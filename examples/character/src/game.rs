@@ -23,7 +23,7 @@ use torque::server::server::{GameServer as _, Server};
 use torque::shapes::instance::ShapeInstance;
 use torque::shapes::math::mul_p;
 use torque_example_common::orbit::Orbit;
-use torque_example_common::view::{SceneShape, WorldView};
+use torque_example_common::view::{Daylight, SceneShape, WorldView};
 use torque_example_common::{KitAssets, draw_cache, kit_path};
 use torque_render_core::Gpu;
 use torque_render_scene::math::Mat;
@@ -34,8 +34,8 @@ use crate::motion::{Figure, Input, State};
 /// The figure's id among the frame's moving objects.
 pub const FIGURE_ID: u32 = 1;
 pub const PISTOL_ID: u32 = 2;
-/// The floor: its half side and how often its texture repeats (units).
-pub const FLOOR_HALF: f32 = 400.0;
+/// The floor: its half side (past the farthest the view reaches) and how often its texture repeats (units).
+pub const FLOOR_HALF: f32 = 3200.0;
 pub const FLOOR_TILE: f32 = 4.0;
 /// Radians the camera turns for a mouse count, and a second with `Q` or `E` held.
 pub const MOUSE_TURN: f32 = 0.005;
@@ -117,9 +117,24 @@ impl CharacterGame {
         })
     }
 
-    /// A world view on `gpu` with the example's floor.
+    /// The daylight: the default's, with the fog and visible distances `main.cs` sets (the default's where it sets none).
+    pub fn daylight(&self) -> Daylight {
+        let mut d = Daylight::default();
+        let (fog, visible) = (
+            self.number("$Character::fogDistance"),
+            self.number("$Character::visibleDistance"),
+        );
+        if visible > 0.0 {
+            d.visible = visible;
+            d.fog_start = fog.clamp(0.0, visible);
+        }
+        d
+    }
+
+    /// A world view on `gpu` with the example's daylight and floor.
     pub fn view(&self, gpu: &Gpu) -> WorldView {
         let mut view = WorldView::new(gpu);
+        view.set_daylight(&self.daylight());
         view.set_floor(&self.assets, &kit_path("grid"), FLOOR_HALF, FLOOR_TILE);
         view
     }

@@ -93,6 +93,22 @@ fn every_map_loads_and_its_figure_spawns_and_walks() {
 }
 
 #[test]
+fn the_maps_sky_reaches_the_client_with_its_far_fog() {
+    let mut game = LevelDemo::new(GameFiles::bundled().expect("the game folder")).unwrap();
+    assert!(enter(&mut game, 0));
+    let mut sky = None;
+    for _ in 0..100 {
+        sky = game.sky_daylight();
+        if sky.is_some() {
+            break;
+        }
+        game.step(32);
+    }
+    let sky = sky.unwrap_or_else(|| panic!("the Sky is ghosted: {:#?}", game.server_log));
+    assert_eq!((sky.fog_start, sky.visible), (1500.0, 3000.0));
+}
+
+#[test]
 fn a_figure_that_walks_into_a_cube_stops_at_it_and_jumps() {
     let mut files = GameFiles::bundled().expect("the game folder");
     files.insert(WALL_PATH, WALL_MAP.as_bytes());

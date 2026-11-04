@@ -4,6 +4,8 @@
 new SimGroup(MissionGroup)
 {
    new ScriptObject(MapInfo) { title = "Maze"; spawn = "-15 -15 0.2"; spawnYaw = 1.5708; };
+   // The sky: a light haze from 1,500 units out, nothing drawn past 3,000.
+   new Sky(WorldSky) { visibleDistance = 3000; fogDistance = 1500; fogColor = "0.72 0.8 0.9 1"; };
    // The ground.
    new StaticShape() { dataBlock = WorldCubeData; position = "0 0 -0.5"; scale = "60 60 1"; };
 };

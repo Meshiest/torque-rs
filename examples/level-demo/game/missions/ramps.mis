@@ -4,6 +4,8 @@
 new SimGroup(MissionGroup)
 {
    new ScriptObject(MapInfo) { title = "Ramps"; spawn = "0 -20 0.2"; spawnYaw = 0; };
+   // The sky: a light haze from 1,500 units out, nothing drawn past 3,000.
+   new Sky(WorldSky) { visibleDistance = 3000; fogDistance = 1500; fogColor = "0.72 0.8 0.9 1"; };
    // A small starting pad on the floor.
    new StaticShape() { dataBlock = WorldCubeData; position = "0 -20 -0.5"; scale = "8 8 1"; };
 };

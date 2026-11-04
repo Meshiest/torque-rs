@@ -28,10 +28,10 @@ use torque::script::vm::host::MemFiles;
 use torque::script::vm::vm::Vm;
 use torque::server::server::{GameServer as _, Server, TICK_MS};
 use torque_example_common::draw_cache;
-use torque_example_common::view::WorldView;
+use torque_example_common::view::{Daylight, WorldView};
 use torque_render_core::Gpu;
 use torque_render_scene::hd::kit::look_at;
-use torque_render_scene::source::Eye;
+use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::{GameFiles, MapEntry};
 use crate::scene::{FigureView, WorldScene};
@@ -105,6 +105,8 @@ pub struct LevelDemo {
     frame_dt: f32,
     /// Lines the server printed (kept for the tests and the console).
     pub server_log: Vec<String>,
+    /// The daylight the view was last given (the map's Sky over the default).
+    daylight: Daylight,
 }
 
 impl LevelDemo {
@@ -167,6 +169,7 @@ impl LevelDemo {
             playing: None,
             frame_dt: 0.0,
             server_log: Vec::new(),
+            daylight: Daylight::default(),
         })
     }
 
@@ -377,8 +380,29 @@ impl LevelDemo {
         with_fov(look_at(at, [centre[0], centre[1], 0.0]))
     }
 
+    /// The daylight of the map's Sky as the client's ghost of it has it: its fog colour, fog distance and visible distance
+    /// over the [`Daylight`] default; None before a Sky is ghosted.
+    pub fn sky_daylight(&self) -> Option<Daylight> {
+        let sky = self.with_world(|w| w.records.sky())??;
+        let mut d = Daylight::default();
+        if let Some([visible, fog]) = sky.distances {
+            d.visible = visible;
+            d.fog_start = fog;
+        }
+        if let Some(main) = sky.main {
+            d.fog = main.fog_color;
+        }
+        Some(d)
+    }
+
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
     pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
+        if let Some(d) = self.sky_daylight()
+            && d != self.daylight
+        {
+            view.set_daylight(&d);
+            self.daylight = d;
+        }
         let dt = std::mem::take(&mut self.frame_dt);
         let objects = {
             let st = self.host.client.borrow();

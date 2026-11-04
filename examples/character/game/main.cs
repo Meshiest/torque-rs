@@ -2,6 +2,10 @@ new GuiControlProfile(CharacterBandProfile) { opaque = true; fillColor = "12 16 
 new GuiControlProfile(CharacterTextProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "235 238 245 255"; };
 new GuiControlProfile(CharacterStateProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "255 214 110 255"; justify = "right"; };
 createCanvas("torque-rs character");
+// How far the view reaches: a light haze from 1,500 units out, nothing drawn past 3,000 (a mission's Sky gives these as its
+// fogDistance and visibleDistance).
+$Character::fogDistance = 1500;
+$Character::visibleDistance = 3000;
 new GameTSCtrl(CharacterView) {
     position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
     new GuiControl(CharacterBand) {

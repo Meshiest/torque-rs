@@ -4,6 +4,8 @@
 new SimGroup(MissionGroup)
 {
    new ScriptObject(MapInfo) { title = "Plaza"; spawn = "0 -14 0.2"; spawnYaw = 0; };
+   // The sky: a light haze from 1,500 units out, nothing drawn past 3,000.
+   new Sky(WorldSky) { visibleDistance = 3000; fogDistance = 1500; fogColor = "0.72 0.8 0.9 1"; };
    // The ground.
    new StaticShape() { dataBlock = WorldCubeData; position = "0 0 -0.5"; scale = "48 48 1"; };
 };

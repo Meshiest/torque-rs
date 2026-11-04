@@ -138,6 +138,14 @@ fn frames_drawn_offscreen_show_the_figure_move() {
 }
 
 #[test]
+fn main_cs_sets_a_far_view() {
+    let game = CharacterGame::new().unwrap();
+    let d = game.daylight();
+    assert_eq!((d.fog_start, d.visible), (1500.0, 3000.0));
+    assert!(torque_example_character::game::FLOOR_HALF > d.visible);
+}
+
+#[test]
 fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
     let mut game = CharacterGame::new().unwrap();
     run(&mut game, 100);
