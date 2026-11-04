@@ -631,3 +631,222 @@ pub fn write_polish(
     a.eye = None;
     Ok(paths)
 }
+
+/// Turns Ann's view to look at `target` (with the next move, as the mouse would).
+fn look_at_point(a: &mut Seat, target: [f32; 3]) {
+    let Some(own) = a.game.scene().own() else {
+        return;
+    };
+    let d = [0, 1, 2].map(|k| target[k] - own.eye[k]);
+    let yaw = d[0].atan2(d[1]);
+    let pitch = -d[2].atan2(d[0].hypot(d[1]));
+    let mut turn = yaw - own.yaw;
+    while turn > std::f32::consts::PI {
+        turn -= std::f32::consts::TAU;
+    }
+    while turn < -std::f32::consts::PI {
+        turn += std::f32::consts::TAU;
+    }
+    turn_by(a, turn);
+    a.game.set_view_pitch(pitch);
+}
+
+/// A crop of `frame` around its center, `w` by `h` pixels, scaled up `zoom` times (nearest), for a close look.
+fn zoomed(frame: &Frame, w: u32, h: u32, zoom: u32) -> Frame {
+    let (x0, y0) = ((frame.width - w) / 2, (frame.height - h) / 2);
+    let (zw, zh) = (w * zoom, h * zoom);
+    let mut rgba = Vec::with_capacity((zw * zh * 4) as usize);
+    for y in 0..zh {
+        for x in 0..zw {
+            let i = 4 * ((y0 + y / zoom) * frame.width + x0 + x / zoom) as usize;
+            rgba.extend_from_slice(&frame.rgba[i..i + 4]);
+        }
+    }
+    Frame {
+        width: zw,
+        height: zh,
+        rgba,
+    }
+}
+
+/// The second round of polish pictures at `size`, written into `dir`'s `ribbon-flash`, `decals2` and `sights` folders: Ann's
+/// first-person frames 0, 16, 32, 64, 128, 256 and 512 ms after a shot (the flares and the smoke); Bob's bolt and its ribbon
+/// seen from the side, into the open sky and into a wall; bolt holes in the middle of a wall, at a block's edge and in the
+/// floor, close and from a few steps off; and Ann aimed down her sights, with a close crop of them. Returns the paths.
+pub fn write_polish2(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    use std::f32::consts::PI;
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    let mut paths = Vec::new();
+    let mut save = |frame: &Frame, sub: &str, name: &str| -> Result<(), String> {
+        let folder = dir.join(sub);
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let path = folder.join(format!("{name}.png"));
+        write_png(frame, &path).map_err(|e| e.to_string())?;
+        paths.push(path);
+        Ok(())
+    };
+    place(&mut a.game, "Bob", [-12.0, 12.0, 0.1], PI)?;
+
+    // The flares and the smoke: Ann fires into the open, a little above level.
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    a.game.set_view_pitch(-0.12);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    let flashes = a.game.scene().flashes;
+    a.game.call("fire", &["1"])?;
+    run_until(&gpu, &mut a, &mut b, "the shot's flash", |a, _| {
+        a.game.scene().flashes > flashes
+    })?;
+    let mut at = 0;
+    for ms in [0, 16, 32, 64, 128, 256, 512] {
+        run(&gpu, &mut [&mut a, &mut b], ms - at)?;
+        at = ms;
+        save(
+            &a.picture(&gpu)?,
+            "ribbon-flash",
+            &format!("fp-fire-{ms:03}ms"),
+        )?;
+    }
+    a.game.call("fire", &["0"])?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+
+    // Bob's bolt from the side: into the open sky (aimed up over the far wall), then into the wall ahead of him.
+    for (bob, pitch, camera, look, name) in [
+        (
+            [-6.0, -10.0, 0.1],
+            -0.25,
+            [2.0, -17.0, 2.5],
+            [2.0, -10.0, 3.2],
+            "ribbon-sky",
+        ),
+        (
+            [10.0, -10.0, 0.1],
+            0.0,
+            [16.0, -15.5, 2.2],
+            [17.0, -10.0, 1.8],
+            "ribbon-wall",
+        ),
+    ] {
+        place(&mut a.game, "Bob", bob, PI / 2.0)?;
+        run(&gpu, &mut [&mut a, &mut b], 600)?;
+        b.game.set_view_pitch(pitch);
+        run(&gpu, &mut [&mut a, &mut b], 300)?;
+        let mut eye = look_at(camera, look);
+        eye.fov = Some(70);
+        a.eye = Some(eye);
+        b.game.call("fire", &["1"])?;
+        run_until(&gpu, &mut a, &mut b, "a bolt in flight", |a, _| {
+            a.game.scene().bolts_drawn > 0
+        })?;
+        b.game.call("fire", &["0"])?;
+        for k in 1..=4 {
+            run(&gpu, &mut [&mut a, &mut b], 32)?;
+            save(&a.picture(&gpu)?, "ribbon-flash", &format!("{name}-{k}"))?;
+        }
+        a.eye = None;
+        b.game.set_view_pitch(0.0);
+        run(&gpu, &mut [&mut a, &mut b], 600)?;
+    }
+    place(&mut a.game, "Bob", [-12.0, 12.0, 0.1], PI)?;
+
+    // Bolt holes: on the cover's face south of the middle (x -0.5..0.5, its face at y = -11, its top at z = 2.4): in the
+    // middle, at its right edge and at its top edge; then in the floor.
+    place(&mut a.game, "Ann", [0.3, -13.4, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    for target in [
+        [0.0, -11.0, 1.4],
+        [-0.2, -11.0, 1.0],
+        [0.47, -11.0, 1.7],
+        [0.49, -11.0, 1.2],
+        [0.1, -11.0, 2.38],
+        [-0.3, -11.0, 2.36],
+    ] {
+        look_at_point(&mut a, target);
+        run(&gpu, &mut [&mut a, &mut b], 150)?;
+        shoot(&gpu, &mut a, &mut b)?;
+    }
+    look_at_point(&mut a, [0.1, -11.0, 1.7]);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals2", "wall-close")?;
+    place(&mut a.game, "Ann", [3.5, -18.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    look_at_point(&mut a, [0.0, -11.0, 1.6]);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals2", "wall-play")?;
+    // The block's edge seen from the side: the holes stop at it.
+    place(&mut a.game, "Ann", [2.2, -12.4, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    look_at_point(&mut a, [0.45, -11.0, 1.8]);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals2", "edge-close")?;
+    place(&mut a.game, "Ann", [-14.0, 0.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    for target in [[-14.0, 1.6, 0.0], [-13.6, 1.9, 0.0], [-14.4, 1.5, 0.0]] {
+        look_at_point(&mut a, target);
+        run(&gpu, &mut [&mut a, &mut b], 150)?;
+        shoot(&gpu, &mut a, &mut b)?;
+    }
+    look_at_point(&mut a, [-14.0, 1.7, 0.0]);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals2", "floor-close")?;
+    place(&mut a.game, "Ann", [-14.0, -4.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    look_at_point(&mut a, [-14.0, 1.7, 0.0]);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals2", "floor-play")?;
+    a.game.set_view_pitch(0.0);
+    run(&gpu, &mut [&mut a, &mut b], 2500)?;
+
+    // Aimed down the sights, and a close crop of them.
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    a.game.call("aim", &["1"])?;
+    run(&gpu, &mut [&mut a, &mut b], 500)?;
+    let frame = a.picture(&gpu)?;
+    let tag = format!("{}x{}", size.0, size.1);
+    save(&frame, "sights", &format!("aimed-{tag}"))?;
+    save(
+        &zoomed(&frame, size.0 / 8, size.1 / 8, 4),
+        "sights",
+        &format!("aimed-{tag}-crop"),
+    )?;
+    a.game.call("aim", &["0"])?;
+    Ok(paths)
+}
+
+/// Ann aimed down her sights at `size`, and a close crop of them, into `dir`'s `sights` folder. Returns the paths.
+pub fn write_sights(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    place(&mut a.game, "Bob", [-12.0, 12.0, 0.1], std::f32::consts::PI)?;
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    a.game.call("aim", &["1"])?;
+    run(&gpu, &mut [&mut a, &mut b], 500)?;
+    let folder = dir.join("sights");
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    let frame = a.picture(&gpu)?;
+    let tag = format!("{}x{}", size.0, size.1);
+    let mut paths = Vec::new();
+    for (f, name) in [
+        (frame.clone(), format!("aimed-{tag}")),
+        (
+            zoomed(&frame, size.0 / 8, size.1 / 8, 4),
+            format!("aimed-{tag}-crop"),
+        ),
+    ] {
+        let path = folder.join(format!("{name}.png"));
+        write_png(&f, &path).map_err(|e| e.to_string())?;
+        paths.push(path);
+    }
+    Ok(paths)
+}

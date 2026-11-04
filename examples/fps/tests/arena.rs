@@ -131,7 +131,7 @@ fn two_players_meet_shoot_and_chat() {
                 .datablocks
                 .iter()
                 .find(|(_, d)| d.class == "ShapeBaseImageData")?;
-            torque_example_fps::scene::muzzle_flash(w, db)
+            torque_example_fps::scene::fire_emitter(w, db).map(|(e, _)| e)
         })
         .flatten()
         .expect("the muzzle flash");

@@ -74,3 +74,8 @@ fps-motion-shots dir="../target/fps-motion-shots":
 # both players, aiming down the sights), drawn offscreen into `dir`
 fps-polish-shots dir="../target/fps-polish-shots":
     cargo run -p torque-example-fps --release --bin fps-client -- --polish-shots {{dir}}
+
+# The arena's second polish pictures (a shot's flares and smoke frame by frame, a bolt's ribbon from the side, bolt holes at a
+# wall's middle and edge and in the floor, the sights aimed), drawn offscreen into `dir`
+fps-polish2-shots dir="../target/fps-polish2-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --polish2-shots {{dir}}
