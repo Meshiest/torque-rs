@@ -23,9 +23,10 @@ new GuiControlProfile(ArenaListProfile)
    fontType = "Arial";
    fontSize = 18;
    fontColors[0] = "226 230 238 255";
-   fontColors[1] = "20 24 32 255";
-   fontColorHL = "20 24 32 255";
-   fillColorHL = "255 190 90 255";
+   // The selected row: the normal light text on a muted blue; a row under the mouse: warm text on the dark list.
+   fontColors[1] = "255 208 120 255";
+   fontColorHL = "255 208 120 255";
+   fillColorHL = "58 84 128 255";
    opaque = false;
    canKeyFocus = true;
 };
