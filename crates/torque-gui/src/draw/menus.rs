@@ -53,6 +53,9 @@ fn font_colors(vm: &torque_ts_vm::vm::Vm, p: ObjId) -> Vec<[u8; 4]> {
     (0..10).map(|i| font_color(vm, p, i)).collect()
 }
 
+/// How opaque an empty GuiTextEditCtrl's `placeholderText` is, out of 255, of the profile's `fontColor`.
+const PLACEHOLDER_ALPHA: u16 = 110;
+
 /// A font, its face and size.
 type FontOf = (Arc<torque_fonts::Font>, String, i32);
 
@@ -353,7 +356,8 @@ impl Walk<'_> {
     /// placed afresh at the left plus 3 when reset or when the text is narrower than the control), in three runs: before the
     /// selection (`fontColor`, `fontColorNA` when not active or not enabled), the selection over a `fillColorHL` box
     /// (`fontColorHL`), after it; with an outline colour each run first nine times in it (and the x moved one pixel
-    /// inwards per run); the caret, a line in `cursorColor`, while focused, on and enabled.
+    /// inwards per run); the caret, a line in `cursorColor`, while focused, on and enabled. An empty control shows its
+    /// `placeholderText` (Torque3D's field, a dynamic field here) in a faded `fontColor`, focused or not.
     fn draw_edit_text(&mut self, id: ObjId, p: ObjId, rect: Rect, focused: bool) {
         let vm = self.vm;
         let Some(f) = self.profile_font(p) else {
@@ -477,6 +481,14 @@ impl Walk<'_> {
             run(self, &mut x, sel, colors[1]);
         }
         run(self, &mut x, &text[be.max(0) as usize..], color);
+        if text.is_empty() {
+            let hint = text_field(vm, id, b"placeholderText");
+            if !hint.is_empty() {
+                let mut dim = colors[0];
+                dim[3] = (u16::from(dim[3]) * PLACEHOLDER_ALPHA / 255) as u8;
+                self.text(&f, (rect[0] + 3, text_y), &hint, dim, Some(&colors));
+            }
+        }
         if focused && on && enabled {
             let cc = color_field(vm, p, b"cursorColor");
             self.line((caret.0, caret.1), (caret.0, caret.2), cc);
