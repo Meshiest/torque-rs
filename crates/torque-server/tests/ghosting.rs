@@ -158,3 +158,25 @@ $command = isFunction(commandToClient);",
     // The command natives come with the host.
     assert_eq!(global(&s, "$command"), "1");
 }
+
+#[test]
+fn torques_codecs_move_a_players_and_an_items_simulation_bits_to_tges_record_masks() {
+    use torque_ghosts::tge::TgeClass;
+    use torque_server::net::codecs::{NetCodecs, TorqueCodecs};
+    let player = TgeClass::Player.code();
+    let item = TgeClass::Item.code();
+    // A Player's MoveMask and ImpactMask as the simulation marks them, then as TGE's Player record reads them.
+    assert_eq!(
+        TorqueCodecs.sim_mask(player, 0x0200_0000 | 0x0400_0000),
+        torque_ghosts::player::mask::MOVE | torque_ghosts::player::mask::IMPACT
+    );
+    // An Item's position and rotation bits.
+    assert_eq!(
+        TorqueCodecs.sim_mask(item, 0x0400_0000 | 0x0800_0000),
+        torque_ghosts::shapes::item_mask::POSITION | torque_ghosts::shapes::item_mask::ROTATION
+    );
+    // The parts' bits below are the same, and so is every bit of another class.
+    assert_eq!(TorqueCodecs.sim_mask(player, 0x0000_0101), 0x0000_0101);
+    let shape = TgeClass::StaticShape.code();
+    assert_eq!(TorqueCodecs.sim_mask(shape, 0x0200_0000), 0x0200_0000);
+}
