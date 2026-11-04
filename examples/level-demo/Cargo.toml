@@ -1,0 +1,30 @@
+[package]
+name = "torque-example-level-demo"
+description = "A singleplayer world in a window: a menu of cube maps, the box figure walking and jumping on them, a server and a client joined in one process"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "example", "gamedev"]
+categories = ["game-development"]
+
+# The server (torque-server's main loop and network host over torque-game's classes) and the client (torque-client's
+# connection over TGE's records) run in one process and talk through an in-memory datagram link. The game's own scripts are
+# in `game/`; the maps are the `.mis` files in `game/missions/`, read when the example starts.
+
+[dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["shapes", "client-window", "system-fonts"] }
+torque-example-assets = { path = "../assets" }
+torque-example-common = { path = "../common" }
+torque-render-core = { path = "../../crates/torque-render-core" }
+torque-render-scene = { path = "../../crates/torque-render-scene" }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+
+[[bin]]
+name = "example-level-demo"
+path = "src/main.rs"
+
+[lints]
+workspace = true

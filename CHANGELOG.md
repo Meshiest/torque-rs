@@ -50,8 +50,22 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-example-assets` (`examples/assets`): the example games' asset kit, made from code at run time: a unit cube with a
   collision hull, a box figure (eye, camera and mount nodes; idle, walk, run and jump sequences), a pistol with its image
   nodes and a fire sequence, a projectile, and their PNG textures.
+- `torque-example-level-demo` (`examples/level-demo`): a singleplayer world in a window: a menu of maps (the `.mis` files in its
+  `game/missions` folder), then the kit's box figure walking and jumping on the map's cubes, a server (torque-server with
+  TGE's game classes) and a client (TGE's connection half) joined in one process by an in-memory datagram link.
+- `torque-server`: `game::install` (TGE's game classes on one container and the process list, `GameBase::onAdd`), the
+  connections' ghosting and control methods (`activateGhosting`, `resetGhosting`, `setControlObject`,
+  `getControlObject`), the `NetObject` behaviour that enters ghostable objects in the hub, the command natives registered
+  with the host, and records packed from the simulated Player's state.
+- `torque-client`: TGE's feed reads datablock events and answers `DataBlocksDone`.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
+
+### Fixed
+
+- `torque-game`: a shape with fewer than eight collision details (the bounds report and the hull slots read past its
+  lists); the class specs name TGE's console methods (the crate's natives were refused without them), and `SceneObject`,
+  `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

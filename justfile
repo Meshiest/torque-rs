@@ -56,6 +56,16 @@ example-character:
 example-character-shots dir="target/character-shots":
     cargo run -p torque-example-character --release -- --shots {{dir}}
 
+# The level demo in a window: a menu of maps, then the box figure on them (W A S D move, Shift walk, Space jump,
+# mouse look, V camera, R restart, Esc menu)
+example-level-demo:
+    cargo run -p torque-example-level-demo --release
+
+# The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
+# offscreen into `dir`
+example-level-demo-shots dir="target/level-demo-shots":
+    cargo run -p torque-example-level-demo --release -- --shots {{dir}}
+
 # Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
 example-kit-shots dir="target/kit-shots":
     cargo run -p torque-example-common --release --example kit-shots -- {{dir}}
