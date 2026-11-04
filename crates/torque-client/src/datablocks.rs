@@ -1,0 +1,193 @@
+//! The client's datablocks as script objects: TGE's `SimDataBlockEvent::process` on the client. After the script's
+//! `onDataBlockObjectReceived(index, total)` the datablock the event unpacked (a new object of the event's class, `unpackData` into
+//! its members) is registered under the server's id and joins DataBlockGroup, so scripts that walk `getDataBlockGroupSize()` /
+//! `getDataBlock(i)` (a dialog's lists of player types and items, an inventory's icons) read its fields as on the server. A
+//! datablock with that id already there (a second mission's) takes the new data and is preloaded again (the event's other branch:
+//! `packData` of the new one, `unpackData` into the old one, `preload(false)`). Client datablocks have no names.
+//!
+//! **The fields' text** is the game's unpack ([`Unpacked`], from [`crate::game::ClientGame::unpack_datablock`]: what the
+//! client's getters print from the members `unpackData` wrote; TGE's in [`crate::conn::tge`]); a text field
+//! goes into the client's string table, a datablock pointer prints the name of the object its id reaches ([`datablock_pointer_name`])
+//! or "" (the client's datablocks are unnamed).
+//!
+//! **The preload** runs at once (TGE queues the datablock for `GameConnection::preloadNextDataBlock`, which preloads them in order
+//! over the next ticks): no script can tell, the datablocks are preloaded before the mission's ghosts need them either way.
+//!
+//! **Engine-only** (TGE clobbers): an object at the id that is not a datablock of the event's class is left alone and the event
+//! refused ([`Received::Refused`]); TGE warns, deletes it and registers the new datablock.
+//!
+//! Credit: follows TGE's `SimDataBlockEvent` as Torque3D carries it (MIT: `T3D/gameBase/gameConnectionEvents.cpp` and
+//! `T3D/gameBase/gameConnection.cpp`, each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.).
+
+use ts_vm::fields::FieldType;
+use ts_vm::sim::ObjId;
+use ts_vm::vm::{Vm, VmError};
+
+use crate::game::{ClientGame, client_game};
+
+/// A field the unpack writes: its name, its array index ("" for a scalar) and its text.
+pub type FieldText = (Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// A field the unpack writes ([`FieldText`]) and, for a datablock pointer the event carried an id for, that id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnpackedField {
+    pub name: Vec<u8>,
+    pub index: Vec<u8>,
+    pub text: Vec<u8>,
+    pub pointer: Option<u32>,
+}
+
+/// A datablock as the game's unpack made it of its event (`unpackData` into a new object of its class).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unpacked {
+    /// The server's id.
+    pub id: u32,
+    pub class: String,
+    pub fields: Vec<UnpackedField>,
+    /// The error the unpack prints, if any.
+    pub error: Option<String>,
+    /// A particle emitter's particle ids (the client keeps them in the datablock values' side table: its emitter has no
+    /// `particles` text); `None` for another class.
+    pub emitter_ids: Option<Vec<i32>>,
+}
+
+/// Whether `name` is a text field of `class` (`string`, `caseString` or `filename`).
+fn string_field(game: &dyn ClientGame, class: &str, name: &[u8]) -> bool {
+    game.class_fields(class).iter().any(|(n, ty, _)| {
+        n.as_bytes() == name
+            && matches!(
+                ty,
+                FieldType::String | FieldType::CaseString | FieldType::Filename
+            )
+    })
+}
+
+/// What [`receive`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Received {
+    Added(ObjId),
+    Updated(ObjId),
+    /// Not made (an id outside the range, a class the client does not know, a refused `onAdd`, a failed preload).
+    Refused,
+}
+
+/// The name of the object a datablock pointer id reaches, as TGE's `preload` resolves one (`AudioProfile::preload`: the id looked
+/// up in the id dictionary, then a dynamic cast to the class the pointer holds, `AudioDescription`; a null result prints "could not
+/// resolve description id" and fails the preload): an id in the datablock range ([`FIRST_DATABLOCK_ID`] up to the last id of the
+/// range, `Objects::datablock_id_limit`), an object there that is a `SimDataBlock` and, when the class table types the field
+/// (`FieldType::DataBlock`), of that class. `None` otherwise (the engine writes the field empty where TGE's client fails the
+/// datablock's preload), and for an unnamed object (a field's text cannot hold it).
+///
+/// [`FIRST_DATABLOCK_ID`]: ts_vm::sim::FIRST_DATABLOCK_ID
+pub fn datablock_pointer_name(vm: &Vm, expected: Option<&str>, id: u32) -> Option<Vec<u8>> {
+    if !(ts_vm::sim::FIRST_DATABLOCK_ID..vm.objects().datablock_id_limit()).contains(&id) {
+        return None;
+    }
+    let objects = vm.objects();
+    let o = objects.get(id)?;
+    if !objects.classes.is_a(o.class(), ts_vm::sim::SIM_DATA_BLOCK) {
+        return None;
+    }
+    if let Some(class) = expected {
+        let wanted = objects.classes.find(class.as_bytes())?;
+        if !objects.classes.is_a(o.class(), wanted) {
+            return None;
+        }
+    }
+    let named = o.name()?.to_vec();
+    (!named.is_empty()).then_some(named)
+}
+
+/// A datablock pointer's text as the field's getter prints it: the name of the object pointer `id` of field `name` of `class`
+/// reaches, when it has one. A remote client's datablocks are unnamed (the getter prints ""); a local game's client shares the
+/// server's own datablocks (one VM, as TGE's local client: `unpackData` sets the pointer to the server's object), so its
+/// pointer fields keep naming them (a weapon image's `projectile` keeps naming the server's projectile, which its `onFire` makes;
+/// the "" a remote client prints would wipe it).
+///
+/// The id is the server's (untrusted): it names an object only as TGE's `preload` resolves a pointer id
+/// ([`datablock_pointer_name`]); any other id gives `None` and the field its plain client text ("").
+fn pointer_name(vm: &Vm, class: &str, name: &[u8], id: u32) -> Option<Vec<u8>> {
+    let name = std::str::from_utf8(name).ok()?;
+    let expected = client_game(vm)
+        .class_fields(class)
+        .into_iter()
+        .find(|(n, _, _)| n.eq_ignore_ascii_case(name))
+        .and_then(|(_, ty, _)| match ty {
+            FieldType::DataBlock(c) => Some(c),
+            _ => None,
+        });
+    datablock_pointer_name(vm, expected, id)
+}
+
+/// The datablock of one event made in the client (see the module docs), after its `onDataBlockObjectReceived`, from the game's
+/// unpack `d`. `values` are the side tables: a new `ParticleEmitterData` keeps the particle ids its record carries there before its
+/// add (a client emitter has no `particles` string, only the unpacked id list).
+pub fn receive(
+    vm: &mut Vm,
+    d: &Unpacked,
+    values: Option<&torque_game::dbvalues::DbValues>,
+) -> Result<Received, VmError> {
+    if let Some(error) = &d.error {
+        vm.error(error.clone());
+    }
+    // `readSTString()`: every string the unpack reads goes into the client's string table ignoring case, so it reads in the first
+    // spelling the client has (the server's `uiName = "rifle"` reads "Rifle" when a GUI's text had that spelling first).
+    let game = client_game(vm);
+    let fields: Vec<FieldText> = d
+        .fields
+        .iter()
+        .map(|f| {
+            let text = if string_field(&*game, &d.class, &f.name) {
+                vm.intern_string(&f.text).to_vec()
+            } else if let Some(named) = f
+                .pointer
+                .and_then(|id| pointer_name(vm, &d.class, &f.name, id))
+            {
+                named
+            } else {
+                f.text.clone()
+            };
+            (f.name.clone(), f.index.clone(), text)
+        })
+        .collect();
+    let id = d.id;
+    let class = d.class.as_bytes();
+    // An object already at the id: TGE updates it in place when it is a datablock of the event's own class. Any other (another
+    // class's datablock, an object the client made itself) is left alone and the event refused: the engine's own safety rule
+    // (TGE clobbers it: `Clobbering it`, the object deleted and the new one registered).
+    if let Some(o) = vm.objects().get(id) {
+        let classes = &vm.objects().classes;
+        let same = classes.is_a(o.class(), ts_vm::sim::SIM_DATA_BLOCK)
+            && classes.find(class) == Some(o.class());
+        if !same {
+            return Ok(Received::Refused);
+        }
+        // The other branch (`packData` of the new one, `unpackData` into the one there, `preload(false)`) resolves a pointer by its
+        // id: in a local game the one there is the server's own datablock and its pointers keep naming the same objects. The
+        // pointer fields' texts are the names [`pointer_name`] resolved (a local game's `play3D` reads `description` back by
+        // name), or empty for an id the preload would not resolve.
+        for (name, index, text) in &fields {
+            vm.set_object_member(id, name, index, text);
+        }
+        return Ok(match vm.preload_engine_datablock(id)? {
+            true => Received::Updated(id),
+            false => Received::Refused,
+        });
+    }
+    let emitter = d.emitter_ids.is_some();
+    if let (Some(ids), Some(values)) = (&d.emitter_ids, values) {
+        values.set_emitter_ids(id, ids.clone());
+    }
+    let added = vm.add_engine_datablock(class, id, &fields)?;
+    if let (true, Some(values), None) = (emitter, values, added) {
+        values.forget(id);
+    }
+    Ok(match added {
+        Some(id) => Received::Added(id),
+        None => Received::Refused,
+    })
+}
+
+#[cfg(test)]
+#[path = "datablocks_tests.rs"]
+mod tests;

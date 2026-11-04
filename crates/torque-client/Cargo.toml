@@ -1,0 +1,45 @@
+[package]
+name = "torque-client"
+description = "The torque-rs client's engine half: the connection to a server, the record world's prediction, the action maps, the server query and the window glue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "client", "networking", "gamedev"]
+categories = ["game-development", "network-programming"]
+
+[dependencies]
+torque-scene = { path = "../torque-scene" }
+torque-game = { path = "../torque-game" }
+torque-server = { path = "../torque-server" }
+ghost-world = { path = "../torque-ghost-world", package = "torque-ghost-world" }
+net = { path = "../torque-net", package = "torque-net" }
+ghosts = { path = "../torque-ghosts", package = "torque-ghosts" }
+collide = { package = "torque-collide", path = "../torque-collide" }
+sim = { package = "torque-sim", path = "../torque-sim" }
+shapes = { package = "torque-shapes", path = "../torque-shapes" }
+vehicle = { package = "torque-vehicle", path = "../torque-vehicle" }
+images = { package = "torque-images", path = "../torque-images" }
+gui = { package = "torque-gui", path = "../torque-gui" }
+ts-text = { package = "torque-ts-text", path = "../torque-ts-text" }
+ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The window glue (`platform`): the window's keys and buttons, the cursor's hold.
+winit = { version = "0.30", default-features = false, features = ["rwh_06"], optional = true }
+
+# The window glue's URL opener: Windows' URL handler (ShellExecuteExW, no command line).
+[target.'cfg(windows)'.dependencies]
+open = { version = "5.4.4", default-features = false, features = ["shellexecute-on-windows"], optional = true }
+
+[dev-dependencies]
+# The host tests' draw cache (no font files: nothing is drawn as text).
+fonts = { package = "torque-fonts", path = "../torque-fonts" }
+
+[features]
+# The window glue (`platform`): keys, cursor hold, frame cap, URL opener.
+window = ["dep:winit", "dep:open"]
+
+[lints]
+workspace = true

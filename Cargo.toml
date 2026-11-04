@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/torque-audio",
+    "crates/torque-client",
     "crates/torque-collide",
     "crates/torque-fonts",
     "crates/torque-game",
