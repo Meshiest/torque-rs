@@ -140,6 +140,12 @@ pub trait EngineRecord<S: ?Sized> {
 
     /// A vehicle's update, for a WheeledVehicle's or a FlyingVehicle's record.
     fn vehicle(&self) -> Option<VehicleUpdate>;
+
+    /// A Player's or an AIPlayer's move block: its velocity and its head's pitch as a fraction of the look range (-1 to 1),
+    /// when the record carries one ([`crate::predict::ghost_players`] runs the Player on from them). None by default.
+    fn player_motion(&self) -> Option<(F3, f32)> {
+        None
+    }
 }
 
 /// What the engine half reads of a datablock.

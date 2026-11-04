@@ -237,6 +237,8 @@ pub struct Predictor<W: PredictWorld> {
     /// FlyingVehicle ghosts' warps ([`look`]).
     pub spins: look::WheelSpins,
     pub flying: look::FlyingWarps,
+    /// The other Players, run on between their updates and warped to each new one ([`ghost_players`]).
+    pub ghost_players: ghost_players::GhostPlayers,
     /// The client's virtual time at the last tick or frame view (ms): what the flying warps are drawn at.
     pub sim_ms: u32,
     /// Whether the game's answers were given (else the first `Vm` seen gives its game's).
@@ -300,6 +302,7 @@ impl<W: PredictWorld> Predictor<W> {
             prefs: game::GamePrefs::default(),
             spins: look::WheelSpins::default(),
             flying: look::FlyingWarps::default(),
+            ghost_players: ghost_players::GhostPlayers::default(),
             sim_ms: 0,
             game_given: false,
         }
@@ -1403,6 +1406,9 @@ impl<W: PredictWorld> Predictor<W> {
                 );
             }
         }
+        // The other Players where the client runs them, at the frame's time.
+        let now = world.anim_ms;
+        self.ghost_players.frame(world, now);
         if let Some(cam) = &self.camera {
             // `Camera::interpolateTick`: the view between the last two ticks, an orbit made from its target's render
             // position at this frame (the corpse drawn there too) and pulled in through the container. Smooth aim: the last
@@ -2889,4 +2895,5 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 pub mod aim;
 pub mod drive;
 pub mod game;
+pub mod ghost_players;
 pub mod look;
