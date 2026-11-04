@@ -1,0 +1,399 @@
+//! The renderers' device layer: a [`Gpu`] (the wgpu adapter, device and queue), the backends it may start on and their order,
+//! the sample counts its formats support, [`Offscreen`] colour and depth targets, a target's frame read back ([`Frame`]), a
+//! window's surface ([`window`]) and the GUI pass ([`GuiPass`], with its backdrop blur [`blur::Blur`]). Every renderer draws on
+//! a [`Gpu`]; nothing here draws a scene.
+
+use std::fmt;
+
+pub mod blur;
+pub mod gui_pass;
+pub mod window;
+pub use gui_pass::GuiPass;
+/// The GPU crate, for a window's surface.
+pub use wgpu;
+
+/// The name a display device list shows for a backend (the windowed client's Options list the one it draws with).
+pub fn backend_name(backend: wgpu::Backend) -> &'static str {
+    match backend {
+        wgpu::Backend::Dx12 => "Direct3D 12",
+        wgpu::Backend::Vulkan => "Vulkan",
+        wgpu::Backend::Metal => "Metal",
+        wgpu::Backend::Gl => "OpenGL",
+        wgpu::Backend::BrowserWebGpu => "WebGPU",
+        _ => "Unknown",
+    }
+}
+
+/// The colour and depth formats of every target made here.
+pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// The device's memory blocks: 8 MiB at first, at most 64 MiB, a larger resource in a block of its own (freed with it). The
+/// default's 256 MiB blocks each kept a few small resources alive after the large ones in them were freed: a big scene's
+/// renderers held 1.3 to 2 GiB of them free in blocks that could not be given back.
+pub const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: (8 << 20)..(64 << 20),
+};
+/// The largest frame the renderer makes (a side).
+pub const MAX_SIDE: u32 = 8192;
+/// The sample counts a multisampled scene pass may use (wgpu's; 1 is the single-sampled path).
+pub const SAMPLE_COUNTS: [u32; 5] = [1, 2, 4, 8, 16];
+
+/// The sample counts of [`SAMPLE_COUNTS`] a device can draw the scene pass with: those both the colour and the depth format support
+/// on it, the colour resolvable (with `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` the adapter's own, else WebGPU's guaranteed 1 and 4).
+fn supported_sample_counts(adapter: &wgpu::Adapter, features: wgpu::Features) -> Vec<u32> {
+    let flags = |format: wgpu::TextureFormat| {
+        if features.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+            adapter.get_texture_format_features(format).flags
+        } else {
+            format.guaranteed_format_features(features).flags
+        }
+    };
+    let (color, depth) = (flags(COLOR_FORMAT), flags(DEPTH_FORMAT));
+    SAMPLE_COUNTS
+        .into_iter()
+        .filter(|&n| {
+            n == 1
+                || (color.sample_count_supported(n)
+                    && depth.sample_count_supported(n)
+                    && color.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE))
+        })
+        .collect()
+}
+
+/// The count a multisampled pass picks: the largest of `supported` at or under `wanted` (0 and 1 are one sample).
+pub fn pick_samples(supported: &[u32], wanted: u32) -> u32 {
+    supported
+        .iter()
+        .copied()
+        .filter(|&n| n <= wanted.max(1))
+        .max()
+        .unwrap_or(1)
+}
+
+/// The optional features the HDR renderer uses when the adapter has them: GPU timestamps (its frame times),
+/// timestamps between passes (per-pass GPU times), `Rg11b10Ufloat` render targets (bloom), depth clip control (shadow pancaking),
+/// filterable 32-bit float textures, and for its indirect draws a first instance in the arguments (a draw names its cluster)
+/// and the draw count read from a buffer.
+/// The device asks for those of them the adapter offers; a single-sampled frame depends on none.
+pub fn hd_wanted() -> wgpu::Features {
+    wgpu::Features::TIMESTAMP_QUERY
+        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+        | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+        | wgpu::Features::DEPTH_CLIP_CONTROL
+        | wgpu::Features::FLOAT32_FILTERABLE
+        | wgpu::Features::INDIRECT_FIRST_INSTANCE
+        | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
+}
+
+/// Why a frame could not be drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderError {
+    NoAdapter(String),
+    NoDevice(String),
+    BadSize(u32, u32),
+    Readback(String),
+}
+
+impl fmt::Display for RenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RenderError::NoAdapter(e) => write!(f, "no GPU adapter: {e}"),
+            RenderError::NoDevice(e) => write!(f, "no GPU device: {e}"),
+            RenderError::BadSize(w, h) => write!(f, "a frame of {w}x{h} cannot be drawn"),
+            RenderError::Readback(e) => write!(f, "reading the frame back failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RenderError {}
+
+/// An RGBA8 frame, rows top to bottom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl Frame {
+    /// The RGB bytes (alpha dropped).
+    pub fn rgb(&self) -> Vec<u8> {
+        self.rgba
+            .chunks_exact(4)
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .collect()
+    }
+}
+
+/// A colour and depth target of one size (`Rgba8Unorm`, no sRGB, and 32-bit float depth, as every frame is drawn).
+pub struct Offscreen {
+    pub width: u32,
+    pub height: u32,
+    texture: wgpu::Texture,
+    pub color: wgpu::TextureView,
+    pub depth: wgpu::TextureView,
+}
+
+/// The flags every instance is made with: wgpu's build defaults, and in a release build without the objects' labels handed to the
+/// driver (a frame's hundred command lists each named cost a few percent of its encode; `WGPU_DISCARD_HAL_LABELS=0` keeps them
+/// for a graphics debugger).
+pub fn instance_flags() -> wgpu::InstanceFlags {
+    let mut flags = wgpu::InstanceFlags::from_build_config();
+    if !cfg!(debug_assertions) {
+        flags |= wgpu::InstanceFlags::DISCARD_HAL_LABELS;
+    }
+    flags.with_env()
+}
+
+/// An adapter, its device and queue, the sample counts its formats support and its downlevel flags.
+#[derive(Clone)]
+pub struct Gpu {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    info: wgpu::AdapterInfo,
+    sample_counts: Vec<u32>,
+    downlevel: wgpu::DownlevelFlags,
+}
+
+impl Gpu {
+    /// The first high-performance adapter (DX12 or Vulkan on Windows), no window.
+    pub fn new() -> Result<Gpu, RenderError> {
+        Gpu::with_backends(&[
+            wgpu::Backends::DX12,
+            wgpu::Backends::VULKAN | wgpu::Backends::METAL,
+        ])
+    }
+
+    /// An offscreen device on the first of `order` that has an adapter.
+    pub fn with_backends(order: &[wgpu::Backends]) -> Result<Gpu, RenderError> {
+        // DX12 first on Windows, then Vulkan and Metal.
+        let mut adapter = None;
+        let mut why = String::new();
+        for &backends in order {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends,
+                flags: instance_flags(),
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+                apply_limit_buckets: false,
+            })) {
+                Ok(a) => {
+                    adapter = Some(a);
+                    break;
+                }
+                Err(e) => why = e.to_string(),
+            }
+        }
+        let adapter = adapter.ok_or(RenderError::NoAdapter(why))?;
+        Gpu::on_adapter(&adapter)
+    }
+
+    /// The device on an adapter the caller chose (a window's: [`window::window_gpu`]). The device asks for the adapter's limits
+    /// and for the optional features of [`hd_wanted`] it has (the HDR renderer draws on this device), and for the adapter's
+    /// own texture format features when it has them (sample counts beyond WebGPU's 4); single-sampled draws use none
+    /// of them.
+    pub fn on_adapter(adapter: &wgpu::Adapter) -> Result<Gpu, RenderError> {
+        let info = adapter.get_info();
+        let wanted = hd_wanted() | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("render"),
+            required_features: adapter.features() & wanted,
+            required_limits: adapter.limits(),
+            memory_hints: MEMORY_HINTS,
+            ..wgpu::DeviceDescriptor::default()
+        }))
+        .map_err(|e| RenderError::NoDevice(e.to_string()))?;
+        let sample_counts = supported_sample_counts(adapter, device.features());
+        let downlevel = adapter.get_downlevel_capabilities().flags;
+        Ok(Gpu {
+            device,
+            queue,
+            info,
+            sample_counts,
+            downlevel,
+        })
+    }
+
+    /// The device (a window's surface is configured on it).
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The queue.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// The adapter's description.
+    pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        &self.info
+    }
+
+    /// The optional features the device has (of [`hd_wanted`]).
+    pub fn features(&self) -> wgpu::Features {
+        self.device.features()
+    }
+
+    /// The device's limits (the adapter's).
+    pub fn limits(&self) -> wgpu::Limits {
+        self.device.limits()
+    }
+
+    /// `name (backend, driver driver-info, device type)`.
+    pub fn adapter(&self) -> String {
+        format!(
+            "{} ({:?}, driver {} {}, {:?})",
+            self.info.name,
+            self.info.backend,
+            self.info.driver,
+            self.info.driver_info,
+            self.info.device_type
+        )
+    }
+
+    /// The sample counts a scene pass can be drawn with on this device (ascending, 1 first).
+    pub fn msaa_counts(&self) -> &[u32] {
+        &self.sample_counts
+    }
+
+    /// The adapter's downlevel flags (whether it executes indirect draws, among others).
+    pub fn downlevel_flags(&self) -> wgpu::DownlevelFlags {
+        self.downlevel
+    }
+
+    /// A target of `width` x `height` pixels.
+    pub fn offscreen(&self, width: u32, height: u32) -> Result<Offscreen, RenderError> {
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+            return Err(RenderError::BadSize(width, height));
+        }
+        let extent = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frame"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: COLOR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let depth = self.depth_view(width, height);
+        let color = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Ok(Offscreen {
+            width,
+            height,
+            texture,
+            color,
+            depth,
+        })
+    }
+
+    /// A depth buffer of `width` x `height` (a window's surface needs its own).
+    pub fn depth_view(&self, width: u32, height: u32) -> wgpu::TextureView {
+        let depth = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        depth.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    /// Shows a window's frame (after drawing into its view).
+    pub fn present(&self, frame: wgpu::SurfaceTexture) {
+        self.queue.present(frame);
+    }
+
+    /// Waits until the GPU has done everything submitted (a frame timing ends here).
+    pub fn finish(&self) -> Result<(), RenderError> {
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map(|_| ())
+            .map_err(|e| RenderError::Readback(e.to_string()))
+    }
+
+    /// Reads `target`'s colour back (waiting for the GPU).
+    pub fn read_back(&self, target: &Offscreen) -> Result<Frame, RenderError> {
+        let (w, h) = (target.width, target.height);
+        let extent = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        let row = 4 * w;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(padded) * u64::from(h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(h),
+                },
+            },
+            extent,
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| RenderError::Readback(e.to_string()))?;
+        rx.recv()
+            .map_err(|e| RenderError::Readback(e.to_string()))?
+            .map_err(|e| RenderError::Readback(e.to_string()))?;
+        let data = slice
+            .get_mapped_range()
+            .map_err(|e| RenderError::Readback(e.to_string()))?;
+        let mut rgba = Vec::with_capacity((row * h) as usize);
+        for y in 0..h as usize {
+            let start = y * padded as usize;
+            rgba.extend_from_slice(&data[start..start + row as usize]);
+        }
+        drop(data);
+        readback.unmap();
+        Ok(Frame {
+            width: w,
+            height: h,
+            rgba,
+        })
+    }
+}

@@ -1,0 +1,27 @@
+[package]
+name = "torque-render-scene"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# A frame as plain data for the renderers (the fixed-function draw list, the enhanced renderer's data, the camera, the
+# scene's source). No GPU and no wgpu. Everything here is Send + Sync.
+
+[dependencies]
+# The client's world of ghosts a frame draws from (its eye, its ghosts and their records: `source`, `world`).
+ghost_world = { package = "torque-ghost-world", path = "../torque-ghost-world" }
+# The records and datablock values of TGE's own set (`world`).
+ghosts = { package = "torque-ghosts", path = "../torque-ghosts" }
+# The texture decoders and mip chains (`textures`).
+images = { package = "torque-images", path = "../torque-images" }
+# A map's collision (the replicators' ground) and its files' importers (`map`).
+collide = { package = "torque-collide", path = "../torque-collide" }
+mapcore = { package = "torque-mapcore", path = "../torque-mapcore" }
+maps = { package = "torque-maps", path = "../torque-maps" }
+rayon = "1.11"
+# The shape files the shapes draw (`shapes`).
+shapes = { package = "torque-shapes", path = "../torque-shapes" }
+
+[lints]
+workspace = true

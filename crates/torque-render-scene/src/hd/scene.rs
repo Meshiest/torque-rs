@@ -1,0 +1,190 @@
+//! The enhanced frame's data the renderer reads, whatever builds it: the sun, the sky and its irradiance, the fog, the planes,
+//! the static geometry (a [`StaticGeometry`] provider's cells), the moving objects, the lights, the coronas and flare, the
+//! particles and one texture table. What fills it from a world is the world's own.
+
+use crate::hd::cells::StaticGeometry;
+use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, sh, shadow, sky};
+use crate::source::Eye;
+
+/// The field of view a frame starts with (degrees).
+pub const DEFAULT_FOV: u8 = 90;
+
+/// A point light: world position, linear colour times brightness, the light's radius (the falloff is windowed to it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdLight {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub radius: f32,
+    /// The shape the light is attached to (its ghost: a player's held light, with its mounted images), left out of the light's
+    /// own shadow casters: the light sits on or in it, and its body would cast a wedge of dark from beside the source.
+    pub carrier: Option<u32>,
+}
+
+/// The sun as the fixed-function frame lights with it (the sun light's colours, gamma-space 0..1), and the Sun's shadow colour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdSun {
+    pub towards: [f32; 3],
+    pub diffuse: [f32; 3],
+    pub ambient: [f32; 3],
+    pub shadow: [f32; 3],
+}
+
+/// The sky-matched distance fog: the horizon ban's colour (gamma 0..1), from `start` (the Sky's fog distance) to `end` (the visible
+/// distance, where everything is fog: the far plane's cut is hidden).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdFog {
+    pub color: [f32; 3],
+    pub start: f32,
+    pub end: f32,
+    /// TGE's linear fog from `start` to `end`, without the height fog; else the enhanced fog (the square of the linear share,
+    /// the height fog over it).
+    pub linear: bool,
+}
+
+/// The enhanced renderer's frame data, the static geometry from the provider `G`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HdScene<G> {
+    /// The eye the eye-dependent parts (sky, planes, coronas, flares) were built for.
+    pub eye: Option<Eye>,
+    pub fov: u8,
+    pub visible_distance: f32,
+    pub fog_distance: f32,
+    pub sun: HdSun,
+    /// The sky's irradiance shape as L2 SH ([`sh`]: 9 RGB coefficients, 1 on average over the horizontal normals).
+    pub sky_sh: [[f32; 3]; 9],
+    pub fog: HdFog,
+    /// The farthest the sun's cascades reach (units; [`shadow::SHADOW_DISTANCE`], or the visible distance of a scene whose rooms
+    /// run past it: past the cascades the floor and walls read sunlit).
+    pub shadow_distance: f32,
+    /// The fixed-function frame's clear (the fog colour quad), gamma 0..1.
+    pub clear: [f32; 3],
+    /// The sky in TGE's order (box, the remote flare, clouds, bans): drawn first, unlit, no depth.
+    pub sky: Vec<HdDraw>,
+    /// The eye the sky's draws were built around (a whole sync's): the renderer moves them by the eye's way from it each frame, so
+    /// the sky stays at the eye between syncs (it rode with the world and snapped back at each sync).
+    pub sky_eye: [f32; 3],
+    /// Which sky the enhanced renderer draws, and whether the last sync drew its own ([`sky::SkyChoice::atmosphere`]): then `sky`
+    /// holds only the server's flat cloud layers and there is no flare.
+    pub sky_choice: sky::SkyChoice,
+    pub atmosphere: bool,
+    /// The sun the server's box paints near the Sun's direction ([`sky::painted_sun`]; None with our own sky or a box without one):
+    /// the disk, the flares and the sky's glow about the sun sit on it ([`HdScene::sky_sun`]); the light keeps the Sun's direction.
+    pub painted_sun: Option<sky::PaintedSun>,
+    /// The last search's key: the box's textures and the Sun's direction (bits) it was made for.
+    pub(crate) painted_key: Option<(Vec<usize>, [u32; 3])>,
+    /// Whether a sync looks for a painted sun at all (off: the disk, the flares and the glow stay on the Sun's direction; the
+    /// checks' before pictures).
+    pub follow_painted_sun: bool,
+    /// Opaque planes (the ground) and blended ones (water).
+    pub planes: Vec<HdDraw>,
+    pub water: Vec<HdDraw>,
+    pub cells: G,
+    pub objects: Vec<DynamicObject>,
+    /// The objects as the last frame drew them, kept by a whole sync for the control sync of the same frame (the shapes it makes
+    /// again move from where that frame had them, not from where the sync just put them).
+    pub drawn_objects: Option<Vec<DynamicObject>>,
+    /// The coronas, each at its eye distance.
+    pub coronas: Vec<(f32, HdDraw)>,
+    /// The sun's own flare, drawn last.
+    pub flare: Option<HdDraw>,
+    /// The particles of the frame (the images' state emitters, the explosions), each at its eye distance, drawn among the
+    /// translucent draws back to front; set every frame, not by a sync.
+    pub particles: Vec<(f32, HdDraw)>,
+    /// Counts the particle sets (the GPU uploads them again when it changes).
+    pub particles_generation: u64,
+    /// Whether the last sync put off static geometry textures still being decoded (a live window's build decodes new ones on a
+    /// decoder thread).
+    pub textures_pending: bool,
+    pub lights: Vec<HdLight>,
+    /// How many of `lights`, at its end, cast no shadows (glowing surfaces' and shaded lamps' lights).
+    pub glow_lights: usize,
+    /// Counts the changes of `lights` (a control sync moves a light attached to the control object; the GPU uploads them again
+    /// when it changed).
+    pub lights_generation: u64,
+    pub textures: TextureTable,
+    pub notes: Vec<String>,
+    /// Counts the syncs (the GPU side compares it).
+    pub generation: u64,
+    /// How many of them were control syncs (the control object's only): `generation` less this counts the changes to everything
+    /// else (the sky's, the planes', the other shapes' draws).
+    pub control_generation: u64,
+    /// What the server's Sky gives the volumetric clouds (None without a Sky: no clouds).
+    pub clouds: Option<clouds::CloudSky>,
+    /// The frame size of the last sync (a control sync's coronas are placed for it).
+    pub size: (u32, u32),
+    /// Control syncs keep each moving shape's vertices in its meshes' own space and the GPU places them
+    /// ([`NodePlace`](crate::hd::NodePlace)); off: the CPU places every vertex (the reference the checks compare with).
+    pub gpu_nodes: bool,
+}
+
+impl<G> HdScene<G> {
+    /// An empty frame drawing the cells of `cells`.
+    pub fn new(cells: G) -> HdScene<G> {
+        HdScene {
+            eye: None,
+            fov: DEFAULT_FOV,
+            visible_distance: 500.0,
+            fog_distance: 250.0,
+            sun: HdSun {
+                towards: [0.0, 0.707, 0.707],
+                diffuse: [0.0; 3],
+                ambient: [0.0; 3],
+                shadow: [0.0; 3],
+            },
+            sky_sh: sh::uniform(),
+            fog: HdFog {
+                color: [1.0; 3],
+                start: 250.0,
+                end: 500.0,
+                linear: false,
+            },
+            clear: [1.0; 3],
+            shadow_distance: shadow::SHADOW_DISTANCE,
+            sky: Vec::new(),
+            sky_eye: [0.0; 3],
+            sky_choice: sky::SkyChoice::Auto,
+            atmosphere: false,
+            painted_sun: None,
+            painted_key: None,
+            follow_painted_sun: true,
+            planes: Vec::new(),
+            water: Vec::new(),
+            cells,
+            objects: Vec::new(),
+            drawn_objects: None,
+            gpu_nodes: true,
+            coronas: Vec::new(),
+            flare: None,
+            particles: Vec::new(),
+            particles_generation: 0,
+            textures_pending: false,
+            lights: Vec::new(),
+            glow_lights: 0,
+            lights_generation: 0,
+            textures: TextureTable::default(),
+            notes: Vec::new(),
+            generation: 0,
+            control_generation: 0,
+            clouds: None,
+            size: (1, 1),
+        }
+    }
+
+    /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the Sun's direction.
+    pub fn sky_sun(&self) -> [f32; 3] {
+        self.painted_sun
+            .and_then(|p| p.drawn())
+            .unwrap_or(self.sun.towards)
+    }
+}
+
+impl<G: StaticGeometry> HdScene<G> {
+    /// Whether changed cells or their textures wait for a later build.
+    pub fn pending(&self) -> bool {
+        self.cells.pending() || self.textures_pending
+    }
+}
+
+#[cfg(test)]
+#[path = "scene_tests.rs"]
+mod tests;

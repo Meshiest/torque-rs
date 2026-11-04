@@ -1,0 +1,18 @@
+[package]
+name = "torque-render-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The renderers' device layer: the wgpu adapter, device and queue (`Gpu`), the backends and their order, the sample counts,
+# offscreen and window targets, the frame read back, and the GUI pass with its backdrop blur.
+
+[dependencies]
+# The GUI pass draws `torque-gui`'s draw lists (plain data; `torque-gui` itself has no wgpu).
+torque-gui = { path = "../torque-gui" }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "metal", "wgsl"] }
+pollster = "0.4"
+
+[lints]
+workspace = true

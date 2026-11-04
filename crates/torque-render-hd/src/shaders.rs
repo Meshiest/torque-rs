@@ -1,0 +1,348 @@
+//! The enhanced renderer's WGSL (`shaders/`, our own) and its permutations. A module is a permutation's constants, then
+//! `common.wgsl` (with the extension's common chunk) when the file uses it, then the file. [`validate_all`] parses and validates
+//! every permutation with naga (the same front end wgpu compiles them with): the `shaders N of N valid`.
+
+/// The shader files, by name (embedded at build time).
+pub const FILES: [(&str, &str); 26] = [
+    ("common.wgsl", include_str!("../shaders/common.wgsl")),
+    ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
+    ("clusters.wgsl", include_str!("../shaders/clusters.wgsl")),
+    ("tonemap.wgsl", include_str!("../shaders/tonemap.wgsl")),
+    ("shadow.wgsl", include_str!("../shaders/shadow.wgsl")),
+    ("contact.wgsl", include_str!("../shaders/contact.wgsl")),
+    ("ao.wgsl", include_str!("../shaders/ao.wgsl")),
+    ("taa.wgsl", include_str!("../shaders/taa.wgsl")),
+    ("fxaa.wgsl", include_str!("../shaders/fxaa.wgsl")),
+    ("reflect.wgsl", include_str!("../shaders/reflect.wgsl")),
+    ("water.wgsl", include_str!("../shaders/water.wgsl")),
+    ("hiz.wgsl", include_str!("../shaders/hiz.wgsl")),
+    ("ssr.wgsl", include_str!("../shaders/ssr.wgsl")),
+    ("down.wgsl", include_str!("../shaders/down.wgsl")),
+    ("skycommon.wgsl", include_str!("../shaders/skycommon.wgsl")),
+    ("skyfog.wgsl", include_str!("../shaders/skyfog.wgsl")),
+    (
+        "atmosphere.wgsl",
+        include_str!("../shaders/atmosphere.wgsl"),
+    ),
+    ("sky.wgsl", include_str!("../shaders/sky.wgsl")),
+    (
+        "volumetric.wgsl",
+        include_str!("../shaders/volumetric.wgsl"),
+    ),
+    ("bloom.wgsl", include_str!("../shaders/bloom.wgsl")),
+    ("exposure.wgsl", include_str!("../shaders/exposure.wgsl")),
+    ("surface.wgsl", include_str!("../shaders/surface.wgsl")),
+    ("wboit.wgsl", include_str!("../shaders/wboit.wgsl")),
+    ("clouds.wgsl", include_str!("../shaders/clouds.wgsl")),
+    (
+        "cloudshadow.wgsl",
+        include_str!("../shaders/cloudshadow.wgsl"),
+    ),
+    ("cull.wgsl", include_str!("../shaders/cull.wgsl")),
+];
+
+/// An extension's WGSL, composed into the renderer's modules: its uniforms' blocks, its hooks and its own entry points (the
+/// engine's own, [`NONE`], has no surfaces of its own: every hook leaves the engine's shading as it is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShaderExtension {
+    /// With common.wgsl in every module that has it: the uniforms' extension blocks (`FrameExt`, `ReflExt`) and the constants of
+    /// the material word's extension bits.
+    pub common: &'static str,
+    /// Before forward.wgsl (the forward pass, a secondary view, the water): the hooks forward.wgsl and water.wgsl call (`ext_*`,
+    /// `reflect_class`), the extension's bindings and entry points.
+    pub forward: &'static str,
+    /// After shadow.wgsl: `CasterExt`, `ext_excluded` and the extension's casters.
+    pub shadow: &'static str,
+}
+
+/// The engine's own extension: no surfaces of its own.
+pub const NONE: ShaderExtension = ShaderExtension {
+    common: include_str!("../shaders/ext_common.wgsl"),
+    forward: include_str!("../shaders/ext_forward.wgsl"),
+    shadow: include_str!("../shaders/ext_shadow.wgsl"),
+};
+
+static EXTENSION: std::sync::OnceLock<ShaderExtension> = std::sync::OnceLock::new();
+
+/// Installs the extension the modules are composed with, before the first module is built; false when one already is.
+pub fn register(ext: ShaderExtension) -> bool {
+    EXTENSION.set(ext).is_ok()
+}
+
+/// The extension the modules are composed with ([`NONE`] unless another was registered first).
+pub fn extension() -> ShaderExtension {
+    *EXTENSION.get_or_init(|| NONE)
+}
+
+/// A module the renderer builds: which file, with which constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Permutation {
+    /// The forward pass; `clustered: false` is the brute-force light loop (the clusters gate's reference); `front_layer` the
+    /// translucent pass's front layer (blended exactly over the weighted composite's copy of the frame, in the blending space).
+    Forward {
+        clustered: bool,
+        front_layer: bool,
+    },
+    Clusters,
+    Tonemap,
+    /// The shadow maps' casters; `unclipped`: the device clamps depth (pancaking), else the vertex stage does.
+    Shadow {
+        unclipped: bool,
+    },
+    /// The screen-space contact shadows.
+    Contact,
+    /// The ambient occlusion (GTAO, or SSAO) with its history.
+    Ao {
+        gtao: bool,
+    },
+    /// The temporal anti-aliasing resolve.
+    Taa,
+    /// The Low quality's FXAA-style edge filter.
+    Fxaa,
+    /// The forward pass of a secondary view (the water's mirrored camera, a light capture's face): every light in turn (no clusters of
+    /// its own), cut at the water plane when the frame says so.
+    View,
+    /// The water: the forward pass's module with `fs_water`.
+    Water,
+    /// The Hi-Z pyramid.
+    Hiz,
+    /// The screen-space reflections' trace and accumulation.
+    Ssr,
+    /// A mip level from the one above it.
+    Down,
+    /// The physical sky's tables (compute).
+    Atmosphere,
+    /// The atmosphere's sky and the sun disk (full-frame, in the opaque pass).
+    Sky,
+    /// The volumetric light's march and its composite.
+    Volumetric,
+    /// The bloom chain.
+    Bloom,
+    /// The automatic exposure (compute).
+    Exposure,
+    /// The weighted blended transparency's composite.
+    Wboit,
+    /// The volumetric clouds' march and their shadow map.
+    Clouds,
+    /// The static cells' clusters' cull and the compaction of their draw lists (compute).
+    Cull,
+}
+
+impl Permutation {
+    /// Every module the renderer can build.
+    pub const ALL: [Permutation; 26] = [
+        Permutation::Forward {
+            clustered: true,
+            front_layer: false,
+        },
+        Permutation::Forward {
+            clustered: false,
+            front_layer: false,
+        },
+        Permutation::Forward {
+            clustered: true,
+            front_layer: true,
+        },
+        Permutation::Forward {
+            clustered: false,
+            front_layer: true,
+        },
+        Permutation::Clusters,
+        Permutation::Tonemap,
+        Permutation::Shadow { unclipped: true },
+        Permutation::Shadow { unclipped: false },
+        Permutation::Contact,
+        Permutation::Ao { gtao: true },
+        Permutation::Ao { gtao: false },
+        Permutation::Taa,
+        Permutation::Fxaa,
+        Permutation::View,
+        Permutation::Water,
+        Permutation::Hiz,
+        Permutation::Ssr,
+        Permutation::Down,
+        Permutation::Atmosphere,
+        Permutation::Sky,
+        Permutation::Volumetric,
+        Permutation::Bloom,
+        Permutation::Exposure,
+        Permutation::Wboit,
+        Permutation::Clouds,
+        Permutation::Cull,
+    ];
+
+    pub fn name(self) -> String {
+        match self {
+            Permutation::Forward {
+                clustered,
+                front_layer,
+            } => format!("forward.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer})"),
+            Permutation::Clusters => "clusters.wgsl".to_string(),
+            Permutation::Tonemap => "tonemap.wgsl".to_string(),
+            Permutation::Shadow { unclipped } => format!("shadow.wgsl (UNCLIPPED = {unclipped})"),
+            Permutation::Contact => "contact.wgsl".to_string(),
+            Permutation::Ao { gtao } => format!("ao.wgsl (GTAO = {gtao})"),
+            Permutation::Taa => "taa.wgsl".to_string(),
+            Permutation::Fxaa => "fxaa.wgsl".to_string(),
+            Permutation::View => {
+                "forward.wgsl (a secondary view: CLUSTERED = false, CLIP = true)".to_string()
+            }
+            Permutation::Water => "water.wgsl".to_string(),
+            Permutation::Hiz => "hiz.wgsl".to_string(),
+            Permutation::Ssr => "ssr.wgsl".to_string(),
+            Permutation::Down => "down.wgsl".to_string(),
+            Permutation::Atmosphere => "atmosphere.wgsl".to_string(),
+            Permutation::Sky => "sky.wgsl".to_string(),
+            Permutation::Volumetric => "volumetric.wgsl".to_string(),
+            Permutation::Bloom => "bloom.wgsl".to_string(),
+            Permutation::Exposure => "exposure.wgsl".to_string(),
+            Permutation::Wboit => "wboit.wgsl".to_string(),
+            Permutation::Clouds => "clouds.wgsl".to_string(),
+            Permutation::Cull => "cull.wgsl".to_string(),
+        }
+    }
+
+    /// The module's source text.
+    pub fn source(self) -> String {
+        let file = |name: &str| {
+            FILES
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map_or("", |(_, t)| *t)
+        };
+        let ext = extension();
+        // common.wgsl's uniforms end in the extension's blocks: composed with it everywhere.
+        let common = &format!("{}\n{}", file("common.wgsl"), ext.common);
+        // The surface helpers and the extension's hooks come before the forward pass's functions.
+        let forward = &format!(
+            "{}\n{}\n{}",
+            file("surface.wgsl"),
+            ext.forward,
+            file("forward.wgsl")
+        );
+        match self {
+            Permutation::Forward {
+                clustered,
+                front_layer,
+            } => format!(
+                "const CLUSTERED: bool = {clustered};\nconst FRONT_LAYER: bool = {front_layer};\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}",
+                common,
+                file("skycommon.wgsl"),
+                file("reflect.wgsl"),
+                forward,
+                file("skyfog.wgsl"),
+                file("cloudshadow.wgsl")
+            ),
+            Permutation::View => format!(
+                "const CLUSTERED: bool = false;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = true;\n{}\n{}\n{}\n{}\n{}\n{}",
+                common,
+                file("skycommon.wgsl"),
+                file("reflect.wgsl"),
+                forward,
+                file("skyfog.wgsl"),
+                file("cloudshadow.wgsl")
+            ),
+            Permutation::Water => format!(
+                "const CLUSTERED: bool = true;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                common,
+                file("skycommon.wgsl"),
+                file("reflect.wgsl"),
+                forward,
+                file("skyfog.wgsl"),
+                file("cloudshadow.wgsl"),
+                file("water.wgsl")
+            ),
+            Permutation::Hiz => file("hiz.wgsl").to_string(),
+            Permutation::Ssr => format!("{}\n{}", common, file("ssr.wgsl")),
+            Permutation::Down => file("down.wgsl").to_string(),
+            Permutation::Clusters => format!("{}\n{}", common, file("clusters.wgsl")),
+            Permutation::Tonemap => file("tonemap.wgsl").to_string(),
+            Permutation::Shadow { unclipped } => format!(
+                "const UNCLIPPED: bool = {unclipped};\n{}\n{}",
+                file("shadow.wgsl"),
+                ext.shadow
+            ),
+            Permutation::Contact => format!("{}\n{}", common, file("contact.wgsl")),
+            Permutation::Ao { gtao } => format!(
+                "const GTAO: bool = {gtao};\n{}\n{}",
+                common,
+                file("ao.wgsl")
+            ),
+            Permutation::Taa => format!("{}\n{}", common, file("taa.wgsl")),
+            Permutation::Fxaa => file("fxaa.wgsl").to_string(),
+            Permutation::Atmosphere => {
+                format!("{}\n{}", file("skycommon.wgsl"), file("atmosphere.wgsl"))
+            }
+            Permutation::Sky => format!(
+                "{}\n{}\n{}\n{}",
+                common,
+                file("skycommon.wgsl"),
+                file("sky.wgsl"),
+                file("cloudshadow.wgsl")
+            ),
+            Permutation::Volumetric => format!(
+                "{}\n{}\n{}\n{}",
+                common,
+                file("skycommon.wgsl"),
+                file("volumetric.wgsl"),
+                file("cloudshadow.wgsl")
+            ),
+            Permutation::Bloom => file("bloom.wgsl").to_string(),
+            Permutation::Exposure => file("exposure.wgsl").to_string(),
+            Permutation::Wboit => file("wboit.wgsl").to_string(),
+            Permutation::Clouds => format!(
+                "{}\n{}\n{}",
+                common,
+                file("skycommon.wgsl"),
+                file("clouds.wgsl")
+            ),
+            Permutation::Cull => file("cull.wgsl").to_string(),
+        }
+    }
+}
+
+/// naga's verdict on one module: `Ok` or the error as text.
+pub fn validate(p: Permutation) -> Result<(), String> {
+    let src = p.source();
+    let module = naga::front::wgsl::parse_str(&src).map_err(|e| e.emit_to_string(&src))?;
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::default(),
+    )
+    .validate(&module)
+    .map(|_| ())
+    .map_err(|e| format!("{e:?}"))
+}
+
+/// Every permutation's verdict: (valid, total, the failures).
+pub fn validate_all() -> (usize, usize, Vec<String>) {
+    let mut bad = Vec::new();
+    for p in Permutation::ALL {
+        if let Err(e) = validate(p) {
+            bad.push(format!("{}: {e}", p.name()));
+        }
+    }
+    let total = Permutation::ALL.len();
+    (total - bad.len(), total, bad)
+}
+
+/// A digest of every shader file and the extension's chunks (a stamp of the shaders a build draws with).
+pub fn source_digest() -> u64 {
+    let ext = extension();
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for (name, text) in FILES.into_iter().chain([
+        ("ext common", ext.common),
+        ("ext forward", ext.forward),
+        ("ext shadow", ext.shadow),
+    ]) {
+        for b in name.bytes().chain(text.bytes()) {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    h
+}
+
+#[cfg(test)]
+#[path = "shaders_tests.rs"]
+mod tests;
