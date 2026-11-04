@@ -1,0 +1,6 @@
+# The code is formatted with rustfmt's 2024 style at its default width; rustfmt leaves comments as written.
+style_edition = "2024"
+max_width = 100
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true

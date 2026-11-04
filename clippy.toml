@@ -1,0 +1,3 @@
+# The MSRV clippy checks against comes from `rust-version` in the root Cargo.toml.
+# `dbg!` is a warning in library code (see `[workspace.lints.clippy]`) but fine while a test is being written.
+allow-dbg-in-tests = true

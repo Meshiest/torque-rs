@@ -1,0 +1,51 @@
+# cargo-deny configuration: `cargo deny check` (CI runs it on every push).
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Check every optional dependency too (the audio device backend, the system fonts).
+all-features = true
+
+[advisories]
+# Unmaintained crates are reported only when they are direct dependencies of a workspace crate.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = [
+    # ttf-parser is unmaintained; fontdue (the TrueType rasterizer of torque-fonts) reads faces with it. Moving off it means
+    # replacing fontdue; until then the faces it reads are bounded by `torque_fonts::ttf::check` first.
+    { id = "RUSTSEC-2026-0192", reason = "no maintained fontdue release without ttf-parser yet" },
+]
+
+[licenses]
+# Permissive licences only. A dependency whose licence is an `OR` expression passes when any branch is allowed.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+# Some licences above are not in today's tree but are expected with the GPU crates; do not warn about them.
+unused-allowed-license = "allow"
+
+[licenses.private]
+# Workspace crates are not published yet; check their licence like any other crate.
+ignore = false
+
+[bans]
+# Two versions of one crate cost build time but are not an error (e.g. a dependency still on an older `foldhash`).
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between workspace crates carry no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
