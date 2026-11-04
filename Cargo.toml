@@ -1,34 +1,6 @@
 [workspace]
 resolver = "3"
-members = [
-    "crates/torque",
-    "crates/torque-audio",
-    "crates/torque-client",
-    "crates/torque-collide",
-    "crates/torque-example",
-    "crates/torque-fonts",
-    "crates/torque-game",
-    "crates/torque-ghost-world",
-    "crates/torque-ghosts",
-    "crates/torque-gui",
-    "crates/torque-images",
-    "crates/torque-mapcore",
-    "crates/torque-maps",
-    "crates/torque-net",
-    "crates/torque-render-core",
-    "crates/torque-render-hd",
-    "crates/torque-render-scene",
-    "crates/torque-resource",
-    "crates/torque-scene",
-    "crates/torque-server",
-    "crates/torque-shapes",
-    "crates/torque-sim",
-    "crates/torque-ts-bytecode",
-    "crates/torque-ts-compiler",
-    "crates/torque-ts-text",
-    "crates/torque-ts-vm",
-    "crates/torque-vehicle",
-]
+members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
