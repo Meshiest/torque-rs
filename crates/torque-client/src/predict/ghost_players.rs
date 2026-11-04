@@ -16,7 +16,8 @@
 //!   runs itself (a corpse its death camera watches) and a mounted one (drawn at its mount).
 //!
 //! **Engine limits**: TGE's client runs the ghost's own `processTick` with its last move (collisions, gravity); the client here
-//! runs it on along the velocity only.
+//! runs it on along the velocity only, and draws a falling Player no lower than its last update's height (it would sink through the
+//! floor it lands on until the next update), so a fall is drawn up to an update late.
 //!
 //! Credit: the warp follows `Player::unpackUpdate` and `Player::processTick`'s ghost branch in Torque3D's MIT-licensed
 //! `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
@@ -154,6 +155,12 @@ impl GhostMotion {
         self.warp_position_left -= warp_position;
         for i in 0..3 {
             self.position[i] += self.velocity[i] * run + self.warp_position[i] * warp_position;
+        }
+        // Falling, the Player is not drawn below the last update's height (where the warp ends): without the ghost's own
+        // collision the client cannot tell where it lands, and a landing run on along its fall would sink through the floor until
+        // the next update.
+        if self.velocity[2] < 0.0 {
+            self.position[2] = self.position[2].max(self.last.position[2]);
         }
         self.yaw = wrap_angle(self.yaw + self.warp_yaw * warp);
         self.head += self.warp_head * warp;

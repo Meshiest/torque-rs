@@ -235,3 +235,44 @@ fn the_own_figure_keeps_up_with_the_server_and_never_steps_back() {
     }
     a.key(keys::W, false);
 }
+
+#[test]
+fn the_drawn_bolt_leaves_the_pistol_and_curves_onto_the_crosshair() {
+    let mut a = host();
+    turn(&mut a, -0.4, -0.2);
+    let (eye, aim) = crosshair(&a);
+    a.call("fire", &["1"]).unwrap();
+    let mut first = None;
+    let mut on_line = 0;
+    for i in 0..40 {
+        if i == 4 {
+            a.call("fire", &["0"]).unwrap();
+        }
+        frame(&mut a, 16);
+        let drawn = a.scene().bolt_positions();
+        let Some(&p) = drawn.first() else {
+            continue;
+        };
+        if first.is_none() {
+            let muzzle = a.scene().own_muzzle().expect("the pistol's muzzle");
+            let from = len(sub(p, muzzle));
+            assert!(
+                from < 0.02,
+                "the bolt is first drawn {from} from the muzzle"
+            );
+            assert!(
+                off_ray(p, eye, aim) > 0.2,
+                "the muzzle is beside the crosshair's ray"
+            );
+            first = Some(p);
+        } else if len(sub(p, eye)) > torque_example_fps::scene::BOLT_BLEND + 1.5 {
+            let off = off_ray(p, eye, aim);
+            assert!(
+                off < 0.05,
+                "past its curve the bolt is drawn {off} off the crosshair's ray"
+            );
+            on_line += 1;
+        }
+    }
+    assert!(first.is_some() && on_line > 3, "the bolt was drawn");
+}

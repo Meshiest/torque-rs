@@ -79,8 +79,54 @@ datablock ParticleEmitterData(ArenaBoltTrail)
    particles = "ArenaBoltSpark";
 };
 
+// A bolt hitting a figure bursts into hot red sparks (the client bursts them where a bolt hits a figure only).
+datablock ParticleData(ArenaHitSpark)
+{
+   textureName = "kit/spark";
+   dragCoefficient = 4;
+   gravityCoefficient = 0.6;
+   inheritedVelFactor = 0;
+   lifetimeMS = 320;
+   lifetimeVarianceMS = 96;
+   useInvAlpha = false;
+   spinRandomMin = -180;
+   spinRandomMax = 180;
+
+   colors[0] = "1 0.95 0.8 1";
+   colors[1] = "1 0.3 0.15 0.8";
+   colors[2] = "0.6 0.05 0.02 0";
+   sizes[0] = 0.18;
+   sizes[1] = 0.12;
+   sizes[2] = 0.04;
+   times[0] = 0;
+   times[1] = 0.3;
+   times[2] = 1;
+};
+
+datablock ParticleEmitterData(ArenaHitBurst)
+{
+   ejectionPeriodMS = 1;
+   periodVarianceMS = 0;
+   ejectionVelocity = 5;
+   velocityVariance = 2;
+   thetaMin = 0;
+   thetaMax = 180;
+   phiReferenceVel = 0;
+   phiVariance = 360;
+   particles = "ArenaHitSpark";
+};
+
+datablock ExplosionData(ArenaBoltHit)
+{
+   particleEmitter = ArenaHitBurst;
+   particleDensity = 36;
+   particleRadius = 0.15;
+   lifetimeMS = 320;
+};
+
 datablock ProjectileData(ArenaBolt)
 {
+   explosion = ArenaBoltHit;
    projectileShapeName = "kit/projectile.dts";
    particleEmitter = ArenaBoltTrail;
    directDamage = 34;
@@ -415,6 +461,9 @@ function ArenaFigure::hurt(%this, %obj, %attacker, %amount)
       %left = 0;
    if (isObject(%client))
       commandToClient(%client, 'SetHealth', mFloor(%left), %this.maxDamage);
+   // Where the hurt came from: the client's screen shows which way.
+   if (isObject(%client) && isObject(%attacker) && isObject(%attacker.player))
+      commandToClient(%client, 'Hurt', %amount, %attacker.player.getPosition());
    if (isObject(%attacker) && %attacker != %client)
       commandToClient(%attacker, 'Hit', %client.name);
    if (%left <= 0)

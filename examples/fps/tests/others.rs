@@ -1,8 +1,8 @@
 //! Another player's figure as a client draws it: the host walks in a circle (forward, turning at a steady rate with the mouse) and
 //! the second client's frames draw the host's figure moving and turning steadily: no frame steps back or turns back, and none
 //! moves or turns much further than the walk and the turn carry it in that frame's time; and the server sends each client a
-//! packet every tick. The game plays
-//! `game/fixtures/aim.mis`.
+//! packet every tick. And a figure jumping while it walks is never drawn below the floor, by its own client or the other one.
+//! The game plays `game/fixtures/aim.mis`.
 
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode, keys};
 use torque_example_fps::files::GameFiles;
@@ -30,8 +30,8 @@ fn frame(a: &mut ArenaGame, b: &mut ArenaGame, ms: u32) {
     }
 }
 
-#[test]
-fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
+/// Ann hosts, Bob joins; both in the game and Bob seeing Ann.
+fn two() -> (ArenaGame, ArenaGame) {
     let mut a = client("Ann");
     let mut b = client("Bob");
     a.call("hostGame", &[]).unwrap();
@@ -50,6 +50,12 @@ fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
         }
     }
     assert_eq!(b.scene().others().len(), 1, "Bob sees Ann");
+    (a, b)
+}
+
+#[test]
+fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
+    let (mut a, mut b) = two();
     // The server sends each client a packet every tick (the scripts' `$pref::Net::PacketRateToClient` 32 on both sides): about
     // 31 a second to each of the two, where TGE's default rate sends 10.
     let sent = |a: &ArenaGame| {
@@ -106,5 +112,27 @@ fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
         }
         last = Some(now);
     }
+    a.key(keys::W, false);
+}
+
+#[test]
+fn a_jumping_figure_never_sinks_into_the_floor() {
+    let (mut a, mut b) = two();
+    // The floor's top is at 0; a standing figure's feet a hair above it.
+    a.key(keys::W, true);
+    let mut highest = 0.0f32;
+    for i in 0..300 {
+        if i % 50 == 5 {
+            a.key(keys::SPACE, true);
+            a.key(keys::SPACE, false);
+        }
+        frame(&mut a, &mut b, [7u32, 16, 9, 33][i % 4]);
+        let own = a.scene().own().unwrap().position[2];
+        let other = b.scene().others()[0].0[2];
+        highest = highest.max(own);
+        assert!(own > -0.002, "frame {i}: Ann draws her feet at {own}");
+        assert!(other > -0.002, "frame {i}: Bob draws Ann's feet at {other}");
+    }
+    assert!(highest > 0.5, "Ann jumped ({highest})");
     a.key(keys::W, false);
 }
