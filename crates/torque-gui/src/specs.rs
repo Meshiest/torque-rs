@@ -2,6 +2,10 @@
 //! element count) and what a fresh object reads where TGE's constructor sets it. [`install`] gives them to a `Vm` that has no
 //! class of the name yet, so a host's own table (installed first) keeps its classes. The methods are this crate's natives
 //! ([`crate::register`]).
+//!
+//! Credit: the classes and defaults follow TGE 1.4's `gui/core/guiControl.cc` and `gui/core/guiTypes.cc` (Copyright (C)
+//! GarageGames.com, Inc.); where Torque3D has the same rules, its MIT-licensed `gui/core/guiControl.cpp` and
+//! `gui/core/guiTypes.cpp` (each Copyright (c) 2012 GarageGames, LLC). The code here is this crate's own.
 
 use torque_ts_vm::classes::{ClassSpec, FieldSpec, install_spec_inheriting};
 use torque_ts_vm::fields::{EnumTable, FieldType};

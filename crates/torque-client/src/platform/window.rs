@@ -3,7 +3,7 @@
 //! ([`super::keymap`]), posted to the host; while the game has the mouse the window holds the system cursor
 //! ([`super::cursor_lock`]) and the mouse's own counts are the game's axes. Over the menus the canvas draws its own cursor; while
 //! it draws none (no GuiCursor set, or its bitmap missing) the system's is shown instead ([`ClientHost::system_cursor`]).
-//! `setScreenMode` ([`crate::screen`]) resizes the window, centred on its monitor, or makes it full screen (the monitor's own mode
+//! `setScreenMode` ([`crate::screen`]) resizes the window, centered on its monitor, or makes it full screen (the monitor's own mode
 //! of that size when it has one, else borderless), as the start-up does for `$pref::Video::fullScreen`; the canvas follows the
 //! client size as on any resize. The clock follows the wall (at most [`MAX_FRAME_MS`] a frame), and while no world is drawn the
 //! frames are capped ([`super::frame_cap`]).
