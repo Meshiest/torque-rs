@@ -249,7 +249,7 @@ impl Ribbon {
     }
 
     /// The middle of the strip's points (for sorting it with the frame's other translucent draws).
-    pub fn centre(&self) -> Option<[f32; 3]> {
+    pub fn center(&self) -> Option<[f32; 3]> {
         let n = self.points.len();
         (n > 0).then(|| {
             let s = self.points.iter().fold([0.0; 3], |a, p| {

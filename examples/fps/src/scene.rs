@@ -1227,7 +1227,7 @@ impl ArenaScene {
             .filter_map(|b| b.ribbon.as_ref())
             .chain(&self.fading_ribbons);
         for r in ribbons {
-            let (Some(center), Some(d)) = (r.centre(), r.draw(eye.position, &mut set, "ribbon"))
+            let (Some(center), Some(d)) = (r.center(), r.draw(eye.position, &mut set, "ribbon"))
             else {
                 continue;
             };
