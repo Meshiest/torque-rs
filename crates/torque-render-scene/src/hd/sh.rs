@@ -146,7 +146,10 @@ pub fn radiance_at(
 ) -> [f32; 3] {
     let mut c = clear;
     for draw in sky {
-        if matches!(draw.blend, Blend::Additive | Blend::One | Blend::Multiply) {
+        if matches!(
+            draw.blend,
+            Blend::Additive | Blend::One | Blend::Multiply | Blend::Modulate2x
+        ) {
             continue;
         }
         for t in draw.vertices.chunks_exact(3) {

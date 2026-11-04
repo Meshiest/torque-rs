@@ -181,7 +181,8 @@ impl<G> HdScene<G> {
 
     /// [`HdScene::set_particles`] with the frame's decals ([`decals`](crate::decals)' draws, each at its eye distance, their
     /// textures indices into the same `textures`): unlit translucent squares on the surfaces, drawn as the particles are but
-    /// not faded into the surface they lie on ([`material::DECAL`]).
+    /// not faded into the surface they lie on ([`material::DECAL`]); a [`Blend::Modulate2x`] one in its own pass over the
+    /// opaque frame instead.
     pub fn set_particles_and_decals(
         &mut self,
         particles: &[(f32, Draw)],

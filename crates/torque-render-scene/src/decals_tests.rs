@@ -14,6 +14,7 @@ fn hole() -> DecalData {
     DecalData {
         size: [0.2, 0.1],
         texture: Some("kit/hole".to_string()),
+        blend: Blend::Alpha,
     }
 }
 
@@ -100,6 +101,27 @@ fn a_decal_draws_as_an_alpha_blended_square_without_depth_writes() {
 }
 
 #[test]
+fn a_multiplied_decal_draws_as_modulate2x_with_its_fade_as_the_alpha() {
+    let mut files = std::collections::HashMap::new();
+    files.insert("kit/hole.png".to_string(), png(8, 8, 30));
+    let files = Files(files);
+    let mut set = TextureSet::new(&files);
+    let mut m = DecalManager::new(8, 10.0, 2.0);
+    let data = DecalData {
+        blend: Blend::Modulate2x,
+        ..hole()
+    };
+    m.add(&data, [0.0, 5.0, 1.0], [0.0, -1.0, 0.0], 0.0);
+    m.advance(9.0);
+    let draws = m.draws([0.0, 0.0, 1.0], &mut set);
+    assert_eq!(draws.len(), 1);
+    let d = &draws[0].1;
+    assert_eq!(d.blend, Blend::Modulate2x);
+    assert!(d.depth_test && !d.depth_write && d.fog);
+    assert!(d.vertices.iter().all(|v| v.color == [255, 255, 255, 128]));
+}
+
+#[test]
 fn a_projectiles_decal_is_one_of_those_it_names() {
     let mut w = ClientWorld::<TgeClientSet>::default();
     w.datablocks.insert(
@@ -123,6 +145,7 @@ fn a_projectiles_decal_is_one_of_those_it_names() {
         Some(DecalData {
             size: [0.15, 1.0],
             texture: Some("kit/hole".to_string()),
+            blend: Blend::Alpha,
         })
     );
     assert_eq!(projectile_decal(&w, 8, &mut rng), None);
@@ -187,6 +210,7 @@ fn a_clipped_decal_at_an_edge_is_cut_off_there_and_none_lies_off_the_surface() {
     let data = DecalData {
         size: [0.2, 0.2],
         texture: Some("kit/hole".to_string()),
+        blend: Blend::Alpha,
     };
     let mut m = DecalManager::default();
     m.add_clipped(&data, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], 0.3, &cube);
