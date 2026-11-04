@@ -20,8 +20,8 @@
 //! visible and are not kept.
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree:
-//! `scene/sceneObject.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this
-//! crate's own.
+//! `scene/sceneObject.cpp` and, for `getDataBlock`, `T3D/gameBase/gameBase.cpp` (each Copyright (c) 2012 GarageGames, LLC;
+//! Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
 
 use std::rc::Rc;
 

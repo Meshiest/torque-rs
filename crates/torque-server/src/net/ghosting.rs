@@ -19,9 +19,10 @@
 //! ([`torque_game::ghost::GhostLink`]), so the game classes' mask writes reach the connections; on removal every connection
 //! drops its ghost ([`GhostHub::removed`]).
 //!
-//! Credit: the methods follow TGE as Torque3D, its MIT-licensed release, keeps them: `sim/netGhost.cpp` (Copyright (c) 2012
-//! GarageGames, LLC), `sim/netObject.cpp` and `T3D/gameBase/gameConnection.cpp` (each Copyright (c) 2012 GarageGames, LLC;
-//! Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
+//! Credit: the methods follow TGE as Torque3D, its MIT-licensed release, keeps them: `sim/netGhost.cpp` and
+//! `sim/netConnection.cpp` (for `getGhostID`; each Copyright (c) 2012 GarageGames, LLC), `sim/netObject.cpp` and
+//! `T3D/gameBase/gameConnection.cpp` (each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The
+//! code here is this crate's own.
 
 use std::cell::RefCell;
 use std::rc::Rc;

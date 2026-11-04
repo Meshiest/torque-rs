@@ -15,8 +15,9 @@
 //! ([`crate::screen`]), the canvas's size, the frame rate ([`crate::fps`]), vertical sync, the display devices and the URL
 //! opener.
 //!
-//! Credit: the order of a pass follows TGE's main loop as Torque3D (MIT) keeps it, `app/mainLoop.cpp` (Copyright (c) 2012
-//! GarageGames, LLC). The code is this crate's own.
+//! Credit: the order of a pass follows TGE's main loop as Torque3D (MIT) keeps it, `app/mainLoop.cpp`, and the split of the
+//! socket's datagrams follows `sim/netInterface.cpp` (each Copyright (c) 2012 GarageGames, LLC). The code is this crate's
+//! own.
 
 use std::cell::RefCell;
 use std::path::PathBuf;

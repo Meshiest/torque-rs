@@ -12,6 +12,10 @@
 //!   pistol is drawn at the eye times the image's `eyeOffset` (a first-person image).
 //! - **Bolts** (Projectiles) fly on from their first record along its velocity (the client runs them on its own, as TGE's
 //!   client runs a projectile ghost) and are drawn along it until their explosion record hides them.
+//!
+//! Credit: the image's hand transform follows `ShapeBase::getRenderImageTransform` in Torque3D's MIT-licensed
+//! `T3D/shapeBase.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this
+//! example's own.
 
 use std::collections::{BTreeMap, HashMap};
 

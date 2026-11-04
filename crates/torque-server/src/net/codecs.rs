@@ -3,6 +3,10 @@
 //! event registry, the server query's answers, the round trip of an infinitely lagging connection, the control section's
 //! format, the connection messages' numbers, the address text and a few console switches only through it. Without a game's,
 //! they are Torque's profiles from `net` ([`TorqueCodecs`]).
+//!
+//! Credit: [`TorqueCodecs::sim_mask`] follows the mask enums of TGE 1.4's `game/shapeBase.h`, `game/gameBase.h`,
+//! `game/player.h`, `game/item.h`, `game/camera.h` and `game/staticShape.h` (each Copyright (C) GarageGames.com, Inc.);
+//! Torque3D's enums differ. The code here is this crate's own.
 
 use std::any::Any;
 use std::fmt::Debug;
