@@ -1,7 +1,8 @@
 // The arena's server. The host sets $Pref::Server::Name, execs this file and calls startArena(%file) with the map to play.
 // A client that connects is sent the datablocks; when it has them, its ghosting starts and it gets a figure holding a pistol
 // with an 11-round magazine, reloaded as often as it likes (R, or by itself when empty). Bolts hurt figures; three hits knock
-// one out: it falls over, away from the shot, and comes back at a spawn point a moment later.
+// one out: it falls over, away from the shot, and comes back at a spawn point a moment later. The way in and out is the
+// examples' shared common/server.cs, which calls this file's hooks.
 
 // ---- datablocks
 
@@ -252,12 +253,10 @@ datablock ShapeBaseImageData(ArenaPistolImage)
 
 // ---- the arena
 
-new SimGroup(ClientGroup);
+exec("common/server.cs");
 
 $Arena::Rounds = 11;
 $Arena::RespawnMs = 2500;
-$Arena::Sequence = 0;
-$Arena::FallHeight = -30;
 
 // A packet to each client every tick (TGE's most; its default is ten a second): the other figures move on smaller steps.
 $pref::Net::PacketRateToClient = 32;
@@ -273,15 +272,9 @@ if ($Pref::Server::Name $= "")
 // MissionGroup's textureFilter field ("nearest", or none) is how the clients draw the map's textures.
 function startArena(%file)
 {
-   $Arena::Sequence++;
-   if (isObject(MissionGroup))
-      MissionGroup.delete();
-   if (isObject(MissionCleanup))
-      MissionCleanup.delete();
-   new SimGroup(MissionCleanup);
    $Arena::SpawnCount = 0;
    $Arena::Title = fileBase(%file);
-   exec(%file);
+   loadMission(%file);
    if ($Arena::SpawnCount == 0)
    {
       $Arena::Spawn[0] = "0 0 1 0";
@@ -309,7 +302,7 @@ function messageAll(%kind, %a, %b)
 
 // ---- a client's way in
 
-function GameConnection::onConnect(%client, %name)
+function GameConnection::onClientConnect(%client, %name)
 {
    %name = trim(stripChars(%name, "\t\n\r"));
    if (%name $= "")
@@ -318,24 +311,16 @@ function GameConnection::onConnect(%client, %name)
    %client.score = 0;
    $Server::PlayerCount++;
    echo("Client" SPC %client SPC "joined as" SPC %client.name);
-   %client.transmitDataBlocks($Arena::Sequence);
 }
 
-function GameConnection::onDataBlocksDone(%client, %sequence)
+function GameConnection::onClientEnterGame(%client)
 {
-   if (%sequence != $Arena::Sequence)
-      return;
-   %client.activateGhosting();
-   %client.spawnFigure();
    commandToClient(%client, 'ArenaStarted', $Arena::Title, $Pref::Server::Name, MissionGroup.textureFilter);
    messageAll("info", %client.name SPC "joined the arena.");
 }
 
-function GameConnection::onDrop(%client, %reason)
+function GameConnection::onClientLeaveGame(%client)
 {
-   echo("Client" SPC %client SPC "left:" SPC %reason);
-   if (isObject(%client.player))
-      %client.player.delete();
    $Server::PlayerCount--;
    messageAll("info", %client.name SPC "left the arena.");
 }
@@ -351,22 +336,12 @@ function nextSpawn()
 function GameConnection::spawnFigure(%client)
 {
    cancel(%client.respawn);
-   if (isObject(%client.player))
-      %client.player.delete();
-   %player = new Player()
-   {
-      dataBlock = ArenaFigure;
-      client = %client;
-   };
-   MissionCleanup.add(%player);
    %spawn = nextSpawn();
-   %player.setTransform(getWords(%spawn, 0, 2) SPC "0 0 1" SPC getWord(%spawn, 3));
+   %player = %client.createFigure(ArenaFigure, getWords(%spawn, 0, 2) SPC "0 0 1" SPC getWord(%spawn, 3));
    %player.setShapeName(%client.name);
    %player.mountImage(ArenaPistolImage, 0);
    %player.ammo = $Arena::Rounds;
    %player.setImageAmmo(0, true);
-   %client.player = %player;
-   %client.setControlObject(%player);
    %client.sendOwnFigure(%player, 0);
    commandToClient(%client, 'SetAmmo', %player.ammo, $Arena::Rounds);
    commandToClient(%client, 'SetHealth', ArenaFigure.maxDamage, ArenaFigure.maxDamage);
@@ -529,15 +504,9 @@ function knockOut(%client, %attacker)
 }
 
 // A figure that fell off the map starts again.
-function watchFalls()
+function GameConnection::onFellOff(%client)
 {
-   for (%i = 0; %i < ClientGroup.getCount(); %i++)
-   {
-      %client = ClientGroup.getObject(%i);
-      if (isObject(%client.player) && getWord(%client.player.getTransform(), 2) < $Arena::FallHeight)
-         %client.spawnFigure();
-   }
-   schedule(500, 0, "watchFalls");
+   %client.spawnFigure();
 }
 
 // ---- chat

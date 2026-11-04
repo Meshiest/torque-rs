@@ -15,12 +15,11 @@ categories = ["game-development"]
 # in `game/`; the maps are the `.mis` files in `game/missions/`, read when the example starts.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["shapes", "client-window", "system-fonts"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["app"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
-winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 
 [[bin]]
 name = "example-level-demo"

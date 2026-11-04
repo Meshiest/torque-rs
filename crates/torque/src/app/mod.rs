@@ -1,0 +1,80 @@
+//! What a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures.
+//!
+//! - [`files::GameFiles`]: a game folder read once into memory, served to the scripts as their files.
+//! - [`server::GameServer`]: the server's main loop with TGE's game classes and a network host, on a UDP socket or an in-memory
+//!   link: started, ticked, called, its console drained; [`server::GameServer::run_dedicated`] paces a dedicated one.
+//! - [`client::GameClient`]: a client host (script engine, GUI, action maps, TGE's connection half), its globals and keys, and the
+//!   server it hosts in the same process on the same clock.
+//! - [`view::WorldView`]: the per-frame world view, drawn by the enhanced renderer under the GUI.
+//! - [`orbit::Orbit`]: a third-person camera that circles a point.
+//! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
+//! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
+//! - [`cli`]: the command line's flags and their values.
+//! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
+
+pub mod cli;
+pub mod client;
+pub mod files;
+pub mod orbit;
+pub mod server;
+pub mod shots;
+pub mod view;
+pub mod window;
+
+use torque_render_core::Gpu;
+use torque_render_scene::source::Eye;
+
+use crate::client::conn::tge::TgeConn;
+use crate::client::host::ClientHost;
+use crate::fonts::{Fallback, FontCache, NoFallback};
+use crate::gui::{DrawCache, GuiDraws};
+use crate::server::server::Server;
+
+pub use client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+pub use files::GameFiles;
+pub use server::{GameServer, Listen};
+pub use view::{Daylight, SceneShape, WorldView};
+
+/// The client host a game drives: TGE's connection half over a script engine as its server.
+pub type Host = ClientHost<TgeConn, Server>;
+
+/// A game the window ([`window::run`]) and the pictures ([`shots`]) drive.
+pub trait App {
+    fn host(&mut self) -> &mut Host;
+
+    fn host_ref(&self) -> &Host;
+
+    /// The window's title.
+    fn title(&self) -> String;
+
+    /// The name printed in front of the window's notes.
+    fn log_name(&self) -> &str;
+
+    /// A world view on `gpu` for the game's frames.
+    fn view(&self, gpu: &Gpu) -> WorldView;
+
+    /// `ms` of the clock between two frames.
+    fn advance(&mut self, ms: u32);
+
+    /// The frame: the world into `view`, the canvas drawn (with the world's rectangle) and the eye.
+    fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye);
+}
+
+/// The system's fonts as the fallback for a face with no font cache in `fonts/` (none where the system has none).
+fn system_fallback() -> Box<dyn Fallback> {
+    match crate::fonts::system::SystemFonts::new() {
+        Some(system) => Box::new(system),
+        None => Box::new(NoFallback),
+    }
+}
+
+/// The GUI's draw cache: fonts from `.uft` files in `fonts/` when there are any, else rasterized from the system's TrueType
+/// face of the profile's name (Windows' fonts folder); with neither, text is not drawn.
+pub fn draw_cache() -> DrawCache {
+    DrawCache::new(Box::new(layout_fonts()))
+}
+
+/// The fonts the GUI's layout measures text with: the same faces [`draw_cache`] draws with.
+pub fn layout_fonts() -> FontCache {
+    FontCache::new("fonts", system_fallback())
+}

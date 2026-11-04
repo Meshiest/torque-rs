@@ -1,4 +1,4 @@
-//! Pictures of every shape of the asset kit for review, drawn offscreen on a plain grey floor: the cube; the figure from the
+//! Pictures of every shape of the asset kit for review, drawn offscreen on a plain gray floor: the cube; the figure from the
 //! front, side and back, its face close up, and in its idle, walk, run and jump poses (the jump also from the front and the
 //! side); the figure holding the pistol (its `hold` arm pose) from the side, front three-quarters and over its shoulder; the
 //! pistol from the side and three-quarters with its muzzle, eject and mount points marked; and the projectile. Then strips of
@@ -11,10 +11,10 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::path::PathBuf;
 
+use torque::app::view::{Daylight, SceneShape, WorldView};
+use torque::app::window::offscreen_gpu;
 use torque::shapes::instance::{ShapeInstance, find_sequence};
 use torque::shapes::math::mul_p;
-use torque_example_common::view::{Daylight, SceneShape, WorldView};
-use torque_example_common::window::offscreen_gpu;
 use torque_example_common::{KitAssets, kit_path};
 use torque_render_scene::hd::kit::{box_object, look_at};
 use torque_render_scene::math::Mat;
@@ -26,7 +26,7 @@ const FOV: u8 = 50;
 
 /// One picture: the shape, a sequence and its position (None: the rest pose), how high its origin stands, the camera's turn
 /// about the shape (0: in front of it, looking along -y at its face), how high the camera stands (a share of its distance),
-/// its distance (a share of the one that holds the whole shape), the point it looks at (None: the shape's centre), the nodes to
+/// its distance (a share of the one that holds the whole shape), the point it looks at (None: the shape's center), the nodes to
 /// mark, and whether the shape holds the pistol at `mount0` (with its `hold` pose). A strip (`frames` not empty) is one tile
 /// for each position of `frames`: of the pose's sequence, or with `look` of the `hold` and `head` sequences over the pose.
 #[derive(Clone, Copy)]
@@ -300,7 +300,7 @@ const PICTURES: &[Picture] = &[
     },
 ];
 
-/// The marks' colours, in the order of a picture's marks.
+/// The marks' colors, in the order of a picture's marks.
 const MARK_COLOURS: [[u8; 4]; 3] = [[230, 50, 40, 255], [40, 120, 230, 255], [60, 190, 70, 255]];
 
 /// The matrix of node `node` of `instance` (shape space).
@@ -438,7 +438,7 @@ fn draw(
         }
         view.set_objects(objects);
         // The camera turned `turn` about the shape from its front, far enough to hold it (times `zoom`).
-        let centre = p.aim.unwrap_or([
+        let center = p.aim.unwrap_or([
             0.5 * (b[0] + b[3]),
             0.5 * (b[1] + b[4]),
             0.5 * (b[2] + b[5]) + p.lift,
@@ -447,11 +447,11 @@ fn draw(
         let (s_turn, c_turn) = p.turn.sin_cos();
         let flat = (1.0 - p.rise * p.rise).sqrt();
         let eye_at = [
-            centre[0] + distance * s_turn * flat,
-            centre[1] + distance * c_turn * flat,
-            centre[2] + distance * p.rise,
+            center[0] + distance * s_turn * flat,
+            center[1] + distance * c_turn * flat,
+            center[2] + distance * p.rise,
         ];
-        let mut eye = look_at(eye_at, centre);
+        let mut eye = look_at(eye_at, center);
         eye.fov = Some(FOV);
         view.reset_history();
         let mut frame = None;

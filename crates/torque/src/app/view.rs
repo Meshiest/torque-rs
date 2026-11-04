@@ -11,9 +11,9 @@
 
 use std::sync::Arc;
 
-use torque::gui::GuiDraws;
-use torque::shapes::instance::ShapeInstance;
-use torque::shapes::shape::Shape;
+use crate::gui::GuiDraws;
+use crate::shapes::instance::ShapeInstance;
+use crate::shapes::shape::Shape;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
@@ -31,14 +31,14 @@ use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Te
 /// The field of view a frame is drawn with when its eye names none (degrees, horizontal).
 pub const DEFAULT_FOV: u8 = 75;
 
-/// The sun, the ambient light and the fog of a scene. Colours are gamma-space 0 to 1, as a mission's Sun and Sky give them.
+/// The sun, the ambient light and the fog of a scene. Colors are gamma-space 0 to 1, as a mission's Sun and Sky give them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Daylight {
     /// Towards the sun (made unit).
     pub towards: [f32; 3],
     pub diffuse: [f32; 3],
     pub ambient: [f32; 3],
-    /// The colour of the sun's shadows.
+    /// The color of the sun's shadows.
     pub shadow: [f32; 3],
     /// The haze toward the horizon, from `fog_start` to `visible` units from the eye (nothing is drawn past `visible`).
     pub fog: [f32; 3],
@@ -47,7 +47,7 @@ pub struct Daylight {
 }
 
 impl Default for Daylight {
-    /// A clear afternoon: the sun high in the south-west, a blue-grey haze.
+    /// A clear afternoon: the sun high in the south-west, a blue-gray haze.
     fn default() -> Daylight {
         Daylight {
             towards: [-0.45, -0.55, 0.7],
@@ -180,7 +180,7 @@ impl WorldView {
         self.put_floor(floor_draw(found, [255; 3], half, tile), &local);
     }
 
-    /// A square floor of one colour (a backdrop for looking at a shape).
+    /// A square floor of one color (a backdrop for looking at a shape).
     pub fn set_plain_floor(&mut self, half: f32, color: [u8; 3]) {
         self.put_floor(floor_draw(None, color, half, 1.0), &[]);
     }
@@ -220,7 +220,7 @@ impl WorldView {
 
     /// [`WorldView::shape_object`] scaled by `scale` (along the shape's own axes, its normals turned by `transform` alone), each
     /// of its draws handed to `edit` before it joins the object (in the world: a caller may set its texture coordinates or
-    /// colours from where the vertices are).
+    /// colors from where the vertices are).
     #[allow(clippy::too_many_arguments)]
     pub fn shape_object_with(
         &mut self,
@@ -268,13 +268,13 @@ impl WorldView {
             .iter()
             .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, &local))
             .collect();
-        let (centre, radius) = bounding_sphere(&draws);
+        let (center, radius) = bounding_sphere(&draws);
         DynamicObject {
             ghost: id,
             transform: placed,
             prev_transform: placed,
             translucent,
-            centre,
+            centre: center,
             radius,
             draws,
             previous: None,

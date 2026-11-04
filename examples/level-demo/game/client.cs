@@ -1,7 +1,9 @@
 // The level demo's client: the menu of maps, the view of the world with its help line, the keys, and the way in.
 //
 // The host fills $World::MapCount, $World::MapTitle[i] and $World::MapAbout[i], then calls buildMenu(). A map picked sets
-// $World::Pick; the host starts that map's server and calls joinWorld(%address). Leaving sets $World::Leave.
+// $World::Pick; the host starts that map's server and calls connectTo(%address). Leaving sets $World::Leave.
+
+exec("common/client.cs");
 
 // ---- profiles
 
@@ -112,18 +114,6 @@ new GameTSCtrl(PlayGui)
    };
 };
 
-// A line in the middle of the view for a few seconds.
-function showNote(%text)
-{
-   cancel($World::NoteTimer);
-   PlayNote.setText(%text);
-   $World::NoteTimer = schedule(2500, 0, "clearNote");
-}
-
-function clearNote()
-{
-   PlayNote.setText("");
-}
 
 // ---- the keys
 
@@ -185,18 +175,9 @@ function showMenu()
    Canvas.cursorOn();
 }
 
-function joinWorld(%address)
-{
-   if (isObject(ServerConnection))
-      ServerConnection.delete();
-   %conn = new GameConnection(ServerConnection);
-   %conn.connect(%address);
-}
-
 function leaveWorld()
 {
-   if (isObject(ServerConnection))
-      ServerConnection.delete();
+   disconnect();
    $World::Forward = $World::Back = $World::Left = $World::Right = 0;
    updateMove();
    MenuStatus.setText("");

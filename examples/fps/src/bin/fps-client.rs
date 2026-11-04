@@ -11,18 +11,16 @@
 //! flares and smoke frame by frame, a bolt's ribbon from the side, bolt holes at a wall's middle and edge and in the floor, and
 //! the sights aimed (also at 1920 x 1080).
 
-use std::net::Ipv4Addr;
-use std::path::PathBuf;
-
+use torque::app::cli::{Args, unknown};
 use torque_example_fps::client::{ArenaGame, ClientOptions};
 use torque_example_fps::files::GameFiles;
-use torque_example_fps::{shots, window};
+use torque_example_fps::shots;
 
 /// The pictures' size.
 const SHOT_SIZE: (u32, u32) = (1280, 720);
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
+    let mut args = Args::from_env();
     let mut shots_dir = None;
     let mut motion_dir = None;
     let mut menu_dir = None;
@@ -31,37 +29,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut options = ClientOptions::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--shots" => {
-                shots_dir = Some(PathBuf::from(args.next().ok_or("--shots needs a folder")?))
-            }
-            "--motion-shots" => {
-                motion_dir = Some(PathBuf::from(
-                    args.next().ok_or("--motion-shots needs a folder")?,
-                ))
-            }
-            "--menu-shots" => {
-                menu_dir = Some(PathBuf::from(
-                    args.next().ok_or("--menu-shots needs a folder")?,
-                ))
-            }
-            "--polish-shots" => {
-                polish_dir = Some(PathBuf::from(
-                    args.next().ok_or("--polish-shots needs a folder")?,
-                ))
-            }
-            "--polish2-shots" => {
-                polish2_dir = Some(PathBuf::from(
-                    args.next().ok_or("--polish2-shots needs a folder")?,
-                ))
-            }
-            "--bind" => {
-                let text = args.next().ok_or("--bind needs an address")?;
-                options.host_address = text
-                    .parse::<Ipv4Addr>()
-                    .map_err(|_| format!("--bind needs an IPv4 address, not {text:?}"))?;
-            }
-            "--name" => options.name = args.next().ok_or("--name needs a name")?,
-            _ => return Err(format!("unknown argument {arg}").into()),
+            "--shots" => shots_dir = Some(args.dir(&arg)?),
+            "--motion-shots" => motion_dir = Some(args.dir(&arg)?),
+            "--menu-shots" => menu_dir = Some(args.dir(&arg)?),
+            "--polish-shots" => polish_dir = Some(args.dir(&arg)?),
+            "--polish2-shots" => polish2_dir = Some(args.dir(&arg)?),
+            "--bind" => options.host_address = args.ipv4(&arg)?,
+            "--name" => options.name = args.value(&arg, "a name")?,
+            _ => return Err(unknown(&arg).into()),
         }
     }
     if let Some(dir) = menu_dir {
@@ -98,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", path.display());
             }
         }
-        None => window::run(ArenaGame::new(GameFiles::bundled()?, options)?)?,
+        None => torque::app::window::run(ArenaGame::new(GameFiles::bundled()?, options)?)?,
     }
     Ok(())
 }

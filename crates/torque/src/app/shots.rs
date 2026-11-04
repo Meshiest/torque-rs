@@ -1,0 +1,131 @@
+//! An [`App`] without a window: every frame drawn offscreen as the window would draw it, and pictures of it written as PNGs.
+//!
+//! A [`Seat`] is one game with its world view and its target; [`run`] runs the clocks of several seats side by side, a frame
+//! of each every [`FRAME_MS`]; [`Seat::picture`] holds the clock while the renderer settles on the scene, then reads it back;
+//! [`Shots`] writes the pictures into a folder.
+
+use std::io;
+use std::path::{Path, PathBuf};
+
+use torque_render_core::{Frame, Gpu, Offscreen};
+use torque_render_scene::source::Eye;
+
+use super::App;
+use super::view::WorldView;
+
+/// The clock's step between frames (ms).
+pub const FRAME_MS: u32 = 16;
+/// The frames drawn from a still scene before its picture (the renderer's history settles).
+pub const SETTLE_FRAMES: u32 = 24;
+
+/// One game and what its frames draw into.
+pub struct Seat<G> {
+    pub game: G,
+    pub view: WorldView,
+    pub target: Offscreen,
+    /// An eye in place of the game's (none: the game's).
+    pub eye: Option<Eye>,
+}
+
+impl<G: App> Seat<G> {
+    /// `game` drawn at `size` on `gpu`.
+    pub fn new(mut game: G, gpu: &Gpu, size: (u32, u32)) -> Result<Seat<G>, String> {
+        game.host().surface_size(size);
+        Ok(Seat {
+            view: game.view(gpu),
+            target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
+            eye: None,
+            game,
+        })
+    }
+
+    /// Draws one frame.
+    pub fn frame(&mut self, gpu: &Gpu) -> Result<(), String> {
+        let (gui, eye) = self.game.frame(&mut self.view);
+        let eye = self.eye.unwrap_or(eye);
+        self.view.draw(gpu, &self.target.color, &gui, eye)?;
+        Ok(())
+    }
+
+    /// Runs `ms` of the clock, a frame every [`FRAME_MS`].
+    pub fn run(&mut self, gpu: &Gpu, ms: u32) -> Result<(), String> {
+        run(gpu, &mut [self], ms)
+    }
+
+    /// A picture of the scene as it stands (the clock held), after the renderer settled on it.
+    pub fn picture(&mut self, gpu: &Gpu) -> Result<Frame, String> {
+        self.view.reset_history();
+        for _ in 0..SETTLE_FRAMES {
+            self.frame(gpu)?;
+        }
+        gpu.read_back(&self.target).map_err(|e| e.to_string())
+    }
+}
+
+/// The seats' clocks run `ms`, a frame of each every [`FRAME_MS`].
+pub fn run<G: App>(gpu: &Gpu, seats: &mut [&mut Seat<G>], ms: u32) -> Result<(), String> {
+    for _ in 0..ms.div_ceil(FRAME_MS) {
+        for s in seats.iter_mut() {
+            s.game.advance(FRAME_MS);
+            s.frame(gpu)?;
+        }
+    }
+    Ok(())
+}
+
+/// A folder of pictures and the paths written into it.
+pub struct Shots {
+    dir: PathBuf,
+    pub paths: Vec<PathBuf>,
+}
+
+impl Shots {
+    /// The folder `dir`, made if missing.
+    pub fn new(dir: &Path) -> Result<Shots, String> {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        Ok(Shots {
+            dir: dir.to_path_buf(),
+            paths: Vec::new(),
+        })
+    }
+
+    /// Writes `frame` as `<name>.png`.
+    pub fn save(&mut self, frame: &Frame, name: &str) -> Result<(), String> {
+        let path = self.dir.join(format!("{name}.png"));
+        write_png(frame, &path).map_err(|e| e.to_string())?;
+        self.paths.push(path);
+        Ok(())
+    }
+}
+
+/// Writes `frame` as a PNG (its color, no alpha).
+pub fn write_png(frame: &Frame, path: &Path) -> io::Result<()> {
+    let width = frame.width;
+    let bytes = png_rgb(frame.width, frame.height, |x, y| {
+        let i = 4 * (y * width + x) as usize;
+        [frame.rgba[i], frame.rgba[i + 1], frame.rgba[i + 2]]
+    })?;
+    std::fs::write(path, bytes)
+}
+
+/// An image of `width` x `height` whose pixel at column `x`, row `y` (row 0 at the top) is `pixel(x, y)`, as a PNG.
+pub fn png_rgb(
+    width: u32,
+    height: u32,
+    pixel: impl Fn(u32, u32) -> [u8; 3],
+) -> io::Result<Vec<u8>> {
+    let mut data = Vec::with_capacity((width * height * 3) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            data.extend(pixel(x, y));
+        }
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(io::Error::other)?;
+    writer.write_image_data(&data).map_err(io::Error::other)?;
+    writer.finish().map_err(io::Error::other)?;
+    Ok(out)
+}

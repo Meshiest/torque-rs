@@ -6,8 +6,9 @@
 //! - [`effects`]: the screen's hurt and hit marks.
 //! - [`prediction`]: what the client's prediction of its own figure asks this game (the cubes it collides with, smooth aim).
 //! - [`scene`]: the client's ghosts as the world view's objects.
-//! - [`window`]: the example in a window.
 //! - [`shots`]: the example without a window: review pictures drawn offscreen.
+//!
+//! The window is the engine's ([`torque::app::window::run`]).
 
 pub mod client;
 pub mod effects;
@@ -16,4 +17,3 @@ pub mod prediction;
 pub mod scene;
 pub mod server;
 pub mod shots;
-pub mod window;

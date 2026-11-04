@@ -37,7 +37,11 @@
 //! - `shape-builder`: `shape_builder`, a builder of shape models from code (`torque-shape-builder`).
 //! - `full`: everything above.
 //!
-//! The crates that draw (the renderer and its back ends) need a GPU and join as features that are off by default.
+//! The crates that draw (the renderer and its back ends) need a GPU and join as features that are off by default:
+//!
+//! - `app`: [`app`], what a game made on the engine shares: its files, a server, a client with the server it hosts, a window,
+//!   the world view under the GUI and offscreen pictures (over `torque-render-core`, `torque-render-hd`,
+//!   `torque-render-scene` and winit).
 //!
 //! The examples in this crate's `examples/` folder run headless: `cargo run -p torque --example script` (also `shape`,
 //! `collide` and `net`). The `torque-example` crate holds a dedicated server and a client built on this crate, which
@@ -53,6 +57,9 @@ pub mod script {
     pub use torque_ts_text as text;
     pub use torque_ts_vm as vm;
 }
+
+#[cfg(feature = "app")]
+pub mod app;
 
 #[cfg(feature = "audio")]
 pub use torque_audio as audio;

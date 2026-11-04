@@ -43,13 +43,13 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use torque::app::view::{SceneShape, WorldView};
 use torque::client::conn::tge::TgeWorld;
 use torque::client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
 use torque::ghost_world::world::Pose;
 use torque::ghosts::{TgeClass, TgeRecord, Value};
 use torque::shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use torque_example_common::KitAssets;
-use torque_example_common::view::{SceneShape, WorldView};
 use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::hd::{DynamicObject, material};
