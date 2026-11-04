@@ -134,6 +134,9 @@ $Arena::RespawnMs = 2500;
 $Arena::Sequence = 0;
 $Arena::FallHeight = -30;
 
+// A packet to each client every tick (TGE's most; its default is ten a second): the other figures move on smaller steps.
+$pref::Net::PacketRateToClient = 32;
+
 $Server::GameType = "Arena";
 $Server::MissionType = "Free for all";
 $Server::PlayerCount = 0;

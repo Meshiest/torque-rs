@@ -1,6 +1,7 @@
 //! Another player's figure as a client draws it: the host walks in a circle (forward, turning at a steady rate with the mouse) and
 //! the second client's frames draw the host's figure moving and turning steadily: no frame steps back or turns back, and none
-//! moves or turns much further than the walk and the turn carry it in that frame's time. The game plays
+//! moves or turns much further than the walk and the turn carry it in that frame's time; and the server sends each client a
+//! packet every tick. The game plays
 //! `game/fixtures/aim.mis`.
 
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode, keys};
@@ -49,6 +50,23 @@ fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
         }
     }
     assert_eq!(b.scene().others().len(), 1, "Bob sees Ann");
+    // The server sends each client a packet every tick (the scripts' `$pref::Net::PacketRateToClient` 32 on both sides): about
+    // 31 a second to each of the two, where TGE's default rate sends 10.
+    let sent = |a: &ArenaGame| {
+        a.server
+            .as_ref()
+            .unwrap()
+            .shared
+            .borrow()
+            .counters
+            .packets_sent
+    };
+    let before = sent(&a);
+    for _ in 0..64 {
+        frame(&mut a, &mut b, 16);
+    }
+    let rate = sent(&a) - before;
+    assert!(rate >= 55, "{rate} packets a second to the two clients");
 
     // Ann walks forward, turning right at 0.75 radians a second (4 mouse counts each 16 ms).
     a.key(keys::W, true);
@@ -62,7 +80,6 @@ fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
         frame(&mut a, &mut b, ms);
         elapsed += ms;
         let now = b.scene().others()[0];
-        // Past the first second: up to speed and turning.
         if let Some((p, yaw)) = last
             && elapsed > 1000
         {

@@ -568,5 +568,7 @@ function clientCmdKnockedOut(%ms)
 }
 
 $Pref::Player::Name = "Player";
+// Ask the server for a packet every tick (it sends at the slower of its rate and this one).
+$pref::Net::PacketRateToClient = 32;
 $Arena::OwnGhost = -1;
 showMainMenu();
