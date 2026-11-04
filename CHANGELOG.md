@@ -54,7 +54,7 @@ The first development version. Nothing is published yet; this is what exists.
   `game/missions` folder), then the kit's box figure walking and jumping on the map's cubes, a server (torque-server with
   TGE's game classes) and a client (TGE's connection half) joined in one process by an in-memory datagram link.
 - `torque-server`: `game::install` (TGE's game classes on one container and the process list, `GameBase::onAdd`), the
-  connections' ghosting and control methods (`activateGhosting`, `resetGhosting`, `setControlObject`,
+  GameConnection's ghosting and control methods (`activateGhosting`, `resetGhosting`, `setControlObject`,
   `getControlObject`), the `NetObject` behaviour that enters ghostable objects in the hub, the command natives registered
   with the host, and records packed from the simulated Player's state.
 - `torque-client`: TGE's feed reads datablock events and answers `DataBlocksDone`.

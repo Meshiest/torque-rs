@@ -173,7 +173,7 @@ fn the_scene_and_shape_classes_name_the_methods_their_natives_replace() {
         ("Camera", "setOrbitMode"),
         ("Item", "isStatic"),
         ("WheeledVehicle", "getWheelCount"),
-        ("NetConnection", "activateGhosting"),
+        ("GameConnection", "activateGhosting"),
         ("GameConnection", "setControlObject"),
     ] {
         assert!(

@@ -3,8 +3,8 @@
 //!
 //! | method | does |
 //! |---|---|
-//! | `NetConnection::activateGhosting()` | [`GhostHub::activate`]: the ghost-always objects' events (and the message that starts them) are posted on the connection |
-//! | `NetConnection::resetGhosting()` | [`GhostHub::reset`]: ghosting and scoping off, every ghost dropped, `EndGhosting` posted |
+//! | `GameConnection::activateGhosting()` | [`GhostHub::activate`]: the ghost-always objects' events (and the message that starts them) are posted on the connection |
+//! | `GameConnection::resetGhosting()` | [`GhostHub::reset`]: ghosting and scoping off, every ghost dropped, `EndGhosting` posted |
 //! | `GameConnection::setControlObject(%obj)` | a ShapeBase by name or id becomes the control object and the scope object (true); anything else changes nothing (false) |
 //! | `GameConnection::getControlObject()` | the control object's id, 0 for none |
 //!
@@ -83,7 +83,7 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
 
     register(
         vm,
-        "NetConnection",
+        "GameConnection",
         "activateGhosting",
         shared,
         |vm, c, s| {
@@ -113,7 +113,7 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
             }
         },
     );
-    register(vm, "NetConnection", "resetGhosting", shared, |vm, c, s| {
+    register(vm, "GameConnection", "resetGhosting", shared, |vm, c, s| {
         let Some((this, conn, hub)) = this_conn(s, c) else {
             return Native::Void;
         };
