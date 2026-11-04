@@ -3,7 +3,7 @@
 //!
 //! - **History.** At the end of each 32 ms step every Player on the process list gets a sample ([`record_step`]): the step,
 //!   its transform, scale, object box, whether it is enabled, and for a Player with hitboxes its LOS pose
-//!   ([`super::hitboxes::Pose`]). Samples are kept for the cap and two steps more; a Player that left the list is dropped.
+//!   ([`super::hitboxes::Pose`]). Samples are kept for the cap and three steps more; a Player that left the list is dropped.
 //! - **The rewind.** The client draws a remote Player run on from its last update along its velocity from the update's arrival,
 //!   not delayed: at the moment it fires it shows the state of one trip down ago, and its trigger reaches the server one trip
 //!   up later. So the shooter saw the targets as they were one round trip before the server handles the shot: the rewind is the
