@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+pub use gui::CursorShape;
 use gui::Gui;
 pub use torque_server::server::GameServer;
 use torque_server::server::{RunEnd, TICK_MS};
@@ -480,6 +481,12 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
     pub fn system_cursor(&self) -> bool {
         let s = self.gui.0.borrow();
         s.cursor_on && s.show_cursor && !s.cursor_drawn && !self.client.borrow().mouse_locked
+    }
+
+    /// The shape of the system cursor now ([`ClientHost::system_cursor`] decides whether it is shown): the pointer over a
+    /// control that takes a click, the text cursor over a text edit, the arrow elsewhere.
+    pub fn cursor_shape(&self) -> CursorShape {
+        gui::hover_cursor(self.server.vm(), &self.gui)
     }
 
     /// One window message through TGE's platform layer and the game ([`input::post`]): who took it. A script's error is kept in
