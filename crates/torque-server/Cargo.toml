@@ -32,6 +32,8 @@ torque-sim = { path = "../torque-sim" }
 [dev-dependencies]
 # The tests' shapes (a box a Player stands in).
 torque-shapes = { path = "../torque-shapes" }
+# The hitbox tests' figure: bones with a box each.
+torque-shape-builder = { path = "../torque-shape-builder" }
 
 [lints]
 workspace = true

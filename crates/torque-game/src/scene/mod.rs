@@ -1,7 +1,7 @@
 //! The Torque scene classes the server hosts, apart from the host's: `SceneObject` (the transform, the boxes, the type mask and
 //! their console methods, [`object`]), `ShapeBase` as data (the shape instance, threads, fades, mounts' transforms,
 //! [`shapebase`]), `Camera` and its `processTick` ([`camera`], [`camera_tick`]), each class's own `castRay` and `buildPolyList`
-//! ([`rays`]), and the server container with its queries ([`container`]) and its view as `collide`'s world
+//! ([`rays`]; a Player's posed hitboxes, [`hitboxes`]; lag compensation's rewound casts, [`lag`]), and the server container with its queries ([`container`]) and its view as `collide`'s world
 //! ([`container_world`]), and the per-class answers a game adds for its own scene classes ([`classes`]).
 //!
 //! **State.** An object's Rust state is one [`ext::ObjectExt`] in its `SimObject::ext` slot; the host's own state for the
@@ -21,6 +21,8 @@ pub mod container;
 pub mod container_world;
 pub mod ext;
 pub mod ghost;
+pub mod hitboxes;
+pub mod lag;
 pub mod object;
 pub mod rays;
 pub mod shapebase;

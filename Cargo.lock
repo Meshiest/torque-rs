@@ -2278,6 +2278,7 @@ dependencies = [
  "torque-ghosts",
  "torque-net",
  "torque-scene",
+ "torque-shape-builder",
  "torque-shapes",
  "torque-sim",
  "torque-ts-vm",

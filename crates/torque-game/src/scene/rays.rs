@@ -4,7 +4,8 @@
 //!
 //! - a class the host registered ([`super::classes`]): `castRay` its own; `buildPolyList` its own
 //! - `Player`, `AIPlayer`: `castRay` no hit when the damage state is not 0, else a slab test of the object box
-//!   ([`RayRules::player_cast`]); `buildPolyList` that box at the position, no rotation
+//!   ([`RayRules::player_cast`]), or its LOS meshes at its pose when its datablock asks for hitboxes ([`super::hitboxes`]);
+//!   `buildPolyList` that box at the position, no rotation
 //! - `Item`: `castRay` the LOS slots as `ShapeBase`'s ([`RayRules::item_without_los`] when no slot is set); `buildPolyList` the
 //!   raw box at the position, the object's scale
 //! - the other `ShapeBase` classes (StaticShape, the vehicles, markers, Camera): `castRay` each LOS slot at the current pose
@@ -46,6 +47,7 @@ use shapes::math as fpu;
 use shapes::preload::Slots;
 use shapes::shape::{Mesh, Shape};
 use torque_scene::bins::object_point;
+use torque_scene::ray_point;
 use torque_scene::transform::{self as grid, Matrix};
 use ts_vm::sim::ObjId;
 use ts_vm::vm::{Vm, VmError};
@@ -234,6 +236,9 @@ const POINT_EPSILON: f32 = 1e-4;
 /// casts do not change the instance, so animating every detail first and casting after gives what an interleaved loop gives,
 /// and the cast can read the pose with a shared borrow. Nothing for a class whose `castRay` has no shape.
 pub fn animate_for_ray(vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
+    if matches!(ray_class(vm, id), RayClass::Player) {
+        return super::hitboxes::prepare(vm, id);
+    }
     animate_slots(vm, id, |s| &s.los)
 }
 
@@ -301,6 +306,18 @@ pub fn object_ray(
             if crate::sim::vitals::get(vm, id).damage_state != 0 {
                 return Ok(None);
             }
+            // A rewound cast answers for the Players it keeps samples of itself.
+            if super::lag::rewound_here(vm, id) {
+                return Ok(None);
+            }
+            if super::hitboxes::wanted(vm, id)
+                && let Some(parts) = super::hitboxes::cast_live(vm, id, a, b)?
+            {
+                return Ok(parts.map(|p| {
+                    super::hitboxes::note(vm, id, ray_point(start, end, p.t), p.object);
+                    turned((p.t, p.normal))
+                }));
+            }
             ray_rules(vm).player_cast(min, max, a, b).map(turned)
         }
         RayClass::Item => match los_slots(vm, id) {
@@ -338,12 +355,12 @@ pub fn object_segment(
 }
 
 /// The shape body of a `ShapeBase`, if it has an instance.
-fn body_of(vm: &Vm, id: ObjId) -> Option<&shapebase::ShapeBody> {
+pub(crate) fn body_of(vm: &Vm, id: ObjId) -> Option<&shapebase::ShapeBody> {
     shapebase::state(vm, id)?.body.as_ref()
 }
 
 /// The eight slots of the shape the object's datablock loaded (resolved at its preload).
-fn los_slots(vm: &Vm, id: ObjId) -> Option<Slots> {
+pub(crate) fn los_slots(vm: &Vm, id: ObjId) -> Option<Slots> {
     body_of(vm, id)?
         .kept
         .facts
@@ -423,7 +440,7 @@ pub fn detail_objects(
 }
 
 /// The convex hull of mesh `index` of the kept shape, built the first time (`TSMesh::buildConvexHull`) and paid for then.
-fn mesh_hull(
+pub(crate) fn mesh_hull(
     kept: &KeptShape,
     index: usize,
     mesh: &Mesh,
@@ -446,7 +463,7 @@ fn mesh_hull(
 }
 
 /// A node's transform at the instance's current pose (the identity for an object with no node, as `shapes::collide` takes it).
-fn node_of(nodes: &[Matrix], shape: &Shape, object: usize) -> Matrix {
+pub(crate) fn node_of(nodes: &[Matrix], shape: &Shape, object: usize) -> Matrix {
     usize::try_from(shape.objects[object].node)
         .ok()
         .and_then(|n| nodes.get(n).copied())
