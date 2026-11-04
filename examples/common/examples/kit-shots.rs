@@ -1,15 +1,15 @@
-//! Pictures of every shape of the asset kit for review, drawn offscreen on a plain grey floor: the cube, the figure from the
-//! front, side and back and in its idle, walk, run and jump poses, the pistol with its muzzle and eject points marked, and the
-//! projectile.
+//! Pictures of every shape of the asset kit for review, drawn offscreen on a plain grey floor: the cube; the figure from the
+//! front, side and back, its face close up, and in its idle, walk, run and jump poses; the figure holding the pistol; the
+//! pistol from the side and three-quarters with its muzzle, eject and mount points marked; and the projectile.
 //!
 //! `cargo run -p torque-example-common --example kit-shots -- <dir>` (default `kit-shots`)
 
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::path::PathBuf;
 
-use torque::shapes::instance::find_sequence;
+use torque::shapes::instance::{ShapeInstance, find_sequence};
 use torque::shapes::math::mul_p;
-use torque_example_common::view::{SceneShape, WorldView};
+use torque_example_common::view::{Daylight, SceneShape, WorldView};
 use torque_example_common::{KitAssets, kit_path};
 use torque_render_core::Gpu;
 use torque_render_scene::hd::kit::{box_object, look_at};
@@ -21,101 +21,139 @@ const FRAMES: usize = 12;
 const FOV: u8 = 50;
 
 /// One picture: the shape, a sequence and its position (None: the rest pose), how high its origin stands, the camera's turn
-/// about the shape (0: in front of it, looking along -y at its face) and the nodes to mark.
+/// about the shape (0: in front of it, looking along -y at its face), how high the camera stands (a share of its distance),
+/// its distance (a share of the one that holds the whole shape), the point it looks at (None: the shape's centre), the nodes to
+/// mark, and whether the shape holds the pistol at `mount0`.
+#[derive(Clone, Copy)]
 struct Picture {
     name: &'static str,
     shape: &'static str,
     pose: Option<(&'static str, f32)>,
     lift: f32,
     turn: f32,
+    rise: f32,
+    zoom: f32,
+    aim: Option<[f32; 3]>,
     marks: &'static [&'static str],
+    hold: bool,
 }
+
+const SHAPE: Picture = Picture {
+    name: "",
+    shape: "figure.dts",
+    pose: None,
+    lift: 0.0,
+    turn: 0.0,
+    rise: 0.34,
+    zoom: 1.0,
+    aim: None,
+    marks: &[],
+    hold: false,
+};
+
+const PISTOL_MARKS: &[&str] = &["muzzlePoint", "ejectPoint", "mountPoint"];
 
 const PICTURES: &[Picture] = &[
     Picture {
         name: "cube",
         shape: "cube.dts",
-        pose: None,
         lift: 0.5,
         turn: 0.6,
-        marks: &[],
+        ..SHAPE
     },
     Picture {
         name: "figure-front",
-        shape: "figure.dts",
-        pose: None,
-        lift: 0.0,
-        turn: 0.0,
-        marks: &[],
+        ..SHAPE
     },
     Picture {
         name: "figure-side",
-        shape: "figure.dts",
-        pose: None,
-        lift: 0.0,
         turn: FRAC_PI_2,
-        marks: &[],
+        ..SHAPE
     },
     Picture {
         name: "figure-back",
-        shape: "figure.dts",
-        pose: None,
-        lift: 0.0,
         turn: PI,
-        marks: &[],
+        ..SHAPE
+    },
+    Picture {
+        name: "figure-face",
+        rise: 0.05,
+        zoom: 0.22,
+        aim: Some([0.0, 0.0, 1.82]),
+        ..SHAPE
     },
     Picture {
         name: "figure-idle",
-        shape: "figure.dts",
         pose: Some(("idle", 0.25)),
-        lift: 0.0,
         turn: 0.7,
-        marks: &[],
+        ..SHAPE
     },
     Picture {
         name: "figure-walk",
-        shape: "figure.dts",
         pose: Some(("walk", 0.25)),
-        lift: 0.0,
         turn: FRAC_PI_2,
-        marks: &[],
+        ..SHAPE
     },
     Picture {
         name: "figure-run",
-        shape: "figure.dts",
         pose: Some(("run", 0.25)),
-        lift: 0.0,
         turn: FRAC_PI_2,
-        marks: &[],
+        ..SHAPE
     },
     Picture {
         name: "figure-jump",
-        shape: "figure.dts",
         pose: Some(("jump", 1.0)),
         lift: 0.3,
         turn: 0.9,
-        marks: &[],
+        zoom: 1.25,
+        ..SHAPE
     },
     Picture {
-        name: "pistol",
+        name: "figure-holding-pistol",
+        pose: Some(("idle", 0.0)),
+        turn: 0.9,
+        rise: 0.15,
+        zoom: 0.35,
+        aim: Some([0.33, 0.1, 0.75]),
+        hold: true,
+        ..SHAPE
+    },
+    Picture {
+        name: "pistol-side",
         shape: "pistol.dts",
-        pose: None,
-        lift: 0.25,
-        turn: 1.9,
-        marks: &["muzzlePoint", "ejectPoint", "mountPoint"],
+        lift: 0.2,
+        turn: FRAC_PI_2,
+        rise: 0.03,
+        marks: PISTOL_MARKS,
+        ..SHAPE
+    },
+    Picture {
+        name: "pistol-three-quarter",
+        shape: "pistol.dts",
+        lift: 0.2,
+        turn: 0.75,
+        rise: 0.4,
+        marks: PISTOL_MARKS,
+        ..SHAPE
     },
     Picture {
         name: "projectile",
         shape: "projectile.dts",
-        pose: None,
         lift: 0.15,
         turn: 1.9,
-        marks: &[],
+        ..SHAPE
     },
 ];
 
 /// The marks' colours, in the order of a picture's marks.
 const MARK_COLOURS: [[u8; 4]; 3] = [[230, 50, 40, 255], [40, 120, 230, 255], [60, 190, 70, 255]];
+
+/// The matrix of node `node` of `instance` (shape space).
+fn node_matrix(instance: &ShapeInstance, node: usize) -> Mat {
+    Mat {
+        m: instance.node_transforms()[node],
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = PathBuf::from(
@@ -126,8 +164,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&dir)?;
     let gpu = Gpu::new()?;
     let assets = KitAssets::new()?;
+    let pistol = SceneShape::load(&assets, &kit_path("pistol.dts")).ok_or("pistol.dts")?;
+    let pistol_pose = pistol.instance().ok_or("no instance")?;
     let mut view = WorldView::new(&gpu);
     view.set_plain_floor(400.0, [150, 152, 156]);
+    // The sun behind the camera's usual side, so the front and the right are lit.
+    view.set_daylight(&Daylight {
+        towards: [0.45, 0.6, 0.66],
+        ..Daylight::default()
+    });
     for p in PICTURES {
         let shape = SceneShape::load(&assets, &kit_path(p.shape)).ok_or(p.shape)?;
         let s = shape.shape();
@@ -142,30 +187,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut place = Mat::IDENTITY;
         place.set_column3([0.0, 0.0, p.lift]);
         let mut objects = vec![view.shape_object(&assets, &shape, &instance, &place, 1)];
+        if p.hold {
+            // The pistol's mountPoint on the hand's mount0.
+            let mount0 = shape.node("mount0").ok_or("mount0")?;
+            let hand = Mat::mul(&place, &node_matrix(&instance, mount0));
+            let grip = pistol.node("mountPoint").ok_or("mountPoint")?;
+            let held = Mat::mul(&hand, &node_matrix(&pistol_pose, grip).affine_inverse());
+            objects.push(view.shape_object(&assets, &pistol, &pistol_pose, &held, 2));
+        }
         let b = s.bounds;
         let size = ((b[3] - b[0]).powi(2) + (b[4] - b[1]).powi(2) + (b[5] - b[2]).powi(2)).sqrt();
         for (k, mark) in p.marks.iter().enumerate() {
             let node = shape.node(mark).ok_or(*mark)?;
             let at = place.mul_p(mul_p(&instance.node_transforms()[node], [0.0; 3]));
-            let mut o = box_object(10 + k as u32, at, [size * 0.03; 3]);
+            let mut o = box_object(10 + k as u32, at, [size * 0.025; 3]);
             for v in o.draws.iter_mut().flat_map(|d| d.vertices.iter_mut()) {
                 v.color = MARK_COLOURS[k % MARK_COLOURS.len()];
             }
             objects.push(o);
         }
         view.set_objects(objects);
-        // The camera in front of the shape (+y, its face) turned `turn` about it, a little above, far enough to hold it.
-        let centre = [
+        // The camera turned `turn` about the shape from its front, far enough to hold it (times `zoom`).
+        let centre = p.aim.unwrap_or([
             0.5 * (b[0] + b[3]),
             0.5 * (b[1] + b[4]),
             0.5 * (b[2] + b[5]) + p.lift,
-        ];
-        let distance = size.max(0.2) * 1.9;
+        ]);
+        let distance = size.max(0.2) * 1.9 * p.zoom;
         let (s_turn, c_turn) = p.turn.sin_cos();
+        let flat = (1.0 - p.rise * p.rise).sqrt();
         let eye_at = [
-            centre[0] + distance * s_turn * 0.94,
-            centre[1] + distance * c_turn * 0.94,
-            centre[2] + distance * 0.34,
+            centre[0] + distance * s_turn * flat,
+            centre[1] + distance * c_turn * flat,
+            centre[2] + distance * p.rise,
         ];
         let mut eye = look_at(eye_at, centre);
         eye.fov = Some(FOV);
