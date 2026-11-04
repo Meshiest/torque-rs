@@ -1,6 +1,7 @@
 //! The example without a window: two clients in one process over the loopback address, every frame drawn offscreen as the
 //! window would draw it, and pictures taken: the main menu, the list of games with the hosted one, the view from the host's
-//! eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight.
+//! eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight (as it leaves the
+//! muzzle, then with its trail behind it eight steps away and two steps away).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -179,6 +180,29 @@ pub fn write_all(
         a.game.scene().bolts_drawn > 0
     })?;
     save(&a.picture(&gpu)?, "bolt")?;
+    b.game.call("fire", &["0"])?;
+
+    // The same bolt farther on, its trail behind it, eight steps from Ann; then Ann two steps from its line, and another.
+    run_until(&gpu, &mut a, &mut b, "the bolt mid-view", |a, _| {
+        a.game
+            .scene()
+            .bolt_positions()
+            .iter()
+            .any(|p| (6.0..7.5).contains(&p[0]))
+    })?;
+    save(&a.picture(&gpu)?, "bolt-cube-mid")?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    place(&mut a.game, "Ann", [8.0, -12.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    b.game.call("fire", &["1"])?;
+    run_until(&gpu, &mut a, &mut b, "a bolt close by", |a, _| {
+        a.game
+            .scene()
+            .bolt_positions()
+            .iter()
+            .any(|p| (8.3..9.5).contains(&p[0]))
+    })?;
+    save(&a.picture(&gpu)?, "bolt-cube-near")?;
     b.game.call("fire", &["0"])?;
     Ok(paths)
 }

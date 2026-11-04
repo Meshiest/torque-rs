@@ -82,6 +82,23 @@ fn two_players_meet_shoot_and_chat() {
         a.own_look().is_some() && b.own_look().is_some(),
         "each client knows its own figure"
     );
+    // The bolt's trail reaches the other client: its ProjectileData names a ParticleEmitterData it holds, with its particles.
+    let trail = b
+        .with_world(|w| {
+            let (&db, _) = w
+                .datablocks
+                .iter()
+                .find(|(_, d)| d.class == "ProjectileData")?;
+            torque_example_fps::scene::bolt_trail(w, db)
+        })
+        .flatten()
+        .expect("the bolt's trail");
+    assert_eq!(trail.particle_data.len(), 1);
+    assert_eq!(trail.particle_data[0].textures, ["kit/spark"]);
+    assert_eq!(
+        trail.particle_data[0].lifetime_ms, 64,
+        "as the script gave it"
+    );
 
     // One shot from the host at the other figure: a round spent and a hit.
     assert_eq!(a.global("$Arena::Ammo"), "11");

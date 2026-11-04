@@ -11,7 +11,10 @@
 //!   client's mouse turned it (the moves carry the same turns to the server, so the view does not wait for them), and the
 //!   pistol is drawn at the eye times the image's `eyeOffset` (a first-person image).
 //! - **Bolts** (Projectiles) fly on from their first record along its velocity (the client runs them on its own, as TGE's
-//!   client runs a projectile ghost) and are drawn along it until their explosion record hides them.
+//!   client runs a projectile ghost) and are drawn along it, turning slowly about their flight, until their explosion record
+//!   hides them. A bolt whose datablock names a `particleEmitter` leaves a trail of its particles behind it
+//!   ([`Emitter::emit_trail`] over each frame's flight, as `Projectile::processTick` emits on the client); a gone bolt's trail
+//!   is left to fade out (`deleteWhenEmpty`).
 //!
 //! Credit: the image's hand transform follows `ShapeBase::getRenderImageTransform` in Torque3D's MIT-licensed
 //! `T3D/shapeBase.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this
@@ -30,7 +33,9 @@ use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::pose_matrix;
+use torque_render_scene::particles::{Emitter, Rng};
 use torque_render_scene::source::Eye;
+use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Draw, Vertex};
 
 /// How long a server tick is (seconds): the time a figure takes from one record's place to the next.
@@ -41,6 +46,8 @@ pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 pub const EYE_HEIGHT: f32 = 1.75;
 /// The field of view (degrees, horizontal).
 pub const FOV: u8 = 90;
+/// How fast a bolt turns about its flight (radians a second).
+pub const BOLT_SPIN: f32 = std::f32::consts::TAU;
 
 /// The id of a ghost's object among the frame's objects (the first-person pistol is 1).
 fn object_id(index: u32, part: u32) -> u32 {
@@ -183,11 +190,29 @@ impl Figure {
     }
 }
 
-/// A bolt: where its first record put it and when.
+/// A bolt: where its first record put it and when, and its trail.
 struct Bolt {
     start: [f32; 3],
     velocity: [f32; 3],
     age: f32,
+    trail: Option<Emitter>,
+}
+
+impl Bolt {
+    fn position(&self) -> [f32; 3] {
+        [0, 1, 2].map(|i| self.start[i] + self.velocity[i] * self.age)
+    }
+}
+
+/// A new trail for a bolt of ProjectileData `db`: its `particleEmitter`, when the client holds it as a `ParticleEmitterData`
+/// with its particles.
+pub fn bolt_trail(world: &TgeWorld, db: u32) -> Option<Emitter> {
+    let id = match world.datablocks.get(&db)?.get("particleEmitter", 0)? {
+        Value::Id(id) => (*id)?,
+        Value::Int(v) => u32::try_from(*v).ok()?,
+        _ => return None,
+    };
+    Emitter::new(&world.records, id)
 }
 
 /// Which ghost is the client's own figure, and where the client's mouse has turned its view.
@@ -215,10 +240,19 @@ pub struct ArenaScene {
     cubes: BTreeMap<u32, KeptCube>,
     figures: BTreeMap<u32, Figure>,
     bolts: BTreeMap<u32, Bolt>,
+    /// The trails of the bolts gone, fading out.
+    fading: Vec<Emitter>,
+    rng: Option<Rng>,
+    /// The live particles of every trail.
+    live: usize,
+    /// The frame time the trails have not run yet (ms, under one).
+    trail_ms: f32,
     own: Option<OwnView>,
     /// The bolts drawn in the last frame, and the other figures holding an image.
     pub bolts_drawn: usize,
     pub holders_drawn: usize,
+    /// The trail particles drawn in the last frame.
+    pub trail_particles: usize,
 }
 
 fn record_images(record: &TgeRecord) -> Option<(u32, u32)> {
@@ -241,7 +275,14 @@ impl ArenaScene {
         self.cubes.clear();
         self.figures.clear();
         self.bolts.clear();
+        self.fading.clear();
+        self.live = 0;
         self.own = None;
+    }
+
+    /// Where the bolts were drawn in the last frame.
+    pub fn bolt_positions(&self) -> Vec<[f32; 3]> {
+        self.bolts.values().map(Bolt::position).collect()
     }
 
     fn shape(&mut self, assets: &KitAssets, path: &[u8]) -> Option<SceneShape> {
@@ -276,6 +317,15 @@ impl ArenaScene {
         self.own = None;
         self.bolts_drawn = 0;
         self.holders_drawn = 0;
+        // The trails run whole milliseconds; the rest waits for the next frame.
+        self.trail_ms += dt * 1000.0;
+        let ms = self.trail_ms.floor().clamp(0.0, 1000.0) as u32;
+        self.trail_ms = (self.trail_ms - ms as f32).clamp(0.0, 1.0);
+        let mut rng = self.rng.take().unwrap_or_else(|| Rng::new(0x5eed));
+        for e in &mut self.fading {
+            e.advance(ms, &mut self.live);
+        }
+        self.fading.retain(|e| !e.particles.is_empty());
         for (&index, ghost) in &world.records.ghosts {
             let Some(record) = ghost.record.as_ref() else {
                 continue;
@@ -430,7 +480,10 @@ impl ArenaScene {
                 (Some(TgeClass::Projectile), TgeRecord::Projectile(p)) => {
                     seen.push(index);
                     if p.explosion.is_some() {
-                        self.bolts.remove(&index);
+                        if let Some(mut trail) = self.bolts.remove(&index).and_then(|b| b.trail) {
+                            trail.dead = true;
+                            self.fading.push(trail);
+                        }
                         continue;
                     }
                     let bolt = match self.bolts.entry(index) {
@@ -447,14 +500,19 @@ impl ArenaScene {
                                 start,
                                 velocity,
                                 age: 0.0,
+                                trail: bolt_trail(world, db),
                             })
                         }
                     };
+                    let from = bolt.position();
                     bolt.age += dt;
-                    let (at, v) = (
-                        [0, 1, 2].map(|i| bolt.start[i] + bolt.velocity[i] * bolt.age),
-                        bolt.velocity,
-                    );
+                    let (at, v, age) = (bolt.position(), bolt.velocity, bolt.age);
+                    if let Some(trail) = bolt.trail.as_mut()
+                        && ms > 0
+                    {
+                        trail.advance(ms, &mut self.live);
+                        trail.emit_trail(from, at, v, ms, &mut rng, &mut self.live);
+                    }
                     let Some(file) = world.datablock_text(db, "projectileShapeName") else {
                         continue;
                     };
@@ -466,7 +524,9 @@ impl ArenaScene {
                     };
                     let yaw = v[0].atan2(v[1]);
                     let pitch = -v[2].atan2((v[0] * v[0] + v[1] * v[1]).sqrt());
-                    let mut m = Mat::mul(&Mat::euler_z(yaw), &Mat::euler_x(pitch));
+                    let spin = Mat::from_axis_angle([0.0, 1.0, 0.0], BOLT_SPIN * age);
+                    let mut m =
+                        Mat::mul(&Mat::mul(&Mat::euler_z(yaw), &Mat::euler_x(pitch)), &spin);
                     m.set_column3(at);
                     out.push(view.shape_object(assets, &shape, &instance, &m, object_id(index, 2)));
                     self.bolts_drawn += 1;
@@ -476,9 +536,49 @@ impl ArenaScene {
         }
         self.cubes.retain(|i, _| seen.contains(i));
         self.figures.retain(|i, _| seen.contains(i));
-        self.bolts.retain(|i, _| seen.contains(i));
+        self.rng = Some(rng);
+        let gone: Vec<u32> = self
+            .bolts
+            .keys()
+            .filter(|i| !seen.contains(i))
+            .copied()
+            .collect();
+        for i in gone {
+            if let Some(mut trail) = self.bolts.remove(&i).and_then(|b| b.trail) {
+                trail.dead = true;
+                self.fading.push(trail);
+            }
+        }
         out.extend(self.cubes.values().map(|c| c.object.clone()));
+        self.draw_trails(view, assets);
         out
+    }
+
+    /// The trails' particles into `view`, facing the frame's eye.
+    fn draw_trails(&mut self, view: &mut WorldView, assets: &KitAssets) {
+        let eye = self.eye();
+        let camera = Mat::mul(&Mat::euler_z(eye.yaw), &Mat::euler_x(eye.pitch));
+        let (right, up) = (camera.column(0), camera.column(2));
+        let mut set = TextureSet::new(assets);
+        let mut draws = Vec::new();
+        self.trail_particles = 0;
+        let trails = self
+            .bolts
+            .values()
+            .filter_map(|b| b.trail.as_ref())
+            .chain(&self.fading);
+        for e in trails {
+            let (Some(centre), Some(d)) = (e.centre(), e.draw(right, up, &mut set, "trail")) else {
+                continue;
+            };
+            let dist = (0..3)
+                .map(|k| (centre[k] - eye.position[k]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            self.trail_particles += e.particles.len();
+            draws.push((dist, d));
+        }
+        view.set_particles(&draws, set);
     }
 
     /// The eye: at the own figure's eye, else over the arena.

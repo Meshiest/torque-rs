@@ -38,9 +38,48 @@ datablock PlayerData(ArenaFigure)
    minLookAngle = -1.4;
 };
 
+// The bolt's trail: small hot sparks added over what is behind them, fading from yellow through orange to nothing as they
+// shrink. A particle's life goes to the client in steps of 32 ms.
+datablock ParticleData(ArenaBoltSpark)
+{
+   textureName = "kit/spark";
+   dragCoefficient = 2;
+   gravityCoefficient = 0;
+   inheritedVelFactor = 0;
+   lifetimeMS = 64;
+   lifetimeVarianceMS = 32;
+   useInvAlpha = false;
+   spinRandomMin = -90;
+   spinRandomMax = 90;
+
+   colors[0] = "1 0.9 0.5 0.8";
+   colors[1] = "1 0.55 0.12 0.5";
+   colors[2] = "0.9 0.25 0.05 0";
+   sizes[0] = 0.24;
+   sizes[1] = 0.14;
+   sizes[2] = 0.05;
+   times[0] = 0;
+   times[1] = 0.35;
+   times[2] = 1;
+};
+
+datablock ParticleEmitterData(ArenaBoltTrail)
+{
+   ejectionPeriodMS = 1;
+   periodVarianceMS = 0;
+   ejectionVelocity = 0.6;
+   velocityVariance = 0.3;
+   thetaMin = 0;
+   thetaMax = 20;
+   phiReferenceVel = 0;
+   phiVariance = 360;
+   particles = "ArenaBoltSpark";
+};
+
 datablock ProjectileData(ArenaBolt)
 {
    projectileShapeName = "kit/projectile.dts";
+   particleEmitter = ArenaBoltTrail;
    directDamage = 34;
    muzzleVelocity = 60;
    velInheritFactor = 0;

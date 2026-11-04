@@ -36,7 +36,8 @@
 //! bore at the barrel's front face, `ejectPoint` on the right of the top, where a spent case leaves. `fire` (0.15 s, once)
 //! runs the `slide` back 4 cm and returns it.
 //!
-//! **The projectile** is a 30 cm bolt along +y, self-lit.
+//! **The projectile** is a small cube ([`BOLT_SIZE`] a side, about four inches) centered on its origin, self-lit, each face hot
+//! at its center and orange at its edges.
 
 use std::f32::consts::TAU;
 
@@ -562,6 +563,9 @@ pub fn pistol() -> Model {
     b.build()
 }
 
+/// The projectile cube's side (m).
+pub const BOLT_SIZE: f32 = 0.1;
+
 /// The projectile.
 pub fn projectile() -> Model {
     let mut b = ShapeBuilder::new();
@@ -569,7 +573,8 @@ pub fn projectile() -> Model {
     b.detail("detail1", 1.0);
     let m = b.material("projectile", OPAQUE | material_flags::SELF_ILLUMINATING);
     let mut bolt = MeshData::new(Some(m));
-    bolt.add_box([-0.03, -0.15, -0.03], [0.03, 0.15, 0.03], |_| FULL_UV);
+    let h = BOLT_SIZE * 0.5;
+    bolt.add_box([-h; 3], [h; 3], |_| FULL_UV);
     b.object("bolt", node, 0, bolt);
     b.build()
 }
