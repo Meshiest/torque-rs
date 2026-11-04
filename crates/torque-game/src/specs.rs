@@ -1,7 +1,10 @@
 //! The console classes of the game layer as TGE 1.4 declares them in their `initPersistFields`: each class's parent and the
 //! fields it adds (name, type, element count), in registration order. [`install`] gives them to a `Vm` that has no class of the
-//! name yet, so a host's own table (installed first) keeps its classes. The methods are the natives of the classes'
-//! implementations; a fresh object reads its type's zero where TGE's constructor would set a value, but for the classes of a
+//! name yet, so a host's own table (installed first) keeps its classes. The methods are the console methods TGE 1.4 declares on
+//! the scene, shape, Player, Item, Camera and vehicle classes and on the connections, with their argument counts (this crate's
+//! natives and the network host's replace the stubs). A fresh object reads its type's zero where TGE's constructor would set a
+//! value, but for `SceneObject`'s transform and scale (the identity and 1, which its subclasses read), the shape datablocks'
+//! numbers (`ShapeBaseData`'s and `PlayerData`'s constructors: a Player's speeds, forces and resistances) and the classes of a
 //! mission's world ([`MAP_CLASSES`]), which read the values their TGE constructors set.
 //!
 //! The fields follow TGE's declarations as in Torque3D's MIT-licensed sources (`T3D/gameBase/gameBase.cpp`,
@@ -97,8 +100,9 @@ pub static CLASSES: &[ClassSpec] = &[
             shared("rotation", FieldType::MatrixRotation, 1, 0x1000),
             field("scale", FieldType::Point3F, 1),
         ],
-        methods: &[],
-        defaults: None,
+        methods: SCENE_OBJECT_METHODS,
+        // `SceneObject`'s constructor: the identity transform and a scale of 1 (the subclasses without their own read these).
+        defaults: Some(&TRANSFORM),
     },
     ClassSpec {
         name: "GameBaseData",
@@ -172,7 +176,7 @@ pub static CLASSES: &[ClassSpec] = &[
             field("computeCRC", FieldType::Bool, 1),
         ],
         methods: &[],
-        defaults: None,
+        defaults: Some(SHAPE_BASE_DATA_DEFAULTS),
     },
     ClassSpec {
         name: "ShapeBase",
@@ -180,7 +184,7 @@ pub static CLASSES: &[ClassSpec] = &[
         sim_object: true,
         inherits_fields: true,
         fields: &[],
-        methods: &[],
+        methods: SHAPE_BASE_METHODS,
         defaults: None,
     },
     ClassSpec {
@@ -389,7 +393,7 @@ pub static CLASSES: &[ClassSpec] = &[
             field("groundImpactShakeFalloff", FieldType::F32, 1),
         ],
         methods: &[],
-        defaults: None,
+        defaults: Some(PLAYER_DATA_DEFAULTS),
     },
     ClassSpec {
         name: "Player",
@@ -397,7 +401,7 @@ pub static CLASSES: &[ClassSpec] = &[
         sim_object: true,
         inherits_fields: true,
         fields: &[],
-        methods: &[],
+        methods: PLAYER_METHODS,
         defaults: None,
     },
     ClassSpec {
@@ -441,7 +445,7 @@ pub static CLASSES: &[ClassSpec] = &[
             field("static", FieldType::Bool, 1),
             field("rotate", FieldType::Bool, 1),
         ],
-        methods: &[],
+        methods: ITEM_METHODS,
         defaults: None,
     },
     ClassSpec {
@@ -814,7 +818,7 @@ pub static CLASSES: &[ClassSpec] = &[
         sim_object: true,
         inherits_fields: true,
         fields: &[],
-        methods: &[],
+        methods: CAMERA_METHODS,
         defaults: None,
     },
     ClassSpec {
@@ -1011,7 +1015,7 @@ pub static CLASSES: &[ClassSpec] = &[
         sim_object: true,
         inherits_fields: true,
         fields: &[],
-        methods: &[],
+        methods: WHEELED_VEHICLE_METHODS,
         defaults: None,
     },
     ClassSpec {
@@ -1067,7 +1071,7 @@ pub static CLASSES: &[ClassSpec] = &[
         sim_object: true,
         inherits_fields: true,
         fields: &[],
-        methods: &[],
+        methods: FLYING_VEHICLE_METHODS,
         defaults: None,
     },
     ClassSpec {
@@ -1483,6 +1487,8 @@ pub static CLASSES: &[ClassSpec] = &[
             method("getAddress", 2, 2, "()", Returns::String),
             method("getPing", 2, 2, "()", Returns::Int),
             method("getPacketLoss", 2, 2, "()", Returns::Int),
+            method("activateGhosting", 2, 2, "()", Returns::Void),
+            method("resetGhosting", 2, 2, "()", Returns::Void),
         ],
         defaults: None,
     },
@@ -1496,10 +1502,324 @@ pub static CLASSES: &[ClassSpec] = &[
             method("delete", 2, 3, "(string reason=NULL)", Returns::Void),
             method("isAIControlled", 2, 2, "()", Returns::Bool),
             method("transmitDataBlocks", 3, 3, "(S32 sequence)", Returns::Void),
+            method(
+                "setControlObject",
+                3,
+                3,
+                "(ShapeBase object)",
+                Returns::Bool,
+            ),
+            method("getControlObject", 2, 2, "()", Returns::Int),
         ],
         defaults: None,
     },
 ];
+
+// The constructors' values of the shape datablocks (`ShapeBaseData::ShapeBaseData`, `PlayerData::PlayerData`): what a datablock
+// a script made reads for the fields it did not set. A PlayerData's list repeats the ShapeBaseData ones it keeps.
+
+const SHAPE_BASE_DATA_DEFAULTS: &[(&str, &str)] = &[
+    ("mass", "1"),
+    ("density", "1"),
+    ("maxDamage", "1"),
+    ("disabledLevel", "1"),
+    ("destroyedLevel", "1"),
+    ("repairRate", "0.0033"),
+    ("cameraMinDist", "0.2"),
+    ("cameraDefaultFov", "90"),
+    ("cameraMinFov", "5"),
+    ("cameraMaxFov", "120"),
+    ("renderWhenDestroyed", "1"),
+];
+
+const PLAYER_DATA_DEFAULTS: &[(&str, &str)] = &[
+    ("mass", "9"),
+    ("density", "1"),
+    ("maxEnergy", "60"),
+    ("maxDamage", "1"),
+    ("disabledLevel", "1"),
+    ("destroyedLevel", "1"),
+    ("repairRate", "0.0033"),
+    ("cameraMinDist", "0.2"),
+    ("cameraDefaultFov", "90"),
+    ("cameraMinFov", "5"),
+    ("cameraMaxFov", "120"),
+    ("renderWhenDestroyed", "1"),
+    ("renderFirstPerson", "1"),
+    ("minLookAngle", "-1.4"),
+    ("maxLookAngle", "1.4"),
+    ("maxFreelookAngle", "3"),
+    ("maxTimeScale", "1.5"),
+    ("maxStepHeight", "1"),
+    ("runForce", "432"),
+    ("maxForwardSpeed", "10"),
+    ("maxBackwardSpeed", "10"),
+    ("maxSideSpeed", "10"),
+    ("maxUnderwaterForwardSpeed", "10"),
+    ("maxUnderwaterBackwardSpeed", "10"),
+    ("maxUnderwaterSideSpeed", "10"),
+    ("runSurfaceAngle", "70"),
+    ("minImpactSpeed", "25"),
+    ("recoverDelay", "30"),
+    ("recoverRunForceScale", "1"),
+    ("jumpForce", "75"),
+    ("minJumpSpeed", "20"),
+    ("maxJumpSpeed", "40"),
+    ("jumpSurfaceAngle", "78"),
+    ("jumpDelay", "30"),
+    ("boundingBox", "1 1 2.3"),
+    ("horizMaxSpeed", "80"),
+    ("horizResistSpeed", "38"),
+    ("horizResistFactor", "1"),
+    ("upMaxSpeed", "80"),
+    ("upResistSpeed", "38"),
+    ("upResistFactor", "1"),
+    ("groundImpactMinSpeed", "10"),
+];
+
+// The console methods of the scene and shape classes, with TGE 1.4's argument counts (the method name and `%this` counted).
+
+const SCENE_OBJECT_METHODS: &[MethodSpec] = &[
+    method("getTransform", 2, 2, "()", Returns::String),
+    method("getPosition", 2, 2, "()", Returns::String),
+    method("getForwardVector", 2, 2, "()", Returns::String),
+    method("getUpVector", 2, 2, "()", Returns::String),
+    method("setTransform", 3, 3, "(Transform T)", Returns::Void),
+    method("getScale", 2, 2, "()", Returns::String),
+    method("setScale", 3, 3, "(Point3F scale)", Returns::Void),
+    method("getWorldBox", 2, 2, "()", Returns::String),
+    method("getWorldBoxCenter", 2, 2, "()", Returns::String),
+    method("getObjectBox", 2, 2, "()", Returns::String),
+];
+
+const SHAPE_BASE_METHODS: &[MethodSpec] = &[
+    method(
+        "playThread",
+        3,
+        4,
+        "(int slot, string sequenceName)",
+        Returns::Bool,
+    ),
+    method(
+        "setThreadDir",
+        4,
+        4,
+        "(int slot, bool isForward)",
+        Returns::Bool,
+    ),
+    method("stopThread", 3, 3, "(int slot)", Returns::Bool),
+    method("pauseThread", 3, 3, "(int slot)", Returns::Bool),
+    method(
+        "playAudio",
+        4,
+        4,
+        "(int slot, AudioProfile ap)",
+        Returns::Bool,
+    ),
+    method(
+        "mountObject",
+        4,
+        4,
+        "(ShapeBase object, int slot)",
+        Returns::Bool,
+    ),
+    method("unmountObject", 3, 3, "(ShapeBase obj)", Returns::Bool),
+    method("unmount", 2, 2, "()", Returns::Void),
+    method("isMounted", 2, 2, "()", Returns::Bool),
+    method("getObjectMount", 2, 2, "()", Returns::Int),
+    method("getMountedObjectCount", 2, 2, "()", Returns::Int),
+    method("getMountedObject", 3, 3, "(int slot)", Returns::Int),
+    method("getMountedObjectNode", 3, 3, "(int node)", Returns::Int),
+    method("getMountNodeObject", 3, 3, "(int node)", Returns::Int),
+    method("setDamageLevel", 3, 3, "(float level)", Returns::Void),
+    method("getDamageLevel", 2, 2, "()", Returns::Float),
+    method("getDamagePercent", 2, 2, "()", Returns::Float),
+    method("setDamageState", 3, 3, "(string state)", Returns::Bool),
+    method("getDamageState", 2, 2, "()", Returns::String),
+    method("isDestroyed", 2, 2, "()", Returns::Bool),
+    method("isDisabled", 2, 2, "()", Returns::Bool),
+    method("isEnabled", 2, 2, "()", Returns::Bool),
+    method("applyDamage", 3, 3, "(float amt)", Returns::Void),
+    method("applyRepair", 3, 3, "(float amt)", Returns::Void),
+    method("setRepairRate", 3, 3, "(float amt)", Returns::Void),
+    method("getRepairRate", 2, 2, "()", Returns::Float),
+    method("setEnergyLevel", 3, 3, "(float level)", Returns::Void),
+    method("getEnergyLevel", 2, 2, "()", Returns::Float),
+    method("getEnergyPercent", 2, 2, "()", Returns::Float),
+    method("setRechargeRate", 3, 3, "(float rate)", Returns::Void),
+    method("getRechargeRate", 2, 2, "()", Returns::Float),
+    method("getControllingClient", 2, 2, "()", Returns::Int),
+    method("getControllingObject", 2, 2, "()", Returns::Int),
+    method("setDamageFlash", 3, 3, "(float lvl)", Returns::Void),
+    method("getDamageFlash", 2, 2, "()", Returns::Float),
+    method("getVelocity", 2, 2, "()", Returns::String),
+    method("setVelocity", 3, 3, "(Vector3F vel)", Returns::Bool),
+    method(
+        "applyImpulse",
+        4,
+        4,
+        "(Point3F pos, Point3F vel)",
+        Returns::Bool,
+    ),
+    method("getEyeVector", 2, 2, "()", Returns::String),
+    method("getEyePoint", 2, 2, "()", Returns::String),
+    method("getEyeTransform", 2, 2, "()", Returns::String),
+    method("setShapeName", 3, 3, "(string tag)", Returns::Void),
+    method("getShapeName", 2, 2, "()", Returns::String),
+    method("setSkinName", 3, 3, "(string tag)", Returns::Void),
+    method("getSkinName", 2, 2, "()", Returns::String),
+    method(
+        "startFade",
+        5,
+        5,
+        "(int fadeTimeMS, int fadeDelayMS, bool fadeOut)",
+        Returns::Void,
+    ),
+    method("setHidden", 3, 3, "(bool show)", Returns::Void),
+    method("isHidden", 2, 2, "()", Returns::Bool),
+    method("getSlotTransform", 3, 3, "(int slot)", Returns::String),
+    method(
+        "mountImage",
+        4,
+        6,
+        "(ShapeBaseImageData image, int slot, bool loaded=true, string skinTag=NULL)",
+        Returns::Bool,
+    ),
+    method("unmountImage", 3, 3, "(int slot)", Returns::Bool),
+    method("getMountedImage", 3, 3, "(int slot)", Returns::Int),
+    method("getPendingImage", 3, 3, "(int slot)", Returns::Int),
+    method("isImageFiring", 3, 3, "(int slot)", Returns::Bool),
+    method(
+        "isImageMounted",
+        3,
+        3,
+        "(ShapeBaseImageData db)",
+        Returns::Bool,
+    ),
+    method(
+        "getMountSlot",
+        3,
+        3,
+        "(ShapeBaseImageData db)",
+        Returns::Int,
+    ),
+    method("getImageSkinTag", 3, 3, "(int slot)", Returns::Int),
+    method("getImageState", 3, 3, "(int slot)", Returns::String),
+    method("getImageTrigger", 3, 3, "(int slot)", Returns::Bool),
+    method(
+        "setImageTrigger",
+        4,
+        4,
+        "(int slot, bool isTriggered)",
+        Returns::Bool,
+    ),
+    method("getImageAmmo", 3, 3, "(int slot)", Returns::Bool),
+    method(
+        "setImageAmmo",
+        4,
+        4,
+        "(int slot, bool hasAmmo)",
+        Returns::Bool,
+    ),
+    method("getImageLoaded", 3, 3, "(int slot)", Returns::Bool),
+    method(
+        "setImageLoaded",
+        4,
+        4,
+        "(int slot, bool loaded)",
+        Returns::Bool,
+    ),
+    method("getMuzzleVector", 3, 3, "(int slot)", Returns::String),
+    method("getMuzzlePoint", 3, 3, "(int slot)", Returns::String),
+];
+
+const PLAYER_METHODS: &[MethodSpec] = &[
+    method("getState", 2, 2, "()", Returns::String),
+    method(
+        "setActionThread",
+        3,
+        5,
+        "(string sequenceName, bool hold, bool fsp)",
+        Returns::Bool,
+    ),
+    method("setArmThread", 3, 3, "(string sequenceName)", Returns::Bool),
+    method("setControlObject", 3, 3, "(ShapeBase obj)", Returns::Bool),
+    method("getControlObject", 2, 2, "()", Returns::Int),
+    method("clearControlObject", 2, 2, "()", Returns::Void),
+    method(
+        "checkDismountPoint",
+        4,
+        4,
+        "(Point3F oldPos, Point3F pos)",
+        Returns::Bool,
+    ),
+];
+
+const ITEM_METHODS: &[MethodSpec] = &[
+    method("isStatic", 2, 2, "()", Returns::Bool),
+    method("isRotating", 2, 2, "()", Returns::Bool),
+    method(
+        "setCollisionTimeout",
+        3,
+        3,
+        "(ShapeBase obj)",
+        Returns::Bool,
+    ),
+    method("getLastStickyPos", 2, 2, "()", Returns::String),
+    method("getLastStickyNormal", 2, 2, "()", Returns::String),
+];
+
+const CAMERA_METHODS: &[MethodSpec] = &[
+    method("getPosition", 2, 2, "()", Returns::String),
+    method(
+        "setOrbitMode",
+        7,
+        8,
+        "(GameBase orbitObject, transform mat, float minDistance, float maxDistance, float curDistance, bool ownClientObject)",
+        Returns::Void,
+    ),
+    method("setFlyMode", 2, 2, "()", Returns::Void),
+];
+
+const WHEELED_VEHICLE_METHODS: &[MethodSpec] = &[
+    method(
+        "setWheelSteering",
+        4,
+        4,
+        "(int wheel, float steering)",
+        Returns::Bool,
+    ),
+    method(
+        "setWheelPowered",
+        4,
+        4,
+        "(int wheel, bool isPowered)",
+        Returns::Bool,
+    ),
+    method(
+        "setWheelTire",
+        4,
+        4,
+        "(int wheel, WheeledVehicleTire tire)",
+        Returns::Bool,
+    ),
+    method(
+        "setWheelSpring",
+        4,
+        4,
+        "(int wheel, WheeledVehicleSpring spring)",
+        Returns::Bool,
+    ),
+    method("getWheelCount", 2, 2, "()", Returns::Int),
+];
+
+const FLYING_VEHICLE_METHODS: &[MethodSpec] = &[method(
+    "useCreateHeight",
+    3,
+    3,
+    "(bool enabled)",
+    Returns::Void,
+)];
 
 const fn method(
     name: &'static str,
