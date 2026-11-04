@@ -5,7 +5,9 @@
 //!   **`renderSlightlyRaisedBox`**: a fill and bevel lines. `dglDrawLine` of an axis-aligned line lights every
 //!   pixel from one end to the other, both included.
 //! - **GuiButtonCtrl**: the raised box unless depressed or on; the text (`renderJustifiedText`), one pixel down and right
-//!   while depressed; the children.
+//!   while depressed; the children. Unless the host keeps TGE's bevels ([`GuiRule::ClassicBoxes`]), the box is instead the
+//!   engine's rounded box of the button's state (`super::rounded`), and so are a bordered or open GuiPopUpMenuCtrl's box and
+//!   GuiSliderCtrl's thumb.
 //! - **GuiCheckBoxCtrl / GuiRadioCtrl**: with more than 3 rectangles in the profile's bitmap array, the state's (0 off, 1 on
 //!   or depressed, 2 and 3 disabled) at the left, centred vertically; the text right of it over `extent.x - extent.y`.
 //! - **GuiTextEditCtrl** (`onRender`, `drawText`): see [`Walk::text_edit`].
@@ -32,8 +34,10 @@ use torque_fonts::TextColors;
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
 
+use super::rounded::{BOX_TEXT_PAD, BoxState, box_colors, box_text_color};
 use super::{Walk, color_field, int_field, intersect, profile_of, text_field};
 use crate::control::{bounds, flag, point};
+use crate::ext::GuiRule;
 use crate::profile::{Rect, bitmap_array, color_at};
 use crate::textures::GuiTexture;
 
@@ -230,18 +234,49 @@ impl Walk<'_> {
         self.line((rt, t + 1), (rt, b - 1), border);
     }
 
-    /// GuiButtonCtrl::onRender.
+    /// Whether the boxes are TGE's bevels ([`GuiRule::ClassicBoxes`]) rather than the rounded ones.
+    fn classic_boxes(&self) -> bool {
+        self.ext.rule(GuiRule::ClassicBoxes)
+    }
+
+    /// A rounded box's state for the control `id`: disabled when not active or not enabled, else pressed, else hover.
+    fn box_state(&self, id: ObjId, pressed: bool, hover: bool) -> BoxState {
+        if !(crate::input::active(self.gui, id) && flag(self.vm, id, b"enabled")) {
+            BoxState::Disabled
+        } else if pressed {
+            BoxState::Pressed
+        } else if hover {
+            BoxState::Hover
+        } else {
+            BoxState::Normal
+        }
+    }
+
+    /// Whether the mouse is over the control `id` (the canvas's mouse control).
+    fn mouse_on(&self, id: ObjId) -> bool {
+        self.gui.0.borrow().input.mouse_control == Some(id)
+    }
+
+    /// GuiButtonCtrl::onRender: classic, the raised box unless depressed or on; else the rounded box of the button's state.
     pub(super) fn button(&mut self, id: ObjId, offset: (i32, i32), update: Rect, depth: usize) {
         let (_, ext) = bounds(self.vm, id);
-        let (depressed, on) = self
+        let (over, depressed, on) = self
             .gui
-            .with(id, |c| (c.depressed, c.state_on))
-            .unwrap_or((false, false));
-        if let Some(p) = profile_of(self.vm, id)
-            && !depressed
-            && !on
-        {
-            self.raised_box([offset.0, offset.1, ext.0, ext.1], p);
+            .with(id, |c| (c.mouse_over, c.depressed, c.state_on))
+            .unwrap_or((false, false, false));
+        let rect = [offset.0, offset.1, ext.0, ext.1];
+        let mut text_color = None;
+        if let Some(p) = profile_of(self.vm, id) {
+            if self.classic_boxes() {
+                if !depressed && !on {
+                    self.raised_box(rect, p);
+                }
+            } else {
+                let state = self.box_state(id, depressed || on, over);
+                let (fill, border) = box_colors(self.vm, p, state);
+                self.rounded_box(rect, fill, border);
+                text_color = box_text_color(self.vm, p, state);
+            }
         }
         let text = text_field(self.vm, id, b"text");
         let at = if depressed {
@@ -249,7 +284,7 @@ impl Walk<'_> {
         } else {
             offset
         };
-        self.justified_text(id, &text, at, ext);
+        self.justified_text_in(id, &text, at, ext, text_color);
         self.children(id, update, offset, depth);
     }
 
@@ -963,7 +998,8 @@ impl Walk<'_> {
 
     /// GuiPopUpMenuCtrl::onRender: closed, the slightly raised box when it has a border; open (`mInAction`), a
     /// `fillColorHL` fill outlined in `borderColor`; the text (`fontColor`, `fontColorNA` when not active or not enabled; no colour
-    /// table) justified, centred vertically. No children.
+    /// table) justified, centred vertically. No children. In a rounded box, text justified left or right keeps
+    /// [`BOX_TEXT_PAD`] from the side.
     pub(super) fn popup(&mut self, id: ObjId, offset: (i32, i32)) {
         let vm = self.vm;
         let Some(p) = profile_of(vm, id) else {
@@ -972,7 +1008,17 @@ impl Walk<'_> {
         let (_, ext) = bounds(vm, id);
         let rect = [offset.0, offset.1, ext.0, ext.1];
         let open = self.gui.with(id, |c| c.in_action).unwrap_or(false);
-        if open {
+        let mut text_color = None;
+        let mut pad = 0;
+        if !self.classic_boxes() {
+            if open || int_field(vm, p, b"border") != 0 {
+                pad = BOX_TEXT_PAD;
+                let state = self.box_state(id, false, open || self.mouse_on(id));
+                let (fill, border) = box_colors(vm, p, state);
+                self.rounded_box(rect, fill, border);
+                text_color = box_text_color(vm, p, state);
+            }
+        } else if open {
             let hl = color_field(vm, p, b"fillColorHL");
             self.fill(rect, hl);
             let border = color_field(vm, p, b"borderColor");
@@ -995,13 +1041,13 @@ impl Walk<'_> {
         let w = f.0.str_width(&text);
         let y = (ext.1 - f.0.height as i32) >> 1;
         let x = match crate::profile::justify(vm, Some(p)) {
-            1 => ext.0 - w,
+            1 => ext.0 - w - pad,
             2 => (ext.0 - w) / 2,
-            _ => 0,
+            _ => pad,
         };
         let colors = font_colors(vm, p);
         let c = if crate::input::active(self.gui, id) && flag(vm, id, b"enabled") {
-            colors[0]
+            text_color.unwrap_or(colors[0])
         } else {
             colors[2]
         };
@@ -1056,7 +1102,13 @@ impl Walk<'_> {
             st.thumb[2],
             st.thumb[3],
         ];
-        self.raised_box(thumb, p);
+        if self.classic_boxes() {
+            self.raised_box(thumb, p);
+        } else {
+            let state = self.box_state(id, false, self.mouse_on(id));
+            let (fill, border) = box_colors(vm, p, state);
+            self.rounded_box(thumb, fill, border);
+        }
         if st.display_value && ext.0 >= ext.1 {
             let buf = torque_ts_vm::text::format_fixed(f64::from(st.value), 3).into_bytes();
             if let Some(f) = self.profile_font(p) {
