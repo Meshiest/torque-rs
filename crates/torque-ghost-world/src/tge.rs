@@ -150,11 +150,74 @@ impl ClientDatablock for TgeDatablock {
             .collect()
     }
 
+    /// The state table as TGE's record carries it: each state's members after its `state` flag (in the wire's order, a member's
+    /// element counted within its state), read as the host's state arrays ([`tge_state_fields`]).
     fn image_states(&self) -> Option<ImageStates> {
         (self.class == "ShapeBaseImageData").then(|| {
-            ImageStates::of_fields(self.fields.iter().map(|(n, i, v)| (n.as_str(), *i, v)))
+            ImageStates::of_fields(tge_state_fields(
+                self.fields.iter().map(|(n, i, v)| (n.as_str(), *i, v)),
+            ))
         })
     }
+}
+
+/// A TGE `ShapeBaseImageData` record's state members (`state`, `transition.loaded`, `timeoutValue`, `sequence`, ...: each
+/// state's after its `state` flag, the flag's element the state) as the host's state arrays name them: `stateUsed`, `stateTrans`
+/// eleven to a state (`NotLoaded`, `Loaded`, `NoAmmo`, `Ammo`, `NoTarget`, `Target`, `NotWet`, `Wet`, `TriggerUp`, `TriggerDown`,
+/// `Timeout`), `stateTimeoutValue`, ... at the state's element. Fields before the first state, or that are no state member,
+/// pass as they are.
+pub fn tge_state_fields<'a>(
+    fields: impl IntoIterator<Item = (&'a str, u32, &'a Value)>,
+) -> Vec<(&'a str, u32, &'a Value)> {
+    const MEMBERS: [(&str, &str); 14] = [
+        ("timeoutValue", "stateTimeoutValue"),
+        ("waitForTimeout", "stateWaitForTimeout"),
+        ("fire", "stateFire"),
+        ("loaded", "stateLoadedFlag"),
+        ("spin", "stateSpinThread"),
+        ("sequence", "stateSequence"),
+        ("direction", "stateDirection"),
+        ("scaleAnimation", "stateScaleAnimation"),
+        ("flashSequence", "stateFlashSequence"),
+        ("sound", "stateSound"),
+        ("emitter", "stateEmitter"),
+        ("emitterTime", "stateEmitterTime"),
+        ("emitterNode", "stateEmitterNode"),
+        ("recoil", "stateRecoil"),
+    ];
+    let mut state: Option<u32> = None;
+    // Each transition pair's elements seen in the state so far.
+    let mut pairs = [0u32; 5];
+    let mut out = Vec::new();
+    for (name, index, value) in fields {
+        if name == "state" {
+            state = Some(index);
+            pairs = [0; 5];
+            out.push(("stateUsed", index, value));
+            continue;
+        }
+        let Some(s) = state else {
+            out.push((name, index, value));
+            continue;
+        };
+        let pair = ["loaded", "ammo", "target", "wet", "trigger"]
+            .iter()
+            .position(|p| name.strip_prefix("transition.") == Some(p));
+        if let Some(p) = pair {
+            let k = pairs[p];
+            pairs[p] += 1;
+            if k < 2 {
+                out.push(("stateTrans", 11 * s + 2 * p as u32 + k, value));
+            }
+        } else if name == "transition.timeout" {
+            out.push(("stateTrans", 11 * s + 10, value));
+        } else if let Some((_, host)) = MEMBERS.iter().find(|(m, _)| *m == name) {
+            out.push((host, s, value));
+        } else {
+            out.push((name, index, value));
+        }
+    }
+    out
 }
 
 fn floats<const N: usize>(v: [F32; N]) -> [f32; N] {

@@ -30,7 +30,10 @@
 //! `delay / timeout`, ignore unchanged). So the machine here keeps the state, the delay, the animation thread's sequence, speed and
 //! time, and the time each of the other two threads has run. Not drawn: a flash state's visibility thread (`stateFlashSequence`).
 //!
-//! **Not modelled** (nothing the frame shows): the state's eject shell, recoil (`onImageRecoil`), the client's energy drain of a
+//! **Recoil** (`onImageRecoil`): a state with `stateRecoil` (light, medium, heavy) counts a recoil on the slot ([`ImageRecoil`]); the
+//! drawer restarts its owner's recoil thread on each new one (a Player's `light_recoil`, `medium_recoil` or `heavy_recoil`).
+//!
+//! **Not modelled** (nothing the frame shows): the state's eject shell, the client's energy drain of a
 //! `usesEnergy` image, the light of a firing image, and the reset of a cyclic animation sequence to its first frame on a state
 //! change (the world loads no shapes).
 //!
@@ -134,6 +137,8 @@ pub struct StateData {
     pub emitter: Option<u32>,
     pub emitter_time: f32,
     pub emitter_node: i32,
+    /// `stateRecoil`: 0 none, 1 light, 2 medium, 3 heavy.
+    pub recoil: u32,
 }
 
 impl Default for StateData {
@@ -154,6 +159,7 @@ impl Default for StateData {
             emitter: None,
             emitter_time: 0.0,
             emitter_node: -1,
+            recoil: 0,
         }
     }
 }
@@ -183,7 +189,7 @@ impl ImageStates {
         let mut states = vec![StateData::default(); MAX_STATES];
         let mut used = [false; MAX_STATES];
         // Which (state, field) were set already: the first value wins.
-        let mut seen = vec![[false; 25]; MAX_STATES];
+        let mut seen = vec![[false; 26]; MAX_STATES];
         let int = |v: &Value| match v {
             Value::Int(i) => *i,
             _ => 0,
@@ -210,6 +216,7 @@ impl ImageStates {
                 "stateEmitter" => (index as usize, 22),
                 "stateEmitterTime" => (index as usize, 23),
                 "stateEmitterNode" => (index as usize, 24),
+                "stateRecoil" => (index as usize, 25),
                 _ => continue,
             };
             let (Some(st), Some(seen)) = (states.get_mut(i), seen.get_mut(i)) else {
@@ -245,8 +252,8 @@ impl ImageStates {
                         _ => 0.0,
                     }
                 }
-                // An `S32` on the wire: the word as a signed int.
-                _ => st.emitter_node = int(value) as u32 as i32,
+                24 => st.emitter_node = int(value) as u32 as i32,
+                _ => st.recoil = (int(value) & 3) as u32,
             }
         }
         // A slot not sent keeps the constructor's state.
@@ -306,6 +313,14 @@ impl ImageAnim {
     }
 }
 
+/// The recoils a slot's states asked for (`onImageRecoil`): the last one's kind (1 light, 2 medium, 3 heavy) and how many
+/// there were since the mount (a drawer restarts its owner's recoil thread when the count changes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageRecoil {
+    pub kind: u32,
+    pub count: u32,
+}
+
 /// One mounted image on the client.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MountedImage {
@@ -330,6 +345,8 @@ pub struct MountedImage {
     pub spin_time: f32,
     /// The animation thread (`isAnimated`): the sequence the last state that named one put it on, and the time since.
     pub anim: Option<ImageAnim>,
+    /// The recoils its states asked for (none yet: `None`).
+    pub recoil: Option<ImageRecoil>,
     /// How many times an engine cap ended a chain or a catch-up.
     pub cap_hits: u32,
     /// What the states entered since the world last took them asked the client to do (sounds, emitters), at most
@@ -390,6 +407,7 @@ impl MountedImage {
             spin_scale: 1.0,
             spin_time: 0.0,
             anim: None,
+            recoil: None,
             cap_hits: 0,
             events: Vec::new(),
         };
@@ -467,6 +485,13 @@ impl MountedImage {
                 self.event(ImageEvent::Sound { profile });
             }
             self.emitter(rules, &s);
+            if s.recoil != 0 {
+                let count = self.recoil.map_or(1, |r| r.count.wrapping_add(1));
+                self.recoil = Some(ImageRecoil {
+                    kind: s.recoil,
+                    count,
+                });
+            }
             // The animation thread (`isAnimated`; the flash path, a `_vis` thread, is not drawn).
             if s.sequence != -1 && !s.flash {
                 let entered = self.anim.map_or(1, |a| a.entered.wrapping_add(1));

@@ -146,7 +146,7 @@ fn the_ghost_view_reads_a_players_arm_action_and_image_a_skys_distances_and_a_pr
     let mut s = game_server();
     s.vm.eval(
         b"new Player(Holder) { dataBlock = Body; position = \"8 0 0\"; };
-new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVelocity = \"0 50 0\"; sourceSlot = 2; };",
+new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVelocity = \"0 50 0\"; sourceObject = Holder.getId(); sourceSlot = 2; };",
     )
     .unwrap();
     let holder = s.vm.objects().find(b"Holder").unwrap();
@@ -154,6 +154,7 @@ new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVel
         GameView {
             fields: FieldView { vm, obj },
             controlled: false,
+            ghost_of: None,
         }
     }
     // The table's eight actions, then the shape's sequences that are not among them: `look` (the arm thread's first action),
@@ -189,4 +190,23 @@ new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVel
     assert_eq!(v.get("source_slot", 0), Value::Int(2));
     assert_eq!(v.get("hidden", 0), Value::Bool(false));
     assert!(matches!(v.get("position", 1), Value::F32(y) if y > 1.5));
+    // Its source is linked through the connection's ghosts: its ghost index there, or not ghosted yet.
+    use torque_ghosts::Link;
+    assert_eq!(
+        v.link("source_object"),
+        Link::Null,
+        "no connection, no link"
+    );
+    let ghosts = |obj: u32| (obj == holder).then_some(7);
+    let linked = GameView {
+        ghost_of: Some(&ghosts),
+        ..view(&s.vm, shot)
+    };
+    assert_eq!(linked.link("source_object"), Link::Ghost(7));
+    let none = |_: u32| None;
+    let unlinked = GameView {
+        ghost_of: Some(&none),
+        ..view(&s.vm, shot)
+    };
+    assert_eq!(unlinked.link("source_object"), Link::NotGhosted);
 }

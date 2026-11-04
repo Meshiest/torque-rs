@@ -28,9 +28,12 @@
 //! While a death action plays (an action whose name starts with `death`), the death owns the whole body: the arm and head
 //! threads stop (TGE leaves the arm and the look alone once the Player is dead) and start again, on the arm action the record
 //! names, when another action plays.
+//! **The recoil thread** (`mRecoilThread`, made when the shape has `light_recoil`): held at its start until a mounted image's state
+//! asks for a recoil ([`PlayerAnimation::recoil`], `onImageRecoil`), then played from its start at speed 1 on the shape's
+//! `light_recoil`, `medium_recoil` or `heavy_recoil` (when it has that one) to its end.
 //!
 //! Credit: follows TGE 1.4's `game/player.cc` (`pickActionAnimation`, `setActionThread`, `updateActionThread`,
-//! `updateLookAnimation`, `PlayerData::preload`; Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
+//! `updateLookAnimation`, `onImageRecoil`, `PlayerData::preload`; Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
 //! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code is this
 //! crate's own.
 
@@ -199,6 +202,9 @@ pub struct PlayerAnimation {
     was_falling: bool,
     /// The upward speed of the last frame.
     last_rise: f32,
+    /// The recoil thread, and the `light_recoil`, `medium_recoil` and `heavy_recoil` sequences.
+    recoil_thread: Option<ThreadId>,
+    recoil_sequences: [Option<usize>; 3],
 }
 
 impl PlayerAnimation {
@@ -224,6 +230,16 @@ impl PlayerAnimation {
             instance.set_sequence(shape, t, seq as i32, 0.5);
             Some((t, seq))
         });
+        let recoil_sequences = [&b"light_recoil"[..], b"medium_recoil", b"heavy_recoil"]
+            .map(|n| find_sequence(shape, n));
+        let recoil_thread = recoil_sequences[0].and_then(|seq| {
+            let t = instance.create_thread(shape)?;
+            instance.set_sequence(shape, t, seq as i32, 0.0);
+            if let Some(th) = instance.thread_mut(t) {
+                th.time_scale = 0.0;
+            }
+            Some(t)
+        });
         let root = actions
             .first()
             .and_then(|a| a.sequence)
@@ -246,7 +262,32 @@ impl PlayerAnimation {
             look_action: look,
             was_falling: false,
             last_rise: 0.0,
+            recoil_thread,
+            recoil_sequences,
         })
+    }
+
+    /// `onImageRecoil`: a mounted image's state asked for recoil `kind` (1 light, 2 medium, 3 heavy): the recoil thread plays
+    /// that recoil's sequence from its start, when the shape has it.
+    pub fn recoil(&mut self, shape: &Shape, instance: &mut ShapeInstance, kind: u32) {
+        let (Some(t), Some(Some(seq))) = (
+            self.recoil_thread,
+            kind.checked_sub(1)
+                .and_then(|k| self.recoil_sequences.get(k as usize)),
+        ) else {
+            return;
+        };
+        instance.set_sequence(shape, t, *seq as i32, 0.0);
+        if let Some(th) = instance.thread_mut(t) {
+            th.time_scale = 1.0;
+        }
+    }
+
+    /// Whether the recoil thread plays (it has not reached its end since the last recoil).
+    pub fn recoiling(&self, instance: &ShapeInstance) -> bool {
+        self.recoil_thread
+            .and_then(|t| instance.thread(t))
+            .is_some_and(|t| t.time_scale != 0.0 && t.pos < 1.0)
     }
 
     /// The action list.
@@ -393,6 +434,9 @@ impl PlayerAnimation {
             t.time_scale = if self.forward { scale } else { -scale };
         }
         instance.advance_time(shape, self.action_thread, dt);
+        if let Some(t) = self.recoil_thread {
+            instance.advance_time(shape, t, dt);
+        }
 
         if self.dying() {
             for t in [self.arm_thread.take(), self.head_thread.take().map(|h| h.0)]
