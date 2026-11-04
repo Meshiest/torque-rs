@@ -87,6 +87,10 @@ pub enum GuiRule {
     /// GuiProgressCtrl's `setValue` takes a value that is not a number as 1 and a negative zero as 0 (a value is 1 unless it
     /// is at most 1, then 0 unless it is above 0); the engine's clamp keeps both as they are.
     ProgressNanIsFull,
+    /// GuiButtonCtrl, a closed GuiPopUpMenuCtrl with a border and GuiSliderCtrl's thumb draw TGE's beveled boxes
+    /// (`renderRaisedBox`, `renderSlightlyRaisedBox`; a depressed button no box at all) instead of the engine's rounded boxes
+    /// (see [`crate::draw`]'s rounded boxes).
+    ClassicBoxes,
 }
 
 /// A console message the GUI prints, with what it names; [`GuiMessage::engine_text`] is the engine's wording.

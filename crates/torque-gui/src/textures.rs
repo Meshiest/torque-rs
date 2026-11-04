@@ -38,6 +38,11 @@ pub const MAX_NOTES: usize = 256;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// A new texture id, one no other texture has.
+pub(crate) fn next_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// A texture on its way to the GPU: plain data (Send + Sync), identified by `id` so a renderer uploads it once.
 #[derive(Debug, PartialEq)]
 pub struct GuiTexture {
@@ -130,7 +135,7 @@ pub fn texture_of(
 ) -> Option<Arc<GuiTexture>> {
     let (pw, ph, rgba) = padded_texels(bitmap)?;
     Some(Arc::new(GuiTexture {
-        id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        id: next_id(),
         name: name.to_string(),
         bitmap_size: (bitmap.width, bitmap.height),
         size: (pw, ph),

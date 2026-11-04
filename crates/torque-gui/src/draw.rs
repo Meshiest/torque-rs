@@ -53,8 +53,10 @@ use crate::{Gui, MAX_TREE_DEPTH, atoi};
 
 mod hud;
 mod menus;
+mod rounded;
 pub use hud::{color_byte, project};
 use menus::CellKind;
+pub use rounded::{BOX_RADIUS, BoxState, DEFAULT_FILL, PRESSED_SHADE, box_colors, box_texture};
 
 /// The most quads one frame draws (a hostile GUI with a million controls draws to here).
 pub const MAX_QUADS: usize = 1 << 20;
@@ -1220,6 +1222,18 @@ impl Walk<'_> {
         at: (i32, i32),
         ext: (i32, i32),
     ) -> Option<i32> {
+        self.justified_text_in(id, text, at, ext, None)
+    }
+
+    /// [`Walk::justified_text`] in `color` instead of the profile's when given (a rounded box's highlight text).
+    fn justified_text_in(
+        &mut self,
+        id: ObjId,
+        text: &[u8],
+        at: (i32, i32),
+        ext: (i32, i32),
+        color: Option<[u8; 4]>,
+    ) -> Option<i32> {
         let vm = self.vm;
         let profile = profile_of(vm, id)?;
         let face = String::from_utf8_lossy(&text_field(vm, profile, b"fontType")).into_owned();
@@ -1251,7 +1265,7 @@ impl Walk<'_> {
             .collect();
         // `mActive` picks `fontColor` or `fontColorNA`, and a control that is not `enabled` is NA either way.
         let active = crate::input::active(self.gui, id) && flag(vm, id, b"enabled");
-        let color = if active { table[0] } else { table[2] };
+        let color = color.unwrap_or(if active { table[0] } else { table[2] });
         let justify = text_field(vm, profile, b"justify").to_ascii_lowercase();
         let justify = match justify.as_slice() {
             b"right" | b"1" => 1,
@@ -1509,6 +1523,12 @@ impl<'a> DrawCtx<'_, 'a> {
     /// `dglDrawRect` through the corner pixels `a` and `b`.
     pub fn outline(&mut self, a: (i32, i32), b: (i32, i32), color: [u8; 4]) {
         self.0.outline(a, b, color);
+    }
+
+    /// A rounded box ([`BOX_RADIUS`]): `fill` over `r` (x, y, width, height), then a one-pixel `border` round it (none when
+    /// its alpha is 0).
+    pub fn rounded_box(&mut self, r: [i32; 4], fill: [u8; 4], border: [u8; 4]) {
+        self.0.rounded_box(r, fill, border);
     }
 
     /// GuiBitmapCtrl's `onRender` with the bitmap `name` (none: nothing but the children).
