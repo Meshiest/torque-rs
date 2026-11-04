@@ -172,7 +172,7 @@ impl Quality {
 }
 
 /// The material word of an [`HdVertex`]: what the shader does with the surface. The renderer never reads bits 0-9 and 19-21,
-/// nor bits 27-30 of kind 0: they are an extension's (kind 0 is the extension's static geometry).
+/// nor bits 27-30 of kind 0 (bit 29 of the others is [`material::DECAL`]): they are an extension's (kind 0 is the extension's static geometry).
 pub mod material {
     /// Emissive: drawn unlit at its colour (times the settings' emissive gain).
     pub const GLOW: u32 = 1 << 10;
@@ -217,6 +217,9 @@ pub mod material {
     /// A particle (an emitter's sprite): it fades into the surface behind it, and it is never the translucent front
     /// layer (it is weighted with what is behind, so the TAA's history of the front layer does not follow it).
     pub const PARTICLE: u32 = 1 << 24;
+    /// With [`PARTICLE`], a decal (a mark lying on a surface, drawn with the particles): it does not fade into the surface
+    /// behind it.
+    pub const DECAL: u32 = 1 << 29;
     /// With [`BILLBOARD`], one anchored in the world (a light's corona): its position is its centre itself, not less
     /// the eye, and it is not dimmed by the facing (a corona at the light, facing the camera).
     pub const ANCHORED: u32 = 1 << 25;

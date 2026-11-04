@@ -176,24 +176,39 @@ impl<G> HdScene<G> {
     /// `textures`): unlit sprites that fade into what is behind them; the additive ones also emitters, into the range the bloom
     /// picks up (as the coronas). Replaces the last frame's and counts a new set.
     pub fn set_particles(&mut self, draws: &[(f32, Draw)], textures: TextureSet) {
+        self.set_particles_and_decals(draws, &[], textures);
+    }
+
+    /// [`HdScene::set_particles`] with the frame's decals ([`decals`](crate::decals)' draws, each at its eye distance, their
+    /// textures indices into the same `textures`): unlit translucent squares on the surfaces, drawn as the particles are but
+    /// not faded into the surface they lie on ([`material::DECAL`]).
+    pub fn set_particles_and_decals(
+        &mut self,
+        particles: &[(f32, Draw)],
+        decals: &[(f32, Draw)],
+        textures: TextureSet,
+    ) {
         let local: Vec<usize> = textures
             .into_textures()
             .into_iter()
             .map(|t| self.textures.intern(t))
             .collect();
-        self.particles = draws
-            .iter()
-            .map(|(dist, d)| {
-                let hd = HdDraw::from_fixed(d, material::KIND_SKY, &local)
-                    .with_material(material::PARTICLE);
-                let hd = if d.blend == Blend::Additive {
-                    hd.with_material(material::EMITTER)
-                } else {
-                    hd
-                };
-                (*dist, hd)
-            })
-            .collect();
+        let sprites = particles.iter().map(|(dist, d)| {
+            let hd =
+                HdDraw::from_fixed(d, material::KIND_SKY, &local).with_material(material::PARTICLE);
+            let hd = if d.blend == Blend::Additive {
+                hd.with_material(material::EMITTER)
+            } else {
+                hd
+            };
+            (*dist, hd)
+        });
+        let marks = decals.iter().map(|(dist, d)| {
+            let hd = HdDraw::from_fixed(d, material::KIND_SKY, &local)
+                .with_material(material::PARTICLE | material::DECAL);
+            (*dist, hd)
+        });
+        self.particles = sprites.chain(marks).collect();
         self.particles_generation = self.particles_generation.wrapping_add(1);
     }
 

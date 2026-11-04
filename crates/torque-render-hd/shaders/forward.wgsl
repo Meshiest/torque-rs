@@ -1079,9 +1079,13 @@ struct WboitOut {
 
 // How much of a particle's sprite shows at this pixel: it fades out over SOFT_PARTICLE units in front of the surface behind it
 // (the front layer's depth: the opaque frame, or the nearest translucent surface) instead of a hard cut along every surface it
-// meets; seen behind a translucent front layer it shows whole. Our own form of the soft-particle depth fade.
+// meets; seen behind a translucent front layer it shows whole. Our own form of the soft-particle depth fade. A decal lies on
+// its surface and shows whole.
 const SOFT_PARTICLE: f32 = 0.4;
 fn soft_particle(in: VertexOut) -> f32 {
+    if (in.material & MAT_DECAL) != 0u {
+        return 1.0;
+    }
     let front = textureLoad(trans_front, vec2<i32>(in.clip.xy), 0);
     if in.clip.z < front {
         return 1.0;
