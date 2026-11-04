@@ -332,3 +332,21 @@ fn the_servers_datablocks_done_is_answered_with_its_sequence() {
         "DataBlocksDownloadDone is queued"
     );
 }
+
+#[test]
+fn the_packet_rates_follow_the_client_preferences() {
+    let mut vm = Vm::new();
+    assert_eq!(client_rates(&vm), RateConfig::standard());
+    vm.set_global("$pref::Net::PacketRateToClient", "32");
+    vm.set_global("$pref::Net::PacketSize", "900");
+    let rates = client_rates(&vm);
+    assert_eq!(
+        (
+            rates.to_server_rate,
+            rates.to_client_rate,
+            rates.packet_size
+        ),
+        (32, 32, 450),
+        "the size clamped as checkMaxRate clamps it"
+    );
+}

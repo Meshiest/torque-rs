@@ -51,7 +51,7 @@ use net::ghost::GhostClient;
 use net::handshake::ConnectFields;
 use net::huffman::Table;
 use net::profile::DEFAULT_DATABLOCK_BITS;
-use net::protocol::{Received, Role, reader_at};
+use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
 use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
@@ -205,6 +205,23 @@ impl PredictWorld for TgeWorld {
     fn set_control_state(&mut self, state: Option<ControlState>) {
         self.control_state = state;
     }
+}
+
+/// `checkMaxRate`'s preferences as the client's scripts set them: `$pref::Net::PacketRateToServer` (32 when unset),
+/// `$pref::Net::PacketRateToClient` (the rate the client asks the server for, 10 when unset) and `$pref::Net::PacketSize` (200),
+/// each clamped as [`RateConfig::new`] clamps it.
+pub fn client_rates(vm: &Vm) -> RateConfig {
+    let standard = RateConfig::standard();
+    let pref = |name: &str, unset: u32| {
+        vm.global(name)
+            .filter(|t| !t.trim_ascii().is_empty())
+            .map_or(unset, |t| u32::try_from(ts_vm::text::atoi(&t)).unwrap_or(0))
+    };
+    RateConfig::new(
+        pref("$pref::Net::PacketRateToServer", standard.to_server_rate),
+        pref("$pref::Net::PacketRateToClient", standard.to_client_rate),
+        pref("$pref::Net::PacketSize", standard.packet_size),
+    )
 }
 
 // ---- the datablocks
@@ -393,13 +410,23 @@ impl TgeFeed {
         seq: u32,
         local: Option<(u32, u8)>,
     ) -> Result<TgeFeed, String> {
+        TgeFeed::with_rates(link, password, args, seq, local, RateConfig::standard())
+    }
+
+    /// [`TgeFeed::new`] whose packet layer asks for `rates` (`checkMaxRate`'s preferences, [`client_rates`]).
+    pub fn with_rates(
+        link: Box<dyn Link>,
+        password: &[u8],
+        args: Vec<Vec<u8>>,
+        seq: u32,
+        local: Option<(u32, u8)>,
+        rates: RateConfig,
+    ) -> Result<TgeFeed, String> {
         let tables = TgeTables::tge()?;
         let fields = ConnectFields::standard(password, args);
         let client = match local {
-            Some((protocol, bits)) => {
-                Client::local(fields, Default::default(), protocol, u32::from(bits), 0)
-            }
-            None => Client::new(seq, fields),
+            Some((protocol, bits)) => Client::local(fields, rates, protocol, u32::from(bits), 0),
+            None => Client::new(seq, fields).with_rates(rates),
         };
         let mut feed = TgeFeed {
             link,
@@ -775,14 +802,15 @@ impl ConnGame for TgeConn {
         client: &Rc<RefCell<ClientState<TgeConn>>>,
         connect: Connect,
     ) -> Result<Started<TgeConn>, String> {
-        let _ = (vm, client);
+        let _ = client;
         let local = connect.local.map(|a| (a.protocol, a.ghost_bits));
-        let feed = TgeFeed::new(
+        let feed = TgeFeed::with_rates(
             connect.link,
             &connect.password,
             connect.args,
             connect.seq,
             local,
+            client_rates(vm),
         )?;
         Ok(Started {
             feed,
