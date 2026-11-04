@@ -40,8 +40,8 @@ pub trait Assets {
     fn read(&self, path: &str) -> Option<Vec<u8>>;
 }
 
-/// The frame's default size.
-pub const DEFAULT_SIZE: (u32, u32) = (800, 600);
+/// The frame's default size (16:9).
+pub const DEFAULT_SIZE: (u32, u32) = (1280, 720);
 
 /// A vertex as a fixed-function vertex buffer holds one (position, normal, RGBA8 colour, UV).
 #[derive(Debug, Clone, Copy, PartialEq)]

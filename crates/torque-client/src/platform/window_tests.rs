@@ -24,7 +24,7 @@ fn full_screen_takes_the_monitors_mode_of_that_size_nearest_the_rate() {
 }
 
 #[test]
-fn a_fresh_profile_starts_at_768p_and_a_saved_resolution_is_kept() {
+fn a_fresh_profile_starts_at_720p_and_a_saved_resolution_is_kept() {
     let on = |size| Monitor {
         size,
         video_modes: vec![size],
@@ -32,7 +32,7 @@ fn a_fresh_profile_starts_at_768p_and_a_saved_resolution_is_kept() {
     let canvas = (800, 600);
     assert_eq!(
         start_size(true, canvas, Some(&on((2560, 1440))), &TgeScreen),
-        (1366, 768)
+        (1280, 720)
     );
     // A saved resolution, or no monitor known: the canvas's (the pref's or the default).
     assert_eq!(

@@ -33,6 +33,7 @@ use shapes::shape::{Model, Shape};
 
 use crate::images::{ImageClock, ImageDb, Owner, advance_clock};
 use crate::math::Mat;
+
 use crate::mounts::{MAX_MOUNT_DEPTH, mounted_transform, pose_matrix, render_pose};
 use crate::shapes::{
     DetailPolicy, Loaded, MIN_VISIBILITY, Models, ShapeParts, detail_for, highest_detail,
@@ -42,6 +43,9 @@ use crate::textures::TextureSet;
 use crate::wheels::{Tires, tire_draws};
 use crate::world::{ClassOf, ShapeKind, ShapeWorld, Value};
 use crate::{Assets, Draw, PointLight};
+
+/// The canvas width the projected pixel sizes are measured against (a fixed reference, not the frame's size).
+const REFERENCE_CANVAS_WIDTH: f32 = 800.0;
 
 /// What a frame's moving shapes ask of their host beyond the world: the point lights a shape is lit by, and the live poses
 /// and image clocks a live client keeps from one frame to the next (its own animation of a ghost, such as a Player's). The
@@ -316,9 +320,9 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
         m.set_column3(e.position);
         m
     });
-    // Pixels a meter covers at a distance of one meter (the default canvas and the world's fov).
+    // Pixels a meter covers at a distance of one meter (the reference canvas and the world's fov).
     let fov = records.fov_deg().to_radians();
-    let pixels_per_meter = crate::DEFAULT_SIZE.0 as f32 / (2.0 * (fov / 2.0).tan());
+    let pixels_per_meter = REFERENCE_CANVAS_WIDTH / (2.0 * (fov / 2.0).tan());
     let mut models = Models::default();
     let mut out = ShapeDraws::default();
     let keeping = crate::shapecache::on();
