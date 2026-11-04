@@ -1,0 +1,12 @@
+// A test floor with one block: the first spawn point faces north, the block stands ahead of it and to its right.
+
+new SimGroup(MissionGroup)
+{
+   new Sky(AimSky) { visibleDistance = 1500; fogDistance = 400; fogColor = "0.72 0.8 0.9 1"; useSkyTextures = false; };
+   new StaticShape(Floor) { dataBlock = ArenaCube; position = "0 0 -0.5"; scale = "60 60 1"; };
+   new StaticShape(Block) { dataBlock = ArenaCube; position = "3 8 1.5"; scale = "2 2 3"; };
+};
+
+$Arena::Spawn[0] = "0 -6 0.1 0";
+$Arena::Spawn[1] = "-10 -6 0.1 0";
+$Arena::SpawnCount = 2;

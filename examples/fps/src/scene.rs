@@ -4,13 +4,15 @@
 //!   grid tile a unit) and tinted by height. A cube's object is kept until its record moves it. A map that asks for sharp
 //!   texels ([`TextureFilter::Nearest`]) has its cubes magnified with nearest-neighbor filtering; minified, they stay linear
 //!   between and within the mip levels, so the far floor does not shimmer.
-//! - **Figures** (Players) stand where their last two records put them, the frame between the two, facing their yaw, animated
-//!   as TGE's client animates a Player ([`torque::client::player_anim`]). A figure that holds an image (its record's first
+//! - **Figures** (Players) of other players move on between their records along the last one's velocity, and a record that puts
+//!   one elsewhere is warped to over a few ticks ([`crate::motion`]); they face the yaw and look at the head's pitch the same way,
+//!   animated as TGE's client animates a Player ([`torque::client::player_anim`]) at the velocity they are drawn moving at. A figure that holds an image (its record's first
 //!   image slot) plays the kit's `hold` on its arm thread, and the image's shape is drawn in its hand: the figure's `mount0`
 //!   node times the inverse of the image's `mountPoint` (`ShapeBase::getRenderImageTransform`). A new fire count plays the
 //!   image's `fire`.
-//! - **The own figure** (the ghost the server named, [`OwnLook`]) is not seen: the eye is at its `eye` node, turned as the
-//!   client's mouse turned it (the moves carry the same turns to the server, so the view does not wait for them), and the
+//! - **The own figure** (the ghost the server named, [`OwnLook`]) stands where the client predicts it and is not seen: the eye is
+//!   at its `eye` node, turned by the predicted yaw and head (the server runs the same moves, so the view is where the server
+//!   aims, and drawn ahead by the mouse's waiting turn, so it does not wait for the next tick), and the
 //!   pistol is drawn at the eye times the image's `eyeOffset` (a first-person image, casting no shadow). The figure and the
 //!   pistol in its hand are still posed as a third-person view would pose them, drawn into the shadow maps only
 //!   ([`material::SHADOW_ONLY`]): the own shadow falls on the floor.
@@ -42,8 +44,7 @@ use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Draw, Filter, Vertex};
 
-/// How long a server tick is (seconds): the time a figure takes from one record's place to the next.
-pub const TICK: f32 = 0.032;
+use crate::motion::{GhostMotion, Update};
 /// The look angle a head fraction is of when the datablock names none (radians).
 pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 /// The eye's height above the feet when the shape has no `eye` node.
@@ -186,15 +187,15 @@ impl Held {
     }
 }
 
-/// A figure's motion between records and its animation.
+/// A figure: where it is drawn, its motion between records (another player's) and its animation.
 struct Figure {
     shape: SceneShape,
-    from: [f32; 3],
-    to: [f32; 3],
-    /// Seconds since `to` came.
-    since: f32,
+    motion: GhostMotion,
+    position: [f32; 3],
     yaw: f32,
     pitch: f32,
+    /// The client's own figure (drawn where the client predicts it, into the shadow maps only).
+    own: bool,
     instance: ShapeInstance,
     anim: PlayerAnimation,
     held: Option<Held>,
@@ -203,8 +204,7 @@ struct Figure {
 
 impl Figure {
     fn position(&self) -> [f32; 3] {
-        let k = (self.since / TICK).clamp(0.0, 1.0);
-        [0, 1, 2].map(|i| self.from[i] + (self.to[i] - self.from[i]) * k)
+        self.position
     }
 
     fn transform(&self) -> Mat {
@@ -252,13 +252,15 @@ pub fn bolt_trail(world: &TgeWorld, db: u32) -> Option<Emitter> {
     Emitter::new(&world.records, id)
 }
 
-/// Which ghost is the client's own figure, and where the client's mouse has turned its view.
+/// Which ghost is the client's own figure, where the client predicts it and where its view is turned.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OwnLook {
     pub ghost: u32,
     pub yaw: f32,
     /// Positive looks down.
     pub pitch: f32,
+    /// The feet as the client predicts them (none before the prediction starts: the record's).
+    pub position: Option<[f32; 3]>,
 }
 
 /// Where the own figure is this frame, for the camera and the tests.
@@ -350,20 +352,196 @@ impl ArenaScene {
         self.figures.values().map(Figure::position).collect()
     }
 
-    /// The frame's objects: `world`'s cubes, figures and bolts, moved on by `dt` seconds.
+    /// The figures moved on by `dt` seconds to `world`'s Player records, with nothing drawn: the own one where the client predicts
+    /// it, the others between their records ([`crate::motion`]); each animated and its held image posed, and the own view set.
+    pub fn update_figures(
+        &mut self,
+        assets: &KitAssets,
+        world: &TgeWorld,
+        own: Option<OwnLook>,
+        dt: f32,
+    ) {
+        self.own = None;
+        let mut seen = Vec::new();
+        for (&index, ghost) in &world.records.ghosts {
+            let (Some(TgeClass::Player), Some(record @ TgeRecord::Player(_))) =
+                (ghost.class, ghost.record.as_ref())
+            else {
+                continue;
+            };
+            let Some(db) = ghost.datablock() else {
+                continue;
+            };
+            let Some(file) = world.datablock_text(db, "shapeFile") else {
+                continue;
+            };
+            let Some(Pose::Euler { position, yaw, .. }) = ghost.pose() else {
+                continue;
+            };
+            let Some(shape) = self.shape(assets, file) else {
+                continue;
+            };
+            seen.push(index);
+            let max_look = match world
+                .datablocks
+                .get(&db)
+                .and_then(|d| d.get("maxLookAngle", 0))
+            {
+                Some(Value::F32(v)) => *v,
+                _ => DEFAULT_MAX_LOOK,
+            };
+            let look = own.filter(|o| o.ghost == index);
+            let head =
+                torque::ghost_world::tge::head_fractions(record).map_or(0.0, |h| h[0]) * max_look;
+            let mut motion = PlayerMotion::of_record(record, yaw).unwrap_or(PlayerMotion {
+                yaw,
+                ..PlayerMotion::default()
+            });
+            let update = Update {
+                position,
+                velocity: motion.velocity,
+                yaw,
+                pitch: head,
+            };
+            let image = record_images(record);
+            let held_shape = image.and_then(|(img, _)| {
+                let file = world.datablock_text(img, "shapeFile")?.to_vec();
+                let eye_offset = offset_of(world, img, "eyeOffset");
+                Some((self.shape(assets, &file)?, eye_offset))
+            });
+            let figure = match self.figures.entry(index) {
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    let Some(mut instance) = shape.instance() else {
+                        continue;
+                    };
+                    let Some(anim) = PlayerAnimation::new(shape.shape(), &mut instance) else {
+                        continue;
+                    };
+                    e.insert(Figure {
+                        shape: shape.clone(),
+                        motion: GhostMotion::new(update),
+                        position,
+                        yaw,
+                        pitch: head,
+                        own: false,
+                        instance,
+                        anim,
+                        held: None,
+                        held_db: None,
+                    })
+                }
+            };
+            figure.own = look.is_some();
+            match look {
+                Some(o) => {
+                    // Kept at the record, so the figure goes on from there if it stops being the own one.
+                    figure.motion = GhostMotion::new(update);
+                    figure.position = o.position.unwrap_or(position);
+                    figure.yaw = o.yaw;
+                    figure.pitch = o.pitch;
+                    if let Some(c) = world.control_state.as_ref() {
+                        motion.velocity = c.velocity;
+                    }
+                }
+                None => {
+                    figure.motion.receive(update);
+                    figure.motion.advance(dt);
+                    figure.position = figure.motion.position();
+                    figure.yaw = figure.motion.yaw();
+                    figure.pitch = figure.motion.pitch();
+                    motion.velocity = figure.motion.velocity();
+                }
+            }
+            motion.yaw = figure.yaw;
+            // The held image.
+            if image.map(|i| i.0) != figure.held_db {
+                figure.held_db = image.map(|i| i.0);
+                figure.held = held_shape.and_then(|(shape, offset)| Held::new(shape, offset));
+            }
+            let hold = figure
+                .held
+                .as_ref()
+                .and_then(|_| figure.anim.actions().iter().position(|a| a.name == b"hold"));
+            motion.arm_action = hold.and_then(|h| u32::try_from(h).ok());
+            motion.look = ((figure.pitch / max_look + 1.0) * 0.5).clamp(0.0, 1.0);
+            let s = figure.shape.shape();
+            figure.anim.update(s, &mut figure.instance, &motion, dt);
+            let detail = figure.shape.detail().unwrap_or(0);
+            let _ = figure.instance.animate(s, detail, None, &mut |_| true);
+            if let (Some(held), Some((_, fire_count))) = (figure.held.as_mut(), image) {
+                held.update(fire_count, dt);
+            }
+            if figure.own {
+                let eye = figure.eye_transform();
+                self.own = Some(OwnView {
+                    position: figure.position,
+                    yaw: figure.yaw,
+                    pitch: figure.pitch,
+                    eye: eye.column(3),
+                });
+            }
+        }
+        self.figures.retain(|i, _| seen.contains(i));
+    }
+
+    /// The figures' objects as [`ArenaScene::update_figures`] left them: the own one and the pistol in its hand into the shadow
+    /// maps only, and its first-person pistol at the eye.
+    fn figure_objects(&mut self, view: &mut WorldView, assets: &KitAssets) -> Vec<DynamicObject> {
+        let mut out = Vec::new();
+        let mut holders = 0;
+        for (&index, figure) in &self.figures {
+            let body = figure.transform();
+            let seen_bits = if figure.own { material::SHADOW_ONLY } else { 0 };
+            if figure.own
+                && let Some(held) = figure.held.as_ref()
+            {
+                let mut offset = Mat::IDENTITY;
+                offset.set_column3(held.eye_offset);
+                let m = Mat::mul(&figure.eye_transform(), &offset);
+                let image = view.shape_object(assets, &held.shape, &held.instance, &m, 1);
+                out.push(marked(image, material::VIEW_ONLY));
+            }
+            let figure_object = view.shape_object(
+                assets,
+                &figure.shape,
+                &figure.instance,
+                &body,
+                object_id(index, 0),
+            );
+            out.push(marked(figure_object, seen_bits));
+            if let (Some(held), Some(hand)) = (
+                figure.held.as_ref(),
+                figure
+                    .shape
+                    .node("mount0")
+                    .and_then(|n| figure.instance.node_transform(n)),
+            ) {
+                let m = Mat::mul(&Mat::mul(&body, &Mat { m: *hand }), &held.mount_inverse);
+                let held_object =
+                    view.shape_object(assets, &held.shape, &held.instance, &m, object_id(index, 1));
+                out.push(marked(held_object, seen_bits));
+                if !figure.own {
+                    holders += 1;
+                }
+            }
+        }
+        self.holders_drawn = holders;
+        out
+    }
+
+    /// The frame's objects: `world`'s cubes, the figures as [`ArenaScene::update_figures`] left them, and the bolts moved on by
+    /// `dt` seconds.
     pub fn objects(
         &mut self,
         view: &mut WorldView,
         assets: &KitAssets,
         world: &TgeWorld,
-        own: Option<OwnLook>,
         dt: f32,
     ) -> Vec<DynamicObject> {
         let mut seen = Vec::new();
-        let mut out = Vec::new();
-        self.own = None;
+        let mut out = self.figure_objects(view, assets);
         self.bolts_drawn = 0;
-        self.holders_drawn = 0;
         // The trails run whole milliseconds; the rest waits for the next frame.
         self.trail_ms += dt * 1000.0;
         let ms = self.trail_ms.floor().clamp(0.0, 1000.0) as u32;
@@ -397,140 +575,7 @@ impl ArenaScene {
                         self.cubes.insert(index, cube);
                     }
                 }
-                (Some(TgeClass::Player), TgeRecord::Player(_)) => {
-                    let Some(file) = world.datablock_text(db, "shapeFile") else {
-                        continue;
-                    };
-                    let Some(Pose::Euler { position, yaw, .. }) = ghost.pose() else {
-                        continue;
-                    };
-                    let Some(shape) = self.shape(assets, file) else {
-                        continue;
-                    };
-                    seen.push(index);
-                    let max_look = match world
-                        .datablocks
-                        .get(&db)
-                        .and_then(|d| d.get("maxLookAngle", 0))
-                    {
-                        Some(Value::F32(v)) => *v,
-                        _ => DEFAULT_MAX_LOOK,
-                    };
-                    let look = own.filter(|o| o.ghost == index);
-                    let is_own = look.is_some();
-                    let (yaw, pitch) = match look {
-                        Some(o) => (o.yaw, o.pitch),
-                        None => {
-                            let head = torque::ghost_world::tge::head_fractions(record)
-                                .map_or(0.0, |h| h[0]);
-                            (yaw, head * max_look)
-                        }
-                    };
-                    let image = record_images(record);
-                    let held_shape = image.and_then(|(img, _)| {
-                        let file = world.datablock_text(img, "shapeFile")?.to_vec();
-                        let eye_offset = offset_of(world, img, "eyeOffset");
-                        Some((self.shape(assets, &file)?, eye_offset))
-                    });
-                    let figure = match self.figures.entry(index) {
-                        std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
-                        std::collections::btree_map::Entry::Vacant(e) => {
-                            let Some(mut instance) = shape.instance() else {
-                                continue;
-                            };
-                            let Some(anim) = PlayerAnimation::new(shape.shape(), &mut instance)
-                            else {
-                                continue;
-                            };
-                            e.insert(Figure {
-                                shape: shape.clone(),
-                                from: position,
-                                to: position,
-                                since: 0.0,
-                                yaw,
-                                pitch,
-                                instance,
-                                anim,
-                                held: None,
-                                held_db: None,
-                            })
-                        }
-                    };
-                    figure.move_to(position, dt);
-                    figure.yaw = yaw;
-                    figure.pitch = pitch;
-                    // The held image.
-                    if image.map(|i| i.0) != figure.held_db {
-                        figure.held_db = image.map(|i| i.0);
-                        figure.held =
-                            held_shape.and_then(|(shape, offset)| Held::new(shape, offset));
-                    }
-                    let hold = figure
-                        .held
-                        .as_ref()
-                        .and_then(|_| figure.anim.actions().iter().position(|a| a.name == b"hold"));
-                    let mut motion = PlayerMotion::of_record(record, yaw).unwrap_or(PlayerMotion {
-                        yaw,
-                        ..PlayerMotion::default()
-                    });
-                    motion.arm_action = hold.and_then(|h| u32::try_from(h).ok());
-                    motion.look = ((pitch / max_look + 1.0) * 0.5).clamp(0.0, 1.0);
-                    let s = figure.shape.shape();
-                    figure.anim.update(s, &mut figure.instance, &motion, dt);
-                    let detail = figure.shape.detail().unwrap_or(0);
-                    let _ = figure.instance.animate(s, detail, None, &mut |_| true);
-                    if let (Some(held), Some((_, fire_count))) = (figure.held.as_mut(), image) {
-                        held.update(fire_count, dt);
-                    }
-                    let body = figure.transform();
-                    // The own figure and the pistol in its hand cast their shadows and are not seen.
-                    let seen_bits = if is_own { material::SHADOW_ONLY } else { 0 };
-                    if is_own {
-                        let eye = figure.eye_transform();
-                        self.own = Some(OwnView {
-                            position: figure.position(),
-                            yaw,
-                            pitch,
-                            eye: eye.column(3),
-                        });
-                        if let Some(held) = figure.held.as_ref() {
-                            let mut offset = Mat::IDENTITY;
-                            offset.set_column3(held.eye_offset);
-                            let m = Mat::mul(&eye, &offset);
-                            let image =
-                                view.shape_object(assets, &held.shape, &held.instance, &m, 1);
-                            out.push(marked(image, material::VIEW_ONLY));
-                        }
-                    }
-                    let figure_object = view.shape_object(
-                        assets,
-                        &figure.shape,
-                        &figure.instance,
-                        &body,
-                        object_id(index, 0),
-                    );
-                    out.push(marked(figure_object, seen_bits));
-                    if let (Some(held), Some(hand)) = (
-                        figure.held.as_ref(),
-                        figure
-                            .shape
-                            .node("mount0")
-                            .and_then(|n| figure.instance.node_transform(n)),
-                    ) {
-                        let m = Mat::mul(&Mat::mul(&body, &Mat { m: *hand }), &held.mount_inverse);
-                        let held_object = view.shape_object(
-                            assets,
-                            &held.shape,
-                            &held.instance,
-                            &m,
-                            object_id(index, 1),
-                        );
-                        out.push(marked(held_object, seen_bits));
-                        if !is_own {
-                            self.holders_drawn += 1;
-                        }
-                    }
-                }
+                (Some(TgeClass::Player), TgeRecord::Player(_)) => {}
                 (Some(TgeClass::Projectile), TgeRecord::Projectile(p)) => {
                     seen.push(index);
                     if p.explosion.is_some() {
@@ -589,7 +634,6 @@ impl ArenaScene {
             }
         }
         self.cubes.retain(|i, _| seen.contains(i));
-        self.figures.retain(|i, _| seen.contains(i));
         self.rng = Some(rng);
         let gone: Vec<u32> = self
             .bolts
@@ -653,24 +697,6 @@ impl ArenaScene {
         let mut eye = look_at([0.0, -34.0, 22.0], [0.0, 0.0, 0.0]);
         eye.fov = Some(FOV);
         eye
-    }
-}
-
-impl Figure {
-    /// A new record's position (or none): the figure moves from where it is drawn to it over a tick; a jump of more than a few
-    /// units is a respawn, with no motion between.
-    fn move_to(&mut self, at: [f32; 3], dt: f32) {
-        if at != self.to {
-            let moved = (0..3)
-                .map(|i| (at[i] - self.to[i]).powi(2))
-                .sum::<f32>()
-                .sqrt();
-            self.from = if moved > 4.0 { at } else { self.position() };
-            self.to = at;
-            self.since = 0.0;
-        } else {
-            self.since += dt;
-        }
     }
 }
 
