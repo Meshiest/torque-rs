@@ -47,6 +47,9 @@ The first development version. Nothing is published yet; this is what exists.
   `shape`, `collide`, `net`).
 - `torque-example`: an example dedicated server (the bundled script mission, TGE's records) and a client that connect over the
   loopback address and print the ghosts the client is sent.
+- `torque-example-assets` (`examples/assets`): the example games' asset kit, made from code at run time: a unit cube with a
+  collision hull, a box figure (eye, camera and mount nodes; idle, walk, run and jump sequences), a pistol with its image
+  nodes and a fire sequence, a projectile, and their PNG textures.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

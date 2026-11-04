@@ -2094,6 +2094,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example-assets"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "torque-images",
+ "torque-shapes",
+]
+
+[[package]]
+name = "torque-example-character"
+version = "0.1.0"
+dependencies = [
+ "torque",
+ "torque-example-assets",
+ "torque-example-common",
+ "torque-render-core",
+ "torque-render-scene",
+ "winit",
+]
+
+[[package]]
+name = "torque-example-common"
+version = "0.1.0"
+dependencies = [
+ "torque",
+ "torque-example-assets",
+ "torque-render-core",
+ "torque-render-hd",
+ "torque-render-scene",
+ "winit",
+]
+
+[[package]]
 name = "torque-fonts"
 version = "0.1.0"
 dependencies = [

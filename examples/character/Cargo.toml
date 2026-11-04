@@ -1,0 +1,28 @@
+[package]
+name = "torque-example-character"
+description = "An animated box figure in a window: idle, walk, run and jump as a small state machine over blended sequence threads, with an orbit camera"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "example", "animation", "gamedev"]
+categories = ["game-development"]
+
+# Client only: no server, no connection. The window's keys go through an action map to script globals the figure reads.
+
+[dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["shapes", "client-window", "system-fonts"] }
+torque-example-assets = { path = "../assets" }
+torque-example-common = { path = "../common" }
+torque-render-core = { path = "../../crates/torque-render-core" }
+torque-render-scene = { path = "../../crates/torque-render-scene" }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+
+[[bin]]
+name = "example-character"
+path = "src/main.rs"
+
+[lints]
+workspace = true

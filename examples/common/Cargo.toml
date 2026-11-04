@@ -1,0 +1,22 @@
+[package]
+name = "torque-example-common"
+description = "What the example games share: the asset kit as a resource reader, the world view (the scene drawn under the GUI), an orbit camera and a window surface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "example", "rendering", "gamedev"]
+categories = ["game-development", "rendering"]
+
+[dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["shapes", "gui", "system-fonts"] }
+torque-example-assets = { path = "../assets" }
+torque-render-core = { path = "../../crates/torque-render-core" }
+torque-render-hd = { path = "../../crates/torque-render-hd" }
+torque-render-scene = { path = "../../crates/torque-render-scene" }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+
+[lints]
+workspace = true
