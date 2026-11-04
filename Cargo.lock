@@ -913,6 +913,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-gui"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "torque-fonts",
+ "torque-images",
+ "torque-ts-vm",
+]
+
+[[package]]
 name = "torque-images"
 version = "0.1.0"
 dependencies = [

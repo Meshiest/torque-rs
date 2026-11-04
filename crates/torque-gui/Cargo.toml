@@ -1,0 +1,23 @@
+[package]
+name = "torque-gui"
+description = "The torque-rs GUI object model: controls, the canvas, layout and the script methods of GUI classes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "gui", "torquescript", "gamedev"]
+categories = ["gui", "game-development"]
+
+[dependencies]
+torque-fonts = { path = "../torque-fonts" }
+torque-images = { path = "../torque-images" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[dev-dependencies]
+# The draw tests' synthetic bitmaps.
+png = "0.18"
+
+[lints]
+workspace = true

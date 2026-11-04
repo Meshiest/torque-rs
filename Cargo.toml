@@ -6,6 +6,7 @@ members = [
     "crates/torque-fonts",
     "crates/torque-game",
     "crates/torque-ghosts",
+    "crates/torque-gui",
     "crates/torque-images",
     "crates/torque-mapcore",
     "crates/torque-maps",
