@@ -48,6 +48,18 @@ example-client *args:
 example-assets dir="target/example-assets":
     cargo run -p torque-example-assets -- {{dir}}
 
+# The animated character example in a window (W A S D move, Shift run, Space jump, mouse or Q/E orbit, Esc quit)
+example-character:
+    cargo run -p torque-example-character --release
+
+# The character example's idle, walk and jump pictures, drawn offscreen into `dir`
+example-character-shots dir="target/character-shots":
+    cargo run -p torque-example-character --release -- --shots {{dir}}
+
+# Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
+example-kit-shots dir="target/kit-shots":
+    cargo run -p torque-example-common --release --example kit-shots -- {{dir}}
+
 # Licences, advisories, bans and sources of the dependency tree (cargo-deny)
 deny:
     cargo deny check
