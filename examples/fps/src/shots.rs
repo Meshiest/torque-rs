@@ -747,8 +747,8 @@ fn zoomed(frame: &Frame, w: u32, h: u32, zoom: u32) -> Frame {
 
 /// The second round of polish pictures at `size`, written into `dir`'s `ribbon-flash`, `decals2` and `sights` folders: Ann's
 /// first-person frames 0, 16, 32, 64, 128, 256 and 512 ms after a shot (the flares and the smoke); Bob's bolt and its ribbon
-/// seen from the side, into the open sky and into a wall; bolt holes in the middle of a wall, at a block's edge and in the
-/// floor, close and from a few steps off; and Ann aimed down her sights, with a close crop of them. Returns the paths.
+/// seen from the side, into the open sky and into a wall; bolt holes in the middle of a wall, at a block's edge, in the
+/// floor and on a wall in shadow, close and from a few steps off; and Ann aimed down her sights, with a close crop of them. Returns the paths.
 pub fn write_polish2(
     dir: &Path,
     size: (u32, u32),
@@ -875,6 +875,18 @@ pub fn write_polish2(
     look_at_point(&mut a, [-14.0, 1.7, 0.0]);
     run(&gpu, &mut [&mut a, &mut b], 300)?;
     save(&a.picture(&gpu)?, "decals2", "floor-play")?;
+    // The same cover's east face (x = 0.5, y -11..-7), in the sun's shadow.
+    a.game.call("reloadKey", &["1"])?;
+    place(&mut a.game, "Ann", [2.6, -10.2, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 2000)?;
+    for target in [[0.5, -9.0, 1.4], [0.5, -9.6, 1.0], [0.5, -8.4, 1.8]] {
+        look_at_point(&mut a, target);
+        run(&gpu, &mut [&mut a, &mut b], 150)?;
+        shoot(&gpu, &mut a, &mut b)?;
+    }
+    look_at_point(&mut a, [0.5, -9.0, 1.4]);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals2", "shadow-close")?;
     a.game.set_view_pitch(0.0);
     run(&gpu, &mut [&mut a, &mut b], 2500)?;
 
