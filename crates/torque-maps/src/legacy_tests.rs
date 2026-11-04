@@ -1,0 +1,125 @@
+use super::*;
+use crate::synth::{DifSpec, dif_hulls};
+
+const SPEC: DifSpec = DifSpec {
+    version: 0,
+    plain_surfaces: true,
+    everything: false,
+    border: 0,
+};
+
+#[test]
+fn a_dif_s_hulls_keep_the_file_s_ranges_and_flips() {
+    let bytes = dif_hulls(SPEC, 3, 6);
+    let d = dif::parse(&bytes).unwrap();
+    let i = &d.details[0];
+    let c = IMPORTER.convexes(&bytes).unwrap();
+    assert_eq!(c.hulls.len(), 3);
+    assert_eq!(c.points, i.points);
+    for (k, h) in c.hulls.iter().enumerate() {
+        assert_eq!(h.point_start, i.hulls.hulls[k].hull_start);
+        assert_eq!(h.plane_start, i.hulls.hulls[k].plane_start);
+    }
+    assert_eq!(
+        c.hulls[2].plane_end as usize,
+        i.hulls.hull_plane_indices.len()
+    );
+    assert_eq!(c.hulls[0].plane_end, c.hulls[1].plane_start);
+    for (r, &raw) in c.plane_refs.iter().zip(&i.hulls.hull_plane_indices) {
+        assert_eq!(r.flipped, raw & PLANE_FLIPPED != 0);
+        assert_eq!(r.index, u32::from(raw & !PLANE_FLIPPED));
+    }
+}
+
+#[test]
+fn a_ter_s_layers_and_heights_are_its_own() {
+    let bytes = crate::synth::ter(3, &["grass", "rock"]);
+    let t = ter::parse(&bytes).unwrap();
+    let f = IMPORTER.heightfield(&bytes).unwrap();
+    assert_eq!(f.layers.len(), t.materials.len());
+    for i in [0, 1, 300, ter::SAMPLES - 1] {
+        assert_eq!(
+            f.height(i % ter::SIZE, i / ter::SIZE),
+            t.height(i % ter::SIZE, i / ter::SIZE)
+        );
+        for k in 0..t.materials.len() {
+            assert_eq!(f.weight(k, i), t.alpha(k, i));
+        }
+    }
+    assert_eq!(
+        IMPORTER.named_files(FileKind::Heightfield, &bytes).unwrap(),
+        ["grass", "rock"]
+    );
+}
+
+#[test]
+fn hostile_bytes_are_refused_with_the_reader_s_reason() {
+    for kind in [FileKind::Heightfield, FileKind::Model] {
+        assert!(IMPORTER.named_files(kind, b"\x01\x02").is_err());
+    }
+    assert!(IMPORTER.heightfield(b"").is_err());
+    assert!(IMPORTER.surfaces(b"xx").is_err());
+    assert!(IMPORTER.convexes(b"xx").is_err());
+}
+
+#[test]
+fn a_placement_centres_the_block_at_height_0_and_names_its_holes() {
+    let p = terrain_placement(8, true, &[2 | (1 << 8) | (3 << 16)]);
+    assert_eq!(p.origin, [-1024.0, -1024.0, 0.0]);
+    assert_eq!(p.square, 8.0);
+    assert!(p.holes[2 + 256] && p.holes[4 + 256] && !p.holes[5 + 256]);
+}
+
+#[test]
+fn surfaces_that_repeat_one_run_stop_at_the_budget() {
+    let mut d = dif::parse(&crate::synth::dif(SPEC)).unwrap();
+    let i = &mut d.details[0];
+    let s = *i.surfaces.iter().find(|s| s.winding_count >= 3).unwrap();
+    i.surfaces = vec![s; 10_000];
+    let budget = i.windings.len() * SURFACE_POINTS_PER_WINDING;
+    let out = surfaces(&d);
+    let vertices: usize = out.by_material.values().map(Vec::len).sum();
+    assert!(vertices > 0);
+    // Each point of a strip gives at most 3 vertices.
+    assert!(vertices <= 3 * budget, "{vertices} > 3 x {budget}");
+}
+
+#[test]
+fn the_special_materials_are_tges_four_with_their_case_and_an_importer_may_name_its_own() {
+    assert!(SPECIAL.iter().all(|&m| is_special(m)));
+    for m in ["null", "EMITTER", "SKY", "wall"] {
+        assert!(!is_special(m), "{m}");
+    }
+    // The synthetic interior's materials are "wall" and "NULL": only "wall" is a file it names.
+    let bytes = crate::synth::dif(SPEC);
+    assert_eq!(
+        IMPORTER.named_files(FileKind::Model, &bytes).unwrap(),
+        ["wall"]
+    );
+    let none = Legacy {
+        special: |_| false,
+        ..Legacy::TGE
+    };
+    assert_eq!(
+        none.named_files(FileKind::Model, &bytes).unwrap(),
+        ["wall", "NULL"]
+    );
+    // A surface of a special material is not drawn: with every material special, nothing is.
+    let d = dif::parse(&bytes).unwrap();
+    assert!(!surfaces(&d).by_material.is_empty());
+    assert!(surfaces_with(&d, |_| true).by_material.is_empty());
+    assert!(!surfaces(&d).by_material.contains_key("NULL"));
+}
+
+#[test]
+fn the_border_word_layout_reads_only_through_an_importer_that_asks_for_it() {
+    let padded = crate::synth::dif(DifSpec { border: 2, ..SPEC });
+    // TGE's layout does not read the file to its end (it may still make something of the start).
+    assert!(!dif::parse(&padded).is_ok_and(|d| d.trailing == 0));
+    assert!(dif::parse_with_border_pad(&padded).unwrap().border_pad);
+    let lenient = Legacy {
+        border_pad: true,
+        ..Legacy::TGE
+    };
+    assert!(lenient.convexes(&padded).is_ok());
+}

@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/torque-collide",
+    "crates/torque-mapcore",
+    "crates/torque-maps",
     "crates/torque-ts-bytecode",
     "crates/torque-ts-compiler",
     "crates/torque-ts-text",

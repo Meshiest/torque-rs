@@ -9,6 +9,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "torque-collide"
+version = "0.1.0"
+dependencies = [
+ "torque-mapcore",
+ "torque-maps",
+]
+
+[[package]]
+name = "torque-mapcore"
+version = "0.1.0"
+
+[[package]]
+name = "torque-maps"
+version = "0.1.0"
+dependencies = [
+ "torque-mapcore",
+]
+
+[[package]]
 name = "torque-ts-bytecode"
 version = "0.1.0"
 

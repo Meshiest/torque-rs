@@ -1,0 +1,21 @@
+[package]
+name = "torque-mapcore"
+description = "The format-neutral map layer of torque-rs: geometry, materials, collision, lightmaps and entities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "map", "level", "gamedev"]
+categories = ["game-development", "data-structures"]
+
+# The format-neutral map layer: what a map is once an importer has read its files
+# (geometry, materials, collision, lightmaps, instances, environment, spawns, entities, listing). Hosting, collision and drawing
+# read these types; the importers (`torque-maps` for Torque's legacy map files, others for other formats) write them.
+# Std only, no dependency at all.
+
+[dependencies]
+
+[lints]
+workspace = true
