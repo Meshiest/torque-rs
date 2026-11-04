@@ -13,8 +13,10 @@
 //! them ([`turn`]).
 //!
 //! Credit: the derived links, detail figures and default states follow `TSShape::init`, and [`turn`] the quaternion layout of
-//! `QuatF::setMatrix`, as Torque3D carries them under the MIT licence (`Engine/source/ts/tsShape.cpp` and
-//! `Engine/source/math/mQuat.cpp`, Copyright (c) 2012 GarageGames, LLC). The code here is this crate's own.
+//! `QuatF::setMatrix`, as Torque3D carries them under the MIT licence (`Engine/source/ts/tsShape.cpp`,
+//! `Engine/source/math/mQuat.cpp`, `Engine/source/ts/tsTransform.cpp` for `Quat16::set`, and the material and primitive
+//! flags of `Engine/source/ts/tsMaterialList.h` and `Engine/source/ts/tsMesh.h`, each Copyright (c) 2012 GarageGames,
+//! LLC). The code here is this crate's own.
 
 use std::sync::Arc;
 

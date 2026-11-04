@@ -12,6 +12,10 @@
 //! **Ground speed.** Walk and run carry ground frames: their sequence moves the figure a known distance a second
 //! ([`ground_speed`]). The thread's time scale is the figure's speed over that, as a Player scales its action thread by its
 //! velocity over the action's speed, so the feet keep pace with the floor at any speed.
+//!
+//! Credit: the transition time and the time-scale rule follow the Player's action thread as Torque3D carries it under the
+//! MIT licence (`Engine/source/T3D/player.cpp`, Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.).
+//! The code here is this crate's own.
 
 use torque::shapes::instance::{ShapeInstance, Thread, ThreadId, find_sequence};
 use torque::shapes::shape::Shape;
