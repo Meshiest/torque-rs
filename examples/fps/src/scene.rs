@@ -28,8 +28,8 @@
 //!   is left to fade out (`deleteWhenEmpty`).
 //!
 //! Credit: the image's hand transform follows `ShapeBase::getRenderImageTransform` in Torque3D's MIT-licensed
-//! `T3D/shapeBase.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this
-//! example's own.
+//! `T3D/shapeBase.cpp`, and the hit burst follows `Explosion::explode` in `T3D/fx/explosion.cpp` (each Copyright (c) 2012
+//! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this example's own.
 
 use std::collections::{BTreeMap, HashMap};
 
