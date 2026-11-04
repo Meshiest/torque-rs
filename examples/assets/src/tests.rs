@@ -234,6 +234,40 @@ fn the_jump_swings_the_arms_forward_tucks_the_knees_and_holds_its_last_key() {
 }
 
 #[test]
+fn the_figures_hitboxes_are_a_line_of_sight_detail_inside_its_box() {
+    let shape = Shape::for_server(shapes::figure());
+    let facts = preload::facts(&shape, &mut free).unwrap();
+    assert_eq!(facts.slots.own_los(), 1);
+    let los = facts.slots.los[0] as usize;
+    assert!(shape.details[los].size < 0.0, "never drawn");
+    let inst = ShapeInstance::new(&shape, &mut free).unwrap();
+    let mut parts = Vec::new();
+    for o in &shape.objects {
+        let Some(Some(mesh)) = shape.meshes.get(o.start_mesh_index as usize + los) else {
+            continue;
+        };
+        let name = String::from_utf8(shape.names[o.name as usize].clone()).unwrap();
+        let hull = torque_shapes::collide::Hull::build_relative(mesh, &mut free).unwrap();
+        assert_eq!(hull.planes(), 6, "{name}: a closed box");
+        let node = inst.node_transforms()[o.node as usize];
+        for c in mesh.positions.iter() {
+            let p = mul_p(&node, *c);
+            assert!(
+                p[0].abs() <= 0.5 && p[1].abs() <= 0.5 && (0.0..=2.0).contains(&p[2]),
+                "{name} at {p:?}"
+            );
+        }
+        parts.push(name);
+    }
+    for name in [
+        "head", "torso", "larm", "rforearm", "lhand", "rleg", "lshin", "rfoot",
+    ] {
+        assert!(parts.iter().any(|p| p == name), "{name} in {parts:?}");
+    }
+    assert_eq!(parts.len(), 14);
+}
+
+#[test]
 fn the_eyes_are_boxes_on_the_face() {
     let model = shapes::figure();
     let shape = &model.shape;
