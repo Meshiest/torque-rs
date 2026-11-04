@@ -75,7 +75,7 @@ pub fn map_name(path: &str) -> String {
 /// The pictures at `size`, written into `dir`: `menu.png`, then `<map>-overview.png`, `<map>-behind.png` and
 /// `<map>-eye.png` for every map. Returns the paths.
 pub fn write_all(files: GameFiles, dir: &Path, size: (u32, u32)) -> Result<Vec<PathBuf>, String> {
-    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let gpu = torque_example_common::window::offscreen_gpu().map_err(|e| e.to_string())?;
     let mut game = LevelDemo::new(files)?;
     game.host.surface_size(size);
     let mut shooter = Shooter {

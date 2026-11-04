@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use torque::shapes::instance::{ShapeInstance, find_sequence};
 use torque::shapes::math::mul_p;
 use torque_example_common::view::{Daylight, SceneShape, WorldView};
+use torque_example_common::window::offscreen_gpu;
 use torque_example_common::{KitAssets, kit_path};
-use torque_render_core::Gpu;
 use torque_render_scene::hd::kit::{box_object, look_at};
 use torque_render_scene::math::Mat;
 
@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| "kit-shots".to_string()),
     );
     std::fs::create_dir_all(&dir)?;
-    let gpu = Gpu::new()?;
+    let gpu = offscreen_gpu()?;
     let assets = KitAssets::new()?;
     let pistol = SceneShape::load(&assets, &kit_path("pistol.dts")).ok_or("pistol.dts")?;
     let pistol_pose = pistol.instance().ok_or("no instance")?;
