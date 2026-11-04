@@ -44,3 +44,22 @@ level-demo-shots dir="../target/level-demo-shots":
 # Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
 kit-shots dir="../target/kit-shots":
     cargo run -p torque-example-common --release --example kit-shots -- {{dir}}
+
+# The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
+# `--name`, `--map`, `--ticks N` (stop after N ticks)
+fps-server *args:
+    cargo run -p torque-example-fps --release --bin fps-server -- {{args}}
+
+# The arena shooter's client in a window: Host (a server in this process, joined at once) / Join (the LAN list) / Quit; W A S D
+# move, mouse look, click shoot, T chat, Esc leave. `--bind <your LAN address>` hosts for the network, `--name <name>`
+fps-client *args:
+    cargo run -p torque-example-fps --release --bin fps-client -- {{args}}
+
+# The arena shooter's headless check: a host and a second client over 127.0.0.1 meet through the LAN list, one shoots the
+# other (a round spent, a hit), and a chat line reaches the other client
+fps-check:
+    cargo test -p torque-example-fps --test arena
+
+# The arena shooter's review pictures (menu, LAN list, first-person view, another player, a bolt), drawn offscreen into `dir`
+fps-shots dir="../target/fps-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --shots {{dir}}
