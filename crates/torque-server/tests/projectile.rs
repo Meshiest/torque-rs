@@ -139,7 +139,7 @@ fn a_projectile_that_hits_nothing_is_deleted_at_its_lifetime() {
 }
 
 #[test]
-fn the_ghost_view_reads_a_players_arm_action_and_a_projectiles_flight() {
+fn the_ghost_view_reads_a_players_arm_action_and_image_and_a_projectiles_flight() {
     use torque_ghosts::{ObjectView, Value};
     use torque_server::net::torque::{FieldView, GameView};
 
@@ -167,6 +167,13 @@ new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVel
     s.vm.eval(b"$armed = Holder.setArmThread(hold);").unwrap();
     assert_eq!(global(&s, "$armed"), "1");
     assert_eq!(view(&s.vm, holder).get("arm_action", 0), Value::Int(9));
+    s.vm.eval(b"datablock ShapeBaseImageData(Gun) { shapeFile = \"body.dts\"; stateName[0] = \"Ready\"; }; Holder.mountImage(Gun, 0); Holder.setImageAmmo(0, true);")
+        .unwrap();
+    let gun = s.vm.objects().find(b"Gun").unwrap();
+    let holder_view = view(&s.vm, holder);
+    assert_eq!(holder_view.get("image_datablock", 0), Value::Id(Some(gun)));
+    assert_eq!(holder_view.get("image_ammo", 0), Value::Bool(true));
+    assert_eq!(holder_view.get("image_datablock", 1), Value::Id(None));
     s.run(TICK_MS, |_| false);
     let shot = s.vm.objects().find(b"Shot").unwrap();
     let v = view(&s.vm, shot);

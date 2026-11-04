@@ -234,6 +234,8 @@ impl ObjectView for FieldView<'_> {
 ///   `state` (the action state), `action` (the action animation), `arm_action` (`setArmThread`'s), `energy`, and from its
 ///   datablock `look_action`, `max_look_angle`,
 ///   `max_energy` and `max_damage`; the move fields are the last move's.
+/// - a ShapeBase's mounted images (the game classes' image slots): per slot `image_datablock`, `image_wet`, `image_ammo`,
+///   `image_loaded`, `image_target`, `image_trigger_down` and `image_fire_count`;
 /// - a simulated Projectile ([`torque_game::sim::projectile::state`]): `position`, `velocity`, `current_tick` (its age),
 ///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`.
 ///
@@ -362,9 +364,35 @@ impl GameView<'_> {
     }
 }
 
+impl GameView<'_> {
+    /// A ShapeBase's mounted image `index` from the game classes' image slots, for the image fields.
+    fn image(&self, field: &str, index: usize) -> Option<Value> {
+        if !field.starts_with("image_") {
+            return None;
+        }
+        let set = torque_game::scene::ext::get(self.fields.vm.objects(), self.fields.obj)?
+            .images
+            .as_deref()?;
+        let slot = set.slots.get(index)?;
+        Some(match field {
+            "image_datablock" => Value::Id(slot.db),
+            "image_wet" => Value::Bool(slot.wet),
+            "image_ammo" => Value::Bool(slot.ammo),
+            "image_loaded" => Value::Bool(slot.loaded),
+            "image_target" => Value::Bool(slot.target),
+            "image_trigger_down" => Value::Bool(slot.trigger_down),
+            "image_fire_count" => Value::Int(i64::from(slot.fire_count)),
+            _ => return None,
+        })
+    }
+}
+
 impl ObjectView for GameView<'_> {
     fn get(&self, field: &str, index: usize) -> Value {
         if let Some(v) = self.player(field, index) {
+            return v;
+        }
+        if let Some(v) = self.image(field, index) {
             return v;
         }
         if let Some(v) = self.projectile(field, index) {
