@@ -1244,8 +1244,8 @@ impl<'a> Cx<'a> {
         op_ip: usize,
         name: &[u8],
     ) -> Option<EntryRef> {
-        // A binding made by another `Vm` that ran the same block, or before `resetAllOpCallFunc`, does not
-        // count (see `CodeBlock`).
+        // A binding made by another `Vm` that ran the same block, or before the host reset the call-site
+        // bindings, does not count (see `CodeBlock`).
         let epoch = self.vm.binding_epoch();
         if let Some(bound) = block.bound_site(op_ip, epoch) {
             return Some(bound);

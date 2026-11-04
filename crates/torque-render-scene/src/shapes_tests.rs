@@ -39,7 +39,7 @@ fn strips_alternate_their_winding_as_gl_does() {
 #[test]
 fn the_texture_folder_is_the_shapes() {
     assert_eq!(
-        shape_dir("StaticShape 7 demo/data/shapes/hammer.dts"),
+        shape_dir("StaticShape 7 demo/data/shapes/tool.dts"),
         "demo/data/shapes"
     );
 }

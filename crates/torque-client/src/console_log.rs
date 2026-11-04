@@ -8,8 +8,9 @@
 //! **Engine rules.** The file is capped ([`MAX_LOG_BYTES`]): past it one closing line says so and nothing more is written (TGE has
 //! no cap). Secrets never reach it ([`redact`]): a script's `echo` could print one, so the writer replaces each value that looks
 //! like a secret: a run of [`MIN_SECRET_HEX`] or more hexadecimal digits (a sign-in ticket is hundreds of them; the 40 of a SHA-1
-//! stay), and the value after a `ticket`, `token`, `joinToken`, `key`, `password` or `code` name in a query string or a form
-//! (`name=value`), plus any value the host registered as secret ([`ConsoleLog::add_secret`]: a join token, a ticket).
+//! stay), and the value after a `ticket`, `token`, `key`, `password` or `code` name, or a name the host registered
+//! ([`ConsoleLog::add_secret_name`]), in a query string or a form (`name=value`), plus any value the host registered as secret
+//! ([`ConsoleLog::add_secret`]: a session token, a ticket).
 //! A write that fails stops the log (the console goes on). The last start's log is kept as `console.log.1` ([`previous_path`]): a
 //! start moves the file there before it writes its own (TGE truncates its one file), so the session a report is about is still on
 //! disk after the next start.
@@ -35,7 +36,7 @@ pub const MIN_SECRET_HEX: usize = 64;
 pub const MAX_SECRETS: usize = 16;
 pub const MIN_SECRET_LEN: usize = 6;
 /// The names whose `name=value` values are redacted (ASCII case ignored).
-pub const SECRET_NAMES: [&str; 6] = ["ticket", "token", "jointoken", "key", "password", "code"];
+pub const SECRET_NAMES: [&str; 5] = ["ticket", "token", "key", "password", "code"];
 /// What a redacted value is written as.
 pub const REDACTED: &str = "<redacted>";
 /// The closing line once the cap is reached.
@@ -68,6 +69,8 @@ pub struct ConsoleLog {
     path: PathBuf,
     written: u64,
     secrets: Vec<Vec<u8>>,
+    /// The host's names whose `name=value` values are redacted too, besides [`SECRET_NAMES`].
+    names: Vec<Vec<u8>>,
 }
 
 /// The log shared by the console sink and the host (which registers secrets).
@@ -92,6 +95,7 @@ impl ConsoleLog {
             path: path.to_path_buf(),
             written: 0,
             secrets: Vec::new(),
+            names: Vec::new(),
         };
         log.write_raw(header_line(chrono::Local::now()).as_bytes());
         Ok(log)
@@ -112,7 +116,7 @@ impl ConsoleLog {
         self.written
     }
 
-    /// A value never written as it is from now on (the join token, a ticket the host holds).
+    /// A value never written as it is from now on (a session token, a ticket the host holds).
     pub fn add_secret(&mut self, value: &[u8]) {
         if value.len() < MIN_SECRET_LEN || self.secrets.iter().any(|s| s == value) {
             return;
@@ -123,6 +127,18 @@ impl ConsoleLog {
         self.secrets.push(value.to_vec());
     }
 
+    /// A name whose `name=value` values are redacted from now on, like [`SECRET_NAMES`] (ASCII case ignored); at most
+    /// [`MAX_SECRETS`] are kept, the newest replacing the oldest.
+    pub fn add_secret_name(&mut self, name: &[u8]) {
+        if name.is_empty() || self.names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            return;
+        }
+        if self.names.len() >= MAX_SECRETS {
+            self.names.remove(0);
+        }
+        self.names.push(name.to_vec());
+    }
+
     /// One printed line (it may hold newlines: each part is one line of the file).
     pub fn line(&mut self, _level: Level, text: &[u8]) {
         if self.file.is_none() {
@@ -130,7 +146,7 @@ impl ConsoleLog {
         }
         for part in text.split(|b| *b == b'\n') {
             let part = part.strip_suffix(b"\r").unwrap_or(part);
-            let clean = redact(part, &self.secrets);
+            let clean = redact_with(part, &self.secrets, &self.names);
             if self.written + clean.len() as u64 + 2 > MAX_LOG_BYTES {
                 self.write_raw(CAP_LINE.as_bytes());
                 self.file = None;
@@ -171,11 +187,16 @@ fn is_hex(b: u8) -> bool {
 
 /// `line` with its secrets replaced by [`REDACTED`] (see the module docs).
 pub fn redact(line: &[u8], secrets: &[Vec<u8>]) -> Vec<u8> {
+    redact_with(line, secrets, &[])
+}
+
+/// [`redact`] with `names` redacted as [`SECRET_NAMES`] are.
+pub fn redact_with(line: &[u8], secrets: &[Vec<u8>], names: &[Vec<u8>]) -> Vec<u8> {
     let mut out = line.to_vec();
     for s in secrets {
         out = replace_all(&out, s);
     }
-    out = redact_named(&out);
+    out = redact_named(&out, names);
     redact_hex(&out)
 }
 
@@ -197,8 +218,8 @@ fn replace_all(text: &[u8], needle: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `name=value` with a secret name: the value (up to `&`, a space or a quote) replaced.
-fn redact_named(text: &[u8]) -> Vec<u8> {
+/// `name=value` with a secret name (one of [`SECRET_NAMES`] or `names`): the value (up to `&`, a space or a quote) replaced.
+fn redact_named(text: &[u8], names: &[Vec<u8>]) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {
@@ -210,7 +231,8 @@ fn redact_named(text: &[u8]) -> Vec<u8> {
             let name = &text[start..i];
             let secret = SECRET_NAMES
                 .iter()
-                .any(|n| name.eq_ignore_ascii_case(n.as_bytes()));
+                .any(|n| name.eq_ignore_ascii_case(n.as_bytes()))
+                || names.iter().any(|n| name.eq_ignore_ascii_case(n));
             out.push(b'=');
             i += 1;
             if secret {

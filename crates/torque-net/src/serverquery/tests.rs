@@ -187,7 +187,7 @@ fn sample_fields() -> InfoFields {
     InfoFields {
         game_type: b"Test App".to_vec(),
         mission_type: b"Deathmatch".to_vec(),
-        mission_name: b"Slate".to_vec(),
+        mission_name: b"Arena".to_vec(),
         status: STATUS_DEDICATED,
         players: 3,
         max_players: 32,

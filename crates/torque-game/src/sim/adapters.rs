@@ -94,7 +94,6 @@ const KNOWN: &[&str] = &[
     "FlyingVehicle",
     "fxLight",
     "ParticleEmitterNode",
-    "VehicleSpawnMarker",
     "SpawnSphere",
     "MissionMarker",
     "WayPoint",

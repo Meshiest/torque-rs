@@ -746,7 +746,7 @@ impl ImageHost for ConsoleHost {
     }
     fn find_image_data(&mut self, name: &str) -> Option<DbId> {
         match name {
-            "GunImage" | "1" => Some(1),
+            "PistolImage" | "1" => Some(1),
             "OtherImage" | "2" => Some(2),
             _ => None,
         }
@@ -766,7 +766,7 @@ fn the_console_methods_answer_as_documented() {
     let mut h = ConsoleHost { inner };
     // mountImage always answers false; with six arguments `loaded` is not read (true) and the skin is a tagged string.
     assert_eq!(
-        call(&mut h, "mountImage", &["GunImage", "1", "0", "\u{1}77"]),
+        call(&mut h, "mountImage", &["PistolImage", "1", "0", "\u{1}77"]),
         Some(Value::Bool(false))
     );
     assert_eq!(h.inner.images.slots[1].db, Some(1));
@@ -777,17 +777,17 @@ fn the_console_methods_answer_as_documented() {
     assert_eq!(h.inner.images.slots[2].db, Some(2));
     assert!(!h.inner.images.slots[2].loaded);
     // A slot outside 0..3 and an unknown datablock mount nothing.
-    call(&mut h, "mountImage", &["GunImage", "4"]);
+    call(&mut h, "mountImage", &["PistolImage", "4"]);
     call(&mut h, "mountImage", &["Missing", "0"]);
     assert_eq!(h.inner.images.slots[0].db, None);
     // The argument count is checked by the caller's table; out of range answers None.
-    assert_eq!(call(&mut h, "mountImage", &["GunImage"]), None);
+    assert_eq!(call(&mut h, "mountImage", &["PistolImage"]), None);
     assert_eq!(call(&mut h, "getMountedImage", &[]), None);
     assert_eq!(call(&mut h, "getMountedImage", &["1"]), Some(Value::Int(1)));
     assert_eq!(call(&mut h, "getMountedImage", &["0"]), Some(Value::Int(0)));
     assert_eq!(call(&mut h, "getMountedImage", &["9"]), Some(Value::Int(0)));
     assert_eq!(
-        call(&mut h, "getMountSlot", &["GunImage"]),
+        call(&mut h, "getMountSlot", &["PistolImage"]),
         Some(Value::Int(1))
     );
     assert_eq!(

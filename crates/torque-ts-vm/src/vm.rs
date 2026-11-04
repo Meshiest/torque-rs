@@ -345,7 +345,7 @@ struct StubKeys(std::collections::BTreeSet<String>);
 /// `VmError::StringTooLong`. The cap is applied where a result is delivered to the string stack (a native
 /// result the string stack would cut fails the run), so `Vm::invoke` from Rust sees a native's result
 /// uncut unless the native itself stops at the cap: the natives that can grow a result several times
-/// (`strreplace`, `setWord` and friends, `urlEnc`, `expandEscape`, `getSafeVariableName`) check it inside
+/// (`strreplace`, `setWord` and friends, `expandEscape`, and a host's text encoders) check it inside
 /// their loops and never build more than the cap plus one step of growth.
 ///
 /// Objects live in [`Objects`] (see `sim`); work proportional to their size is charged to the step
@@ -376,7 +376,7 @@ pub struct Vm {
     files: Box<dyn FileHost>,
     compiler: Box<dyn Compiler>,
     /// The tick counter, the wall clock and the time zone (`setRandomSeed()`; later `getRealTime`,
-    /// `getDateTime` and file times).
+    /// the local date and time and file times).
     clock: Box<dyn Clock>,
     /// The state of the one random generator (TGE's `gRandGen`).
     random_seed: i32,
@@ -425,8 +425,8 @@ pub struct Vm {
     pub(crate) file_objects: crate::classes::file_object::FileObjects,
     /// Tells this `Vm` apart from others: tagged-literal conversions are stamped with it.
     id: u64,
-    /// The stamp of this `Vm`'s call-site bindings: `id` at first, a fresh one after `resetAllOpCallFunc`,
-    /// which makes every binding made before stale.
+    /// The stamp of this `Vm`'s call-site bindings: `id` at first, a fresh one after the host resets the
+    /// call-site bindings ([`Vm::reset_call_bindings`]), which makes every binding made before stale.
     binding_epoch: u64,
     /// The retained log and what is kept of the lines that left it ([`LogKeep`]).
     log: Box<LogKeep>,
@@ -1528,7 +1528,7 @@ impl Vm {
         self.globals.get(name.as_bytes()).map(Entry::get_string)
     }
 
-    /// A global by a name of any bytes (an array element: `$uiNameTable` and the index text), as `LOADVAR_STR` reads it: None
+    /// A global by a name of any bytes (an array element: `$table` and the index text), as `LOADVAR_STR` reads it: None
     /// when there is no such variable.
     pub fn global_of(&self, name: &[u8]) -> Option<Vec<u8>> {
         self.globals.get(name).map(Entry::get_string)
