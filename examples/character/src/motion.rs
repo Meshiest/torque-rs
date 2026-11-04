@@ -9,6 +9,11 @@
 //! while the new one plays. Walk and run keep their phase when one becomes the other (both start with the same leg forward);
 //! idle and jump start at their beginning.
 //!
+//! **Holding.** The `hold` arm pose plays on a second thread. It comes in and goes out over [`HOLD_BLEND`] seconds: each step
+//! poses the figure once without it (the second thread playing the state's sequence where the first is) and once with it, and
+//! the instance's pose blend moves the first pose toward the second by the hold's weight. Only the arm `hold` moves differs
+//! between the two, so the rest of the figure goes on as it was.
+//!
 //! **Ground speed.** Walk and run carry ground frames: their sequence moves the figure a known distance a second
 //! ([`ground_speed`]). The thread's time scale is the figure's speed over that, as a Player scales its action thread by its
 //! velocity over the action's speed, so the feet keep pace with the floor at any speed.
@@ -17,12 +22,14 @@
 //! MIT licence (`Engine/source/T3D/player.cpp`, Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.).
 //! The code here is this crate's own.
 
-use torque::shapes::instance::{ShapeInstance, Thread, ThreadId, find_sequence};
+use torque::shapes::instance::{PoseBlend, ShapeInstance, Thread, ThreadId, find_sequence};
 use torque::shapes::shape::Shape;
 use torque_render_scene::math::Mat;
 
 /// Seconds a change of state blends over (a Player's action transition time).
 pub const TRANSITION: f32 = 0.25;
+/// Seconds the `hold` pose takes to come in or go out.
+pub const HOLD_BLEND: f32 = 0.2;
 /// Ground acceleration and the slower steering in the air (units a second, a second).
 pub const ACCELERATION: f32 = 12.0;
 pub const AIR_ACCELERATION: f32 = 3.0;
@@ -120,6 +127,13 @@ impl Sequences {
     }
 }
 
+/// The `hold` pose's thread and how far it is in (0 out, 1 in).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Hold {
+    thread: ThreadId,
+    weight: f32,
+}
+
 /// The figure: where it is, its velocity and heading, its state and its animated pose.
 pub struct Figure {
     /// Its feet (z 0 on the floor).
@@ -133,8 +147,10 @@ pub struct Figure {
     sequences: Sequences,
     detail: usize,
     jump_held: bool,
-    /// The thread playing `hold` while the figure holds a pistol.
-    holding: Option<ThreadId>,
+    /// The `hold` pose, from the step it is asked for until it has gone out again.
+    hold: Option<Hold>,
+    /// Whether the figure is to hold a pistol.
+    hold_wanted: bool,
 }
 
 impl Figure {
@@ -154,35 +170,57 @@ impl Figure {
             sequences,
             detail,
             jump_held: false,
-            holding: None,
+            hold: None,
+            hold_wanted: false,
         };
         figure.animate(shape);
         Some(figure)
     }
 
-    /// Whether the figure holds a pistol (its right arm in the `hold` pose).
+    /// Whether the figure has a pistol in its hand: from when it is asked to hold one until its arm is down again.
     pub fn holding(&self) -> bool {
-        self.holding.is_some()
+        self.hold.is_some()
     }
 
-    /// Takes the `hold` pose (a second thread over the state's, the right arm raised) or leaves it; nothing when the shape
-    /// has no `hold` sequence.
+    /// How far the `hold` pose is in: 0 out, 1 in (eased).
+    pub fn hold_weight(&self) -> f32 {
+        self.hold.map_or(0.0, |h| ease(h.weight))
+    }
+
+    /// Asks for the `hold` pose (a second thread over the state's, the right arm raised) or for its end; the steps after blend
+    /// it in or out. Nothing when the shape has no `hold` sequence.
     pub fn set_holding(&mut self, shape: &Shape, on: bool) {
-        match (on, self.holding, self.sequences.hold) {
-            (true, None, Some(seq)) => {
-                if let Some(t) = self.instance.create_thread(shape) {
-                    self.instance.set_sequence(shape, t, seq as i32, 0.0);
-                    self.holding = Some(t);
-                }
-            }
-            (false, Some(t), _) => {
-                self.instance.destroy_thread(shape, t);
-                self.holding = None;
-            }
-            _ => return,
+        let Some(seq) = self.sequences.hold else {
+            return;
+        };
+        self.hold_wanted = on;
+        if on
+            && self.hold.is_none()
+            && let Some(thread) = self.instance.create_thread(shape)
+        {
+            self.instance.set_sequence(shape, thread, seq as i32, 0.0);
+            self.hold = Some(Hold {
+                thread,
+                weight: 0.0,
+            });
         }
-        self.instance.set_all_dirty();
-        self.animate(shape);
+    }
+
+    /// Moves the hold's weight `dt` seconds toward where it is asked to be; a hold gone out leaves its thread.
+    fn blend_hold(&mut self, shape: &Shape, dt: f32) {
+        let Some(hold) = self.hold.as_mut() else {
+            return;
+        };
+        let d = dt / HOLD_BLEND;
+        hold.weight = if self.hold_wanted {
+            (hold.weight + d).min(1.0)
+        } else {
+            (hold.weight - d).max(0.0)
+        };
+        if !self.hold_wanted && hold.weight <= 0.0 {
+            self.instance.destroy_thread(shape, hold.thread);
+            self.hold = None;
+        }
     }
 
     pub fn state(&self) -> State {
@@ -304,6 +342,7 @@ impl Figure {
             t.time_scale = scale;
         }
         self.instance.advance_time(shape, self.thread, dt);
+        self.blend_hold(shape, dt);
         self.animate(shape);
         changed
     }
@@ -322,12 +361,59 @@ impl Figure {
         self.state = state;
     }
 
+    /// Poses the figure: with the hold part of the way in, the pose without it blended toward the pose with it.
     fn animate(&mut self, shape: &Shape) {
+        let (Some(hold), Some(hold_seq)) = (self.hold, self.sequences.hold) else {
+            self.pose(shape, None);
+            return;
+        };
+        if hold.weight >= 1.0 {
+            self.pose(shape, None);
+            return;
+        }
+        // Without the hold: its thread plays the state's sequence where the state's thread is, which poses nothing else.
+        let (seq, pos) = {
+            let t = self.thread();
+            (t.sequence.map_or(-1, |s| s as i32), t.pos)
+        };
+        self.pose_with(shape, hold.thread, seq, pos, None);
+        let (rotations, translations) = self.instance.local_pose();
+        let blend = PoseBlend {
+            rotations,
+            translations,
+            weight: ease(hold.weight),
+        };
+        self.pose_with(shape, hold.thread, hold_seq as i32, 0.0, Some(blend));
+    }
+
+    /// Poses the figure with the hold's thread playing `seq` at `pos`, through `blend`.
+    fn pose_with(
+        &mut self,
+        shape: &Shape,
+        thread: ThreadId,
+        seq: i32,
+        pos: f32,
+        blend: Option<PoseBlend>,
+    ) {
+        self.instance.set_sequence(shape, thread, seq, pos);
+        self.pose(shape, blend);
+    }
+
+    fn pose(&mut self, shape: &Shape, blend: Option<PoseBlend>) {
+        if blend.is_some() || self.instance.pose_blend().is_some() {
+            self.instance.set_pose_blend(blend);
+        }
         // The figure's own shape: nothing to run out of.
         let _ = self
             .instance
             .animate(shape, self.detail, None, &mut |_| true);
     }
+}
+
+/// Smoothstep: a weight that starts and ends slowly.
+fn ease(w: f32) -> f32 {
+    let w = w.clamp(0.0, 1.0);
+    w * w * (3.0 - 2.0 * w)
 }
 
 #[cfg(test)]
@@ -345,6 +431,55 @@ mod tests {
         assert!((s.walk_speed - torque_example_assets::shapes::WALK_SPEED).abs() < 1e-4);
         assert!((s.run_speed - torque_example_assets::shapes::RUN_SPEED).abs() < 1e-4);
         assert_eq!(ground_speed(&shape, s.idle), 0.0);
+    }
+
+    /// Where the right hand (`mount0`) is in the figure's own space.
+    fn hand(shape: &Shape, f: &Figure) -> [f32; 3] {
+        let n = shape.find_name(b"mount0").unwrap();
+        let node = shape.nodes.iter().position(|x| x.name == n).unwrap();
+        torque::shapes::math::mul_p(&f.instance().node_transforms()[node], [0.0; 3])
+    }
+
+    #[test]
+    fn the_hold_pose_blends_in_and_out_without_a_jump() {
+        let shape = figure_shape();
+        let mut f = Figure::new(&shape, 0).unwrap();
+        let walk = Input {
+            forward: 1.0,
+            ..Input::default()
+        };
+        let step = |f: &mut Figure| f.step(&shape, &walk, [0.0, 1.0], [1.0, 0.0], 1.0 / 60.0);
+        for _ in 0..60 {
+            step(&mut f);
+        }
+        let down = hand(&shape, &f);
+        // In: the hand rises over HOLD_BLEND, never more than a share of the way in one frame.
+        f.set_holding(&shape, true);
+        let mut last = hand(&shape, &f);
+        let mut most = 0.0f32;
+        for _ in 0..30 {
+            step(&mut f);
+            let now = hand(&shape, &f);
+            most = most.max((now[2] - last[2]).abs());
+            last = now;
+        }
+        let up = hand(&shape, &f);
+        assert_eq!(f.hold_weight(), 1.0);
+        let rise = up[2] - down[2];
+        assert!(rise > 0.3, "the hand is raised: {down:?} {up:?}");
+        assert!(most < 0.25 * rise, "a frame moves it {most} of {rise}");
+        // Out: the same the other way, and the thread is gone once the arm is down.
+        f.set_holding(&shape, false);
+        let mut most = 0.0f32;
+        let mut last = hand(&shape, &f);
+        for _ in 0..30 {
+            step(&mut f);
+            let now = hand(&shape, &f);
+            most = most.max((now[2] - last[2]).abs());
+            last = now;
+        }
+        assert!(!f.holding() && f.instance().thread_count() == 1);
+        assert!(most < 0.25 * rise, "a frame moves it {most} of {rise}");
     }
 
     #[test]

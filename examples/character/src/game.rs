@@ -175,9 +175,7 @@ impl CharacterGame {
             ZOOM_STEP.powf(zoom / 120.0),
         );
         let holding = self.number("$charPistol") != 0.0;
-        if holding != self.figure.holding() {
-            self.figure.set_holding(self.shape.shape(), holding);
-        }
+        self.figure.set_holding(self.shape.shape(), holding);
         let (forward, right) = (self.orbit.forward(), self.orbit.right());
         if self
             .figure

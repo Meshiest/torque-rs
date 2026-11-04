@@ -144,8 +144,8 @@ fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
     assert!(game.held_pistol().is_none());
     game.key(keys::F, true);
     game.key(keys::F, false);
-    run(&mut game, 100);
-    assert!(game.figure().holding());
+    run(&mut game, 300);
+    assert!(game.figure().holding() && game.figure().hold_weight() == 1.0);
     let held = game.held_pistol().unwrap();
     // The barrel points the way the figure faces (+y), level, at about shoulder height in front of it.
     let ahead = held.mul_v([0.0, 1.0, 0.0]);
@@ -165,5 +165,10 @@ fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
     game.key(keys::F, true);
     game.key(keys::F, false);
     run(&mut game, 50);
+    assert!(
+        game.figure().holding() && game.figure().hold_weight() < 1.0,
+        "the arm goes down over a moment"
+    );
+    run(&mut game, 300);
     assert!(!game.figure().holding() && game.held_pistol().is_none());
 }
