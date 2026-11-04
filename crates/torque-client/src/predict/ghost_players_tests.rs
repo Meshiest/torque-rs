@@ -87,3 +87,24 @@ fn the_yaw_warps_the_short_way_round() {
     m.advance(MAX_WARP);
     assert!(wrap_angle(m.yaw() + 3.0).abs() < 1e-4, "{}", m.yaw());
 }
+
+#[test]
+fn a_landing_player_is_not_run_on_through_the_floor() {
+    let falling = Update {
+        position: [0.0, 0.0, 0.01],
+        velocity: [0.0, 6.0, -7.0],
+        yaw: 0.0,
+        head: 0.0,
+    };
+    let mut m = GhostMotion::new(Update {
+        position: [0.0, -0.2, 0.25],
+        ..falling
+    });
+    m.advance(0.03);
+    m.receive(falling);
+    for _ in 0..20 {
+        m.advance(0.016);
+        assert!(m.position()[2] >= 0.01 - 1e-6, "{:?}", m.position());
+    }
+    assert!(m.position()[1] > 0.5, "still runs on along the ground");
+}
