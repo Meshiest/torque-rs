@@ -30,17 +30,9 @@ fn client(name: &str) -> ArenaGame {
 }
 
 /// The center of a control placed straight on the screen.
-fn center(game: &ArenaGame, name: &str) -> (i32, i32) {
-    let id = game.vm().objects().find(name.as_bytes()).expect(name);
-    let field = |f: &[u8]| -> Vec<i32> {
-        let text = game.vm().objects().field(id, f, b"").unwrap_or_default();
-        String::from_utf8_lossy(&text)
-            .split_whitespace()
-            .map(|n| n.parse().unwrap())
-            .collect()
-    };
-    let (pos, ext) = (field(b"position"), field(b"extent"));
-    (pos[0] + ext[0] / 2, pos[1] + ext[1] / 2)
+fn center(game: &mut ArenaGame, name: &str) -> (i32, i32) {
+    let [x, y, w, h] = game.control_rect(name).unwrap();
+    (x + w / 2, y + h / 2)
 }
 
 fn click(game: &mut ArenaGame, at: (i32, i32)) {
@@ -123,7 +115,7 @@ fn a_typed_address_and_the_connect_button_join_a_game() {
 fn typed_keys_and_enter_connect_and_a_bare_address_means_port_28000() {
     let mut g = client("Ann");
     g.call("showJoin", &[]).unwrap();
-    let at = center(&g, "AddressEdit");
+    let at = center(&mut g, "AddressEdit");
     click(&mut g, at);
     for vk in [
         b'1', b'2', b'7', VK_PERIOD, b'0', VK_PERIOD, b'0', VK_PERIOD, b'1',

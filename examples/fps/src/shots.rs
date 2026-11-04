@@ -334,6 +334,70 @@ fn watch_bob(a: &mut Seat, offset: [f32; 3], aim: f32) {
     a.eye = Some(eye);
 }
 
+/// The main menu, the host choice and the join screen (with a game in its list) at each of `sizes`, written into `dir` as
+/// `main-<w>x<h>.png`, `host-<w>x<h>.png` and `join-<w>x<h>.png`. Returns the paths.
+pub fn write_menus(
+    dir: &Path,
+    sizes: &[(u32, u32)],
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let first = *sizes.first().ok_or("no sizes")?;
+    let seat = |name: &str| -> Result<Seat, String> {
+        let mut game = ArenaGame::new(
+            make_files().map_err(|e| e.to_string())?,
+            ClientOptions {
+                net: NetMode::Loopback,
+                name: name.to_string(),
+                port: 0,
+                ..ClientOptions::default()
+            },
+        )?;
+        game.host.surface_size(first);
+        Ok(Seat {
+            view: game.view(&gpu),
+            target: gpu.offscreen(first.0, first.1).map_err(|e| e.to_string())?,
+            eye: None,
+            game,
+        })
+    };
+    let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
+    a.game.call("hostGame", &["lan"])?;
+    run_until(&gpu, &mut a, &mut b, "the hosted game", |a, _| {
+        a.game.in_game()
+    })?;
+    let port = a.game.hosted_address().ok_or("no hosted address")?.port();
+    b.game.set_global("$Arena::Port", &port.to_string());
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut paths = Vec::new();
+    for &size in sizes {
+        b.game.host.surface_size(size);
+        b.target = gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?;
+        for (screen, show) in [
+            ("main", "showMainMenu"),
+            ("host", "showHost"),
+            ("join", "showJoin"),
+        ] {
+            b.game.call(show, &[])?;
+            if screen == "join" {
+                run_until(&gpu, &mut a, &mut b, "the list of games", |_, b| {
+                    b.game
+                        .global("$Arena::ServerRows")
+                        .parse::<u32>()
+                        .is_ok_and(|n| n > 0)
+                })?;
+                b.game
+                    .call("eval", &["AddressEdit.setValue(\"192.168.1.20:28000\");"])?;
+            }
+            run(&gpu, &mut [&mut a, &mut b], 64)?;
+            let path = dir.join(format!("{screen}-{}x{}.png", size.0, size.1));
+            write_png(&b.picture(&gpu)?, &path).map_err(|e| e.to_string())?;
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
 /// The motion pictures at `size`, written into `dir`: Bob stepping sideways (left, then right), walking backward and jumping,
 /// seen by a camera beside him; Bob looking up, level and down; Bob knocked out from the front (falling backward) and from behind
 /// (falling forward), a few frames of each fall and the body lying still; Ann's first-person pistol at rest, then the frames

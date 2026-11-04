@@ -39,17 +39,9 @@ fn object(game: &ArenaGame, name: &str) -> u32 {
 }
 
 /// The center of a control placed straight on the menu.
-fn center(game: &ArenaGame, name: &str) -> (i32, i32) {
-    let id = object(game, name);
-    let field = |f: &[u8]| -> Vec<i32> {
-        let text = game.vm().objects().field(id, f, b"").unwrap_or_default();
-        String::from_utf8_lossy(&text)
-            .split_whitespace()
-            .map(|n| n.parse().unwrap())
-            .collect()
-    };
-    let (pos, ext) = (field(b"position"), field(b"extent"));
-    (pos[0] + ext[0] / 2, pos[1] + ext[1] / 2)
+fn center(game: &mut ArenaGame, name: &str) -> (i32, i32) {
+    let [x, y, w, h] = game.control_rect(name).unwrap();
+    (x + w / 2, y + h / 2)
 }
 
 fn click(game: &mut ArenaGame, at: (i32, i32)) {
@@ -72,15 +64,15 @@ fn over(game: &ArenaGame, name: &str) -> bool {
 #[test]
 fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
     let mut g = client();
-    let host = center(&g, "HostButton");
+    let host = center(&mut g, "HostButton");
     g.host.mouse_move(host);
     assert!(over(&g, "HostButton"), "the pointer over Host hovers it");
-    let join = center(&g, "JoinButton");
+    let join = center(&mut g, "JoinButton");
     g.host.mouse_move(join);
     assert!(!over(&g, "HostButton"), "leaving Host lets it go");
     assert!(over(&g, "JoinButton"));
 
-    let name = center(&g, "NameEdit");
+    let name = center(&mut g, "NameEdit");
     click(&mut g, name);
     for vk in *b"BOB" {
         press(&mut g, vk);
@@ -108,7 +100,7 @@ fn name_value(game: &mut ArenaGame) -> String {
 #[test]
 fn the_name_box_takes_the_desktop_editing_keys() {
     let mut g = client();
-    let name = center(&g, "NameEdit");
+    let name = center(&mut g, "NameEdit");
     click(&mut g, name);
     for vk in [b'B', b'O', b'B', VK_SPACE, b'J', b'O'] {
         press(&mut g, vk);
@@ -141,10 +133,10 @@ fn the_system_cursor_is_a_pointer_over_buttons_and_a_text_cursor_over_the_name_b
     let mut g = client();
     g.host.draw_frame();
     assert!(g.host.system_cursor());
-    let host = center(&g, "HostButton");
+    let host = center(&mut g, "HostButton");
     g.host.mouse_move(host);
     assert_eq!(g.host.cursor_shape(), CursorShape::Pointer, "a button");
-    let name = center(&g, "NameEdit");
+    let name = center(&mut g, "NameEdit");
     g.host.mouse_move(name);
     assert_eq!(g.host.cursor_shape(), CursorShape::Text, "the name box");
     g.host.mouse_move((1, 1));
@@ -196,10 +188,10 @@ fn the_system_cursor_stands_in_while_the_canvas_draws_none() {
 #[test]
 fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
     let mut g = client();
-    let host = center(&g, "HostButton");
+    let host = center(&mut g, "HostButton");
     click(&mut g, host);
     g.step(32);
-    let lan = center(&g, "HostLanButton");
+    let lan = center(&mut g, "HostLanButton");
     click(&mut g, lan);
     for _ in 0..200 {
         g.step(32);
@@ -248,10 +240,10 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
 /// A client in the arena it hosts.
 fn in_arena() -> ArenaGame {
     let mut g = client();
-    let host = center(&g, "HostButton");
+    let host = center(&mut g, "HostButton");
     click(&mut g, host);
     g.step(32);
-    let lan = center(&g, "HostLanButton");
+    let lan = center(&mut g, "HostLanButton");
     click(&mut g, lan);
     for _ in 0..200 {
         g.step(32);
@@ -264,20 +256,9 @@ fn in_arena() -> ArenaGame {
     g
 }
 
-/// The center of a control in the pause panel (placed in the panel, the panel in the dialog).
-fn in_panel(game: &ArenaGame, name: &str) -> (i32, i32) {
-    let panel = object(game, "PausePanel");
-    let text = game
-        .vm()
-        .objects()
-        .field(panel, b"position", b"")
-        .unwrap_or_default();
-    let at: Vec<i32> = String::from_utf8_lossy(&text)
-        .split_whitespace()
-        .map(|n| n.parse().unwrap())
-        .collect();
-    let (x, y) = center(game, name);
-    (at[0] + x, at[1] + y)
+/// The center of a control in the pause panel.
+fn in_panel(game: &mut ArenaGame, name: &str) -> (i32, i32) {
+    center(game, name)
 }
 
 #[test]
@@ -300,7 +281,7 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
         "W does not reach the play map"
     );
     g.key(b'W', false);
-    let resume = in_panel(&g, "ResumeButton");
+    let resume = in_panel(&mut g, "ResumeButton");
     g.host.mouse_move(resume);
     assert!(over(&g, "ResumeButton"), "the pointer hovers Resume");
 
@@ -341,7 +322,7 @@ fn leave_game_from_the_pause_menu_returns_to_the_main_menu() {
     press(&mut g, VK_ESCAPE);
     g.step(32);
     g.host.draw_frame();
-    let leave = in_panel(&g, "LeaveButton");
+    let leave = in_panel(&mut g, "LeaveButton");
     click(&mut g, leave);
     g.step(32);
     assert!(!g.in_game(), "Leave game leaves the arena");

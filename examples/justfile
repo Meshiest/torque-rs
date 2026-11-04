@@ -71,6 +71,10 @@ fps-check:
 fps-shots dir="../target/fps-shots":
     cargo run -p torque-example-fps --release --bin fps-client -- --shots {{dir}}
 
+# The arena's menus (main, host choice, join) at 1280x720, 1920x1080 and 2560x1080, drawn offscreen into `dir`
+fps-menu-shots dir="../target/fps-menu-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --menu-shots {{dir}}
+
 # The arena's motion pictures (side steps, the walk backward, the look, the falls, a shot's kick and flash, the reload HUD, the
 # pause menu), drawn offscreen into `dir`
 fps-motion-shots dir="../target/fps-motion-shots":

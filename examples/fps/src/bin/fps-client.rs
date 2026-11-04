@@ -6,7 +6,7 @@
 //! that address instead of this computer's LAN address, `--name <name>` sets the player's name, `--shots <dir>` draws the review
 //! pictures offscreen into `dir` (two clients over the loopback address, no window), and `--motion-shots <dir>` the pictures of
 //! the figures' and the pistol's motion (side steps, the walk backward, the look, the falls, a shot, the reload, the pause
-//! menu).
+//! menu), and `--menu-shots <dir>` the menus at 1280x720, 1920x1080 and 2560x1080.
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let mut shots_dir = None;
     let mut motion_dir = None;
+    let mut menu_dir = None;
     let mut options = ClientOptions::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -33,6 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     args.next().ok_or("--motion-shots needs a folder")?,
                 ))
             }
+            "--menu-shots" => {
+                menu_dir = Some(PathBuf::from(
+                    args.next().ok_or("--menu-shots needs a folder")?,
+                ))
+            }
             "--bind" => {
                 let text = args.next().ok_or("--bind needs an address")?;
                 options.host_address = text
@@ -42,6 +48,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--name" => options.name = args.next().ok_or("--name needs a name")?,
             _ => return Err(format!("unknown argument {arg}").into()),
         }
+    }
+    if let Some(dir) = menu_dir {
+        let sizes = [(1280, 720), (1920, 1080), (2560, 1080)];
+        for path in shots::write_menus(&dir, &sizes, GameFiles::bundled)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
     }
     if let Some(dir) = motion_dir {
         for path in shots::write_motion(&dir, SHOT_SIZE, GameFiles::bundled)? {

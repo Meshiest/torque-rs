@@ -224,6 +224,18 @@ impl ArenaGame {
             .map_err(|e| format!("{function}: {e}"))
     }
 
+    /// Where the control `name` is on the screen: its left, top, width and height (what the tests and the pictures place clicks
+    /// and checks by; the script's `getScreenPosition` and `getExtent`).
+    pub fn control_rect(&mut self, name: &str) -> Result<[i32; 4], String> {
+        let code = format!("return {name}.getScreenPosition() SPC {name}.getExtent();");
+        let text = self.call("eval", &[&code])?;
+        let n: Vec<i32> = text
+            .split_whitespace()
+            .filter_map(|w| w.parse().ok())
+            .collect();
+        <[i32; 4]>::try_from(n).map_err(|_| format!("{name}: no place on the screen ({text:?})"))
+    }
+
     /// Sets a global of the client's scripts.
     pub fn set_global(&mut self, name: &str, value: &str) {
         self.vm_mut().set_global(name, value);
