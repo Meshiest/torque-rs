@@ -90,7 +90,7 @@ impl std::fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
-/// What the server tells its host (the `example-server` program prints them).
+/// What the server tells its host (the `min-server` program prints them).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerNote {
     /// A line the scripts printed.

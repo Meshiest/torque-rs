@@ -1,0 +1,46 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The headless examples: the umbrella crate's examples and a short run of the minimal server
+headless:
+    cargo run -p torque --example script
+    cargo run -p torque --example shape
+    cargo run -p torque --example collide
+    cargo run -p torque --example net
+    cargo run -p torque-example --bin min-server -- --port 0 --ticks 64
+
+# The minimal dedicated server: the bundled game on 127.0.0.1:28000 (`--ticks N` stops it after N ticks)
+min-server *args:
+    cargo run -p torque-example --bin min-server -- {{args}}
+
+# The minimal client: connects to the minimal server and prints the ghosts it is sent
+min-client *args:
+    cargo run -p torque-example --bin min-client -- {{args}}
+
+# The example games' asset kit (shapes and textures made from code), written into `dir`
+assets dir="../target/example-assets":
+    cargo run -p torque-example-assets -- {{dir}}
+
+# The animated character example in a window (W A S D move, Shift run, Space jump, F pistol, mouse or Q/E orbit, Esc quit)
+character:
+    cargo run -p torque-example-character --release
+
+# The character example's idle, walk and jump pictures, drawn offscreen into `dir`
+character-shots dir="../target/character-shots":
+    cargo run -p torque-example-character --release -- --shots {{dir}}
+
+# The level demo in a window: a menu of maps, then the box figure on them (W A S D move, Shift walk, Space jump,
+# mouse look, V camera, R restart, Esc menu)
+level-demo:
+    cargo run -p torque-example-level-demo --release
+
+# The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
+# offscreen into `dir`
+level-demo-shots dir="../target/level-demo-shots":
+    cargo run -p torque-example-level-demo --release -- --shots {{dir}}
+
+# Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
+kit-shots dir="../target/kit-shots":
+    cargo run -p torque-example-common --release --example kit-shots -- {{dir}}

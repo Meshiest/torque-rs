@@ -6,8 +6,8 @@ together into a small dedicated server and a client that connect over the loopba
 piece below is a few dozen lines there.
 
 ```
-just example-server                 # the bundled game on 127.0.0.1:28000; --ticks N stops it after N ticks
-just example-client                 # in another terminal: connects and prints the ghosts it is sent
+just examples/min-server           # the bundled game on 127.0.0.1:28000; --ticks N stops it after N ticks
+just examples/min-client           # in another terminal: connects and prints the ghosts it is sent
 ```
 
 ```

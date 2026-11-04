@@ -45,8 +45,9 @@ The first development version. Nothing is published yet; this is what exists.
   the `device` feature.
 - `torque`: the umbrella crate, re-exporting the engine crates behind features, with headless examples (`script`,
   `shape`, `collide`, `net`).
-- `torque-example`: an example dedicated server (the bundled script mission, TGE's records) and a client that connect over the
-  loopback address and print the ghosts the client is sent.
+- `torque-example`: a minimal dedicated server (the bundled script mission, TGE's records) and client, `min-server` and
+  `min-client` (`just examples/min-server`, `just examples/min-client`), that connect over the loopback address and print the
+  ghosts the client is sent. The example recipes are in `examples/justfile`.
 - `torque-example-assets` (`examples/assets`): the example games' asset kit, made from code at run time: a unit cube with a
   collision hull, a box figure (eye, camera and mount nodes; idle, walk, run and jump sequences), a pistol with its image
   nodes and a fire sequence, a projectile, and their PNG textures.
