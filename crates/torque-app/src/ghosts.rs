@@ -29,7 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
-use crate::ghost_world::images::ImageRecoil;
+use torque_ghost_world::images::ImageRecoil;
 use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
 use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::images::{HeldMotion, ImageClock, ImageDb, node_named, sight_offset};
@@ -46,13 +46,13 @@ use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Assets, Draw, Filter, Vertex};
 
 use super::view::WorldView;
-use crate::client::conn::tge::TgeWorld;
-use crate::client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
-use crate::client::predict::ghost_players::GhostPlayers;
-use crate::ghost_world::tge::TgeClientSet;
-use crate::ghost_world::world::{ClientWorld, Pose, ProjectileLook};
-use crate::ghosts::{TgeClass, TgeRecord, Value};
-use crate::shapes::instance::ShapeInstance;
+use torque_client::conn::tge::TgeWorld;
+use torque_client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
+use torque_client::predict::ghost_players::GhostPlayers;
+use torque_ghost_world::tge::TgeClientSet;
+use torque_ghost_world::world::{ClientWorld, Pose, ProjectileLook};
+use torque_ghosts::{TgeClass, TgeRecord, Value};
+use torque_shapes::instance::ShapeInstance;
 
 /// The record world the scene draws.
 type World = ClientWorld<TgeClientSet>;
@@ -1053,7 +1053,7 @@ impl GhostScene {
                     let end = x.position.map(|v| v.get());
                     self.retire(bolt, Some(end));
                 }
-                use crate::collide::types::{PLAYER, VEHICLE};
+                use torque_collide::types::{PLAYER, VEHICLE};
                 if x.hit_type != 0 && self.burst.insert(index) {
                     let at = x.position.map(|v| v.get());
                     let normal = x.normal.map(|v| v.get());
@@ -1086,7 +1086,7 @@ impl GhostScene {
                     continue;
                 };
                 let velocity = initial.velocity.map_or([0.0; 3], |v| {
-                    v.value(crate::ghosts::projectile::VELOCITY_NORMAL_BITS)
+                    v.value(torque_ghosts::projectile::VELOCITY_NORMAL_BITS)
                 });
                 // Drawn from its source's muzzle as the frame draws it.
                 let muzzle = initial.source.as_ref().and_then(|s| {

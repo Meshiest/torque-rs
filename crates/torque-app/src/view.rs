@@ -11,9 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::gui::GuiDraws;
-use crate::shapes::instance::ShapeInstance;
-use crate::shapes::shape::Shape;
+use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
@@ -30,6 +28,8 @@ use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::world::ShapeWorld;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
+use torque_shapes::instance::ShapeInstance;
+use torque_shapes::shape::Shape;
 
 /// The field of view a frame is drawn with when its eye names none (degrees, horizontal).
 pub const DEFAULT_FOV: u8 = 75;

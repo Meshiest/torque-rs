@@ -28,6 +28,7 @@
 //! | `gui` | `gui` | `torque-gui` | the GUI object model, layout and the script methods of GUI classes |
 //! | `audio` | `audio` | `torque-audio` | sound decoding, sources, channels and the mixer |
 //! | `client` | `client` | `torque-client` | the client's engine half: the connection, prediction, action maps, the server query |
+//! | `app` | `app` (off by default) | `torque-app` | what a game made on the engine shares: files, server, client, window, world view, pictures |
 //!
 //! Optional features that are off by default:
 //!
@@ -41,7 +42,7 @@
 //!
 //! - `app`: [`app`], what a game made on the engine shares: its files, a server, a client with the server it hosts, a window,
 //!   the world view under the GUI and offscreen pictures (over `torque-render-core`, `torque-render-hd`,
-//!   `torque-render-scene` and winit).
+//!   `torque-render-scene` and winit; the `torque-app` crate).
 //!
 //! The examples in this crate's `examples/` folder run headless: `cargo run -p torque --example script` (also `shape`,
 //! `collide` and `net`). The `torque-example` crate holds a dedicated server and a client built on this crate, which
@@ -59,8 +60,7 @@ pub mod script {
 }
 
 #[cfg(feature = "app")]
-pub mod app;
-
+pub use torque_app as app;
 #[cfg(feature = "audio")]
 pub use torque_audio as audio;
 #[cfg(feature = "client")]

@@ -1,4 +1,4 @@
-//! A game's server: torque-server's main loop with TGE's game classes ([`crate::server::game`]) and a network host of Torque's
+//! A game's server: torque-server's main loop with TGE's game classes ([`torque_server::game`]) and a network host of Torque's
 //! net game ([`TorqueNet`]), running the game's `server.cs` and the function that starts its map.
 //!
 //! **The socket** ([`Listen`]). On UDP the server binds one socket on the address it is given: `127.0.0.1` keeps the game on
@@ -6,7 +6,7 @@
 //! when allowed as public) opens it to players outside the network too (the router must forward its UDP port). The bind policy
 //! refuses any other public address. The LAN list's pings and queries are answered on the same socket. In memory, the server's
 //! transport is bound at an address and its other end ([`GameServer::memory_end`]) carries the datagrams: a client in the same
-//! process joins it with no socket opened ([`crate::app::client::ClientNet::Memory`]).
+//! process joins it with no socket opened ([`crate::client::ClientNet::Memory`]).
 //!
 //! **A tick** ([`GameServer::tick`]) is one 32 ms pass of the main loop: the datagrams waiting, the scripts' events, the
 //! objects' ticks and a packet to every client.
@@ -16,16 +16,16 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::script::vm::host::MemFiles;
-use crate::script::vm::vm::Vm;
-use crate::server::game::GameParts;
-use crate::server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
-use crate::server::net::transport::{
+use torque_server::game::GameParts;
+use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
+use torque_server::net::transport::{
     BindPolicy, LanRules, MemoryEnd, MemoryTransport, SharedTransport, Transport, UdpTransport,
 };
-use crate::server::net::{Host, HostParts, NetClock, NetShared, attach_host};
-use crate::server::server::{Server, TICK_MS};
-use crate::server::state::ServerState;
+use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
+use torque_server::server::{Server, TICK_MS};
+use torque_server::state::ServerState;
+use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::vm::Vm;
 
 /// The UDP port number games listen on (and the LAN list asks): TGE's.
 pub const DEFAULT_PORT: u16 = 28_000;
@@ -116,10 +116,10 @@ impl GameServer {
         };
 
         let mut vm = Vm::new();
-        crate::game::specs::install(&mut vm);
+        torque_game::specs::install(&mut vm);
         vm.set_file_host(files);
         let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
-        let game = crate::server::game::install(&mut vm, &state);
+        let game = torque_server::game::install(&mut vm, &state);
         let mut server = Server::with_state(vm, Rc::clone(&state));
         let shared = attach_host(
             &mut server.vm,

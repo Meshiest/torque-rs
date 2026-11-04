@@ -51,7 +51,7 @@ The first development version. Nothing is published yet; this is what exists.
   the `device` feature.
 - `torque`: the umbrella crate, re-exporting the engine crates behind features, with headless examples (`script`,
   `shape`, `collide`, `net`).
-- `torque::app` (the umbrella's `app` feature, off by default: it needs a GPU): what a game on the engine shares: its game
+- `torque-app`, re-exported as `torque::app` (the umbrella's `app` feature, off by default: it needs a GPU): what a game on the engine shares: its game
   folder in memory, a server on UDP or an in-memory link (with a dedicated server's pacing), a client with the server it hosts,
   the world view under the GUI, an orbit camera, a window, offscreen pictures and the command line's flags. The example games
   run on it, with their shared scripts (connection lifecycle, mission loading, figures, falls, notes) in
