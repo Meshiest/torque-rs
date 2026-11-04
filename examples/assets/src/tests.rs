@@ -222,11 +222,24 @@ fn the_hands_reach_mid_thigh_and_the_hand_holds_the_mount() {
 }
 
 #[test]
-fn the_jump_raises_the_arms_tucks_the_knees_and_holds_its_last_key() {
+fn the_jump_swings_the_arms_forward_tucks_the_knees_and_holds_its_last_key() {
     let shape = Shape::for_server(shapes::figure());
-    let hand = posed(&shape, "jump", 1.0, "elbow_r", [0.0, 0.0, -shapes::FOREARM]);
-    let shoulder = posed(&shape, "jump", 1.0, "arm_r", [0.0; 3]);
-    assert!(hand[2] > shoulder[2] + 0.4, "{hand:?} {shoulder:?}");
+    for side in ["l", "r"] {
+        let hand = posed(
+            &shape,
+            "jump",
+            1.0,
+            &format!("elbow_{side}"),
+            [0.0, 0.0, -shapes::FOREARM],
+        );
+        let shoulder = posed(&shape, "jump", 1.0, &format!("arm_{side}"), [0.0; 3]);
+        // In front of the figure, at about shoulder height: not overhead.
+        assert!(hand[1] > shoulder[1] + 0.4, "{side}: {hand:?} {shoulder:?}");
+        assert!(
+            (hand[2] - shoulder[2]).abs() < 0.2,
+            "{side}: {hand:?} {shoulder:?}"
+        );
+    }
     for side in ["knee_l", "knee_r"] {
         let foot = posed(&shape, "jump", 1.0, side, [0.0, 0.0, -shapes::SHIN]);
         assert!(foot[2] > 0.3, "tucked up: {side} {foot:?}");
