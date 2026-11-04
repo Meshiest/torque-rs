@@ -224,6 +224,7 @@ pub fn water_coverage(vm: &Vm, id: ObjId) -> f32 {
 }
 
 pub fn register(vm: &mut Vm) {
+    crate::scene::hitboxes::register(vm);
     register_method(vm, "ShapeBase", "setVelocity", |vm, c| {
         if let Some(id) = c.this_object {
             let v = (crate::library::get().set_velocity)(vec3(c, 2));
