@@ -1,17 +1,46 @@
 //! A window's device: its surface, the backends a window may draw with and their order, and the surface's configuration.
+//!
+//! A window tries Vulkan first, then Direct3D 12, then Metal ([`WINDOW_BACKENDS`]); a backend with no adapter, or whose surface
+//! does not start, falls back to the next. Two things go ahead of that order: wgpu's own `WGPU_BACKEND` environment variable
+//! ([`BACKEND_ENV`], for one run) and the caller's own choice ([`window_gpu_prefer`]'s `first`, such as a profile's display
+//! device). Offscreen devices ([`Gpu::new`](crate::Gpu::new)) keep their own order.
 
 use crate::{COLOR_FORMAT, Gpu, RenderError};
 
-/// The colour format a window's surface must offer: the frames' own (`Rgba8Unorm`, no sRGB step: frames are drawn in gamma space).
+/// The color format a window's surface must offer: the frames' own (`Rgba8Unorm`, no sRGB step: frames are drawn in gamma space).
 pub const SURFACE_FORMAT: wgpu::TextureFormat = COLOR_FORMAT;
 
-/// The backends a window may draw with, in the order this crate prefers them (Direct3D 12 first on Windows: what Windows players
-/// expect, and clear of Vulkan driver quirks).
+/// The backends a window may draw with, in the order a window tries them: Vulkan first, then Direct3D 12 and Metal. Vulkan makes
+/// the renderers' pipelines in well under a second (and the driver keeps them for the next start); Direct3D 12's go through its
+/// older shader compiler and take the enhanced renderer more than ten seconds at every start.
 pub const WINDOW_BACKENDS: [wgpu::Backends; 3] = [
-    wgpu::Backends::DX12,
     wgpu::Backends::VULKAN,
+    wgpu::Backends::DX12,
     wgpu::Backends::METAL,
 ];
+
+/// The environment variable that puts backends ahead of a window's order for one run: wgpu's own `WGPU_BACKEND`, a comma list
+/// such as `dx12` or `vulkan,metal` (`vk`, `d3d12` and `mtl` too). The ones it names are tried first, in [`WINDOW_BACKENDS`]'
+/// order; names of backends a window does not draw with are left out.
+pub const BACKEND_ENV: &str = "WGPU_BACKEND";
+
+/// The order a window tries backends in: those `env` names ([`BACKEND_ENV`]), then `first`, then the rest of
+/// [`WINDOW_BACKENDS`], each once.
+pub fn window_order(
+    env: Option<wgpu::Backends>,
+    first: Option<wgpu::Backends>,
+) -> Vec<wgpu::Backends> {
+    let named = WINDOW_BACKENDS
+        .into_iter()
+        .filter(|b| env.is_some_and(|e| e.contains(*b)));
+    let mut order: Vec<wgpu::Backends> = Vec::with_capacity(WINDOW_BACKENDS.len());
+    for b in named.chain(first).chain(WINDOW_BACKENDS) {
+        if !b.is_empty() && !order.contains(&b) {
+            order.push(b);
+        }
+    }
+    order
+}
 
 /// The backend a display device name (`$pref::Video::displayDevice`, [`crate::backend_name`]'s words) asks for; None for any other
 /// name ("OpenGL" among them: there is no OpenGL backend).
@@ -90,8 +119,9 @@ where
     Ok((gpu, surface, adapter))
 }
 
-/// A device for a window: the backend `first` asks for when it starts, else the others in [`WINDOW_BACKENDS`]' order (Direct3D
-/// 12 first). The last item says why `first` did not start, when it did not (the window carries on with the next that does).
+/// A device for a window: the backends [`BACKEND_ENV`] names, then the backend `first` asks for, then the others in
+/// [`WINDOW_BACKENDS`]' order (Vulkan first), the first that starts ([`window_order`]). The last item says why `first` did not
+/// start, when it was tried and did not (the window carries on with the next that does).
 #[allow(clippy::type_complexity)]
 pub fn window_gpu_prefer<T>(
     target: T,
@@ -100,8 +130,7 @@ pub fn window_gpu_prefer<T>(
 where
     T: Into<wgpu::SurfaceTarget<'static>> + Clone,
 {
-    let mut order: Vec<wgpu::Backends> = first.into_iter().collect();
-    order.extend(WINDOW_BACKENDS.into_iter().filter(|b| Some(*b) != first));
+    let order = window_order(wgpu::Backends::from_env(), first);
     let mut why_first = None;
     let mut last = RenderError::NoAdapter("no backend".into());
     for b in order {
@@ -118,7 +147,7 @@ where
     Err(last)
 }
 
-/// A device for a window, Direct3D 12 first ([`window_gpu_prefer`] with no preference). `target` is the window (anything wgpu
+/// A device for a window, Vulkan first ([`window_gpu_prefer`] with no preference). `target` is the window (anything wgpu
 /// makes a surface of).
 pub fn window_gpu<T>(target: T) -> Result<(Gpu, wgpu::Surface<'static>, wgpu::Adapter), RenderError>
 where
@@ -160,4 +189,43 @@ pub fn configure_surface_vsync(
             view_formats: vec![],
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::Backends as B;
+
+    #[test]
+    fn a_window_tries_vulkan_first() {
+        assert_eq!(window_order(None, None), [B::VULKAN, B::DX12, B::METAL]);
+    }
+
+    #[test]
+    fn the_callers_choice_goes_first() {
+        assert_eq!(
+            window_order(None, Some(B::DX12)),
+            [B::DX12, B::VULKAN, B::METAL]
+        );
+    }
+
+    #[test]
+    fn the_environment_goes_ahead_of_the_callers_choice() {
+        assert_eq!(
+            window_order(Some(B::DX12 | B::METAL), Some(B::VULKAN)),
+            [B::DX12, B::METAL, B::VULKAN]
+        );
+    }
+
+    #[test]
+    fn backends_a_window_does_not_draw_with_are_left_out() {
+        assert_eq!(
+            window_order(Some(B::GL), None),
+            [B::VULKAN, B::DX12, B::METAL]
+        );
+        assert_eq!(
+            window_order(None, Some(B::empty())),
+            [B::VULKAN, B::DX12, B::METAL]
+        );
+    }
 }
