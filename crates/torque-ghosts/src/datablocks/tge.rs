@@ -50,7 +50,7 @@ use super::weather::{
     pack_fireball_atmosphere_data, pack_fx_light_data, pack_lightning_data,
     pack_precipitation_data, pack_weather_lightning_data,
 };
-use crate::codec::{NetWidths, R, ReadCtx, decode, encode};
+use crate::codec::{Codec, Layout, NetWidths, R, ReadCtx, decode, encode};
 use crate::{ChargeFn, ObjectView};
 
 /// Declares the class enum, the record enum and their dispatch from one table: `Variant = "ClassName" (Record, pack)`.
@@ -91,6 +91,13 @@ macro_rules! datablock_classes {
             pub fn encode(&self, w: &mut BitWriter, table: &Table, widths: NetWidths) -> R {
                 match self {
                     $(TgeDatablockRecord::$variant(r) => encode(r, w, table, widths)),+
+                }
+            }
+
+            /// Runs the record's layout on `c` (on a copy: the layout takes `&mut`).
+            pub fn visit<C: Codec>(&self, c: &mut C) -> R {
+                match self {
+                    $(TgeDatablockRecord::$variant(r) => r.clone().layout(c)),+
                 }
             }
         }

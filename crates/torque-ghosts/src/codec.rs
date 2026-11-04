@@ -180,6 +180,21 @@ pub trait Codec: Sized {
         each: impl FnMut(&mut Self, &mut T) -> R,
     ) -> R;
 
+    /// The presence flag of an optional block ([`opt`]): `flag` (a codec that keeps values by kind sees it as one).
+    fn presence(&mut self, name: &'static str, v: &mut bool) -> R {
+        self.flag(name, v)
+    }
+
+    /// A float written as its raw word (`write(F32)`): `raw32` of its bits (a codec that keeps values by kind sees it as one).
+    fn float32(&mut self, name: &'static str, v: &mut u32) -> R {
+        self.raw32(name, v)
+    }
+
+    /// A datablock reference: `ranged(id, lo, hi)` (a codec that keeps values by kind sees it as one).
+    fn datablock_ref(&mut self, name: &'static str, id: &mut u32, lo: u32, hi: u32) -> R {
+        self.ranged(name, id, lo, hi)
+    }
+
     /// The id widths of the connection.
     fn widths(&self) -> NetWidths;
     /// The ghost-index width of the connection.
@@ -273,7 +288,7 @@ pub fn opt<C: Codec, T: Default>(
     f: impl FnOnce(&mut C, &mut T) -> R,
 ) -> R {
     let mut present = o.is_some();
-    c.flag(name, &mut present)?;
+    c.presence(name, &mut present)?;
     if present {
         let inner = o.get_or_insert_with(T::default);
         f(c, inner)
@@ -289,7 +304,7 @@ pub const WIRE_WHEELS: usize = 8;
 /// A datablock reference, `ranged(id, lo, hi)` over the connection's datablock-id range ([`NetWidths::datablock_range`]).
 pub fn datablock_id<C: Codec>(c: &mut C, name: &'static str, id: &mut u32) -> R {
     let (lo, hi) = c.widths().datablock_range();
-    c.ranged(name, id, lo, hi)
+    c.datablock_ref(name, id, lo, hi)
 }
 
 /// A ghost index sent as `writeRangedU32(index, 0, MaxGhostCount)`: `MaxGhostCount` is `1 << ghost bits`, so the field is one
