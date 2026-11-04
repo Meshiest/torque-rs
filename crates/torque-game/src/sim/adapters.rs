@@ -4,7 +4,8 @@
 //!   ([`crate::scene::camera::CameraClass`]), with or without a move
 //! - `Player`, `AIPlayer` (Torque: `Player::processTick`): [`super::player::tick::PlayerTicker`]
 //! - `Item` (Torque: `Item::processTick`): [`super::item::ItemTicker`]
-//! - `Projectile` (Torque: `Projectile::processTick`): the host's ([`GameTickers`])
+//! - `Projectile` (Torque: `Projectile::processTick`): the host's ([`GameTickers`]) when it names one, else
+//!   [`super::projectile::ProjectileTicker`]
 //! - `WheeledVehicle`, `FlyingVehicle` (Torque: `Vehicle::processTick`): [`super::vehicle_tick::VehicleTicker`]
 //! - every other `GameBase` class (Torque: its own): [`NoopTicker`] (not simulated here)
 //!
@@ -142,6 +143,7 @@ pub fn ticker_for(
                 return Box::new(super::player::tick::PlayerTicker { id, env, class });
             }
             "Item" => return Box::new(super::item::ItemTicker { id, env }),
+            "Projectile" => return Box::new(super::projectile::ProjectileTicker { id, env }),
             "WheeledVehicle" | "FlyingVehicle" => {
                 return Box::new(super::vehicle_tick::VehicleTicker { id, env, class });
             }

@@ -233,6 +233,8 @@ impl ObjectView for FieldView<'_> {
 /// - a simulated Player ([`torque_game::sim::player::state`]): `velocity`, `rotation` (its yaw at 2), `head`, `falling`,
 ///   `state` (the action state), `action` (the action animation), `energy`, and from its datablock `max_look_angle`,
 ///   `max_energy` and `max_damage`; the move fields are the last move's.
+/// - a simulated Projectile ([`torque_game::sim::projectile::state`]): `position`, `velocity`, `current_tick` (its age),
+///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`.
 ///
 /// The record is never left out for the controlling client (`controlled_here` false): the client draws the control object from
 /// it like any ghost.
@@ -333,9 +335,31 @@ impl GameView<'_> {
     }
 }
 
+impl GameView<'_> {
+    /// A simulated Projectile's field from its state, if the object is one.
+    fn projectile(&self, field: &str, index: usize) -> Option<Value> {
+        let s = torque_game::sim::projectile::state(self.fields.vm, self.fields.obj)?;
+        let component = |v: [f32; 3]| v.get(index).map_or(Value::Null, |f| Value::F32(*f));
+        Some(match field {
+            "position" => component(s.position),
+            "velocity" => component(s.velocity),
+            "current_tick" => Value::Int(i64::from(s.age)),
+            "source_slot" => Value::Int(i64::from(s.source_slot)),
+            "hidden" => Value::Bool(s.exploded),
+            "explosion_position" => component(s.explosion_pos),
+            "explosion_normal" => component(s.explosion_normal),
+            "collide_hit_type" => Value::Int(i64::from(s.explosion_type)),
+            _ => return None,
+        })
+    }
+}
+
 impl ObjectView for GameView<'_> {
     fn get(&self, field: &str, index: usize) -> Value {
         if let Some(v) = self.player(field, index) {
+            return v;
+        }
+        if let Some(v) = self.projectile(field, index) {
             return v;
         }
         match field {
