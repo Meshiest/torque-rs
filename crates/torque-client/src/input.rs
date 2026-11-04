@@ -7,7 +7,8 @@
 //! - `WM_LBUTTONDOWN`/`UP`, `WM_RBUTTONDOWN`/`UP`, `WM_MBUTTONDOWN`/`UP`, `WM_XBUTTONDOWN`/`UP`: mouse button 0, 1, 2, 3 make/break
 //!   (value 1/0).
 //! - `WM_MOUSEWHEEL`: a message whose own delta is at least 120 either way is a Z axis move of that delta.
-//! - `WM_KEYDOWN`/`UP`, `WM_SYSKEYDOWN`/`UP`: the key code from the virtual-key table (else the scan code's); with the extended
+//! - `WM_KEYDOWN`/`UP`, `WM_SYSKEYDOWN`/`UP`: the key code of the virtual key ([`gui::keys::vk_to_key`]: every key its own; TGE's
+//!   virtual-key table, else the scan code's, with [`gui::ext::GuiRule::TgeKeyCodes`]); with the extended
 //!   bit Return is numpad Enter and Ctrl/Alt the right ones; Shift is the right one for scan code 0x36. A down whose previous state bit
 //!   is set is a repeat. The layer keeps its own modifier bits and key states from these messages alone (Caps Lock toggles), and the
 //!   event's ascii is `ToAscii` over those states (US layout: [`gui::keys::to_ascii`]). A modifier key's own event has no modifiers.
@@ -70,6 +71,8 @@ pub enum Engine {
 pub struct Win32 {
     pub modifiers: u8,
     keys: [u8; 256],
+    /// TGE's key codes ([`gui::ext::GuiRule::TgeKeyCodes`]; [`post`] sets it from the GUI's extension), else the engine's.
+    pub tge_key_codes: bool,
 }
 
 impl Default for Win32 {
@@ -77,6 +80,7 @@ impl Default for Win32 {
         Win32 {
             modifiers: 0,
             keys: [0; 256],
+            tge_key_codes: false,
         }
     }
 }
@@ -139,7 +143,11 @@ impl Win32 {
         let extended = (lparam >> 24) & 1 != 0;
         let previous = (lparam >> 30) & 1 != 0;
         let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
-        let base = keys::vk_to_key(vk, scan);
+        let base = if self.tge_key_codes {
+            keys::tge_vk_to_key(vk, scan)
+        } else {
+            keys::vk_to_key(vk, scan)
+        };
         let code = match base {
             KEY_RETURN if extended => KEY_NUMPADENTER,
             KEY_CONTROL => KEY_LCONTROL + u16::from(extended),
@@ -256,6 +264,7 @@ pub fn post<G: ConnGame>(
     wparam: u32,
     lparam: u32,
 ) -> Result<Taken, VmError> {
+    win.tge_key_codes = gui.ext().rule(gui::ext::GuiRule::TgeKeyCodes);
     let Some(engine) = win.message(msg, wparam, lparam) else {
         return Ok(Taken::Nobody);
     };

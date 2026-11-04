@@ -222,3 +222,34 @@ fn a_bind_on_the_iso_key_saves_and_loads_back_onto_it() {
     assert_eq!(h.server.vm().global("$iso").unwrap(), b"1010");
     assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
 }
+
+/// A host that keeps TGE's key codes.
+struct TgeKeys;
+
+impl gui::GuiExtension for TgeKeys {
+    fn into_any(self: Rc<Self>) -> Rc<dyn std::any::Any> {
+        self
+    }
+
+    fn rule(&self, rule: gui::ext::GuiRule) -> bool {
+        rule == gui::ext::GuiRule::TgeKeyCodes
+    }
+}
+
+#[test]
+fn pause_is_its_own_key_unless_the_gui_keeps_tge_s_key_codes() {
+    use crate::input::{Key, Taken};
+    let (mut h, map) = host_with_map(
+        "function onPause(%v) { $pause = $pause @ %v; }
+         function onNumLock(%v) { $numlock = $numlock @ %v; }
+         TestMap.bind(keyboard, \"pause\", onPause);
+         TestMap.bind(keyboard, \"numlock\", onNumLock);",
+    );
+    assert_eq!(h.press(Key::Pause), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$pause").unwrap(), b"10");
+    h.gui.set_extension(Rc::new(TgeKeys));
+    assert_eq!(h.press(Key::Pause), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$pause").unwrap(), b"10");
+    assert_eq!(h.server.vm().global("$numlock").unwrap(), b"10");
+    assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
+}

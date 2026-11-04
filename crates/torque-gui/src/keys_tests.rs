@@ -48,10 +48,12 @@ fn virtual_keys_map_as_the_window_procedure_maps_them() {
     assert_eq!(vk_to_key(0x25, 0x4b), KEY_LEFT);
     assert_eq!(vk_to_key(0xbc, 0x33), 0x43);
     assert_eq!(vk_to_key(0x60, 0x52), 0x46);
-    // F13..F15 reach their codes through the scan code; F16 and up have none.
-    assert_eq!(vk_to_key(0x7c, map_virtual_key(0x7c)), 0x63);
-    assert_eq!(vk_to_key(0x7e, map_virtual_key(0x7e)), 0x65);
-    assert_eq!(vk_to_key(0x7f, map_virtual_key(0x7f)), 0);
+    // TGE's: F13..F15 reach their codes through the scan code, F16 and up have none.
+    assert_eq!(tge_vk_to_key(0x7c, map_virtual_key(0x7c)), 0x63);
+    assert_eq!(tge_vk_to_key(0x7e, map_virtual_key(0x7e)), 0x65);
+    assert_eq!(tge_vk_to_key(0x7f, map_virtual_key(0x7f)), 0);
+    assert_eq!(vk_to_key(0x7f, map_virtual_key(0x7f)), 0x66);
+    assert_eq!(vk_to_key(0x87, map_virtual_key(0x87)), 0x6e);
     assert_eq!(map_virtual_key(0x87), 0x76);
     // The ISO key is out of this table (its scan code is the window's to give), so the ascii table leaves its code without
     // characters and it keeps its own name rather than the backslash key's.
@@ -67,6 +69,7 @@ fn virtual_keys_map_as_the_window_procedure_maps_them() {
     assert_eq!(to_ascii(0x25, &none, false), 0);
     for vk in 0..=255u8 {
         let _ = vk_to_key(vk, map_virtual_key(vk));
+        let _ = tge_vk_to_key(vk, map_virtual_key(vk));
         let _ = to_ascii(vk, &none, false);
     }
 }
