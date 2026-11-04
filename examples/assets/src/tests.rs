@@ -339,12 +339,25 @@ fn the_textures_decode_with_the_engines_reader() {
             "{name}"
         );
     }
-    // The ones with an alpha channel: soft edges, clear corners.
+    // The holes, drawn multiplied: a mid-gray corner (no change), a dark middle.
     for (name, bytes) in [
         ("hole", crate::textures::hole_of(1).unwrap()),
         ("hole2", crate::textures::hole_of(2).unwrap()),
-        ("smoke", crate::textures::smoke().unwrap()),
     ] {
+        let image =
+            torque_images::decode(Kind::Png, &bytes).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(
+            (image.width, image.height, image.format),
+            (64, 64, Format::Rgb),
+            "{name}"
+        );
+        let px = |x: usize, y: usize| &image.bits[(y * 64 + x) * 3..][..3];
+        assert_eq!(px(0, 0), [128, 128, 128], "{name}: a neutral corner");
+        assert!(px(32, 32).iter().all(|&c| c < 40), "{name}: a dark middle");
+    }
+    // The smoke, with an alpha channel: soft edges, clear corners.
+    {
+        let (name, bytes) = ("smoke", crate::textures::smoke().unwrap());
         let image =
             torque_images::decode(Kind::Png, &bytes).unwrap_or_else(|e| panic!("{name}: {e:?}"));
         assert_eq!(

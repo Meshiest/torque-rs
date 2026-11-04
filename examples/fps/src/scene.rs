@@ -30,7 +30,7 @@
 //!   [`ArenaScene::ribbon_trails`] (the default) that trail is a continuous ribbon instead ([`Ribbon`], its look the
 //!   emitter's particle data's): a point at each frame's drawn place, from the muzzle, ending where the bolt burst. A bolt that bursts
 //!   on the world (not on a figure) leaves one of its datablock's decals there ([`DecalManager`]: at most [`MAX_DECALS`],
-//!   each for [`DECAL_SECONDS`]).
+//!   each for [`DECAL_SECONDS`]), multiplied over the surface (`Blend::Modulate2x`).
 //! - **Aiming down the sights** ([`ArenaScene::update_aim`]): while the client aims, the first-person pistol moves from its
 //!   `eyeOffset` to where its `sightRear` and `sightFront` nodes lie on the eye's line ([`AIM_REAR_DISTANCE`] ahead) over
 //!   [`AIM_SECONDS`], eased, and the field of view narrows from [`FOV`] to [`AIM_FOV`] with it ([`ArenaScene::turn_scale`]
@@ -751,8 +751,10 @@ impl ArenaScene {
                             self.hit_bursts.drain(..cut);
                         }
                     } else if x.hit_type & VEHICLE == 0
-                        && let Some(d) = projectile_decal(world, db, &mut rng)
+                        && let Some(mut d) = projectile_decal(world, db, &mut rng)
                     {
+                        // Multiplied: the hole takes the color, light and shadow of the surface it is on.
+                        d.blend = torque_render_scene::Blend::Modulate2x;
                         let angle = rng.f() * std::f32::consts::TAU;
                         let reach = d.size[0].max(d.size[1]);
                         let surface = cube_triangles_near(world, at, reach);

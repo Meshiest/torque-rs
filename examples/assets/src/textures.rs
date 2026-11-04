@@ -7,8 +7,9 @@
 //! | `pistol.png` | 32 x 32 | dark metal, lighter along the top rows, faint grip lines lower down |
 //! | `projectile.png` | 16 x 16 | a white core fading to a pale cyan at the edge |
 //! | `spark.png` | 32 x 32 | a soft white dot fading to black at the edge (a particle: drawn added, its black adds nothing) |
-//! | `hole.png`, `hole2.png`, `hole3.png` | 64 x 64, with alpha | a bolt's hole: a dark, irregular center with short cracks
-//! running out of it and a lighter, chipped and dusty rim fading into the surface (three of them, each its own shape) |
+//! | `hole.png`, `hole2.png`, `hole3.png` | 64 x 64 | a bolt's hole, drawn multiplied (0.5 gray leaves the surface as it is): a
+//! dark, irregular center with short cracks running out of it and a slightly lighter, chipped rim fading into the mid-gray
+//! around (three of them, each its own shape) |
 //! | `flare_star.png` | 256 x 256 | a muzzle flash seen head on: a hot white core in a soft bloom with uneven petals, smoothed
 //! (drawn added: black adds nothing) |
 //! | `smoke.png` | 64 x 64, with alpha | a soft, uneven puff of light gray smoke |
@@ -141,8 +142,9 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// A bolt's hole (a decal), shaped by `seed`: a dark, irregular center (its edge a few waves about a circle), short cracks
-/// running out of it, and a lighter, chipped and dusty rim fading into the surface; the alpha soft at every edge.
+/// A bolt's hole (a decal drawn multiplied: 0.5 gray leaves the surface as it is), shaped by `seed`: a dark, irregular center
+/// (its edge a few waves about a circle), short cracks running out of it, and a slightly lighter, chipped rim, every edge
+/// fading softly into the mid-gray around.
 pub fn hole_of(seed: u32) -> io::Result<Vec<u8>> {
     let mut r = Seq(seed.wrapping_mul(2_654_435_761).wrapping_add(17));
     let phases = [r.f(), r.f(), r.f()].map(|v| v * std::f32::consts::TAU);
@@ -157,7 +159,7 @@ pub fn hole_of(seed: u32) -> io::Result<Vec<u8>> {
             )
         })
         .collect();
-    png_rgba(64, 64, move |x, y| {
+    png(64, 64, move |x, y| {
         let (dx, dy) = (x as f32 - 31.5, y as f32 - 31.5);
         let d = (dx * dx + dy * dy).sqrt();
         let a = dy.atan2(dx);
@@ -186,25 +188,21 @@ pub fn hole_of(seed: u32) -> io::Result<Vec<u8>> {
             crack = crack.max((1.0 - smoothstep(width * 0.5, width, across)) * (1.0 - t * t));
         }
         let depth = (d / edge).clamp(0.0, 1.0);
-        let dark = [
-            10.0 + 18.0 * depth,
-            10.0 + 17.0 * depth,
-            12.0 + 16.0 * depth,
-        ];
-        let dust = [205.0, 198.0, 186.0];
-        let crack_c = [34.0, 33.0, 32.0];
+        let dark = [22.0 + 26.0 * depth; 3];
+        let dust = [150.0, 149.0, 147.0];
+        let crack_c = [40.0, 40.0, 40.0];
         let alpha_hole = hole * 0.95;
         let alpha_rim = rim * 0.6;
         let alpha_crack = crack * 0.7;
         let alpha = (alpha_hole + alpha_rim + alpha_crack).min(1.0);
         if alpha <= 0.0 {
-            return [128, 128, 128, 0];
+            return [128, 128, 128];
         }
-        let c = [0, 1, 2].map(|k| {
-            ((dark[k] * alpha_hole + dust[k] * alpha_rim + crack_c[k] * alpha_crack)
-                / (alpha_hole + alpha_rim + alpha_crack)) as u8
-        });
-        [c[0], c[1], c[2], (alpha * 255.0).round() as u8]
+        [0, 1, 2].map(|k| {
+            let c = (dark[k] * alpha_hole + dust[k] * alpha_rim + crack_c[k] * alpha_crack)
+                / (alpha_hole + alpha_rim + alpha_crack);
+            (128.0 + (c - 128.0) * alpha).round() as u8
+        })
     })
 }
 
