@@ -1731,6 +1731,23 @@ const SHAPE_BASE_METHODS: &[MethodSpec] = &[
     ),
     method("getMuzzleVector", 3, 3, "(int slot)", Returns::String),
     method("getMuzzlePoint", 3, 3, "(int slot)", Returns::String),
+    method("stopAudio", 3, 3, "(int slot)", Returns::Bool),
+    method("getAIRepairPoint", 2, 2, "()", Returns::String),
+    method("canCloak", 2, 2, "()", Returns::Bool),
+    method("setCloaked", 3, 3, "(bool isCloaked)", Returns::Void),
+    method("isCloaked", 2, 2, "()", Returns::Bool),
+    method("setWhiteOut", 3, 3, "(float flashLevel)", Returns::Void),
+    method("getWhiteOut", 2, 2, "()", Returns::Float),
+    method("getCameraFov", 2, 2, "()", Returns::Float),
+    method("setCameraFov", 3, 3, "(float fov)", Returns::Void),
+    method(
+        "setInvincibleMode",
+        4,
+        4,
+        "(float time, float speed)",
+        Returns::Void,
+    ),
+    method("setDamageVector", 3, 3, "(Vector3F origin)", Returns::Void),
 ];
 
 const PLAYER_METHODS: &[MethodSpec] = &[
@@ -1753,6 +1770,7 @@ const PLAYER_METHODS: &[MethodSpec] = &[
         "(Point3F oldPos, Point3F pos)",
         Returns::Bool,
     ),
+    method("getDamageLocation", 3, 3, "(Point3F pos)", Returns::String),
 ];
 
 const ITEM_METHODS: &[MethodSpec] = &[
