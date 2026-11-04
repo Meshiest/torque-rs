@@ -4,9 +4,10 @@
 //!   grid tile a unit) and tinted by height. A cube's object is kept until its record moves it. A map that asks for sharp
 //!   texels ([`TextureFilter::Nearest`]) has its cubes magnified with nearest-neighbor filtering; minified, they stay linear
 //!   between and within the mip levels, so the far floor does not shimmer.
-//! - **Figures** (Players) of other players move on between their records along the last one's velocity, and a record that puts
-//!   one elsewhere is warped to over a few ticks ([`crate::motion`]); they face the yaw and look at the head's pitch the same way,
-//!   animated as TGE's client animates a Player ([`torque::client::player_anim`]) at the velocity they are drawn moving at. A figure that holds an image (its record's first
+//! - **Figures** (Players) of other players stand where the client runs them between their records (the client's
+//!   [`GhostPlayers`]: on along the last one's velocity, warped to each new one over a few ticks), facing that yaw and looking
+//!   at that head's pitch, animated as TGE's client animates a Player ([`torque::client::player_anim`]) at the velocity they are
+//!   drawn moving at. A figure that holds an image (its record's first
 //!   image slot) plays the kit's `hold` on its arm thread, and the image's shape is drawn in its hand: the figure's `mount0`
 //!   node times the inverse of the image's `mountPoint` (`ShapeBase::getRenderImageTransform`). A new fire count plays the
 //!   image's `fire`.
@@ -44,7 +45,7 @@ use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Draw, Filter, Vertex};
 
-use crate::motion::{GhostMotion, Update};
+use torque::client::predict::ghost_players::GhostPlayers;
 /// The look angle a head fraction is of when the datablock names none (radians).
 pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 /// The eye's height above the feet when the shape has no `eye` node.
@@ -187,10 +188,9 @@ impl Held {
     }
 }
 
-/// A figure: where it is drawn, its motion between records (another player's) and its animation.
+/// A figure: where it is drawn and its animation.
 struct Figure {
     shape: SceneShape,
-    motion: GhostMotion,
     position: [f32; 3],
     yaw: f32,
     pitch: f32,
@@ -347,17 +347,23 @@ impl ArenaScene {
         self.own
     }
 
-    /// The other figures' positions (feet) as the last frame drew them.
-    pub fn others(&self) -> Vec<[f32; 3]> {
-        self.figures.values().map(Figure::position).collect()
+    /// The other figures' positions (feet) and yaws as the last frame drew them.
+    pub fn others(&self) -> Vec<([f32; 3], f32)> {
+        self.figures
+            .values()
+            .filter(|f| !f.own)
+            .map(|f| (f.position, f.yaw))
+            .collect()
     }
 
     /// The figures moved on by `dt` seconds to `world`'s Player records, with nothing drawn: the own one where the client predicts
-    /// it, the others between their records ([`crate::motion`]); each animated and its held image posed, and the own view set.
+    /// it, the others where the client runs them (`ghost_render` and `ghosts`); each animated and its held image posed, and the own
+    /// view set.
     pub fn update_figures(
         &mut self,
         assets: &KitAssets,
         world: &TgeWorld,
+        ghosts: &GhostPlayers,
         own: Option<OwnLook>,
         dt: f32,
     ) {
@@ -397,12 +403,6 @@ impl ArenaScene {
                 yaw,
                 ..PlayerMotion::default()
             });
-            let update = Update {
-                position,
-                velocity: motion.velocity,
-                yaw,
-                pitch: head,
-            };
             let image = record_images(record);
             let held_shape = image.and_then(|(img, _)| {
                 let file = world.datablock_text(img, "shapeFile")?.to_vec();
@@ -420,7 +420,6 @@ impl ArenaScene {
                     };
                     e.insert(Figure {
                         shape: shape.clone(),
-                        motion: GhostMotion::new(update),
                         position,
                         yaw,
                         pitch: head,
@@ -435,8 +434,6 @@ impl ArenaScene {
             figure.own = look.is_some();
             match look {
                 Some(o) => {
-                    // Kept at the record, so the figure goes on from there if it stops being the own one.
-                    figure.motion = GhostMotion::new(update);
                     figure.position = o.position.unwrap_or(position);
                     figure.yaw = o.yaw;
                     figure.pitch = o.pitch;
@@ -445,12 +442,15 @@ impl ArenaScene {
                     }
                 }
                 None => {
-                    figure.motion.receive(update);
-                    figure.motion.advance(dt);
-                    figure.position = figure.motion.position();
-                    figure.yaw = figure.motion.yaw();
-                    figure.pitch = figure.motion.pitch();
-                    motion.velocity = figure.motion.velocity();
+                    (figure.position, figure.yaw) = match world.ghost_render.get(&index) {
+                        Some(Pose::Euler { position, yaw, .. }) => (*position, *yaw),
+                        _ => (position, yaw),
+                    };
+                    figure.pitch = head;
+                    if let Some(m) = ghosts.get(index) {
+                        figure.pitch = m.head() * max_look;
+                        motion.velocity = m.velocity();
+                    }
                 }
             }
             motion.yaw = figure.yaw;

@@ -163,9 +163,16 @@ pub fn refresh_config<G: NetGame>(vm: &Vm, sh: &mut NetShared<G>) {
     let lan = global_text(vm, "$Server::LAN").is_some_and(|t| atob(&t));
     let codecs = Rc::clone(&sh.codecs);
     let (wide_clients, wide_slots) = codecs.wide_defaults();
+    // `checkMaxRate`: the packets a second to each client, `$pref::Net::PacketRateToClient` when set (clamped by the rate
+    // config).
+    let to_client_rate = global_text(vm, "$pref::Net::PacketRateToClient")
+        .filter(|t| !t.trim_ascii().is_empty())
+        .map_or(DEFAULT_PACKET_RATE, |t| {
+            u32::try_from(atoi(&t)).unwrap_or(1)
+        });
     let mut prefs = ServerPrefs {
         lan,
-        to_client_rate: DEFAULT_PACKET_RATE,
+        to_client_rate,
         engine_ghost_bits: None,
         wide_clients,
         wide_slots,

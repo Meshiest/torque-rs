@@ -253,6 +253,18 @@ impl EngineRecord<TgeClientSet> for TgeRecord {
             _ => None,
         }
     }
+
+    fn player_motion(&self) -> Option<(F3, f32)> {
+        let (TgeRecord::Player(p) | TgeRecord::AiPlayer(p)) = self else {
+            return None;
+        };
+        let m = p.motion.as_ref()?;
+        let velocity = m
+            .velocity
+            .map_or([0.0; 3], |v| v.value(ghosts::player::VELOCITY_NORMAL_BITS));
+        let head = ghost_world::tge::head_fractions(self).map_or(0.0, |h| h[0]);
+        Some((velocity, head))
+    }
 }
 
 impl EngineDatablock for TgeDatablock {

@@ -4,14 +4,12 @@
 //! - [`server`]: torque-server's main loop over TGE's game classes, with a network host on a UDP socket.
 //! - [`client`]: the client host on its own UDP socket, and the server it hosts.
 //! - [`prediction`]: what the client's prediction of its own figure asks this game (the cubes it collides with, smooth aim).
-//! - [`motion`]: another player's figure between the server's updates.
 //! - [`scene`]: the client's ghosts as the world view's objects.
 //! - [`window`]: the example in a window.
 //! - [`shots`]: the example without a window: review pictures drawn offscreen.
 
 pub mod client;
 pub mod files;
-pub mod motion;
 pub mod prediction;
 pub mod scene;
 pub mod server;
