@@ -18,8 +18,9 @@
 //! hangs over it); the lift and the fade are this crate's.
 //!
 //! Credit: follows TGE 1.4's `sim/decalManager.cc` and `game/projectile.cc` (Copyright (C) GarageGames.com, Inc.), as Torque3D
-//! carries them under the MIT license (`T3D/decal/decalManager.cpp`, `T3D/decal/decalData.cpp`, `T3D/projectile.cpp`:
-//! Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
+//! carries them under the MIT license: `T3D/decal/decalManager.cpp` and `T3D/decal/decalData.cpp` (each Copyright (c) 2012
+//! GarageGames, LLC) and `T3D/projectile.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The
+//! code here is this crate's own.
 
 use std::collections::VecDeque;
 
