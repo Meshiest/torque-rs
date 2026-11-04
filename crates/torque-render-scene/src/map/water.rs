@@ -104,3 +104,96 @@ pub(crate) fn meshes(
     }
     out
 }
+
+/// Each water block's top as [`meshes`] makes it: its mesh's key and the corners `(0, 0)`, `(0, 1)`, `(1, 1)`, `(1, 0)` of its
+/// box's top.
+pub(crate) fn tops(objects: &[Object], key: u64) -> Vec<(u64, [[f32; 3]; 4])> {
+    objects
+        .iter()
+        .filter(|o| o.class == MapClass::WaterBlock)
+        .enumerate()
+        .filter_map(|(n, o)| {
+            let m = o.matrix();
+            let s = o.scale();
+            let c = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]
+                .map(|[i, j]| m.mul_p([s[0] * i, s[1] * j, s[2]]));
+            let mut h = Fnv::new("map water");
+            h.u64(key);
+            h.u64(n as u64);
+            c.iter()
+                .flatten()
+                .all(|v| v.is_finite())
+                .then_some((h.0, c))
+        })
+        .collect()
+}
+
+/// The copies of water mesh `m` (a block's top, `corners` as [`tops`] gives them) that a repeated terrain carries every `period`
+/// units in x and y, within `reach` of `eye` across the ground, the block itself left out (at most `max_reach` periods each
+/// way): one quad each in the mesh's state, its texture carried on across them (`loops` repeats a unit). None when no copy is
+/// in reach.
+pub(crate) fn tiles(
+    m: &Mesh,
+    corners: [[f32; 3]; 4],
+    period: f32,
+    loops: f32,
+    eye: [f32; 3],
+    reach: f32,
+    max_reach: i32,
+) -> Option<Mesh> {
+    if !(period > 0.0 && period.is_finite() && reach > 0.0) {
+        return None;
+    }
+    let color = m.vertices.first()?.color;
+    let lo = [0, 1].map(|k| corners.iter().map(|c| c[k]).fold(f32::INFINITY, f32::min));
+    let hi = [0, 1].map(|k| {
+        corners
+            .iter()
+            .map(|c| c[k])
+            .fold(f32::NEG_INFINITY, f32::max)
+    });
+    let r = ((reach / period).ceil() as i32)
+        .saturating_add(1)
+        .min(max_reach);
+    let mut vertices = Vec::new();
+    let mut h = Fnv::new("map water tiles");
+    h.u64(m.key);
+    for j in -r..=r {
+        for i in -r..=r {
+            if (i, j) == (0, 0) {
+                continue;
+            }
+            let off = [i as f32 * period, j as f32 * period];
+            let d = [0, 1].map(|k| {
+                (lo[k] + off[k] - eye[k])
+                    .max(eye[k] - (hi[k] + off[k]))
+                    .max(0.0)
+            });
+            let far = (d[0] * d[0] + d[1] * d[1]).sqrt();
+            if far.is_nan() || far > reach {
+                continue;
+            }
+            h.u32(i as u32);
+            h.u32(j as u32);
+            let q = corners.map(|c| {
+                let p = [c[0] + off[0], c[1] + off[1], c[2]];
+                Vertex {
+                    position: p,
+                    normal: [0.0, 0.0, 1.0],
+                    color,
+                    uv: [p[0] * loops, p[1] * loops],
+                }
+            });
+            vertices.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+        }
+    }
+    if vertices.is_empty() {
+        return None;
+    }
+    Some(Mesh {
+        label: format!("{} tiles", m.label),
+        vertices: Arc::new(vertices),
+        key: h.0,
+        ..m.clone()
+    })
+}

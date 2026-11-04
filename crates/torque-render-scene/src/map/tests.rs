@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::*;
@@ -1021,4 +1021,161 @@ fn many_statics_merge_at_most_the_vertex_cap() {
     let total: usize = meshes.iter().map(|m| m.vertices.len()).sum();
     assert!(total >= cap && total <= cap + 2, "{total}");
     assert!(notes.iter().any(|n| n.contains("past")), "{notes:?}");
+}
+
+/// A repeated block of `maps::synth::ter(3, ..)` with one material, its texture found.
+fn repeated_block() -> (terrain::Block, Object, Files) {
+    let bytes = maps::synth::ter(3, &["packs/valley/grass"]);
+    let files = Files(vec![
+        ("packs/valley/t.ter".into(), bytes),
+        (
+            "packs/valley/grass.png".into(),
+            crate::textures::tests::png(4, 4, 200),
+        ),
+    ]);
+    let o = object(
+        MapClass::TerrainBlock,
+        [0.0; 3],
+        [1.0; 3],
+        &[
+            ("terrainFile", text("packs/valley/t.ter")),
+            ("squareSize", MapValue::Int(8)),
+            ("RepeatTerrain", MapValue::Bool(true)),
+        ],
+    );
+    let mut textures = TextureSet::new(&files);
+    let block = terrain::Block::load(&o, &PROFILE, &files, &mut textures).unwrap();
+    (block, o, files)
+}
+
+#[test]
+fn the_levels_of_detail_cover_each_tile_once_and_coarsen_away_from_the_eye() {
+    let (mut block, _, _) = repeated_block();
+    let eye = [100.0, 300.0, 50.0];
+    let reach = 12_000.0;
+    let nodes = terrain::lod_chunks(std::slice::from_mut(&mut block), eye, reach, 9);
+    assert!(nodes.len() < terrain::MAX_KEPT_CHUNKS, "{}", nodes.len());
+    // Each node's label: "terrain <name> <tile x> <tile y> level <L> <x> <y>"; its chunks of a tile are covered once.
+    let mut cover: HashMap<[i32; 2], [[u8; terrain::CHUNKS]; terrain::CHUNKS]> = HashMap::new();
+    let mut levels = [0usize; 4];
+    let mut nearest = (f32::INFINITY, u32::MAX);
+    for node in &nodes {
+        let w: Vec<&str> = node[0].label.split(' ').collect();
+        let n = |i: usize| w[i].parse::<i64>().unwrap();
+        let (tile, level, at) = ([n(2) as i32, n(3) as i32], n(5) as u32, [n(6), n(7)]);
+        levels[level as usize] += 1;
+        let side = 1usize << level;
+        let cells = cover
+            .entry(tile)
+            .or_insert([[0; terrain::CHUNKS]; terrain::CHUNKS]);
+        for y in 0..side {
+            for x in 0..side {
+                cells[at[1] as usize * side + y][at[0] as usize * side + x] += 1;
+            }
+        }
+        let d =
+            ((node[0].centre[0] - eye[0]).powi(2) + (node[0].centre[1] - eye[1]).powi(2)).sqrt();
+        if d < nearest.0 {
+            nearest = (d, level);
+        }
+    }
+    assert!(
+        cover.values().flatten().flatten().all(|c| *c <= 1),
+        "a chunk drawn twice"
+    );
+    assert_eq!(
+        cover[&[0, 0]],
+        [[1; terrain::CHUNKS]; terrain::CHUNKS],
+        "the eye's tile whole"
+    );
+    assert_eq!(nearest.1, 0, "full detail at the eye");
+    assert!(
+        levels.iter().all(|n| *n > 0),
+        "every level in use: {levels:?}"
+    );
+    // The surface's vertices lie on the heightfield; the skirts hang under it.
+    for v in nodes.iter().flat_map(|n| n[0].vertices.iter()).step_by(13) {
+        let h = block.surface(v.position[0], v.position[1]).unwrap().0;
+        assert!(v.position[2] <= h + 1e-2, "{v:?} over {h}");
+    }
+    // Nothing past the reach.
+    for n in &nodes {
+        let c = n[0].centre;
+        assert!(((c[0] - eye[0]).powi(2) + (c[1] - eye[1]).powi(2)).sqrt() < reach + 2048.0);
+    }
+}
+
+#[test]
+fn the_levels_of_detail_keep_their_nodes_and_let_go_of_unused_ones_past_the_cap() {
+    let (mut block, _, _) = repeated_block();
+    let blocks = std::slice::from_mut(&mut block);
+    let first = terrain::lod_chunks(blocks, [0.0; 3], 6_000.0, 1);
+    let again = terrain::lod_chunks(blocks, [0.0; 3], 6_000.0, 1);
+    assert_eq!(first.len(), again.len());
+    assert!(
+        first.iter().zip(&again).all(|(a, b)| Arc::ptr_eq(a, b)),
+        "kept, not made again"
+    );
+    // Walking far away a few times never holds more than the cap and still draws the eye's tile.
+    for k in 1..6 {
+        let eye = [k as f32 * 9_000.0, 0.0, 0.0];
+        let nodes = terrain::lod_chunks(blocks, eye, 6_000.0, 1);
+        assert!(!nodes.is_empty());
+    }
+}
+
+#[test]
+fn a_repeated_terrain_carries_its_water_out_as_far_as_it_is_drawn() {
+    let files = Files(vec![(
+        "packs/water/water1.png".into(),
+        crate::textures::tests::png(4, 4, 200),
+    )]);
+    let o = object(
+        MapClass::WaterBlock,
+        [-500.0, -400.0, -40.0],
+        [1024.0, 1024.0, 10.0],
+        &[
+            ("surfaceOpacity", MapValue::F32(1.0)),
+            ("surfaceTexture", text("data/water/water1")),
+        ],
+    );
+    let mut textures = TextureSet::new(&files);
+    let w = water::meshes(std::slice::from_ref(&o), &PROFILE, &mut textures, 4);
+    let tops = water::tops(std::slice::from_ref(&o), 4);
+    assert_eq!(tops.len(), 1);
+    assert_eq!(tops[0].0, w[0].key, "the top names its mesh");
+    let eye = [0.0, 0.0, 10.0];
+    let tiles = water::tiles(
+        &w[0],
+        tops[0].1,
+        2048.0,
+        PROFILE.water_loops_per_unit,
+        eye,
+        5000.0,
+        8,
+    )
+    .unwrap();
+    assert_eq!(tiles.texture, w[0].texture);
+    assert_eq!(tiles.vertices.len() % 6, 0);
+    let copies = tiles.vertices.len() / 6;
+    // Every copy's box lies within the reach; the block itself is not among them.
+    let mut want = 0;
+    for j in -4..=4 {
+        for i in -4..=4 {
+            let (x0, y0) = (-500.0 + i as f32 * 2048.0, -400.0 + j as f32 * 2048.0);
+            let dx = (x0 - eye[0]).max(eye[0] - (x0 + 1024.0)).max(0.0);
+            let dy = (y0 - eye[1]).max(eye[1] - (y0 + 1024.0)).max(0.0);
+            if (i, j) != (0, 0) && (dx * dx + dy * dy).sqrt() <= 5000.0 {
+                want += 1;
+            }
+        }
+    }
+    assert_eq!(copies, want);
+    for v in tiles.vertices.iter() {
+        assert_eq!(v.position[2], -30.0);
+        assert_eq!(v.uv, [v.position[0] * 0.25, v.position[1] * 0.25]);
+    }
+    // No repeat, no reach: no copies.
+    assert!(water::tiles(&w[0], tops[0].1, 0.0, 0.25, eye, 5000.0, 8).is_none());
+    assert!(water::tiles(&w[0], tops[0].1, 2048.0, 0.25, eye, 0.0, 8).is_none());
 }

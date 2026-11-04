@@ -15,6 +15,11 @@
 //! weights filling its squares. The textures repeat every [`TEXTURE_METRES`]. The layers are drawn with the opaque objects,
 //! right after their chunk's first.
 //!
+//! **Levels of detail.** The enhanced looks draw the terrain farther than the fixed-function frame (`lod_chunks`): a tile's
+//! chunks as a quadtree of nodes, a node of level `L` covering `2^L` chunks a side with [`CHUNK`] quads of `2^L` squares each,
+//! drawn whole from [`LOD_SIDES`] of its sides away (the coarsest a whole tile). Each node's opaque layer hangs a skirt down
+//! from its edges, so the seams between levels show no gap.
+//!
 //! **Lighting.** With the sun's relight ([`super::light`]) the layers are unlit and a last pass a chunk multiplies them by the
 //! lightmap of the chunk's tile (a repeated block's tiles without one of their own share its terrain-only lightmap); until
 //! then, GL lighting with the heightfield's normals.
@@ -22,7 +27,7 @@
 //! Credit: follows TGE 1.4's `terrain/terrData.cc` and `terrain/terrRender.cc` (Copyright (C) GarageGames.com, Inc.); the code
 //! here is this crate's own.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use mapcore::budget::HEIGHTFIELD_SIDE as SIZE;
@@ -50,6 +55,17 @@ pub const MAX_TILE_REACH: i32 = 4;
 
 /// A chunk of a block: its tile and its place in the tile.
 type ChunkId = ([i32; 2], [usize; 2]);
+
+/// The coarsest level of detail (`lod_chunks`): a node of this level is a whole tile.
+pub const LOD_LEVELS: u32 = 3;
+const _: () = assert!(CHUNKS == 1 << LOD_LEVELS);
+/// A node of level 1 and up is drawn whole from this many of its sides away across the ground; nearer, its four children are.
+pub const LOD_SIDES: f32 = 4.0;
+/// The most tiles of a repeated block the levels of detail reach each way from the one under the eye.
+pub const MAX_LOD_TILE_REACH: i32 = 8;
+
+/// A node of the levels of detail: its tile, its level and its place among the level's nodes in the tile.
+type LodId = ([i32; 2], u32, [usize; 2]);
 
 /// A lit block's lightmaps.
 pub(crate) struct Light {
@@ -79,6 +95,8 @@ pub(crate) struct Block {
     /// The materials drawn, in order: (material index, texture name).
     layers: Vec<(usize, String)>,
     chunks: HashMap<ChunkId, Arc<Vec<Mesh>>>,
+    /// The levels of detail's nodes made so far ([`lod_chunks`]).
+    lod: HashMap<LodId, Arc<Vec<Mesh>>>,
     /// The `.ter` file's bytes' hash.
     hash: u64,
     /// The block's lightmaps (by tile, and the one for every other tile) and the relight's key, once lit.
@@ -208,6 +226,7 @@ impl Block {
             empty: place.holes,
             layers,
             chunks: HashMap::new(),
+            lod: HashMap::new(),
             hash: h.0,
             light: None,
         })
@@ -229,6 +248,167 @@ impl Block {
     pub(crate) fn set_light(&mut self, light: Light) {
         self.light = Some(light);
         self.chunks.clear();
+    }
+
+    /// How far apart the block's copies stand (in x and y) when it repeats.
+    pub(crate) fn repeat_period(&self) -> Option<f32> {
+        self.repeat.then_some(SIZE as f32 * self.square)
+    }
+
+    /// Whether the fine squares `[gx, gx + step) x [gy, gy + step)` are all holes.
+    fn holes(&self, gx: i64, gy: i64, step: i64) -> bool {
+        let s = SIZE as i64;
+        (gy..gy + step).all(|y| {
+            (gx..gx + step)
+                .all(|x| self.empty[x.rem_euclid(s) as usize + y.rem_euclid(s) as usize * SIZE])
+        })
+    }
+
+    /// The meshes of node `id` of the levels of detail: [`CHUNK`] x [`CHUNK`] quads of `2^level` squares, the layers as
+    /// [`Block::chunk`] makes them (no lightmap pass), the opaque one with a skirt down from each edge ([`Block::skirts`]).
+    fn lod_chunk(&self, (t, level, n): LodId, key: u64) -> Vec<Mesh> {
+        let s = SIZE as i64;
+        let step = 1i64 << level;
+        let x0 = i64::from(t[0]) * s + n[0] as i64 * CHUNK as i64 * step;
+        let y0 = i64::from(t[1]) * s + n[1] as i64 * CHUNK as i64 * step;
+        let end = CHUNK as i64 * step;
+        let sq = self.square;
+        let vertex = |gx: i64, gy: i64, alpha: u8| {
+            let p = [
+                self.origin[0] + gx as f32 * sq,
+                self.origin[1] + gy as f32 * sq,
+                self.origin[2] + self.h(gx, gy),
+            ];
+            let n = normalize([
+                (self.h(gx - step, gy) - self.h(gx + step, gy)) / (2.0 * sq * step as f32),
+                (self.h(gx, gy - step) - self.h(gx, gy + step)) / (2.0 * sq * step as f32),
+                1.0,
+            ]);
+            Vertex {
+                position: p,
+                normal: n,
+                color: [255, 255, 255, alpha],
+                uv: [
+                    gx as f32 * sq / TEXTURE_METRES,
+                    gy as f32 * sq / TEXTURE_METRES,
+                ],
+            }
+        };
+        let centre = [
+            self.origin[0] + (x0 + end / 2) as f32 * sq,
+            self.origin[1] + (y0 + end / 2) as f32 * sq,
+            self.origin[2] + self.h(x0 + end / 2, y0 + end / 2),
+        ];
+        let mut out = Vec::new();
+        for (li, (material, name)) in self.layers.iter().enumerate() {
+            let earlier: Vec<usize> = self.layers[..=li].iter().map(|(m, _)| *m).collect();
+            let share = |gx: i64, gy: i64| -> u8 {
+                if li == 0 {
+                    return 255;
+                }
+                let w = self.weight(*material, gx, gy);
+                let total: f32 = earlier.iter().map(|&m| self.weight(m, gx, gy)).sum();
+                if total <= 0.0 {
+                    0
+                } else {
+                    (w / total * 255.0).round().clamp(0.0, 255.0) as u8
+                }
+            };
+            let mut vertices = Vec::new();
+            for qy in 0..CHUNK as i64 {
+                for qx in 0..CHUNK as i64 {
+                    let (x, y) = (x0 + qx * step, y0 + qy * step);
+                    if self.holes(x, y, step) {
+                        continue;
+                    }
+                    let corners = [(x, y), (x + step, y), (x + step, y + step), (x, y + step)];
+                    let a = corners.map(|(gx, gy)| share(gx, gy));
+                    if li > 0 && a.iter().all(|&v| v == 0) {
+                        continue;
+                    }
+                    let v = [0, 1, 2, 3].map(|k| vertex(corners[k].0, corners[k].1, a[k]));
+                    let (lx, ly) = (x.rem_euclid(s) as usize, y.rem_euclid(s) as usize);
+                    if self.ter.main_diagonal(lx, ly) {
+                        vertices.extend_from_slice(&[v[0], v[2], v[1], v[0], v[3], v[2]]);
+                    } else {
+                        vertices.extend_from_slice(&[v[0], v[3], v[1], v[1], v[3], v[2]]);
+                    }
+                }
+            }
+            if li == 0 {
+                self.skirts(x0, y0, step, &vertex, &mut vertices);
+            }
+            let mut h = Fnv::new("map terrain lod");
+            h.u64(key);
+            h.u64(self.index as u64);
+            h.u64(t[0] as u32 as u64);
+            h.u64(t[1] as u32 as u64);
+            h.u64(u64::from(level));
+            h.u64(n[0] as u64);
+            h.u64(n[1] as u64);
+            h.u64(li as u64);
+            out.push(Mesh {
+                label: format!(
+                    "terrain {name} {} {} level {level} {} {}",
+                    t[0], t[1], n[0], n[1]
+                ),
+                texture: TexRef::Name(name.clone()),
+                vertices: Arc::new(vertices),
+                lighting: true,
+                tex_env: TexEnv::Modulate,
+                blend: if li == 0 { Blend::Opaque } else { Blend::Alpha },
+                cull: Cull::BackCw,
+                depth_write: li == 0,
+                sampler: super::SAMPLER,
+                alpha_from_texture: false,
+                overlay: true,
+                centre,
+                key: h.0,
+            });
+        }
+        out
+    }
+
+    /// The skirts of the node of quads of `step` squares at grid (x0, y0) ([`Block::lod_chunk`]): along each edge, a quad down
+    /// from each quad's side that is not a hole, both windings, as deep as the edge's heights at full detail span and a square
+    /// more (a coarser neighbour's edge never leaves a gap it does not cover).
+    fn skirts(
+        &self,
+        x0: i64,
+        y0: i64,
+        step: i64,
+        vertex: &dyn Fn(i64, i64, u8) -> Vertex,
+        out: &mut Vec<Vertex>,
+    ) {
+        let end = CHUNK as i64 * step;
+        // Each edge: its first grid point, its direction, and where the quad beside each of its pieces starts.
+        let edges = [
+            ((x0, y0), (1, 0), (0, 0)),
+            ((x0, y0 + end), (1, 0), (0, -step)),
+            ((x0, y0), (0, 1), (0, 0)),
+            ((x0 + end, y0), (0, 1), (-step, 0)),
+        ];
+        for ((ex, ey), (dx, dy), (ix, iy)) in edges {
+            let (lo, hi) = (0..=end).fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), k| {
+                let z = self.h(ex + dx * k, ey + dy * k);
+                (lo.min(z), hi.max(z))
+            });
+            let depth = (hi - lo).max(0.0) + self.square;
+            for k in 0..CHUNK as i64 {
+                let (ax, ay) = (ex + dx * k * step, ey + dy * k * step);
+                let (bx, by) = (ax + dx * step, ay + dy * step);
+                if self.holes(ax + ix, ay + iy, step) {
+                    continue;
+                }
+                let (a, b) = (vertex(ax, ay, 255), vertex(bx, by, 255));
+                let down = |v: Vertex| Vertex {
+                    position: [v.position[0], v.position[1], v.position[2] - depth],
+                    ..v
+                };
+                let (a2, b2) = (down(a), down(b));
+                out.extend_from_slice(&[a, b, b2, a, b2, a2, a, b2, b, a, a2, b2]);
+            }
+        }
     }
 
     /// The block's height at sample (gx, gy) of the infinite grid (wrapped).
@@ -460,4 +640,100 @@ pub(crate) fn visible_chunks(
         }
     }
     out
+}
+
+/// The enhanced looks' terrain within `visible` of `eye` over every block ([`Block::lod_chunk`]'s nodes, made on first use and
+/// kept), the opaque layer of a node first: each tile in reach (a repeated block's, at most [`MAX_LOD_TILE_REACH`] each way)
+/// from its whole down, a node drawn whole from [`LOD_SIDES`] of its sides away (level 0 nearer). The nodes the build does not
+/// use are let go once the kept ones would pass [`MAX_KEPT_CHUNKS`]; past it no node is made this build.
+pub(crate) fn lod_chunks(
+    blocks: &mut [Block],
+    eye: [f32; 3],
+    visible: f32,
+    key: u64,
+) -> Vec<Arc<Vec<Mesh>>> {
+    let mut out = Vec::new();
+    for (index, b) in blocks.iter_mut().enumerate() {
+        b.index = index;
+        if b.layers.is_empty() {
+            continue;
+        }
+        let span = SIZE as f32 * b.square;
+        let reach = visible.max(0.0);
+        let tile = |v: f32, o: f32| ((v - o) / span).floor() as i32;
+        let (tx, ty) = (tile(eye[0], b.origin[0]), tile(eye[1], b.origin[1]));
+        let tiles: Vec<[i32; 2]> = if b.repeat {
+            let r = ((reach / span).ceil() as i32)
+                .saturating_add(1)
+                .min(MAX_LOD_TILE_REACH);
+            (-r..=r)
+                .flat_map(|dy| {
+                    (-r..=r).map(move |dx| [tx.saturating_add(dx), ty.saturating_add(dy)])
+                })
+                .collect()
+        } else {
+            vec![[0, 0]]
+        };
+        let mut want = Vec::new();
+        for t in tiles {
+            select(b, t, LOD_LEVELS, [0, 0], eye, reach, &mut want);
+        }
+        let new = want.iter().filter(|id| !b.lod.contains_key(id)).count();
+        if b.lod.len() + new > MAX_KEPT_CHUNKS {
+            let used: HashSet<LodId> = want.iter().copied().collect();
+            b.lod.retain(|id, _| used.contains(id));
+        }
+        for id in want {
+            if !b.lod.contains_key(&id) {
+                if b.lod.len() >= MAX_KEPT_CHUNKS {
+                    continue;
+                }
+                let made = Arc::new(b.lod_chunk(id, key));
+                b.lod.insert(id, made);
+            }
+            if let Some(m) = b.lod.get(&id) {
+                out.push(Arc::clone(m));
+            }
+        }
+    }
+    out
+}
+
+/// The nodes under node `n` of `level` of tile `t` drawn from `eye` within `reach` ([`lod_chunks`]).
+fn select(
+    b: &Block,
+    t: [i32; 2],
+    level: u32,
+    n: [usize; 2],
+    eye: [f32; 3],
+    reach: f32,
+    out: &mut Vec<LodId>,
+) {
+    let span = SIZE as f32 * b.square;
+    let side = (CHUNK << level) as f32 * b.square;
+    let x0 = b.origin[0] + t[0] as f32 * span + n[0] as f32 * side;
+    let y0 = b.origin[1] + t[1] as f32 * span + n[1] as f32 * side;
+    let dx = (x0 - eye[0]).max(eye[0] - (x0 + side)).max(0.0);
+    let dy = (y0 - eye[1]).max(eye[1] - (y0 + side)).max(0.0);
+    let d = (dx * dx + dy * dy).sqrt();
+    if d.is_nan() || d > reach {
+        return;
+    }
+    if level == 0 || d >= LOD_SIDES * side {
+        out.push((t, level, n));
+        return;
+    }
+    for j in 0..2 {
+        for i in 0..2 {
+            select(
+                b,
+                t,
+                level - 1,
+                [2 * n[0] + i, 2 * n[1] + j],
+                eye,
+                reach,
+                out,
+            );
+        }
+    }
 }
