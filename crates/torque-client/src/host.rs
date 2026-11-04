@@ -474,6 +474,14 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         !self.gui.0.borrow().cursor_on || self.client.borrow().mouse_locked
     }
 
+    /// Whether the window shows the system's cursor: the canvas's cursor is on and shown but the last frame drew none (no
+    /// GuiCursor set, or its bitmap did not load), and the game does not hold the mouse. A game that sets a GuiCursor, or turns
+    /// the cursor off, hides it again.
+    pub fn system_cursor(&self) -> bool {
+        let s = self.gui.0.borrow();
+        s.cursor_on && s.show_cursor && !s.cursor_drawn && !self.client.borrow().mouse_locked
+    }
+
     /// One window message through TGE's platform layer and the game ([`input::post`]): who took it. A script's error is kept in
     /// [`ClientHost::input_errors`].
     pub fn post(&mut self, msg: u32, wparam: u32, lparam: u32) -> input::Taken {

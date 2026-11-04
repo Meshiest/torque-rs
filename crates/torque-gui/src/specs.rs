@@ -445,7 +445,12 @@ pub static CLASSES: &[ClassSpec] = &[
             field("soundButtonOver", FieldType::DataBlock("AudioProfile"), 1),
         ],
         methods: &[],
-        defaults: Some(&[("borderThickness", "1"), ("fontCharset", "ANSI")]),
+        // TGE's constructor: a profile is modal (its controls take the mouse) unless it says otherwise.
+        defaults: Some(&[
+            ("modal", "1"),
+            ("borderThickness", "1"),
+            ("fontCharset", "ANSI"),
+        ]),
     },
     ClassSpec {
         name: "GuiGraphCtrl",

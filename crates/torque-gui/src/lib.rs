@@ -220,6 +220,9 @@ pub struct GuiState {
     pub show_cursor: bool,
     /// `getCursorPos` (headless: what `setCursorPos` stored).
     pub cursor_pos: (i32, i32),
+    /// Whether the last drawn frame drew the canvas's cursor (a GuiCursor is set and its bitmap loaded). A window shows the
+    /// system's cursor while the canvas's is on and none was drawn, so a game without a GuiCursor still has a pointer.
+    pub cursor_drawn: bool,
     pub render_front: bool,
     pub controls: HashMap<ObjId, Control>,
     /// Frames drawn ([`Gui::frame`]).
@@ -263,6 +266,7 @@ impl Default for GuiState {
             cursor_on: true,
             show_cursor: true,
             cursor_pos: (0, 0),
+            cursor_drawn: false,
             render_front: false,
             controls: HashMap::new(),
             frames: 0,
