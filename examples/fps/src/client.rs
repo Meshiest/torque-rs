@@ -11,8 +11,8 @@
 //! server starts and the client joins it over the loopback address) or the arena left (`$Arena::LeaveAsked`: the server stops).
 //!
 //! **A frame** ([`ArenaGame::frame`]): the client's own figure where the client predicts it, between its last two ticks
-//! (`Player::interpolateTick`) and turned ahead by the mouse's waiting turn ([`crate::prediction`]), the other figures moved on
-//! between their records ([`crate::motion`]), the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and
+//! (`Player::interpolateTick`) and turned ahead by the mouse's waiting turn ([`crate::prediction`]), the other figures where the
+//! client runs them between their records, the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and
 //! the eye at the own figure's eye.
 
 use std::cell::RefCell;
@@ -448,6 +448,7 @@ impl ArenaGame {
         };
         let since = now.wrapping_sub(last).min(TICK_MS);
         c.predict.back = 1.0 - since as f32 / TICK_MS as f32;
+        c.world.anim_ms = now;
         c.predict.set_aim_input(vm);
         c.predict.update_view(&mut c.world);
     }
@@ -462,7 +463,9 @@ impl ArenaGame {
         match st.conn.conn.as_ref() {
             Some(conn) => {
                 let world: &World = &conn.world;
-                self.scene.update_figures(&self.files.kit, world, own, dt);
+                let ghosts = &conn.predict.ghost_players;
+                self.scene
+                    .update_figures(&self.files.kit, world, ghosts, own, dt);
             }
             None => self.scene.clear(),
         }
