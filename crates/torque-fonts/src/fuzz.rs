@@ -1,0 +1,239 @@
+//! The hostile `.uft` fuzz: 50,000 seeded cases, 0 panics. The seeds are small fonts of every
+//! shape the reader meets (one and two sheets, no sheet, glyphs on a missing sheet, a remap past the table, no remap); the mutations
+//! are structure-aware where that reaches deeper (the header's fields and counts, the glyph table's fields, a sheet's PNG chunk changed
+//! with its CRC fixed, the remap's range and its zlib data) plus plain flips, cuts, insertions and repeats. Every font that parses is
+//! also measured and laid out with every byte and with UTF-8 text.
+//! `TORQUE_FUZZ_FONTS` sets the count.
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use crate::tests::{grey_png, sample, uft};
+use crate::{Font, Glyph, TextColors};
+
+const CASES: usize = 50_000;
+
+/// A small deterministic generator (xorshift64*).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        if n == 0 {
+            0
+        } else {
+            (self.next() % n as u64) as usize
+        }
+    }
+}
+
+fn seeds() -> Vec<Vec<u8>> {
+    let remap: Vec<(u32, i32)> = (0..8)
+        .map(|i| (32 + i, i as i32))
+        .chain([(0x4e2d, 3)])
+        .collect();
+    let glyphs: Vec<Glyph> = (0..8)
+        .map(|i| Glyph {
+            bitmap_index: (i % 3) as i16,
+            x_offset: (i * 3) as u8,
+            y_offset: 1,
+            width: 3,
+            height: (i % 4) as u8,
+            x_origin: -1,
+            y_origin: 6,
+            x_increment: 4,
+        })
+        .collect();
+    vec![
+        sample(),
+        uft(
+            12,
+            9,
+            &glyphs,
+            &[grey_png(32, 8, |x, y| (x ^ y) as u8)],
+            &remap,
+        ),
+        uft(12, 9, &glyphs, &[], &remap),
+        uft(0, 0, &[], &[grey_png(1, 1, |_, _| 7)], &[]),
+        uft(
+            u32::MAX,
+            u32::MAX,
+            &glyphs,
+            &[grey_png(4, 4, |_, _| 1), grey_png(2, 2, |_, _| 3)],
+            &[(0, i32::MAX), (0xffff, i32::MIN), (0x100, -2)],
+        ),
+    ]
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &b in bytes {
+        crc ^= u32::from(b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+/// Changes one byte inside a PNG chunk of the file and fixes that chunk's CRC.
+fn mutate_png_chunk(f: &mut [u8], rng: &mut Rng) {
+    let starts: Vec<usize> = f
+        .windows(8)
+        .enumerate()
+        .filter(|(_, w)| *w == [137, 80, 78, 71, 13, 10, 26, 10])
+        .map(|(i, _)| i)
+        .collect();
+    if starts.is_empty() {
+        return;
+    }
+    let mut at = starts[rng.below(starts.len())] + 8;
+    let mut chunks = Vec::new();
+    while let Some(len) = f.get(at..at + 4) {
+        let len = u32::from_be_bytes([len[0], len[1], len[2], len[3]]) as usize;
+        let end = at + 12 + len;
+        if end > f.len() {
+            break;
+        }
+        chunks.push((at, len));
+        if &f[at + 4..at + 8] == b"IEND" {
+            break;
+        }
+        at = end;
+    }
+    let Some(&(at, len)) = chunks.get(rng.below(chunks.len())) else {
+        return;
+    };
+    if len > 0 {
+        let i = at + 8 + rng.below(len);
+        f[i] = rng.next() as u8;
+    }
+    let crc = crc32(&f[at + 4..at + 8 + len]);
+    f[at + 8 + len..at + 12 + len].copy_from_slice(&crc.to_be_bytes());
+}
+
+fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
+    let mut f = seed.to_vec();
+    for _ in 0..1 + rng.below(3) {
+        match rng.below(9) {
+            0 => {
+                if !f.is_empty() {
+                    let i = rng.below(f.len());
+                    f[i] ^= 1 << rng.below(8);
+                }
+            }
+            1 => {
+                let n = rng.below(f.len() + 1);
+                f.truncate(n);
+            }
+            2 => {
+                let i = rng.below(f.len() + 1);
+                let n = 1 + rng.below(16);
+                let bytes: Vec<u8> = (0..n).map(|_| rng.next() as u8).collect();
+                f.splice(i..i, bytes);
+            }
+            3 => {
+                // A header field (the name's length, size, charset, height, baseline, ascent, descent, glyph count) set to an edge
+                // value.
+                let field = [4usize, 10, 14, 18, 22, 26, 30, 34][rng.below(8)];
+                let v: u32 = [0, 1, 255, 256, 4096, 4097, u32::MAX, 0x7fff_ffff][rng.below(8)];
+                if f.len() >= field + 4 {
+                    f[field..field + 4].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            4 => mutate_png_chunk(&mut f, rng),
+            5 => {
+                // A glyph-table byte (sheet index, offsets, sizes, origins).
+                if f.len() > 38 {
+                    let i = 38 + rng.below((f.len() - 38).min(9 * 16));
+                    f[i] = [0, 1, 0x7f, 0x80, 0xff][rng.below(5)];
+                }
+            }
+            6 => {
+                // The remap's tail: its range, its length or its zlib data (the last bytes).
+                if f.len() >= 48 {
+                    let i = f.len() - 1 - rng.below(48);
+                    let v: u32 = [0, 1, 0xffff, 0x1_0000, u32::MAX, 0x7fff_ffff][rng.below(6)];
+                    let end = (i + 4).min(f.len());
+                    f[i..end].copy_from_slice(&v.to_le_bytes()[..end - i]);
+                }
+            }
+            7 => {
+                // A repeated stretch.
+                if !f.is_empty() {
+                    let a = rng.below(f.len());
+                    let b = (a + 1 + rng.below(64)).min(f.len());
+                    let s = f[a..b].to_vec();
+                    f.splice(b..b, s);
+                }
+            }
+            _ => {
+                // The sheet count.
+                let at = f
+                    .windows(8)
+                    .position(|w| w == [137, 80, 78, 71, 13, 10, 26, 10])
+                    .unwrap_or(f.len().min(38));
+                if at >= 4 {
+                    let v: u32 = [0, 1, 2, 3, 256, 257, u32::MAX][rng.below(7)];
+                    f[at - 4..at].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+    }
+    f
+}
+
+fn exercise(bytes: &[u8]) {
+    if let Ok(font) = Font::parse(bytes) {
+        let mut text: Vec<u8> = (1..=255u8).collect();
+        text.extend_from_slice("\u{4e2d}\u{20ac}\u{1f600}\t A".as_bytes());
+        let _ = font.str_width(&text);
+        let _ = font.str_width_precise(&text);
+        let _ = font.break_pos(&text, 40, true);
+        let table = [[1, 2, 3, 4]; 10];
+        let mut colors = TextColors::new([255; 4], [0; 4]);
+        let l = font.layout(
+            (i32::MAX - 5, i32::MIN + 5),
+            &text,
+            &mut colors,
+            Some(&table),
+            9,
+        );
+        assert!(l.quads.iter().all(|q| q.sheet < font.sheets.len()));
+    }
+}
+
+#[test]
+fn hostile_font_files_never_panic() {
+    let cases = std::env::var("TORQUE_FUZZ_FONTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(CASES);
+    let seeds = seeds();
+    for s in &seeds {
+        assert!(Font::parse(s).is_ok(), "a seed does not parse");
+    }
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let (mut panics, mut parsed) = (0usize, 0usize);
+    for case in 0..cases {
+        let f = mutate(&seeds[case % seeds.len()], &mut rng);
+        match catch_unwind(AssertUnwindSafe(|| exercise(&f))) {
+            Ok(()) => parsed += usize::from(Font::parse(&f).is_ok() && case % 64 == 0),
+            Err(_) => {
+                panics += 1;
+                eprintln!("case {case} panicked ({} bytes)", f.len());
+            }
+        }
+    }
+    eprintln!("fonts fuzz: {cases} cases, {panics} panics ({parsed} sampled cases parsed)");
+    assert_eq!(panics, 0);
+}

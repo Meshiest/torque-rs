@@ -1,0 +1,19 @@
+[package]
+name = "torque-shapes"
+description = "DTS shapes and DSQ sequences: reading, writing, collision meshes and animated poses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "dts", "shape", "animation", "gamedev"]
+categories = ["game-development", "parser-implementations", "rendering::data-formats"]
+
+# Torque shapes: `.dts` and `.dsq` read as data, the preload facts of the datablocks that load a shape, collision meshes and
+# the animated pose. Std only, no dependency at all.
+
+[dependencies]
+
+[lints]
+workspace = true

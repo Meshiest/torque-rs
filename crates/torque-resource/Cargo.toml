@@ -1,0 +1,21 @@
+[package]
+name = "torque-resource"
+description = "The torque-rs resource layer: a game folder read-only, its zips mounted as folders and the scripts' writes in memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "resources", "zip", "gamedev"]
+categories = ["game-development", "filesystem"]
+
+# The resource layer: a game folder read-only, its zips mounted as folders, the scripts' writes in memory. The script engine's
+# FileHost is what it serves.
+
+[dependencies]
+torque-ts-vm = { path = "../torque-ts-vm" }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

@@ -1,11 +1,18 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/torque-audio",
     "crates/torque-collide",
+    "crates/torque-fonts",
+    "crates/torque-game",
     "crates/torque-ghosts",
+    "crates/torque-images",
     "crates/torque-mapcore",
     "crates/torque-maps",
     "crates/torque-net",
+    "crates/torque-resource",
+    "crates/torque-scene",
+    "crates/torque-shapes",
     "crates/torque-sim",
     "crates/torque-ts-bytecode",
     "crates/torque-ts-compiler",

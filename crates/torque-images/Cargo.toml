@@ -1,0 +1,20 @@
+[package]
+name = "torque-images"
+description = "Image decoding for torque-rs: PNG, JPEG and mip chains"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "image", "png", "jpeg", "gamedev"]
+categories = ["multimedia::images", "game-development"]
+
+# Image decoders for the renderer (no GPU): PNG through the `png` crate, expanded the way libpng's transforms do (no gamma), JPEG as
+# our own implementation of libjpeg 6b's decoder, and TGE's mip chain. Every decoder reads hostile bytes: a value or an error, never a panic.
+
+[dependencies]
+png = "0.18"
+
+[lints]
+workspace = true

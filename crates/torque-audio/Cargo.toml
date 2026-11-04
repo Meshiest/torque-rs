@@ -1,0 +1,34 @@
+[package]
+name = "torque-audio"
+description = "Audio for torque-rs: WAV and Ogg Vorbis decoding, sources, channels, a listener and a mixer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "audio", "mixer", "vorbis", "gamedev"]
+categories = ["multimedia::audio", "game-development"]
+
+# The client audio layer: sound files as an `AudioBuffer` reads them (WAV, and Ogg Vorbis through `lewton`), the `alx` source table,
+# handles, channels, the listener and the looping lists, in the design of the Torque Game Engine's audio layer, and a mixer. No
+# script VM, no GPU. Output goes through `cpal` behind the `device` feature (the window client only); without it, and in every
+# test, a null sink keeps the same state on the host's clock. Sound files are hostile input: a value or an error, never a panic,
+# every allocation capped.
+
+[dependencies]
+lewton = "0.10"
+# The Ogg pages and packets, read as `lewton` reads them (its own dependency, so the same version: the decode is driven here).
+ogg = "0.8"
+cpal = { version = "0.15", optional = true }
+# The `alx` console functions (`natives`, feature `script`): the script engine, its text rules and the datablocks' fields.
+ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm", optional = true }
+ts-text = { package = "torque-ts-text", path = "../torque-ts-text", optional = true }
+torque-game = { path = "../torque-game", optional = true }
+
+[features]
+device = ["dep:cpal"]
+script = ["dep:ts-vm", "dep:ts-text", "dep:torque-game"]
+
+[lints]
+workspace = true

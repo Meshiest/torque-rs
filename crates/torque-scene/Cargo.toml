@@ -1,0 +1,19 @@
+[package]
+name = "torque-scene"
+description = "The torque-rs scene container: the bins, the searches and a scene object's transform maths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "scene", "spatial", "gamedev"]
+categories = ["game-development"]
+
+# The scene container's core: the bins, the search lists and their sort, and the transform maths. Std only; a host answers what
+# the walks read of its objects.
+
+[dependencies]
+
+[lints]
+workspace = true

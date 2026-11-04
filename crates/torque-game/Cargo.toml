@@ -1,0 +1,34 @@
+[package]
+name = "torque-game"
+description = "The torque-rs game classes as console classes: the scene objects and their container, the simulated classes' hosts, the shapes and the datablocks' values"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "game", "scene", "gamedev"]
+categories = ["game-development"]
+
+# The TGE game classes as console classes: their specs, the scene and its container, the simulated classes' hosts, the shapes
+# and the datablocks' values. A host's own classes reach in through seams (SimClasses, SceneClasses, masks, geometry, the ghost
+# link).
+
+[dependencies]
+ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm" }
+# The collision library the scene's queries and the movers run on.
+collide = { package = "torque-collide", path = "../torque-collide" }
+# The shapes the datablocks load and the instances the objects pose.
+shapes = { package = "torque-shapes", path = "../torque-shapes" }
+# The simulated classes (Player, Item, images, the process list) and the vehicles.
+sim = { package = "torque-sim", path = "../torque-sim" }
+vehicle = { package = "torque-vehicle", path = "../torque-vehicle" }
+# The control object's moves and camera state as the network carries them.
+net = { package = "torque-net", path = "../torque-net" }
+# The scene container's core and the transform maths.
+torque-scene = { path = "../torque-scene" }
+# The game folder's files the shapes are read from.
+torque-resource = { path = "../torque-resource" }
+
+[lints]
+workspace = true
