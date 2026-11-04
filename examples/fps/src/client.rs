@@ -470,6 +470,7 @@ impl ArenaGame {
                 let ghosts = &conn.predict.ghost_players;
                 self.scene
                     .update_figures(&self.files.kit, world, ghosts, own, dt);
+                self.scene.update_bolts(world, dt);
             }
             None => self.scene.clear(),
         }
