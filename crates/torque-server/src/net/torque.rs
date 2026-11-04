@@ -121,12 +121,14 @@ impl GhostGame for TgeGhostGame {
         let mut guard = hub.0.borrow_mut();
         let hub = &mut *guard;
         let always = ghost_always_of(env.vm, &hub.reg);
+        let controlled = hub.conns.values().filter_map(|c| c.control).collect();
         let mut src = TgeSource {
             vm: env.vm,
             reg: &hub.reg,
             table: env.table,
             ghost_bits: env.ghost_bits,
             always,
+            controlled,
         };
         f(&mut src, &mut hub.conns)
     }
@@ -160,6 +162,8 @@ pub struct TgeSource<'a> {
     pub table: Option<&'a Table>,
     pub ghost_bits: u8,
     always: Vec<ObjId>,
+    /// The objects some connection controls (the ShapeBase part's `controlled` flag).
+    controlled: Vec<ObjId>,
 }
 
 impl TgeSource<'_> {
@@ -218,6 +222,155 @@ impl ObjectView for FieldView<'_> {
     }
 }
 
+/// A TGE object as its record's packer reads it: the game classes' state where torque-game keeps it, the static fields for the
+/// rest ([`FieldView`]).
+///
+/// - every object: `datablock` (the `dataBlock` field), `transform` (the object's matrix as a position and a unit quaternion,
+///   `QuatF::set(MatrixF)`), `position` (its translation), `scale`; a ShapeBase is fully visible (`fade_value` 1) and runs no
+///   script thread (`thread_sequence` -1), its damage over the datablock's `maxDamage`;
+/// - a simulated Player ([`torque_game::sim::player::state`]): `velocity`, `rotation` (its yaw at 2), `head`, `falling`,
+///   `state` (the action state), `action` (the action animation), `energy`, and from its datablock `max_look_angle`,
+///   `max_energy` and `max_damage`; the move fields are the last move's.
+///
+/// The record is never left out for the controlling client (`controlled_here` false): the client draws the control object from
+/// it like any ghost.
+pub struct GameView<'a> {
+    pub fields: FieldView<'a>,
+    /// Whether some connection controls the object.
+    pub controlled: bool,
+}
+
+/// `QuatF::set(MatrixF)` of a row-major matrix's rotation part.
+fn quat_of(m: &[f32; 16]) -> [f32; 4] {
+    let at = |r: usize, c: usize| m[r * 4 + c];
+    let trace = at(0, 0) + at(1, 1) + at(2, 2);
+    if trace > 0.0 {
+        let s = (trace + 1.0).sqrt();
+        let w = s * 0.5;
+        let s = 0.5 / s;
+        return [
+            (at(1, 2) - at(2, 1)) * s,
+            (at(2, 0) - at(0, 2)) * s,
+            (at(0, 1) - at(1, 0)) * s,
+            w,
+        ];
+    }
+    let mut i = 0;
+    if at(1, 1) > at(0, 0) {
+        i = 1;
+    }
+    if at(2, 2) > at(i, i) {
+        i = 2;
+    }
+    let j = (i + 1) % 3;
+    let k = (j + 1) % 3;
+    let s = (at(i, i) - (at(j, j) + at(k, k)) + 1.0).sqrt();
+    let mut q = [0.0; 4];
+    q[i] = s * 0.5;
+    let s = 0.5 / s;
+    q[j] = (at(i, j) + at(j, i)) * s;
+    q[k] = (at(i, k) + at(k, i)) * s;
+    q[3] = (at(j, k) - at(k, j)) * s;
+    q
+}
+
+impl GameView<'_> {
+    fn matrix(&self) -> Option<[f32; 16]> {
+        torque_game::scene::access::matrix_of(self.fields.vm, self.fields.obj)
+    }
+
+    fn datablock(&self) -> Option<ObjId> {
+        torque_game::scene::access::object_field(self.fields.vm, self.fields.obj, b"dataBlock")
+    }
+
+    fn db_float(&self, name: &[u8], default: f32) -> f32 {
+        self.datablock().map_or(default, |db| {
+            torque_game::sim::player::float(self.fields.vm, db, name, default)
+        })
+    }
+
+    /// A Player's field from its simulated state, if the object is one.
+    fn player(&self, field: &str, index: usize) -> Option<Value> {
+        use torque_game::sim::player;
+        let (vm, obj) = (self.fields.vm, self.fields.obj);
+        let s = player::state(vm, obj)?;
+        let info = player::info(vm, obj);
+        let data = |pick: usize| {
+            info.as_ref().map_or(Value::Null, |i| {
+                let d = &i.data;
+                Value::F32([d.max_look_angle, d.max_energy, d.max_damage][pick])
+            })
+        };
+        let component = |v: [f32; 3]| v.get(index).map_or(Value::Null, |f| Value::F32(*f));
+        Some(match field {
+            "velocity" => component(s.velocity),
+            "rotation" => component(s.rot),
+            "head" => component(s.head),
+            "falling" => Value::Bool(s.falling),
+            "state" => Value::Int(i64::from(s.action_state)),
+            "action" => Value::Int(i64::from(s.action_anim)),
+            "energy" => Value::F32(s.energy),
+            "damage" => Value::F32(s.damage),
+            "damage_state" => Value::Int(i64::from(s.damage_state)),
+            "max_look_angle" => data(0),
+            "max_energy" => data(1),
+            "max_damage" => data(2),
+            // A move's axis as its 6-bit word: -1 to 1 over 0 to 32, 16 the middle.
+            "move_axes" => {
+                let m = &s.last_move;
+                let v = [m.x, m.y, m.z].get(index).copied().unwrap_or(0.0);
+                Value::Int(((v.clamp(-1.0, 1.0) * 16.0) as i64) + 16)
+            }
+            "move_angles" => Value::Int(0),
+            "move_free_look" => Value::Bool(s.last_move.free_look),
+            "move_triggers" => {
+                Value::Bool(s.last_move.triggers.get(index).copied().unwrap_or(false))
+            }
+            _ => return None,
+        })
+    }
+}
+
+impl ObjectView for GameView<'_> {
+    fn get(&self, field: &str, index: usize) -> Value {
+        if let Some(v) = self.player(field, index) {
+            return v;
+        }
+        match field {
+            "datablock" => Value::Id(self.datablock()),
+            "transform" => match self.matrix() {
+                Some(m) => {
+                    let q = quat_of(&m);
+                    Value::Xform(Some([
+                        m[3].to_bits(),
+                        m[7].to_bits(),
+                        m[11].to_bits(),
+                        q[0].to_bits(),
+                        q[1].to_bits(),
+                        q[2].to_bits(),
+                        u32::from(q[3] < 0.0),
+                    ]))
+                }
+                None => Value::Xform(None),
+            },
+            "position" => self
+                .matrix()
+                .and_then(|m| [m[3], m[7], m[11]].get(index).copied())
+                .map_or(Value::Null, Value::F32),
+            "scale" => torque_game::scene::access::scale_of(self.fields.vm, self.fields.obj)
+                .get(index)
+                .map_or(Value::Null, |f| Value::F32(*f)),
+            "fade_value" => Value::F32(1.0),
+            "thread_sequence" => Value::Int(-1),
+            "max_damage" => Value::F32(self.db_float(b"maxDamage", 1.0)),
+            "max_energy" => Value::F32(self.db_float(b"maxEnergy", 0.0)),
+            "controlled" => Value::Bool(self.controlled),
+            "controlled_here" => Value::Bool(false),
+            _ => self.fields.get(field, index),
+        }
+    }
+}
+
 impl ObjectSource for TgeSource<'_> {
     fn exists(&self, obj: ObjId) -> bool {
         self.vm.objects().contains(obj) && self.reg.entries.contains_key(&obj)
@@ -243,7 +396,10 @@ impl ObjectSource for TgeSource<'_> {
         };
         let widths = NetWidths::new(self.ghost_bits, torque_net::profile::DEFAULT_DATABLOCK_BITS);
         let ctx = PackCtx::for_writer(w, widths, self.vm.sim_time());
-        let view = FieldView { vm: self.vm, obj };
+        let view = GameView {
+            fields: FieldView { vm: self.vm, obj },
+            controlled: self.controlled.contains(&obj),
+        };
         let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
         // The packers cut every count to its width first, so a record cannot fail to encode.
         let _ = record.encode(w, table, widths);
@@ -336,5 +492,38 @@ impl<G: NetGame> NetHost for NetPasses<G> {
                 .any(|rec| rec.local_peer.is_none() && rec.conn.is_some()),
             sh.conns.values().any(|rec| rec.local_peer.is_some()),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quat_of;
+
+    #[test]
+    fn a_matrixs_rotation_is_its_unit_quaternion() {
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        assert_eq!(quat_of(&identity), [0.0, 0.0, 0.0, 1.0]);
+        // A half turn about z (the trace is -1: the largest-diagonal branch).
+        let half = [
+            -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let q = quat_of(&half);
+        assert!(
+            (q[2].abs() - 1.0).abs() < 1e-6 && q[3].abs() < 1e-6,
+            "{q:?}"
+        );
+        // A quarter turn about z, as `MatrixF` stores it (row-major, its rotation the transpose of the column form).
+        let (s, c) = std::f32::consts::FRAC_PI_2.sin_cos();
+        let quarter = [
+            c, s, 0.0, 0.0, -s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let q = quat_of(&quarter);
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(
+            (q[2].abs() - h).abs() < 1e-6 && (q[3].abs() - h).abs() < 1e-6,
+            "{q:?}"
+        );
     }
 }
