@@ -173,6 +173,13 @@ pub struct EditState {
     pub caret_frames: u32,
     /// `mTextOffset.x` where the text starts while it scrolls; `None`: placed afresh at the next draw.
     pub text_offset: Option<i32>,
+    /// The engine's keys only ([`text_edit`]): the undo steps (oldest first, at most [`text_edit::MAX_UNDO_STEPS`]), the
+    /// redo steps, and the kind of change the last step may still take more of.
+    pub undo_steps: Vec<(Vec<u8>, i32, i32, i32)>,
+    pub redo_steps: Vec<(Vec<u8>, i32, i32, i32)>,
+    pub undo_merge: Option<text_edit::Merge>,
+    /// The engine's keys only: the word or the whole text a double or triple click selected, kept while the drag goes on.
+    pub drag_range: Option<(i32, i32)>,
 }
 
 impl EditState {

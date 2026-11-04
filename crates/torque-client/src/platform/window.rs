@@ -21,12 +21,13 @@ use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, CursorIcon, Fullscreen, Window, WindowId};
 
 use super::{cursor_lock, frame_cap, keymap};
 use crate::conn::ConnGame;
 use crate::host::{ClientHost, CursorShape, GameServer};
+use crate::input::{Key, MouseButton};
 use crate::screen::{Monitor, ScreenMode, ScreenRules};
 
 /// The most simulation time one frame runs (a stall is not caught up beyond it).
@@ -460,10 +461,10 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                 if state == ElementState::Pressed {
                     self.lock.on_click();
                 }
-                if let Some((m, w, l)) =
-                    self.input
-                        .button(button, state == ElementState::Pressed, self.cursor)
-                {
+                if let Some(button) = MouseButton::from_winit(button) {
+                    let (m, w, l) =
+                        self.input
+                            .button(button, state == ElementState::Pressed, self.cursor);
                     self.game.host().post(m, w, l);
                 }
             }
@@ -482,18 +483,16 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                 is_synthetic,
                 ..
             } => {
-                if let PhysicalKey::Code(code) = event.physical_key {
+                if let PhysicalKey::Code(code) = event.physical_key
+                    && let Some(key) = Key::from_winit(code)
+                {
                     let down = event.state == ElementState::Pressed;
                     // a Windows key lets go of the cursor before the shell's shortcut opens its overlay.
-                    if down
-                        && !is_synthetic
-                        && matches!(code, KeyCode::SuperLeft | KeyCode::SuperRight)
-                    {
+                    if down && !is_synthetic && matches!(key, Key::SuperLeft | Key::SuperRight) {
                         let release = self.lock.on_system_key();
                         self.release_cursor(release);
                     }
-                    if let Some((m, w, l)) = self.input.key(code, down, event.repeat, is_synthetic)
-                    {
+                    if let Some((m, w, l)) = self.input.key(key, down, event.repeat, is_synthetic) {
                         self.game.host().post(m, w, l);
                     }
                 }

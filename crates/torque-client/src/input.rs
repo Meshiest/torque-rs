@@ -14,7 +14,8 @@
 //!   `WM_CHAR` is not read.
 //!
 //! Nothing here touches the operating system: the window (the `platform` glue's key map) and the headless injection
-//! ([`Injected`]) both feed it the same messages.
+//! ([`Injected`]) both feed it the same messages. A game or a test names keys and buttons with [`Key`] and [`MouseButton`]
+//! ([`key_message`], [`button_message`]; the client host's `key`, `press`, `type_text` and `mouse_button`).
 //!
 //! Credit: follows TGE's Windows input layer and event routing as Torque3D carries them (MIT: `platformWin32/winInput.cpp`,
 //! `windowManager/win32/winDispatch.cpp`, each Copyright (c) 2012 GarageGames, LLC; `gui/core/guiCanvas.cpp`, Copyright (c) 2012
@@ -31,6 +32,10 @@ use ts_vm::vm::{Vm, VmError};
 use crate::actionmap;
 use crate::conn::ConnGame;
 use crate::state::ClientState;
+
+#[path = "input_key.rs"]
+mod key;
+pub use key::{Key, MouseButton, button_message, key_message};
 
 pub const WM_KEYDOWN: u32 = 0x100;
 pub const WM_KEYUP: u32 = 0x101;
@@ -77,6 +82,11 @@ impl Default for Win32 {
 }
 
 impl Win32 {
+    /// Whether Caps Lock is on (the layer's own toggle, from the key messages).
+    pub fn caps_lock(&self) -> bool {
+        self.keys[0x14] & 1 != 0
+    }
+
     /// One window message.
     pub fn message(&mut self, msg: u32, wparam: u32, lparam: u32) -> Option<Engine> {
         let button = |obj: u16, make: bool, mods: u8| {

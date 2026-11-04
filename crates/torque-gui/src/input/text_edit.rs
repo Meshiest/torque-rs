@@ -21,6 +21,23 @@
 //! The clipboard is the system's when the window set [`super::SYSTEM_CLIPBOARD`], else the canvas's own
 //! ([`super::CanvasInput::clipboard`]).
 //!
+//! The above is TGE's, kept with the extension's [`GuiRule::TgeEditKeys`]. Without it the engine takes the usual desktop keys
+//! first (Alt held: every key is a character's):
+//! - Ctrl+A selects all; Ctrl+C and Ctrl+Insert copy, Ctrl+X and Shift+Delete cut (not a `password`), Ctrl+V and Shift+Insert
+//!   paste over the selection (its first line, digits only with `numbersOnly`, as much as `maxLength` leaves room for).
+//! - Left and Right move a character (with a selection and no Shift: to its start or end), with Ctrl a word ([`word_left`],
+//!   [`word_right`]; a `password` is one word); Home and End to the start and the end; Shift selects from the selection's
+//!   anchor to where the cursor goes.
+//! - Backspace and Delete remove the selection, else a character, with Ctrl a word.
+//! - Ctrl+Z undoes a step and Ctrl+Y and Ctrl+Shift+Z redo one: typing in a row is one step (as are Backspaces and Deletes in
+//!   a row; a move or a click ends the row), every other change (a paste, a cut, a word deleted, Up and Down's history line)
+//!   is a step of its own; at most [`MAX_UNDO_STEPS`] are kept. Undo and redo run the variable and the command as a change.
+//! - Other Ctrl keys are characters (no Emacs keys, so they go on to the parent and the accelerators).
+//! - A click places the cursor at the nearest gap between characters of the text as drawn (scrolled); a double click selects
+//!   the word under it, a triple click all; Shift+click selects to the click; a drag after a double or triple click keeps
+//!   what it selected and grows it to the mouse.
+//! - Typing over a selection measures `maxLength` against the text without it; paste and cut run the variable and command.
+//!
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `gui/controls/guiTextEditCtrl.cpp`
 //! (Copyright (c) 2012 GarageGames, LLC), `gui/controls/guiTextEditSliderCtrl.cpp` (Copyright (c) 2012 GarageGames, LLC); the
 //! code here is this crate's own.
@@ -40,6 +57,12 @@ use crate::{Gui, classes};
 
 /// `mText`'s size less its NUL.
 pub const MAX_EDIT_TEXT: usize = 255;
+/// The most undo steps an edit keeps with the engine's keys.
+pub const MAX_UNDO_STEPS: usize = 100;
+
+#[path = "edit_keys.rs"]
+mod edit_keys;
+pub use edit_keys::{Merge, word_left, word_right};
 
 fn text(gui: &Gui, id: ObjId) -> Vec<u8> {
     gui.with(id, |c| c.text.clone().unwrap_or_default())
@@ -88,7 +111,10 @@ pub fn set_text(vm: &mut Vm, gui: &Gui, id: ObjId, t: &[u8]) {
         classes::set_text(vm, gui, id, t);
     }
     let len = text(gui, id).len() as i32;
-    edit(gui, id, |e| e.cursor = len);
+    edit(gui, id, |e| {
+        e.cursor = len;
+        e.undo_merge = None;
+    });
 }
 
 /// The font the edit measures with.
@@ -143,6 +169,10 @@ fn cursor_at(vm: &Vm, gui: &Gui, id: ObjId, pt: (i32, i32)) -> i32 {
 
 /// `onMouseDown`: the selection dropped, the cursor where the click is, the mouse locked, the first responder.
 pub fn mouse_down(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    if !gui.ext().rule(GuiRule::TgeEditKeys) {
+        edit_keys::mouse_down(vm, gui, id, ev);
+        return take_mouse(vm, gui, id);
+    }
     let pos = cursor_at(vm, gui, id, ev.point);
     let len = text(gui, id).len() as i32;
     let pos = match pos {
@@ -157,6 +187,11 @@ pub fn mouse_down(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(),
         e.cursor = pos;
         e.drag_start = pos;
     });
+    take_mouse(vm, gui, id)
+}
+
+/// The tail of `onMouseDown`: the mouse locked, the first responder.
+fn take_mouse(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
     mouse_lock(vm, gui, id)?;
     edit(gui, id, |e| e.drag_hit = true);
     if gui.is_awake(id)
@@ -171,6 +206,10 @@ pub fn mouse_down(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(),
 
 /// `onMouseDragged` (TGE 1.4): the selection from the drag's start to the cursor.
 pub fn mouse_dragged(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    if !gui.ext().rule(GuiRule::TgeEditKeys) {
+        edit_keys::mouse_dragged(vm, gui, id, ev);
+        return Ok(());
+    }
     let pos = cursor_at(vm, gui, id, ev.point);
     let len = text(gui, id).len() as i32;
     edit(gui, id, |e| {
@@ -313,6 +352,11 @@ pub fn key_down(
     }
     let len = text(gui, id).len() as i32;
     let st = edit(gui, id, |e| e.clone()).unwrap_or_else(EditState::new);
+    if !gui.ext().rule(GuiRule::TgeEditKeys)
+        && let Some(taken) = edit_keys::key_down(vm, gui, id, ev, depth)?
+    {
+        return Ok(taken);
+    }
     let key = u16::from(ev.key_code);
     let m = ev.modifier;
     if m & SI_SHIFT != 0 {
@@ -660,12 +704,19 @@ fn character(
             return Ok(true);
         }
     }
-    save_undo(gui, id);
+    let tge = gui.ext().rule(GuiRule::TgeEditKeys);
+    let before = edit_keys::snapshot(gui, id);
+    if tge {
+        save_undo(gui, id);
+    }
     if st.block_end > 0 {
         delete_range(gui, id, st.block_start, st.block_end);
     }
     if ev.action == SI_REPEAT {
         if !edit(gui, id, |e| e.key_seen).unwrap_or(false) {
+            if !tge {
+                edit_keys::commit(gui, id, before, None);
+            }
             return Ok(false);
         }
     } else {
@@ -673,7 +724,8 @@ fn character(
     }
     let st = edit(gui, id, |e| e.clone()).unwrap_or_else(EditState::new);
     let max = torque_ts_vm::text::atoi(&text_field(vm, id, b"maxLength"));
-    // Compared with the length read before the selection went (`len`).
+    // TGE's compares with the length read before the selection went (`len`); the engine's with the text left.
+    let len = if tge { len } else { text(gui, id).len() as i32 };
     let measure = if st.insert_on { len } else { st.cursor };
     if measure < max && (text(gui, id).len()) < MAX_EDIT_TEXT {
         let mut t = text(gui, id);
@@ -692,6 +744,9 @@ fn character(
     } else {
         denied(vm, gui, id);
     }
+    if !tge {
+        edit_keys::commit(gui, id, before, Some(Merge::Typing));
+    }
     changed(vm, gui, id)
 }
 
@@ -704,3 +759,7 @@ pub fn set_cursor(gui: &Gui, id: ObjId, pos: i32) {
     let len = text(gui, id).len() as i32;
     edit(gui, id, |e| e.cursor = pos.clamp(0, len));
 }
+
+#[cfg(test)]
+#[path = "text_edit_tests.rs"]
+mod tests;
