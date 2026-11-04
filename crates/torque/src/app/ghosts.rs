@@ -179,6 +179,9 @@ pub struct GhostOptions {
     pub ribbon_trails: bool,
     pub flare: Option<ShotFlare>,
     pub decals: DecalLimits,
+    /// Players are posed by the synced rules of a server whose Players have hitboxes
+    /// ([`PlayerAnimation::set_synced`]), so the figure drawn is the one hits are cast at.
+    pub synced_poses: bool,
 }
 
 impl Default for GhostOptions {
@@ -192,6 +195,7 @@ impl Default for GhostOptions {
             ribbon_trails: false,
             flare: None,
             decals: DecalLimits::default(),
+            synced_poses: false,
         }
     }
 }
@@ -353,6 +357,8 @@ struct GhostHooks {
     clocks: Mutex<HashMap<(u32, usize), ImageClock>>,
     inputs: HashMap<u32, PlayerInput>,
     motions: HashMap<(u32, usize), HeldMotion>,
+    /// [`GhostOptions::synced_poses`].
+    synced: bool,
 }
 
 impl Hooks<World> for GhostHooks {
@@ -394,9 +400,10 @@ impl Hooks<World> for GhostHooks {
                 let Ok(mut instance) = ShapeInstance::new(ask.shape, &mut |_| true) else {
                     return (None, None);
                 };
-                let Some(anim) = PlayerAnimation::new(ask.shape, &mut instance) else {
+                let Some(mut anim) = PlayerAnimation::new(ask.shape, &mut instance) else {
                     return (None, None);
                 };
+                anim.set_synced(self.synced);
                 LivePlayer {
                     instance,
                     anim,
@@ -412,15 +419,16 @@ impl Hooks<World> for GhostHooks {
         };
         let dt = (world.anim_ms.wrapping_sub(live.at_ms) as f32 / 1000.0).min(MAX_FRAME_STEP);
         live.at_ms = world.anim_ms;
-        let yaw = match render_pose(world, ask.index) {
-            Some(Pose::Euler { yaw, .. }) => yaw,
-            _ => 0.0,
+        let (yaw, position) = match render_pose(world, ask.index) {
+            Some(Pose::Euler { yaw, position, .. }) => (yaw, Some(position)),
+            _ => (0.0, None),
         };
         let mut motion = PlayerMotion::of_record(record, yaw).unwrap_or(PlayerMotion {
             yaw,
             ..PlayerMotion::default()
         });
         motion.server_action = ServerAction::of_record(record);
+        motion.position = position;
         let input = self.inputs.get(&ask.index).copied().unwrap_or_default();
         if let Some((velocity, _, falling)) = input.motion {
             motion.velocity = velocity;
@@ -615,10 +623,13 @@ struct SightNodes {
 impl GhostScene {
     /// A scene with nothing in it yet.
     pub fn new(options: GhostOptions) -> GhostScene {
-        let d = options.decals;
+        let (d, synced) = (options.decals, options.synced_poses);
         GhostScene {
             options,
-            hooks: GhostHooks::default(),
+            hooks: GhostHooks {
+                synced,
+                ..GhostHooks::default()
+            },
             frames: ImageFrames::default(),
             held: BTreeMap::new(),
             bolts: BTreeMap::new(),

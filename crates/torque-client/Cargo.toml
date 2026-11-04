@@ -36,6 +36,8 @@ open = { version = "5.4.4", default-features = false, features = ["shellexecute-
 [dev-dependencies]
 # The host tests' draw cache (no font files: nothing is drawn as text).
 fonts = { package = "torque-fonts", path = "../torque-fonts" }
+# The synced pose tests' figure.
+torque-shape-builder = { path = "../torque-shape-builder" }
 
 [features]
 # The window glue (`platform`): keys, cursor hold, frame cap, URL opener.

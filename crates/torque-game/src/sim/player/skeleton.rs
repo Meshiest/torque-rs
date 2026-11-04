@@ -10,6 +10,10 @@
 //! are the class's action table's ([`ActionTable`](crate::scene::shapebase::ActionTable)): TGE's by default. The thread
 //! rate follows the velocity along the action's direction over its speed, at most `maxTimeScale`.
 //!
+//! A synced Player (one with hitboxes) follows its clients' rules instead ([`synced`]): the action thread steps every tick
+//! after the pick, by the ground covered for a moving action, a jump plays on the rise, a new action blends in and the spine
+//! bones are let go.
+//!
 //! The shape work (`animate`, thread steps) is counted here and charged to the run by the tick when it next holds the `Vm`.
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree: `T3D/player.cpp`
@@ -25,6 +29,7 @@ use shapes::instance::ThreadId;
 
 use super::PlayerInfo;
 use super::ground;
+use super::synced;
 use crate::scene::shapebase::{
     ActionRequest, PlayerThreads, ShapeBaseState, action_thread, update_node_masks,
 };
@@ -32,6 +37,8 @@ use crate::sim_classes::ActionPick;
 
 /// The root action's number (every table's first); falling and landing are the table's.
 const ROOT: u32 = 0;
+/// The root and the moving actions (`run`, `back`, `side`): a synced pose steps the moving ones by the ground covered.
+const MOVES: u32 = 4;
 
 /// The skeleton of one Player for one tick.
 pub struct HostSkeleton {
@@ -41,6 +48,10 @@ pub struct HostSkeleton {
     pub work: u64,
     /// `isFirstPerson`: a controlling client whose control object this is, in first person.
     pub first_person: bool,
+    /// The pose is synced with the clients' ([`synced`]).
+    pub synced: bool,
+    /// The step's seconds (`advanceThreads`').
+    dt: f32,
 }
 
 impl HostSkeleton {
@@ -50,7 +61,15 @@ impl HostSkeleton {
             info,
             work: 0,
             first_person: false,
+            synced: false,
+            dt: 0.0,
         }
+    }
+
+    /// The skeleton with its pose synced with the clients' or not ([`synced`]).
+    pub fn synced(mut self, on: bool) -> HostSkeleton {
+        self.synced = on;
+        self
     }
 
     fn threads(&self) -> Option<&PlayerThreads> {
@@ -110,6 +129,7 @@ impl HostSkeleton {
             wait,
             fsp,
             force: false,
+            blend: self.synced,
         };
         // The out-of-range line needs the console; the server's own calls never ask past the table.
         let _ = action_thread(st, action as usize, request);
@@ -153,11 +173,66 @@ impl HostSkeleton {
             moves,
             first_person: self.first_person,
             held: self.threads().is_some_and(|p| p.hold),
+            synced: self.synced,
         };
         let Some((action, forward)) = self.info.class.pick_action(&pick) else {
             return;
         };
         self.set_action(s, action, forward, false, false, false);
+    }
+
+    /// A synced pose's jump: an upward speed passing the rise speed plays `jump` (`standjump` slow along the ground, when the
+    /// shape has it) to its end, as the clients play it ([`synced::rose`]).
+    fn synced_jump(&mut self, s: &mut PlayerState) {
+        let Some(p) = self.threads() else {
+            return;
+        };
+        let last = p.synced_from.map_or(0.0, |f| f.1);
+        if p.hold || !synced::rose(last, s.velocity[2]) {
+            return;
+        }
+        let table = self.info.actions;
+        let has = |a: u32| p.actions.get(a as usize).is_some_and(|x| x.sequence != -1);
+        let action = if synced::standing_jump(s.velocity) && has(table.stand_jump) {
+            table.stand_jump
+        } else {
+            table.jump
+        };
+        self.set_action(s, action, true, false, true, true);
+    }
+
+    /// A synced pose's action thread after the pick: a moving action at the rate of the ground covered since the last step
+    /// ([`synced::step_scale`]), any other at its own; then the step. The position and the upward speed are kept for the next.
+    fn synced_step(&mut self, s: &mut PlayerState) {
+        let position = [s.obj_to_world[3], s.obj_to_world[7], s.obj_to_world[11]];
+        let dt = self.dt;
+        let none = self.info.actions.none;
+        let Some(p) = self.st.as_mut().and_then(|st| st.player.as_mut()) else {
+            return;
+        };
+        let from = p.synced_from.replace((position, s.velocity[2]));
+        let (action, forward, th) = (p.action, p.forward, p.action_thread);
+        if action == none {
+            return;
+        }
+        let mut scale = 1.0f32;
+        if action < MOVES
+            && let Some(m) = self.info.motions.get(action as usize)
+            && m.velocity_scale
+            && m.speed != 0.0
+        {
+            let moved = from.map_or(s.velocity.map(|v| v * dt), |(f, _)| {
+                [0, 1, 2].map(|i| position[i] - f[i])
+            });
+            let step = mul_v(&s.world_to_obj, moved);
+            scale = synced::step_scale(step, dt, m.dir, m.speed, self.info.max_time_scale);
+        }
+        self.with_thread(th, |inst, _, t| {
+            if let Some(th) = inst.thread_mut(t) {
+                th.time_scale = if forward { scale } else { -scale };
+            }
+        });
+        self.advance_time(th, dt);
     }
 
     /// `updateAnimation` on a server.
@@ -312,10 +387,14 @@ impl Skeleton for HostSkeleton {
         });
     }
 
-    fn thread_in_transition(&self, _t: Thread) -> bool {
-        // The engine's threads have no transitions (the server never starts one: `setActionThread`'s transition branch is a
-        // ghost's).
-        false
+    fn thread_in_transition(&self, t: Thread) -> bool {
+        // TGE's server never starts one (`setActionThread`'s transition branch is a ghost's); a synced pose does.
+        let Some(body) = self.st.as_ref().and_then(|s| s.body.as_ref()) else {
+            return false;
+        };
+        self.thread_id(t)
+            .and_then(|t| body.instance.thread(t))
+            .is_some_and(|th| th.transition.in_transition)
     }
 
     fn root_displacement(&mut self, from: f32, to: f32) -> Matrix {
@@ -333,14 +412,16 @@ impl Skeleton for HostSkeleton {
         self.set_action(s, anim, true, false, true, true);
     }
 
-    /// `advanceThreads(dt)` on a server: the action thread steps only while its first-person flag is set; then the class's own
-    /// threads ([`PlayerKind::advance_class_threads`](crate::sim_classes::PlayerKind::advance_class_threads)).
+    /// `advanceThreads(dt)` on a server: the action thread steps only while its first-person flag is set (a synced pose steps it
+    /// after the pick instead); then the class's own threads
+    /// ([`PlayerKind::advance_class_threads`](crate::sim_classes::PlayerKind::advance_class_threads)).
     fn advance_before(&mut self, _s: &mut PlayerState, dt: f32) {
+        self.dt = dt;
         let Some(p) = self.threads() else {
             return;
         };
         let (fsp, action) = (p.fsp, p.action_thread);
-        if fsp {
+        if fsp && !self.synced {
             self.advance_time(action, dt);
         }
         let class = Rc::clone(&self.info.class);
@@ -354,8 +435,14 @@ impl Skeleton for HostSkeleton {
 
     /// `updateAnimation` and `updateActionThread(true)`.
     fn advance_after(&mut self, s: &mut PlayerState) {
+        if self.synced {
+            self.synced_jump(s);
+        }
         self.update_animation(s);
-        let fsp = self.threads().is_some_and(|p| p.fsp);
+        if self.synced {
+            self.synced_step(s);
+        }
+        let fsp = self.threads().is_some_and(|p| p.fsp) || self.synced;
         if let Some(body) = self.st.as_mut().and_then(|st| st.body.as_mut()) {
             update_node_masks(body, fsp);
         }

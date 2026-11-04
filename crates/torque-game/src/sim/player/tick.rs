@@ -174,6 +174,7 @@ pub fn tick(vm: &mut Vm, calls: &mut dyn TriggerCalls, env: &SimEnv, id: ObjId, 
         info.class
             .before_step(vm, id, client.map(|(client, _)| client), s);
     }
+    let synced = crate::scene::hitboxes::wanted(vm, id);
     let shape = ext::get_mut(vm.objects_mut(), id).and_then(|e| e.shape.take());
     vm.hold(id);
     let statics = *env.statics.borrow();
@@ -183,7 +184,7 @@ pub fn tick(vm: &mut Vm, calls: &mut dyn TriggerCalls, env: &SimEnv, id: ObjId, 
         env,
         calls,
         id,
-        skel: HostSkeleton::new(shape, Rc::clone(&info)),
+        skel: HostSkeleton::new(shape, Rc::clone(&info)).synced(synced),
         statics,
         spare: None,
         error: None,
