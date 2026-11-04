@@ -14,6 +14,10 @@
 //! (`Player::interpolateTick`) and turned ahead by the mouse's waiting turn ([`crate::prediction`]), the other figures where the
 //! client runs them between their records, the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and
 //! the eye at the own figure's eye.
+//!
+//! Credit: the frame between the last two ticks follows `Player::interpolateTick` and the client's `ProcessList` in Torque3D's
+//! MIT-licensed `T3D/player.cpp` and `T3D/gameBase/processList.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
+//! Faust Logic, Inc. for `player.cpp`). The code here is this example's own.
 
 use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddr};

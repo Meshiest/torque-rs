@@ -7,6 +7,10 @@
 //!   holds it: the cube shape's collision hulls (read from the kit), its pose and scale, a StaticShape's type bits.
 //! - **Smooth aim** ([`PredictGame::smooth_aim`]): the view turns with the mouse within the frame, ahead of the last tick by
 //!   what the next move will make of the waiting turn, instead of a tick or two behind it. The moves are unchanged.
+//!
+//! Credit: a cube's collision object follows `ShapeBase::buildConvex` and the StaticShape type bits in Torque3D's MIT-licensed
+//! `T3D/shapeBase.cpp` and `T3D/staticShape.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc. for
+//! `shapeBase.cpp`). The code here is this example's own.
 
 use std::any::Any;
 use std::rc::Rc;
