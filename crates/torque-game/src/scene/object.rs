@@ -247,6 +247,13 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
             container: Rc::clone(container),
         }),
     );
+    // `GameBase::getDataBlock`: the datablock's id, 0 for none.
+    register_method(vm, "GameBase", "getDataBlock", |vm, c| {
+        let db = c
+            .this_object
+            .and_then(|id| crate::scene::access::object_field(vm, id, b"dataBlock"));
+        Native::Int(db.map_or(0, |d| i32::try_from(d).unwrap_or(0)))
+    });
     // The type mask lives in the object's ext, for every object: 0 until a class sets it.
     vm.register_in("SimObject", "getType", 2, 2, "obj.getType()", |vm, c| {
         let mask = c
