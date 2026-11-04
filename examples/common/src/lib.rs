@@ -7,7 +7,7 @@
 //!   canvas's GUI drawn over it by the GUI pass.
 //! - [`view::SceneShape`]: a shape loaded from the kit, posed by a `ShapeInstance` and turned into a moving object of the frame.
 //! - [`orbit::Orbit`]: a third-person camera that circles a point.
-//! - [`window::WindowSurface`]: a window's GPU device and surface, kept to its size, on the examples' [`window::BACKENDS`] (Vulkan
+//! - [`window::WindowSurface`]: a window's GPU device and surface, kept to its size, on the engine's window backends (Vulkan
 //!   first: its pipelines are made in well under a second); [`window::offscreen_gpu`] the same for pictures and tests.
 //! - [`draw_cache`]: the GUI's draw cache with the fonts the examples use (the system's TrueType faces where it has them).
 
