@@ -243,7 +243,7 @@ fn the_drawn_bolt_leaves_the_pistol_and_curves_onto_the_crosshair() {
     let (eye, aim) = crosshair(&a);
     a.call("fire", &["1"]).unwrap();
     let mut first = None;
-    let mut on_line = 0;
+    let (mut on_line, mut curving, mut last_off) = (0, 0, f32::MAX);
     for i in 0..40 {
         if i == 4 {
             a.call("fire", &["0"]).unwrap();
@@ -266,13 +266,156 @@ fn the_drawn_bolt_leaves_the_pistol_and_curves_onto_the_crosshair() {
             );
             first = Some(p);
         } else if len(sub(p, eye)) > torque_example_fps::scene::BOLT_BLEND + 1.5 {
+            // On the line, to within the record's quantized direction.
             let off = off_ray(p, eye, aim);
+            let far = len(sub(p, eye));
             assert!(
-                off < 0.05,
-                "past its curve the bolt is drawn {off} off the crosshair's ray"
+                off < 0.05 || off / far < 0.002,
+                "past its curve the bolt is drawn {off} off the crosshair's ray, {far} out"
             );
             on_line += 1;
+        } else {
+            // Curving in: nearer the line each frame (to within the record's quantized direction).
+            let off = off_ray(p, eye, aim);
+            let far = len(sub(p, eye));
+            assert!(
+                off <= last_off + 0.002 * far,
+                "it curves in: {off} after {last_off}, {far} out"
+            );
+            last_off = off;
+            curving += 1;
         }
     }
     assert!(first.is_some() && on_line > 3, "the bolt was drawn");
+    assert!(
+        curving >= 2,
+        "it is drawn on its curve for a few frames ({curving})"
+    );
 }
+
+#[test]
+fn holding_the_right_button_raises_the_sights_narrows_the_view_and_slows_the_turn_and_the_walk() {
+    use torque::client::MouseButton;
+    use torque_example_fps::scene::{AIM_FOV, FOV};
+    let mut a = host();
+    let (eye, aim) = crosshair(&a);
+    let hip = a.scene().own_muzzle().expect("the pistol's muzzle");
+    assert!(
+        off_ray(hip, eye, aim) > 0.2,
+        "at the hip the muzzle is beside the crosshair"
+    );
+    assert_eq!(a.eye().fov, Some(FOV));
+    let at = (400, 300);
+    a.host.mouse_button(MouseButton::Right, true, at);
+    frame(&mut a, 16);
+    assert_eq!(a.global("$Arena::Aiming"), "1");
+    let rising = a.scene().aim();
+    assert!(rising > 0.0 && rising < 0.5, "on the way up: {rising}");
+    frames(&mut a, 300);
+    assert_eq!(a.scene().aim(), 1.0, "at the sights");
+    let (eye, aim) = crosshair(&a);
+    let muzzle = a.scene().own_muzzle().unwrap();
+    let off = off_ray(muzzle, eye, aim);
+    assert!(
+        off < 0.05,
+        "at the sights the muzzle is {off} off the crosshair's ray"
+    );
+    assert_eq!(a.eye().fov, Some(AIM_FOV as u8));
+    // The mouse turns the narrower view by as much less.
+    let scale: f32 = a.global("$Arena::TurnScale").parse().unwrap();
+    let want = (AIM_FOV.to_radians() * 0.5).tan() / (f32::from(FOV).to_radians() * 0.5).tan();
+    assert!((scale - want).abs() < 1e-3, "{scale} {want}");
+    let before = a.global("$Arena::LookYaw").parse::<f32>().unwrap();
+    a.host.mouse_motion(100.0, 0.0);
+    frame(&mut a, 16);
+    let turned = a.global("$Arena::LookYaw").parse::<f32>().unwrap() - before;
+    assert!((turned - 0.3 * want).abs() < 1e-3, "turned {turned}");
+    // Walking while aiming is slower.
+    a.key(keys::W, true);
+    frame(&mut a, 16);
+    assert_eq!(a.global("$mvForwardAction"), "0.6");
+    // Let go: back to the hip, the full view and the full walk.
+    a.host.mouse_button(MouseButton::Right, false, at);
+    frames(&mut a, 300);
+    assert_eq!(a.global("$Arena::Aiming"), "0");
+    assert_eq!(a.scene().aim(), 0.0);
+    assert_eq!(a.eye().fov, Some(FOV));
+    assert_eq!(a.global("$mvForwardAction"), "1");
+    a.key(keys::W, false);
+}
+
+#[test]
+fn a_bolt_that_hits_the_block_leaves_a_hole_on_its_face_and_nowhere_else() {
+    let mut a = host();
+    turn(&mut a, 0.6, 0.3);
+    turn(&mut a, -0.37, -0.25);
+    let (eye, aim) = crosshair(&a);
+    let hit = block_hit(eye, aim).expect("the crosshair is on the block");
+    assert!(a.scene().decals.is_empty());
+    fire(&mut a);
+    frames(&mut a, 600);
+    let decals: Vec<_> = a.scene().decals.decals().cloned().collect();
+    assert_eq!(decals.len(), 1, "one hole");
+    let d = &decals[0];
+    let lifted = len(sub(d.position, hit));
+    assert!(
+        lifted < 0.1,
+        "the hole is {lifted} from the hit ({:?}, {hit:?})",
+        d.position
+    );
+    // On the block's face toward the eye, facing out of it, its mesh on that face (y = 7) and inside the block's bounds.
+    assert!(d.normal[1] < -0.99, "{:?}", d.normal);
+    assert!(!d.triangles.is_empty());
+    for t in &d.triangles {
+        for (p, _) in t {
+            assert!((p[1] - 7.0).abs() < 0.02, "on the face: {p:?}");
+            assert!(
+                (2.0..=4.0).contains(&p[0]) && (0.0..=3.0).contains(&p[2]),
+                "{p:?}"
+            );
+        }
+    }
+}
+
+/// Where `p` lands on a screen of `size` pixels seen from `eye` (position, yaw, pitch) with a horizontal field of view of
+/// `fov` degrees: pixels from the screen's center (right, down).
+fn project(p: F3, eye: F3, yaw: f32, pitch: f32, fov: f32, size: (f32, f32)) -> (f32, f32) {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let forward = [sy * cp, cy * cp, -sp];
+    let right = [cy, -sy, 0.0];
+    let up = [sy * sp, cy * sp, cp];
+    let v = sub(p, eye);
+    let (x, y, z) = (dot(v, right), dot(v, up), dot(v, forward));
+    let focal = size.0 * 0.5 / (fov.to_radians() * 0.5).tan();
+    (focal * x / z, -focal * y / z)
+}
+
+#[test]
+fn aimed_the_front_post_sits_in_the_rear_notch_on_the_crosshair() {
+    let mut a = host();
+    turn(&mut a, -0.3, 0.1);
+    a.call("aim", &["1"]).unwrap();
+    frames(&mut a, 400);
+    assert_eq!(a.scene().aim(), 1.0);
+    let own = a.scene().own().unwrap();
+    let [front, rear] = a.scene().own_sights().expect("the pistol's sights");
+    let fov = f32::from(a.eye().fov.unwrap());
+    for size in [(1280.0, 720.0), (1920.0, 1080.0)] {
+        for (name, p) in [("front post", front), ("rear notch", rear)] {
+            let (x, y) = project(p, own.eye, own.yaw, own.pitch, fov, size);
+            assert!(
+                x.abs() <= 1.0 && y.abs() <= 1.0,
+                "{name} {x:.2},{y:.2} px from the center at {size:?}"
+            );
+        }
+    }
+    // The bolt still leaves the muzzle.
+    let muzzle = a.scene().own_muzzle().unwrap();
+    assert!(
+        len(sub(muzzle, own.eye)) > AIM_SIGHT_TO_MUZZLE,
+        "{muzzle:?}"
+    );
+}
+
+const AIM_SIGHT_TO_MUZZLE: f32 = 0.3;

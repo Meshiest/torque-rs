@@ -3,7 +3,7 @@
 //! | file | nodes | sequences | material |
 //! |---|---|---|---|
 //! | `cube.dts` | `cube` | | `grid` |
-//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `head`, `death1`, `death2` | `figure` |
+//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `death1`, `death2` | `figure` |
 //! | `pistol.dts` | `pistol`, `mountPoint`, `muzzlePoint`, `ejectPoint`, `slide` | `fire` | `pistol` |
 //! | `projectile.dts` | `projectile` | | `projectile` |
 //!
@@ -35,20 +35,23 @@
 //! - `hold`: the right arm raised to aim, from fully up (position 0) through level and straight ahead (0.5) to fully down (1),
 //!   [`LOOK_RANGE`] degrees each way; priority 1 and only the right arm, so played on a second thread at the aim's pitch it
 //!   holds that arm over any of the others while the figure holds a pistol.
+//! - `look`: the same as `hold` (a Player's arm thread starts on `look`; the server sets the arm's action on that thread).
+//! - `aim`: as `hold`, the pistol raised to eye level in front of the face (aiming down the sights), over the same range.
 //! - `head`: a blend sequence over the same range: the torso and the head bend up and down with the aim (a share each,
 //!   [`LOOK_TORSO`] and [`LOOK_HEAD`]), added to whatever else plays.
-//! - `death1` and `death2`: 1.2 s, played once and held: the knees give, the body tips over at the feet, backward
+//! - `death1` and `death2`: 0.6 s, played once and held: the knees give, the body tips over at the feet, backward
 //!   (`death1`, hit from the front) or forward (`death2`, hit from behind), lands flat with a small bounce and lies still, the
 //!   arms flung out to the sides.
 //!
 //! **The pistol** is a large semi-automatic, 26 cm long: a long squared top (the slide, the whole length from the hammer to
 //! the muzzle, with the front and rear sights on it, over a fixed barrel whose end shows as it runs back), an exposed hammer, a trigger in its guard and a grip raked back. It points
 //! along +y with its origin at the top of the grip; `mountPoint` is in the grip where the hand holds it, `muzzlePoint` on the
-//! bore at the front face, `ejectPoint` on the right of the top, where a spent case leaves. `fire` (0.15 s, once)
+//! bore at the front face, `sightFront` and `sightRear` on the sight line (the front post's top, the rear notch's), on the
+//! slide, `ejectPoint` on the right of the top, where a spent case leaves. `fire` (0.15 s, once)
 //! runs the whole `slide` back 4 cm and returns it.
 //!
-//! **The projectile** is a small cube ([`BOLT_SIZE`] a side, about four inches) centered on its origin, self-lit, each face hot
-//! at its center and orange at its edges.
+//! **The projectile** is a small cube ([`BOLT_SIZE`] a side, about an inch and a half; it hits along its path, not by its size) centered on its origin, self-lit, each face white
+//! at its center and pale cyan at its edges.
 
 use std::f32::consts::TAU;
 
@@ -486,13 +489,51 @@ pub fn figure() -> Model {
         .iter()
         .map(|d| HOLD_SHOULDER + d)
         .collect();
+    // `look` is the same pose: a Player's arm thread starts on its shape's `look` (and has none without one), so the server can
+    // set the arm's action (`setArmThread`: `aim`, back to `hold`).
+    for name in ["hold", "look"] {
+        b.sequence(SequenceDef {
+            name,
+            duration: 1.0,
+            cyclic: false,
+            priority: 1,
+            keyframes: LOOK_KEYS,
+            rotations: vec![track(arm_r, &shoulder), track(elbow_r, &[HOLD_ELBOW])],
+            translations: Vec::new(),
+            ground: Vec::new(),
+        });
+    }
+    // Aiming down the sights: as `hold`, the shoulder raised higher and swung in toward the middle so the hand comes up in
+    // front of the face; the elbow turns the forearm back out and down so the pistol still points along the aim.
+    let aim_keys = |pitch_share: f32| -> (Vec<Quat16>, Vec<Quat16>) {
+        (0..LOOK_KEYS)
+            .map(|k| {
+                let pitch = pitch_share * look_pitch(k as f32 / (LOOK_KEYS - 1) as f32);
+                let a = AIM_SHOULDER + pitch;
+                (
+                    turns(&[(Z, AIM_IN), (X, a)]),
+                    turns(&[(X, -a), (Z, -AIM_IN), (X, a + AIM_ELBOW)]),
+                )
+            })
+            .unzip()
+    };
+    let (aim_shoulder, aim_elbow) = aim_keys(1.0 - LOOK_TORSO);
     b.sequence(SequenceDef {
-        name: "hold",
+        name: "aim",
         duration: 1.0,
         cyclic: false,
         priority: 1,
         keyframes: LOOK_KEYS,
-        rotations: vec![track(arm_r, &shoulder), track(elbow_r, &[HOLD_ELBOW])],
+        rotations: vec![
+            Track {
+                node: arm_r,
+                keys: aim_shoulder,
+            },
+            Track {
+                node: elbow_r,
+                keys: aim_elbow,
+            },
+        ],
         translations: Vec::new(),
         ground: Vec::new(),
     });
@@ -563,7 +604,7 @@ fn side_tracks(torso: usize, limbs: &Limbs, n: usize) -> Vec<Track<Quat16>> {
     tracks
 }
 
-/// The death sequences, each 1.2 s, played once and held on their last key: `death1` falls backward (hit from the front),
+/// The death sequences, each 0.6 s, played once and held on their last key: `death1` falls backward (hit from the front),
 /// `death2` forward (hit from behind). The knees give first, the body tips over at the feet and lands flat on the floor (the
 /// root lifted by the depth of the side that lands, so nothing sinks into it), with a small bounce, and lies still.
 fn death_sequences(b: &mut ShapeBuilder, root: usize, torso: usize, head: usize, limbs: &Limbs) {
@@ -636,7 +677,7 @@ fn death_sequences(b: &mut ShapeBuilder, root: usize, torso: usize, head: usize,
         }
         b.sequence(SequenceDef {
             name,
-            duration: 1.2,
+            duration: 0.6,
             cyclic: false,
             priority: 0,
             keyframes: FALL.len(),
@@ -653,6 +694,11 @@ fn death_sequences(b: &mut ShapeBuilder, root: usize, torso: usize, head: usize,
 /// The `hold` pose's shoulder and elbow (degrees): together a quarter turn, the forearm level.
 pub const HOLD_SHOULDER: f32 = 78.0;
 pub const HOLD_ELBOW: f32 = 12.0;
+/// The `aim` pose (degrees): the shoulder raised past level and swung in toward the middle, the elbow straightened a little
+/// past straight so the forearm (and the pistol) is level again.
+pub const AIM_SHOULDER: f32 = 100.0;
+pub const AIM_IN: f32 = 24.0;
+pub const AIM_ELBOW: f32 = -10.0;
 
 /// The pistol's texture rectangles: the plain metal and the grip's lined panel (`pistol.png`'s upper and lower halves).
 const METAL: UvRect = [0.0, 0.14, 1.0, 0.46];
@@ -685,6 +731,14 @@ pub const GRIP_CENTRE: Vec3 = [0.0, -0.015, -0.049];
 pub const RECOIL: f32 = 0.04;
 /// The barrel's front face (y) and the bore's height (z): the muzzle point.
 pub const MUZZLE_Y: f32 = 0.205;
+/// The slide's top (z), the sights' height over it, where along the slide the front post and the rear notch stand (y), the
+/// front post's width and the notch's.
+pub const SLIDE_TOP: f32 = 0.05;
+pub const SIGHT_HEIGHT: f32 = 0.009;
+pub const FRONT_SIGHT_Y: f32 = 0.193;
+pub const REAR_SIGHT_Y: f32 = -0.025;
+pub const FRONT_POST_WIDTH: f32 = 0.004;
+pub const NOTCH_WIDTH: f32 = 0.007;
 pub const BORE_Z: f32 = 0.033;
 
 /// The pistol: a large semi-automatic with a long squared top whose fixed barrel runs flush to its front, sights front and
@@ -697,9 +751,21 @@ pub fn pistol() -> Model {
     b.node("muzzlePoint", Some(root), [0.0, MUZZLE_Y, BORE_Z]);
     b.node("ejectPoint", Some(root), [0.017, 0.04, 0.042]);
     let slide = b.node("slide", Some(root), [0.0; 3]);
+    let top = SLIDE_TOP;
+    // The sight line: over the front post's top and through the rear notch, level along +y (both on the slide).
+    b.node(
+        "sightFront",
+        Some(slide),
+        [0.0, FRONT_SIGHT_Y, top + SIGHT_HEIGHT],
+    );
+    b.node(
+        "sightRear",
+        Some(slide),
+        [0.0, REAR_SIGHT_Y, top + SIGHT_HEIGHT],
+    );
     b.detail("detail1", 1.0);
     let m = b.material("pistol", OPAQUE);
-    let (top, bottom) = (0.05, 0.011);
+    let bottom = 0.011;
     let mut part = |name: &str, node: usize, width: f32, profile: &[[f32; 2]], uv: UvRect| {
         pistol_part(&mut b, name, node, m, width, profile, uv);
     };
@@ -721,20 +787,29 @@ pub fn pistol() -> Model {
         [-0.036, top - 0.006],
     ];
     part("slide", slide, 0.034, &slide_profile, METAL);
+    // The iron sights: a thin front post near the muzzle, and at the back a notch (two posts with a gap a little wider than
+    // the front post), their tops at one height: aimed, the post sits in the notch, its top level with the notch's.
     let front_sight = [
-        [0.186, top],
-        [0.2, top],
-        [0.2, top + 0.006],
-        [0.19, top + 0.006],
+        [FRONT_SIGHT_Y - 0.007, top],
+        [FRONT_SIGHT_Y + 0.007, top],
+        [FRONT_SIGHT_Y + 0.007, top + SIGHT_HEIGHT],
+        [FRONT_SIGHT_Y - 0.003, top + SIGHT_HEIGHT],
     ];
-    part("front_sight", slide, 0.008, &front_sight, METAL);
-    part(
-        "rear_sight",
-        slide,
-        0.026,
-        &rect(-0.03, -0.02, top, top + 0.007),
-        METAL,
+    part("front_sight", slide, FRONT_POST_WIDTH, &front_sight, METAL);
+    let notch = rect(
+        REAR_SIGHT_Y - 0.005,
+        REAR_SIGHT_Y + 0.005,
+        top,
+        top + SIGHT_HEIGHT,
     );
+    let rear: Vec<MeshData> = [(-0.013, -0.5 * NOTCH_WIDTH), (0.5 * NOTCH_WIDTH, 0.013)]
+        .into_iter()
+        .map(|(x0, x1)| {
+            let mut post = MeshData::new(Some(m));
+            post.add_prism(&notch, x0, x1, METAL, METAL);
+            post
+        })
+        .collect();
     // The frame under the slide, and the tang over the hand.
     part(
         "frame",
@@ -808,11 +883,14 @@ pub fn pistol() -> Model {
         }],
         ground: Vec::new(),
     });
+    for (name, post) in ["rear_sight", "rear_sight_right"].into_iter().zip(rear) {
+        b.object(name, slide, 0, post);
+    }
     b.build()
 }
 
 /// The projectile cube's side (m).
-pub const BOLT_SIZE: f32 = 0.1;
+pub const BOLT_SIZE: f32 = 0.04;
 
 /// The projectile.
 pub fn projectile() -> Model {

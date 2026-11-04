@@ -9,7 +9,8 @@
 //!
 //! The fields follow TGE's declarations as in Torque3D's MIT-licensed sources (`T3D/gameBase/gameBase.cpp`,
 //! `T3D/shapeBase.cpp`, `T3D/player.cpp` and the others of each class; Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
-//! Faust Logic, Inc.). The classes of a mission's world and their defaults follow TGE 1.4's `terrain/terrData.cc`,
+//! Faust Logic, Inc.); `DecalData`'s are TGE 1.4's (`sim/decalManager.cc`, Copyright (C) GarageGames.com, Inc.), which
+//! Torque3D replaced. The classes of a mission's world and their defaults follow TGE 1.4's `terrain/terrData.cc`,
 //! `terrain/waterBlock.cc`, `interior/interiorInstance.cc`, `game/missionArea.cc` (Copyright (C) GarageGames.com, Inc.) and
 //! `game/fx/fxFoliageReplicator.cc` and `game/fx/fxShapeReplicator.cc` (written by Melvyn May; in Torque3D as `T3D/fx/`,
 //! Copyright (c) 2012 GarageGames, LLC; `fxFoliageReplicator.cpp` also Copyright (C) 2015 Faust Logic, Inc.). Enumerated fields and types this layer does not model yet are kept as written (`FieldType::Opaque`); two
@@ -643,6 +644,19 @@ pub static CLASSES: &[ClassSpec] = &[
         sim_object: true,
         inherits_fields: true,
         fields: &[],
+        methods: &[],
+        defaults: None,
+    },
+    ClassSpec {
+        name: "DecalData",
+        parent: Some("SimDataBlock"),
+        sim_object: true,
+        inherits_fields: true,
+        fields: &[
+            field("sizeX", FieldType::F32, 1),
+            field("sizeY", FieldType::F32, 1),
+            field("textureName", FieldType::Filename, 1),
+        ],
         methods: &[],
         defaults: None,
     },

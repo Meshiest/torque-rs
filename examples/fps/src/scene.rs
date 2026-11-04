@@ -11,8 +11,8 @@
 //!   image slot) plays the kit's `hold` on its arm thread, and the image's shape is drawn in its hand: the figure's `mount0`
 //!   node times the inverse of the image's `mountPoint` (`ShapeBase::getRenderImageTransform`). A new fire count plays the
 //!   image's `fire`, kicks the pistol up and back for a moment ([`recoil`]: in first person the view's pistol, in third the
-//!   pistol in the hand), and flashes at its `muzzlePoint`: a burst of the particles of the emitter its datablock's fire state
-//!   names (`stateEmitter`), thrown out along the barrel. The action the server set (a death) plays as the record carries it,
+//!   pistol in the hand), and flares at its `muzzlePoint` for [`FLARE_SECONDS`]: a star facing the eye. The emitter its datablock's fire state names (`stateEmitter`) emits from the
+//!   muzzle for its `stateEmitterTime`, following the muzzle as the pistol moves (`ShapeBaseImage`'s state emitter). The action the server set (a death) plays as the record carries it,
 //!   and the head and the aiming arm follow the look.
 //! - **The own figure** (the ghost the server named, [`OwnLook`]) stands where the client predicts it and is not seen: the eye is
 //!   at its `eye` node, turned by the predicted yaw and head (the server runs the same moves, so the view is where the server
@@ -23,9 +23,19 @@
 //! - **Bolts** (Projectiles) fly on from their first record along its velocity (the client runs them on its own, as TGE's
 //!   client runs a projectile ghost) and are drawn along it, turning slowly about their flight, until their explosion record
 //!   hides them. The server fires a bolt along its shooter's eye line (so it goes where the crosshair is); the client draws it
-//!   leaving the shooter's pistol muzzle and curving onto that line over its first [`BOLT_BLEND`] units. A bolt whose datablock names a `particleEmitter` leaves a trail of its particles behind it
-//!   ([`Emitter::emit_trail`] over each frame's flight, as `Projectile::processTick` emits on the client); a gone bolt's trail
-//!   is left to fade out (`deleteWhenEmpty`).
+//!   leaving the shooter's pistol muzzle (growing out of it over its first [`BOLT_GROW`] units) and curving onto that line
+//!   over its first [`BOLT_BLEND`] units. A bolt whose datablock names a `particleEmitter` leaves a trail of its particles
+//!   behind it ([`Emitter::emit_trail`] over each frame's flight, as `Projectile::processTick` emits on the client), so the
+//!   trail draws the curve from the muzzle; a gone bolt's trail is left to fade out (`deleteWhenEmpty`). With
+//!   [`ArenaScene::ribbon_trails`] (the default) that trail is a continuous ribbon instead ([`Ribbon`], its look the
+//!   emitter's particle data's): a point at each frame's drawn place, from the muzzle, ending where the bolt burst. A bolt that bursts
+//!   on the world (not on a figure) leaves one of its datablock's decals there ([`DecalManager`]: at most [`MAX_DECALS`],
+//!   each for [`DECAL_SECONDS`]).
+//! - **Aiming down the sights** ([`ArenaScene::update_aim`]): while the client aims, the first-person pistol moves from its
+//!   `eyeOffset` to where its `sightRear` and `sightFront` nodes lie on the eye's line ([`AIM_REAR_DISTANCE`] ahead) over
+//!   [`AIM_SECONDS`], eased, and the field of view narrows from [`FOV`] to [`AIM_FOV`] with it ([`ArenaScene::turn_scale`]
+//!   slows the mouse's turn by as much). A figure whose record's arm action is the shape's `aim` (the server's, while its
+//!   player aims) holds its pistol up at its eye.
 //!
 //! Credit: the image's hand transform follows `ShapeBase::getRenderImageTransform` in Torque3D's MIT-licensed
 //! `T3D/shapeBase.cpp`, and the hit burst follows `Explosion::explode` in `T3D/fx/explosion.cpp` (each Copyright (c) 2012
@@ -40,11 +50,13 @@ use torque::ghosts::{TgeClass, TgeRecord, Value};
 use torque::shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use torque_example_common::KitAssets;
 use torque_example_common::view::{SceneShape, WorldView};
+use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::hd::{DynamicObject, material};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::particles::{Emitter, Rng};
+use torque_render_scene::ribbons::{Ribbon, projectile_ribbon};
 use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Draw, Filter, Vertex};
@@ -56,17 +68,33 @@ pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 pub const EYE_HEIGHT: f32 = 1.75;
 /// The field of view (degrees, horizontal).
 pub const FOV: u8 = 90;
+/// Aiming down the sights: how long the pistol takes to come up to the sights (seconds), the field of view there (degrees,
+/// horizontal), and how far ahead of the eye the rear sight is held. The pistol is placed there from its `sightRear` and
+/// `sightFront` nodes: turned so the line through them runs along the eye's, and moved so that line is the eye's (both
+/// sights on the crosshair). A pistol without them is held at [`AIM_OFFSET`] (the image's place in the eye's frame).
+pub const AIM_SECONDS: f32 = 0.18;
+pub const AIM_FOV: f32 = 60.0;
+pub const AIM_REAR_DISTANCE: f32 = 0.36;
+pub const AIM_OFFSET: [f32; 3] = [0.0, 0.42, -0.057];
+
+/// The ease of the sights' blend: `t` (0 to 1 of [`AIM_SECONDS`]) smoothed at both ends.
+pub fn aim_ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// How fast a bolt turns about its flight (radians a second).
 pub const BOLT_SPIN: f32 = std::f32::consts::TAU;
 /// How far a bolt flies before it is drawn on its flight (units): until then it is drawn curving there from the shooter's muzzle
 /// (the server fires it along the eye's line, so it goes where the crosshair is).
-pub const BOLT_BLEND: f32 = 6.0;
+pub const BOLT_BLEND: f32 = 12.0;
+/// A bolt leaving the muzzle grows from this share of its size to its whole size over its first [`BOLT_GROW`] units, so it
+/// comes out of the barrel instead of filling the view beside it.
+pub const BOLT_START_SIZE: f32 = 0.3;
+pub const BOLT_GROW: f32 = 1.5;
 /// How far from a figure's eye a bolt may have been fired and still be that figure's (units).
 pub const SHOOTER_REACH: f32 = 1.5;
 
-/// The muzzle flash's burst: how many particles, about how far from the muzzle (m).
-pub const FLASH_PARTICLES: u32 = 8;
-pub const FLASH_RADIUS: f32 = 0.02;
 /// The recoil's kick: how long it takes to reach its height and how fast it settles after (seconds), and how far it goes at
 /// its height: back (m) and up (radians), in first person and in the hand.
 pub const RECOIL_RISE: f32 = 0.04;
@@ -174,11 +202,23 @@ struct Held {
     fire: Option<ThreadId>,
     fire_count: Option<u32>,
     since_fire: f32,
-    flash: Option<Emitter>,
+    /// The emitters its shots started (the fire state's `stateEmitter`), each with the milliseconds it still emits, following
+    /// the muzzle.
+    emitters: Vec<(Emitter, f32)>,
+    /// The frame time the emitters have not run yet (ms, under one).
+    emit_ms: f32,
+    /// Seconds since the last shot (its flare shows for [`FLARE_SECONDS`]).
+    since_flare: f32,
+    /// The muzzle's place and the barrel's direction as the last frame drew the image.
+    muzzle_at: Option<([f32; 3], [f32; 3])>,
     /// The image's `mountPoint` node at rest, inverted.
     mount_inverse: Mat,
     /// The datablock's `eyeOffset`.
     eye_offset: [f32; 3],
+    /// Where the image is held aiming down the sights (its place in the eye's frame), and how far it is turned down there
+    /// (radians) so its sight line is level.
+    aim_offset: [f32; 3],
+    aim_pitch: f32,
 }
 
 impl Held {
@@ -195,15 +235,34 @@ impl Held {
             .node("mountPoint")
             .and_then(|n| instance.node_transform(n))
             .map_or(Mat::IDENTITY, |m| Mat { m: *m }.affine_inverse());
+        let node_at = |name: &str| {
+            shape
+                .node(name)
+                .and_then(|n| instance.node_transform(n))
+                .map(|m| [m[3], m[7], m[11]])
+        };
+        let (aim_offset, aim_pitch) = match (node_at("sightRear"), node_at("sightFront")) {
+            (Some(rear), Some(front)) => {
+                let pitch = (front[2] - rear[2]).atan2(front[1] - rear[1]);
+                let r = Mat::euler_x(pitch).mul_v(rear);
+                ([-r[0], AIM_REAR_DISTANCE - r[1], -r[2]], pitch)
+            }
+            _ => (AIM_OFFSET, 0.0),
+        };
         Some(Held {
             shape,
             instance,
             fire,
             fire_count: None,
             since_fire: f32::MAX,
-            flash: None,
+            emitters: Vec::new(),
+            emit_ms: 0.0,
+            since_flare: f32::MAX,
+            muzzle_at: None,
             mount_inverse,
             eye_offset,
+            aim_offset,
+            aim_pitch,
         })
     }
 
@@ -244,23 +303,98 @@ impl Held {
     }
 }
 
-/// The emitter of an image's muzzle flash: the `stateEmitter` of its datablock's fire state (the state with `stateFire`), when
-/// the client holds it with its particles. The datablock's record lists each state's members in order (`state` first, then
-/// `fire`, ..., `emitter` when the state has one).
-pub fn muzzle_flash(world: &TgeWorld, image: u32) -> Option<Emitter> {
+/// The emitter an image's shot starts: the `stateEmitter` of its datablock's fire state (the state with `stateFire`), when
+/// the client holds it with its particles, and how long it emits (`stateEmitterTime`, seconds). The datablock's record lists
+/// each state's members in order (`state` first, then `fire`, ..., `emitter` and `emitterTime` when the state has one).
+pub fn fire_emitter(world: &TgeWorld, image: u32) -> Option<(Emitter, f32)> {
     let db = world.datablocks.get(&image)?;
     let mut firing = false;
+    let mut found: Option<Emitter> = None;
     for (name, _, value) in &db.fields {
         match (name.as_str(), value) {
+            ("state", _) if found.is_some() => break,
             ("state", _) => firing = false,
             ("fire", Value::Bool(fire)) => firing = *fire,
             ("emitter", Value::Id(Some(id))) if firing => {
-                return Emitter::new(&world.records, *id);
+                found = Some(Emitter::new(&world.records, *id)?);
+            }
+            ("emitterTime", Value::F32(t)) if found.is_some() => {
+                return found.map(|e| (e, t.clamp(0.0, MAX_EMITTER_SECONDS)));
             }
             _ => {}
         }
     }
-    None
+    found.map(|e| (e, 0.0))
+}
+
+/// The longest an image's emitter emits after a shot (seconds; a server's datablock names it).
+pub const MAX_EMITTER_SECONDS: f32 = 5.0;
+
+/// A shot's flare at the muzzle: how long it shows (seconds) and the star seen head on (its width, units). It shrinks and fades
+/// over the time.
+pub const FLARE_SECONDS: f32 = 0.07;
+pub const FLARE_STAR: f32 = 0.26;
+/// The flare's texture.
+pub const FLARE_STAR_TEXTURE: &str = "kit/flare_star";
+
+/// A quad draw of `corners` (with `uv`s), added over what is behind it, `alpha` its strength.
+fn sprite(label: &str, corners: [[f32; 3]; 4], texture: usize, alpha: f32) -> Draw {
+    let uv = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+    let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let v = |i: usize| Vertex {
+        position: corners[i],
+        normal: [0.0, 0.0, 1.0],
+        color: [255, 255, 255, a],
+        uv: uv[i],
+    };
+    Draw {
+        label: label.to_string(),
+        vertices: vec![v(0), v(1), v(2), v(0), v(2), v(3)],
+        lighting: false,
+        tex_env: torque_render_scene::TexEnv::Modulate,
+        texture: Some((
+            texture,
+            torque_render_scene::Sampler {
+                repeat: false,
+                mag: Filter::Linear,
+                min: Filter::Linear,
+                mip: Filter::Linear,
+                mipmaps: true,
+            },
+        )),
+        blend: torque_render_scene::Blend::Additive,
+        cull: torque_render_scene::Cull::None,
+        depth_test: true,
+        depth_write: false,
+        fog: false,
+        lights: Vec::new(),
+        vertex_key: None,
+    }
+}
+
+/// A shot's flare at the muzzle `at` along `dir`, `t` (0 to 1) through its time, seen from `eye` with the camera's `right` and
+/// `up`: the star facing the eye at the muzzle.
+fn flare_draws(
+    at: [f32; 3],
+    dir: [f32; 3],
+    t: f32,
+    eye: [f32; 3],
+    (right, up): ([f32; 3], [f32; 3]),
+    set: &mut TextureSet,
+) -> Vec<(f32, Draw)> {
+    let mut out = Vec::new();
+    let fade = 1.0 - t.clamp(0.0, 1.0);
+    let dist = (0..3).map(|k| (at[k] - eye[k]).powi(2)).sum::<f32>().sqrt();
+    if let Some(tex) = set.get_modulated(FLARE_STAR_TEXTURE) {
+        let h = 0.5 * FLARE_STAR * (0.45 + 0.55 * fade);
+        let c = [0, 1, 2].map(|k| at[k] + dir[k] * 0.01);
+        let p = |sx: f32, sy: f32| [0, 1, 2].map(|k| c[k] + (right[k] * sx + up[k] * sy) * h);
+        let corners = [p(-1.0, -1.0), p(1.0, -1.0), p(1.0, 1.0), p(-1.0, 1.0)];
+        // Drawn twice: the additive passes add up to a brighter flash than the texture alone.
+        out.push((dist, sprite("flare star", corners, tex, fade)));
+        out.push((dist, sprite("flare star", corners, tex, fade)));
+    }
+    out
 }
 
 /// A figure: where it is drawn and its animation.
@@ -275,6 +409,8 @@ struct Figure {
     anim: PlayerAnimation,
     held: Option<Held>,
     held_db: Option<u32>,
+    /// How far the first-person pistol is up at the sights (0 at the hip, 1 at the sights; eased).
+    aim: f32,
 }
 
 impl Figure {
@@ -288,11 +424,16 @@ impl Figure {
         m
     }
 
-    /// The first-person pistol's transform: at the eye times the image's `eyeOffset`, kicked back and up while it recoils.
+    /// The first-person pistol's transform: at the eye times the image's `eyeOffset` (moved toward its place at the sights as
+    /// they come up), kicked back and up while it recoils.
     fn view_image(&self, held: &Held) -> Mat {
         let kick = held.kick();
-        let mut offset = Mat::euler_x(-RECOIL_UP * kick);
-        let [x, y, z] = held.eye_offset;
+        let mut offset = Mat::mul(
+            &Mat::euler_x(-RECOIL_UP * kick),
+            &Mat::euler_x(held.aim_pitch * self.aim),
+        );
+        let [x, y, z] = [0, 1, 2]
+            .map(|k| held.eye_offset[k] + (held.aim_offset[k] - held.eye_offset[k]) * self.aim);
         offset.set_column3([x, y - RECOIL_BACK * kick, z + 0.2 * RECOIL_BACK * kick]);
         Mat::mul(&self.eye_transform(), &offset)
     }
@@ -334,8 +475,8 @@ impl Figure {
     }
 }
 
-/// Where a bolt is drawn, its velocity and its age.
-type BoltPose = ([f32; 3], [f32; 3], f32);
+/// Where a bolt is drawn, its velocity, its age and its size (a share of its shape's).
+type BoltPose = ([f32; 3], [f32; 3], f32, f32);
 
 /// A bolt: where its first record put it and when, and its trail.
 struct Bolt {
@@ -347,6 +488,8 @@ struct Bolt {
     /// first [`BOLT_BLEND`] units.
     offset: [f32; 3],
     trail: Option<Emitter>,
+    /// Its trail drawn as a ribbon (in place of `trail`).
+    ribbon: Option<Ribbon>,
 }
 
 impl Bolt {
@@ -355,10 +498,19 @@ impl Bolt {
         [0, 1, 2].map(|i| self.start[i] + self.velocity[i] * self.age)
     }
 
+    /// How far it has flown (units).
+    fn flown(&self) -> f32 {
+        self.velocity.iter().map(|v| v * v).sum::<f32>().sqrt() * self.age
+    }
+
+    /// Its size as drawn: growing out of the muzzle ([`BOLT_START_SIZE`], [`BOLT_GROW`]).
+    fn size(&self) -> f32 {
+        BOLT_START_SIZE + (1.0 - BOLT_START_SIZE) * (self.flown() / BOLT_GROW).clamp(0.0, 1.0)
+    }
+
     /// Where it is drawn: from the muzzle, curving onto its flight ([`BOLT_BLEND`]).
     fn drawn(&self) -> [f32; 3] {
-        let speed = self.velocity.iter().map(|v| v * v).sum::<f32>().sqrt();
-        let k = (1.0 - (speed * self.age / BOLT_BLEND).clamp(0.0, 1.0)).powi(2);
+        let k = (1.0 - (self.flown() / BOLT_BLEND).clamp(0.0, 1.0)).powi(2);
         let at = self.position();
         [0, 1, 2].map(|i| at[i] + self.offset[i] * k)
     }
@@ -445,17 +597,26 @@ pub struct ArenaScene {
     burst: std::collections::BTreeSet<u32>,
     /// Where the last hits on figures burst (the last [`MAX_HIT_BURSTS`]).
     pub hit_bursts: Vec<[f32; 3]>,
+    /// The holes the bolts left in the world.
+    pub decals: DecalManager,
     rng: Option<Rng>,
     /// The live particles of every trail.
     live: usize,
     /// The frame time the trails have not run yet (ms, under one).
     trail_ms: f32,
     own: Option<OwnView>,
+    /// How far the sights' blend has run (0 at the hip, 1 at the sights; not eased).
+    aim: f32,
     /// The bolts drawn in the last frame, and the other figures holding an image.
     pub bolts_drawn: usize,
     pub holders_drawn: usize,
     /// The trail particles drawn in the last frame.
     pub trail_particles: usize,
+    /// Whether bolts' trails are drawn as ribbons (their emitter's particle data along a strip) rather than particles.
+    pub ribbon_trails: bool,
+    /// The trails drawn as ribbons in the last frame, and the gone bolts' ribbons, aging away.
+    pub ribbons_drawn: usize,
+    fading_ribbons: Vec<Ribbon>,
     /// The muzzle flashes started so far.
     pub flashes: usize,
 }
@@ -474,7 +635,21 @@ fn offset_of(world: &TgeWorld, db: u32, field: &str) -> [f32; 3] {
     }
 }
 
+/// The most bolt holes kept, how long each stays and how long of that it fades out (seconds).
+pub const MAX_DECALS: usize = 64;
+pub const DECAL_SECONDS: f32 = 25.0;
+pub const DECAL_FADE: f32 = 4.0;
+
 impl ArenaScene {
+    /// A scene with nothing in it yet.
+    pub fn new() -> ArenaScene {
+        ArenaScene {
+            decals: DecalManager::new(MAX_DECALS, DECAL_SECONDS, DECAL_FADE),
+            ribbon_trails: true,
+            ..ArenaScene::default()
+        }
+    }
+
     /// Forgets every ghost's object (a new connection's ghosts are new).
     pub fn clear(&mut self) {
         self.cubes.clear();
@@ -483,6 +658,8 @@ impl ArenaScene {
         self.fading.clear();
         self.burst.clear();
         self.hit_bursts.clear();
+        self.decals.clear();
+        self.fading_ribbons.clear();
         self.live = 0;
         self.own = None;
     }
@@ -498,6 +675,19 @@ impl ArenaScene {
     /// Where the bolts were drawn in the last frame.
     pub fn bolt_positions(&self) -> Vec<[f32; 3]> {
         self.bolts.values().map(Bolt::drawn).collect()
+    }
+
+    /// Where the own figure's first-person pistol's sights (`sightFront`, `sightRear`) were drawn in the last frame.
+    pub fn own_sights(&self) -> Option<[[f32; 3]; 2]> {
+        let figure = self.figures.values().find(|f| f.own)?;
+        let held = figure.held.as_ref()?;
+        let m = figure.view_image(held);
+        let at = |name: &str| {
+            let n = held.shape.node(name)?;
+            let p = held.instance.node_transform(n)?;
+            Some(m.mul_p([p[3], p[7], p[11]]))
+        };
+        Some([at("sightFront")?, at("sightRear")?])
     }
 
     /// Where the own figure's first-person pistol's muzzle was drawn in the last frame.
@@ -533,6 +723,7 @@ impl ArenaScene {
         for e in &mut self.fading {
             e.advance(ms, &mut self.live);
         }
+        self.decals.advance(dt);
         self.fading.retain(|e| !e.particles.is_empty());
         let mut seen = Vec::new();
         for (&index, ghost) in &world.records.ghosts {
@@ -543,18 +734,29 @@ impl ArenaScene {
             };
             seen.push(index);
             if let Some(x) = p.explosion.as_ref() {
-                if let Some(mut trail) = self.bolts.remove(&index).and_then(|b| b.trail) {
-                    trail.dead = true;
-                    self.fading.push(trail);
+                if let Some(bolt) = self.bolts.remove(&index) {
+                    let end = x.position.map(|v| v.get());
+                    self.retire(bolt, Some(end));
                 }
-                if x.hit_type & torque::collide::types::PLAYER != 0 && self.burst.insert(index) {
+                use torque::collide::types::{PLAYER, VEHICLE};
+                if x.hit_type != 0 && self.burst.insert(index) {
                     let at = x.position.map(|v| v.get());
                     let normal = x.normal.map(|v| v.get());
-                    if let Some(e) = hit_burst(world, db, at, normal, &mut rng, &mut self.live) {
-                        self.fading.push(e);
-                        self.hit_bursts.push(at);
-                        let cut = self.hit_bursts.len().saturating_sub(MAX_HIT_BURSTS);
-                        self.hit_bursts.drain(..cut);
+                    if x.hit_type & PLAYER != 0 {
+                        if let Some(e) = hit_burst(world, db, at, normal, &mut rng, &mut self.live)
+                        {
+                            self.fading.push(e);
+                            self.hit_bursts.push(at);
+                            let cut = self.hit_bursts.len().saturating_sub(MAX_HIT_BURSTS);
+                            self.hit_bursts.drain(..cut);
+                        }
+                    } else if x.hit_type & VEHICLE == 0
+                        && let Some(d) = projectile_decal(world, db, &mut rng)
+                    {
+                        let angle = rng.f() * std::f32::consts::TAU;
+                        let reach = d.size[0].max(d.size[1]);
+                        let surface = cube_triangles_near(world, at, reach);
+                        self.decals.add_clipped(&d, at, normal, angle, &surface);
                     }
                 }
                 continue;
@@ -581,7 +783,8 @@ impl ArenaScene {
                         velocity,
                         age: 0.0,
                         offset,
-                        trail: bolt_trail(world, db),
+                        trail: None,
+                        ribbon: None,
                     },
                 );
                 continue;
@@ -589,6 +792,17 @@ impl ArenaScene {
             let Some(bolt) = self.bolts.get_mut(&index) else {
                 continue;
             };
+            // The trail starts at the muzzle: as a ribbon when the scene draws trails so, else as the emitter's particles.
+            if bolt.trail.is_none() && bolt.ribbon.is_none() {
+                match projectile_ribbon(world, db).filter(|_| self.ribbon_trails) {
+                    Some(data) => {
+                        let mut r = Ribbon::new(data);
+                        r.add_point(bolt.drawn());
+                        bolt.ribbon = Some(r);
+                    }
+                    None => bolt.trail = bolt_trail(world, db),
+                }
+            }
             let from = bolt.drawn();
             bolt.age += dt;
             let (at, v) = (bolt.drawn(), bolt.velocity);
@@ -597,6 +811,10 @@ impl ArenaScene {
             {
                 trail.advance(ms, &mut self.live);
                 trail.emit_trail(from, at, v, ms, &mut rng, &mut self.live);
+            }
+            if let Some(r) = bolt.ribbon.as_mut() {
+                r.advance(dt * 1000.0);
+                r.add_point(at);
             }
         }
         self.rng = Some(rng);
@@ -608,10 +826,28 @@ impl ArenaScene {
             .copied()
             .collect();
         for i in gone {
-            if let Some(mut trail) = self.bolts.remove(&i).and_then(|b| b.trail) {
-                trail.dead = true;
-                self.fading.push(trail);
+            if let Some(bolt) = self.bolts.remove(&i) {
+                self.retire(bolt, None);
             }
+        }
+        for r in &mut self.fading_ribbons {
+            r.advance(dt * 1000.0);
+        }
+        self.fading_ribbons.retain(|r| !r.is_empty());
+    }
+
+    /// A bolt gone (at `end` when it burst there): its trail left to fade.
+    fn retire(&mut self, bolt: Bolt, end: Option<[f32; 3]>) {
+        if let Some(mut trail) = bolt.trail {
+            trail.dead = true;
+            self.fading.push(trail);
+        }
+        if let Some(mut r) = bolt.ribbon {
+            if let Some(end) = end {
+                r.add_point(end);
+            }
+            r.dead = true;
+            self.fading_ribbons.push(r);
         }
     }
 
@@ -626,9 +862,9 @@ impl ArenaScene {
         let bolts: Vec<(u32, u32, BoltPose)> = self
             .bolts
             .iter()
-            .map(|(&i, b)| (i, b.db, (b.drawn(), b.velocity, b.age)))
+            .map(|(&i, b)| (i, b.db, (b.drawn(), b.velocity, b.age, b.size())))
             .collect();
-        for (index, db, (at, v, age)) in bolts {
+        for (index, db, (at, v, age, size)) in bolts {
             let Some(file) = world.datablock_text(db, "projectileShapeName") else {
                 continue;
             };
@@ -642,6 +878,11 @@ impl ArenaScene {
             let pitch = -v[2].atan2((v[0] * v[0] + v[1] * v[1]).sqrt());
             let spin = Mat::from_axis_angle([0.0, 1.0, 0.0], BOLT_SPIN * age);
             let mut m = Mat::mul(&Mat::mul(&Mat::euler_z(yaw), &Mat::euler_x(pitch)), &spin);
+            for r in 0..3 {
+                for c in 0..3 {
+                    m.m[r * 4 + c] *= size;
+                }
+            }
             m.set_column3(at);
             out.push(view.shape_object(assets, &shape, &instance, &m, object_id(index, 2)));
         }
@@ -660,6 +901,24 @@ impl ArenaScene {
     /// The own figure as the last frame placed it.
     pub fn own(&self) -> Option<OwnView> {
         self.own
+    }
+
+    /// The other figures' arms as the last frame posed them: whether each plays a death, and the action its arm thread plays
+    /// (none: the thread is stopped).
+    pub fn others_arms(&self) -> Vec<(bool, Option<String>)> {
+        self.figures
+            .values()
+            .filter(|f| !f.own)
+            .map(|f| {
+                let arm = f
+                    .anim
+                    .arm_action()
+                    .filter(|_| f.anim.arm_running())
+                    .and_then(|a| f.anim.actions().get(a))
+                    .map(|a| String::from_utf8_lossy(&a.name).into_owned());
+                (f.anim.dying(), arm)
+            })
+            .collect()
     }
 
     /// The other figures' positions (feet) and yaws as the last frame drew them.
@@ -684,6 +943,8 @@ impl ArenaScene {
     ) {
         self.own = None;
         let mut seen = Vec::new();
+        let (mut shots, mut live, mut done) = (0, self.live, Vec::new());
+        let mut rng = self.rng.take().unwrap_or_else(|| Rng::new(0x5eed));
         for (&index, ghost) in &world.records.ghosts {
             let (Some(TgeClass::Player), Some(record @ TgeRecord::Player(_))) =
                 (ghost.class, ghost.record.as_ref())
@@ -744,10 +1005,12 @@ impl ArenaScene {
                         anim,
                         held: None,
                         held_db: None,
+                        aim: 0.0,
                     })
                 }
             };
             figure.own = look.is_some();
+            figure.aim = if figure.own { aim_ease(self.aim) } else { 0.0 };
             match look {
                 Some(o) => {
                     figure.position = o.position.unwrap_or(position);
@@ -776,20 +1039,58 @@ impl ArenaScene {
                 figure.held_db = image.map(|i| i.0);
                 figure.held = held_shape.and_then(|(shape, offset)| Held::new(shape, offset));
             }
+            // A held pistol is held up (`hold`), or at the eye while the server says its figure aims (`aim`).
+            let named = |name: &[u8]| figure.anim.actions().iter().position(|a| a.name == name);
+            let aiming = named(b"aim").filter(|a| motion.arm_action == u32::try_from(*a).ok());
             let hold = figure
                 .held
                 .as_ref()
-                .and_then(|_| figure.anim.actions().iter().position(|a| a.name == b"hold"));
+                .and_then(|_| aiming.or_else(|| named(b"hold")));
             motion.arm_action = hold.and_then(|h| u32::try_from(h).ok());
             motion.look = ((figure.pitch / max_look + 1.0) * 0.5).clamp(0.0, 1.0);
             let s = figure.shape.shape();
             figure.anim.update(s, &mut figure.instance, &motion, dt);
             let detail = figure.shape.detail().unwrap_or(0);
             let _ = figure.instance.animate(s, detail, None, &mut |_| true);
-            if let (Some(held), Some((db, fire_count))) = (figure.held.as_mut(), image)
-                && held.update(fire_count, dt)
-            {
-                held.flash = muzzle_flash(world, db);
+            if let (Some(held), Some((db, fire_count))) = (figure.held.as_mut(), image) {
+                if held.update(fire_count, dt) {
+                    held.since_flare = 0.0;
+                    shots += 1;
+                    if let Some((e, seconds)) = fire_emitter(world, db) {
+                        held.emitters.push((e, seconds * 1000.0));
+                    }
+                } else {
+                    held.since_flare += dt;
+                }
+            }
+            // The image's emitters follow the muzzle of the pistol the frame draws (the own figure's first-person one).
+            let drawn = figure.held.as_ref().and_then(|h| {
+                if figure.own {
+                    Some(figure.view_image(h))
+                } else {
+                    figure.hand_image(h)
+                }
+            });
+            if let Some(held) = figure.held.as_mut() {
+                held.muzzle_at = drawn.map(|m| held.muzzle(&m));
+                held.emit_ms += dt * 1000.0;
+                let ms = held.emit_ms.floor().clamp(0.0, 1000.0) as u32;
+                held.emit_ms = (held.emit_ms - ms as f32).clamp(0.0, 1.0);
+                for (e, left) in &mut held.emitters {
+                    e.advance(ms, &mut live);
+                    if *left > 0.0
+                        && ms > 0
+                        && let Some((at, dir)) = held.muzzle_at
+                    {
+                        let run = (ms as f32).min(*left).ceil() as u32;
+                        e.emit_path(at, dir, [0.0; 3], run, &mut rng, &mut live);
+                        *left -= ms as f32;
+                    }
+                }
+                for (mut e, _) in held.emitters.extract_if(.., |(_, left)| *left <= 0.0) {
+                    e.dead = true;
+                    done.push(e);
+                }
             }
             if figure.own {
                 let eye = figure.eye_transform();
@@ -802,6 +1103,10 @@ impl ArenaScene {
             }
         }
         self.figures.retain(|i, _| seen.contains(i));
+        self.flashes += shots;
+        self.live = live;
+        self.rng = Some(rng);
+        self.fading.extend(done);
     }
 
     /// The figures' objects as [`ArenaScene::update_figures`] left them: the own one and the pistol in its hand into the shadow
@@ -809,8 +1114,6 @@ impl ArenaScene {
     fn figure_objects(&mut self, view: &mut WorldView, assets: &KitAssets) -> Vec<DynamicObject> {
         let mut out = Vec::new();
         let mut holders = 0;
-        // The shots' flashes: each at the muzzle of the pistol the frame draws (the own figure's first-person one).
-        let mut flashes = Vec::new();
         for (&index, figure) in &mut self.figures {
             let body = figure.transform();
             let seen_bits = if figure.own { material::SHADOW_ONLY } else { 0 };
@@ -820,11 +1123,7 @@ impl ArenaScene {
                 .filter(|_| figure.own)
                 .map(|h| figure.view_image(h));
             let hand_image = figure.held.as_ref().and_then(|h| figure.hand_image(h));
-            if let (Some(m), Some(held)) = (view_image, figure.held.as_mut()) {
-                if let Some(e) = held.flash.take() {
-                    let (at, dir) = held.muzzle(&m);
-                    flashes.push((e, at, dir));
-                }
+            if let (Some(m), Some(held)) = (view_image, figure.held.as_ref()) {
                 let image = view.shape_object(assets, &held.shape, &held.instance, &m, 1);
                 out.push(marked(image, material::VIEW_ONLY));
             }
@@ -836,11 +1135,7 @@ impl ArenaScene {
                 object_id(index, 0),
             );
             out.push(marked(figure_object, seen_bits));
-            if let (Some(held), Some(m)) = (figure.held.as_mut(), hand_image) {
-                if let Some(e) = held.flash.take() {
-                    let (at, dir) = held.muzzle(&m);
-                    flashes.push((e, at, dir));
-                }
+            if let (Some(held), Some(m)) = (figure.held.as_ref(), hand_image) {
                 let held_object =
                     view.shape_object(assets, &held.shape, &held.instance, &m, object_id(index, 1));
                 out.push(marked(held_object, seen_bits));
@@ -850,21 +1145,6 @@ impl ArenaScene {
             }
         }
         self.holders_drawn = holders;
-        let mut rng = self.rng.take().unwrap_or_else(|| Rng::new(0x5eed));
-        for (mut e, at, dir) in flashes {
-            e.emit_burst(
-                at,
-                dir,
-                FLASH_RADIUS,
-                FLASH_PARTICLES,
-                &mut rng,
-                &mut self.live,
-            );
-            e.dead = true;
-            self.fading.push(e);
-            self.flashes += 1;
-        }
-        self.rng = Some(rng);
         out
     }
 
@@ -916,23 +1196,82 @@ impl ArenaScene {
         let mut set = TextureSet::new(assets);
         let mut draws = Vec::new();
         self.trail_particles = 0;
+        let images = self
+            .figures
+            .values()
+            .filter_map(|f| f.held.as_ref())
+            .flat_map(|h| h.emitters.iter().map(|(e, _)| e));
         let trails = self
             .bolts
             .values()
             .filter_map(|b| b.trail.as_ref())
-            .chain(&self.fading);
+            .chain(&self.fading)
+            .chain(images);
+        let dist = |c: [f32; 3]| {
+            (0..3)
+                .map(|k| (c[k] - eye.position[k]).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        };
         for e in trails {
             let (Some(center), Some(d)) = (e.centre(), e.draw(right, up, &mut set, "trail")) else {
                 continue;
             };
-            let dist = (0..3)
-                .map(|k| (center[k] - eye.position[k]).powi(2))
-                .sum::<f32>()
-                .sqrt();
             self.trail_particles += e.particles.len();
-            draws.push((dist, d));
+            draws.push((dist(center), d));
         }
-        view.set_particles(&draws, set);
+        self.ribbons_drawn = 0;
+        let ribbons = self
+            .bolts
+            .values()
+            .filter_map(|b| b.ribbon.as_ref())
+            .chain(&self.fading_ribbons);
+        for r in ribbons {
+            let (Some(center), Some(d)) = (r.center(), r.draw(eye.position, &mut set, "ribbon"))
+            else {
+                continue;
+            };
+            self.ribbons_drawn += 1;
+            draws.push((dist(center), d));
+        }
+        // The shots' flares at the muzzles the frame draws.
+        for held in self.figures.values().filter_map(|f| f.held.as_ref()) {
+            if let Some((at, dir)) = held.muzzle_at
+                && held.since_flare < FLARE_SECONDS
+            {
+                let t = held.since_flare / FLARE_SECONDS;
+                draws.extend(flare_draws(at, dir, t, eye.position, (right, up), &mut set));
+            }
+        }
+        let decals = self.decals.draws(eye.position, &mut set);
+        view.set_particles_and_decals(&draws, &decals, set);
+    }
+
+    /// `dt` seconds of the sights' blend toward the sights (`aiming`) or the hip; returns how far up they are (eased).
+    pub fn update_aim(&mut self, aiming: bool, dt: f32) -> f32 {
+        let step = dt.max(0.0) / AIM_SECONDS;
+        self.aim = if aiming {
+            (self.aim + step).min(1.0)
+        } else {
+            (self.aim - step).max(0.0)
+        };
+        aim_ease(self.aim)
+    }
+
+    /// How far the sights are up (eased, 0 to 1).
+    pub fn aim(&self) -> f32 {
+        aim_ease(self.aim)
+    }
+
+    /// The field of view now (degrees, horizontal): [`FOV`], narrowing to [`AIM_FOV`] as the sights come up.
+    pub fn fov(&self) -> f32 {
+        f32::from(FOV) + (AIM_FOV - f32::from(FOV)) * self.aim()
+    }
+
+    /// How much slower the mouse turns the view now: the narrower view's share of the full one (`tan` of the half angles).
+    pub fn turn_scale(&self) -> f32 {
+        let half = |deg: f32| (deg.to_radians() * 0.5).tan();
+        half(self.fov()) / half(f32::from(FOV))
     }
 
     /// The eye: at the own figure's eye, else over the arena.
@@ -942,7 +1281,7 @@ impl ArenaScene {
                 position: o.eye,
                 pitch: o.pitch,
                 yaw: o.yaw,
-                fov: Some(FOV),
+                fov: Some(self.fov().round() as u8),
             },
             None => self.overview_eye(),
         }
@@ -954,6 +1293,47 @@ impl ArenaScene {
         eye.fov = Some(FOV);
         eye
     }
+}
+
+/// The faces (as triangles) of the map's cubes (its StaticShapes, each the kit's unit cube scaled and turned as its record
+/// says) whose bounds come within `reach` of `at`: the surface a decal there may lie on.
+fn cube_triangles_near(world: &TgeWorld, at: [f32; 3], reach: f32) -> Vec<Triangle> {
+    let mut out = Vec::new();
+    for ghost in world.records.ghosts.values() {
+        let (Some(TgeClass::StaticShape), Some(pose)) = (ghost.class, ghost.pose()) else {
+            continue;
+        };
+        let Some((m, scale)) = pose_matrix(&pose, None) else {
+            continue;
+        };
+        let half = scale.map(|s| s.abs() * 0.5);
+        let radius = (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt();
+        let center = m.column(3);
+        let far = (0..3)
+            .map(|k| (center[k] - at[k]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        if far > radius + reach {
+            continue;
+        }
+        let corner = |i: usize| {
+            let local = [0, 1, 2].map(|k| if i >> k & 1 != 0 { 0.5 } else { -0.5 } * scale[k]);
+            m.mul_p(local)
+        };
+        // Each face's corners counter-clockwise seen from outside (for a positive scale).
+        for f in [
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+        ] {
+            out.push([corner(f[0]), corner(f[1]), corner(f[2])]);
+            out.push([corner(f[0]), corner(f[2]), corner(f[3])]);
+        }
+    }
+    out
 }
 
 fn make_cube(

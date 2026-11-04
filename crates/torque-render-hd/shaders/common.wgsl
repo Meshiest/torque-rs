@@ -18,8 +18,9 @@ const MAT_PLAYER: u32 = 0x400000u;
 // A shape's first-person image drawn before the eye (material::VIEW_ONLY): it receives no shadow of the client's own Player.
 const MAT_VIEW_ONLY: u32 = 0x10000000u;
 const MAT_BILLBOARD: u32 = 0x800000u;
-// A particle sprite.
+// A particle sprite, and a decal drawn with them (it does not fade into its surface).
 const MAT_PARTICLE: u32 = 0x1000000u;
+const MAT_DECAL: u32 = 0x20000000u;
 const MAT_ANCHORED: u32 = 0x2000000u;
 const MAT_SKY_EYE: u32 = 0x4000000u;
 // A shape's vertex in its mesh's own space (NodePlace): its extra word names its mesh's place in the frame's table.

@@ -120,7 +120,7 @@ fn two_players_meet_shoot_and_chat() {
     assert_eq!(trail.particle_data.len(), 1);
     assert_eq!(trail.particle_data[0].textures, ["kit/spark"]);
     assert_eq!(
-        trail.particle_data[0].lifetime_ms, 64,
+        trail.particle_data[0].lifetime_ms, 160,
         "as the script gave it"
     );
 
@@ -131,11 +131,11 @@ fn two_players_meet_shoot_and_chat() {
                 .datablocks
                 .iter()
                 .find(|(_, d)| d.class == "ShapeBaseImageData")?;
-            torque_example_fps::scene::muzzle_flash(w, db)
+            torque_example_fps::scene::fire_emitter(w, db).map(|(e, _)| e)
         })
         .flatten()
         .expect("the muzzle flash");
-    assert_eq!(flash.particle_data[0].lifetime_ms, 64);
+    assert_eq!(flash.particle_data[0].lifetime_ms, 640);
 
     // One shot from the host at the other figure: a round spent and a hit.
     assert_eq!(a.global("$Arena::Ammo"), "11");

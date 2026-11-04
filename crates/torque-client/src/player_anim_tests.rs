@@ -284,6 +284,48 @@ fn a_death_the_server_sets_plays_to_its_end_and_holds_there() {
 }
 
 #[test]
+fn a_death_stops_the_arm_and_head_threads_until_another_action_plays() {
+    let shape = moving_shape();
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    let find = |name: &[u8]| anim.actions().iter().position(|a| a.name == name);
+    let (death, hold) = (find(b"death1").unwrap(), find(b"hold").unwrap());
+    let holding = PlayerMotion {
+        arm_action: Some(hold as u32),
+        look: 0.2,
+        ..PlayerMotion::default()
+    };
+    anim.update(&shape, &mut instance, &holding, 0.032);
+    assert!(anim.arm_running() && anim.head_running());
+    let threads = instance.thread_count();
+    let dying = PlayerMotion {
+        server_action: Some(ServerAction {
+            action: death as u32,
+            hold: false,
+            at_end: false,
+        }),
+        ..holding
+    };
+    anim.update(&shape, &mut instance, &dying, 0.032);
+    assert!(anim.dying());
+    assert!(!anim.arm_running() && !anim.head_running());
+    assert_eq!(anim.arm_action(), None);
+    assert_eq!(
+        instance.thread_count(),
+        threads - 2,
+        "only the action thread is left"
+    );
+    // Played out (the server did not hold it), the hold and the look come back.
+    for _ in 0..100 {
+        anim.update(&shape, &mut instance, &dying, 0.032);
+    }
+    assert!(!anim.dying());
+    assert!(anim.arm_running() && anim.head_running());
+    assert_eq!(anim.arm_action(), Some(hold));
+    assert_eq!(instance.thread_count(), threads);
+}
+
+#[test]
 fn the_head_thread_follows_the_look() {
     let shape = moving_shape();
     let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();

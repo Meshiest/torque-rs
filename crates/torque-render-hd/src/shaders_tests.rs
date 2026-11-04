@@ -24,6 +24,7 @@ fn the_shaders_material_numbers_are_the_scenes() {
         ("MAT_PLAYER", material::PLAYER),
         ("MAT_BILLBOARD", material::BILLBOARD),
         ("MAT_PARTICLE", material::PARTICLE),
+        ("MAT_DECAL", material::DECAL),
         ("MAT_ANCHORED", material::ANCHORED),
         ("MAT_SKY_EYE", material::SKY_EYE),
         ("MAT_NODE", material::NODE),

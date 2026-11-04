@@ -184,7 +184,7 @@ impl ArenaGame {
             files,
             options,
             server: None,
-            scene: ArenaScene::default(),
+            scene: ArenaScene::new(),
             server_lag: 0,
             frame_dt: 0.0,
             sky: None,
@@ -568,6 +568,10 @@ impl ArenaGame {
         } else {
             self.marks.clear();
         }
+        let aiming = self.in_game() && atoi(self.global("$Arena::Aiming").as_bytes()) != 0;
+        self.scene.update_aim(aiming, dt);
+        let scale = self.scene.turn_scale();
+        self.set_global("$Arena::TurnScale", &scale.to_string());
         self.predict_frame();
         let own = self.own_look();
         let st = self.host.client.borrow();

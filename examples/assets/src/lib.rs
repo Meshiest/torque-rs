@@ -57,6 +57,26 @@ pub fn all() -> io::Result<Vec<Asset>> {
             name: "spark.png",
             bytes: textures::spark()?,
         },
+        Asset {
+            name: "hole.png",
+            bytes: textures::hole()?,
+        },
+        Asset {
+            name: "hole2.png",
+            bytes: textures::hole_of(2)?,
+        },
+        Asset {
+            name: "hole3.png",
+            bytes: textures::hole_of(3)?,
+        },
+        Asset {
+            name: "flare_star.png",
+            bytes: textures::flare_star()?,
+        },
+        Asset {
+            name: "smoke.png",
+            bytes: textures::smoke()?,
+        },
     ])
 }
 

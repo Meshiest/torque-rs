@@ -301,6 +301,18 @@ impl WorldView {
         self.scene.set_particles(draws, textures);
     }
 
+    /// The frame's particles and decals (the decals' draws lie on surfaces: not faded into them as the particles are), their
+    /// textures indices into `textures`.
+    pub fn set_particles_and_decals(
+        &mut self,
+        particles: &[(f32, Draw)],
+        decals: &[(f32, Draw)],
+        textures: TextureSet,
+    ) {
+        self.scene
+            .set_particles_and_decals(particles, decals, textures);
+    }
+
     /// Draws a frame into `target` (an `Rgba8Unorm` texture of the canvas's size): the scene seen from `eye` in the world
     /// rectangle of `gui` (the first `GameTSCtrl` drawn), then `gui` over it. Returns whether the world was drawn.
     pub fn draw(
