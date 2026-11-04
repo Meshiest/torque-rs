@@ -25,6 +25,9 @@
 //! **The arm thread** plays the arm action the record names (the server's `setArmThread`; `look` when the shape has it and
 //! none was named), held at the head's pitch over the look range (`updateLookAnimation`): 0 looking fully up, 1 fully down.
 //! **The head thread** plays the shape's `head` sequence, when it has one, at the same position (`mHeadVThread`).
+//! While a death action plays (an action whose name starts with `death`), the death owns the whole body: the arm and head
+//! threads stop (TGE leaves the arm and the look alone once the Player is dead) and start again, on the arm action the record
+//! names, when another action plays.
 //!
 //! Credit: follows TGE 1.4's `game/player.cc` (`pickActionAnimation`, `setActionThread`, `updateActionThread`,
 //! `updateLookAnimation`, `PlayerData::preload`; Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
@@ -189,6 +192,10 @@ pub struct PlayerAnimation {
     arm_thread: Option<ThreadId>,
     arm_action: Option<usize>,
     head_thread: Option<(ThreadId, usize)>,
+    /// The `head` sequence, kept while a death stops its thread.
+    head_sequence: Option<usize>,
+    /// The `look` action, the arm's when the record names none.
+    look_action: Option<usize>,
     was_falling: bool,
     /// The upward speed of the last frame.
     last_rise: f32,
@@ -211,7 +218,8 @@ impl PlayerAnimation {
             None => (None, None),
         };
         let action_thread = instance.create_thread(shape)?;
-        let head_thread = find_sequence(shape, b"head").and_then(|seq| {
+        let head_sequence = find_sequence(shape, b"head");
+        let head_thread = head_sequence.and_then(|seq| {
             let t = instance.create_thread(shape)?;
             instance.set_sequence(shape, t, seq as i32, 0.5);
             Some((t, seq))
@@ -234,6 +242,8 @@ impl PlayerAnimation {
             arm_thread,
             arm_action,
             head_thread,
+            head_sequence,
+            look_action: look,
             was_falling: false,
             last_rise: 0.0,
         })
@@ -252,6 +262,23 @@ impl PlayerAnimation {
     /// The arm action playing.
     pub fn arm_action(&self) -> Option<usize> {
         self.arm_action
+    }
+
+    /// Whether a death action plays (the arm and head threads stopped).
+    pub fn dying(&self) -> bool {
+        self.actions
+            .get(self.action)
+            .is_some_and(|a| a.motion.death)
+    }
+
+    /// Whether the arm thread runs.
+    pub fn arm_running(&self) -> bool {
+        self.arm_thread.is_some()
+    }
+
+    /// Whether the head thread runs.
+    pub fn head_running(&self) -> bool {
+        self.head_thread.is_some()
     }
 
     /// Whether the action stays at its end until the server sets another.
@@ -367,7 +394,27 @@ impl PlayerAnimation {
         }
         instance.advance_time(shape, self.action_thread, dt);
 
-        if let Some(arm) = m.arm_action.and_then(|a| usize::try_from(a).ok())
+        if self.dying() {
+            for t in [self.arm_thread.take(), self.head_thread.take().map(|h| h.0)]
+                .into_iter()
+                .flatten()
+            {
+                instance.destroy_thread(shape, t);
+            }
+            self.arm_action = None;
+            return;
+        }
+        if self.head_thread.is_none()
+            && let Some(seq) = self.head_sequence
+            && let Some(t) = instance.create_thread(shape)
+        {
+            instance.set_sequence(shape, t, seq as i32, m.look);
+            self.head_thread = Some((t, seq));
+        }
+        if let Some(arm) = m
+            .arm_action
+            .and_then(|a| usize::try_from(a).ok())
+            .or(self.look_action.filter(|_| self.arm_action.is_none()))
             && self.arm_action != Some(arm)
             && let Some(seq) = self.actions.get(arm).and_then(|a| a.sequence)
         {
