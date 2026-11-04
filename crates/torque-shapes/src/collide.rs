@@ -73,6 +73,9 @@ const SAME_NORMAL: f32 = 0.99;
 const SAME_CONSTANT: f32 = 0.01;
 /// A triangle whose cross product is shorter (squared) than this (0.001) is degenerate from that vertex.
 const TINY_AREA: f32 = 0.001;
+/// [`Hull::build_relative`]'s rule: a triangle whose cross product is shorter than this fraction of the square of the mesh's
+/// diagonal is degenerate from that vertex.
+pub const RELATIVE_AREA: f32 = 1.0e-4;
 
 /// The detail LOS entry `slot` casts a ray against (`ShapeBase::castRay`; the fallback to the collision detail is made when
 /// the entries are, [`crate::preload::collision_slots`]), or -1.
@@ -101,13 +104,18 @@ pub struct Hull {
 
 /// One triangle's plane: the normal of the first attempt, from vertex 1, then vertex 2, then vertex 3, whose cross product
 /// is long enough, normalised; the constant `n . p1`. None for a triangle degenerate from all three.
-fn triangle_plane(p1: &[f32; 3], p2: &[f32; 3], p3: &[f32; 3]) -> Option<([f32; 3], f32)> {
+fn triangle_plane(
+    p1: &[f32; 3],
+    p2: &[f32; 3],
+    p3: &[f32; 3],
+    tiny: f32,
+) -> Option<([f32; 3], f32)> {
     let (mut cross, mut squared) = math::triangle_cross(p1, p2, p3);
-    if squared < TINY_AREA {
+    if squared < tiny {
         (cross, squared) = math::triangle_cross(p2, p3, p1);
-        if squared < TINY_AREA {
+        if squared < tiny {
             (cross, squared) = math::triangle_cross(p3, p1, p2);
-            if squared < TINY_AREA {
+            if squared < tiny {
                 return None;
             }
         }
@@ -285,6 +293,29 @@ impl Hull {
     /// already has a plane whose normal is within 0.99 (a dot above it) and whose constant is within 0.01. Charged by the
     /// triangle and by the planes each is compared with, and the primitives walked ([`PRIMITIVE_WORK`]), before the work.
     pub fn build(mesh: &Mesh, charge: Charge) -> Result<Hull, ShapeError> {
+        Hull::build_with(mesh, TINY_AREA, charge)
+    }
+
+    /// [`Hull::build`] with the degenerate-triangle rule relative to the mesh's size ([`RELATIVE_AREA`] of the square of its
+    /// vertices' diagonal) instead of TGE's fixed one, which drops every triangle of a face under about 0.18 units square and
+    /// leaves a small box open there: what a hitbox's hull is built by. Also charged by the vertex for the size.
+    pub fn build_relative(mesh: &Mesh, charge: Charge) -> Result<Hull, ShapeError> {
+        let verts = mesh.positions.as_ref();
+        pay(charge, VERTEX_WORK.saturating_mul(verts.len() as u64))?;
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in verts {
+            for i in 0..3 {
+                lo[i] = lo[i].min(v[i]);
+                hi[i] = hi[i].max(v[i]);
+            }
+        }
+        let diagonal2: f32 = (0..3).map(|i| (hi[i] - lo[i]).max(0.0).powi(2)).sum();
+        let least = RELATIVE_AREA * diagonal2;
+        Hull::build_with(mesh, least * least, charge)
+    }
+
+    /// The hull with triangles whose cross product is shorter (squared) than `tiny` taken as degenerate from that vertex.
+    fn build_with(mesh: &Mesh, tiny: f32, charge: Charge) -> Result<Hull, ShapeError> {
         let mut hull = Hull::default();
         if mesh.num_frames <= 0 {
             return Ok(hull);
@@ -301,7 +332,7 @@ impl Hull {
                 TRI_WORK.saturating_add(PLANE_WORK.saturating_mul(hull.normals.len() as u64)),
             )?;
             let [a, b, c] = tri.map(|i| verts[i as usize]);
-            let Some((n, constant)) = triangle_plane(&a, &b, &c) else {
+            let Some((n, constant)) = triangle_plane(&a, &b, &c, tiny) else {
                 continue;
             };
             let same = hull.normals.iter().zip(&hull.constants).any(|(e, ec)| {

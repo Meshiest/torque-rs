@@ -446,13 +446,41 @@ pub(crate) fn mesh_hull(
     mesh: &Mesh,
     charge: &mut dyn FnMut(u64) -> bool,
 ) -> Result<Option<Rc<MeshHull>>, VmError> {
-    if let Some(h) = kept.hulls.meshes.borrow().get(&index) {
+    kept_hull(&kept.hulls.meshes, index, mesh, MeshHull::build, charge)
+}
+
+/// The hull of mesh `index` as a hitbox ([`MeshHull::build_relative`]: a small box keeps every face), built the first time.
+pub(crate) fn part_hull(
+    kept: &KeptShape,
+    index: usize,
+    mesh: &Mesh,
+    charge: &mut dyn FnMut(u64) -> bool,
+) -> Result<Option<Rc<MeshHull>>, VmError> {
+    kept_hull(
+        &kept.hulls.parts,
+        index,
+        mesh,
+        MeshHull::build_relative,
+        charge,
+    )
+}
+
+type HullBuild = fn(&Mesh, shapes::Charge) -> Result<MeshHull, ShapeError>;
+
+fn kept_hull(
+    cache: &std::cell::RefCell<std::collections::BTreeMap<usize, Rc<MeshHull>>>,
+    index: usize,
+    mesh: &Mesh,
+    build: HullBuild,
+    charge: &mut dyn FnMut(u64) -> bool,
+) -> Result<Option<Rc<MeshHull>>, VmError> {
+    if let Some(h) = cache.borrow().get(&index) {
         return Ok(Some(Rc::clone(h)));
     }
-    match MeshHull::build(mesh, charge) {
+    match build(mesh, charge) {
         Ok(h) => {
             let h = Rc::new(h);
-            kept.hulls.meshes.borrow_mut().insert(index, Rc::clone(&h));
+            cache.borrow_mut().insert(index, Rc::clone(&h));
             Ok(Some(h))
         }
         Err(e) => match budget(e) {
