@@ -87,7 +87,7 @@ app = [
     "client-window", "system-fonts", "shapes", "dep:torque-render-core", "dep:torque-render-hd", "dep:torque-render-scene",
     "dep:winit", "dep:png",
 ]
-full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder"]
+full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder", "app"]
 
 [[example]]
 name = "script"
