@@ -587,3 +587,35 @@ fn a_sub_shape_claiming_billions_of_nodes_is_paid_for_by_the_nodes_there_are() {
     .unwrap();
     assert!(paid < 100, "{paid}");
 }
+
+#[test]
+fn a_six_centimeter_box_keeps_its_six_planes_with_the_relative_rule_and_loses_them_with_tges() {
+    let model = solid_shape(
+        BIG,
+        &[("Collision-1", [0.0, 0.0, 0.0, 0.06, 0.06, 0.06])],
+        [0, 0, 0, 32767],
+        [0.0; 3],
+        false,
+    );
+    let shape = Shape::for_server(model);
+    let mesh = shape.meshes[0].as_ref().unwrap();
+    assert_eq!(
+        Hull::build(mesh, &mut free).unwrap().planes(),
+        0,
+        "TGE's rule: every face too small"
+    );
+    let hull = Hull::build_relative(mesh, &mut free).unwrap();
+    assert_eq!(hull.planes(), 6, "{hull:?}");
+    let hit = hull
+        .cast([-1.0, 0.03, 0.03], [1.0, 0.03, 0.03], &mut free)
+        .unwrap()
+        .expect("a hit");
+    assert!((hit.normal[0] + 1.0).abs() < 1e-6, "{hit:?}");
+    assert!((hit.t - 0.5).abs() < 1e-6, "{hit:?}");
+    // A ray beside it hits nothing.
+    assert!(
+        hull.cast([-1.0, 0.1, 0.03], [1.0, 0.1, 0.03], &mut free)
+            .unwrap()
+            .is_none()
+    );
+}

@@ -1047,6 +1047,9 @@ pub struct PlayerThreads {
     pub at_end: bool,
     /// The counter `setActionThread` sets to 4 and `updateAnimation` counts down.
     pub action_counter: i32,
+    /// A synced Player's position and upward speed at the end of its last step
+    /// ([`synced`](crate::sim::player::synced)).
+    pub synced_from: Option<([f32; 3], f32)>,
 }
 
 /// `updateActionThread(true)` on a server: each of the six bones is pinned to the default pose (the rotation and the three
@@ -1130,6 +1133,7 @@ fn player_threads(
         wait: false,
         at_end: false,
         action_counter: 0,
+        synced_from: None,
     };
     let still = |body: &mut ShapeBody, t: Option<ThreadId>| {
         if let Some(t) = t.and_then(|t| body.instance.thread_mut(t)) {
@@ -1219,10 +1223,14 @@ pub struct ActionRequest {
     pub wait: bool,
     pub fsp: bool,
     pub force: bool,
+    /// The action blends in over [`TRANSITION`](crate::sim::player::synced::TRANSITION) seconds (a synced Player's; TGE's
+    /// server sets the sequence).
+    pub blend: bool,
 }
 
 /// `Player::setActionThread` on a server: the action's sequence on the action thread, from its start when the action plays
-/// forward and from its end when it plays back, at the rate +1 or -1. The error line when the action is out of range.
+/// forward and from its end when it plays back, at the rate +1 or -1 (blended in when the request says so, as a client does).
+/// The error line when the action is out of range.
 pub fn action_thread(st: &mut ShapeBaseState, action: usize, r: ActionRequest) -> Option<String> {
     let (Some(body), Some(player)) = (st.body.as_mut(), st.player.as_mut()) else {
         return None;
@@ -1250,9 +1258,27 @@ pub fn action_thread(st: &mut ShapeBaseState, action: usize, r: ActionRequest) -
     let kept = Rc::clone(&body.kept);
     if let (Some(shape), Some(thread)) = (kept.shape.as_ref(), player.action_thread) {
         let pos = if r.forward { 0.0 } else { 1.0 };
-        body.instance.set_sequence(shape, thread, sequence, pos);
-        if let Some(t) = body.instance.thread_mut(thread) {
-            t.time_scale = if r.forward { 1.0 } else { -1.0 };
+        let scale = if r.forward { 1.0 } else { -1.0 };
+        match usize::try_from(sequence) {
+            // The direction first: a transition runs the way the thread plays when it starts.
+            Ok(seq) if r.blend => {
+                if let Some(t) = body.instance.thread_mut(thread) {
+                    t.time_scale = scale;
+                }
+                body.instance.transition_to_sequence(
+                    shape,
+                    thread,
+                    seq,
+                    pos,
+                    crate::sim::player::synced::TRANSITION,
+                );
+            }
+            _ => {
+                body.instance.set_sequence(shape, thread, sequence, pos);
+                if let Some(t) = body.instance.thread_mut(thread) {
+                    t.time_scale = scale;
+                }
+            }
         }
     }
     None
@@ -1311,6 +1337,7 @@ fn set_action_thread(vm: &mut Vm, c: &NativeCall) -> Native {
             wait: true,
             fsp,
             force: true,
+            blend: crate::scene::hitboxes::wanted(vm, id),
         };
         message = action_thread(&mut st, i, request);
     }

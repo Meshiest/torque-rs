@@ -67,6 +67,16 @@ fn crouching_looking_and_leaning_move_the_parts() {
     // Crouched (the action thread): the head drops from 1.8..2.2 to 1.3..1.7.
     assert_eq!(across(&mut s, 0.0, 2.0).0, t);
     eval(&mut s, "Target.setActionThread(\"crouch\", true);");
+    // The crouch blends in over a quarter second, as a client draws it.
+    assert_eq!(across(&mut s, 0.0, 2.0).0, t, "not yet");
+    for _ in 0..8 {
+        // Held where it stands (no floor).
+        eval(
+            &mut s,
+            "Target.setTransform(\"0 0 0 0 0 1 0\"); Target.setVelocity(\"0 0 0\");",
+        );
+        s.run(TICK_MS, |_| false);
+    }
     assert_eq!(across(&mut s, 0.0, 2.0).0, 0, "the head is lower");
     let (hit, point) = across(&mut s, 0.0, 1.5);
     assert_eq!(hit, t);

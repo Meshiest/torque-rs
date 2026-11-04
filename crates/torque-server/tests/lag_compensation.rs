@@ -80,20 +80,23 @@ fn a_shooter_with_latency_hits_the_target_where_it_saw_it() {
 
 #[test]
 fn the_rewound_pose_is_the_one_the_shooter_saw() {
-    let mut s = lag_server(96);
-    eval(&mut s, "$Pref::Server::LagCompensation = 1;");
+    let mut s = lag_server(480);
+    eval(
+        &mut s,
+        "$Pref::Server::LagCompensation = 1; $Pref::Server::MaxRewindMs = 1000;",
+    );
     let t = spawn(&mut s, "Target", "Posed", "0 0 0");
-    for _ in 0..6 {
+    for _ in 0..10 {
         eval(
             &mut s,
             "Target.setTransform(\"0 0 0 0 0 1 0\"); Target.setVelocity(\"0 0 0\");",
         );
         s.run(TICK_MS, |_| false);
     }
-    // Crouched for the last two steps and the shot's first (the shot reaches the head in its second): three steps back the
-    // shooter saw it standing.
+    // Crouched for the last nine steps (the crouch blends in over the first eight, as a client draws it) and the shot's first
+    // (the shot reaches the head in its second): fifteen steps back the shooter saw it standing.
     eval(&mut s, "Target.setActionThread(\"crouch\", true);");
-    for _ in 0..2 {
+    for _ in 0..9 {
         eval(
             &mut s,
             "Target.setTransform(\"0 0 0 0 0 1 0\"); Target.setVelocity(\"0 0 0\");",

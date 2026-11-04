@@ -103,21 +103,23 @@ pub struct ActionPick<'a> {
     pub first_person: bool,
     /// The action thread holds at its end.
     pub held: bool,
+    /// The Player's pose is synced with its clients' ([`synced`](crate::sim::player::synced)): no contact timer.
+    pub synced: bool,
 }
 
 /// `sContactTickTime`: the ticks without a contact after which the moving actions give way to `root`.
 pub const CONTACT_TICK_TIME: u32 = 30;
 
 /// TGE's `pickActionAnimation`: falling plays the table's fall action; without a contact for [`CONTACT_TICK_TIME`] ticks,
-/// `root`; otherwise the moving action whose ground direction best fits the velocity past 0.1 (`mDot`), side also backwards
-/// (`forward` false). A class with crouching actions (`crouched`) moves 1..3 onto them.
+/// `root` (unless the pose is synced); otherwise the moving action whose ground direction best fits the velocity past 0.1 (`mDot`),
+/// side also backwards (`forward` false). A class with crouching actions (`crouched`) moves 1..3 onto them.
 pub fn pick_action(pick: &ActionPick<'_>, crouched: bool) -> (u32, bool) {
     const SIDE: usize = 3;
     let (s, table) = (pick.s, pick.table);
     let (mut action, mut forward) = (0u32, true);
     if s.falling {
         action = table.fall;
-    } else if s.contact_timer < CONTACT_TICK_TIME {
+    } else if pick.synced || s.contact_timer < CONTACT_TICK_TIME {
         let lib = crate::library::get();
         if (lib.moving)(pick.velocity) {
             let mut cur_max = 0.1f32;
@@ -313,6 +315,10 @@ mod tests {
     use super::*;
 
     fn pick(s: &PlayerState, velocity: F3) -> (u32, bool) {
+        pick_synced(s, velocity, false)
+    }
+
+    fn pick_synced(s: &PlayerState, velocity: F3, synced: bool) -> (u32, bool) {
         let p = ActionPick {
             s,
             table: &TGE_ACTIONS,
@@ -325,6 +331,7 @@ mod tests {
             ],
             first_person: false,
             held: false,
+            synced,
         };
         TorquePlayerKind.pick_action(&p).unwrap()
     }
@@ -340,6 +347,11 @@ mod tests {
         assert_eq!(pick(&s, [0.05, 0.05, 0.0]), (0, true));
         s.contact_timer = CONTACT_TICK_TIME;
         assert_eq!(pick(&s, [0.0, 3.0, 0.0]), (0, true));
+        assert_eq!(
+            pick_synced(&s, [0.0, 3.0, 0.0], true),
+            (1, true),
+            "a synced pose has no contact timer, as a client's pick"
+        );
         s.falling = true;
         assert_eq!(pick(&s, [0.0, 3.0, 0.0]), (TGE_ACTIONS.fall, true));
     }
