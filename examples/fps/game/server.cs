@@ -211,7 +211,7 @@ function GameConnection::onDrop(%client, %reason)
    messageAll("info", %client.name SPC "left the arena.");
 }
 
-// The next spawn point, round the map's list.
+// The next spawn point, around the map's list.
 function nextSpawn()
 {
    %spawn = $Arena::Spawn[$Arena::NextSpawn % $Arena::SpawnCount];

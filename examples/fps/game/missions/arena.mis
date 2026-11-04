@@ -28,7 +28,7 @@ function addArenaCube(%position, %scale)
 
 function buildArena()
 {
-   // Low walls to duck behind, in a ring round the middle.
+   // Low walls to duck behind, in a ring around the middle.
    for (%i = 0; %i < 8; %i++)
    {
       %a = %i * 0.785398;

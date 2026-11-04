@@ -4,12 +4,11 @@
 //! table, and every rule of [`NetGame`] at its default. [`NetPasses`] is the network host the main loop drives
 //! ([`NetHost`]) over any net game's shared state.
 //!
-//! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`; the
-//! views of a player's arm and look action, a projectile and a shape's images follow `T3D/player.cpp`, `T3D/projectile.cpp`
-//! and `T3D/shapeBase.cpp` (each `Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of`
-//! follows `QuatF::set(MatrixF)` in `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind
-//! its record (`sky_field`) are those of TGE 1.4's `terrain/sky.cc` (`Copyright (C) GarageGames.com, Inc.`; Torque3D has no
-//! Sky class).
+//! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`, and the
+//! views of a player's arm and look action, a projectile and a shape's images follow `T3D/player.cpp`, `T3D/projectile.cpp` and
+//! `T3D/shapeBase.cpp` (each `Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of` follows
+//! `QuatF::set(MatrixF)` in `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record
+//! (`sky_field`) are those of TGE 1.4's `terrain/sky.cc` (`Copyright (C) GarageGames.com, Inc.`; Torque3D has no Sky class).
 
 use std::cell::RefCell;
 use std::collections::HashMap;

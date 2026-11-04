@@ -568,11 +568,11 @@ impl ArenaScene {
             .filter_map(|b| b.trail.as_ref())
             .chain(&self.fading);
         for e in trails {
-            let (Some(centre), Some(d)) = (e.centre(), e.draw(right, up, &mut set, "trail")) else {
+            let (Some(center), Some(d)) = (e.centre(), e.draw(right, up, &mut set, "trail")) else {
                 continue;
             };
             let dist = (0..3)
-                .map(|k| (centre[k] - eye.position[k]).powi(2))
+                .map(|k| (center[k] - eye.position[k]).powi(2))
                 .sum::<f32>()
                 .sqrt();
             self.trail_particles += e.particles.len();
