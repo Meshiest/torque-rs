@@ -2,7 +2,8 @@
 // the pause menu, the keys, and the way in and out.
 //
 // The host watches three globals the scripts set: $Arena::HostAsked (start a server here and join it), $Arena::LeaveAsked (the
-// view was left: stop hosting) and $Arena::QuitAsked. $Arena::Port is the UDP port number the games listen on.
+// view was left: stop hosting) and $Arena::QuitAsked. $Arena::Port is the UDP port number the games listen on. $Arena::HostScope
+// ("lan" or "public") says who may join the game the host starts.
 
 // ---- profiles
 
@@ -98,7 +99,7 @@ new GuiControl(MainMenuGui)
    new GuiButtonCtrl(HostButton)
    {
       profile = ArenaButtonProfile; position = "70 250"; extent = "280 56"; visible = true; enabled = true;
-      text = "Host game"; command = "hostGame();";
+      text = "Host game"; command = "showHost();";
    };
    new GuiButtonCtrl(JoinButton)
    {
@@ -135,10 +136,88 @@ function saveName()
    NameEdit.setValue($Pref::Player::Name);
 }
 
-function hostGame()
+// ---- the choice of who may join a hosted game
+
+new GuiControl(HostGui)
+{
+   profile = ArenaBackProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+   new GuiTextCtrl(HostTitle)
+   {
+      profile = ArenaTitleProfile; position = "70 50"; extent = "660 56"; visible = true; enabled = true;
+      text = "Host a game";
+   };
+   new GuiTextCtrl(HostLine)
+   {
+      profile = ArenaDimProfile; position = "72 112"; extent = "660 20"; visible = true; enabled = true;
+      text = "Who can join the game you start?";
+   };
+   new GuiButtonCtrl(HostLanButton)
+   {
+      profile = ArenaButtonProfile; position = "70 170"; extent = "280 56"; visible = true; enabled = true;
+      text = "LAN only"; command = "hostGame(\"lan\");";
+   };
+   new GuiTextCtrl(HostLanNote)
+   {
+      profile = ArenaDimProfile; position = "372 172"; extent = "400 20"; visible = true; enabled = true;
+      text = "Players on your own network can join.";
+   };
+   new GuiTextCtrl(HostLanNote2)
+   {
+      profile = ArenaDimProfile; position = "372 194"; extent = "400 20"; visible = true; enabled = true;
+      text = "Nobody outside it can reach the game.";
+   };
+   new GuiButtonCtrl(HostPublicButton)
+   {
+      profile = ArenaButtonProfile; position = "70 250"; extent = "280 56"; visible = true; enabled = true;
+      text = "Public"; command = "hostGame(\"public\");";
+   };
+   new GuiTextCtrl(HostPublicNote)
+   {
+      profile = ArenaDimProfile; position = "372 252"; extent = "400 20"; visible = true; enabled = true;
+      text = "Anyone who can reach this computer can join.";
+   };
+   new GuiTextCtrl(HostPublicNote2)
+   {
+      profile = ArenaDimProfile; position = "372 274"; extent = "400 20"; visible = true; enabled = true;
+      text = "Needs UDP 28000 forwarded to this computer.";
+   };
+   new GuiButtonCtrl(HostBackButton)
+   {
+      profile = ArenaButtonProfile; position = "70 330"; extent = "280 56"; visible = true; enabled = true;
+      text = "Back"; command = "showMainMenu();";
+   };
+   new GuiTextCtrl(HostLast)
+   {
+      profile = ArenaDimProfile; position = "72 410"; extent = "660 20"; visible = true; enabled = true;
+      text = "";
+   };
+   new GuiTextCtrl(HostStatus)
+   {
+      profile = ArenaNoteProfile; position = "70 520"; extent = "660 28"; vertSizing = "top"; visible = true; enabled = true;
+      text = "";
+   };
+};
+
+function showHost()
 {
    saveName();
+   HostStatus.setText("");
+   HostLast.setText($Pref::Arena::HostScope $= "public" ? "Last time you hosted: Public." : "Last time you hosted: LAN only.");
+   Canvas.setContent(HostGui);
+}
+
+// %scope is "lan" or "public"; empty takes the last choice.
+function hostGame(%scope)
+{
+   if (%scope $= "")
+      %scope = $Pref::Arena::HostScope;
+   if (%scope !$= "public")
+      %scope = "lan";
+   $Pref::Arena::HostScope = %scope;
+   $Arena::HostScope = %scope;
+   saveName();
    MainStatus.setText("Starting a game...");
+   HostStatus.setText("Starting a game...");
    $Arena::HostAsked = 1;
 }
 
@@ -176,7 +255,7 @@ new GuiControl(JoinGui)
    };
    new GuiScrollCtrl(ServerScroll)
    {
-      profile = ArenaScrollProfile; position = "70 148"; extent = "660 300"; visible = true; enabled = true;
+      profile = ArenaScrollProfile; position = "70 148"; extent = "660 252"; visible = true; enabled = true;
       hScrollBar = "alwaysOff"; vScrollBar = "dynamic";
       new GuiTextListCtrl(ServerList)
       {
@@ -184,24 +263,45 @@ new GuiControl(JoinGui)
          columns = "0 300 400 490";
       };
    };
+   new GuiTextCtrl(AddressLabel)
+   {
+      profile = ArenaTextProfile; position = "74 418"; extent = "80 24"; visible = true; enabled = true;
+      text = "Address";
+   };
+   new GuiTextEditCtrl(AddressEdit)
+   {
+      profile = ArenaEditProfile; position = "156 414"; extent = "380 32"; visible = true; enabled = true;
+      maxLength = 64; text = "";
+      altCommand = "connectAddress();";
+   };
+   new GuiButtonCtrl(ConnectButton)
+   {
+      profile = ArenaButtonProfile; position = "560 410"; extent = "170 40"; visible = true; enabled = true;
+      text = "Connect"; command = "connectAddress();";
+   };
+   new GuiTextCtrl(AddressHint)
+   {
+      profile = ArenaDimProfile; position = "158 452"; extent = "570 20"; visible = true; enabled = true;
+      text = "A game on another network: like 203.0.113.5 or 203.0.113.5:28000";
+   };
    new GuiButtonCtrl(RefreshButton)
    {
-      profile = ArenaButtonProfile; position = "70 470"; extent = "200 50"; visible = true; enabled = true;
+      profile = ArenaButtonProfile; position = "70 486"; extent = "200 50"; visible = true; enabled = true;
       text = "Refresh"; command = "refreshServers();";
    };
    new GuiButtonCtrl(JoinSelectedButton)
    {
-      profile = ArenaButtonProfile; position = "300 470"; extent = "200 50"; visible = true; enabled = true;
+      profile = ArenaButtonProfile; position = "300 486"; extent = "200 50"; visible = true; enabled = true;
       text = "Join"; command = "joinSelected();";
    };
    new GuiButtonCtrl(BackButton)
    {
-      profile = ArenaButtonProfile; position = "530 470"; extent = "200 50"; visible = true; enabled = true;
+      profile = ArenaButtonProfile; position = "530 486"; extent = "200 50"; visible = true; enabled = true;
       text = "Back"; command = "showMainMenu();";
    };
    new GuiTextCtrl(JoinStatus)
    {
-      profile = ArenaNoteProfile; position = "70 540"; extent = "660 28"; vertSizing = "top"; visible = true; enabled = true;
+      profile = ArenaNoteProfile; position = "70 552"; extent = "660 28"; vertSizing = "top"; visible = true; enabled = true;
       text = "";
    };
 };
@@ -209,6 +309,7 @@ new GuiControl(JoinGui)
 function showJoin()
 {
    saveName();
+   AddressEdit.setValue($Pref::Client::LastAddress);
    Canvas.setContent(JoinGui);
    refreshServers();
 }
@@ -258,6 +359,23 @@ function joinSelected()
    }
    JoinStatus.setText("Joining " @ $ServerInfo::Name @ "...");
    connectTo($ServerInfo::Address);
+}
+
+// Connects to the address typed in the box (host:port, or just the numbers: port 28000).
+function connectAddress()
+{
+   saveName();
+   %typed = trim(AddressEdit.getValue());
+   %address = checkJoinAddress(%typed);
+   if (getSubStr(%address, 0, 1) $= "!")
+   {
+      JoinStatus.setText(getSubStr(%address, 1, 200));
+      return;
+   }
+   $Pref::Client::LastAddress = %typed;
+   JoinStatus.setText("Connecting to " @ %address @ "...");
+   armPublicJoin(%address);
+   connectTo(%address);
 }
 
 // ---- the view
@@ -529,6 +647,18 @@ function showMainMenu()
    Canvas.cursorOn();
 }
 
+// The lines the hosting client sets for the view's chat box: where the others join, and what a public game needs.
+function showHostInfo()
+{
+   for (%i = 1; %i <= 3; %i++)
+   {
+      %line = $Arena::HostInfo[%i];
+      if (%line !$= "")
+         chatLine(1, %line);
+      $Arena::HostInfo[%i] = "";
+   }
+}
+
 function connectTo(%address)
 {
    if (isObject(ServerConnection))
@@ -605,6 +735,7 @@ function clientCmdArenaStarted(%map, %server, %textureFilter)
    Canvas.cursorOff();
    PlayMap.push();
    $Arena::InGame = 1;
+   showHostInfo();
    showNote(%server);
 }
 
@@ -667,6 +798,8 @@ function clientCmdHurt(%amount, %from)
 }
 
 $Pref::Player::Name = "Player";
+$Pref::Arena::HostScope = "lan";
+$Pref::Client::LastAddress = "";
 // Ask the server for a packet every tick (it sends at the slower of its rate and this one).
 $pref::Net::PacketRateToClient = 32;
 $Arena::OwnGhost = -1;

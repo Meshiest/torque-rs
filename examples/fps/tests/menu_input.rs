@@ -198,13 +198,16 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
     let mut g = client();
     let host = center(&g, "HostButton");
     click(&mut g, host);
+    g.step(32);
+    let lan = center(&g, "HostLanButton");
+    click(&mut g, lan);
     for _ in 0..200 {
         g.step(32);
         if g.in_game() {
             break;
         }
     }
-    assert!(g.in_game(), "the Host button started a game");
+    assert!(g.in_game(), "the Host and LAN only buttons started a game");
     g.host.draw_frame();
     assert!(g.host.wants_mouse(), "the arena holds the mouse");
     assert!(!g.host.system_cursor());
@@ -247,13 +250,16 @@ fn in_arena() -> ArenaGame {
     let mut g = client();
     let host = center(&g, "HostButton");
     click(&mut g, host);
+    g.step(32);
+    let lan = center(&g, "HostLanButton");
+    click(&mut g, lan);
     for _ in 0..200 {
         g.step(32);
         if g.in_game() {
             break;
         }
     }
-    assert!(g.in_game(), "the Host button started a game");
+    assert!(g.in_game(), "the Host and LAN only buttons started a game");
     g.host.draw_frame();
     g
 }

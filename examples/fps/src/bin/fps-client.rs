@@ -1,8 +1,9 @@
 //! The arena's client.
 //!
-//! `fps-client` opens the window on the main menu: Host starts a server in this process and joins it (a game for one, or for
-//! others on the network), Join lists the games on the local network. `--bind <address>` hosts on this computer's LAN address
-//! instead of `127.0.0.1` (so others can join), `--name <name>` sets the player's name, `--shots <dir>` draws the review
+//! `fps-client` opens the window on the main menu: Host starts a server in this process and joins it (for the local network
+//! only, or public: every interface, so players outside the network can join when UDP 28000 is forwarded to this computer),
+//! Join lists the games on the local network and takes an address to connect to by hand. `--bind <address>` hosts a LAN game on
+//! that address instead of this computer's LAN address, `--name <name>` sets the player's name, `--shots <dir>` draws the review
 //! pictures offscreen into `dir` (two clients over the loopback address, no window), and `--motion-shots <dir>` the pictures of
 //! the figures' and the pistol's motion (side steps, the walk backward, the look, the falls, a shot, the reload, the pause
 //! menu).

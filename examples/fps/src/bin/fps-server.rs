@@ -2,15 +2,16 @@
 //! lines printed. No window.
 //!
 //! `fps-server [--bind <address>] [--port <port>] [--name <name>] [--map <path>] [--ticks <n>]`: the address defaults to
-//! `127.0.0.1` (this computer only; pass the computer's LAN address so others on the network can join), the port to 28000, the
-//! map to the first in `game/missions/`; `--ticks` stops after that many ticks (a short check).
+//! `127.0.0.1` (this computer only; pass the computer's LAN address so others on the network can join, or `0.0.0.0` to listen
+//! on every interface so players outside the network can join too), the port to 28000, the map to the first in
+//! `game/missions/`; `--ticks` stops after that many ticks (a short check).
 
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use torque::server::server::TICK_MS;
 use torque_example_fps::files::GameFiles;
-use torque_example_fps::server::{ArenaServer, DEFAULT_PORT, ServerOptions};
+use torque_example_fps::server::{ArenaServer, DEFAULT_PORT, ServerOptions, lan_addresses};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let files = GameFiles::bundled()?;
@@ -19,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         port: DEFAULT_PORT,
         name: "Arena".to_string(),
         mission: String::new(),
+        public: false,
     };
     let mut ticks = None;
     let mut args = std::env::args().skip(1);
@@ -44,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("unknown argument {arg}").into()),
         }
     }
+    options.public = options.address.is_unspecified();
     if options.mission.is_empty() {
         options.mission = files
             .maps()
@@ -57,6 +60,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "fps-server: {} on {addr}, map {}",
             options.name, options.mission
         );
+        if options.public {
+            let port = addr.port();
+            let lan = lan_addresses();
+            if lan.is_empty() {
+                println!("fps-server: no LAN address found on this computer");
+            }
+            for ip in lan {
+                println!("fps-server: players on this network join {ip}:{port}");
+            }
+            println!(
+                "fps-server: players outside the network need UDP {port} forwarded to this computer, and the firewall to allow it"
+            );
+        }
     }
     let tick = Duration::from_millis(u64::from(TICK_MS));
     let mut next = Instant::now();

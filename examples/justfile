@@ -50,9 +50,15 @@ kit-shots dir="../target/kit-shots":
 fps-server *args:
     cargo run -p torque-example-fps --release --bin fps-server -- {{args}}
 
-# The arena shooter's client in a window: Host (a server in this process, joined at once) / Join (the LAN list) / Quit; W A S D
-# move, mouse look, click shoot, R reload, T chat, Esc pause menu. `--bind <your LAN address>` hosts for the network,
-# `--name <name>`
+# The arena shooter's server open to the internet: listens on every interface (0.0.0.0) on UDP 28000 (`--port` changes it), prints
+# this computer's LAN address(es), and players outside the network need that port forwarded to this computer and the firewall to
+# allow it. It registers with no master server: give players your public address.
+fps-server-public *args:
+    cargo run -p torque-example-fps --release --bin fps-server -- --bind 0.0.0.0 --port 28000 {{args}}
+
+# The arena shooter's client in a window: Host (a server in this process, joined at once: LAN only or public) / Join (the LAN list,
+# or an address typed in) / Quit; W A S D move, mouse look, click shoot, R reload, T chat, Esc pause menu. `--bind <LAN address>`
+# picks the LAN game's address, `--name <name>`
 fps-client *args:
     cargo run -p torque-example-fps --release --bin fps-client -- {{args}}
 

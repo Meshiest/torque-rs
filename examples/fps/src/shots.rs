@@ -1,6 +1,6 @@
 //! The example without a window: two clients in one process over the loopback address, every frame drawn offscreen as the
-//! window would draw it, and pictures taken: the main menu, the list of games with the hosted one, the view from the host's
-//! eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight (as it leaves the
+//! window would draw it, and pictures taken: the main menu, the choice of who may join a hosted game, the list of games with
+//! the hosted one, the address box with an error line, the view from the host's eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight (as it leaves the
 //! muzzle, then with its trail behind it eight steps away and two steps away), then the arena itself: the floor at the host's
 //! feet, the length of the arena from a corner, the host's own shadow on the floor ahead, the view from a spawn point with the
 //! other player hidden behind the cover, and the whole arena from above.
@@ -138,7 +138,11 @@ pub fn write_all(
     run(&gpu, &mut [&mut a], 200)?;
     save(&a.picture(&gpu)?, "menu")?;
 
-    a.game.call("hostGame", &[])?;
+    a.game.call("showHost", &[])?;
+    run(&gpu, &mut [&mut a], 64)?;
+    save(&a.picture(&gpu)?, "host-choice")?;
+
+    a.game.call("hostGame", &["lan"])?;
     run_until(&gpu, &mut a, &mut b, "the hosted game", |a, _| {
         a.game.in_game()
     })?;
@@ -152,6 +156,14 @@ pub fn write_all(
             .is_ok_and(|rows| rows > 0)
     })?;
     save(&b.picture(&gpu)?, "lan-list")?;
+
+    // A name where the numbers go: the plain error line under the box.
+    b.game
+        .call("eval", &["AddressEdit.setValue(\"my-server.example\");"])?;
+    b.game.call("connectAddress", &[])?;
+    run(&gpu, &mut [&mut a, &mut b], 64)?;
+    save(&b.picture(&gpu)?, "join-error")?;
+    b.game.call("eval", &["AddressEdit.setValue(\"\");"])?;
 
     b.game.call("joinSelected", &[])?;
     run_until(&gpu, &mut a, &mut b, "the second player", |a, b| {
