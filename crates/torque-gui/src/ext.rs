@@ -87,10 +87,6 @@ pub enum GuiRule {
     /// GuiProgressCtrl's `setValue` takes a value that is not a number as 1 and a negative zero as 0 (a value is 1 unless it
     /// is at most 1, then 0 unless it is above 0); the engine's clamp keeps both as they are.
     ProgressNanIsFull,
-    /// GuiButtonCtrl, a closed GuiPopUpMenuCtrl with a border and GuiSliderCtrl's thumb draw TGE's beveled boxes
-    /// (`renderRaisedBox`, `renderSlightlyRaisedBox`; a depressed button no box at all) instead of the engine's rounded boxes
-    /// (see [`crate::draw`]'s rounded boxes).
-    ClassicBoxes,
 }
 
 /// A console message the GUI prints, with what it names; [`GuiMessage::engine_text`] is the engine's wording.
@@ -260,6 +256,14 @@ pub trait GuiExtension: Any {
     /// The text of a console message (None: the engine's, [`GuiMessage::engine_text`]).
     fn message(&self, _message: &GuiMessage<'_>) -> Option<String> {
         None
+    }
+
+    /// Whether a GuiButtonCtrl, a GuiPopUpMenuCtrl with a border or open, its open list and GuiSliderCtrl's thumb in
+    /// `profile` draw TGE's beveled boxes and square lists (`renderRaisedBox`, `renderSlightlyRaisedBox`; a depressed button
+    /// no box at all, an open popup a `fillColorHL` fill outlined in `borderColor`) instead of the engine's rounded boxes
+    /// (see [`crate::draw`]'s rounded boxes). The engine's answer: no.
+    fn classic_boxes(&self, _vm: &Vm, _profile: ObjId) -> bool {
+        false
     }
 
     /// Whether `rule` holds (the engine's answer: no).

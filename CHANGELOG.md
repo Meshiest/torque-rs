@@ -44,8 +44,9 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-images`: PNG and JPEG decoding and mip chains.
 - `torque-fonts`: font caches, glyph metrics and text layout.
 - `torque-gui`: the GUI object model, layout and the script methods of GUI classes.
-- `torque-gui`: buttons, popups and slider thumbs drawn as rounded boxes (a solid fill, a one-pixel border, hover, pressed
-  and disabled colors from the profile); a host keeps TGE's beveled boxes with `GuiRule::ClassicBoxes`.
+- `torque-gui`: buttons, popups and their open lists, and slider thumbs drawn as rounded boxes (a solid fill, a one-pixel
+  border, hover, pressed and disabled colors from the profile); a host keeps TGE's beveled boxes for a profile with
+  `GuiExtension::classic_boxes`.
 - `torque-audio`: WAV and Ogg Vorbis decoding, sources, channels, the listener and a mixer, with device output behind
   the `device` feature.
 - `torque`: the umbrella crate, re-exporting the engine crates behind features, with headless examples (`script`,

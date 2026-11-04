@@ -1,5 +1,5 @@
-//! The engine's rounded boxes: what GuiButtonCtrl, a closed GuiPopUpMenuCtrl with a border and GuiSliderCtrl's thumb draw
-//! unless the host keeps TGE's bevels ([`crate::ext::GuiRule::ClassicBoxes`]).
+//! The engine's rounded boxes: what GuiButtonCtrl, a GuiPopUpMenuCtrl with a border and its open list, and GuiSliderCtrl's
+//! thumb draw unless the host keeps TGE's bevels for their profile ([`crate::ext::GuiExtension::classic_boxes`]).
 //!
 //! - **The shape**: a rectangle with corners of [`BOX_RADIUS`] pixels (less on a box under twice that), a solid fill and a
 //!   one-pixel border, both with anti-aliased corners.

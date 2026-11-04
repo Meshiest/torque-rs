@@ -5,7 +5,7 @@ use torque_ts_vm::vm::Vm;
 
 use super::*;
 use crate::draw::{DrawCache, GuiBatch, draw_canvas};
-use crate::ext::{GuiExtension, GuiRule};
+use crate::ext::GuiExtension;
 use crate::{Gui, canvas};
 
 /// A host that keeps TGE's bevels.
@@ -16,8 +16,8 @@ impl GuiExtension for Classic {
         self
     }
 
-    fn rule(&self, rule: GuiRule) -> bool {
-        rule == GuiRule::ClassicBoxes
+    fn classic_boxes(&self, _vm: &Vm, _profile: ObjId) -> bool {
+        true
     }
 }
 
