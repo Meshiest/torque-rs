@@ -5,6 +5,9 @@
 //! `processTick(NULL)` with a hold on it (its own `delete` waits for the tick to return). Objects the tick made are not visited
 //! in this pass; objects it deleted are skipped.
 //!
+//! **Lag compensation** (engine-only, off by default): after each step's pass, a sample of every Player
+//! ([`crate::scene::lag::record_step`]).
+//!
 //! **Budget** (engine-only): a tick runs outside any script run, so the pass gives each object's turn a host work budget
 //! that `Vm::charge_work` enforces ([`TICK_OBJECT_WORK`], [`TICK_PASS_WORK`]) and charges each visit to the run's step budget
 //! before the turn ([`advance_objects_within`]). The scripts a turn runs (every callback of the tick: `stateScript`, `onMount`,
@@ -169,6 +172,10 @@ pub fn advance_objects_within(
             list.borrow_mut().restore(obj, visit.serial, ticker);
         }
         list.borrow_mut().finish_pass();
+        if crate::scene::lag::wants_steps(vm) {
+            let order = list.order();
+            crate::scene::lag::record_step(vm, &order);
+        }
     }
     control.end_batch(steps);
     out

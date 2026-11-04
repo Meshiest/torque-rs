@@ -16,6 +16,9 @@
 //! `getPosition` is the hit point. A Projectile that reaches its lifetime is deleted after its tick; one that exploded is
 //! deleted [`::sim::projectile::DELETE_WAIT_MS`] later (a scheduled `delete`, as the engine's `ObjectDeleteEvent`).
 //!
+//! **Lag compensation** (engine-only, off by default): a Projectile whose source a client controls takes the source's rewind
+//! at `onAdd` ([`crate::scene::lag::rewind_for`]) and casts every tick of its flight with the Players rewound by it.
+//!
 //! **Listed (engine-only).** The source is not put ahead of the Projectile in the process list (`processAfter`): a Projectile
 //! made during its source's tick is ticked after it anyway, being new.
 //!
@@ -35,7 +38,7 @@ use ts_vm::text::format_g;
 use ts_vm::vm::{Vm, VmError};
 
 use super::TickCx;
-use super::hosted::{call_db, container_ray, switch_collision};
+use super::hosted::{call_db, container_ray, rewound_container_ray, switch_collision};
 use super::player::tick::SimEnv;
 use crate::scene::access::{object_field, value_named};
 use crate::scene::camera::is_class;
@@ -51,6 +54,8 @@ pub struct ProjectileExt {
     pub body: Option<Projectile>,
     /// The state as it was when the tick took the body out (what a script in a callback reads).
     pub parked: Option<Box<ProjectileState>>,
+    /// How far back (ms) its casts see the Players: its source's rewind at `onAdd`, 0 for none.
+    pub rewind_ms: u32,
 }
 
 impl PartialEq for ProjectileExt {
@@ -280,7 +285,15 @@ impl ProjectileHost for HostImpl<'_> {
         if self.error.is_some() {
             return None;
         }
-        match container_ray(self.vm, self.env, start, end, mask) {
+        let rewind = ext::get(self.vm.objects(), self.id)
+            .and_then(|e| e.projectile.as_deref())
+            .map_or(0, |p| p.rewind_ms);
+        let hit = if rewind == 0 {
+            container_ray(self.vm, self.env, start, end, mask)
+        } else {
+            rewound_container_ray(self.vm, self.env, start, end, mask, rewind)
+        };
+        match hit {
             Ok(h) => h,
             Err(e) => {
                 self.note(Err(e));
@@ -370,6 +383,7 @@ impl EngineClass for ProjectileClass {
         s.scene.set_matrix(&translation(position));
         let mut p = Projectile::new(s);
         p.on_add();
+        let rewind_ms = source.map_or(0, |s| crate::scene::lag::rewind_for(vm, s));
         if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
             e.type_mask = p.s.type_mask;
         }
@@ -378,6 +392,7 @@ impl EngineClass for ProjectileClass {
             e.projectile = Some(Box::new(ProjectileExt {
                 body: Some(p),
                 parked: None,
+                rewind_ms,
             }));
         }
         scene::add_to_scene(vm, &self.container, id);

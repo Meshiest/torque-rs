@@ -92,6 +92,32 @@ pub fn container_ray(
     }))
 }
 
+/// [`container_ray`] with the Players rewound by `rewind_ms` ([`crate::scene::lag::rewound_ray`]).
+pub fn rewound_container_ray(
+    vm: &mut Vm,
+    env: &SimEnv,
+    start: F3,
+    end: F3,
+    mask: u32,
+    rewind_ms: u32,
+) -> Result<Option<::sim::RayHit>, VmError> {
+    let hit = crate::scene::lag::rewound_ray(
+        vm,
+        &env.container,
+        Some(&env.shapes),
+        start,
+        end,
+        mask,
+        rewind_ms,
+    )?;
+    Ok(hit.map(|h| ::sim::RayHit {
+        object: collide::ObjectId(h.object),
+        point: h.point,
+        normal: h.normal,
+        type_mask: ext::get(vm.objects(), h.object).map_or(0, |e| e.type_mask),
+    }))
+}
+
 /// `"%f %f %f"` of three floats widened.
 pub fn text3_fixed(v: F3) -> Vec<u8> {
     v.iter()

@@ -306,6 +306,10 @@ pub fn object_ray(
             if crate::sim::vitals::get(vm, id).damage_state != 0 {
                 return Ok(None);
             }
+            // A rewound cast answers for the Players it keeps samples of itself.
+            if super::lag::rewound_here(vm, id) {
+                return Ok(None);
+            }
             if super::hitboxes::wanted(vm, id)
                 && let Some(parts) = super::hitboxes::cast_live(vm, id, a, b)?
             {
