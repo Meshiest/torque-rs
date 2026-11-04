@@ -35,7 +35,9 @@ What is planned, roughly in order. Items marked *tool* are build-time features.
   lightning and precipitation, splash and debris, replicators.
 - A modern particle system beside TGE's: GPU simulation and sorting, soft particles, lit and shadowed particles,
   flipbook and ribbon (trail) emitters, curves over a particle's life, collision with the scene, and an editor-friendly
-  data format; TGE's ParticleEmitterData stays the exact default.
+  data format; TGE's ParticleEmitterData stays the exact default. First step done: ribbons (Torque3D's `Ribbon`), which a
+  client can draw a projectile's trail as, from the trail emitter's particle data; a ribbon datablock of its own waits for a
+  network profile that can add datablock classes (TGE's class list and its ProjectileData are fixed on the wire).
 - `torque::app`: the shared game layer the examples use (game files, server and client wrappers, the window loop,
   screenshots, the shared scripts), so a new game starts from it.
 - Voice chat: proximity and channel voice (Opus), relayed by the server under game rules.

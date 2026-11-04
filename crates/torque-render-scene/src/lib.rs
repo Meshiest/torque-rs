@@ -2,7 +2,7 @@
 //! [`Draw`]s, each a triangle list with the fixed-function state it is drawn with (lighting, texture environment, sampler,
 //! culling, depth, blending), so a renderer only has to reproduce OpenGL 1.x's per-vertex lighting, texture environments and
 //! rasterisation; the enhanced renderer's data types ([`hd`]), the scene's source ([`source`]), what a frame reads of the
-//! client's world of ghosts ([`world`]), the environment ([`env`](mod@env)), the sun's flare ([`flare`]), the lights' coronas ([`lights`]), the decals on surfaces ([`decals`]) and
+//! client's world of ghosts ([`world`]), the environment ([`env`](mod@env)), the sun's flare ([`flare`]), the lights' coronas ([`lights`]), the decals on surfaces ([`decals`]), the ribbons along moving things ([`ribbons`]) and
 //! their lines of sight ([`sight`]), the camera ([`camera`]) and TGE's matrix math ([`math`]). No GPU type appears here, and every type is `Send + Sync`.
 //!
 //! Files come through [`Assets`] (the caller's file reader).
@@ -22,6 +22,7 @@ pub mod moving;
 pub mod par;
 pub mod particles;
 pub mod player;
+pub mod ribbons;
 pub mod shapecache;
 pub mod shapes;
 pub mod sight;
