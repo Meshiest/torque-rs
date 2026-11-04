@@ -150,3 +150,49 @@ fn a_turn_is_right_handed_through_torques_matrix() {
     ));
     assert_eq!(turn([1.0, 0.0, 0.0], 0.0), NO_TURN);
 }
+
+#[test]
+fn a_blend_sequence_is_flagged_and_adds_its_turn_to_the_other_threads_pose() {
+    use torque_shapes::instance::{FLAG_BLEND, ShapeInstance};
+    let mut b = ShapeBuilder::new();
+    let root = b.node("root", None, [0.0; 3]);
+    let arm = b.node("arm", Some(root), [0.0, 0.0, 1.0]);
+    let drawn = b.detail("detail1", 1.0);
+    let mut mesh = MeshData::new(None);
+    mesh.add_box([-0.1; 3], [0.1; 3], |_| FULL_UV);
+    b.object("limb", arm, drawn, mesh);
+    let x = [1.0, 0.0, 0.0];
+    let def = |name, degrees| SequenceDef {
+        name,
+        duration: 1.0,
+        cyclic: false,
+        priority: 0,
+        keyframes: 1,
+        rotations: vec![Track {
+            node: arm,
+            keys: vec![turn(x, degrees)],
+        }],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    };
+    b.sequence(def("raise", 30.0));
+    b.blend_sequence(def("nod", 20.0));
+    let model = b.build();
+    let shape = &model.shape;
+    assert_eq!(shape.sequences[0].flags & FLAG_BLEND, 0);
+    assert_ne!(shape.sequences[1].flags & FLAG_BLEND, 0);
+    let back = dts::parse(&write_dts(&model), &mut free).unwrap();
+    assert_eq!(back.shape.sequences, shape.sequences);
+
+    let mut instance = ShapeInstance::new(shape, &mut free).unwrap();
+    for seq in 0..2 {
+        let t = instance.create_thread(shape).unwrap();
+        instance.set_sequence(shape, t, seq, 0.0);
+    }
+    let _ = instance.animate(shape, 0, None, &mut free);
+    // The arm's +y turned 30 by the first thread and 20 more by the blend: 50 degrees up from y toward z.
+    let m = instance.node_transform(arm).unwrap();
+    let y = mul_v(m, [0.0, 1.0, 0.0]);
+    let a = 50f32.to_radians();
+    assert!(near(y, [0.0, a.cos(), a.sin()]), "{y:?}");
+}
