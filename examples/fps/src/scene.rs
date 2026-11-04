@@ -10,7 +10,10 @@
 //!   drawn moving at. A figure that holds an image (its record's first
 //!   image slot) plays the kit's `hold` on its arm thread, and the image's shape is drawn in its hand: the figure's `mount0`
 //!   node times the inverse of the image's `mountPoint` (`ShapeBase::getRenderImageTransform`). A new fire count plays the
-//!   image's `fire`.
+//!   image's `fire`, kicks the pistol up and back for a moment ([`recoil`]: in first person the view's pistol, in third the
+//!   pistol in the hand), and flashes at its `muzzlePoint`: a burst of the particles of the emitter its datablock's fire state
+//!   names (`stateEmitter`), thrown out along the barrel. The action the server set (a death) plays as the record carries it,
+//!   and the head and the aiming arm follow the look.
 //! - **The own figure** (the ghost the server named, [`OwnLook`]) stands where the client predicts it and is not seen: the eye is
 //!   at its `eye` node, turned by the predicted yaw and head (the server runs the same moves, so the view is where the server
 //!   aims, and drawn ahead by the mouse's waiting turn, so it does not wait for the next tick), and the
@@ -31,7 +34,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use torque::client::conn::tge::TgeWorld;
-use torque::client::player_anim::{PlayerAnimation, PlayerMotion};
+use torque::client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
 use torque::ghost_world::world::Pose;
 use torque::ghosts::{TgeClass, TgeRecord, Value};
 use torque::shapes::instance::{ShapeInstance, ThreadId, find_sequence};
@@ -60,6 +63,28 @@ pub const BOLT_SPIN: f32 = std::f32::consts::TAU;
 pub const BOLT_BLEND: f32 = 6.0;
 /// How far from a figure's eye a bolt may have been fired and still be that figure's (units).
 pub const SHOOTER_REACH: f32 = 1.5;
+
+/// The muzzle flash's burst: how many particles, about how far from the muzzle (m).
+pub const FLASH_PARTICLES: u32 = 8;
+pub const FLASH_RADIUS: f32 = 0.02;
+/// The recoil's kick: how long it takes to reach its height and how fast it settles after (seconds), and how far it goes at
+/// its height: back (m) and up (radians), in first person and in the hand.
+pub const RECOIL_RISE: f32 = 0.04;
+pub const RECOIL_SETTLE: f32 = 0.08;
+pub const RECOIL_BACK: f32 = 0.06;
+pub const RECOIL_UP: f32 = 0.14;
+pub const RECOIL_UP_HAND: f32 = 0.3;
+
+/// How far into its kick the recoil is `t` seconds after a shot: 0 at rest, 1 at its height (a quick rise, then a settle).
+pub fn recoil(t: f32) -> f32 {
+    if !(0.0..1.0).contains(&t) {
+        0.0
+    } else if t < RECOIL_RISE {
+        t / RECOIL_RISE
+    } else {
+        (-(t - RECOIL_RISE) / RECOIL_SETTLE).exp()
+    }
+}
 
 /// The id of a ghost's object among the frame's objects (the first-person pistol is 1).
 fn object_id(index: u32, part: u32) -> u32 {
@@ -141,12 +166,15 @@ struct KeptCube {
     object: DynamicObject,
 }
 
-/// A held image: its shape, its instance, its `fire` thread and the fire count last seen.
+/// A held image: its shape, its instance, its `fire` thread, the fire count last seen, the seconds since it changed and the
+/// flash of a shot not drawn yet.
 struct Held {
     shape: SceneShape,
     instance: ShapeInstance,
     fire: Option<ThreadId>,
     fire_count: Option<u32>,
+    since_fire: f32,
+    flash: Option<Emitter>,
     /// The image's `mountPoint` node at rest, inverted.
     mount_inverse: Mat,
     /// The datablock's `eyeOffset`.
@@ -172,18 +200,24 @@ impl Held {
             instance,
             fire,
             fire_count: None,
+            since_fire: f32::MAX,
+            flash: None,
             mount_inverse,
             eye_offset,
         })
     }
 
-    /// The frame: a new fire count restarts `fire`, then `dt` of it.
-    fn update(&mut self, fire_count: u32, dt: f32) {
+    /// The frame: a new fire count restarts `fire` and the recoil, then `dt` of it. Whether the count was new (a shot).
+    fn update(&mut self, fire_count: u32, dt: f32) -> bool {
         let shape = self.shape.shape();
+        let fired = self.fire_count.is_some_and(|c| c != fire_count);
+        if fired {
+            self.since_fire = 0.0;
+        } else {
+            self.since_fire += dt;
+        }
         if let Some(t) = self.fire {
-            if self.fire_count.is_some_and(|c| c != fire_count)
-                && let Some(seq) = find_sequence(shape, b"fire")
-            {
+            if fired && let Some(seq) = find_sequence(shape, b"fire") {
                 self.instance.set_sequence(shape, t, seq as i32, 0.0);
             }
             self.instance.advance_time(shape, t, dt);
@@ -191,7 +225,42 @@ impl Held {
         self.fire_count = Some(fire_count);
         let detail = self.shape.detail().unwrap_or(0);
         let _ = self.instance.animate(shape, detail, None, &mut |_| true);
+        fired
     }
+
+    /// The kick of the recoil now (0 to 1).
+    fn kick(&self) -> f32 {
+        recoil(self.since_fire)
+    }
+
+    /// The muzzle's place and the barrel's direction with the image drawn at `m`.
+    fn muzzle(&self, m: &Mat) -> ([f32; 3], [f32; 3]) {
+        let at = self
+            .shape
+            .node("muzzlePoint")
+            .and_then(|n| self.instance.node_transform(n))
+            .map_or([0.0; 3], |n| [n[3], n[7], n[11]]);
+        (m.mul_p(at), m.mul_v([0.0, 1.0, 0.0]))
+    }
+}
+
+/// The emitter of an image's muzzle flash: the `stateEmitter` of its datablock's fire state (the state with `stateFire`), when
+/// the client holds it with its particles. The datablock's record lists each state's members in order (`state` first, then
+/// `fire`, ..., `emitter` when the state has one).
+pub fn muzzle_flash(world: &TgeWorld, image: u32) -> Option<Emitter> {
+    let db = world.datablocks.get(&image)?;
+    let mut firing = false;
+    for (name, _, value) in &db.fields {
+        match (name.as_str(), value) {
+            ("state", _) => firing = false,
+            ("fire", Value::Bool(fire)) => firing = *fire,
+            ("emitter", Value::Id(Some(id))) if firing => {
+                return Emitter::new(&world.records, *id);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A figure: where it is drawn and its animation.
@@ -219,29 +288,36 @@ impl Figure {
         m
     }
 
-    /// The pistol's `muzzlePoint` as the frame draws it: the own figure's first-person pistol (at the eye times the image's
-    /// `eyeOffset`), another's in its hand.
+    /// The first-person pistol's transform: at the eye times the image's `eyeOffset`, kicked back and up while it recoils.
+    fn view_image(&self, held: &Held) -> Mat {
+        let kick = held.kick();
+        let mut offset = Mat::euler_x(-RECOIL_UP * kick);
+        let [x, y, z] = held.eye_offset;
+        offset.set_column3([x, y - RECOIL_BACK * kick, z + 0.2 * RECOIL_BACK * kick]);
+        Mat::mul(&self.eye_transform(), &offset)
+    }
+
+    /// The pistol in the hand's transform (the `mount0` node times the inverse of the image's `mountPoint`), kicked up while it
+    /// recoils; none without the node.
+    fn hand_image(&self, held: &Held) -> Option<Mat> {
+        let hand = self
+            .shape
+            .node("mount0")
+            .and_then(|n| self.instance.node_transform(n))?;
+        let kick = Mat::euler_x(-RECOIL_UP_HAND * held.kick());
+        let hand = Mat::mul(&Mat::mul(&self.transform(), &Mat { m: *hand }), &kick);
+        Some(Mat::mul(&hand, &held.mount_inverse))
+    }
+
+    /// The pistol's `muzzlePoint` as the frame draws it: the own figure's first-person pistol, another's in its hand.
     fn muzzle(&self) -> Option<[f32; 3]> {
         let held = self.held.as_ref()?;
-        let node = held
-            .shape
-            .node("muzzlePoint")
-            .and_then(|n| held.instance.node_transform(n))?;
         let image = if self.own {
-            let mut offset = Mat::IDENTITY;
-            offset.set_column3(held.eye_offset);
-            Mat::mul(&self.eye_transform(), &offset)
+            self.view_image(held)
         } else {
-            let hand = self
-                .shape
-                .node("mount0")
-                .and_then(|n| self.instance.node_transform(n))?;
-            Mat::mul(
-                &Mat::mul(&self.transform(), &Mat { m: *hand }),
-                &held.mount_inverse,
-            )
+            self.hand_image(held)?
         };
-        Some(image.mul_p([node[3], node[7], node[11]]))
+        Some(held.muzzle(&image).0)
     }
 
     /// The eye: the `eye` node's place on the figure, turned by the yaw and the head's pitch.
@@ -380,6 +456,8 @@ pub struct ArenaScene {
     pub holders_drawn: usize,
     /// The trail particles drawn in the last frame.
     pub trail_particles: usize,
+    /// The muzzle flashes started so far.
+    pub flashes: usize,
 }
 
 fn record_images(record: &TgeRecord) -> Option<(u32, u32)> {
@@ -640,6 +718,7 @@ impl ArenaScene {
                 yaw,
                 ..PlayerMotion::default()
             });
+            motion.server_action = ServerAction::of_record(record);
             let image = record_images(record);
             let held_shape = image.and_then(|(img, _)| {
                 let file = world.datablock_text(img, "shapeFile")?.to_vec();
@@ -676,6 +755,7 @@ impl ArenaScene {
                     figure.pitch = o.pitch;
                     if let Some(c) = world.control_state.as_ref() {
                         motion.velocity = c.velocity;
+                        motion.falling = c.falling;
                     }
                 }
                 None => {
@@ -706,8 +786,10 @@ impl ArenaScene {
             figure.anim.update(s, &mut figure.instance, &motion, dt);
             let detail = figure.shape.detail().unwrap_or(0);
             let _ = figure.instance.animate(s, detail, None, &mut |_| true);
-            if let (Some(held), Some((_, fire_count))) = (figure.held.as_mut(), image) {
-                held.update(fire_count, dt);
+            if let (Some(held), Some((db, fire_count))) = (figure.held.as_mut(), image)
+                && held.update(fire_count, dt)
+            {
+                held.flash = muzzle_flash(world, db);
             }
             if figure.own {
                 let eye = figure.eye_transform();
@@ -727,15 +809,22 @@ impl ArenaScene {
     fn figure_objects(&mut self, view: &mut WorldView, assets: &KitAssets) -> Vec<DynamicObject> {
         let mut out = Vec::new();
         let mut holders = 0;
-        for (&index, figure) in &self.figures {
+        // The shots' flashes: each at the muzzle of the pistol the frame draws (the own figure's first-person one).
+        let mut flashes = Vec::new();
+        for (&index, figure) in &mut self.figures {
             let body = figure.transform();
             let seen_bits = if figure.own { material::SHADOW_ONLY } else { 0 };
-            if figure.own
-                && let Some(held) = figure.held.as_ref()
-            {
-                let mut offset = Mat::IDENTITY;
-                offset.set_column3(held.eye_offset);
-                let m = Mat::mul(&figure.eye_transform(), &offset);
+            let view_image = figure
+                .held
+                .as_ref()
+                .filter(|_| figure.own)
+                .map(|h| figure.view_image(h));
+            let hand_image = figure.held.as_ref().and_then(|h| figure.hand_image(h));
+            if let (Some(m), Some(held)) = (view_image, figure.held.as_mut()) {
+                if let Some(e) = held.flash.take() {
+                    let (at, dir) = held.muzzle(&m);
+                    flashes.push((e, at, dir));
+                }
                 let image = view.shape_object(assets, &held.shape, &held.instance, &m, 1);
                 out.push(marked(image, material::VIEW_ONLY));
             }
@@ -747,14 +836,11 @@ impl ArenaScene {
                 object_id(index, 0),
             );
             out.push(marked(figure_object, seen_bits));
-            if let (Some(held), Some(hand)) = (
-                figure.held.as_ref(),
-                figure
-                    .shape
-                    .node("mount0")
-                    .and_then(|n| figure.instance.node_transform(n)),
-            ) {
-                let m = Mat::mul(&Mat::mul(&body, &Mat { m: *hand }), &held.mount_inverse);
+            if let (Some(held), Some(m)) = (figure.held.as_mut(), hand_image) {
+                if let Some(e) = held.flash.take() {
+                    let (at, dir) = held.muzzle(&m);
+                    flashes.push((e, at, dir));
+                }
                 let held_object =
                     view.shape_object(assets, &held.shape, &held.instance, &m, object_id(index, 1));
                 out.push(marked(held_object, seen_bits));
@@ -764,6 +850,21 @@ impl ArenaScene {
             }
         }
         self.holders_drawn = holders;
+        let mut rng = self.rng.take().unwrap_or_else(|| Rng::new(0x5eed));
+        for (mut e, at, dir) in flashes {
+            e.emit_burst(
+                at,
+                dir,
+                FLASH_RADIUS,
+                FLASH_PARTICLES,
+                &mut rng,
+                &mut self.live,
+            );
+            e.dead = true;
+            self.fading.push(e);
+            self.flashes += 1;
+        }
+        self.rng = Some(rng);
         out
     }
 
@@ -908,6 +1009,20 @@ mod tests {
             lights: Vec::new(),
             vertex_key: None,
         }
+    }
+
+    #[test]
+    fn the_recoil_kicks_quickly_and_settles() {
+        assert_eq!(recoil(0.0), 0.0);
+        assert_eq!(recoil(RECOIL_RISE), 1.0);
+        assert!(recoil(RECOIL_RISE * 0.5) > 0.4);
+        let later = [0.08, 0.15, 0.3].map(recoil);
+        assert!(
+            later[0] > later[1] && later[1] > later[2] && later[2] < 0.05,
+            "{later:?}"
+        );
+        assert_eq!(recoil(2.0), 0.0);
+        assert_eq!(recoil(f32::MAX), 0.0);
     }
 
     #[test]

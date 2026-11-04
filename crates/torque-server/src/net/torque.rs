@@ -319,6 +319,24 @@ impl GameView<'_> {
             "falling" => Value::Bool(s.falling),
             "state" => Value::Int(i64::from(s.action_state)),
             "action" => Value::Int(i64::from(s.action_anim)),
+            // The action thread as `setActionThread` left it: held at its end, at its end, first-person, and its position.
+            "action_hold" | "action_at_end" | "action_first_person" | "action_position" => {
+                let st = torque_game::scene::shapebase::state(vm, obj)?;
+                let p = st.player.as_ref()?;
+                match field {
+                    "action_hold" => Value::Bool(p.hold),
+                    "action_at_end" => Value::Bool(p.at_end),
+                    "action_first_person" => Value::Bool(p.fsp),
+                    _ => {
+                        let pos = p
+                            .action_thread
+                            .zip(st.body.as_ref())
+                            .and_then(|(t, b)| b.instance.thread(t))
+                            .map_or(0.0, |t| t.pos);
+                        Value::F32(pos)
+                    }
+                }
+            }
             // The arm action `setArmThread` chose (no action until one is), and the datablock's `look` action.
             "arm_action" => Value::Int(i64::from(
                 torque_game::scene::shapebase::state(vm, obj)

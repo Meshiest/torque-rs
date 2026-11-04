@@ -72,8 +72,9 @@ pub mod material_flags {
 /// `TSDrawPrimitive`'s bits: an indexed triangle list, and a primitive with no material.
 const PRIM_INDEXED: u32 = 0x2000_0000;
 const PRIM_NO_MATERIAL: u32 = 0x1000_0000;
-/// `TSShape::Sequence`'s flag for a sequence that loops.
+/// `TSShape::Sequence`'s flags for a sequence that loops and for a blend sequence.
 const SEQ_CYCLIC: u32 = 16;
+const SEQ_BLEND: u32 = 8;
 /// The "no map" index of the material list's reflectance, bump and detail maps.
 const NO_MAP: u32 = u32::MAX;
 
@@ -389,7 +390,8 @@ pub struct ShapeBuilder {
     objects: Vec<ObjectDef>,
     details: Vec<(i32, f32)>,
     materials: Vec<RawMaterial>,
-    sequences: Vec<SequenceDef>,
+    /// Each sequence and whether it is a blend sequence.
+    sequences: Vec<(SequenceDef, bool)>,
 }
 
 impl ShapeBuilder {
@@ -468,7 +470,14 @@ impl ShapeBuilder {
 
     pub fn sequence(&mut self, def: SequenceDef) {
         self.name(def.name);
-        self.sequences.push(def);
+        self.sequences.push((def, false));
+    }
+
+    /// A blend sequence: its keys are turns and moves from the rest pose that a thread playing it multiplies onto each node's
+    /// pose of the other threads (`handleBlendSequence`), so it adds to whatever else plays rather than replacing it.
+    pub fn blend_sequence(&mut self, def: SequenceDef) {
+        self.name(def.name);
+        self.sequences.push((def, true));
     }
 
     /// The model (module docs).
@@ -567,9 +576,12 @@ impl ShapeBuilder {
             }
         }
 
-        for def in std::mem::take(&mut self.sequences) {
+        for (def, blend) in std::mem::take(&mut self.sequences) {
             let name = self.name(def.name);
-            let seq = sequence(&mut s, name, def);
+            let mut seq = sequence(&mut s, name, def);
+            if blend {
+                seq.flags |= SEQ_BLEND;
+            }
             s.sequences.push(seq);
         }
 

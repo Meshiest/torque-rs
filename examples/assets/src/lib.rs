@@ -1,6 +1,7 @@
-//! The example games' shared asset kit: a unit cube, a box figure with idle, walk, run and jump sequences, a pistol, a
-//! projectile, their textures and a particle's, all made by this crate's code ([`shapes`], [`textures`]; the shape builder is
-//! the `torque-shape-builder` crate, [`builder`]) and written as `.dts` (version 24, through `torque_shapes::write`) and `.png`.
+//! The example games' shared asset kit: a unit cube, a box figure with idle, walk, run, back, side, jump, look and death
+//! sequences, a pistol, a projectile, their textures and a particle's, all made by this crate's code ([`shapes`],
+//! [`textures`]; the shape builder is the `torque-shape-builder` crate, [`builder`]) and written as `.dts` (version 24,
+//! through `torque_shapes::write`) and `.png`.
 //!
 //! **Made at run time, not kept in the repository.** The code is the source of the assets; an example calls [`write_all`] at
 //! start-up (a few kilobytes, a millisecond), or `just examples/assets <dir>` (the `make-example-assets` tool) writes them
