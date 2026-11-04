@@ -1,0 +1,32 @@
+[package]
+name = "torque-server"
+description = "The torque-rs dedicated server's engine side: the machine the natives report, the main loop's pacing and the datagram transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "server", "networking", "gamedev"]
+categories = ["game-development", "network-programming"]
+
+# The dedicated server's engine side: the machine and the network the natives report, the main loop's pacing, the datagram
+# transport with its bind policy, and the seam between the packet layer and what rides in the packets.
+
+[dependencies]
+torque-ts-vm = { path = "../torque-ts-vm" }
+# The packet layer: datagram caps, the server query's request types, the bit streams.
+torque-net = { path = "../torque-net" }
+# The datablocks' computed values a game's record writer reads beside the host's view.
+torque-game = { path = "../torque-game" }
+# TGE's networked class lists, the default class table of a server's codecs; the net strings a ghost record packs.
+torque-ghosts = { path = "../torque-ghosts" }
+# The scope eye's transform the ghost hub keeps.
+torque-collide = { path = "../torque-collide" }
+
+[dev-dependencies]
+# The test's container bins.
+torque-scene = { path = "../torque-scene" }
+
+[lints]
+workspace = true

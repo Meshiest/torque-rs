@@ -1,0 +1,23 @@
+[package]
+name = "torque-ghost-world"
+description = "A Torque-style client's world of ghosts: the records merged, the datablocks, the control object, the mounted images, script threads and effects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "networking", "ghosting", "netcode", "gamedev"]
+categories = ["network-programming", "game-development"]
+
+# The client's world of ghosts: the ghosts a connection was sent and their records merged, the datablocks, the net strings,
+# the control object and the eye, and the mounted images, script threads and effects the records drive. Generic over a
+# game's classes and records ([`ClientSet`]); TGE 1.4's own set is `tge::TgeClientSet`.
+
+[dependencies]
+net = { path = "../torque-net", package = "torque-net" }
+# The engine's networked-object layer: net strings, transforms, field values and TGE's record codecs.
+ghosts = { path = "../torque-ghosts", package = "torque-ghosts" }
+
+[lints]
+workspace = true

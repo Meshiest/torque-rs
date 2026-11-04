@@ -906,6 +906,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-ghost-world"
+version = "0.1.0"
+dependencies = [
+ "torque-ghosts",
+ "torque-net",
+]
+
+[[package]]
 name = "torque-ghosts"
 version = "0.1.0"
 dependencies = [
@@ -955,6 +963,18 @@ dependencies = [
 [[package]]
 name = "torque-scene"
 version = "0.1.0"
+
+[[package]]
+name = "torque-server"
+version = "0.1.0"
+dependencies = [
+ "torque-collide",
+ "torque-game",
+ "torque-ghosts",
+ "torque-net",
+ "torque-scene",
+ "torque-ts-vm",
+]
 
 [[package]]
 name = "torque-shapes"

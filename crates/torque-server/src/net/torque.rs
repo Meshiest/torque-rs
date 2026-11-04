@@ -1,0 +1,340 @@
+//! Torque's net game ([`TorqueNet`]): the network host of a server that adds nothing of its own. No events past Torque's
+//! ([`NoGameEvents`]), TGE's object classes ghosted with their record codecs ([`TgeGhostGame`]: the class of each object is
+//! looked up by name in `torque_ghosts`' TGE set and its record packed from the object's static fields), Torque's string coder
+//! table, and every rule of [`NetGame`] at its default. [`NetPasses`] is the network host the main loop drives
+//! ([`NetHost`]) over any net game's shared state.
+//!
+//! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`
+//! (`Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`).
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use torque_ghosts::codec::NetWidths;
+use torque_ghosts::set::GhostCodecSet;
+use torque_ghosts::tge::{TgeClass, TgeGhosts};
+use torque_ghosts::{ObjectView, PackCtx, Value};
+use torque_net::NetError;
+use torque_net::bits::{BitReader, BitWriter};
+use torque_net::events::{ChargeFn, EventCtx, EventIds, WireEvent};
+use torque_net::ghost::{CamInfo, ObjectSource, TorqueGhosts};
+use torque_net::handshake::ConnId;
+use torque_net::huffman::Table;
+use torque_ts_vm::fields::Value as Field;
+use torque_ts_vm::sim::ObjId;
+use torque_ts_vm::vm::Vm;
+
+use super::ghosts::{Conns, GhostGame, GhostHub, Registry, SourceEnv};
+use super::hostevent::{GameEvents, ReceiveCx};
+use super::{NetGame, NetShared, pump};
+use crate::server::{NetHost, Phase};
+use torque_game::sim::ProcessHandle;
+use torque_game::sim::pass::{Outcome, advance_objects_within};
+
+/// Torque's net game: Torque's string coder table and nothing of a game's own.
+#[derive(Debug)]
+pub struct TorqueNet {
+    table: Rc<Table>,
+}
+
+impl Default for TorqueNet {
+    fn default() -> TorqueNet {
+        TorqueNet {
+            table: Rc::new(Table::torque()),
+        }
+    }
+}
+
+impl NetGame for TorqueNet {
+    type Events = NoGameEvents;
+    type Ghosts = TgeGhostGame;
+    type Conn = ();
+
+    fn string_table(&self) -> Rc<Table> {
+        Rc::clone(&self.table)
+    }
+}
+
+/// A game event of a game that has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoEvent {}
+
+impl WireEvent for NoEvent {
+    fn class(&self, _ids: &EventIds) -> u32 {
+        match *self {}
+    }
+
+    fn pack(&self, _w: &mut BitWriter, _ctx: &EventCtx<'_>) {
+        match *self {}
+    }
+}
+
+/// The events of a game that adds none to Torque's.
+#[derive(Debug, Default)]
+pub struct NoGameEvents;
+
+impl GameEvents for NoGameEvents {
+    type Event = NoEvent;
+    type Conn = ();
+
+    fn unpack(
+        _class: u32,
+        _r: &mut BitReader,
+        _ctx: &EventCtx<'_>,
+        _charge: &mut ChargeFn,
+    ) -> Result<Option<NoEvent>, NetError> {
+        Ok(None)
+    }
+
+    fn on_received<S: GhostGame>(
+        &mut self,
+        _conn: &mut (),
+        event: NoEvent,
+        _cx: &mut ReceiveCx<'_, S>,
+    ) -> Option<NetError> {
+        match event {}
+    }
+}
+
+/// TGE's objects as the hub ghosts them: Torque's ghosting policy, every ghostable object in scope, each record packed by
+/// `torque_ghosts`' TGE codec of the object's class.
+#[derive(Debug, Default)]
+pub struct TgeGhostGame;
+
+impl GhostGame for TgeGhostGame {
+    type Policy = TorqueGhosts;
+    type Source<'a> = TgeSource<'a>;
+    type Cursor = ();
+    type Conn = ();
+
+    fn new_policy(&self) -> TorqueGhosts {
+        TorqueGhosts
+    }
+
+    fn with_source<R>(
+        hub: &GhostHub<Self>,
+        env: SourceEnv<'_>,
+        _conn: Option<ConnId>,
+        f: impl FnOnce(&mut TgeSource<'_>, &mut HashMap<ConnId, Conns<Self>>) -> R,
+    ) -> R {
+        let mut guard = hub.0.borrow_mut();
+        let hub = &mut *guard;
+        let always = ghost_always_of(env.vm, &hub.reg);
+        let mut src = TgeSource {
+            vm: env.vm,
+            reg: &hub.reg,
+            table: env.table,
+            ghost_bits: env.ghost_bits,
+            always,
+        };
+        f(&mut src, &mut hub.conns)
+    }
+}
+
+/// `GhostAlwaysSet` in set order when the `Vm` has it, else the registry's ScopeAlways objects in id order.
+fn ghost_always_of(vm: &Vm, reg: &Registry) -> Vec<ObjId> {
+    let objects = vm.objects();
+    if let Some(members) = objects
+        .find(b"GhostAlwaysSet")
+        .and_then(|set| objects.get(set))
+        .and_then(|o| o.members())
+    {
+        return members.as_slice().to_vec();
+    }
+    let mut ids: Vec<ObjId> = reg
+        .entries
+        .iter()
+        .filter(|(_, e)| e.flags & super::ghosts::flags::SCOPE_ALWAYS != 0)
+        .map(|(id, _)| *id)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The world as one connection's ghost manager sees it, for the length of one call.
+pub struct TgeSource<'a> {
+    pub vm: &'a Vm,
+    pub reg: &'a Registry,
+    /// The string coder's table; a source made for scoping alone has none and packs nothing.
+    pub table: Option<&'a Table>,
+    pub ghost_bits: u8,
+    always: Vec<ObjId>,
+}
+
+impl TgeSource<'_> {
+    fn class(&self, obj: ObjId) -> Option<TgeClass> {
+        let objects = self.vm.objects();
+        let name = objects.classes.name(objects.get(obj)?.class());
+        TgeGhosts::class_by_name(std::str::from_utf8(name).ok()?)
+    }
+}
+
+/// An object's static fields as a TGE packer reads them: a field by its registered name, each component of a vector field one
+/// element; anything else is null.
+pub struct FieldView<'a> {
+    pub vm: &'a Vm,
+    pub obj: ObjId,
+}
+
+impl ObjectView for FieldView<'_> {
+    fn get(&self, field: &str, index: usize) -> Value {
+        let objects = self.vm.objects();
+        let Some(object) = objects.get(self.obj) else {
+            return Value::Null;
+        };
+        let Some((_, slots)) = objects
+            .classes
+            .static_field(object.class(), field.as_bytes())
+        else {
+            return Value::Null;
+        };
+        let (slot, component) = if slots.len() > 1 {
+            (slots.get(index).copied(), 0)
+        } else {
+            (slots.first().copied(), index)
+        };
+        let Some(value) = slot.and_then(|s| object.slot(s)) else {
+            return Value::Null;
+        };
+        let float = |v: Option<&f32>| v.map_or(Value::Null, |&f| Value::F32(f));
+        match value {
+            Field::Text(t) => Value::Str(t.to_vec()),
+            Field::Int(i) => Value::Int(i64::from(*i)),
+            Field::Float(f) => Value::F32(*f),
+            Field::Bool(b) => Value::Bool(*b),
+            Field::ColorI(c) => c
+                .get(component)
+                .map_or(Value::Null, |&b| Value::Int(i64::from(b))),
+            Field::ColorF(c) => float(c.get(component)),
+            Field::Floats2(p) => float(p.get(component)),
+            Field::Floats3(p) => float(p.get(component)),
+            Field::Ints2(p) => p
+                .get(component)
+                .map_or(Value::Null, |&i| Value::Int(i64::from(i))),
+            Field::Object(id) => Value::Id(*id),
+            Field::Matrix(_) | Field::IntList(_) | Field::FloatList(_) => Value::Null,
+        }
+    }
+}
+
+impl ObjectSource for TgeSource<'_> {
+    fn exists(&self, obj: ObjId) -> bool {
+        self.vm.objects().contains(obj) && self.reg.entries.contains_key(&obj)
+    }
+
+    fn class_id(&self, obj: ObjId) -> Option<u32> {
+        self.reg.entries.get(&obj).map(|e| e.class_id)
+    }
+
+    fn net_flags(&self, obj: ObjId) -> u32 {
+        self.reg.entries.get(&obj).map_or(0, |e| e.flags)
+    }
+
+    fn pack_update(
+        &mut self,
+        obj: ObjId,
+        mask: u32,
+        w: &mut BitWriter,
+        _ghost_of: &dyn Fn(ObjId) -> Option<u32>,
+    ) -> u32 {
+        let (Some(class), Some(table)) = (self.class(obj), self.table) else {
+            return 0;
+        };
+        let widths = NetWidths::new(self.ghost_bits, torque_net::profile::DEFAULT_DATABLOCK_BITS);
+        let ctx = PackCtx::for_writer(w, widths, self.vm.sim_time());
+        let view = FieldView { vm: self.vm, obj };
+        let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
+        // The packers cut every count to its width first, so a record cannot fail to encode.
+        let _ = record.encode(w, table, widths);
+        kept
+    }
+
+    fn update_priority(&self, _obj: ObjId, _cam: &CamInfo, _mask: u32, skip: u8) -> f32 {
+        // `NetObject::getUpdatePriority`: the skip count over ten.
+        f32::from(skip) * 0.1
+    }
+
+    fn camera_info(&self, scope: ObjId) -> Option<CamInfo> {
+        let _ = scope;
+        None
+    }
+
+    fn sky_visible_distance(&self) -> Option<f32> {
+        None
+    }
+
+    fn mount_of(&self, _scope: ObjId) -> Option<ObjId> {
+        None
+    }
+
+    fn scope_query(
+        &self,
+        _scope: ObjId,
+        _cam: &CamInfo,
+        _radius: f32,
+        visit: &mut dyn FnMut(ObjId) -> bool,
+    ) {
+        let mut ids: Vec<ObjId> = self.reg.entries.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            if !visit(id) {
+                return;
+            }
+        }
+    }
+
+    fn scope_distance(&self, _obj: ObjId, _scope: ObjId) -> Option<f32> {
+        None
+    }
+
+    fn ghost_always(&self) -> &[ObjId] {
+        &self.always
+    }
+}
+
+/// The network host the main loop drives over a net game's shared state: the receive, send and timeout passes of [`pump`] and
+/// the control branch of the process list's pass.
+pub struct NetPasses<G: NetGame>(pub Rc<RefCell<NetShared<G>>>);
+
+impl<G: NetGame> NetHost for NetPasses<G> {
+    fn clock_ms(&self, sim: u32) -> u32 {
+        self.0.borrow().clock_ms(sim)
+    }
+
+    fn phase(&self, phase: Phase) {
+        self.0.borrow_mut().push_phase(phase);
+    }
+
+    fn receive(&self, vm: &mut Vm, now: u32, new_tick: bool) {
+        pump::receive(vm, &self.0, now, new_tick);
+    }
+
+    fn advance_objects(
+        &self,
+        vm: &mut Vm,
+        list: &ProcessHandle,
+        steps: u32,
+        budget: u64,
+    ) -> Outcome {
+        advance_objects_within(vm, list, &mut pump::control_side(&self.0), steps, budget)
+    }
+
+    fn send(&self, vm: &mut Vm, now: u32) {
+        pump::send_pass(vm, &self.0, now);
+    }
+
+    fn timeouts(&self, vm: &mut Vm, now: u32) {
+        pump::timeouts(vm, &self.0, now);
+    }
+
+    fn clients(&self) -> (bool, bool) {
+        let sh = self.0.borrow();
+        (
+            sh.conns
+                .values()
+                .any(|rec| rec.local_peer.is_none() && rec.conn.is_some()),
+            sh.conns.values().any(|rec| rec.local_peer.is_some()),
+        )
+    }
+}
