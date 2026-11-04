@@ -3,7 +3,8 @@
 //! flies along the crosshair's ray; and walking forward, the own figure the client draws keeps up with the server's and never
 //! steps back. The game plays `game/fixtures/aim.mis`: a floor and one block ahead and to the right of the first spawn point.
 
-use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode, keys};
+use torque::client::input::Key;
+use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
 
 type F3 = [f32; 3];
@@ -187,7 +188,7 @@ fn looking_up_into_the_sky_the_bolt_flies_along_the_crosshair() {
 #[test]
 fn the_own_figure_keeps_up_with_the_server_and_never_steps_back() {
     let mut a = host();
-    a.key(keys::W, true);
+    a.key(Key::W, true);
     let mut last: Option<F3> = None;
     for i in 0..120 {
         // Frames of uneven length, as a window's are.
@@ -233,7 +234,7 @@ fn the_own_figure_keeps_up_with_the_server_and_never_steps_back() {
             "frame {i}: on the floor as the server has it"
         );
     }
-    a.key(keys::W, false);
+    a.key(Key::W, false);
 }
 
 #[test]
@@ -331,7 +332,7 @@ fn holding_the_right_button_raises_the_sights_narrows_the_view_and_slows_the_tur
     let turned = a.global("$Arena::LookYaw").parse::<f32>().unwrap() - before;
     assert!((turned - 0.3 * want).abs() < 1e-3, "turned {turned}");
     // Walking while aiming is slower.
-    a.key(keys::W, true);
+    a.key(Key::W, true);
     frame(&mut a, 16);
     assert_eq!(a.global("$mvForwardAction"), "0.6");
     // Let go: back to the hip, the full view and the full walk.
@@ -341,7 +342,7 @@ fn holding_the_right_button_raises_the_sights_narrows_the_view_and_slows_the_tur
     assert_eq!(a.scene().aim(), 0.0);
     assert_eq!(a.eye().fov, Some(FOV));
     assert_eq!(a.global("$mvForwardAction"), "1");
-    a.key(keys::W, false);
+    a.key(Key::W, false);
 }
 
 #[test]

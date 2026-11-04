@@ -36,6 +36,7 @@ fn held(anim_time: f32, entered: u32, ambient: f32) -> MountedImage {
             still: false,
             entered,
         }),
+        recoil: None,
         cap_hits: 0,
         events: Vec::new(),
     }
@@ -109,4 +110,95 @@ fn scale_columns_scales_the_basis_not_the_translation_row() {
     let r = scale_columns(&m, [2.0, 3.0, 4.0]);
     assert_eq!((r.m[0], r.m[5], r.m[10]), (2.0, 3.0, 4.0));
     assert_eq!(r.column(3), [5.0, 6.0, 7.0]);
+}
+
+/// A shape with `sightRear` and `sightFront` nodes at `rear` and `front`.
+fn sighted(rear: [f32; 3], front: [f32; 3]) -> Shape {
+    let b = [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
+    let mut model =
+        shapes::synth::hull_shape(b, &[("detail32", b)], &["sightRear", "sightFront"], &[]);
+    let s = &mut model.shape;
+    let rear_node = node_named(s, b"sightRear").unwrap();
+    let front_node = node_named(s, b"sightFront").unwrap();
+    s.default_translations[rear_node] = rear;
+    s.default_translations[front_node] = front;
+    model.shape
+}
+
+#[test]
+fn the_sights_are_held_on_the_eyes_line() {
+    let shape = sighted([0.02, 0.1, 0.05], [0.02, 0.3, 0.15]);
+    let (place, pitch) = sight_offset(&shape, 0.36).expect("both sights");
+    let mut m = Mat::euler_x(pitch);
+    m.set_column3(place);
+    let rear = m.mul_p([0.02, 0.1, 0.05]);
+    let front = m.mul_p([0.02, 0.3, 0.15]);
+    for (got, want) in rear.iter().zip([0.0, 0.36, 0.0]) {
+        assert!((got - want).abs() < 1e-5, "the rear sight at {rear:?}");
+    }
+    assert!(
+        front[0].abs() < 1e-5 && front[2].abs() < 1e-5 && front[1] > rear[1],
+        "{front:?}"
+    );
+    let plain = shapes::synth::hull_shape([-1.0; 6], &[], &[], &[]).shape;
+    assert_eq!(sight_offset(&plain, 0.36), None, "no sights");
+}
+
+#[test]
+fn a_hosts_motion_moves_an_image_before_the_eye_and_in_the_hand() {
+    let shape = sighted([0.0; 3], [0.0, 1.0, 0.0]);
+    let instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut eye_offset = Mat::IDENTITY;
+    eye_offset.set_column3([0.3, 0.5, -0.2]);
+    let db = ImageDb {
+        shape_file: "pistol.dts".to_string(),
+        mount_point: 0,
+        offset: Mat::IDENTITY,
+        eye_offset: Some(eye_offset),
+    };
+    let mut camera = Mat::IDENTITY;
+    camera.set_column3([0.0, 0.0, 1.8]);
+    let mut xform = Mat::IDENTITY;
+    xform.set_column3([5.0, 0.0, 0.0]);
+    let owner = Owner {
+        kind: ShapeKind::Player,
+        shape: &shape,
+        instance: &instance,
+        xform,
+        scale: [1.0; 3],
+        first_person: true,
+        camera,
+        scaled_eye_offset: false,
+        scaled_bare_mount: false,
+        motion: HeldMotion::default(),
+    };
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+    // TGE's: at the eye times `eyeOffset`, and in the hand at the mount.
+    assert!(near(
+        owner.image_transform(&db, &shape).column(3),
+        [0.3, 0.5, 1.6]
+    ));
+    assert_eq!(owner.held_transform(&db, &shape).column(3), [5.0, 0.0, 0.0]);
+    let mut eye = Mat::IDENTITY;
+    eye.set_column3([0.0, 0.4, 0.0]);
+    let moved = Owner {
+        motion: HeldMotion {
+            eye: Some(eye),
+            hand: Some(Mat::euler_x(0.3)),
+        },
+        ..owner
+    };
+    assert!(near(
+        moved.image_transform(&db, &shape).column(3),
+        [0.0, 0.4, 1.8]
+    ));
+    let hand = moved.held_transform(&db, &shape);
+    assert_eq!(hand.column(3), [5.0, 0.0, 0.0]);
+    assert_eq!(hand.m, Mat::mul(&xform, &Mat::euler_x(0.3)).m);
+    // An image with no eye offset is held in the hand in the first person too.
+    let bare = ImageDb {
+        eye_offset: None,
+        ..db
+    };
+    assert_eq!(moved.image_transform(&bare, &shape).m, hand.m);
 }

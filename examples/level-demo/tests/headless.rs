@@ -1,7 +1,8 @@
 //! The example without a window or a GPU: the client and the server joined in one process, the keys posted as a window
 //! posts them, and the figure's place read from the server's simulation and from the client's ghost of it.
 
-use torque_example_level_demo::client::{LevelDemo, keys};
+use torque::client::input::Key;
+use torque_example_level_demo::client::LevelDemo;
 use torque_example_level_demo::files::GameFiles;
 
 /// A test map: a floor and one wall four units ahead of the spawn point, which faces it.
@@ -39,12 +40,12 @@ fn server_position(game: &LevelDemo) -> [f32; 3] {
 }
 
 /// Holds key `vk` down for `ms` of the clock.
-fn hold(game: &mut LevelDemo, vk: u8, ms: u32) {
-    game.key(vk, true);
+fn hold(game: &mut LevelDemo, key: Key, ms: u32) {
+    game.key(key, true);
     for _ in 0..ms / 32 {
         game.step(32);
     }
-    game.key(vk, false);
+    game.key(key, false);
 }
 
 fn errors(game: &LevelDemo) -> Vec<&String> {
@@ -67,7 +68,7 @@ fn every_map_loads_and_its_figure_spawns_and_walks() {
             game.step(32);
         }
         let start = server_position(&game);
-        hold(&mut game, keys::W, 1200);
+        hold(&mut game, Key::W, 1200);
         let end = server_position(&game);
         let moved = ((end[0] - start[0]).powi(2) + (end[1] - start[1]).powi(2)).sqrt();
         assert!(
@@ -87,7 +88,7 @@ fn every_map_loads_and_its_figure_spawns_and_walks() {
             errors(&game)
         );
         // Leaving goes back to the menu and stops the server.
-        hold(&mut game, keys::ESCAPE, 64);
+        hold(&mut game, Key::Escape, 64);
         assert!(!game.in_world() && game.server.is_none(), "{}", map.title);
     }
 }
@@ -126,7 +127,7 @@ fn a_figure_that_walks_into_a_cube_stops_at_it_and_jumps() {
     assert!(start[2].abs() < 0.1, "standing on the floor: {start:?}");
     // Two seconds forward: far enough to cross the four units, but the wall's near face is at y 4 and the figure's box is a
     // unit deep.
-    hold(&mut game, keys::W, 2000);
+    hold(&mut game, Key::W, 2000);
     let stopped = server_position(&game);
     assert!(
         stopped[1] > 3.0 && stopped[1] < 3.6,
@@ -144,13 +145,13 @@ fn a_figure_that_walks_into_a_cube_stops_at_it_and_jumps() {
     let apart = (0..3).map(|i| (ghost[i] - at[i]).abs()).fold(0.0, f32::max);
     assert!(apart < 0.05, "the ghost at {ghost:?}, the figure at {at:?}");
     // A jump lifts the figure off the floor and it lands again.
-    game.key(keys::SPACE, true);
+    game.key(Key::Space, true);
     let mut highest = 0.0f32;
     for _ in 0..40 {
         game.step(32);
         highest = highest.max(server_position(&game)[2]);
     }
-    game.key(keys::SPACE, false);
+    game.key(Key::Space, false);
     for _ in 0..60 {
         game.step(32);
     }

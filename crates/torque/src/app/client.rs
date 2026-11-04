@@ -19,7 +19,7 @@ use crate::client::conn::tge::{TgeConn, TgeWorld};
 use crate::client::game::ClientGame;
 use crate::client::host::{ClientHost, EnginePass};
 use crate::client::hud::HudWorld as _;
-use crate::client::input::{WM_KEYDOWN, WM_KEYUP, key_lparam};
+use crate::client::input::{Key, key_message};
 use crate::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy, UdpDatagrams};
 use crate::client::state::ClientState;
 use crate::gui::Gui;
@@ -269,11 +269,10 @@ impl<S> GameClient<S> {
         self.host.server.vm_mut()
     }
 
-    /// A key (a virtual key code) going down or up, as the window posts it.
-    pub fn key(&mut self, vk: u8, down: bool) {
-        let msg = if down { WM_KEYDOWN } else { WM_KEYUP };
-        self.host
-            .post(msg, u32::from(vk), key_lparam(vk, !down, false));
+    /// A key going down or up, as the window posts it.
+    pub fn key(&mut self, key: Key, down: bool) {
+        let (msg, wparam, lparam) = key_message(key, down, false, false);
+        self.host.post(msg, wparam, lparam);
     }
 
     /// Calls the script function `function` with `args` in the client's engine (tests and pictures press a menu's buttons and
@@ -372,6 +371,27 @@ impl<S> GameClient<S> {
     /// The time the next frame covers (seconds), taken.
     pub fn take_frame_time(&mut self) -> f32 {
         std::mem::take(&mut self.frame_dt)
+    }
+
+    /// The control object's view this frame: the predicted Player between its last two ticks (`back`: 1 right after a tick, 0
+    /// just before the next), its angles drawn ahead by the move globals the next move will be made of.
+    pub fn predict_frame(&mut self) {
+        let host = &self.host;
+        let vm = host.server.vm();
+        let now = vm.sim_time();
+        let mut st = host.client.borrow_mut();
+        let Some(c) = st.conn.conn.as_mut() else {
+            return;
+        };
+        let c = &mut **c;
+        let Some(last) = c.last_tick else {
+            return;
+        };
+        let since = now.wrapping_sub(last).min(TICK_MS);
+        c.predict.back = 1.0 - since as f32 / TICK_MS as f32;
+        c.world.anim_ms = now;
+        c.predict.set_aim_input(vm);
+        c.predict.update_view(&mut c.world);
     }
 }
 

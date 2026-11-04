@@ -17,7 +17,7 @@ use std::rc::Rc;
 use torque_ghosts::codec::NetWidths;
 use torque_ghosts::set::GhostCodecSet;
 use torque_ghosts::tge::{TgeClass, TgeGhosts};
-use torque_ghosts::{ObjectView, PackCtx, Value};
+use torque_ghosts::{Link, ObjectView, PackCtx, Value};
 use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::events::{ChargeFn, EventCtx, EventIds, WireEvent};
@@ -240,7 +240,8 @@ impl ObjectView for FieldView<'_> {
 /// - a ShapeBase's mounted images (the game classes' image slots): per slot `image_datablock`, `image_wet`, `image_ammo`,
 ///   `image_loaded`, `image_target`, `image_trigger_down` and `image_fire_count`;
 /// - a simulated Projectile ([`torque_game::sim::projectile::state`]): `position`, `velocity`, `current_tick` (its age),
-///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`.
+///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`; the
+///   link `source_object` (its source object's ghost on the connection, [`GameView::ghost_of`]).
 ///
 /// The record is never left out for the controlling client (`controlled_here` false): the client draws the control object from
 /// it like any ghost.
@@ -248,6 +249,8 @@ pub struct GameView<'a> {
     pub fields: FieldView<'a>,
     /// Whether some connection controls the object.
     pub controlled: bool,
+    /// The connection's ghost index of an object (`getGhostIndex`; none: no links are resolved).
+    pub ghost_of: Option<&'a dyn Fn(ObjId) -> Option<u32>>,
 }
 
 /// `QuatF::set(MatrixF)` of a row-major matrix's rotation part.
@@ -409,6 +412,22 @@ impl GameView<'_> {
 }
 
 impl ObjectView for GameView<'_> {
+    /// A simulated Projectile's `source_object`: its source's ghost on the connection (`NotGhosted` while it has none).
+    fn link(&self, field: &str) -> Link {
+        let source = match field {
+            "source_object" => torque_game::sim::projectile::state(self.fields.vm, self.fields.obj)
+                .and_then(|s| s.source),
+            _ => None,
+        };
+        let (Some(source), Some(ghost_of)) = (source, self.ghost_of) else {
+            return Link::Null;
+        };
+        match ghost_of(source.0) {
+            Some(g) => Link::Ghost(g),
+            None => Link::NotGhosted,
+        }
+    }
+
     fn get(&self, field: &str, index: usize) -> Value {
         if let Some(v) = self.player(field, index) {
             return v;
@@ -493,7 +512,7 @@ impl ObjectSource for TgeSource<'_> {
         obj: ObjId,
         mask: u32,
         w: &mut BitWriter,
-        _ghost_of: &dyn Fn(ObjId) -> Option<u32>,
+        ghost_of: &dyn Fn(ObjId) -> Option<u32>,
     ) -> u32 {
         let (Some(class), Some(table)) = (self.class(obj), self.table) else {
             return 0;
@@ -503,6 +522,7 @@ impl ObjectSource for TgeSource<'_> {
         let view = GameView {
             fields: FieldView { vm: self.vm, obj },
             controlled: self.controlled.contains(&obj),
+            ghost_of: Some(ghost_of),
         };
         let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
         // The packers cut every count to its width first, so a record cannot fail to encode.

@@ -137,7 +137,7 @@ impl EngineClass for ImageDataAdd {
                 energy_drain: f32_of(vm, id, "stateEnergyDrain", i),
                 loaded_flag: i32_of(vm, id, "stateLoadedFlag", i),
                 spin_thread: i32_of(vm, id, "stateSpinThread", i),
-                recoil: i32_of(vm, id, "stateRecoil", i),
+                recoil: recoil_of(vm, id, i),
                 sequence: -1,
                 sequence_vis: -1,
                 flash: false,
@@ -169,6 +169,20 @@ impl EngineClass for ImageDataAdd {
         self.values.forget(id);
         Ok(())
     }
+}
+
+/// `stateRecoil`'s element `i` as its enum table reads it (`NoRecoil`, `LightRecoil`, `MediumRecoil`, `HeavyRecoil`: 0 to 3,
+/// ignoring case); anything else is 0.
+fn recoil_of(vm: &Vm, id: ObjId, i: usize) -> i32 {
+    const TABLE: [&[u8]; 4] = [b"NoRecoil", b"LightRecoil", b"MediumRecoil", b"HeavyRecoil"];
+    let Some(text) = text_of(vm, id, "stateRecoil", i) else {
+        return 0;
+    };
+    let text = until_nul(&text);
+    TABLE
+        .iter()
+        .position(|n| n.eq_ignore_ascii_case(text))
+        .map_or(0, |k| k as i32)
 }
 
 /// `TSShape::findSequence`: the index of the first sequence whose name is the name table's entry for `name`; -1 for none.

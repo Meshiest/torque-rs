@@ -9,8 +9,9 @@
 //! ticks as the time covers, the link carried around each); then what the scripts asked of the host: a map picked
 //! (`$World::Pick`: the map's server starts and the client joins it) or the world left (`$World::Leave`: the server stops).
 //!
-//! **A frame** ([`LevelDemo::frame`]): the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and the eye:
-//! behind the client's own figure (or at its eyes, `V`), kept in front of the cubes between.
+//! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
+//! ([`crate::scene`]), the canvas drawn, and the eye: behind the client's own figure (or at its eyes, `V`), kept in front of the
+//! cubes between.
 
 use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
@@ -24,8 +25,10 @@ use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::{GameFiles, MapEntry};
-use crate::scene::{FigureView, WorldScene};
+use crate::scene::WorldScene;
 use crate::server::{SERVER_ADDR, WorldServer};
+use torque::app::ghosts::OwnView;
+use torque_example_common::prediction::CubeClient;
 
 /// The client's address on the link.
 pub const CLIENT_ADDR: SocketAddrV4 = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 50_000);
@@ -34,24 +37,8 @@ pub const CLIENT_ADDR: SocketAddrV4 = SocketAddrV4::new(std::net::Ipv4Addr::LOCA
 pub const CAMERA_DISTANCE: f32 = 6.5;
 pub const CAMERA_TARGET_HEIGHT: f32 = 1.7;
 pub const CAMERA_PITCH: f32 = 0.3;
-/// The first-person eye's height above the feet.
-pub const EYE_HEIGHT: f32 = 1.75;
 /// The nearest the camera comes to a cube between it and the figure.
 pub const CAMERA_CLEARANCE: f32 = 0.3;
-
-/// The virtual keys the example uses.
-pub mod keys {
-    pub const W: u8 = 0x57;
-    pub const A: u8 = 0x41;
-    pub const S: u8 = 0x53;
-    pub const D: u8 = 0x44;
-    pub const V: u8 = 0x56;
-    pub const R: u8 = 0x52;
-    pub const SHIFT: u8 = 0x10;
-    pub const SPACE: u8 = 0x20;
-    pub const ESCAPE: u8 = 0x1b;
-    pub const ONE: u8 = 0x31;
-}
 
 /// The example's client (the engine's [`GameClient`], which it derefs to: its host, its globals, the map's server and their
 /// logs) and the level demo's own parts.
@@ -87,6 +74,7 @@ impl LevelDemo {
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
             game_classes: true,
+            client_game: Some(std::rc::Rc::new(CubeClient::new(files.mem_files()))),
             net: ClientNet::Memory {
                 client: CLIENT_ADDR,
                 server: SERVER_ADDR,
@@ -167,10 +155,9 @@ impl LevelDemo {
         .flatten()
     }
 
-    /// The client's own figure as the last frame drew it (the first figure: the example has one player).
-    pub fn figure(&self) -> Option<FigureView> {
-        let index = self.scene.figure_indices().next()?;
-        self.scene.figure(index)
+    /// The client's own figure as the last frame drew it.
+    pub fn figure(&self) -> Option<OwnView> {
+        self.scene.own()
     }
 
     /// Whether the camera is at the figure's eyes (`V`).
@@ -187,7 +174,7 @@ impl LevelDemo {
     pub fn eye(&self) -> Eye {
         match self.figure() {
             Some(f) if self.first_person() => {
-                let at = [f.position[0], f.position[1], f.position[2] + EYE_HEIGHT];
+                let at = f.eye;
                 let (s, c) = f.pitch.sin_cos();
                 let ahead = [at[0] + f.yaw.sin() * c, at[1] + f.yaw.cos() * c, at[2] - s];
                 with_fov(look_at(at, ahead))
@@ -197,7 +184,7 @@ impl LevelDemo {
         }
     }
 
-    fn third_person(&self, f: &FigureView) -> Eye {
+    fn third_person(&self, f: &OwnView) -> Eye {
         let target = [
             f.position[0],
             f.position[1],
@@ -264,10 +251,30 @@ impl LevelDemo {
             self.daylight = d;
         }
         let dt = self.client.take_frame_time();
+        self.client.predict_frame();
+        let first_person = self.first_person();
+        {
+            let mut st = self.client.host.client.borrow_mut();
+            match st.conn.conn.as_mut() {
+                Some(conn) => {
+                    let conn = &mut **conn;
+                    // The camera is the example's own: the figure is seen unless the view is at its eyes.
+                    conn.world.hide_control = first_person;
+                    self.scene.update(
+                        &self.files.kit,
+                        &mut conn.world,
+                        &conn.predict.ghost_players,
+                        dt,
+                    );
+                }
+                None => self.scene.clear(),
+            }
+        }
+        let eye = self.eye();
         let objects = {
             let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
-                Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world, dt),
+                Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world, &eye),
                 None => Vec::new(),
             }
         };
@@ -275,7 +282,7 @@ impl LevelDemo {
         // The client's camera is the example's own: the GameTSCtrl draws the world whatever the connection's camera is.
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
-        (host.draw_frame(), self.eye())
+        (host.draw_frame(), eye)
     }
 }
 

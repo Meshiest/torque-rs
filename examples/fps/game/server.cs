@@ -227,6 +227,8 @@ datablock ShapeBaseImageData(ArenaPistolImage)
    stateFire[2] = true;
    stateAllowImageChange[2] = false;
    stateSequence[2] = "fire";
+   stateDirection[2] = true;
+   stateRecoil[2] = LightRecoil;
    stateScript[2] = "onFire";
    stateEmitter[2] = ArenaMuzzleSmoke;
    stateEmitterTime[2] = 0.7;
@@ -340,6 +342,8 @@ function GameConnection::spawnFigure(%client)
    %player = %client.createFigure(ArenaFigure, getWords(%spawn, 0, 2) SPC "0 0 1" SPC getWord(%spawn, 3));
    %player.setShapeName(%client.name);
    %player.mountImage(ArenaPistolImage, 0);
+   // The pistol is held up (the arm thread's `hold`): every client draws the figure as its record says.
+   %player.setArmThread(hold);
    %player.ammo = $Arena::Rounds;
    %player.setImageAmmo(0, true);
    %client.sendOwnFigure(%player, 0);

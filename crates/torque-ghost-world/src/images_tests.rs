@@ -500,3 +500,76 @@ fn hostile_states_never_loop_or_panic() {
     ap(&mut slots, &one(sent(9, 5, true)), true, Some(10), &none);
     assert!(slots[0].is_none());
 }
+
+#[test]
+fn tges_state_members_are_read_as_the_state_arrays() {
+    use crate::tge::tge_state_fields;
+    let t = Value::Bool(true);
+    let f = Value::Bool(false);
+    let to = |s: i64| Value::Int(s + 1);
+    let none = Value::Int(0);
+    let quarter = Value::F32(0.25);
+    let seq = Value::Int(0);
+    let (into0, into1) = (to(0), to(1));
+    // State 0 times out into state 1 after 0.25 s; state 1 fires, plays sequence 0 and goes to state 0 when the trigger is up.
+    let fields: Vec<(&str, u32, &Value)> = vec![
+        ("state", 0, &t),
+        ("transition.loaded", 0, &none),
+        ("transition.loaded", 1, &none),
+        ("transition.trigger", 0, &none),
+        ("transition.trigger", 1, &none),
+        ("transition.timeout", 0, &into1),
+        ("timeoutValue", 0, &quarter),
+        ("fire", 0, &f),
+        ("state", 1, &t),
+        ("transition.loaded", 2, &none),
+        ("transition.loaded", 3, &none),
+        ("transition.trigger", 2, &into0),
+        ("transition.trigger", 3, &none),
+        ("transition.timeout", 1, &none),
+        ("fire", 1, &t),
+        ("sequence", 0, &seq),
+        ("state", 2, &f),
+    ];
+    let states = ImageStates::of_fields(tge_state_fields(fields));
+    assert_eq!(states.states[0].trans[10], 1);
+    assert_eq!(states.states[0].timeout, 0.25);
+    assert_eq!(states.states[0].sequence, -1);
+    assert_eq!(states.states[1].trans[8], 0, "trigger up");
+    assert_eq!(states.states[1].trans[10], -1);
+    assert!(states.states[1].fire);
+    assert_eq!(states.states[1].sequence, 0);
+    assert_eq!(states.fire_state, 1);
+}
+
+#[test]
+fn a_state_with_a_recoil_counts_one_on_the_slot() {
+    let mut r = record(&[
+        ("Activate", trans(1, -1, -1), 0.15, true, false, 0),
+        ("Ready", trans(-1, 2, -1), 0.0, false, false, 0),
+        ("Fire", trans(1, -1, -1), 0.2, true, true, 0),
+    ]);
+    r.entries.push(Entry {
+        name: "stateRecoil",
+        index: 2,
+        value: Value::Int(1),
+    });
+    let st = ImageStates::of(&r).unwrap();
+    assert_eq!(st.states[2].recoil, 1);
+    let f = move |_: u32| Some(st.clone());
+    let mut slots: Slots = Default::default();
+    ap(&mut slots, &one(sent(70, 0, false)), true, Some(0), &f);
+    assert_eq!(slots[0].as_ref().unwrap().recoil, None, "no recoil yet");
+    // A shot: Fire's recoil, once.
+    ap(
+        &mut slots,
+        &one(sent(70, 1, false)),
+        true,
+        Some(10 * 32),
+        &f,
+    );
+    assert_eq!(
+        slots[0].as_ref().unwrap().recoil,
+        Some(ImageRecoil { kind: 1, count: 1 })
+    );
+}

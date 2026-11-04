@@ -18,14 +18,17 @@ use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
 use torque_render_scene::hd::cells::StaticCells;
+use torque_render_scene::hd::objects::objects_of;
 use torque_render_scene::hd::{
     DynamicObject, HdCamera, HdDraw, HdMode, HdScene, Quality, bounding_sphere, material,
 };
 use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
+use torque_render_scene::moving::ShapeDraws;
 use torque_render_scene::shapes::{Loaded, ShapeParts, highest_detail, load, shape_draws};
 use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
+use torque_render_scene::world::ShapeWorld;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
 
 /// The field of view a frame is drawn with when its eye names none (degrees, horizontal).
@@ -281,6 +284,18 @@ impl WorldView {
             stamp: None,
             nodes: Vec::new(),
         }
+    }
+
+    /// The objects of a frame's moving shapes ([`torque_render_scene::moving::draws_culled`] over `world`, their textures in
+    /// `textures`): one a ghost, each moving from where the last frame's object of its ghost was.
+    pub fn ghost_objects<W: ShapeWorld + ?Sized>(
+        &mut self,
+        world: &W,
+        shaped: &ShapeDraws,
+        textures: TextureSet,
+    ) -> Vec<DynamicObject> {
+        let local = self.intern(textures.into_textures());
+        objects_of(world, shaped, &local, &mut self.scene.objects, None)
     }
 
     /// The frame's moving objects. Each takes its motion from the last frame's object of the same id: its transform then and

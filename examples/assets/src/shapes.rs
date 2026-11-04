@@ -3,7 +3,7 @@
 //! | file | nodes | sequences | material |
 //! |---|---|---|---|
 //! | `cube.dts` | `cube` | | `grid` |
-//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `death1`, `death2` | `figure` |
+//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2` | `figure` |
 //! | `pistol.dts` | `pistol`, `mountPoint`, `muzzlePoint`, `ejectPoint`, `slide` | `fire` | `pistol` |
 //! | `projectile.dts` | `projectile` | | `projectile` |
 //!
@@ -35,10 +35,13 @@
 //! - `hold`: the right arm raised to aim, from fully up (position 0) through level and straight ahead (0.5) to fully down (1),
 //!   [`LOOK_RANGE`] degrees each way; priority 1 and only the right arm, so played on a second thread at the aim's pitch it
 //!   holds that arm over any of the others while the figure holds a pistol.
-//! - `look`: the same as `hold` (a Player's arm thread starts on `look`; the server sets the arm's action on that thread).
+//! - `look`: empty hands: moves no node, so the arms hang and swing with the action (a Player's arm thread starts on `look`;
+//!   the server sets the arm's action on that thread, `hold` while it holds a pistol).
 //! - `aim`: as `hold`, the pistol raised to eye level in front of the face (aiming down the sights), over the same range.
 //! - `head`: a blend sequence over the same range: the torso and the head bend up and down with the aim (a share each,
 //!   [`LOOK_TORSO`] and [`LOOK_HEAD`]), added to whatever else plays.
+//! - `light_recoil`: a blend of 0.14 s, played once when the held pistol fires: the right arm kicks up at the shoulder (14°)
+//!   and the forearm back at the elbow (18°) within 0.04 s, then settles.
 //! - `death1` and `death2`: 0.6 s, played once and held: the knees give, the body tips over at the feet, backward
 //!   (`death1`, hit from the front) or forward (`death2`, hit from behind), lands flat with a small bounce and lies still, the
 //!   arms flung out to the sides.
@@ -489,20 +492,28 @@ pub fn figure() -> Model {
         .iter()
         .map(|d| HOLD_SHOULDER + d)
         .collect();
-    // `look` is the same pose: a Player's arm thread starts on its shape's `look` (and has none without one), so the server can
-    // set the arm's action (`setArmThread`: `aim`, back to `hold`).
-    for name in ["hold", "look"] {
-        b.sequence(SequenceDef {
-            name,
-            duration: 1.0,
-            cyclic: false,
-            priority: 1,
-            keyframes: LOOK_KEYS,
-            rotations: vec![track(arm_r, &shoulder), track(elbow_r, &[HOLD_ELBOW])],
-            translations: Vec::new(),
-            ground: Vec::new(),
-        });
-    }
+    b.sequence(SequenceDef {
+        name: "hold",
+        duration: 1.0,
+        cyclic: false,
+        priority: 1,
+        keyframes: LOOK_KEYS,
+        rotations: vec![track(arm_r, &shoulder), track(elbow_r, &[HOLD_ELBOW])],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
+    // Empty hands: a Player's arm thread starts on its shape's `look` (and has none without one); this one moves no node, so
+    // the arms hang and swing with the action until the server sets the arm's action (`setArmThread`: `hold`, `aim`).
+    b.sequence(SequenceDef {
+        name: "look",
+        duration: 1.0,
+        cyclic: false,
+        priority: 1,
+        keyframes: LOOK_KEYS,
+        rotations: Vec::new(),
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
     // Aiming down the sights: as `hold`, the shoulder raised higher and swung in toward the middle so the hand comes up in
     // front of the face; the elbow turns the forearm back out and down so the pistol still points along the aim.
     let aim_keys = |pitch_share: f32| -> (Vec<Quat16>, Vec<Quat16>) {
@@ -551,9 +562,29 @@ pub fn figure() -> Model {
         translations: Vec::new(),
         ground: Vec::new(),
     });
+    // A shot's kick (`light_recoil`, a blend over whatever else plays): the right arm kicks up at the shoulder and the forearm back at
+    // the elbow, at their height after RECOIL_RISE and settled by the end.
+    b.blend_sequence(SequenceDef {
+        name: "light_recoil",
+        duration: RECOIL_SECONDS,
+        cyclic: false,
+        priority: 0,
+        keyframes: RECOIL_SHOULDER.len(),
+        rotations: vec![
+            track(arm_r, &RECOIL_SHOULDER),
+            track(elbow_r, &RECOIL_ELBOW),
+        ],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
     death_sequences(&mut b, root, torso, head, &limbs);
     b.build()
 }
+
+/// `light_recoil`: how long it lasts (seconds) and its keys (degrees, evenly spaced: the height at 0.04 s).
+pub const RECOIL_SECONDS: f32 = 0.14;
+const RECOIL_SHOULDER: [f32; 8] = [0.0, 7.0, 14.0, 10.0, 6.0, 3.5, 1.5, 0.0];
+const RECOIL_ELBOW: [f32; 8] = [0.0, 9.0, 18.0, 13.0, 8.0, 4.0, 1.5, 0.0];
 
 /// The keys of the `head` and `hold` sequences.
 const LOOK_KEYS: usize = 9;

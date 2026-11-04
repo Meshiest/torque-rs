@@ -196,3 +196,65 @@ fn orient_from_dir_makes_a_right_handed_frame_about_the_direction() {
     };
     assert_eq!(up.column(0), [0.0, -1.0, 0.0]);
 }
+
+#[test]
+fn a_projectile_grown_by_its_render_transform_is_drawn_at_that_scale() {
+    let mut w = ClientWorld::<TgeClientSet>::default();
+    w.datablocks.insert(
+        4,
+        datablock(
+            "ProjectileData",
+            &[("projectileShapeName", Value::str(CRATE))],
+        ),
+    );
+    let record = ghosts::projectile::Projectile {
+        game: ghosts::parts::GameBase {
+            scale: None,
+            datablock: Some(4),
+        },
+        ..Default::default()
+    };
+    w.ghosts.insert(
+        2,
+        ghost(TgeClass::Projectile, TgeRecord::Projectile(record)),
+    );
+    let placed = |w: &ClientWorld<TgeClientSet>| {
+        projectile_placement(w, 2, &w.ghosts[&2], [0.0; 3]).map(|(m, s, _)| (m, s))
+    };
+    assert_eq!(
+        placed(&w),
+        None,
+        "a projectile the client does not run is not drawn"
+    );
+    let mut m = crate::images::scale_columns(&Mat::euler_z(0.5), [0.25; 3]);
+    m.set_column3([1.0, 2.0, 3.0]);
+    let look = ghost_world::world::ProjectileLook {
+        birth: 0,
+        transform: m.m,
+        velocity: [0.0, 1.0, 0.0],
+        fade: 1.0,
+    };
+    w.projectile_render.insert(2, look);
+    let (at, scale) = placed(&w).expect("drawn");
+    assert!(scale.iter().all(|s| (s - 0.25).abs() < 1e-6), "{scale:?}");
+    let turn = Mat::euler_z(0.5);
+    for k in 0..3 {
+        let (a, b) = (at.column(k), turn.column(k));
+        assert!(
+            (0..3).all(|i| (a[i] - b[i]).abs() < 1e-6),
+            "column {k}: {a:?}"
+        );
+    }
+    assert_eq!(at.column(3), [1.0, 2.0, 3.0]);
+    // An unscaled transform is taken as it is.
+    let mut whole = Mat::euler_z(0.5);
+    whole.set_column3([1.0, 2.0, 3.0]);
+    w.projectile_render.insert(
+        2,
+        ghost_world::world::ProjectileLook {
+            transform: whole.m,
+            ..look
+        },
+    );
+    assert_eq!(placed(&w), Some((whole, [1.0; 3])));
+}

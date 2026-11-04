@@ -37,20 +37,6 @@ pub const KEY_TURN: f32 = 2.0;
 /// How much one wheel notch (120 counts) moves the camera in or out.
 pub const ZOOM_STEP: f32 = 0.9;
 
-/// The virtual keys the example binds.
-pub mod keys {
-    pub const W: u8 = 0x57;
-    pub const A: u8 = 0x41;
-    pub const S: u8 = 0x53;
-    pub const D: u8 = 0x44;
-    pub const Q: u8 = 0x51;
-    pub const E: u8 = 0x45;
-    pub const SHIFT: u8 = 0x10;
-    pub const SPACE: u8 = 0x20;
-    pub const ESCAPE: u8 = 0x1b;
-    pub const F: u8 = 0x46;
-}
-
 /// The example's game folder: `main.cs` builds the canvas, its profiles and the action map.
 pub fn game_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("game")

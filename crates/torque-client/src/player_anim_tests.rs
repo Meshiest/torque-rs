@@ -399,3 +399,31 @@ fn rising_off_the_ground_plays_the_jump_once() {
     anim.update(&shape, &mut instance, &at([0.0, 4.0, 1.5]), 0.032);
     assert_ne!(anim.action().0, action::JUMP);
 }
+
+#[test]
+fn an_images_recoil_plays_the_recoil_sequence_from_its_start() {
+    let b = [-0.5, -0.5, 0.0, 0.5, 0.5, 2.0];
+    let mut shape = hull_shape(b, &[("detail2", b)], &["eye"], &["root", "light_recoil"]).shape;
+    shape.names[1] = b"base".to_vec();
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    let still = PlayerMotion::default();
+    anim.update(&shape, &mut instance, &still, 0.032);
+    assert!(
+        !anim.recoiling(&instance),
+        "held at its start until a recoil"
+    );
+    // A kind the shape has no sequence for changes nothing.
+    anim.recoil(&shape, &mut instance, 3);
+    assert!(!anim.recoiling(&instance));
+    anim.recoil(&shape, &mut instance, 1);
+    assert!(anim.recoiling(&instance));
+    anim.update(&shape, &mut instance, &still, 10.0);
+    assert!(!anim.recoiling(&instance), "played to its end");
+    // A shape without one has no recoil thread.
+    let plain = self::shape();
+    let mut instance = ShapeInstance::new(&plain, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&plain, &mut instance).unwrap();
+    anim.recoil(&plain, &mut instance, 1);
+    assert!(!anim.recoiling(&instance));
+}

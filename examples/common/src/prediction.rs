@@ -1,7 +1,7 @@
-//! What the client's prediction asks this game: the arena's cubes as the client's collision world, and the view drawn ahead
+//! What the client's prediction asks a game of kit cubes: the cubes as the client's collision world, and the view drawn ahead
 //! of the last tick by the mouse's waiting turn.
 //!
-//! - **The cubes** (StaticShapes) are the only static objects of the arena. The engine's client has no static collision world of
+//! - **The cubes** (StaticShapes) are the only static objects of the examples' maps. The engine's client has no static collision world of
 //!   its own (a game gives one, [`StaticIndex`]), so without them the own figure the client predicts falls through the floor
 //!   between the server's corrections. Each cube's ghost becomes an object of the client's container as the server's container
 //!   holds it: the cube shape's collision hulls (read from the kit), its pose and scale, a StaticShape's type bits.
@@ -10,7 +10,7 @@
 //!
 //! Credit: a cube's collision object follows `ShapeBase::buildConvex` and the StaticShape type bits in Torque3D's MIT-licensed
 //! `T3D/shapeBase.cpp` and `T3D/staticShape.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc. for
-//! `shapeBase.cpp`). The code here is this example's own.
+//! `shapeBase.cpp`). The code here is the examples' own.
 
 use std::any::Any;
 use std::rc::Rc;
@@ -38,45 +38,45 @@ pub const STATIC_SHAPE_TYPE_MASK: u32 = torque::collide::types::STATIC
 /// The work a cube's shape may cost to read the first time.
 const SHAPE_BUDGET: u64 = 50_000_000;
 
-/// The example's answers to the client's engine half: Torque's, with the arena's prediction.
-pub struct ArenaClient {
+/// A game's answers to the client's engine half: Torque's, with the cubes' prediction.
+pub struct CubeClient {
     prediction: Rc<Prediction<TgeWorld>>,
 }
 
-impl std::fmt::Debug for ArenaClient {
+impl std::fmt::Debug for CubeClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ArenaClient")
+        f.write_str("CubeClient")
     }
 }
 
-impl ArenaClient {
+impl CubeClient {
     /// The answers over the game's files `files` (the kit's shapes the cubes collide with).
-    pub fn new(files: MemFiles) -> ArenaClient {
-        ArenaClient {
-            prediction: Rc::new(Prediction(Rc::new(ArenaPrediction { files }))),
+    pub fn new(files: MemFiles) -> CubeClient {
+        CubeClient {
+            prediction: Rc::new(Prediction(Rc::new(CubePrediction { files }))),
         }
     }
 }
 
-impl ClientGame for ArenaClient {
+impl ClientGame for CubeClient {
     fn prediction(&self) -> Option<Rc<dyn Any>> {
         Some(Rc::clone(&self.prediction) as Rc<dyn Any>)
     }
 }
 
-/// The arena's prediction: the cubes, and smooth aim.
+/// The prediction over the cubes, with smooth aim.
 #[derive(Debug)]
-pub struct ArenaPrediction {
+pub struct CubePrediction {
     files: MemFiles,
 }
 
-impl PredictGame<TgeWorld> for ArenaPrediction {
+impl PredictGame<TgeWorld> for CubePrediction {
     fn static_index(&self) -> Option<Box<dyn StaticIndex<TgeWorld>>> {
         let files = self.files.clone();
         let reader: FileReader = Rc::new(move |path: &[u8]| {
             files.get(&String::from_utf8_lossy(path).replace('\\', "/"))
         });
-        Some(Box::new(ArenaStatics {
+        Some(Box::new(CubeStatics {
             reader,
             shapes: ShapeCache::default(),
         }))
@@ -90,12 +90,12 @@ impl PredictGame<TgeWorld> for ArenaPrediction {
 
 /// The cubes as the client's container holds them.
 #[derive(Clone)]
-pub struct ArenaStatics {
+pub struct CubeStatics {
     reader: FileReader,
     shapes: ShapeCache,
 }
 
-impl StaticIndex<TgeWorld> for ArenaStatics {
+impl StaticIndex<TgeWorld> for CubeStatics {
     fn clone_box(&self) -> Box<dyn StaticIndex<TgeWorld>> {
         Box::new(self.clone())
     }

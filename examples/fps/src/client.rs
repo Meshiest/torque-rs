@@ -16,7 +16,7 @@
 //! joins it over the loopback address) or the arena left (`$Arena::LeaveAsked`: the server stops).
 //!
 //! **A frame** ([`ArenaGame::frame`]): the client's own figure where the client predicts it, between its last two ticks
-//! (`Player::interpolateTick`) and turned ahead by the mouse's waiting turn ([`crate::prediction`]), the other figures where the
+//! (`Player::interpolateTick`) and turned ahead by the mouse's waiting turn ([`torque_example_common::prediction`]), the other figures where the
 //! client runs them between their records, the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and
 //! the eye at the own figure's eye.
 //!
@@ -39,15 +39,14 @@ use torque::ghost_world::world::Pose;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
 use torque::script::vm::vm::{Native, Vm};
-use torque::server::server::{GameServer as _, TICK_MS};
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
 use crate::effects::{ScreenMarks, insert_over_world};
 use crate::files::GameFiles;
-use crate::prediction::ArenaClient;
 use crate::scene::{ArenaScene, OwnLook, TextureFilter};
 use crate::server::{ArenaServer, DEFAULT_PORT, ServerOptions, lan_addresses};
+use torque_example_common::prediction::CubeClient;
 
 /// Where the client's socket binds and what it reaches (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,18 +79,6 @@ impl Default for ClientOptions {
             map: None,
         }
     }
-}
-
-/// The virtual keys the example uses.
-pub mod keys {
-    pub const W: u8 = 0x57;
-    pub const A: u8 = 0x41;
-    pub const S: u8 = 0x53;
-    pub const D: u8 = 0x44;
-    pub const T: u8 = 0x54;
-    pub const SPACE: u8 = 0x20;
-    pub const ESCAPE: u8 = 0x1b;
-    pub const RETURN: u8 = 0x0d;
 }
 
 /// The example's client (the engine's [`GameClient`], which it derefs to: its host, its globals, the server it hosts and
@@ -127,7 +114,7 @@ impl ArenaGame {
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
             game_classes: true,
-            client_game: Some(Rc::new(ArenaClient::new(files.mem_files()))),
+            client_game: Some(Rc::new(CubeClient::new(files.mem_files()))),
             // The controls that measure text as they lay out (the list of games) find their fonts where the drawing does.
             layout_fonts: true,
             net: match options.net {
@@ -374,27 +361,6 @@ impl ArenaGame {
         self.set_global("$Arena::LookPitch", &pitch.to_string());
     }
 
-    /// The control object's view this frame: the predicted Player between its last two ticks (`back`: 1 right after a tick, 0
-    /// just before the next), its angles drawn ahead by the move globals the next move will be made of.
-    fn predict_frame(&mut self) {
-        let host = &self.client.host;
-        let now = host.server.vm().sim_time();
-        let vm = host.server.vm();
-        let mut st = host.client.borrow_mut();
-        let Some(c) = st.conn.conn.as_mut() else {
-            return;
-        };
-        let c = &mut **c;
-        let Some(last) = c.last_tick else {
-            return;
-        };
-        let since = now.wrapping_sub(last).min(TICK_MS);
-        c.predict.back = 1.0 - since as f32 / TICK_MS as f32;
-        c.world.anim_ms = now;
-        c.predict.set_aim_input(vm);
-        c.predict.update_view(&mut c.world);
-    }
-
     /// The frame's motion, with nothing drawn: the own figure where the client predicts it and the other figures moved on by the
     /// time since the last frame. Returns that time (seconds).
     pub fn view_frame(&mut self) -> f32 {
@@ -411,16 +377,14 @@ impl ArenaGame {
         self.scene.update_aim(aiming, dt);
         let scale = self.scene.turn_scale();
         self.set_global("$Arena::TurnScale", &scale.to_string());
-        self.predict_frame();
-        let own = self.own_look();
-        let st = self.client.host.client.borrow();
-        match st.conn.conn.as_ref() {
+        self.client.predict_frame();
+        let mut st = self.client.host.client.borrow_mut();
+        match st.conn.conn.as_mut() {
             Some(conn) => {
-                let world: &World = &conn.world;
-                let ghosts = &conn.predict.ghost_players;
+                let conn = &mut **conn;
+                let world: &mut World = &mut conn.world;
                 self.scene
-                    .update_figures(&self.files.kit, world, ghosts, own, dt);
-                self.scene.update_bolts(world, dt);
+                    .update(&self.files.kit, world, &conn.predict.ghost_players, dt);
             }
             None => self.scene.clear(),
         }
@@ -429,13 +393,13 @@ impl ArenaGame {
 
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
     pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
-        let dt = self.view_frame();
+        self.view_frame();
         let filter = TextureFilter::named(&self.global("$Arena::TextureFilter"));
         self.scene.set_texture_filter(filter);
         let objects = {
             let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
-                Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world, dt),
+                Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world),
                 None => Vec::new(),
             }
         };

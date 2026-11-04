@@ -4,7 +4,8 @@
 //! packet every tick. And a figure jumping while it walks is never drawn below the floor, by its own client or the other one.
 //! The game plays `game/fixtures/aim.mis`.
 
-use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode, keys};
+use torque::client::input::Key;
+use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
 
 fn client(name: &str) -> ArenaGame {
@@ -75,7 +76,7 @@ fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
     assert!(rate >= 55, "{rate} packets a second to the two clients");
 
     // Ann walks forward, turning right at 0.75 radians a second (4 mouse counts each 16 ms).
-    a.key(keys::W, true);
+    a.key(Key::W, true);
     let (speed, turn) = (7.0f32, 0.75f32);
     let mut last: Option<([f32; 3], f32)> = None;
     let mut elapsed = 0u32;
@@ -112,19 +113,19 @@ fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
         }
         last = Some(now);
     }
-    a.key(keys::W, false);
+    a.key(Key::W, false);
 }
 
 #[test]
 fn a_jumping_figure_never_sinks_into_the_floor() {
     let (mut a, mut b) = two();
     // The floor's top is at 0; a standing figure's feet a hair above it.
-    a.key(keys::W, true);
+    a.key(Key::W, true);
     let mut highest = 0.0f32;
     for i in 0..300 {
         if i % 50 == 5 {
-            a.key(keys::SPACE, true);
-            a.key(keys::SPACE, false);
+            a.key(Key::Space, true);
+            a.key(Key::Space, false);
         }
         frame(&mut a, &mut b, [7u32, 16, 9, 33][i % 4]);
         let own = a.scene().own().unwrap().position[2];
@@ -134,5 +135,5 @@ fn a_jumping_figure_never_sinks_into_the_floor() {
         assert!(other > -0.002, "frame {i}: Bob draws Ann's feet at {other}");
     }
     assert!(highest > 0.5, "Ann jumped ({highest})");
-    a.key(keys::W, false);
+    a.key(Key::W, false);
 }
