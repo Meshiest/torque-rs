@@ -6,6 +6,8 @@
 //! - [`client::GameClient`]: a client host (script engine, GUI, action maps, TGE's connection half), its globals and keys, and the
 //!   server it hosts in the same process on the same clock.
 //! - [`view::WorldView`]: the per-frame world view, drawn by the enhanced renderer under the GUI.
+//! - [`ghosts::GhostScene`]: the client's ghosts drawn through the engine's moving shapes, with live Players, held images and
+//!   projectiles.
 //! - [`orbit::Orbit`]: a third-person camera that circles a point.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
 //! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
@@ -15,6 +17,7 @@
 pub mod cli;
 pub mod client;
 pub mod files;
+pub mod ghosts;
 pub mod orbit;
 pub mod server;
 pub mod shots;
