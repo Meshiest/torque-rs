@@ -65,6 +65,11 @@ The first development version. Nothing is published yet; this is what exists.
   `getControlObject`), the `NetObject` behaviour that enters ghostable objects in the hub, the command natives registered
   with the host, and records packed from the simulated Player's state.
 - `torque-client`: TGE's feed reads datablock events and answers `DataBlocksDone`.
+- `torque-client`: named keys and mouse buttons (`Key`, `MouseButton`, also `torque::client::Key`) with the client host's
+  `key`, `press`, `type_text` and `mouse_button`; the window maps winit's keys through `Key` (F13 to F24, the ISO key next
+  to the left Shift and the side buttons now reach the platform layer).
+- `torque-gui`: the US layout's scan codes (`map_virtual_key`) cover F13 to F24, so F13 to F15 give their key codes
+  (`f13`..`f15`); F16 to F24 have none in the scan-code table.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
