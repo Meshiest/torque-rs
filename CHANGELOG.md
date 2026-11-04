@@ -19,6 +19,9 @@ The first development version. Nothing is published yet; this is what exists.
   natives and events, with a pluggable executor.
 - `torque-collide`: convexes, GJK, polygon lists, working sets and object type masks.
 - `torque-shapes`: DTS shapes and DSQ sequences (reading, writing, collision meshes, animated poses).
+- `torque-shape-builder`: a builder of shape models from code (nodes, box and prism meshes, details, materials, keyframed
+  sequences), with every derived figure filled in, written as a `.dts` by `torque-shapes`; behind the umbrella's
+  `shape-builder` feature.
 - `torque-sim`: the process list, players, AI players, items, projectiles and mounted images.
 - `torque-vehicle`: rigid bodies, wheeled and flying vehicles.
 - `torque-scene`: the scene container (bins, `findObjects` and `castRay` walks, the container searches) and a scene object's

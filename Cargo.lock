@@ -2031,6 +2031,7 @@ dependencies = [
  "torque-resource",
  "torque-scene",
  "torque-server",
+ "torque-shape-builder",
  "torque-shapes",
  "torque-sim",
  "torque-ts-bytecode",
@@ -2099,6 +2100,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "torque-images",
+ "torque-shape-builder",
  "torque-shapes",
 ]
 
@@ -2253,6 +2255,13 @@ dependencies = [
  "torque-net",
  "torque-scene",
  "torque-ts-vm",
+]
+
+[[package]]
+name = "torque-shape-builder"
+version = "0.1.0"
+dependencies = [
+ "torque-shapes",
 ]
 
 [[package]]

@@ -34,6 +34,7 @@
 //! - `audio-device`: sound output through the system's audio device (needs ALSA on Linux).
 //! - `system-fonts`: the system's fonts as the fallback for a face with no font cache.
 //! - `client-window`: the client's window glue (`client::platform`, over winit).
+//! - `shape-builder`: `shape_builder`, a builder of shape models from code (`torque-shape-builder`).
 //! - `full`: everything above.
 //!
 //! The crates that draw (the renderer and its back ends) need a GPU and join as features that are off by default.
@@ -83,6 +84,8 @@ pub use torque_resource as resource;
 pub use torque_scene as scene;
 #[cfg(feature = "server")]
 pub use torque_server as server;
+#[cfg(feature = "shape-builder")]
+pub use torque_shape_builder as shape_builder;
 #[cfg(feature = "shapes")]
 pub use torque_shapes as shapes;
 #[cfg(feature = "sim")]

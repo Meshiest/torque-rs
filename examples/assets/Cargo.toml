@@ -14,6 +14,7 @@ categories = ["game-development"]
 # call `write_all` at start-up, or `just example-assets` writes the set to a folder.
 
 [dependencies]
+torque-shape-builder = { path = "../../crates/torque-shape-builder" }
 torque-shapes = { path = "../../crates/torque-shapes" }
 png = "0.18"
 

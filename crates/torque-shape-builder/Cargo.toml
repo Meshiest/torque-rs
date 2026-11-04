@@ -1,0 +1,20 @@
+[package]
+name = "torque-shape-builder"
+description = "A builder of DTS shape models for torque-rs: nodes, box and prism meshes, details, materials and keyframed sequences"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "dts", "shape", "model", "gamedev"]
+categories = ["game-development"]
+
+# Makes a `torque_shapes::shape::Model` from code, with every derived figure (links, bounds, detail sizes, sequence
+# membership) filled in as an exporter writes it; `torque_shapes::write::write_dts` writes it as a `.dts`.
+
+[dependencies]
+torque-shapes = { path = "../torque-shapes" }
+
+[lints]
+workspace = true

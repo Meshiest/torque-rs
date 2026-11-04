@@ -1,10 +1,9 @@
 use torque_images::{Format, Kind};
 use torque_shapes::instance::{ShapeInstance, find_sequence};
-use torque_shapes::math::{mul_p, mul_v, quat_matrix, quat16};
+use torque_shapes::math::{mul_p, mul_v};
 use torque_shapes::shape::{Model, Shape};
 use torque_shapes::{bounds, dts, preload, write::write_dts};
 
-use crate::builder::turn;
 use crate::shapes;
 
 fn free(_: u64) -> bool {
@@ -78,24 +77,6 @@ fn every_triangle_is_clockwise_seen_from_its_front() {
             }
         }
     }
-}
-
-#[test]
-fn a_turn_is_right_handed_through_torques_matrix() {
-    let about = |axis, v| mul_v(&quat_matrix(quat16(turn(axis, 90.0))), v);
-    assert!(near(
-        about([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-        [0.0, 0.0, 1.0]
-    ));
-    assert!(near(
-        about([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
-        [0.0, 1.0, 0.0]
-    ));
-    // A hanging limb turned forward about x reaches forward.
-    assert!(near(
-        about([1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
-        [0.0, 1.0, 0.0]
-    ));
 }
 
 #[test]
