@@ -2085,6 +2085,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example"
+version = "0.1.0"
+dependencies = [
+ "torque",
+ "torque-render-core",
+ "winit",
+]
+
+[[package]]
 name = "torque-fonts"
 version = "0.1.0"
 dependencies = [

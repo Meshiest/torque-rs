@@ -5,6 +5,7 @@ members = [
     "crates/torque-audio",
     "crates/torque-client",
     "crates/torque-collide",
+    "crates/torque-example",
     "crates/torque-fonts",
     "crates/torque-game",
     "crates/torque-ghost-world",
