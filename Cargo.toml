@@ -2,8 +2,10 @@
 resolver = "3"
 members = [
     "crates/torque-collide",
+    "crates/torque-ghosts",
     "crates/torque-mapcore",
     "crates/torque-maps",
+    "crates/torque-net",
     "crates/torque-sim",
     "crates/torque-ts-bytecode",
     "crates/torque-ts-compiler",

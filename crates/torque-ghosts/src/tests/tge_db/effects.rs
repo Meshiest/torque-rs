@@ -1,0 +1,386 @@
+//! Projectiles, explosions, debris, particles and their emitters, splashes and decals.
+
+use super::*;
+use crate::datablocks::effects::{
+    ExplosionData, ParticleData, ParticleEmitterData, pack_debris_data, pack_decal_data,
+    pack_explosion_data, pack_particle_data, pack_particle_emitter_data,
+    pack_particle_emitter_node_data, pack_projectile_data, pack_splash_data,
+};
+use crate::datablocks::{MAX_EMITTER_PARTICLES, MAX_EXPLOSION_KEYS, MAX_PARTICLE_TEXTURES};
+
+/// The bits of `rec` with the field logged as `name` (its first occurrence) replaced by `value`.
+pub(super) fn with_field<L: Layout>(rec: &L, name: &str, value: u32) -> (Vec<u8>, usize) {
+    let t = table();
+    let log = layout_log(rec, &t, [0.0; 3]);
+    let at: usize = log
+        .iter()
+        .take_while(|(n, _)| *n != name)
+        .map(|(_, w)| w)
+        .sum();
+    let width = log.iter().find(|(n, _)| *n == name).unwrap().1;
+    let mut w = writer();
+    encode(rec, &mut w, &t, widths()).unwrap();
+    let n = w.bits();
+    let bytes = w.into_bytes();
+    let mut r = BitReader::with_bit_len(&bytes, n);
+    let mut bits: Vec<bool> = (0..n).map(|_| r.read_flag().unwrap()).collect();
+    for k in 0..width {
+        bits[at + k] = (value >> k) & 1 == 1;
+    }
+    let mut out = BitWriter::new();
+    for b in bits {
+        out.write_flag(b);
+    }
+    (out.into_bytes(), n)
+}
+
+/// Decodes `L` from `bytes`; the error's text.
+pub(super) fn refused<L: Layout + Debug>(bytes: &[u8], bits: usize) -> String {
+    let got: Result<L, _> = decode(
+        &mut reader(bytes, bits),
+        &table(),
+        &mut free_charge(),
+        &ReadCtx::new(widths(), true),
+    );
+    format!("{:?}", got.expect_err("a count over its cap decoded"))
+}
+
+const PROJECTILE_DEFAULT: &str = "projectileShapeName:s faceViewer:1 scale:1 particleEmitter:1 particleWaterEmitter:1 \
+     explosion:1 waterExplosion:1 splash:1 sound:1 decals:1*6 hasLight:1 hasWaterLight:1 lifetime:12 armingDelay:12 \
+     fadeDelay:12 isBallistic:1";
+
+#[test]
+fn projectile_data_with_tges_defaults_is_its_flags_and_three_tick_counts() {
+    let v = floats(&[("lifetime", 625.0), ("fadeDelay", 625.0)]).floats("scale", &[1.0, 1.0, 1.0]);
+    let rec = pack_projectile_data(&v, widths());
+    assert_eq!((rec.lifetime, rec.fade_delay), (625, 625));
+    check(&rec, PROJECTILE_DEFAULT, EMPTY + 1 + 1 + 6 + 6 + 2 + 36 + 1);
+}
+
+#[test]
+fn projectile_data_sends_its_scale_lights_and_ballistics() {
+    let mut v = MapView::default()
+        .with("projectileShapeName", 0, Value::str("bullet.dts"))
+        .floats("scale", &[2.0, 1.0, 1.0])
+        .with("hasLight", 0, Value::Bool(true))
+        .with("lightRadius", 0, Value::F32(10.0))
+        .floats("lightColor", &[1.0, 0.5, 0.0, 1.0])
+        .with("hasWaterLight", 0, Value::Bool(true))
+        .with("isBallistic", 0, Value::Bool(true))
+        .with("gravityMod", 0, Value::F32(0.8))
+        .with("lifetime", 0, Value::Int(5000));
+    v = with_ids(v, "decals", 6, 10);
+    for (i, name) in [
+        "particleEmitter",
+        "particleWaterEmitter",
+        "explosion",
+        "waterExplosion",
+        "splash",
+        "sound",
+    ]
+    .iter()
+    .enumerate()
+    {
+        v = v.with(name, 0, Value::Id(Some(20 + i as u32)));
+    }
+    let rec = pack_projectile_data(&v, widths());
+    // 10 / 20.0 = 0.5 of 255; the colour's channels of 127.
+    assert_eq!(rec.light, Some((127, [127, 63, 0])));
+    // 5000 ticks wrap into the 12-bit range.
+    assert_eq!(rec.lifetime, 5000 & 4095);
+    assert_eq!(rec.ballistic.unwrap()[0], F32::new(0.8));
+    let golden = PROJECTILE_DEFAULT
+        .replace("scale:1", "scale:1 scale:96")
+        .replace("decals:1*6", &times("decals:1 decals:{db}", 6))
+        .replace("hasLight:1", "hasLight:1 lightRadius:8 lightColor:7*3")
+        .replace("hasWaterLight:1", "hasWaterLight:1 waterLightColor:7*3")
+        .replace("isBallistic:1", "isBallistic:1 ballistic:96");
+    let golden = [
+        "particleEmitter",
+        "particleWaterEmitter",
+        "explosion",
+        "waterExplosion",
+        "splash",
+        "sound",
+    ]
+    .iter()
+    .fold(golden, |g, n| {
+        g.replacen(&format!(" {n}:1"), &format!(" {n}:1 {n}:{{db}}"), 1)
+    });
+    check_log(&rec, &spec(&golden));
+    canonical(&rec, &ReadCtx::new(widths(), true));
+}
+
+const EXPLOSION_DEFAULT: &str = "dtsFileName:s soundProfile:1 particleEmitter:1 particleDensity:14 particleRadius:32 \
+     faceViewer:1 explosionScale:1 playSpeed:14 debrisThetaMin:8 debrisThetaMax:8 debrisPhiMin:9 debrisPhiMax:9 \
+     debrisNum:10 debrisNumVariance:10 debrisVelocity:14 debrisVelocityVariance:14 delayMS:16 delayVariance:16 \
+     lifetimeMS:16 lifetimeVariance:16 offset:32 shakeCamera:1 camShakeFreq:96 camShakeAmp:96 camShakeDuration:32 \
+     camShakeRadius:32 camShakeFalloff:32 debrisList:1 emitterList:1*4 explosionList:1*5 keys:3 times:8*2 sizes:14*6 \
+     lightRadius:8*2 lightStartColor:7*3 lightEndColor:7*3";
+
+/// The view of an ExplosionData with TGE's constructor defaults: scale 1, play speed 1, times 0, 1, 1, 1.
+fn explosion_defaults() -> MapView {
+    floats(&[("playSpeed", 1.0)])
+        .floats("explosionScale", &[1.0, 1.0, 1.0])
+        .floats("times", &[0.0, 1.0, 1.0, 1.0])
+}
+
+#[test]
+fn explosion_data_with_tges_defaults_sends_two_keys() {
+    let rec = pack_explosion_data(&explosion_defaults(), widths());
+    assert_eq!((rec.play_speed, rec.keys.len()), (20, 2));
+    let bits = EMPTY
+        + 2
+        + 14
+        + 32
+        + 2
+        + 14
+        + (8 + 8 + 9 + 9 + 10 + 10)
+        + 14
+        + 14
+        + 4 * 16
+        + 32
+        + 1
+        + 2 * 96
+        + 3 * 32
+        + 10
+        + 3
+        + 2 * (8 + 3 * 14)
+        + 16
+        + 42;
+    check(&rec, EXPLOSION_DEFAULT, bits);
+}
+
+#[test]
+fn explosion_data_quantises_its_scale_speeds_times_and_light() {
+    let v = explosion_defaults()
+        .floats("explosionScale", &[2.0, 1.0, 0.5])
+        .floats("times", &[0.0, 0.25, 0.5, 0.75])
+        .floats(
+            "sizes",
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+        )
+        .with("debrisThetaMax", 0, Value::F32(90.0))
+        .with("debrisVelocity", 0, Value::F32(3.5))
+        .with("debrisVelocityVariance", 0, Value::F32(1.5))
+        .with("delayMS", 0, Value::Int(1000))
+        .with("lightStartRadius", 0, Value::F32(10.0));
+    let rec = pack_explosion_data(&v, widths());
+    assert_eq!(rec.explosion_scale, Some([200, 100, 50]));
+    assert_eq!(
+        (
+            rec.debris_theta_max,
+            rec.debris_velocity,
+            rec.debris_velocity_variance
+        ),
+        (90, 35, 15)
+    );
+    assert_eq!(rec.delay_ms, 1000 >> 5);
+    // No time reaches 1: all four keys go.
+    assert_eq!(rec.keys.len(), MAX_EXPLOSION_KEYS);
+    assert_eq!(rec.keys[3].size, [1000, 1100, 1200]);
+    assert_eq!(rec.keys[1].time, (0.25f32 * 255.0) as u32);
+    assert_eq!(rec.light_radius, [127, 0]);
+    let golden = EXPLOSION_DEFAULT
+        .replace("explosionScale:1", "explosionScale:1 explosionScale:16*3")
+        .replace("times:8*2 sizes:14*6", "times:8*4 sizes:14*12");
+    check_log(&rec, &golden);
+    canonical(&rec, &ReadCtx::new(widths(), true));
+    // A key count of 5..7 is refused.
+    for n in 5..8 {
+        let (bytes, bits) = with_field(&rec, "keys", n);
+        assert!(refused::<ExplosionData>(&bytes, bits).contains("keys"));
+    }
+}
+
+#[test]
+fn debris_data_sends_its_spin_speeds_twice_and_its_bools_as_bytes() {
+    let v = floats(&[("minSpinSpeed", -10.0), ("maxSpinSpeed", 20.0)])
+        .with("render2D", 0, Value::Bool(true))
+        .with("explosion", 0, Value::Id(Some(5)));
+    let rec = pack_debris_data(&v, widths());
+    assert_eq!(rec.spin_speed, rec.spin_speed_again);
+    assert_eq!(rec.bounce_flags, [1, 0, 0, 0]);
+    check(
+        &rec,
+        "elasticity:32 friction:32 numBounces:32 bounceVariance:32 minSpinSpeed:32 maxSpinSpeed:32 render2D:8 \
+         explodeOnMaxBounce:8 staticOnMaxBounce:8 snapOnMaxBounce:8 lifetime:32 lifetimeVariance:32 minSpinSpeed:32 \
+         maxSpinSpeed:32 velocity:32 velocityVariance:32 fade:8 useRadiusMass:8 baseRadius:32 gravModifier:32 \
+         terminalVelocity:32 ignoreWater:8 textureName:s shapeName:s emitterList:1*2 explosion:1 explosion:{db}",
+        4 * 32 + 2 * 32 + 4 * 8 + 6 * 32 + 2 * 8 + 3 * 32 + 8 + 2 * EMPTY + 3 + db(),
+    );
+}
+
+const PARTICLE_DEFAULT: &str = "dragCoefficient:10 windCoefficient:1 gravityCoefficient:12 inheritedVelFactor:9 \
+     constantAcceleration:1 lifetimeMS:10 lifetimeVarianceMS:10 spinSpeed:1 spinRandom:1 useInvAlpha:1 keys:2 \
+     colors:7*4 sizes:14 times:8 colors:7*4 sizes:14 times:8 textures:6";
+
+/// The view of a ParticleData with TGE's constructor defaults: wind 1, lifetime 1000, white, size 1, times 0, 1, 2, 2.
+fn particle_defaults() -> MapView {
+    floats(&[("windCoefficient", 1.0), ("lifetimeMS", 1000.0)])
+        .floats("colors", &[1.0; 16])
+        .floats("sizes", &[1.0; 4])
+        .floats("times", &[0.0, 1.0, 2.0, 2.0])
+}
+
+#[test]
+fn particle_data_with_tges_defaults_sends_two_keys_and_no_texture() {
+    let rec = pack_particle_data(&particle_defaults());
+    assert_eq!(rec.lifetime_ms, 1000 >> 5);
+    // writeSignedFloat(0, 12): half of 4095.
+    assert_eq!(rec.gravity_coefficient, 2047);
+    assert_eq!(rec.keys[0].size, (1.0 / 50.0 * 16383.0f64) as u32);
+    assert_eq!(rec.keys[0].color, [127; 4]);
+    check(
+        &rec,
+        PARTICLE_DEFAULT,
+        10 + 1 + 12 + 9 + 1 + 20 + 1 + 1 + 1 + 2 + 2 * (28 + 14 + 8) + 6,
+    );
+}
+
+#[test]
+fn particle_data_sends_its_spin_range_and_textures_up_to_the_first_missing_one() {
+    let v = with_strs(
+        particle_defaults(),
+        "textureNameList",
+        &["a.png", "b.png", "c.png"],
+    )
+    .with("textureNameList", 4, Value::str("after a gap"))
+    .with("spinRandomMin", 0, Value::F32(-90.0))
+    .with("spinRandomMax", 0, Value::F32(90.0))
+    .with("dragCoefficient", 0, Value::F32(2.5))
+    .floats("times", &[0.0, 0.3, 0.6, 0.9]);
+    let rec = pack_particle_data(&v);
+    assert_eq!(rec.spin_random, Some([910, 1090]));
+    assert_eq!(rec.drag_coefficient, (0.5f32 * 1023.0) as u32);
+    assert_eq!(rec.textures.len(), 3);
+    assert_eq!(rec.keys.len(), 4);
+    let golden = PARTICLE_DEFAULT
+        .replace("spinRandom:1", "spinRandom:1 spinRandom:11*2")
+        .replace(
+            "times:8 textures:6",
+            "times:8 colors:7*4 sizes:14 times:8 colors:7*4 sizes:14 times:8 textures:6",
+        )
+        + " textureNameList:s*3";
+    check_log(&rec, &golden);
+    canonical(&rec, &ReadCtx::new(widths(), true));
+}
+
+#[test]
+fn particle_textures_over_the_cap_are_refused() {
+    let names: Vec<String> = (0..MAX_PARTICLE_TEXTURES)
+        .map(|i| format!("t{i}"))
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let rec = pack_particle_data(&with_strs(particle_defaults(), "textureNameList", &refs));
+    assert_eq!(rec.textures.len(), MAX_PARTICLE_TEXTURES);
+    canonical(&rec, &ReadCtx::new(widths(), true));
+    // A count of 51..63 claims more names than the cap (the bits after it are names, so the cap is what refuses).
+    let empty = ParticleData {
+        textures: vec![Vec::new(); 13],
+        ..pack_particle_data(&particle_defaults())
+    };
+    let (bytes, bits) = with_field(&empty, "textures", 51);
+    assert!(refused::<ParticleData>(&bytes, bits).contains("textures"));
+}
+
+const EMITTER_DEFAULT: &str = "ejectionPeriodMS:10 periodVarianceMS:10 ejectionVelocity:16 velocityVariance:14 \
+     ejectionOffset:1 thetaMin:8 thetaMax:8 phiReferenceVel:1 phiVariance:1 overrideAdvance:1 orientParticles:1 \
+     orientOnVelocity:1 lifetimeMS:10 lifetimeVarianceMS:10 useEmitterSizes:1 useEmitterColors:1 dataBlockIds:32";
+
+#[test]
+fn particle_emitter_data_with_tges_defaults_and_its_particle_ids() {
+    let defaults = floats(&[
+        ("ejectionPeriodMS", 100.0),
+        ("ejectionVelocity", 2.0),
+        ("velocityVariance", 1.0),
+        ("thetaMax", 90.0),
+        ("phiVariance", 360.0),
+        ("orientOnVelocity", 1.0),
+    ]);
+    let rec = pack_particle_emitter_data(&defaults);
+    assert_eq!(
+        (
+            rec.ejection_period_ms,
+            rec.ejection_velocity,
+            rec.velocity_variance,
+            rec.theta_max
+        ),
+        (100, 200, 100, 90)
+    );
+    check(
+        &rec,
+        EMITTER_DEFAULT,
+        10 + 10 + 16 + 14 + 1 + 16 + 2 + 3 + 20 + 2 + 32,
+    );
+    let v = (0..3).fold(defaults, |v, i| {
+        v.with("dataBlockIds", i, Value::Int(100 + i as i64))
+    });
+    let v = v
+        .with("phiVariance", 0, Value::F32(180.0))
+        .with("ejectionOffset", 0, Value::F32(0.5));
+    let rec = pack_particle_emitter_data(&v);
+    assert_eq!(rec.data_block_ids, vec![100, 101, 102]);
+    assert_eq!(
+        (rec.phi_variance, rec.ejection_offset),
+        (Some(180), Some(50))
+    );
+    let golden = EMITTER_DEFAULT
+        .replace("ejectionOffset:1", "ejectionOffset:1 ejectionOffset:16")
+        .replace("phiVariance:1", "phiVariance:1 phiVariance:9")
+        + " dataBlockIds:32*3";
+    check(&rec, &golden, 126 + 16 + 9 + 3 * 32);
+}
+
+#[test]
+fn emitter_particle_ids_over_the_cap_are_refused() {
+    let rec = ParticleEmitterData {
+        data_block_ids: vec![7; MAX_EMITTER_PARTICLES],
+        ..ParticleEmitterData::default()
+    };
+    canonical(&rec, &ReadCtx::new(widths(), true));
+    let (bytes, bits) = with_field(&rec, "dataBlockIds", MAX_EMITTER_PARTICLES as u32 + 1);
+    assert!(refused::<ParticleEmitterData>(&bytes, bits).contains("dataBlockIds"));
+    // The encoder cuts a longer list to the cap.
+    let long = ParticleEmitterData {
+        data_block_ids: vec![7; MAX_EMITTER_PARTICLES + 5],
+        ..ParticleEmitterData::default()
+    };
+    assert_eq!(bit_total(&long, &table()), bit_total(&rec, &table()));
+}
+
+#[test]
+fn the_small_effect_datablocks() {
+    let node = pack_particle_emitter_node_data(&floats(&[("timeMultiple", 1.0)]));
+    assert_eq!(node.time_multiple, F32::new(1.0));
+    check(&node, "timeMultiple:32", 32);
+    let decal =
+        pack_decal_data(&floats(&[("sizeX", 0.5)]).with("textureName", 0, Value::str("decal.png")));
+    check_log(&decal, "sizeX:32 sizeY:32 textureName:s");
+    canonical(&decal, &ReadCtx::new(widths(), true));
+    check(
+        &pack_decal_data(&MapView::default()),
+        "sizeX:32 sizeY:32 textureName:s",
+        64 + EMPTY,
+    );
+}
+
+#[test]
+fn splash_data_sends_its_colours_as_bytes() {
+    let v = MapView::default()
+        .floats("colors", &[1.0, 0.0, 0.5, 1.0])
+        .with("numSegments", 0, Value::Int(10))
+        .with("explosion", 0, Value::Id(Some(9)));
+    let rec = pack_splash_data(&v, widths());
+    // ColorF to ColorI rounds: 0.5 * 255 + 0.5.
+    assert_eq!(rec.colors[0], [255, 0, 128, 255]);
+    check(
+        &rec,
+        "scale:96 delayMS:32 delayVariance:32 lifetimeMS:32 lifetimeVariance:32 width:32 numSegments:32 velocity:32 \
+         height:32 acceleration:32 texWrap:32 texFactor:32 ejectionFreq:32 ejectionAngle:32 ringLifetime:32 \
+         startRadius:32 explosion:1 explosion:{db} emitterList:1*3 colors:8*16 times:128 textureName:s*2",
+        96 + 4 * 32 + 32 + 32 + 9 * 32 + 1 + db() + 3 + 128 + 128 + 2 * EMPTY,
+    );
+}

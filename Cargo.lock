@@ -17,6 +17,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-ghosts"
+version = "0.1.0"
+dependencies = [
+ "torque-net",
+]
+
+[[package]]
 name = "torque-mapcore"
 version = "0.1.0"
 
@@ -26,6 +33,10 @@ version = "0.1.0"
 dependencies = [
  "torque-mapcore",
 ]
+
+[[package]]
+name = "torque-net"
+version = "0.1.0"
 
 [[package]]
 name = "torque-sim"
