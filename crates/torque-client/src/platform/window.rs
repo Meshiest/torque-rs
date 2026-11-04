@@ -22,11 +22,11 @@ use winit::dpi::PhysicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
+use winit::window::{CursorGrabMode, CursorIcon, Fullscreen, Window, WindowId};
 
 use super::{cursor_lock, frame_cap, keymap};
 use crate::conn::ConnGame;
-use crate::host::{ClientHost, GameServer};
+use crate::host::{ClientHost, CursorShape, GameServer};
 use crate::screen::{Monitor, ScreenMode, ScreenRules};
 
 /// The most simulation time one frame runs (a stall is not caught up beyond it).
@@ -238,6 +238,8 @@ struct WindowApp<G: WindowGame> {
     lock: cursor_lock::CursorLock,
     /// Whether the system cursor is shown over the window now.
     system_cursor: bool,
+    /// The shape the window's system cursor was last given.
+    cursor_shape: CursorShape,
     started: Instant,
     /// The frame cap while no world is drawn, the frames a second it holds now (0: none), and whether the last frame drew one.
     cap: frame_cap::FrameCap,
@@ -263,6 +265,7 @@ pub fn run<G: WindowGame>(game: G, event_loop: EventLoop<()>) -> Result<G, (G, S
         input: keymap::WindowInput::default(),
         lock: cursor_lock::CursorLock::new(),
         system_cursor: false,
+        cursor_shape: CursorShape::Arrow,
         started: Instant::now(),
         cap: frame_cap::FrameCap::new(),
         cap_fps: u32::MAX,
@@ -326,6 +329,17 @@ impl<G: WindowGame> WindowApp<G> {
         if want != self.system_cursor {
             window.set_cursor_visible(want);
             self.system_cursor = want;
+        }
+        if want {
+            let shape = self.game.host_ref().cursor_shape();
+            if shape != self.cursor_shape {
+                window.set_cursor(match shape {
+                    CursorShape::Arrow => CursorIcon::Default,
+                    CursorShape::Pointer => CursorIcon::Pointer,
+                    CursorShape::Text => CursorIcon::Text,
+                });
+                self.cursor_shape = shape;
+            }
         }
     }
 }
