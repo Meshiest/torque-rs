@@ -12,8 +12,11 @@ use torque::app::shots::{FRAME_MS, Shots, run, write_png};
 use torque_render_core::{Frame, Gpu};
 use torque_render_scene::hd::kit::look_at;
 
+use torque::script::vm::sim::ObjId;
+
 use crate::client::{ArenaGame, ClientOptions, NetMode};
 use crate::files::GameFiles;
+use crate::hitbox_view;
 
 /// The longest a step of the script may wait (ms of the clock).
 pub const WAIT_LIMIT_MS: u32 = 20_000;
@@ -852,4 +855,111 @@ pub fn write_sights(
         paths.push(path);
     }
     Ok(paths)
+}
+
+/// Bob's figure on the server Ann hosts.
+fn bob_figure(a: &mut Seat) -> Result<ObjId, String> {
+    let server = a.game.server.as_mut().ok_or("no hosted server")?;
+    server
+        .call("figureOf", &["Bob"])?
+        .parse()
+        .map_err(|_| "Bob has no figure".to_string())
+}
+
+/// A picture of Ann's view with Bob's hitboxes drawn over it ([`hitbox_view`]), seen from `offset` off his feet.
+fn hitbox_picture(
+    gpu: &Gpu,
+    a: &mut Seat,
+    shots: &mut Shots,
+    offset: [f32; 3],
+    name: &str,
+) -> Result<(), String> {
+    watch_bob(a, offset, 1.0);
+    let eye = a.eye.ok_or("no eye")?;
+    let mut frame = a.picture(gpu)?;
+    let bob = bob_figure(a)?;
+    let server = a.game.server.as_mut().ok_or("no hosted server")?;
+    let boxes = hitbox_view::part_boxes(server, bob);
+    if boxes.is_empty() {
+        return Err("Bob has no hitboxes".to_string());
+    }
+    hitbox_view::draw(&mut frame, eye, &boxes);
+    shots.save(&frame, name)
+}
+
+/// The hitbox pictures at `size`, written into `dir`: Bob's hitboxes as the server poses them, drawn over him standing (from
+/// the front and the side), running, stepping to the side, looking up and down, jumping, aiming down the sights and falling
+/// knocked out. Returns the paths.
+pub fn write_hitboxes(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    use std::f32::consts::PI;
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    let mut shots = Shots::new(dir)?;
+    let front = [-1.8, -4.4, 0.2];
+    let side = [-4.8, 0.0, 0.2];
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 800)?;
+    hitbox_picture(&gpu, &mut a, &mut shots, front, "stand-front")?;
+    hitbox_picture(&gpu, &mut a, &mut shots, side, "stand-side")?;
+
+    for (key, name) in [("$mvForwardAction", "run"), ("$mvLeftAction", "side-step")] {
+        place(&mut a.game, "Bob", [4.6, -2.0, 0.1], PI)?;
+        run(&gpu, &mut [&mut a, &mut b], 500)?;
+        b.game.set_global(key, "1");
+        run(&gpu, &mut [&mut a, &mut b], 400)?;
+        for k in 1..=2 {
+            hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("{name}-{k}"))?;
+            run(&gpu, &mut [&mut a, &mut b], 160)?;
+        }
+        b.game.set_global(key, "0");
+    }
+
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    for (motion, name) in [("-500", "look-up"), ("1000", "look-down")] {
+        b.game.call("look", &[motion])?;
+        run(&gpu, &mut [&mut a, &mut b], 500)?;
+        hitbox_picture(&gpu, &mut a, &mut shots, side, name)?;
+    }
+    b.game.call("look", &["-500"])?;
+
+    place(&mut a.game, "Bob", [4.6, -6.0, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 500)?;
+    b.game.set_global("$mvForwardAction", "1");
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    b.game.call("jump", &["1"])?;
+    for k in 1..=2 {
+        run(&gpu, &mut [&mut a, &mut b], 128)?;
+        hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("jump-{k}"))?;
+    }
+    b.game.call("jump", &["0"])?;
+    b.game.set_global("$mvForwardAction", "0");
+    run(&gpu, &mut [&mut a, &mut b], 800)?;
+
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    b.game.call("aim", &["1"])?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    hitbox_picture(&gpu, &mut a, &mut shots, front, "aim-front")?;
+    hitbox_picture(&gpu, &mut a, &mut shots, side, "aim-side")?;
+    b.game.call("aim", &["0"])?;
+    run(&gpu, &mut [&mut a, &mut b], 400)?;
+
+    // Knocked out from the front: he falls backward.
+    let server = a.game.server.as_mut().ok_or("no hosted server")?;
+    server
+        .vm_mut()
+        .eval(b"ArenaFigure.hurt(figureOf(\"Bob\"), \"\", 100, \"\");")
+        .map_err(|e| e.to_string())?;
+    for (k, ms) in [(1, 160), (2, 160), (3, 600)] {
+        run(&gpu, &mut [&mut a, &mut b], ms)?;
+        hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("fall-{k}"))?;
+    }
+    a.eye = None;
+    Ok(shots.paths)
 }

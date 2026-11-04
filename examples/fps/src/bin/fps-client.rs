@@ -9,7 +9,7 @@
 //! menu), `--menu-shots <dir>` the menus at 1280x720, 1920x1080 and 2560x1080; `--polish-shots <dir>` the pictures of a bolt's
 //! flight frame by frame, the bolts' holes, a hit from both sides and aiming down the sights; `--polish2-shots <dir>` a shot's
 //! flares and smoke frame by frame, a bolt's ribbon from the side, bolt holes at a wall's middle and edge and in the floor, and
-//! the sights aimed (also at 1920 x 1080).
+//! the sights aimed (also at 1920 x 1080); `--hitbox-shots <dir>` the other figure's hitboxes drawn over it in its poses.
 
 use torque::app::cli::{Args, unknown};
 use torque_example_fps::client::{ArenaGame, ClientOptions};
@@ -26,6 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut menu_dir = None;
     let mut polish_dir = None;
     let mut polish2_dir = None;
+    let mut hitbox_dir = None;
     let mut options = ClientOptions::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -34,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--menu-shots" => menu_dir = Some(args.dir(&arg)?),
             "--polish-shots" => polish_dir = Some(args.dir(&arg)?),
             "--polish2-shots" => polish2_dir = Some(args.dir(&arg)?),
+            "--hitbox-shots" => hitbox_dir = Some(args.dir(&arg)?),
             "--bind" => options.host_address = args.ipv4(&arg)?,
             "--name" => options.name = args.value(&arg, "a name")?,
             _ => return Err(unknown(&arg).into()),
@@ -42,6 +44,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = menu_dir {
         let sizes = [(1280, 720), (1920, 1080), (2560, 1080)];
         for path in shots::write_menus(&dir, &sizes, GameFiles::bundled)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
+    if let Some(dir) = hitbox_dir {
+        for path in shots::write_hitboxes(&dir, SHOT_SIZE, GameFiles::bundled)? {
             println!("{}", path.display());
         }
         return Ok(());

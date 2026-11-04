@@ -828,9 +828,11 @@ function clientCmdSetHealth(%left, %full)
    HealthHud.setText("+" SPC %left);
 }
 
-function clientCmdHit(%name)
+// %part is the part of the figure the bolt hit (head, torso, rarm, ...).
+function clientCmdHit(%name, %part)
 {
    $Arena::Hits++;
+   $Arena::HitPart = %part;
 }
 
 function clientCmdKnockedOut(%ms)
