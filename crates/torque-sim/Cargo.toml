@@ -1,0 +1,20 @@
+[package]
+name = "torque-sim"
+description = "The torque-rs game object simulation: the process list, players, AI players, items, projectiles and mounted images"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "simulation", "physics", "gamedev"]
+categories = ["game-development", "simulation"]
+
+# The simulation a client predicts: the process list, Player and AIPlayer, Item, Projectile and the weapon images, as pure state
+# and steps over `collide`. Std only: no scripting and no networking.
+
+[dependencies]
+torque-collide = { path = "../torque-collide" }
+
+[lints]
+workspace = true

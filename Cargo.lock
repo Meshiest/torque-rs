@@ -28,6 +28,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-sim"
+version = "0.1.0"
+dependencies = [
+ "torque-collide",
+]
+
+[[package]]
 name = "torque-ts-bytecode"
 version = "0.1.0"
 
@@ -52,6 +59,13 @@ dependencies = [
  "torque-ts-compiler",
  "torque-ts-text",
  "winapi-util",
+]
+
+[[package]]
+name = "torque-vehicle"
+version = "0.1.0"
+dependencies = [
+ "torque-collide",
 ]
 
 [[package]]
