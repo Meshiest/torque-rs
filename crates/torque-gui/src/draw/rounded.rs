@@ -24,6 +24,8 @@ use crate::textures::GuiTexture;
 
 /// The corner radius of a rounded box (pixels).
 pub const BOX_RADIUS: i32 = 5;
+/// How far a popup's left or right justified text keeps from the side of its rounded box (pixels).
+pub const BOX_TEXT_PAD: i32 = BOX_RADIUS + 3;
 /// A box's fill when its profile sets no `fillColor`.
 pub const DEFAULT_FILL: [u8; 4] = [224, 227, 232, 255];
 /// How much of the highlight fill's color a pressed box keeps.

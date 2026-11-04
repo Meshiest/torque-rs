@@ -34,7 +34,7 @@ use torque_fonts::TextColors;
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
 
-use super::rounded::{BoxState, box_colors, box_text_color};
+use super::rounded::{BOX_TEXT_PAD, BoxState, box_colors, box_text_color};
 use super::{Walk, color_field, int_field, intersect, profile_of, text_field};
 use crate::control::{bounds, flag, point};
 use crate::ext::GuiRule;
@@ -998,7 +998,8 @@ impl Walk<'_> {
 
     /// GuiPopUpMenuCtrl::onRender: closed, the slightly raised box when it has a border; open (`mInAction`), a
     /// `fillColorHL` fill outlined in `borderColor`; the text (`fontColor`, `fontColorNA` when not active or not enabled; no colour
-    /// table) justified, centred vertically. No children.
+    /// table) justified, centred vertically. No children. In a rounded box, text justified left or right keeps
+    /// [`BOX_TEXT_PAD`] from the side.
     pub(super) fn popup(&mut self, id: ObjId, offset: (i32, i32)) {
         let vm = self.vm;
         let Some(p) = profile_of(vm, id) else {
@@ -1008,8 +1009,10 @@ impl Walk<'_> {
         let rect = [offset.0, offset.1, ext.0, ext.1];
         let open = self.gui.with(id, |c| c.in_action).unwrap_or(false);
         let mut text_color = None;
+        let mut pad = 0;
         if !self.classic_boxes() {
             if open || int_field(vm, p, b"border") != 0 {
+                pad = BOX_TEXT_PAD;
                 let state = self.box_state(id, false, open || self.mouse_on(id));
                 let (fill, border) = box_colors(vm, p, state);
                 self.rounded_box(rect, fill, border);
@@ -1038,9 +1041,9 @@ impl Walk<'_> {
         let w = f.0.str_width(&text);
         let y = (ext.1 - f.0.height as i32) >> 1;
         let x = match crate::profile::justify(vm, Some(p)) {
-            1 => ext.0 - w,
+            1 => ext.0 - w - pad,
             2 => (ext.0 - w) / 2,
-            _ => 0,
+            _ => pad,
         };
         let colors = font_colors(vm, p);
         let c = if crate::input::active(self.gui, id) && flag(vm, id, b"enabled") {
