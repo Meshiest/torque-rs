@@ -21,9 +21,10 @@
 //!   the host gives ([`DecalManager`]).
 //!
 //! Credit: the image's state emitter and the hit burst follow `ShapeBase::updateImageAnimation` and `Explosion::explode` in
-//! Torque3D's MIT-licensed `T3D/shapeImage.cpp` and `T3D/fx/explosion.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C)
-//! 2015 Faust Logic, Inc.), the eye at the drawn `eye` node `Player::getRenderEyeTransform` in `T3D/player.cpp` (the same
-//! copyrights). The code here is this crate's own.
+//! Torque3D's MIT-licensed `T3D/shapeImage.cpp` (Copyright (c) 2012 GarageGames, LLC) and `T3D/fx/explosion.cpp` (Copyright
+//! (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.), the eye at the drawn `eye` node
+//! `Player::getRenderEyeTransform` in `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic,
+//! Inc.). The code here is this crate's own.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;

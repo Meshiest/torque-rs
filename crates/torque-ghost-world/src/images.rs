@@ -33,7 +33,7 @@
 //! **Recoil** (`onImageRecoil`): a state with `stateRecoil` (light, medium, heavy) counts a recoil on the slot ([`ImageRecoil`]); the
 //! drawer restarts its owner's recoil thread on each new one (a Player's `light_recoil`, `medium_recoil` or `heavy_recoil`).
 //!
-//! **Not modelled** (nothing the frame shows): the state's eject shell, the client's energy drain of a
+//! **Not modeled** (nothing the frame shows): the state's eject shell, the client's energy drain of a
 //! `usesEnergy` image, the light of a firing image, and the reset of a cyclic animation sequence to its first frame on a state
 //! change (the world loads no shapes).
 //!

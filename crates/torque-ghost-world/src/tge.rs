@@ -8,7 +8,8 @@
 //! Credit: the client's reading of each record follows TGE 1.4's `unpackUpdate`s, as Torque3D (MIT) carries them in
 //! `T3D/shapeBase.cpp`, `T3D/player.cpp`, `T3D/projectile.cpp` (each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
 //! Faust Logic, Inc.), `T3D/camera.cpp`, `T3D/item.cpp` and `T3D/vehicles/vehicle.cpp` (each Copyright (c) 2012 GarageGames,
-//! LLC). The code is this crate's own.
+//! LLC); an image datablock's state table follows `T3D/shapeImage.cpp` (Copyright (c) 2012 GarageGames, LLC) and
+//! `T3D/shapeBase.h` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code is this crate's own.
 
 use std::collections::BTreeMap;
 

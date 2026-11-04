@@ -3,7 +3,7 @@
 //!
 //! - **Cubes** (StaticShapes) are scaled as their records say. Their texture coordinates are made from where each vertex is in
 //!   the world (one grid tile a unit, the face's two axes), so a long wall shows square tiles instead of one stretched grid, and
-//!   each is tinted by its height: the ground grey-blue, higher cubes warmer. A cube's object is made once and kept until its
+//!   each is tinted by its height: the ground gray-blue, higher cubes warmer. A cube's object is made once and kept until its
 //!   record moves it.
 //! - **Figures** (Players) are the engine's ([`GhostScene`]): the client's own where it predicts it (the cubes are its
 //!   collision world, [`torque_example_common::prediction`]), each playing the actions its shape has for the way it moves
@@ -133,7 +133,7 @@ impl WorldScene {
     }
 }
 
-/// The tint of a cube whose top is at `top`: the ground grey-blue, warmer the higher it reaches.
+/// The tint of a cube whose top is at `top`: the ground gray-blue, warmer the higher it reaches.
 pub fn cube_tint(top: f32) -> [u8; 3] {
     let t = (top / 6.0).clamp(0.0, 1.0);
     let ground = [196.0, 206.0, 222.0];
