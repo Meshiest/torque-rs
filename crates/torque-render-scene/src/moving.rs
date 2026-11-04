@@ -34,8 +34,6 @@ use shapes::shape::{Model, Shape};
 use crate::images::{ImageClock, ImageDb, Owner, advance_clock};
 use crate::math::Mat;
 
-/// The canvas width the projected pixel sizes are measured against (a fixed reference, not the frame's size).
-const REFERENCE_CANVAS_WIDTH: f32 = 800.0;
 use crate::mounts::{MAX_MOUNT_DEPTH, mounted_transform, pose_matrix, render_pose};
 use crate::shapes::{
     DetailPolicy, Loaded, MIN_VISIBILITY, Models, ShapeParts, detail_for, highest_detail,
@@ -45,6 +43,9 @@ use crate::textures::TextureSet;
 use crate::wheels::{Tires, tire_draws};
 use crate::world::{ClassOf, ShapeKind, ShapeWorld, Value};
 use crate::{Assets, Draw, PointLight};
+
+/// The canvas width the projected pixel sizes are measured against (a fixed reference, not the frame's size).
+const REFERENCE_CANVAS_WIDTH: f32 = 800.0;
 
 /// What a frame's moving shapes ask of their host beyond the world: the point lights a shape is lit by, and the live poses
 /// and image clocks a live client keeps from one frame to the next (its own animation of a ghost, such as a Player's). The
