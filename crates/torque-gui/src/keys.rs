@@ -719,8 +719,6 @@ pub fn map_virtual_key(vk: u8) -> u8 {
         0xdc => 0x2b,
         0xdd => 0x1b,
         0xde => 0x28,
-        // `VK_OEM_102`, the ISO keyboard's key next to the left Shift.
-        0xe2 => 0x56,
         _ => 0,
     }
 }

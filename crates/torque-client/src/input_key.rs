@@ -104,10 +104,12 @@ key_table! {
 }
 
 impl Key {
-    /// The scan code Windows gives the key (the US layout's, `MapVirtualKey`; the right Shift's own 0x36).
+    /// The scan code Windows gives the key (the US layout's, `MapVirtualKey`; the right Shift's own 0x36, the ISO key's 0x56,
+    /// which the platform layer's own table leaves out so its key code keeps its name).
     pub fn scan_code(self) -> u8 {
         match self {
             Key::ShiftRight => 0x36,
+            Key::IntlBackslash => 0x56,
             k => keys::map_virtual_key(k.virtual_key()),
         }
     }

@@ -180,3 +180,45 @@ fn typed_text_presses_the_keys_with_shift_where_needed() {
     assert_eq!(h.win32.modifiers, 0, "Shift let go");
     assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
 }
+
+#[test]
+fn a_bind_on_the_iso_key_saves_and_loads_back_onto_it() {
+    use crate::input::{Key, Taken};
+    let (mut h, map) = host_with_map(
+        "function iso(%v) { $iso = $iso @ %v; }
+         TestMap.bind(keyboard, \"lessthan\", iso);",
+    );
+    assert_eq!(h.press(Key::IntlBackslash), Taken::Map(map));
+    assert_ne!(h.press(Key::Backslash), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$iso").unwrap(), b"10");
+    assert_eq!(
+        h.server
+            .vm_mut()
+            .eval(b"return TestMap.getBinding(iso);")
+            .unwrap(),
+        b"keyboard\tlessthan"
+    );
+    // The map's lines as `save` prints them, run again on a new map of the same name.
+    h.drain_log();
+    h.server.vm_mut().eval(b"TestMap.save();").unwrap();
+    let lines: Vec<u8> = h
+        .drain_log()
+        .into_iter()
+        .flat_map(|l| l.text.into_iter().chain([b'\n']))
+        .collect();
+    assert!(
+        String::from_utf8_lossy(&lines).contains("\"lessthan\""),
+        "{}",
+        String::from_utf8_lossy(&lines)
+    );
+    let vm = h.server.vm_mut();
+    vm.eval(b"TestMap.delete(); new ActionMap(TestMap);")
+        .unwrap();
+    vm.eval(&lines).unwrap();
+    vm.eval(b"TestMap.push();").unwrap();
+    let map = h.server.vm().objects().find(b"TestMap").unwrap();
+    assert_eq!(h.press(Key::IntlBackslash), Taken::Map(map));
+    assert_ne!(h.press(Key::Backslash), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$iso").unwrap(), b"1010");
+    assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
+}
