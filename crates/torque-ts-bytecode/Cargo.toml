@@ -1,0 +1,14 @@
+[package]
+name = "torque-ts-bytecode"
+description = "Compiled TorqueScript (DSO) files: reading, writing and decoding, with dialect profiles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "torquescript", "bytecode", "dso", "scripting"]
+categories = ["parser-implementations", "compilers"]
+
+[lints]
+workspace = true

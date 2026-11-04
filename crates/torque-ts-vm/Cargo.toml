@@ -1,0 +1,26 @@
+[package]
+name = "torque-ts-vm"
+description = "The TorqueScript runtime: the console's variables, namespaces, objects, natives and events"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "torquescript", "console", "vm", "scripting"]
+categories = ["game-development", "compilers"]
+
+[dependencies]
+torque-ts-bytecode = { path = "../torque-ts-bytecode" }
+torque-ts-compiler = { path = "../torque-ts-compiler" }
+torque-ts-text = { path = "../torque-ts-text" }
+# The keyed hash of the maps keyed by names (`namehash`): a peer can choose names, so the hash is seeded at random.
+foldhash = "0.2"
+
+# A file's identity (volume and index) from its handle, without unsafe code here: a file opened by name is checked to be the
+# one looked at (`host::open_found`).
+[target.'cfg(windows)'.dependencies]
+winapi-util = "0.1.11"
+
+[lints]
+workspace = true

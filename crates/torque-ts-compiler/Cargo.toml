@@ -1,0 +1,18 @@
+[package]
+name = "torque-ts-compiler"
+description = "A TorqueScript compiler: source text to DSO bytecode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "torquescript", "compiler", "scripting"]
+categories = ["compilers", "game-development"]
+
+[dependencies]
+torque-ts-bytecode = { path = "../torque-ts-bytecode" }
+torque-ts-text = { path = "../torque-ts-text" }
+
+[lints]
+workspace = true
