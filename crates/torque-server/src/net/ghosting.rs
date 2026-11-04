@@ -5,6 +5,7 @@
 //! |---|---|
 //! | `GameConnection::activateGhosting()` | [`GhostHub::activate`]: the ghost-always objects' events (and the message that starts them) are posted on the connection |
 //! | `GameConnection::resetGhosting()` | [`GhostHub::reset`]: ghosting and scoping off, every ghost dropped, `EndGhosting` posted |
+//! | `NetConnection::getGhostID(%obj)` | the object's ghost index on the connection ([`GhostHub::ghost_index`]), -1 until its first record is acknowledged |
 //! | `GameConnection::setControlObject(%obj)` | a ShapeBase by name or id becomes the control object and the scope object (true); anything else changes nothing (false) |
 //! | `GameConnection::getControlObject()` | the control object's id, 0 for none |
 //!
@@ -121,6 +122,13 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
             Some(event) => post_events(vm, s, this, vec![HostEvent::Ghost(event)]),
             None => Native::Void,
         }
+    });
+    register(vm, "NetConnection", "getGhostID", shared, |vm, c, s| {
+        let index = this_conn(s, c).and_then(|(_, conn, hub)| {
+            let target = c.argv.get(2).map_or(&b""[..], |a| until_nul(a));
+            hub.ghost_index(conn, vm.objects().find(target)?)
+        });
+        Native::Int(index.map_or(-1, |i| i32::try_from(i).unwrap_or(-1)))
     });
     register(
         vm,
