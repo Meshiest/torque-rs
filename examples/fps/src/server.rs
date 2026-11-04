@@ -2,14 +2,15 @@
 //! Torque's net game ([`TorqueNet`]) on a UDP socket, running the game's `server.cs` and one map.
 //!
 //! **The socket.** The server binds one UDP socket on the address it is given: `127.0.0.1` keeps the game on this computer (the
-//! tests, a game for one), a private LAN address opens it to the local network. The bind policy refuses a public address. The
-//! LAN list's pings and queries are answered on the same socket.
+//! tests, a game for one), a private LAN address opens it to the local network, and `0.0.0.0` (every interface, with
+//! [`ServerOptions::public`]) opens it to players outside the network too (the router must forward its UDP port). The bind policy
+//! refuses any other public address. The LAN list's pings and queries are answered on the same socket.
 //!
 //! **A tick** ([`ArenaServer::tick`]) is one 32 ms pass of the main loop: the datagrams waiting, the scripts' events, the
 //! objects' ticks (each client's figure moves by the moves it sent, bolts fly) and a packet to every client.
 
 use std::cell::RefCell;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 
 use torque::script::vm::vm::Vm;
@@ -41,6 +42,35 @@ pub struct ServerOptions {
     pub name: String,
     /// The map: a path under the game folder (`missions/arena.mis`).
     pub mission: String,
+    /// Whether `0.0.0.0` (every interface, so players outside the network can join when their traffic reaches this computer) is
+    /// allowed as the address; no other public address is.
+    pub public: bool,
+}
+
+/// This computer's private IPv4 addresses (the ones other players on its network join by), the one the routing table prefers
+/// for each private range first. Nothing is sent: each target only asks the system which local address a datagram would leave
+/// from.
+pub fn lan_addresses() -> Vec<Ipv4Addr> {
+    let mut found = Vec::new();
+    for target in [
+        Ipv4Addr::new(192, 168, 255, 254),
+        Ipv4Addr::new(10, 255, 255, 254),
+        Ipv4Addr::new(172, 31, 255, 254),
+    ] {
+        let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
+            continue;
+        };
+        if socket.connect((target, 9)).is_err() {
+            continue;
+        }
+        if let Ok(SocketAddr::V4(local)) = socket.local_addr() {
+            let ip = *local.ip();
+            if (ip.is_private() || ip.is_link_local()) && !found.contains(&ip) {
+                found.push(ip);
+            }
+        }
+    }
+    found
 }
 
 /// The example's server.
@@ -71,7 +101,16 @@ impl ArenaServer {
         dedicated: bool,
     ) -> Result<ArenaServer, String> {
         let ip = IpAddr::V4(options.address);
-        let policy = BindPolicy::new(ip, false, &LanRules::PLAIN).map_err(|e| e.to_string())?;
+        let policy = BindPolicy::new(
+            ip,
+            options.public && options.address.is_unspecified(),
+            &LanRules::PLAIN,
+        ).map_err(|e| {
+            format!(
+                "the address {} is not a private one; only 0.0.0.0 (every interface) may be public: {e}",
+                options.address
+            )
+        })?;
         let mut udp = UdpTransport::new(policy);
         udp.bind(ip, options.port)
             .map_err(|e| format!("the server's socket: {e}"))?;

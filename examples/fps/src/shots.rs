@@ -1,6 +1,6 @@
 //! The example without a window: two clients in one process over the loopback address, every frame drawn offscreen as the
-//! window would draw it, and pictures taken: the main menu, the list of games with the hosted one, the view from the host's
-//! eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight (as it leaves the
+//! window would draw it, and pictures taken: the main menu, the choice of who may join a hosted game, the list of games with
+//! the hosted one, the address box with an error line, the view from the host's eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight (as it leaves the
 //! muzzle, then with its trail behind it eight steps away and two steps away), then the arena itself: the floor at the host's
 //! feet, the length of the arena from a corner, the host's own shadow on the floor ahead, the view from a spawn point with the
 //! other player hidden behind the cover, and the whole arena from above.
@@ -138,7 +138,11 @@ pub fn write_all(
     run(&gpu, &mut [&mut a], 200)?;
     save(&a.picture(&gpu)?, "menu")?;
 
-    a.game.call("hostGame", &[])?;
+    a.game.call("showHost", &[])?;
+    run(&gpu, &mut [&mut a], 64)?;
+    save(&a.picture(&gpu)?, "host-choice")?;
+
+    a.game.call("hostGame", &["lan"])?;
     run_until(&gpu, &mut a, &mut b, "the hosted game", |a, _| {
         a.game.in_game()
     })?;
@@ -152,6 +156,14 @@ pub fn write_all(
             .is_ok_and(|rows| rows > 0)
     })?;
     save(&b.picture(&gpu)?, "lan-list")?;
+
+    // A name where the numbers go: the plain error line under the box.
+    b.game
+        .call("eval", &["AddressEdit.setValue(\"my-server.example\");"])?;
+    b.game.call("connectAddress", &[])?;
+    run(&gpu, &mut [&mut a, &mut b], 64)?;
+    save(&b.picture(&gpu)?, "join-error")?;
+    b.game.call("eval", &["AddressEdit.setValue(\"\");"])?;
 
     b.game.call("joinSelected", &[])?;
     run_until(&gpu, &mut a, &mut b, "the second player", |a, b| {
@@ -320,6 +332,70 @@ fn watch_bob(a: &mut Seat, offset: [f32; 3], aim: f32) {
     );
     eye.fov = Some(60);
     a.eye = Some(eye);
+}
+
+/// The main menu, the host choice and the join screen (with a game in its list) at each of `sizes`, written into `dir` as
+/// `main-<w>x<h>.png`, `host-<w>x<h>.png` and `join-<w>x<h>.png`. Returns the paths.
+pub fn write_menus(
+    dir: &Path,
+    sizes: &[(u32, u32)],
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let first = *sizes.first().ok_or("no sizes")?;
+    let seat = |name: &str| -> Result<Seat, String> {
+        let mut game = ArenaGame::new(
+            make_files().map_err(|e| e.to_string())?,
+            ClientOptions {
+                net: NetMode::Loopback,
+                name: name.to_string(),
+                port: 0,
+                ..ClientOptions::default()
+            },
+        )?;
+        game.host.surface_size(first);
+        Ok(Seat {
+            view: game.view(&gpu),
+            target: gpu.offscreen(first.0, first.1).map_err(|e| e.to_string())?,
+            eye: None,
+            game,
+        })
+    };
+    let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
+    a.game.call("hostGame", &["lan"])?;
+    run_until(&gpu, &mut a, &mut b, "the hosted game", |a, _| {
+        a.game.in_game()
+    })?;
+    let port = a.game.hosted_address().ok_or("no hosted address")?.port();
+    b.game.set_global("$Arena::Port", &port.to_string());
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut paths = Vec::new();
+    for &size in sizes {
+        b.game.host.surface_size(size);
+        b.target = gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?;
+        for (screen, show) in [
+            ("main", "showMainMenu"),
+            ("host", "showHost"),
+            ("join", "showJoin"),
+        ] {
+            b.game.call(show, &[])?;
+            if screen == "join" {
+                run_until(&gpu, &mut a, &mut b, "the list of games", |_, b| {
+                    b.game
+                        .global("$Arena::ServerRows")
+                        .parse::<u32>()
+                        .is_ok_and(|n| n > 0)
+                })?;
+                b.game
+                    .call("eval", &["AddressEdit.setValue(\"192.168.1.20:28000\");"])?;
+            }
+            run(&gpu, &mut [&mut a, &mut b], 64)?;
+            let path = dir.join(format!("{screen}-{}x{}.png", size.0, size.1));
+            write_png(&b.picture(&gpu)?, &path).map_err(|e| e.to_string())?;
+            paths.push(path);
+        }
+    }
+    Ok(paths)
 }
 
 /// The motion pictures at `size`, written into `dir`: Bob stepping sideways (left, then right), walking backward and jumping,
