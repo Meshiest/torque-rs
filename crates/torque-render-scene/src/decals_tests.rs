@@ -22,7 +22,7 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 #[test]
-fn a_decal_lies_in_the_surfaces_plane_lifted_off_it() {
+fn a_decal_lies_in_the_surfaces_plane() {
     let mut m = DecalManager::default();
     for (normal, angle) in [
         ([0.0, -1.0, 0.0], 0.0),
@@ -34,7 +34,7 @@ fn a_decal_lies_in_the_surfaces_plane_lifted_off_it() {
         let d = m.decals().next().unwrap();
         let n = unit(normal).unwrap();
         for k in 0..3 {
-            assert!((d.position[k] - ([1.0, 2.0, 3.0][k] + n[k] * DECAL_LIFT)).abs() < 1e-5);
+            assert!((d.position[k] - [1.0, 2.0, 3.0][k]).abs() < 1e-5);
         }
         assert!(dot(d.half_x, n).abs() < 1e-5 && dot(d.half_y, n).abs() < 1e-5);
         assert!(dot(d.half_x, d.half_y).abs() < 1e-5);
@@ -92,7 +92,7 @@ fn a_decal_draws_as_an_alpha_blended_square_without_depth_writes() {
     let draws = m.draws([0.0, 0.0, 1.0], &mut set);
     assert_eq!(draws.len(), 1, "the one whose texture loads");
     let (dist, d) = &draws[0];
-    assert!((dist - (5.0 - DECAL_LIFT)).abs() < 1e-4);
+    assert!((dist - 5.0).abs() < 1e-4);
     assert_eq!(d.blend, Blend::Alpha);
     assert!(d.depth_test && !d.depth_write);
     assert_eq!(d.vertices.len(), 6);
@@ -126,4 +126,114 @@ fn a_projectiles_decal_is_one_of_those_it_names() {
         })
     );
     assert_eq!(projectile_decal(&w, 8, &mut rng), None);
+}
+
+/// The faces of the box `lo..hi` as triangles, each wound to face out.
+fn box_triangles(lo: [f32; 3], hi: [f32; 3]) -> Vec<Triangle> {
+    let c = |i: usize| {
+        [
+            if i & 1 != 0 { hi[0] } else { lo[0] },
+            if i & 2 != 0 { hi[1] } else { lo[1] },
+            if i & 4 != 0 { hi[2] } else { lo[2] },
+        ]
+    };
+    // Each face's corners counter-clockwise seen from outside.
+    let faces = [
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+    ];
+    faces
+        .iter()
+        .flat_map(|f| [[c(f[0]), c(f[1]), c(f[2])], [c(f[0]), c(f[2]), c(f[3])]])
+        .collect()
+}
+
+fn area(d: &Decal) -> f32 {
+    d.triangles
+        .iter()
+        .map(|t| {
+            let e1 = [0, 1, 2].map(|k| t[1].0[k] - t[0].0[k]);
+            let e2 = [0, 1, 2].map(|k| t[2].0[k] - t[0].0[k]);
+            let c = cross(e1, e2);
+            0.5 * dot(c, c).sqrt()
+        })
+        .sum()
+}
+
+#[test]
+fn a_clipped_decal_mid_face_is_the_whole_square_on_the_face() {
+    // A wall facing -y at y = 0, two units wide.
+    let wall = box_triangles([-1.0, 0.0, 0.0], [1.0, 1.0, 2.0]);
+    let mut m = DecalManager::default();
+    m.add_clipped(&hole(), [0.2, 0.0, 1.0], [0.0, -1.0, 0.0], 0.4, &wall);
+    let d = m.decals().next().unwrap();
+    assert!((area(d) - 0.2 * 0.1).abs() < 1e-5, "{}", area(d));
+    for t in &d.triangles {
+        for (p, uv) in t {
+            assert!(p[1].abs() < 1e-6, "on the face: {p:?}");
+            assert!(uv.iter().all(|c| (-1e-4..=1.0001).contains(c)), "{uv:?}");
+        }
+    }
+}
+
+#[test]
+fn a_clipped_decal_at_an_edge_is_cut_off_there_and_none_lies_off_the_surface() {
+    // A cube's face at y = 0 whose top edge is at z = 1; the decal sits on the edge, half of it over the air.
+    let cube = box_triangles([-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]);
+    let data = DecalData {
+        size: [0.2, 0.2],
+        texture: Some("kit/hole".to_string()),
+    };
+    let mut m = DecalManager::default();
+    m.add_clipped(&data, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], 0.3, &cube);
+    let d = m.decals().next().unwrap();
+    for t in &d.triangles {
+        for (p, _) in t {
+            assert!(
+                p[1].abs() < 1e-6 && p[2] <= 1.0 + 1e-6,
+                "on the face, under its edge: {p:?}"
+            );
+        }
+    }
+    assert!(
+        (area(d) - 0.02).abs() < 1e-4,
+        "half the square: {}",
+        area(d)
+    );
+    // Nothing under the box: no decal.
+    let mut m = DecalManager::default();
+    m.add_clipped(&data, [0.0, -3.0, 1.0], [0.0, -1.0, 0.0], 0.0, &cube);
+    assert!(m.is_empty());
+}
+
+#[test]
+fn a_decal_is_drawn_nearer_the_eye_along_its_ray() {
+    let mut files = std::collections::HashMap::new();
+    files.insert("kit/hole.png".to_string(), png(8, 8, 30));
+    let files = Files(files);
+    let mut set = TextureSet::new(&files);
+    let mut m = DecalManager::default();
+    m.add(&hole(), [0.0, 5.0, 1.0], [0.0, -1.0, 0.0], 0.0);
+    let eye = [0.5, 0.0, 1.2];
+    let draws = m.draws(eye, &mut set);
+    let laid: Vec<[f32; 3]> = m
+        .decals()
+        .next()
+        .unwrap()
+        .triangles
+        .iter()
+        .flat_map(|t| t.map(|p| p.0))
+        .collect();
+    for (v, p) in draws[0].1.vertices.iter().zip(laid) {
+        let to_eye = [0, 1, 2].map(|k| eye[k] - p[k]);
+        let moved = [0, 1, 2].map(|k| v.position[k] - p[k]);
+        let c = cross(to_eye, moved);
+        assert!(dot(c, c).sqrt() < 1e-5, "along the eye's ray");
+        assert!(dot(moved, to_eye) > 0.0, "toward the eye");
+        assert!(v.position[1] < 5.0 && v.position[1] > 4.98);
+    }
 }

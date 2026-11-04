@@ -47,7 +47,7 @@ use torque::ghosts::{TgeClass, TgeRecord, Value};
 use torque::shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use torque_example_common::KitAssets;
 use torque_example_common::view::{SceneShape, WorldView};
-use torque_render_scene::decals::{DecalManager, projectile_decal};
+use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::hd::{DynamicObject, material};
 use torque_render_scene::math::Mat;
@@ -620,7 +620,9 @@ impl ArenaScene {
                         && let Some(d) = projectile_decal(world, db, &mut rng)
                     {
                         let angle = rng.f() * std::f32::consts::TAU;
-                        self.decals.add(&d, at, normal, angle);
+                        let reach = d.size[0].max(d.size[1]);
+                        let surface = cube_triangles_near(world, at, reach);
+                        self.decals.add_clipped(&d, at, normal, angle, &surface);
                     }
                 }
                 continue;
@@ -1076,6 +1078,47 @@ impl ArenaScene {
         eye.fov = Some(FOV);
         eye
     }
+}
+
+/// The faces (as triangles) of the map's cubes (its StaticShapes, each the kit's unit cube scaled and turned as its record
+/// says) whose bounds come within `reach` of `at`: the surface a decal there may lie on.
+fn cube_triangles_near(world: &TgeWorld, at: [f32; 3], reach: f32) -> Vec<Triangle> {
+    let mut out = Vec::new();
+    for ghost in world.records.ghosts.values() {
+        let (Some(TgeClass::StaticShape), Some(pose)) = (ghost.class, ghost.pose()) else {
+            continue;
+        };
+        let Some((m, scale)) = pose_matrix(&pose, None) else {
+            continue;
+        };
+        let half = scale.map(|s| s.abs() * 0.5);
+        let radius = (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt();
+        let center = m.column(3);
+        let far = (0..3)
+            .map(|k| (center[k] - at[k]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        if far > radius + reach {
+            continue;
+        }
+        let corner = |i: usize| {
+            let local = [0, 1, 2].map(|k| if i >> k & 1 != 0 { 0.5 } else { -0.5 } * scale[k]);
+            m.mul_p(local)
+        };
+        // Each face's corners counter-clockwise seen from outside (for a positive scale).
+        for f in [
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+        ] {
+            out.push([corner(f[0]), corner(f[1]), corner(f[2])]);
+            out.push([corner(f[0]), corner(f[2]), corner(f[3])]);
+        }
+    }
+    out
 }
 
 fn make_cube(

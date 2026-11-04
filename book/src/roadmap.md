@@ -30,8 +30,8 @@ What is planned, roughly in order. Items marked *tool* are build-time features.
 - Source BSP maps through the format-neutral map layer: brushes, displacements, static props, visleafs, lightmaps,
   cubemaps, the 3D skybox, water, overlays and worldlights, read from the player's own installs.
 - Full terrain (editable, `.ter` writer), full interiors, lighting (lightmaps and dynamic lights).
-- The remaining game classes: WaterBlock, PathedInterior, decals clipped to the surfaces they lie on (the
-  client lays a projectile's decals as flat squares), MissionArea, AIConnection, HoverVehicle,
+- The remaining game classes: WaterBlock, PathedInterior, decals clipped to interiors and terrain (the client clips a
+  projectile's decals to the triangles its caller gives), MissionArea, AIConnection, HoverVehicle,
   lightning and precipitation, splash and debris, replicators.
 - A modern particle system beside TGE's: GPU simulation and sorting, soft particles, lit and shadowed particles,
   flipbook and ribbon (trail) emitters, curves over a particle's life, collision with the scene, and an editor-friendly

@@ -345,7 +345,7 @@ fn holding_the_right_button_raises_the_sights_narrows_the_view_and_slows_the_tur
 }
 
 #[test]
-fn a_bolt_that_hits_the_block_leaves_a_hole_on_its_face() {
+fn a_bolt_that_hits_the_block_leaves_a_hole_on_its_face_and_nowhere_else() {
     let mut a = host();
     turn(&mut a, 0.6, 0.3);
     turn(&mut a, -0.37, -0.25);
@@ -363,11 +363,16 @@ fn a_bolt_that_hits_the_block_leaves_a_hole_on_its_face() {
         "the hole is {lifted} from the hit ({:?}, {hit:?})",
         d.position
     );
-    // On the block's face toward the eye, facing out of it.
+    // On the block's face toward the eye, facing out of it, its mesh on that face (y = 7) and inside the block's bounds.
     assert!(d.normal[1] < -0.99, "{:?}", d.normal);
-    assert!(
-        d.position[1] < 7.0,
-        "in front of the face: {:?}",
-        d.position
-    );
+    assert!(!d.triangles.is_empty());
+    for t in &d.triangles {
+        for (p, _) in t {
+            assert!((p[1] - 7.0).abs() < 0.02, "on the face: {p:?}");
+            assert!(
+                (2.0..=4.0).contains(&p[0]) && (0.0..=3.0).contains(&p[2]),
+                "{p:?}"
+            );
+        }
+    }
 }
