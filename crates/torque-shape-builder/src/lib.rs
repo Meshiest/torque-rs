@@ -12,6 +12,26 @@
 //! renderer culls the other side); [`MeshData::add_box`] winds every face that way. Rotations are stored as Torque stores
 //! them ([`turn`]).
 //!
+//! ```
+//! use torque_shape_builder::{FULL_UV, MeshData, ShapeBuilder, material_flags};
+//! use torque_shapes::write::write_dts;
+//!
+//! let mut b = ShapeBuilder::new();
+//! let node = b.node("crate", None, [0.0; 3]);
+//! let drawn = b.detail("detail1", 1.0);
+//! let collision = b.detail("Collision-1", -1.0);
+//! let wood = b.material("wood", material_flags::S_WRAP | material_flags::T_WRAP);
+//! let (min, max) = ([-0.5; 3], [0.5; 3]);
+//! let mut mesh = MeshData::new(Some(wood));
+//! mesh.add_box(min, max, |_| FULL_UV);
+//! b.object("crate", node, drawn, mesh);
+//! b.object("Col-1", node, collision, MeshData::hull_box(min, max));
+//! let model = b.build();
+//! assert_eq!(model.shape.bounds, [-0.5, -0.5, -0.5, 0.5, 0.5, 0.5]);
+//! let dts_bytes = write_dts(&model);
+//! assert!(!dts_bytes.is_empty());
+//! ```
+//!
 //! Credit: the derived links, detail figures and default states follow `TSShape::init`, and [`turn`] the quaternion layout of
 //! `QuatF::setMatrix`, as Torque3D carries them under the MIT licence (`Engine/source/ts/tsShape.cpp`,
 //! `Engine/source/math/mQuat.cpp`, `Engine/source/ts/tsTransform.cpp` for `Quat16::set`, and the material and primitive
@@ -639,3 +659,6 @@ fn sequence(s: &mut Shape, name: i32, def: SequenceDef) -> Sequence {
         mat_frame_matters: Default::default(),
     }
 }
+
+#[cfg(test)]
+mod tests;

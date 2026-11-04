@@ -18,6 +18,7 @@ debugger, telnet console, journaling) are build-time features, so a finished gam
 | `torque-ts-compiler` | the TorqueScript compiler |
 | `torque-collide` | convexes, GJK, polygon lists, working sets, object type masks |
 | `torque-shapes` | DTS shapes and DSQ sequences |
+| `torque-shape-builder` | a builder of shape models from code: nodes, box and prism meshes, details, materials and sequences |
 | `torque-sim` | the process list, Player, AIPlayer, Item, Projectile, ShapeBase images |
 | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
 | `torque-scene` | the scene container: bins, searches, a scene object's transform maths |

@@ -26,6 +26,7 @@ torque-net = { path = "../torque-net", optional = true }
 torque-resource = { path = "../torque-resource", optional = true }
 torque-scene = { path = "../torque-scene", optional = true }
 torque-server = { path = "../torque-server", optional = true }
+torque-shape-builder = { path = "../torque-shape-builder", optional = true }
 torque-shapes = { path = "../torque-shapes", optional = true }
 torque-sim = { path = "../torque-sim", optional = true }
 torque-ts-bytecode = { path = "../torque-ts-bytecode", optional = true }
@@ -44,6 +45,8 @@ default = [
 script = ["dep:torque-ts-text", "dep:torque-ts-bytecode", "dep:torque-ts-compiler", "dep:torque-ts-vm"]
 collide = ["dep:torque-collide", "dep:torque-mapcore"]
 shapes = ["dep:torque-shapes"]
+# Builds shape models from code: nodes, box and prism meshes, details, materials and sequences.
+shape-builder = ["dep:torque-shape-builder", "shapes"]
 sim = ["dep:torque-sim", "collide"]
 vehicle = ["dep:torque-vehicle", "collide"]
 # The format-neutral map layer and the Torque map file readers.
@@ -72,7 +75,7 @@ client-window = ["client", "torque-client/window"]
 audio-device = ["audio", "torque-audio/device"]
 # The system's fonts as the fallback for a face and size with no font cache.
 system-fonts = ["fonts", "torque-fonts/system-fonts"]
-full = ["default", "audio-device", "system-fonts", "client-window"]
+full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder"]
 
 [[example]]
 name = "script"
