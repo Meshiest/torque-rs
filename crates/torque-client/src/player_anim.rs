@@ -9,15 +9,22 @@
 //!
 //! **The action thread** ([`PlayerAnimation::update`]): unless the action playing waits for its end and has not reached it,
 //! `pickActionAnimation` chooses: a falling Player plays `fall`; one on the ground the moving action (`run`, `back`, `side`)
-//! whose direction best matches its velocity in its own frame (a dot product over 0.1, the back of an action counting as that
-//! action played backwards), else `root`. A jump the record's move asks for while the Player leaves the ground plays `jump`
-//! (`standjump` under 0.5 units a second) to its end. A new action blends in over [`TRANSITION`] seconds
+//! whose direction best matches its velocity in its own frame (a dot product over 0.1, the back of `side` counting as `side`
+//! played backwards: a step the other way), else `root`. A jump the record's move asks for while the Player leaves the ground
+//! plays `jump` (`standjump` under 0.5 units a second along the ground, when the shape has one) to its end; so does one whose
+//! upward speed passes [`JUMP_RISE_SPEED`] (TGE's client starts the jump as it runs the ghost's move; a record seldom carries
+//! the move's jump trigger together with the take-off, and `falling` is set only once the Player is coming down fast, so the
+//! rise is what the client sees of a jump). An action the server set (a record's action, one past the
+//! table: a script's `setActionThread`, such as a death) plays forward from its start, or at its end when the record says the
+//! server's has ended, and is played to its end before another is picked; one the server holds at its end (`holdAtEnd`) stays
+//! there until the server sets another. A new action blends in over [`TRANSITION`] seconds
 //! (`transitionToSequence`); an action the shape has no sequence for changes nothing. A moving action's rate is the velocity
 //! along its direction over its speed, at most `maxTimeScale` ([`MAX_TIME_SCALE`]), negative backwards
 //! (`updateActionThread`).
 //!
 //! **The arm thread** plays the arm action the record names (the server's `setArmThread`; `look` when the shape has it and
 //! none was named), held at the head's pitch over the look range (`updateLookAnimation`): 0 looking fully up, 1 fully down.
+//! **The head thread** plays the shape's `head` sequence, when it has one, at the same position (`mHeadVThread`).
 //!
 //! Credit: follows TGE 1.4's `game/player.cc` (`pickActionAnimation`, `setActionThread`, `updateActionThread`,
 //! `updateLookAnimation`, `PlayerData::preload`; Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
@@ -40,12 +47,15 @@ pub const MAX_TIME_SCALE: f32 = 1.5;
 pub const MIN_MATCH: f32 = 0.1;
 /// Below this speed a jump is a standing jump.
 pub const STAND_JUMP_SPEED: f32 = 0.5;
+/// An upward speed past this (units a second), from below it, is a jump leaving the ground.
+pub const JUMP_RISE_SPEED: f32 = 3.0;
 
 /// TGE's action numbers.
 pub mod action {
     pub const ROOT: usize = 0;
     /// The moving actions are 1 to 3 (`run`, `back`, `side`).
     pub const FIRST_MOVE: usize = 1;
+    pub const SIDE: usize = 3;
     pub const MOVES: usize = 4;
     pub const FALL: usize = 4;
     pub const JUMP: usize = 5;
@@ -90,6 +100,30 @@ pub fn action_list(shape: &Shape) -> Vec<Action> {
         .collect()
 }
 
+/// An action the server set, as a record carries it (`ghosts::player::Action`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ServerAction {
+    pub action: u32,
+    /// The thread holds at its end (`holdAtEnd`).
+    pub hold: bool,
+    /// The server's thread had reached its end when the record was written.
+    pub at_end: bool,
+}
+
+impl ServerAction {
+    /// The action a Player record (or an AIPlayer's) last carried, if any.
+    pub fn of_record(record: &TgeRecord) -> Option<ServerAction> {
+        let (TgeRecord::Player(p) | TgeRecord::AiPlayer(p)) = record else {
+            return None;
+        };
+        p.action.map(|a| ServerAction {
+            action: a.action,
+            hold: a.hold_at_end,
+            at_end: a.at_end,
+        })
+    }
+}
+
 /// What a frame of a Player's animation reads from its ghost.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct PlayerMotion {
@@ -104,6 +138,8 @@ pub struct PlayerMotion {
     pub arm_action: Option<u32>,
     /// The head's pitch over the look range, 0 (up) to 1 (down).
     pub look: f32,
+    /// The action the server set, as the record last carried it ([`ServerAction::of_record`]).
+    pub server_action: Option<ServerAction>,
 }
 
 impl PlayerMotion {
@@ -125,6 +161,7 @@ impl PlayerMotion {
             jumping: m.mv.triggers.get(2).copied().unwrap_or(false),
             arm_action: p.arm,
             look: ((head + 1.0) * 0.5).clamp(0.0, 1.0),
+            server_action: ServerAction::of_record(record),
         })
     }
 
@@ -144,10 +181,17 @@ pub struct PlayerAnimation {
     forward: bool,
     /// The action plays to its end before another is picked.
     wait: bool,
+    /// The action stays at its end until the server sets another.
+    hold: bool,
+    /// The server's action last seen in a record.
+    server_action: Option<ServerAction>,
     action_thread: ThreadId,
     arm_thread: Option<ThreadId>,
     arm_action: Option<usize>,
+    head_thread: Option<(ThreadId, usize)>,
     was_falling: bool,
+    /// The upward speed of the last frame.
+    last_rise: f32,
 }
 
 impl PlayerAnimation {
@@ -167,6 +211,11 @@ impl PlayerAnimation {
             None => (None, None),
         };
         let action_thread = instance.create_thread(shape)?;
+        let head_thread = find_sequence(shape, b"head").and_then(|seq| {
+            let t = instance.create_thread(shape)?;
+            instance.set_sequence(shape, t, seq as i32, 0.5);
+            Some((t, seq))
+        });
         let root = actions
             .first()
             .and_then(|a| a.sequence)
@@ -179,10 +228,14 @@ impl PlayerAnimation {
             action: action::ROOT,
             forward: true,
             wait: false,
+            hold: false,
+            server_action: None,
             action_thread,
             arm_thread,
             arm_action,
+            head_thread,
             was_falling: false,
+            last_rise: 0.0,
         })
     }
 
@@ -199,6 +252,11 @@ impl PlayerAnimation {
     /// The arm action playing.
     pub fn arm_action(&self) -> Option<usize> {
         self.arm_action
+    }
+
+    /// Whether the action stays at its end until the server sets another.
+    pub fn held(&self) -> bool {
+        self.hold
     }
 
     /// `setActionThread(action, forward)`: nothing for the action already playing that way, or one without a sequence.
@@ -219,7 +277,14 @@ impl PlayerAnimation {
         self.action = action;
         self.forward = forward;
         self.wait = wait;
+        self.hold = false;
         let pos = if forward { 0.0 } else { 1.0 };
+        // The thread's direction first: a transition runs the way the thread plays when it starts, and one run against the
+        // new direction would end back on the old sequence (side played backward giving way to back, say).
+        if let Some(t) = instance.thread_mut(self.action_thread) {
+            let speed = t.time_scale.abs().max(f32::MIN_POSITIVE);
+            t.time_scale = if forward { speed } else { -speed };
+        }
         instance.transition_to_sequence(shape, self.action_thread, seq, pos, TRANSITION);
     }
 
@@ -239,7 +304,7 @@ impl PlayerAnimation {
             let d = vel[0] * a.motion.dir[0] + vel[1] * a.motion.dir[1] + vel[2] * a.motion.dir[2];
             if d > best {
                 (best, chosen, forward) = (d, i, true);
-            } else if -d > best {
+            } else if i == action::SIDE && -d > best {
                 (best, chosen, forward) = (-d, i, false);
             }
         }
@@ -268,16 +333,25 @@ impl PlayerAnimation {
     ) {
         let took_off = m.falling && !self.was_falling;
         self.was_falling = m.falling;
-        if took_off && m.jumping {
-            let speed = m.velocity.iter().map(|v| v * v).sum::<f32>().sqrt();
-            let jump = if speed < STAND_JUMP_SPEED {
+        let rose = m.velocity[2] > JUMP_RISE_SPEED && self.last_rise <= JUMP_RISE_SPEED;
+        self.last_rise = m.velocity[2];
+        if !self.hold && ((took_off && m.jumping) || rose) {
+            let flat = m.velocity[0].hypot(m.velocity[1]);
+            let has = |a: usize| self.actions.get(a).is_some_and(|x| x.sequence.is_some());
+            let jump = if flat < STAND_JUMP_SPEED && has(action::STAND_JUMP) {
                 action::STAND_JUMP
             } else {
                 action::JUMP
             };
             self.set_action(shape, instance, jump, true, true);
         }
-        if !self.wait || self.at_end(instance) {
+        if let Some(a) = m.server_action
+            && self.server_action != Some(a)
+        {
+            self.server_action = Some(a);
+            self.server_set(shape, instance, a);
+        }
+        if !self.hold && (!self.wait || self.at_end(instance)) {
             self.wait = false;
             self.pick(shape, instance, m);
         }
@@ -313,6 +387,32 @@ impl PlayerAnimation {
             self.arm_action.and_then(|a| self.actions.get(a)?.sequence),
         ) {
             instance.set_sequence(shape, t, seq as i32, m.look);
+        }
+        if let Some((t, seq)) = self.head_thread {
+            instance.set_sequence(shape, t, seq as i32, m.look);
+        }
+    }
+
+    /// A new action from the server (`unpackUpdate`'s `setActionThread(action, true, hold, true, ...)`): one of the table's
+    /// changes nothing (the client picks those itself); another plays forward to its end, from its start, or at its end
+    /// already when the server's had ended.
+    fn server_set(&mut self, shape: &Shape, instance: &mut ShapeInstance, a: ServerAction) {
+        let action = a.action as usize;
+        if a.action == ghosts::player::NULL_ANIMATION
+            || a.action < ghosts::player::NUM_TABLE_ACTION_ANIMS
+            || self.actions.get(action).and_then(|x| x.sequence).is_none()
+        {
+            return;
+        }
+        if self.action != action || !self.forward {
+            self.set_action(shape, instance, action, true, true);
+        }
+        self.wait = true;
+        self.hold = a.hold;
+        if a.at_end
+            && let Some(seq) = self.actions[action].sequence
+        {
+            instance.set_sequence(shape, self.action_thread, seq as i32, 1.0);
         }
     }
 }

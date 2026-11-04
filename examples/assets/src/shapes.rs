@@ -3,7 +3,7 @@
 //! | file | nodes | sequences | material |
 //! |---|---|---|---|
 //! | `cube.dts` | `cube` | | `grid` |
-//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `jump`, `hold` | `figure` |
+//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `head`, `death1`, `death2` | `figure` |
 //! | `pistol.dts` | `pistol`, `mountPoint`, `muzzlePoint`, `ejectPoint`, `slide` | `fire` | `pistol` |
 //! | `projectile.dts` | `projectile` | | `projectile` |
 //!
@@ -16,25 +16,36 @@
 //! first-person view), `cam` at its centre (the point a third-person camera orbits), `mount0` in the closed right hand (where a held
 //! item's `mountPoint` goes), turned so the item's +y runs along the forearm. The eyes are two small dark boxes on the face.
 //! Its texture is four swatches: skin, shirt, trousers (with the shoes) and the eyes' colour. The sequences turn the joints
-//! about x:
+//! about x (the side step and the falls also about y and z):
 //!
 //! - `idle` (and `root`, the same keys under the name a player's rest action looks for): 2 s, looped, the arms sway 3°, the
 //!   elbows a little bent.
 //! - `walk`: 1 s, looped, legs ±25° and arms ±20° against them; each knee bends (to 50°) as its leg swings through from
 //!   behind and is straight while its foot is down; the elbows bend 12° to 24°. The ground frames carry it [`WALK_SPEED`]
 //!   units a second.
-//! - `run`: 0.6 s, looped, legs ±45°, the knees bending to 107°, arms ±40° with the elbows bent about 80°, the torso leant
+//! - `run`: 0.6 s, looped, legs ±45°, the knees bending to 107°, arms ±40° with the elbows bent about 80°, the torso leaned
 //!   10° forward; [`RUN_SPEED`] units a second.
+//! - `back`: 0.7 s, looped, a walk backward: the gait run in reverse, each knee bending as its leg comes back under the hip;
+//!   [`BACK_SPEED`] units a second backward.
+//! - `side`: 0.6 s, looped, a side step to the left: the left leg lifts and swings out, then the right lifts and closes in to
+//!   it, the arms a little out and the torso leaned into the step; [`SIDE_SPEED`] units a second along -x (the way the side
+//!   action of a player's table points). A player plays it backward to step right.
 //! - `jump`: 0.5 s, played once: a crouch with the arms back, then the knees tucked up and the arms swung forward to about
 //!   shoulder height, held on the last key.
-//! - `hold`: the right arm raised to aim, the forearm level and straight ahead; priority 1 and only the right arm, so played on
-//!   a second thread it holds that arm over any of the others while the figure holds a pistol.
+//! - `hold`: the right arm raised to aim, from fully up (position 0) through level and straight ahead (0.5) to fully down (1),
+//!   [`LOOK_RANGE`] degrees each way; priority 1 and only the right arm, so played on a second thread at the aim's pitch it
+//!   holds that arm over any of the others while the figure holds a pistol.
+//! - `head`: a blend sequence over the same range: the torso and the head bend up and down with the aim (a share each,
+//!   [`LOOK_TORSO`] and [`LOOK_HEAD`]), added to whatever else plays.
+//! - `death1` and `death2`: 1.2 s, played once and held: the knees give, the body tips over at the feet, backward
+//!   (`death1`, hit from the front) or forward (`death2`, hit from behind), lands flat with a small bounce and lies still, the
+//!   arms flung out to the sides.
 //!
-//! **The pistol** is a large semi-automatic, 26 cm long: a long squared top (the fixed barrel in front, flush to the muzzle,
-//! the slide behind it), front and rear sights, an exposed hammer, a trigger in its guard and a grip raked back. It points
+//! **The pistol** is a large semi-automatic, 26 cm long: a long squared top (the slide, the whole length from the hammer to
+//! the muzzle, with the front and rear sights on it, over a fixed barrel whose end shows as it runs back), an exposed hammer, a trigger in its guard and a grip raked back. It points
 //! along +y with its origin at the top of the grip; `mountPoint` is in the grip where the hand holds it, `muzzlePoint` on the
-//! bore at the barrel's front face, `ejectPoint` on the right of the top, where a spent case leaves. `fire` (0.15 s, once)
-//! runs the `slide` back 4 cm and returns it.
+//! bore at the front face, `ejectPoint` on the right of the top, where a spent case leaves. `fire` (0.15 s, once)
+//! runs the whole `slide` back 4 cm and returns it.
 //!
 //! **The projectile** is a small cube ([`BOLT_SIZE`] a side, about four inches) centered on its origin, self-lit, each face hot
 //! at its center and orange at its edges.
@@ -48,11 +59,21 @@ use crate::builder::{
     material_flags, turn,
 };
 
-/// The figure's ground speed in its `walk` and `run` sequences, units a second.
+/// The figure's ground speed in its `walk`, `run`, `back` and `side` sequences, units a second.
 pub const WALK_SPEED: f32 = 1.6;
 pub const RUN_SPEED: f32 = 5.0;
+pub const BACK_SPEED: f32 = 4.0;
+pub const SIDE_SPEED: f32 = 4.5;
+
+/// The pitch the `head` and `hold` sequences span each way (degrees): position 0 looks this far up, 1 this far down.
+pub const LOOK_RANGE: f32 = 80.0;
+/// How much of the look the torso and the head take (the rest is the eyes').
+pub const LOOK_TORSO: f32 = 0.2;
+pub const LOOK_HEAD: f32 = 0.35;
 
 const X: Vec3 = [1.0, 0.0, 0.0];
+const Y: Vec3 = [0.0, 1.0, 0.0];
+const Z: Vec3 = [0.0, 0.0, 1.0];
 const OPAQUE: u32 = material_flags::S_WRAP | material_flags::T_WRAP | material_flags::NEVER_ENV_MAP;
 
 /// The unit cube.
@@ -108,9 +129,35 @@ fn keys(degrees: &[f32]) -> Vec<Quat16> {
 
 /// Ground frames moving `speed` units a second forward over `duration`, one a key.
 fn travel(n: usize, speed: f32, duration: f32) -> Vec<Vec3> {
+    travel_along(n, [0.0, 1.0, 0.0], speed, duration)
+}
+
+/// Ground frames moving `speed` units a second along `dir` over `duration`, one a key.
+fn travel_along(n: usize, dir: Vec3, speed: f32, duration: f32) -> Vec<Vec3> {
     (1..=n)
-        .map(|k| [0.0, speed * duration * k as f32 / n as f32, 0.0])
+        .map(|k| dir.map(|d| d * speed * duration * k as f32 / n as f32))
         .collect()
+}
+
+/// One rotation made of turns `(axis, degrees)`, the first applied last (outermost).
+fn turns(parts: &[(Vec3, f32)]) -> Quat16 {
+    let mut q = [0.0f32, 0.0, 0.0, 1.0];
+    for &(axis, degrees) in parts {
+        let (s, c) = (0.5 * degrees.to_radians()).sin_cos();
+        let r = [axis[0] * s, axis[1] * s, axis[2] * s, c];
+        q = [
+            q[3] * r[0] + q[0] * r[3] + q[1] * r[2] - q[2] * r[1],
+            q[3] * r[1] - q[0] * r[2] + q[1] * r[3] + q[2] * r[0],
+            q[3] * r[2] + q[0] * r[1] - q[1] * r[0] + q[2] * r[3],
+            q[3] * r[3] - q[0] * r[0] - q[1] * r[1] - q[2] * r[2],
+        ];
+    }
+    let w = q[3].clamp(-1.0, 1.0);
+    let s = (1.0 - w * w).sqrt();
+    if s < 1e-6 {
+        return NO_TURN;
+    }
+    turn([q[0] / s, q[1] / s, q[2] / s], 2.0 * w.acos().to_degrees())
 }
 
 /// The figure's limb lengths: thigh and shin with the foot (the hips 0.95 up), upper arm and forearm with the hand (the hand
@@ -146,6 +193,17 @@ struct Gait {
 /// eighth of a loop before the leg passes under the hip) and is straight from before the foot lands until it pushes off; an
 /// elbow bends more as its arm swings forward.
 fn gait_tracks(torso: usize, limbs: &Limbs, n: usize, g: &Gait) -> Vec<Track<Quat16>> {
+    gait_tracks_along(torso, limbs, n, g, 1.0)
+}
+
+/// [`gait_tracks`] run forward (`dir` 1) or backward (-1: the same loop in reverse, a walk backward).
+fn gait_tracks_along(
+    torso: usize,
+    limbs: &Limbs,
+    n: usize,
+    g: &Gait,
+    dir: f32,
+) -> Vec<Track<Quat16>> {
     let half = TAU / 2.0;
     let mut tracks = vec![Track {
         node: torso,
@@ -155,22 +213,22 @@ fn gait_tracks(torso: usize, limbs: &Limbs, n: usize, g: &Gait) -> Vec<Track<Qua
         let phase = half * side as f32;
         tracks.push(Track {
             node: limbs.legs[side],
-            keys: cycle(n, |p| g.hips * (p + phase).sin()),
+            keys: cycle(n, |p| g.hips * (dir * p + phase).sin()),
         });
         tracks.push(Track {
             node: limbs.knees[side],
             keys: cycle(n, |p| {
-                -(g.knee_always + g.knee_swing * (p + phase + TAU / 8.0).cos().max(0.0))
+                -(g.knee_always + g.knee_swing * (dir * p + phase + TAU / 8.0 * dir).cos().max(0.0))
             }),
         });
         tracks.push(Track {
             node: limbs.arms[side],
-            keys: cycle(n, |p| g.arms * (p + phase + half).sin()),
+            keys: cycle(n, |p| g.arms * (dir * p + phase + half).sin()),
         });
         tracks.push(Track {
             node: limbs.elbows[side],
             keys: cycle(n, |p| {
-                g.elbow_always + g.elbow_swing * (p + phase + half).sin().max(0.0)
+                g.elbow_always + g.elbow_swing * (dir * p + phase + half).sin().max(0.0)
             }),
         });
     }
@@ -362,6 +420,37 @@ pub fn figure() -> Model {
             ground: travel(n, speed, duration),
         });
     }
+    // Walking backward: a gait run in reverse, each knee bending as its leg comes back under the hip.
+    let back = Gait {
+        hips: 28.0,
+        knee_swing: 55.0,
+        knee_always: 5.0,
+        arms: 18.0,
+        elbow_always: 25.0,
+        elbow_swing: 10.0,
+        lean: 4.0,
+    };
+    let n = 16;
+    b.sequence(SequenceDef {
+        name: "back",
+        duration: 0.7,
+        cyclic: true,
+        priority: 0,
+        keyframes: n,
+        rotations: gait_tracks_along(torso, &limbs, n, &back, -1.0),
+        translations: Vec::new(),
+        ground: travel_along(n, [0.0, -1.0, 0.0], BACK_SPEED, 0.7),
+    });
+    b.sequence(SequenceDef {
+        name: "side",
+        duration: 0.6,
+        cyclic: true,
+        priority: 0,
+        keyframes: n,
+        rotations: side_tracks(torso, &limbs, n),
+        translations: Vec::new(),
+        ground: travel_along(n, [-1.0, 0.0, 0.0], SIDE_SPEED, 0.6),
+    });
     let track = |node, degrees: &[f32]| Track {
         node,
         keys: keys(degrees),
@@ -386,21 +475,179 @@ pub fn figure() -> Model {
         translations: Vec::new(),
         ground: Vec::new(),
     });
-    // Holding a pistol: the right arm raised to aim, the forearm level and straight ahead, over whatever else plays.
+    // Holding a pistol: the right arm raised to aim, over whatever else plays, from aiming fully up (position 0) through level
+    // (0.5) to fully down (1); the `head` blend bends the torso a share of the way, so the shoulder takes the rest.
+    let looks = |share: f32| -> Vec<f32> {
+        (0..LOOK_KEYS)
+            .map(|k| share * look_pitch(k as f32 / (LOOK_KEYS - 1) as f32))
+            .collect()
+    };
+    let shoulder: Vec<f32> = looks(1.0 - LOOK_TORSO)
+        .iter()
+        .map(|d| HOLD_SHOULDER + d)
+        .collect();
     b.sequence(SequenceDef {
         name: "hold",
         duration: 1.0,
-        cyclic: true,
+        cyclic: false,
         priority: 1,
-        keyframes: 2,
+        keyframes: LOOK_KEYS,
+        rotations: vec![track(arm_r, &shoulder), track(elbow_r, &[HOLD_ELBOW])],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
+    // The look: a blend over every other sequence, the torso and the head bending up (position 0) and down (1) with the aim.
+    b.blend_sequence(SequenceDef {
+        name: "head",
+        duration: 1.0,
+        cyclic: false,
+        priority: 0,
+        keyframes: LOOK_KEYS,
         rotations: vec![
-            track(arm_r, &[HOLD_SHOULDER, HOLD_SHOULDER]),
-            track(elbow_r, &[HOLD_ELBOW, HOLD_ELBOW]),
+            track(torso, &looks(LOOK_TORSO)),
+            track(head, &looks(LOOK_HEAD)),
         ],
         translations: Vec::new(),
         ground: Vec::new(),
     });
+    death_sequences(&mut b, root, torso, head, &limbs);
     b.build()
+}
+
+/// The keys of the `head` and `hold` sequences.
+const LOOK_KEYS: usize = 9;
+
+/// The pitch (degrees, up positive) at position `pos` of the look sequences.
+pub fn look_pitch(pos: f32) -> f32 {
+    LOOK_RANGE * (1.0 - 2.0 * pos)
+}
+
+/// The `side` step's tracks over `n` keys, stepping to the left (-x, the way the side action of a player's table points; played
+/// backward it steps right). The first half of the loop the left leg lifts and swings out while the right stays down; the
+/// second half the right lifts and closes in to it. The
+/// arms hang a little out from the body, the elbows bent, and the torso leans a little into the step.
+fn side_tracks(torso: usize, limbs: &Limbs, n: usize) -> Vec<Track<Quat16>> {
+    const SPREAD: f32 = 22.0;
+    const LIFT: f32 = 38.0;
+    let at = |k: usize| TAU * k as f32 / n as f32;
+    let open = |p: f32| 0.5 * (1.0 - p.cos());
+    let keys_of = |f: &dyn Fn(f32) -> Quat16| (0..n).map(|k| f(at(k))).collect::<Vec<_>>();
+    let mut tracks = vec![Track {
+        node: torso,
+        keys: keys_of(&|p| turns(&[(Y, -(3.0 + 2.0 * open(p))), (X, -4.0)])),
+    }];
+    // Side 0 is the left (out toward -x: a positive turn about y), 1 the right.
+    for side in 0..2 {
+        let out = if side == 0 { 1.0 } else { -1.0 };
+        let lifted = move |p: f32| {
+            let s = p.sin();
+            if side == 0 { s.max(0.0) } else { (-s).max(0.0) }
+        };
+        tracks.push(Track {
+            node: limbs.legs[side],
+            keys: keys_of(&|p| turns(&[(Y, out * SPREAD * open(p)), (X, 14.0 * lifted(p))])),
+        });
+        tracks.push(Track {
+            node: limbs.knees[side],
+            keys: keys_of(&|p| turn(X, -(4.0 + LIFT * lifted(p)))),
+        });
+        tracks.push(Track {
+            node: limbs.arms[side],
+            keys: keys_of(&|p| turns(&[(Y, out * (10.0 + 8.0 * open(p))), (X, 6.0)])),
+        });
+        tracks.push(Track {
+            node: limbs.elbows[side],
+            keys: keys_of(&|_| turn(X, 28.0)),
+        });
+    }
+    tracks
+}
+
+/// The death sequences, each 1.2 s, played once and held on their last key: `death1` falls backward (hit from the front),
+/// `death2` forward (hit from behind). The knees give first, the body tips over at the feet and lands flat on the floor (the
+/// root lifted by the depth of the side that lands, so nothing sinks into it), with a small bounce, and lies still.
+fn death_sequences(b: &mut ShapeBuilder, root: usize, torso: usize, head: usize, limbs: &Limbs) {
+    // The share of the fall at each key, a small bounce near the end, and how far the knees give.
+    const FALL: [f32; 9] = [0.0, 0.04, 0.12, 0.28, 0.52, 0.8, 1.0, 0.95, 1.0];
+    const KNEES: [f32; 9] = [0.0, 0.5, 1.0, 0.9, 0.6, 0.3, 0.1, 0.05, 0.0];
+    for (name, dir, lift) in [("death1", 1.0f32, 0.17), ("death2", -1.0, 0.18)] {
+        let backward = dir > 0.0;
+        let mut rotations = vec![
+            Track {
+                node: root,
+                keys: FALL.iter().map(|f| turn(X, dir * 90.0 * f)).collect(),
+            },
+            Track {
+                node: torso,
+                keys: FALL
+                    .iter()
+                    .zip(KNEES)
+                    .map(|(f, k)| turn(X, -dir * (8.0 * k + 6.0 * f)))
+                    .collect(),
+            },
+            Track {
+                node: head,
+                keys: FALL
+                    .iter()
+                    .map(|f| {
+                        if backward {
+                            turn(X, -12.0 * f)
+                        } else {
+                            turns(&[(Z, 50.0 * f), (X, 10.0 * f)])
+                        }
+                    })
+                    .collect(),
+            },
+        ];
+        for side in 0..2 {
+            let out = if side == 0 { 1.0 } else { -1.0 };
+            rotations.push(Track {
+                node: limbs.legs[side],
+                keys: KNEES
+                    .iter()
+                    .zip(FALL)
+                    .map(|(k, f)| turns(&[(Y, out * 8.0 * f), (X, 22.0 * k)]))
+                    .collect(),
+            });
+            rotations.push(Track {
+                node: limbs.knees[side],
+                keys: KNEES.iter().map(|k| turn(X, -(40.0 * k + 3.0))).collect(),
+            });
+            // The arms fly up as the body goes, then fall out to the sides on the floor.
+            rotations.push(Track {
+                node: limbs.arms[side],
+                keys: FALL
+                    .iter()
+                    .map(|&f| {
+                        let fly = (f * TAU / 2.0).sin();
+                        let forward = if backward {
+                            70.0 * fly
+                        } else {
+                            60.0 * fly - 5.0 * f
+                        };
+                        turns(&[(Y, out * 55.0 * f), (X, forward)])
+                    })
+                    .collect(),
+            });
+            rotations.push(Track {
+                node: limbs.elbows[side],
+                keys: FALL.iter().map(|f| turn(X, 10.0 + 25.0 * f)).collect(),
+            });
+        }
+        b.sequence(SequenceDef {
+            name,
+            duration: 1.2,
+            cyclic: false,
+            priority: 0,
+            keyframes: FALL.len(),
+            rotations,
+            translations: vec![Track {
+                node: root,
+                keys: FALL.iter().map(|f| [0.0, 0.0, lift * f * f]).collect(),
+            }],
+            ground: Vec::new(),
+        });
+    }
 }
 
 /// The `hold` pose's shoulder and elbow (degrees): together a quarter turn, the forearm level.
@@ -456,30 +703,31 @@ pub fn pistol() -> Model {
     let mut part = |name: &str, node: usize, width: f32, profile: &[[f32; 2]], uv: UvRect| {
         pistol_part(&mut b, name, node, m, width, profile, uv);
     };
-    // The barrel and its housing, fixed, from the slide's front to the muzzle, with the front sight on it.
+    // The barrel, fixed, around the bore inside the slide: its end sits just behind the slide's front face and shows as the
+    // slide runs back.
     part(
         "barrel",
         root,
-        0.032,
-        &rect(0.06, MUZZLE_Y, bottom, top),
+        0.014,
+        &rect(0.1, MUZZLE_Y - 0.002, BORE_Z - 0.008, BORE_Z + 0.008),
         METAL,
     );
+    // The slide: the whole top, from the hammer to the muzzle, with both sights; all of it runs back as the pistol fires.
+    let slide_profile = [
+        [-0.036, bottom],
+        [MUZZLE_Y, bottom],
+        [MUZZLE_Y, top],
+        [-0.03, top],
+        [-0.036, top - 0.006],
+    ];
+    part("slide", slide, 0.034, &slide_profile, METAL);
     let front_sight = [
         [0.186, top],
         [0.2, top],
         [0.2, top + 0.006],
         [0.19, top + 0.006],
     ];
-    part("front_sight", root, 0.008, &front_sight, METAL);
-    // The slide: the rear of the top, which runs back as the pistol fires, with the rear sight.
-    let slide_profile = [
-        [-0.036, bottom],
-        [0.06, bottom],
-        [0.06, top],
-        [-0.03, top],
-        [-0.036, top - 0.006],
-    ];
-    part("slide", slide, 0.034, &slide_profile, METAL);
+    part("front_sight", slide, 0.008, &front_sight, METAL);
     part(
         "rear_sight",
         slide,

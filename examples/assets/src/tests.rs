@@ -247,7 +247,7 @@ fn the_eyes_are_boxes_on_the_face() {
 fn holding_raises_the_right_arm_and_the_held_item_points_along_the_forearm() {
     let shape = Shape::for_server(shapes::figure());
     let mut inst = ShapeInstance::new(&shape, &mut free).unwrap();
-    for (name, pos) in [("walk", 0.25), ("hold", 0.0)] {
+    for (name, pos) in [("walk", 0.25), ("hold", 0.5)] {
         let t = inst.create_thread(&shape).unwrap();
         let seq = find_sequence(&shape, name.as_bytes()).unwrap();
         inst.set_sequence(&shape, t, seq as i32, pos);
@@ -357,4 +357,190 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
             assert!(names.contains(&file.as_str()), "{file}");
         }
     }
+}
+
+/// Where the point `local` of node `name` is with `threads` (sequence and position) playing, in order.
+fn posed_with(shape: &Shape, threads: &[(&str, f32)], name: &str, local: [f32; 3]) -> [f32; 3] {
+    let mut inst = ShapeInstance::new(shape, &mut free).unwrap();
+    for (sequence, pos) in threads {
+        let t = inst.create_thread(shape).unwrap();
+        let seq = find_sequence(shape, sequence.as_bytes()).unwrap();
+        inst.set_sequence(shape, t, seq as i32, *pos);
+    }
+    inst.animate(shape, 0, None, &mut free).unwrap();
+    let n = shape.find_name(name.as_bytes()).unwrap();
+    let node = shape.nodes.iter().position(|x| x.name == n).unwrap();
+    mul_p(&inst.node_transforms()[node], local)
+}
+
+#[test]
+fn back_and_side_carry_their_ground_speed_backward_and_to_the_left() {
+    let shape = Shape::for_server(shapes::figure());
+    for (name, speed, axis) in [
+        ("back", -shapes::BACK_SPEED, 1),
+        ("side", -shapes::SIDE_SPEED, 0),
+    ] {
+        let s = &shape.sequences[find_sequence(&shape, name.as_bytes()).unwrap()];
+        assert!(s.flags & 16 != 0, "{name} loops");
+        let last = (s.first_ground_frame + s.num_ground_frames - 1) as usize;
+        let travel = shape.ground_translations[last];
+        assert!(
+            (travel[axis] / s.duration - speed).abs() < 1e-4 && travel[1 - axis].abs() < 1e-6,
+            "{name}: {travel:?}"
+        );
+    }
+}
+
+#[test]
+fn walking_backward_lifts_each_foot_as_it_comes_back() {
+    let shape = Shape::for_server(shapes::figure());
+    let foot = [0.0, 0.0, -shapes::SHIN];
+    let rest = posed(&shape, "root", 0.0, "knee_l", foot)[2];
+    // The left leg is forward at the loop's start and swings back under the hip by a quarter.
+    let (start, quarter) = (
+        posed(&shape, "back", 0.0, "knee_l", foot),
+        posed(&shape, "back", 0.25, "knee_l", foot),
+    );
+    assert!(
+        quarter[1] < start[1],
+        "the left leg swings back: {start:?} {quarter:?}"
+    );
+    let lifted = (0..8)
+        .map(|k| posed(&shape, "back", k as f32 / 8.0, "knee_l", foot)[2] - rest)
+        .fold(0.0f32, f32::max);
+    assert!(lifted > 0.08, "the left foot lifts: {lifted}");
+}
+
+#[test]
+fn the_side_step_swings_the_left_foot_out_then_closes_the_right_in() {
+    let shape = Shape::for_server(shapes::figure());
+    let foot = [0.0, 0.0, -shapes::SHIN];
+    let rest_r = posed(&shape, "root", 0.0, "knee_r", foot);
+    let rest_l = posed(&shape, "root", 0.0, "knee_l", foot);
+    let out_l = posed(&shape, "side", 0.25, "knee_l", foot);
+    assert!(
+        out_l[0] < rest_l[0] - 0.1 && out_l[2] > rest_l[2] + 0.05,
+        "the left foot lifts and swings out: {out_l:?}"
+    );
+    let down_r = posed(&shape, "side", 0.25, "knee_r", foot);
+    assert!(
+        down_r[2] < rest_r[2] + 0.02,
+        "the right stays down: {down_r:?}"
+    );
+    let in_r = posed(&shape, "side", 0.75, "knee_r", foot);
+    assert!(in_r[2] > rest_r[2] + 0.05, "then the right lifts: {in_r:?}");
+}
+
+#[test]
+fn the_deaths_fall_backward_and_forward_and_lie_flat_on_the_floor() {
+    let shape = Shape::for_server(shapes::figure());
+    for (name, way) in [("death1", -1.0f32), ("death2", 1.0)] {
+        let s = &shape.sequences[find_sequence(&shape, name.as_bytes()).unwrap()];
+        assert_eq!(s.flags & 16, 0, "{name} plays once");
+        let head = posed(&shape, name, 1.0, "head", [0.0, 0.0, 0.2]);
+        assert!(
+            head[1] * way > 1.4 && head[2] < 0.4,
+            "{name}: the head lies on the floor that way: {head:?}"
+        );
+        // Lying still, every corner of the head, the torso and the feet is on or above the floor, and none far off it.
+        let corners = |min: [f32; 3], max: [f32; 3]| {
+            (0..8).map(move |i| {
+                [
+                    if i & 1 == 0 { min[0] } else { max[0] },
+                    if i & 2 == 0 { min[1] } else { max[1] },
+                    if i & 4 == 0 { min[2] } else { max[2] },
+                ]
+            })
+        };
+        let foot = (
+            [-0.095, -0.11, -shapes::SHIN],
+            [0.095, 0.17, -shapes::SHIN + 0.08],
+        );
+        let mut lowest = f32::MAX;
+        for (node, min, max) in [
+            ("head", [-0.16, -0.16, 0.02], [0.16, 0.16, 0.36]),
+            ("torso", [-0.25, -0.13, 0.0], [0.25, 0.13, 0.7]),
+            ("knee_l", foot.0, foot.1),
+            ("knee_r", foot.0, foot.1),
+        ] {
+            for c in corners(min, max) {
+                lowest = lowest.min(posed(&shape, name, 1.0, node, c)[2]);
+            }
+        }
+        assert!(
+            (-0.02..0.08).contains(&lowest),
+            "{name}: the lowest corner {lowest}"
+        );
+        // Standing at the start.
+        let start = posed(&shape, name, 0.0, "head", [0.0; 3]);
+        assert!(near(start, [0.0, 0.0, 1.65]), "{name}: {start:?}");
+    }
+}
+
+#[test]
+fn the_look_bends_the_head_torso_and_aiming_arm_with_the_pitch() {
+    let shape = Shape::for_server(shapes::figure());
+    let s = &shape.sequences[find_sequence(&shape, b"head").unwrap()];
+    assert_ne!(s.flags & 8, 0, "head is a blend sequence");
+    for (pos, pitch) in [
+        (0.0, shapes::LOOK_RANGE),
+        (0.5, 0.0),
+        (1.0, -shapes::LOOK_RANGE),
+    ] {
+        assert_eq!(shapes::look_pitch(pos), pitch);
+        // With a gait, the hold and the look playing, the held item points along the aim.
+        let threads = [("walk", 0.25), ("hold", pos), ("head", pos)];
+        let at = posed_with(&shape, &threads, "mount0", [0.0; 3]);
+        let ahead = posed_with(&shape, &threads, "mount0", [0.0, 1.0, 0.0]);
+        let d = [0, 1, 2].map(|k| ahead[k] - at[k]);
+        let got = d[2].atan2(d[1]).to_degrees();
+        assert!(
+            (got - pitch).abs() < 3.0,
+            "at {pos}: aims {got}, not {pitch}"
+        );
+        // The face turns the same way, by less.
+        let eye = posed_with(&shape, &threads, "head", [0.0, 1.0, 0.2]);
+        let center = posed_with(&shape, &threads, "head", [0.0, 0.0, 0.2]);
+        let face = (eye[2] - center[2]).atan2(eye[1] - center[1]).to_degrees();
+        let share = shapes::LOOK_TORSO + shapes::LOOK_HEAD;
+        assert!(
+            (face - share * pitch).abs() < 3.0,
+            "at {pos}: the face {face}"
+        );
+    }
+    // The blend adds to the run's lean: the head is further forward looking down than level.
+    let level = posed_with(&shape, &[("run", 0.0), ("head", 0.5)], "head", [0.0; 3]);
+    let down = posed_with(&shape, &[("run", 0.0), ("head", 1.0)], "head", [0.0; 3]);
+    let run = posed(&shape, "run", 0.0, "head", [0.0; 3]);
+    assert!(near(level, run), "{level:?} {run:?}");
+    assert!(down[1] > level[1] + 0.1, "{down:?}");
+}
+
+#[test]
+fn the_whole_top_of_the_pistol_runs_back_and_the_barrel_stays() {
+    let shape = Shape::for_server(shapes::pistol());
+    let front = [0.0, shapes::MUZZLE_Y, 0.05];
+    let back = posed(&shape, "fire", 0.5, "slide", front);
+    assert!(
+        near(back, [0.0, shapes::MUZZLE_Y - shapes::RECOIL, 0.05]),
+        "the slide's front face runs back with it: {back:?}"
+    );
+    let n = |name: &str| shape.find_name(name.as_bytes()).unwrap();
+    let node_of = |object: &str| {
+        shape
+            .objects
+            .iter()
+            .find(|o| o.name == n(object))
+            .unwrap()
+            .node
+    };
+    let slide = shape
+        .nodes
+        .iter()
+        .position(|x| x.name == n("slide"))
+        .unwrap() as i32;
+    for part in ["slide", "front_sight", "rear_sight"] {
+        assert_eq!(node_of(part), slide, "{part} is on the slide");
+    }
+    assert_ne!(node_of("barrel"), slide, "the barrel is fixed");
 }

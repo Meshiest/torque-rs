@@ -51,7 +51,8 @@ fps-server *args:
     cargo run -p torque-example-fps --release --bin fps-server -- {{args}}
 
 # The arena shooter's client in a window: Host (a server in this process, joined at once) / Join (the LAN list) / Quit; W A S D
-# move, mouse look, click shoot, T chat, Esc leave. `--bind <your LAN address>` hosts for the network, `--name <name>`
+# move, mouse look, click shoot, R reload, T chat, Esc pause menu. `--bind <your LAN address>` hosts for the network,
+# `--name <name>`
 fps-client *args:
     cargo run -p torque-example-fps --release --bin fps-client -- {{args}}
 
@@ -63,3 +64,8 @@ fps-check:
 # The arena shooter's review pictures (menu, LAN list, first-person view, another player, a bolt), drawn offscreen into `dir`
 fps-shots dir="../target/fps-shots":
     cargo run -p torque-example-fps --release --bin fps-client -- --shots {{dir}}
+
+# The arena's motion pictures (side steps, the walk backward, the look, the falls, a shot's kick and flash, the reload HUD, the
+# pause menu), drawn offscreen into `dir`
+fps-motion-shots dir="../target/fps-motion-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --motion-shots {{dir}}

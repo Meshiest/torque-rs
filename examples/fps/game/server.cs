@@ -1,8 +1,11 @@
 // The arena's server. The host sets $Pref::Server::Name, execs this file and calls startArena(%file) with the map to play.
 // A client that connects is sent the datablocks; when it has them, its ghosting starts and it gets a figure holding a pistol
-// with 11 rounds. Bolts hurt figures; three hits knock one out, and it comes back at a spawn point a moment later.
+// with an 11-round magazine, reloaded as often as it likes (R, or by itself when empty). Bolts hurt figures; three hits knock
+// one out: it falls over, away from the shot, and comes back at a spawn point a moment later.
 
 // ---- datablocks
+
+$Arena::ReloadSeconds = 1.2;
 
 datablock StaticShapeData(ArenaCube)
 {
@@ -89,6 +92,43 @@ datablock ProjectileData(ArenaBolt)
    isBallistic = false;
 };
 
+// The muzzle flash: a quick burst of large, hot sparks at the muzzle, added over what is behind them, gone in a few frames.
+datablock ParticleData(ArenaMuzzleSpark)
+{
+   textureName = "kit/spark";
+   dragCoefficient = 8;
+   gravityCoefficient = 0;
+   inheritedVelFactor = 0;
+   lifetimeMS = 64;
+   lifetimeVarianceMS = 0;
+   useInvAlpha = false;
+   spinRandomMin = -180;
+   spinRandomMax = 180;
+
+   colors[0] = "1 0.95 0.75 1";
+   colors[1] = "1 0.7 0.25 0.8";
+   colors[2] = "1 0.4 0.1 0";
+   sizes[0] = 0.22;
+   sizes[1] = 0.3;
+   sizes[2] = 0.12;
+   times[0] = 0;
+   times[1] = 0.3;
+   times[2] = 1;
+};
+
+datablock ParticleEmitterData(ArenaMuzzleFlash)
+{
+   ejectionPeriodMS = 4;
+   periodVarianceMS = 0;
+   ejectionVelocity = 2;
+   velocityVariance = 1;
+   thetaMin = 0;
+   thetaMax = 25;
+   phiReferenceVel = 0;
+   phiVariance = 360;
+   particles = "ArenaMuzzleSpark";
+};
+
 datablock ShapeBaseImageData(ArenaPistolImage)
 {
    shapeFile = "kit/pistol.dts";
@@ -104,8 +144,9 @@ datablock ShapeBaseImageData(ArenaPistolImage)
    stateTimeoutValue[0] = 0.25;
    stateTransitionOnTimeout[0] = "Ready";
 
+   // The magazine empty (or a reload asked for: the script clears the image's ammo) reloads it.
    stateName[1] = "Ready";
-   stateTransitionOnNoAmmo[1] = "Empty";
+   stateTransitionOnNoAmmo[1] = "Reload";
    stateTransitionOnTriggerDown[1] = "Fire";
 
    stateName[2] = "Fire";
@@ -113,16 +154,27 @@ datablock ShapeBaseImageData(ArenaPistolImage)
    stateAllowImageChange[2] = false;
    stateSequence[2] = "fire";
    stateScript[2] = "onFire";
+   stateEmitter[2] = ArenaMuzzleFlash;
+   stateEmitterTime[2] = 0.05;
+   stateEmitterNode[2] = "muzzlePoint";
    stateTimeoutValue[2] = 0.15;
    stateTransitionOnTimeout[2] = "Release";
 
-   // One round a click: the trigger has to come up before the next.
+   // One round a click: the trigger has to come up before the next. The last round spent reloads at once.
    stateName[3] = "Release";
+   stateTransitionOnNoAmmo[3] = "Reload";
    stateTransitionOnTriggerUp[3] = "Ready";
 
-   // Out of rounds: clicking does nothing.
-   stateName[4] = "Empty";
-   stateTransitionOnAmmo[4] = "Ready";
+   // Reloading: a full magazine when the time runs out (there is no count of spare rounds).
+   stateName[4] = "Reload";
+   stateAllowImageChange[4] = false;
+   stateScript[4] = "onReload";
+   stateTimeoutValue[4] = $Arena::ReloadSeconds;
+   stateTransitionOnTimeout[4] = "Reloaded";
+
+   stateName[5] = "Reloaded";
+   stateScript[5] = "onReloaded";
+   stateTransitionOnAmmo[5] = "Ready";
 };
 
 // ---- the arena
@@ -280,6 +332,33 @@ function GameConnection::sendOwnFigure(%client, %player, %tries)
 
 // ---- the pistol
 
+// R: a reload, when the magazine is not full and none is running (the image's ammo cleared sends it to its Reload state).
+function serverCmdReload(%client)
+{
+   %player = %client.player;
+   if (!isObject(%player) || %player.getState() $= "Dead")
+      return;
+   if (%player.reloading || %player.ammo >= $Arena::Rounds)
+      return;
+   %player.setImageAmmo(0, false);
+}
+
+function ArenaWeapon::onReload(%this, %obj, %slot)
+{
+   %obj.reloading = true;
+   if (isObject(%obj.client))
+      commandToClient(%obj.client, 'Reloading', $Arena::ReloadSeconds);
+}
+
+function ArenaWeapon::onReloaded(%this, %obj, %slot)
+{
+   %obj.reloading = false;
+   %obj.ammo = $Arena::Rounds;
+   %obj.setImageAmmo(%slot, true);
+   if (isObject(%obj.client))
+      commandToClient(%obj.client, 'SetAmmo', %obj.ammo, $Arena::Rounds);
+}
+
 function ArenaWeapon::onFire(%this, %obj, %slot)
 {
    if (%obj.ammo <= 0)
@@ -322,6 +401,13 @@ function ArenaFigure::hurt(%this, %obj, %attacker, %amount)
 {
    if (%obj.getState() $= "Dead")
       return;
+   // Where the shot came from, for the fall (onDisabled): the shooter's figure in front of this one or behind it.
+   %obj.hitFromFront = true;
+   if (isObject(%attacker) && isObject(%attacker.player) && %attacker.player != %obj)
+   {
+      %to = VectorSub(%attacker.player.getPosition(), %obj.getPosition());
+      %obj.hitFromFront = VectorDot(%to, %obj.getForwardVector()) >= 0;
+   }
    %obj.applyDamage(%amount);
    %client = %obj.client;
    %left = %this.maxDamage - %obj.getDamageLevel();
@@ -333,6 +419,13 @@ function ArenaFigure::hurt(%this, %obj, %attacker, %amount)
       commandToClient(%attacker, 'Hit', %client.name);
    if (%left <= 0)
       knockOut(%client, %attacker);
+}
+
+// Knocked out (the damage reached maxDamage): the figure falls away from the shot, backward when hit from the front, and lies
+// still on the last frame until it respawns.
+function ArenaFigure::onDisabled(%this, %obj, %state)
+{
+   %obj.setActionThread(%obj.hitFromFront ? "death1" : "death2", true);
 }
 
 function knockOut(%client, %attacker)
