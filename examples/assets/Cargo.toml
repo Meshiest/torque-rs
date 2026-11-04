@@ -1,0 +1,28 @@
+[package]
+name = "torque-example-assets"
+description = "The example games' shared asset kit: original shapes and textures made from code, written as .dts and .png"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "example", "assets", "gamedev"]
+categories = ["game-development"]
+
+# Every asset is made by this crate's code (boxes, keyframes, pixel patterns): nothing is read from any other file. The examples
+# call `write_all` at start-up, or `just example-assets` writes the set to a folder.
+
+[dependencies]
+torque-shapes = { path = "../../crates/torque-shapes" }
+png = "0.18"
+
+[dev-dependencies]
+# torque-images decodes the textures back in the tests.
+torque-images = { path = "../../crates/torque-images" }
+
+[[bin]]
+name = "make-example-assets"
+
+[lints]
+workspace = true

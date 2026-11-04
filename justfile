@@ -44,6 +44,10 @@ example-server *args:
 example-client *args:
     cargo run -p torque-example --bin example-client -- {{args}}
 
+# The example games' asset kit (shapes and textures made from code), written into `dir`
+example-assets dir="target/example-assets":
+    cargo run -p torque-example-assets -- {{dir}}
+
 # Licences, advisories, bans and sources of the dependency tree (cargo-deny)
 deny:
     cargo deny check

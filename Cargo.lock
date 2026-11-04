@@ -2094,6 +2094,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example-assets"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "torque-images",
+ "torque-shapes",
+]
+
+[[package]]
 name = "torque-fonts"
 version = "0.1.0"
 dependencies = [
