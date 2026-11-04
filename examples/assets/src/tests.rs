@@ -324,7 +324,11 @@ fn the_textures_decode_with_the_engines_reader() {
         ("pistol", crate::textures::pistol().unwrap(), 32),
         ("projectile", crate::textures::projectile().unwrap(), 16),
         ("spark", crate::textures::spark().unwrap(), 32),
-        ("hole", crate::textures::hole().unwrap(), 16),
+        (
+            "flare_star",
+            crate::textures::flare_star().unwrap(),
+            crate::textures::FLARE_STAR_SIDE,
+        ),
     ];
     for (name, bytes, side) in cases {
         let image =
@@ -335,6 +339,28 @@ fn the_textures_decode_with_the_engines_reader() {
             "{name}"
         );
     }
+    // The ones with an alpha channel: soft edges, clear corners.
+    for (name, bytes) in [
+        ("hole", crate::textures::hole_of(1).unwrap()),
+        ("hole2", crate::textures::hole_of(2).unwrap()),
+        ("smoke", crate::textures::smoke().unwrap()),
+    ] {
+        let image =
+            torque_images::decode(Kind::Png, &bytes).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(
+            (image.width, image.height, image.format),
+            (64, 64, Format::Rgba),
+            "{name}"
+        );
+        let alpha = |x: usize, y: usize| image.bits[(y * 64 + x) * 4 + 3];
+        assert_eq!(alpha(0, 0), 0, "{name}: a clear corner");
+        assert!(alpha(32, 32) > 150, "{name}: a solid middle");
+    }
+    assert_ne!(
+        crate::textures::hole_of(1).unwrap(),
+        crate::textures::hole_of(2).unwrap(),
+        "each hole its own"
+    );
     let grid = torque_images::decode(Kind::Png, &crate::textures::grid().unwrap()).unwrap();
     let px = |x: usize, y: usize| &grid.bits[(y * 64 + x) * 3..][..3];
     assert!(px(0, 0)[0] < px(8, 8)[0], "a darker border");
@@ -347,7 +373,7 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
     let mut names: Vec<_> = a.iter().map(|x| x.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 10);
+    assert_eq!(names.len(), 14);
     // Every material names a texture of the kit.
     for (_, model) in models() {
         for m in &model.shape.materials {
@@ -476,6 +502,35 @@ fn the_deaths_fall_backward_and_forward_and_lie_flat_on_the_floor() {
         let start = posed(&shape, name, 0.0, "head", [0.0; 3]);
         assert!(near(start, [0.0, 0.0, 1.65]), "{name}: {start:?}");
     }
+}
+
+#[test]
+fn aiming_raises_the_pistol_to_eye_level_in_front_of_the_face_along_the_aim() {
+    let shape = Shape::for_server(shapes::figure());
+    for (pos, pitch) in [
+        (0.25, shapes::look_pitch(0.25)),
+        (0.5, 0.0),
+        (0.75, shapes::look_pitch(0.75)),
+    ] {
+        let threads = [("root", 0.0), ("aim", pos), ("head", pos)];
+        let at = posed_with(&shape, &threads, "mount0", [0.0; 3]);
+        let ahead = posed_with(&shape, &threads, "mount0", [0.0, 1.0, 0.0]);
+        let d = [0, 1, 2].map(|k| ahead[k] - at[k]);
+        let got = d[2].atan2(d[1]).to_degrees();
+        assert!(
+            (got - pitch).abs() < 3.0,
+            "at {pos}: aims {got}, not {pitch}"
+        );
+        assert!(d[0].abs() < 0.05, "at {pos}: points straight ahead {d:?}");
+    }
+    let held = posed_with(&shape, &[("root", 0.0), ("hold", 0.5)], "mount0", [0.0; 3]);
+    let aimed = posed_with(&shape, &[("root", 0.0), ("aim", 0.5)], "mount0", [0.0; 3]);
+    assert!(aimed[2] > held[2] + 0.1, "higher: {aimed:?} {held:?}");
+    assert!(
+        aimed[0] < held[0] - 0.1,
+        "nearer the middle: {aimed:?} {held:?}"
+    );
+    assert!(aimed[1] > 0.5, "in front: {aimed:?}");
 }
 
 #[test]

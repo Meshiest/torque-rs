@@ -41,26 +41,26 @@ datablock PlayerData(ArenaFigure)
    minLookAngle = -1.4;
 };
 
-// The bolt's trail: small hot sparks added over what is behind them, fading from yellow through orange to nothing as they
-// shrink. A particle's life goes to the client in steps of 32 ms.
+// The bolt's trail: small bright sparks added over what is behind them, fading from white through a pale cyan to nothing as
+// they shrink. A particle's life goes to the client in steps of 32 ms.
 datablock ParticleData(ArenaBoltSpark)
 {
    textureName = "kit/spark";
    dragCoefficient = 2;
    gravityCoefficient = 0;
    inheritedVelFactor = 0;
-   lifetimeMS = 64;
+   lifetimeMS = 160;
    lifetimeVarianceMS = 32;
    useInvAlpha = false;
    spinRandomMin = -90;
    spinRandomMax = 90;
 
-   colors[0] = "1 0.9 0.5 0.8";
-   colors[1] = "1 0.55 0.12 0.5";
-   colors[2] = "0.9 0.25 0.05 0";
-   sizes[0] = 0.24;
-   sizes[1] = 0.14;
-   sizes[2] = 0.05;
+   colors[0] = "1 1 1 0.85";
+   colors[1] = "0.7 0.92 1 0.5";
+   colors[2] = "0.45 0.75 1 0";
+   sizes[0] = 0.09;
+   sizes[1] = 0.06;
+   sizes[2] = 0.02;
    times[0] = 0;
    times[1] = 0.35;
    times[2] = 1;
@@ -124,64 +124,82 @@ datablock ExplosionData(ArenaBoltHit)
    lifetimeMS = 320;
 };
 
-// Where a bolt hits the world it leaves a small dark square hole (the client lays it, and fades it out after a while).
+// Where a bolt hits the world it leaves a small cracked hole, one of three (the client lays it on the face it hit, and fades
+// it out after a while).
 datablock DecalData(ArenaBoltHole)
 {
-   sizeX = 0.12;
-   sizeY = 0.12;
+   sizeX = 0.24;
+   sizeY = 0.24;
    textureName = "kit/hole";
+};
+
+datablock DecalData(ArenaBoltHole2)
+{
+   sizeX = 0.21;
+   sizeY = 0.21;
+   textureName = "kit/hole2";
+};
+
+datablock DecalData(ArenaBoltHole3)
+{
+   sizeX = 0.27;
+   sizeY = 0.27;
+   textureName = "kit/hole3";
 };
 
 datablock ProjectileData(ArenaBolt)
 {
    explosion = ArenaBoltHit;
    decals[0] = ArenaBoltHole;
+   decals[1] = ArenaBoltHole2;
+   decals[2] = ArenaBoltHole3;
    projectileShapeName = "kit/projectile.dts";
    particleEmitter = ArenaBoltTrail;
    directDamage = 34;
-   muzzleVelocity = 60;
+   muzzleVelocity = 150;
    velInheritFactor = 0;
    armingDelay = 0;
-   lifetime = 3000;
-   fadeDelay = 2800;
+   lifetime = 1000;
+   fadeDelay = 900;
    isBallistic = false;
 };
 
-// The muzzle flash: a quick burst of large, hot sparks at the muzzle, added over what is behind them, gone in a few frames.
-datablock ParticleData(ArenaMuzzleSpark)
+// After a shot, a little smoke drifts out of the muzzle and follows it as the pistol moves: soft gray puffs blended over what
+// is behind them, swelling and fading as they rise. (The flash itself is the client's: a star at the muzzle.)
+datablock ParticleData(ArenaMuzzleSmokePuff)
 {
-   textureName = "kit/spark";
-   dragCoefficient = 8;
-   gravityCoefficient = 0;
+   textureName = "kit/smoke";
+   dragCoefficient = 3;
+   gravityCoefficient = -0.06;
    inheritedVelFactor = 0;
-   lifetimeMS = 64;
-   lifetimeVarianceMS = 0;
-   useInvAlpha = false;
-   spinRandomMin = -180;
-   spinRandomMax = 180;
+   lifetimeMS = 640;
+   lifetimeVarianceMS = 192;
+   useInvAlpha = true;
+   spinRandomMin = -60;
+   spinRandomMax = 60;
 
-   colors[0] = "1 0.95 0.75 1";
-   colors[1] = "1 0.7 0.25 0.8";
-   colors[2] = "1 0.4 0.1 0";
-   sizes[0] = 0.22;
-   sizes[1] = 0.3;
-   sizes[2] = 0.12;
+   colors[0] = "0.85 0.85 0.86 0.42";
+   colors[1] = "0.8 0.8 0.82 0.25";
+   colors[2] = "0.75 0.75 0.78 0";
+   sizes[0] = 0.04;
+   sizes[1] = 0.12;
+   sizes[2] = 0.22;
    times[0] = 0;
-   times[1] = 0.3;
+   times[1] = 0.4;
    times[2] = 1;
 };
 
-datablock ParticleEmitterData(ArenaMuzzleFlash)
+datablock ParticleEmitterData(ArenaMuzzleSmoke)
 {
-   ejectionPeriodMS = 4;
-   periodVarianceMS = 0;
-   ejectionVelocity = 2;
-   velocityVariance = 1;
+   ejectionPeriodMS = 40;
+   periodVarianceMS = 10;
+   ejectionVelocity = 0.25;
+   velocityVariance = 0.1;
    thetaMin = 0;
-   thetaMax = 25;
+   thetaMax = 20;
    phiReferenceVel = 0;
    phiVariance = 360;
-   particles = "ArenaMuzzleSpark";
+   particles = "ArenaMuzzleSmokePuff";
 };
 
 datablock ShapeBaseImageData(ArenaPistolImage)
@@ -209,8 +227,8 @@ datablock ShapeBaseImageData(ArenaPistolImage)
    stateAllowImageChange[2] = false;
    stateSequence[2] = "fire";
    stateScript[2] = "onFire";
-   stateEmitter[2] = ArenaMuzzleFlash;
-   stateEmitterTime[2] = 0.05;
+   stateEmitter[2] = ArenaMuzzleSmoke;
+   stateEmitterTime[2] = 0.7;
    stateEmitterNode[2] = "muzzlePoint";
    stateTimeoutValue[2] = 0.15;
    stateTransitionOnTimeout[2] = "Release";

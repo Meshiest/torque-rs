@@ -11,8 +11,7 @@
 //!   image slot) plays the kit's `hold` on its arm thread, and the image's shape is drawn in its hand: the figure's `mount0`
 //!   node times the inverse of the image's `mountPoint` (`ShapeBase::getRenderImageTransform`). A new fire count plays the
 //!   image's `fire`, kicks the pistol up and back for a moment ([`recoil`]: in first person the view's pistol, in third the
-//!   pistol in the hand), and flares at its `muzzlePoint` for [`FLARE_SECONDS`]: a star facing the eye and a cone along the
-//!   barrel turned about it to face the eye. The emitter its datablock's fire state names (`stateEmitter`) emits from the
+//!   pistol in the hand), and flares at its `muzzlePoint` for [`FLARE_SECONDS`]: a star facing the eye. The emitter its datablock's fire state names (`stateEmitter`) emits from the
 //!   muzzle for its `stateEmitterTime`, following the muzzle as the pistol moves (`ShapeBaseImage`'s state emitter). The action the server set (a death) plays as the record carries it,
 //!   and the head and the aiming arm follow the look.
 //! - **The own figure** (the ghost the server named, [`OwnLook`]) stands where the client predicts it and is not seen: the eye is
@@ -331,15 +330,12 @@ pub fn fire_emitter(world: &TgeWorld, image: u32) -> Option<(Emitter, f32)> {
 /// The longest an image's emitter emits after a shot (seconds; a server's datablock names it).
 pub const MAX_EMITTER_SECONDS: f32 = 5.0;
 
-/// A shot's flare at the muzzle: how long it shows (seconds); the star seen head on (its width, units), and the cone along the
-/// barrel (its length and its width at the far end). Each shrinks and fades over the time.
-pub const FLARE_SECONDS: f32 = 0.06;
-pub const FLARE_STAR: f32 = 0.16;
-pub const FLARE_CONE_LENGTH: f32 = 0.42;
-pub const FLARE_CONE_WIDTH: f32 = 0.22;
-/// The flares' textures.
+/// A shot's flare at the muzzle: how long it shows (seconds) and the star seen head on (its width, units). It shrinks and fades
+/// over the time.
+pub const FLARE_SECONDS: f32 = 0.07;
+pub const FLARE_STAR: f32 = 0.26;
+/// The flare's texture.
 pub const FLARE_STAR_TEXTURE: &str = "kit/flare_star";
-pub const FLARE_CONE_TEXTURE: &str = "kit/flare_cone";
 
 /// A quad draw of `corners` (with `uv`s), added over what is behind it, `alpha` its strength.
 fn sprite(label: &str, corners: [[f32; 3]; 4], texture: usize, alpha: f32) -> Draw {
@@ -377,7 +373,7 @@ fn sprite(label: &str, corners: [[f32; 3]; 4], texture: usize, alpha: f32) -> Dr
 }
 
 /// A shot's flare at the muzzle `at` along `dir`, `t` (0 to 1) through its time, seen from `eye` with the camera's `right` and
-/// `up`: the star facing the eye at the muzzle, and the cone from the muzzle along the barrel, turned about it to face the eye.
+/// `up`: the star facing the eye at the muzzle.
 fn flare_draws(
     at: [f32; 3],
     dir: [f32; 3],
@@ -390,32 +386,13 @@ fn flare_draws(
     let fade = 1.0 - t.clamp(0.0, 1.0);
     let dist = (0..3).map(|k| (at[k] - eye[k]).powi(2)).sum::<f32>().sqrt();
     if let Some(tex) = set.get_modulated(FLARE_STAR_TEXTURE) {
-        let h = 0.5 * FLARE_STAR * (0.6 + 0.4 * fade);
+        let h = 0.5 * FLARE_STAR * (0.45 + 0.55 * fade);
         let c = [0, 1, 2].map(|k| at[k] + dir[k] * 0.01);
         let p = |sx: f32, sy: f32| [0, 1, 2].map(|k| c[k] + (right[k] * sx + up[k] * sy) * h);
         let corners = [p(-1.0, -1.0), p(1.0, -1.0), p(1.0, 1.0), p(-1.0, 1.0)];
+        // Drawn twice: the additive passes add up to a brighter flash than the texture alone.
         out.push((dist, sprite("flare star", corners, tex, fade)));
-    }
-    let to_eye = [0, 1, 2].map(|k| eye[k] - at[k]);
-    let across = [
-        dir[1] * to_eye[2] - dir[2] * to_eye[1],
-        dir[2] * to_eye[0] - dir[0] * to_eye[2],
-        dir[0] * to_eye[1] - dir[1] * to_eye[0],
-    ];
-    let len = across.iter().map(|c| c * c).sum::<f32>().sqrt();
-    if len > 1e-5
-        && let Some(tex) = set.get_modulated(FLARE_CONE_TEXTURE)
-    {
-        let side = across.map(|c| c / len * 0.5 * FLARE_CONE_WIDTH * (0.7 + 0.3 * fade));
-        let length = FLARE_CONE_LENGTH * (0.6 + 0.4 * fade);
-        let tip = [0, 1, 2].map(|k| at[k] + dir[k] * length);
-        let corners = [
-            [0, 1, 2].map(|k| at[k] - side[k]),
-            [0, 1, 2].map(|k| at[k] + side[k]),
-            [0, 1, 2].map(|k| tip[k] + side[k]),
-            [0, 1, 2].map(|k| tip[k] - side[k]),
-        ];
-        out.push((dist, sprite("flare cone", corners, tex, fade)));
+        out.push((dist, sprite("flare star", corners, tex, fade)));
     }
     out
 }

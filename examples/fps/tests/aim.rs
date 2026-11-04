@@ -376,3 +376,46 @@ fn a_bolt_that_hits_the_block_leaves_a_hole_on_its_face_and_nowhere_else() {
         }
     }
 }
+
+/// Where `p` lands on a screen of `size` pixels seen from `eye` (position, yaw, pitch) with a horizontal field of view of
+/// `fov` degrees: pixels from the screen's center (right, down).
+fn project(p: F3, eye: F3, yaw: f32, pitch: f32, fov: f32, size: (f32, f32)) -> (f32, f32) {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let forward = [sy * cp, cy * cp, -sp];
+    let right = [cy, -sy, 0.0];
+    let up = [sy * sp, cy * sp, cp];
+    let v = sub(p, eye);
+    let (x, y, z) = (dot(v, right), dot(v, up), dot(v, forward));
+    let focal = size.0 * 0.5 / (fov.to_radians() * 0.5).tan();
+    (focal * x / z, -focal * y / z)
+}
+
+#[test]
+fn aimed_the_front_post_sits_in_the_rear_notch_on_the_crosshair() {
+    let mut a = host();
+    turn(&mut a, -0.3, 0.1);
+    a.call("aim", &["1"]).unwrap();
+    frames(&mut a, 400);
+    assert_eq!(a.scene().aim(), 1.0);
+    let own = a.scene().own().unwrap();
+    let [front, rear] = a.scene().own_sights().expect("the pistol's sights");
+    let fov = f32::from(a.eye().fov.unwrap());
+    for size in [(1280.0, 720.0), (1920.0, 1080.0)] {
+        for (name, p) in [("front post", front), ("rear notch", rear)] {
+            let (x, y) = project(p, own.eye, own.yaw, own.pitch, fov, size);
+            assert!(
+                x.abs() <= 1.0 && y.abs() <= 1.0,
+                "{name} {x:.2},{y:.2} px from the center at {size:?}"
+            );
+        }
+    }
+    // The bolt still leaves the muzzle.
+    let muzzle = a.scene().own_muzzle().unwrap();
+    assert!(
+        len(sub(muzzle, own.eye)) > AIM_SIGHT_TO_MUZZLE,
+        "{muzzle:?}"
+    );
+}
+
+const AIM_SIGHT_TO_MUZZLE: f32 = 0.3;

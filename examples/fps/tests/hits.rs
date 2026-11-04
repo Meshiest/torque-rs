@@ -99,6 +99,17 @@ fn a_hit_bursts_marks_the_shooter_and_shows_the_hurt_its_way() {
     assert_eq!(a.marks.hit_alpha(), 0.0);
 
     assert_eq!(a.scene().others_arms(), [(false, Some("hold".to_string()))]);
+    // Bob aims down his sights: Ann sees him raise his pistol to his eye, then lower it.
+    b.call("aim", &["1"]).unwrap();
+    for _ in 0..20 {
+        frame(&mut a, &mut b, 16);
+    }
+    assert_eq!(a.scene().others_arms(), [(false, Some("aim".to_string()))]);
+    b.call("aim", &["0"]).unwrap();
+    for _ in 0..20 {
+        frame(&mut a, &mut b, 16);
+    }
+    assert_eq!(a.scene().others_arms(), [(false, Some("hold".to_string()))]);
     // Two more knock Bob out: his fall owns his whole body, the arm that aimed the pistol falls with it.
     for k in 2..=3 {
         a.call("fire", &["1"]).unwrap();
