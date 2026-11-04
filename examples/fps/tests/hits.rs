@@ -81,6 +81,11 @@ fn a_hit_bursts_marks_the_shooter_and_shows_the_hurt_its_way() {
         }
     }
     assert_eq!(a.global("$Arena::Hits"), "1", "the bolt hit");
+    let part = a.global("$Arena::HitPart");
+    assert!(
+        ["head", "torso"].contains(&part.as_str()),
+        "Ann is told the part she hit: {part:?}"
+    );
     assert!(marked, "Ann saw the X");
     assert!(hurt, "Bob saw where the hurt came from");
     for (who, g) in [("Ann", &a), ("Bob", &b)] {

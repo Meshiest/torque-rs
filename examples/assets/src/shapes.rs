@@ -15,6 +15,8 @@
 //! (`arm_*`) and a forearm with its hand (`elbow_*`), the hands reaching mid-thigh. `eye` is in front of the head (a
 //! first-person view), `cam` at its centre (the point a third-person camera orbits), `mount0` in the closed right hand (where a held
 //! item's `mountPoint` goes), turned so the item's +y runs along the forearm. The eyes are two small dark boxes on the face.
+//! An `LOS-9` detail, never drawn, holds its hitboxes: a box for each part on the part's node, named by the part (`head`,
+//! `torso`, `rarm`, `lforearm`, `lhand`, `lleg`, `lshin`, `lfoot`, ...), each within the drawn one.
 //! Its texture is four swatches: skin, shirt, trousers (with the shoes) and the eyes' colour. The sequences turn the joints
 //! about x (the side step and the falls also about y and z):
 //!
@@ -241,6 +243,59 @@ fn gait_tracks_along(
     tracks
 }
 
+/// The figure's hitboxes: an `LOS-9` detail (never drawn) of one box per part on its node, named by the part (`head`, `torso`,
+/// `larm`/`rarm` the upper arms, `lforearm`/`rforearm`, `lhand`/`rhand`, `lleg`/`rleg` the thighs, `lshin`/`rshin`,
+/// `lfoot`/`rfoot`), each within its drawn box; the head stops at 2 units, the top of the arena's `boundingBox`.
+fn hitboxes(b: &mut ShapeBuilder, torso: usize, head: usize, limbs: &Limbs) {
+    let sight = b.detail("LOS-9", -1.0);
+    let mut part = |name: &str, node: usize, min: Vec3, max: Vec3| {
+        b.object(name, node, sight, MeshData::hull_box(min, max));
+    };
+    part("torso", torso, [-0.24, -0.12, 0.0], [0.24, 0.12, 0.7]);
+    part("head", head, [-0.15, -0.15, 0.02], [0.15, 0.15, 0.35]);
+    let wrist = FOREARM - 0.11;
+    for (side, s) in ["l", "r"].into_iter().enumerate() {
+        let (arm, elbow) = (limbs.arms[side], limbs.elbows[side]);
+        part(
+            &format!("{s}arm"),
+            arm,
+            [-0.065, -0.065, -UPPER_ARM - 0.02],
+            [0.065, 0.065, 0.0],
+        );
+        part(
+            &format!("{s}forearm"),
+            elbow,
+            [-0.06, -0.06, -wrist],
+            [0.06, 0.06, 0.0],
+        );
+        part(
+            &format!("{s}hand"),
+            elbow,
+            [-0.05, -0.055, -FOREARM],
+            [0.05, 0.055, -wrist],
+        );
+        let (leg, knee) = (limbs.legs[side], limbs.knees[side]);
+        part(
+            &format!("{s}leg"),
+            leg,
+            [-0.09, -0.1, -THIGH - 0.02],
+            [0.09, 0.1, 0.0],
+        );
+        part(
+            &format!("{s}shin"),
+            knee,
+            [-0.085, -0.095, -SHIN + 0.08],
+            [0.085, 0.095, 0.0],
+        );
+        part(
+            &format!("{s}foot"),
+            knee,
+            [-0.09, -0.105, -SHIN],
+            [0.09, 0.165, -SHIN + 0.08],
+        );
+    }
+}
+
 /// The box figure.
 pub fn figure() -> Model {
     let mut b = ShapeBuilder::new();
@@ -358,6 +413,7 @@ pub fn figure() -> Model {
         arms: [arm_l, arm_r],
         elbows: [elbow_l, elbow_r],
     };
+    hitboxes(&mut b, torso, head, &limbs);
 
     let half = TAU / 2.0;
     for name in ["root", "idle"] {

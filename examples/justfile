@@ -89,3 +89,8 @@ fps-polish-shots dir="../target/fps-polish-shots":
 # wall's middle and edge and in the floor, the sights aimed), drawn offscreen into `dir`
 fps-polish2-shots dir="../target/fps-polish2-shots":
     cargo run -p torque-example-fps --release --bin fps-client -- --polish2-shots {{dir}}
+
+# The arena's hitbox pictures: the other figure's hitboxes, as the server poses them, drawn as lines over it standing, running,
+# stepping aside, looking up and down, jumping, aiming down the sights and falling, offscreen into `dir`
+fps-hitbox-shots dir="../target/fps-hitbox-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --hitbox-shots {{dir}}

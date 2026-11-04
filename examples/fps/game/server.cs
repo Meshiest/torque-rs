@@ -23,6 +23,8 @@ datablock PlayerData(ArenaFigure)
    drag = 0.3;
    maxDamage = 100;
    boundingBox = "1 1 2";
+   // Bolts hit the figure's parts as it stands (its shape's LOS boxes), not the box; the box still moves it.
+   hitboxes = true;
 
    runForce = 3600;
    maxForwardSpeed = 7;
@@ -267,6 +269,8 @@ $Server::GameType = "Arena";
 $Server::MissionType = "Free for all";
 $Server::PlayerCount = 0;
 $Pref::Server::MaxPlayers = 16;
+// A bolt hits the figures where its shooter saw them: as they were one round trip ago (up to the default cap).
+$Pref::Server::LagCompensation = 1;
 if ($Pref::Server::Name $= "")
    $Pref::Server::Name = "Arena";
 
@@ -365,6 +369,18 @@ function placeFigure(%name, %x, %y, %z, %yaw)
    }
 }
 
+// The figure of the client named %name (the pictures look at it on the server), or 0.
+function figureOf(%name)
+{
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+   {
+      %client = ClientGroup.getObject(%i);
+      if (%client.name $= %name && isObject(%client.player))
+         return %client.player.getId();
+   }
+   return 0;
+}
+
 // Tells the client which ghost is its own figure, and which way it faces, once the figure's ghost has reached it (the view is
 // drawn from the figure's eyes, turned as the client's own mouse turns it).
 function GameConnection::sendOwnFigure(%client, %player, %tries)
@@ -444,12 +460,13 @@ function ArenaBolt::onCollision(%this, %bolt, %col, %fade, %pos, %normal)
 {
    if (%col.getClassName() !$= "Player")
       return;
-   %col.getDataBlock().hurt(%col, %bolt.client, %this.directDamage);
+   // The part hit (head, torso, rarm, ...): every part takes the same damage; the shooter is told which.
+   %col.getDataBlock().hurt(%col, %bolt.client, %this.directDamage, %col.getDamageLocation(%pos));
 }
 
 // ---- hits and knock-outs
 
-function ArenaFigure::hurt(%this, %obj, %attacker, %amount)
+function ArenaFigure::hurt(%this, %obj, %attacker, %amount, %part)
 {
    if (%obj.getState() $= "Dead")
       return;
@@ -461,6 +478,8 @@ function ArenaFigure::hurt(%this, %obj, %attacker, %amount)
       %obj.hitFromFront = VectorDot(%to, %obj.getForwardVector()) >= 0;
    }
    %obj.applyDamage(%amount);
+   if (%part !$= "")
+      echo(%obj.getShapeName() SPC "hit in the" SPC %part @ ".");
    %client = %obj.client;
    %left = %this.maxDamage - %obj.getDamageLevel();
    if (%left < 0)
@@ -471,7 +490,7 @@ function ArenaFigure::hurt(%this, %obj, %attacker, %amount)
    if (isObject(%client) && isObject(%attacker) && isObject(%attacker.player))
       commandToClient(%client, 'Hurt', %amount, %attacker.player.getPosition());
    if (isObject(%attacker) && %attacker != %client)
-      commandToClient(%attacker, 'Hit', %client.name);
+      commandToClient(%attacker, 'Hit', %client.name, %part);
    if (%left <= 0)
       knockOut(%client, %attacker);
 }
