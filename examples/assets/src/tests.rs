@@ -318,12 +318,13 @@ fn the_pistol_fires_its_slide_back_and_has_its_image_nodes() {
 
 #[test]
 fn the_textures_decode_with_the_engines_reader() {
-    let cases: [(&str, Vec<u8>, u32); 5] = [
+    let cases: [(&str, Vec<u8>, u32); 6] = [
         ("grid", crate::textures::grid().unwrap(), 64),
         ("figure", crate::textures::figure().unwrap(), 64),
         ("pistol", crate::textures::pistol().unwrap(), 32),
         ("projectile", crate::textures::projectile().unwrap(), 16),
         ("spark", crate::textures::spark().unwrap(), 32),
+        ("hole", crate::textures::hole().unwrap(), 16),
     ];
     for (name, bytes, side) in cases {
         let image =
@@ -346,7 +347,7 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
     let mut names: Vec<_> = a.iter().map(|x| x.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 9);
+    assert_eq!(names.len(), 10);
     // Every material names a texture of the kit.
     for (_, model) in models() {
         for m in &model.shape.materials {

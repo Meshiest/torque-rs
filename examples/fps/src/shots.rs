@@ -478,3 +478,156 @@ pub fn write_motion(
     a.game.call("resumeKey", &["1"])?;
     Ok(paths)
 }
+
+/// Turns Ann's view `yaw` radians from where it looks, with the next move (as the mouse would).
+fn turn_by(a: &mut Seat, yaw: f32) {
+    let waiting = a.game.vm().global_f32("$mvYaw").unwrap_or(0.0);
+    a.game.set_global("$mvYaw", &(waiting + yaw).to_string());
+    let look = a.game.vm().global_f32("$Arena::LookYaw").unwrap_or(0.0);
+    a.game
+        .set_global("$Arena::LookYaw", &(look + yaw).to_string());
+}
+
+/// One shot of Ann's: the trigger down for a few frames, then up.
+fn shoot(gpu: &Gpu, a: &mut Seat, b: &mut Seat) -> Result<(), String> {
+    a.game.call("fire", &["1"])?;
+    run(gpu, &mut [&mut *a, &mut *b], 64)?;
+    a.game.call("fire", &["0"])?;
+    run(gpu, &mut [&mut *a, &mut *b], 500)
+}
+
+/// The polish pictures at `size`, written into `dir`: Ann's first-person frames of a bolt fired into open space and of one
+/// fired at a wall (a frame every [`FRAME_MS`] from the shot's flash), the holes bolts leave in a wall and in the floor, a hit
+/// as the shooter sees it (the hit mark and the sparks) and as the one hit sees it (the hurt edge and the mark of where it came
+/// from), and aiming down the sights: Ann's pistol at the hip, on its way up and at the sights, a bolt fired from there, and
+/// Bob seen holding his pistol, then raising it to his eye. Returns the paths.
+pub fn write_polish(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    use std::f32::consts::PI;
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut paths = Vec::new();
+    let mut save = |frame: &Frame, name: &str| -> Result<(), String> {
+        let path = dir.join(format!("{name}.png"));
+        write_png(frame, &path).map_err(|e| e.to_string())?;
+        paths.push(path);
+        Ok(())
+    };
+    place(&mut a.game, "Bob", [-12.0, 12.0, 0.1], PI)?;
+
+    // A bolt into open space (a little above level, over the far wall), then one at the cover ahead: frame by frame.
+    for (at, pitch, name) in [
+        ([4.0, -16.0, 0.1], -0.2, "bolt-open"),
+        ([0.0, -18.0, 0.1], 0.05, "bolt-wall"),
+    ] {
+        place(&mut a.game, "Ann", at, 0.0)?;
+        run(&gpu, &mut [&mut a, &mut b], 600)?;
+        a.game.set_view_pitch(pitch);
+        run(&gpu, &mut [&mut a, &mut b], 300)?;
+        let flashes = a.game.scene().flashes;
+        a.game.call("fire", &["1"])?;
+        run_until(&gpu, &mut a, &mut b, "the shot's flash", |a, _| {
+            a.game.scene().flashes > flashes
+        })?;
+        for k in 0..8 {
+            save(&a.picture(&gpu)?, &format!("{name}-{k}"))?;
+            run(&gpu, &mut [&mut a, &mut b], FRAME_MS)?;
+        }
+        a.game.call("fire", &["0"])?;
+        run(&gpu, &mut [&mut a, &mut b], 600)?;
+    }
+
+    // Holes in a wall: a few shots at the cover's face three steps ahead; then in the floor.
+    place(&mut a.game, "Ann", [0.0, -14.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    for (yaw, pitch) in [
+        (0.0, -0.05),
+        (0.12, 0.0),
+        (-0.22, 0.05),
+        (0.15, -0.17),
+        (-0.2, -0.1),
+    ] {
+        turn_by(&mut a, yaw);
+        a.game.set_view_pitch(pitch);
+        run(&gpu, &mut [&mut a, &mut b], 100)?;
+        shoot(&gpu, &mut a, &mut b)?;
+    }
+    a.game.set_view_pitch(0.0);
+    turn_by(&mut a, 0.15);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals-wall")?;
+    place(&mut a.game, "Ann", [-14.0, 0.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    a.game.set_view_pitch(0.9);
+    run(&gpu, &mut [&mut a, &mut b], 200)?;
+    for yaw in [0.0, 0.2, -0.35, 0.25] {
+        turn_by(&mut a, yaw);
+        run(&gpu, &mut [&mut a, &mut b], 100)?;
+        shoot(&gpu, &mut a, &mut b)?;
+    }
+    turn_by(&mut a, -0.05);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    save(&a.picture(&gpu)?, "decals-floor")?;
+    a.game.set_view_pitch(0.0);
+
+    // A hit: Ann shoots Bob, who stands side on to her; Ann sees the mark and the sparks, Bob the hurt edge and where it came
+    // from.
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    place(&mut a.game, "Bob", [4.0, -11.0, 0.1], PI / 2.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 800)?;
+    let hits: u32 = a.game.global("$Arena::Hits").parse().unwrap_or(0);
+    a.game.call("fire", &["1"])?;
+    run_until(&gpu, &mut a, &mut b, "a hit", |a, _| {
+        a.game.global("$Arena::Hits").parse::<u32>().unwrap_or(0) > hits
+    })?;
+    run(&gpu, &mut [&mut a, &mut b], 32)?;
+    save(&a.picture(&gpu)?, "hit-shooter-1")?;
+    save(&b.picture(&gpu)?, "hit-victim-1")?;
+    a.game.call("fire", &["0"])?;
+    run(&gpu, &mut [&mut a, &mut b], 150)?;
+    save(&a.picture(&gpu)?, "hit-shooter-2")?;
+    save(&b.picture(&gpu)?, "hit-victim-2")?;
+    run(&gpu, &mut [&mut a, &mut b], 2500)?;
+
+    // Aiming down the sights: at the hip, on the way up, at the sights, a bolt fired from there.
+    place(&mut a.game, "Bob", [-12.0, 12.0, 0.1], PI)?;
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    save(&a.picture(&gpu)?, "aim-hip")?;
+    a.game.call("aim", &["1"])?;
+    run(&gpu, &mut [&mut a, &mut b], 80)?;
+    save(&a.picture(&gpu)?, "aim-rising")?;
+    run(&gpu, &mut [&mut a, &mut b], 400)?;
+    save(&a.picture(&gpu)?, "aim-sights")?;
+    let flashes = a.game.scene().flashes;
+    a.game.call("fire", &["1"])?;
+    run_until(&gpu, &mut a, &mut b, "the shot's flash", |a, _| {
+        a.game.scene().flashes > flashes
+    })?;
+    for k in 0..4 {
+        run(&gpu, &mut [&mut a, &mut b], FRAME_MS)?;
+        save(&a.picture(&gpu)?, &format!("aim-fire-{k}"))?;
+    }
+    a.game.call("fire", &["0"])?;
+    a.game.call("aim", &["0"])?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+
+    // Bob holding his pistol, then raising it to his eye.
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    watch_bob(&mut a, [-2.6, -3.4, 0.6], 1.3);
+    save(&a.picture(&gpu)?, "aim-third-hold")?;
+    b.game.call("aim", &["1"])?;
+    run(&gpu, &mut [&mut a, &mut b], 500)?;
+    watch_bob(&mut a, [-2.6, -3.4, 0.6], 1.3);
+    save(&a.picture(&gpu)?, "aim-third-raised")?;
+    watch_bob(&mut a, [-3.6, 0.4, 0.4], 1.3);
+    save(&a.picture(&gpu)?, "aim-third-side")?;
+    b.game.call("aim", &["0"])?;
+    a.eye = None;
+    Ok(paths)
+}

@@ -346,7 +346,7 @@ function pauseGame()
       return;
    $Arena::Paused = 1;
    PlayMap.pop();
-   $mvForwardAction = $mvBackwardAction = $mvLeftAction = $mvRightAction = 0;
+   releaseKeys();
    Canvas.pushDialog(PauseGui);
    Canvas.cursorOn();
    PauseMap.push();
@@ -477,19 +477,51 @@ function say(%text)
 function resetCanvas() {}
 
 new ActionMap(PlayMap);
-function moveForward(%v) { $mvForwardAction = %v; }
-function moveBack(%v) { $mvBackwardAction = %v; }
-function moveLeft(%v) { $mvLeftAction = %v; }
-function moveRight(%v) { $mvRightAction = %v; }
+// The keys held, and the moves made of them: slower while aiming down the sights.
+$Arena::AimWalk = 0.6;
+function applyMoves()
+{
+   %speed = $Arena::Aiming ? $Arena::AimWalk : 1;
+   $mvForwardAction = $Arena::KeyForward * %speed;
+   $mvBackwardAction = $Arena::KeyBack * %speed;
+   $mvLeftAction = $Arena::KeyLeft * %speed;
+   $mvRightAction = $Arena::KeyRight * %speed;
+}
+function releaseKeys()
+{
+   $Arena::KeyForward = $Arena::KeyBack = $Arena::KeyLeft = $Arena::KeyRight = 0;
+   if ($Arena::Aiming)
+      aim(0);
+   applyMoves();
+}
+function moveForward(%v) { $Arena::KeyForward = %v; applyMoves(); }
+function moveBack(%v) { $Arena::KeyBack = %v; applyMoves(); }
+function moveLeft(%v) { $Arena::KeyLeft = %v; applyMoves(); }
+function moveRight(%v) { $Arena::KeyRight = %v; applyMoves(); }
 function jump(%v) { $mvTriggerCount2++; }
 // The trigger counts once going down and once coming up.
 function fire(%v) { $mvTriggerCount0++; }
+// Aiming down the sights while the right button is held: the move's trigger 4 tells the server (the figure raises its pistol
+// for the others to see); the client moves the view's pistol to the sights and narrows the view ($Arena::Aiming), and the
+// crosshair gives way to the sights.
+function aim(%v)
+{
+   if ((%v != 0) == ($Arena::Aiming != 0))
+      return;
+   $mvTriggerCount4++;
+   $Arena::Aiming = %v != 0;
+   Crosshair.setVisible(!$Arena::Aiming);
+   applyMoves();
+}
 // The view turns at once with the mouse ($Arena::LookYaw and $Arena::LookPitch); the moves carry the same turns to the server.
+// A narrower view turns slower by as much ($Arena::TurnScale, which the client sets from the field of view each frame), so a
+// move of the mouse sweeps the same share of the screen.
 $Arena::MaxLook = 1.4;
-function turn(%v) { $mvYaw += %v * 0.003; $Arena::LookYaw += %v * 0.003; }
+$Arena::TurnScale = 1;
+function turn(%v) { %d = %v * 0.003 * $Arena::TurnScale; $mvYaw += %d; $Arena::LookYaw += %d; }
 function look(%v)
 {
-   %pitch = $Arena::LookPitch + %v * 0.003;
+   %pitch = $Arena::LookPitch + %v * 0.003 * $Arena::TurnScale;
    if (%pitch > $Arena::MaxLook)
       %pitch = $Arena::MaxLook;
    if (%pitch < -$Arena::MaxLook)
@@ -510,6 +542,7 @@ PlayMap.bind(keyboard, t, chatKey);
 PlayMap.bind(keyboard, r, reloadKey);
 PlayMap.bind(keyboard, escape, pauseKey);
 PlayMap.bind(mouse, button0, fire);
+PlayMap.bind(mouse, button1, aim);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
 
@@ -545,7 +578,7 @@ function leaveGame()
    closePause();
    if (isObject(ServerConnection))
       ServerConnection.delete();
-   $mvForwardAction = $mvBackwardAction = $mvLeftAction = $mvRightAction = 0;
+   releaseKeys();
    $Arena::OwnGhost = -1;
    ChatLines.clear();
    showChat();

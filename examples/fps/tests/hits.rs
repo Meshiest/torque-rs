@@ -1,6 +1,6 @@
 //! A hit as both players see it: Ann shoots Bob, who stands facing her (`game/fixtures/floor.mis`). Ann's screen shows the X
 //! over the crosshair and both clients burst sparks where the bolt hit Bob; Bob's screen flashes its red edge and marks the way
-//! the shot came from, straight ahead of him.
+//! the shot came from, straight ahead of him. Knocked out, Bob falls with his aiming arm let go.
 
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
@@ -97,4 +97,28 @@ fn a_hit_bursts_marks_the_shooter_and_shows_the_hurt_its_way() {
         frame(&mut a, &mut b, 16);
     }
     assert_eq!(a.marks.hit_alpha(), 0.0);
+
+    assert_eq!(a.scene().others_arms(), [(false, Some("hold".to_string()))]);
+    // Two more knock Bob out: his fall owns his whole body, the arm that aimed the pistol falls with it.
+    for k in 2..=3 {
+        a.call("fire", &["1"]).unwrap();
+        for i in 0..60 {
+            if i == 4 {
+                a.call("fire", &["0"]).unwrap();
+            }
+            frame(&mut a, &mut b, 16);
+            if a.global("$Arena::Hits") == k.to_string() && i > 20 {
+                break;
+            }
+        }
+    }
+    assert_eq!(a.global("$Arena::Hits"), "3");
+    for _ in 0..20 {
+        frame(&mut a, &mut b, 16);
+    }
+    assert_eq!(
+        a.scene().others_arms(),
+        [(true, None)],
+        "dying, the arm let go"
+    );
 }

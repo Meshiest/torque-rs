@@ -69,3 +69,8 @@ fps-shots dir="../target/fps-shots":
 # pause menu), drawn offscreen into `dir`
 fps-motion-shots dir="../target/fps-motion-shots":
     cargo run -p torque-example-fps --release --bin fps-client -- --motion-shots {{dir}}
+
+# The arena's polish pictures (a bolt's flight frame by frame into open space and at a wall, the bolts' holes, a hit seen by
+# both players, aiming down the sights), drawn offscreen into `dir`
+fps-polish-shots dir="../target/fps-polish-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --polish-shots {{dir}}

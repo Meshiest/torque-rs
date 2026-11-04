@@ -7,6 +7,7 @@
 //! | `pistol.png` | 32 x 32 | dark metal, lighter along the top rows, faint grip lines lower down |
 //! | `projectile.png` | 16 x 16 | a hot core fading to orange at the edge |
 //! | `spark.png` | 32 x 32 | a soft white dot fading to black at the edge (a particle: drawn added, its black adds nothing) |
+//! | `hole.png` | 16 x 16 | a bolt's hole: a near-black square inside a dark grey rim |
 
 use std::io;
 
@@ -99,5 +100,17 @@ pub fn spark() -> io::Result<Vec<u8>> {
         let t = (1.0 - (dx * dx + dy * dy).sqrt() / 15.5).max(0.0);
         let v = (255.0 * t * t).round() as u8;
         [v, v, v]
+    })
+}
+
+/// A bolt's hole (a decal): a near-black square inside a dark grey rim.
+pub fn hole() -> io::Result<Vec<u8>> {
+    png(16, 16, |x, y| {
+        let edge = x.min(y).min(15 - x).min(15 - y);
+        match edge {
+            0 => [70, 70, 74],
+            1 | 2 => [42, 42, 46],
+            _ => [14, 14, 16],
+        }
     })
 }

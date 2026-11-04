@@ -124,9 +124,18 @@ datablock ExplosionData(ArenaBoltHit)
    lifetimeMS = 320;
 };
 
+// Where a bolt hits the world it leaves a small dark square hole (the client lays it, and fades it out after a while).
+datablock DecalData(ArenaBoltHole)
+{
+   sizeX = 0.12;
+   sizeY = 0.12;
+   textureName = "kit/hole";
+};
+
 datablock ProjectileData(ArenaBolt)
 {
    explosion = ArenaBoltHit;
+   decals[0] = ArenaBoltHole;
    projectileShapeName = "kit/projectile.dts";
    particleEmitter = ArenaBoltTrail;
    directDamage = 34;
@@ -468,6 +477,15 @@ function ArenaFigure::hurt(%this, %obj, %attacker, %amount)
       commandToClient(%attacker, 'Hit', %client.name);
    if (%left <= 0)
       knockOut(%client, %attacker);
+}
+
+// Aiming down the sights (the move's trigger 4, the right mouse button held): the figure raises its pistol to its eye, which
+// the others see; let go, it holds it as before.
+function ArenaFigure::onTrigger(%this, %obj, %slot, %down)
+{
+   if (%slot != 4 || %obj.getState() $= "Dead")
+      return;
+   %obj.setArmThread(%down ? "aim" : "hold");
 }
 
 // Knocked out (the damage reached maxDamage): the figure falls away from the shot, backward when hit from the front, and lies

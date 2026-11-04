@@ -23,9 +23,16 @@
 //! - **Bolts** (Projectiles) fly on from their first record along its velocity (the client runs them on its own, as TGE's
 //!   client runs a projectile ghost) and are drawn along it, turning slowly about their flight, until their explosion record
 //!   hides them. The server fires a bolt along its shooter's eye line (so it goes where the crosshair is); the client draws it
-//!   leaving the shooter's pistol muzzle and curving onto that line over its first [`BOLT_BLEND`] units. A bolt whose datablock names a `particleEmitter` leaves a trail of its particles behind it
-//!   ([`Emitter::emit_trail`] over each frame's flight, as `Projectile::processTick` emits on the client); a gone bolt's trail
-//!   is left to fade out (`deleteWhenEmpty`).
+//!   leaving the shooter's pistol muzzle (growing out of it over its first [`BOLT_GROW`] units) and curving onto that line
+//!   over its first [`BOLT_BLEND`] units. A bolt whose datablock names a `particleEmitter` leaves a trail of its particles
+//!   behind it ([`Emitter::emit_trail`] over each frame's flight, as `Projectile::processTick` emits on the client), so the
+//!   trail draws the curve from the muzzle; a gone bolt's trail is left to fade out (`deleteWhenEmpty`). A bolt that bursts
+//!   on the world (not on a figure) leaves one of its datablock's decals there ([`DecalManager`]: at most [`MAX_DECALS`],
+//!   each for [`DECAL_SECONDS`]).
+//! - **Aiming down the sights** ([`ArenaScene::update_aim`]): while the client aims, the first-person pistol moves from its
+//!   `eyeOffset` to [`AIM_OFFSET`] (its sights on the eye's line) over [`AIM_SECONDS`], eased, and the field of view narrows
+//!   from [`FOV`] to [`AIM_FOV`] with it ([`ArenaScene::turn_scale`] slows the mouse's turn by as much). A figure whose
+//!   record's arm action is the shape's `aim` (the server's, while its player aims) holds its pistol up at its eye.
 //!
 //! Credit: the image's hand transform follows `ShapeBase::getRenderImageTransform` in Torque3D's MIT-licensed
 //! `T3D/shapeBase.cpp`, and the hit burst follows `Explosion::explode` in `T3D/fx/explosion.cpp` (each Copyright (c) 2012
@@ -40,6 +47,7 @@ use torque::ghosts::{TgeClass, TgeRecord, Value};
 use torque::shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use torque_example_common::KitAssets;
 use torque_example_common::view::{SceneShape, WorldView};
+use torque_render_scene::decals::{DecalManager, projectile_decal};
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::hd::{DynamicObject, material};
 use torque_render_scene::math::Mat;
@@ -56,11 +64,28 @@ pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 pub const EYE_HEIGHT: f32 = 1.75;
 /// The field of view (degrees, horizontal).
 pub const FOV: u8 = 90;
+/// Aiming down the sights: how long the pistol takes to come up to the sights (seconds), the field of view there (degrees,
+/// horizontal), and where the pistol is held there (the image's place in the eye's frame, as `eyeOffset`): centered, its
+/// sights on the eye's line.
+pub const AIM_SECONDS: f32 = 0.18;
+pub const AIM_FOV: f32 = 60.0;
+pub const AIM_OFFSET: [f32; 3] = [0.0, 0.42, -0.057];
+
+/// The ease of the sights' blend: `t` (0 to 1 of [`AIM_SECONDS`]) smoothed at both ends.
+pub fn aim_ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// How fast a bolt turns about its flight (radians a second).
 pub const BOLT_SPIN: f32 = std::f32::consts::TAU;
 /// How far a bolt flies before it is drawn on its flight (units): until then it is drawn curving there from the shooter's muzzle
 /// (the server fires it along the eye's line, so it goes where the crosshair is).
-pub const BOLT_BLEND: f32 = 6.0;
+pub const BOLT_BLEND: f32 = 12.0;
+/// A bolt leaving the muzzle grows from this share of its size to its whole size over its first [`BOLT_GROW`] units, so it
+/// comes out of the barrel instead of filling the view beside it.
+pub const BOLT_START_SIZE: f32 = 0.3;
+pub const BOLT_GROW: f32 = 1.5;
 /// How far from a figure's eye a bolt may have been fired and still be that figure's (units).
 pub const SHOOTER_REACH: f32 = 1.5;
 
@@ -275,6 +300,8 @@ struct Figure {
     anim: PlayerAnimation,
     held: Option<Held>,
     held_db: Option<u32>,
+    /// How far the first-person pistol is up at the sights (0 at the hip, 1 at the sights; eased).
+    aim: f32,
 }
 
 impl Figure {
@@ -288,11 +315,13 @@ impl Figure {
         m
     }
 
-    /// The first-person pistol's transform: at the eye times the image's `eyeOffset`, kicked back and up while it recoils.
+    /// The first-person pistol's transform: at the eye times the image's `eyeOffset` (moved toward [`AIM_OFFSET`] as the sights
+    /// come up), kicked back and up while it recoils.
     fn view_image(&self, held: &Held) -> Mat {
         let kick = held.kick();
         let mut offset = Mat::euler_x(-RECOIL_UP * kick);
-        let [x, y, z] = held.eye_offset;
+        let [x, y, z] =
+            [0, 1, 2].map(|k| held.eye_offset[k] + (AIM_OFFSET[k] - held.eye_offset[k]) * self.aim);
         offset.set_column3([x, y - RECOIL_BACK * kick, z + 0.2 * RECOIL_BACK * kick]);
         Mat::mul(&self.eye_transform(), &offset)
     }
@@ -334,8 +363,8 @@ impl Figure {
     }
 }
 
-/// Where a bolt is drawn, its velocity and its age.
-type BoltPose = ([f32; 3], [f32; 3], f32);
+/// Where a bolt is drawn, its velocity, its age and its size (a share of its shape's).
+type BoltPose = ([f32; 3], [f32; 3], f32, f32);
 
 /// A bolt: where its first record put it and when, and its trail.
 struct Bolt {
@@ -355,10 +384,19 @@ impl Bolt {
         [0, 1, 2].map(|i| self.start[i] + self.velocity[i] * self.age)
     }
 
+    /// How far it has flown (units).
+    fn flown(&self) -> f32 {
+        self.velocity.iter().map(|v| v * v).sum::<f32>().sqrt() * self.age
+    }
+
+    /// Its size as drawn: growing out of the muzzle ([`BOLT_START_SIZE`], [`BOLT_GROW`]).
+    fn size(&self) -> f32 {
+        BOLT_START_SIZE + (1.0 - BOLT_START_SIZE) * (self.flown() / BOLT_GROW).clamp(0.0, 1.0)
+    }
+
     /// Where it is drawn: from the muzzle, curving onto its flight ([`BOLT_BLEND`]).
     fn drawn(&self) -> [f32; 3] {
-        let speed = self.velocity.iter().map(|v| v * v).sum::<f32>().sqrt();
-        let k = (1.0 - (speed * self.age / BOLT_BLEND).clamp(0.0, 1.0)).powi(2);
+        let k = (1.0 - (self.flown() / BOLT_BLEND).clamp(0.0, 1.0)).powi(2);
         let at = self.position();
         [0, 1, 2].map(|i| at[i] + self.offset[i] * k)
     }
@@ -445,12 +483,16 @@ pub struct ArenaScene {
     burst: std::collections::BTreeSet<u32>,
     /// Where the last hits on figures burst (the last [`MAX_HIT_BURSTS`]).
     pub hit_bursts: Vec<[f32; 3]>,
+    /// The holes the bolts left in the world.
+    pub decals: DecalManager,
     rng: Option<Rng>,
     /// The live particles of every trail.
     live: usize,
     /// The frame time the trails have not run yet (ms, under one).
     trail_ms: f32,
     own: Option<OwnView>,
+    /// How far the sights' blend has run (0 at the hip, 1 at the sights; not eased).
+    aim: f32,
     /// The bolts drawn in the last frame, and the other figures holding an image.
     pub bolts_drawn: usize,
     pub holders_drawn: usize,
@@ -474,7 +516,20 @@ fn offset_of(world: &TgeWorld, db: u32, field: &str) -> [f32; 3] {
     }
 }
 
+/// The most bolt holes kept, how long each stays and how long of that it fades out (seconds).
+pub const MAX_DECALS: usize = 64;
+pub const DECAL_SECONDS: f32 = 25.0;
+pub const DECAL_FADE: f32 = 4.0;
+
 impl ArenaScene {
+    /// A scene with nothing in it yet.
+    pub fn new() -> ArenaScene {
+        ArenaScene {
+            decals: DecalManager::new(MAX_DECALS, DECAL_SECONDS, DECAL_FADE),
+            ..ArenaScene::default()
+        }
+    }
+
     /// Forgets every ghost's object (a new connection's ghosts are new).
     pub fn clear(&mut self) {
         self.cubes.clear();
@@ -483,6 +538,7 @@ impl ArenaScene {
         self.fading.clear();
         self.burst.clear();
         self.hit_bursts.clear();
+        self.decals.clear();
         self.live = 0;
         self.own = None;
     }
@@ -533,6 +589,7 @@ impl ArenaScene {
         for e in &mut self.fading {
             e.advance(ms, &mut self.live);
         }
+        self.decals.advance(dt);
         self.fading.retain(|e| !e.particles.is_empty());
         let mut seen = Vec::new();
         for (&index, ghost) in &world.records.ghosts {
@@ -547,14 +604,23 @@ impl ArenaScene {
                     trail.dead = true;
                     self.fading.push(trail);
                 }
-                if x.hit_type & torque::collide::types::PLAYER != 0 && self.burst.insert(index) {
+                use torque::collide::types::{PLAYER, VEHICLE};
+                if x.hit_type != 0 && self.burst.insert(index) {
                     let at = x.position.map(|v| v.get());
                     let normal = x.normal.map(|v| v.get());
-                    if let Some(e) = hit_burst(world, db, at, normal, &mut rng, &mut self.live) {
-                        self.fading.push(e);
-                        self.hit_bursts.push(at);
-                        let cut = self.hit_bursts.len().saturating_sub(MAX_HIT_BURSTS);
-                        self.hit_bursts.drain(..cut);
+                    if x.hit_type & PLAYER != 0 {
+                        if let Some(e) = hit_burst(world, db, at, normal, &mut rng, &mut self.live)
+                        {
+                            self.fading.push(e);
+                            self.hit_bursts.push(at);
+                            let cut = self.hit_bursts.len().saturating_sub(MAX_HIT_BURSTS);
+                            self.hit_bursts.drain(..cut);
+                        }
+                    } else if x.hit_type & VEHICLE == 0
+                        && let Some(d) = projectile_decal(world, db, &mut rng)
+                    {
+                        let angle = rng.f() * std::f32::consts::TAU;
+                        self.decals.add(&d, at, normal, angle);
                     }
                 }
                 continue;
@@ -626,9 +692,9 @@ impl ArenaScene {
         let bolts: Vec<(u32, u32, BoltPose)> = self
             .bolts
             .iter()
-            .map(|(&i, b)| (i, b.db, (b.drawn(), b.velocity, b.age)))
+            .map(|(&i, b)| (i, b.db, (b.drawn(), b.velocity, b.age, b.size())))
             .collect();
-        for (index, db, (at, v, age)) in bolts {
+        for (index, db, (at, v, age, size)) in bolts {
             let Some(file) = world.datablock_text(db, "projectileShapeName") else {
                 continue;
             };
@@ -642,6 +708,11 @@ impl ArenaScene {
             let pitch = -v[2].atan2((v[0] * v[0] + v[1] * v[1]).sqrt());
             let spin = Mat::from_axis_angle([0.0, 1.0, 0.0], BOLT_SPIN * age);
             let mut m = Mat::mul(&Mat::mul(&Mat::euler_z(yaw), &Mat::euler_x(pitch)), &spin);
+            for r in 0..3 {
+                for c in 0..3 {
+                    m.m[r * 4 + c] *= size;
+                }
+            }
             m.set_column3(at);
             out.push(view.shape_object(assets, &shape, &instance, &m, object_id(index, 2)));
         }
@@ -660,6 +731,24 @@ impl ArenaScene {
     /// The own figure as the last frame placed it.
     pub fn own(&self) -> Option<OwnView> {
         self.own
+    }
+
+    /// The other figures' arms as the last frame posed them: whether each plays a death, and the action its arm thread plays
+    /// (none: the thread is stopped).
+    pub fn others_arms(&self) -> Vec<(bool, Option<String>)> {
+        self.figures
+            .values()
+            .filter(|f| !f.own)
+            .map(|f| {
+                let arm = f
+                    .anim
+                    .arm_action()
+                    .filter(|_| f.anim.arm_running())
+                    .and_then(|a| f.anim.actions().get(a))
+                    .map(|a| String::from_utf8_lossy(&a.name).into_owned());
+                (f.anim.dying(), arm)
+            })
+            .collect()
     }
 
     /// The other figures' positions (feet) and yaws as the last frame drew them.
@@ -744,10 +833,12 @@ impl ArenaScene {
                         anim,
                         held: None,
                         held_db: None,
+                        aim: 0.0,
                     })
                 }
             };
             figure.own = look.is_some();
+            figure.aim = if figure.own { aim_ease(self.aim) } else { 0.0 };
             match look {
                 Some(o) => {
                     figure.position = o.position.unwrap_or(position);
@@ -776,10 +867,13 @@ impl ArenaScene {
                 figure.held_db = image.map(|i| i.0);
                 figure.held = held_shape.and_then(|(shape, offset)| Held::new(shape, offset));
             }
+            // A held pistol is held up (`hold`), or at the eye while the server says its figure aims (`aim`).
+            let named = |name: &[u8]| figure.anim.actions().iter().position(|a| a.name == name);
+            let aiming = named(b"aim").filter(|a| motion.arm_action == u32::try_from(*a).ok());
             let hold = figure
                 .held
                 .as_ref()
-                .and_then(|_| figure.anim.actions().iter().position(|a| a.name == b"hold"));
+                .and_then(|_| aiming.or_else(|| named(b"hold")));
             motion.arm_action = hold.and_then(|h| u32::try_from(h).ok());
             motion.look = ((figure.pitch / max_look + 1.0) * 0.5).clamp(0.0, 1.0);
             let s = figure.shape.shape();
@@ -932,7 +1026,35 @@ impl ArenaScene {
             self.trail_particles += e.particles.len();
             draws.push((dist, d));
         }
-        view.set_particles(&draws, set);
+        let decals = self.decals.draws(eye.position, &mut set);
+        view.set_particles_and_decals(&draws, &decals, set);
+    }
+
+    /// `dt` seconds of the sights' blend toward the sights (`aiming`) or the hip; returns how far up they are (eased).
+    pub fn update_aim(&mut self, aiming: bool, dt: f32) -> f32 {
+        let step = dt.max(0.0) / AIM_SECONDS;
+        self.aim = if aiming {
+            (self.aim + step).min(1.0)
+        } else {
+            (self.aim - step).max(0.0)
+        };
+        aim_ease(self.aim)
+    }
+
+    /// How far the sights are up (eased, 0 to 1).
+    pub fn aim(&self) -> f32 {
+        aim_ease(self.aim)
+    }
+
+    /// The field of view now (degrees, horizontal): [`FOV`], narrowing to [`AIM_FOV`] as the sights come up.
+    pub fn fov(&self) -> f32 {
+        f32::from(FOV) + (AIM_FOV - f32::from(FOV)) * self.aim()
+    }
+
+    /// How much slower the mouse turns the view now: the narrower view's share of the full one (`tan` of the half angles).
+    pub fn turn_scale(&self) -> f32 {
+        let half = |deg: f32| (deg.to_radians() * 0.5).tan();
+        half(self.fov()) / half(f32::from(FOV))
     }
 
     /// The eye: at the own figure's eye, else over the arena.
@@ -942,7 +1064,7 @@ impl ArenaScene {
                 position: o.eye,
                 pitch: o.pitch,
                 yaw: o.yaw,
-                fov: Some(FOV),
+                fov: Some(self.fov().round() as u8),
             },
             None => self.overview_eye(),
         }
