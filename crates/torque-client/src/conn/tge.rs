@@ -25,8 +25,9 @@
 //!
 //! Credit: the connection follows TGE 1.4's `NetConnection` / `GameConnection` client half (`netConnection.cc`,
 //! `netInterface.cc`, `netInterface.h`, `gameConnection.cc`), as Torque3D (MIT) carries it in `sim/netConnection.cpp`,
-//! `sim/netInterface.cpp` and `sim/netInterface.h` (each Copyright (c) 2012 GarageGames, LLC) and `T3D/gameBase/gameConnection.cpp` (Copyright (c) 2012 GarageGames, LLC;
-//! Copyright (C) 2015 Faust Logic, Inc.). The code is this crate's own.
+//! `sim/netInterface.cpp` and `sim/netInterface.h` (each Copyright (c) 2012 GarageGames, LLC), `T3D/gameBase/gameConnection.cpp` (Copyright (c) 2012 GarageGames, LLC;
+//! Copyright (C) 2015 Faust Logic, Inc.) and, for `read_datablock`, `T3D/gameBase/gameConnectionEvents.cpp` (Copyright (c) 2012
+//! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code is this crate's own.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;

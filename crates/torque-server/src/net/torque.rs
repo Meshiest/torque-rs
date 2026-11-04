@@ -5,7 +5,8 @@
 //! ([`NetHost`]) over any net game's shared state.
 //!
 //! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`
-//! (`Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`).
+//! (`Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of` follows `QuatF::set(MatrixF)` in
+//! `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
