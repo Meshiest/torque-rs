@@ -231,3 +231,104 @@ fn the_prediction_runs_over_torques_world() {
     p.update_view(&mut world);
     assert_eq!(p.checksum(), 0);
 }
+
+/// A StaticShapeData as a host's view answers it: its shape and its mass.
+struct CrateView;
+
+impl torque_server::net::datablock::DatablockView for CrateView {
+    fn get(&self, field: &str, _index: usize) -> torque_server::net::datablock::DbValue {
+        use torque_server::net::datablock::DbValue;
+        match field {
+            "shapeFile" => DbValue::Str(b"shapes/crate.dts".to_vec()),
+            "mass" => DbValue::F32(4.0),
+            _ => DbValue::Null,
+        }
+    }
+}
+
+#[test]
+fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
+    use torque_server::net::codecs::{NetCodecs, TorqueCodecs};
+    use torque_server::net::datablock::{DatablockBody, DatablockEvent};
+    let tables = TgeTables::tge().unwrap();
+    let widths = NetWidths::engine_default();
+    let record = TorqueCodecs
+        .datablock_record(
+            "StaticShapeData",
+            40,
+            &CrateView,
+            &torque_game::dbvalues::DbValues::default(),
+        )
+        .expect("TGE's StaticShapeData has a record");
+    let event = DatablockEvent {
+        body: Some(DatablockBody::new(
+            40,
+            "StaticShapeData",
+            2,
+            5,
+            widths.datablock_bits,
+            record,
+        )),
+        id_bits: widths.datablock_bits,
+    };
+    let mut w = net::bits::BitWriter::new();
+    w.enable_string_buffer();
+    event.pack(&mut w, &tables.table, &tables.classes).unwrap();
+    let bytes = w.into_bytes();
+    let mut r = BitReader::new(&bytes);
+    r.enable_string_buffer();
+    let (read, index, total) = read_datablock(&mut r, &tables.ctx(widths), &tables.classes)
+        .unwrap()
+        .expect("a modified datablock");
+    assert_eq!((read.id, index, total), (40, 2, 5));
+    assert_eq!(read.datablock.class, "StaticShapeData");
+    assert_eq!(
+        read.datablock.get("shapeFile", 0),
+        Some(&Value::str("shapes/crate.dts"))
+    );
+    assert_eq!(read.datablock.get("mass", 0), Some(&Value::F32(4.0)));
+
+    // The one-bit event of a datablock the client has: nothing.
+    let mut w = net::bits::BitWriter::new();
+    DatablockEvent {
+        body: None,
+        id_bits: widths.datablock_bits,
+    }
+    .pack(&mut w, &tables.table, &tables.classes)
+    .unwrap();
+    let bytes = w.into_bytes();
+    let mut r = BitReader::new(&bytes);
+    assert!(
+        read_datablock(&mut r, &tables.ctx(widths), &tables.classes)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn the_servers_datablocks_done_is_answered_with_its_sequence() {
+    let sent = Rc::new(RefCell::new(VecDeque::new()));
+    let mut feed = TgeFeed::new(
+        Box::new(Kept(Rc::clone(&sent))),
+        b"",
+        vec![Vec::new(); 5],
+        0,
+        Some((12, 14)),
+    )
+    .expect("TGE's tables");
+    let mut world = TgeWorld::default();
+    assert_eq!(feed.out.ordered_len(), 0);
+    feed.message(
+        &mut world,
+        ConnectionMessage {
+            seq: 3,
+            message: DATABLOCKS_DONE,
+            count: 0,
+        },
+    );
+    assert_eq!(
+        feed.out.ordered_len(),
+        1,
+        "DataBlocksDownloadDone is queued"
+    );
+}
