@@ -3,7 +3,7 @@
 //! class of the name yet, so a host's own table (installed first) keeps its classes. The methods are this crate's natives
 //! ([`crate::register`]).
 
-use torque_ts_vm::classes::{ClassSpec, FieldSpec, install_spec};
+use torque_ts_vm::classes::{ClassSpec, FieldSpec, install_spec_inheriting};
 use torque_ts_vm::fields::{EnumTable, FieldType};
 use torque_ts_vm::vm::Vm;
 
@@ -581,14 +581,16 @@ pub static CLASSES: &[ClassSpec] = &[
     },
 ];
 
-/// Registers every class of [`CLASSES`] that `vm` does not have yet (by name); returns how many it added.
+/// Registers every class of [`CLASSES`] that `vm` does not have yet (by name); returns how many it added. A class's
+/// `defaults` list only what it changes: its fresh objects read the rest from its parent (a GuiTextListCtrl is visible, as
+/// GuiControl's `visible` default says).
 pub fn install(vm: &mut Vm) -> usize {
     let mut added = 0;
     for spec in CLASSES {
         if vm.objects().classes.find(spec.name.as_bytes()).is_some() {
             continue;
         }
-        added += usize::from(install_spec(vm, spec));
+        added += usize::from(install_spec_inheriting(vm, spec));
     }
     added
 }

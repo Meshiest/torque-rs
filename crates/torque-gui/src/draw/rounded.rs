@@ -1,5 +1,5 @@
-//! The engine's rounded boxes: what GuiButtonCtrl, a closed GuiPopUpMenuCtrl with a border and GuiSliderCtrl's thumb draw
-//! unless the host keeps TGE's bevels ([`crate::ext::GuiRule::ClassicBoxes`]).
+//! The engine's rounded boxes: what GuiButtonCtrl, a GuiPopUpMenuCtrl with a border and its open list, and GuiSliderCtrl's
+//! thumb draw unless the host keeps TGE's bevels for their profile ([`crate::ext::GuiExtension::classic_boxes`]).
 //!
 //! - **The shape**: a rectangle with corners of [`BOX_RADIUS`] pixels (less on a box under twice that), a solid fill and a
 //!   one-pixel border, both with anti-aliased corners.
@@ -184,7 +184,7 @@ pub fn box_text_color(vm: &Vm, p: ObjId, state: BoxState) -> Option<[u8; 4]> {
 }
 
 impl Walk<'_> {
-    /// A rounded box over `r` (x, y, width, height): `fill`, then a one-pixel `border` round it (none when its alpha is 0).
+    /// A rounded box over `r` (x, y, width, height): `fill`, then a one-pixel `border` around it (none when its alpha is 0).
     pub(super) fn rounded_box(&mut self, r: Rect, fill: [u8; 4], border: [u8; 4]) {
         if r[2] <= 0 || r[3] <= 0 {
             return;

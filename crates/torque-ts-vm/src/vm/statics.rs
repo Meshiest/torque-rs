@@ -253,7 +253,15 @@ impl Vm {
     /// The class's slots start from the type's zero: a `dump()` lists every non-empty value, so what it
     /// leaves out reads empty even where the parent's defaults (which the layout's initial values were
     /// cloned from) say otherwise; a class table where a class leaves out a value its parent lists reads empty there.
-    pub(crate) fn apply_defaults(&mut self, class: ClassId, defaults: &[(&str, &str)]) {
+    ///
+    /// With `inherit`, the slots start from the class's layout (the parent's defaults) instead of the type's zero, so
+    /// the list only needs the values the class changes.
+    pub(crate) fn apply_defaults(
+        &mut self,
+        class: ClassId,
+        defaults: &[(&str, &str)],
+        inherit: bool,
+    ) {
         let Some(layout) = self
             .objects
             .classes
@@ -263,10 +271,12 @@ impl Vm {
             return;
         };
         let mut values = layout.initial.clone();
-        for (field, slots) in &layout.fields {
-            for slot in slots {
-                if let Some(value) = values.get_mut(*slot) {
-                    *value = fields::zero(field.ty);
+        if !inherit {
+            for (field, slots) in &layout.fields {
+                for slot in slots {
+                    if let Some(value) = values.get_mut(*slot) {
+                        *value = fields::zero(field.ty);
+                    }
                 }
             }
         }

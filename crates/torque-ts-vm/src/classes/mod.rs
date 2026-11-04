@@ -203,9 +203,25 @@ pub fn install_spec(vm: &mut Vm, spec: &ClassSpec) -> bool {
     install_spec_with(vm, spec, None)
 }
 
+/// [`install_spec`] for a hand-written table whose `defaults` list only what a class changes: the class's fresh objects
+/// read its parent's defaults for every field the list leaves out (a dump-made table lists every value, so
+/// [`install_spec`] reads the rest as the type's zero).
+pub fn install_spec_inheriting(vm: &mut Vm, spec: &ClassSpec) -> bool {
+    install_spec_impl(vm, spec, None, true)
+}
+
 /// [`install_spec`] with a host's own declarations on the class (`extra`, when its `class` names the spec; else it is
 /// ignored). A class that was already registered keeps its fields; the defaults still apply.
 pub fn install_spec_with(vm: &mut Vm, spec: &ClassSpec, extra: Option<&ClassExtra>) -> bool {
+    install_spec_impl(vm, spec, extra, false)
+}
+
+fn install_spec_impl(
+    vm: &mut Vm,
+    spec: &ClassSpec,
+    extra: Option<&ClassExtra>,
+    inherit_defaults: bool,
+) -> bool {
     let extra = extra.filter(|e| e.class.eq_ignore_ascii_case(spec.name));
     let static_field = |f: &FieldSpec| StaticField {
         name: f.name.as_bytes().to_vec(),
@@ -254,7 +270,7 @@ pub fn install_spec_with(vm: &mut Vm, spec: &ClassSpec, extra: Option<&ClassExtr
         def.sim_object = false;
     }
     match (spec.defaults, extra.map(|e| e.defaults)) {
-        (Some(defaults), None) => vm.apply_defaults(class, defaults),
+        (Some(defaults), None) => vm.apply_defaults(class, defaults, inherit_defaults),
         (defaults, Some(more)) if defaults.is_some() || !more.is_empty() => {
             let all: Vec<(&str, &str)> = defaults
                 .unwrap_or_default()
@@ -262,7 +278,7 @@ pub fn install_spec_with(vm: &mut Vm, spec: &ClassSpec, extra: Option<&ClassExtr
                 .chain(more)
                 .copied()
                 .collect();
-            vm.apply_defaults(class, &all);
+            vm.apply_defaults(class, &all, inherit_defaults);
         }
         _ => {}
     }

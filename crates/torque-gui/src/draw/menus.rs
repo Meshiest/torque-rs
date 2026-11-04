@@ -5,9 +5,10 @@
 //!   **`renderSlightlyRaisedBox`**: a fill and bevel lines. `dglDrawLine` of an axis-aligned line lights every
 //!   pixel from one end to the other, both included.
 //! - **GuiButtonCtrl**: the raised box unless depressed or on; the text (`renderJustifiedText`), one pixel down and right
-//!   while depressed; the children. Unless the host keeps TGE's bevels ([`GuiRule::ClassicBoxes`]), the box is instead the
-//!   engine's rounded box of the button's state (`super::rounded`), and so are a bordered or open GuiPopUpMenuCtrl's box and
-//!   GuiSliderCtrl's thumb.
+//!   while depressed; the children. Unless the host keeps TGE's bevels for the profile
+//!   ([`crate::ext::GuiExtension::classic_boxes`]), the box is instead the engine's rounded box of the button's state
+//!   (`super::rounded`), and so are a bordered or open GuiPopUpMenuCtrl's box, its open list (the scroll view's fill and
+//!   border, the row under the mouse a box inset in its cell) and GuiSliderCtrl's thumb.
 //! - **GuiCheckBoxCtrl / GuiRadioCtrl**: with more than 3 rectangles in the profile's bitmap array, the state's (0 off, 1 on
 //!   or depressed, 2 and 3 disabled) at the left, centred vertically; the text right of it over `extent.x - extent.y`.
 //! - **GuiTextEditCtrl** (`onRender`, `drawText`): see [`Walk::text_edit`].
@@ -37,12 +38,15 @@ use torque_ts_vm::sim::ObjId;
 use super::rounded::{BOX_TEXT_PAD, BoxState, box_colors, box_text_color};
 use super::{Walk, color_field, int_field, intersect, profile_of, text_field};
 use crate::control::{bounds, flag, point};
-use crate::ext::GuiRule;
+
 use crate::profile::{Rect, bitmap_array, color_at};
 use crate::textures::GuiTexture;
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
 const BLACK: [u8; 4] = [0, 0, 0, 255];
+/// How far the row under the mouse in a rounded popup list keeps from its cell's sides and from the rows above and below
+/// (pixels).
+const ROW_INSET: (i32, i32) = (3, 1);
 
 /// The profile's font colours (`fontColors[0..10]`): 0 normal, 1 highlighted, 2 not active, 3 selected, 4 and 5 links.
 fn font_colors(vm: &torque_ts_vm::vm::Vm, p: ObjId) -> Vec<[u8; 4]> {
@@ -234,9 +238,10 @@ impl Walk<'_> {
         self.line((rt, t + 1), (rt, b - 1), border);
     }
 
-    /// Whether the boxes are TGE's bevels ([`GuiRule::ClassicBoxes`]) rather than the rounded ones.
-    fn classic_boxes(&self) -> bool {
-        self.ext.rule(GuiRule::ClassicBoxes)
+    /// Whether the boxes of controls in `profile` are TGE's bevels ([`crate::ext::GuiExtension::classic_boxes`]) rather
+    /// than the rounded ones.
+    fn classic_boxes(&self, profile: ObjId) -> bool {
+        self.ext.classic_boxes(self.vm, profile)
     }
 
     /// A rounded box's state for the control `id`: disabled when not active or not enabled, else pressed, else hover.
@@ -267,7 +272,7 @@ impl Walk<'_> {
         let rect = [offset.0, offset.1, ext.0, ext.1];
         let mut text_color = None;
         if let Some(p) = profile_of(self.vm, id) {
-            if self.classic_boxes() {
+            if self.classic_boxes(p) {
                 if !depressed && !on {
                     self.raised_box(rect, p);
                 }
@@ -478,20 +483,51 @@ impl Walk<'_> {
         }
     }
 
-    /// GuiScrollCtrl::onRender.
+    /// Whether the scroll control `id` in `profile` holds an open popup's list drawn in a rounded box (the profile's boxes
+    /// are not TGE's bevels, [`crate::ext::GuiExtension::classic_boxes`]).
+    fn rounded_popup_list(&self, id: ObjId, profile: ObjId) -> bool {
+        crate::control::children(self.vm, id).into_iter().any(|c| {
+            matches!(
+                crate::popup::part_of(self.gui, c),
+                Some((_, crate::popup::Part::List))
+            )
+        }) && !self.classic_boxes(profile)
+    }
+
+    /// GuiScrollCtrl::onRender. An open popup's list in a rounded box ([`Walk::rounded_popup_list`]) draws its fill (when
+    /// opaque) and border (the extension's list border, else `borderColor` when the profile has a border) as one instead of
+    /// the square ones.
     pub(super) fn scroll(&mut self, id: ObjId, offset: (i32, i32), update: Rect, depth: usize) {
         let vm = self.vm;
         let (_, ext) = bounds(vm, id);
         let rect = [offset.0, offset.1, ext.0, ext.1];
         // The bars and the children where the extension's displacement draws them (their places without one).
         let (s, glide) = crate::scroll::shown(vm, self.gui, id, self.now);
+        let rounded = profile_of(vm, id).is_some_and(|p| self.rounded_popup_list(id, p));
         if let Some(p) = profile_of(vm, id) {
-            if flag(vm, p, b"opaque") {
-                let fill = color_field(vm, p, b"fillColor");
-                self.fill(rect, fill);
-            }
-            if int_field(vm, p, b"border") != 0 {
-                self.render_border(p, rect);
+            if rounded {
+                let fill = if flag(vm, p, b"opaque") {
+                    color_field(vm, p, b"fillColor")
+                } else {
+                    [0; 4]
+                };
+                let border = self
+                    .ext
+                    .list_color(vm, p, crate::ext::ListColor::Border)
+                    .or_else(|| {
+                        (int_field(vm, p, b"border") != 0)
+                            .then(|| color_field(vm, p, b"borderColor"))
+                    })
+                    .unwrap_or([0; 4]);
+                self.rounded_box(rect, fill, border);
+            } else {
+                if flag(vm, p, b"opaque") {
+                    let fill = color_field(vm, p, b"fillColor");
+                    self.fill(rect, fill);
+                }
+                if int_field(vm, p, b"border") != 0 {
+                    self.render_border(p, rect);
+                }
             }
             let rects = bitmap_array(vm, self.gui, p);
             if rects.len() > 36
@@ -530,6 +566,7 @@ impl Walk<'_> {
         // The extension's list border ([`crate::ext::ListColor::Border`]) outlines the view over its content (a popup's open
         // list takes the popup's profile).
         if let Some(p) = profile_of(vm, id)
+            && !rounded
             && let Some(c) = self.ext.list_color(vm, p, crate::ext::ListColor::Border)
         {
             let saved_clip = self.clip;
@@ -704,6 +741,7 @@ impl Walk<'_> {
         };
         let selected_row = self.gui.with(id, |c| c.selected).unwrap_or(-1);
         let colors = font_colors(vm, p);
+        let rounded = matches!(kind, CellKind::PopUp) && !self.classic_boxes(p);
         let cols = crate::textlist::columns(vm, id);
         let clip_columns = flag(vm, id, b"clipColumnText");
         let saved_clip = self.clip;
@@ -769,6 +807,16 @@ impl Walk<'_> {
                         } else {
                             None
                         };
+                        // In a rounded list the row under the mouse is a rounded box inset in its cell (the extension's
+                        // hover fill, else `fillColorHL`), so it stays inside the list's corners.
+                        let inset = if rounded && over {
+                            fill.or_else(|| {
+                                let hl = color_field(vm, p, b"fillColorHL");
+                                (hl[3] != 0).then_some(hl)
+                            })
+                        } else {
+                            None
+                        };
                         let c = if fill.is_some() {
                             colors[1]
                         } else if selected {
@@ -778,7 +826,18 @@ impl Walk<'_> {
                         } else {
                             colors[0]
                         };
-                        if let Some(fc) = fill {
+                        // A rounded list's highlighted row keeps the normal text color when the profile sets no
+                        // highlight one (an unset color is fully transparent).
+                        let c = if rounded && c[3] == 0 { colors[0] } else { c };
+                        if let Some(fc) = inset {
+                            let r = [
+                                cx + ROW_INSET.0,
+                                cy + ROW_INSET.1,
+                                s.cell.0 - 2 * ROW_INSET.0,
+                                s.cell.1 - 2 * ROW_INSET.1,
+                            ];
+                            self.rounded_box(r, fc, [0; 4]);
+                        } else if let Some(fc) = fill {
                             self.fill([cx, cy, s.cell.0, s.cell.1], fc);
                         }
                         let pad = self.ext.list_pad(vm, &text_field(vm, id, b"profile"));
@@ -998,8 +1057,8 @@ impl Walk<'_> {
 
     /// GuiPopUpMenuCtrl::onRender: closed, the slightly raised box when it has a border; open (`mInAction`), a
     /// `fillColorHL` fill outlined in `borderColor`; the text (`fontColor`, `fontColorNA` when not active or not enabled; no colour
-    /// table) justified, centred vertically. No children. In a rounded box, text justified left or right keeps
-    /// [`BOX_TEXT_PAD`] from the side.
+    /// table) justified, centered vertically. No children. In a rounded box of a popup with a border, text justified left or right
+    /// keeps [`BOX_TEXT_PAD`] from the side.
     pub(super) fn popup(&mut self, id: ObjId, offset: (i32, i32)) {
         let vm = self.vm;
         let Some(p) = profile_of(vm, id) else {
@@ -1010,9 +1069,13 @@ impl Walk<'_> {
         let open = self.gui.with(id, |c| c.in_action).unwrap_or(false);
         let mut text_color = None;
         let mut pad = 0;
-        if !self.classic_boxes() {
-            if open || int_field(vm, p, b"border") != 0 {
-                pad = BOX_TEXT_PAD;
+        if !self.classic_boxes(p) {
+            let bordered = int_field(vm, p, b"border") != 0;
+            if open || bordered {
+                // A popup with no border of its own keeps its text where it is closed when it opens.
+                if bordered {
+                    pad = BOX_TEXT_PAD;
+                }
                 let state = self.box_state(id, false, open || self.mouse_on(id));
                 let (fill, border) = box_colors(vm, p, state);
                 self.rounded_box(rect, fill, border);
@@ -1102,7 +1165,7 @@ impl Walk<'_> {
             st.thumb[2],
             st.thumb[3],
         ];
-        if self.classic_boxes() {
+        if self.classic_boxes(p) {
             self.raised_box(thumb, p);
         } else {
             let state = self.box_state(id, false, self.mouse_on(id));
