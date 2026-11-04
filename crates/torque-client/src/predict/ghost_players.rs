@@ -5,9 +5,9 @@
 //! - **Between updates** the Player moves on along the last update's velocity (TGE's client ticks the ghost on with its last move,
 //!   `mPredictionCount` ticks at most), for at most [`MAX_EXTRAPOLATION`] past the time the next update is due: a Player whose
 //!   updates stop (it stood still) stops too.
-//! - **An update** sets the velocity, and the difference between where the Player is drawn and where the update puts it (the
-//!   position, the yaw and the head's pitch) is spread over the time the next update is due in, at least a tick and at most
-//!   [`MAX_WARP`] (`Player::unpackUpdate`'s warp: `delta.warpOffset` over `warpTicks`, at most `sMaxWarpTicks`). A Player that
+//! - **An update** sets the velocity, and the difference between where the Player is drawn and where the update puts it is
+//!   spread out (`Player::unpackUpdate`'s warp: `delta.warpOffset` over `warpTicks`): the yaw's and the head's over the time the
+//!   next update is due in (at least a tick), the position's over at least [`WARP_TICKS`] ticks; each at most [`MAX_WARP`]. A Player that
 //!   turns at a steady rate turns at that rate on the client, with no step at each update. More than [`SNAP_DISTANCE`] away is
 //!   a respawn: the Player is put there at once.
 //! - **The time between updates** is the running average of the last ones (a server sends a client packets at its own rate, not
@@ -34,6 +34,8 @@ use crate::records::{EngineRecord, EngineSet};
 pub const TICK: f32 = TICK_MS as f32 / 1000.0;
 /// The longest a warp lasts (seconds; TGE's `sMaxWarpTicks` is 3 ticks, its updates come every tick).
 pub const MAX_WARP: f32 = 0.25;
+/// The fewest ticks the position's warp lasts (TGE's `sMaxWarpTicks`).
+pub const WARP_TICKS: u32 = 3;
 /// How long past the due time of the next update a Player still runs on along its velocity (seconds).
 pub const MAX_EXTRAPOLATION: f32 = 0.1;
 /// An update further than this from where the Player is drawn is a respawn or a teleport (units).
@@ -61,8 +63,9 @@ pub struct GhostMotion {
     yaw: f32,
     head: f32,
     last: Update,
-    /// The warp: what it adds a second, and the seconds it has left.
+    /// The warp: what it adds a second, and the seconds it has left (the position's and the angles').
     warp_position: [f32; 3],
+    warp_position_left: f32,
     warp_yaw: f32,
     warp_head: f32,
     warp_left: f32,
@@ -93,6 +96,7 @@ impl GhostMotion {
             head: u.head,
             last: u,
             warp_position: [0.0; 3],
+            warp_position_left: 0.0,
             warp_yaw: 0.0,
             warp_head: 0.0,
             warp_left: 0.0,
@@ -122,8 +126,13 @@ impl GhostMotion {
             };
             return;
         }
+        // The angles reach the update as the next one is due (they are not run on between updates); the position, which runs
+        // on along the velocity, takes the difference over at least TGE's most warp ticks, so an update that comes a tick
+        // early or late is not caught up in one frame.
         let span = self.interval.clamp(TICK, MAX_WARP);
-        self.warp_position = [0, 1, 2].map(|i| (u.position[i] - self.position[i]) / span);
+        let position_span = self.interval.clamp(WARP_TICKS as f32 * TICK, MAX_WARP);
+        self.warp_position = [0, 1, 2].map(|i| (u.position[i] - self.position[i]) / position_span);
+        self.warp_position_left = position_span;
         self.warp_yaw = wrap_angle(u.yaw - self.yaw) / span;
         self.warp_head = (u.head - self.head) / span;
         self.warp_left = span;
@@ -141,8 +150,10 @@ impl GhostMotion {
         self.run_left -= run;
         let warp = dt.min(self.warp_left);
         self.warp_left -= warp;
+        let warp_position = dt.min(self.warp_position_left);
+        self.warp_position_left -= warp_position;
         for i in 0..3 {
-            self.position[i] += self.velocity[i] * run + self.warp_position[i] * warp;
+            self.position[i] += self.velocity[i] * run + self.warp_position[i] * warp_position;
         }
         self.yaw = wrap_angle(self.yaw + self.warp_yaw * warp);
         self.head += self.warp_head * warp;
@@ -225,8 +236,9 @@ impl GhostPlayers {
                 .players
                 .entry(index)
                 .or_insert_with(|| GhostMotion::new(u));
-            m.receive(u);
+            // The record stands for now: the Player runs on to now first, then the warp to the record starts.
             m.advance(dt);
+            m.receive(u);
             seen.push(index);
             placed.push((
                 index,

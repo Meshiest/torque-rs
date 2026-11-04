@@ -15,11 +15,11 @@ fn run(speed: f32, turn: f32, every: f32, frame: f32) -> (f32, f32, f32) {
     let mut last = (m.position(), m.yaw());
     while t < 5.0 {
         t += frame;
+        m.advance(frame);
         if t >= next {
             m.receive(at(next - TICK));
             next += every;
         }
-        m.advance(frame);
         let (p, y) = (m.position(), m.yaw());
         max_step = max_step.max(distance(p, last.0));
         max_back = max_back.max(last.0[1] - p[1]);
