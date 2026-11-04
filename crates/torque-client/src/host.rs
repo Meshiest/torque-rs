@@ -15,8 +15,9 @@
 //! ([`crate::screen`]), the canvas's size, the frame rate ([`crate::fps`]), vertical sync, the display devices and the URL
 //! opener.
 //!
-//! Credit: the order of a pass follows TGE's main loop as Torque3D (MIT) keeps it, `app/mainLoop.cpp` (Copyright (c) 2012
-//! GarageGames, LLC). The code is this crate's own.
+//! Credit: the order of a pass follows TGE's main loop as Torque3D (MIT) keeps it, `app/mainLoop.cpp`, and the split of the
+//! socket's datagrams follows `sim/netInterface.cpp` (each Copyright (c) 2012 GarageGames, LLC). The code is this crate's
+//! own.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -39,20 +40,32 @@ pub trait ClientPass<G: ConnGame> {
     fn other(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>);
 }
 
-/// No work of a game's own: the socket's datagrams to the connection ([`crate::conn::take_datagram`]; the others are dropped),
-/// then the connection's tick ([`crate::conn::tick`]).
+/// No work of a game's own: the socket's datagrams, as TGE's one `NetInterface` hands them out: a server query's answer to the
+/// query ([`crate::query::take_datagram`]), the rest to the connection ([`crate::conn::take_datagram`]; what neither takes is
+/// dropped); then the query's waiting pass when it is due ([`crate::query::tick`]) and the connection's tick
+/// ([`crate::conn::tick`]). The query's script calls (`onServerQueryStatus`) run after the datagrams are read, with no borrow
+/// held; an error in one is kept with the callbacks' errors.
 pub struct EnginePass;
 
 impl<G: ConnGame> ClientPass<G> for EnginePass {
     fn net(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
         let socket = Rc::clone(&client.borrow().net);
+        let now = vm.sim_time();
+        let mut out = Vec::new();
         for _ in 0..net::MAX_DATAGRAMS_PER_TICK {
             let Some((from, data)) = socket.borrow_mut().recv() else {
                 break;
             };
+            if crate::query::take_datagram(client, from, &data, now, &mut out) {
+                continue;
+            }
             if crate::conn::take_datagram(client, from, data).is_err() {
                 socket.borrow_mut().stats.stray += 1;
             }
+        }
+        let ran = crate::query::run_out(vm, out).and_then(|()| crate::query::tick(vm, client, now));
+        if let Err(e) = ran {
+            net::keep_error(client, e);
         }
         crate::conn::tick(vm, client);
     }

@@ -3,8 +3,10 @@
 //! particles and one texture table. What fills it from a world is the world's own.
 
 use crate::hd::cells::StaticGeometry;
-use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, sh, shadow, sky};
+use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, sh, shadow, sky};
 use crate::source::Eye;
+use crate::textures::TextureSet;
+use crate::{Blend, Draw};
 
 /// The field of view a frame starts with (degrees).
 pub const DEFAULT_FOV: u8 = 90;
@@ -168,6 +170,31 @@ impl<G> HdScene<G> {
             clouds: None,
             size: (1, 1),
         }
+    }
+
+    /// The frame's particles ([`particles`](crate::particles)' draws, each at its eye distance, their textures indices into
+    /// `textures`): unlit sprites that fade into what is behind them; the additive ones also emitters, into the range the bloom
+    /// picks up (as the coronas). Replaces the last frame's and counts a new set.
+    pub fn set_particles(&mut self, draws: &[(f32, Draw)], textures: TextureSet) {
+        let local: Vec<usize> = textures
+            .into_textures()
+            .into_iter()
+            .map(|t| self.textures.intern(t))
+            .collect();
+        self.particles = draws
+            .iter()
+            .map(|(dist, d)| {
+                let hd = HdDraw::from_fixed(d, material::KIND_SKY, &local)
+                    .with_material(material::PARTICLE);
+                let hd = if d.blend == Blend::Additive {
+                    hd.with_material(material::EMITTER)
+                } else {
+                    hd
+                };
+                (*dist, hd)
+            })
+            .collect();
+        self.particles_generation = self.particles_generation.wrapping_add(1);
     }
 
     /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the Sun's direction.

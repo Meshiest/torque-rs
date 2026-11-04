@@ -15,7 +15,7 @@
 //!
 //! **The classes.** The Player glue ([`player`]: the state, the tick over `::sim::player`, the skeleton, the methods), two
 //! pieces every `ShapeBase` shares: [`mount`] (the mount links and their methods) and [`vitals`] (damage, energy, their
-//! scripts), the Item ([`item`]) over the same borrow rule ([`hosted`]; a host's Projectile uses it too), and the
+//! scripts), the Item ([`item`]) and the Projectile ([`projectile`]) over the same borrow rule ([`hosted`]), and the
 //! WheeledVehicle and FlyingVehicle ([`vehicle`], [`vehicle_tick`], [`vehicle_methods`]).
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree:
@@ -29,6 +29,7 @@ pub mod item;
 pub mod mount;
 pub mod pass;
 pub mod player;
+pub mod projectile;
 pub mod vehicle;
 pub mod vehicle_methods;
 pub mod vehicle_tick;

@@ -122,6 +122,8 @@ pub struct ObjectExt {
     pub player: Option<Box<crate::sim::player::PlayerExt>>,
     /// An Item's simulation state, made by its first ItemData.
     pub item: Option<Box<crate::sim::item::ItemExt>>,
+    /// A Projectile's simulation state, made by its `onAdd`.
+    pub projectile: Option<Box<crate::sim::projectile::ProjectileExt>>,
     /// A WheeledVehicle's or FlyingVehicle's simulation state, made by its `onAdd`.
     pub vehicle: Option<Box<crate::sim::vehicle::VehicleExt>>,
     /// A ShapeBase's mount links.

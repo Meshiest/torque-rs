@@ -4,7 +4,7 @@
 //! - the shape loader ([`torque_game::shapes::register`]: a `ShapeBaseData` loads its shape at `preload`, and its computed
 //!   values are the server's [`ServerState::db_values`]);
 //! - the scene classes over one container ([`torque_game::scene::object`], the container natives, [`torque_game::scene::shapebase`],
-//!   the Player, the Item, the camera methods), the movers' environment over the same container and shapes, set on the
+//!   the Player, the Item, the camera methods, the Projectile), the movers' environment over the same container and shapes, set on the
 //!   process list, and the write observer that rebuilds a Player's datablock after a script changes it;
 //! - `GameBase::onAdd`: an object with no datablock is refused (its script `onRemove` runs first); otherwise it takes the type
 //!   mask its class's constructor sets, the classes' `onNewDataBlock` run (the camera's, the shape's, the Player's, the Item's, the vehicles'), then the datablock's script
@@ -100,6 +100,7 @@ pub fn install<N: NetParts>(vm: &mut Vm, state: &Rc<RefCell<ServerState<N>>>) ->
     torque_game::scene::shapebase::register(vm, &container);
     torque_game::sim::player::register(vm, &container);
     torque_game::sim::item::register(vm, &container);
+    torque_game::sim::projectile::register(vm, &container);
     torque_game::sim::vehicle::register(vm, &container);
     let env = Rc::new(SimEnv::new(
         Rc::clone(&container),

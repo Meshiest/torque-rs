@@ -295,6 +295,12 @@ impl WorldView {
         self.scene.objects = objects;
     }
 
+    /// The frame's particles: each draw at its eye distance, its texture an index into `textures` (the set the emitters drew
+    /// with). Every frame hands its own (none: an empty list).
+    pub fn set_particles(&mut self, draws: &[(f32, Draw)], textures: TextureSet) {
+        self.scene.set_particles(draws, textures);
+    }
+
     /// Draws a frame into `target` (an `Rgba8Unorm` texture of the canvas's size): the scene seen from `eye` in the world
     /// rectangle of `gui` (the first `GameTSCtrl` drawn), then `gui` over it. Returns whether the world was drawn.
     pub fn draw(

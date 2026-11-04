@@ -6,6 +6,8 @@
 //!   (plus a random `+-periodVarianceMS`), each at the point between the last call's position and this one's, the time left of
 //!   the call run on it at once unless `overrideAdvance`; the time to the next particle kept across calls. A call longer than
 //!   [`MAX_CALL_MS`] makes nothing (this crate's cap: a stalled frame does not pour out particles).
+//! - **A projectile's trail** (`Projectile::emitParticles(from, to, vel, ms)`): a path from where the projectile was to where
+//!   it is, the axis against its velocity ([`trail_axis`]; up when it has none); [`Emitter::emit_trail`].
 //! - **A burst** (`emitParticles(center, normal, radius, velocity, count)`): `count` particles in the half-box of `radius` on
 //!   the normal's side.
 //! - **A particle** (`addParticle` with `ParticleData::initializeParticle`): the speed `ejectionVelocity +- velocityVariance`,
@@ -31,10 +33,10 @@
 //!
 //! The datablocks come through [`ParticleDatablocks`] (TGE's client set reads its records' fields).
 //!
-//! Credit: follows TGE 1.4's `game/fx/particleEngine.cc` and `math/mRandom.cc` (Copyright (C) GarageGames.com, Inc.), as Torque3D
-//! carries them under the MIT licence (`T3D/fx/particleEmitter.cpp`, `T3D/fx/particle.cpp`: Copyright (c) 2012 GarageGames, LLC;
-//! Copyright (C) 2015 Faust Logic, Inc.; `math/mRandom.cpp`: Copyright (c) 2012 GarageGames, LLC). The code here is this crate's
-//! own.
+//! Credit: follows TGE 1.4's `game/fx/particleEngine.cc`, `game/projectile.cc` (the trail) and `math/mRandom.cc` (Copyright (C)
+//! GarageGames.com, Inc.), as Torque3D carries them under the MIT license (`T3D/fx/particleEmitter.cpp`, `T3D/fx/particle.cpp`,
+//! `T3D/projectile.cpp`: Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.; `math/mRandom.cpp`: Copyright
+//! (c) 2012 GarageGames, LLC). The code here is this crate's own.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -124,22 +126,35 @@ pub trait ParticleDatablocks {
     }
 }
 
-/// TGE's datablocks: their fields by TGE's names, each default `ParticleData`'s and `ParticleEmitterData`'s constructor's.
+/// TGE's `MaxParticleSize`: a size key travels as a fraction of it.
+const MAX_PARTICLE_SIZE: f32 = 50.0;
+
+/// TGE's datablocks as the client's records hold them: the values `ParticleData::packData` and `ParticleEmitterData::packData`
+/// wrote, by their script fields ([`ghosts::datablocks::fields`]), read back as `unpackData` reads them into the members (a
+/// `readFloat(n)` is the integer over `2^n - 1`, a lifetime travels in 32 ms steps, a speed in hundredths); a block the server
+/// did not send keeps the constructor's default.
 impl ParticleDatablocks for ClientWorld<TgeClientSet> {
     fn particle_data(&self, id: u32) -> Option<ParticleData> {
         let db = self
             .datablocks
             .get(&id)
             .filter(|d| d.class == "ParticleData")?;
-        let fl = |name: &str, i: u32, default: f32| match db.get(name, i) {
+        let int = |name: &str, i: u32| match db.get(name, i) {
+            Some(Value::Int(v)) => Some(*v),
+            _ => None,
+        };
+        // `readFloat(bits)`.
+        let unit = |name: &str, i: u32, bits: u32| {
+            let top = (1i64 << bits) - 1;
+            int(name, i).map(|v| v.clamp(0, top) as f32 / top as f32)
+        };
+        let float = |name: &str, default: f32| match db.get(name, 0) {
             Some(Value::F32(x)) if x.is_finite() => *x,
-            Some(Value::Int(v)) => *v as f32,
             _ => default,
         };
-        let int = |name: &str, default: i64| match db.get(name, 0) {
-            Some(Value::Int(v)) => *v,
-            Some(Value::F32(x)) if x.is_finite() => *x as i64,
-            _ => default,
+        // `readInt(10) << 5`.
+        let ms = |name: &str, default: i32| {
+            int(name, 0).map_or(default, |v| (v.clamp(0, 1023) << 5) as i32)
         };
         let flag = |name: &str| matches!(db.get(name, 0), Some(Value::Bool(true)));
         let text = |name: &str, i: u32| match db.get(name, i) {
@@ -148,34 +163,43 @@ impl ParticleDatablocks for ClientWorld<TgeClientSet> {
             }
             _ => None,
         };
+        // The keys the server sent (`readInt(2) + 1` of them); the others keep the constructor's white, 1 and 0, 1, 2, 2.
         let mut colors = [[1.0f32; 4]; 4];
         let mut sizes = [1.0f32; 4];
         let mut times = [0.0, 1.0, 2.0, 2.0];
         for k in 0..4u32 {
             for c in 0..4u32 {
-                colors[k as usize][c as usize] =
-                    fl("colors", 4 * k + c, colors[k as usize][c as usize]);
+                if let Some(v) = unit("colors", 4 * k + c, 7) {
+                    colors[k as usize][c as usize] = v;
+                }
             }
-            sizes[k as usize] = fl("sizes", k, sizes[k as usize]);
-            times[k as usize] = fl("times", k, times[k as usize]);
+            if let Some(v) = unit("sizes", k, 14) {
+                sizes[k as usize] = v * MAX_PARTICLE_SIZE;
+            }
+            if let Some(v) = unit("times", k, 8) {
+                times[k as usize] = v;
+            }
         }
+        // `readInt(11) - 1000` each, when sent.
+        let spin = |i: u32| int("spinRandom", i).map_or(0.0, |v| (v.clamp(0, 2047) - 1000) as f32);
         let animate = flag("animateTexture");
-        // `textureNameList` as the codec reads it (`textureName` is its first, `animTexName` all of it): the first drawn, or
-        // the list stepped with `animateTexture`.
+        // The texture list as the codec names it (`textureName` is its first): the first drawn, or the list stepped with
+        // `animateTexture`.
         let textures: Vec<String> = (0..ghosts::datablocks::MAX_PARTICLE_TEXTURES as u32)
-            .filter_map(|i| text("textureNameList", i))
+            .filter_map(|i| text("animTexName", i))
             .collect();
         Some(ParticleData {
-            drag: fl("dragCoefficient", 0, 0.0),
-            wind: fl("windCoefficient", 0, 1.0),
-            gravity: fl("gravityCoefficient", 0, 0.0),
-            inherited_vel: fl("inheritedVelFactor", 0, 0.0),
-            constant_accel: fl("constantAcceleration", 0, 0.0),
-            lifetime_ms: int("lifetimeMS", 1000).clamp(0, 1 << 20) as i32,
-            lifetime_variance_ms: int("lifetimeVarianceMS", 0).clamp(0, 1 << 20) as i32,
-            spin_speed: fl("spinSpeed", 0, 0.0),
-            spin_min: fl("spinRandomMin", 0, 0.0),
-            spin_max: fl("spinRandomMax", 0, 0.0),
+            drag: unit("dragCoefficient", 0, 10).map_or(0.0, |v| v * 5.0),
+            wind: float("windCoefficient", 1.0),
+            // `readSignedFloat(12) * 10`.
+            gravity: unit("gravityCoefficient", 0, 12).map_or(0.0, |v| (v * 2.0 - 1.0) * 10.0),
+            inherited_vel: unit("inheritedVelFactor", 0, 9).unwrap_or(0.0),
+            constant_accel: float("constantAcceleration", 0.0),
+            lifetime_ms: ms("lifetimeMS", 1000),
+            lifetime_variance_ms: ms("lifetimeVarianceMS", 0),
+            spin_speed: float("spinSpeed", 0.0),
+            spin_min: spin(0),
+            spin_max: spin(1),
             inv_alpha: flag("useInvAlpha"),
             colors,
             sizes,
@@ -183,7 +207,7 @@ impl ParticleDatablocks for ClientWorld<TgeClientSet> {
             textures,
             animate,
             // `numFrames` (1) by default; `onAdd` makes one past 200 (or negative, as a `U32`) 20.
-            fps: match int("framesPerSec", 1) {
+            fps: match int("framesPerSec", 0).unwrap_or(1) {
                 f @ 0..=200 => f as i32,
                 _ => 20,
             },
@@ -195,15 +219,13 @@ impl ParticleDatablocks for ClientWorld<TgeClientSet> {
             .datablocks
             .get(&id)
             .filter(|d| d.class == "ParticleEmitterData")?;
-        let fl = |name: &str, default: f32| match db.get(name, 0) {
-            Some(Value::F32(x)) if x.is_finite() => *x,
-            Some(Value::Int(v)) => *v as f32,
-            _ => default,
+        let int = |name: &str| match db.get(name, 0) {
+            Some(Value::Int(v)) => Some(*v),
+            _ => None,
         };
-        let int = |name: &str, default: i64| match db.get(name, 0) {
-            Some(Value::Int(v)) => *v,
-            _ => default,
-        };
+        // A speed in hundredths (`readInt(n) / 100`).
+        let hundredths = |name: &str, default: f32| int(name).map_or(default, |v| v as f32 / 100.0);
+        let angle = |name: &str, default: f32| int(name).map_or(default, |v| v as f32);
         let flag = |name: &str| matches!(db.get(name, 0), Some(Value::Bool(true)));
         // The particle datablocks (`dataBlockIds`), at most 16 named, each a `ParticleData` the client holds.
         let particles: Vec<u32> = (0..16)
@@ -222,17 +244,18 @@ impl ParticleDatablocks for ClientWorld<TgeClientSet> {
             return None;
         }
         Some(EmitterData {
-            period_ms: int("ejectionPeriodMS", 100).clamp(1, 1 << 20) as i32,
-            period_variance_ms: int("periodVarianceMS", 0).clamp(0, 1 << 20) as i32,
-            velocity: fl("ejectionVelocity", 2.0),
-            velocity_variance: fl("velocityVariance", 1.0),
-            offset: fl("ejectionOffset", 0.0),
-            theta_min: fl("thetaMin", 0.0),
-            theta_max: fl("thetaMax", 90.0),
-            phi_ref_vel: fl("phiReferenceVel", 0.0),
-            phi_variance: fl("phiVariance", 360.0),
+            period_ms: int("ejectionPeriodMS").unwrap_or(100).clamp(1, 1 << 20) as i32,
+            period_variance_ms: int("periodVarianceMS").unwrap_or(0).clamp(0, 1 << 20) as i32,
+            velocity: hundredths("ejectionVelocity", 2.0),
+            velocity_variance: hundredths("velocityVariance", 1.0),
+            offset: hundredths("ejectionOffset", 0.0),
+            theta_min: angle("thetaMin", 0.0),
+            theta_max: angle("thetaMax", 90.0),
+            phi_ref_vel: angle("phiReferenceVel", 0.0),
+            phi_variance: angle("phiVariance", 360.0),
             override_advance: flag("overrideAdvance"),
-            lifetime_ms: int("lifetimeMS", 0).clamp(0, 1 << 24) as i32,
+            // `readInt(10) << 5`.
+            lifetime_ms: int("lifetimeMS").map_or(0, |v| (v.clamp(0, 1023) << 5) as i32),
             use_emitter_sizes: flag("useEmitterSizes"),
             use_emitter_colors: flag("useEmitterColors"),
             particles,
@@ -318,6 +341,16 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 fn rotate(v: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
     let m = Mat::from_axis_angle(axis, angle);
     m.mul_v(v)
+}
+
+/// The axis a projectile's trail is emitted along (`Projectile::emitParticles`): against its velocity, up when it has none.
+pub fn trail_axis(vel: [f32; 3]) -> [f32; 3] {
+    let l = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
+    if l > 1e-6 && l.is_finite() {
+        vel.map(|x| -x / l)
+    } else {
+        [0.0, 0.0, 1.0]
+    }
 }
 
 /// One emitter: its datablocks, its particles and its clock.
@@ -551,6 +584,24 @@ impl Emitter {
             }
         }
         self.last = Some((end, axis, vel));
+    }
+
+    /// A projectile's trail (`Projectile::emitParticles(from, to, vel, ms)`): the path it flew over `ms`, emitted against its
+    /// flight (the axis `-vel`, up while it is still). A first call starts at `from`, a later one where the last ended.
+    pub fn emit_trail(
+        &mut self,
+        from: [f32; 3],
+        to: [f32; 3],
+        vel: [f32; 3],
+        ms: u32,
+        rng: &mut Rng,
+        live: &mut usize,
+    ) {
+        let axis = trail_axis(vel);
+        if self.last.is_none() {
+            self.last = Some((from, axis, vel));
+        }
+        self.emit_path(to, axis, vel, ms, rng, live);
     }
 
     /// A new particle run for the time left of its call (dropped when that outlives it), not stepped again by the next frame.

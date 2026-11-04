@@ -125,7 +125,7 @@ pub static CLASSES: &[ClassSpec] = &[
             field("nameTag", FieldType::CaseString, 1),
             field("dataBlock", FieldType::DataBlock("GameBaseData"), 1),
         ],
-        methods: &[],
+        methods: &[method("getDataBlock", 2, 2, "()", Returns::Int)],
         defaults: None,
     },
     ClassSpec {
@@ -1487,6 +1487,7 @@ pub static CLASSES: &[ClassSpec] = &[
             method("getAddress", 2, 2, "()", Returns::String),
             method("getPing", 2, 2, "()", Returns::Int),
             method("getPacketLoss", 2, 2, "()", Returns::Int),
+            method("getGhostID", 3, 3, "(S32 realID)", Returns::Int),
         ],
         defaults: None,
     },

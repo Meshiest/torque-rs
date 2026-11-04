@@ -27,5 +27,9 @@ torque-collide = { path = "../torque-collide" }
 # The container bins of the game classes' container.
 torque-scene = { path = "../torque-scene" }
 
+[dev-dependencies]
+# The tests' shapes (a box a Player stands in).
+torque-shapes = { path = "../torque-shapes" }
+
 [lints]
 workspace = true

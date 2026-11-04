@@ -4,10 +4,11 @@
 //! table, and every rule of [`NetGame`] at its default. [`NetPasses`] is the network host the main loop drives
 //! ([`NetHost`]) over any net game's shared state.
 //!
-//! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`
-//! (`Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of` follows `QuatF::set(MatrixF)` in
-//! `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record (`sky_field`) are those
-//! of TGE 1.4's `terrain/sky.cc` (`Copyright (C) GarageGames.com, Inc.`; Torque3D has no Sky class).
+//! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`, and the
+//! views of a player's arm and look action, a projectile and a shape's images follow `T3D/player.cpp`, `T3D/projectile.cpp` and
+//! `T3D/shapeBase.cpp` (each `Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of` follows
+//! `QuatF::set(MatrixF)` in `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record
+//! (`sky_field`) are those of TGE 1.4's `terrain/sky.cc` (`Copyright (C) GarageGames.com, Inc.`; Torque3D has no Sky class).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -231,8 +232,15 @@ impl ObjectView for FieldView<'_> {
 ///   `QuatF::set(MatrixF)`), `position` (its translation), `scale`; a ShapeBase is fully visible (`fade_value` 1) and runs no
 ///   script thread (`thread_sequence` -1), its damage over the datablock's `maxDamage`;
 /// - a simulated Player ([`torque_game::sim::player::state`]): `velocity`, `rotation` (its yaw at 2), `head`, `falling`,
-///   `state` (the action state), `action` (the action animation), `energy`, and from its datablock `max_look_angle`,
+///   `state` (the action state), `action` (the action animation), `arm_action` (`setArmThread`'s), `energy`, and from its
+///   datablock `look_action`, `max_look_angle`,
 ///   `max_energy` and `max_damage`; the move fields are the last move's.
+/// - a Sky: its record's fields from the persist fields of their TGE names (`visibleDistance`, `fogDistance`, `fogColor`,
+///   `materialList`, `useSkyTextures`, the cloud layers' `cloudText` and `cloudHeightPer`, ...);
+/// - a ShapeBase's mounted images (the game classes' image slots): per slot `image_datablock`, `image_wet`, `image_ammo`,
+///   `image_loaded`, `image_target`, `image_trigger_down` and `image_fire_count`;
+/// - a simulated Projectile ([`torque_game::sim::projectile::state`]): `position`, `velocity`, `current_tick` (its age),
+///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`.
 ///
 /// The record is never left out for the controlling client (`controlled_here` false): the client draws the control object from
 /// it like any ghost.
@@ -311,6 +319,13 @@ impl GameView<'_> {
             "falling" => Value::Bool(s.falling),
             "state" => Value::Int(i64::from(s.action_state)),
             "action" => Value::Int(i64::from(s.action_anim)),
+            // The arm action `setArmThread` chose (no action until one is), and the datablock's `look` action.
+            "arm_action" => Value::Int(i64::from(
+                torque_game::scene::shapebase::state(vm, obj)
+                    .and_then(|st| st.player.as_ref())
+                    .map_or(::torque_ghosts::player::NULL_ANIMATION, |p| p.arm_action),
+            )),
+            "look_action" => Value::Int(i64::from(info.as_ref().map_or(0, |i| i.look_action))),
             "energy" => Value::F32(s.energy),
             "damage" => Value::F32(s.damage),
             "damage_state" => Value::Int(i64::from(s.damage_state)),
@@ -333,9 +348,57 @@ impl GameView<'_> {
     }
 }
 
+impl GameView<'_> {
+    /// A simulated Projectile's field from its state, if the object is one.
+    fn projectile(&self, field: &str, index: usize) -> Option<Value> {
+        let s = torque_game::sim::projectile::state(self.fields.vm, self.fields.obj)?;
+        let component = |v: [f32; 3]| v.get(index).map_or(Value::Null, |f| Value::F32(*f));
+        Some(match field {
+            "position" => component(s.position),
+            "velocity" => component(s.velocity),
+            "current_tick" => Value::Int(i64::from(s.age)),
+            "source_slot" => Value::Int(i64::from(s.source_slot)),
+            "hidden" => Value::Bool(s.exploded),
+            "explosion_position" => component(s.explosion_pos),
+            "explosion_normal" => component(s.explosion_normal),
+            "collide_hit_type" => Value::Int(i64::from(s.explosion_type)),
+            _ => return None,
+        })
+    }
+}
+
+impl GameView<'_> {
+    /// A ShapeBase's mounted image `index` from the game classes' image slots, for the image fields.
+    fn image(&self, field: &str, index: usize) -> Option<Value> {
+        if !field.starts_with("image_") {
+            return None;
+        }
+        let set = torque_game::scene::ext::get(self.fields.vm.objects(), self.fields.obj)?
+            .images
+            .as_deref()?;
+        let slot = set.slots.get(index)?;
+        Some(match field {
+            "image_datablock" => Value::Id(slot.db),
+            "image_wet" => Value::Bool(slot.wet),
+            "image_ammo" => Value::Bool(slot.ammo),
+            "image_loaded" => Value::Bool(slot.loaded),
+            "image_target" => Value::Bool(slot.target),
+            "image_trigger_down" => Value::Bool(slot.trigger_down),
+            "image_fire_count" => Value::Int(i64::from(slot.fire_count)),
+            _ => return None,
+        })
+    }
+}
+
 impl ObjectView for GameView<'_> {
     fn get(&self, field: &str, index: usize) -> Value {
         if let Some(v) = self.player(field, index) {
+            return v;
+        }
+        if let Some(v) = self.image(field, index) {
+            return v;
+        }
+        if let Some(v) = self.projectile(field, index) {
             return v;
         }
         match field {
@@ -388,6 +451,7 @@ fn sky_field(field: &str) -> Option<&'static str> {
         "no_render_bans" => "noRenderBans",
         "material_list" => "materialList",
         "cloud_text" => "cloudText",
+        "cloud_height" => "cloudHeightPer",
         "wind_velocity" => "windVelocity",
         _ => return None,
     })

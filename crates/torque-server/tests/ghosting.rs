@@ -124,9 +124,26 @@ new Sun(TheSun) { azimuth = 30; elevation = 45; };",
     assert_eq!(hub.scope_object_of(conn), Some(eye));
 
     // `activateGhosting` posts the ghost-always objects (the Sun is ScopeAlways); `resetGhosting` drops every ghost.
+    s.vm.eval(format!("$before = {obj}.getGhostID(TheSun);").as_bytes())
+        .unwrap();
+    assert_eq!(
+        global(&s, "$before"),
+        "-1",
+        "no ghost before ghosting starts"
+    );
     s.vm.eval(format!("{obj}.activateGhosting();").as_bytes())
         .unwrap();
     assert!(hub.ghost_index(conn, sun).is_some(), "the sun has a ghost");
+    s.vm.eval(
+        format!("$index = {obj}.getGhostID(TheSun); $missing = {obj}.getGhostID(NoSuchObject);")
+            .as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(
+        global(&s, "$index"),
+        hub.ghost_index(conn, sun).unwrap().to_string()
+    );
+    assert_eq!(global(&s, "$missing"), "-1");
     s.vm.eval(format!("{obj}.resetGhosting();").as_bytes())
         .unwrap();
     assert!(hub.ghost_index(conn, sun).is_none(), "ghosting was reset");
@@ -160,7 +177,7 @@ $command = isFunction(commandToClient);",
 }
 
 #[test]
-fn torques_codecs_move_a_players_and_an_items_simulation_bits_to_tges_record_masks() {
+fn torques_codecs_move_a_shapebases_simulation_bits_to_tges_record_masks() {
     use torque_ghosts::tge::TgeClass;
     use torque_server::net::codecs::{NetCodecs, TorqueCodecs};
     let player = TgeClass::Player.code();
@@ -175,8 +192,15 @@ fn torques_codecs_move_a_players_and_an_items_simulation_bits_to_tges_record_mas
         TorqueCodecs.sim_mask(item, 0x0400_0000 | 0x0800_0000),
         torque_ghosts::shapes::item_mask::POSITION | torque_ghosts::shapes::item_mask::ROTATION
     );
-    // The parts' bits below are the same, and so is every bit of another class.
-    assert_eq!(TorqueCodecs.sim_mask(player, 0x0000_0101), 0x0000_0101);
+    // The ShapeBase part's bits move up too: the damage, a mounted image, the scale bit stays.
+    use torque_ghosts::shapebase::mask as sb;
+    assert_eq!(
+        TorqueCodecs.sim_mask(player, 0x0000_0001 | 0x0000_0020 | 0x0010_0000),
+        0x0000_0001 | sb::DAMAGE | sb::IMAGE_N
+    );
     let shape = TgeClass::StaticShape.code();
-    assert_eq!(TorqueCodecs.sim_mask(shape, 0x0200_0000), 0x0200_0000);
+    assert_eq!(TorqueCodecs.sim_mask(shape, 0x0001_0000), sb::THREAD_N);
+    // A class without a ShapeBase part keeps every bit (a Projectile's bounce and explosion bits are TGE's).
+    let projectile = TgeClass::Projectile.code();
+    assert_eq!(TorqueCodecs.sim_mask(projectile, 0x60), 0x60);
 }

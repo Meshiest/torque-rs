@@ -3,6 +3,10 @@
 //! event registry, the server query's answers, the round trip of an infinitely lagging connection, the control section's
 //! format, the connection messages' numbers, the address text and a few console switches only through it. Without a game's,
 //! they are Torque's profiles from `net` ([`TorqueCodecs`]).
+//!
+//! Credit: [`TorqueCodecs::sim_mask`] follows the mask enums of TGE 1.4's `game/shapeBase.h`, `game/gameBase.h`,
+//! `game/player.h`, `game/item.h`, `game/camera.h` and `game/staticShape.h` (each Copyright (C) GarageGames.com, Inc.);
+//! Torque3D's enums differ. The code here is this crate's own.
 
 use std::any::Any;
 use std::fmt::Debug;
@@ -428,14 +432,23 @@ impl ObjectView for TgeView<'_> {
 }
 
 impl NetCodecs for TorqueCodecs {
-    /// torque-sim numbers a Player's and an Item's own bits from bit 24 (a Player's `MoveMask` is bit 25); TGE 1.4's records
-    /// start them one bit higher, past its ShapeBase's last (a Player's `ActionMask` 25, `MoveMask` 26, `ImpactMask` 27; an
-    /// Item's `HiddenMask` 25 to `RotationMask` 28). The bits below are the parts' and are the same.
+    /// The game classes number a ShapeBase's bits from bit 4 (`setShapeName` marks 0x10, the damage 0x20, a mount 0x80,
+    /// the fade 0x100, the sounds, threads and images from 0x1000, 0x10000 and 0x10_0000; a Player's, an Item's and a
+    /// Camera's own bits from 24). TGE 1.4's records put each one bit higher, past GameBase's `ControlMask` (bit 4):
+    /// `NameMask` 5, `DamageMask` 6, `MountedMask` 8, `CloakMask` 9, the sounds from 13, the threads from 17, the images
+    /// from 21, a Player's `ActionMask` 25 and `MoveMask` 26, an Item's `HiddenMask` 25 to `RotationMask` 28, a Camera's
+    /// `MoveMask` 25. The scale bit (0) is the same, and so is every bit of a class without a ShapeBase part. The vehicles,
+    /// whose step numbers its own bits, are left as they are.
     fn sim_mask(&self, code: u16, bits: u32) -> u32 {
         match TgeClass::of_code(code) {
-            Some(TgeClass::Player | TgeClass::AiPlayer | TgeClass::Item) => {
-                (bits & 0x00ff_ffff) | ((bits & 0x7f00_0000) << 1)
-            }
+            Some(
+                TgeClass::Player
+                | TgeClass::AiPlayer
+                | TgeClass::Item
+                | TgeClass::StaticShape
+                | TgeClass::ScopeAlwaysShape
+                | TgeClass::Camera,
+            ) => (bits & 0x0000_000f) | ((bits & 0x7fff_fff0) << 1),
             _ => bits,
         }
     }

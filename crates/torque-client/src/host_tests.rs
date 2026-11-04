@@ -73,3 +73,52 @@ fn the_log_names_the_objects_scripts_could_not_find() {
         Some("A.b")
     );
 }
+
+#[test]
+fn the_engine_pass_hands_a_server_query_answer_to_the_query() {
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    use ::net::serverquery::{GAME_PING_REQUEST, GAME_PING_RESPONSE, request};
+
+    use crate::net::{BROADCAST, DatagramQueue, MemoryDatagrams, NetPolicy};
+
+    let mut h = host();
+    let (sent, incoming) = (DatagramQueue::default(), DatagramQueue::default());
+    {
+        let st = h.client.borrow();
+        let mut net = st.net.borrow_mut();
+        net.policy = NetPolicy::Loopback;
+        net.socket = Some(Box::new(MemoryDatagrams {
+            sent: Rc::clone(&sent),
+            incoming: Rc::clone(&incoming),
+            local_port: 50_000,
+        }));
+    }
+    crate::query::register(h.server.vm_mut(), &h.client);
+    // A ping goes out when its last send is more than the time-out old: past the clock's start.
+    h.run(1024, |_| false);
+    h.server
+        .vm_mut()
+        .eval(b"queryLanServers(28000, 0, \"\", \"\", 0, 100, 0, 2, 0, 100, 0);")
+        .unwrap();
+    let pings: Vec<_> = sent.borrow_mut().drain(..).collect();
+    assert!(
+        pings
+            .iter()
+            .any(|(to, d)| *to == SocketAddrV4::new(BROADCAST, 28000) && d[0] == GAME_PING_REQUEST),
+        "the LAN ping went to the broadcast address"
+    );
+    // A server on the loopback address answers the broadcast: the query pings it in turn on its next pass.
+    let server = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28000);
+    incoming
+        .borrow_mut()
+        .push_back((server, request(GAME_PING_RESPONSE, 0, 1, 1)));
+    h.run(64, |_| false);
+    assert!(
+        sent.borrow()
+            .iter()
+            .any(|(to, d)| *to == server && d[0] == GAME_PING_REQUEST),
+        "the answer reached the query, which pinged the server"
+    );
+    assert_eq!(h.client.borrow().net.borrow().stats.stray, 0);
+}

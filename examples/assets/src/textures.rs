@@ -6,6 +6,7 @@
 //! | `figure.png` | 64 x 64 | four swatches: skin, shirt (with a hem), trousers (shoes along the bottom), and the eyes' colour |
 //! | `pistol.png` | 32 x 32 | dark metal, lighter along the top rows, faint grip lines lower down |
 //! | `projectile.png` | 16 x 16 | a hot core fading to orange at the edge |
+//! | `spark.png` | 32 x 32 | a soft white dot fading to black at the edge (a particle: drawn added, its black adds nothing) |
 
 use std::io;
 
@@ -88,5 +89,15 @@ pub fn projectile() -> io::Result<Vec<u8>> {
         let t = ((dx * dx + dy * dy).sqrt() / 10.6).min(1.0);
         let mix = |a: f32, b: f32| (a + (b - a) * t) as u8;
         [mix(255.0, 255.0), mix(240.0, 120.0), mix(170.0, 30.0)]
+    })
+}
+
+/// A trail particle's soft dot.
+pub fn spark() -> io::Result<Vec<u8>> {
+    png(32, 32, |x, y| {
+        let (dx, dy) = (x as f32 - 15.5, y as f32 - 15.5);
+        let t = (1.0 - (dx * dx + dy * dy).sqrt() / 15.5).max(0.0);
+        let v = (255.0 * t * t).round() as u8;
+        [v, v, v]
     })
 }
