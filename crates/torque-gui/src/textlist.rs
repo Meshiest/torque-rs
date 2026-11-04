@@ -239,6 +239,15 @@ fn valid(s: &ListState, c: (i32, i32)) -> bool {
     c.0 >= 0 && c.0 < s.size.0 && c.1 >= 0 && c.1 < s.size.1
 }
 
+/// Whether the canvas point `pt` is on a cell of the list a click would select.
+pub fn row_under(vm: &Vm, gui: &Gui, id: ObjId, pt: (i32, i32)) -> bool {
+    if !flag(vm, id, b"visible") {
+        return false;
+    }
+    let s = state(gui, id);
+    valid(&s, cell_at(&s, crate::scroll::local(vm, id, pt)))
+}
+
 /// `onMouseDown`.
 pub fn mouse_down(
     vm: &mut Vm,

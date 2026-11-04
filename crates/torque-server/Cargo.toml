@@ -26,6 +26,8 @@ torque-collide = { path = "../torque-collide" }
 
 # The container bins of the game classes' container.
 torque-scene = { path = "../torque-scene" }
+# The simulated Player's state a control object's packet data is written from.
+torque-sim = { path = "../torque-sim" }
 
 [dev-dependencies]
 # The tests' shapes (a box a Player stands in).

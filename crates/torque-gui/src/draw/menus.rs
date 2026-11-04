@@ -39,7 +39,7 @@ use super::rounded::{BOX_TEXT_PAD, BoxState, box_colors, box_text_color};
 use super::{Walk, color_field, int_field, intersect, profile_of, text_field};
 use crate::control::{bounds, flag, point};
 
-use crate::profile::{Rect, bitmap_array, color_at};
+use crate::profile::{Rect, bitmap_array, font_color};
 use crate::textures::GuiTexture;
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -50,7 +50,7 @@ const ROW_INSET: (i32, i32) = (3, 1);
 
 /// The profile's font colours (`fontColors[0..10]`): 0 normal, 1 highlighted, 2 not active, 3 selected, 4 and 5 links.
 fn font_colors(vm: &torque_ts_vm::vm::Vm, p: ObjId) -> Vec<[u8; 4]> {
-    (0..10).map(|i| color_at(vm, p, b"fontColors", i)).collect()
+    (0..10).map(|i| font_color(vm, p, i)).collect()
 }
 
 /// A font, its face and size.
@@ -1013,7 +1013,7 @@ impl Walk<'_> {
                     xo = 0;
                 }
                 let to = point(vm, p, b"textOffset");
-                let c = color_at(vm, p, b"fontColors", 0);
+                let c = font_color(vm, p, 0);
                 self.text(&f, (to.0 + xo + offset.0, to.1 + offset.1), &title, c, None);
             }
             if let Some(t) = self.profile_texture(p) {

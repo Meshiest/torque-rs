@@ -87,6 +87,12 @@ pub enum GuiRule {
     /// GuiProgressCtrl's `setValue` takes a value that is not a number as 1 and a negative zero as 0 (a value is 1 unless it
     /// is at most 1, then 0 unless it is above 0); the engine's clamp keeps both as they are.
     ProgressNanIsFull,
+    /// GuiTextEditCtrl takes TGE's keys and clicks: Ctrl+A/B/D/E/F/N/P/U are Home, Left, Delete, End, Right, Down, Up and
+    /// Ctrl+Delete, Ctrl+Z swaps the text with one undo copy, Ctrl+Backspace and Ctrl+Delete clear the text, Ctrl+Left and
+    /// Ctrl+Right do nothing, a click places the cursor before the character under it with the text taken unscrolled, and a
+    /// double click is a click. The engine's are the usual desktop keys and clicks (select all, word moves, undo and redo
+    /// steps; see [`crate::input::text_edit`]).
+    TgeEditKeys,
 }
 
 /// A console message the GUI prints, with what it names; [`GuiMessage::engine_text`] is the engine's wording.

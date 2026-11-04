@@ -10,8 +10,10 @@
 //! its scripts, its connection, its query); then what the scripts asked of the host: a game hosted (`$Arena::HostAsked`: the
 //! server starts and the client joins it over the loopback address) or the arena left (`$Arena::LeaveAsked`: the server stops).
 //!
-//! **A frame** ([`ArenaGame::frame`]): the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and the eye
-//! at the client's own figure's eye.
+//! **A frame** ([`ArenaGame::frame`]): the client's own figure where the client predicts it, between its last two ticks
+//! (`Player::interpolateTick`) and turned ahead by the mouse's waiting turn ([`crate::prediction`]), the other figures moved on
+//! between their records ([`crate::motion`]), the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and
+//! the eye at the own figure's eye.
 
 use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -33,8 +35,11 @@ use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
 use crate::files::GameFiles;
+use crate::prediction::ArenaClient;
 use crate::scene::{ArenaScene, OwnLook, TextureFilter};
 use crate::server::{ArenaServer, DEFAULT_PORT, ServerOptions};
+use torque::client::conn::tge::TgeWorld as World;
+use torque::ghost_world::world::Pose;
 
 /// Where the client's socket binds and what it reaches (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +121,10 @@ impl ArenaGame {
         let mut vm = Vm::new();
         torque::game::specs::install(&mut vm);
         vm.set_file_host(files.mem_files());
+        torque::client::game::set_client_game(
+            &mut vm,
+            Rc::new(ArenaClient::new(files.mem_files())),
+        );
         let gui = torque::gui::register(&mut vm);
         // The controls that measure text as they lay out (the list of games) find their fonts where the drawing does: the
         // system's TrueType faces.
@@ -381,34 +390,95 @@ impl ArenaGame {
         });
     }
 
-    /// The own figure's ghost and the view's turn, as the scripts keep them (`$Arena::OwnGhost`, `$Arena::LookYaw`,
-    /// `$Arena::LookPitch`).
+    /// The own figure's ghost (`$Arena::OwnGhost`, which the server names) and where the client predicts it: its feet, yaw and
+    /// head as this frame draws them (the control object's, [`ArenaGame::view_frame`]). Before the prediction starts, the
+    /// view's turn as the scripts keep it (`$Arena::LookYaw`, `$Arena::LookPitch`) and the record's feet.
     pub fn own_look(&self) -> Option<OwnLook> {
         let ghost = u32::try_from(atoi(self.global("$Arena::OwnGhost").as_bytes())).ok()?;
+        let predicted = self
+            .with_world(|w| match (w.control.object, w.control_render) {
+                (
+                    Some(index),
+                    Some(Pose::Euler {
+                        position,
+                        pitch,
+                        yaw,
+                    }),
+                ) if index == ghost => Some((position, yaw, pitch)),
+                _ => None,
+            })
+            .flatten();
+        if let Some((position, yaw, pitch)) = predicted {
+            return Some(OwnLook {
+                ghost,
+                yaw,
+                pitch,
+                position: Some(position),
+            });
+        }
         let float = |name: &str| self.global(name).trim().parse::<f32>().unwrap_or(0.0);
         Some(OwnLook {
             ghost,
             yaw: float("$Arena::LookYaw"),
             pitch: float("$Arena::LookPitch"),
+            position: None,
         })
+    }
+
+    /// Turns the own view to `pitch` (positive looks down) with the next move, as the mouse would turn it.
+    pub fn set_view_pitch(&mut self, pitch: f32) {
+        let now = self.own_look().map_or(0.0, |o| o.pitch);
+        let waiting = self.vm().global_f32("$mvPitch").unwrap_or(0.0);
+        self.set_global("$mvPitch", &(waiting + pitch - now).to_string());
+        self.set_global("$Arena::LookPitch", &pitch.to_string());
+    }
+
+    /// The control object's view this frame: the predicted Player between its last two ticks (`back`: 1 right after a tick, 0
+    /// just before the next), its angles drawn ahead by the move globals the next move will be made of.
+    fn predict_frame(&mut self) {
+        let now = self.host.server.vm().sim_time();
+        let vm = self.host.server.vm();
+        let mut st = self.host.client.borrow_mut();
+        let Some(c) = st.conn.conn.as_mut() else {
+            return;
+        };
+        let c = &mut **c;
+        let Some(last) = c.last_tick else {
+            return;
+        };
+        let since = now.wrapping_sub(last).min(TICK_MS);
+        c.predict.back = 1.0 - since as f32 / TICK_MS as f32;
+        c.predict.set_aim_input(vm);
+        c.predict.update_view(&mut c.world);
+    }
+
+    /// The frame's motion, with nothing drawn: the own figure where the client predicts it and the other figures moved on by the
+    /// time since the last frame. Returns that time (seconds).
+    pub fn view_frame(&mut self) -> f32 {
+        let dt = std::mem::take(&mut self.frame_dt);
+        self.predict_frame();
+        let own = self.own_look();
+        let st = self.host.client.borrow();
+        match st.conn.conn.as_ref() {
+            Some(conn) => {
+                let world: &World = &conn.world;
+                self.scene.update_figures(&self.files.kit, world, own, dt);
+            }
+            None => self.scene.clear(),
+        }
+        dt
     }
 
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
     pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
-        let dt = std::mem::take(&mut self.frame_dt);
-        let own = self.own_look();
+        let dt = self.view_frame();
         let filter = TextureFilter::named(&self.global("$Arena::TextureFilter"));
         self.scene.set_texture_filter(filter);
         let objects = {
             let st = self.host.client.borrow();
             match st.conn.conn.as_ref() {
-                Some(conn) => self
-                    .scene
-                    .objects(view, &self.files.kit, &conn.world, own, dt),
-                None => {
-                    self.scene.clear();
-                    Vec::new()
-                }
+                Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world, dt),
+                None => Vec::new(),
             }
         };
         view.set_objects(objects);

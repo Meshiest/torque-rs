@@ -63,6 +63,32 @@ pub fn color_at(vm: &Vm, id: ObjId, name: &[u8], i: usize) -> [u8; 4] {
     )
 }
 
+/// The names TGE gives `fontColors[0..6]`: `fontColor`, `fontColorHL`, `fontColorNA`, `fontColorSEL`, `fontColorLink` and
+/// `fontColorLinkHL` are the same colors as the array's first six entries.
+const FONT_COLOR_NAMES: [&[u8]; 6] = [
+    b"fontColor",
+    b"fontColorHL",
+    b"fontColorNA",
+    b"fontColorSEL",
+    b"fontColorLink",
+    b"fontColorLinkHL",
+];
+
+/// A profile's font color `i` (`fontColors[i]`), or the color set under its name (`fontColorHL` for 1, ...) when the
+/// array entry is not set: TGE stores both in one place. An entry no script set reads as transparent black (the class's
+/// fresh value), and transparent text is never meant, so that counts as not set.
+pub fn font_color(vm: &Vm, id: ObjId, i: usize) -> [u8; 4] {
+    let objects = vm.objects();
+    let read = |name: &[u8], index: &[u8]| {
+        crate::draw::color_i(&objects.field(id, name, index).unwrap_or_default())
+    };
+    let entry = read(b"fontColors", i.to_string().as_bytes());
+    match FONT_COLOR_NAMES.get(i) {
+        Some(name) if entry == [0; 4] => read(name, b""),
+        _ => entry,
+    }
+}
+
 /// A profile's flag.
 pub fn pflag(vm: &Vm, profile: Option<ObjId>, name: &[u8]) -> bool {
     profile.is_some_and(|p| flag(vm, p, name))

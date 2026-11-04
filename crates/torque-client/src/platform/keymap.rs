@@ -1,180 +1,154 @@
-//! The window's keys and buttons as the Windows messages TGE's platform layer reads: a winit key is the virtual key, scan code
-//! and extended bit Windows would give it on a US keyboard, so the engine's [`crate::input::Win32`] turns it into the same event
-//! TGE makes of the real message.
+//! The window's keys and buttons as the Windows messages TGE's platform layer reads: a winit key is the engine's [`Key`]
+//! ([`Key::from_winit`]), whose message ([`key_message`]) is the virtual key, scan code and extended bit Windows would give it on
+//! a US keyboard, so the engine's [`crate::input::Win32`] turns it into the same event TGE makes of the real message.
 //!
 //! Credit: follows TGE's window procedure as Torque3D carries it (MIT: `platformWin32/winWindow.cpp`, Copyright (c) 2012
 //! GarageGames, LLC).
 
-use crate::input::{
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-};
-use winit::event::{MouseButton, MouseScrollDelta};
+use crate::input::{Key, MouseButton, WM_MOUSEWHEEL, button_message, key_message};
+use winit::event::MouseScrollDelta;
 use winit::keyboard::KeyCode;
 
-/// The virtual key and the extended bit of a key (None: one the key table has no key for).
-pub fn virtual_key(code: KeyCode) -> Option<(u8, bool)> {
-    use KeyCode as K;
-    let letter = |c: u8| Some((c, false));
-    Some(match code {
-        K::KeyA => return letter(b'A'),
-        K::KeyB => return letter(b'B'),
-        K::KeyC => return letter(b'C'),
-        K::KeyD => return letter(b'D'),
-        K::KeyE => return letter(b'E'),
-        K::KeyF => return letter(b'F'),
-        K::KeyG => return letter(b'G'),
-        K::KeyH => return letter(b'H'),
-        K::KeyI => return letter(b'I'),
-        K::KeyJ => return letter(b'J'),
-        K::KeyK => return letter(b'K'),
-        K::KeyL => return letter(b'L'),
-        K::KeyM => return letter(b'M'),
-        K::KeyN => return letter(b'N'),
-        K::KeyO => return letter(b'O'),
-        K::KeyP => return letter(b'P'),
-        K::KeyQ => return letter(b'Q'),
-        K::KeyR => return letter(b'R'),
-        K::KeyS => return letter(b'S'),
-        K::KeyT => return letter(b'T'),
-        K::KeyU => return letter(b'U'),
-        K::KeyV => return letter(b'V'),
-        K::KeyW => return letter(b'W'),
-        K::KeyX => return letter(b'X'),
-        K::KeyY => return letter(b'Y'),
-        K::KeyZ => return letter(b'Z'),
-        K::Digit0 => (b'0', false),
-        K::Digit1 => (b'1', false),
-        K::Digit2 => (b'2', false),
-        K::Digit3 => (b'3', false),
-        K::Digit4 => (b'4', false),
-        K::Digit5 => (b'5', false),
-        K::Digit6 => (b'6', false),
-        K::Digit7 => (b'7', false),
-        K::Digit8 => (b'8', false),
-        K::Digit9 => (b'9', false),
-        K::Backspace => (0x08, false),
-        K::Tab => (0x09, false),
-        K::Enter => (0x0d, false),
-        K::NumpadEnter => (0x0d, true),
-        K::ShiftLeft | K::ShiftRight => (0x10, false),
-        K::ControlLeft => (0x11, false),
-        K::ControlRight => (0x11, true),
-        K::AltLeft => (0x12, false),
-        K::AltRight => (0x12, true),
-        K::Pause => (0x13, false),
-        K::CapsLock => (0x14, false),
-        K::Escape => (0x1b, false),
-        K::Space => (0x20, false),
-        K::PageUp => (0x21, true),
-        K::PageDown => (0x22, true),
-        K::End => (0x23, true),
-        K::Home => (0x24, true),
-        K::ArrowLeft => (0x25, true),
-        K::ArrowUp => (0x26, true),
-        K::ArrowRight => (0x27, true),
-        K::ArrowDown => (0x28, true),
-        K::PrintScreen => (0x2c, true),
-        K::Insert => (0x2d, true),
-        K::Delete => (0x2e, true),
-        K::SuperLeft => (0x5b, true),
-        K::SuperRight => (0x5c, true),
-        K::ContextMenu => (0x5d, true),
-        K::Numpad0 => (0x60, false),
-        K::Numpad1 => (0x61, false),
-        K::Numpad2 => (0x62, false),
-        K::Numpad3 => (0x63, false),
-        K::Numpad4 => (0x64, false),
-        K::Numpad5 => (0x65, false),
-        K::Numpad6 => (0x66, false),
-        K::Numpad7 => (0x67, false),
-        K::Numpad8 => (0x68, false),
-        K::Numpad9 => (0x69, false),
-        K::NumpadMultiply => (0x6a, false),
-        K::NumpadAdd => (0x6b, false),
-        K::NumpadSubtract => (0x6d, false),
-        K::NumpadDecimal => (0x6e, false),
-        K::NumpadDivide => (0x6f, true),
-        K::F1 => (0x70, false),
-        K::F2 => (0x71, false),
-        K::F3 => (0x72, false),
-        K::F4 => (0x73, false),
-        K::F5 => (0x74, false),
-        K::F6 => (0x75, false),
-        K::F7 => (0x76, false),
-        K::F8 => (0x77, false),
-        K::F9 => (0x78, false),
-        K::F10 => (0x79, false),
-        K::F11 => (0x7a, false),
-        K::F12 => (0x7b, false),
-        K::NumLock => (0x90, true),
-        K::ScrollLock => (0x91, false),
-        K::Semicolon => (0xba, false),
-        K::Equal => (0xbb, false),
-        K::Comma => (0xbc, false),
-        K::Minus => (0xbd, false),
-        K::Period => (0xbe, false),
-        K::Slash => (0xbf, false),
-        K::Backquote => (0xc0, false),
-        K::BracketLeft => (0xdb, false),
-        K::Backslash => (0xdc, false),
-        K::BracketRight => (0xdd, false),
-        K::Quote => (0xde, false),
-        K::IntlBackslash => (0xe2, false),
-        _ => return None,
-    })
+impl Key {
+    /// The key of a winit key code (None: one the platform layer has no key for, such as the media keys).
+    pub fn from_winit(code: KeyCode) -> Option<Key> {
+        use KeyCode as C;
+        Some(match code {
+            C::KeyA => Key::A,
+            C::KeyB => Key::B,
+            C::KeyC => Key::C,
+            C::KeyD => Key::D,
+            C::KeyE => Key::E,
+            C::KeyF => Key::F,
+            C::KeyG => Key::G,
+            C::KeyH => Key::H,
+            C::KeyI => Key::I,
+            C::KeyJ => Key::J,
+            C::KeyK => Key::K,
+            C::KeyL => Key::L,
+            C::KeyM => Key::M,
+            C::KeyN => Key::N,
+            C::KeyO => Key::O,
+            C::KeyP => Key::P,
+            C::KeyQ => Key::Q,
+            C::KeyR => Key::R,
+            C::KeyS => Key::S,
+            C::KeyT => Key::T,
+            C::KeyU => Key::U,
+            C::KeyV => Key::V,
+            C::KeyW => Key::W,
+            C::KeyX => Key::X,
+            C::KeyY => Key::Y,
+            C::KeyZ => Key::Z,
+            C::Digit0 => Key::Digit0,
+            C::Digit1 => Key::Digit1,
+            C::Digit2 => Key::Digit2,
+            C::Digit3 => Key::Digit3,
+            C::Digit4 => Key::Digit4,
+            C::Digit5 => Key::Digit5,
+            C::Digit6 => Key::Digit6,
+            C::Digit7 => Key::Digit7,
+            C::Digit8 => Key::Digit8,
+            C::Digit9 => Key::Digit9,
+            C::F1 => Key::F1,
+            C::F2 => Key::F2,
+            C::F3 => Key::F3,
+            C::F4 => Key::F4,
+            C::F5 => Key::F5,
+            C::F6 => Key::F6,
+            C::F7 => Key::F7,
+            C::F8 => Key::F8,
+            C::F9 => Key::F9,
+            C::F10 => Key::F10,
+            C::F11 => Key::F11,
+            C::F12 => Key::F12,
+            C::F13 => Key::F13,
+            C::F14 => Key::F14,
+            C::F15 => Key::F15,
+            C::F16 => Key::F16,
+            C::F17 => Key::F17,
+            C::F18 => Key::F18,
+            C::F19 => Key::F19,
+            C::F20 => Key::F20,
+            C::F21 => Key::F21,
+            C::F22 => Key::F22,
+            C::F23 => Key::F23,
+            C::F24 => Key::F24,
+            C::ArrowLeft => Key::ArrowLeft,
+            C::ArrowUp => Key::ArrowUp,
+            C::ArrowRight => Key::ArrowRight,
+            C::ArrowDown => Key::ArrowDown,
+            C::Home => Key::Home,
+            C::End => Key::End,
+            C::PageUp => Key::PageUp,
+            C::PageDown => Key::PageDown,
+            C::Insert => Key::Insert,
+            C::Delete => Key::Delete,
+            C::Backspace => Key::Backspace,
+            C::Tab => Key::Tab,
+            C::Enter => Key::Enter,
+            C::Escape => Key::Escape,
+            C::Space => Key::Space,
+            C::ShiftLeft => Key::ShiftLeft,
+            C::ShiftRight => Key::ShiftRight,
+            C::ControlLeft => Key::ControlLeft,
+            C::ControlRight => Key::ControlRight,
+            C::AltLeft => Key::AltLeft,
+            C::AltRight => Key::AltRight,
+            C::SuperLeft => Key::SuperLeft,
+            C::SuperRight => Key::SuperRight,
+            C::ContextMenu => Key::ContextMenu,
+            C::CapsLock => Key::CapsLock,
+            C::NumLock => Key::NumLock,
+            C::ScrollLock => Key::ScrollLock,
+            C::PrintScreen => Key::PrintScreen,
+            C::Pause => Key::Pause,
+            C::Numpad0 => Key::Numpad0,
+            C::Numpad1 => Key::Numpad1,
+            C::Numpad2 => Key::Numpad2,
+            C::Numpad3 => Key::Numpad3,
+            C::Numpad4 => Key::Numpad4,
+            C::Numpad5 => Key::Numpad5,
+            C::Numpad6 => Key::Numpad6,
+            C::Numpad7 => Key::Numpad7,
+            C::Numpad8 => Key::Numpad8,
+            C::Numpad9 => Key::Numpad9,
+            C::NumpadMultiply => Key::NumpadMultiply,
+            C::NumpadAdd => Key::NumpadAdd,
+            C::NumpadSubtract => Key::NumpadSubtract,
+            C::NumpadDecimal => Key::NumpadDecimal,
+            C::NumpadDivide => Key::NumpadDivide,
+            C::NumpadEnter => Key::NumpadEnter,
+            C::Minus => Key::Minus,
+            C::BracketLeft => Key::BracketLeft,
+            C::BracketRight => Key::BracketRight,
+            C::Backslash => Key::Backslash,
+            C::Semicolon => Key::Semicolon,
+            C::Comma => Key::Comma,
+            C::Period => Key::Period,
+            C::Slash => Key::Slash,
+            C::IntlBackslash => Key::IntlBackslash,
+            C::Equal => Key::Equals,
+            C::Quote => Key::Apostrophe,
+            C::Backquote => Key::Grave,
+            _ => return None,
+        })
+    }
 }
 
-/// The message of a key: `(message, wParam, lParam)` as Windows posts it (the scan code the US layout's, the right Shift's 0x36,
-/// the extended bit, the previous-state bit of a repeat, the up bits).
-pub fn key_message(
-    code: KeyCode,
-    down: bool,
-    repeat: bool,
-    alt_held: bool,
-) -> Option<(u32, u32, u32)> {
-    let (vk, extended) = virtual_key(code)?;
-    let scan = if code == KeyCode::ShiftRight {
-        0x36
-    } else {
-        u32::from(gui::keys::map_virtual_key(vk))
-    };
-    let mut l = 1 | (scan << 16);
-    if extended {
-        l |= 1 << 24;
+impl MouseButton {
+    /// The button of a winit mouse button (None: one past the two side buttons).
+    pub fn from_winit(button: winit::event::MouseButton) -> Option<MouseButton> {
+        use winit::event::MouseButton as B;
+        Some(match button {
+            B::Left => MouseButton::Left,
+            B::Right => MouseButton::Right,
+            B::Middle => MouseButton::Middle,
+            B::Back => MouseButton::Back,
+            B::Forward => MouseButton::Forward,
+            B::Other(_) => return None,
+        })
     }
-    if !down {
-        l |= (1 << 30) | (1 << 31);
-    } else if repeat {
-        l |= 1 << 30;
-    }
-    // Windows sends a key with Alt held (and F10, and Alt itself) as a system key.
-    let system = alt_held || vk == 0x12 || vk == 0x79;
-    let msg = match (down, system) {
-        (true, false) => WM_KEYDOWN,
-        (false, false) => WM_KEYUP,
-        (true, true) => WM_SYSKEYDOWN,
-        (false, true) => WM_SYSKEYUP,
-    };
-    Some((msg, u32::from(vk), l))
-}
-
-/// The message of a mouse button at the client position (None: a button the platform layer does not read).
-pub fn button_message(button: MouseButton, down: bool, at: (i32, i32)) -> Option<(u32, u32, u32)> {
-    let msg = match (button, down) {
-        (MouseButton::Left, true) => WM_LBUTTONDOWN,
-        (MouseButton::Left, false) => WM_LBUTTONUP,
-        (MouseButton::Right, true) => WM_RBUTTONDOWN,
-        (MouseButton::Right, false) => WM_RBUTTONUP,
-        (MouseButton::Middle, true) => WM_MBUTTONDOWN,
-        (MouseButton::Middle, false) => WM_MBUTTONUP,
-        _ => return None,
-    };
-    Some((
-        msg,
-        0,
-        ((at.1 as u32 & 0xffff) << 16) | (at.0 as u32 & 0xffff),
-    ))
 }
 
 /// The wheel's message for `notches` (positive away from the user), 120 a notch as Windows counts it.
@@ -225,6 +199,7 @@ pub fn wheel_notches(delta: MouseScrollDelta) -> f32 {
 /// The window's keys, buttons, wheel and focus as the messages it posts to the platform layer ([`crate::input::Win32`]),
 /// whatever winit adds of its own:
 /// - a key is its message ([`key_message`]), a system key while Alt is held;
+/// - a button is its message ([`button_message`]); the side buttons (Back, Forward) are `WM_XBUTTONDOWN`/`UP`;
 /// - winit's **synthetic presses** (the keys found held when the window takes the focus) post nothing: Windows sends no message
 ///   for them, and a press whose release goes to another window (the Alt of an Alt+Tab back, the Shift of a Win+Shift+S) leaves the
 ///   platform layer holding that modifier, so every modifier bind reads as another (Ctrl+Z as Ctrl+Alt+Z, which no bind has: the
@@ -244,7 +219,7 @@ impl WindowInput {
     /// The message of a key event (None: nothing to post).
     pub fn key(
         &mut self,
-        code: KeyCode,
+        key: Key,
         pressed: bool,
         repeat: bool,
         synthetic: bool,
@@ -252,10 +227,10 @@ impl WindowInput {
         if synthetic && pressed {
             return None;
         }
-        if matches!(code, KeyCode::AltLeft | KeyCode::AltRight) {
+        if matches!(key, Key::AltLeft | Key::AltRight) {
             self.alt = pressed;
         }
-        key_message(code, pressed, repeat, self.alt)
+        Some(key_message(key, pressed, repeat, self.alt))
     }
 
     /// The message of a mouse button at the client position `at`.
@@ -264,14 +239,16 @@ impl WindowInput {
         button: MouseButton,
         pressed: bool,
         at: (i32, i32),
-    ) -> Option<(u32, u32, u32)> {
+    ) -> (u32, u32, u32) {
         let slot = match button {
-            MouseButton::Left => 0,
-            MouseButton::Right => 1,
-            MouseButton::Middle => 2,
-            _ => return None,
+            MouseButton::Left => Some(0),
+            MouseButton::Right => Some(1),
+            MouseButton::Middle => Some(2),
+            MouseButton::Back | MouseButton::Forward => None,
         };
-        self.buttons[slot] = pressed;
+        if let Some(slot) = slot {
+            self.buttons[slot] = pressed;
+        }
         button_message(button, pressed, at)
     }
 
@@ -292,10 +269,8 @@ impl WindowInput {
             .into_iter()
             .enumerate()
         {
-            if std::mem::take(&mut self.buttons[slot])
-                && let Some(m) = button_message(button, false, at)
-            {
-                out.push(m);
+            if std::mem::take(&mut self.buttons[slot]) {
+                out.push(button_message(button, false, at));
             }
         }
         out

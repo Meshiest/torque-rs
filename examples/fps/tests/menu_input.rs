@@ -2,6 +2,7 @@
 //! name box takes typed keys, the system cursor stands in for the canvas's (the arena sets no GuiCursor), in the arena the
 //! keys and the mouse reach the play map, and Escape opens the pause menu over the view.
 
+use torque::client::host::CursorShape;
 use torque::client::input::{WM_LBUTTONDOWN, WM_LBUTTONUP};
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
@@ -9,6 +10,9 @@ use torque_example_fps::files::GameFiles;
 /// Virtual-key codes of the keys the tests press.
 const VK_RETURN: u8 = 0x0d;
 const VK_ESCAPE: u8 = 0x1b;
+const VK_BACK: u8 = 0x08;
+const VK_CONTROL: u8 = 0x11;
+const VK_SPACE: u8 = 0x20;
 
 fn client() -> ArenaGame {
     let mut game = ArenaGame::new(
@@ -88,6 +92,65 @@ fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
         "the clicked name box takes the keys"
     );
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
+}
+
+/// `vk` pressed with Ctrl held.
+fn ctrl(game: &mut ArenaGame, vk: u8) {
+    game.key(VK_CONTROL, true);
+    press(game, vk);
+    game.key(VK_CONTROL, false);
+}
+
+fn name_value(game: &mut ArenaGame) -> String {
+    game.call("eval", &["return NameEdit.getValue();"]).unwrap()
+}
+
+#[test]
+fn the_name_box_takes_the_desktop_editing_keys() {
+    let mut g = client();
+    let name = center(&g, "NameEdit");
+    click(&mut g, name);
+    for vk in [b'B', b'O', b'B', VK_SPACE, b'J', b'O'] {
+        press(&mut g, vk);
+    }
+    assert_eq!(name_value(&mut g), "Annbob jo");
+    ctrl(&mut g, VK_BACK);
+    assert_eq!(
+        name_value(&mut g),
+        "Annbob ",
+        "Ctrl+Backspace deletes a word"
+    );
+    ctrl(&mut g, b'Z');
+    assert_eq!(name_value(&mut g), "Annbob jo", "Ctrl+Z undoes it");
+    ctrl(&mut g, b'A');
+    press(&mut g, b'X');
+    assert_eq!(
+        name_value(&mut g),
+        "x",
+        "Ctrl+A selects all, typing replaces it"
+    );
+    ctrl(&mut g, b'Z');
+    assert_eq!(name_value(&mut g), "Annbob jo");
+    ctrl(&mut g, b'Y');
+    assert_eq!(name_value(&mut g), "x", "Ctrl+Y redoes");
+    assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
+}
+
+#[test]
+fn the_system_cursor_is_a_pointer_over_buttons_and_a_text_cursor_over_the_name_box() {
+    let mut g = client();
+    g.host.draw_frame();
+    assert!(g.host.system_cursor());
+    let host = center(&g, "HostButton");
+    g.host.mouse_move(host);
+    assert_eq!(g.host.cursor_shape(), CursorShape::Pointer, "a button");
+    let name = center(&g, "NameEdit");
+    g.host.mouse_move(name);
+    assert_eq!(g.host.cursor_shape(), CursorShape::Text, "the name box");
+    g.host.mouse_move((1, 1));
+    assert_eq!(g.host.cursor_shape(), CursorShape::Arrow, "the bare panel");
+    g.host.mouse_move(host);
+    assert_eq!(g.host.cursor_shape(), CursorShape::Pointer);
 }
 
 #[test]

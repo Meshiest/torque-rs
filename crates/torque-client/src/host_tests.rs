@@ -122,3 +122,103 @@ fn the_engine_pass_hands_a_server_query_answer_to_the_query() {
     );
     assert_eq!(h.client.borrow().net.borrow().stats.stray, 0);
 }
+
+/// A host with ActionMap (the class is the game's to declare: TGE's is a plain SimObject), the global map pushed first and
+/// `TestMap` on top of it, bound by `binds` (`TestMap.bind(...)` lines).
+fn host_with_map(binds: &str) -> (Host, u32) {
+    let mut h = host();
+    crate::actionmap::register(h.server.vm_mut(), &h.client);
+    let vm = h.server.vm_mut();
+    vm.register_class("ActionMap", "SimObject", &[]);
+    let script = format!(
+        "new ActionMap(GlobalActionMap); GlobalActionMap.push(); new ActionMap(TestMap); {binds} TestMap.push();"
+    );
+    vm.eval(script.as_bytes()).unwrap();
+    let map = h.server.vm().objects().find(b"TestMap").unwrap();
+    (h, map)
+}
+
+#[test]
+fn a_named_key_reaches_the_action_map_bound_to_it() {
+    use crate::input::{Key, MouseButton, Taken};
+    let (mut h, map) = host_with_map(
+        "function moveForward(%v) { $fwd = $fwd @ %v; }
+         function fire(%v) { $fire = $fire @ %v; }
+         TestMap.bind(keyboard, \"w\", moveForward);
+         TestMap.bind(mouse, \"button0\", fire);",
+    );
+    assert_eq!(h.press(Key::W), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$fwd").unwrap(), b"10");
+    assert_eq!(h.key(Key::W, true), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$fwd").unwrap(), b"101");
+    h.key(Key::W, false);
+    // With the canvas's cursor off (in game) the buttons go past the canvas to the maps.
+    h.gui.0.borrow_mut().cursor_on = false;
+    assert_eq!(
+        h.mouse_button(MouseButton::Left, true, (5, 5)),
+        Taken::Map(map)
+    );
+    h.mouse_button(MouseButton::Left, false, (5, 5));
+    assert_eq!(h.server.vm().global("$fire").unwrap(), b"10");
+    assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
+}
+
+#[test]
+fn typed_text_presses_the_keys_with_shift_where_needed() {
+    let (mut h, _) = host_with_map(
+        "function bigH(%v) { if (%v) $typed = $typed @ \"H\"; }
+         function smallI(%v) { if (%v) $typed = $typed @ \"i\"; }
+         function bang(%v) { if (%v) $typed = $typed @ \"bang\"; }
+         TestMap.bind(keyboard, \"shift h\", bigH);
+         TestMap.bind(keyboard, \"i\", smallI);
+         TestMap.bind(keyboard, \"shift 1\", bang);",
+    );
+    assert_eq!(h.type_text("Hi!\u{e9}"), Err('\u{e9}'));
+    assert_eq!(h.server.vm().global("$typed").unwrap_or_default(), b"");
+    h.type_text("Hi!").unwrap();
+    assert_eq!(h.server.vm().global("$typed").unwrap(), b"Hibang");
+    assert_eq!(h.win32.modifiers, 0, "Shift let go");
+    assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
+}
+
+#[test]
+fn a_bind_on_the_iso_key_saves_and_loads_back_onto_it() {
+    use crate::input::{Key, Taken};
+    let (mut h, map) = host_with_map(
+        "function iso(%v) { $iso = $iso @ %v; }
+         TestMap.bind(keyboard, \"lessthan\", iso);",
+    );
+    assert_eq!(h.press(Key::IntlBackslash), Taken::Map(map));
+    assert_ne!(h.press(Key::Backslash), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$iso").unwrap(), b"10");
+    assert_eq!(
+        h.server
+            .vm_mut()
+            .eval(b"return TestMap.getBinding(iso);")
+            .unwrap(),
+        b"keyboard\tlessthan"
+    );
+    // The map's lines as `save` prints them, run again on a new map of the same name.
+    h.drain_log();
+    h.server.vm_mut().eval(b"TestMap.save();").unwrap();
+    let lines: Vec<u8> = h
+        .drain_log()
+        .into_iter()
+        .flat_map(|l| l.text.into_iter().chain([b'\n']))
+        .collect();
+    assert!(
+        String::from_utf8_lossy(&lines).contains("\"lessthan\""),
+        "{}",
+        String::from_utf8_lossy(&lines)
+    );
+    let vm = h.server.vm_mut();
+    vm.eval(b"TestMap.delete(); new ActionMap(TestMap);")
+        .unwrap();
+    vm.eval(&lines).unwrap();
+    vm.eval(b"TestMap.push();").unwrap();
+    let map = h.server.vm().objects().find(b"TestMap").unwrap();
+    assert_eq!(h.press(Key::IntlBackslash), Taken::Map(map));
+    assert_ne!(h.press(Key::Backslash), Taken::Map(map));
+    assert_eq!(h.server.vm().global("$iso").unwrap(), b"1010");
+    assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
+}

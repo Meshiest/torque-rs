@@ -216,7 +216,8 @@ pub fn write_all(
     // The floor close up, looking down at Ann's feet; then the whole arena from a corner, the floor reaching far off.
     place(&mut a.game, "Ann", [-14.0, 0.0, 0.1], 0.0)?;
     run(&gpu, &mut [&mut a, &mut b], 600)?;
-    a.game.set_global("$Arena::LookPitch", "1.1");
+    a.game.set_view_pitch(1.1);
+    run(&gpu, &mut [&mut a, &mut b], 100)?;
     save(&a.picture(&gpu)?, "floor-near")?;
     place(
         &mut a.game,
@@ -225,7 +226,8 @@ pub fn write_all(
         std::f32::consts::FRAC_PI_4,
     )?;
     run(&gpu, &mut [&mut a, &mut b], 600)?;
-    a.game.set_global("$Arena::LookPitch", "0.2");
+    a.game.set_view_pitch(0.2);
+    run(&gpu, &mut [&mut a, &mut b], 100)?;
     save(&a.picture(&gpu)?, "arena-far")?;
 
     // Ann's own shadow on the floor ahead of her, the sun behind her.
@@ -236,7 +238,8 @@ pub fn write_all(
         std::f32::consts::FRAC_PI_4,
     )?;
     run(&gpu, &mut [&mut a, &mut b], 600)?;
-    a.game.set_global("$Arena::LookPitch", "0.6");
+    a.game.set_view_pitch(0.6);
+    run(&gpu, &mut [&mut a, &mut b], 100)?;
     save(&a.picture(&gpu)?, "own-shadow")?;
 
     // From the first spawn point toward the middle, Bob just behind the ring of cover; then the whole arena from above.

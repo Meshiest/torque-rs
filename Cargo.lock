@@ -2279,6 +2279,7 @@ dependencies = [
  "torque-net",
  "torque-scene",
  "torque-shapes",
+ "torque-sim",
  "torque-ts-vm",
 ]
 
