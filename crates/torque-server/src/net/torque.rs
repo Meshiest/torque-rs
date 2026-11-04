@@ -234,6 +234,8 @@ impl ObjectView for FieldView<'_> {
 ///   `state` (the action state), `action` (the action animation), `arm_action` (`setArmThread`'s), `energy`, and from its
 ///   datablock `look_action`, `max_look_angle`,
 ///   `max_energy` and `max_damage`; the move fields are the last move's.
+/// - a Sky: its record's fields from the persist fields of their TGE names (`visibleDistance`, `fogDistance`, `fogColor`,
+///   `materialList`, `useSkyTextures`, the cloud layers' `cloudText` and `cloudHeightPer`, ...);
 /// - a ShapeBase's mounted images (the game classes' image slots): per slot `image_datablock`, `image_wet`, `image_ammo`,
 ///   `image_loaded`, `image_target`, `image_trigger_down` and `image_fire_count`;
 /// - a simulated Projectile ([`torque_game::sim::projectile::state`]): `position`, `velocity`, `current_tick` (its age),
@@ -448,6 +450,7 @@ fn sky_field(field: &str) -> Option<&'static str> {
         "no_render_bans" => "noRenderBans",
         "material_list" => "materialList",
         "cloud_text" => "cloudText",
+        "cloud_height" => "cloudHeightPer",
         "wind_velocity" => "windVelocity",
         _ => return None,
     })

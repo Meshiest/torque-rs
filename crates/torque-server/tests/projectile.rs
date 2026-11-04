@@ -139,7 +139,7 @@ fn a_projectile_that_hits_nothing_is_deleted_at_its_lifetime() {
 }
 
 #[test]
-fn the_ghost_view_reads_a_players_arm_action_and_image_and_a_projectiles_flight() {
+fn the_ghost_view_reads_a_players_arm_action_and_image_a_skys_distances_and_a_projectiles_flight() {
     use torque_ghosts::{ObjectView, Value};
     use torque_server::net::torque::{FieldView, GameView};
 
@@ -174,6 +174,13 @@ new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVel
     assert_eq!(holder_view.get("image_datablock", 0), Value::Id(Some(gun)));
     assert_eq!(holder_view.get("image_ammo", 0), Value::Bool(true));
     assert_eq!(holder_view.get("image_datablock", 1), Value::Id(None));
+    // A Sky's record reads its persist fields under their TGE names.
+    s.vm.eval(b"new Sky(TheSky) { visibleDistance = 1500; fogDistance = 400; fogColor = \"0.5 0.6 0.7 1\"; };")
+        .unwrap();
+    let sky = view(&s.vm, s.vm.objects().find(b"TheSky").unwrap());
+    assert_eq!(sky.get("visible_distance", 0), Value::F32(1500.0));
+    assert_eq!(sky.get("fog_distance", 0), Value::F32(400.0));
+    assert_eq!(sky.get("fog_color", 1), Value::F32(0.6));
     s.run(TICK_MS, |_| false);
     let shot = s.vm.objects().find(b"Shot").unwrap();
     let v = view(&s.vm, shot);

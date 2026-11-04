@@ -385,7 +385,7 @@ impl EngineClass for ProjectileClass {
     }
 }
 
-/// Gives Projectile its behaviour. After `shapebase::register`.
+/// Gives Projectile its behavior. After `shapebase::register`.
 pub fn register(vm: &mut Vm, container: &Rc<Container>) {
     vm.set_class_behaviour(
         "Projectile",
