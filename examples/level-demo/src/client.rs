@@ -380,7 +380,7 @@ impl LevelDemo {
         with_fov(look_at(at, [centre[0], centre[1], 0.0]))
     }
 
-    /// The daylight of the map's Sky as the client's ghost of it has it: its fog colour, fog distance and visible distance
+    /// The daylight of the map's Sky as the client's ghost of it has it: its fog color, fog distance and visible distance
     /// over the [`Daylight`] default; None before a Sky is ghosted.
     pub fn sky_daylight(&self) -> Option<Daylight> {
         let sky = self.with_world(|w| w.records.sky())??;

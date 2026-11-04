@@ -374,7 +374,7 @@ impl ObjectView for GameView<'_> {
 }
 
 /// The Sky's script field behind a field its record reads, where the record's name is not the script's: the visible and fog
-/// distances, the fog and solid colours, the material list, the cloud textures, the wind and the flags (the cloud heights and
+/// distances, the fog and solid colors, the material list, the cloud textures, the wind and the flags (the cloud heights and
 /// speeds, the fog volumes and the storms are left out: the script sets them in other shapes).
 fn sky_field(field: &str) -> Option<&'static str> {
     Some(match field {
