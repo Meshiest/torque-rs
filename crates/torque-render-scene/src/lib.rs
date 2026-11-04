@@ -100,6 +100,10 @@ pub enum Blend {
     One,
     /// `DST_COLOR, ONE_MINUS_SRC_ALPHA` (multiplies the destination).
     Multiply,
+    /// `DST_COLOR, SRC_COLOR`: twice the fragment's color times the destination ("mod2x"), the color first mixed toward 0.5
+    /// gray by one minus its alpha (0.5 leaves the destination as it is; darker darkens, lighter brightens). Fog mixes it
+    /// toward 0.5 too. A decal that takes the color, light and shadow of the surface it lies on.
+    Modulate2x,
 }
 
 /// A point light as TGE's `LightManager::installGLLight` sets a GL light: world position (w = 1), the diffuse colour (zero

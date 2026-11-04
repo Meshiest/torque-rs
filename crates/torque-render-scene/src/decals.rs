@@ -18,8 +18,11 @@
 //!   it with the other translucent draws (the particles' list). Flush with the surface, it is drawn [`DEPTH_BIAS`] of its
 //!   distance nearer the eye along the eye's ray (a depth bias: it moves nothing on the screen). A decal whose texture does
 //!   not load is not drawn.
+//! - **Multiplied** ([`DecalData::blend`] [`Blend::Modulate2x`], this crate's choice beside TGE's alpha blend): drawn the same
+//!   way but multiplying the surface under it by twice its texture (0.5 gray leaves it as it is), so it takes the surface's
+//!   color, light and shadow; it fades toward 0.5 gray.
 //!
-//! **Approximations**: no wrapping onto a neighboring face; the bias and the fade are this crate's.
+//! **Approximations**: no wrapping onto a neighboring face; the bias, the fade and the multiplied blend are this crate's.
 //!
 //! Credit: follows TGE 1.4's `sim/decalManager.cc` and `game/projectile.cc` (Copyright (C) GarageGames.com, Inc.), as Torque3D
 //! carries them under the MIT license: `T3D/decal/decalManager.cpp` and `T3D/decal/decalData.cpp` (each Copyright (c) 2012
@@ -55,6 +58,8 @@ pub struct DecalData {
     pub size: [f32; 2],
     /// `textureName`, `/`-separated; none: nothing is drawn.
     pub texture: Option<String>,
+    /// How it is drawn over its surface: [`Blend::Alpha`] (TGE's; the default) or [`Blend::Modulate2x`].
+    pub blend: Blend,
 }
 
 /// The `DecalData` `id` of `world` (`DecalData::unpackData`): a size the server did not send is the constructor's 1.
@@ -74,6 +79,7 @@ pub fn decal_data(world: &ClientWorld<TgeClientSet>, id: u32) -> Option<DecalDat
     Some(DecalData {
         size: [size("sizeX"), size("sizeY")],
         texture,
+        blend: Blend::Alpha,
     })
 }
 
@@ -114,6 +120,8 @@ pub struct Decal {
     pub half_x: [f32; 3],
     pub half_y: [f32; 3],
     pub texture: Option<String>,
+    /// [`DecalData::blend`].
+    pub blend: Blend,
     /// Seconds since it was laid.
     pub age: f32,
     /// Its mesh: triangles on the surface.
@@ -313,6 +321,7 @@ impl DecalManager {
             half_x: x.map(|e| e * data.size[0] * 0.5),
             half_y: y.map(|e| e * data.size[1] * 0.5),
             texture: data.texture.clone(),
+            blend: data.blend,
             age: 0.0,
             triangles: Vec::new(),
         })
@@ -380,7 +389,11 @@ impl DecalManager {
                             mipmaps: true,
                         },
                     )),
-                    blend: Blend::Alpha,
+                    blend: if d.blend == Blend::Modulate2x {
+                        Blend::Modulate2x
+                    } else {
+                        Blend::Alpha
+                    },
                     cull: Cull::None,
                     depth_test: true,
                     depth_write: false,

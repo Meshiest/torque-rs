@@ -5,9 +5,10 @@
 //! **The frame** ([`HdWorld::draw`]): the light clusters (a compute pass: 16 x 9 tiles x 24 exponential depth slices, each with a
 //! 1,024-bit mask of the point lights whose sphere meets it), then one forward pass into an `Rgba16Float` HDR target with a reversed
 //! 32-bit float depth (the sky first, unlit and without depth; the opaque static cells front to back, the ground, the opaque shapes;
-//! then the water, the translucent shapes and coronas back to front, the translucent static cells back to front, the sun's flare), then
-//! the tonemap pass (exposure, our neutral hue-keeping curve, sRGB encoding) into the caller's `Rgba8Unorm` target. Textures are
-//! sampled through sRGB views (linear in the shader); vertex colours are decoded the same way.
+//! the multiplied decals over them in their own pass; then the water, the translucent shapes and coronas back to front, the
+//! translucent static cells back to front, the sun's flare), then the tonemap pass (exposure, our neutral hue-keeping curve, sRGB
+//! encoding) into the caller's `Rgba8Unorm` target. Textures are sampled through sRGB views (linear in the shader); vertex colours
+//! are decoded the same way.
 //!
 //! **Uploads** ([`HdWorld::upload`]) are incremental: new textures of the scene's table, the static cells whose generation changed
 //! (removed cells dropped), and the eye-dependent draws (sky, planes, shapes, coronas, flare) when the scene was synced again.
@@ -265,6 +266,8 @@ struct Particles {
     vertices: Option<wgpu::Buffer>,
     indices: Option<wgpu::Buffer>,
     draws: Vec<(f32, DrawRef)>,
+    /// The multiplied decals ([`Blend::Modulate2x`]): their own pass over the opaque frame, in any order.
+    decals: Vec<DrawRef>,
     /// The bounds of the particle draws the TAA's frame has (not the late ones): centre and radius, the radius negative (they
     /// change every frame and have no motion: the TAA keeps little history where they are).
     bounds: Vec<[f32; 4]>,
@@ -1336,6 +1339,11 @@ fn blend_state(b: Blend) -> Option<wgpu::BlendState> {
         Blend::Additive => both(comp(F::SrcAlpha, F::One)),
         Blend::One => both(comp(F::One, F::One)),
         Blend::Multiply => both(comp(F::Dst, F::OneMinusSrcAlpha)),
+        // The destination's alpha kept (a light capture's face keeps a distance there).
+        Blend::Modulate2x => Some(wgpu::BlendState {
+            color: comp(F::Dst, F::Src),
+            alpha: comp(F::Zero, F::One),
+        }),
     }
 }
 
@@ -2331,6 +2339,15 @@ impl<E: HdExtension> HdWorld<E> {
         let depths = [(true, true), (true, false), (false, false)];
         for cull in culls {
             self.ensure_prepass(cull);
+            self.ensure_pipeline(PipelineKey {
+                blend: Blend::Modulate2x,
+                cull,
+                depth_test: true,
+                depth_write: false,
+                clustered: true,
+                front_layer: false,
+                stage: Stage::Main,
+            });
             for blend in blends {
                 for (depth_test, depth_write) in depths {
                     let key = PipelineKey {
@@ -2602,6 +2619,13 @@ impl<E: HdExtension> HdWorld<E> {
         }
         let module = &self.forward[&(key.clustered, key.front_layer)];
         let pipeline = match key.stage {
+            Stage::Main if key.blend == Blend::Modulate2x => forward_pipeline(
+                &self.device,
+                &self.forward_layout,
+                module,
+                key,
+                "fs_modulate2x",
+            ),
             Stage::Main => {
                 forward_pipeline(&self.device, &self.forward_layout, module, key, "fs_main")
             }
@@ -3706,9 +3730,13 @@ impl<E: HdExtension> HdWorld<E> {
                 (r.is_finite() && c.iter().all(|v| v.is_finite())).then_some([c[0], c[1], c[2], -r])
             })
             .collect();
+        let (decals, draws): (Vec<_>, Vec<_>) = draws
+            .into_iter()
+            .partition(|(_, r)| r.blend == Blend::Modulate2x);
         let mut particles = Particles {
             generation: Some(scene.particles_generation),
             draws,
+            decals: decals.into_iter().map(|(_, r)| r).collect(),
             bounds,
             ..Particles::default()
         };
@@ -3731,6 +3759,7 @@ impl<E: HdExtension> HdWorld<E> {
             ));
         } else {
             particles.draws.clear();
+            particles.decals.clear();
         }
         self.particles = particles;
     }
@@ -5026,6 +5055,9 @@ impl<E: HdExtension> HdWorld<E> {
                 );
             }
         }
+        // The multiplied decals, over the opaque frame in their own pass.
+        let decal_start = items.len();
+        items.extend(self.particles.decals.iter().map(|d| Item::Loose(*d)));
         // The translucent pass from here: drawn over a copy of the opaque frame.
         let split = items.len();
         items.extend(self.loose.water.iter().map(|d| Item::Loose(*d)));
@@ -5199,7 +5231,8 @@ impl<E: HdExtension> HdWorld<E> {
                 }
             }
             // An additive particle's own fragment entry (the late pass).
-            if matches!(it, Item::Loose(d) if d.particle) && key.blend != Blend::Alpha {
+            if matches!(it, Item::Loose(d) if d.particle) && key.blend != Blend::Alpha && n >= split
+            {
                 self.ensure_pipeline(PipelineKey {
                     stage: Stage::Particle,
                     ..key
@@ -6017,12 +6050,17 @@ impl<E: HdExtension> HdWorld<E> {
         mark!("sky");
         {
             let mut pass = begin!("hd opaque", false, &targets.depth_view, &frame_group);
-            draw_list(&mut pass, &keyed(sky_end..split), &mut draw_calls);
+            draw_list(&mut pass, &keyed(sky_end..decal_start), &mut draw_calls);
             if has_extras {
                 pass.set_bind_group(1, &self.groups[&(TexRef::White, SamplerKey::PLAIN)], &[]);
                 extras = self.ext.draw_extras(&mut pass, false, clustered);
                 draw_calls += extras.calls;
             }
+        }
+        // The multiplied decals over the whole opaque frame (lit, shadowed and fogged), before the volumetric light.
+        if decal_start < split {
+            let mut pass = begin!("hd decals", false, &targets.depth_view, &frame_group);
+            draw_list(&mut pass, &keyed(decal_start..split), &mut draw_calls);
         }
         mark!("opaque");
         // The volumetric light over the opaque frame, the water's depth, the opaque frame's copy.

@@ -1025,6 +1025,31 @@ fn fs_particle(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(c.rgb * fade, c.a * fade);
 }
 
+// A multiplied decal (Blend::Modulate2x, DST_COLOR and SRC_COLOR: twice this times the frame). Unlit: the surface under it is
+// already lit, shadowed and fogged. Its texture times its color in gamma space, as the fixed-function blend sees it, mixed
+// toward the neutral 0.5 by its coverage and by the fog and water in front of it (they keep their color); that gamma factor
+// on the frame's linear light is about its 2.2 power.
+@fragment
+fn fs_modulate2x(in: VertexOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, in.uv);
+    let kind = (in.material >> MAT_KIND_SHIFT) & 3u;
+    if CLIP && frame.flags.z > 0.5 && kind != KIND_SKY && in.world.z < frame.flags.w {
+        discard;
+    }
+    if shadows.config.w != 0u && frame.flags.y < 0.5 {
+        return vec4<f32>(0.5, 0.5, 0.5, 1.0);
+    }
+    var keep = clamp(t.a * in.color.a, 0.0, 1.0);
+    if frame.fog_color.w > 0.0 {
+        keep = keep * fog_keep(in.world);
+    }
+    if frame.water.z > 0.5 {
+        keep = keep * under_water_keep(in.world);
+    }
+    let factor = mix(vec3<f32>(1.0), 2.0 * linear_to_srgb(t.rgb) * in.color.rgb, keep);
+    return vec4<f32>(0.5 * pow(max(factor, vec3<f32>(0.0)), vec3<f32>(2.2)), 1.0);
+}
+
 fn forward_color(in: VertexOut) -> vec4<f32> {
     let material = in.material;
     // The normal's change across the pixel (in uniform control flow, before any branch): the specular AA's kernel (variance 1/4,
