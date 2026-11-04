@@ -311,8 +311,6 @@ pub fn write_menus(
                         .parse::<u32>()
                         .is_ok_and(|n| n > 0)
                 })?;
-                b.game
-                    .call("eval", &["AddressEdit.setValue(\"192.168.1.20:28000\");"])?;
             }
             run(&gpu, &mut [&mut a, &mut b], 64)?;
             let path = dir.join(format!("{screen}-{}x{}.png", size.0, size.1));

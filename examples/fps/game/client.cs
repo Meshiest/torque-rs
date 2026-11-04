@@ -287,18 +287,13 @@ new GuiControl(JoinGui)
       new GuiTextEditCtrl(AddressEdit)
       {
          profile = ArenaEditProfile; position = "82 368"; extent = "738 32"; horizSizing = "width"; vertSizing = "top";
-         visible = true; enabled = true; maxLength = 64; text = "";
+         visible = true; enabled = true; maxLength = 64; text = ""; placeholderText = "127.0.0.1:28000";
          altCommand = "connectAddress();";
       };
       new GuiButtonCtrl(ConnectButton)
       {
          profile = ArenaButtonProfile; position = "830 364"; extent = "170 40"; horizSizing = "left"; vertSizing = "top";
          visible = true; enabled = true; text = "Connect"; command = "connectAddress();";
-      };
-      new GuiTextCtrl(AddressHint)
-      {
-         profile = ArenaDimProfile; position = "84 406"; extent = "700 20"; horizSizing = "width"; vertSizing = "top"; visible = true; enabled = true;
-         text = "Another network: like 203.0.113.5 or 203.0.113.5:28000";
       };
       new GuiButtonCtrl(RefreshButton)
       {

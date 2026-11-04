@@ -119,7 +119,6 @@ const JOIN: &[&str] = &[
     "AddressLabel",
     "AddressEdit",
     "ConnectButton",
-    "AddressHint",
     "RefreshButton",
     "JoinSelectedButton",
     "BackButton",
