@@ -51,8 +51,9 @@ pub const WINDOW_MODES: [(u32, u32); 12] = [
     (3840, 2160),
 ];
 
-/// The windowed client's first size on a fresh profile (no saved `$pref::Video::resolution`; engine-only).
-pub const WINDOW_START_MODE: (u32, u32) = (1366, 768);
+/// The windowed client's first size on a fresh profile (no saved `$pref::Video::resolution`; engine-only): 16:9, and listed in
+/// [`WINDOW_MODES`]. A game's rules may name another ([`ScreenRules::start_mode`]).
+pub const WINDOW_START_MODE: (u32, u32) = (1280, 720);
 
 /// The smallest mode TGE's device takes (`can't go smaller than 480x360!`).
 pub const MIN_MODE: (u32, u32) = (480, 360);
@@ -90,13 +91,14 @@ impl Monitor {
         list
     }
 
-    /// The window's size on a fresh profile: [`WINDOW_START_MODE`] when a window of that size fits the desktop
-    /// ([`ScreenRules::window_fits`]), else the largest listed mode (by area) that does, else the smallest listed one (else the
-    /// rules' smallest).
+    /// The window's size on a fresh profile: the rules' start mode ([`ScreenRules::start_mode`]) when a window of that size fits
+    /// the desktop ([`ScreenRules::window_fits`]), else the largest listed mode (by area) that does, else the smallest
+    /// listed one (else the rules' smallest).
     pub fn start_size(&self, rules: &dyn ScreenRules) -> (u32, u32) {
         let fits = |&m: &(u32, u32)| rules.window_fits(self.size, m);
-        if fits(&WINDOW_START_MODE) {
-            return WINDOW_START_MODE;
+        let start = rules.start_mode();
+        if fits(&start) {
+            return start;
         }
         let list = self.modes(rules);
         list.iter()
@@ -257,6 +259,11 @@ pub trait ScreenRules {
             desktop: DESKTOP,
             modes: DISPLAY_MODES.to_vec(),
         }
+    }
+
+    /// The window's size on a fresh profile, when it fits the desktop ([`WINDOW_START_MODE`], 16:9).
+    fn start_mode(&self) -> (u32, u32) {
+        WINDOW_START_MODE
     }
 
     /// The smallest mode the device takes ([`MIN_MODE`]).

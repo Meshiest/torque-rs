@@ -17,11 +17,11 @@
 //!   `removeObject`).
 //! - `resize`: the extent clamped to `minExtent`, every child's `parentResized(old, new)` (TGE's horiz/vertSizing rules:
 //!   `center`, `width`, `left`, `relative`; `right` and `bottom` keep their place), then the bounds. Unconditional.
-//! - The canvas (`createCanvas` makes `Canvas`, awake, 800x600 by default): `setContent` (TGE 1.4's loop, which
+//! - The canvas (`createCanvas` makes `Canvas`, awake, 1280x720 by default): `setContent` (TGE 1.4's loop, which
 //!   removes every child it meets to GuiGroup, the content's place kept first), `pushDialog`/`popDialog`/`popLayer` with layers,
 //!   `setCursor` (`<name> is not a valid cursor.`), cursor on/off and show/hide, a stored cursor position. Every frame
 //!   ([`Gui::frame`], `GuiCanvas::renderFrame`'s first step) resizes each child of the canvas to the canvas: that is how the 640x480
-//!   authoring reaches 800x600.
+//!   authoring reaches the canvas's size.
 //! - The render pass's scripts: a drawn GuiFadeinBitmapCtrl (awake, visible with its parents) calls `onWait` once after its fade-in
 //!   and `onDone` once after its fade-out, timed from its wake or `reset` ([`Fade`]), each frame ([`Gui::frame`]).
 //! - `GuiControlProfile`'s constructor: a new profile starts from `GuiDefaultProfile`'s fields (all but
@@ -233,7 +233,7 @@ pub struct GuiState {
     pub autosize_skipped: u64,
     /// The fonts the layout measures text with (the automatic sizes; a [`FontSource`]).
     pub fonts: SharedFonts,
-    /// The canvas size `createCanvas` uses instead of `$pref::Video::resolution` (headless runs: 800x600).
+    /// The canvas size `createCanvas` uses instead of `$pref::Video::resolution` (headless runs: the default, 1280x720).
     pub forced_size: Option<(i32, i32)>,
     /// The canvas's input state (first responder, capture, the control under the mouse, clicks, accelerators: [`input`]).
     pub input: input::CanvasInput,
@@ -306,6 +306,9 @@ impl Gui {
     pub fn set_extension(&self, ext: Rc<dyn GuiExtension>) {
         let fonts = ext.fonts();
         let mut s = self.0.borrow_mut();
+        if s.canvas.is_none() {
+            s.canvas_size = ext.default_canvas_size();
+        }
         if let Some(f) = fonts {
             s.fonts = SharedFonts::new(f);
         }
@@ -578,7 +581,7 @@ impl Gui {
         self.0.borrow().input.first_responder
     }
 
-    /// Makes `createCanvas` use `size` instead of `$pref::Video::resolution` (headless runs: 800x600); None: the preference.
+    /// Makes `createCanvas` use `size` instead of `$pref::Video::resolution` (headless runs: the default, 1280x720); None: the preference.
     pub fn force_canvas_size(&self, size: Option<(i32, i32)>) {
         self.0.borrow_mut().forced_size = size;
     }

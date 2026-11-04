@@ -193,6 +193,11 @@ pub trait GuiExtension: Any {
         None
     }
 
+    /// The canvas size when no `$pref::Video::resolution` says otherwise (the engine's: [`crate::DEFAULT_CANVAS_SIZE`], 16:9).
+    fn default_canvas_size(&self) -> (i32, i32) {
+        crate::DEFAULT_CANVAS_SIZE
+    }
+
     /// What runs when `createCanvas` makes the canvas, before it exists (the canvas size is set).
     fn before_canvas(&self, _vm: &mut Vm) -> Result<(), VmError> {
         Ok(())

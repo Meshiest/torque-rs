@@ -109,10 +109,20 @@ fn a_monitor_lists_the_window_modes_that_fit_and_its_own_size() {
 }
 
 #[test]
-fn the_fresh_profile_window_is_768p_or_the_largest_mode_under_the_desktop() {
-    assert_eq!(monitor((1920, 1080)).start_size(&TgeScreen), (1366, 768));
-    // 1366x768 is not under a 768p desktop: the largest listed mode that is.
+fn the_fresh_profile_window_is_720p_or_the_largest_mode_under_the_desktop() {
+    assert_eq!(monitor((1920, 1080)).start_size(&TgeScreen), (1280, 720));
     assert_eq!(monitor((1366, 768)).start_size(&TgeScreen), (1280, 720));
+    assert_eq!(monitor((2560, 1440)).start_size(&TgeScreen), (1280, 720));
+    // A game's rules name their own start mode.
+    struct Wide;
+    impl ScreenRules for Wide {
+        fn start_mode(&self) -> (u32, u32) {
+            (1600, 900)
+        }
+    }
+    assert_eq!(monitor((1920, 1080)).start_size(&Wide), (1600, 900));
+    // Not under the desktop: the largest listed mode that is.
+    assert_eq!(monitor((1366, 768)).start_size(&Wide), (1280, 720));
     // Nothing is under it: the smallest listed mode.
     assert_eq!(monitor((1280, 720)).start_size(&TgeScreen), (1280, 720));
 }

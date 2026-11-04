@@ -10,40 +10,42 @@ use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 use crate::control::{self, children, is_a};
 use crate::{Gui, MAX_CHILDREN_WALKED, arg, atob, atoi, done};
 
-/// The window's size before the preferences say otherwise (800 by 600).
-pub const DEFAULT_CANVAS_SIZE: (i32, i32) = (800, 600);
+/// The window's size before the preferences say otherwise (1280 by 720, 16:9; a game's extension may name another,
+/// [`crate::GuiExtension::default_canvas_size`]).
+pub const DEFAULT_CANVAS_SIZE: (i32, i32) = (1280, 720);
 
 /// The largest window side taken from `$pref::Video::resolution` (a hostile preference falls back to the default).
 const MAX_CANVAS_SIDE: i32 = 16_384;
 
-/// The window size `$pref::Video::resolution` asks for (`strtok(" x")`, width then height, 800 and 600 when absent),
-/// else [`DEFAULT_CANVAS_SIZE`] for a size that is not taken.
-pub fn resolution(vm: &Vm) -> (i32, i32) {
+/// The window size `$pref::Video::resolution` asks for (`strtok(" x")`, width then height, `default`'s when absent),
+/// else `default` for a size that is not taken.
+pub fn resolution(vm: &Vm, default: (i32, i32)) -> (i32, i32) {
     let text = vm.global("$pref::Video::resolution").unwrap_or_default();
     let mut words = text
         .split(|b| *b == b' ' || *b == b'x')
         .filter(|w| !w.is_empty())
         .map(atoi);
     match (words.next(), words.next()) {
-        (None, _) => DEFAULT_CANVAS_SIZE,
-        (Some(w), None) if (1..=MAX_CANVAS_SIDE).contains(&w) => (w, DEFAULT_CANVAS_SIZE.1),
+        (None, _) => default,
+        (Some(w), None) if (1..=MAX_CANVAS_SIDE).contains(&w) => (w, default.1),
         (Some(w), Some(h))
             if (1..=MAX_CANVAS_SIDE).contains(&w) && (1..=MAX_CANVAS_SIDE).contains(&h) =>
         {
             (w, h)
         }
-        _ => DEFAULT_CANVAS_SIZE,
+        _ => default,
     }
 }
 
-/// `createCanvas(title)`, headless: the awake `GuiCanvas` named `Canvas`, sized by `$pref::Video::resolution` (the
+/// `createCanvas(title)`, headless: the awake `GuiCanvas` named `Canvas`, sized by `$pref::Video::resolution` (else the
+/// extension's [`crate::GuiExtension::default_canvas_size`]; the
 /// extension's [`crate::GuiExtension::before_canvas`] runs first). True once the canvas exists; a second call is refused.
 pub fn create_canvas(vm: &mut Vm, gui: &Gui) -> Result<bool, VmError> {
     if gui.canvas().is_some_and(|c| vm.objects().contains(c)) {
         return Ok(false);
     }
     let forced = gui.0.borrow().forced_size;
-    let size = forced.unwrap_or_else(|| resolution(vm));
+    let size = forced.unwrap_or_else(|| resolution(vm, gui.ext().default_canvas_size()));
     gui.set_canvas_size(size);
     gui.ext().before_canvas(vm)?;
     vm.eval(b"new GuiCanvas(Canvas);")?;
@@ -586,3 +588,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
     );
     reg(vm, gui, "canTabFocus", 3, 3, "", |_, _, _| Native::Void);
 }
+
+#[cfg(test)]
+#[path = "canvas_tests.rs"]
+mod tests;
