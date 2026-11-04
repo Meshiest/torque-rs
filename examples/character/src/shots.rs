@@ -1,16 +1,16 @@
 //! The example without a window: a scripted run of keys and pauses, every frame drawn offscreen as the window would draw it,
 //! and pictures taken where the script says.
 
-use std::io;
 use std::path::Path;
 
-use torque_example_common::view::WorldView;
+use torque::app::shots::Shots;
+use torque::app::view::WorldView;
+use torque::app::window::offscreen_gpu;
 use torque_render_core::{Frame, Gpu};
 
 use crate::game::{CharacterGame, keys};
 
-/// The clock's step between frames (ms).
-pub const FRAME_MS: u32 = 16;
+pub use torque::app::shots::FRAME_MS;
 
 /// One step of a scripted run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,28 +73,15 @@ pub fn play(
     Ok(shots)
 }
 
-/// Writes `frame` as a PNG.
-pub fn write_png(frame: &Frame, path: &Path) -> io::Result<()> {
-    let width = frame.width;
-    let bytes = torque_example_assets::textures::png(frame.width, frame.height, |x, y| {
-        let i = 4 * (y * width + x) as usize;
-        [frame.rgba[i], frame.rgba[i + 1], frame.rgba[i + 2]]
-    })?;
-    std::fs::write(path, bytes)
-}
-
 /// The pictures of [`STATES`] at `size`, written into `dir` as `<state>.png`; returns the paths.
 pub fn write_states(dir: &Path, size: (u32, u32)) -> Result<Vec<std::path::PathBuf>, String> {
-    let gpu = torque_example_common::window::offscreen_gpu().map_err(|e| e.to_string())?;
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
     let mut game = CharacterGame::new()?;
     picture_camera(&mut game);
     let mut view = game.view(&gpu);
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut paths = Vec::new();
+    let mut shots = Shots::new(dir)?;
     for (name, frame) in play(&mut game, &gpu, &mut view, size, STATES)? {
-        let path = dir.join(format!("{name}.png"));
-        write_png(&frame, &path).map_err(|e| e.to_string())?;
-        paths.push(path);
+        shots.save(&frame, name)?;
     }
-    Ok(paths)
+    Ok(shots.paths)
 }

@@ -1,5 +1,6 @@
 // The level demo's server. The host execs this file and then startWorld(%file) with the map the menu chose. A client that
-// connects is sent the datablocks; when it has them, its ghosting starts and it is given a figure to walk.
+// connects is sent the datablocks; when it has them, its ghosting starts and it is given a figure to walk (the way in and out
+// is the examples' shared common/server.cs, which calls this file's hooks).
 
 // ---- datablocks
 
@@ -39,23 +40,12 @@ datablock PlayerData(WorldFigureData)
 
 // ---- the world
 
-new SimGroup(ClientGroup);
-
-$World::Sequence = 0;
-// A figure below this height has fallen off the map and starts again.
-$World::FallHeight = -30;
+exec("common/server.cs");
 
 // Loads the map %file (a script that builds MissionGroup and a MapInfo object with the title, the spawn point and the yaw).
 function startWorld(%file)
 {
-   $World::Sequence++;
-   $World::File = %file;
-   if (isObject(MissionGroup))
-      MissionGroup.delete();
-   if (isObject(MissionCleanup))
-      MissionCleanup.delete();
-   new SimGroup(MissionCleanup);
-   exec(%file);
+   loadMission(%file);
    if (!isObject(MapInfo))
       new ScriptObject(MapInfo) { title = fileBase(%file); spawn = "0 0 1"; spawnYaw = 0; };
    $World::Title = MapInfo.title;
@@ -65,41 +55,23 @@ function startWorld(%file)
 
 // ---- a client's way in
 
-function GameConnection::onConnect(%client, %name)
+function GameConnection::onClientConnect(%client, %name)
 {
    echo("Client" SPC %client SPC "connected");
-   %client.transmitDataBlocks($World::Sequence);
-}
-
-function GameConnection::onDataBlocksDone(%client, %sequence)
-{
-   if (%sequence != $World::Sequence)
-      return;
-   %client.activateGhosting();
-   %client.spawnFigure();
-   commandToClient(%client, 'WorldStarted', $World::Title);
 }
 
 function GameConnection::spawnFigure(%client)
 {
-   if (isObject(%client.player))
-      %client.player.delete();
-   %player = new Player()
-   {
-      dataBlock = WorldFigureData;
-   };
-   MissionCleanup.add(%player);
-   %player.setTransform(MapInfo.spawn SPC "0 0 1" SPC MapInfo.spawnYaw);
-   %client.player = %player;
-   %client.setControlObject(%player);
-   $World::Figure = %player;
+   $World::Figure = %client.createFigure(WorldFigureData, MapInfo.spawn SPC "0 0 1" SPC MapInfo.spawnYaw);
 }
 
-function GameConnection::onDrop(%client, %reason)
+function GameConnection::onClientEnterGame(%client)
 {
-   echo("Client" SPC %client SPC "left:" SPC %reason);
-   if (isObject(%client.player))
-      %client.player.delete();
+   commandToClient(%client, 'WorldStarted', $World::Title);
+}
+
+function GameConnection::onClientLeaveGame(%client)
+{
 }
 
 // The client asked to start again at the spawn point.
@@ -110,16 +82,8 @@ function serverCmdRespawn(%client)
 }
 
 // A figure that fell off the map starts again.
-function watchFalls()
+function GameConnection::onFellOff(%client)
 {
-   for (%i = 0; %i < ClientGroup.getCount(); %i++)
-   {
-      %client = ClientGroup.getObject(%i);
-      if (isObject(%client.player) && getWord(%client.player.getTransform(), 2) < $World::FallHeight)
-      {
-         %client.spawnFigure();
-         commandToClient(%client, 'Fell');
-      }
-   }
-   schedule(500, 0, "watchFalls");
+   %client.spawnFigure();
+   commandToClient(%client, 'Fell');
 }

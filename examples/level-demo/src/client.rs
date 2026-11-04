@@ -1,34 +1,24 @@
 //! The example's client and the server it runs: a client host (script engine, GUI, action maps, TGE's connection half) whose
 //! canvas is the menu or the world's view, and while a map is played, the [`WorldServer`] it joined, both on one clock.
 //!
-//! **The link.** The client's socket is an in-memory one ([`MemoryDatagrams`]) and the server's transport another; every step
-//! carries the datagrams each sent to the other, so the connection is the engine's own handshake, packets and ghosts, with no
-//! socket opened.
+//! **The link.** The client's socket is an in-memory one and the server's transport another ([`ClientNet::Memory`]); every
+//! step carries the datagrams each sent to the other, so the connection is the engine's own handshake, packets and ghosts,
+//! with no socket opened.
 //!
-//! **A step** ([`LevelDemo::step`]): the client's ticks (its input, its scripts, its connection: the moves out, the ghosts in)
-//! and as many server ticks as the time covers, the link carried around each; then what the scripts asked of the host: a map
-//! picked (`$World::Pick`: the map's server starts and the client joins it) or the world left (`$World::Leave`: the server
-//! stops).
+//! **A step** ([`LevelDemo::step`]): the engine's client step ([`GameClient::step`]: the client's ticks and as many server
+//! ticks as the time covers, the link carried around each); then what the scripts asked of the host: a map picked
+//! (`$World::Pick`: the map's server starts and the client joins it) or the world left (`$World::Leave`: the server stops).
 //!
 //! **A frame** ([`LevelDemo::frame`]): the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and the eye:
 //! behind the client's own figure (or at its eyes, `V`), kept in front of the cubes between.
 
-use std::cell::RefCell;
-use std::net::{SocketAddr, SocketAddrV4};
-use std::rc::Rc;
+use std::net::SocketAddrV4;
+use std::ops::{Deref, DerefMut};
 
-use torque::client::conn::tge::{TgeConn, TgeWorld};
-use torque::client::host::{ClientHost, EnginePass};
-use torque::client::input::{WM_KEYDOWN, WM_KEYUP, key_lparam};
-use torque::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
-use torque::client::state::ClientState;
+use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+use torque::app::view::{Daylight, WorldView};
+use torque::app::{App, Host};
 use torque::gui::GuiDraws;
-use torque::script::text::atoi;
-use torque::script::vm::host::MemFiles;
-use torque::script::vm::vm::Vm;
-use torque::server::server::{GameServer as _, Server, TICK_MS};
-use torque_example_common::draw_cache;
-use torque_example_common::view::{Daylight, WorldView};
 use torque_render_core::Gpu;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::{Eye, SceneSource as _};
@@ -63,112 +53,59 @@ pub mod keys {
     pub const ONE: u8 = 0x31;
 }
 
-/// The datagrams between the client's socket and the server's transport.
-struct Link {
-    sent: DatagramQueue,
-    incoming: DatagramQueue,
+/// The example's client (the engine's [`GameClient`], which it derefs to: its host, its globals, the map's server and their
+/// logs) and the level demo's own parts.
+pub struct LevelDemo {
+    pub client: GameClient<WorldServer>,
+    pub files: GameFiles,
+    pub maps: Vec<MapEntry>,
+    scene: WorldScene,
+    /// The map being played (its index in [`LevelDemo::maps`]).
+    pub playing: Option<usize>,
+    /// The daylight the view was last given (the map's Sky over the default).
+    daylight: Daylight,
 }
 
-impl Link {
-    fn carry(&self, server: &WorldServer) {
-        let client = SocketAddr::V4(CLIENT_ADDR);
-        for (to, data) in self.sent.borrow_mut().drain(..) {
-            if SocketAddr::V4(to) == SERVER_ADDR {
-                server.end.inject(client, &data);
-            }
-        }
-        let SocketAddr::V4(from) = SERVER_ADDR else {
-            return;
-        };
-        let mut incoming = self.incoming.borrow_mut();
-        for (to, data) in server.end.take_sent() {
-            if to == client {
-                incoming.push_back((from, data));
-            }
-        }
+impl Deref for LevelDemo {
+    type Target = GameClient<WorldServer>;
+
+    fn deref(&self) -> &GameClient<WorldServer> {
+        &self.client
     }
 }
 
-/// The example's client, and the server of the map being played.
-pub struct LevelDemo {
-    pub host: ClientHost<TgeConn, Server>,
-    pub files: GameFiles,
-    pub maps: Vec<MapEntry>,
-    pub server: Option<WorldServer>,
-    link: Link,
-    scene: WorldScene,
-    /// Milliseconds of the client's clock the server has not ticked yet.
-    server_lag: u32,
-    /// The map being played (its index in [`LevelDemo::maps`]).
-    pub playing: Option<usize>,
-    /// The seconds the last frame covered (the figures move on by it).
-    frame_dt: f32,
-    /// Lines the server printed (kept for the tests and the console).
-    pub server_log: Vec<String>,
-    /// The daylight the view was last given (the map's Sky over the default).
-    daylight: Daylight,
+impl DerefMut for LevelDemo {
+    fn deref_mut(&mut self) -> &mut GameClient<WorldServer> {
+        &mut self.client
+    }
 }
 
 impl LevelDemo {
     /// The client over `files`: `client.cs` run, the menu built from the maps found.
     pub fn new(files: GameFiles) -> Result<LevelDemo, String> {
-        let maps = files.maps();
-        let mut vm = Vm::new();
-        torque::game::specs::install(&mut vm);
-        let mem = MemFiles::new();
-        files.fill(&mem);
-        vm.set_file_host(mem);
-        let gui = torque::gui::register(&mut vm);
-        let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
-        let sent = DatagramQueue::default();
-        let incoming = DatagramQueue::default();
-        {
-            let st = state.borrow();
-            let mut net = st.net.borrow_mut();
-            net.policy = NetPolicy::Loopback;
-            net.socket = Some(Box::new(MemoryDatagrams {
-                sent: Rc::clone(&sent),
-                incoming: Rc::clone(&incoming),
-                local_port: CLIENT_ADDR.port(),
-            }));
-        }
-        // The engine's natives on ActionMap; the class itself is the game's to declare (TGE's is a plain SimObject).
-        vm.register_class("ActionMap", "SimObject", &[]);
-        torque::client::actionmap::register(&mut vm, &state);
-        torque::client::screen::register(&mut vm, &gui, &state);
-        torque::client::conn::register(&mut vm, &state, &gui);
-        vm.set_global("$World::MapCount", &maps.len().to_string());
+        let maps = crate::files::maps(&files);
+        let mut b = ClientBuilder::new(ClientSetup {
+            files: Some(files.mem_files()),
+            game_classes: true,
+            net: ClientNet::Memory {
+                client: CLIENT_ADDR,
+                server: SERVER_ADDR,
+            },
+            ..ClientSetup::default()
+        })?;
+        b.vm.set_global("$World::MapCount", &maps.len().to_string());
         for (i, m) in maps.iter().enumerate() {
-            vm.set_global(&format!("$World::MapTitle{i}"), &m.title);
-            vm.set_global(&format!("$World::MapAbout{i}"), &m.about);
+            b.vm.set_global(&format!("$World::MapTitle{i}"), &m.title);
+            b.vm.set_global(&format!("$World::MapAbout{i}"), &m.about);
         }
-        if !vm
-            .exec_file(b"client.cs", false)
-            .map_err(|e| format!("client.cs: {e}"))?
-        {
-            return Err("client.cs is not in the game folder".to_string());
-        }
-        vm.invoke(None, b"buildMenu", &[])
-            .map_err(|e| format!("buildMenu: {e}"))?;
-        let mut host = ClientHost::new(
-            Server::new(vm),
-            gui,
-            state,
-            Rc::new(EnginePass),
-            draw_cache(),
-        );
-        host.set_windowed();
+        b.exec("client.cs")?;
+        b.invoke("buildMenu")?;
         Ok(LevelDemo {
-            host,
+            client: b.build(),
             files,
             maps,
-            server: None,
-            link: Link { sent, incoming },
             scene: WorldScene::default(),
-            server_lag: 0,
             playing: None,
-            frame_dt: 0.0,
-            server_log: Vec::new(),
             daylight: Daylight::default(),
         })
     }
@@ -178,105 +115,41 @@ impl LevelDemo {
         WorldView::new(gpu)
     }
 
-    /// A key going down or up, as the window posts it.
-    pub fn key(&mut self, vk: u8, down: bool) {
-        let msg = if down { WM_KEYDOWN } else { WM_KEYUP };
-        self.host
-            .post(msg, u32::from(vk), key_lparam(vk, !down, false));
-    }
-
     /// Starts map `index`: its server, and the client joins it.
     pub fn start_map(&mut self, index: usize) -> Result<(), String> {
         let map = self.maps.get(index).ok_or("no such map")?.clone();
         self.leave();
-        let mut server = WorldServer::start(&self.files, &map.path)?;
-        self.server_log.extend(server.drain_log());
-        self.server = Some(server);
-        self.server_lag = 0;
+        let server = WorldServer::start(&self.files, &map.path)?;
+        self.client.start_hosting(server);
         self.playing = Some(index);
-        let address = SERVER_ADDR.to_string();
-        self.host
-            .server
-            .vm_mut()
-            .invoke(None, b"joinWorld", &[address.into_bytes()])
-            .map_err(|e| format!("joinWorld: {e}"))?;
+        self.call("connectTo", &[SERVER_ADDR.to_string().as_str()])?;
         Ok(())
     }
 
     /// Stops the server being played, if there is one.
     pub fn leave(&mut self) {
-        if let Some(server) = self.server.take() {
-            let _ = server.server.finish();
-        }
-        self.link.sent.borrow_mut().clear();
-        self.link.incoming.borrow_mut().clear();
+        self.client.stop_hosting();
         self.scene.clear();
         self.playing = None;
     }
 
-    /// A global the scripts set for the host, taken (cleared).
-    fn take_global(&mut self, name: &str) -> Option<i32> {
-        let vm = self.host.server.vm_mut();
-        let v = vm.global(name).filter(|v| !v.is_empty())?;
-        vm.set_global(name, "");
-        Some(atoi(&v))
-    }
-
     /// `ms` of the clock (see the module docs).
     pub fn step(&mut self, ms: u32) {
-        let mut left = ms;
-        while left > 0 {
-            let slice = left.min(TICK_MS);
-            left -= slice;
-            if let Some(server) = self.server.as_mut() {
-                self.server_lag += slice;
-                while self.server_lag >= TICK_MS {
-                    self.server_lag -= TICK_MS;
-                    self.link.carry(server);
-                    server.tick();
-                    self.link.carry(server);
-                }
-                self.server_log.extend(server.drain_log());
-            }
-            self.host.run(slice, |_| false);
-            if let Some(server) = self.server.as_ref() {
-                self.link.carry(server);
-            }
-        }
-        if self.server_log.len() > 2000 {
-            let cut = self.server_log.len() - 1000;
-            self.server_log.drain(..cut);
-        }
-        if let Some(pick) = self.take_global("$World::Pick")
+        self.client.step(ms);
+        if let Some(pick) = self.take_number("$World::Pick")
             && let Ok(index) = usize::try_from(pick)
             && let Err(e) = self.start_map(index)
         {
             eprintln!("example-level-demo: {e}");
         }
-        if self.take_global("$World::Leave").is_some() {
+        if self.take_number("$World::Leave").is_some() {
             self.leave();
         }
     }
 
     /// Whether the canvas shows the world (the server said the map started: `$World::InWorld`).
     pub fn in_world(&self) -> bool {
-        self.host
-            .server
-            .vm()
-            .global("$World::InWorld")
-            .is_some_and(|v| atoi(&v) != 0)
-    }
-
-    /// The client's world of ghosts, if it is connected.
-    fn with_world<R>(&self, f: impl FnOnce(&TgeWorld) -> R) -> Option<R> {
-        let st = self.host.client.borrow();
-        let conn = st.conn.conn.as_ref()?;
-        Some(f(&conn.world))
-    }
-
-    /// How many ghosts the client holds.
-    pub fn ghost_count(&self) -> usize {
-        self.with_world(|w| w.records.ghosts.len()).unwrap_or(0)
+        self.flag("$World::InWorld")
     }
 
     /// Where the client's ghost of the first Player is, as its last record put it (no frame needed).
@@ -302,25 +175,12 @@ impl LevelDemo {
 
     /// Whether the camera is at the figure's eyes (`V`).
     pub fn first_person(&self) -> bool {
-        self.host
-            .server
-            .vm()
-            .global("$World::FirstPerson")
-            .is_some_and(|v| atoi(&v) != 0)
+        self.flag("$World::FirstPerson")
     }
 
     /// Sets where the camera is (the shots' second picture).
     pub fn set_first_person(&mut self, on: bool) {
-        let v = if on { "1" } else { "0" };
-        self.host
-            .server
-            .vm_mut()
-            .set_global("$World::FirstPerson", v);
-    }
-
-    /// Adds `seconds` to the time the next frame covers (the clock's steps since the last frame).
-    pub fn add_frame_time(&mut self, seconds: f32) {
-        self.frame_dt += seconds;
+        self.set_global("$World::FirstPerson", if on { "1" } else { "0" });
     }
 
     /// The eye this frame: behind the figure or at its eyes; a fixed view of the middle of the map before there is one.
@@ -403,9 +263,9 @@ impl LevelDemo {
             view.set_daylight(&d);
             self.daylight = d;
         }
-        let dt = std::mem::take(&mut self.frame_dt);
+        let dt = self.client.take_frame_time();
         let objects = {
-            let st = self.host.client.borrow();
+            let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
                 Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world, dt),
                 None => Vec::new(),
@@ -413,8 +273,41 @@ impl LevelDemo {
         };
         view.set_objects(objects);
         // The client's camera is the example's own: the GameTSCtrl draws the world whatever the connection's camera is.
-        self.host.gui.0.borrow_mut().world_camera = true;
-        (self.host.draw_frame(), self.eye())
+        let host = &mut self.client.host;
+        host.gui.0.borrow_mut().world_camera = true;
+        (host.draw_frame(), self.eye())
+    }
+}
+
+impl App for LevelDemo {
+    fn host(&mut self) -> &mut Host {
+        &mut self.client.host
+    }
+
+    fn host_ref(&self) -> &Host {
+        &self.client.host
+    }
+
+    fn title(&self) -> String {
+        "torque-rs level demo".to_string()
+    }
+
+    fn log_name(&self) -> &str {
+        "example-level-demo"
+    }
+
+    fn view(&self, gpu: &Gpu) -> WorldView {
+        LevelDemo::view(self, gpu)
+    }
+
+    /// A step, and its time added to the next frame's.
+    fn advance(&mut self, ms: u32) {
+        self.step(ms);
+        self.add_frame_time(ms as f32 / 1000.0);
+    }
+
+    fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
+        LevelDemo::frame(self, view)
     }
 }
 

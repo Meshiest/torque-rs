@@ -13,12 +13,11 @@ categories = ["game-development"]
 # Client only: no server, no connection. The window's keys go through an action map to script globals the figure reads.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["shapes", "client-window", "system-fonts"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["app"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
-winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 
 [[bin]]
 name = "example-character"

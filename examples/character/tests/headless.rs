@@ -91,7 +91,7 @@ fn a_transition_blends_the_pose() {
 
 #[test]
 fn frames_drawn_offscreen_show_the_figure_move() {
-    let gpu = match torque_example_common::window::offscreen_gpu() {
+    let gpu = match torque::app::window::offscreen_gpu() {
         Ok(gpu) => gpu,
         Err(e) => {
             eprintln!("skipped: {e}");

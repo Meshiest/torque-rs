@@ -5,6 +5,8 @@
 // view was left: stop hosting) and $Arena::QuitAsked. $Arena::Port is the UDP port number the games listen on. $Arena::HostScope
 // ("lan" or "public") says who may join the game the host starts.
 
+exec("common/client.cs");
+
 // ---- profiles
 
 new GuiControlProfile(ArenaClearProfile) { opaque = false; };
@@ -577,19 +579,6 @@ function showChat()
    }
 }
 
-// A line in the middle of the view for a few seconds.
-function showNote(%text)
-{
-   cancel($Arena::NoteTimer);
-   PlayNote.setText(%text);
-   $Arena::NoteTimer = schedule(2500, 0, "clearNote");
-}
-
-function clearNote()
-{
-   PlayNote.setText("");
-}
-
 // ---- chat
 
 function openChat()
@@ -735,22 +724,12 @@ function showHostInfo()
    }
 }
 
-function connectTo(%address)
-{
-   if (isObject(ServerConnection))
-      ServerConnection.delete();
-   %conn = new GameConnection(ServerConnection);
-   %conn.setConnectArgs($Pref::Player::Name);
-   %conn.connect(%address);
-}
-
 function leaveGame()
 {
    if ($Arena::Chatting)
       closeChat();
    closePause();
-   if (isObject(ServerConnection))
-      ServerConnection.delete();
+   disconnect();
    releaseKeys();
    $Arena::OwnGhost = -1;
    ChatLines.clear();

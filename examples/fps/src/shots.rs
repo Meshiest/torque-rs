@@ -8,59 +8,18 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use torque_example_common::view::WorldView;
-use torque_render_core::{Frame, Gpu, Offscreen};
+use torque::app::shots::{FRAME_MS, Shots, run, write_png};
+use torque_render_core::{Frame, Gpu};
 use torque_render_scene::hd::kit::look_at;
-use torque_render_scene::source::Eye;
 
 use crate::client::{ArenaGame, ClientOptions, NetMode};
 use crate::files::GameFiles;
 
-/// The clock's step between frames (ms).
-pub const FRAME_MS: u32 = 16;
-/// The frames drawn from a still scene before its picture (the renderer's history settles).
-pub const SETTLE_FRAMES: u32 = 24;
 /// The longest a step of the script may wait (ms of the clock).
 pub const WAIT_LIMIT_MS: u32 = 20_000;
 
 /// One client and what its frames draw into.
-struct Seat {
-    game: ArenaGame,
-    view: WorldView,
-    target: Offscreen,
-    /// An eye in place of the game's (none: the game's).
-    eye: Option<Eye>,
-}
-
-impl Seat {
-    fn frame(&mut self, gpu: &Gpu) -> Result<(), String> {
-        let (gui, eye) = self.game.frame(&mut self.view);
-        let eye = self.eye.unwrap_or(eye);
-        self.view.draw(gpu, &self.target.color, &gui, eye)?;
-        Ok(())
-    }
-
-    /// A picture of the scene as it stands (the clock held), after the renderer settled on it.
-    fn picture(&mut self, gpu: &Gpu) -> Result<Frame, String> {
-        self.view.reset_history();
-        for _ in 0..SETTLE_FRAMES {
-            self.frame(gpu)?;
-        }
-        gpu.read_back(&self.target).map_err(|e| e.to_string())
-    }
-}
-
-/// Both clients' clocks run `ms`, a frame of each every [`FRAME_MS`].
-fn run(gpu: &Gpu, seats: &mut [&mut Seat], ms: u32) -> Result<(), String> {
-    for _ in 0..ms.div_ceil(FRAME_MS) {
-        for s in seats.iter_mut() {
-            s.game.step(FRAME_MS);
-            s.game.add_frame_time(FRAME_MS as f32 / 1000.0);
-            s.frame(gpu)?;
-        }
-    }
-    Ok(())
-}
+type Seat = torque::app::shots::Seat<ArenaGame>;
 
 /// Runs both clocks until `done` holds (at most [`WAIT_LIMIT_MS`]).
 fn run_until(
@@ -81,16 +40,6 @@ fn run_until(
     Ok(())
 }
 
-/// Writes `frame` as a PNG.
-pub fn write_png(frame: &Frame, path: &Path) -> io::Result<()> {
-    let width = frame.width;
-    let bytes = torque_example_assets::textures::png(frame.width, frame.height, |x, y| {
-        let i = 4 * (y * width + x) as usize;
-        [frame.rgba[i], frame.rgba[i + 1], frame.rgba[i + 2]]
-    })?;
-    std::fs::write(path, bytes)
-}
-
 /// Places a client's figure on the server: feet at `at`, facing `yaw`.
 fn place(host: &mut ArenaGame, name: &str, at: [f32; 3], yaw: f32) -> Result<(), String> {
     let server = host.server.as_mut().ok_or("no hosted server")?;
@@ -108,7 +57,7 @@ pub fn write_all(
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
     let seat = |name: &str| -> Result<Seat, String> {
         let files = make_files().map_err(|e| e.to_string())?;
-        let mut game = ArenaGame::new(
+        let game = ArenaGame::new(
             files,
             ClientOptions {
                 net: NetMode::Loopback,
@@ -117,23 +66,11 @@ pub fn write_all(
                 ..ClientOptions::default()
             },
         )?;
-        game.host.surface_size(size);
-        Ok(Seat {
-            view: game.view(&gpu),
-            target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
-            eye: None,
-            game,
-        })
+        Seat::new(game, &gpu, size)
     };
     let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut paths = Vec::new();
-    let mut save = |frame: &Frame, name: &str| -> Result<(), String> {
-        let path = dir.join(format!("{name}.png"));
-        write_png(frame, &path).map_err(|e| e.to_string())?;
-        paths.push(path);
-        Ok(())
-    };
+    let mut shots = Shots::new(dir)?;
+    let mut save = |frame: &Frame, name: &str| shots.save(frame, name);
 
     run(&gpu, &mut [&mut a], 200)?;
     save(&a.picture(&gpu)?, "menu")?;
@@ -262,7 +199,7 @@ pub fn write_all(
     a.eye = Some(a.game.scene().overview_eye());
     save(&a.picture(&gpu)?, "overview")?;
     a.eye = None;
-    Ok(paths)
+    Ok(shots.paths)
 }
 
 /// The two clients met in the arena Ann hosts, with a frame of each drawn at `size`.
@@ -273,7 +210,7 @@ fn meet(
 ) -> Result<(Seat, Seat), String> {
     let seat = |name: &str| -> Result<Seat, String> {
         let files = make_files().map_err(|e| e.to_string())?;
-        let mut game = ArenaGame::new(
+        let game = ArenaGame::new(
             files,
             ClientOptions {
                 net: NetMode::Loopback,
@@ -282,13 +219,7 @@ fn meet(
                 ..ClientOptions::default()
             },
         )?;
-        game.host.surface_size(size);
-        Ok(Seat {
-            view: game.view(gpu),
-            target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
-            eye: None,
-            game,
-        })
+        Seat::new(game, gpu, size)
     };
     let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
     a.game.call("hostGame", &[])?;
@@ -344,7 +275,7 @@ pub fn write_menus(
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
     let first = *sizes.first().ok_or("no sizes")?;
     let seat = |name: &str| -> Result<Seat, String> {
-        let mut game = ArenaGame::new(
+        let game = ArenaGame::new(
             make_files().map_err(|e| e.to_string())?,
             ClientOptions {
                 net: NetMode::Loopback,
@@ -353,13 +284,7 @@ pub fn write_menus(
                 ..ClientOptions::default()
             },
         )?;
-        game.host.surface_size(first);
-        Ok(Seat {
-            view: game.view(&gpu),
-            target: gpu.offscreen(first.0, first.1).map_err(|e| e.to_string())?,
-            eye: None,
-            game,
-        })
+        Seat::new(game, &gpu, first)
     };
     let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
     a.game.call("hostGame", &["lan"])?;
@@ -410,14 +335,8 @@ pub fn write_motion(
 ) -> Result<Vec<PathBuf>, String> {
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
     let (mut a, mut b) = meet(&gpu, size, &make_files)?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut paths = Vec::new();
-    let mut save = |frame: &Frame, name: &str| -> Result<(), String> {
-        let path = dir.join(format!("{name}.png"));
-        write_png(frame, &path).map_err(|e| e.to_string())?;
-        paths.push(path);
-        Ok(())
-    };
+    let mut shots = Shots::new(dir)?;
+    let mut save = |frame: &Frame, name: &str| shots.save(frame, name);
     use std::f32::consts::PI;
 
     // Side steps and the walk backward: Bob faces Ann (south); the camera stands in front of him and to his side.
@@ -552,7 +471,7 @@ pub fn write_motion(
     run(&gpu, &mut [&mut a, &mut b], 200)?;
     save(&a.picture(&gpu)?, "pause-menu")?;
     a.game.call("resumeKey", &["1"])?;
-    Ok(paths)
+    Ok(shots.paths)
 }
 
 /// Turns Ann's view `yaw` radians from where it looks, with the next move (as the mouse would).
@@ -585,14 +504,8 @@ pub fn write_polish(
     use std::f32::consts::PI;
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
     let (mut a, mut b) = meet(&gpu, size, &make_files)?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut paths = Vec::new();
-    let mut save = |frame: &Frame, name: &str| -> Result<(), String> {
-        let path = dir.join(format!("{name}.png"));
-        write_png(frame, &path).map_err(|e| e.to_string())?;
-        paths.push(path);
-        Ok(())
-    };
+    let mut shots = Shots::new(dir)?;
+    let mut save = |frame: &Frame, name: &str| shots.save(frame, name);
     place(&mut a.game, "Bob", [-12.0, 12.0, 0.1], PI)?;
 
     // A bolt into open space (a little above level, over the far wall), then one at the cover ahead: frame by frame.
@@ -705,7 +618,7 @@ pub fn write_polish(
     save(&a.picture(&gpu)?, "aim-third-side")?;
     b.game.call("aim", &["0"])?;
     a.eye = None;
-    Ok(paths)
+    Ok(shots.paths)
 }
 
 /// Turns Ann's view to look at `target` (with the next move, as the mouse would).

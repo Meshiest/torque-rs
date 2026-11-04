@@ -8,23 +8,17 @@
 //! **A frame** ([`CharacterGame::frame`]): the figure as the world view's moving object, the canvas drawn (its `GameTSCtrl`
 //! leaves the world's rectangle in the draws), and the eye: the orbit camera around the figure's `cam` node.
 
-use std::cell::RefCell;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
-use torque::client::conn::tge::TgeConn;
-use torque::client::host::{ClientHost, EnginePass};
-use torque::client::input::{WM_KEYDOWN, WM_KEYUP, key_lparam};
-use torque::client::state::ClientState;
+use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
+use torque::app::orbit::Orbit;
+use torque::app::view::{Daylight, SceneShape, WorldView};
+use torque::app::{App, Host};
 use torque::gui::GuiDraws;
-use torque::script::text::atof;
-use torque::script::vm::vm::Vm;
-use torque::server::server::{GameServer as _, Server};
 use torque::shapes::instance::ShapeInstance;
 use torque::shapes::math::mul_p;
-use torque_example_common::orbit::Orbit;
-use torque_example_common::view::{Daylight, SceneShape, WorldView};
-use torque_example_common::{KitAssets, draw_cache, kit_path};
+use torque_example_common::{KitAssets, kit_path};
 use torque_render_core::Gpu;
 use torque_render_scene::math::Mat;
 use torque_render_scene::source::Eye;
@@ -62,9 +56,10 @@ pub fn game_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("game")
 }
 
-/// The example's client.
+/// The example's client: the engine's [`GameClient`] (which it derefs to: its host and globals; it hosts no server), the
+/// figure and the camera.
 pub struct CharacterGame {
-    pub host: ClientHost<TgeConn, Server>,
+    pub client: GameClient,
     assets: KitAssets,
     shape: SceneShape,
     figure: Figure,
@@ -74,6 +69,20 @@ pub struct CharacterGame {
     pub orbit: Orbit,
     /// The `cam` node (the point the camera circles).
     cam: Option<usize>,
+}
+
+impl Deref for CharacterGame {
+    type Target = GameClient;
+
+    fn deref(&self) -> &GameClient {
+        &self.client
+    }
+}
+
+impl DerefMut for CharacterGame {
+    fn deref_mut(&mut self) -> &mut GameClient {
+        &mut self.client
+    }
 }
 
 impl CharacterGame {
@@ -87,26 +96,12 @@ impl CharacterGame {
         let pistol =
             SceneShape::load(&assets, &kit_path("pistol.dts")).ok_or("the pistol does not load")?;
         let pistol_pose = pistol.instance().ok_or("the pistol does not pose")?;
-        let mut vm = Vm::new();
-        let gui = torque::gui::register(&mut vm);
-        let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
-        // The engine's natives on ActionMap; the class itself is the game's to declare (TGE's is a plain SimObject).
-        vm.register_class("ActionMap", "SimObject", &[]);
-        torque::client::actionmap::register(&mut vm, &state);
-        torque::client::screen::register(&mut vm, &gui, &state);
+        let mut b = ClientBuilder::new(ClientSetup::default())?;
         let main = game_dir().join("main.cs");
         let script = std::fs::read(&main).map_err(|e| format!("main.cs: {e}"))?;
-        vm.eval(&script).map_err(|e| format!("main.cs: {e}"))?;
-        let mut host = ClientHost::new(
-            Server::new(vm),
-            gui,
-            state,
-            Rc::new(EnginePass),
-            draw_cache(),
-        );
-        host.set_windowed();
+        b.vm.eval(&script).map_err(|e| format!("main.cs: {e}"))?;
         Ok(CharacterGame {
-            host,
+            client: b.build(),
             assets,
             shape,
             figure,
@@ -143,34 +138,18 @@ impl CharacterGame {
         &self.figure
     }
 
-    /// A key going down or up, as the window posts it.
-    pub fn key(&mut self, vk: u8, down: bool) {
-        let msg = if down { WM_KEYDOWN } else { WM_KEYUP };
-        self.host
-            .post(msg, u32::from(vk), key_lparam(vk, !down, false));
-    }
-
-    /// A global the action map's functions set, as a number (0 when unset).
-    fn number(&self, name: &str) -> f32 {
-        self.host
-            .server
-            .vm()
-            .global(name)
-            .map_or(0.0, |v| atof(&v) as f32)
-    }
-
     /// A global the mouse adds to, taken (set back to 0).
     fn take(&mut self, name: &str) -> f32 {
         let v = self.number(name);
         if v != 0.0 {
-            self.host.server.vm_mut().set_global(name, "0");
+            self.set_global(name, "0");
         }
         v
     }
 
     /// `ms` of the clock: the host's pass (its input, layout and scripts), then the camera and the figure.
     pub fn step(&mut self, ms: u32) {
-        self.host.run(ms, |_| false);
+        self.client.host.run(ms, |_| false);
         let dt = ms as f32 / 1000.0;
         let input = Input {
             forward: self.number("$charForward") - self.number("$charBack"),
@@ -202,12 +181,7 @@ impl CharacterGame {
 
     fn show_state(&mut self, state: State) {
         let name = state.name().as_bytes().to_vec();
-        if let Err(e) = self
-            .host
-            .server
-            .vm_mut()
-            .invoke(None, b"showState", &[name])
-        {
+        if let Err(e) = self.vm_mut().invoke(None, b"showState", &[name]) {
             eprintln!("example-character: {e}");
         }
     }
@@ -265,7 +239,38 @@ impl CharacterGame {
         }
         view.set_objects(objects);
         // No connection gives the GameTSCtrl a camera: the example's own camera is the view's.
-        self.host.gui.0.borrow_mut().world_camera = true;
-        (self.host.draw_frame(), self.eye())
+        let host = &mut self.client.host;
+        host.gui.0.borrow_mut().world_camera = true;
+        (host.draw_frame(), self.eye())
+    }
+}
+
+impl App for CharacterGame {
+    fn host(&mut self) -> &mut Host {
+        &mut self.client.host
+    }
+
+    fn host_ref(&self) -> &Host {
+        &self.client.host
+    }
+
+    fn title(&self) -> String {
+        "torque-rs character".to_string()
+    }
+
+    fn log_name(&self) -> &str {
+        "example-character"
+    }
+
+    fn view(&self, gpu: &Gpu) -> WorldView {
+        CharacterGame::view(self, gpu)
+    }
+
+    fn advance(&mut self, ms: u32) {
+        self.step(ms);
+    }
+
+    fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
+        CharacterGame::frame(self, view)
     }
 }
