@@ -1,0 +1,63 @@
+// Ramps
+// A course of ramps and bridges high above the floor. Fall off and you start again.
+
+new SimGroup(MissionGroup)
+{
+   new ScriptObject(MapInfo) { title = "Ramps"; spawn = "0 -20 0.2"; spawnYaw = 0; };
+   // A small starting pad on the floor.
+   new StaticShape() { dataBlock = WorldCubeData; position = "0 -20 -0.5"; scale = "8 8 1"; };
+};
+
+function addCube(%pos, %scale)
+{
+   MissionGroup.add(new StaticShape() { dataBlock = WorldCubeData; position = %pos; scale = %scale; });
+}
+
+// A ramp of width %w from the point %from up (or down) to %to: one cube turned about its own x axis, its top surface on the
+// line between the two points. The points differ in y and z only.
+function addRamp(%from, %to, %w)
+{
+   %x = getWord(%from, 0);
+   %y0 = getWord(%from, 1);
+   %z0 = getWord(%from, 2);
+   %dy = getWord(%to, 1) - %y0;
+   %dz = getWord(%to, 2) - %z0;
+   %len = mSqrt(%dy * %dy + %dz * %dz);
+   %angle = mRadToDeg(mAtan(%dz, %dy));
+   %thick = 0.4;
+   // The middle of the top surface, moved down half the thickness along the ramp's up.
+   %cy = %y0 + %dy / 2 + mSin(mDegToRad(%angle)) * %thick / 2;
+   %cz = %z0 + %dz / 2 - mCos(mDegToRad(%angle)) * %thick / 2;
+   MissionGroup.add(new StaticShape()
+   {
+      dataBlock = WorldCubeData;
+      position = %x SPC %cy SPC %cz;
+      // A turn about x by -%angle carries the cube's +y up the slope.
+      rotation = "1 0 0" SPC -%angle;
+      scale = %w SPC %len SPC %thick;
+   });
+}
+
+function buildRamps()
+{
+   // Up from the pad to the first platform.
+   addRamp("0 -16 0", "0 -8 3", 3);
+   addCube("0 -6 2.5", "6 4 1");
+   // A narrow bridge on to the second platform, a little higher.
+   addRamp("0 -4 3", "0 4 4.5", 1.6);
+   addCube("0 6 4", "6 4 1");
+   // A turn: a short wall to walk round, and a bridge east.
+   addCube("0 7.5 5.25", "4 0.5 1.5");
+   addCube("6.5 6 4", "7 1.4 1");
+   addCube("12 6 4", "4 4 1");
+   // Down and up again: a dip between two ramps.
+   addRamp("12 8 4.5", "12 14 2.5", 3);
+   addRamp("12 14 2.5", "12 20 5.5", 3);
+   // The top: a wide landing with low railings.
+   addCube("12 23 5", "8 6 1");
+   addCube("8.25 23 6", "0.5 6 1");
+   addCube("15.75 23 6", "0.5 6 1");
+   addCube("12 25.75 6", "8 0.5 1");
+}
+
+buildRamps();

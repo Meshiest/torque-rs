@@ -1,0 +1,70 @@
+// Maze
+// Find the way through the walls to the tall marker in the far corner.
+
+new SimGroup(MissionGroup)
+{
+   new ScriptObject(MapInfo) { title = "Maze"; spawn = "-15 -15 0.2"; spawnYaw = 1.5708; };
+   // The ground.
+   new StaticShape() { dataBlock = WorldCubeData; position = "0 0 -0.5"; scale = "60 60 1"; };
+};
+
+// The plan, one character a cell of 3 units: # is a wall, E the marker. The first row is the north edge.
+$Maze::Row[0]  = "#############";
+$Maze::Row[1]  = "#.....#.....#";
+$Maze::Row[2]  = "#.###.#.###.#";
+$Maze::Row[3]  = "#.#...#...#.#";
+$Maze::Row[4]  = "#.#.#####.#.#";
+$Maze::Row[5]  = "#.#.....#.#.#";
+$Maze::Row[6]  = "#.#####.#.#.#";
+$Maze::Row[7]  = "#.....#...#E#";
+$Maze::Row[8]  = "###.#.#####.#";
+$Maze::Row[9]  = "#...#.....#.#";
+$Maze::Row[10] = "#.#######.#.#";
+$Maze::Row[11] = "#.........#.#";
+$Maze::Row[12] = "#############";
+$Maze::Rows = 13;
+$Maze::Cell = 3;
+$Maze::Height = 2.5;
+
+function addCube(%pos, %scale)
+{
+   MissionGroup.add(new StaticShape() { dataBlock = WorldCubeData; position = %pos; scale = %scale; });
+}
+
+// Each run of walls along a row is one long cube.
+function buildMaze()
+{
+   %half = ($Maze::Rows * $Maze::Cell) / 2;
+   for (%r = 0; %r < $Maze::Rows; %r++)
+   {
+      %row = $Maze::Row[%r];
+      %y = %half - (%r + 0.5) * $Maze::Cell;
+      %len = strlen(%row);
+      %start = -1;
+      for (%c = 0; %c <= %len; %c++)
+      {
+         %ch = %c < %len ? getSubStr(%row, %c, 1) : ".";
+         if (%ch $= "#")
+         {
+            if (%start < 0)
+               %start = %c;
+            continue;
+         }
+         if (%start >= 0)
+         {
+            %count = %c - %start;
+            %x = -%half + (%start + %count / 2) * $Maze::Cell;
+            addCube(%x SPC %y SPC $Maze::Height / 2, %count * $Maze::Cell SPC $Maze::Cell SPC $Maze::Height);
+            %start = -1;
+         }
+         if (%ch $= "E")
+         {
+            %x = -%half + (%c + 0.5) * $Maze::Cell;
+            addCube(%x SPC %y SPC "3", "1 1 6");
+            addCube(%x SPC %y SPC "0.1", "2.5 2.5 0.2");
+         }
+      }
+   }
+}
+
+buildMaze();
