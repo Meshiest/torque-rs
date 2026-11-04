@@ -6,7 +6,8 @@
 //!
 //! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`
 //! (`Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of` follows `QuatF::set(MatrixF)` in
-//! `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`).
+//! `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record (`sky_field`) are those
+//! of TGE 1.4's `terrain/sky.cc` (`Copyright (C) GarageGames.com, Inc.`; Torque3D has no Sky class).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -367,9 +368,29 @@ impl ObjectView for GameView<'_> {
             "max_energy" => Value::F32(self.db_float(b"maxEnergy", 0.0)),
             "controlled" => Value::Bool(self.controlled),
             "controlled_here" => Value::Bool(false),
-            _ => self.fields.get(field, index),
+            _ => self.fields.get(sky_field(field).unwrap_or(field), index),
         }
     }
+}
+
+/// The Sky's script field behind a field its record reads, where the record's name is not the script's: the visible and fog
+/// distances, the fog and solid colours, the material list, the cloud textures, the wind and the flags (the cloud heights and
+/// speeds, the fog volumes and the storms are left out: the script sets them in other shapes).
+fn sky_field(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "visible_distance" => "visibleDistance",
+        "fog_distance" => "fogDistance",
+        "fog_color" => "fogColor",
+        "solid_fill_color" => "SkySolidColor",
+        "sky_textures_on" => "useSkyTextures",
+        "render_box_bottom" => "renderBottomTexture",
+        "effect_precip" => "windEffectPrecipitation",
+        "no_render_bans" => "noRenderBans",
+        "material_list" => "materialList",
+        "cloud_text" => "cloudText",
+        "wind_velocity" => "windVelocity",
+        _ => return None,
+    })
 }
 
 impl ObjectSource for TgeSource<'_> {
