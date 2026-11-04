@@ -19,17 +19,20 @@ use torque::gui::GuiDraws;
 use torque::script::text::atof;
 use torque::script::vm::vm::Vm;
 use torque::server::server::{GameServer as _, Server};
+use torque::shapes::instance::ShapeInstance;
 use torque::shapes::math::mul_p;
 use torque_example_common::orbit::Orbit;
 use torque_example_common::view::{SceneShape, WorldView};
 use torque_example_common::{KitAssets, draw_cache, kit_path};
 use torque_render_core::Gpu;
+use torque_render_scene::math::Mat;
 use torque_render_scene::source::Eye;
 
 use crate::motion::{Figure, Input, State};
 
 /// The figure's id among the frame's moving objects.
 pub const FIGURE_ID: u32 = 1;
+pub const PISTOL_ID: u32 = 2;
 /// The floor: its half side and how often its texture repeats (units).
 pub const FLOOR_HALF: f32 = 400.0;
 pub const FLOOR_TILE: f32 = 4.0;
@@ -50,6 +53,7 @@ pub mod keys {
     pub const SHIFT: u8 = 0x10;
     pub const SPACE: u8 = 0x20;
     pub const ESCAPE: u8 = 0x1b;
+    pub const F: u8 = 0x46;
 }
 
 /// The canvas, its profiles and the action map.
@@ -63,11 +67,11 @@ new GameTSCtrl(CharacterView) {
     new GuiControl(CharacterBand) {
         profile = CharacterBandProfile; position = "0 0"; extent = "800 28"; horizSizing = "width";
         new GuiTextCtrl(CharacterHelp) {
-            profile = CharacterTextProfile; position = "10 5"; extent = "640 18"; visible = true; enabled = true;
-            text = "W A S D move    Shift run    Space jump    Mouse or Q / E orbit    Wheel zoom    Esc quit";
+            profile = CharacterTextProfile; position = "10 5"; extent = "700 18"; visible = true; enabled = true;
+            text = "W A S D move    Shift run    Space jump    F pistol    Mouse or Q / E orbit    Wheel zoom    Esc quit";
         };
         new GuiTextCtrl(CharacterState) {
-            profile = CharacterStateProfile; position = "640 5"; extent = "150 18"; horizSizing = "left"; visible = true; enabled = true; text = "idle";
+            profile = CharacterStateProfile; position = "700 5"; extent = "90 18"; horizSizing = "left"; visible = true; enabled = true; text = "idle";
         };
     };
 };
@@ -85,6 +89,7 @@ function charTurnRight(%v) { $charTurnRight = %v; }
 function charYaw(%v) { $charYaw += %v; }
 function charPitch(%v) { $charPitch += %v; }
 function charZoom(%v) { $charZoom += %v; }
+function charPistol(%v) { if (%v) $charPistol = !$charPistol; }
 function charQuit(%v) { if (%v) quit(); }
 function resetCanvas() {}
 
@@ -97,6 +102,7 @@ CharacterMap.bind(keyboard, lshift, charRun);
 CharacterMap.bind(keyboard, space, charJump);
 CharacterMap.bind(keyboard, q, charTurnLeft);
 CharacterMap.bind(keyboard, e, charTurnRight);
+CharacterMap.bind(keyboard, f, charPistol);
 CharacterMap.bind(keyboard, escape, charQuit);
 CharacterMap.bind(mouse, xaxis, charYaw);
 CharacterMap.bind(mouse, yaxis, charPitch);
@@ -110,6 +116,9 @@ pub struct CharacterGame {
     assets: KitAssets,
     shape: SceneShape,
     figure: Figure,
+    /// The pistol the figure holds (`F`), and its pose.
+    pistol: SceneShape,
+    pistol_pose: ShapeInstance,
     pub orbit: Orbit,
     /// The `cam` node (the point the camera circles).
     cam: Option<usize>,
@@ -123,6 +132,9 @@ impl CharacterGame {
         let detail = shape.detail().ok_or("the figure has no detail")?;
         let figure = Figure::new(shape.shape(), detail).ok_or("the figure lacks a sequence")?;
         let cam = shape.node("cam");
+        let pistol =
+            SceneShape::load(&assets, &kit_path("pistol.dts")).ok_or("the pistol does not load")?;
+        let pistol_pose = pistol.instance().ok_or("the pistol does not pose")?;
         let mut vm = Vm::new();
         let gui = torque::gui::register(&mut vm);
         let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
@@ -145,6 +157,8 @@ impl CharacterGame {
             assets,
             shape,
             figure,
+            pistol,
+            pistol_pose,
             orbit: Orbit::default(),
             cam,
         })
@@ -207,6 +221,10 @@ impl CharacterGame {
             pitch * MOUSE_TURN,
             ZOOM_STEP.powf(zoom / 120.0),
         );
+        let holding = self.number("$charPistol") != 0.0;
+        if holding != self.figure.holding() {
+            self.figure.set_holding(self.shape.shape(), holding);
+        }
         let (forward, right) = (self.orbit.forward(), self.orbit.right());
         if self
             .figure
@@ -232,6 +250,25 @@ impl CharacterGame {
         self.figure.transform().mul_p(local)
     }
 
+    /// Where the pistol is while the figure holds it: its `mountPoint` on the figure's `mount0`.
+    pub fn held_pistol(&self) -> Option<Mat> {
+        if !self.figure.holding() {
+            return None;
+        }
+        let hand = self.shape.node("mount0")?;
+        let grip = self.pistol.node("mountPoint")?;
+        let hand = Mat {
+            m: *self.figure.instance().node_transforms().get(hand)?,
+        };
+        let grip = Mat {
+            m: *self.pistol_pose.node_transforms().get(grip)?,
+        };
+        Some(Mat::mul(
+            &Mat::mul(&self.figure.transform(), &hand),
+            &grip.affine_inverse(),
+        ))
+    }
+
     pub fn eye(&self) -> Eye {
         self.orbit.eye(self.camera_target())
     }
@@ -245,7 +282,17 @@ impl CharacterGame {
             &self.figure.transform(),
             FIGURE_ID,
         );
-        view.set_objects(vec![figure]);
+        let mut objects = vec![figure];
+        if let Some(held) = self.held_pistol() {
+            objects.push(view.shape_object(
+                &self.assets,
+                &self.pistol,
+                &self.pistol_pose,
+                &held,
+                PISTOL_ID,
+            ));
+        }
+        view.set_objects(objects);
         // No connection gives the GameTSCtrl a camera: the example's own camera is the view's.
         self.host.gui.0.borrow_mut().world_camera = true;
         (self.host.draw_frame(), self.eye())

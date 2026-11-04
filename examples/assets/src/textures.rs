@@ -3,7 +3,7 @@
 //! | file | size | look |
 //! |---|---|---|
 //! | `grid.png` | 64 x 64 | light grey tiles, 16 px each, alternating a shade, with darker grout and a darker border |
-//! | `figure.png` | 64 x 64 | four swatches: skin, shirt (with a hem), trousers, and a face (two eyes and a mouth on skin) |
+//! | `figure.png` | 64 x 64 | four swatches: skin, shirt (with a hem), trousers (shoes along the bottom), and the eyes' colour |
 //! | `pistol.png` | 32 x 32 | dark metal, lighter along the top rows, faint grip lines lower down |
 //! | `projectile.png` | 16 x 16 | a hot core fading to orange at the edge |
 
@@ -55,31 +55,21 @@ pub fn figure() -> io::Result<Vec<u8>> {
     let shirt: Rgb = [52, 104, 196];
     let trousers: Rgb = [48, 52, 68];
     png(64, 64, |x, y| {
-        let (qx, qy) = (x % 32, y % 32);
+        let qy = y % 32;
         match (x < 32, y < 32) {
             (true, true) => skin,
             (false, true) if qy >= 28 => shade(shirt, -30),
             (false, true) => shirt,
+            (true, false) if qy >= 29 => shade(trousers, -26),
             (true, false) => trousers,
-            (false, false) => {
-                let eye =
-                    (9..13).contains(&qy) && ((8..12).contains(&qx) || (20..24).contains(&qx));
-                let mouth = qy == 22 && (11..21).contains(&qx);
-                if eye {
-                    [30, 30, 36]
-                } else if mouth {
-                    [150, 80, 70]
-                } else {
-                    skin
-                }
-            }
+            (false, false) => [30, 30, 36],
         }
     })
 }
 
 /// The pistol's metal.
 pub fn pistol() -> io::Result<Vec<u8>> {
-    let metal: Rgb = [58, 62, 70];
+    let metal: Rgb = [74, 78, 86];
     png(32, 32, |_, y| {
         if y < 4 {
             shade(metal, 36)

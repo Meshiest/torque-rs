@@ -160,6 +160,105 @@ impl MeshData {
         }
     }
 
+    /// Adds a prism: the convex polygon `profile` (points `[y, z]`, in order around it either way) drawn between `x0` and `x1`
+    /// (`x0 < x1`), with flat faces. Its two ends take the texture rectangle `ends` laid over the profile's box (u along y, v
+    /// down z); each side takes `sides`, u along the edge and v across the prism.
+    pub fn add_prism(
+        &mut self,
+        profile: &[[f32; 2]],
+        x0: f32,
+        x1: f32,
+        ends: UvRect,
+        sides: UvRect,
+    ) {
+        let n = profile.len();
+        if n < 3 {
+            return;
+        }
+        let c = [0, 1].map(|k| profile.iter().map(|p| p[k]).sum::<f32>() / n as f32);
+        let (lo, hi) = (
+            [0, 1].map(|k| profile.iter().map(|p| p[k]).fold(f32::INFINITY, f32::min)),
+            [0, 1].map(|k| {
+                profile
+                    .iter()
+                    .map(|p| p[k])
+                    .fold(f32::NEG_INFINITY, f32::max)
+            }),
+        );
+        let span = |v: f32, k: usize| {
+            if hi[k] > lo[k] {
+                (v - lo[k]) / (hi[k] - lo[k])
+            } else {
+                0.0
+            }
+        };
+        let end_uv = |p: [f32; 2]| {
+            [
+                ends[0] + (ends[2] - ends[0]) * span(p[0], 0),
+                ends[1] + (ends[3] - ends[1]) * (1.0 - span(p[1], 1)),
+            ]
+        };
+        // The two ends.
+        for (x, normal) in [(x1, [1.0, 0.0, 0.0]), (x0, [-1.0, 0.0, 0.0])] {
+            let face: Vec<(Vec3, [f32; 2])> = profile
+                .iter()
+                .map(|&p| ([x, p[0], p[1]], end_uv(p)))
+                .collect();
+            self.add_face(&face, normal);
+        }
+        // The sides, one an edge.
+        for i in 0..n {
+            let (a, b) = (profile[i], profile[(i + 1) % n]);
+            let edge = [b[0] - a[0], b[1] - a[1]];
+            let mut normal = [0.0, edge[1], -edge[0]];
+            let mid = [0.5 * (a[0] + b[0]) - c[0], 0.5 * (a[1] + b[1]) - c[1]];
+            if normal[1] * mid[0] + normal[2] * mid[1] < 0.0 {
+                normal = [0.0, -normal[1], -normal[2]];
+            }
+            let l = (normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+            if l == 0.0 {
+                continue;
+            }
+            let normal = normal.map(|v| v / l);
+            let face = [
+                ([x0, a[0], a[1]], [sides[0], sides[3]]),
+                ([x0, b[0], b[1]], [sides[2], sides[3]]),
+                ([x1, b[0], b[1]], [sides[2], sides[1]]),
+                ([x1, a[0], a[1]], [sides[0], sides[1]]),
+            ];
+            self.add_face(&face, normal);
+        }
+    }
+
+    /// Adds one flat convex face (its corners in order either way round) facing `normal`, as a fan of triangles wound clockwise
+    /// seen from outside.
+    fn add_face(&mut self, corners: &[(Vec3, [f32; 2])], normal: Vec3) {
+        let base = self.positions.len() as u16;
+        for &(p, uv) in corners {
+            self.positions.push(p);
+            self.normals.push(normal);
+            self.tverts.push(uv);
+        }
+        let (a, b, c) = (corners[0].0, corners[1].0, corners[2].0);
+        let (e1, e2) = (
+            [0, 1, 2].map(|k| b[k] - a[k]),
+            [0, 1, 2].map(|k| c[k] - a[k]),
+        );
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let ccw = cross[0] * normal[0] + cross[1] * normal[1] + cross[2] * normal[2] > 0.0;
+        for i in 1..corners.len() as u16 - 1 {
+            if ccw {
+                self.indices.extend([base, base + i + 1, base + i]);
+            } else {
+                self.indices.extend([base, base + i, base + i + 1]);
+            }
+        }
+    }
+
     /// The box `min`..`max` as a collision hull: its eight corners and twelve triangles, no material.
     pub fn hull_box(min: Vec3, max: Vec3) -> MeshData {
         let mut m = MeshData::new(None);
@@ -249,6 +348,7 @@ struct NodeDef {
     name: i32,
     parent: Option<usize>,
     translation: Vec3,
+    rotation: Quat16,
 }
 
 #[derive(Debug, Clone)]
@@ -290,11 +390,23 @@ impl ShapeBuilder {
 
     /// A node at `translation` from its parent (or the shape's origin), not turned at rest; returns its index.
     pub fn node(&mut self, name: &str, parent: Option<usize>, translation: Vec3) -> usize {
+        self.node_turned(name, parent, translation, NO_TURN)
+    }
+
+    /// A node at `translation` from its parent, turned by `rotation` at rest ([`turn`]); returns its index.
+    pub fn node_turned(
+        &mut self,
+        name: &str,
+        parent: Option<usize>,
+        translation: Vec3,
+        rotation: Quat16,
+    ) -> usize {
         let name = self.name(name);
         self.nodes.push(NodeDef {
             name,
             parent,
             translation,
+            rotation,
         });
         self.nodes.len() - 1
     }
@@ -360,7 +472,7 @@ impl ShapeBuilder {
                 first_child: first_child.map_or(-1, |j| j as i32),
                 next_sibling: next_sibling.map_or(-1, |j| j as i32),
             });
-            s.default_rotations.push(NO_TURN);
+            s.default_rotations.push(n.rotation);
             s.default_translations.push(n.translation);
         }
 

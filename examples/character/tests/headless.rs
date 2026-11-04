@@ -18,11 +18,11 @@ fn run(game: &mut CharacterGame, ms: u32) {
 /// Where the left foot is in the figure's own space.
 fn left_foot(game: &CharacterGame) -> [f32; 3] {
     let shape = torque::shapes::shape::Shape::for_server(torque_example_assets::shapes::figure());
-    let n = shape.find_name(b"leg_l").unwrap();
+    let n = shape.find_name(b"knee_l").unwrap();
     let node = shape.nodes.iter().position(|x| x.name == n).unwrap();
     mul_p(
         &game.figure().instance().node_transforms()[node],
-        [0.0, 0.0, -0.95],
+        [0.0, 0.0, -torque_example_assets::shapes::SHIN],
     )
 }
 
@@ -136,4 +136,35 @@ fn frames_drawn_offscreen_show_the_figure_move() {
         u32::from(rgba[i]) + u32::from(rgba[i + 1]) + u32::from(rgba[i + 2])
     };
     assert!(lum(40) > 150 && lum(170) > 150, "{} {}", lum(40), lum(170));
+}
+
+#[test]
+fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
+    let mut game = CharacterGame::new().unwrap();
+    run(&mut game, 100);
+    assert!(game.held_pistol().is_none());
+    game.key(keys::F, true);
+    game.key(keys::F, false);
+    run(&mut game, 100);
+    assert!(game.figure().holding());
+    let held = game.held_pistol().unwrap();
+    // The barrel points the way the figure faces (+y), level, at about shoulder height in front of it.
+    let ahead = held.mul_v([0.0, 1.0, 0.0]);
+    assert!(ahead[1] > 0.98, "{ahead:?}");
+    let muzzle = held.mul_p([0.0, 0.205, 0.033]);
+    assert!(
+        muzzle[1] > 0.8 && (muzzle[2] - 1.55).abs() < 0.2,
+        "{muzzle:?}"
+    );
+    // Walking keeps the arm up.
+    game.key(keys::W, true);
+    run(&mut game, 500);
+    assert_eq!(game.figure().state(), State::Walk);
+    let ahead = game.held_pistol().unwrap().mul_v([0.0, 1.0, 0.0]);
+    assert!(ahead[1] > 0.98, "{ahead:?}");
+    game.key(keys::W, false);
+    game.key(keys::F, true);
+    game.key(keys::F, false);
+    run(&mut game, 50);
+    assert!(!game.figure().holding() && game.held_pistol().is_none());
 }

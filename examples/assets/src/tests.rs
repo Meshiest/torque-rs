@@ -143,21 +143,21 @@ fn posed(shape: &Shape, sequence: &str, pos: f32, name: &str, local: [f32; 3]) -
 #[test]
 fn walking_and_running_swing_the_legs_against_each_other() {
     let shape = Shape::for_server(shapes::figure());
-    let foot = [0.0, 0.0, -0.95];
-    for (seq, reach) in [("walk", 0.35), ("run", 0.6)] {
+    let foot = [0.0, 0.0, -shapes::SHIN];
+    for (seq, reach) in [("walk", 0.35), ("run", 0.5)] {
         let (l, r) = (
-            posed(&shape, seq, 0.25, "leg_l", foot),
-            posed(&shape, seq, 0.25, "leg_r", foot),
+            posed(&shape, seq, 0.25, "knee_l", foot),
+            posed(&shape, seq, 0.25, "knee_r", foot),
         );
         assert!(l[1] > reach && r[1] < -reach, "{seq}: {l:?} {r:?}");
         let (l, r) = (
-            posed(&shape, seq, 0.75, "leg_l", foot),
-            posed(&shape, seq, 0.75, "leg_r", foot),
+            posed(&shape, seq, 0.75, "knee_l", foot),
+            posed(&shape, seq, 0.75, "knee_r", foot),
         );
         assert!(l[1] < -reach && r[1] > reach, "{seq}: {l:?} {r:?}");
         // The arm swings against its own side's leg.
-        let hand = posed(&shape, seq, 0.25, "arm_l", [0.0, 0.0, -0.66]);
-        assert!(hand[1] < -0.1, "{seq}: {hand:?}");
+        let elbow = posed(&shape, seq, 0.25, "elbow_l", [0.0; 3]);
+        assert!(elbow[1] < -0.1, "{seq}: {elbow:?}");
     }
     let head = posed(&shape, "run", 0.0, "head", [0.0; 3]);
     assert!(head[1] > 0.1, "the run leans forward: {head:?}");
@@ -165,19 +165,117 @@ fn walking_and_running_swing_the_legs_against_each_other() {
     assert!(near(still, [0.0, 0.0, 1.65]), "{still:?}");
 }
 
+/// The angle (degrees) between a limb's upper and lower part at a joint: 0 straight.
+fn bend(shape: &Shape, seq: &str, pos: f32, upper: &str, joint: &str, lower: f32) -> f32 {
+    let top = posed(shape, seq, pos, upper, [0.0; 3]);
+    let mid = posed(shape, seq, pos, joint, [0.0; 3]);
+    let end = posed(shape, seq, pos, joint, [0.0, 0.0, -lower]);
+    let a = [0, 1, 2].map(|k| mid[k] - top[k]);
+    let b = [0, 1, 2].map(|k| end[k] - mid[k]);
+    let dot = (0..3).map(|k| a[k] * b[k]).sum::<f32>();
+    let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    (dot / (len(a) * len(b)))
+        .clamp(-1.0, 1.0)
+        .acos()
+        .to_degrees()
+}
+
 #[test]
-fn the_jump_raises_the_arms_and_holds_its_last_key() {
+fn the_knees_bend_as_the_legs_come_through_and_the_elbows_bend_running() {
     let shape = Shape::for_server(shapes::figure());
-    let hand = posed(&shape, "jump", 1.0, "arm_r", [0.0, 0.0, -0.66]);
+    let shin = shapes::SHIN;
+    for seq in ["walk", "run"] {
+        // A quarter in: the left leg forward (its foot about to land), the right behind (coming through).
+        let front = bend(&shape, seq, 0.25, "leg_l", "knee_l", shin);
+        let back = bend(&shape, seq, 0.25, "leg_r", "knee_r", shin);
+        assert!(back > front + 30.0, "{seq}: {front} {back}");
+        // The knee bends the shin backward, never forward.
+        let knee = posed(&shape, seq, 0.25, "knee_r", [0.0; 3]);
+        let foot = posed(&shape, seq, 0.25, "knee_r", [0.0, 0.0, -shin]);
+        let thigh = posed(&shape, seq, 0.25, "leg_r", [0.0; 3]);
+        let ahead =
+            (knee[1] - thigh[1]) * (foot[2] - knee[2]) - (knee[2] - thigh[2]) * (foot[1] - knee[1]);
+        assert!(ahead < 0.0, "{seq}: {thigh:?} {knee:?} {foot:?}");
+    }
+    let still = bend(&shape, "walk", 0.25, "leg_l", "knee_l", shin);
+    assert!(still < 2.0, "the landing leg is straight: {still}");
+    let walking = bend(&shape, "walk", 0.0, "arm_r", "elbow_r", shapes::FOREARM);
+    let running = bend(&shape, "run", 0.0, "arm_r", "elbow_r", shapes::FOREARM);
+    assert!(running > 60.0 && walking < 30.0, "{walking} {running}");
+}
+
+#[test]
+fn the_hands_reach_mid_thigh_and_the_hand_holds_the_mount() {
+    let shape = Shape::for_server(shapes::figure());
+    let fingers = posed(&shape, "root", 0.0, "elbow_l", [0.0, 0.0, -shapes::FOREARM]);
+    let mid_thigh = 0.95 - 0.5 * shapes::THIGH;
+    assert!((fingers[2] - mid_thigh).abs() < 0.08, "{fingers:?}");
+    let mount = posed(&shape, "root", 0.0, "mount0", [0.0; 3]);
+    let wrist = posed(
+        &shape,
+        "root",
+        0.0,
+        "elbow_r",
+        [0.0, 0.0, -shapes::FOREARM + 0.11],
+    );
+    assert!(mount[2] < wrist[2] && mount[2] > fingers[2], "{mount:?}");
+}
+
+#[test]
+fn the_jump_raises_the_arms_tucks_the_knees_and_holds_its_last_key() {
+    let shape = Shape::for_server(shapes::figure());
+    let hand = posed(&shape, "jump", 1.0, "elbow_r", [0.0, 0.0, -shapes::FOREARM]);
     let shoulder = posed(&shape, "jump", 1.0, "arm_r", [0.0; 3]);
     assert!(hand[2] > shoulder[2] + 0.4, "{hand:?} {shoulder:?}");
+    for side in ["knee_l", "knee_r"] {
+        let foot = posed(&shape, "jump", 1.0, side, [0.0, 0.0, -shapes::SHIN]);
+        assert!(foot[2] > 0.3, "tucked up: {side} {foot:?}");
+    }
     let seq = |name: &str| &shape.sequences[find_sequence(&shape, name.as_bytes()).unwrap()];
     assert_eq!(seq("jump").flags & 16, 0, "played once");
     for name in ["root", "idle", "walk", "run"] {
         assert_eq!(seq(name).flags & 16, 16, "{name} loops");
     }
-    assert_eq!(seq("root").base_rotation + 8, seq("idle").base_rotation);
     assert_eq!(seq("root").rotation_matters, seq("idle").rotation_matters);
+}
+
+#[test]
+fn the_eyes_are_boxes_on_the_face() {
+    let model = shapes::figure();
+    let shape = &model.shape;
+    for name in ["pupil_l", "pupil_r"] {
+        let n = shape.find_name(name.as_bytes()).unwrap();
+        assert!(shape.objects.iter().any(|o| o.name == n), "{name}");
+    }
+}
+
+#[test]
+fn holding_raises_the_right_arm_and_the_held_item_points_along_the_forearm() {
+    let shape = Shape::for_server(shapes::figure());
+    let mut inst = ShapeInstance::new(&shape, &mut free).unwrap();
+    for (name, pos) in [("walk", 0.25), ("hold", 0.0)] {
+        let t = inst.create_thread(&shape).unwrap();
+        let seq = find_sequence(&shape, name.as_bytes()).unwrap();
+        inst.set_sequence(&shape, t, seq as i32, pos);
+    }
+    inst.animate(&shape, 0, None, &mut free).unwrap();
+    let node = |name: &str| {
+        let n = shape.find_name(name.as_bytes()).unwrap();
+        shape.nodes.iter().position(|x| x.name == n).unwrap()
+    };
+    let hand = &inst.node_transforms()[node("mount0")];
+    let elbow = &inst.node_transforms()[node("elbow_r")];
+    let ahead = mul_v(hand, [0.0, 1.0, 0.0]);
+    let up = mul_v(hand, [0.0, 0.0, 1.0]);
+    assert!(ahead[1] > 0.99 && up[2] > 0.99, "{ahead:?} {up:?}");
+    // The forearm points the same way, and the hand is in front of the shoulder at its height.
+    let forearm = mul_v(elbow, [0.0, 0.0, -1.0]);
+    assert!(forearm[1] > 0.99, "{forearm:?}");
+    let grip = mul_p(hand, [0.0; 3]);
+    assert!(grip[1] > 0.6 && (grip[2] - 1.5).abs() < 0.15, "{grip:?}");
+    // The left arm still walks.
+    let left = mul_p(&inst.node_transforms()[node("elbow_l")], [0.0; 3]);
+    assert!(left[1] < -0.1, "{left:?}");
 }
 
 #[test]
@@ -202,11 +300,26 @@ fn the_pistol_fires_its_slide_back_and_has_its_image_nodes() {
         assert!(shape.nodes.iter().any(|x| x.name == n), "{node}");
     }
     let back = posed(&shape, "fire", 0.5, "slide", [0.0; 3]);
-    assert!(near(back, [0.0, -0.06, 0.075]), "{back:?}");
+    assert!(near(back, [0.0, -shapes::RECOIL, 0.0]), "{back:?}");
     let home = posed(&shape, "fire", 1.0, "slide", [0.0; 3]);
-    assert!(near(home, [0.0, 0.0, 0.075]), "{home:?}");
+    assert!(near(home, [0.0; 3]), "{home:?}");
+    // The muzzle point is on the barrel's front face, the front of the whole pistol.
     let muzzle = posed(&shape, "fire", 0.0, "muzzlePoint", [0.0; 3]);
-    assert!(muzzle[1] > 0.24, "past the barrel's end: {muzzle:?}");
+    assert!(
+        near(muzzle, [0.0, shapes::MUZZLE_Y, shapes::BORE_Z]),
+        "{muzzle:?}"
+    );
+    assert!(
+        (shape.bounds[4] - shapes::MUZZLE_Y).abs() < 1e-6,
+        "{:?}",
+        shape.bounds
+    );
+    // The hand's point is inside the grip, below the slide.
+    let mount = posed(&shape, "fire", 0.0, "mountPoint", [0.0; 3]);
+    assert!(
+        mount[2] < -0.02 && mount[2] > -0.09 && mount[1].abs() < 0.03,
+        "{mount:?}"
+    );
 }
 
 #[test]

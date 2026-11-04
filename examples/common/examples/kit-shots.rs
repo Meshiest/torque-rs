@@ -1,5 +1,6 @@
 //! Pictures of every shape of the asset kit for review, drawn offscreen on a plain grey floor: the cube; the figure from the
-//! front, side and back, its face close up, and in its idle, walk, run and jump poses; the figure holding the pistol; the
+//! front, side and back, its face close up, and in its idle, walk, run and jump poses; the figure holding the pistol (its
+//! `hold` arm pose) from the side, front three-quarters and over its shoulder; the
 //! pistol from the side and three-quarters with its muzzle, eject and mount points marked; and the projectile.
 //!
 //! `cargo run -p torque-example-common --example kit-shots -- <dir>` (default `kit-shots`)
@@ -23,7 +24,7 @@ const FOV: u8 = 50;
 /// One picture: the shape, a sequence and its position (None: the rest pose), how high its origin stands, the camera's turn
 /// about the shape (0: in front of it, looking along -y at its face), how high the camera stands (a share of its distance),
 /// its distance (a share of the one that holds the whole shape), the point it looks at (None: the shape's centre), the nodes to
-/// mark, and whether the shape holds the pistol at `mount0`.
+/// mark, and whether the shape holds the pistol at `mount0` (with its `hold` pose).
 #[derive(Clone, Copy)]
 struct Picture {
     name: &'static str,
@@ -109,12 +110,32 @@ const PICTURES: &[Picture] = &[
         ..SHAPE
     },
     Picture {
-        name: "figure-holding-pistol",
+        name: "holding-side",
         pose: Some(("idle", 0.0)),
-        turn: 0.9,
+        turn: FRAC_PI_2,
+        rise: 0.1,
+        zoom: 0.6,
+        aim: Some([0.2, 0.35, 1.3]),
+        hold: true,
+        ..SHAPE
+    },
+    Picture {
+        name: "holding-front-three-quarter",
+        pose: Some(("idle", 0.0)),
+        turn: 0.6,
         rise: 0.15,
-        zoom: 0.35,
-        aim: Some([0.33, 0.1, 0.75]),
+        zoom: 0.6,
+        aim: Some([0.2, 0.35, 1.3]),
+        hold: true,
+        ..SHAPE
+    },
+    Picture {
+        name: "holding-over-the-shoulder",
+        pose: Some(("idle", 0.0)),
+        turn: PI - 0.25,
+        rise: 0.2,
+        zoom: 0.55,
+        aim: Some([0.33, 1.6, 1.5]),
         hold: true,
         ..SHAPE
     },
@@ -181,6 +202,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let seq = find_sequence(s, name.as_bytes()).ok_or(name)?;
             let t = instance.create_thread(s).ok_or("no thread")?;
             instance.set_sequence(s, t, seq as i32, pos);
+        }
+        if p.hold {
+            // The arm pose of holding, over the rest.
+            let seq = find_sequence(s, b"hold").ok_or("hold")?;
+            let t = instance.create_thread(s).ok_or("no thread")?;
+            instance.set_sequence(s, t, seq as i32, 0.0);
         }
         let detail = shape.detail().ok_or("no detail")?;
         let _ = instance.animate(s, detail, None, &mut |_| true);

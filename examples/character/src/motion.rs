@@ -83,6 +83,8 @@ pub struct Sequences {
     pub walk: usize,
     pub run: usize,
     pub jump: usize,
+    /// The arm pose of holding a pistol (played over the others on a second thread), when the shape has one.
+    pub hold: Option<usize>,
     pub walk_speed: f32,
     pub run_speed: f32,
 }
@@ -97,6 +99,7 @@ impl Sequences {
             walk,
             run,
             jump: seq("jump")?,
+            hold: seq("hold"),
             walk_speed: ground_speed(shape, walk),
             run_speed: ground_speed(shape, run),
         };
@@ -126,6 +129,8 @@ pub struct Figure {
     sequences: Sequences,
     detail: usize,
     jump_held: bool,
+    /// The thread playing `hold` while the figure holds a pistol.
+    holding: Option<ThreadId>,
 }
 
 impl Figure {
@@ -145,9 +150,35 @@ impl Figure {
             sequences,
             detail,
             jump_held: false,
+            holding: None,
         };
         figure.animate(shape);
         Some(figure)
+    }
+
+    /// Whether the figure holds a pistol (its right arm in the `hold` pose).
+    pub fn holding(&self) -> bool {
+        self.holding.is_some()
+    }
+
+    /// Takes the `hold` pose (a second thread over the state's, the right arm raised) or leaves it; nothing when the shape
+    /// has no `hold` sequence.
+    pub fn set_holding(&mut self, shape: &Shape, on: bool) {
+        match (on, self.holding, self.sequences.hold) {
+            (true, None, Some(seq)) => {
+                if let Some(t) = self.instance.create_thread(shape) {
+                    self.instance.set_sequence(shape, t, seq as i32, 0.0);
+                    self.holding = Some(t);
+                }
+            }
+            (false, Some(t), _) => {
+                self.instance.destroy_thread(shape, t);
+                self.holding = None;
+            }
+            _ => return,
+        }
+        self.instance.set_all_dirty();
+        self.animate(shape);
     }
 
     pub fn state(&self) -> State {
