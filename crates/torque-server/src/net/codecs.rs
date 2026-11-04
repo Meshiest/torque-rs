@@ -6,7 +6,10 @@
 //!
 //! Credit: [`TorqueCodecs::sim_mask`] follows the mask enums of TGE 1.4's `game/shapeBase.h`, `game/gameBase.h`,
 //! `game/player.h`, `game/item.h`, `game/camera.h` and `game/staticShape.h` (each Copyright (C) GarageGames.com, Inc.);
-//! Torque3D's enums differ. The code here is this crate's own.
+//! Torque3D's enums differ. A Player control object's packet data ([`player_packet_data`]) follows TGE 1.4's
+//! `Player::writePacketData` in `game/player.cc` (Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
+//! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is
+//! this crate's own.
 
 use std::any::Any;
 use std::fmt::Debug;

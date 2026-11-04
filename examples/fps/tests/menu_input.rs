@@ -2,6 +2,7 @@
 //! name box takes typed keys, the system cursor stands in for the canvas's (the arena sets no GuiCursor), and in the arena
 //! the keys and the mouse reach the play map.
 
+use torque::client::host::CursorShape;
 use torque::client::input::{WM_LBUTTONDOWN, WM_LBUTTONUP};
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
@@ -88,6 +89,23 @@ fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
         "the clicked name box takes the keys"
     );
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
+}
+
+#[test]
+fn the_system_cursor_is_a_pointer_over_buttons_and_a_text_cursor_over_the_name_box() {
+    let mut g = client();
+    g.host.draw_frame();
+    assert!(g.host.system_cursor());
+    let host = center(&g, "HostButton");
+    g.host.mouse_move(host);
+    assert_eq!(g.host.cursor_shape(), CursorShape::Pointer, "a button");
+    let name = center(&g, "NameEdit");
+    g.host.mouse_move(name);
+    assert_eq!(g.host.cursor_shape(), CursorShape::Text, "the name box");
+    g.host.mouse_move((1, 1));
+    assert_eq!(g.host.cursor_shape(), CursorShape::Arrow, "the bare panel");
+    g.host.mouse_move(host);
+    assert_eq!(g.host.cursor_shape(), CursorShape::Pointer);
 }
 
 #[test]

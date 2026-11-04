@@ -82,6 +82,7 @@ pub use control::{
 };
 pub use draw::{DrawCache, GuiDraws, draw_canvas, run_callbacks};
 pub use ext::{FontSource, GuiExtension, NoExtension};
+pub use input::{CursorShape, hover_cursor};
 
 /// The most children one walk visits under one control: a hostile script's GUI with more is walked to here (a named cap).
 pub const MAX_CHILDREN_WALKED: usize = 65_536;

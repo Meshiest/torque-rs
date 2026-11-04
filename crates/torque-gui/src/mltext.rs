@@ -32,7 +32,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
 use crate::control::{bounds, is_a, parent};
-use crate::profile::{color_at, int, profile_of, text};
+use crate::profile::{int, profile_of, text};
 use crate::{Gui, atoi};
 
 /// The most atoms, lines, bitmaps and tags one reflow makes (a hostile text of a million tags stops there).
@@ -752,12 +752,12 @@ pub fn reflow(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
         if font_of(vmr, gui, &face, size).is_none() {
             None
         } else {
-            let color = profile.map_or([0, 0, 0, 255], |p| color_at(vmr, p, b"fontColors", 0));
+            let color = profile.map_or([0, 0, 0, 255], |p| crate::profile::font_color(vmr, p, 0));
             let first = Style {
                 color,
                 shadow_color: color,
-                link_color: profile.map_or([0; 4], |p| color_at(vmr, p, b"fontColors", 4)),
-                link_color_hl: profile.map_or([0; 4], |p| color_at(vmr, p, b"fontColors", 5)),
+                link_color: profile.map_or([0; 4], |p| crate::profile::font_color(vmr, p, 4)),
+                link_color_hl: profile.map_or([0; 4], |p| crate::profile::font_color(vmr, p, 5)),
                 shadow_offset: (0, 0),
                 font: (face, size),
                 used: false,

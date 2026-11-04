@@ -96,7 +96,7 @@ fn bolts(a: &mut ArenaGame) -> Vec<(u32, F3, F3, bool, F3)> {
 }
 
 /// Turns the view by `yaw` and `pitch` (radians, positive pitch looks down) with the mouse, a little every frame over a second
-/// and a half, as a player's hand turns it (many small moves, each quantised).
+/// and a half, as a player's hand turns it (many small moves, each quantized).
 fn turn(a: &mut ArenaGame, yaw: f32, pitch: f32) {
     let steps = 90;
     for _ in 0..steps {

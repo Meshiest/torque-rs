@@ -426,6 +426,48 @@ pub fn refresh_mouse_control(vm: &mut Vm, gui: &Gui) -> Result<(), VmError> {
 /// The buttons' `mMouseOver` shown by drawing follows the canvas's mouse control (the hover).
 fn sync_hover(_gui: &Gui) {}
 
+/// The shape of the system cursor over the control under the mouse ([`hover_cursor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    /// The default arrow.
+    #[default]
+    Arrow,
+    /// The hand: the control under the mouse takes a click.
+    Pointer,
+    /// The text cursor: a text edit.
+    Text,
+}
+
+/// The cursor shape for the control under the mouse (the canvas's mouse control, the one [`find_mouse_control`] keeps): a
+/// button of any kind, a popup menu, a slider or a row of a text list that is active (and a button enabled) is a pointer, an
+/// active text edit the text cursor, anything else the arrow.
+pub fn hover_cursor(vm: &Vm, gui: &Gui) -> CursorShape {
+    let (mouse, pt) = {
+        let s = gui.0.borrow();
+        (s.input.mouse_control, s.cursor_pos)
+    };
+    let Some(id) = mouse.filter(|m| alive(vm, *m)) else {
+        return CursorShape::Arrow;
+    };
+    if !active(gui, id) || !gui.is_awake(id) {
+        return CursorShape::Arrow;
+    }
+    let pointer = if is_a(vm, id, "GuiTextEditCtrl") {
+        return CursorShape::Text;
+    } else if is_a(vm, id, "GuiButtonBaseCtrl") {
+        enabled(vm, id)
+    } else if is_a(vm, id, "GuiTextListCtrl") {
+        crate::textlist::row_under(vm, gui, id, pt)
+    } else {
+        is_a(vm, id, "GuiPopUpMenuCtrl") || is_a(vm, id, "GuiSliderCtrl")
+    };
+    if pointer {
+        CursorShape::Pointer
+    } else {
+        CursorShape::Arrow
+    }
+}
+
 // ---- first responders
 
 /// `GuiControl::setFirstResponder(GuiControl*)` up the parents (the canvas's tells the old one it lost it).

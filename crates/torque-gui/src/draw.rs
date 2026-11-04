@@ -1255,13 +1255,7 @@ impl Walk<'_> {
         };
         let width = font.str_width(text);
         let table: Vec<[u8; 4]> = (0..10)
-            .map(|i| {
-                color_i(
-                    &vm.objects()
-                        .field(profile, b"fontColors", i.to_string().as_bytes())
-                        .unwrap_or_default(),
-                )
-            })
+            .map(|i| crate::profile::font_color(vm, profile, i))
             .collect();
         // `mActive` picks `fontColor` or `fontColorNA`, and a control that is not `enabled` is NA either way.
         let active = crate::input::active(self.gui, id) && flag(vm, id, b"enabled");
