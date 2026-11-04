@@ -150,12 +150,13 @@ pub fn hull_slots(kept: &KeptShape) -> Vec<HullSlot> {
     let Some(facts) = kept.facts.as_ref() else {
         return Vec::new();
     };
+    // A shape lists only the collision details it has (TGE's lists grow by one per detail): the slots past them are absent.
     (0..SLOTS)
         .map(|i| {
-            let b = facts.bounds[i];
+            let b = facts.bounds.get(i).copied().unwrap_or_default();
             HullSlot {
                 slot: i as u32,
-                present: facts.slots.collision[i] >= 0,
+                present: facts.slots.collision.get(i).is_some_and(|&d| d >= 0),
                 bounds: Box3 {
                     min: [b[0], b[1], b[2]],
                     max: [b[3], b[4], b[5]],
@@ -352,7 +353,7 @@ impl ContainerWorld<'_> {
             let detail = {
                 let vm: &Vm = &self.vm.borrow();
                 let body = shapebase::state(vm, id)?.body.as_ref()?;
-                body.kept.facts.as_ref()?.slots.collision[slot]
+                *body.kept.facts.as_ref()?.slots.collision.get(slot)?
             };
             let at = usize::try_from(detail).ok()?;
             // `TSShapeInstance::animate(detail)` before the meshes are read (no script runs in it).
@@ -367,7 +368,7 @@ impl ContainerWorld<'_> {
                 Rc::new(body.instance.node_transforms().to_vec()),
             )
         };
-        let detail = kept.facts.as_ref()?.slots.collision[slot];
+        let detail = *kept.facts.as_ref()?.slots.collision.get(slot)?;
         if detail < 0 {
             return None;
         }
