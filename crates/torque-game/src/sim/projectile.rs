@@ -6,7 +6,7 @@
 //! for the position and the velocity; the VM's `position` matrix and the scene's boxes are copies written after every move,
 //! then the bins are checked.
 //!
-//! - `Projectile::onAdd` (Torque: after `GameBase::onAdd`): [`ProjectileClass`]: a Projectile without a ProjectileData is
+//! - `Projectile::onAdd` (Torque: after `GameBase::onAdd`): `ProjectileClass`: a Projectile without a ProjectileData is
 //!   refused; the state starts at the persist fields `initialPosition` and `initialVelocity`, with `sourceObject` (an object
 //!   id, resolved now: the source) and `sourceSlot`; the object enters the container.
 //! - `processTick` (Torque: `Projectile::processTick`): [`ProjectileTicker`] -> [`tick`] over [`HostImpl`].
