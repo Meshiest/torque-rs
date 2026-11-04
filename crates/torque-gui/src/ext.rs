@@ -93,6 +93,10 @@ pub enum GuiRule {
     /// double click is a click. The engine's are the usual desktop keys and clicks (select all, word moves, undo and redo
     /// steps; see [`crate::input::text_edit`]).
     TgeEditKeys,
+    /// The platform layer gives the keys TGE's codes ([`crate::keys::tge_vk_to_key`]): Pause reads as `numlock`, the
+    /// numpad's divide as `slash`, and Print Screen, the Windows and menu keys and F16 to F24 have none. The engine gives
+    /// every key its own ([`crate::keys::vk_to_key`]).
+    TgeKeyCodes,
 }
 
 /// A console message the GUI prints, with what it names; [`GuiMessage::engine_text`] is the engine's wording.

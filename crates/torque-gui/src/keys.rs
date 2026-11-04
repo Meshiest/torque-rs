@@ -3,7 +3,7 @@
 //! the US layout's `AsciiTable` is computed as Torque3D's `fillAsciiTable` fills it ([`ascii_table`]). The key codes
 //! (`KEY_*`), the names `bind` reads and `save`/`getBinding` write ([`parse_descriptor`], [`key_string`],
 //! [`modifier_string`]; a host's own tables through [`KeyTables`]), the device names ([`device_type_and_instance`],
-//! [`device_name`]), and the Win32 layer a window procedure uses ([`vk_to_key`], [`to_ascii`], [`map_virtual_key`]: the US
+//! [`device_name`]), and the Win32 layer a window procedure uses ([`vk_to_key`], TGE's [`tge_vk_to_key`], [`to_ascii`], [`map_virtual_key`]: the US
 //! layout's `ToAscii` and `MapVirtualKey`).
 //!
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `platform/input/event.cpp` (Copyright (c)
@@ -60,6 +60,7 @@ pub const KEY_LEFT: u16 = 0x0f;
 pub const KEY_UP: u16 = 0x10;
 pub const KEY_RIGHT: u16 = 0x11;
 pub const KEY_DOWN: u16 = 0x12;
+pub const KEY_PRINT: u16 = 0x13;
 pub const KEY_INSERT: u16 = 0x14;
 pub const KEY_DELETE: u16 = 0x15;
 pub const KEY_NUMPAD0: u16 = 0x46;
@@ -637,9 +638,21 @@ fn dik_to_key(scan: u8) -> u16 {
     }
 }
 
-/// The key code the window procedure gives a virtual key: the table for 0x08..=0x12, 0x1b, 0x20..=0x2e, 0x30..=0x39,
-/// 0x41..=0x5a and 0x70..=0x7b, the scan code's otherwise.
+/// The key code the engine gives a virtual key: TGE's ([`tge_vk_to_key`]), but every key its own: Pause is `pause` (TGE
+/// reads Num Lock's scan code for it), Print Screen `print` (TGE has none), the Windows and menu keys `win_lwindow`,
+/// `win_rwindow` and `win_apps` (TGE has none), the numpad's divide `numpaddivide` (TGE reads the slash's scan code) and F16
+/// to F24 their own (TGE has none).
 pub fn vk_to_key(vk: u8, scan: u8) -> u16 {
+    match vk {
+        0x13 | 0x5b..=0x5d | 0x6f | 0x7c..=0x87 => u16::from(VK_TABLE[usize::from(vk)]),
+        0x2c => KEY_PRINT,
+        _ => tge_vk_to_key(vk, scan),
+    }
+}
+
+/// The key code TGE's window procedure gives a virtual key: the table for 0x08..=0x12, 0x1b, 0x20..=0x2e, 0x30..=0x39,
+/// 0x41..=0x5a and 0x70..=0x7b, the scan code's otherwise.
+pub fn tge_vk_to_key(vk: u8, scan: u8) -> u16 {
     let direct =
         matches!(vk, 0x08..=0x12 | 0x1b | 0x20..=0x2e | 0x30..=0x39 | 0x41..=0x5a | 0x70..=0x7b);
     if direct {

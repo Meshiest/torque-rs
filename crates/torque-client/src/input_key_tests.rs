@@ -21,62 +21,57 @@ fn named(name: &str) -> u16 {
         .2
 }
 
-#[test]
-fn every_key_is_the_virtual_key_and_key_code_tge_uses() {
+/// Every key: its virtual key and the key code the engine's platform layer makes of it, by TGE's name.
+fn key_table() -> Vec<(Key, u8, u16)> {
     use Key as K;
-    // (key, virtual key, the key code the platform layer makes of it by TGE's name; None: one TGE reads no key code for).
-    let mut table: Vec<(Key, u8, Option<u16>)> = vec![
-        (K::ArrowLeft, 0x25, Some(named("left"))),
-        (K::ArrowUp, 0x26, Some(named("up"))),
-        (K::ArrowRight, 0x27, Some(named("right"))),
-        (K::ArrowDown, 0x28, Some(named("down"))),
-        (K::Home, 0x24, Some(named("home"))),
-        (K::End, 0x23, Some(named("end"))),
-        (K::PageUp, 0x21, Some(named("pageup"))),
-        (K::PageDown, 0x22, Some(named("pagedown"))),
-        (K::Insert, 0x2d, Some(named("insert"))),
-        (K::Delete, 0x2e, Some(named("delete"))),
-        (K::Backspace, 0x08, Some(named("backspace"))),
-        (K::Tab, 0x09, Some(named("tab"))),
-        (K::Enter, 0x0d, Some(named("return"))),
-        (K::Escape, 0x1b, Some(named("escape"))),
-        (K::Space, 0x20, Some(named("space"))),
-        (K::ShiftLeft, 0x10, Some(named("lshift"))),
-        (K::ShiftRight, 0x10, Some(named("rshift"))),
-        (K::ControlLeft, 0x11, Some(named("lcontrol"))),
-        (K::ControlRight, 0x11, Some(named("rcontrol"))),
-        (K::AltLeft, 0x12, Some(named("lalt"))),
-        (K::AltRight, 0x12, Some(named("ralt"))),
-        // The Windows and menu keys: TGE's window procedure finds no key code for them.
-        (K::SuperLeft, 0x5b, None),
-        (K::SuperRight, 0x5c, None),
-        (K::ContextMenu, 0x5d, None),
-        (K::CapsLock, 0x14, Some(named("capslock"))),
-        (K::NumLock, 0x90, Some(named("numlock"))),
-        (K::ScrollLock, 0x91, Some(named("scrolllock"))),
-        // `print` is TGE's code for `VK_PRINT` (0x2a), not for this key's `VK_SNAPSHOT`.
-        (K::PrintScreen, 0x2c, None),
-        // Its scan code is Num Lock's (the scan code table reads it as `numlock`).
-        (K::Pause, 0x13, Some(named("numlock"))),
-        (K::NumpadMultiply, 0x6a, Some(named("numpadmult"))),
-        (K::NumpadAdd, 0x6b, Some(named("numpadadd"))),
-        (K::NumpadSubtract, 0x6d, Some(named("numpadminus"))),
-        (K::NumpadDecimal, 0x6e, Some(named("numpaddecimal"))),
-        // Its scan code is the slash's (the extended bit tells them apart, and the scan code table reads none).
-        (K::NumpadDivide, 0x6f, Some(named("slash"))),
-        (K::NumpadEnter, 0x0d, Some(named("numpadenter"))),
-        (K::Minus, 0xbd, Some(named("minus"))),
-        (K::Equals, 0xbb, Some(named("equals"))),
-        (K::BracketLeft, 0xdb, Some(named("lbracket"))),
-        (K::BracketRight, 0xdd, Some(named("rbracket"))),
-        (K::Backslash, 0xdc, Some(named("backslash"))),
-        (K::Semicolon, 0xba, Some(named("semicolon"))),
-        (K::Apostrophe, 0xde, Some(named("apostrophe"))),
-        (K::Comma, 0xbc, Some(named("comma"))),
-        (K::Period, 0xbe, Some(named("period"))),
-        (K::Slash, 0xbf, Some(named("slash"))),
-        (K::Grave, 0xc0, Some(named("tilde"))),
-        (K::IntlBackslash, 0xe2, Some(named("lessthan"))),
+    let mut table: Vec<(Key, u8, u16)> = vec![
+        (K::ArrowLeft, 0x25, named("left")),
+        (K::ArrowUp, 0x26, named("up")),
+        (K::ArrowRight, 0x27, named("right")),
+        (K::ArrowDown, 0x28, named("down")),
+        (K::Home, 0x24, named("home")),
+        (K::End, 0x23, named("end")),
+        (K::PageUp, 0x21, named("pageup")),
+        (K::PageDown, 0x22, named("pagedown")),
+        (K::Insert, 0x2d, named("insert")),
+        (K::Delete, 0x2e, named("delete")),
+        (K::Backspace, 0x08, named("backspace")),
+        (K::Tab, 0x09, named("tab")),
+        (K::Enter, 0x0d, named("return")),
+        (K::Escape, 0x1b, named("escape")),
+        (K::Space, 0x20, named("space")),
+        (K::ShiftLeft, 0x10, named("lshift")),
+        (K::ShiftRight, 0x10, named("rshift")),
+        (K::ControlLeft, 0x11, named("lcontrol")),
+        (K::ControlRight, 0x11, named("rcontrol")),
+        (K::AltLeft, 0x12, named("lalt")),
+        (K::AltRight, 0x12, named("ralt")),
+        (K::SuperLeft, 0x5b, named("win_lwindow")),
+        (K::SuperRight, 0x5c, named("win_rwindow")),
+        (K::ContextMenu, 0x5d, named("win_apps")),
+        (K::CapsLock, 0x14, named("capslock")),
+        (K::NumLock, 0x90, named("numlock")),
+        (K::ScrollLock, 0x91, named("scrolllock")),
+        (K::PrintScreen, 0x2c, named("print")),
+        (K::Pause, 0x13, named("pause")),
+        (K::NumpadMultiply, 0x6a, named("numpadmult")),
+        (K::NumpadAdd, 0x6b, named("numpadadd")),
+        (K::NumpadSubtract, 0x6d, named("numpadminus")),
+        (K::NumpadDecimal, 0x6e, named("numpaddecimal")),
+        (K::NumpadDivide, 0x6f, named("numpaddivide")),
+        (K::NumpadEnter, 0x0d, named("numpadenter")),
+        (K::Minus, 0xbd, named("minus")),
+        (K::Equals, 0xbb, named("equals")),
+        (K::BracketLeft, 0xdb, named("lbracket")),
+        (K::BracketRight, 0xdd, named("rbracket")),
+        (K::Backslash, 0xdc, named("backslash")),
+        (K::Semicolon, 0xba, named("semicolon")),
+        (K::Apostrophe, 0xde, named("apostrophe")),
+        (K::Comma, 0xbc, named("comma")),
+        (K::Period, 0xbe, named("period")),
+        (K::Slash, 0xbf, named("slash")),
+        (K::Grave, 0xc0, named("tilde")),
+        (K::IntlBackslash, 0xe2, named("lessthan")),
     ];
     let letters = [
         K::A,
@@ -107,7 +102,7 @@ fn every_key_is_the_virtual_key_and_key_code_tge_uses() {
         K::Z,
     ];
     for (i, k) in letters.into_iter().enumerate() {
-        table.push((k, b'A' + i as u8, Some(KEY_A + i as u16)));
+        table.push((k, b'A' + i as u8, KEY_A + i as u16));
     }
     let digits = [
         K::Digit0,
@@ -134,12 +129,8 @@ fn every_key_is_the_virtual_key_and_key_code_tge_uses() {
         K::Numpad9,
     ];
     for i in 0..10 {
-        table.push((digits[i], b'0' + i as u8, Some(KEY_0 + i as u16)));
-        table.push((
-            numpad[i],
-            0x60 + i as u8,
-            Some(named(&format!("numpad{i}"))),
-        ));
+        table.push((digits[i], b'0' + i as u8, KEY_0 + i as u16));
+        table.push((numpad[i], 0x60 + i as u8, named(&format!("numpad{i}"))));
     }
     let f = [
         K::F1,
@@ -168,16 +159,68 @@ fn every_key_is_the_virtual_key_and_key_code_tge_uses() {
         K::F24,
     ];
     for (i, k) in f.into_iter().enumerate() {
-        // F16 and up have scan codes the scan code table does not read.
-        let code = (i < 15).then(|| KEY_F1 + i as u16);
-        table.push((k, 0x70 + i as u8, code));
+        table.push((k, 0x70 + i as u8, KEY_F1 + i as u16));
     }
+    table
+}
+
+#[test]
+fn every_key_is_its_virtual_key_and_has_a_key_code_of_its_own() {
+    let table = key_table();
     assert_eq!(table.len(), Key::ALL.len(), "every key in the table");
+    let mut codes = std::collections::HashMap::new();
     for (key, vk, code) in table {
         assert_eq!(key.virtual_key(), vk, "{key:?}");
         let mut w = Win32::default();
         let ev = event(&mut w, key, true);
-        assert_eq!((ev.obj_inst != 0).then_some(ev.obj_inst), code, "{key:?}");
+        assert_eq!(ev.obj_inst, code, "{key:?}");
+        assert_eq!(event(&mut w, key, false).obj_inst, code, "{key:?} up");
+        if let Some(other) = codes.insert(code, key) {
+            panic!("{key:?} and {other:?} share {code:#x}");
+        }
+    }
+}
+
+#[test]
+fn tge_s_key_codes_keep_its_window_procedure_s_quirks() {
+    // (key, TGE's code by name; None: one TGE reads no key code for). The other keys keep the engine's code.
+    let mut quirks: Vec<(Key, Option<u16>)> = vec![
+        // Its scan code is Num Lock's (the scan code table reads it as `numlock`).
+        (Key::Pause, Some(named("numlock"))),
+        // Its scan code is the slash's (the extended bit tells them apart, and the scan code table reads none).
+        (Key::NumpadDivide, Some(named("slash"))),
+        // `print` is TGE's code for `VK_PRINT` (0x2a), not for this key's `VK_SNAPSHOT`.
+        (Key::PrintScreen, None),
+        (Key::SuperLeft, None),
+        (Key::SuperRight, None),
+        (Key::ContextMenu, None),
+    ];
+    // F16 and up have scan codes the scan code table does not read.
+    quirks.extend(
+        [
+            Key::F16,
+            Key::F17,
+            Key::F18,
+            Key::F19,
+            Key::F20,
+            Key::F21,
+            Key::F22,
+            Key::F23,
+            Key::F24,
+        ]
+        .map(|k| (k, None)),
+    );
+    for (key, _, engine) in key_table() {
+        let want = quirks
+            .iter()
+            .find(|q| q.0 == key)
+            .map_or(Some(engine), |q| q.1);
+        let mut w = Win32 {
+            tge_key_codes: true,
+            ..Win32::default()
+        };
+        let ev = event(&mut w, key, true);
+        assert_eq!((ev.obj_inst != 0).then_some(ev.obj_inst), want, "{key:?}");
         assert_eq!(
             event(&mut w, key, false).obj_inst,
             ev.obj_inst,
