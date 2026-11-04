@@ -1525,7 +1525,7 @@ impl<'a> DrawCtx<'_, 'a> {
         self.0.outline(a, b, color);
     }
 
-    /// A rounded box ([`BOX_RADIUS`]): `fill` over `r` (x, y, width, height), then a one-pixel `border` round it (none when
+    /// A rounded box ([`BOX_RADIUS`]): `fill` over `r` (x, y, width, height), then a one-pixel `border` around it (none when
     /// its alpha is 0).
     pub fn rounded_box(&mut self, r: [i32; 4], fill: [u8; 4], border: [u8; 4]) {
         self.0.rounded_box(r, fill, border);

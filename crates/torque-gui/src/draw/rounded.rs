@@ -184,7 +184,7 @@ pub fn box_text_color(vm: &Vm, p: ObjId, state: BoxState) -> Option<[u8; 4]> {
 }
 
 impl Walk<'_> {
-    /// A rounded box over `r` (x, y, width, height): `fill`, then a one-pixel `border` round it (none when its alpha is 0).
+    /// A rounded box over `r` (x, y, width, height): `fill`, then a one-pixel `border` around it (none when its alpha is 0).
     pub(super) fn rounded_box(&mut self, r: Rect, fill: [u8; 4], border: [u8; 4]) {
         if r[2] <= 0 || r[3] <= 0 {
             return;

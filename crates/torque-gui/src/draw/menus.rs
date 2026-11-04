@@ -1057,7 +1057,7 @@ impl Walk<'_> {
 
     /// GuiPopUpMenuCtrl::onRender: closed, the slightly raised box when it has a border; open (`mInAction`), a
     /// `fillColorHL` fill outlined in `borderColor`; the text (`fontColor`, `fontColorNA` when not active or not enabled; no colour
-    /// table) justified, centred vertically. No children. In a rounded box of a popup with a border, text justified left or right
+    /// table) justified, centered vertically. No children. In a rounded box of a popup with a border, text justified left or right
     /// keeps [`BOX_TEXT_PAD`] from the side.
     pub(super) fn popup(&mut self, id: ObjId, offset: (i32, i32)) {
         let vm = self.vm;
