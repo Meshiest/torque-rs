@@ -253,3 +253,176 @@ fn pause_is_its_own_key_unless_the_gui_keeps_tge_s_key_codes() {
     assert_eq!(h.server.vm().global("$numlock").unwrap(), b"10");
     assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
 }
+
+/// A font whose printable characters are each 6 pixels wide.
+struct EvenFonts;
+
+impl fonts::Fallback for EvenFonts {
+    fn make(&self, _face: &str, _size: i32) -> Option<fonts::Font> {
+        let glyph = fonts::Glyph {
+            x_increment: 6,
+            ..fonts::Glyph::default()
+        };
+        Some(fonts::Font {
+            height: 12,
+            baseline: 10,
+            ascent: 10,
+            descent: 2,
+            glyphs: vec![glyph; 95],
+            sheets: Vec::new(),
+            remap: fonts::Remap::new(32, (0..95).collect()),
+            units: fonts::Units::Utf16,
+            tab: fonts::Tab::Spaces,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "even"
+    }
+}
+
+/// Even fonts and the engine's edit keys; TGE's click count when `tge_count`.
+struct EvenEdits {
+    tge_count: bool,
+}
+
+impl gui::GuiExtension for EvenEdits {
+    fn into_any(self: Rc<Self>) -> Rc<dyn std::any::Any> {
+        self
+    }
+
+    fn fonts(&self) -> Option<Box<dyn gui::FontSource>> {
+        Some(Box::new(fonts::FontCache::new(
+            "fonts",
+            Box::new(EvenFonts),
+        )))
+    }
+
+    fn rule(&self, rule: gui::ext::GuiRule) -> bool {
+        self.tge_count && rule == gui::ext::GuiRule::TgeClickCount
+    }
+}
+
+/// A host with a text edit at (10, 10), 200 wide, holding "hello world" (6 pixels a character), run for a second.
+fn host_with_edit(tge_count: bool) -> (Host, ts_vm::sim::ObjId) {
+    let mut h = host();
+    h.gui.set_extension(Rc::new(EvenEdits { tge_count }));
+    h.server
+        .vm_mut()
+        .eval(
+            b"new GuiControlProfile(EditProfile) { fontType = \"Arial\"; fontSize = 12; canKeyFocus = 1; tab = 1; };\
+              Content.add(new GuiTextEditCtrl(Ed) { profile = \"EditProfile\"; position = \"10 10\"; extent = \"200 20\"; enabled = 1; text = \"hello world\"; });",
+        )
+        .unwrap();
+    h.run(1000, |_| false);
+    let ed = h.server.vm().objects().find(b"Ed").unwrap();
+    (h, ed)
+}
+
+/// The edit's cursor and selection.
+fn edit_state(h: &Host, ed: ts_vm::sim::ObjId) -> (i32, i32, i32) {
+    h.gui
+        .with(ed, |c| {
+            let e = c.edit.as_ref().unwrap();
+            (e.cursor, e.block_start, e.block_end)
+        })
+        .unwrap()
+}
+
+/// Where the gap before character `i` is drawn.
+fn gap_x(h: &Host, ed: ts_vm::sim::ObjId, i: i32) -> i32 {
+    let start = h
+        .gui
+        .with(ed, |c| c.edit.as_ref().and_then(|e| e.text_offset))
+        .flatten()
+        .unwrap_or(13);
+    start + 6 * i
+}
+
+fn click(h: &mut Host, x: i32) {
+    use crate::input::MouseButton;
+    h.mouse_move((x, 15));
+    h.mouse_button(MouseButton::Left, true, (x, 15));
+    h.mouse_button(MouseButton::Left, false, (x, 15));
+}
+
+#[test]
+fn a_click_in_a_selection_drops_it_and_places_the_cursor() {
+    use crate::input::{Key, MouseButton};
+    // Selected by a drag.
+    let (mut h, ed) = host_with_edit(false);
+    let (a, b) = (gap_x(&h, ed, 1), gap_x(&h, ed, 9));
+    h.mouse_move((a, 15));
+    h.mouse_button(MouseButton::Left, true, (a, 15));
+    h.run(100, |_| false);
+    h.mouse_move((b, 15));
+    h.mouse_button(MouseButton::Left, false, (b, 15));
+    assert_eq!(edit_state(&h, ed), (9, 1, 9));
+    h.run(100, |_| false);
+    let x = gap_x(&h, ed, 4);
+    click(&mut h, x);
+    assert_eq!(edit_state(&h, ed), (4, 0, 0), "after a drag");
+
+    // Selected by Ctrl+A.
+    h.run(100, |_| false);
+    h.key(Key::ControlLeft, true);
+    h.press(Key::A);
+    h.key(Key::ControlLeft, false);
+    assert_eq!(edit_state(&h, ed), (11, 0, 11));
+    h.run(100, |_| false);
+    let x = gap_x(&h, ed, 7);
+    click(&mut h, x);
+    assert_eq!(edit_state(&h, ed), (7, 0, 0), "after Ctrl+A");
+
+    // Selected by a double click; a quick click elsewhere in the word is a click, not a triple click.
+    h.run(800, |_| false);
+    let x = gap_x(&h, ed, 8);
+    click(&mut h, x);
+    click(&mut h, x + 1);
+    assert_eq!(
+        edit_state(&h, ed),
+        (11, 6, 11),
+        "a double click selects the word"
+    );
+    h.run(100, |_| false);
+    let x = gap_x(&h, ed, 10);
+    click(&mut h, x);
+    assert_eq!(edit_state(&h, ed), (10, 0, 0), "after a double click");
+
+    // A drag from inside a selection selects from the press.
+    h.run(800, |_| false);
+    let x = gap_x(&h, ed, 2);
+    click(&mut h, x);
+    click(&mut h, x);
+    assert_eq!(edit_state(&h, ed), (5, 0, 5));
+    h.run(100, |_| false);
+    let (a, b) = (gap_x(&h, ed, 3), gap_x(&h, ed, 8));
+    h.mouse_move((a, 15));
+    h.mouse_button(MouseButton::Left, true, (a, 15));
+    h.mouse_move((b, 15));
+    h.mouse_button(MouseButton::Left, false, (b, 15));
+    assert_eq!(
+        edit_state(&h, ed),
+        (8, 3, 8),
+        "a drag from inside a selection"
+    );
+    assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
+}
+
+#[test]
+fn tge_s_click_count_takes_a_quick_press_anywhere_as_one_more_click() {
+    let (mut h, ed) = host_with_edit(true);
+    let x = gap_x(&h, ed, 8);
+    click(&mut h, x);
+    click(&mut h, x);
+    assert_eq!(edit_state(&h, ed), (11, 6, 11));
+    h.run(100, |_| false);
+    let x = gap_x(&h, ed, 2);
+    click(&mut h, x);
+    assert_eq!(
+        edit_state(&h, ed),
+        (11, 0, 11),
+        "a triple click 36 pixels away selects all"
+    );
+    assert!(h.input_errors.is_empty(), "{:?}", h.input_errors);
+}

@@ -12,7 +12,8 @@
 //!   `onRightMouseDragged` with the right one, else `onMouseMove`, after the captured control's enter/leave check), else to the
 //!   control under the cursor (`findMouseControl`: leave/enter as it changes). The wheel goes to the captured control or the one under
 //!   the cursor and is NOT consumed (the maps see it too). Button 0: a make counts clicks (the last press was the left one and at most
-//!   500 ms ago: one more, else 1), and goes to the captured control, else to the first canvas child from the top whose hit control
+//!   500 ms ago: one more, else 1; without [`GuiRule::TgeClickCount`] the press must also be within [`DOUBLE_CLICK_DISTANCE`]
+//!   of the last one), and goes to the captured control, else to the first canvas child from the top whose hit control
 //!   (`findHitControl`) is active or has a modal profile (that control's window comes to the front first); no such
 //!   child: nobody. A break goes to the captured control, else to the one under the cursor. Button 1 the same with `onRightMouse*`
 //!   and a 50 ms double-click window. Both are consumed.
@@ -44,6 +45,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
 use crate::control::{children, flag, is_a, parent};
+use crate::ext::GuiRule;
 use crate::keys::{self, *};
 use crate::{Gui, MAX_TREE_DEPTH};
 
@@ -56,6 +58,9 @@ pub const MAX_TAB_VISITS: u32 = 1 << 16;
 /// The double-click windows: the left button's and the right button's, in milliseconds.
 pub const LEFT_DOUBLE_CLICK_MS: u32 = 500;
 pub const RIGHT_DOUBLE_CLICK_MS: u32 = 50;
+/// Without [`GuiRule::TgeClickCount`]: how far a press may be from the last one, in pixels in x and in y, to count as one
+/// more click (the desktop's default).
+pub const DOUBLE_CLICK_DISTANCE: i32 = 4;
 /// The caret's flip: more than 500 ms and more than 3 frames since the last flip.
 pub const CARET_FLIP_MS: u32 = 500;
 pub const CARET_FLIP_FRAMES: u32 = 3;
@@ -113,6 +118,8 @@ pub struct CanvasInput {
     /// `mLastMouseDownTime`, `mLastMouseClickCount`, `mPrevMouseTime`.
     pub last_down_time: u32,
     pub click_count: u8,
+    /// Where the last press was (the engine's click count, [`DOUBLE_CLICK_DISTANCE`]).
+    pub last_down_point: (i32, i32),
     pub prev_mouse_time: u32,
     /// `mLastEvent`.
     pub last: GuiEvent,
@@ -1584,17 +1591,21 @@ fn left_button(vm: &mut Vm, gui: &Gui, canvas: ObjId, make: bool) -> Result<bool
         }
         return Ok(true);
     }
+    let tge_count = gui.ext().rule(GuiRule::TgeClickCount);
     let gev = {
         let mut i = input(gui);
         if !i.left_last {
             i.left_last = true;
             i.click_count = 1;
-        } else if t.wrapping_sub(i.last_down_time) > LEFT_DOUBLE_CLICK_MS {
+        } else if t.wrapping_sub(i.last_down_time) > LEFT_DOUBLE_CLICK_MS
+            || !(tge_count || near_last_press(&i))
+        {
             i.click_count = 1;
         } else {
             i.click_count = i.click_count.wrapping_add(1);
         }
         i.last_down_time = t;
+        i.last_down_point = i.last.point;
         i.last.clicks = i.click_count;
         i.prev_mouse_time = t;
         i.left_down = true;
@@ -1630,18 +1641,22 @@ fn left_button(vm: &mut Vm, gui: &Gui, canvas: ObjId, make: bool) -> Result<bool
 fn right_button(vm: &mut Vm, gui: &Gui, make: bool) -> Result<bool, VmError> {
     let t = now(vm);
     let capture = input(gui).capture.filter(|c| alive(vm, *c));
+    let tge_count = gui.ext().rule(GuiRule::TgeClickCount);
     let gev = {
         let mut i = input(gui);
         if make {
             if i.left_last {
                 i.left_last = false;
                 i.click_count = 1;
-            } else if t.wrapping_sub(i.last_down_time) > RIGHT_DOUBLE_CLICK_MS {
+            } else if t.wrapping_sub(i.last_down_time) > RIGHT_DOUBLE_CLICK_MS
+                || !(tge_count || near_last_press(&i))
+            {
                 i.click_count = 1;
             } else {
                 i.click_count = i.click_count.wrapping_add(1);
             }
             i.last_down_time = t;
+            i.last_down_point = i.last.point;
             i.last.clicks = i.click_count;
         }
         i.prev_mouse_time = t;
@@ -1668,6 +1683,13 @@ fn right_button(vm: &mut Vm, gui: &Gui, make: bool) -> Result<bool, VmError> {
         }
     }
     Ok(true)
+}
+
+/// Whether the pointer is within [`DOUBLE_CLICK_DISTANCE`] of the last press.
+fn near_last_press(i: &CanvasInput) -> bool {
+    let (x, y) = i.last.point;
+    let (lx, ly) = i.last_down_point;
+    x.abs_diff(lx) <= DOUBLE_CLICK_DISTANCE as u32 && y.abs_diff(ly) <= DOUBLE_CLICK_DISTANCE as u32
 }
 
 /// Before a mouse down: the GuiWindowCtrl the control is in comes to the front of its parent.

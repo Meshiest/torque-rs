@@ -97,6 +97,10 @@ pub enum GuiRule {
     /// numpad's divide as `slash`, and Print Screen, the Windows and menu keys and F16 to F24 have none. The engine gives
     /// every key its own ([`crate::keys::vk_to_key`]).
     TgeKeyCodes,
+    /// The canvas counts a press of a mouse button as one more click by its time alone (within the button's double-click
+    /// window of the last press). The engine's also needs it within [`crate::input::DOUBLE_CLICK_DISTANCE`] of the last
+    /// press, as the desktop does.
+    TgeClickCount,
 }
 
 /// A console message the GUI prints, with what it names; [`GuiMessage::engine_text`] is the engine's wording.
