@@ -1,5 +1,5 @@
 // The arena's client: the main menu, the list of games on the local network, the view with its HUD (rounds, health, chat),
-// the keys, and the way in and out.
+// the pause menu, the keys, and the way in and out.
 //
 // The host watches three globals the scripts set: $Arena::HostAsked (start a server here and join it), $Arena::LeaveAsked (the
 // view was left: stop hosting) and $Arena::QuitAsked. $Arena::Port is the UDP port number the games listen on.
@@ -13,6 +13,10 @@ new GuiControlProfile(ArenaTitleProfile) { fontType = "Arial"; fontSize = 48; fo
 new GuiControlProfile(ArenaTextProfile) { fontType = "Arial"; fontSize = 18; fontColors[0] = "226 230 238 255"; };
 new GuiControlProfile(ArenaDimProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "150 160 178 255"; };
 new GuiControlProfile(ArenaNoteProfile) { fontType = "Arial"; fontSize = 24; fontColors[0] = "255 208 120 255"; justify = "center"; };
+new GuiControlProfile(ArenaHeadProfile) { fontType = "Arial"; fontSize = 32; fontColors[0] = "246 240 228 255"; justify = "center"; };
+new GuiControlProfile(ArenaReloadProfile) { fontType = "Arial"; fontSize = 22; fontColors[0] = "255 208 120 255"; justify = "right"; };
+new GuiControlProfile(ArenaHintProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "150 160 178 255"; justify = "center"; };
+new GuiControlProfile(ArenaShadeProfile) { opaque = true; fillColor = "8 10 16 140"; };
 new GuiControlProfile(ArenaBigProfile) { fontType = "Arial"; fontSize = 40; fontColors[0] = "255 236 200 255"; justify = "right"; };
 new GuiControlProfile(ArenaHealthProfile) { fontType = "Arial"; fontSize = 40; fontColors[0] = "170 232 170 255"; };
 new GuiControlProfile(ArenaCrossProfile) { fontType = "Arial"; fontSize = 28; fontColors[0] = "255 255 255 220"; justify = "center"; };
@@ -284,6 +288,11 @@ new GameTSCtrl(PlayGui)
       profile = ArenaBigProfile; position = "556 540"; extent = "220 46"; horizSizing = "left"; vertSizing = "top";
       visible = true; enabled = true; text = "";
    };
+   new GuiTextCtrl(ReloadHud)
+   {
+      profile = ArenaReloadProfile; position = "556 512"; extent = "220 28"; horizSizing = "left"; vertSizing = "top";
+      visible = true; enabled = true; text = "";
+   };
    new GuiTextCtrl(PlayNote)
    {
       profile = ArenaNoteProfile; position = "100 200"; extent = "600 30"; horizSizing = "center"; visible = true; enabled = true;
@@ -291,14 +300,78 @@ new GameTSCtrl(PlayGui)
    };
    new GuiControl(HelpBand)
    {
-      profile = ArenaBandProfile; position = "500 12"; extent = "288 26"; horizSizing = "left";
+      profile = ArenaBandProfile; position = "428 12"; extent = "360 26"; horizSizing = "left";
       new GuiTextCtrl(PlayHelp)
       {
-         profile = ArenaDimProfile; position = "10 4"; extent = "270 18"; visible = true; enabled = true;
-         text = "Click shoot   T chat   Esc leave";
+         profile = ArenaDimProfile; position = "10 4"; extent = "342 18"; visible = true; enabled = true;
+         text = "Click shoot   R reload   T chat   Esc menu";
       };
    };
 };
+
+// ---- the pause menu: over the view (the game goes on: others still play), the cursor on and the keys off the figure
+
+new GuiControl(PauseGui)
+{
+   profile = ArenaShadeProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+   new GuiControl(PausePanel)
+   {
+      profile = ArenaPanelProfile; position = "240 160"; extent = "320 280"; horizSizing = "center"; vertSizing = "center";
+      new GuiTextCtrl(PauseTitle)
+      {
+         profile = ArenaHeadProfile; position = "0 26"; extent = "320 40"; visible = true; enabled = true;
+         text = "Paused";
+      };
+      new GuiButtonCtrl(ResumeButton)
+      {
+         profile = ArenaButtonProfile; position = "40 92"; extent = "240 56"; visible = true; enabled = true;
+         text = "Resume"; command = "resumeGame();";
+      };
+      new GuiButtonCtrl(LeaveButton)
+      {
+         profile = ArenaButtonProfile; position = "40 168"; extent = "240 56"; visible = true; enabled = true;
+         text = "Leave game"; command = "leaveGame();";
+      };
+      new GuiTextCtrl(PauseNote)
+      {
+         profile = ArenaHintProfile; position = "0 240"; extent = "320 20"; visible = true; enabled = true;
+         text = "Esc: back to the game";
+      };
+   };
+};
+
+function pauseGame()
+{
+   if ($Arena::Paused || $Arena::Chatting || !$Arena::InGame)
+      return;
+   $Arena::Paused = 1;
+   PlayMap.pop();
+   $mvForwardAction = $mvBackwardAction = $mvLeftAction = $mvRightAction = 0;
+   Canvas.pushDialog(PauseGui);
+   Canvas.cursorOn();
+   PauseMap.push();
+}
+
+function resumeGame()
+{
+   if (!$Arena::Paused)
+      return;
+   $Arena::Paused = 0;
+   PauseMap.pop();
+   Canvas.popDialog(PauseGui);
+   Canvas.cursorOff();
+   PlayMap.push();
+}
+
+// Leaving from the pause menu closes it first.
+function closePause()
+{
+   if (!$Arena::Paused)
+      return;
+   $Arena::Paused = 0;
+   PauseMap.pop();
+   Canvas.popDialog(PauseGui);
+}
 
 $Arena::ChatRows = 6;
 for (%i = 0; %i < $Arena::ChatRows; %i++)
@@ -425,17 +498,24 @@ function look(%v)
    $Arena::LookPitch = %pitch;
 }
 function chatKey(%v) { if (%v) openChat(); }
-function leaveKey(%v) { if (%v) leaveGame(); }
+function pauseKey(%v) { if (%v) pauseGame(); }
+function resumeKey(%v) { if (%v) resumeGame(); }
+function reloadKey(%v) { if (%v && isObject(ServerConnection)) commandToServer('Reload'); }
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
 PlayMap.bind(keyboard, space, jump);
 PlayMap.bind(keyboard, t, chatKey);
-PlayMap.bind(keyboard, escape, leaveKey);
+PlayMap.bind(keyboard, r, reloadKey);
+PlayMap.bind(keyboard, escape, pauseKey);
 PlayMap.bind(mouse, button0, fire);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
+
+// While paused, Esc goes back to the game.
+new ActionMap(PauseMap);
+PauseMap.bind(keyboard, escape, resumeKey);
 
 // ---- in and out
 
@@ -462,6 +542,7 @@ function leaveGame()
 {
    if ($Arena::Chatting)
       closeChat();
+   closePause();
    if (isObject(ServerConnection))
       ServerConnection.delete();
    $mvForwardAction = $mvBackwardAction = $mvLeftAction = $mvRightAction = 0;
@@ -546,8 +627,18 @@ function clientCmdSetAmmo(%left, %full)
 {
    $Arena::Ammo = %left;
    AmmoHud.setText(%left @ " / " @ %full);
-   if (%left == 0)
-      showNote("Out of rounds");
+   if (%left == %full)
+   {
+      $Arena::Reloading = 0;
+      ReloadHud.setText("");
+   }
+}
+
+function clientCmdReloading(%seconds)
+{
+   $Arena::Reloading = 1;
+   $Arena::Reloads++;
+   ReloadHud.setText("Reloading...");
 }
 
 function clientCmdSetHealth(%left, %full)

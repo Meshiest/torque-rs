@@ -1,5 +1,6 @@
 //! The arena over the loopback address: a host and a second client find each other through the LAN list, one shoots the other,
-//! and a chat line goes round. The game plays the test floor (`game/fixtures/floor.mis`): two figures facing each other.
+//! and a chat line goes round; the host reloads, by the key and by emptying the magazine. The game plays the test floor
+//! (`game/fixtures/floor.mis`): two figures facing each other.
 
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
@@ -16,6 +17,14 @@ fn client(name: &str) -> ArenaGame {
         },
     )
     .unwrap()
+}
+
+/// One shot: the trigger down, a moment, up, then `ms` of both clocks.
+fn shoot(a: &mut ArenaGame, b: &mut ArenaGame, ms: u32) {
+    a.call("fire", &["1"]).unwrap();
+    step_both(a, b, 96);
+    a.call("fire", &["0"]).unwrap();
+    step_both(a, b, ms);
 }
 
 fn step_both(a: &mut ArenaGame, b: &mut ArenaGame, ms: u32) {
@@ -100,6 +109,19 @@ fn two_players_meet_shoot_and_chat() {
         "as the script gave it"
     );
 
+    // The pistol's fire state names the muzzle flash's emitter, which the client holds with its particles.
+    let flash = b
+        .with_world(|w| {
+            let (&db, _) = w
+                .datablocks
+                .iter()
+                .find(|(_, d)| d.class == "ShapeBaseImageData")?;
+            torque_example_fps::scene::muzzle_flash(w, db)
+        })
+        .flatten()
+        .expect("the muzzle flash");
+    assert_eq!(flash.particle_data[0].lifetime_ms, 64);
+
     // One shot from the host at the other figure: a round spent and a hit.
     assert_eq!(a.global("$Arena::Ammo"), "11");
     a.call("fire", &["1"]).unwrap();
@@ -118,4 +140,33 @@ fn two_players_meet_shoot_and_chat() {
     a.call("say", &["hello there"]).unwrap();
     step_both(&mut a, &mut b, 500);
     assert_eq!(b.global("$Arena::LastChat"), "Ann: hello there");
+
+    // R reloads a magazine that is not full: the HUD says so while it runs, then the magazine is full again.
+    a.call("reloadKey", &["1"]).unwrap();
+    step_both(&mut a, &mut b, 300);
+    assert_eq!(a.global("$Arena::Reloading"), "1", "reloading");
+    assert_eq!(
+        a.call("eval", &["return ReloadHud.getValue();"]).unwrap(),
+        "Reloading..."
+    );
+    step_both(&mut a, &mut b, 1500);
+    assert_eq!(a.global("$Arena::Ammo"), "11", "a full magazine");
+    assert_eq!(a.global("$Arena::Reloading"), "0");
+    assert_eq!(
+        a.call("eval", &["return ReloadHud.getValue();"]).unwrap(),
+        ""
+    );
+    // A full magazine does not reload.
+    a.call("reloadKey", &["1"]).unwrap();
+    step_both(&mut a, &mut b, 300);
+    assert_eq!(a.global("$Arena::Reloads"), "1");
+
+    // Emptying the magazine reloads it by itself.
+    let left: u32 = a.global("$Arena::Ammo").parse().unwrap();
+    for _ in 0..left {
+        shoot(&mut a, &mut b, 200);
+    }
+    assert_eq!(a.global("$Arena::Reloads"), "2", "empty: a reload");
+    step_both(&mut a, &mut b, 1500);
+    assert_eq!(a.global("$Arena::Ammo"), "11");
 }

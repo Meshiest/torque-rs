@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use torque_example_common::view::WorldView;
 use torque_render_core::{Frame, Gpu, Offscreen};
+use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::Eye;
 
 use crate::client::{ArenaGame, ClientOptions, NetMode};
@@ -246,5 +247,215 @@ pub fn write_all(
     a.eye = Some(a.game.scene().overview_eye());
     save(&a.picture(&gpu)?, "overview")?;
     a.eye = None;
+    Ok(paths)
+}
+
+/// The two clients met in the arena Ann hosts, with a frame of each drawn at `size`.
+fn meet(
+    gpu: &Gpu,
+    size: (u32, u32),
+    make_files: &impl Fn() -> io::Result<GameFiles>,
+) -> Result<(Seat, Seat), String> {
+    let seat = |name: &str| -> Result<Seat, String> {
+        let files = make_files().map_err(|e| e.to_string())?;
+        let mut game = ArenaGame::new(
+            files,
+            ClientOptions {
+                net: NetMode::Loopback,
+                name: name.to_string(),
+                port: 0,
+                ..ClientOptions::default()
+            },
+        )?;
+        game.host.surface_size(size);
+        Ok(Seat {
+            view: game.view(gpu),
+            target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
+            eye: None,
+            game,
+        })
+    };
+    let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
+    a.game.call("hostGame", &[])?;
+    run_until(gpu, &mut a, &mut b, "the hosted game", |a, _| {
+        a.game.in_game()
+    })?;
+    let port = a.game.hosted_address().ok_or("no hosted address")?.port();
+    b.game.set_global("$Arena::Port", &port.to_string());
+    b.game.call("showJoin", &[])?;
+    run_until(gpu, &mut a, &mut b, "the list of games", |_, b| {
+        b.game
+            .global("$Arena::ServerRows")
+            .parse::<u32>()
+            .is_ok_and(|rows| rows > 0)
+    })?;
+    b.game.call("joinSelected", &[])?;
+    run_until(gpu, &mut a, &mut b, "the second player", |a, b| {
+        b.game.in_game() && a.game.scene().holders_drawn > 0
+    })?;
+    run(gpu, &mut [&mut a, &mut b], 1000)?;
+    Ok((a, b))
+}
+
+/// Ann's camera on Bob: from `offset` (in the world) off his feet, looking at his middle (or at `aim` above his feet).
+fn watch_bob(a: &mut Seat, offset: [f32; 3], aim: f32) {
+    let scene = a.game.scene();
+    let own = scene.own().map_or([0.0; 3], |o| o.position);
+    let far = |p: &[f32; 3]| (p[0] - own[0]).powi(2) + (p[1] - own[1]).powi(2);
+    let Some(bob) = scene
+        .others()
+        .into_iter()
+        .max_by(|p, q| far(p).total_cmp(&far(q)))
+    else {
+        return;
+    };
+    let at = [bob[0], bob[1], bob[2] + aim];
+    let mut eye = look_at(
+        [at[0] + offset[0], at[1] + offset[1], at[2] + offset[2]],
+        at,
+    );
+    eye.fov = Some(60);
+    a.eye = Some(eye);
+}
+
+/// The motion pictures at `size`, written into `dir`: Bob stepping sideways (left, then right) and walking backward, seen by a
+/// camera beside him; Bob looking up, level and down; Bob knocked out from the front (falling backward) and from behind
+/// (falling forward), a few frames of each fall and the body lying still; Ann's first-person pistol at rest, then the frames
+/// after a shot (the slide back, the kick, the muzzle flash); Bob firing toward the camera; the HUD while reloading; and the
+/// pause menu. Returns the paths.
+pub fn write_motion(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut paths = Vec::new();
+    let mut save = |frame: &Frame, name: &str| -> Result<(), String> {
+        let path = dir.join(format!("{name}.png"));
+        write_png(frame, &path).map_err(|e| e.to_string())?;
+        paths.push(path);
+        Ok(())
+    };
+    use std::f32::consts::PI;
+
+    // Side steps and the walk backward: Bob faces Ann (south); the camera stands in front of him and to his side.
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 800)?;
+    for (key, name) in [
+        ("$mvLeftAction", "strafe-left"),
+        ("$mvRightAction", "strafe-right"),
+        ("$mvBackwardAction", "walk-back"),
+    ] {
+        place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+        run(&gpu, &mut [&mut a, &mut b], 400)?;
+        b.game.set_global(key, "1");
+        run(&gpu, &mut [&mut a, &mut b], 350)?;
+        for k in 1..=4 {
+            watch_bob(&mut a, [-2.6, -3.4, 0.6], 1.0);
+            save(&a.picture(&gpu)?, &format!("{name}-{k}"))?;
+            run(&gpu, &mut [&mut a, &mut b], 96)?;
+        }
+        b.game.set_global(key, "0");
+    }
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+
+    // The look: Bob, side on to the camera, aims up, level and down.
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 400)?;
+    for (motion, name) in [
+        ("-500", "look-up"),
+        ("500", "look-level"),
+        ("500", "look-down"),
+    ] {
+        b.game.call("look", &[motion])?;
+        run(&gpu, &mut [&mut a, &mut b], 500)?;
+        watch_bob(&mut a, [-4.5, 0.0, 0.4], 1.1);
+        save(&a.picture(&gpu)?, name)?;
+    }
+    b.game.call("look", &["-500"])?;
+
+    // Ann's first-person pistol at rest, then the frames after a shot.
+    a.eye = None;
+    place(&mut a.game, "Bob", [6.0, 8.0, 0.1], PI)?;
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    save(&a.picture(&gpu)?, "fp-rest")?;
+    let flashes = a.game.scene().flashes;
+    a.game.call("fire", &["1"])?;
+    run_until(&gpu, &mut a, &mut b, "the shot's flash", |a, _| {
+        a.game.scene().flashes > flashes
+    })?;
+    save(&a.picture(&gpu)?, "fp-fire-0ms")?;
+    for (ms, name) in [
+        (16, "fp-fire-16ms"),
+        (32, "fp-fire-48ms"),
+        (48, "fp-fire-96ms"),
+        (112, "fp-fire-208ms"),
+    ] {
+        run(&gpu, &mut [&mut a, &mut b], ms)?;
+        save(&a.picture(&gpu)?, name)?;
+    }
+    a.game.call("fire", &["0"])?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+
+    // Bob fires toward the camera: the flash and the kick in his hand.
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 500)?;
+    let flashes = a.game.scene().flashes;
+    b.game.call("fire", &["1"])?;
+    run_until(&gpu, &mut a, &mut b, "Bob's flash", |a, _| {
+        a.game.scene().flashes > flashes
+    })?;
+    watch_bob(&mut a, [-2.2, -2.6, 0.5], 1.3);
+    save(&a.picture(&gpu)?, "third-person-fire")?;
+    b.game.call("fire", &["0"])?;
+    run(&gpu, &mut [&mut a, &mut b], 64)?;
+    a.eye = None;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+
+    // The reload: the HUD while it runs.
+    a.game.call("reloadKey", &["1"])?;
+    run_until(&gpu, &mut a, &mut b, "the reload", |a, _| {
+        a.game.global("$Arena::Reloading") == "1"
+    })?;
+    run(&gpu, &mut [&mut a, &mut b], 200)?;
+    save(&a.picture(&gpu)?, "reload-hud")?;
+    run(&gpu, &mut [&mut a, &mut b], 1500)?;
+
+    // Knocked out from the front (Bob faces Ann: he falls backward), then from behind (he faces away: forward).
+    for (yaw, name) in [(PI, "death-front"), (0.0, "death-behind")] {
+        place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+        place(&mut a.game, "Bob", [4.0, -11.5, 0.1], yaw)?;
+        run(&gpu, &mut [&mut a, &mut b], 500)?;
+        let hits: u32 = a.game.global("$Arena::Hits").parse().unwrap_or(0);
+        for k in 1..=3 {
+            a.game.call("fire", &["1"])?;
+            run(&gpu, &mut [&mut a, &mut b], 64)?;
+            a.game.call("fire", &["0"])?;
+            run_until(&gpu, &mut a, &mut b, "a hit", |a, _| {
+                a.game.global("$Arena::Hits").parse::<u32>().unwrap_or(0) >= hits + k
+            })?;
+            run(&gpu, &mut [&mut a, &mut b], 100)?;
+        }
+        for (k, ms) in [(1, 0), (2, 200), (3, 200), (4, 250), (5, 600)] {
+            run(&gpu, &mut [&mut a, &mut b], ms)?;
+            watch_bob(&mut a, [4.6, 1.2, 0.9], 0.6);
+            save(&a.picture(&gpu)?, &format!("{name}-{k}"))?;
+        }
+        a.eye = None;
+        // Back on his feet after the knock-out's wait.
+        run(&gpu, &mut [&mut a, &mut b], 2000)?;
+        a.game.call("reloadKey", &["1"])?;
+        run(&gpu, &mut [&mut a, &mut b], 1500)?;
+    }
+
+    // The pause menu over Ann's view.
+    a.game.call("pauseKey", &["1"])?;
+    run(&gpu, &mut [&mut a, &mut b], 200)?;
+    save(&a.picture(&gpu)?, "pause-menu")?;
+    a.game.call("resumeKey", &["1"])?;
     Ok(paths)
 }

@@ -1,6 +1,6 @@
 //! The mouse and the keys as the window posts them to the client host: over the menu the pointer hovers a button and the
-//! name box takes typed keys, the system cursor stands in for the canvas's (the arena sets no GuiCursor), and in the arena
-//! the keys and the mouse reach the play map.
+//! name box takes typed keys, the system cursor stands in for the canvas's (the arena sets no GuiCursor), in the arena the
+//! keys and the mouse reach the play map, and Escape opens the pause menu over the view.
 
 use torque::client::input::{WM_LBUTTONDOWN, WM_LBUTTONUP};
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
@@ -174,6 +174,115 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
 
     press(&mut g, VK_ESCAPE);
     g.step(32);
-    assert!(!g.in_game(), "Escape leaves the arena");
+    assert_eq!(g.global("$Arena::Paused"), "1", "Escape pauses");
+    assert!(g.in_game(), "and stays in the arena");
+    assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
+}
+
+/// A client in the arena it hosts.
+fn in_arena() -> ArenaGame {
+    let mut g = client();
+    let host = center(&g, "HostButton");
+    click(&mut g, host);
+    for _ in 0..200 {
+        g.step(32);
+        if g.in_game() {
+            break;
+        }
+    }
+    assert!(g.in_game(), "the Host button started a game");
+    g.host.draw_frame();
+    g
+}
+
+/// The center of a control in the pause panel (placed in the panel, the panel in the dialog).
+fn in_panel(game: &ArenaGame, name: &str) -> (i32, i32) {
+    let panel = object(game, "PausePanel");
+    let text = game
+        .vm()
+        .objects()
+        .field(panel, b"position", b"")
+        .unwrap_or_default();
+    let at: Vec<i32> = String::from_utf8_lossy(&text)
+        .split_whitespace()
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let (x, y) = center(game, name);
+    (at[0] + x, at[1] + y)
+}
+
+#[test]
+fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
+    let mut g = in_arena();
+    press(&mut g, VK_ESCAPE);
+    g.step(32);
+    g.host.draw_frame();
+    assert_eq!(g.global("$Arena::Paused"), "1");
+    assert!(
+        g.host.system_cursor(),
+        "the cursor is on over the pause menu"
+    );
+    assert!(!g.host.wants_mouse(), "the mouse is free");
+    // The figure does not move while paused: W goes nowhere.
+    g.key(b'W', true);
+    assert_eq!(
+        g.global("$mvForwardAction"),
+        "0",
+        "W does not reach the play map"
+    );
+    g.key(b'W', false);
+    let resume = in_panel(&g, "ResumeButton");
+    g.host.mouse_move(resume);
+    assert!(over(&g, "ResumeButton"), "the pointer hovers Resume");
+
+    // Resume: back to the game, the keys on the figure again.
+    click(&mut g, resume);
+    g.step(32);
+    g.host.draw_frame();
+    assert_eq!(g.global("$Arena::Paused"), "0", "Resume goes back");
+    assert!(g.host.wants_mouse(), "the arena holds the mouse again");
+    g.key(b'W', true);
+    assert_eq!(g.global("$mvForwardAction"), "1", "W moves again");
+    g.key(b'W', false);
+
+    // Escape twice: paused, then back.
+    press(&mut g, VK_ESCAPE);
+    g.step(32);
+    assert_eq!(g.global("$Arena::Paused"), "1");
+    press(&mut g, VK_ESCAPE);
+    g.step(32);
+    assert_eq!(g.global("$Arena::Paused"), "0", "Escape again goes back");
+    g.key(b'W', true);
+    assert_eq!(g.global("$mvForwardAction"), "1");
+    g.key(b'W', false);
+
+    // T still opens the chat when not paused.
+    press(&mut g, b'T');
+    g.step(32);
+    assert_eq!(g.global("$Arena::Chatting"), "1");
+    press(&mut g, VK_ESCAPE);
+    assert_eq!(g.global("$Arena::Chatting"), "0", "Escape closes the chat");
+    assert_eq!(g.global("$Arena::Paused"), "0", "without pausing");
+    assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
+}
+
+#[test]
+fn leave_game_from_the_pause_menu_returns_to_the_main_menu() {
+    let mut g = in_arena();
+    press(&mut g, VK_ESCAPE);
+    g.step(32);
+    g.host.draw_frame();
+    let leave = in_panel(&g, "LeaveButton");
+    click(&mut g, leave);
+    g.step(32);
+    assert!(!g.in_game(), "Leave game leaves the arena");
+    assert_eq!(g.global("$Arena::Paused"), "0");
+    assert_eq!(
+        g.call("eval", &["return Canvas.getContent().getName();"])
+            .unwrap(),
+        "MainMenuGui"
+    );
+    g.host.draw_frame();
+    assert!(g.host.system_cursor(), "the menu's cursor");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }

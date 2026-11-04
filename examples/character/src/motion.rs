@@ -30,6 +30,8 @@ use torque_render_scene::math::Mat;
 pub const TRANSITION: f32 = 0.25;
 /// Seconds the `hold` pose takes to come in or go out.
 pub const HOLD_BLEND: f32 = 0.2;
+/// Where in the `hold` sequence the arm aims level (the sequence runs from aiming up to aiming down).
+pub const HOLD_LEVEL: f32 = 0.5;
 /// Ground acceleration and the slower steering in the air (units a second, a second).
 pub const ACCELERATION: f32 = 12.0;
 pub const AIR_ACCELERATION: f32 = 3.0;
@@ -198,7 +200,8 @@ impl Figure {
             && self.hold.is_none()
             && let Some(thread) = self.instance.create_thread(shape)
         {
-            self.instance.set_sequence(shape, thread, seq as i32, 0.0);
+            self.instance
+                .set_sequence(shape, thread, seq as i32, HOLD_LEVEL);
             self.hold = Some(Hold {
                 thread,
                 weight: 0.0,
@@ -383,7 +386,7 @@ impl Figure {
             translations,
             weight: ease(hold.weight),
         };
-        self.pose_with(shape, hold.thread, hold_seq as i32, 0.0, Some(blend));
+        self.pose_with(shape, hold.thread, hold_seq as i32, HOLD_LEVEL, Some(blend));
     }
 
     /// Poses the figure with the hold's thread playing `seq` at `pos`, through `blend`.
