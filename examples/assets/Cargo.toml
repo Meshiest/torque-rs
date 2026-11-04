@@ -11,7 +11,7 @@ keywords = ["torque", "example", "assets", "gamedev"]
 categories = ["game-development"]
 
 # Every asset is made by this crate's code (boxes, keyframes, pixel patterns): nothing is read from any other file. The examples
-# call `write_all` at start-up, or `just example-assets` writes the set to a folder.
+# call `write_all` at start-up, or `just examples/assets` writes the set to a folder.
 
 [dependencies]
 torque-shape-builder = { path = "../../crates/torque-shape-builder" }
