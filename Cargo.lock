@@ -2016,6 +2016,7 @@ dependencies = [
 name = "torque"
 version = "0.1.0"
 dependencies = [
+ "png",
  "torque-audio",
  "torque-client",
  "torque-collide",
@@ -2028,6 +2029,9 @@ dependencies = [
  "torque-mapcore",
  "torque-maps",
  "torque-net",
+ "torque-render-core",
+ "torque-render-hd",
+ "torque-render-scene",
  "torque-resource",
  "torque-scene",
  "torque-server",
@@ -2039,6 +2043,7 @@ dependencies = [
  "torque-ts-text",
  "torque-ts-vm",
  "torque-vehicle",
+ "winit",
 ]
 
 [[package]]
@@ -2113,7 +2118,6 @@ dependencies = [
  "torque-example-common",
  "torque-render-core",
  "torque-render-scene",
- "winit",
 ]
 
 [[package]]
@@ -2123,9 +2127,7 @@ dependencies = [
  "torque",
  "torque-example-assets",
  "torque-render-core",
- "torque-render-hd",
  "torque-render-scene",
- "winit",
 ]
 
 [[package]]
@@ -2137,7 +2139,6 @@ dependencies = [
  "torque-example-common",
  "torque-render-core",
  "torque-render-scene",
- "winit",
 ]
 
 [[package]]
@@ -2149,7 +2150,6 @@ dependencies = [
  "torque-example-common",
  "torque-render-core",
  "torque-render-scene",
- "winit",
 ]
 
 [[package]]

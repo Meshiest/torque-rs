@@ -34,6 +34,12 @@ torque-ts-compiler = { path = "../torque-ts-compiler", optional = true }
 torque-ts-text = { path = "../torque-ts-text", optional = true }
 torque-ts-vm = { path = "../torque-ts-vm", optional = true }
 torque-vehicle = { path = "../torque-vehicle", optional = true }
+# `app`: the drawing crates, the window and the pictures' encoder.
+torque-render-core = { path = "../torque-render-core", optional = true }
+torque-render-hd = { path = "../torque-render-hd", optional = true }
+torque-render-scene = { path = "../torque-render-scene", optional = true }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"], optional = true }
+png = { version = "0.18", optional = true }
 
 [features]
 # Everything that needs no GPU, no window and no system library.
@@ -75,6 +81,12 @@ client-window = ["client", "torque-client/window"]
 audio-device = ["audio", "torque-audio/device"]
 # The system's fonts as the fallback for a face and size with no font cache.
 system-fonts = ["fonts", "torque-fonts/system-fonts"]
+# What a game made on the engine shares (`torque::app`): its files, a server, a client, a window, the world view and offscreen
+# pictures. Needs a GPU.
+app = [
+    "client-window", "system-fonts", "shapes", "dep:torque-render-core", "dep:torque-render-hd", "dep:torque-render-scene",
+    "dep:winit", "dep:png",
+]
 full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder"]
 
 [[example]]
