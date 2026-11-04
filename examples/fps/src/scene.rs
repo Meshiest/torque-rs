@@ -1,15 +1,19 @@
 //! The client's ghosts as the world view's objects, and the eye.
 //!
 //! - **Cubes** (StaticShapes) are scaled as their records say, their texture coordinates made from where each vertex is (one
-//!   grid tile a unit) and tinted by height. A cube's object is kept until its record moves it.
+//!   grid tile a unit) and tinted by height. A cube's object is kept until its record moves it. A map that asks for sharp
+//!   texels ([`TextureFilter::Nearest`]) has its cubes magnified with nearest-neighbor filtering; minified, they stay linear
+//!   between and within the mip levels, so the far floor does not shimmer.
 //! - **Figures** (Players) stand where their last two records put them, the frame between the two, facing their yaw, animated
 //!   as TGE's client animates a Player ([`torque::client::player_anim`]). A figure that holds an image (its record's first
 //!   image slot) plays the kit's `hold` on its arm thread, and the image's shape is drawn in its hand: the figure's `mount0`
 //!   node times the inverse of the image's `mountPoint` (`ShapeBase::getRenderImageTransform`). A new fire count plays the
 //!   image's `fire`.
-//! - **The own figure** (the ghost the server named, [`OwnLook`]) is not drawn: the eye is at its `eye` node, turned as the
+//! - **The own figure** (the ghost the server named, [`OwnLook`]) is not seen: the eye is at its `eye` node, turned as the
 //!   client's mouse turned it (the moves carry the same turns to the server, so the view does not wait for them), and the
-//!   pistol is drawn at the eye times the image's `eyeOffset` (a first-person image).
+//!   pistol is drawn at the eye times the image's `eyeOffset` (a first-person image, casting no shadow). The figure and the
+//!   pistol in its hand are still posed as a third-person view would pose them, drawn into the shadow maps only
+//!   ([`material::SHADOW_ONLY`]): the own shadow falls on the floor.
 //! - **Bolts** (Projectiles) fly on from their first record along its velocity (the client runs them on its own, as TGE's
 //!   client runs a projectile ghost) and are drawn along it, turning slowly about their flight, until their explosion record
 //!   hides them. A bolt whose datablock names a `particleEmitter` leaves a trail of its particles behind it
@@ -29,14 +33,14 @@ use torque::ghosts::{TgeClass, TgeRecord, Value};
 use torque::shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use torque_example_common::KitAssets;
 use torque_example_common::view::{SceneShape, WorldView};
-use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::hd::kit::look_at;
+use torque_render_scene::hd::{DynamicObject, material};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::particles::{Emitter, Rng};
 use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
-use torque_render_scene::{Draw, Vertex};
+use torque_render_scene::{Draw, Filter, Vertex};
 
 /// How long a server tick is (seconds): the time a figure takes from one record's place to the next.
 pub const TICK: f32 = 0.032;
@@ -80,13 +84,46 @@ fn world_uv(v: &Vertex) -> [f32; 2] {
     [u / 4.0, -w / 4.0]
 }
 
-fn retexture(d: &mut Draw, tint: [u8; 3]) {
+/// How a map's textures are drawn: the map's `textureFilter` (`$Arena::TextureFilter` once the server named it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextureFilter {
+    /// Linear filtering, the engine's default.
+    #[default]
+    Smooth,
+    /// Sharp texels: nearest-neighbor filtering where a texel covers more than a pixel.
+    Nearest,
+}
+
+impl TextureFilter {
+    /// The filter a map names (`nearest`, any case); anything else is smooth.
+    pub fn named(name: &str) -> TextureFilter {
+        if name.trim().eq_ignore_ascii_case("nearest") {
+            TextureFilter::Nearest
+        } else {
+            TextureFilter::Smooth
+        }
+    }
+}
+
+/// `o` with the material bits `bits` on each of its draws.
+fn marked(mut o: DynamicObject, bits: u32) -> DynamicObject {
+    if bits == 0 {
+        return o;
+    }
+    o.draws = o.draws.into_iter().map(|d| d.with_material(bits)).collect();
+    o
+}
+
+fn retexture(d: &mut Draw, tint: [u8; 3], filter: TextureFilter) {
     for v in &mut d.vertices {
         v.uv = world_uv(v);
         v.color = [tint[0], tint[1], tint[2], 255];
     }
     if let Some((_, sampler)) = d.texture.as_mut() {
         sampler.repeat = true;
+        if filter == TextureFilter::Nearest {
+            sampler.mag = Filter::Nearest;
+        }
     }
 }
 
@@ -238,6 +275,8 @@ pub struct OwnView {
 pub struct ArenaScene {
     shapes: HashMap<String, Option<SceneShape>>,
     cubes: BTreeMap<u32, KeptCube>,
+    /// How the cubes are drawn.
+    filter: TextureFilter,
     figures: BTreeMap<u32, Figure>,
     bolts: BTreeMap<u32, Bolt>,
     /// The trails of the bolts gone, fading out.
@@ -278,6 +317,14 @@ impl ArenaScene {
         self.fading.clear();
         self.live = 0;
         self.own = None;
+    }
+
+    /// Draws the cubes with `filter` from now on (the ones made with another are made again).
+    pub fn set_texture_filter(&mut self, filter: TextureFilter) {
+        if filter != self.filter {
+            self.filter = filter;
+            self.cubes.clear();
+        }
     }
 
     /// Where the bolts were drawn in the last frame.
@@ -346,7 +393,7 @@ impl ArenaScene {
                     let Some(shape) = self.shape(assets, file) else {
                         continue;
                     };
-                    if let Some(cube) = make_cube(view, assets, &shape, pose, index) {
+                    if let Some(cube) = make_cube(view, assets, &shape, pose, index, self.filter) {
                         self.cubes.insert(index, cube);
                     }
                 }
@@ -436,6 +483,8 @@ impl ArenaScene {
                         held.update(fire_count, dt);
                     }
                     let body = figure.transform();
+                    // The own figure and the pistol in its hand cast their shadows and are not seen.
+                    let seen_bits = if is_own { material::SHADOW_ONLY } else { 0 };
                     if is_own {
                         let eye = figure.eye_transform();
                         self.own = Some(OwnView {
@@ -448,17 +497,19 @@ impl ArenaScene {
                             let mut offset = Mat::IDENTITY;
                             offset.set_column3(held.eye_offset);
                             let m = Mat::mul(&eye, &offset);
-                            out.push(view.shape_object(assets, &held.shape, &held.instance, &m, 1));
+                            let image =
+                                view.shape_object(assets, &held.shape, &held.instance, &m, 1);
+                            out.push(marked(image, material::VIEW_ONLY));
                         }
-                        continue;
                     }
-                    out.push(view.shape_object(
+                    let figure_object = view.shape_object(
                         assets,
                         &figure.shape,
                         &figure.instance,
                         &body,
                         object_id(index, 0),
-                    ));
+                    );
+                    out.push(marked(figure_object, seen_bits));
                     if let (Some(held), Some(hand)) = (
                         figure.held.as_ref(),
                         figure
@@ -467,14 +518,17 @@ impl ArenaScene {
                             .and_then(|n| figure.instance.node_transform(n)),
                     ) {
                         let m = Mat::mul(&Mat::mul(&body, &Mat { m: *hand }), &held.mount_inverse);
-                        out.push(view.shape_object(
+                        let held_object = view.shape_object(
                             assets,
                             &held.shape,
                             &held.instance,
                             &m,
                             object_id(index, 1),
-                        ));
-                        self.holders_drawn += 1;
+                        );
+                        out.push(marked(held_object, seen_bits));
+                        if !is_own {
+                            self.holders_drawn += 1;
+                        }
                     }
                 }
                 (Some(TgeClass::Projectile), TgeRecord::Projectile(p)) => {
@@ -626,6 +680,7 @@ fn make_cube(
     shape: &SceneShape,
     pose: Pose,
     index: u32,
+    filter: TextureFilter,
 ) -> Option<KeptCube> {
     let (m, scale) = pose_matrix(&pose, None)?;
     let instance = shape.instance()?;
@@ -639,7 +694,66 @@ fn make_cube(
         &m,
         scale,
         object_id(index, 0),
-        &mut |d| retexture(d, tint),
+        &mut |d| retexture(d, tint, filter),
     );
     Some(KeptCube { pose, object })
+}
+
+#[cfg(test)]
+mod tests {
+    use torque_render_scene::{Blend, Cull, Sampler, TexEnv};
+
+    use super::*;
+
+    fn textured() -> Draw {
+        let linear = Sampler {
+            repeat: false,
+            mag: Filter::Linear,
+            min: Filter::Linear,
+            mip: Filter::Linear,
+            mipmaps: true,
+        };
+        Draw {
+            label: String::new(),
+            vertices: Vec::new(),
+            lighting: true,
+            tex_env: TexEnv::Modulate,
+            texture: Some((0, linear)),
+            blend: Blend::Opaque,
+            cull: Cull::None,
+            depth_test: true,
+            depth_write: true,
+            fog: true,
+            lights: Vec::new(),
+            vertex_key: None,
+        }
+    }
+
+    #[test]
+    fn a_map_names_its_texture_filter() {
+        assert_eq!(TextureFilter::named("nearest"), TextureFilter::Nearest);
+        assert_eq!(TextureFilter::named(" Nearest "), TextureFilter::Nearest);
+        assert_eq!(TextureFilter::named(""), TextureFilter::Smooth);
+        assert_eq!(TextureFilter::named("linear"), TextureFilter::Smooth);
+    }
+
+    #[test]
+    fn sharp_cubes_are_magnified_nearest_and_minified_linear() {
+        let mut d = textured();
+        retexture(&mut d, [255; 3], TextureFilter::Nearest);
+        let (_, s) = d.texture.unwrap();
+        assert!(s.repeat && s.mipmaps);
+        assert_eq!(
+            (s.mag, s.min, s.mip),
+            (Filter::Nearest, Filter::Linear, Filter::Linear)
+        );
+
+        let mut d = textured();
+        retexture(&mut d, [255; 3], TextureFilter::Smooth);
+        let (_, s) = d.texture.unwrap();
+        assert_eq!(
+            (s.mag, s.min, s.mip),
+            (Filter::Linear, Filter::Linear, Filter::Linear)
+        );
+    }
 }

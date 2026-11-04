@@ -142,6 +142,7 @@ if ($Pref::Server::Name $= "")
    $Pref::Server::Name = "Arena";
 
 // Loads the map %file: a script that builds MissionGroup and sets $Arena::SpawnCount and $Arena::Spawn[i] ("x y z yaw").
+// MissionGroup's textureFilter field ("nearest", or none) is how the clients draw the map's textures.
 function startArena(%file)
 {
    $Arena::Sequence++;
@@ -198,7 +199,7 @@ function GameConnection::onDataBlocksDone(%client, %sequence)
       return;
    %client.activateGhosting();
    %client.spawnFigure();
-   commandToClient(%client, 'ArenaStarted', $Arena::Title, $Pref::Server::Name);
+   commandToClient(%client, 'ArenaStarted', $Arena::Title, $Pref::Server::Name, MissionGroup.textureFilter);
    messageAll("info", %client.name SPC "joined the arena.");
 }
 
