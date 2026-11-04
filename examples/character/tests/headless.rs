@@ -2,8 +2,9 @@
 //! the figure's pose differs between idle and walk; and frames drawn offscreen show it (skipped with a note on a machine with
 //! no GPU adapter).
 
+use torque::client::input::Key;
 use torque::shapes::math::mul_p;
-use torque_example_character::game::{CharacterGame, keys};
+use torque_example_character::game::CharacterGame;
 use torque_example_character::motion::State;
 use torque_example_character::shots::{FRAME_MS, Step, picture_camera, play};
 
@@ -32,7 +33,7 @@ fn the_keys_walk_run_and_jump_the_figure_and_it_lands() {
     assert_eq!(game.figure().state(), State::Idle);
     let idle_foot = left_foot(&game);
 
-    game.key(keys::W, true);
+    game.key(Key::W, true);
     run(&mut game, 400);
     assert_eq!(game.figure().state(), State::Walk);
     let walk = game.figure().sequences().walk;
@@ -56,24 +57,24 @@ fn the_keys_walk_run_and_jump_the_figure_and_it_lands() {
         game.figure().position
     );
 
-    game.key(keys::SHIFT, true);
+    game.key(Key::ShiftLeft, true);
     run(&mut game, 200);
     let speed = game.figure().ground_speed();
     assert!(speed > 1.6, "speeding up: {speed}");
     run(&mut game, 600);
     assert_eq!(game.figure().state(), State::Run);
 
-    game.key(keys::SPACE, true);
+    game.key(Key::Space, true);
     run(&mut game, 100);
     assert_eq!(game.figure().state(), State::Jump);
     assert!(game.figure().position[2] > 0.2);
     run(&mut game, 600);
     assert_eq!(game.figure().state(), State::Run, "landed running");
     assert_eq!(game.figure().position[2], 0.0);
-    game.key(keys::SPACE, false);
+    game.key(Key::Space, false);
 
-    game.key(keys::SHIFT, false);
-    game.key(keys::W, false);
+    game.key(Key::ShiftLeft, false);
+    game.key(Key::W, false);
     run(&mut game, 1500);
     assert_eq!(game.figure().state(), State::Idle);
 }
@@ -82,7 +83,7 @@ fn the_keys_walk_run_and_jump_the_figure_and_it_lands() {
 fn a_transition_blends_the_pose() {
     let mut game = CharacterGame::new().unwrap();
     run(&mut game, 300);
-    game.key(keys::W, true);
+    game.key(Key::W, true);
     game.step(FRAME_MS);
     game.step(FRAME_MS);
     assert_eq!(game.figure().state(), State::Walk);
@@ -106,7 +107,7 @@ fn frames_drawn_offscreen_show_the_figure_move() {
         Step::Shot("idle"),
         Step::Wait(160),
         Step::Shot("idle again"),
-        Step::Key(keys::D, true),
+        Step::Key(Key::D, true),
         Step::Wait(320),
         Step::Shot("walk"),
     ];
@@ -150,8 +151,8 @@ fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
     let mut game = CharacterGame::new().unwrap();
     run(&mut game, 100);
     assert!(game.held_pistol().is_none());
-    game.key(keys::F, true);
-    game.key(keys::F, false);
+    game.key(Key::F, true);
+    game.key(Key::F, false);
     run(&mut game, 300);
     assert!(game.figure().holding() && game.figure().hold_weight() == 1.0);
     let held = game.held_pistol().unwrap();
@@ -164,14 +165,14 @@ fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
         "{muzzle:?}"
     );
     // Walking keeps the arm up.
-    game.key(keys::W, true);
+    game.key(Key::W, true);
     run(&mut game, 500);
     assert_eq!(game.figure().state(), State::Walk);
     let ahead = game.held_pistol().unwrap().mul_v([0.0, 1.0, 0.0]);
     assert!(ahead[1] > 0.98, "{ahead:?}");
-    game.key(keys::W, false);
-    game.key(keys::F, true);
-    game.key(keys::F, false);
+    game.key(Key::W, false);
+    game.key(Key::F, true);
+    game.key(Key::F, false);
     run(&mut game, 50);
     assert!(
         game.figure().holding() && game.figure().hold_weight() < 1.0,

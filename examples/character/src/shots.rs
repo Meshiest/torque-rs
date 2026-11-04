@@ -6,17 +6,18 @@ use std::path::Path;
 use torque::app::shots::Shots;
 use torque::app::view::WorldView;
 use torque::app::window::offscreen_gpu;
+use torque::client::input::Key;
 use torque_render_core::{Frame, Gpu};
 
-use crate::game::{CharacterGame, keys};
+use crate::game::CharacterGame;
 
 pub use torque::app::shots::FRAME_MS;
 
 /// One step of a scripted run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// A key (a virtual key code) going down (true) or up.
-    Key(u8, bool),
+    /// A key going down (true) or up.
+    Key(Key, bool),
     /// Milliseconds of frames.
     Wait(u32),
     /// A picture of the last frame, named.
@@ -27,14 +28,14 @@ pub enum Step {
 pub const STATES: &[Step] = &[
     Step::Wait(1000),
     Step::Shot("idle"),
-    Step::Key(keys::D, true),
+    Step::Key(Key::D, true),
     Step::Wait(800),
     Step::Shot("walk"),
-    Step::Key(keys::SPACE, true),
+    Step::Key(Key::Space, true),
     Step::Wait(300),
     Step::Shot("jump"),
-    Step::Key(keys::SPACE, false),
-    Step::Key(keys::D, false),
+    Step::Key(Key::Space, false),
+    Step::Key(Key::D, false),
 ];
 
 /// The camera the pictures are taken from: in front of the figure and to its side, a little above.
@@ -57,7 +58,7 @@ pub fn play(
     let mut shots = Vec::new();
     for step in script {
         match *step {
-            Step::Key(vk, down) => game.key(vk, down),
+            Step::Key(key, down) => game.key(key, down),
             Step::Wait(ms) => {
                 for _ in 0..ms.div_ceil(FRAME_MS) {
                     game.step(FRAME_MS);

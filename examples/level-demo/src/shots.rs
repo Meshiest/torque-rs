@@ -6,11 +6,25 @@ use std::path::{Path, PathBuf};
 
 use torque::app::shots::{Seat, Shots};
 use torque::app::window::offscreen_gpu;
+use torque::client::input::Key;
 use torque_render_core::Frame;
 use torque_render_scene::source::Eye;
 
-use crate::client::{LevelDemo, keys};
+use crate::client::LevelDemo;
 use crate::files::GameFiles;
+
+/// The keys that pick the first nine maps on the menu.
+const DIGITS: [Key; 9] = [
+    Key::Digit1,
+    Key::Digit2,
+    Key::Digit3,
+    Key::Digit4,
+    Key::Digit5,
+    Key::Digit6,
+    Key::Digit7,
+    Key::Digit8,
+    Key::Digit9,
+];
 
 /// The longest a map may take to start (ms of the clock).
 pub const START_LIMIT_MS: u32 = 20_000;
@@ -38,9 +52,9 @@ pub fn write_all(files: GameFiles, dir: &Path, size: (u32, u32)) -> Result<Vec<P
     };
     seat.run(&gpu, 200)?;
     save(&picture(&mut seat, None)?, "menu")?;
-    for index in 0..seat.game.maps.len().min(9) {
+    let count = seat.game.maps.len();
+    for (index, &number) in DIGITS.iter().enumerate().take(count) {
         let name = map_name(&seat.game.maps[index].path);
-        let number = keys::ONE + index as u8;
         seat.game.key(number, true);
         seat.game.key(number, false);
         let mut waited = 0;
@@ -59,16 +73,16 @@ pub fn write_all(files: GameFiles, dir: &Path, size: (u32, u32)) -> Result<Vec<P
             &format!("{name}-overview"),
         )?;
         // Behind the figure in mid-stride (the clock stands still while the picture settles).
-        seat.game.key(keys::W, true);
+        seat.game.key(Key::W, true);
         seat.run(&gpu, 700)?;
         save(&picture(&mut seat, None)?, &format!("{name}-behind"))?;
-        seat.game.key(keys::W, false);
+        seat.game.key(Key::W, false);
         seat.run(&gpu, 500)?;
         seat.game.set_first_person(true);
         save(&picture(&mut seat, None)?, &format!("{name}-eye"))?;
         seat.game.set_first_person(false);
-        seat.game.key(keys::ESCAPE, true);
-        seat.game.key(keys::ESCAPE, false);
+        seat.game.key(Key::Escape, true);
+        seat.game.key(Key::Escape, false);
         seat.run(&gpu, 200)?;
     }
     Ok(shots.paths)

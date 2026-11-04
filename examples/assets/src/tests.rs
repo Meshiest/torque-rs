@@ -613,3 +613,29 @@ fn the_whole_top_of_the_pistol_runs_back_and_the_barrel_stays() {
     }
     assert_ne!(node_of("barrel"), slide, "the barrel is fixed");
 }
+
+#[test]
+fn the_recoil_kicks_the_held_arm_up_and_back_and_settles() {
+    let shape = shapes::figure();
+    let shape = &shape.shape;
+    let s = &shape.sequences[find_sequence(shape, b"light_recoil").unwrap()];
+    assert_ne!(s.flags & 8, 0, "light_recoil is a blend sequence");
+    assert_eq!(s.duration, shapes::RECOIL_SECONDS);
+    // Over the arm held up, the hand rises at the kick's height and is back where it was at the end.
+    let hand = |pos: f32| {
+        posed_with(
+            shape,
+            &[("hold", 0.5), ("light_recoil", pos)],
+            "elbow_r",
+            [0.0, 0.0, -0.3],
+        )
+    };
+    let held = posed(shape, "hold", 0.5, "elbow_r", [0.0, 0.0, -0.3]);
+    let kicked = hand(0.04 / shapes::RECOIL_SECONDS);
+    assert!(kicked[2] > held[2] + 0.02, "{kicked:?} over {held:?}");
+    let end = hand(1.0);
+    assert!(
+        (0..3).all(|k| (end[k] - held[k]).abs() < 1e-4),
+        "{end:?} back at {held:?}"
+    );
+}

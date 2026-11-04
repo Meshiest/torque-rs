@@ -3,16 +3,9 @@
 //! keys and the mouse reach the play map, and Escape opens the pause menu over the view.
 
 use torque::client::host::CursorShape;
-use torque::client::input::{WM_LBUTTONDOWN, WM_LBUTTONUP};
+use torque::client::input::{Key, WM_LBUTTONDOWN, WM_LBUTTONUP};
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
-
-/// Virtual-key codes of the keys the tests press.
-const VK_RETURN: u8 = 0x0d;
-const VK_ESCAPE: u8 = 0x1b;
-const VK_BACK: u8 = 0x08;
-const VK_CONTROL: u8 = 0x11;
-const VK_SPACE: u8 = 0x20;
 
 fn client() -> ArenaGame {
     let mut game = ArenaGame::new(
@@ -51,9 +44,9 @@ fn click(game: &mut ArenaGame, at: (i32, i32)) {
     game.host.post(WM_LBUTTONUP, 0, lparam);
 }
 
-fn press(game: &mut ArenaGame, vk: u8) {
-    game.key(vk, true);
-    game.key(vk, false);
+fn press(game: &mut ArenaGame, key: Key) {
+    game.key(key, true);
+    game.key(key, false);
 }
 
 fn over(game: &ArenaGame, name: &str) -> bool {
@@ -74,8 +67,8 @@ fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
 
     let name = center(&mut g, "NameEdit");
     click(&mut g, name);
-    for vk in *b"BOB" {
-        press(&mut g, vk);
+    for key in [Key::B, Key::O, Key::B] {
+        press(&mut g, key);
     }
     g.step(32);
     assert_eq!(
@@ -86,11 +79,11 @@ fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
 
-/// `vk` pressed with Ctrl held.
-fn ctrl(game: &mut ArenaGame, vk: u8) {
-    game.key(VK_CONTROL, true);
-    press(game, vk);
-    game.key(VK_CONTROL, false);
+/// `key` pressed with Ctrl held.
+fn ctrl(game: &mut ArenaGame, key: Key) {
+    game.key(Key::ControlLeft, true);
+    press(game, key);
+    game.key(Key::ControlLeft, false);
 }
 
 fn name_value(game: &mut ArenaGame) -> String {
@@ -102,28 +95,28 @@ fn the_name_box_takes_the_desktop_editing_keys() {
     let mut g = client();
     let name = center(&mut g, "NameEdit");
     click(&mut g, name);
-    for vk in [b'B', b'O', b'B', VK_SPACE, b'J', b'O'] {
-        press(&mut g, vk);
+    for key in [Key::B, Key::O, Key::B, Key::Space, Key::J, Key::O] {
+        press(&mut g, key);
     }
     assert_eq!(name_value(&mut g), "Annbob jo");
-    ctrl(&mut g, VK_BACK);
+    ctrl(&mut g, Key::Backspace);
     assert_eq!(
         name_value(&mut g),
         "Annbob ",
         "Ctrl+Backspace deletes a word"
     );
-    ctrl(&mut g, b'Z');
+    ctrl(&mut g, Key::Z);
     assert_eq!(name_value(&mut g), "Annbob jo", "Ctrl+Z undoes it");
-    ctrl(&mut g, b'A');
-    press(&mut g, b'X');
+    ctrl(&mut g, Key::A);
+    press(&mut g, Key::X);
     assert_eq!(
         name_value(&mut g),
         "x",
         "Ctrl+A selects all, typing replaces it"
     );
-    ctrl(&mut g, b'Z');
+    ctrl(&mut g, Key::Z);
     assert_eq!(name_value(&mut g), "Annbob jo");
-    ctrl(&mut g, b'Y');
+    ctrl(&mut g, Key::Y);
     assert_eq!(name_value(&mut g), "x", "Ctrl+Y redoes");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
@@ -204,9 +197,9 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
     assert!(g.host.wants_mouse(), "the arena holds the mouse");
     assert!(!g.host.system_cursor());
 
-    g.key(b'W', true);
+    g.key(Key::W, true);
     assert_eq!(g.global("$mvForwardAction"), "1", "W moves forward");
-    g.key(b'W', false);
+    g.key(Key::W, false);
     assert_eq!(g.global("$mvForwardAction"), "0");
 
     let yaw = g.global("$Arena::LookYaw");
@@ -217,20 +210,20 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
     click(&mut g, (400, 300));
     assert_ne!(g.global("$mvTriggerCount0"), shots, "a click fires");
 
-    press(&mut g, b'T');
+    press(&mut g, Key::T);
     g.step(32);
     assert_eq!(g.global("$Arena::Chatting"), "1", "T opens the chat box");
-    for vk in *b"HI" {
-        press(&mut g, vk);
+    for key in [Key::H, Key::I] {
+        press(&mut g, key);
     }
     assert_eq!(
         g.call("eval", &["return ChatEdit.getValue();"]).unwrap(),
         "hi"
     );
-    press(&mut g, VK_RETURN);
+    press(&mut g, Key::Enter);
     assert_eq!(g.global("$Arena::Chatting"), "0", "Return sends the line");
 
-    press(&mut g, VK_ESCAPE);
+    press(&mut g, Key::Escape);
     g.step(32);
     assert_eq!(g.global("$Arena::Paused"), "1", "Escape pauses");
     assert!(g.in_game(), "and stays in the arena");
@@ -264,7 +257,7 @@ fn in_panel(game: &mut ArenaGame, name: &str) -> (i32, i32) {
 #[test]
 fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     let mut g = in_arena();
-    press(&mut g, VK_ESCAPE);
+    press(&mut g, Key::Escape);
     g.step(32);
     g.host.draw_frame();
     assert_eq!(g.global("$Arena::Paused"), "1");
@@ -274,13 +267,13 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     );
     assert!(!g.host.wants_mouse(), "the mouse is free");
     // The figure does not move while paused: W goes nowhere.
-    g.key(b'W', true);
+    g.key(Key::W, true);
     assert_eq!(
         g.global("$mvForwardAction"),
         "0",
         "W does not reach the play map"
     );
-    g.key(b'W', false);
+    g.key(Key::W, false);
     let resume = in_panel(&mut g, "ResumeButton");
     g.host.mouse_move(resume);
     assert!(over(&g, "ResumeButton"), "the pointer hovers Resume");
@@ -291,26 +284,26 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     g.host.draw_frame();
     assert_eq!(g.global("$Arena::Paused"), "0", "Resume goes back");
     assert!(g.host.wants_mouse(), "the arena holds the mouse again");
-    g.key(b'W', true);
+    g.key(Key::W, true);
     assert_eq!(g.global("$mvForwardAction"), "1", "W moves again");
-    g.key(b'W', false);
+    g.key(Key::W, false);
 
     // Escape twice: paused, then back.
-    press(&mut g, VK_ESCAPE);
+    press(&mut g, Key::Escape);
     g.step(32);
     assert_eq!(g.global("$Arena::Paused"), "1");
-    press(&mut g, VK_ESCAPE);
+    press(&mut g, Key::Escape);
     g.step(32);
     assert_eq!(g.global("$Arena::Paused"), "0", "Escape again goes back");
-    g.key(b'W', true);
+    g.key(Key::W, true);
     assert_eq!(g.global("$mvForwardAction"), "1");
-    g.key(b'W', false);
+    g.key(Key::W, false);
 
     // T still opens the chat when not paused.
-    press(&mut g, b'T');
+    press(&mut g, Key::T);
     g.step(32);
     assert_eq!(g.global("$Arena::Chatting"), "1");
-    press(&mut g, VK_ESCAPE);
+    press(&mut g, Key::Escape);
     assert_eq!(g.global("$Arena::Chatting"), "0", "Escape closes the chat");
     assert_eq!(g.global("$Arena::Paused"), "0", "without pausing");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
@@ -319,7 +312,7 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
 #[test]
 fn leave_game_from_the_pause_menu_returns_to_the_main_menu() {
     let mut g = in_arena();
-    press(&mut g, VK_ESCAPE);
+    press(&mut g, Key::Escape);
     g.step(32);
     g.host.draw_frame();
     let leave = in_panel(&mut g, "LeaveButton");

@@ -3,6 +3,10 @@
 //! - [`KitAssets`]: the asset kit (`torque-example-assets`) made in memory and read as files under [`KIT_DIR`], the way the
 //!   renderer's shape and texture loaders read any game's files.
 //! - [`GameFiles`]: the kit, the shared scripts (`game/` here, under `common/`) and an example's own game folder.
+//! - [`prediction`]: what the client's prediction of its own figure asks a game of kit cubes (the cubes it collides with, smooth
+//!   aim).
+
+pub mod prediction;
 
 use std::collections::HashMap;
 use std::io;

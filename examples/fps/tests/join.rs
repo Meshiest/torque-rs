@@ -4,13 +4,10 @@
 
 use std::net::Ipv4Addr;
 
-use torque::client::input::{WM_LBUTTONDOWN, WM_LBUTTONUP};
+use torque::client::input::{Key, WM_LBUTTONDOWN, WM_LBUTTONUP};
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode, parse_join_address};
 use torque_example_fps::files::GameFiles;
 use torque_example_fps::server::{ArenaServer, ServerOptions};
-
-const VK_RETURN: u8 = 0x0d;
-const VK_PERIOD: u8 = 0xbe;
 
 fn client(name: &str) -> ArenaGame {
     let mut game = ArenaGame::new(
@@ -42,9 +39,9 @@ fn click(game: &mut ArenaGame, at: (i32, i32)) {
     game.host.post(WM_LBUTTONUP, 0, lparam);
 }
 
-fn press(game: &mut ArenaGame, vk: u8) {
-    game.key(vk, true);
-    game.key(vk, false);
+fn press(game: &mut ArenaGame, key: Key) {
+    game.key(key, true);
+    game.key(key, false);
 }
 
 fn click_button(game: &mut ArenaGame, name: &str) {
@@ -118,12 +115,20 @@ fn typed_keys_and_enter_connect_and_a_bare_address_means_port_28000() {
     let at = center(&mut g, "AddressEdit");
     click(&mut g, at);
     for vk in [
-        b'1', b'2', b'7', VK_PERIOD, b'0', VK_PERIOD, b'0', VK_PERIOD, b'1',
+        Key::Digit1,
+        Key::Digit2,
+        Key::Digit7,
+        Key::Period,
+        Key::Digit0,
+        Key::Period,
+        Key::Digit0,
+        Key::Period,
+        Key::Digit1,
     ] {
         press(&mut g, vk);
     }
     assert_eq!(eval(&mut g, "return AddressEdit.getValue();"), "127.0.0.1");
-    press(&mut g, VK_RETURN);
+    press(&mut g, Key::Enter);
     g.step(32);
     assert_eq!(status(&mut g), "Connecting to 127.0.0.1:28000...");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);

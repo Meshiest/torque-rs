@@ -423,8 +423,12 @@ pub fn write_motion(
     })?;
     watch_bob(&mut a, [-2.2, -2.6, 0.5], 1.3);
     save(&a.picture(&gpu)?, "third-person-fire")?;
+    // His arm at the recoil's height.
+    run(&gpu, &mut [&mut a, &mut b], 32)?;
+    watch_bob(&mut a, [-2.2, -2.6, 0.5], 1.3);
+    save(&a.picture(&gpu)?, "third-person-recoil")?;
     b.game.call("fire", &["0"])?;
-    run(&gpu, &mut [&mut a, &mut b], 64)?;
+    run(&gpu, &mut [&mut a, &mut b], 32)?;
     a.eye = None;
     run(&gpu, &mut [&mut a, &mut b], 600)?;
 
