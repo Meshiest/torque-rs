@@ -15,7 +15,15 @@ fn game_server() -> Server {
     torque_game::specs::install(&mut vm);
     let files = MemFiles::new();
     let b = [-0.5, -0.5, 0.0, 0.5, 0.5, 2.0];
-    let body = torque_shapes::synth::hull_shape(b, &[("detail2", b)], &["eye", "cam"], &["root"]);
+    let body = torque_shapes::synth::hull_shape(
+        b,
+        &[("detail2", b)],
+        &["eye", "cam"],
+        &["root", "look", "hold"],
+    );
+    let mut body = body;
+    // The synthetic shape names its root node `root` too; a shape's names are unique.
+    body.shape.names[1] = b"base".to_vec();
     files.insert("body.dts", &torque_shapes::write::write_dts(&body));
     vm.set_file_host(files);
     let state = Rc::new(RefCell::new(ServerState::default()));
@@ -128,4 +136,43 @@ fn a_projectile_that_hits_nothing_is_deleted_at_its_lifetime() {
         "its lifetime ran out"
     );
     assert_eq!(global(&s, "$hit"), "");
+}
+
+#[test]
+fn the_ghost_view_reads_a_players_arm_action_and_a_projectiles_flight() {
+    use torque_ghosts::{ObjectView, Value};
+    use torque_server::net::torque::{FieldView, GameView};
+
+    let mut s = game_server();
+    s.vm.eval(
+        b"new Player(Holder) { dataBlock = Body; position = \"8 0 0\"; };
+new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVelocity = \"0 50 0\"; sourceSlot = 2; };",
+    )
+    .unwrap();
+    let holder = s.vm.objects().find(b"Holder").unwrap();
+    fn view(vm: &Vm, obj: u32) -> GameView<'_> {
+        GameView {
+            fields: FieldView { vm, obj },
+            controlled: false,
+        }
+    }
+    // The table's eight actions, then the shape's sequences that are not among them: `look` (the arm thread's first action),
+    // then `hold`.
+    assert_eq!(view(&s.vm, holder).get("look_action", 0), Value::Int(8));
+    assert_eq!(
+        view(&s.vm, holder).get("arm_action", 0),
+        Value::Int(8),
+        "the arm thread starts on look"
+    );
+    s.vm.eval(b"$armed = Holder.setArmThread(hold);").unwrap();
+    assert_eq!(global(&s, "$armed"), "1");
+    assert_eq!(view(&s.vm, holder).get("arm_action", 0), Value::Int(9));
+    s.run(TICK_MS, |_| false);
+    let shot = s.vm.objects().find(b"Shot").unwrap();
+    let v = view(&s.vm, shot);
+    assert_eq!(v.get("velocity", 1), Value::F32(50.0));
+    assert_eq!(v.get("current_tick", 0), Value::Int(1));
+    assert_eq!(v.get("source_slot", 0), Value::Int(2));
+    assert_eq!(v.get("hidden", 0), Value::Bool(false));
+    assert!(matches!(v.get("position", 1), Value::F32(y) if y > 1.5));
 }

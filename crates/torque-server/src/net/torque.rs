@@ -231,7 +231,8 @@ impl ObjectView for FieldView<'_> {
 ///   `QuatF::set(MatrixF)`), `position` (its translation), `scale`; a ShapeBase is fully visible (`fade_value` 1) and runs no
 ///   script thread (`thread_sequence` -1), its damage over the datablock's `maxDamage`;
 /// - a simulated Player ([`torque_game::sim::player::state`]): `velocity`, `rotation` (its yaw at 2), `head`, `falling`,
-///   `state` (the action state), `action` (the action animation), `energy`, and from its datablock `max_look_angle`,
+///   `state` (the action state), `action` (the action animation), `arm_action` (`setArmThread`'s), `energy`, and from its
+///   datablock `look_action`, `max_look_angle`,
 ///   `max_energy` and `max_damage`; the move fields are the last move's.
 /// - a simulated Projectile ([`torque_game::sim::projectile::state`]): `position`, `velocity`, `current_tick` (its age),
 ///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`.
@@ -313,6 +314,13 @@ impl GameView<'_> {
             "falling" => Value::Bool(s.falling),
             "state" => Value::Int(i64::from(s.action_state)),
             "action" => Value::Int(i64::from(s.action_anim)),
+            // The arm action `setArmThread` chose (no action until one is), and the datablock's `look` action.
+            "arm_action" => Value::Int(i64::from(
+                torque_game::scene::shapebase::state(vm, obj)
+                    .and_then(|st| st.player.as_ref())
+                    .map_or(::torque_ghosts::player::NULL_ANIMATION, |p| p.arm_action),
+            )),
+            "look_action" => Value::Int(i64::from(info.as_ref().map_or(0, |i| i.look_action))),
             "energy" => Value::F32(s.energy),
             "damage" => Value::F32(s.damage),
             "damage_state" => Value::Int(i64::from(s.damage_state)),
