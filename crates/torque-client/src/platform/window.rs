@@ -1,10 +1,12 @@
 //! A client's window (feature `window`): the winit event loop over a [`ClientHost`] ([`run`]). The window's client area is the
 //! canvas (resized with it); the mouse, its buttons and wheel and the keys are the Windows messages TGE's platform layer reads
 //! ([`super::keymap`]), posted to the host; while the game has the mouse the window holds the system cursor
-//! ([`super::cursor_lock`]) and the mouse's own counts are the game's axes. `setScreenMode` ([`crate::screen`]) resizes the window,
-//! centred on its monitor, or makes it full screen (the monitor's own mode of that size when it has one, else borderless), as the
-//! start-up does for `$pref::Video::fullScreen`; the canvas follows the client size as on any resize. The clock follows the wall
-//! (at most [`MAX_FRAME_MS`] a frame), and while no world is drawn the frames are capped ([`super::frame_cap`]).
+//! ([`super::cursor_lock`]) and the mouse's own counts are the game's axes. Over the menus the canvas draws its own cursor; while
+//! it draws none (no GuiCursor set, or its bitmap missing) the system's is shown instead ([`ClientHost::system_cursor`]).
+//! `setScreenMode` ([`crate::screen`]) resizes the window, centered on its monitor, or makes it full screen (the monitor's own mode
+//! of that size when it has one, else borderless), as the start-up does for `$pref::Video::fullScreen`; the canvas follows the
+//! client size as on any resize. The clock follows the wall (at most [`MAX_FRAME_MS`] a frame), and while no world is drawn the
+//! frames are capped ([`super::frame_cap`]).
 //!
 //! What the window draws, and with what, is the game's ([`WindowGame`]): it makes its GPU state when the window is made, draws
 //! each frame and runs the host's clock (so it can time it).
@@ -114,8 +116,9 @@ pub fn start_size(
     }
 }
 
-/// Does `action` to the system cursor over `window` (see [`cursor_lock`]).
-pub fn hold_cursor(window: &Window, action: cursor_lock::Action) {
+/// Does `action` to the system cursor over `window` (see [`cursor_lock`]); `system`: whether the system cursor stands in for
+/// the canvas's ([`ClientHost::system_cursor`]). Returns whether the system cursor is shown now.
+pub fn hold_cursor(window: &Window, action: cursor_lock::Action, system: bool) -> bool {
     use cursor_lock::Action;
     let size = window.inner_size();
     let centre =
@@ -143,12 +146,13 @@ pub fn hold_cursor(window: &Window, action: cursor_lock::Action) {
             // a window that lost the focus (or a Windows key's overlay) shows the system cursor, as TGE's `setMouseClipping`.
             if show {
                 window.set_cursor_visible(true);
-                return;
+                return true;
             }
         }
     }
-    // TGE hides the system cursor over its window whatever the hold (the canvas draws its own).
-    window.set_cursor_visible(false);
+    // TGE hides the system cursor over its window whatever the hold (the canvas draws its own), unless the canvas draws none.
+    window.set_cursor_visible(system);
+    system
 }
 
 /// What a game gives the window: its client host, its GPU state and its frames.
@@ -232,6 +236,8 @@ struct WindowApp<G: WindowGame> {
     input: keymap::WindowInput,
     /// The window's hold on the system cursor while the game has the mouse.
     lock: cursor_lock::CursorLock,
+    /// Whether the system cursor is shown over the window now.
+    system_cursor: bool,
     started: Instant,
     /// The frame cap while no world is drawn, the frames a second it holds now (0: none), and whether the last frame drew one.
     cap: frame_cap::FrameCap,
@@ -256,6 +262,7 @@ pub fn run<G: WindowGame>(game: G, event_loop: EventLoop<()>) -> Result<G, (G, S
         grabbed: false,
         input: keymap::WindowInput::default(),
         lock: cursor_lock::CursorLock::new(),
+        system_cursor: false,
         started: Instant::now(),
         cap: frame_cap::FrameCap::new(),
         cap_fps: u32::MAX,
@@ -302,9 +309,23 @@ impl<G: WindowGame> WindowApp<G> {
     }
 
     /// Applies a release of the cursor hold now (in the event that caused it, not at the next pass).
-    fn release_cursor(&self, release: Option<cursor_lock::Action>) {
+    fn release_cursor(&mut self, release: Option<cursor_lock::Action>) {
         if let (Some(action), Some(window)) = (release, &self.window) {
-            hold_cursor(window, action);
+            let system = self.game.host_ref().system_cursor();
+            self.system_cursor = hold_cursor(window, action, system);
+        }
+    }
+
+    /// Shows or hides the system cursor as the canvas's needs it ([`ClientHost::system_cursor`]), when that changed (an
+    /// unfocused window keeps the one its release showed).
+    fn sync_system_cursor(&mut self, window: &Window) {
+        if !window.has_focus() {
+            return;
+        }
+        let want = self.game.host_ref().system_cursor() && !self.lock.held();
+        if want != self.system_cursor {
+            window.set_cursor_visible(want);
+            self.system_cursor = want;
         }
     }
 }
@@ -534,8 +555,10 @@ impl<G: WindowGame> WindowApp<G> {
         let now_ms = self.started.elapsed().as_millis() as u64;
         let may_grab = self.game.may_grab();
         if let Some(action) = self.lock.pass(wants, may_grab, self.cursor, now_ms) {
-            hold_cursor(&window, action);
+            let system = self.game.host_ref().system_cursor();
+            self.system_cursor = hold_cursor(&window, action, system);
         }
+        self.sync_system_cursor(&window);
         if let Some(mode) = self.game.host().take_screen_mode() {
             let line = apply_screen_mode(&window, &mode);
             self.game.note(&line);

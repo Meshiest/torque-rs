@@ -1379,18 +1379,24 @@ impl Walk<'_> {
         advance
     }
 
-    /// The cursor (the end of `renderFrame`).
+    /// The cursor (the end of `renderFrame`); notes whether it was drawn ([`crate::GuiState::cursor_drawn`]).
     fn cursor(&mut self) {
+        let drawn = self.draw_cursor();
+        self.gui.0.borrow_mut().cursor_drawn = drawn;
+    }
+
+    /// The canvas's GuiCursor at the cursor's place: whether it was drawn.
+    fn draw_cursor(&mut self) -> bool {
         let (on, shown, cursor, pos) = {
             let s = self.gui.0.borrow();
             (s.cursor_on, s.show_cursor, s.cursor, s.cursor_pos)
         };
         let Some(cursor) = cursor.filter(|c| on && shown && self.vm.objects().contains(*c)) else {
-            return;
+            return false;
         };
         let hot = point(self.vm, cursor, b"hotSpot");
         let Some(t) = self.texture(&text_field(self.vm, cursor, b"bitmapName"), false) else {
-            return;
+            return false;
         };
         let (bw, bh) = (t.bitmap_size.0 as i32, t.bitmap_size.1 as i32);
         self.stretch(
@@ -1400,6 +1406,7 @@ impl Walk<'_> {
             [255; 4],
             false,
         );
+        true
     }
 }
 

@@ -143,7 +143,8 @@ fn a_button_is_one_batch_of_a_fill_and_a_border_colored_by_its_state() {
 
 #[test]
 fn a_profile_without_colors_gets_made_ones() {
-    let (vm, gui) = rig(&button("Btn", "PlainProfile", "0 0", "40 20"));
+    // Away from the cursor (at 0 0), so the box is not hovered.
+    let (vm, gui) = rig(&button("Btn", "PlainProfile", "50 50", "40 20"));
     let quads = &box_batches(&vm, &gui)[0].quads;
     assert_eq!(quads[4].color, DEFAULT_FILL);
     assert_eq!(quads[9].color, [134, 136, 139, 255]);
