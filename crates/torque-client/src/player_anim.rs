@@ -22,6 +22,11 @@
 //! along its direction over its speed, at most `maxTimeScale` ([`MAX_TIME_SCALE`]), negative backwards
 //! (`updateActionThread`).
 //!
+//! **Synced** ([`PlayerAnimation::set_synced`], a host's opt-in for a server whose Players have hitboxes): the rules above are the
+//! ones a hitbox Player's server follows too ([`torque_game::sim::player::synced`]), and a moving action steps by the ground
+//! the Player was drawn covering ([`PlayerMotion::position`]) along its direction over its speed instead of by the velocity, so
+//! its phase follows the server's path rather than the client's clock.
+//!
 //! **The arm thread** plays the arm action the record names (the server's `setArmThread`; `look` when the shape has it and
 //! none was named), held at the head's pitch over the look range (`updateLookAnimation`): 0 looking fully up, 1 fully down.
 //! **The head thread** plays the shape's `head` sequence, when it has one, at the same position (`mHeadVThread`).
@@ -44,17 +49,13 @@ use shapes::Shape;
 use shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use torque_game::scene::shapebase::{TGE_ACTIONS, player_actions};
 use torque_game::sim::player::ground::{ActionMotion, ground_info};
+use torque_game::sim::player::synced;
+pub use torque_game::sim::player::synced::{JUMP_RISE_SPEED, STAND_JUMP_SPEED, TRANSITION};
 
-/// `sAnimationTransitionTime`: the seconds a new action blends in over.
-pub const TRANSITION: f32 = 0.25;
 /// `PlayerData::maxTimeScale`'s default: the fastest a moving action plays.
 pub const MAX_TIME_SCALE: f32 = 1.5;
 /// The smallest match a moving action must beat to be chosen over `root`.
 pub const MIN_MATCH: f32 = 0.1;
-/// Below this speed a jump is a standing jump.
-pub const STAND_JUMP_SPEED: f32 = 0.5;
-/// An upward speed past this (units a second), from below it, is a jump leaving the ground.
-pub const JUMP_RISE_SPEED: f32 = 3.0;
 
 /// TGE's action numbers.
 pub mod action {
@@ -146,6 +147,8 @@ pub struct PlayerMotion {
     pub look: f32,
     /// The action the server set, as the record last carried it ([`ServerAction::of_record`]).
     pub server_action: Option<ServerAction>,
+    /// Where the Player is drawn (its feet): a synced animation steps a moving action by its change.
+    pub position: Option<F3>,
 }
 
 impl PlayerMotion {
@@ -168,13 +171,19 @@ impl PlayerMotion {
             arm_action: p.arm,
             look: ((head + 1.0) * 0.5).clamp(0.0, 1.0),
             server_action: ServerAction::of_record(record),
+            position: None,
         })
     }
 
     /// The velocity in the Player's own frame (`mWorldToObj.mulV`: the yaw undone; a Player of yaw `a` faces `(sin a, cos a)`).
     pub fn local_velocity(&self) -> F3 {
+        self.local(self.velocity)
+    }
+
+    /// A world vector in the Player's own frame.
+    pub fn local(&self, v: F3) -> F3 {
         let (s, c) = self.yaw.sin_cos();
-        let [x, y, z] = self.velocity;
+        let [x, y, z] = v;
         [x * c - y * s, x * s + y * c, z]
     }
 }
@@ -205,6 +214,10 @@ pub struct PlayerAnimation {
     /// The recoil thread, and the `light_recoil`, `medium_recoil` and `heavy_recoil` sequences.
     recoil_thread: Option<ThreadId>,
     recoil_sequences: [Option<usize>; 3],
+    /// The pose follows the synced rules (see the module docs).
+    synced: bool,
+    /// Where the last frame drew the Player.
+    last_position: Option<F3>,
 }
 
 impl PlayerAnimation {
@@ -264,6 +277,8 @@ impl PlayerAnimation {
             last_rise: 0.0,
             recoil_thread,
             recoil_sequences,
+            synced: false,
+            last_position: None,
         })
     }
 
@@ -288,6 +303,11 @@ impl PlayerAnimation {
         self.recoil_thread
             .and_then(|t| instance.thread(t))
             .is_some_and(|t| t.time_scale != 0.0 && t.pos < 1.0)
+    }
+
+    /// Turns the synced rules on or off (see the module docs); off by default: TGE's client.
+    pub fn set_synced(&mut self, on: bool) {
+        self.synced = on;
     }
 
     /// The action list.
@@ -401,12 +421,12 @@ impl PlayerAnimation {
     ) {
         let took_off = m.falling && !self.was_falling;
         self.was_falling = m.falling;
-        let rose = m.velocity[2] > JUMP_RISE_SPEED && self.last_rise <= JUMP_RISE_SPEED;
+        let rose = synced::rose(self.last_rise, m.velocity[2]);
         self.last_rise = m.velocity[2];
+        let from = std::mem::replace(&mut self.last_position, m.position);
         if !self.hold && ((took_off && m.jumping) || rose) {
-            let flat = m.velocity[0].hypot(m.velocity[1]);
             let has = |a: usize| self.actions.get(a).is_some_and(|x| x.sequence.is_some());
-            let jump = if flat < STAND_JUMP_SPEED && has(action::STAND_JUMP) {
+            let jump = if synced::standing_jump(m.velocity) && has(action::STAND_JUMP) {
                 action::STAND_JUMP
             } else {
                 action::JUMP
@@ -426,9 +446,15 @@ impl PlayerAnimation {
         let a = &self.actions[self.action.min(self.actions.len() - 1)];
         let mut scale = 1.0;
         if self.action < action::MOVES && a.motion.velocity_scale && a.motion.speed != 0.0 {
-            let v = m.local_velocity();
-            let along = v[0] * a.motion.dir[0] + v[1] * a.motion.dir[1] + v[2] * a.motion.dir[2];
-            scale = (along / a.motion.speed).abs().min(MAX_TIME_SCALE);
+            if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
+                let step = m.local([0, 1, 2].map(|i| to[i] - from[i]));
+                scale = synced::step_scale(step, dt, a.motion.dir, a.motion.speed, MAX_TIME_SCALE);
+            } else {
+                let v = m.local_velocity();
+                let along =
+                    v[0] * a.motion.dir[0] + v[1] * a.motion.dir[1] + v[2] * a.motion.dir[2];
+                scale = (along / a.motion.speed).abs().min(MAX_TIME_SCALE);
+            }
         }
         if let Some(t) = instance.thread_mut(self.action_thread) {
             t.time_scale = if self.forward { scale } else { -scale };

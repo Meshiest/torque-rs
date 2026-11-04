@@ -3,7 +3,8 @@
 //!
 //! - **The parts** are what `ShapeBase::castRay` casts against: each mesh object of the LOS details (`LOS-N`, or a collision
 //!   detail that has none of its own), on its node, as its convex hull. A part's name is its object's name (`head`, `torso`,
-//!   ...). A shape with no such mesh falls back to the box.
+//!   ...). A shape with no such mesh falls back to the box. The hull drops a degenerate triangle by a rule relative to the
+//!   mesh's size (`Hull::build_relative`), not TGE's fixed one, so a small part (a hand, a foot) keeps every face.
 //! - **The pose** is the server's own threads as they stand (the action, arm, head, headside and class threads, and the
 //!   script threads); each LOS detail is animated before the cast, as `ShapeBase::castRay` does.
 //! - **The answer**: the nearest part hit with `t` at most 1 (a later object wins a tie), its normal turned by its node. The
@@ -32,7 +33,7 @@ use ts_vm::text::scan_floats;
 use ts_vm::vm::{Native, Vm, VmError};
 
 use super::access::{matrix_of, object_field, scale_of};
-use super::rays::{body_of, detail_objects, los_slots, mesh_hull, node_of};
+use super::rays::{body_of, detail_objects, los_slots, node_of, part_hull};
 use super::shapebase;
 use crate::methods::register_method;
 use crate::shapes::KeptShape;
@@ -98,7 +99,7 @@ pub fn cast(
                 continue;
             };
             any = true;
-            let Some(hull) = mesh_hull(kept, mi, mesh, charge)? else {
+            let Some(hull) = part_hull(kept, mi, mesh, charge)? else {
                 continue;
             };
             let node = node_of(nodes, shape, oi);

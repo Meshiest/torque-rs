@@ -21,6 +21,7 @@
 pub mod ground;
 pub mod methods;
 pub mod skeleton;
+pub mod synced;
 pub mod tick;
 
 use std::rc::Rc;
@@ -438,6 +439,7 @@ pub fn play_action(
     wait: bool,
     fsp: bool,
 ) -> bool {
+    let blend = crate::scene::hitboxes::wanted(vm, id);
     let Some(mut st) = ext::get_mut(vm.objects_mut(), id).and_then(|e| e.shape.take()) else {
         return false;
     };
@@ -447,6 +449,7 @@ pub fn play_action(
         wait,
         fsp,
         force: false,
+        blend,
     };
     let message = shapebase::action_thread(&mut st, action as usize, request);
     let none = crate::sim_classes::sim_classes(vm).action_table().none;
@@ -584,6 +587,7 @@ impl EngineClass for PlayerClass {
                 wait: false,
                 fsp: false,
                 force: true,
+                blend: false,
             };
             let _ = shapebase::action_thread(&mut st, 0, request);
             let none = crate::sim_classes::sim_classes(vm).action_table().none;

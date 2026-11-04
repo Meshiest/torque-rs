@@ -164,6 +164,8 @@ pub struct KeptShape {
 #[derive(Debug, Clone, Default)]
 pub struct HullCache {
     pub meshes: RefCell<std::collections::BTreeMap<usize, Rc<shapes::collide::Hull>>>,
+    /// The hull of each mesh a hitbox ray has reached ([`shapes::collide::Hull::build_relative`]).
+    pub parts: RefCell<std::collections::BTreeMap<usize, Rc<shapes::collide::Hull>>>,
     pub accels: RefCell<std::collections::BTreeMap<i32, Rc<collide::mesh::HullAccel>>>,
     /// The node transforms at rest (an instance made with no thread).
     pub rest: RefCell<Option<Rc<Vec<shapes::math::Matrix>>>>,

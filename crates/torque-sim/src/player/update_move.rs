@@ -421,7 +421,11 @@ fn jump_step(
         acc[2] += n[2] * scale_z * impulse * z_speed_scale;
         s.jump_delay = db.jump_delay;
         s.energy -= db.jump_energy_drain;
-        let anim = if len3(s.velocity) < 0.5 { 9 } else { 8 };
+        let anim = if len3(s.velocity) < 0.5 {
+            db.actions.stand_jump
+        } else {
+            db.actions.jump
+        };
         host.skeleton().set_action_thread(s, anim);
         let sk = host.skeleton();
         if sk.has_shape() && sk.has_thread(Thread::Action) {

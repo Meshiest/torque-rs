@@ -6,8 +6,9 @@
 //!   ([`super::hitboxes::Pose`]). Samples are kept for the cap and three steps more; a Player that left the list is dropped.
 //! - **The rewind.** The client draws a remote Player run on from its last update along its velocity from the update's arrival,
 //!   not delayed: at the moment it fires it shows the state of one trip down ago, and its trigger reaches the server one trip
-//!   up later. So the shooter saw the targets as they were one round trip before the server handles the shot: the rewind is the
-//!   shooter's round trip ([`RewindSource`]; by default its controlling client's `getPing`), capped at
+//!   up later, while the run-on puts the drawn Player one step past the server's last step. So the shooter saw the targets as
+//!   they were one round trip less one step before the server handles the shot: the rewind is the shooter's round trip
+//!   ([`RewindSource`]; by default its controlling client's `getPing`) less [`STEP_MS`], capped at
 //!   `$Pref::Server::MaxRewindMs` ([`DEFAULT_MAX_MS`] when unset, never past [`LIMIT_MS`]). A shooter with no client is not
 //!   rewound.
 //! - **The rewound cast** ([`rewound_ray`]): the container's cast with every Player that has samples left out, then each of those
@@ -183,7 +184,8 @@ pub fn history_len(vm: &Vm, id: ObjId) -> usize {
         .map_or(0, |h| h.players.borrow().get(&id).map_or(0, VecDeque::len))
 }
 
-/// The rewind (ms) of a shot by `shooter`: its round trip capped; 0 when lag compensation is off or no client controls it.
+/// The rewind (ms) of a shot by `shooter`: its round trip less one step, capped; 0 when lag compensation is off or no client
+/// controls it.
 pub fn rewind_for(vm: &mut Vm, shooter: ObjId) -> u32 {
     if !on(vm) {
         return 0;
@@ -193,7 +195,7 @@ pub fn rewind_for(vm: &mut Vm, shooter: ObjId) -> u32 {
         |s| Rc::clone(&s.0),
     );
     let trip = source.round_trip_ms(vm, shooter).unwrap_or(0);
-    trip.min(max_rewind_ms(vm))
+    trip.saturating_sub(STEP_MS).min(max_rewind_ms(vm))
 }
 
 /// Whether a rewound cast's container pass is running and the Player has samples: it answers in the second pass.
