@@ -11,6 +11,9 @@
 //! eye offset by the owner's scale too ([`ShapeWorld::scaled_eye_offset`]), and the render transform of a mount point with no
 //! node ([`ShapeWorld::scaled_bare_mount`]).
 //!
+//! **A host's own motion** ([`HeldMotion`], none by default): an image raised to its sights or kicked by a shot, in place of its
+//! `eyeOffset` in the first person and about the owner's mount node in the hand; [`sight_offset`] is where its sights lie on the eye's line.
+//!
 //! **Which detail**: the image's own, chosen as a body's is; a game may pin a Player's ([`ShapeWorld::player_image_detail`]).
 //! **The pose**: the shape's default pose with its state animation thread (the last state's `stateSequence`), its `ambient` and
 //! `spin` threads at the times the client's machine ran them (`torque_ghost_world::images`), or at the frame's times
@@ -222,6 +225,35 @@ pub fn scaled_translation(m: &Mat, s: [f32; 3]) -> Mat {
     r
 }
 
+/// A host's own motion of a held image beyond TGE's placement ([`crate::moving::Hooks::held_motion`]; none by default): `eye` in
+/// place of the image's `eyeOffset` while its owner is in its first-person view (raised to its sights, kicked back by a shot),
+/// `hand` about its owner's mount node, before the image's own mount, where its owner holds it (a kick in the hand). An image without an `eyeOffset` is not drawn before the
+/// eye whatever `eye` says.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct HeldMotion {
+    pub eye: Option<Mat>,
+    pub hand: Option<Mat>,
+}
+
+/// Where an image is held with its sights on the eye's line, in the eye's frame: the turn about its x axis (radians) that makes
+/// the line from its `sightRear` node to its `sightFront` node run along the eye's (y), and the place that puts `sightRear`
+/// `rear` units ahead of the eye on that line once turned, at the shape's rest pose. None without both nodes.
+pub fn sight_offset(shape: &Shape, rear: f32) -> Option<([f32; 3], f32)> {
+    let mut charge = |_: u64| true;
+    let mut instance = ShapeInstance::new(shape, &mut charge).ok()?;
+    if !shape.details.is_empty() {
+        let _ = instance.animate(shape, 0, None, &mut charge);
+    }
+    let at = |name: &[u8]| {
+        let m = instance.node_transform(node_named(shape, name)?)?;
+        Some([m[3], m[7], m[11]])
+    };
+    let (back, front) = (at(b"sightRear")?, at(b"sightFront")?);
+    let pitch = (front[2] - back[2]).atan2(front[1] - back[1]);
+    let r = Mat::euler_x(pitch).mul_v(back);
+    Some(([-r[0], rear - r[1], -r[2]], pitch))
+}
+
 /// What the image transform reads of its owner.
 pub struct Owner<'a> {
     pub kind: ShapeKind,
@@ -238,6 +270,8 @@ pub struct Owner<'a> {
     pub scaled_eye_offset: bool,
     /// A mount point with no node scales the render transform's columns ([`ShapeWorld::scaled_bare_mount`]).
     pub scaled_bare_mount: bool,
+    /// The host's own motion of the image placed ([`HeldMotion`]).
+    pub motion: HeldMotion,
 }
 
 impl Owner<'_> {
@@ -277,6 +311,7 @@ impl Owner<'_> {
         if let Some(eye_offset) = &db.eye_offset
             && self.first_person
         {
+            let eye_offset = self.motion.eye.as_ref().unwrap_or(eye_offset);
             if !self.scaled_eye_offset {
                 return Mat::mul(&self.eye_transform(), eye_offset);
             }
@@ -294,10 +329,12 @@ impl Owner<'_> {
     /// Where the owner holds the image of `db` (its mount point's transform and the image's own mount): the third person's
     /// place of an image the first person draws before the eye.
     pub fn held_transform(&self, db: &ImageDb, shape: &Shape) -> Mat {
-        Mat::mul(
-            &self.mount_transform(db.mount_point),
-            &db.mount_transform(shape),
-        )
+        let mount = self.mount_transform(db.mount_point);
+        let mount = match &self.motion.hand {
+            Some(hand) => Mat::mul(&mount, hand),
+            None => mount,
+        };
+        Mat::mul(&mount, &db.mount_transform(shape))
     }
 
     /// The detail the image of `details` details is drawn at when the owner is a Player and the world pins it

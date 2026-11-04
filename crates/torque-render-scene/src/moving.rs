@@ -31,7 +31,7 @@ use ghost_world::world::{Ghost, Pose};
 use shapes::instance::ShapeInstance;
 use shapes::shape::{Model, Shape};
 
-use crate::images::{ImageClock, ImageDb, Owner, advance_clock};
+use crate::images::{HeldMotion, ImageClock, ImageDb, Owner, advance_clock};
 use crate::math::Mat;
 
 use crate::mounts::{MAX_MOUNT_DEPTH, mounted_transform, pose_matrix, render_pose};
@@ -85,6 +85,12 @@ pub trait Hooks<W: ShapeWorld + ?Sized>: Sync {
         (kept, None)
     }
 
+    /// The host's own motion of the image in ghost `ghost`'s slot `slot` this frame ([`HeldMotion`]: none by default).
+    fn held_motion(&self, ghost: u32, slot: usize) -> HeldMotion {
+        let _ = (ghost, slot);
+        HeldMotion::default()
+    }
+
     /// Puts ghost `index`'s live pose and its images' clocks back in the host's keeping.
     fn put_back(
         &self,
@@ -120,7 +126,7 @@ pub trait Cull {
 /// Where a Projectile ghost is drawn and its shape (`Projectile::prepRenderImage` and `renderObject`): not at all while hidden or
 /// faded out (`fade <= 1/255`) or with no `projectileShapeName`; else at the render transform the client's step gives it
 /// (`ClientWorld::projectile_render`), facing the camera instead with `faceViewer` (`createOrientFromDir` of the camera minus the
-/// render point), scaled by the datablock's `scale` times the object's. The shape is drawn whole and opaque as any shape; a world
+/// render point), scaled by the datablock's `scale` times the object's (times a uniform scale the render transform carries). The shape is drawn whole and opaque as any shape; a world
 /// that steps no projectile draws none.
 fn projectile_placement<W: ShapeWorld + ?Sized>(
     world: &W,
@@ -142,8 +148,15 @@ fn projectile_placement<W: ShapeWorld + ?Sized>(
     let f = |name: &str, i: u32| world.float(db, name, i).filter(|x| x.is_finite());
     let face_viewer = matches!(world.field(db, "faceViewer", 0), Some(Value::Bool(true)));
     let own = ghost.scale().unwrap_or([1.0; 3]);
-    let scale = [0, 1, 2].map(|k| f("scale", k as u32).unwrap_or(1.0) * own[k]);
+    let mut scale = [0, 1, 2].map(|k| f("scale", k as u32).unwrap_or(1.0) * own[k]);
     let mut m = Mat { m: look.transform };
+    // A host may grow the projectile (a uniform scale in the transform's columns, as one leaving a muzzle): taken out into the
+    // scale.
+    let grow = m.column(1).iter().map(|c| c * c).sum::<f32>().sqrt();
+    if grow.is_finite() && grow > 1.0e-6 && (grow - 1.0).abs() > 1.0e-3 {
+        m = crate::images::scale_columns(&m, [1.0 / grow; 3]);
+        scale = scale.map(|s| s * grow);
+    }
     if face_viewer {
         let p = look.position();
         let d = [eye[0] - p[0], eye[1] - p[1], eye[2] - p[2]];
@@ -824,6 +837,7 @@ impl ImageFrames {
             kind: world.kind(class),
             scaled_eye_offset: world.scaled_eye_offset(),
             scaled_bare_mount: world.scaled_bare_mount(),
+            motion: hooks.held_motion(ghost, slot),
             shape: &owner.model.shape,
             instance: &instance,
             xform,
@@ -1141,6 +1155,7 @@ fn pose<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
         kind: world.kind(job.class),
         scaled_eye_offset: world.scaled_eye_offset(),
         scaled_bare_mount: world.scaled_bare_mount(),
+        motion: HeldMotion::default(),
         shape,
         instance: &instance,
         xform: job.xform,
@@ -1200,7 +1215,7 @@ fn pose_record<W: ShapeWorld + ?Sized, H, L>(
 }
 
 /// The pose phase of one image (before its build).
-fn pose_image<W: ShapeWorld + ?Sized, H>(
+fn pose_image<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     f: &Frame<'_, W, H>,
     owner: &Owner<'_>,
     (class, index): (ClassOf<W>, u32),
@@ -1222,6 +1237,10 @@ fn pose_image<W: ShapeWorld + ?Sized, H>(
     };
     let model = &p.loaded.model;
     let path = &p.path;
+    let owner = &Owner {
+        motion: f.hooks.held_motion(index, p.slot),
+        ..*owner
+    };
     let clock = advance_clock(f.world.records(), &p.image, p.clock.as_ref());
     if p.clock_out {
         out.clock = Some(((index, p.slot), clock));
