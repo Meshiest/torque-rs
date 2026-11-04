@@ -157,6 +157,9 @@ fn an_address_that_cannot_be_joined_shows_a_plain_error() {
             "That is not an address. Use numbers like 192.168.1.20:28000.",
         ),
         ("0.0.0.0:28000", "That address cannot be a game."),
+        ("192.168.1.255", "That address cannot be a game."),
+        ("240.0.0.1", "That address cannot be a game."),
+        ("0.1.2.3:28000", "That address cannot be a game."),
         (
             "999.1.1.1",
             "That is not an address. Use numbers like 192.168.1.20:28000.",
@@ -190,7 +193,15 @@ fn the_address_forms_the_box_takes() {
     assert_eq!(ok("IP:10.0.0.5:28001"), Ok("10.0.0.5:28001".to_string()));
     assert_eq!(ok("localhost"), Ok("127.0.0.1:28000".to_string()));
     assert_eq!(ok("203.0.113.5:28000"), Ok("203.0.113.5:28000".to_string()));
-    assert!(ok("255.255.255.255").is_err() && ok("224.0.0.1").is_err());
+    for bad in [
+        "255.255.255.255",
+        "224.0.0.1",
+        "10.0.0.255",
+        "240.0.0.1",
+        "0.1.2.3",
+    ] {
+        assert!(ok(bad).is_err(), "{bad}");
+    }
 }
 
 #[test]
@@ -203,11 +214,12 @@ fn a_game_hosted_for_the_lan_starts_and_a_second_client_joins_it() {
 }
 
 #[test]
-fn a_game_hosted_for_everyone_listens_on_every_interface_and_a_client_joins_over_loopback() {
+fn a_game_hosted_for_everyone_starts_and_a_client_joins_over_loopback() {
     let (mut a, mut b) = (client("Ann"), client("Bob"));
     host(&mut a, &mut b, "public");
     let bound = a.hosted_address().unwrap();
-    assert!(bound.ip().is_unspecified(), "bound to {bound}");
+    // A harness binds no socket beyond the loopback address, whoever may join.
+    assert!(bound.ip().is_loopback(), "bound to {bound}");
     assert_eq!(a.global("$Pref::Arena::HostScope"), "public");
     // The host joined its own game, and the chat box tells it what a public game needs.
     let lines = eval(
@@ -261,13 +273,31 @@ fn a_server_listens_on_every_interface_only_when_asked_to() {
     assert!(refused.is_err(), "0.0.0.0 needs the public choice");
     let other = ArenaServer::start(&files, &options(Ipv4Addr::new(8, 8, 8, 8), true));
     assert!(other.is_err(), "no other public address is allowed");
-    let all = ArenaServer::start(&files, &options(Ipv4Addr::UNSPECIFIED, true)).unwrap();
+}
+
+/// The success case binds every interface of this computer: run by hand.
+#[test]
+#[ignore = "binds all interfaces; run by hand"]
+fn a_server_listens_on_every_interface_when_asked_to() {
+    let files = GameFiles::bundled().unwrap();
+    let all = ArenaServer::start(
+        &files,
+        &ServerOptions {
+            address: Ipv4Addr::UNSPECIFIED,
+            port: 0,
+            name: "Test".to_string(),
+            mission: "fixtures/floor.mis".to_string(),
+            public: true,
+        },
+    )
+    .unwrap();
     assert!(all.address().unwrap().ip().is_unspecified());
 }
 
 /// A server on every interface answers the LAN list and a connection to this computer's LAN address (a client over the real
 /// LAN sockets; skipped on a computer with no LAN address).
 #[test]
+#[ignore = "binds all interfaces and queries the real LAN; run by hand"]
 fn a_server_on_every_interface_is_listed_and_joined_through_the_lan_address() {
     let Some(lan) = torque_example_fps::server::lan_addresses().first().copied() else {
         return;

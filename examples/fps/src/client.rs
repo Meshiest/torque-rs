@@ -257,7 +257,8 @@ impl ArenaGame {
         } else {
             self.options.port
         };
-        let address = if public {
+        // A harness ([`NetMode::Loopback`]) never opens a socket beyond the loopback address, whoever may join.
+        let address = if public && self.options.net == NetMode::Lan {
             Ipv4Addr::UNSPECIFIED
         } else {
             self.lan_bind_address()
@@ -616,7 +617,8 @@ pub fn parse_join_address(text: &str) -> Result<SocketAddrV4, &'static str> {
     if address.port() == 0 {
         return Err("Ports are numbers from 1 to 65535.");
     }
-    if ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast() {
+    // Not a game's address: this network (0/8), multicast, reserved (240/4) and broadcasts (a last number of 255, as on a /24 LAN).
+    if ip.octets()[0] == 0 || ip.octets()[0] >= 224 || ip.octets()[3] == 255 {
         return Err("That address cannot be a game.");
     }
     Ok(address)
