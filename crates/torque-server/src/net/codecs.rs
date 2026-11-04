@@ -6,7 +6,10 @@
 //!
 //! Credit: [`TorqueCodecs::sim_mask`] follows the mask enums of TGE 1.4's `game/shapeBase.h`, `game/gameBase.h`,
 //! `game/player.h`, `game/item.h`, `game/camera.h` and `game/staticShape.h` (each Copyright (C) GarageGames.com, Inc.);
-//! Torque3D's enums differ. The code here is this crate's own.
+//! Torque3D's enums differ. A Player control object's packet data ([`player_packet_data`]) follows TGE 1.4's
+//! `Player::writePacketData` in `game/player.cc` (Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
+//! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is
+//! this crate's own.
 
 use std::any::Any;
 use std::fmt::Debug;
@@ -15,16 +18,19 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use torque_game::dbvalues::DbValues;
+use torque_ghosts::TgePacketData;
+use torque_ghosts::codec::F32;
 use torque_ghosts::codec::NetWidths;
 use torque_ghosts::datablocks::{
     DatablockCodecSet, ScriptField, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks,
 };
 use torque_ghosts::set::GhostCodecSet;
+use torque_ghosts::tails::{PlayerTail, PlayerTailMotion, ShapeTail, TailData};
 use torque_ghosts::tge::{TGE_DATABLOCK_CLASSES, TgeClass, TgeGhosts, tge_reps};
 use torque_ghosts::{ObjectView, Value};
 use torque_net::bits::BitWriter;
 use torque_net::classes::{Direction, Kind, NetClasses};
-use torque_net::control::{ControlObject, ControlState};
+use torque_net::control::{ControlData, ControlObject, ControlState, Damage};
 use torque_net::events::{EventIds, EventRegistry};
 use torque_net::handshake::{HandshakeTypes, ServerConfig};
 use torque_net::huffman::Table;
@@ -33,6 +39,7 @@ use torque_net::profile::{
 };
 use torque_net::protocol::RateConfig;
 use torque_net::serverquery::Request;
+use torque_sim::player::PlayerState;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
@@ -451,6 +458,69 @@ impl NetCodecs for TorqueCodecs {
             ) => (bits & 0x0000_000f) | ((bits & 0x7fff_fff0) << 1),
             _ => bits,
         }
+    }
+
+    /// A simulated Player as TGE's head writes it: its ghost index, its damage flash and white-out, and `Player::writePacketData`
+    /// ([`player_packet_data`]); any other object writes no control section.
+    fn control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
+        torque_game::sim::player::state(vm, obj)?;
+        Some(Box::new(PlayerControl {
+            vm,
+            obj,
+            ghost_index,
+        }))
+    }
+}
+
+/// A simulated Player as the connection's control object ([`TorqueCodecs::control_object`]).
+struct PlayerControl<'a> {
+    vm: &'a Vm,
+    obj: ObjId,
+    ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+}
+
+impl ControlObject for PlayerControl<'_> {
+    fn ghost_index(&self) -> Option<u32> {
+        (self.ghost_index)(self.obj)
+    }
+
+    fn damage(&self) -> Damage {
+        torque_game::sim::player::state(self.vm, self.obj).map_or_else(Damage::default, |s| {
+            Damage::from_levels(s.damage_flash, s.white_out)
+        })
+    }
+
+    fn packet_data(&self) -> Box<dyn ControlData> {
+        let tail = torque_game::sim::player::state(self.vm, self.obj)
+            .map_or_else(PlayerTail::default, player_packet_data);
+        Box::new(TgePacketData::new(TailData::Player(tail)))
+    }
+}
+
+/// `Player::writePacketData` of a simulated Player ([`torque_sim::player::Player::packet_words`]'s words): the energy, the
+/// position, velocity and last contact when it is not mounted, the head's x and z and the yaw. The record's other fields (the
+/// recharge rate, the state, the recover ticks, the jump delay) are none of those words: they are written as the engine's
+/// client writes the packet data it takes its checksum of (0, none), so a client that predicted the Player right matches.
+/// A Player that controls another object writes no index for it (none is simulated).
+pub fn player_packet_data(s: &PlayerState) -> PlayerTail {
+    PlayerTail {
+        shape: ShapeTail {
+            energy: F32::new(s.energy),
+            recharge_rate: F32::new(0.0),
+        },
+        motion: s.mount.is_none().then(|| PlayerTailMotion {
+            position: s.position().map(F32::new),
+            velocity: s.velocity.map(F32::new),
+            last_contact: s.jump_surface_last.min(15),
+        }),
+        head: [F32::new(s.head[0]), F32::new(s.head[2])],
+        rotation_z: F32::new(s.rot[2]),
+        ..PlayerTail::default()
     }
 }
 

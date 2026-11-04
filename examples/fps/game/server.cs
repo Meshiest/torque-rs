@@ -287,11 +287,18 @@ function ArenaWeapon::onFire(%this, %obj, %slot)
    %client = %obj.client;
    if (isObject(%client))
       commandToClient(%client, 'SetAmmo', %obj.ammo, $Arena::Rounds);
+   // The bolt flies along the eye's line (the crosshair) at every range: it starts on that line as far ahead of the eye as
+   // the muzzle is, instead of at the muzzle beside it, whose corrected aim only meets the line where the eye's ray ends.
+   %eye = %obj.getEyePoint();
+   %aim = %obj.getEyeVector();
+   %ahead = VectorDot(VectorSub(%obj.getMuzzlePoint(%slot), %eye), %aim);
+   if (%ahead < 0.25)
+      %ahead = 0.25;
    %bolt = new Projectile()
    {
       dataBlock = %this.projectile;
-      initialVelocity = VectorScale(%obj.getMuzzleVector(%slot), %this.projectile.muzzleVelocity);
-      initialPosition = %obj.getMuzzlePoint(%slot);
+      initialVelocity = VectorScale(%aim, %this.projectile.muzzleVelocity);
+      initialPosition = VectorAdd(%eye, VectorScale(%aim, %ahead));
       sourceObject = %obj;
       sourceSlot = %slot;
       client = %client;

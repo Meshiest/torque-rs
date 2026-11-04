@@ -62,12 +62,13 @@ pub struct ClientShape {
 impl ClientShape {
     /// The eight collision slots as `collide` takes them.
     pub fn hull_slots(&self) -> Vec<HullSlot> {
+        // A shape lists only the collision details it has: the slots past them are absent.
         (0..SLOTS)
             .map(|i| {
-                let b = self.facts.bounds[i];
+                let b = self.facts.bounds.get(i).copied().unwrap_or_default();
                 HullSlot {
                     slot: i as u32,
-                    present: self.facts.slots.collision[i] >= 0,
+                    present: self.facts.slots.collision.get(i).is_some_and(|&d| d >= 0),
                     bounds: Box3 {
                         min: [b[0], b[1], b[2]],
                         max: [b[3], b[4], b[5]],
@@ -191,11 +192,12 @@ impl ShapeLoad {
                 Err(_) => Step::Bad,
             };
         };
-        while self.next_slot < SLOTS && facts.slots.collision[self.next_slot] < 0 {
+        let detail_of = |slot: usize| facts.slots.collision.get(slot).copied().unwrap_or(-1);
+        while self.next_slot < SLOTS && detail_of(self.next_slot) < 0 {
             self.next_slot += 1;
         }
         if self.next_slot < SLOTS {
-            let detail = facts.slots.collision[self.next_slot];
+            let detail = detail_of(self.next_slot);
             let hull = slot_hull(shape, nodes, detail, &mut charge);
             return match hull {
                 Some(hull) => {
@@ -333,7 +335,7 @@ fn load(bytes: &[u8], slots: SlotRule, work: &mut u64, budget: u64) -> Option<Cl
     let nodes = instance.node_transforms().to_vec();
     let mut hulls: [Option<Rc<Hull>>; SLOTS] = Default::default();
     for (slot, hull) in hulls.iter_mut().enumerate() {
-        let detail = facts.slots.collision[slot];
+        let detail = facts.slots.collision.get(slot).copied().unwrap_or(-1);
         if detail < 0 {
             continue;
         }
