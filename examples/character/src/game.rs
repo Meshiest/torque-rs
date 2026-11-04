@@ -9,6 +9,7 @@
 //! leaves the world's rectangle in the draws), and the eye: the orbit camera around the figure's `cam` node.
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use torque::client::conn::tge::TgeConn;
@@ -22,7 +23,7 @@ use torque::server::server::{GameServer as _, Server};
 use torque::shapes::instance::ShapeInstance;
 use torque::shapes::math::mul_p;
 use torque_example_common::orbit::Orbit;
-use torque_example_common::view::{SceneShape, WorldView};
+use torque_example_common::view::{Daylight, SceneShape, WorldView};
 use torque_example_common::{KitAssets, draw_cache, kit_path};
 use torque_render_core::Gpu;
 use torque_render_scene::math::Mat;
@@ -33,8 +34,8 @@ use crate::motion::{Figure, Input, State};
 /// The figure's id among the frame's moving objects.
 pub const FIGURE_ID: u32 = 1;
 pub const PISTOL_ID: u32 = 2;
-/// The floor: its half side and how often its texture repeats (units).
-pub const FLOOR_HALF: f32 = 400.0;
+/// The floor: its half side (past the farthest the view reaches) and how often its texture repeats (units).
+pub const FLOOR_HALF: f32 = 3200.0;
 pub const FLOOR_TILE: f32 = 4.0;
 /// Radians the camera turns for a mouse count, and a second with `Q` or `E` held.
 pub const MOUSE_TURN: f32 = 0.005;
@@ -56,59 +57,10 @@ pub mod keys {
     pub const F: u8 = 0x46;
 }
 
-/// The canvas, its profiles and the action map.
-const SCRIPT: &str = r#"
-new GuiControlProfile(CharacterBandProfile) { opaque = true; fillColor = "12 16 24 150"; };
-new GuiControlProfile(CharacterTextProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "235 238 245 255"; };
-new GuiControlProfile(CharacterStateProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "255 214 110 255"; justify = "right"; };
-createCanvas("torque-rs character");
-new GameTSCtrl(CharacterView) {
-    position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
-    new GuiControl(CharacterBand) {
-        profile = CharacterBandProfile; position = "0 0"; extent = "800 28"; horizSizing = "width";
-        new GuiTextCtrl(CharacterHelp) {
-            profile = CharacterTextProfile; position = "10 5"; extent = "700 18"; visible = true; enabled = true;
-            text = "W A S D move    Shift run    Space jump    F pistol    Mouse or Q / E orbit    Wheel zoom    Esc quit";
-        };
-        new GuiTextCtrl(CharacterState) {
-            profile = CharacterStateProfile; position = "700 5"; extent = "90 18"; horizSizing = "left"; visible = true; enabled = true; text = "idle";
-        };
-    };
-};
-Canvas.setContent(CharacterView);
-Canvas.cursorOff();
-
-function charForward(%v) { $charForward = %v; }
-function charBack(%v) { $charBack = %v; }
-function charLeft(%v) { $charLeft = %v; }
-function charRight(%v) { $charRight = %v; }
-function charRun(%v) { $charRun = %v; }
-function charJump(%v) { $charJump = %v; }
-function charTurnLeft(%v) { $charTurnLeft = %v; }
-function charTurnRight(%v) { $charTurnRight = %v; }
-function charYaw(%v) { $charYaw += %v; }
-function charPitch(%v) { $charPitch += %v; }
-function charZoom(%v) { $charZoom += %v; }
-function charPistol(%v) { if (%v) $charPistol = !$charPistol; }
-function charQuit(%v) { if (%v) quit(); }
-function resetCanvas() {}
-
-new ActionMap(CharacterMap);
-CharacterMap.bind(keyboard, w, charForward);
-CharacterMap.bind(keyboard, s, charBack);
-CharacterMap.bind(keyboard, a, charLeft);
-CharacterMap.bind(keyboard, d, charRight);
-CharacterMap.bind(keyboard, lshift, charRun);
-CharacterMap.bind(keyboard, space, charJump);
-CharacterMap.bind(keyboard, q, charTurnLeft);
-CharacterMap.bind(keyboard, e, charTurnRight);
-CharacterMap.bind(keyboard, f, charPistol);
-CharacterMap.bind(keyboard, escape, charQuit);
-CharacterMap.bind(mouse, xaxis, charYaw);
-CharacterMap.bind(mouse, yaxis, charPitch);
-CharacterMap.bind(mouse, zaxis, charZoom);
-CharacterMap.push();
-"#;
+/// The example's game folder: `main.cs` builds the canvas, its profiles and the action map.
+pub fn game_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("game")
+}
 
 /// The example's client.
 pub struct CharacterGame {
@@ -142,8 +94,9 @@ impl CharacterGame {
         vm.register_class("ActionMap", "SimObject", &[]);
         torque::client::actionmap::register(&mut vm, &state);
         torque::client::screen::register(&mut vm, &gui, &state);
-        vm.eval(SCRIPT.as_bytes())
-            .map_err(|e| format!("the script: {e}"))?;
+        let main = game_dir().join("main.cs");
+        let script = std::fs::read(&main).map_err(|e| format!("main.cs: {e}"))?;
+        vm.eval(&script).map_err(|e| format!("main.cs: {e}"))?;
         let mut host = ClientHost::new(
             Server::new(vm),
             gui,
@@ -164,9 +117,24 @@ impl CharacterGame {
         })
     }
 
-    /// A world view on `gpu` with the example's floor.
+    /// The daylight: the default's, with the fog and visible distances `main.cs` sets (the default's where it sets none).
+    pub fn daylight(&self) -> Daylight {
+        let mut d = Daylight::default();
+        let (fog, visible) = (
+            self.number("$Character::fogDistance"),
+            self.number("$Character::visibleDistance"),
+        );
+        if visible > 0.0 {
+            d.visible = visible;
+            d.fog_start = fog.clamp(0.0, visible);
+        }
+        d
+    }
+
+    /// A world view on `gpu` with the example's daylight and floor.
     pub fn view(&self, gpu: &Gpu) -> WorldView {
         let mut view = WorldView::new(gpu);
+        view.set_daylight(&self.daylight());
         view.set_floor(&self.assets, &kit_path("grid"), FLOOR_HALF, FLOOR_TILE);
         view
     }
@@ -222,9 +190,7 @@ impl CharacterGame {
             ZOOM_STEP.powf(zoom / 120.0),
         );
         let holding = self.number("$charPistol") != 0.0;
-        if holding != self.figure.holding() {
-            self.figure.set_holding(self.shape.shape(), holding);
-        }
+        self.figure.set_holding(self.shape.shape(), holding);
         let (forward, right) = (self.orbit.forward(), self.orbit.right());
         if self
             .figure
@@ -235,8 +201,13 @@ impl CharacterGame {
     }
 
     fn show_state(&mut self, state: State) {
-        let line = format!("CharacterState.setText(\"{}\");", state.name());
-        if let Err(e) = self.host.server.vm_mut().eval(line.as_bytes()) {
+        let name = state.name().as_bytes().to_vec();
+        if let Err(e) = self
+            .host
+            .server
+            .vm_mut()
+            .invoke(None, b"showState", &[name])
+        {
             eprintln!("example-character: {e}");
         }
     }

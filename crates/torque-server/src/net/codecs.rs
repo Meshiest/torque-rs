@@ -149,6 +149,13 @@ pub trait NetCodecs: Debug {
         0
     }
 
+    /// The record mask of the bits a game class's simulation marks on an object of ghost class `code` (torque-sim's numbering
+    /// of a class's own bits, which the game classes hand the ghost layer): the same bits by default.
+    fn sim_mask(&self, code: u16, bits: u32) -> u32 {
+        let _ = code;
+        bits
+    }
+
     /// The width of a class id in a ghost record.
     fn ghost_class_bits(&self) -> u8 {
         self.object_classes()
@@ -420,7 +427,19 @@ impl ObjectView for TgeView<'_> {
     }
 }
 
-impl NetCodecs for TorqueCodecs {}
+impl NetCodecs for TorqueCodecs {
+    /// torque-sim numbers a Player's and an Item's own bits from bit 24 (a Player's `MoveMask` is bit 25); TGE 1.4's records
+    /// start them one bit higher, past its ShapeBase's last (a Player's `ActionMask` 25, `MoveMask` 26, `ImpactMask` 27; an
+    /// Item's `HiddenMask` 25 to `RotationMask` 28). The bits below are the parts' and are the same.
+    fn sim_mask(&self, code: u16, bits: u32) -> u32 {
+        match TgeClass::of_code(code) {
+            Some(TgeClass::Player | TgeClass::AiPlayer | TgeClass::Item) => {
+                (bits & 0x00ff_ffff) | ((bits & 0x7f00_0000) << 1)
+            }
+            _ => bits,
+        }
+    }
+}
 
 struct Installed(Rc<dyn NetCodecs>);
 

@@ -25,7 +25,8 @@
 //!   units a second.
 //! - `run`: 0.6 s, looped, legs ±45°, the knees bending to 107°, arms ±40° with the elbows bent about 80°, the torso leant
 //!   10° forward; [`RUN_SPEED`] units a second.
-//! - `jump`: 0.5 s, played once: a crouch, then the knees tucked up and the arms raised, held on the last key.
+//! - `jump`: 0.5 s, played once: a crouch with the arms back, then the knees tucked up and the arms swung forward to about
+//!   shoulder height, held on the last key.
 //! - `hold`: the right arm raised to aim, the forearm level and straight ahead; priority 1 and only the right arm, so played on
 //!   a second thread it holds that arm over any of the others while the figure holds a pistol.
 //!
@@ -376,10 +377,10 @@ pub fn figure() -> Model {
             track(knee_l, &[0.0, -50.0, -110.0, -110.0]),
             track(leg_r, &[0.0, 15.0, 45.0, 45.0]),
             track(knee_r, &[0.0, -40.0, -95.0, -95.0]),
-            track(arm_l, &[0.0, -25.0, 150.0, 150.0]),
-            track(elbow_l, &[6.0, 20.0, 15.0, 15.0]),
-            track(arm_r, &[0.0, -25.0, 150.0, 150.0]),
-            track(elbow_r, &[6.0, 20.0, 15.0, 15.0]),
+            track(arm_l, &[0.0, -30.0, 62.0, 62.0]),
+            track(elbow_l, &[6.0, 20.0, 30.0, 30.0]),
+            track(arm_r, &[0.0, -34.0, 68.0, 68.0]),
+            track(elbow_r, &[6.0, 22.0, 26.0, 26.0]),
         ],
         translations: Vec::new(),
         ground: Vec::new(),

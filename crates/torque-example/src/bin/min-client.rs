@@ -1,6 +1,6 @@
 //! The example's client: connects to an example server and prints the ghosts it is sent.
 //!
-//! `cargo run -p torque-example --bin example-client -- [--server 127.0.0.1:28000] [--seconds 5]`
+//! `cargo run -p torque-example --bin min-client -- [--server 127.0.0.1:28000] [--seconds 5]`
 
 use std::time::{Duration, Instant};
 

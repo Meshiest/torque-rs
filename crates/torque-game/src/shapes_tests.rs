@@ -41,3 +41,24 @@ fn a_loaded_result_is_present_unless_it_failed() {
     assert!(Loaded::Nothing.is_present() && Loaded::Unread.is_present());
     assert!(!Loaded::Failed.is_present());
 }
+
+#[test]
+fn a_shape_with_one_collision_detail_reports_its_one_entry() {
+    let facts = Facts {
+        slots: shapes::preload::Slots {
+            collision: vec![1],
+            los: vec![2],
+        },
+        bounds: vec![[0.0; 6]],
+        findings: vec![Some(Finding::Invalid)],
+        debris_detail: -1,
+        eye_node: -1,
+        camera_node: -1,
+        mount_nodes: [-1; shapes::preload::MOUNT_POINTS],
+        ai_repair_node: -1,
+    };
+    let mut vm = Vm::new();
+    report_findings(&mut vm, b"box.dts", &facts);
+    let lines: Vec<_> = vm.drain_log().into_iter().map(|l| l.text).collect();
+    assert_eq!(lines, [invalid_line(b"box.dts", 0, 1).into_bytes()]);
+}

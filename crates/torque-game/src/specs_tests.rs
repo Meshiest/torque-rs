@@ -140,3 +140,45 @@ fn the_map_classes_come_alone_with_their_defaults_and_a_hosts_own_fields() {
     assert_eq!(initial(water, b"liquidType"), Value::Int(1));
     assert_eq!(initial(water, b"envMapIntensity"), Value::Float(0.4));
 }
+
+#[test]
+fn a_scene_object_and_a_player_datablock_read_their_constructors_values() {
+    let mut vm = Vm::new();
+    install(&mut vm);
+    let text = |vm: &mut Vm, expr: &str| {
+        let line = format!("$out = {expr};");
+        vm.eval(line.as_bytes()).unwrap();
+        String::from_utf8_lossy(&vm.global("$out").unwrap()).into_owned()
+    };
+    vm.eval(b"new StaticShape(Box); new PlayerData(Walker) { runForce = 900; };")
+        .unwrap();
+    // `SceneObject`'s constructor: a scale of 1 (a zero scale makes a point of every box).
+    assert_eq!(text(&mut vm, "Box.scale"), "1 1 1");
+    // A PlayerData keeps what the script set and reads the constructor's value for the rest.
+    assert_eq!(text(&mut vm, "Walker.runForce"), "900");
+    assert_eq!(text(&mut vm, "Walker.horizMaxSpeed"), "80");
+    assert_eq!(text(&mut vm, "Walker.maxForwardSpeed"), "10");
+    assert_eq!(text(&mut vm, "Walker.cameraMaxFov"), "120");
+}
+
+#[test]
+fn the_scene_and_shape_classes_name_the_methods_their_natives_replace() {
+    for (class, method) in [
+        ("SceneObject", "setTransform"),
+        ("SceneObject", "getPosition"),
+        ("ShapeBase", "playThread"),
+        ("ShapeBase", "mountImage"),
+        ("ShapeBase", "setVelocity"),
+        ("Player", "setActionThread"),
+        ("Camera", "setOrbitMode"),
+        ("Item", "isStatic"),
+        ("WheeledVehicle", "getWheelCount"),
+        ("GameConnection", "activateGhosting"),
+        ("GameConnection", "setControlObject"),
+    ] {
+        assert!(
+            crate::methods::find_in(CLASSES, class, method).is_some(),
+            "{class}::{method}"
+        );
+    }
+}

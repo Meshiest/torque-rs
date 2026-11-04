@@ -8,7 +8,7 @@
 //! - [`client`]: the client: the handshake, the packets, and the client's world of ghosts over TGE's client set.
 //! - `window` (feature `window`): the client in a window, its ghosts drawn by a client host's GUI.
 //!
-//! `cargo run -p torque-example --bin example-server` and, beside it, `cargo run -p torque-example --bin example-client` (or
+//! `cargo run -p torque-example --bin min-server` and, beside it, `cargo run -p torque-example --bin min-client` (or
 //! `cargo run -p torque-example --features window --bin example-window`, which with `--local` runs the server itself).
 
 pub mod client;

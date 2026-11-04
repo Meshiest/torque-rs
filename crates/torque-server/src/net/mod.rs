@@ -1,8 +1,8 @@
 //! The network host: the datagram transport under it ([`transport`]), the seam between the packet layer and what rides in the
 //! packets ([`payload`]), the codecs a game's protocol sets ([`codecs`]), the frame of the datablock events ([`datablock`]),
 //! and the host itself over a game's parts ([`host`]: [`NetShared`], [`NetGame`]): the passes ([`pump`]), the connections
-//! ([`conn`], [`local`]), the event layer ([`events`], [`hostevent`]), the datablock chain ([`datablocks`]), the ghost hub
-//! ([`ghosts`]), the command natives ([`commands`]) and the server query's answers ([`query`]); [`torque`] is Torque's
+//! ([`conn`], [`local`]), the ghosting natives and the `NetObject` behaviour ([`ghosting`]), the event layer ([`events`],
+//! [`hostevent`]), the datablock chain ([`datablocks`]), the ghost hub ([`ghosts`]), the command natives ([`commands`]) and the server query's answers ([`query`]); [`torque`] is Torque's
 //! own net game and the network host the main loop drives.
 
 pub mod codecs;
@@ -11,6 +11,7 @@ pub mod conn;
 pub mod datablock;
 pub mod datablocks;
 pub mod events;
+pub mod ghosting;
 pub mod ghosts;
 pub mod host;
 pub mod hostevent;

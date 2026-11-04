@@ -1,6 +1,6 @@
 //! Pictures of every shape of the asset kit for review, drawn offscreen on a plain grey floor: the cube; the figure from the
-//! front, side and back, its face close up, and in its idle, walk, run and jump poses; the figure holding the pistol (its
-//! `hold` arm pose) from the side, front three-quarters and over its shoulder; the
+//! front, side and back, its face close up, and in its idle, walk, run and jump poses (the jump also from the front and the
+//! side); the figure holding the pistol (its `hold` arm pose) from the side, front three-quarters and over its shoulder; the
 //! pistol from the side and three-quarters with its muzzle, eject and mount points marked; and the projectile.
 //!
 //! `cargo run -p torque-example-common --example kit-shots -- <dir>` (default `kit-shots`)
@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use torque::shapes::instance::{ShapeInstance, find_sequence};
 use torque::shapes::math::mul_p;
 use torque_example_common::view::{Daylight, SceneShape, WorldView};
+use torque_example_common::window::offscreen_gpu;
 use torque_example_common::{KitAssets, kit_path};
-use torque_render_core::Gpu;
 use torque_render_scene::hd::kit::{box_object, look_at};
 use torque_render_scene::math::Mat;
 
@@ -110,6 +110,21 @@ const PICTURES: &[Picture] = &[
         ..SHAPE
     },
     Picture {
+        name: "figure-jump-front",
+        pose: Some(("jump", 1.0)),
+        lift: 0.3,
+        zoom: 1.25,
+        ..SHAPE
+    },
+    Picture {
+        name: "figure-jump-side",
+        pose: Some(("jump", 1.0)),
+        lift: 0.3,
+        turn: FRAC_PI_2,
+        zoom: 1.25,
+        ..SHAPE
+    },
+    Picture {
         name: "holding-side",
         pose: Some(("idle", 0.0)),
         turn: FRAC_PI_2,
@@ -183,7 +198,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| "kit-shots".to_string()),
     );
     std::fs::create_dir_all(&dir)?;
-    let gpu = Gpu::new()?;
+    let gpu = offscreen_gpu()?;
     let assets = KitAssets::new()?;
     let pistol = SceneShape::load(&assets, &kit_path("pistol.dts")).ok_or("pistol.dts")?;
     let pistol_pose = pistol.instance().ok_or("no instance")?;

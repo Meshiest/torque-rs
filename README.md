@@ -35,7 +35,7 @@ debugger, telnet console, journaling) are build-time features, so a finished gam
 | `torque-fonts` | font caches and text rasterising |
 | `torque-audio` | audio decoding and mixing |
 | `torque` | the umbrella crate: the crates above behind features, and headless examples |
-| `torque-example` | an example dedicated server and client over the loopback address (`just examples/server`, `just examples/client`) |
+| `torque-example` | an example dedicated server and client over the loopback address (`just examples/min-server`, `just examples/min-client`) |
 | `torque-example-assets` (`examples/assets`) | the example games' asset kit: a cube, a box figure with idle, walk, run and jump, a pistol, a projectile and their textures, made from code (`just examples/assets`) |
 
 The roadmap is in the guide (`book/src/roadmap.md`).

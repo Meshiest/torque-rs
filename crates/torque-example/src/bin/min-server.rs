@@ -1,6 +1,6 @@
 //! The example's dedicated server: loads the bundled game, binds the loopback address and runs headless.
 //!
-//! `cargo run -p torque-example --bin example-server -- [--port 28000] [--ticks N] [--root <game folder>]`
+//! `cargo run -p torque-example --bin min-server -- [--port 28000] [--ticks N] [--root <game folder>]`
 //!
 //! With `--ticks N` it stops after N ticks (64 a second); without, it runs until it is stopped.
 

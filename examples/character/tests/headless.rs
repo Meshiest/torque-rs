@@ -6,7 +6,6 @@ use torque::shapes::math::mul_p;
 use torque_example_character::game::{CharacterGame, keys};
 use torque_example_character::motion::State;
 use torque_example_character::shots::{FRAME_MS, Step, picture_camera, play};
-use torque_render_core::Gpu;
 
 /// Steps the game `ms` without drawing.
 fn run(game: &mut CharacterGame, ms: u32) {
@@ -92,7 +91,7 @@ fn a_transition_blends_the_pose() {
 
 #[test]
 fn frames_drawn_offscreen_show_the_figure_move() {
-    let gpu = match Gpu::new() {
+    let gpu = match torque_example_common::window::offscreen_gpu() {
         Ok(gpu) => gpu,
         Err(e) => {
             eprintln!("skipped: {e}");
@@ -139,14 +138,22 @@ fn frames_drawn_offscreen_show_the_figure_move() {
 }
 
 #[test]
+fn main_cs_sets_a_far_view() {
+    let game = CharacterGame::new().unwrap();
+    let d = game.daylight();
+    assert_eq!((d.fog_start, d.visible), (1500.0, 3000.0));
+    assert!(torque_example_character::game::FLOOR_HALF > d.visible);
+}
+
+#[test]
 fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
     let mut game = CharacterGame::new().unwrap();
     run(&mut game, 100);
     assert!(game.held_pistol().is_none());
     game.key(keys::F, true);
     game.key(keys::F, false);
-    run(&mut game, 100);
-    assert!(game.figure().holding());
+    run(&mut game, 300);
+    assert!(game.figure().holding() && game.figure().hold_weight() == 1.0);
     let held = game.held_pistol().unwrap();
     // The barrel points the way the figure faces (+y), level, at about shoulder height in front of it.
     let ahead = held.mul_v([0.0, 1.0, 0.0]);
@@ -166,5 +173,10 @@ fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
     game.key(keys::F, true);
     game.key(keys::F, false);
     run(&mut game, 50);
+    assert!(
+        game.figure().holding() && game.figure().hold_weight() < 1.0,
+        "the arm goes down over a moment"
+    );
+    run(&mut game, 300);
     assert!(!game.figure().holding() && game.held_pistol().is_none());
 }

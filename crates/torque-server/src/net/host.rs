@@ -536,7 +536,8 @@ pub struct Host<G: NetGame> {
 }
 
 /// Attaches a network host to `vm`: the shared state, the ghost hub, the event layer, the `GameConnection` behaviour and the
-/// connection natives, the datablock keys and the command host. The game installs its own natives on the result.
+/// connection natives, the `NetObject` behaviour and the ghosting natives ([`super::ghosting`]), the datablock keys, the
+/// command host and the command natives ([`commands::register_always`]). The game installs its own natives on the result.
 pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShared<G>>> {
     let Host {
         transport,
@@ -593,11 +594,14 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
     shared.borrow().engine.borrow_mut().ghost = Some(hub.clone());
     shared.borrow_mut().ghosts = Some(hub.clone());
     shared.borrow().events.set_hub(hub.clone());
+    super::ghosting::install(vm, &shared);
     let layer = shared.borrow().events.clone();
     let values = shared.borrow().engine.borrow().db_values.clone();
     layer.set_values(values.clone());
     datablocks::install_keys_with(vm, &layer.keys(), static_writes);
     shared.borrow().engine.borrow_mut().datablock_keys = layer.keys();
     shared.borrow().engine.borrow_mut().commands = commands::CommandHost::new(&shared, layer);
+    let engine = Rc::clone(&shared.borrow().engine);
+    commands::register_always(vm, &engine);
     shared
 }

@@ -85,7 +85,7 @@ pub fn write_png(frame: &Frame, path: &Path) -> io::Result<()> {
 
 /// The pictures of [`STATES`] at `size`, written into `dir` as `<state>.png`; returns the paths.
 pub fn write_states(dir: &Path, size: (u32, u32)) -> Result<Vec<std::path::PathBuf>, String> {
-    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let gpu = torque_example_common::window::offscreen_gpu().map_err(|e| e.to_string())?;
     let mut game = CharacterGame::new()?;
     picture_camera(&mut game);
     let mut view = game.view(&gpu);

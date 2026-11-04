@@ -24,8 +24,7 @@ torque-ghosts = { path = "../torque-ghosts" }
 # The scope eye's transform the ghost hub keeps.
 torque-collide = { path = "../torque-collide" }
 
-[dev-dependencies]
-# The test's container bins.
+# The container bins of the game classes' container.
 torque-scene = { path = "../torque-scene" }
 
 [lints]

@@ -8,9 +8,16 @@
 //! [`TGE_HANDSHAKE_WAIT_MS`] has passed since it last went out, [`TGE_HANDSHAKE_TRIES`] times (five sends in all) before the
 //! connect times out unanswered; a server packet is read as TGE's client reads it: the head (the move
 //! ack and the control section, its packet data by the class of the control object's ghost), the event section (net strings,
-//! remote commands, the connection messages, the ghost-always objects) and the ghost section. A datablock event, or any event
-//! class without a reader here, does not decode: the connection ends loudly, as the engine's connection ends on any section it
-//! cannot read. The client's packet carries its control block and the events it posted (a remote command, the answer to the
+//! remote commands, the connection messages, the ghost-always objects, the datablocks) and the ghost section. An event class
+//! without a reader here does not decode: the connection ends loudly, as the engine's connection ends on any section it cannot
+//! read.
+//!
+//! **Datablocks.** A `SimDataBlockEvent` is read as TGE's `SimDataBlockEvent::unpack` reads it: `flag(modified)`, then the id
+//! (`ranged` over the datablock-id range), the class id, the position in the server's datablock group and the group's size,
+//! then the class's `packData` record ([`TgeDatablocks`]). The datablock joins the world under its id (its fields named as
+//! the script fields, [`ghosts::datablocks::fields::fields`]) and the scripts hear `onDataBlockObjectReceived(index, total)`.
+//! The server's `DataBlocksDone` message is answered with `DataBlocksDownloadDone` and its sequence: the client has every
+//! datablock it was sent (the server then runs `onDataBlocksDone`). The client's packet carries its control block and the events it posted (a remote command, the answer to the
 //! server's ghost-always message).
 //!
 //! **The world** ([`TgeWorld`]) poses nothing (every shape stands at its default pose), names a ghost by its ShapeBase name block,
@@ -18,8 +25,9 @@
 //!
 //! Credit: the connection follows TGE 1.4's `NetConnection` / `GameConnection` client half (`netConnection.cc`,
 //! `netInterface.cc`, `netInterface.h`, `gameConnection.cc`), as Torque3D (MIT) carries it in `sim/netConnection.cpp`,
-//! `sim/netInterface.cpp` and `sim/netInterface.h` (each Copyright (c) 2012 GarageGames, LLC) and `T3D/gameBase/gameConnection.cpp` (Copyright (c) 2012 GarageGames, LLC;
-//! Copyright (C) 2015 Faust Logic, Inc.). The code is this crate's own.
+//! `sim/netInterface.cpp` and `sim/netInterface.h` (each Copyright (c) 2012 GarageGames, LLC), `T3D/gameBase/gameConnection.cpp` (Copyright (c) 2012 GarageGames, LLC;
+//! Copyright (C) 2015 Faust Logic, Inc.) and, for `read_datablock`, `T3D/gameBase/gameConnectionEvents.cpp` (Copyright (c) 2012
+//! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code is this crate's own.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -28,7 +36,8 @@ use std::rc::Rc;
 
 use ghost_world::tge::{TgeClientSet, TgeCodec, TgeDatablock, shape_part};
 use ghost_world::{ClientWorld, Ghost};
-use ghosts::{NetWidths, TgeClass, TgeRecord, Value, tge_reps};
+use ghosts::datablocks::DatablockCodecSet;
+use ghosts::{NetWidths, TgeClass, TgeDatablocks, TgeRecord, Value, tge_reps};
 use net::NetError;
 use net::bits::BitReader;
 use net::classes::{Kind, NetClasses};
@@ -45,6 +54,7 @@ use net::profile::DEFAULT_DATABLOCK_BITS;
 use net::protocol::{Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
+use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
 use ts_vm::fields::{FieldRules, FieldType};
 use ts_vm::vm::Vm;
 
@@ -294,10 +304,43 @@ enum Incoming {
     Net(NetEvent),
     /// A ghost-always object (its index; `None` for the empty form).
     Always(Option<u32>),
+    /// A datablock (`None`: the one-bit event of a datablock the client already has), its position and the group's size.
+    DataBlock(Option<(TgeDatablockEvent, u32, u32)>),
 }
 
 struct Unpacker<'a> {
     ghosts: &'a mut GhostClient<TgeCodec>,
+    classes: &'a NetClasses,
+}
+
+/// `SimDataBlockEvent::unpack`: the flag, the id, the class id, the position, the group's size and the record.
+fn read_datablock(
+    r: &mut BitReader,
+    ctx: &EventCtx<'_>,
+    classes: &NetClasses,
+) -> Result<Option<(TgeDatablockEvent, u32, u32)>, NetError> {
+    if !r.read_flag()? {
+        return Ok(None);
+    }
+    let widths = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits);
+    let (lo, hi) = widths.datablock_range();
+    let id = r.read_ranged_u32(lo, hi)?;
+    let class_id = r.read_bits(classes.id_bits(Kind::DataBlock))?;
+    let index = r.read_bits(ctx.datablock_bits)?;
+    let total = r.read_bits(ctx.datablock_bits + 1)?;
+    let name = classes
+        .classes(Kind::DataBlock)
+        .get(class_id as usize)
+        .map(|c| c.name.as_str())
+        .ok_or(NetError::Invalid("datablock class id"))?;
+    let class = TgeDatablocks::class_by_name(name).ok_or(NetError::Invalid("datablock class"))?;
+    let record =
+        TgeDatablocks::decode(class, r, ctx.table, &mut net::events::free_charge(), widths)?;
+    let datablock = TgeDatablock {
+        class: name.to_string(),
+        fields: ghosts::datablocks::fields::fields(&record, widths),
+    };
+    Ok(Some((TgeDatablockEvent { id, datablock }, index, total)))
 }
 
 impl EventUnpacker for Unpacker<'_> {
@@ -311,6 +354,8 @@ impl EventUnpacker for Unpacker<'_> {
     ) -> Result<Incoming, NetError> {
         if class == ctx.ids.ghost_always_object {
             self.ghosts.read_always_event(r).map(Incoming::Always)
+        } else if class == ctx.ids.sim_data_block {
+            read_datablock(r, ctx, self.classes).map(Incoming::DataBlock)
         } else {
             NetEvent::unpack(class, r, ctx).map(Incoming::Net)
         }
@@ -492,7 +537,10 @@ impl TgeFeed {
             &mut r,
             &self.tables.ctx(self.widths),
             Role::Client,
-            &mut Unpacker { ghosts },
+            &mut Unpacker {
+                ghosts,
+                classes: &self.tables.classes,
+            },
             &mut incoming,
             None,
         )?;
@@ -514,6 +562,15 @@ impl TgeFeed {
                     world.apply_remote(&cmd.args);
                     self.events.push_back(FeedEvent::Remote(cmd));
                 }
+                Incoming::DataBlock(Some((event, index, total))) => {
+                    world.apply_datablock(event.id, event.datablock.clone());
+                    self.events.push_back(FeedEvent::DataBlock {
+                        index,
+                        total,
+                        body: Box::new(event),
+                    });
+                }
+                Incoming::DataBlock(None) => {}
                 Incoming::Always(index) => {
                     if let Some(i) = index {
                         world.apply_ghost_always(i);
@@ -544,7 +601,8 @@ impl TgeFeed {
     }
 
     /// A connection message: 0 (the ghost-always objects are done) is answered with 1 (ready for the rest), 2 (the server ended
-    /// its ghosting) clears the table, 3 (the ghost-always objects start) is the scripts' `onGhostAlwaysStarted(count)`.
+    /// its ghosting) clears the table, 3 (the ghost-always objects start) is the scripts' `onGhostAlwaysStarted(count)`, 6
+    /// (`DataBlocksDone`) is answered with 7 (`DataBlocksDownloadDone`) and its sequence.
     fn message(&mut self, world: &mut TgeWorld, m: ConnectionMessage) {
         match m.message {
             0 => {
@@ -564,6 +622,14 @@ impl TgeFeed {
             3 => self
                 .events
                 .push_back(FeedEvent::GhostAlwaysStarted(m.count)),
+            DATABLOCKS_DONE => {
+                let done = NetEvent::ConnectionMessage(ConnectionMessage {
+                    seq: m.seq,
+                    message: DATABLOCKS_DOWNLOAD_DONE,
+                    count: 0,
+                });
+                let _ = self.out.post(done);
+            }
             _ => {}
         }
     }

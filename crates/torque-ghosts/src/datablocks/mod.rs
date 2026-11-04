@@ -27,6 +27,7 @@
 
 pub mod audio;
 pub mod effects;
+pub mod fields;
 pub mod image;
 pub mod misc;
 pub mod shapes;
@@ -104,7 +105,7 @@ pub trait DatablockCodecSet {
 
 /// `write(F32)`: a raw float.
 pub fn float<C: Codec>(c: &mut C, name: &'static str, v: &mut F32) -> R {
-    c.raw32(name, &mut v.0)
+    c.float32(name, &mut v.0)
 }
 
 /// `writeFlag(x != default)` and, when set, `write(F32)`.

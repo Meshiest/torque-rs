@@ -752,9 +752,14 @@ fn split_sequence(value: &[u8]) -> (&[u8], Option<&[u8]>) {
 /// What the check of a shape's collision boxes prints for a datablock that names it as `name` (see the module doc): the slots
 /// in order, the warning only when `$Pref::Debug::ShowShapeMessages` is true, the error always.
 pub fn report_findings(vm: &mut Vm, name: &[u8], facts: &Facts) {
-    for slot in 0..SLOTS {
-        let detail = facts.slots.collision[slot];
-        match facts.findings[slot] {
+    // The entries the check made (at most `SLOTS`: a shape with fewer collision details has fewer).
+    let entries = facts
+        .findings
+        .iter()
+        .zip(&facts.slots.collision)
+        .take(SLOTS);
+    for (slot, (finding, &detail)) in entries.enumerate() {
+        match finding {
             Some(Finding::Exceeds) => {
                 if vm.global(SHOW_SHAPE_MESSAGES).is_some_and(|v| atob(&v)) {
                     vm.warn(exceed_line(name, slot, detail));

@@ -16,7 +16,7 @@ just test       # run the tests (all features)
 just check      # rustfmt and clippy, warnings as errors
 just doc        # API reference
 just book       # the guide, into target/book
-just examples   # the headless examples of the umbrella crate
+just examples/headless   # the headless examples and a short run of the minimal server
 just deny       # licences, advisories and sources of the dependencies
 just msrv       # build with the oldest supported Rust
 just ci         # everything CI checks

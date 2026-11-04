@@ -1207,11 +1207,24 @@ impl<G: GhostGame> GhostHub<G> {
 
 /// The hub as the scene classes' link to it ([`torque_game::ghost`]).
 impl<G: GhostGame> torque_game::ghost::GhostLink for GhostHub<G> {
+    /// The class's simulation bits as the codecs' record mask ([`NetCodecs::sim_mask`]).
     fn set_mask(&self, obj: torque_ts_vm::sim::ObjId, bits: u32) {
+        let bits = self.with(|h| {
+            h.reg
+                .entries
+                .get(&obj)
+                .map_or(bits, |e| h.codecs.sim_mask(e.code, bits))
+        });
         GhostHub::set_mask(self, obj, bits);
     }
 
     fn clear_mask(&self, obj: torque_ts_vm::sim::ObjId, bits: u32) {
+        let bits = self.with(|h| {
+            h.reg
+                .entries
+                .get(&obj)
+                .map_or(bits, |e| h.codecs.sim_mask(e.code, bits))
+        });
         GhostHub::clear_mask(self, obj, bits);
     }
 

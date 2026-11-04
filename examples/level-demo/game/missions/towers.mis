@@ -1,0 +1,41 @@
+// Towers
+// Jump from pillar to pillar, each a step higher, up to the lookout in the middle.
+
+new SimGroup(MissionGroup)
+{
+   new ScriptObject(MapInfo) { title = "Towers"; spawn = "0 -12 0.2"; spawnYaw = 0; };
+   // The sky: a light haze from 1,500 units out, nothing drawn past 3,000.
+   new Sky(WorldSky) { visibleDistance = 3000; fogDistance = 1500; fogColor = "0.72 0.8 0.9 1"; };
+   // The ground.
+   new StaticShape() { dataBlock = WorldCubeData; position = "0 0 -0.5"; scale = "44 44 1"; };
+};
+
+function addCube(%pos, %scale)
+{
+   MissionGroup.add(new StaticShape() { dataBlock = WorldCubeData; position = %pos; scale = %scale; });
+}
+
+// Ten pillars round a circle, each a little higher than the last, then the lookout in the middle: its wide top is a short jump
+// from the last pillar.
+function buildTowers()
+{
+   %count = 10;
+   %radius = 8;
+   %step = 1.1;
+   for (%i = 0; %i < %count; %i++)
+   {
+      // From the south, turning east.
+      %angle = -1.5708 + %i * 0.576;
+      %x = mCos(%angle) * %radius;
+      %y = mSin(%angle) * %radius;
+      %top = (%i + 1) * %step;
+      addCube(%x SPC %y SPC %top / 2, "2.2 2.2" SPC %top);
+   }
+   %lookout = %count * %step + 0.6;
+   addCube("0 0" SPC %lookout / 2, "2 2" SPC %lookout);
+   addCube("0 0" SPC %lookout + 0.25, "9 9 0.5");
+   // A low step to the first pillar.
+   addCube("0 -10.5 0.25", "2 1.5 0.5");
+}
+
+buildTowers();
