@@ -275,11 +275,12 @@ fn the_drawn_bolt_leaves_the_pistol_and_curves_onto_the_crosshair() {
             );
             on_line += 1;
         } else {
-            // Curving in: nearer the line each frame.
+            // Curving in: nearer the line each frame (to within the record's quantized direction).
             let off = off_ray(p, eye, aim);
+            let far = len(sub(p, eye));
             assert!(
-                off <= last_off + 1e-4,
-                "it curves in: {off} after {last_off}"
+                off <= last_off + 0.002 * far,
+                "it curves in: {off} after {last_off}, {far} out"
             );
             last_off = off;
             curving += 1;
