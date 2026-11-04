@@ -559,12 +559,20 @@ function clientCmdSetHealth(%left, %full)
 function clientCmdHit(%name)
 {
    $Arena::Hits++;
-   showNote("Hit " @ %name);
 }
 
 function clientCmdKnockedOut(%ms)
 {
    showNote("Knocked out. Back in a moment...");
+}
+
+// ---- the screen's hurt and hit marks (the client draws them from these: a red edge and a mark toward %from when hurt, an X
+// over the crosshair on a hit)
+
+function clientCmdHurt(%amount, %from)
+{
+   $Arena::HurtCount++;
+   $Arena::HurtFrom = %from;
 }
 
 $Pref::Player::Name = "Player";

@@ -299,6 +299,41 @@ pub fn bolt_trail(world: &TgeWorld, db: u32) -> Option<Emitter> {
     Emitter::new(&world.records, id)
 }
 
+/// The burst of a bolt of ProjectileData `db` hitting a figure at `at`: its `explosion`'s `particleEmitter`, `particleDensity`
+/// particles within `particleRadius` (`Explosion::explode`), when the client holds them.
+pub fn hit_burst(
+    world: &TgeWorld,
+    db: u32,
+    at: [f32; 3],
+    normal: [f32; 3],
+    rng: &mut Rng,
+    live: &mut usize,
+) -> Option<Emitter> {
+    let id = |db: u32, field: &str| match world.datablocks.get(&db)?.get(field, 0)? {
+        Value::Id(id) => *id,
+        Value::Int(v) => u32::try_from(*v).ok(),
+        _ => None,
+    };
+    let number =
+        |db: u32, field: &str| match world.datablocks.get(&db).and_then(|d| d.get(field, 0)) {
+            Some(Value::F32(v)) => Some(*v),
+            Some(Value::Int(v)) => Some(*v as f32),
+            _ => None,
+        };
+    let explosion = id(db, "explosion")?;
+    let mut e = Emitter::new(&world.records, id(explosion, "particleEmitter")?)?;
+    let count = number(explosion, "particleDensity")
+        .unwrap_or(10.0)
+        .clamp(0.0, 256.0) as u32;
+    let radius = number(explosion, "particleRadius").unwrap_or(0.0);
+    e.emit_burst(at, normal, radius, count, rng, live);
+    e.dead = true;
+    Some(e)
+}
+
+/// The most hit bursts [`ArenaScene::hit_bursts`] keeps.
+pub const MAX_HIT_BURSTS: usize = 16;
+
 /// Which ghost is the client's own figure, where the client predicts it and where its view is turned.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OwnLook {
@@ -328,8 +363,12 @@ pub struct ArenaScene {
     filter: TextureFilter,
     figures: BTreeMap<u32, Figure>,
     bolts: BTreeMap<u32, Bolt>,
-    /// The trails of the bolts gone, fading out.
+    /// The trails of the bolts gone and the hits' bursts, fading out.
     fading: Vec<Emitter>,
+    /// The bolts whose hit on a figure burst (each bursts once).
+    burst: std::collections::BTreeSet<u32>,
+    /// Where the last hits on figures burst (the last [`MAX_HIT_BURSTS`]).
+    pub hit_bursts: Vec<[f32; 3]>,
     rng: Option<Rng>,
     /// The live particles of every trail.
     live: usize,
@@ -364,6 +403,8 @@ impl ArenaScene {
         self.figures.clear();
         self.bolts.clear();
         self.fading.clear();
+        self.burst.clear();
+        self.hit_bursts.clear();
         self.live = 0;
         self.own = None;
     }
@@ -423,10 +464,20 @@ impl ArenaScene {
                 continue;
             };
             seen.push(index);
-            if p.explosion.is_some() {
+            if let Some(x) = p.explosion.as_ref() {
                 if let Some(mut trail) = self.bolts.remove(&index).and_then(|b| b.trail) {
                     trail.dead = true;
                     self.fading.push(trail);
+                }
+                if x.hit_type & torque::collide::types::PLAYER != 0 && self.burst.insert(index) {
+                    let at = x.position.map(|v| v.get());
+                    let normal = x.normal.map(|v| v.get());
+                    if let Some(e) = hit_burst(world, db, at, normal, &mut rng, &mut self.live) {
+                        self.fading.push(e);
+                        self.hit_bursts.push(at);
+                        let cut = self.hit_bursts.len().saturating_sub(MAX_HIT_BURSTS);
+                        self.hit_bursts.drain(..cut);
+                    }
                 }
                 continue;
             }
@@ -471,6 +522,7 @@ impl ArenaScene {
             }
         }
         self.rng = Some(rng);
+        self.burst.retain(|i| seen.contains(i));
         let gone: Vec<u32> = self
             .bolts
             .keys()

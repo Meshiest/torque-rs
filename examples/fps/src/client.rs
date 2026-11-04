@@ -38,6 +38,7 @@ use torque_example_common::view::{Daylight, WorldView};
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
+use crate::effects::{ScreenMarks, insert_over_world};
 use crate::files::GameFiles;
 use crate::prediction::ArenaClient;
 use crate::scene::{ArenaScene, OwnLook, TextureFilter};
@@ -113,6 +114,8 @@ pub struct ArenaGame {
     frame_dt: f32,
     /// The Sky's distances the view was given.
     sky: Option<(f32, f32)>,
+    /// The screen's hurt and hit marks.
+    pub marks: ScreenMarks,
     /// Lines the hosted server printed (kept for the tests and the console).
     pub server_log: Vec<String>,
     /// Lines the client printed.
@@ -179,6 +182,7 @@ impl ArenaGame {
             server_lag: 0,
             frame_dt: 0.0,
             sky: None,
+            marks: ScreenMarks::default(),
             server_log: Vec::new(),
             client_log: Vec::new(),
         })
@@ -461,6 +465,14 @@ impl ArenaGame {
     /// time since the last frame. Returns that time (seconds).
     pub fn view_frame(&mut self) -> f32 {
         let dt = std::mem::take(&mut self.frame_dt);
+        if self.in_game() {
+            let hurts = crate::effects::count(&self.global("$Arena::HurtCount"));
+            let from = crate::effects::point(&self.global("$Arena::HurtFrom"));
+            let hits = crate::effects::count(&self.global("$Arena::Hits"));
+            self.marks.update(hurts, from, hits, dt);
+        } else {
+            self.marks.clear();
+        }
         self.predict_frame();
         let own = self.own_look();
         let st = self.host.client.borrow();
@@ -493,6 +505,12 @@ impl ArenaGame {
         self.apply_sky(view);
         // The example draws the world itself: the GameTSCtrl draws the world whatever the connection's camera is.
         self.host.gui.0.borrow_mut().world_camera = true;
-        (self.host.draw_frame(), self.eye())
+        let mut draws = self.host.draw_frame();
+        let eye = self.eye();
+        if let Some(world) = draws.worlds.first() {
+            let marks = self.marks.batches(world.rect, eye.position, eye.yaw);
+            insert_over_world(&mut draws, marks);
+        }
+        (draws, eye)
     }
 }
