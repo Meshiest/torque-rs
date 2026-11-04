@@ -441,6 +441,7 @@ PlayMap.bind(mouse, yaxis, look);
 function showMainMenu()
 {
    $Arena::InGame = 0;
+   $Arena::TextureFilter = "";
    PlayMap.pop();
    NameEdit.setValue($Pref::Player::Name);
    Canvas.setContent(MainMenuGui);
@@ -512,8 +513,10 @@ function GameConnection::onConnectionTimedOut(%this)
 
 // ---- what the server says
 
-function clientCmdArenaStarted(%map, %server)
+// %textureFilter is the map's choice of how its textures are drawn ("nearest": sharp texels; empty: smooth).
+function clientCmdArenaStarted(%map, %server, %textureFilter)
 {
+   $Arena::TextureFilter = %textureFilter;
    MainStatus.setText("");
    JoinStatus.setText("");
    Canvas.setContent(PlayGui);

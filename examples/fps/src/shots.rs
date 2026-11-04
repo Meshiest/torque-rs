@@ -1,13 +1,16 @@
 //! The example without a window: two clients in one process over the loopback address, every frame drawn offscreen as the
 //! window would draw it, and pictures taken: the main menu, the list of games with the hosted one, the view from the host's
 //! eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight (as it leaves the
-//! muzzle, then with its trail behind it eight steps away and two steps away).
+//! muzzle, then with its trail behind it eight steps away and two steps away), then the arena itself: the floor at the host's
+//! feet, the length of the arena from a corner, the host's own shadow on the floor ahead, the view from a spawn point with the
+//! other player hidden behind the cover, and the whole arena from above.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 use torque_example_common::view::WorldView;
 use torque_render_core::{Frame, Gpu, Offscreen};
+use torque_render_scene::source::Eye;
 
 use crate::client::{ArenaGame, ClientOptions, NetMode};
 use crate::files::GameFiles;
@@ -24,11 +27,14 @@ struct Seat {
     game: ArenaGame,
     view: WorldView,
     target: Offscreen,
+    /// An eye in place of the game's (none: the game's).
+    eye: Option<Eye>,
 }
 
 impl Seat {
     fn frame(&mut self, gpu: &Gpu) -> Result<(), String> {
         let (gui, eye) = self.game.frame(&mut self.view);
+        let eye = self.eye.unwrap_or(eye);
         self.view.draw(gpu, &self.target.color, &gui, eye)?;
         Ok(())
     }
@@ -114,6 +120,7 @@ pub fn write_all(
         Ok(Seat {
             view: game.view(&gpu),
             target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
+            eye: None,
             game,
         })
     };
@@ -171,7 +178,7 @@ pub fn write_all(
     place(
         &mut a.game,
         "Bob",
-        [-2.5, -10.0, 0.1],
+        [1.2, -10.0, 0.1],
         std::f32::consts::FRAC_PI_2,
     )?;
     run(&gpu, &mut [&mut a, &mut b], 600)?;
@@ -204,5 +211,40 @@ pub fn write_all(
     })?;
     save(&a.picture(&gpu)?, "bolt-cube-near")?;
     b.game.call("fire", &["0"])?;
+
+    // The floor close up, looking down at Ann's feet; then the whole arena from a corner, the floor reaching far off.
+    place(&mut a.game, "Ann", [-14.0, 0.0, 0.1], 0.0)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    a.game.set_global("$Arena::LookPitch", "1.1");
+    save(&a.picture(&gpu)?, "floor-near")?;
+    place(
+        &mut a.game,
+        "Ann",
+        [-18.5, -18.5, 0.1],
+        std::f32::consts::FRAC_PI_4,
+    )?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    a.game.set_global("$Arena::LookPitch", "0.2");
+    save(&a.picture(&gpu)?, "arena-far")?;
+
+    // Ann's own shadow on the floor ahead of her, the sun behind her.
+    place(
+        &mut a.game,
+        "Ann",
+        [-14.0, 0.0, 0.1],
+        std::f32::consts::FRAC_PI_4,
+    )?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    a.game.set_global("$Arena::LookPitch", "0.6");
+    save(&a.picture(&gpu)?, "own-shadow")?;
+
+    // From the first spawn point toward the middle, Bob just behind the ring of cover; then the whole arena from above.
+    place(&mut a.game, "Ann", [0.0, -16.0, 0.1], 0.0)?;
+    place(&mut a.game, "Bob", [0.0, -5.5, 0.1], std::f32::consts::PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    save(&a.picture(&gpu)?, "spawn-view")?;
+    a.eye = Some(a.game.scene().overview_eye());
+    save(&a.picture(&gpu)?, "overview")?;
+    a.eye = None;
     Ok(paths)
 }

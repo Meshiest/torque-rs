@@ -33,7 +33,7 @@ use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
 use crate::files::GameFiles;
-use crate::scene::{ArenaScene, OwnLook};
+use crate::scene::{ArenaScene, OwnLook, TextureFilter};
 use crate::server::{ArenaServer, DEFAULT_PORT, ServerOptions};
 
 /// Where the client's socket binds and what it reaches (see the module docs).
@@ -397,6 +397,8 @@ impl ArenaGame {
     pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
         let dt = std::mem::take(&mut self.frame_dt);
         let own = self.own_look();
+        let filter = TextureFilter::named(&self.global("$Arena::TextureFilter"));
+        self.scene.set_texture_filter(filter);
         let objects = {
             let st = self.host.client.borrow();
             match st.conn.conn.as_ref() {
