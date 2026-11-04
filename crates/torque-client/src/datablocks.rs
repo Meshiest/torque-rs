@@ -131,7 +131,7 @@ pub fn receive(
         vm.error(error.clone());
     }
     // `readSTString()`: every string the unpack reads goes into the client's string table ignoring case, so it reads in the first
-    // spelling the client has (the server's `uiName = "rifle"` reads "Rifle" when a GUI's text had that spelling first).
+    // spelling the client has (the server's `pickupName = "rifle"` reads "Rifle" when a GUI's text had that spelling first).
     let game = client_game(vm);
     let fields: Vec<FieldText> = d
         .fields

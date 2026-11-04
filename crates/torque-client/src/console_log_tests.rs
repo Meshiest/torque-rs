@@ -64,7 +64,7 @@ fn the_log_starts_with_tges_header_and_writes_each_line_with_crlf_at_once() {
 fn secrets_never_reach_the_file() {
     let ticket = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123";
     let sha = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
-    let secrets = vec![b"Zq9-join-code".to_vec()];
+    let secrets = vec![b"Zq9-pass-word".to_vec()];
     let cases: [(String, String); 6] = [
         (
             format!("auth: ticket {ticket}"),
@@ -75,10 +75,7 @@ fn secrets_never_reach_the_file() {
             format!("POST /join ticket={REDACTED}&id=12345 HTTP/1.1"),
         ),
         ("token=abc123&x=1".into(), format!("token={REDACTED}&x=1")),
-        (
-            "SUCCESS Zq9-join-code".into(),
-            format!("SUCCESS {REDACTED}"),
-        ),
+        ("reply Zq9-pass-word".into(), format!("reply {REDACTED}")),
         (
             format!("a hash line (expected={sha}, actual={sha})"),
             format!("a hash line (expected={sha}, actual={sha})"),
@@ -95,13 +92,32 @@ fn secrets_never_reach_the_file() {
     let path = log_path(&dir);
     let mut vm = Vm::new();
     let log = attach(&mut vm, &path).unwrap();
-    log.borrow_mut().add_secret(b"Zq9-join-code");
-    vm.print(format!("echo ticket {ticket} code Zq9-join-code").as_bytes());
+    log.borrow_mut().add_secret(b"Zq9-pass-word");
+    vm.print(format!("echo ticket {ticket} code Zq9-pass-word").as_bytes());
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(
-        !text.contains(ticket) && !text.contains("Zq9-join-code"),
+        !text.contains(ticket) && !text.contains("Zq9-pass-word"),
         "{text}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_registered_name_is_redacted_like_the_built_in_ones() {
+    let names = vec![b"sessionKey".to_vec()];
+    assert_eq!(
+        String::from_utf8(redact_with(b"SESSIONKEY=abc123&x=1", &[], &names)).unwrap(),
+        format!("SESSIONKEY={REDACTED}&x=1")
+    );
+    assert_eq!(redact(b"sessionKey=abc123", &[]), b"sessionKey=abc123");
+    let dir = temp("names");
+    let path = log_path(&dir);
+    let mut vm = Vm::new();
+    let log = attach(&mut vm, &path).unwrap();
+    log.borrow_mut().add_secret_name(b"sessionkey");
+    vm.print(b"echo sessionKey=abc123");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("abc123"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
