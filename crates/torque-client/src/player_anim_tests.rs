@@ -102,8 +102,8 @@ fn a_jump_plays_when_the_player_leaves_the_ground_and_falling_keeps_it_without_a
     };
     let mut other = PlayerAnimation::new(&shape, &mut instance).unwrap();
     other.update(&shape, &mut instance, &standing_jump, 0.032);
-    // The shape has no `standjump`: nothing changes.
-    assert_eq!(other.action(), (action::ROOT, true));
+    // The shape has no `standjump`: `jump` plays.
+    assert_eq!(other.action(), (action::JUMP, true));
 }
 
 #[test]
@@ -327,4 +327,33 @@ fn a_records_action_is_the_servers() {
     );
     // The controlling client's record has no move block; the action still comes.
     assert!(PlayerMotion::of_record(&record, 0.0).is_none());
+}
+
+#[test]
+fn rising_off_the_ground_plays_the_jump_once() {
+    let shape = shape();
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    let at = |v: [f32; 3]| PlayerMotion {
+        velocity: v,
+        ..PlayerMotion::default()
+    };
+    anim.update(&shape, &mut instance, &at([0.0, 4.0, 0.0]), 0.032);
+    assert_eq!(anim.action().0, 1, "running");
+    // The jump's impulse: the record's velocity rises past the threshold (no falling flag, no trigger in this record).
+    anim.update(&shape, &mut instance, &at([0.0, 4.0, 8.0]), 0.032);
+    assert_eq!(anim.action(), (action::JUMP, true));
+    // Still rising, then coming down: no new jump; the jump plays to its end first.
+    anim.update(&shape, &mut instance, &at([0.0, 4.0, 6.0]), 0.032);
+    assert_eq!(anim.action(), (action::JUMP, true));
+    // A standing jump plays `jump` too when the shape has no `standjump`.
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    anim.update(&shape, &mut instance, &at([0.0, 0.0, 8.0]), 0.032);
+    assert_eq!(anim.action(), (action::JUMP, true));
+    // A small step up is no jump.
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    anim.update(&shape, &mut instance, &at([0.0, 4.0, 1.5]), 0.032);
+    assert_ne!(anim.action().0, action::JUMP);
 }

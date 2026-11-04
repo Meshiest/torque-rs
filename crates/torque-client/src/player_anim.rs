@@ -11,7 +11,10 @@
 //! `pickActionAnimation` chooses: a falling Player plays `fall`; one on the ground the moving action (`run`, `back`, `side`)
 //! whose direction best matches its velocity in its own frame (a dot product over 0.1, the back of `side` counting as `side`
 //! played backwards: a step the other way), else `root`. A jump the record's move asks for while the Player leaves the ground
-//! plays `jump` (`standjump` under 0.5 units a second) to its end. An action the server set (a record's action, one past the
+//! plays `jump` (`standjump` under 0.5 units a second along the ground, when the shape has one) to its end; so does one whose
+//! upward speed passes [`JUMP_RISE_SPEED`] (TGE's client starts the jump as it runs the ghost's move; a record seldom carries
+//! the move's jump trigger together with the take-off, and `falling` is set only once the Player is coming down fast, so the
+//! rise is what the client sees of a jump). An action the server set (a record's action, one past the
 //! table: a script's `setActionThread`, such as a death) plays forward from its start, or at its end when the record says the
 //! server's has ended, and is played to its end before another is picked; one the server holds at its end (`holdAtEnd`) stays
 //! there until the server sets another. A new action blends in over [`TRANSITION`] seconds
@@ -44,6 +47,8 @@ pub const MAX_TIME_SCALE: f32 = 1.5;
 pub const MIN_MATCH: f32 = 0.1;
 /// Below this speed a jump is a standing jump.
 pub const STAND_JUMP_SPEED: f32 = 0.5;
+/// An upward speed past this (units a second), from below it, is a jump leaving the ground.
+pub const JUMP_RISE_SPEED: f32 = 3.0;
 
 /// TGE's action numbers.
 pub mod action {
@@ -185,6 +190,8 @@ pub struct PlayerAnimation {
     arm_action: Option<usize>,
     head_thread: Option<(ThreadId, usize)>,
     was_falling: bool,
+    /// The upward speed of the last frame.
+    last_rise: f32,
 }
 
 impl PlayerAnimation {
@@ -228,6 +235,7 @@ impl PlayerAnimation {
             arm_action,
             head_thread,
             was_falling: false,
+            last_rise: 0.0,
         })
     }
 
@@ -325,9 +333,12 @@ impl PlayerAnimation {
     ) {
         let took_off = m.falling && !self.was_falling;
         self.was_falling = m.falling;
-        if took_off && m.jumping {
-            let speed = m.velocity.iter().map(|v| v * v).sum::<f32>().sqrt();
-            let jump = if speed < STAND_JUMP_SPEED {
+        let rose = m.velocity[2] > JUMP_RISE_SPEED && self.last_rise <= JUMP_RISE_SPEED;
+        self.last_rise = m.velocity[2];
+        if !self.hold && ((took_off && m.jumping) || rose) {
+            let flat = m.velocity[0].hypot(m.velocity[1]);
+            let has = |a: usize| self.actions.get(a).is_some_and(|x| x.sequence.is_some());
+            let jump = if flat < STAND_JUMP_SPEED && has(action::STAND_JUMP) {
                 action::STAND_JUMP
             } else {
                 action::JUMP
