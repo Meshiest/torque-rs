@@ -21,6 +21,7 @@ use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::{
     DynamicObject, HdCamera, HdDraw, HdMode, HdScene, Quality, bounding_sphere, material,
 };
+use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
 use torque_render_scene::shapes::{Loaded, ShapeParts, highest_detail, load, shape_draws};
 use torque_render_scene::source::Eye;
@@ -206,12 +207,39 @@ impl WorldView {
         transform: &Mat,
         id: u32,
     ) -> DynamicObject {
+        self.shape_object_with(
+            assets,
+            shape,
+            instance,
+            transform,
+            [1.0; 3],
+            id,
+            &mut |_| {},
+        )
+    }
+
+    /// [`WorldView::shape_object`] scaled by `scale` (along the shape's own axes, its normals turned by `transform` alone), each
+    /// of its draws handed to `edit` before it joins the object (in the world: a caller may set its texture coordinates or
+    /// colours from where the vertices are).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shape_object_with(
+        &mut self,
+        assets: &dyn Assets,
+        shape: &SceneShape,
+        instance: &ShapeInstance,
+        transform: &Mat,
+        scale: [f32; 3],
+        id: u32,
+        edit: &mut dyn FnMut(&mut Draw),
+    ) -> DynamicObject {
         let model = &shape.loaded.model;
         let detail = shape
             .detail()
             .and_then(|d| model.shape.details.get(d).copied());
+        let unscaled = scale == [1.0; 3];
+        let placed = scale_columns(transform, scale);
         let mut set = TextureSet::new(assets);
-        let (draws, translucent) = match detail {
+        let (mut draws, translucent) = match detail {
             Some(detail) => shape_draws(
                 model,
                 instance,
@@ -225,15 +253,16 @@ impl WorldView {
                     skin: None,
                     color_all: None,
                 },
+                &placed,
                 transform,
-                transform,
-                true,
+                unscaled,
                 &[],
                 &mut set,
                 &shape.path,
             ),
             None => (Vec::new(), false),
         };
+        draws.iter_mut().for_each(edit);
         let local = self.intern(set.into_textures());
         let draws: Vec<HdDraw> = draws
             .iter()
@@ -242,8 +271,8 @@ impl WorldView {
         let (centre, radius) = bounding_sphere(&draws);
         DynamicObject {
             ghost: id,
-            transform: *transform,
-            prev_transform: *transform,
+            transform: placed,
+            prev_transform: placed,
             translucent,
             centre,
             radius,
