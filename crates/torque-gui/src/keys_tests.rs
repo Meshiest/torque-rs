@@ -48,6 +48,12 @@ fn virtual_keys_map_as_the_window_procedure_maps_them() {
     assert_eq!(vk_to_key(0x25, 0x4b), KEY_LEFT);
     assert_eq!(vk_to_key(0xbc, 0x33), 0x43);
     assert_eq!(vk_to_key(0x60, 0x52), 0x46);
+    // F13..F15 and the ISO key reach their codes through the scan code; F16 and up have none.
+    assert_eq!(vk_to_key(0x7c, map_virtual_key(0x7c)), 0x63);
+    assert_eq!(vk_to_key(0x7e, map_virtual_key(0x7e)), 0x65);
+    assert_eq!(vk_to_key(0x7f, map_virtual_key(0x7f)), 0);
+    assert_eq!(map_virtual_key(0x87), 0x76);
+    assert_eq!(vk_to_key(0xe2, map_virtual_key(0xe2)), KEY_OEM_102);
     let none = |_: u8| false;
     let shift = |k: u8| k == 0x10;
     assert_eq!(to_ascii(0x41, &none, false), b'a');

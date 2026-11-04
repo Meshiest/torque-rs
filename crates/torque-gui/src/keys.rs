@@ -703,6 +703,9 @@ pub fn map_virtual_key(vk: u8) -> u8 {
         0x70..=0x79 => SCAN_F1 + (vk - VK_F1),
         0x7a => 0x57,
         0x7b => 0x58,
+        // `VK_F13`..`VK_F23`, then `VK_F24`.
+        0x7c..=0x86 => 0x64 + (vk - 0x7c),
+        0x87 => 0x76,
         0x90 => 0x45,
         0x91 => 0x46,
         0xba => 0x27,
@@ -716,6 +719,8 @@ pub fn map_virtual_key(vk: u8) -> u8 {
         0xdc => 0x2b,
         0xdd => 0x1b,
         0xde => 0x28,
+        // `VK_OEM_102`, the ISO keyboard's key next to the left Shift.
+        0xe2 => 0x56,
         _ => 0,
     }
 }

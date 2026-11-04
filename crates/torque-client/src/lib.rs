@@ -4,7 +4,7 @@
 //! | module | part |
 //! |---|---|
 //! | [`actionmap`] | `ActionMap` and its natives (bindings, the key strings, `save`) |
-//! | [`input`] | the platform input layer (window or injected messages into the canvas and the action maps) |
+//! | [`input`] | the platform input layer (window or injected messages into the canvas and the action maps); the keys and buttons ([`Key`], [`MouseButton`]) |
 //! | [`screen`] | the screen mode natives (resolutions, full screen, the display device) |
 //! | [`conn`] | the client's connection to a server (the handshake, the packets, the ticks) |
 //! | [`query`] | the LAN server query (the pings and info requests of the server list) |
@@ -56,6 +56,8 @@ pub mod screen;
 pub mod state;
 pub mod view;
 pub mod zoom;
+
+pub use input::{Key, MouseButton};
 
 /// The object a method native was called on, if it still exists.
 pub fn this(vm: &ts_vm::vm::Vm, c: &ts_vm::vm::NativeCall) -> Option<ts_vm::sim::ObjId> {

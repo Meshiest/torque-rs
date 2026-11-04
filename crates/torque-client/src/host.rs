@@ -9,7 +9,9 @@
 //! control drawn run: TGE's main loop renders after every pass; [`ClientHost::draw_each_tick`]). Callbacks run with no borrow held.
 //!
 //! **Input.** A window's messages go through TGE's platform layer and the action maps ([`ClientHost::post`],
-//! [`ClientHost::mouse_motion`]); an injection plays a list of them on the clock ([`ClientHost::inject`]).
+//! [`ClientHost::mouse_motion`]); an injection plays a list of them on the clock ([`ClientHost::inject`]). A game or a test names
+//! keys and buttons instead of messages: [`ClientHost::key`], [`ClientHost::press`], [`ClientHost::type_text`],
+//! [`ClientHost::mouse_button`] ([`input::Key`], [`input::MouseButton`]).
 //!
 //! **The window's parts** (a window client calls them; a headless run never does): the screen mode and the monitor
 //! ([`crate::screen`]), the canvas's size, the frame rate ([`crate::fps`]), vertical sync, the display devices and the URL
@@ -509,6 +511,55 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
                 input::Taken::Nobody
             }
         }
+    }
+
+    /// A key going down or up, as the window posts it ([`input::key_message`]: a system key while Alt is held): who took it.
+    pub fn key(&mut self, key: input::Key, down: bool) -> input::Taken {
+        use gui::keys::{SI_LALT, SI_RALT};
+        let alt = self.win32.modifiers & (SI_LALT | SI_RALT) != 0;
+        let (m, w, l) = input::key_message(key, down, false, alt);
+        self.post(m, w, l)
+    }
+
+    /// A key pressed and let go: who took the press.
+    pub fn press(&mut self, key: input::Key) -> input::Taken {
+        let taken = self.key(key, true);
+        self.key(key, false);
+        taken
+    }
+
+    /// Characters typed on a US layout: each the press of the key that types it ([`input::Key::for_char`], with the left Shift
+    /// held around it where it needs Shift; Caps Lock as the platform layer has it), the way the window's key messages reach a
+    /// text edit (the platform layer reads the characters from the keys, not from `WM_CHAR`). Type with no modifier held.
+    /// Err: the first character no key types; nothing is posted then.
+    pub fn type_text(&mut self, text: &str) -> Result<(), char> {
+        let caps = self.win32.caps_lock();
+        let presses = text
+            .chars()
+            .map(|c| input::Key::for_char(c, caps).ok_or(c))
+            .collect::<Result<Vec<_>, char>>()?;
+        for (key, shift) in presses {
+            if shift {
+                self.key(input::Key::ShiftLeft, true);
+            }
+            self.press(key);
+            if shift {
+                self.key(input::Key::ShiftLeft, false);
+            }
+        }
+        Ok(())
+    }
+
+    /// A mouse button going down or up at the client position `at`, as the window posts it ([`input::button_message`]): who took
+    /// it. The canvas reads where the pointer is from its moves, so move it there first ([`mouse_move`](Self::mouse_move)).
+    pub fn mouse_button(
+        &mut self,
+        button: input::MouseButton,
+        down: bool,
+        at: (i32, i32),
+    ) -> input::Taken {
+        let (m, w, l) = input::button_message(button, down, at);
+        self.post(m, w, l)
     }
 
     /// An injection ([`input::parse_injection`]): each message posted, each pause run on the clock (the client's own work every tick).
