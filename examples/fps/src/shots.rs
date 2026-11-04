@@ -321,8 +321,8 @@ fn watch_bob(a: &mut Seat, offset: [f32; 3], aim: f32) {
     a.eye = Some(eye);
 }
 
-/// The motion pictures at `size`, written into `dir`: Bob stepping sideways (left, then right) and walking backward, seen by a
-/// camera beside him; Bob looking up, level and down; Bob knocked out from the front (falling backward) and from behind
+/// The motion pictures at `size`, written into `dir`: Bob stepping sideways (left, then right), walking backward and jumping,
+/// seen by a camera beside him; Bob looking up, level and down; Bob knocked out from the front (falling backward) and from behind
 /// (falling forward), a few frames of each fall and the body lying still; Ann's first-person pistol at rest, then the frames
 /// after a shot (the slide back, the kick, the muzzle flash); Bob firing toward the camera; the HUD while reloading; and the
 /// pause menu. Returns the paths.
@@ -364,6 +364,21 @@ pub fn write_motion(
         b.game.set_global(key, "0");
     }
     run(&gpu, &mut [&mut a, &mut b], 600)?;
+
+    // A jump: Bob jumps running toward the camera's side, a few frames as he leaves the ground and tucks.
+    place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
+    run(&gpu, &mut [&mut a, &mut b], 400)?;
+    b.game.set_global("$mvLeftAction", "1");
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    b.game.call("jump", &["1"])?;
+    for k in 1..=4 {
+        run(&gpu, &mut [&mut a, &mut b], 96)?;
+        watch_bob(&mut a, [-2.6, -3.4, 0.6], 1.0);
+        save(&a.picture(&gpu)?, &format!("jump-{k}"))?;
+    }
+    b.game.call("jump", &["0"])?;
+    b.game.set_global("$mvLeftAction", "0");
+    run(&gpu, &mut [&mut a, &mut b], 800)?;
 
     // The look: Bob, side on to the camera, aims up, level and down.
     place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
