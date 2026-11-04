@@ -15,6 +15,7 @@
 //! | `platform` | the window glue (feature `window`: keys, cursor hold, frame cap, URL opener, the window's event loop) |
 //! | [`ghost_objects`], [`datablocks`] | the ghosts and the datablocks as script objects |
 //! | [`predict`] | the control object's prediction (on torque-scene's container) |
+//! | [`player_anim`] | a Player ghost's action and arm threads, as TGE's client plays them |
 //! | [`eye`], [`zoom`], [`fps`], [`hud`], [`console_log`] | the eye and the zoom, the frame rate, the HUD feed, the console log file |
 //! | [`game`] | what the engine half asks the game ([`game::ClientGame`]) |
 //! | [`records`] | what the engine half reads of the game's records ([`records::EngineSet`]) |
@@ -46,6 +47,7 @@ pub mod net;
 pub mod perf;
 #[cfg(feature = "window")]
 pub mod platform;
+pub mod player_anim;
 pub mod predict;
 pub mod query;
 pub mod records;
