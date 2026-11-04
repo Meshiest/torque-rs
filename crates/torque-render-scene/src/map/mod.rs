@@ -3,14 +3,16 @@
 //! [`Assets`]. The looks are the engine's own reading of TGE's, drawn with the fixed-function renderer's state:
 //!
 //! - **Terrain** ([`terrain`]): the 256 x 256 heightfield, centred on the origin and repeated when the mission repeats it, cut in
-//!   chunks of [`terrain::CHUNK`] squares; only the chunks within the visible distance are drawn. The materials are blended by
+//!   chunks of [`terrain::CHUNK`] squares; only the chunks within the visible distance are drawn (the enhanced looks' coarser
+//!   far away, `terrain::lod_chunks`). The materials are blended by
 //!   their alpha maps as layers: the first opaque, each next one over it with its weight's share in the vertex alpha.
 //! - **Sun lighting** ([`light`]): the engine's own relight of the terrain and the interiors (the sun's shadows in a lightmap a
 //!   terrain block and atlas pages of the interiors' rectangles), cached by content; each lit surface is drawn unlit and then
 //!   multiplied by its lightmap. Until it is done (a live window makes it on a thread of its own), GL lighting from the sun.
 //! - **Interiors** ([`interior`]): every instance's surfaces (triangle strips, texgen UVs) in world space, merged into one draw a
 //!   material over the whole map. A material whose texture has alpha is drawn blended (and GL-lit).
-//! - **Water** ([`water`]): the top of each block's box, its surface texture at its opacity, as a blended plane.
+//! - **Water** ([`water`]): the top of each block's box, its surface texture at its opacity, as a blended plane; in the
+//!   enhanced looks also its copies a repeated terrain carries (TGE's tiled fluid), as far as the terrain is drawn.
 //! - **Replicators and statics** ([`foliage`], [`statics`]): the foliage as billboards facing the camera within the view
 //!   distance; the shape replicas and the `TSStatic`s as their shapes at rest, merged a material per shape file.
 //!
@@ -446,7 +448,9 @@ pub struct HdMesh {
 /// The map's meshes for the enhanced renderer seen from `eye` with `visible` the visible distance (it lights, shadows and
 /// reflects them). The same files and placement as the fixed-function [`draws`], built apart and never relit (no lightmap
 /// pass): every surface GL-lit, so the enhanced renderer's own sun, shadows and ambient light it. The bounds are the
-/// fixed-function build's (the readers' caps, the kept chunks, the replicas, the billboards).
+/// fixed-function build's (the readers' caps, the kept chunks, the replicas, the billboards); the terrain is drawn at levels of
+/// detail (`terrain::lod_chunks`) and a repeated terrain carries the water with it (`water::tiles`), so `visible` may reach
+/// far past the fixed-function frame's.
 pub fn enhanced(
     map: MapInput<'_>,
     assets: &dyn Assets,
@@ -510,7 +514,30 @@ pub fn enhanced(
             };
             push(m, part, textures);
         }
-        for chunk in terrain::visible_chunks(&mut built.terrains, eye, visible, key) {
+        // The water a repeated terrain carries with it (TGE's tiled fluid), as far as the terrain is drawn.
+        let period = built
+            .terrains
+            .iter()
+            .find_map(terrain::Block::repeat_period);
+        if let Some(period) = period {
+            for (mesh_key, corners) in water::tops(&recs.objects, key) {
+                let Some(m) = built.meshes.iter().find(|m| m.key == mesh_key) else {
+                    continue;
+                };
+                if let Some(t) = water::tiles(
+                    m,
+                    corners,
+                    period,
+                    map.profile.water_loops_per_unit,
+                    eye,
+                    visible,
+                    terrain::MAX_LOD_TILE_REACH,
+                ) {
+                    push(&t, HdPart::Water, textures);
+                }
+            }
+        }
+        for chunk in terrain::lod_chunks(&mut built.terrains, eye, visible, key) {
             let Some(first) = chunk.first() else {
                 continue;
             };
