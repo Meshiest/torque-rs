@@ -81,6 +81,7 @@ fn defaults_are_parsed_by_the_fields_type_and_run_no_validator() {
             ("p", "1 2 3"),
             ("s", "Mixed"),
         ],
+        false,
     );
     // 625 is stored as written: the validator (625 / 32 = 19, then clamped to 10) did not run.
     assert_eq!(read(&vm, class, "n", ""), b"625");
@@ -117,12 +118,13 @@ fn defaults_naming_what_the_class_lacks_or_that_are_malformed_are_skipped() {
             ("", "7"),
             ("a[1]]]", "8"),
         ],
+        false,
     );
     // `a[` and `a[]` are element 0 (atoi of nothing); `a[1]]]` is element 1; the rest write nothing.
     assert_eq!(read(&vm, class, "a", "0"), b"2");
     assert_eq!(read(&vm, class, "a", "1"), b"8");
     // An unknown class id is ignored.
-    vm.apply_defaults(9999, &[("a", "1")]);
+    vm.apply_defaults(9999, &[("a", "1")], false);
 }
 
 #[test]
@@ -137,7 +139,7 @@ fn a_child_class_does_not_keep_the_parents_default_the_dump_did_not_list() {
             true,
         )
         .unwrap();
-    vm.apply_defaults(parent, &[("a", "5")]);
+    vm.apply_defaults(parent, &[("a", "5")], false);
     let child = vm
         .register_class_typed(
             "DefaultsChild",
@@ -149,11 +151,38 @@ fn a_child_class_does_not_keep_the_parents_default_the_dump_did_not_list() {
     // The child's layout started from the parent's defaults ...
     assert_eq!(read(&vm, child, "a", ""), b"5");
     // ... and a dump that lists only `b` means `a` reads empty (0) on a fresh child.
-    vm.apply_defaults(child, &[("b", "2")]);
+    vm.apply_defaults(child, &[("b", "2")], false);
     assert_eq!(read(&vm, child, "a", ""), b"0");
     assert_eq!(read(&vm, child, "b", ""), b"2");
     assert_eq!(read(&vm, parent, "a", ""), b"5");
 }
+
+#[test]
+fn an_inheriting_child_keeps_the_parents_defaults_it_does_not_list() {
+    use crate::fields::FieldType;
+    let mut vm = crate::vm::Vm::new();
+    let parent = vm
+        .register_class_typed(
+            "InheritParent",
+            "SimObject",
+            vec![typed("a", FieldType::S32, 1)],
+            true,
+        )
+        .unwrap();
+    vm.apply_defaults(parent, &[("a", "5")], false);
+    let child = vm
+        .register_class_typed(
+            "InheritChild",
+            "InheritParent",
+            vec![typed("b", FieldType::S32, 1)],
+            true,
+        )
+        .unwrap();
+    vm.apply_defaults(child, &[("b", "2")], true);
+    assert_eq!(read(&vm, child, "a", ""), b"5");
+    assert_eq!(read(&vm, child, "b", ""), b"2");
+}
+
 #[test]
 fn a_text_of_any_bytes_is_kept_whole() {
     let mut table = StringTable::default();

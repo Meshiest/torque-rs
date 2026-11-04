@@ -349,3 +349,7 @@ pub fn list_key_down(
     }
     Ok(None)
 }
+
+#[cfg(test)]
+#[path = "popup_tests.rs"]
+mod tests;
