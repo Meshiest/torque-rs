@@ -35,7 +35,8 @@
 //! - `hold`: the right arm raised to aim, from fully up (position 0) through level and straight ahead (0.5) to fully down (1),
 //!   [`LOOK_RANGE`] degrees each way; priority 1 and only the right arm, so played on a second thread at the aim's pitch it
 //!   holds that arm over any of the others while the figure holds a pistol.
-//! - `look`: the same as `hold` (a Player's arm thread starts on `look`; the server sets the arm's action on that thread).
+//! - `look`: empty hands: moves no node, so the arms hang and swing with the action (a Player's arm thread starts on `look`;
+//!   the server sets the arm's action on that thread, `hold` while it holds a pistol).
 //! - `aim`: as `hold`, the pistol raised to eye level in front of the face (aiming down the sights), over the same range.
 //! - `head`: a blend sequence over the same range: the torso and the head bend up and down with the aim (a share each,
 //!   [`LOOK_TORSO`] and [`LOOK_HEAD`]), added to whatever else plays.
@@ -491,20 +492,28 @@ pub fn figure() -> Model {
         .iter()
         .map(|d| HOLD_SHOULDER + d)
         .collect();
-    // `look` is the same pose: a Player's arm thread starts on its shape's `look` (and has none without one), so the server can
-    // set the arm's action (`setArmThread`: `aim`, back to `hold`).
-    for name in ["hold", "look"] {
-        b.sequence(SequenceDef {
-            name,
-            duration: 1.0,
-            cyclic: false,
-            priority: 1,
-            keyframes: LOOK_KEYS,
-            rotations: vec![track(arm_r, &shoulder), track(elbow_r, &[HOLD_ELBOW])],
-            translations: Vec::new(),
-            ground: Vec::new(),
-        });
-    }
+    b.sequence(SequenceDef {
+        name: "hold",
+        duration: 1.0,
+        cyclic: false,
+        priority: 1,
+        keyframes: LOOK_KEYS,
+        rotations: vec![track(arm_r, &shoulder), track(elbow_r, &[HOLD_ELBOW])],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
+    // Empty hands: a Player's arm thread starts on its shape's `look` (and has none without one); this one moves no node, so
+    // the arms hang and swing with the action until the server sets the arm's action (`setArmThread`: `hold`, `aim`).
+    b.sequence(SequenceDef {
+        name: "look",
+        duration: 1.0,
+        cyclic: false,
+        priority: 1,
+        keyframes: LOOK_KEYS,
+        rotations: Vec::new(),
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
     // Aiming down the sights: as `hold`, the shoulder raised higher and swung in toward the middle so the hand comes up in
     // front of the face; the elbow turns the forearm back out and down so the pistol still points along the aim.
     let aim_keys = |pitch_share: f32| -> (Vec<Quat16>, Vec<Quat16>) {
