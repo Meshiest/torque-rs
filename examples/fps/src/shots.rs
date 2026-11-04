@@ -12,6 +12,7 @@ use torque::app::shots::{FRAME_MS, Shots, run, write_png};
 use torque_render_core::{Frame, Gpu};
 use torque_render_scene::hd::kit::look_at;
 
+use torque::game::scene::lag::STEP_MS;
 use torque::script::vm::sim::ObjId;
 
 use crate::client::{ArenaGame, ClientOptions, NetMode};
@@ -866,25 +867,72 @@ fn bob_figure(a: &mut Seat) -> Result<ObjId, String> {
         .map_err(|_| "Bob has no figure".to_string())
 }
 
-/// A picture of Ann's view with Bob's hitboxes drawn over it ([`hitbox_view`]), seen from `offset` off his feet.
+/// Bob's figure where Ann's last frame drew it (the other figure farthest from her own).
+fn bob_drawn(a: &Seat) -> Option<[f32; 3]> {
+    let scene = a.game.scene();
+    let own = scene.own().map_or([0.0; 3], |o| o.position);
+    let far = |p: &[f32; 3]| (p[0] - own[0]).powi(2) + (p[1] - own[1]).powi(2);
+    scene
+        .others()
+        .into_iter()
+        .map(|(position, _)| position)
+        .max_by(|p, q| far(p).total_cmp(&far(q)))
+}
+
+/// Three numbers of a script's answer.
+fn floats3(text: &str) -> [f32; 3] {
+    let mut v = text.split_whitespace().map(|w| w.parse().unwrap_or(0.0));
+    std::array::from_fn(|_| v.next().unwrap_or(0.0))
+}
+
+/// A picture of Ann's view with Bob's hitboxes drawn over it ([`hitbox_view`]), seen from `offset` off his feet. The boxes are
+/// the server's last step run on along Bob's velocity to the time the client draws him at: how far along the velocity the drawn
+/// figure is ahead of the server's (at most two steps; one step when he moves only up or down). Returns that lead (ms) and how
+/// far the drawn figure is from the boxes' figure then.
 fn hitbox_picture(
     gpu: &Gpu,
     a: &mut Seat,
     shots: &mut Shots,
     offset: [f32; 3],
     name: &str,
-) -> Result<(), String> {
+) -> Result<(f32, [f32; 3]), String> {
     watch_bob(a, offset, 1.0);
     let eye = a.eye.ok_or("no eye")?;
     let mut frame = a.picture(gpu)?;
+    let drawn = bob_drawn(a).ok_or("Bob is not drawn")?;
     let bob = bob_figure(a)?;
     let server = a.game.server.as_mut().ok_or("no hosted server")?;
-    let boxes = hitbox_view::part_boxes(server, bob);
+    let mut ask = |what: &str| -> Result<[f32; 3], String> {
+        let text = server
+            .vm_mut()
+            .eval(format!("return {bob}.{what}();").as_bytes())
+            .map_err(|e| e.to_string())?;
+        Ok(floats3(&String::from_utf8_lossy(&text)))
+    };
+    let (at, velocity) = (ask("getPosition")?, ask("getVelocity")?);
+    let ahead: [f32; 3] = std::array::from_fn(|k| drawn[k] - at[k]);
+    let level = velocity[0] * velocity[0] + velocity[1] * velocity[1];
+    let step = STEP_MS as f32 / 1000.0;
+    let lead = if level > 0.25 {
+        ((ahead[0] * velocity[0] + ahead[1] * velocity[1]) / level).clamp(0.0, 2.0 * step)
+    } else if velocity[2].abs() > 0.5 {
+        step
+    } else {
+        0.0
+    };
+    let by: [f32; 3] = std::array::from_fn(|k| velocity[k] * lead);
+    let mut boxes = hitbox_view::part_boxes(server, bob);
     if boxes.is_empty() {
         return Err("Bob has no hitboxes".to_string());
     }
+    for corner in boxes.iter_mut().flat_map(|b| b.corners.iter_mut()) {
+        for k in 0..3 {
+            corner[k] += by[k];
+        }
+    }
     hitbox_view::draw(&mut frame, eye, &boxes);
-    shots.save(&frame, name)
+    shots.save(&frame, name)?;
+    Ok((lead * 1000.0, std::array::from_fn(|k| ahead[k] - by[k])))
 }
 
 /// The hitbox pictures at `size`, written into `dir`: Bob's hitboxes as the server poses them, drawn over him standing (from
@@ -899,14 +947,17 @@ pub fn write_hitboxes(
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
     let (mut a, mut b) = meet(&gpu, size, &make_files)?;
     let mut shots = Shots::new(dir)?;
+    let mut offsets = Vec::new();
     let front = [-1.8, -4.4, 0.2];
     let side = [-4.8, 0.0, 0.2];
     place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
 
     place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
     run(&gpu, &mut [&mut a, &mut b], 800)?;
-    hitbox_picture(&gpu, &mut a, &mut shots, front, "stand-front")?;
-    hitbox_picture(&gpu, &mut a, &mut shots, side, "stand-side")?;
+    let off = hitbox_picture(&gpu, &mut a, &mut shots, front, "stand-front")?;
+    offsets.push(("stand-front".to_string(), off));
+    let off = hitbox_picture(&gpu, &mut a, &mut shots, side, "stand-side")?;
+    offsets.push(("stand-side".to_string(), off));
 
     for (key, name) in [("$mvForwardAction", "run"), ("$mvLeftAction", "side-step")] {
         place(&mut a.game, "Bob", [4.6, -2.0, 0.1], PI)?;
@@ -914,7 +965,8 @@ pub fn write_hitboxes(
         b.game.set_global(key, "1");
         run(&gpu, &mut [&mut a, &mut b], 400)?;
         for k in 1..=2 {
-            hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("{name}-{k}"))?;
+            let off = hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("{name}-{k}"))?;
+            offsets.push((format!("{name}-{k}"), off));
             run(&gpu, &mut [&mut a, &mut b], 160)?;
         }
         b.game.set_global(key, "0");
@@ -925,7 +977,8 @@ pub fn write_hitboxes(
     for (motion, name) in [("-500", "look-up"), ("1000", "look-down")] {
         b.game.call("look", &[motion])?;
         run(&gpu, &mut [&mut a, &mut b], 500)?;
-        hitbox_picture(&gpu, &mut a, &mut shots, side, name)?;
+        let off = hitbox_picture(&gpu, &mut a, &mut shots, side, name)?;
+        offsets.push((String::from(name), off));
     }
     b.game.call("look", &["-500"])?;
 
@@ -936,7 +989,8 @@ pub fn write_hitboxes(
     b.game.call("jump", &["1"])?;
     for k in 1..=2 {
         run(&gpu, &mut [&mut a, &mut b], 128)?;
-        hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("jump-{k}"))?;
+        let off = hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("jump-{k}"))?;
+        offsets.push((format!("jump-{k}"), off));
     }
     b.game.call("jump", &["0"])?;
     b.game.set_global("$mvForwardAction", "0");
@@ -945,8 +999,10 @@ pub fn write_hitboxes(
     place(&mut a.game, "Bob", [4.6, -11.5, 0.1], PI)?;
     b.game.call("aim", &["1"])?;
     run(&gpu, &mut [&mut a, &mut b], 600)?;
-    hitbox_picture(&gpu, &mut a, &mut shots, front, "aim-front")?;
-    hitbox_picture(&gpu, &mut a, &mut shots, side, "aim-side")?;
+    let off = hitbox_picture(&gpu, &mut a, &mut shots, front, "aim-front")?;
+    offsets.push(("aim-front".to_string(), off));
+    let off = hitbox_picture(&gpu, &mut a, &mut shots, side, "aim-side")?;
+    offsets.push(("aim-side".to_string(), off));
     b.game.call("aim", &["0"])?;
     run(&gpu, &mut [&mut a, &mut b], 400)?;
 
@@ -958,8 +1014,17 @@ pub fn write_hitboxes(
         .map_err(|e| e.to_string())?;
     for (k, ms) in [(1, 160), (2, 160), (3, 600)] {
         run(&gpu, &mut [&mut a, &mut b], ms)?;
-        hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("fall-{k}"))?;
+        let off = hitbox_picture(&gpu, &mut a, &mut shots, side, &format!("fall-{k}"))?;
+        offsets.push((format!("fall-{k}"), off));
     }
     a.eye = None;
+    // A line a picture: the boxes' lead (ms), and how far the drawn figure is from the boxes' (x, y, z).
+    let lines: String = offsets
+        .iter()
+        .map(|(name, (lead, d))| format!("{name} {lead:.0} {:.3} {:.3} {:.3}\n", d[0], d[1], d[2]))
+        .collect();
+    let path = dir.join("offsets.txt");
+    std::fs::write(&path, lines).map_err(|e| e.to_string())?;
+    shots.paths.push(path);
     Ok(shots.paths)
 }

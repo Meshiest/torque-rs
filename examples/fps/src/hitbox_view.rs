@@ -27,7 +27,7 @@ pub struct PartBox {
 fn hull_extent(mesh: &Mesh) -> ([f32; 6], bool) {
     let b = mesh.bounds;
     let mut free = |_: u64| true;
-    let Ok(hull) = Hull::build(mesh, &mut free) else {
+    let Ok(hull) = Hull::build_relative(mesh, &mut free) else {
         return (b, true);
     };
     let middle: [f32; 3] = std::array::from_fn(|a| (b[a] + b[a + 3]) / 2.0);

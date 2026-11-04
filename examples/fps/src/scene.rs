@@ -197,6 +197,8 @@ pub fn options() -> GhostOptions {
             fade: DECAL_FADE,
             multiply: true,
         },
+        // The server's figures have hitboxes: drawn as posed for hits.
+        synced_poses: true,
         ..GhostOptions::default()
     }
 }
