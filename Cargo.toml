@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/torque",
     "crates/torque-audio",
     "crates/torque-client",
     "crates/torque-collide",

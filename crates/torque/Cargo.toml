@@ -1,0 +1,94 @@
+[package]
+name = "torque"
+description = "A game engine library inspired by the Torque Game Engine and Torque3D: the torque-rs engine crates in one place"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "game-engine", "torquescript", "gamedev"]
+categories = ["game-engines", "game-development"]
+
+[dependencies]
+torque-audio = { path = "../torque-audio", optional = true }
+torque-client = { path = "../torque-client", optional = true }
+torque-collide = { path = "../torque-collide", optional = true }
+torque-fonts = { path = "../torque-fonts", optional = true }
+torque-game = { path = "../torque-game", optional = true }
+torque-ghost-world = { path = "../torque-ghost-world", optional = true }
+torque-ghosts = { path = "../torque-ghosts", optional = true }
+torque-gui = { path = "../torque-gui", optional = true }
+torque-images = { path = "../torque-images", optional = true }
+torque-mapcore = { path = "../torque-mapcore", optional = true }
+torque-maps = { path = "../torque-maps", optional = true }
+torque-net = { path = "../torque-net", optional = true }
+torque-resource = { path = "../torque-resource", optional = true }
+torque-scene = { path = "../torque-scene", optional = true }
+torque-server = { path = "../torque-server", optional = true }
+torque-shapes = { path = "../torque-shapes", optional = true }
+torque-sim = { path = "../torque-sim", optional = true }
+torque-ts-bytecode = { path = "../torque-ts-bytecode", optional = true }
+torque-ts-compiler = { path = "../torque-ts-compiler", optional = true }
+torque-ts-text = { path = "../torque-ts-text", optional = true }
+torque-ts-vm = { path = "../torque-ts-vm", optional = true }
+torque-vehicle = { path = "../torque-vehicle", optional = true }
+
+[features]
+# Everything that needs no GPU, no window and no system library.
+default = [
+    "script", "collide", "shapes", "sim", "vehicle", "maps", "net", "ghosts", "ghost-world", "resource", "scene", "game",
+    "server", "images", "fonts", "gui", "audio", "client",
+]
+# TorqueScript: the text rules, compiled scripts, the compiler and the runtime (`torque::script`).
+script = ["dep:torque-ts-text", "dep:torque-ts-bytecode", "dep:torque-ts-compiler", "dep:torque-ts-vm"]
+collide = ["dep:torque-collide", "dep:torque-mapcore"]
+shapes = ["dep:torque-shapes"]
+sim = ["dep:torque-sim", "collide"]
+vehicle = ["dep:torque-vehicle", "collide"]
+# The format-neutral map layer and the Torque map file readers.
+maps = ["dep:torque-mapcore", "dep:torque-maps"]
+net = ["dep:torque-net"]
+# The networked objects' record codecs (TGE's ghost and datablock layouts) and the client's world of ghosts.
+ghosts = ["dep:torque-ghosts", "net"]
+ghost-world = ["dep:torque-ghost-world", "ghosts"]
+# A game folder with its zips mounted, as the scripts' files.
+resource = ["dep:torque-resource", "script"]
+# The scene container's core and the transform maths.
+scene = ["dep:torque-scene"]
+# The TGE game classes as console classes, over the simulation, the shapes and the scene.
+game = ["dep:torque-game", "script", "collide", "shapes", "sim", "vehicle", "net", "scene", "resource"]
+# A dedicated server's pacing, platform values and datagram transport.
+server = ["dep:torque-server", "net", "game"]
+images = ["dep:torque-images"]
+fonts = ["dep:torque-fonts", "images"]
+gui = ["dep:torque-gui", "fonts", "images", "script"]
+audio = ["dep:torque-audio"]
+# The client's engine half: the connection to a server, the prediction, action maps, the server query.
+client = ["dep:torque-client", "server", "gui", "ghost-world"]
+# The client's window glue (winit: keys, cursor hold, frame cap; the URL opener).
+client-window = ["client", "torque-client/window"]
+# Sound output through the system's audio device (ALSA on Linux).
+audio-device = ["audio", "torque-audio/device"]
+# The system's fonts as the fallback for a face and size with no font cache.
+system-fonts = ["fonts", "torque-fonts/system-fonts"]
+full = ["default", "audio-device", "system-fonts", "client-window"]
+
+[[example]]
+name = "script"
+required-features = ["script"]
+
+[[example]]
+name = "shape"
+required-features = ["shapes"]
+
+[[example]]
+name = "collide"
+required-features = ["collide"]
+
+[[example]]
+name = "net"
+required-features = ["net"]
+
+[lints]
+workspace = true

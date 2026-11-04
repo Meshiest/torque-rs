@@ -2013,6 +2013,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque"
+version = "0.1.0"
+dependencies = [
+ "torque-audio",
+ "torque-client",
+ "torque-collide",
+ "torque-fonts",
+ "torque-game",
+ "torque-ghost-world",
+ "torque-ghosts",
+ "torque-gui",
+ "torque-images",
+ "torque-mapcore",
+ "torque-maps",
+ "torque-net",
+ "torque-resource",
+ "torque-scene",
+ "torque-server",
+ "torque-shapes",
+ "torque-sim",
+ "torque-ts-bytecode",
+ "torque-ts-compiler",
+ "torque-ts-text",
+ "torque-ts-vm",
+ "torque-vehicle",
+]
+
+[[package]]
 name = "torque-audio"
 version = "0.1.0"
 dependencies = [
