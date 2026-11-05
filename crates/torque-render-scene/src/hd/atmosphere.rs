@@ -302,29 +302,21 @@ impl Reference {
             .map_or(1, |n| n.get())
             .clamp(1, 16);
         let per = nh.div_ceil(workers);
-        let rows: Vec<Vec<Rgb>> = std::thread::scope(|s| {
+        let rows: Vec<Vec<Rgb>> = {
             let reference = &reference;
-            let handles: Vec<_> = (0..workers)
-                .map(|w| {
-                    s.spawn(move || {
-                        let mut out = Vec::new();
-                        for j in w * per..((w + 1) * per).min(nh) {
-                            let hv = (j as f64 + 0.5) / nh as f64;
-                            let r = a.bottom + (a.top - a.bottom) * hv * hv;
-                            for i in 0..nu {
-                                let mu_s = 2.0 * (i as f64 + 0.5) / nu as f64 - 1.0;
-                                out.push(reference.multiscatter_at(r, mu_s));
-                            }
-                        }
-                        out
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or_default())
-                .collect()
-        });
+            crate::par::each_worker(workers, |w| {
+                let mut out = Vec::new();
+                for j in w * per..((w + 1) * per).min(nh) {
+                    let hv = (j as f64 + 0.5) / nh as f64;
+                    let r = a.bottom + (a.top - a.bottom) * hv * hv;
+                    for i in 0..nu {
+                        let mu_s = 2.0 * (i as f64 + 0.5) / nu as f64 - 1.0;
+                        out.push(reference.multiscatter_at(r, mu_s));
+                    }
+                }
+                out
+            })
+        };
         reference.ms_table = rows.into_iter().flatten().collect();
         reference
     }

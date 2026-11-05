@@ -86,6 +86,10 @@ pub const MAX_SOURCE_BYTES: usize = 16 << 20;
 /// messages name (None for `eval`'d text). Runs on a thread of its own with [`WORKER_STACK`] bytes of stack, so
 /// the caller's stack depth does not matter (a script can `eval` at the bottom of a deep recursion).
 pub fn compile(source: &[u8], file: Option<&[u8]>, purpose: Purpose, dialect: &Dialect) -> Output {
+    // A browser has no threads: there the caller's stack is the compiler's (the page's build gives it room).
+    if cfg!(target_arch = "wasm32") {
+        return compile_here(source, file, purpose, dialect);
+    }
     let joined = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("ts-compiler".into())

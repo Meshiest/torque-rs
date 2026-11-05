@@ -298,7 +298,7 @@ impl Arena {
                     vertex_buffer(&device, vertices),
                     index_buffer(&device, indices),
                 );
-                let ok = pollster::block_on(scope.pop()).is_none();
+                let ok = !out_of_memory(scope);
                 let _ = tx.send(ok.then_some(pair));
             });
         if spawned.is_ok() {
@@ -504,7 +504,7 @@ impl Arena {
             valloc: RangeAlloc::new(fv),
             ialloc: RangeAlloc::new(fi),
         };
-        if pollster::block_on(scope.pop()).is_some() {
+        if out_of_memory(scope) {
             return None;
         }
         self.pages.push(page);
@@ -623,7 +623,7 @@ impl Arena {
                 let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
                 let vertices = vertex_buffer(device, vcap);
                 let indices = index_buffer(device, icap);
-                if pollster::block_on(scope.pop()).is_some() {
+                if out_of_memory(scope) {
                     return false;
                 }
                 (vertices, indices, vcap, icap)
@@ -1262,6 +1262,16 @@ impl Table {
                 .sum::<usize>()
             + self.dirty.len() * 24) as u64
     }
+}
+
+/// Whether the allocations made under `scope` (an out-of-memory error scope) failed. A browser answers only on its own event
+/// loop, which cannot be waited for: there the scope is closed unread (a failure is then the device's uncaptured error).
+fn out_of_memory(scope: wgpu::ErrorScopeGuard) -> bool {
+    if cfg!(target_arch = "wasm32") {
+        drop(scope);
+        return false;
+    }
+    pollster::block_on(scope.pop()).is_some()
 }
 
 #[cfg(test)]

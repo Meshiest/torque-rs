@@ -114,6 +114,23 @@ pub fn map_owned<T: Send, R: Send>(
     }
 }
 
+/// `job(w)` for every worker `w` of `0..workers`, each on a scoped thread of its own, the results in the workers' order (a
+/// worker that panicked gives `T::default()`). A browser has no threads: there the workers run one after another on the
+/// calling thread.
+pub fn each_worker<T: Send + Default>(workers: usize, job: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    if cfg!(target_arch = "wasm32") {
+        return (0..workers).map(job).collect();
+    }
+    std::thread::scope(|s| {
+        let job = &job;
+        let handles: Vec<_> = (0..workers).map(|w| s.spawn(move || job(w))).collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap_or_default())
+            .collect()
+    })
+}
+
 #[cfg(test)]
 #[path = "par_tests.rs"]
 mod tests;

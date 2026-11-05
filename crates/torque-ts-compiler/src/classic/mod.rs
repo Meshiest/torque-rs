@@ -103,6 +103,10 @@ pub struct Output {
 /// and `exec`'s first pass over a source) generates nothing after a syntax error and reports a size mismatch as an
 /// error ([`Generation::check_mismatch`]).
 pub fn compile(source: &[u8], file: Option<&[u8]>, purpose: Purpose, profile: &Profile) -> Output {
+    // A browser has no threads: there the caller's stack is the compiler's (the page's build gives it room).
+    if cfg!(target_arch = "wasm32") {
+        return compile_here(source, file, purpose, profile);
+    }
     let joined = std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("ts-compiler".into())

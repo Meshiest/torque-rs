@@ -1076,35 +1076,30 @@ pub fn cirrus_plane(size: usize) -> Vec<u8> {
     let workers = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
         .clamp(1, 32);
-    let rows: Vec<Vec<[f32; 3]>> = std::thread::scope(|sc| {
-        let jobs: Vec<_> = (0..workers)
-            .map(|w| {
-                let texel = &texel;
-                sc.spawn(move || {
-                    (w..size)
-                        .step_by(workers)
-                        .map(|y| {
-                            let row: Vec<[f32; 3]> = (0..size)
-                                .map(|x| {
-                                    texel([
-                                        (x as f32 + 0.5) / size as f32,
-                                        (y as f32 + 0.5) / size as f32,
-                                    ])
-                                })
-                                .collect();
-                            (y, row)
+    let rows: Vec<Vec<[f32; 3]>> = {
+        let texel = &texel;
+        let mut all: Vec<(usize, Vec<[f32; 3]>)> = crate::par::each_worker(workers, |w| {
+            (w..size)
+                .step_by(workers)
+                .map(|y| {
+                    let row: Vec<[f32; 3]> = (0..size)
+                        .map(|x| {
+                            texel([
+                                (x as f32 + 0.5) / size as f32,
+                                (y as f32 + 0.5) / size as f32,
+                            ])
                         })
-                        .collect::<Vec<_>>()
+                        .collect();
+                    (y, row)
                 })
-            })
-            .collect();
-        let mut all: Vec<(usize, Vec<[f32; 3]>)> = jobs
-            .into_iter()
-            .flat_map(|j| j.join().unwrap_or_default())
-            .collect();
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         all.sort_by_key(|(y, _)| *y);
         all.into_iter().map(|(_, r)| r).collect()
-    });
+    };
     let flat: Vec<[f32; 3]> = rows.concat();
     let mut channels: Vec<Vec<f32>> = (0..3)
         .map(|k| flat.iter().map(|t| t[k]).collect())
@@ -1144,25 +1139,20 @@ fn volume(size: usize, depth: usize, f: &(dyn Fn([f32; 3]) -> [f32; 4] + Sync)) 
     let workers = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
         .clamp(1, 32);
-    let slices: Vec<Vec<u8>> = std::thread::scope(|s| {
-        let jobs: Vec<_> = (0..workers)
-            .map(|w| {
-                let slice = &slice;
-                s.spawn(move || {
-                    (w..depth)
-                        .step_by(workers)
-                        .map(|z| (z, slice(z)))
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        let mut all: Vec<(usize, Vec<u8>)> = jobs
-            .into_iter()
-            .flat_map(|j| j.join().unwrap_or_default())
-            .collect();
+    let slices: Vec<Vec<u8>> = {
+        let slice = &slice;
+        let mut all: Vec<(usize, Vec<u8>)> = crate::par::each_worker(workers, |w| {
+            (w..depth)
+                .step_by(workers)
+                .map(|z| (z, slice(z)))
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         all.sort_by_key(|(z, _)| *z);
         all.into_iter().map(|(_, v)| v).collect()
-    });
+    };
     slices.concat()
 }
 

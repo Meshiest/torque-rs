@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use web_time::Instant;
 
 use mapcore::budget::HEIGHTFIELD_SIDE as SIZE;
 use mapcore::collision::Heightfield as Terrain;
@@ -448,6 +448,8 @@ pub fn last_report() -> Option<Report> {
 /// The lightmaps for `inputs`: kept, read from the disk cache or made. `blocking` false (a live window): made on a thread of
 /// its own and None until it is done (the map is drawn GL-lit meanwhile).
 pub(crate) fn get(inputs: &Inputs, key: u64, blocking: bool) -> Option<Arc<Lit>> {
+    // A browser has no threads: the maps are lit on the caller's.
+    let blocking = blocking || cfg!(target_arch = "wasm32");
     if !ENABLED.load(Ordering::Relaxed) {
         return None;
     }

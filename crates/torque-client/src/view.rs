@@ -5,7 +5,7 @@
 //! its current look meanwhile). What a build and a draw are is the renderer's and the game's.
 
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// The scene is built again at most this often (a window), and when the eye is this far (units) from where it was built.
 pub const REBUILD_EVERY: Duration = Duration::from_millis(500);
@@ -148,6 +148,14 @@ impl<T: Send + 'static> Warm<T> {
     /// Starts `job` on a thread named `name`.
     pub fn start(name: &str, job: impl FnOnce() -> Result<T, String> + Send + 'static) -> Warm<T> {
         let (tx, rx) = mpsc::channel();
+        // A browser has no threads: the job runs now, on the caller's.
+        if cfg!(target_arch = "wasm32") {
+            let _ = tx.send(job());
+            return Warm {
+                started: Instant::now(),
+                rx,
+            };
+        }
         let spawned = std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {

@@ -1458,12 +1458,19 @@ struct LodWork<X: HdExtension> {
     done: std::sync::mpsc::Receiver<LodDone<X>>,
     latest: HashMap<(u32, [i32; 3]), u64>,
     next: u64,
+    /// In a browser (no threads): the jobs' side, built on the calling thread when the results are looked for ([`LodWork::pump`]).
+    #[cfg(target_arch = "wasm32")]
+    here: (
+        std::sync::mpsc::Receiver<LodJob<X>>,
+        std::sync::mpsc::Sender<LodDone<X>>,
+    ),
 }
 
 impl<X: HdExtension> LodWork<X> {
     fn spawn() -> LodWork<X> {
         let (jobs, rx) = std::sync::mpsc::channel::<LodJob<X>>();
         let (tx, done) = std::sync::mpsc::channel::<LodDone<X>>();
+        #[cfg(not(target_arch = "wasm32"))]
         std::thread::spawn(move || {
             for job in rx {
                 if tx.send(job.run()).is_err() {
@@ -1476,6 +1483,16 @@ impl<X: HdExtension> LodWork<X> {
             done,
             latest: HashMap::new(),
             next: 0,
+            #[cfg(target_arch = "wasm32")]
+            here: (rx, tx),
+        }
+    }
+
+    /// In a browser: the jobs sent so far, built now.
+    fn pump(&self) {
+        #[cfg(target_arch = "wasm32")]
+        while let Ok(job) = self.here.0.try_recv() {
+            let _ = self.here.1.send(job.run());
         }
     }
 }
@@ -1640,10 +1657,13 @@ impl<E: HdExtension> HdWorld<E> {
     pub fn new(gpu: &torque_render_core::Gpu) -> HdWorld<E> {
         // The clouds' noise is made once a process (half a second): begun now beside the caller, so the first frame that draws
         // clouds finds it made (or waits only for the rest of it) instead of making it then.
+        // Where no thread can be started (a browser) it is made when first drawn.
         if !torque_render_scene::hd::clouds::noise_ready() {
-            std::thread::spawn(|| {
-                let _ = torque_render_scene::hd::clouds::noise();
-            });
+            let _ = std::thread::Builder::new()
+                .name("cloud noise".into())
+                .spawn(|| {
+                    let _ = torque_render_scene::hd::clouds::noise();
+                });
         }
         HdWorld::<E>::from_device(gpu.device().clone(), gpu.queue().clone())
     }
@@ -2874,11 +2894,11 @@ impl<E: HdExtension> HdWorld<E> {
             return;
         }
         // Each step's time (the reports' upload_times, and a live window's slow frames).
-        let mut upload_at = std::time::Instant::now();
+        let mut upload_at = web_time::Instant::now();
         self.upload_times.clear();
         macro_rules! upload_mark {
             ($label:expr) => {
-                let now = std::time::Instant::now();
+                let now = web_time::Instant::now();
                 let ms = (now - upload_at).as_secs_f64() * 1000.0;
                 self.upload_times.push(($label, ms));
                 match self.upload_steps.iter_mut().find(|s| s.0 == $label) {
@@ -2983,7 +3003,7 @@ impl<E: HdExtension> HdWorld<E> {
         upload_mark!("reserve");
         // Each cell's old slab given back as its new one goes in, and (under a budget) no more than UPLOAD_TIME of them a
         // frame: the rest at the next upload, their old slabs drawn until then.
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         // A cell being put in slices goes on first (dropped when the scene's cell changed or went).
         let mut busy = false;
         if let Some(mut p) = self.putting.take() {
@@ -3171,7 +3191,7 @@ impl<E: HdExtension> HdWorld<E> {
         &mut self,
         c: &ExtCell<E>,
         p: &mut Putting<E::CellRuns>,
-        until: Option<(std::time::Instant, std::time::Duration)>,
+        until: Option<(web_time::Instant, std::time::Duration)>,
     ) -> bool {
         let late = || until.is_some_and(|(t, d)| t.elapsed() > d);
         let slice = if until.is_some() {
@@ -3570,6 +3590,7 @@ impl<E: HdExtension> HdWorld<E> {
         // The worker's blocks finished since, the latest of each; a live window puts in LOD_BYTES_A_FRAME of their meshes a
         // frame (at least one block; a load's blocks came back dozens at once, 12 to 23 ms of a frame), the rest at the next.
         if let Some(work) = &mut self.lod_work {
+            work.pump();
             while let Ok(done) = work.done.try_recv() {
                 if work.latest.get(&(done.level, done.block)) == Some(&done.ticket) {
                     work.latest.remove(&(done.level, done.block));
@@ -4879,7 +4900,7 @@ impl<E: HdExtension> HdWorld<E> {
         camera: &HdCamera,
         target: Option<(&wgpu::TextureView, wgpu::TextureFormat, [u32; 2])>,
     ) -> Result<(), HdError> {
-        let cpu_start = std::time::Instant::now();
+        let cpu_start = web_time::Instant::now();
         let mut cpu_at = cpu_start;
         let mut cpu_marks: Vec<(&'static str, f64)> = Vec::new();
         let passes_before = PASSES.load(std::sync::atomic::Ordering::Relaxed);
@@ -4889,7 +4910,7 @@ impl<E: HdExtension> HdWorld<E> {
         macro_rules! cpu_mark {
             ($label:expr) => {
                 if self.profile_passes || self.cpu_marks {
-                    let now = std::time::Instant::now();
+                    let now = web_time::Instant::now();
                     cpu_marks.push(($label, (now - cpu_at).as_secs_f64() * 1000.0));
                     cpu_at = now;
                 }
@@ -5433,7 +5454,7 @@ impl<E: HdExtension> HdWorld<E> {
                     {
                         m.mark(&mut encoder, $label);
                     }
-                    let now = std::time::Instant::now();
+                    let now = web_time::Instant::now();
                     cpu_marks.push(($label, (now - cpu_at).as_secs_f64() * 1000.0));
                     cpu_at = now;
                 }
@@ -6852,7 +6873,7 @@ impl<E: HdExtension> HdWorld<E> {
         }
         let commands = encoder.finish();
         if self.profile_passes || self.cpu_marks {
-            let now = std::time::Instant::now();
+            let now = web_time::Instant::now();
             cpu_marks.push(("finish", (now - cpu_at).as_secs_f64() * 1000.0));
             cpu_at = now;
         }
@@ -6878,7 +6899,7 @@ impl<E: HdExtension> HdWorld<E> {
                 });
         }
         if self.profile_passes || self.cpu_marks {
-            let now = std::time::Instant::now();
+            let now = web_time::Instant::now();
             cpu_marks.push(("submit", (now - cpu_at).as_secs_f64() * 1000.0));
             cpu_marks.push((
                 "passes",
