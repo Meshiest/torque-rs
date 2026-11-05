@@ -76,8 +76,13 @@ pub trait App {
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye);
 }
 
-/// The system's fonts as the fallback for a face with no font cache in `fonts/` (none where the system has none).
+/// The system's fonts as the fallback for a face with no font cache in `fonts/` (none where the system has none); in a
+/// browser, the page's fonts.
 fn system_fallback() -> Box<dyn Fallback> {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(browser) = torque_fonts::web::BrowserFonts::new() {
+        return Box::new(browser);
+    }
     match torque_fonts::system::SystemFonts::new() {
         Some(system) => Box::new(system),
         None => Box::new(NoFallback),
@@ -85,7 +90,7 @@ fn system_fallback() -> Box<dyn Fallback> {
 }
 
 /// The GUI's draw cache: fonts from `.uft` files in `fonts/` when there are any, else rasterized from the system's TrueType
-/// face of the profile's name (Windows' fonts folder); with neither, text is not drawn.
+/// face of the profile's name (Windows' fonts folder, or a browser's fonts); with neither, text is not drawn.
 pub fn draw_cache() -> DrawCache {
     DrawCache::new(Box::new(layout_fonts()))
 }

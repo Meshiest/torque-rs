@@ -24,6 +24,12 @@ fontdue = "0.9.3"
 # The cmap lookups `ttf::check` makes once it has bounded them (the version fontdue reads the file with).
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 
+# The fallback in a browser: the page's fonts, rasterized by a canvas.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["CanvasRenderingContext2d", "Document", "Element", "HtmlCanvasElement", "ImageData", "TextMetrics", "Window"] }
+
 [features]
 system-fonts = []
 

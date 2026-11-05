@@ -41,6 +41,8 @@ pub mod ttf_fuzz;
 #[cfg(test)]
 mod ttf_tests;
 pub mod uft;
+#[cfg(all(feature = "system-fonts", target_arch = "wasm32"))]
+pub mod web;
 
 #[cfg(test)]
 mod fuzz;
