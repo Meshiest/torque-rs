@@ -22,16 +22,14 @@ pub const VALLEY_VIEWS: [(&str, [f32; 3], [f32; 3]); 6] = [
     ("valley-close", [-120.0, -175.0, 9.0], [-170.0, -70.0, 26.0]),
     ("valley-far", [900.0, 120.0, 260.0], [-700.0, -40.0, 80.0]),
     ("valley-start", [200.0, -34.0, 3.5], [-100.0, -10.0, 34.0]),
-    ("valley-sea", [-330.0, -60.0, 8.0], [-1400.0, 120.0, 150.0]),
+    ("valley-sea", [-650.0, 20.0, 6.0], [-2400.0, 0.0, 170.0]),
 ];
 
-/// The eye of a view of [`VALLEY_VIEWS`]: its height over the valley's ground made a height.
+/// The eye of a view of [`VALLEY_VIEWS`]: its height over the valley's ground (or over the water, where the ground is under
+/// it) made a height.
 pub fn valley_eye(at: [f32; 3]) -> [f32; 3] {
-    [
-        at[0],
-        at[1],
-        torque_example_assets::valley::height(at[0], at[1]) + at[2],
-    ]
+    use torque_example_assets::valley::{WATER_LEVEL, height};
+    [at[0], at[1], height(at[0], at[1]).max(WATER_LEVEL) + at[2]]
 }
 
 /// The game on `files` drawn at `size` with the highest quality, the map `name` started and its figure there.
@@ -174,10 +172,16 @@ pub fn write_valley_clip(
     Ok(paths)
 }
 
-/// The front page's valley: the lake at golden hour from above its eastern end, the sun low over the pass.
+/// How much more of the clock runs before the front page's valley is pictured (ms): the moment its clouds' reflections read
+/// best.
+pub const SEA_PICTURE_MS: u32 = 6_000;
+
+/// The front page's valley: low over the sea, the clouds racing over it reflected in the water, the sun's glint running to the
+/// horizon between the far ranges.
 pub fn valley_picture(gpu: &Gpu, files: GameFiles, size: (u32, u32)) -> Result<Frame, String> {
     let mut seat = seat_on(gpu, files, size, "valley")?;
-    let (_, from, to) = VALLEY_VIEWS[0];
+    seat.run(gpu, SEA_PICTURE_MS)?;
+    let (_, from, to) = VALLEY_VIEWS[5];
     view(gpu, &mut seat, valley_eye(from), to)
 }
 

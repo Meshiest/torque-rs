@@ -298,6 +298,8 @@ The first development version. Nothing is published yet; this is what exists.
 - The water's mirrored view fogs toward the atmosphere's own sky (its light toward the point, turned up), as the main view
   fogs toward the sky behind a point, instead of the horizon ban's flat colour: a far shape fogged into the sky reflects
   in the colour it is seen in. Capture faces and a server's sky box keep the ban's colour.
+- The showcase's valley is the view low over the sea (`SEA_PICTURE_MS` into the timelapse, when the clouds' reflections read
+  best), the far ranges' peaks with more faces, and a valley view's eye kept above the water where the ground is under it.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel

@@ -390,7 +390,7 @@ fn peak(
     rng: &mut Rng,
 ) -> torque_interior_builder::Brush {
     use torque_interior_builder::{Brush, Plane, TexGen};
-    let sides = 4 + (rng.next() % 3) as usize;
+    let sides = 5 + (rng.next() % 3) as usize;
     let turn = rng.range(0.0, std::f64::consts::TAU);
     let z0 = f64::from(WATER_LEVEL) - 60.0;
     let top = 0.04;
@@ -463,7 +463,7 @@ pub fn far_ranges() -> Vec<(String, Vec<torque_interior_builder::Brush>)> {
                             h * rng.range(0.45, 0.8),
                         )
                     };
-                    let r = hk * rng.range(0.55, 0.85);
+                    let r = hk * rng.range(0.45, 0.75);
                     let lean = [rng.range(-0.35, 0.35) * r, rng.range(-0.35, 0.35) * r];
                     brushes.push(peak(
                         [x + dx, y + side * dy.abs() * 0.5 + dy],
