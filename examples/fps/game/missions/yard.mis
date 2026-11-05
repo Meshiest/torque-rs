@@ -1,0 +1,35 @@
+// The yard: one interior (the kit's `yard.dif`, built from boxes in code): an open field of 72 by 48 units inside walls 3 high,
+// with long sight lines down its length between a raised stand at each end, two long low walls broken by gaps, tall pillars
+// and a wall in the middle for cover.
+
+new SimGroup(MissionGroup)
+{
+   // Sharp texels: the map drawn with nearest-neighbor filtering.
+   textureFilter = "nearest";
+   // The far end of the field is clear: the haze starts farther out than the arena's.
+   new Sky(YardSky)
+   {
+      visibleDistance = 1500;
+      fogDistance = 600;
+      fogColor = "0.72 0.8 0.9 1";
+      useSkyTextures = false;
+   };
+   new InteriorInstance(Yard)
+   {
+      position = "0 0 0";
+      rotation = "1 0 0 0";
+      scale = "1 1 1";
+      interiorFile = "kit/yard.dif";
+   };
+};
+
+// Where figures start: "x y z yaw", each facing the middle: on the stands at either end and out on the flanks.
+$Arena::Spawn[0] = "-33 5 1.6 1.7212";
+$Arena::Spawn[1] = "33 -5 1.6 -1.4204";
+$Arena::Spawn[2] = "-33 -5 1.6 1.4204";
+$Arena::Spawn[3] = "33 5 1.6 -1.7212";
+$Arena::Spawn[4] = "-20 -15 0.1 0.9273";
+$Arena::Spawn[5] = "20 15 0.1 -2.2143";
+$Arena::Spawn[6] = "-6 20 0.1 2.8501";
+$Arena::Spawn[7] = "6 -20 0.1 -0.2915";
+$Arena::SpawnCount = 8;
