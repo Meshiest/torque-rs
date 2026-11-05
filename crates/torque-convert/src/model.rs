@@ -76,7 +76,7 @@ pub fn write_images(model: &Model, output: &Path) -> Result<usize, String> {
             "png"
         };
         // The name is a file name of the reader's making (no folder), but it is checked again here.
-        if img.name.is_empty() || img.name.contains(['/', '\\', ':']) || img.name.starts_with('.') {
+        if !is_plain_file_name(&img.name) {
             return Err(format!(
                 "image name {:?} is not a plain file name",
                 img.name
@@ -87,6 +87,32 @@ pub fn write_images(model: &Model, output: &Path) -> Result<usize, String> {
         written += 1;
     }
     Ok(written)
+}
+
+/// Whether `name` is safe as a file name on every platform: no folders, no drive or stream colon, no control or
+/// wildcard characters, no leading dot, no trailing dot or space, and not a Windows device name (`CON`, `COM1`, ...).
+fn is_plain_file_name(name: &str) -> bool {
+    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    if name.is_empty()
+        || name.starts_with('.')
+        || name.ends_with(['.', ' '])
+        || name
+            .chars()
+            .any(|c| c.is_control() || "/\\:*?\"<>|".contains(c))
+    {
+        return false;
+    }
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end()
+        .to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+    };
+    !(DEVICES.contains(&stem.as_str()) || numbered("COM") || numbered("LPT"))
 }
 
 /// The command for a model input (module docs).
@@ -177,4 +203,22 @@ pub fn run(args: &[String]) -> ExitCode {
         model.animations.len(),
     );
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_plain_file_name;
+
+    #[test]
+    fn image_names_are_refused_when_a_platform_would_not_take_them_as_a_plain_file() {
+        for ok in ["bark", "leaf_2", "Wood.Floor", "console", "com10", "lpt"] {
+            assert!(is_plain_file_name(ok), "{ok}");
+        }
+        for bad in [
+            "", ".hidden", "a/b", r"a\b", "c:x", "x:stream", "tail.", "tail ", "q?", "t\u{1}",
+            "CON", "con", "Nul.png", "aux .txt", "COM1", "lpt9", "prn",
+        ] {
+            assert!(!is_plain_file_name(bad), "{bad:?}");
+        }
+    }
 }
