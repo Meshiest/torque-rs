@@ -1,11 +1,12 @@
-//! A `.glb` whose import does not fit a staged shape read's room is tried again on a later tick, unless the room was the whole
-//! budget: then it fails once for good and is not read again.
+//! A `.glb` whose import does not fit a staged shape read's room is refused with that room, as any step is: the caller decides
+//! whether it can ever fit (a host fails it once the room was a whole tick's share). Each call reads with nothing spent yet and
+//! a budget of what the tick has left, as a host does.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use torque_client::predict::FileReader;
-use torque_client::predict::drive::{MAX_SHAPE_BYTES, SHAPE_WORK_PER_BYTE, ShapeCache, Staged};
+use torque_client::predict::drive::{ShapeCache, Staged};
 use torque_import::modelcore::{Detail, Mesh, Model, Node, Primitive};
 
 /// A cube as a `.glb`, its buffer padded with `n` more bytes: its read, its import and its buffer are each charged by its
@@ -72,16 +73,20 @@ fn counting(file: Vec<u8>) -> (FileReader, Rc<Cell<usize>>) {
     (reader, reads)
 }
 
+/// A whole tick's share in these tests: room for the largest file's read.
+const TICK: u64 = 40 << 20;
+
 #[test]
-fn a_glb_too_costly_for_a_whole_ticks_room_fails_once_and_is_not_read_again() {
-    let (reader, reads) = counting(padded_cube(6 << 20));
+fn a_glb_too_costly_for_a_whole_tick_is_refused_with_the_whole_room() {
+    let (reader, reads) = counting(padded_cube(15 << 20));
     let mut cache = ShapeCache::default();
-    let budget = SHAPE_WORK_PER_BYTE * MAX_SHAPE_BYTES as u64;
-    for tick in 0..4 {
-        let mut work = 0;
-        let got = cache.get_staged(b"kit/big.glb", Some(&reader), &mut work, budget, tick, 16);
-        assert!(matches!(got, Staged::Failed), "tick {tick}: {got:?}");
-    }
+    let mut work = 0;
+    let got = cache.get_staged(b"kit/big.glb", Some(&reader), &mut work, TICK, 0, 16);
+    // The room it was refused with is the whole tick's: a host gives it up for good.
+    assert!(
+        matches!(got, Staged::Refused { room } if room == TICK),
+        "{got:?}"
+    );
     assert_eq!(reads.get(), 1);
 }
 
@@ -89,13 +94,15 @@ fn a_glb_too_costly_for_a_whole_ticks_room_fails_once_and_is_not_read_again() {
 fn a_glb_refused_after_a_busy_tick_loads_on_the_next() {
     let (reader, reads) = counting(padded_cube(8 << 20));
     let mut cache = ShapeCache::default();
-    let budget = 40 << 20;
-    // Earlier shapes spent half the tick: room for the largest file's read, not for this one's import.
-    let mut work = 20 << 20;
-    let got = cache.get_staged(b"kit/cube.glb", Some(&reader), &mut work, budget, 0, 16);
-    assert!(matches!(got, Staged::Refused { .. }), "{got:?}");
+    // Earlier shapes spent half the tick: what is left holds the largest file's read, not this one's import.
     let mut work = 0;
-    let got = cache.get_staged(b"kit/cube.glb", Some(&reader), &mut work, budget, 1, 16);
+    let got = cache.get_staged(b"kit/cube.glb", Some(&reader), &mut work, TICK / 2, 0, 16);
+    assert!(
+        matches!(got, Staged::Refused { room } if room == TICK / 2),
+        "{got:?}"
+    );
+    let mut work = 0;
+    let got = cache.get_staged(b"kit/cube.glb", Some(&reader), &mut work, TICK, 1, 16);
     assert!(matches!(got, Staged::Loaded(_)), "{got:?}");
     assert_eq!(reads.get(), 2);
 }
