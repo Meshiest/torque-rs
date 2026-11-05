@@ -2175,6 +2175,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example-vehicle-demo"
+version = "0.1.0"
+dependencies = [
+ "torque",
+ "torque-example-assets",
+ "torque-example-common",
+ "torque-render-core",
+ "torque-render-scene",
+]
+
+[[package]]
 name = "torque-fonts"
 version = "0.1.0"
 dependencies = [
@@ -2320,6 +2331,7 @@ dependencies = [
  "torque-shapes",
  "torque-sim",
  "torque-ts-vm",
+ "torque-vehicle",
 ]
 
 [[package]]

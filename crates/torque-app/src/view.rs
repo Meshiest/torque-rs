@@ -199,6 +199,26 @@ impl WorldView {
         self.put_floor(floor_draw(None, color, half, 1.0), &[]);
     }
 
+    /// A terrain as the ground in place of the floor, textured with `texture` (a path the reader finds) repeated every `tile`
+    /// units ([`super::terrain::Terrain::draws`]).
+    pub fn set_terrain(
+        &mut self,
+        assets: &dyn Assets,
+        terrain: &super::terrain::Terrain,
+        texture: &str,
+        tile: f32,
+    ) {
+        let mut set = TextureSet::new(assets);
+        let found = set.get(texture);
+        let local = self.intern(set.into_textures());
+        self.scene.planes = terrain
+            .draws(found, tile)
+            .iter()
+            .map(|d| HdDraw::from_fixed(d, material::KIND_PLANE, &local))
+            .collect();
+        self.statics_changed = true;
+    }
+
     fn put_floor(&mut self, floor: Draw, local: &[usize]) {
         self.scene.planes = vec![HdDraw::from_fixed(&floor, material::KIND_PLANE, local)];
         self.statics_changed = true;

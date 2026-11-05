@@ -269,6 +269,12 @@ impl ObjectView for FieldView<'_> {
 ///   `materialList`, `useSkyTextures`, the cloud layers' `cloudText` and `cloudHeightPer`, ...);
 /// - a ShapeBase's mounted images (the game classes' image slots): per slot `image_datablock`, `image_wet`, `image_ammo`,
 ///   `image_loaded`, `image_target`, `image_trigger_down` and `image_fire_count`;
+/// - a ShapeBase's mount: the link `mount` (the object it is mounted on, by its ghost on the connection) and `mount_node`;
+/// - a simulated vehicle ([`torque_game::sim::vehicle::state`]): `position`, `rotation` (its rigid body's quaternion),
+///   `linear_momentum`, `angular_momentum`, `at_rest`, `contact_count`, `disable_move`, `jetting`, `steering`, `energy`,
+///   `energy_value` (over the datablock's `maxEnergy`), `damage`, the last move's fields, and from its datablock
+///   `max_steering_angle`; a WheeledVehicle's `wheel_count` (`WheeledVehicleData::wheelCount`), `braking`, and per wheel
+///   `wheel_tire`, `wheel_spring`, `wheel_powered`, `wheel_steering`, `wheel_avel`, `wheel_dy`, `wheel_dx`, `wheel_slipping`;
 /// - a simulated Projectile ([`torque_game::sim::projectile::state`]): `position`, `velocity`, `current_tick` (its age),
 ///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`; the
 ///   link `source_object` (its source object's ghost on the connection, [`GameView::ghost_of`]).
@@ -400,6 +406,73 @@ impl GameView<'_> {
 }
 
 impl GameView<'_> {
+    /// A simulated vehicle's field from its state, if the object is one (the record's and the packet data's view fields,
+    /// `torque_ghosts::vehicle` and `torque_ghosts::tails`).
+    fn vehicle(&self, field: &str, index: usize) -> Option<Value> {
+        use torque_game::sim::vehicle::{Body, ext_of};
+        let (vm, obj) = (self.fields.vm, self.fields.obj);
+        let e = ext_of(vm, obj)?;
+        let s = e.state()?;
+        let component = |v: &[f32]| v.get(index).map_or(Value::Null, |f| Value::F32(*f));
+        let wheeled = match e.body.as_ref() {
+            Some(Body::Wheeled(v)) => Some(&**v),
+            _ => None,
+        };
+        let wheel = || wheeled.and_then(|v| v.k.wheels.get(index));
+        let db_id =
+            |w: Option<torque_collide::ObjectId>| w.map_or(Value::Null, |id| Value::Id(Some(id.0)));
+        Some(match field {
+            "position" => component(&s.position()),
+            "rotation" => component(&s.rigid.ang_pos),
+            "linear_momentum" => component(&s.rigid.lin_mom),
+            "angular_momentum" => component(&s.rigid.ang_mom),
+            "at_rest" => Value::Bool(s.rigid.at_rest),
+            "contact_count" => Value::Int(i64::from(s.contacts_count)),
+            "disable_move" => Value::Bool(s.disable_move),
+            "jetting" => Value::Bool(s.jetting),
+            "steering" => component(&s.steering),
+            "max_steering_angle" => Value::F32(self.db_float(b"maxSteeringAngle", 0.785)),
+            "energy" => Value::F32(s.energy),
+            "energy_value" => {
+                let max = self.db_float(b"maxEnergy", 0.0);
+                Value::F32(if max > 0.0 { s.energy / max } else { 0.0 })
+            }
+            "damage" => Value::F32(s.damage),
+            "damage_state" => Value::Int(i64::from(s.damage_state)),
+            "passenger_here" => Value::Bool(false),
+            // A move's axis as its 6-bit word, as a Player's.
+            "move_axes" => {
+                let m = &s.last_move;
+                let v = [m.x, m.y, m.z].get(index).copied().unwrap_or(0.0);
+                Value::Int(((v.clamp(-1.0, 1.0) * 16.0) as i64) + 16)
+            }
+            "move_angles" => Value::Int(0),
+            "move_free_look" => Value::Bool(s.last_move.free_look),
+            "move_triggers" => {
+                Value::Bool(s.last_move.triggers.get(index).copied().unwrap_or(false))
+            }
+            "wheel_count" => {
+                let n = match torque_game::sim::vehicle::data(vm, obj) {
+                    Some(torque_game::sim::vehicle::Data::Wheeled(d, _)) => {
+                        torque_vehicle::wheeled::wheel_count(&d)
+                    }
+                    _ => 0,
+                };
+                Value::Int(n as i64)
+            }
+            "braking" => Value::Bool(wheeled.is_some_and(|v| v.k.brake)),
+            "wheel_tire" => db_id(wheel().and_then(|w| w.tire.map(|t| t.0))),
+            "wheel_spring" => db_id(wheel().and_then(|w| w.spring.map(|t| t.0))),
+            "wheel_powered" => Value::Bool(wheel().is_some_and(|w| w.powered)),
+            "wheel_steering" => wheel().map_or(Value::Null, |w| Value::F32(w.steering)),
+            "wheel_avel" => wheel().map_or(Value::Null, |w| Value::F32(w.avel)),
+            "wheel_dy" => wheel().map_or(Value::Null, |w| Value::F32(w.dy)),
+            "wheel_dx" => wheel().map_or(Value::Null, |w| Value::F32(w.dx)),
+            "wheel_slipping" => Value::Bool(wheel().is_some_and(|w| w.slipping)),
+            _ => return None,
+        })
+    }
+
     /// A simulated Projectile's field from its state, if the object is one.
     fn projectile(&self, field: &str, index: usize) -> Option<Value> {
         let s = torque_game::sim::projectile::state(self.fields.vm, self.fields.obj)?;
@@ -442,8 +515,8 @@ impl GameView<'_> {
 }
 
 impl ObjectView for GameView<'_> {
-    /// A simulated Projectile's `source_object` and a SpotLight's `mount_object`: the object's ghost on the connection
-    /// (`NotGhosted` while it has none).
+    /// A simulated Projectile's `source_object`, a SpotLight's `mount_object` and a ShapeBase's `mount`: the object's ghost
+    /// on the connection (`NotGhosted` while it has none).
     fn link(&self, field: &str) -> Link {
         let (vm, obj) = (self.fields.vm, self.fields.obj);
         let linked = match field {
@@ -451,6 +524,7 @@ impl ObjectView for GameView<'_> {
                 torque_game::sim::projectile::state(vm, obj).and_then(|s| s.source.map(|s| s.0))
             }
             "mount_object" => torque_game::scene::lights::spot_mount(vm, obj).map(|m| m.0),
+            "mount" => torque_game::sim::mount::mount_of(vm, obj),
             _ => None,
         };
         let (Some(linked), Some(ghost_of)) = (linked, self.ghost_of) else {
@@ -464,6 +538,9 @@ impl ObjectView for GameView<'_> {
 
     fn get(&self, field: &str, index: usize) -> Value {
         if let Some(v) = self.player(field, index) {
+            return v;
+        }
+        if let Some(v) = self.vehicle(field, index) {
             return v;
         }
         if let Some(v) = self.image(field, index) {
@@ -504,9 +581,14 @@ impl ObjectView for GameView<'_> {
                 .get(index)
                 .map_or(Value::Null, |f| Value::F32(*f)),
             "fade_value" => Value::F32(1.0),
-            // A SpotLight's mount node and a TimeOfDay's animation.
-            "mount_node" => torque_game::scene::lights::spot_mount(self.fields.vm, self.fields.obj)
-                .map_or(Value::Int(0), |m| Value::Int(i64::from(m.1))),
+            // A SpotLight's mount node (else a ShapeBase's), and a TimeOfDay's animation.
+            "mount_node" => Value::Int(i64::from(
+                torque_game::scene::lights::spot_mount(self.fields.vm, self.fields.obj)
+                    .map_or_else(
+                        || torque_game::sim::mount::link(self.fields.vm, self.fields.obj).1,
+                        |m| m.1,
+                    ),
+            )),
             "animate_time" | "animate_speed" => {
                 torque_game::scene::lights::day_animation(self.fields.vm, self.fields.obj)
                     .map_or(Value::F32(0.0), |(t, s)| {

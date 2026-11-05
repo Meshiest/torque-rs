@@ -127,6 +127,8 @@ pub struct WheelLook {
     /// In contact (`surface.contact`) and the contact point (`surface.pos`) where the frame draws the vehicle.
     pub contact: bool,
     pub point: [f32; 3],
+    /// How much the tire slips (`slip`: 0 gripping, up to 1 as the friction circle cuts its force), which its dust follows.
+    pub slip: f32,
 }
 
 /// A Projectile ghost as the client draws it this frame (`Projectile::interpolateTick`): its render transform (the point

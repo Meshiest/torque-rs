@@ -10,12 +10,14 @@ fn free(_: u64) -> bool {
     true
 }
 
-fn models() -> [(&'static str, Model); 4] {
+fn models() -> [(&'static str, Model); 6] {
     [
         ("cube", shapes::cube()),
         ("figure", shapes::figure()),
         ("pistol", shapes::pistol()),
         ("projectile", shapes::projectile()),
+        ("buggy", crate::buggy::buggy()),
+        ("buggy_wheel", crate::buggy::wheel()),
     ]
 }
 
@@ -67,6 +69,15 @@ fn every_triangle_is_clockwise_seen_from_its_front() {
                 // Outward: from the box's centre to the triangle; the normals the renderer lights with agree.
                 let out = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0 - centre[k]);
                 let dot = |v: [f32; 3]| v[0] * cross[0] + v[1] * cross[1] + v[2] * cross[2];
+                // The buggy's meshes are many parts each: their faces agree with their own normals instead.
+                if name.starts_with("buggy") {
+                    if render.normals.len() == p.len() {
+                        for &i in t {
+                            assert!(dot(render.normals[usize::from(i)]) < 0.0, "{name}: {t:?}");
+                        }
+                    }
+                    continue;
+                }
                 assert!(dot(out) < 0.0, "{name}: {t:?}");
                 if render.normals.len() == p.len() && mesh.num_verts == 24 {
                     assert!(
@@ -420,7 +431,7 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
     let mut names: Vec<_> = a.iter().map(|x| x.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 23);
     // Every material names a texture of the kit.
     for (_, model) in models() {
         for m in &model.shape.materials {
@@ -702,4 +713,57 @@ fn the_arena_interior_passes_the_builders_checks() {
     println!("arena ({} brushes): {}", brushes.len(), r.line());
     assert!(r.clean(), "{}", r.line());
     assert_eq!(r.hulls, brushes.len());
+}
+
+#[test]
+fn the_buggy_has_its_hubs_two_seats_and_a_body_hull() {
+    let shape = Shape::for_server(crate::buggy::buggy());
+    let facts = preload::facts(&shape, &mut free).unwrap();
+    let node = |name: &str| {
+        let n = shape.find_name(name.as_bytes()).unwrap();
+        shape.nodes.iter().position(|x| x.name == n).unwrap() as i32
+    };
+    for i in 0..4 {
+        node(&format!("hub{i}"));
+    }
+    assert_eq!(facts.mount_nodes[0], node("mount0"));
+    assert_eq!(facts.mount_nodes[1], node("mount1"));
+    assert_eq!(facts.eye_node, node("eye"));
+    assert_eq!(facts.slots.hulls(), 1);
+    assert_eq!(facts.slots.own_los(), 1);
+}
+
+#[test]
+fn the_seated_hands_hold_a_round_wheel_before_the_chest_and_the_feet_rest_on_the_floor() {
+    use crate::buggy::{SEAT_HIP, SEATS, grips, steering_wheel};
+    let [l, r] = grips();
+    // Level with each other, in front of the chest, at its height.
+    assert!(
+        (l[1] - r[1]).abs() < 1e-3 && (l[2] - r[2]).abs() < 1e-3,
+        "{l:?} {r:?}"
+    );
+    assert!(l[1] > 0.3 && l[1] < 0.6, "{l:?}");
+    assert!(l[2] > SEAT_HIP + 0.1 && l[2] < SEAT_HIP + 0.55, "{l:?}");
+    let (_, radius) = steering_wheel();
+    assert!(
+        (0.13..0.23).contains(&radius),
+        "the wheel's radius {radius}"
+    );
+    // The soles above the floor pan's top.
+    let shape = Shape::for_server(shapes::figure());
+    for knee in ["knee_l", "knee_r"] {
+        let sole = posed(&shape, "sit", 0.0, knee, [0.0, 0.0, -shapes::SHIN]);
+        assert!(SEATS[0][2] + sole[2] > 0.24, "{knee}: {sole:?}");
+    }
+}
+
+#[test]
+fn a_riding_figure_rests_its_hands_on_its_thighs() {
+    let shape = Shape::for_server(shapes::figure());
+    for elbow in ["elbow_l", "elbow_r"] {
+        let hand = posed(&shape, "ride", 0.0, elbow, [0.0, 0.0, -shapes::GRIP]);
+        assert!((0.2..0.45).contains(&hand[1]), "{elbow}: {hand:?}");
+        assert!((1.02..1.25).contains(&hand[2]), "{elbow}: {hand:?}");
+        assert!((0.12..0.28).contains(&hand[0].abs()), "{elbow}: {hand:?}");
+    }
 }

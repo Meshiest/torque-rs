@@ -21,6 +21,7 @@ torque-game = { path = "../torque-game" }
 torque-ghost-world = { path = "../torque-ghost-world" }
 torque-ghosts = { path = "../torque-ghosts" }
 torque-gui = { path = "../torque-gui" }
+# A TerrainBlock's file and its heightfield.
 torque-mapcore = { path = "../torque-mapcore" }
 torque-maps = { path = "../torque-maps" }
 torque-render-core = { path = "../torque-render-core" }
