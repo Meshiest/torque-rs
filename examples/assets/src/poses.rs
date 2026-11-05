@@ -21,7 +21,7 @@
 //!   raised [`PRONE_TILT`] degrees further, so the pistol points ahead along the ground.
 //! - Hit reactions, blend sequences played once over any pose or gait: `flinch_front`, `flinch_back`, `flinch_left` and
 //!   `flinch_right` ([`FLINCH_SECONDS`], a body shot from that side: the torso punched away from it, the hips pushed back a few
-//!   centimetres and a small step to catch the balance); `flinch_head_front` and the rest ([`HEAD_FLINCH_SECONDS`], a head shot:
+//!   centimeters and a small step to catch the balance); `flinch_head_front` and the rest ([`HEAD_FLINCH_SECONDS`], a head shot:
 //!   the head snapped sharply away, the torso barely). Each is at rest at its start and its end.
 
 use std::f32::consts::{PI, TAU};
