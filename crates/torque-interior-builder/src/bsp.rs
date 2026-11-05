@@ -39,9 +39,15 @@ pub struct Bsp {
     pub root: Option<Child>,
 }
 
-/// More nodes than the cap.
+/// The most part-against-plane tests one tree may take (a splitter weighs each candidate against each part of its cell).
+pub const MAX_WORK: u64 = 400_000_000;
+
+/// A tree past a cap: its nodes, or the tests making it took.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TooManyNodes(pub usize);
+pub enum TooMuch {
+    Nodes(usize),
+    Work(u64),
+}
 
 struct Part {
     brush: usize,
@@ -83,7 +89,7 @@ enum Slot {
 }
 
 /// The tree of `brushes`, at most `max_nodes` nodes.
-pub fn build(brushes: &[Brush], max_nodes: usize) -> Result<Bsp, TooManyNodes> {
+pub fn build(brushes: &[Brush], max_nodes: usize) -> Result<Bsp, TooMuch> {
     let mut parts = Vec::new();
     for (i, b) in brushes.iter().enumerate() {
         if let Some(c) = corners(b, &[]) {
@@ -96,8 +102,9 @@ pub fn build(brushes: &[Brush], max_nodes: usize) -> Result<Bsp, TooManyNodes> {
         }
     }
     let mut bsp = Bsp::default();
-    let mut work = vec![(parts, Slot::Root)];
-    while let Some((parts, slot)) = work.pop() {
+    let mut tasks = vec![(parts, Slot::Root)];
+    let mut work = 0u64;
+    while let Some((parts, slot)) = tasks.pop() {
         let child = if parts.is_empty() {
             Child::Empty
         } else if let Some(p) = parts.iter().find(|p| p.left.is_empty()) {
@@ -105,9 +112,9 @@ pub fn build(brushes: &[Brush], max_nodes: usize) -> Result<Bsp, TooManyNodes> {
             Child::Solid(bsp.solid.len() as u32 - 1)
         } else {
             if bsp.nodes.len() >= max_nodes {
-                return Err(TooManyNodes(max_nodes));
+                return Err(TooMuch::Nodes(max_nodes));
             }
-            let s = splitter(&parts);
+            let s = splitter(&parts, &mut work)?;
             let (front, back) = divide(parts, &s, brushes);
             let at = bsp.nodes.len();
             bsp.nodes.push(Node {
@@ -115,8 +122,8 @@ pub fn build(brushes: &[Brush], max_nodes: usize) -> Result<Bsp, TooManyNodes> {
                 front: Child::Empty,
                 back: Child::Empty,
             });
-            work.push((back, Slot::Back(at)));
-            work.push((front, Slot::Front(at)));
+            tasks.push((back, Slot::Back(at)));
+            tasks.push((front, Slot::Front(at)));
             Child::Node(at as u32)
         };
         match slot {
@@ -132,7 +139,7 @@ pub fn build(brushes: &[Brush], max_nodes: usize) -> Result<Bsp, TooManyNodes> {
     Ok(bsp)
 }
 
-fn splitter(parts: &[Part]) -> Plane {
+fn splitter(parts: &[Part], work: &mut u64) -> Result<Plane, TooMuch> {
     let mut candidates: Vec<Plane> = Vec::new();
     'outer: for p in parts {
         for q in &p.left {
@@ -143,6 +150,10 @@ fn splitter(parts: &[Part]) -> Plane {
                 candidates.push(*q);
             }
         }
+    }
+    *work = work.saturating_add((candidates.len() * parts.len()) as u64);
+    if *work > MAX_WORK {
+        return Err(TooMuch::Work(*work));
     }
     let mut best = (u64::MAX, candidates[0]);
     for c in candidates {
@@ -172,7 +183,7 @@ fn splitter(parts: &[Part]) -> Plane {
             best = (score, c);
         }
     }
-    best.1
+    Ok(best.1)
 }
 
 fn divide(parts: Vec<Part>, s: &Plane, brushes: &[Brush]) -> (Vec<Part>, Vec<Part>) {

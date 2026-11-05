@@ -131,6 +131,10 @@ pub const MAX_PLANES: usize = 0x7fff;
 /// The most surfaces (zone surface lists are 16-bit) and hulls (bin entries are 16-bit).
 pub const MAX_SURFACES: usize = 0xffff;
 pub const MAX_HULLS: usize = 0xffff;
+/// The most points looked at for T-junctions in all.
+pub const MAX_TJUNCTION_WORK: u64 = 400_000_000;
+/// The most brushes built into one interior (hidden-face removal compares brushes pairwise).
+pub const MAX_BRUSHES: usize = 8_192;
 /// The most points a winding takes (a surface's fan mask is 32 bits).
 pub const MAX_WINDING: usize = 32;
 
@@ -185,7 +189,8 @@ impl Weld {
     }
 
     /// The points (other than `a` and `b`) on the segment `a`-`b`, nearest `a` first.
-    fn on_segment(&self, a: V3, b: V3) -> Vec<V3> {
+    /// Each point looked at is a unit of `work`.
+    fn on_segment(&self, a: V3, b: V3, work: &mut u64) -> Vec<V3> {
         let lo = a[0].min(b[0]) - EPS;
         let hi = a[0].max(b[0]) + EPS;
         let start = self.by_x.partition_point(|e| e.0 < lo);
@@ -196,6 +201,7 @@ impl Weld {
             if x > hi {
                 break;
             }
+            *work += 1;
             let p = self.points[i];
             let t = geom::dot(geom::sub(p, a), d) / len2;
             if t <= 0.0 || t >= 1.0 {
@@ -222,9 +228,24 @@ struct Part {
 }
 
 /// Cuts `poly` until its lightmap rectangle fits [`MAX_RECT`].
-fn fit_lightmap(poly: Vec<V3>, n: V3, texel: f64, out: &mut Vec<Vec<V3>>) {
+fn fit_lightmap(
+    poly: Vec<V3>,
+    n: V3,
+    texel: f64,
+    out: &mut Vec<Vec<V3>>,
+    left: &mut usize,
+) -> Result<(), BuildError> {
     let axes = lightmap::axes(n);
     let r = lightmap::rect(&poly, axes, texel);
+    // The pieces this part needs at least, counted before any is cut: a part too large for what is left fails at once.
+    let need = [0, 1].map(|k| u64::from(r.size[k]).div_ceil(u64::from(MAX_RECT)));
+    if need[0].saturating_mul(need[1]) > *left as u64 {
+        return Err(BuildError::TooMany {
+            what: "surfaces",
+            count: MAX_SURFACES + 1,
+            cap: MAX_SURFACES,
+        });
+    }
     let k = if r.size[0] > MAX_RECT {
         Some(axes.0)
     } else if r.size[1] > MAX_RECT {
@@ -233,8 +254,9 @@ fn fit_lightmap(poly: Vec<V3>, n: V3, texel: f64, out: &mut Vec<Vec<V3>>) {
         None
     };
     let Some(k) = k else {
+        *left -= 1;
         out.push(poly);
-        return;
+        return Ok(());
     };
     let lo = poly.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min);
     let hi = poly.iter().map(|p| p[k]).fold(f64::NEG_INFINITY, f64::max);
@@ -242,16 +264,18 @@ fn fit_lightmap(poly: Vec<V3>, n: V3, texel: f64, out: &mut Vec<Vec<V3>>) {
     let mut normal = [0.0; 3];
     normal[k] = 1.0;
     let Some(cut) = Plane::new(normal, [mid, mid, mid]) else {
+        *left -= 1;
         out.push(poly);
-        return;
+        return Ok(());
     };
     let (front, back) = geom::split(&poly, &cut);
     if front.is_empty() || back.is_empty() {
+        *left -= 1;
         out.push(poly);
-        return;
+        return Ok(());
     }
-    fit_lightmap(front, n, texel, out);
-    fit_lightmap(back, n, texel, out);
+    fit_lightmap(front, n, texel, out, left)?;
+    fit_lightmap(back, n, texel, out, left)
 }
 
 /// Whether `b` is a corner between `a` and `c` (not on the line through them).
@@ -399,7 +423,7 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
     if brushes.is_empty() {
         return Err(BuildError::NoBrushes);
     }
-    cap("brushes", brushes.len(), MAX_HULLS)?;
+    cap("brushes", brushes.len(), MAX_BRUSHES)?;
     let mut polys = Vec::with_capacity(brushes.len());
     let mut boxes = Vec::with_capacity(brushes.len());
     for (index, b) in brushes.iter().enumerate() {
@@ -412,14 +436,23 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
 
     // 1-2: the visible parts, cut to fit the lightmaps, welded, with their neighbours' corners on their edges.
     let mut parts: Vec<Part> = Vec::new();
-    for f in csg::visible(brushes, &polys, &boxes) {
+    let fragments = csg::visible(brushes, &polys, &boxes, MAX_SURFACES).map_err(|count| {
+        BuildError::TooMany {
+            what: "surfaces",
+            count,
+            cap: MAX_SURFACES,
+        }
+    })?;
+    // Every drawn piece is a surface: the lightmap cuts stop once the surfaces would pass the cap.
+    let mut left = MAX_SURFACES;
+    for f in fragments {
         let face = &brushes[f.brush].faces[f.face];
         let null = is_null_material(&face.material);
         let mut cut = Vec::new();
         if null {
             cut.push(f.poly);
         } else {
-            fit_lightmap(f.poly, face.plane.n, texel, &mut cut);
+            fit_lightmap(f.poly, face.plane.n, texel, &mut cut, &mut left)?;
         }
         parts.extend(cut.into_iter().map(|poly| Part {
             brush: f.brush,
@@ -435,6 +468,7 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
         }
     }
     weld.sort();
+    let mut work = 0u64;
     let mut pieces: Vec<Part> = Vec::new();
     for p in parts {
         let n = p.poly.len();
@@ -442,7 +476,14 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
         for i in 0..n {
             let (a, b) = (p.poly[i], p.poly[(i + 1) % n]);
             poly.push(a);
-            poly.extend(weld.on_segment(a, b));
+            poly.extend(weld.on_segment(a, b, &mut work));
+            if work > MAX_TJUNCTION_WORK {
+                return Err(BuildError::TooMany {
+                    what: "T-junction tests",
+                    count: work as usize,
+                    cap: MAX_TJUNCTION_WORK as usize,
+                });
+            }
         }
         geom::dedup(&mut poly);
         if poly.len() < 3 {
@@ -648,10 +689,17 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
     let (coord_bins, coord_bin_indices) = bins(&bounds, &hull_boxes);
 
     // 6: the BSP.
-    let tree = bsp::build(brushes, MAX_BSP).map_err(|e| BuildError::TooMany {
-        what: "BSP nodes",
-        count: e.0 + 1,
-        cap: MAX_BSP,
+    let tree = bsp::build(brushes, MAX_BSP).map_err(|e| match e {
+        bsp::TooMuch::Nodes(n) => BuildError::TooMany {
+            what: "BSP nodes",
+            count: n + 1,
+            cap: MAX_BSP,
+        },
+        bsp::TooMuch::Work(w) => BuildError::TooMany {
+            what: "BSP splitter tests",
+            count: w as usize,
+            cap: bsp::MAX_WORK as usize,
+        },
     })?;
     cap("BSP solid leaves", tree.solid.len(), MAX_BSP)?;
     let child = |c: Child| match c {
@@ -798,6 +846,51 @@ fn bins(bounds: &Aabb, hulls: &[Aabb]) -> (Vec<[u32; 2]>, Vec<u16>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn grid(n: V3) -> TexGen {
+        TexGen::world(n, 1.0)
+    }
+
+    #[test]
+    fn an_enormous_brush_fails_before_its_lightmap_cuts() {
+        // 200,000 units a side at half a unit a texel: about 2.5 million rectangles a face, refused before one is cut.
+        let b = Brush::cuboid([-1.0e5; 3], [1.0e5; 3], "m", grid);
+        let started = std::time::Instant::now();
+        let e = build(&[b], &Options::default()).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                BuildError::TooMany {
+                    what: "surfaces",
+                    ..
+                }
+            ),
+            "{e}"
+        );
+        assert!(started.elapsed().as_secs() < 5);
+        // One just inside the cap builds.
+        let b = Brush::cuboid([0.0; 3], [100.0, 100.0, 1.0], "m", grid);
+        assert!(build(&[b], &Options::default()).is_ok());
+    }
+
+    #[test]
+    fn too_many_brushes_fail_before_any_work() {
+        let brushes: Vec<Brush> = (0..=MAX_BRUSHES)
+            .map(|i| {
+                let x = i as f64 * 2.0;
+                Brush::cuboid([x, 0.0, 0.0], [x + 1.0, 1.0, 1.0], "m", grid)
+            })
+            .collect();
+        let e = build(&brushes, &Options::default()).unwrap_err();
+        assert_eq!(
+            e,
+            BuildError::TooMany {
+                what: "brushes",
+                count: MAX_BRUSHES + 1,
+                cap: MAX_BRUSHES
+            }
+        );
+    }
 
     #[test]
     fn the_strip_order_turns_back_into_the_polygon() {

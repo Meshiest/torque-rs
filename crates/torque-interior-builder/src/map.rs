@@ -14,8 +14,9 @@
 //! - **Editor textures.** `clip`, `caulk` and `skip` (any case, any folder) are null faces like TGE's `NULL`; a brush all of
 //!   `ORIGIN`, `TRIGGER` or `PORTAL` is left out (zones and portals come later) with a warning.
 //!
-//! The file is untrusted: its size, its entities, brushes, faces and numbers are capped ([`MAX_MAP_BYTES`], [`MAX_BRUSHES`],
-//! [`MAX_FACES`], [`MAX_COORD`]) and every error names its line.
+//! The file is untrusted: its size, its entities and their keys, brushes, faces, names, numbers and each brush's size are
+//! capped ([`MAX_MAP_BYTES`], [`MAX_ENTITIES`], [`MAX_KEYS`], [`MAX_BRUSHES`], [`MAX_FACES`], [`MAX_NAME`], [`MAX_VALUE`],
+//! [`MAX_COORD`], [`MAX_BRUSH_SIZE`]) before anything is built, and every error names its line.
 
 use crate::brush::{Brush, Face, TexGen};
 use crate::geom::{Plane, V3};
@@ -23,8 +24,16 @@ use crate::mission::{MissionObject, Shape};
 
 /// The largest `.map` read.
 pub const MAX_MAP_BYTES: usize = 64 << 20;
-/// The most brushes of a file.
-pub const MAX_BRUSHES: usize = 65_535;
+/// The most brushes of a file (the most one interior is built of).
+pub const MAX_BRUSHES: usize = crate::build::MAX_BRUSHES;
+/// The most keys of an entity.
+pub const MAX_KEYS: usize = 256;
+/// The longest key or texture name (a `.dif` or a mission names it in at most 255 bytes).
+pub const MAX_NAME: usize = 255;
+/// The longest key value.
+pub const MAX_VALUE: usize = 4_096;
+/// The largest side of a brush's box (map units; 2,048 units of the interior at the default scale).
+pub const MAX_BRUSH_SIZE: f64 = 65_536.0;
 /// The most faces of a brush.
 pub const MAX_FACES: usize = 128;
 /// The most entities of a file.
@@ -137,6 +146,9 @@ fn key_value(line: usize, s: &str) -> Result<(String, String), MapError> {
     if parts.len() != 5 || !parts[0].trim().is_empty() || !parts[4].trim().is_empty() {
         return Err(err(line, "expected \"key\" \"value\""));
     }
+    if parts[1].len() > MAX_NAME || parts[3].len() > MAX_VALUE {
+        return Err(err(line, "a key or a value is too long"));
+    }
     Ok((parts[1].to_string(), parts[3].to_string()))
 }
 
@@ -188,6 +200,9 @@ fn face(line: usize, s: &str) -> Result<RawFace, MapError> {
     let (texture, tail) = rest
         .split_once(char::is_whitespace)
         .ok_or_else(|| err(line, "a face needs a texture and its alignment"))?;
+    if texture.len() > MAX_NAME {
+        return Err(err(line, "the texture name is too long"));
+    }
     let plane = Plane::from_points(pts[0], pts[1], pts[2])
         .ok_or_else(|| err(line, "the three points are on one line"))?;
     let valve = tail.contains('[');
@@ -294,6 +309,9 @@ pub fn parse(text: &str, options: &MapOptions) -> Result<MapFile, MapError> {
             (1, _) if s.starts_with('"') => {
                 let kv = key_value(line, s)?;
                 if let Some(e) = entities.last_mut() {
+                    if e.keys.len() >= MAX_KEYS {
+                        return Err(err(line, "too many keys in an entity"));
+                    }
                     e.keys.push(kv);
                 }
             }
@@ -484,9 +502,16 @@ fn make_brush(
         });
     }
     let brush = Brush { faces: out };
-    brush
-        .polygons()
+    let (lo, hi) = brush
+        .bounds()
         .map_err(|e| err(line, format!("the brush bounds no solid: {e:?}")))?;
+    let side = (0..3).map(|i| (hi[i] - lo[i]) * k).fold(0.0, f64::max);
+    if side > MAX_BRUSH_SIZE {
+        return Err(err(
+            line,
+            format!("the brush is {side} map units across, over the {MAX_BRUSH_SIZE} taken"),
+        ));
+    }
     Ok(brush)
 }
 
@@ -541,6 +566,110 @@ mod tests {
         assert_eq!(m.objects[0].shape, Shape::Point([1.0, 0.0, 0.75]));
         assert_eq!(m.objects[0].yaw, 0.0);
         assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+    }
+
+    /// A box brush from `lo` to `hi` (map units) as face lines.
+    fn box_brush(lo: [i64; 3], hi: [i64; 3]) -> String {
+        let [a, b, c] = lo;
+        let [x, y, z] = hi;
+        format!(
+            "{{
+( {a} {b} {c} ) ( {a} {} {c} ) ( {a} {b} {} ) m 0 0 0 1 1
+             ( {a} {b} {c} ) ( {a} {b} {} ) ( {} {b} {c} ) m 0 0 0 1 1
+             ( {a} {b} {c} ) ( {} {b} {c} ) ( {a} {} {c} ) m 0 0 0 1 1
+             ( {x} {y} {z} ) ( {x} {} {z} ) ( {} {y} {z} ) m 0 0 0 1 1
+             ( {x} {y} {z} ) ( {} {y} {z} ) ( {x} {y} {} ) m 0 0 0 1 1
+             ( {x} {y} {z} ) ( {x} {y} {} ) ( {x} {} {z} ) m 0 0 0 1 1
+}}
+",
+            b + 1,
+            c + 1,
+            c + 1,
+            a + 1,
+            a + 1,
+            b + 1,
+            y + 1,
+            x + 1,
+            x + 1,
+            z + 1,
+            z + 1,
+            y + 1,
+        )
+    }
+
+    #[test]
+    fn a_box_brush_reads_as_its_box() {
+        let text = format!(
+            "{{
+\"classname\" \"worldspawn\"
+{}}}
+",
+            box_brush([-32, -64, 0], [32, 64, 16])
+        );
+        let m = parse(&text, &MapOptions::default()).unwrap();
+        assert_eq!(
+            m.brushes[0].bounds().unwrap(),
+            ([-1.0, -2.0, 0.0], [1.0, 2.0, 0.5])
+        );
+    }
+
+    #[test]
+    fn an_enormous_brush_is_refused_before_it_is_built() {
+        let text = format!(
+            "{{
+\"classname\" \"worldspawn\"
+{}}}
+",
+            box_brush([-900_000, -900_000, -900_000], [900_000, 900_000, 900_000])
+        );
+        let e = parse(&text, &MapOptions::default()).unwrap_err();
+        assert!(e.what.contains("map units across"), "{e}");
+    }
+
+    #[test]
+    fn too_many_brushes_or_keys_are_refused_while_reading() {
+        let mut text = String::from(
+            "{
+\"classname\" \"worldspawn\"
+",
+        );
+        for i in 0..=MAX_BRUSHES as i64 {
+            text.push_str(&box_brush([i * 2, 0, 0], [i * 2 + 1, 1, 1]));
+        }
+        text.push_str(
+            "}
+",
+        );
+        let e = parse(&text, &MapOptions::default()).unwrap_err();
+        assert!(e.what.contains("too many brushes"), "{e}");
+        let mut text = String::from(
+            "{
+",
+        );
+        for i in 0..=MAX_KEYS {
+            text.push_str(&format!(
+                "\"k{i}\" \"v\"
+"
+            ));
+        }
+        text.push_str(
+            "}
+",
+        );
+        assert!(
+            parse(&text, &MapOptions::default())
+                .unwrap_err()
+                .what
+                .contains("too many keys")
+        );
+        let long = format!(
+            "{{
+\"k\" \"{}\"
+}}
+",
+            "v".repeat(MAX_VALUE + 1)
+        );
+        assert!(parse(&long, &MapOptions::default()).is_err());
     }
 
     #[test]

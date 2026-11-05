@@ -53,8 +53,14 @@ fn outside(poly: Vec<V3>, plane: &Plane, i: usize, j: usize, other: &Brush) -> V
     out
 }
 
-/// The visible parts of every brush's faces (`polys[b][f]`: brush `b`'s face `f`'s polygon), in brush and face order.
-pub fn visible(brushes: &[Brush], polys: &[Vec<Vec<V3>>], boxes: &[(V3, V3)]) -> Vec<Fragment> {
+/// The visible parts of every brush's faces (`polys[b][f]`: brush `b`'s face `f`'s polygon), in brush and face order; `Err`
+/// with the count reached as soon as the parts (those kept and those still being cut) would pass `max`.
+pub fn visible(
+    brushes: &[Brush],
+    polys: &[Vec<Vec<V3>>],
+    boxes: &[(V3, V3)],
+    max: usize,
+) -> Result<Vec<Fragment>, usize> {
     let mut out = Vec::new();
     for (i, b) in brushes.iter().enumerate() {
         for (fi, face) in b.faces.iter().enumerate() {
@@ -72,6 +78,9 @@ pub fn visible(brushes: &[Brush], polys: &[Vec<Vec<V3>>], boxes: &[(V3, V3)]) ->
                     .into_iter()
                     .flat_map(|p| outside(p, &face.plane, i, j, other))
                     .collect();
+                if out.len() + parts.len() > max {
+                    return Err(out.len() + parts.len());
+                }
                 if parts.is_empty() {
                     break;
                 }
@@ -88,5 +97,5 @@ pub fn visible(brushes: &[Brush], polys: &[Vec<Vec<V3>>], boxes: &[(V3, V3)]) ->
             }
         }
     }
-    out
+    Ok(out)
 }
