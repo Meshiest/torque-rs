@@ -1,21 +1,77 @@
-// Fails when a browser check script could load a page without `?nolock` (see `guard.mjs`): every `*check*.mjs` here, and every
-// script that names puppeteer, must import `guard.mjs` and must not call `.goto(` itself (`open` does, refusing a URL without
-// the option). Usage: node guard-scan.mjs
+// Fails when any script in the repository could open a browser without `guard.mjs`'s `launchGuarded` (whose pages cannot take
+// the pointer lock). Every `.mjs`, `.js`, `.cjs` and `.ts` file outside node_modules, target and scratch folders is read with
+// its comments removed; except `guard.mjs`, none may name a browser driver (puppeteer, playwright, selenium, ...), a browser
+// program or its debugging switches, load a module by a computed name (`createRequire`, `import(expr)`, `require(expr)`),
+// so a name cannot be built up out of pieces; and `guard.mjs` itself must still install the pointer-lock block.
+// Usage: node guard-scan.mjs [root]      (run by `just examples/web-guard` and CI)
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), '..'));
+const SKIP = new Set(['node_modules', 'target', '.git', '.scratch', '.claude']);
+const SOURCE = /\.(mjs|js|cjs|ts)$/;
+
+function* walk(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (!SKIP.has(entry.name)) yield* walk(join(dir, entry.name));
+    } else if (SOURCE.test(entry.name)) {
+      yield join(dir, entry.name);
+    }
+  }
+}
+
+// The code without comments: line and block comments are cut outside strings, so a name inside a comment is not a use and a
+// comment marker inside a string is not a comment.
+function stripComments(text) {
+  let out = '';
+  for (let i = 0; i < text.length; ) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (c === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+    } else if (c === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end < 0 ? text.length : end + 2;
+      out += ' ';
+    } else if (c === '"' || c === "'" || c === '`') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
+const BROWSER =
+  /puppeteer|playwright|selenium|webdriver|chromedriver|chrome|chromium|msedge|firefox|brave|remote-debugging|devtools-protocol|\bcdp\b/i;
+const COMPUTED_LOAD = /\bcreateRequire\b|\bimport\s*\(\s*[^'"`\s]|\brequire\s*\(\s*[^'"`\s]|\bimport\s*\(\s*['"`][^'"`]*['"`]\s*\+/;
+
+const guard = join(root, 'web', 'guard.mjs');
 const problems = [];
-for (const name of readdirSync(here).filter((n) => n.endsWith('.mjs') && n !== 'guard.mjs' && n !== 'guard-scan.mjs')) {
-  const text = readFileSync(join(here, name), 'utf8').replace(/^\s*\/\/.*$/gm, '');
-  const drives = /check/.test(name) || /puppeteer/.test(text);
-  if (!drives) continue;
-  if (!/from '\.\/guard\.mjs'/.test(text)) problems.push(`${name}: does not import guard.mjs`);
-  if (/\.goto\(/.test(text)) problems.push(`${name}: calls .goto( itself (use open from guard.mjs)`);
+let scanned = 0;
+for (const file of walk(root)) {
+  const name = relative(root, file).replaceAll('\\', '/');
+  const code = stripComments(readFileSync(file, 'utf8'));
+  scanned++;
+  if (resolve(file) === guard) {
+    for (const need of ['evaluateOnNewDocument', 'requestPointerLock', 'configurable: false']) {
+      if (!code.includes(need)) problems.push(`${name}: no longer has \`${need}\` (the pointer-lock block)`);
+    }
+    continue;
+  }
+  if (basename(file) === 'guard-scan.mjs') continue;
+  const named = BROWSER.exec(code);
+  if (named) problems.push(`${name}: names a browser ("${named[0]}"); a browser comes only from launchGuarded in web/guard.mjs`);
+  if (COMPUTED_LOAD.test(code)) problems.push(`${name}: loads a module by a computed name (createRequire, import(expr), require(expr))`);
 }
 if (problems.length) {
-  console.error(`browser checks must load pages with ?nolock:\n  ${problems.join('\n  ')}`);
+  console.error(`browser scripts must get their browser from launchGuarded (web/guard.mjs):\n  ${problems.join('\n  ')}`);
   process.exit(1);
 }
-console.log('every browser check loads its pages with ?nolock');
+console.log(`guard-scan: ${scanned} scripts, none opens a browser except through launchGuarded`);

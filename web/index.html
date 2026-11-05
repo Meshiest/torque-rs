@@ -28,7 +28,13 @@
   // `?nolock` (the browser checks load every page with it): the page never takes the pointer lock. In headless Chrome on Windows
   // a lock confines the real cursor to the invisible window.
   if (new URLSearchParams(location.search).has('nolock')) {
-    Element.prototype.requestPointerLock = () => {};
+    Object.defineProperty(Element.prototype, 'requestPointerLock', {
+      value() {
+        return Promise.resolve();
+      },
+      writable: false,
+      configurable: false,
+    });
   }
 
   const status = document.getElementById('status');

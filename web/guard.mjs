@@ -1,7 +1,66 @@
 // The browser checks never let a page take the pointer lock: headless Chrome on Windows confines the real cursor to its
-// invisible window when a page locks the pointer, and a check that clicks the canvas would do exactly that. Every page a
-// check loads carries `?nolock` (the page's `index.html` then replaces `requestPointerLock` with a no-op), and a check opens
-// pages only through `open`, which refuses a URL without it. `guard-scan.mjs` fails any check script that does otherwise.
+// invisible window when a page locks the pointer, and a check that clicks the canvas would do exactly that.
+//
+// This file owns the browser. `launchGuarded` is the only way a script in this repository gets one: it launches puppeteer and
+// installs, for every page, popup and frame it opens, a script that runs before the page's own and replaces
+// `requestPointerLock` with a no-op that cannot be put back. Whatever URL a check loads, or however it navigates, no page
+// can lock the pointer. Pages also load with `?nolock` (`noLock`), which `index.html` honors the same way.
+// `guard-scan.mjs` fails any other file that names a browser driver or a browser program.
+import { createRequire } from 'node:module';
+import { join, resolve } from 'node:path';
+
+// Runs in the page, before any of its scripts. `requestPointerLock` (with or without `{ unadjustedMovement: true }`) is one
+// method on `Element.prototype`; each prototype below gets its own non-writable, non-configurable no-op so that neither an
+// assignment nor `defineProperty` on a body or canvas, nor on `Object` itself, brings the real one back.
+function blockPointerLock() {
+  const key = 'requestPointerLock';
+  const noop = { [key]() { return Promise.resolve(); } }[key];
+  const hide = (target) => {
+    try {
+      Object.defineProperty(target, key, { value: noop, writable: false, configurable: false, enumerable: false });
+    } catch {}
+  };
+  for (const name of ['Element', 'HTMLElement', 'HTMLBodyElement', 'HTMLCanvasElement', 'HTMLDivElement']) {
+    const type = globalThis[name];
+    if (type) hide(type.prototype);
+  }
+  const refuse = (define) =>
+    function (target, property, ...rest) {
+      if (property === key) return define === Reflect.defineProperty ? false : target;
+      return define.call(this, target, property, ...rest);
+    };
+  const refuseAll = (define) =>
+    function (target, properties) {
+      if (properties && Object.prototype.hasOwnProperty.call(Object(properties), key)) return target;
+      return define.call(this, target, properties);
+    };
+  const lock = (owner, name, value) => {
+    try {
+      Object.defineProperty(owner, name, { value, writable: false, configurable: false });
+    } catch {}
+  };
+  lock(Object, 'defineProperty', refuse(Object.defineProperty));
+  lock(Reflect, 'defineProperty', refuse(Reflect.defineProperty));
+  lock(Object, 'defineProperties', refuseAll(Object.defineProperties));
+}
+const script = `(${blockPointerLock.toString()})()`;
+
+async function guardPage(page) {
+  await page.evaluateOnNewDocument(script);
+  // a page that is already open (a popup the browser made before this ran) gets it now, too.
+  await page.evaluate(script).catch(() => {});
+}
+
+// Every way a page is made goes through `guardPage` first, before the caller can navigate it.
+function guardContext(context) {
+  const newPage = context.newPage.bind(context);
+  context.newPage = async (...args) => {
+    const page = await newPage(...args);
+    await guardPage(page);
+    return page;
+  };
+  return context;
+}
 
 /** `url` with the `nolock` option on its query. */
 export function noLock(url) {
@@ -10,15 +69,37 @@ export function noLock(url) {
   return u.href;
 }
 
-/** Throws unless `url` carries the `nolock` option. */
-export function assertNoLock(url) {
-  if (!new URL(url).searchParams.has('nolock')) {
-    throw new Error(`refusing to load ${url} without ?nolock (a page's pointer lock confines the real cursor)`);
-  }
-}
-
-/** `page.goto`, for a URL with `nolock` only. */
-export async function open(page, url, options) {
-  assertNoLock(url);
-  return page.goto(url, options);
+/**
+ * Launches headless Chrome with puppeteer-core (from the folder `TORQUE_WEB_TOOLS` names; the program `CHROME` names, else the
+ * installed stable channel) and returns the browser. Every page it opens, in any context, has the pointer lock replaced
+ * before its own scripts run. `options` are puppeteer's launch options (`args`, `defaultViewport`); `headless` is always on.
+ */
+export async function launchGuarded(options = {}) {
+  if (options.headless === false) throw new Error('a guarded browser is always headless');
+  const tools = resolve(process.env.TORQUE_WEB_TOOLS ?? '.');
+  const puppeteer = createRequire(join(tools, 'package.json'))('puppeteer-core');
+  const args = [...(options.args ?? []), ...(process.env.CI ? ['--no-sandbox'] : [])];
+  const browser = await puppeteer.launch({
+    ...(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: 'chrome' }),
+    ...options,
+    args,
+    headless: true,
+  });
+  guardContext(browser.defaultBrowserContext());
+  const createContext = (browser.createBrowserContext ?? browser.createIncognitoBrowserContext).bind(browser);
+  browser.createBrowserContext = browser.createIncognitoBrowserContext = async (...a) => guardContext(await createContext(...a));
+  const newPage = browser.newPage.bind(browser);
+  browser.newPage = async (...a) => {
+    const page = await newPage(...a);
+    await guardPage(page);
+    return page;
+  };
+  // a popup (`window.open`) is a page too.
+  browser.on('targetcreated', async (target) => {
+    if (target.type() === 'page') {
+      const page = await target.page().catch(() => null);
+      if (page) await guardPage(page).catch(() => {});
+    }
+  });
+  return browser;
 }

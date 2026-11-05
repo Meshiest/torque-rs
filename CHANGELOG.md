@@ -264,8 +264,11 @@ The first development version. Nothing is published yet; this is what exists.
   moment it loses focus or is hidden, never moves the cursor then, and takes it again when it is focused and shown and the
   game still wants the hold (a window made in the background held it before). In a browser the pointer lock is asked for
   only right after a click, never renewed on a timer or after Esc.
-- The web page: `?nolock` stops every pointer-lock request; the browser check scripts load their pages with it, refuse a
-  page without it, and `just examples/web-guard` (run by each check recipe) fails a check script that could do otherwise.
-  Headless Chrome on Windows confined the real cursor when a check clicked the canvas.
+- The web page: `?nolock` stops every pointer-lock request (a non-writable, non-configurable no-op). The browser checks get
+  their browser only from `launchGuarded` (`web/guard.mjs`), whose pages (and popups and frames) cannot take the pointer
+  lock whatever they load, and also load with `?nolock`. `web/guard-scan.mjs` fails any script in the repository that names a
+  browser driver or program or loads a module by a computed name, and `web/guard.test.mjs` shows a page that locks on click
+  never gets it; both run in `just examples/web-guard-test` (first in each check recipe) and in CI. Headless Chrome on
+  Windows confined the real cursor when a check clicked the canvas.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

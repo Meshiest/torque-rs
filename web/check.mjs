@@ -26,11 +26,9 @@
 //   tried, given up, and the game goes on over the game socket.
 // - `refused`: a fresh browser profile whose every file `files.json` names comes back with one byte changed; the page must
 //   show the refusal, start no game and keep nothing in its cache.
-import { createRequire } from 'node:module';
-import { join, resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { serve } from './serve.mjs';
-import { assertNoLock, noLock, open } from './guard.mjs';
+import { launchGuarded, noLock } from './guard.mjs';
 
 const MODES = ['world', 'menu', 'cached', 'refused', 'join', 'rtc', 'rtc-loss', 'rtc-blocked'];
 const [where, out, seconds = '90', mode = 'world', query = ''] = process.argv.slice(2);
@@ -41,13 +39,11 @@ if (!where || !out || !MODES.includes(mode)) {
 const menu = mode === 'menu';
 const rtc = mode.startsWith('rtc');
 const joins = mode === 'join' || rtc;
-const tools = resolve(process.env.TORQUE_WEB_TOOLS ?? '.');
-const puppeteer = createRequire(join(tools, 'package.json'))('puppeteer-core');
 
 const server = /^https?:/.test(where) ? null : await serve(where, 0);
-// Every page carries `?nolock`: a page's pointer lock would confine the real cursor (guard.mjs).
+// Every page carries `?nolock`, and the browser is guard.mjs's, whose pages cannot take the pointer lock at all: a lock would
+// confine the real cursor.
 const url = noLock(server ? `http://127.0.0.1:${server.address().port}/${query}` : where);
-assertNoLock(url);
 const stem = out.replace(/\.png$/, '');
 
 // The files `files.json` names, by their URL's path (empty for a check that does not need them).
@@ -61,9 +57,7 @@ async function listed() {
 }
 const files = await listed();
 
-const browser = await puppeteer.launch({
-  ...(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: 'chrome' }),
-  headless: true,
+const browser = await launchGuarded({
   args: [
     '--enable-unsafe-webgpu',
     '--enable-gpu',
@@ -128,7 +122,7 @@ async function wait(page, deadline, done) {
 async function play(page, file) {
   const started = Date.now();
   const deadline = started + Number(seconds) * 1000;
-  await open(page, url, { waitUntil: 'load' });
+  await page.goto(url, { waitUntil: 'load' });
   const adapter = await page.evaluate(async () => {
     const a = await navigator.gpu?.requestAdapter();
     return a ? `${a.info?.vendor ?? '?'} ${a.info?.architecture ?? ''} ${a.info?.description ?? ''}`.trim() : null;
@@ -221,7 +215,7 @@ async function refused(page) {
     bytes[bytes.length >> 1] ^= 0x5a;
     r.respond({ status: 200, contentType: 'application/octet-stream', body: bytes });
   });
-  await open(page, url, { waitUntil: 'load' });
+  await page.goto(url, { waitUntil: 'load' });
   const s = await wait(page, Date.now() + Number(seconds) * 1000, (s) => s.refused !== null);
   const shown = await page.$eval('#status', (e) => e.textContent).catch(() => '');
   console.log(`the page shows: ${shown}`);
