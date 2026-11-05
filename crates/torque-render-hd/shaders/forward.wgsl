@@ -887,9 +887,14 @@ fn resolve(in: VertexOut, t_in: vec4<f32>, d: Derivs) -> Resolved {
     var sun = 1.0;
     let lit = (material & (MAT_UNLIT | MAT_GLOW)) == 0u;
     if lit && env != 0u {
-        // A plane's texture tiled stochastically, where the extension leaves the plane its texture.
-        if kind == KIND_PLANE && (material & MAT_LAYER) == 0u && ext_plane_tiles(material) && frame.surf2.y > 0.5 {
+        // A plane's texture tiled stochastically, where the extension leaves the plane its texture (the terrain's layers too,
+        // and varied by a large-scale tint, where the scene asks for its ground varied: surf2.y 2).
+        let varied = frame.surf2.y > 1.5;
+        if kind == KIND_PLANE && ext_plane_tiles(material) && (((material & MAT_LAYER) == 0u && frame.surf2.y > 0.5) || varied) {
             t = stochastic_sample(uv, d.duvx, d.duvy);
+        }
+        if kind == KIND_PLANE && varied {
+            t = vec4<f32>(t.rgb * ground_tint(in.world.xy), t.a);
         }
     }
     // The extension's detail (its normals, occlusion, sun and hollow).

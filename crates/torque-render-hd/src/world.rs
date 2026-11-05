@@ -4755,7 +4755,7 @@ impl<E: HdExtension> HdWorld<E> {
         );
         let mode = E::mode(scene).unwrap_or_else(E::fallback_mode);
         let quality = mode.quality;
-        let surfaces = self.ext.surfaces(scene);
+        let surfaces = varied_ground(self.ext.surfaces(scene), scene.ground_variation);
         push_f32(&mut b, &surfaces.light);
         let per_cluster = quality.lights_per_cluster();
         push_u32(&mut b, &[per_cluster, 0, 0, 0]);
@@ -4856,7 +4856,7 @@ impl<E: HdExtension> HdWorld<E> {
         cpu_mark!("begin: particles");
         let mode = E::mode(scene).unwrap_or_else(E::fallback_mode);
         let (quality, image) = (mode.quality, mode.image);
-        let surfaces = self.ext.surfaces(scene);
+        let surfaces = varied_ground(self.ext.surfaces(scene), scene.ground_variation);
         let pq = quality.post();
         let (iw, ih) = internal_size(
             camera.width,
@@ -5553,7 +5553,7 @@ impl<E: HdExtension> HdWorld<E> {
             &self.device,
             &self.queue,
             scene,
-            E::time(scene),
+            scene.cloud_time.unwrap_or_else(|| E::time(scene)),
             &icam,
             (iw, ih),
             cloud_quality,
@@ -7551,3 +7551,11 @@ pub fn non_finite(px: &[[f32; 4]]) -> usize {
 #[cfg(test)]
 #[path = "world_tests.rs"]
 mod tests;
+
+/// `surfaces` with the ground's variation asked for (`surf2.y` 2: [`torque_render_scene::hd::HdScene::ground_variation`]) when `on`.
+fn varied_ground(mut surfaces: crate::ext::Surfaces, on: bool) -> crate::ext::Surfaces {
+    if on {
+        surfaces.table[9] = 2.0;
+    }
+    surfaces
+}

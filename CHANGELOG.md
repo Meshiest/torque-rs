@@ -266,6 +266,10 @@ The first development version. Nothing is published yet; this is what exists.
 - `just examples/showcase` (`torque-example-showcase`): the front page's four pictures (the buggy in a turn, a shot in the
   arena, the valley at golden hour, the office), each the world alone at the Ultra quality, set in a 2 x 2 grid with thin
   transparent gutters (`hero.png`, 1920 x 1080, and `hero@2x.png`); `--examples` the examples' other pictures.
+- `HdScene::ground_variation` (opt-in, `WorldView::set_ground_variation`): the ground's textures varied against visible
+  tiling: every terrain layer's texture tiled stochastically and tinted by a large-scale noise. Off, the planes are drawn as
+  before. `HdScene::cloud_time` (opt-in, `WorldView::set_cloud_time`): the volumetric clouds' own clock (their drift,
+  change of shape and shadows) in place of the effect time.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel

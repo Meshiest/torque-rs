@@ -54,3 +54,12 @@ fn stochastic_sample(uv: vec2<f32>, duvx: vec2<f32>, duvy: vec2<f32>) -> vec4<f3
     let d = ca.rgb - cb.rgb;
     return mix(ca, cb, smoothstep(0.2, 0.8, f - 0.1 * (d.x + d.y + d.z)));
 }
+
+// A varied ground's large-scale tint at world `xy`: two octaves of the noise (about 90 and 23 units across), a little darker
+// and greener in places, a little lighter and drier in others, so a tiled texture's repeats do not line up over the distance.
+fn ground_tint(xy: vec2<f32>) -> vec3<f32> {
+    let a = mat_noise(xy * 0.011).x;
+    let b = mat_noise(xy * 0.043 + vec2<f32>(17.3, -4.1)).x;
+    let k = 0.7 * a + 0.3 * b;
+    return mix(vec3<f32>(0.8, 0.86, 0.8), vec3<f32>(1.14, 1.1, 1.0), k);
+}

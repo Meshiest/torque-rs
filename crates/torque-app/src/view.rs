@@ -380,6 +380,18 @@ impl WorldView {
         self.statics_changed = true;
     }
 
+    /// Whether the ground's textures are varied against visible tiling (stochastic tiling of every terrain layer and a
+    /// large-scale tint: [`torque_render_scene::hd::HdScene::ground_variation`]); off by default.
+    pub fn set_ground_variation(&mut self, on: bool) {
+        self.scene.ground_variation = on;
+    }
+
+    /// The volumetric clouds' own clock in seconds ([`torque_render_scene::hd::HdScene::cloud_time`]: their drift, change of
+    /// shape and shadows), or None for the effect time. A game advances it as fast as it wants the clouds to run.
+    pub fn set_cloud_time(&mut self, time: Option<f32>) {
+        self.scene.cloud_time = time;
+    }
+
     /// No ground and no water: the floor, the terrain and the water taken away.
     pub fn clear_ground(&mut self) {
         self.scene.planes.clear();
