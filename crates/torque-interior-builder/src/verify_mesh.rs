@@ -19,9 +19,9 @@
 use std::sync::Arc;
 
 use super::{
-    BAND, Counts, Report, Rng, TOLERANCE, Tri, bsp_solid, enter, hull_strings, sample, wide,
+    BAND, Counts, Report, Rng, TOLERANCE, Tri, bsp_solid, enter, enter_moved, hull_strings, sample,
+    wide,
 };
-use crate::brush::Brush;
 use crate::geom::{self, Plane, V3};
 use crate::mesh::{HullKind, MeshBuilt, MeshInput, MeshOptions, build_mesh};
 use torque_collide::map::{InteriorGeom, InteriorShape};
@@ -533,21 +533,8 @@ pub fn check_mesh(
                     }
                 }
             }
-            let moved = |by: f64| Brush {
-                faces: b
-                    .faces
-                    .iter()
-                    .map(|f| crate::brush::Face {
-                        plane: Plane {
-                            n: f.plane.n,
-                            d: f.plane.d + by,
-                        },
-                        ..f.clone()
-                    })
-                    .collect(),
-            };
-            grazes |= enter(&moved(-TOLERANCE), s, dir).is_some()
-                != enter(&moved(TOLERANCE), s, dir).is_some()
+            grazes |= enter_moved(b, s, dir, -TOLERANCE).is_some()
+                != enter_moved(b, s, dir, TOLERANCE).is_some()
                 || (b.faces.iter().all(|f| f.plane.dist(s) < BAND)
                     && b.faces.iter().any(|f| f.plane.dist(s).abs() < BAND));
         }

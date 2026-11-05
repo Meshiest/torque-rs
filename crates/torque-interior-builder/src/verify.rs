@@ -703,22 +703,9 @@ pub fn check(
         // A segment that grazes a brush (it meets the brush grown by a hair and misses it shrunk by one, or the other way
         // round) or starts on one: either answer holds.
         let grazes = brushes.iter().any(|b| {
-            let moved = |by: f64| Brush {
-                faces: b
-                    .faces
-                    .iter()
-                    .map(|f| crate::brush::Face {
-                        plane: Plane {
-                            n: f.plane.n,
-                            d: f.plane.d + by,
-                        },
-                        ..f.clone()
-                    })
-                    .collect(),
-            };
             let (grown, shrunk) = (
-                enter(&moved(-TOLERANCE), s, dir),
-                enter(&moved(TOLERANCE), s, dir),
+                enter_moved(b, s, dir, -TOLERANCE),
+                enter_moved(b, s, dir, TOLERANCE),
             );
             grown.is_some() != shrunk.is_some()
                 || (b.faces.iter().all(|f| f.plane.dist(s) < BAND)
@@ -922,10 +909,15 @@ fn bsp_solid(i: &Interior, p: V3) -> bool {
 
 /// The segment `s + t dir` (t in 0..1) entering `b`: the fraction and the plane's normal; None for a miss or a start inside.
 pub fn enter(b: &Brush, s: V3, dir: V3) -> Option<(f64, V3)> {
+    enter_moved(b, s, dir, 0.0)
+}
+
+/// [`enter`] into the brush with every plane moved `by` along its normal's opposite (a negative `by` grows it).
+pub fn enter_moved(b: &Brush, s: V3, dir: V3, by: f64) -> Option<(f64, V3)> {
     let (mut t0, mut t1) = (0.0f64, 1.0f64);
     let mut normal = None;
     for f in &b.faces {
-        let a = f.plane.dist(s);
+        let a = f.plane.dist(s) + by;
         let e = a + geom::dot(f.plane.n, dir);
         if a > 0.0 && e > 0.0 {
             return None;

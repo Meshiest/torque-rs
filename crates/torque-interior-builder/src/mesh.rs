@@ -43,6 +43,8 @@ pub const PIECE_HULLS: usize = 1_000;
 pub const PIECE_POLYGONS: usize = 8_000;
 /// The most pieces.
 pub const MAX_PIECES: usize = 4_096;
+/// The most pieces that may fail to build (over a cap, then cut again): each failure is a whole build's work.
+pub const MAX_FAILED_PIECES: usize = 64;
 /// How far a point may be off a polygon's plane, and its texture coordinates off its map, to join it.
 const PLANE_TOL: f64 = 2e-5;
 const UV_TOL: f64 = 1e-5;
@@ -656,6 +658,15 @@ fn solid_leaves(tris: &[&Tri], work: &mut u64, out: &mut Vec<Brush>) -> Result<(
         if back.is_empty() {
             too_many("hulls", out.len() + 1, MAX_HULLS)?;
             let planes: Vec<Plane> = back_path.iter().chain(&boxed).copied().collect();
+            // A leaf's faces are each of its planes clipped by the others.
+            *work = work.saturating_add((planes.len() * planes.len()) as u64);
+            if *work > MAX_LEAF_WORK {
+                return Err(MeshError::TooMany {
+                    what: "solid-leaf tests",
+                    count: *work as usize,
+                    cap: MAX_LEAF_WORK as usize,
+                });
+            }
             if let Some(b) = pruned(planes) {
                 out.push(b);
             }
@@ -865,6 +876,7 @@ pub fn build_mesh(input: &MeshInput, options: &MeshOptions) -> Result<MeshBuilt,
         (0..plan.hulls.len()).collect(),
     )];
     let mut pieces = Vec::new();
+    let mut failed = 0usize;
     while let Some((polys, hulls)) = tasks.pop() {
         too_many("pieces", pieces.len() + tasks.len() + 1, MAX_PIECES)?;
         let over =
@@ -883,7 +895,13 @@ pub fn build_mesh(input: &MeshInput, options: &MeshOptions) -> Result<MeshBuilt,
                     });
                     continue;
                 }
-                Err(e @ BuildError::TooMany { .. }) => Some(e),
+                Err(e @ BuildError::TooMany { .. }) => {
+                    failed += 1;
+                    if failed > MAX_FAILED_PIECES {
+                        return Err(MeshError::Build(e));
+                    }
+                    Some(e)
+                }
                 Err(BuildError::NoBrushes) => continue,
                 Err(e) => return Err(MeshError::Build(e)),
             }
@@ -1083,5 +1101,47 @@ mod tests {
             assert!((got[0] - uv[k][0]).abs() < 1e-12 && (got[1] - uv[k][1]).abs() < 1e-12);
         }
         assert!(texgen_of([[0.0; 3], [1.0; 3], [2.0; 3]], uv).is_none());
+    }
+
+    #[test]
+    fn random_triangle_soups_build_or_fail_without_panics() {
+        let mut seed = 0x51ed_270b_2c4a_3f19u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case in 0..120 {
+            // Corners on a coarse grid: coplanar, repeated, flat and tiny triangles come often.
+            let mut corner = || [0, 1, 2].map(|_| (next() % 5) as f64 * 0.5 - 1.0);
+            let mut tri = |m: usize| Tri {
+                p: [corner(), corner(), corner()],
+                uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                material: m,
+            };
+            let mut input = MeshInput {
+                materials: vec!["m".into(), "NULL".into()],
+                ..MeshInput::default()
+            };
+            let n = 1 + case % 24;
+            input.drawn.push(NamedMesh {
+                name: "soup".into(),
+                tris: (0..n).map(|k| tri(k % 2)).collect(),
+            });
+            let mut closed_box = box_tris([0.0; 3], [1.0, 1.0, 1.0]);
+            closed_box.truncate(12 - case % 3);
+            input.drawn.push(NamedMesh {
+                name: "box".into(),
+                tris: closed_box,
+            });
+            if case % 4 == 0 {
+                input.authored.push(NamedMesh {
+                    name: "col_soup".into(),
+                    tris: (0..n).map(|_| tri(0)).collect(),
+                });
+            }
+            let _ = build_mesh(&input, &MeshOptions::default());
+        }
     }
 }
