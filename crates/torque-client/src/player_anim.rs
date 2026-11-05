@@ -30,8 +30,9 @@
 //! mean of the walk's and the back's, `walk` plays backward (a walk backward is the walk's steps in reverse). The limit has a
 //! margin ([`WALK_MARGIN`]) either way so a speed hovering at it does not flip the two. A change between `walk` and `run`
 //! keeps the thread's position (the walk's feet land where the run's legs reach furthest forward) and blends over
-//! [`TRANSITION`] seconds like any other. The walk's rate is the speed over its own, not held to `maxTimeScale` (the limit
-//! keeps it near 1). `side` stays TGE's at any speed, slowed by it. A shape without `walk`, or whose `walk` has no forward
+//! [`TRANSITION`] seconds like any other. The walk's rate is the speed over its own, held to
+//! [`synced::WALK_MAX_TIME_SCALE`] rather than `maxTimeScale` (the limit keeps it near 1). An unheld walk a record carries
+//! changes nothing: the client picks its walk itself. `side` stays TGE's at any speed, slowed by it. A shape without `walk`, or whose `walk` has no forward
 //! ground motion, keeps TGE's pick. A synced Player walks by the same rule as its server ([`synced::walk_or`]), its walk
 //! stepped by the ground covered.
 //!
@@ -513,12 +514,20 @@ impl PlayerAnimation {
         if walking {
             if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
                 let step = m.local([0, 1, 2].map(|i| to[i] - from[i]));
-                scale = synced::step_scale(step, dt, a.motion.dir, a.motion.speed, f32::INFINITY);
+                scale = synced::step_scale(
+                    step,
+                    dt,
+                    a.motion.dir,
+                    a.motion.speed,
+                    synced::WALK_MAX_TIME_SCALE,
+                );
             } else {
                 let v = m.local_velocity();
                 let along =
                     v[0] * a.motion.dir[0] + v[1] * a.motion.dir[1] + v[2] * a.motion.dir[2];
-                scale = (along / a.motion.speed).abs();
+                scale = (along / a.motion.speed)
+                    .abs()
+                    .min(synced::WALK_MAX_TIME_SCALE);
             }
         } else if self.action < action::MOVES && a.motion.velocity_scale && a.motion.speed != 0.0 {
             if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
@@ -586,8 +595,10 @@ impl PlayerAnimation {
     }
 
     /// A new action from the server (`unpackUpdate`'s `setActionThread(action, true, hold, true, ...)`): one of the table's
-    /// changes nothing (the client picks those itself), nor does the walk a synced server picked unheld (the client picks it
-    /// by the same rule); another plays forward to its end, from its start, or at its end already when the server's had ended.
+    /// changes nothing (the client picks those itself), nor does an unheld walk from any server (the client picks its walk
+    /// itself: a synced server by the same rule, and a server picking by TGE's rules never sends one; only a script's held
+    /// walk plays as set); another plays forward to its end, from its start, or at its end already when the server's had
+    /// ended.
     fn server_set(&mut self, shape: &Shape, instance: &mut ShapeInstance, a: ServerAction) {
         let action = a.action as usize;
         if a.action == ghosts::player::NULL_ANIMATION

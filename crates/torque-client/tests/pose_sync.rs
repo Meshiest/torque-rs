@@ -25,6 +25,9 @@ const MOVE_SPEED: f32 = 5.0;
 /// The walk's ground speed, and a walking pace under the limit between it and the run's.
 const WALK_SPEED: f32 = 1.5;
 const WALK_PACE: f32 = 1.8;
+/// The back's ground speed, and a slow pace backward (a walk backward).
+const BACK_SPEED: f32 = 3.0;
+const BACK_PACE: f32 = 1.2;
 
 fn sequence(
     name: &'static str,
@@ -109,6 +112,28 @@ fn figure() -> ShapeBuilder {
             Track {
                 node: rleg,
                 keys: swing(-1.0),
+            },
+        ],
+        Vec::new(),
+        ground,
+    ));
+    // `back` swings them 20 degrees each way over 0.8 seconds at [`BACK_SPEED`] backward.
+    let back_step = |s: f32| [0.0, 20.0 * s, 0.0, -20.0 * s].map(|d| turn(X, d)).to_vec();
+    let ground = (1..=4)
+        .map(|k| [0.0, -BACK_SPEED * 0.8 * k as f32 / 4.0, 0.0])
+        .collect();
+    b.sequence(sequence(
+        "back",
+        0.8,
+        true,
+        vec![
+            Track {
+                node: lleg,
+                keys: back_step(-1.0),
+            },
+            Track {
+                node: rleg,
+                keys: back_step(1.0),
             },
         ],
         Vec::new(),
@@ -414,4 +439,41 @@ fn a_walking_figure_walks_on_the_server_as_on_the_client_and_its_hitboxes_follow
     );
     // Without hitboxes the server keeps TGE's pick: never the walk.
     assert_eq!(tge_walked, 0);
+}
+
+#[test]
+fn a_walk_forward_turned_straight_into_a_walk_backward_stays_posed_alike() {
+    let mut s = server();
+    let (id, mut drawn) = runner(&mut s, "Turner", "Posed", 0.0, true);
+    let walk = torque_client::player_anim::action_list(&drawn.shape)
+        .iter()
+        .position(|a| a.name == b"walk")
+        .unwrap() as u32;
+    let (mut worst, mut backward) = (0.0f32, 0);
+    for tick in 0..100 {
+        let pace = if tick < 50 { WALK_PACE } else { -BACK_PACE };
+        eval(&mut s, &format!("Turner.setVelocity(\"0 {pace} 0\");"));
+        let (_, detail) = served(&mut s, id);
+        let client = drawn.frames(&s.vm, id, detail);
+        s.run(TICK_MS, |_| false);
+        let server = served(&mut s, id).0;
+        if tick >= 20 {
+            let action = torque_game::sim::player::state(&s.vm, id)
+                .unwrap()
+                .action_anim;
+            assert_eq!(action, walk, "tick {tick}: the server walks");
+            assert_eq!(
+                drawn.anim.action().0 as u32,
+                walk,
+                "tick {tick}: the client walks"
+            );
+            worst = worst.max(apart(&server, &client));
+        }
+        backward += usize::from(tick >= 60 && !drawn.anim.action().1);
+    }
+    assert_eq!(backward, 40, "the client walks backward");
+    assert!(
+        worst < 0.01,
+        "the server's hitbox nodes are within {worst} of the client's"
+    );
 }

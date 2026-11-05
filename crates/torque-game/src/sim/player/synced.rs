@@ -23,7 +23,8 @@
 //!
 //! - **The walk** (the engine's own, on both sides): a shape with a `walk` sequence that moves it forward walks at walking
 //!   pace instead of playing `run` or `back` slowly ([`walk_or`]); its thread steps by the ground covered like a moving
-//!   action's, held to no `maxTimeScale` ([`walk_limit`] keeps it near 1).
+//!   action's, held to [`WALK_MAX_TIME_SCALE`] rather than `maxTimeScale` ([`walk_limit`] keeps it near 1). An action that
+//!   only turns around (a walk forward into one backward) is set again on both sides.
 //!
 //! The server reads it from the datablock's `hitboxes` field; the client from its host's option (a client cannot read a
 //! datablock's dynamic fields). With neither, both sides are TGE's.
@@ -63,6 +64,9 @@ pub fn step_scale(step: F3, dt: f32, dir: F3, speed: f32, max: f32) -> f32 {
 pub const WALK: &[u8] = b"walk";
 /// The share past [`walk_limit`] a Player must go to change from walking to the faster action (and under it to change back).
 pub const WALK_MARGIN: f32 = 0.05;
+/// The fastest the walk plays: past any rate its limit allows (about 1.6 for a walk and a run 2.4 times its speed), so only a
+/// jump in position (a teleport) reaches it.
+pub const WALK_MAX_TIME_SCALE: f32 = 2.5;
 /// The table's run and back actions, which the walk stands in for at walking pace.
 const RUN: usize = 1;
 const BACK: usize = 2;

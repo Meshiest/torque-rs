@@ -126,6 +126,8 @@ impl HostSkeleton {
         let start = now
             .filter(|&n| self.synced && synced::keeps_phase(n, (action as usize, forward), walk))
             .and_then(|_| self.pos_of(self.threads().and_then(|p| p.action_thread)));
+        // A synced action that only turns around (a walk forward into one backward) is set again, as the clients set it.
+        let force = self.synced && now == Some((action as usize, !forward));
         let Some(st) = self.st.as_mut() else {
             return;
         };
@@ -134,7 +136,7 @@ impl HostSkeleton {
             hold,
             wait,
             fsp,
-            force: false,
+            force,
             blend: self.synced,
             start,
         };
@@ -257,7 +259,7 @@ impl HostSkeleton {
             let step = mul_v(&s.world_to_obj, moved);
             // The walk is held to no maxTimeScale (its limit keeps it near 1), as on the clients.
             let max = if walking {
-                f32::INFINITY
+                synced::WALK_MAX_TIME_SCALE
             } else {
                 self.info.max_time_scale
             };

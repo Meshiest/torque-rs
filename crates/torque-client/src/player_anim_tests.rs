@@ -680,3 +680,32 @@ fn speeding_up_changes_walk_to_run_past_the_limit_in_step_and_without_a_pop() {
     }
     assert_eq!(changes, 0);
 }
+
+#[test]
+fn a_synced_walk_steps_by_the_ground_covered_but_a_jump_in_place_does_not_spin_it() {
+    let shape = gait_shape(true);
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    anim.set_synced(true);
+    let dt = 0.016;
+    let mut y = 0.0;
+    for _ in 0..20 {
+        y += 2.0 * dt;
+        let m = PlayerMotion {
+            position: Some([0.0, y, 0.0]),
+            ..moving(2.0)
+        };
+        anim.update(&shape, &mut instance, &m, dt);
+    }
+    assert_eq!(anim.action(), (anim.walk.unwrap(), true));
+    let scale = instance.thread(anim.action_thread).unwrap().time_scale;
+    assert!((scale - 1.0).abs() < 1e-3, "{scale}");
+    // Moved 10 units in one frame (a teleport) at a walking velocity: the walk plays no faster than its cap.
+    let m = PlayerMotion {
+        position: Some([0.0, y + 10.0, 0.0]),
+        ..moving(2.0)
+    };
+    anim.update(&shape, &mut instance, &m, dt);
+    let scale = instance.thread(anim.action_thread).unwrap().time_scale;
+    assert_eq!(scale, synced::WALK_MAX_TIME_SCALE);
+}
