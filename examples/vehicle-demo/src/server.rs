@@ -186,6 +186,11 @@ impl WorldServer {
         torque::game::sim::vehicle::state(self.vm(), id).map(VehicleState::position)
     }
 
+    /// Buggy `id`'s velocity, as the server's step holds it.
+    pub fn buggy_velocity_of(&self, id: u32) -> Option<F3> {
+        torque::game::sim::vehicle::state(self.vm(), id).map(|s| s.rigid.lin_vel)
+    }
+
     /// The buggy's state as the server's step holds it.
     pub fn buggy_state(&self) -> Option<&VehicleState> {
         torque::game::sim::vehicle::state(self.vm(), self.buggy()?)

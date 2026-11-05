@@ -42,7 +42,7 @@ use net::NetError;
 use net::bits::BitReader;
 use net::classes::{Kind, NetClasses};
 use net::client::{Client, ClientEvent as Handshake};
-use net::control::{ClientBlock, ControlData, ControlSection, ServerHead};
+use net::control::{ClientBlock, ControlSection, ServerHead};
 use net::events::{
     ConnectionMessage, EventCtx, EventIds, EventQueue, EventReceiver, EventRegistry, EventUnpacker,
     NetEvent, SectionParams,
@@ -293,6 +293,17 @@ pub struct TgeTables {
     pub table: Table,
     pub ids: EventIds,
     pub classes: NetClasses,
+}
+
+/// The stream's compression point as a packet's head left it: raw floats the server sent, so a packet whose point is not finite
+/// (it would put every position read against it there) is refused.
+pub fn stream_point(r: &net::bits::BitReader) -> Result<[f32; 3], NetError> {
+    let cp = r.compression_point();
+    if cp.iter().all(|c| c.is_finite()) {
+        Ok(cp)
+    } else {
+        Err(NetError::Invalid("compression point not finite"))
+    }
 }
 
 impl TgeTables {
@@ -609,6 +620,9 @@ impl TgeFeed {
             &mut charge,
             &mut ghosts::TgeTails::new(&class_of),
         )?;
+        // The point the head left the stream at, which the ghosts are read against: a resent Player at a vehicle's wheel sends no
+        // position of its own, and the vehicle's packet data nested in it sets the point.
+        let cp = stream_point(&r)?;
         let mut incoming = Vec::new();
         self.receiver.read_section(
             &mut r,
@@ -657,11 +671,6 @@ impl TgeFeed {
                 }
             }
         }
-        let cp = match &head.control {
-            ControlSection::Matching { position } => *position,
-            ControlSection::Resend { data, .. } => data.position(),
-            ControlSection::None => [0.0; 3],
-        };
         if let Some(ghosts) = self.ghosts.as_mut() {
             let changes = ghosts.take_log();
             world.apply_ghosts(record, &changes, &*ghosts, cp, &mut ());

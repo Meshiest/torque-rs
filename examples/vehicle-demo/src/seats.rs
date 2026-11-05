@@ -3,7 +3,8 @@
 //! which dismounts with it); and no trigger of a move dismounts it ([`DISMOUNT_TRIGGER`] is one the demo's keys never set).
 //! The vehicle turns its wheels only by the yaw of a move made at the wheel ([`DRIVE_TRIGGER`] held): the moves the client made
 //! on foot before it learned it was seated carry the mouse's turn, which would steer. `straightenWheels(%vehicle)` sets a
-//! vehicle's wheels straight (a new driver's start).
+//! vehicle's wheels straight (a new driver's start); `stopVehicle(%vehicle)` stops it still, its wheels straight and not
+//! turning (a buggy put back in its place).
 //!
 //! The demo's WheeledVehicle ([`SteeredWheels`]) sends its steering whenever it changes: TGE sends a vehicle's steering only with
 //! its pose, so a parked buggy's steering wheel, turned by its driver, would stay still for everyone else.
@@ -117,4 +118,22 @@ pub fn install(vm: &mut Vm) {
             Native::Void
         },
     );
+    vm.register("stopVehicle", 2, 2, "stopVehicle(vehicle);", |vm, c| {
+        use torque::game::sim::vehicle::{self, Body};
+        let Some(id) = c.argv.get(1).and_then(|a| vm.objects().find(a)) else {
+            return Native::Void;
+        };
+        vehicle::set_velocity(vm, id, [0.0; 3]);
+        vehicle::set_angular_velocity(vm, id, [0.0; 3]);
+        if let Some(s) = vehicle::state_mut(vm, id) {
+            s.steering = [0.0; 2];
+            s.steering_delta = [0.0; 2];
+        }
+        if let Some(Body::Wheeled(v)) = vehicle::ext_mut(vm, id).and_then(|e| e.body.as_mut()) {
+            for w in &mut v.k.wheels {
+                w.avel = 0.0;
+            }
+        }
+        Native::Void
+    });
 }

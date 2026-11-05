@@ -675,8 +675,17 @@ impl DrivenVehicle {
         }
     }
 
-    /// `Vehicle::readPacketData` then `WheeledVehicle::readPacketData`.
+    /// `Vehicle::readPacketData` then `WheeledVehicle::readPacketData`; packet data whose state is not finite is ignored.
     pub fn read_packet_data(&mut self, p: &VehicleWords, world: &mut ClientCollision) {
+        if !finite_state(&[
+            &p.position,
+            &p.rotation,
+            &p.lin_mom,
+            &p.ang_mom,
+            &p.steering,
+        ]) {
+            return;
+        }
         let mut host = ClientVehicleHost {
             world,
             sim_time: 0,
@@ -703,9 +712,11 @@ impl DrivenVehicle {
         if let vehicle::words::KindWords::Wheeled { brake, wheels } = &p.kind {
             self.v.k.brake = *brake;
             for (dst, src) in self.v.k.wheels.iter_mut().zip(wheels) {
-                dst.avel = src.avel;
-                dst.dy = src.dy;
-                dst.dx = src.dx;
+                if finite_state(&[&[src.avel, src.dy, src.dx]]) {
+                    dst.avel = src.avel;
+                    dst.dy = src.dy;
+                    dst.dx = src.dx;
+                }
                 dst.slipping = src.slipping;
             }
         }
@@ -882,6 +893,11 @@ fn quat_extrapolate(r1: [f32; 4], cr: [f32; 4], dt: f32) -> [f32; 4] {
     std::array::from_fn(|i| (d(cr[i]) * a - d(r1[i]) * b) as f32)
 }
 
+/// Whether every value the server sent is finite.
+pub fn finite_state(values: &[&[f32]]) -> bool {
+    values.iter().all(|v| v.iter().all(|x| x.is_finite()))
+}
+
 /// `vec *= f32(1 / f)` per component.
 fn scale_inv(v: F3, f: f32) -> F3 {
     let inv = (1.0 / d(f)) as f32;
@@ -961,7 +977,13 @@ impl GhostVehicle {
             free_look: m.free_look,
             triggers: m.triggers,
         };
-        if let (Some(pose), Some(pos)) = (&rec.pose, position) {
+        // A pose the server sent with a value that is not finite is left out (the vehicle goes on as it was).
+        let pose = rec
+            .pose
+            .as_ref()
+            .zip(position)
+            .filter(|(p, pos)| finite_state(&[pos, &p.rotation, &p.linear, &p.angular]));
+        if let Some((pose, pos)) = pose {
             self.warp.prediction = MAX_PREDICTION_TICKS;
             let old_vel = s.rigid.lin_vel;
             self.warp.rot[0] = s.rigid.ang_pos;
@@ -1039,9 +1061,11 @@ impl GhostVehicle {
         self.body.v.k.brake = rec.brake;
         if let Some(wheels) = &rec.wheels {
             for (dst, src) in self.body.v.k.wheels.iter_mut().zip(wheels) {
-                dst.avel = src.avel;
-                dst.dy = src.dy;
-                dst.dx = src.dx;
+                if finite_state(&[&[src.avel, src.dy, src.dx]]) {
+                    dst.avel = src.avel;
+                    dst.dy = src.dy;
+                    dst.dx = src.dx;
+                }
                 dst.slipping = src.slipping;
             }
         }
@@ -1062,18 +1086,23 @@ impl GhostVehicle {
         let s = &mut *self.body.v.s;
         if w.count < w.ticks {
             w.count += 1;
-            let t = s.obj_to_world;
-            s.delta_pos = [
-                (d(t[3]) + d(w.offset[0])) as f32,
-                (d(t[7]) + d(w.offset[1])) as f32,
-                (d(t[11]) + d(w.offset[2])) as f32,
-            ];
+            // On from where the warp starts (the update's `delta.pos`, which the last frame drew at its fraction), not from the
+            // object's last tick (TGE's `getTransform`): the two differ by up to a tick's travel, which the vehicle would jump by
+            // on the warp's first tick, and the warp would end that far from the update's position.
+            s.delta_pos = std::array::from_fn(|i| (d(s.delta_pos[i]) + d(w.offset[i])) as f32);
             s.delta_rot[0] = s.delta_rot[1];
             let frac = (f64::from(w.count) / f64::from(w.ticks)) as f32;
             s.delta_rot[1] = quat_slerp(w.rot[0], w.rot[1], frac);
             let (p, q) = (s.delta_pos, s.delta_rot[1]);
+            let from = s.world_to_obj;
             s.set_position(p, &q, &mut host);
             s.delta_pos_vec = w.offset.map(|v| -v);
+            // A warp tick runs no physics: the wheels' contacts ride with the body to where the next one finds them, so what
+            // is drawn at them (dust, tracks) goes on with the vehicle.
+            let moved = collide::math::matrix_product(&s.obj_to_world, &from);
+            for wheel in &mut self.body.v.k.wheels {
+                wheel.point = collide::math::mul_p(&moved, wheel.point);
+            }
             return;
         }
         let left = w.prediction;

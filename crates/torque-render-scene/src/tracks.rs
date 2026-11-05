@@ -10,7 +10,7 @@
 //!   terrain over the hills, cut where the triangles meet, never in the air. A wheel that turns back on its strip (backing up,
 //!   or a turn sharper than [`MAX_TURN_COS`] in one segment) starts the next segment square across its own way: the end's
 //!   plane would face the other way and the segment would run on ahead of the wheel. A wheel that leaves the ground, or
-//!   jumps further than [`MAX_GAP`] (a respawn), ends its strip.
+//!   jumps further than [`MAX_GAP`] past what [`MAX_SPEED`] covers in the frame (a respawn), ends its strip.
 //! - **The head** ([`TireTracks::heads`]): each strip runs on from its last segment to the wheel's contact point this frame,
 //!   in a head laid again every frame (replaced by the next segment), so the strip ends under the tire.
 //! - **Textured**: [`TrackRules::texture`] across the strip (u from side to side) and repeating along it every strip's width
@@ -34,8 +34,15 @@ pub const TRACK_DEPTH_BIAS: f32 = 0.008;
 /// The steps of opacity the segments are drawn in (one draw each).
 pub const FADE_STEPS: u32 = 16;
 
-/// The furthest a contact point may move between frames and still continue its strip (units).
+/// The furthest a contact point may move between frames and still continue its strip (units), past what [`MAX_SPEED`] covers in
+/// the frame's time.
 pub const MAX_GAP: f32 = 4.0;
+
+/// The fastest a wheel is taken to roll (units a second): a long frame (a hitch) bridges what it covers at that speed, over at
+/// most [`MAX_BRIDGE_DT`] (a strip's longest bridge, so a stall lays no more than a few hundred segments in a frame).
+pub const MAX_SPEED: f32 = 60.0;
+/// The longest frame (seconds) a strip bridges at [`MAX_SPEED`].
+pub const MAX_BRIDGE_DT: f32 = 0.25;
 
 /// The sharpest turn between a strip's last segment and its next that still joins them (the cosine of the angle between their
 /// ways): past it the next starts square across its own way.
@@ -90,6 +97,9 @@ pub type Surfaces<'a> = dyn Fn([f32; 3], f32) -> Vec<Triangle> + 'a;
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackSegment {
     pub triangles: Vec<[DecalPoint; 3]>,
+    /// The wheel that laid it, and the line along its middle (from the strip's end before it to its own).
+    pub wheel: (u32, usize),
+    pub line: [[f32; 3]; 2],
     /// Its middle (where it sorts among the translucent draws).
     pub center: [f32; 3],
     /// Seconds since it was laid.
@@ -205,7 +215,7 @@ impl TireTracks {
             };
             let d = [0, 1, 2].map(|k| w.point[k] - end.point[k]);
             let gone = d[0].hypot(d[1]);
-            if gone > MAX_GAP {
+            if gone > MAX_GAP + MAX_SPEED * dt.min(MAX_BRIDGE_DT) {
                 kept.insert(
                     w.key,
                     End {
@@ -225,7 +235,7 @@ impl TireTracks {
                 // The head: from the strip's end to the wheel, as the next segment will start.
                 if gone >= MIN_HEAD
                     && let Some(head) =
-                        self.segment(end, w.point, start_of(end, along), along, surfaces)
+                        self.segment(w.key, end, w.point, start_of(end, along), along, surfaces)
                 {
                     self.heads.insert(w.key, head);
                 }
@@ -240,7 +250,7 @@ impl TireTracks {
                 let to = [0, 1, 2].map(|c| end.point[c] + d[c] * f);
                 let step = (to[0] - at.point[0]).hypot(to[1] - at.point[1]);
                 let start_along = start_of(at, along);
-                if let Some(seg) = self.segment(at, to, start_along, along, surfaces) {
+                if let Some(seg) = self.segment(w.key, at, to, start_along, along, surfaces) {
                     self.push(seg);
                 }
                 at = End {
@@ -269,6 +279,7 @@ impl TireTracks {
     /// across `along` at `to`, and within half the width of the line between them; none when no triangle is under it.
     fn segment(
         &self,
+        wheel: (u32, usize),
         end: End,
         to: [f32; 3],
         start_along: [f32; 2],
@@ -316,6 +327,8 @@ impl TireTracks {
         }
         (!triangles.is_empty()).then_some(TrackSegment {
             triangles,
+            wheel,
+            line: [a, to],
             center: mid,
             age: 0.0,
         })
