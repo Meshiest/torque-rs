@@ -280,6 +280,12 @@ impl LevelDemo {
         eye
     }
 
+    /// The share of the way from `from` to `to` at which the camera's line of sight first meets something, if it does
+    /// ([`WorldScene::sight_share`]).
+    pub fn sight_share(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+        self.scene.sight_share(from, to)
+    }
+
     /// Whether the camera is easing between modes.
     pub fn camera_blending(&self) -> bool {
         !self.blend.arrived()

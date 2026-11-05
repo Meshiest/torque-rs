@@ -141,7 +141,7 @@ fn cases() -> Vec<Case> {
             // In the corridor facing south, the meeting room's glass wall behind: the view turns slowly one way and back, so the
             // camera behind sweeps through the glass, its posts and the corridor's walls.
             map: "office",
-            spawn: Some(([12.0, 13.6], std::f32::consts::PI)),
+            spawn: Some(([11.0, 13.6], std::f32::consts::PI)),
             ms: 5000,
             script: |g, t, dt| {
                 let s = t as f32 / 1000.0;

@@ -11,8 +11,9 @@
 //! - **Nearest texels** ([`crate::levels::nearest`]): the cubes' tiles and every texture of the figures and what they hold.
 //! - **The camera's line of sight** ([`WorldScene::sight_hit`]) meets the cubes' boxes and the interiors' hulls (each
 //!   InteriorInstance's `.dif` read as the server reads it, placed where its record puts it), so the camera behind the figure
-//!   stays in front of a wall or a ceiling. It passes glass: a hull a see-through face lies on is left out, so the camera
-//!   looks at the figure through a glass wall instead of jumping in front of it.
+//!   stays in front of a wall or a ceiling. It passes glass: a pane's own hull is left out, so the camera looks at the
+//!   figure through a glass wall instead of jumping in front of it, while the walls and frames around the pane still stop
+//!   it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -78,11 +79,12 @@ impl Default for WorldScene {
 }
 
 /// `kept`'s hulls without the see-through ones (glass), for the camera's line of sight; as it is when the file has none. A
-/// hull is see-through when the middle of a see-through face of the file lies on it (a pane is a hull of its own, between
-/// its frame's).
+/// hull is see-through when a see-through face of the file lies on one of its own planes, facing the same way, with the
+/// face's middle in the hull: the pane's own hull. A wall, sill or frame the pane's edge touches meets that face with a plane
+/// facing the other way, and stays.
 fn without_glass(bytes: &[u8], kept: KeptInterior) -> KeptInterior {
     use torque::mapcore::Importer as _;
-    use torque::maps::dif::surface_flags;
+    use torque::maps::dif::{PLANE_FLIPPED, surface_flags};
     let (Ok(dif), Ok(set)) = (
         torque::maps::dif::parse(bytes),
         torque::maps::legacy::IMPORTER.convexes(bytes),
@@ -92,11 +94,19 @@ fn without_glass(bytes: &[u8], kept: KeptInterior) -> KeptInterior {
     let Some(i) = dif.details.first() else {
         return kept;
     };
-    let middles: Vec<[f64; 3]> = i
+    // Each see-through face: its middle and its outward normal.
+    let faces: Vec<([f64; 3], [f64; 3])> = i
         .surfaces
         .iter()
         .filter(|f| f.flags & surface_flags::TRANSLUCENT != 0)
         .filter_map(|f| {
+            let plane = i.planes.get(usize::from(f.plane & !PLANE_FLIPPED))?;
+            let sign = if f.plane & PLANE_FLIPPED != 0 {
+                -1.0
+            } else {
+                1.0
+            };
+            let normal = plane.normal.map(|c| sign * f64::from(c));
             let start = f.winding_start as usize;
             let corners = i.windings.get(start..start + f.winding_count as usize)?;
             let mut sum = [0.0f64; 3];
@@ -107,23 +117,35 @@ fn without_glass(bytes: &[u8], kept: KeptInterior) -> KeptInterior {
                 }
             }
             let n = corners.len().max(1) as f64;
-            Some(sum.map(|x| x / n))
+            Some((sum.map(|x| x / n), normal))
         })
         .collect();
-    if middles.is_empty() {
+    if faces.is_empty() {
         return kept;
     }
+    const ON: f64 = 1e-3;
+    let pane = |h: &torque::collide::map::interior::Hull| {
+        faces.iter().any(|(m, n)| {
+            let side = |p: &[f64; 4]| p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + p[3];
+            let inside = h.planes.iter().all(|p| {
+                let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+                side(p) / len <= ON
+            });
+            inside
+                && h.planes.iter().any(|p| {
+                    let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+                    let facing = (p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) / len;
+                    (side(p) / len).abs() <= ON && facing > 0.99
+                })
+        })
+    };
     let mut glass = 0;
     let hulls = (0..set.hulls.len())
         .filter_map(|k| hull_of(&set, k))
         .filter(|h| {
-            let on = middles.iter().any(|m| {
-                h.planes
-                    .iter()
-                    .all(|p| p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + p[3] <= 1e-3)
-            });
-            glass += usize::from(on);
-            !on
+            let see_through = pane(h);
+            glass += usize::from(see_through);
+            !see_through
         })
         .collect();
     if glass == 0 {

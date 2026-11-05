@@ -262,8 +262,8 @@ fn every_piece_of_furniture_stands_on_the_floor_or_on_something() {
     );
 }
 
-/// Standing in the corridor with its back to the meeting room's glass wall (1.4 units behind the figure), the camera behind it
-/// looks through the glass from inside the meeting room instead of stopping in front of the glass.
+/// Standing in the corridor with its back to the meeting room's glass wall (1.4 units behind the figure, a pane's middle between
+/// two posts), the camera behind it looks through the glass from inside the meeting room instead of stopping in front of it.
 #[test]
 fn the_camera_behind_the_figure_looks_through_the_meeting_rooms_glass() {
     let mut files = GameFiles::bundled().expect("the game folder");
@@ -273,7 +273,7 @@ fn the_camera_behind_the_figure_looks_through_the_meeting_rooms_glass() {
             .into_owned();
     let spawn = format!(
         "spawn = \"{} {} 0.2\"; spawnYaw = {};",
-        12.0 + CORNER[0],
+        11.0 + CORNER[0],
         13.6 + CORNER[1],
         std::f32::consts::PI
     );
@@ -302,4 +302,94 @@ fn the_camera_behind_the_figure_looks_through_the_meeting_rooms_glass() {
         "the camera at {:?}, the glass at y {glass}",
         eye.position
     );
+}
+
+/// The camera's line of sight passes a window's panes and the meeting room's glass, and is still stopped by the wall under, over
+/// and beside a window, the window's mullion and the glass wall's post.
+#[test]
+fn the_camera_sees_through_the_panes_and_not_through_the_wall_around_them() {
+    let mut files = GameFiles::bundled().expect("the game folder");
+    torque_example_level_demo::levels::add_levels(&mut files).unwrap();
+    let mut game = LevelDemo::new(files).expect("the client");
+    let index = game
+        .maps
+        .iter()
+        .position(|m| m.path.ends_with("office.mis"))
+        .unwrap();
+    assert!(enter(&mut game, index), "the office did not start");
+    let at = |x: f32, y: f32, z: f32| [x + CORNER[0], y + CORNER[1], z];
+    // The interiors are placed for the line of sight by the frames.
+    let mut placed = false;
+    for _ in 0..200 {
+        game.step(16);
+        game.update_scene(0.016);
+        if game
+            .sight_share(at(14.5, 1.0, 0.5), at(14.5, -1.0, 0.5))
+            .is_some()
+        {
+            placed = true;
+            break;
+        }
+    }
+    assert!(placed, "the office's walls never stopped the line of sight");
+    // The south wall's window at x 15 (14.2 to 15.8, its mullion in the middle, its glass from 0.9 to 2.6 up): lines from
+    // inside (y 1) out through the wall (y -1). The meeting room's glass wall at y 15, its posts at x 10, 12 and 14.
+    let lines = [
+        (
+            "the window's left pane",
+            at(14.5, 1.0, 1.7),
+            at(14.5, -1.0, 1.7),
+            false,
+        ),
+        (
+            "the window's right pane",
+            at(15.5, 1.0, 1.7),
+            at(15.5, -1.0, 1.7),
+            false,
+        ),
+        (
+            "the wall under the window",
+            at(14.5, 1.0, 0.5),
+            at(14.5, -1.0, 0.5),
+            true,
+        ),
+        (
+            "the wall over the window",
+            at(14.5, 1.0, 2.9),
+            at(14.5, -1.0, 2.9),
+            true,
+        ),
+        (
+            "the wall beside the window",
+            at(13.5, 1.0, 1.7),
+            at(13.5, -1.0, 1.7),
+            true,
+        ),
+        (
+            "the window's mullion",
+            at(15.0, 1.0, 1.7),
+            at(15.0, -1.0, 1.7),
+            true,
+        ),
+        (
+            "the meeting room's glass",
+            at(11.0, 14.0, 1.7),
+            at(11.0, 16.0, 1.7),
+            false,
+        ),
+        (
+            "the glass wall's post",
+            at(12.0, 14.0, 1.7),
+            at(12.0, 16.0, 1.7),
+            true,
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (what, from, to, stopped) in lines {
+        let hit = game.sight_share(from, to);
+        if hit.is_some() != stopped {
+            wrong.push(format!("{what}: {hit:?}"));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
