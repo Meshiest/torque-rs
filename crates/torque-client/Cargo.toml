@@ -40,12 +40,16 @@ open = { version = "5.4.4", default-features = false, features = ["shellexecute-
 # A game socket over WebSocket (the `web-socket` feature): natively a plain `ws` connection made with tungstenite...
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tungstenite = { version = "0.30", default-features = false, optional = true }
+# A data channel beside it (the `webrtc` feature): natively ICE, DTLS and SCTP over a UDP socket made here...
+str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"], optional = true }
 
 # ... and in a browser the page's own `WebSocket`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = ["BinaryType", "MessageEvent", "WebSocket"], optional = true }
+# ... and in a browser the page's own `RTCPeerConnection`, whose offers and answers are promises.
+wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
 # The host tests' draw cache (no font files: nothing is drawn as text).
@@ -58,6 +62,23 @@ torque-shape-builder = { path = "../torque-shape-builder" }
 window = ["dep:winit", "dep:open"]
 # The datagrams over WebSocket (`net::web_socket`): the browser's side of a server's web transport.
 web-socket = ["torque-server/web", "dep:tungstenite", "dep:wasm-bindgen", "dep:js-sys", "dep:web-sys"]
+# The datagrams over a WebRTC data channel beside the game socket (`net::web_rtc`): the browser's side of a server's data
+# channels.
+webrtc = [
+    "web-socket",
+    "torque-server/webrtc",
+    "dep:str0m",
+    "dep:wasm-bindgen-futures",
+    "web-sys/RtcDataChannel",
+    "web-sys/RtcDataChannelInit",
+    "web-sys/RtcDataChannelState",
+    "web-sys/RtcDataChannelType",
+    "web-sys/RtcIceConnectionState",
+    "web-sys/RtcPeerConnection",
+    "web-sys/RtcSdpType",
+    "web-sys/RtcSessionDescription",
+    "web-sys/RtcSessionDescriptionInit",
+]
 
 [lints]
 workspace = true

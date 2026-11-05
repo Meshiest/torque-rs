@@ -33,6 +33,8 @@ use std::rc::Rc;
 
 pub use crate::{conn, ghost_objects, query};
 pub mod moves;
+#[cfg(feature = "webrtc")]
+pub mod web_rtc;
 #[cfg(feature = "web-socket")]
 pub mod web_socket;
 

@@ -5,11 +5,18 @@
 //! The socket has one far end, the server: every datagram sent goes to it whatever address it is sent to (the connection
 //! names the server by a stand-in address, [`WebSocketDatagrams::server`]), and every datagram received comes from that
 //! address. Received datagrams are hostile as on UDP: each is cut to [`RECV_BYTES`] and at most [`MAX_INBOX`] wait.
+//!
+//! Text messages are the server's signaling for a data channel ([`super::web_rtc`]): at most [`MAX_TEXTS`] of at most
+//! [`MAX_TEXT`] bytes are kept for [`WebSocketDatagrams::take_text`], the rest dropped.
 
 use super::{Datagrams, MAX_INBOX, RECV_BYTES};
 
 /// The most datagrams held while the socket is still opening (sent once it is open).
 pub const MAX_PENDING: usize = 64;
+/// The most text messages kept.
+pub const MAX_TEXTS: usize = 16;
+/// The longest text message kept.
+pub const MAX_TEXT: usize = 16 << 10;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::WebSocketDatagrams;
@@ -42,6 +49,7 @@ mod native {
         port: u16,
         closed: bool,
         held: VecDeque<Vec<u8>>,
+        texts: VecDeque<String>,
     }
 
     impl WebSocketDatagrams {
@@ -101,8 +109,8 @@ mod native {
                 .read_buffer_size(4096)
                 .write_buffer_size(0)
                 .max_write_buffer_size(MAX_UNSENT)
-                .max_message_size(Some(RECV_BYTES * 32))
-                .max_frame_size(Some(RECV_BYTES * 32));
+                .max_message_size(Some(MAX_TEXT.max(RECV_BYTES * 32)))
+                .max_frame_size(Some(MAX_TEXT.max(RECV_BYTES * 32)));
             let rest = answer[end..].to_vec();
             Ok(WebSocketDatagrams {
                 ws: WebSocket::from_partially_read(tcp, rest, Role::Client, Some(config)),
@@ -110,7 +118,21 @@ mod native {
                 port,
                 closed: false,
                 held: VecDeque::new(),
+                texts: VecDeque::new(),
             })
+        }
+
+        /// The connection's own address (the data channel's socket binds the same IP).
+        pub fn local_ip(&self) -> Option<std::net::IpAddr> {
+            self.ws.get_ref().local_addr().ok().map(|a| a.ip())
+        }
+
+        /// The next text message the server sent (signaling).
+        pub fn take_text(&mut self) -> Option<String> {
+            if self.texts.is_empty() {
+                self.read_all();
+            }
+            self.texts.pop_front()
         }
 
         /// The address the connection names the server by.
@@ -154,6 +176,11 @@ mod native {
                     Ok(Message::Binary(data)) => {
                         let keep = data.len().min(RECV_BYTES);
                         self.held.push_back(data[..keep].to_vec());
+                    }
+                    Ok(Message::Text(text)) => {
+                        if self.texts.len() < MAX_TEXTS && text.len() <= MAX_TEXT {
+                            self.texts.push_back(text.as_str().to_string());
+                        }
                     }
                     Ok(_) => {}
                     Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => break,
@@ -211,6 +238,7 @@ mod web {
         socket: WebSocket,
         server: SocketAddrV4,
         incoming: Rc<RefCell<VecDeque<Vec<u8>>>>,
+        texts: Rc<RefCell<VecDeque<String>>>,
         pending: VecDeque<Vec<u8>>,
         _on_message: Closure<dyn FnMut(MessageEvent)>,
     }
@@ -221,9 +249,19 @@ mod web {
             let socket = WebSocket::new(url).map_err(|e| format!("{url}: {e:?}"))?;
             socket.set_binary_type(BinaryType::Arraybuffer);
             let incoming = Rc::new(RefCell::new(VecDeque::new()));
+            let texts = Rc::new(RefCell::new(VecDeque::new()));
             let inbox = Rc::clone(&incoming);
+            let text_box = Rc::clone(&texts);
             let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
-                let Ok(buffer) = e.data().dyn_into::<js_sys::ArrayBuffer>() else {
+                let data = e.data();
+                if let Some(text) = data.as_string() {
+                    let mut q = text_box.borrow_mut();
+                    if q.len() < MAX_TEXTS && text.len() <= MAX_TEXT {
+                        q.push_back(text);
+                    }
+                    return;
+                }
+                let Ok(buffer) = data.dyn_into::<js_sys::ArrayBuffer>() else {
                     return;
                 };
                 let array = js_sys::Uint8Array::new(&buffer);
@@ -240,9 +278,20 @@ mod web {
                 socket,
                 server,
                 incoming,
+                texts,
                 pending: VecDeque::new(),
                 _on_message: on_message,
             })
+        }
+
+        /// The next text message the server sent (signaling).
+        pub fn take_text(&mut self) -> Option<String> {
+            self.texts.borrow_mut().pop_front()
+        }
+
+        /// Sends a text message (signaling): false when the socket is not open.
+        pub fn send_text(&mut self, text: &str) -> bool {
+            self.socket.ready_state() == WebSocket::OPEN && self.socket.send_with_str(text).is_ok()
         }
 
         /// The address the connection names the server by.
