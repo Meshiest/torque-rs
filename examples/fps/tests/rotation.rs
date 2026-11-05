@@ -246,7 +246,7 @@ fn reaching_the_score_limit_ends_the_round_and_zero_turns_it_off() {
     assert_eq!(
         eval(&mut a, "return isEventPending(byName(\"Ann\").respawn);"),
         "0",
-        "endRound cancelled the respawn"
+        "endRound canceled the respawn"
     );
     let log = eval(&mut a, "return $T::Log;");
     assert!(log.contains("Bob reached the score limit of 10.|"), "{log}");

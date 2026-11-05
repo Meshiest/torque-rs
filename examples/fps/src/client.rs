@@ -56,13 +56,20 @@ pub use torque::app::hosting::{NetMode, parse_join_address};
 use torque::app::hosting::{join_address, lan_bind_address, lan_reach, register_join_natives};
 use torque_example_common::prediction::CubeClient;
 
-/// A fresh secret (128 random bits, in hex) a hosted game's server and its own client share: the connection that presents it is
-/// the host's. The standard library seeds each `RandomState` from the operating system.
-fn host_key() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let part = || RandomState::new().build_hasher().finish();
-    format!("{:016x}{:016x}", part(), part())
+/// A fresh secret (128 random bits from the operating system, in hex) a hosted game's server and its own client share: the
+/// connection that presents it is the host's.
+#[cfg(not(target_arch = "wasm32"))]
+fn host_key() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| format!("no secure random source for the host key: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// A page joins games and never hosts one, so it has no host key.
+#[cfg(target_arch = "wasm32")]
+fn host_key() -> Result<String, String> {
+    Err("a page cannot host a game".into())
 }
 
 /// The camera behind the figure: how far back along its look, how far above its eye, and the nearest it comes to a wall.
@@ -233,7 +240,7 @@ impl ArenaGame {
         )?;
         // The secret that marks this process's own connection as the host's: only the server and the connection that
         // follows ever see it.
-        let key = host_key();
+        let key = host_key()?;
         server.vm_mut().set_global("$Server::HostKey", &key);
         let bound = server.address().ok_or("the server has no socket")?;
         let join = join_address(bound).to_string();

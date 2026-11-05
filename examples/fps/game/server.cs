@@ -718,11 +718,22 @@ function sendMapChoices(%client)
 // The host picked %name from the pause menu: that map loads at once, every client stays connected and the scores start
 // again. Only the host's own connection may ask (the server marked it when it connected, by the key only the host's process
 // holds), and only for a map of the server's own list: the path that loads is the list's, never the client's text.
+// A refused map change, logged; a client other than the host is logged at most once every five seconds, so one sending it over
+// and over can't fill the server's log.
+function refuseMapChange(%client, %why)
+{
+   %now = getSimTime();
+   if (!%client.isHost && %client.mapRefusedAt !$= "" && %now - %client.mapRefusedAt < 5000)
+      return;
+   %client.mapRefusedAt = %now;
+   echo("Refused a map change from" SPC %client SPC "(" @ %client.name @ "):" SPC %why);
+}
+
 function serverCmdChangeMap(%client, %name)
 {
    if (!%client.isHost)
    {
-      echo("Refused a map change from" SPC %client SPC "(" @ %client.name @ "): not the host.");
+      refuseMapChange(%client, "not the host.");
       return;
    }
    %name = trim(%name);
@@ -733,13 +744,13 @@ function serverCmdChangeMap(%client, %name)
          %file = getWord(%list, %i);
    if (%file $= "")
    {
-      echo("Refused a map change from" SPC %client SPC "(" @ %client.name @ "): not in the map list.");
+      refuseMapChange(%client, "not in the map list.");
       return;
    }
    %now = getSimTime();
    if ($Arena::MapChangeAt !$= "" && %now - $Arena::MapChangeAt < $Arena::MapChangeGapMs)
    {
-      echo("Refused a map change from" SPC %client SPC "(" @ %client.name @ "): too soon after the last.");
+      refuseMapChange(%client, "too soon after the last.");
       return;
    }
    $Arena::MapChangeAt = %now;
