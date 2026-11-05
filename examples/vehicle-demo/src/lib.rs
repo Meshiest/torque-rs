@@ -8,10 +8,12 @@
 //! - [`scene`]: the client's ghosts as the world view's objects (the figures and the buggy with its wheels).
 //! - [`shots`]: the example without a window, drawn offscreen: pictures of the buggy, its cockpit, two players seated, a
 //!   passenger's view, the hill and the start.
+//! - [`cloud_shots`]: the sky's clouds through the day, drawn offscreen with the engine's clouds and with the demo's.
 //!
 //! The window is the engine's ([`torque::app::window::run`]).
 
 pub mod client;
+pub mod cloud_shots;
 pub mod files;
 pub mod scene;
 pub mod seats;
