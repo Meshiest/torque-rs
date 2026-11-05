@@ -16,6 +16,7 @@ use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
 use torque_render_scene::hd::cells::StaticCells;
+use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::environment::ClientDay;
 use torque_render_scene::hd::objects::objects_of;
 use torque_render_scene::hd::particle_light::ParticleLight;
@@ -184,6 +185,11 @@ impl WorldView {
     /// The renderer's quality step.
     pub fn set_quality(&mut self, quality: Quality) {
         self.scene.mode = Some(HdMode::new(quality));
+    }
+
+    /// How the volumetric clouds look (None: the engine's, [`CloudLook::DEFAULT`]).
+    pub fn set_cloud_look(&mut self, look: Option<CloudLook>) {
+        self.scene.frame.cloud_look = look;
     }
 
     pub fn set_daylight(&mut self, d: &Daylight) {

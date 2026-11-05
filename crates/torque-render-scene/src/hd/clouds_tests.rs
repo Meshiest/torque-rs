@@ -278,3 +278,126 @@ fn an_overcast_is_neutral_and_fair_weather_keeps_its_colour() {
     let kept = keep_chroma(lavender, 1.0);
     assert!(kept.iter().zip(lavender).all(|(a, b)| (a - b).abs() < 1e-6));
 }
+
+#[test]
+fn the_default_look_is_the_engines_and_a_look_can_cast_shadows_at_any_quality() {
+    let d = CloudLook::DEFAULT;
+    assert_eq!(d.layers, FAIR_WEATHER);
+    assert_eq!(d.light, CLOUD_LIGHT);
+    assert_eq!((d.sun, d.fine_step, d.coverage), (None, 0.0, None));
+    for quality in [Quality::Medium, Quality::High, Quality::Ultra] {
+        let q = CloudQuality::of(quality).unwrap();
+        assert_eq!(d.quality(q), q);
+        let sunlit = CloudLook::SUNLIT_CUMULUS.quality(q);
+        assert!(sunlit.ground_shadows);
+        assert_eq!(
+            CloudQuality {
+                ground_shadows: q.ground_shadows,
+                ..sunlit
+            },
+            q
+        );
+    }
+    // The sunlit cumulus keeps the layers' order and kinds: a quality's mask draws the same layers.
+    let s = CloudLook::SUNLIT_CUMULUS;
+    for (a, b) in s.layers.iter().zip(&FAIR_WEATHER) {
+        assert_eq!((a.name, a.form, a.profile), (b.name, b.form, b.profile));
+        assert!(a.top > a.base || a.form == LayerForm::Sheet);
+    }
+    assert!(s.fine_step > 0.0 && s.fine_budget >= 1.0);
+}
+
+#[test]
+fn a_sanitized_look_holds_only_values_the_renderer_can_take() {
+    assert_eq!(CloudLook::DEFAULT.sanitized(), CloudLook::DEFAULT);
+    assert_eq!(
+        CloudLook::SUNLIT_CUMULUS.sanitized(),
+        CloudLook::SUNLIT_CUMULUS
+    );
+    let mut bad = CloudLook::SUNLIT_CUMULUS;
+    for (k, l) in bad.layers.iter_mut().enumerate() {
+        l.base = [f32::NAN, 5000.0, 3000.0][k];
+        l.top = [f32::INFINITY, 4000.0, 3000.0][k];
+        l.extinction = f32::NEG_INFINITY;
+        l.shape_period = 0.0;
+        l.detail_period = -1.0;
+        l.weather_period = f32::NAN;
+        l.fade = (f32::NAN, -5.0);
+        l.sun = f32::NAN;
+        l.steps = f32::INFINITY;
+    }
+    bad.light.forward_g = f32::NAN;
+    bad.light.light_step = 0.0;
+    bad.light.octaves = u32::MAX;
+    bad.coverage = Some(f32::NAN);
+    bad.ground_shadow = Some(7.0);
+    bad.sun = Some([f32::NAN, -2.0, f32::INFINITY]);
+    bad.fine_step = f32::NAN;
+    bad.fine_budget = f32::INFINITY;
+    let s = bad.sanitized();
+    let floats = |l: &CloudLayerDef| {
+        [
+            l.base,
+            l.top,
+            l.coverage,
+            l.coverage_add,
+            l.extinction,
+            l.shape_period,
+            l.detail_period,
+            l.weather_period,
+            l.variation,
+            l.detail,
+            l.turn,
+            l.wind_turn,
+            l.wind_speed,
+            l.edge_base,
+            l.edge_top,
+            l.top_density,
+            l.aerial,
+            l.fade.0,
+            l.fade.1,
+            l.reach,
+            l.sun,
+            l.ambient,
+            l.steps,
+            l.evolve,
+            l.blur,
+        ]
+    };
+    for l in &s.layers {
+        assert!(floats(l).iter().all(|v| v.is_finite()), "{l:?}");
+        assert!(l.shape_period > 0.0 && l.detail_period > 0.0 && l.weather_period > 0.0);
+        assert!(l.fade.0 <= l.fade.1 && l.steps <= MAX_STEP_SHARE);
+        match l.form {
+            LayerForm::Volume => assert!(l.top - l.base >= MIN_THICKNESS, "{l:?}"),
+            LayerForm::Sheet => assert_eq!(l.top, l.base),
+        }
+    }
+    // An inverted sheet lies at the lower of its heights, a flat volume layer takes the least thickness.
+    assert_eq!((s.layers[1].base, s.layers[1].top), (4000.0, 4000.0));
+    assert_eq!(
+        (s.layers[2].base, s.layers[2].top),
+        (3000.0, 3000.0 + MIN_THICKNESS)
+    );
+    assert!(
+        s.light.forward_g.is_finite() && s.light.light_step > 0.0 && s.light.octaves <= MAX_OCTAVES
+    );
+    assert_eq!(s.coverage, None);
+    assert_eq!(s.ground_shadow, Some(1.0));
+    assert_eq!(s.sun, Some([0.0, 0.0, 0.0]));
+    assert_eq!((s.fine_step, s.fine_budget), (0.0, 1.0));
+    let huge = CloudLook {
+        fine_budget: 1e9,
+        ..CloudLook::SUNLIT_CUMULUS
+    };
+    assert_eq!(huge.sanitized().fine_budget, CloudLook::MAX_FINE_BUDGET);
+    assert_eq!(
+        CloudLook {
+            coverage: Some(3.0),
+            ..CloudLook::DEFAULT
+        }
+        .sanitized()
+        .coverage,
+        Some(MAX_COVERAGE)
+    );
+}

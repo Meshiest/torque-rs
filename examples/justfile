@@ -105,3 +105,8 @@ vehicle-demo *args:
 # passenger's view, the climb up the hill), drawn offscreen into `dir`
 vehicle-demo-shots dir="../target/vehicle-demo-shots":
     cargo run -p torque-example-vehicle-demo --release -- --shots {{dir}}
+
+# The vehicle demo's clouds at noon, golden hour and sunset, looking up and their shadows on the hills, with the engine's clouds
+# (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
+vehicle-demo-cloud-shots dir="../target/vehicle-demo-cloud-shots":
+    cargo run -p torque-example-vehicle-demo --release -- --cloud-shots {{dir}}

@@ -45,6 +45,7 @@ use torque::app::{App, Host};
 use torque::ghosts::TgeClass;
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
+use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::{Eye, SceneSource as _};
@@ -281,9 +282,10 @@ impl VehicleDemo {
         self.camera_mode = None;
     }
 
-    /// A world view on `gpu`, the terrain its ground.
+    /// A world view on `gpu`, the terrain its ground, the sky's clouds sunlit cumulus.
     pub fn view(&self, gpu: &Gpu) -> WorldView {
         let mut view = WorldView::new(gpu);
+        view.set_cloud_look(Some(CloudLook::SUNLIT_CUMULUS));
         view.set_terrain(
             &self.files.kit,
             &self.terrain,

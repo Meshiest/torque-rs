@@ -93,7 +93,9 @@ struct Clouds {
     // x: the slant (the ray's path through a slab over its thickness) past which it thins out, y: its coverage's power (the spread),
     // z: its density's; w: the radius of the disc the rays toward the sun cover (fs_sun_rays; radians).
     thin: vec4<f32>,
-    // x: how overcast the sky is (0 fair weather, 1 closed: the ambient loses its colour; hd::clouds's OVERCAST); yzw unused.
+    // x: how overcast the sky is (0 fair weather, 1 closed: the ambient loses its colour; hd::clouds's OVERCAST); y: 1 when sun_light
+    // is the look's own sunlight (the air's transmittance dims it as well as coloring it); z: the refined march's fine step (units; 0
+    // the even march), w: its most samples as a multiple of the layer's steps.
     weather: vec4<f32>,
 };
 
@@ -145,6 +147,8 @@ const CIRRUS_VEIL: vec4<f32> = vec4<f32>(0.55, 0.9, 0.65, 0.5);
 const SPIN_EASE: f32 = 0.35;
 // The view's transmittance under which a sample's light march takes one step fewer, and under which two.
 const DEEP_SEEN: vec2<f32> = vec2<f32>(0.35, 0.12);
+// The refined march's fine steps in a row that find no cloud before it takes long steps again.
+const FINE_EMPTY: u32 = 3u;
 // The altocumulus' rows: how many across a shape period, and how much of an element's density they set where it lies in rows.
 const ELEMENT_ROWS: f32 = 3.0;
 const ELEMENT_ROW_SHARE: f32 = 0.7;
@@ -194,7 +198,7 @@ fn element_present(b: f32) -> f32 {
 // `detail`: the detail volume's erosion; `lod`: the shape volume's mip level.
 fn cloud_density(li: u32, p: vec3<f32>, detail: bool, lod: f32, spread: f32) -> vec2<f32> {
     let l = clouds.layers[li];
-    let h = (p.z - l.slab.x) / (l.slab.y - l.slab.x);
+    let h = (p.z - l.slab.x) / max(l.slab.y - l.slab.x, 1e-3);
     if h <= 0.0 || h >= 1.0 {
         return vec2<f32>(0.0, h);
     }
@@ -397,9 +401,14 @@ fn sun_at(r: f32) -> vec3<f32> {
     let overhead = textureSampleLevel(transmittance_lut, sky_linear, transmittance_uv(sky.radii.z, 1.0), 0.0).rgb;
     var tint = toward / max(overhead, vec3<f32>(1e-4));
     let m = max(tint.r, max(tint.g, tint.b));
-    // The colour only (its brightest channel kept): the server's sun keeps its strength, the low sun's light turns peach and then
-    // red as the air's long path takes the blue.
-    tint = mix(vec3<f32>(1.0), tint / max(m, 1e-4), clouds.octaves.w);
+    if clouds.weather.y > 0.5 {
+        // The look's own sunlight: the air's transmittance whole (a low sun's light dims as it reddens).
+        tint = min(tint, vec3<f32>(1.0));
+    } else {
+        // The colour only (its brightest channel kept): the server's sun keeps its strength, the low sun's light turns peach and
+        // then red as the air's long path takes the blue.
+        tint = mix(vec3<f32>(1.0), tint / max(m, 1e-4), clouds.octaves.w);
+    }
     let fade = smoothstep(horizon, horizon + HORIZON_FADE, s.z);
     return clouds.sun_light.rgb * tint * fade;
 }
@@ -517,6 +526,9 @@ fn march_volume(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32,
     // segment that starts its own length or more away to 1 at the eye): the cloud about the eye is drawn in steps
     // as short as its features, the far part in longer ones. The same steps as before for an eye under the slab.
     let span = t1 - t0;
+    if clouds.weather.z > 0.0 {
+        return march_refined(li, o, dir, t0, t1, j, lit, above0, above1, spread, thin, cos_sun);
+    }
     let c = clamp(1.0 - t0 / max(span, 1e-3), 0.0, 1.0);
     for (var i = 0u; i < n; i = i + 1u) {
         let f = (f32(i) + j) / f32(n);
@@ -538,6 +550,75 @@ fn march_volume(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32,
                 break;
             }
         }
+    }
+    out.dist = select(l.far.w, at / max(seen, 1e-6), seen > 1e-4);
+    out.c = layer_air(li, light * clouds.tint.rgb, 1.0 - tr, out.dist, dir);
+    return out;
+}
+
+// The look's refined march (weather.z the fine step, units; weather.w the most samples as a multiple of the layer's steps): the
+// layer's steps through clear air, and where one finds cloud, back a step and on through the cloud in fine steps (no shorter than
+// the pixel's footprint there) until FINE_EMPTY in a row find none. The coarse march's first sample in a cloud lies a long step
+// deep, where the sun's light has gone: the sunlit shell, a few fine steps thick, is what gives a cumulus its lit side, its dark
+// side and its bright rim.
+fn march_refined(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32, lit: Lighting, above0: f32, above1: f32, spread: f32, thin: f32, cos_sun: f32) -> Marched {
+    let l = clouds.layers[li];
+    var out: Marched;
+    let n = max(u32(l.slab.w), 1u);
+    let detail = clouds.march.w > 0.5;
+    let footprint = clouds.lod.x * clouds.march.z;
+    let span = t1 - t0;
+    let coarse = span / f32(n);
+    let budget = u32(f32(n) * max(clouds.weather.w, 1.0));
+    var tr = 1.0;
+    var light = vec3<f32>(0.0);
+    var seen = 0.0;
+    var at = 0.0;
+    var t = t0 + coarse * j;
+    var fine_mode = false;
+    var found = false;
+    var empty = 0u;
+    for (var i = 0u; i < budget; i = i + 1u) {
+        if t >= t1 {
+            break;
+        }
+        let fine = clamp(max(clouds.weather.z, t * footprint), 1.0, coarse);
+        let p = o + dir * t;
+        let lod = max(log2(max(t * footprint, 1e-3) / l.offset.w), 0.0);
+        var d = cloud_density(li, p, detail && t < l.far.y, lod, spread);
+        d.x = d.x * thin;
+        if !fine_mode {
+            if d.x > 0.0 {
+                fine_mode = true;
+                found = false;
+                empty = 0u;
+                t = max(t - coarse + fine * j, t0);
+            } else {
+                t = t + coarse;
+            }
+            continue;
+        }
+        if d.x > 0.0 {
+            found = true;
+            empty = 0u;
+            let dt = min(fine, t1 - t);
+            let k = 1.0 - exp(-d.x * dt);
+            let f = clamp((t - t0) / max(span, 1e-3), 0.0, 1.0);
+            light = light + tr * k * cloud_light(li, p, d.x, d.y, cos_sun, lod, t, lit, mix(above0, above1, f), spread, tr);
+            at = at + tr * k * t;
+            seen = seen + tr * k;
+            tr = tr * (1.0 - k);
+            if tr < 0.01 {
+                break;
+            }
+        } else {
+            // (Before the cloud is reached again, as many fine steps as the coarse one took.)
+            empty = empty + 1u;
+            if empty >= select(u32(ceil(coarse / fine)) + 2u, FINE_EMPTY, found) {
+                fine_mode = false;
+            }
+        }
+        t = t + fine;
     }
     out.dist = select(l.far.w, at / max(seen, 1e-6), seen > 1e-4);
     out.c = layer_air(li, light * clouds.tint.rgb, 1.0 - tr, out.dist, dir);

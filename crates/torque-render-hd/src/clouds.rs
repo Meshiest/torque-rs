@@ -9,9 +9,9 @@
 
 use torque_render_core::wgpu;
 use torque_render_scene::hd::clouds::{
-    self as cl, BLUE_SIZE, CIRRUS_SIZE, CLOUD_LIGHT, CLOUD_SUN, CloudQuality, DETAIL_SIZE,
-    FAIR_WEATHER, LayerForm, LayerProfile, MAX_LAYERS, SHADOW_STEPS, SHADOW_TEXELS, SHAPE_SIZE,
-    SLAB, SUN_RAYS, SUN_SEGMENTS, UNITS_PER_KM, WEATHER_SIZE,
+    self as cl, BLUE_SIZE, CIRRUS_SIZE, CLOUD_SUN, CloudLook, CloudQuality, DETAIL_SIZE, LayerForm,
+    LayerProfile, MAX_LAYERS, SHADOW_STEPS, SHADOW_TEXELS, SHAPE_SIZE, SLAB, SUN_RAYS,
+    SUN_SEGMENTS, UNITS_PER_KM, WEATHER_SIZE,
 };
 use torque_render_scene::hd::{HdCamera, HdScene, srgb_to_linear};
 
@@ -630,7 +630,13 @@ impl Clouds {
             self.drawn = false;
             return SkyClouds::default();
         };
-        let mut layers = cl::drawn_layers(&FAIR_WEATHER, q.layers);
+        // The scene's look (the engine's without one): its layers, light and coverage, and what it asks of the quality.
+        let look = scene
+            .cloud_look
+            .map_or(CloudLook::DEFAULT, |l| l.sanitized());
+        let q = look.quality(q);
+        let coverage = look.coverage.unwrap_or(sky.coverage);
+        let mut layers = cl::drawn_layers(&look.layers, q.layers);
         // Over a world that rises into the deck, every layer is raised over it.
         let lift = if sky.lift.is_finite() {
             sky.lift.clamp(0.0, cl::MAX_LIFT)
@@ -674,13 +680,21 @@ impl Clouds {
         };
         let sun = &scene.sun;
         // An overcast's light is neutral (cl::OVERCAST): the sun's light on the clouds, their tint and the ambient lose their colour.
-        let overcast = cl::overcast_share(sky.coverage);
+        let overcast = cl::overcast_share(coverage);
         let neutral = 1.0 - overcast;
+        // The look's own sunlight through the air while the scene's light is the sun (under the moon the scene's).
+        let by_sun = scene.atmosphere_sun.is_none_or(|a| {
+            let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt().max(1e-6);
+            (a[0] * s[0] + a[1] * s[1] + a[2] * s[2]) / l > 0.999
+        });
+        let physical = look.sun.filter(|_| by_sun);
         let sun_light = cl::keep_chroma(
-            [0, 1, 2].map(|k| {
-                (srgb_to_linear((sun.ambient[k] + sun.diffuse[k]).max(0.0))
-                    - srgb_to_linear(sun.ambient[k].max(0.0)))
-                .max(0.0)
+            physical.unwrap_or_else(|| {
+                [0, 1, 2].map(|k| {
+                    (srgb_to_linear((sun.ambient[k] + sun.diffuse[k]).max(0.0))
+                        - srgb_to_linear(sun.ambient[k].max(0.0)))
+                    .max(0.0)
+                })
             }),
             neutral,
         );
@@ -690,7 +704,7 @@ impl Clouds {
         let pixel_angle = (camera.frustum[3] - camera.frustum[2]).abs()
             / camera.near.max(1e-6)
             / ih.max(1) as f32;
-        let l = CLOUD_LIGHT;
+        let l = look.light;
         let uv = [
             iw as f32 / (scale * key.0) as f32,
             ih as f32 / (scale * key.1) as f32,
@@ -712,7 +726,7 @@ impl Clouds {
                 continue;
             };
             let sheet = layer.form == LayerForm::Sheet;
-            let coverage = cl::layer_coverage(sky.coverage, layer);
+            let coverage = cl::layer_coverage(coverage, layer);
             let steps = if sheet {
                 0.0
             } else {
@@ -868,7 +882,15 @@ impl Clouds {
             &mut b,
             &[l.thin_slant, l.thin_power, l.thin_density, CLOUD_SUN.spread],
         );
-        push_f32(&mut b, &[overcast, 0.0, 0.0, 0.0]);
+        push_f32(
+            &mut b,
+            &[
+                overcast,
+                if physical.is_some() { 1.0 } else { 0.0 },
+                look.fine_step,
+                look.fine_budget,
+            ],
+        );
         debug_assert_eq!(b.len() as u64, UNIFORM_BYTES);
         queue.write_buffer(&self.uniform, 0, &b);
         self.drawn = true;
@@ -876,7 +898,11 @@ impl Clouds {
         SkyClouds {
             map: [centre[0], centre[1], 1.0 / span, lowest.base],
             uses: [
-                if q.ground_shadows { GROUND_SHADOW } else { 0.0 },
+                if q.ground_shadows {
+                    look.ground_shadow.unwrap_or(GROUND_SHADOW)
+                } else {
+                    0.0
+                },
                 1.0,
                 uv[0],
                 uv[1],
