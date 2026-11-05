@@ -315,7 +315,7 @@ impl VehicleDemo {
         self.seat().is_some()
     }
 
-    /// Whether the camera on foot is at the figure's eyes (`V`).
+    /// Whether the camera on foot is at the figure's eyes (`Tab`).
     pub fn first_person(&self) -> bool {
         self.flag("$World::FirstPerson")
     }

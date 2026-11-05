@@ -145,12 +145,15 @@ The first development version. Nothing is published yet; this is what exists.
   clouds. `CloudLook::SUNLIT_CUMULUS` gives sunlit cumulus; without a look the clouds are as before. The vehicle demo uses
   it.
 - `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
-  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
+  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's Tab uses it.
 - The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
   meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
   the engine's own classes to every client).
 - The level demo's office map: a Blockbench model (`game/levels/office.bbmodel`, made by `tools/office.py`) built into an
   interior when the demo starts, with pixel textures drawn nearest, glass windows, a roof and ceiling lights.
+- `torque-example-fps`: Tab eases the camera behind the figure (over the shoulder, kept in front of cubes and interior walls)
+  and back to its eyes; backed against a wall it draws the first person's view. `torque-client`'s
+  `Predictor::cast_ray` casts a segment in the client's container (the static index's objects near it and the ghosts).
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
   while it runs.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
@@ -246,6 +249,9 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- The level demo: a quick tap of Space held the jump until the next tap (the script counted only the press); now it jumps
+  once. Tab switches the camera (it was V), as in the other demos, and every map draws its textures nearest (cubes, tiles,
+  figures, interiors; the mipmaps kept).
 - `torque-render-hd`: a room with more shadowed point or spot lights than the quality's shadow slots no longer switches
   shadows on and off as the camera turns or walks: a light that holds a slot keeps it against one barely ahead, a light
   still in view fades its shadow out (or in) over 12 frames when the slots change hands, and within its radius a nearer light
