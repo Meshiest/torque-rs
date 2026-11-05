@@ -4,7 +4,8 @@
 //! The physical sky itself is the renderer's (drawn for the same sun); this is the light it casts.
 //!
 //! - **The sun's light** is the atmosphere's transmittance from the camera's height toward the sun (reddened and dimmed near the
-//!   horizon; [`SUN_DEPTH`] of its optical depth), faded out as the sun's disk sinks under it, scaled so the sun overhead gives [`NOON_SUN`].
+//!   horizon; [`SUN_DEPTH`] of its optical depth), faded out as the sun's disk sinks under it, scaled so the sun overhead gives [`NOON_SUN`]; a high sun's cut to
+//!   [`HIGH_SUN_SHARE`] of it.
 //! - **The ambient** is the sky's light on a level surface (single scattering, integrated over the sky's hemisphere for the
 //!   sun's elevation: blue by day, warm at sunset, deep blue at dusk), scaled so the sun overhead gives [`NOON_AMBIENT`]; at
 //!   night never darker than the night color.
@@ -30,6 +31,11 @@ use crate::hd::{HdFog, HdSun, linear_to_srgb, srgb_to_linear};
 
 /// The sun's light overhead (linear).
 pub const NOON_SUN: [f32; 3] = [1.35, 1.35, 1.35];
+/// A high sun's light is cut to [`HIGH_SUN_SHARE`] of it, from [`HIGH_SUN_START`] to [`HIGH_SUN_FULL`] degrees up (a white
+/// surface at noon stays clear of the tonemap's shoulder; a low sun keeps its whole light).
+pub const HIGH_SUN_START: f32 = 25.0;
+pub const HIGH_SUN_FULL: f32 = 70.0;
+pub const HIGH_SUN_SHARE: f32 = 0.7;
 /// The ambient light with the sun overhead (linear, its brightness: the hue is the sky's).
 pub const NOON_AMBIENT: f32 = 0.15;
 /// The share of the sky's color the ambient keeps (the single scattering alone is bluer than the sky's light).
@@ -275,8 +281,10 @@ impl ScatterTable {
         // The sun: its transmittance, faded as its disk sinks.
         let share = smoothstep(SUN_GONE, SUN_WHOLE, elevation);
         let sun = self.sun(elevation);
-        let sun_lin: [f32; 3] =
-            [0, 1, 2].map(|k| NOON_SUN[k] * sun[k] * share * look.sun_scale[k] * look.brightness);
+        let high =
+            1.0 - (1.0 - HIGH_SUN_SHARE) * smoothstep(HIGH_SUN_START, HIGH_SUN_FULL, elevation);
+        let sun_lin: [f32; 3] = [0, 1, 2]
+            .map(|k| NOON_SUN[k] * high * sun[k] * share * look.sun_scale[k] * look.brightness);
         // The ambient: the sky's irradiance, its noon's brightness NOON_AMBIENT.
         let a_scale = NOON_AMBIENT / luminance(amb_noon).max(1e-9);
         let night_amb = look.night_color.map(srgb_to_linear);
