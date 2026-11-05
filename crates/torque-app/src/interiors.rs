@@ -82,6 +82,35 @@ pub fn interior_sampler(nearest: bool) -> Sampler {
     }
 }
 
+/// The translucent draws of interior ghost `index` as objects, one a pane ([`panes`]), so the translucent pass sorts the panes
+/// back to front: at most [`MAX_PANES`] in all (over every material; the rest join the last). Each draw's vertices are moved
+/// into its panes, never copied whole for each.
+pub fn pane_objects(see_through: Vec<Draw>, index: u32) -> Vec<(Vec<Draw>, u32)> {
+    let mut objects: Vec<Vec<Draw>> = Vec::new();
+    for mut draw in see_through {
+        let vertices = std::mem::take(&mut draw.vertices);
+        for pane in panes(&vertices) {
+            if objects.len() < MAX_PANES {
+                objects.push(Vec::new());
+            }
+            let last = objects.len() - 1;
+            let into = &mut objects[last];
+            match into.iter_mut().find(|d| d.label == draw.label) {
+                Some(d) => d.vertices.extend(pane),
+                None => into.push(Draw {
+                    vertices: pane,
+                    ..draw.clone()
+                }),
+            }
+        }
+    }
+    objects
+        .into_iter()
+        .enumerate()
+        .map(|(k, d)| (d, pane_id(index, k)))
+        .collect()
+}
+
 /// `vertices` (three a triangle) split into panes: triangles that share a corner are one pane. At most [`MAX_PANES`].
 pub fn panes(vertices: &[Vertex]) -> Vec<Vec<Vertex>> {
     let tris = vertices.len() / 3;
@@ -308,26 +337,8 @@ fn build(
             draws.push(draw);
         }
     }
-    // Each pane its own object, so the translucent pass sorts the panes back to front.
     let mut groups = vec![(draws, object_id(index))];
-    let mut pane_draws: Vec<Vec<Draw>> = Vec::new();
-    for draw in see_through {
-        for (k, vertices) in panes(&draw.vertices).into_iter().enumerate() {
-            if k == pane_draws.len() {
-                pane_draws.push(Vec::new());
-            }
-            pane_draws[k].push(Draw {
-                vertices,
-                ..draw.clone()
-            });
-        }
-    }
-    groups.extend(
-        pane_draws
-            .into_iter()
-            .enumerate()
-            .map(|(k, d)| (d, pane_id(index, k))),
-    );
+    groups.extend(pane_objects(see_through, index));
     Some(Kept {
         pose,
         objects: view.mesh_objects(set, &groups),
@@ -357,6 +368,45 @@ mod tests {
         v.extend(tri([0.0; 3], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]));
         let p = panes(&v);
         assert_eq!(p.iter().map(Vec::len).collect::<Vec<_>>(), [6, 3]);
+    }
+
+    #[test]
+    fn many_panes_over_several_materials_make_at_most_the_cap_of_objects_and_keep_every_triangle() {
+        let draw = |label: &str, n: usize| {
+            let mut vertices = Vec::with_capacity(3 * n);
+            for k in 0..n {
+                let x = k as f32 * 3.0;
+                vertices.extend(tri([x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]));
+            }
+            Draw {
+                label: label.to_string(),
+                vertices,
+                lighting: true,
+                tex_env: TexEnv::Modulate,
+                texture: None,
+                blend: Blend::Alpha,
+                cull: Cull::BackCw,
+                depth_test: true,
+                depth_write: false,
+                fog: true,
+                lights: Vec::new(),
+                vertex_key: None,
+            }
+        };
+        let n = MAX_PANES + 500;
+        let objects = pane_objects(vec![draw("a", n), draw("b", n)], 3);
+        assert_eq!(objects.len(), MAX_PANES);
+        let vertices: usize = objects
+            .iter()
+            .flat_map(|(d, _)| d.iter())
+            .map(|d| d.vertices.len())
+            .sum();
+        assert_eq!(vertices, 2 * 3 * n);
+        // The last object holds the rest, one draw a material.
+        assert_eq!(objects.last().unwrap().0.len(), 2);
+        let ids: std::collections::HashSet<u32> = objects.iter().map(|(_, id)| *id).collect();
+        assert_eq!(ids.len(), MAX_PANES);
+        assert!(!ids.contains(&object_id(3)));
     }
 
     #[test]
