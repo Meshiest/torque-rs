@@ -47,7 +47,7 @@ new GuiControl(MenuGui)
       profile = WorldDimProfile; position = "62 104"; extent = "680 20"; visible = true; enabled = true;
       text = "Pick a map to walk around in. Click it, or press its number.";
    };
-   new GuiControl(MenuList) { position = "60 150"; extent = "940 400"; };
+   new GuiControl(MenuList) { position = "60 150"; extent = "680 400"; horizSizing = "width"; };
    new GuiTextCtrl(MenuStatus)
    {
       profile = WorldNoteProfile; position = "60 540"; extent = "680 26"; vertSizing = "top"; visible = true; enabled = true;
@@ -73,10 +73,11 @@ function buildMenu()
          text = (%i + 1) @ "   " @ $World::MapTitle[%i];
          command = "pickMap(" @ %i @ ");";
       });
-      MenuList.add(new GuiTextCtrl("MapAbout" @ %i)
+      // The line wraps in the width the window leaves, up to three lines beside the button.
+      MenuList.add(new GuiMLTextCtrl("MapAbout" @ %i)
       {
-         profile = WorldTextProfile; position = "284" SPC %y + 18; extent = "640 20"; visible = true; enabled = true;
-         text = $World::MapAbout[%i];
+         profile = WorldTextProfile; position = "284" SPC %y + 10; extent = "396 72"; horizSizing = "width"; visible = true;
+         enabled = true; text = $World::MapAbout[%i];
       });
    }
 }
