@@ -103,11 +103,11 @@ const FOG_LOW_SUN: f32 = 0.45;
 // is the sky beside it (all of it held to white cut the clouds' highlights: a fogged wall showed as a lighter patch).
 fn fog_color_toward(frag: vec2<f32>, p: vec3<f32>, keep: f32) -> vec3<f32> {
     // A secondary view (the water's mirrored camera, a capture face) has no sky copy of its own: the horizon ban's colour. The
-    // water's mirrored camera under the atmosphere's own sky takes that sky's light toward the point instead (its direction
+    // water's mirrored camera (the view clipped at the water plane) under the atmosphere's own sky takes that sky's light toward the point instead (its direction
     // turned up, as the main view sees the sky behind it), held as below: a far shape fogged into the sky reflects in the colour
     // the view sees it in, not as a flat block of the ban's.
     if CLIP {
-        if refl.capture.x < 0.5 && sky.params.w > 1.5 {
+        if frame.flags.z > 0.5 && sky.params.w > 1.5 {
             let d = normalize(p - frame.eye.xyz);
             let up = normalize(vec3<f32>(d.xy, abs(d.z)));
             let near = smoothstep(cos(FOG_SUN_OUTER), cos(FOG_SUN_INNER), dot(up, normalize(sky.drawn.xyz)));

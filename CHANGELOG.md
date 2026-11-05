@@ -297,7 +297,7 @@ The first development version. Nothing is published yet; this is what exists.
   `--examples`).
 - The water's mirrored view fogs toward the atmosphere's own sky (its light toward the point, turned up), as the main view
   fogs toward the sky behind a point, instead of the horizon ban's flat colour: a far shape fogged into the sky reflects
-  in the colour it is seen in. Capture faces and a server's sky box keep the ban's colour.
+  in the colour it is seen in. Capture faces, the sky cube's faces and a server's sky box keep the ban's colour.
 - The showcase's valley is the view low over the sea (`SEA_PICTURE_MS` into the timelapse, when the clouds' reflections read
   best), the far ranges' peaks with more faces, and a valley view's eye kept above the water where the ground is under it.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
