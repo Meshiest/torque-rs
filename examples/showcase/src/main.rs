@@ -7,7 +7,8 @@
 //! level demo's office), each at the panel size (`--size WxH`, 1920x1080 by default); then `hero.png`, the four in a 2 x 2
 //! grid of [`WIDTH`] x [`HEIGHT`] with thin transparent gutters (car and shot on top, valley and office below), and
 //! `hero@2x.png` at twice that. `--examples` draws the examples' other pictures instead (no grid): `plaza.png` (the level
-//! demo's plaza from above), `valley-wide.png` (the valley from high on its eastern slope) and `character.png` (the character
+//! demo's plaza from above), `valley-wide.png` (the valley from high on its eastern slope), `valley-close.png` (its ground close up: grass, rock and
+//! sand), `valley-far.png` (the whole valley from far up its eastern end) and `character.png` (the character
 //! example's figure mid-stride). `--only <name>` draws that one picture alone (no grid); `--grid` sets the grid again from the
 //! four pictures already in `dir`.
 
@@ -28,7 +29,13 @@ const PANEL: (u32, u32) = (1920, 1080);
 /// The panels in the grid's order: top left, top right, bottom left, bottom right.
 const PANELS: [&str; 4] = ["car", "shot", "valley", "office"];
 /// The examples' other pictures (`--examples`).
-const EXTRAS: [&str; 3] = ["plaza", "valley-wide", "character"];
+const EXTRAS: [&str; 5] = [
+    "plaza",
+    "valley-wide",
+    "valley-close",
+    "valley-far",
+    "character",
+];
 
 fn draw(gpu: &Gpu, name: &str, size: (u32, u32), dir: &Path) -> Result<Frame, String> {
     match name {
@@ -64,7 +71,7 @@ fn draw(gpu: &Gpu, name: &str, size: (u32, u32), dir: &Path) -> Result<Frame, St
             };
             picture(gpu, files, size)
         }
-        "plaza" | "valley-wide" => {
+        "plaza" | "valley-wide" | "valley-close" | "valley-far" => {
             use torque_example_level_demo::showcase::{VALLEY_VIEWS, seat_on, valley_eye, view};
             let files = torque_example_level_demo::files::GameFiles::bundled()
                 .map_err(|e| e.to_string())?;
@@ -74,7 +81,12 @@ fn draw(gpu: &Gpu, name: &str, size: (u32, u32), dir: &Path) -> Result<Frame, St
                 seat.world_picture(gpu)
             } else {
                 let mut seat = seat_on(gpu, files, size, "valley")?;
-                let (_, from, to) = VALLEY_VIEWS[1];
+                let k = match name {
+                    "valley-wide" => 1,
+                    "valley-close" => 2,
+                    _ => 3,
+                };
+                let (_, from, to) = VALLEY_VIEWS[k];
                 view(gpu, &mut seat, valley_eye(from), to)
             }
         }

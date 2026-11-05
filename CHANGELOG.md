@@ -278,6 +278,9 @@ The first development version. Nothing is published yet; this is what exists.
   fast as the clock (`cloudTimeScale = 30`, a timelapse over the held golden hour), both read by the level demo from the
   map's `MapInfo`; the level demo asks for a packet every tick at the largest size (the valley's places ghost in about
   7 s). `--valley-shots` writes each view's GPU frame time, and `--valley-clip` eight seconds of the sky moving.
+- The showcase's buggy drives through the turn in the late afternoon with its roof lamps on, their beam on the track
+  ahead; its valley is seen from over the lake's eastern end, the lake in the middle; `--examples` adds the valley's
+  ground close up and the whole valley from far up its eastern end.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel

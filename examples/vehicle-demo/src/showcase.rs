@@ -2,7 +2,7 @@
 //! hints) at the renderer's highest quality, for the project's front page ([`turn_picture`]).
 //!
 //! One player alone: into the buggy, the buggy set down on the track [`RUN_UP`] m before its tightest turn, the day held in the
-//! afternoon, then driven at about [`SPEED`] m/s along the track (steered toward the centerline [`LOOK_AHEAD`] m on), the dust
+//! late afternoon with its roof lamps on, then driven at about [`SPEED`] m/s along the track (steered toward the centerline [`LOOK_AHEAD`] m on), the dust
 //! thrown up and the tire tracks laid behind it, until it is [`IN_TURN`] m into the turn.
 
 use std::io;
@@ -20,7 +20,7 @@ use crate::files::GameFiles;
 /// The longest a step may wait (ms of the clock).
 pub const WAIT_LIMIT_MS: u32 = 20_000;
 /// The day's time held (0 sunrise, 0.25 noon, 0.5 sunset).
-pub const TIME: f32 = 0.36;
+pub const TIME: f32 = 0.43;
 /// How far before the turn the buggy is set down, the speed it is driven at (m/s), how far ahead it steers toward and how far
 /// into the turn it is pictured (m).
 pub const RUN_UP: f32 = 140.0;
@@ -148,6 +148,18 @@ pub fn turn_picture(
         ),
     )?;
     run(gpu, &mut [&mut a], 1500)?;
+    // The roof lamps on (F at the wheel): their beam on the track ahead and their glow.
+    a.game.key(Key::F, true);
+    run(gpu, &mut [&mut a], 100)?;
+    a.game.key(Key::F, false);
+    let mut waited = 0;
+    while a.game.headlight_on() != Some(true) {
+        if waited > WAIT_LIMIT_MS {
+            return Err("the headlight did not come on".into());
+        }
+        run(gpu, &mut [&mut a], 100)?;
+        waited += 100;
+    }
     // Driven up to the turn, then pictured in it.
     let goal = (turn + IN_TURN).rem_euclid(t.length());
     let mut waited = 0;
