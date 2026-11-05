@@ -47,7 +47,7 @@ new GuiControl(MenuGui)
       profile = WorldDimProfile; position = "62 104"; extent = "680 20"; visible = true; enabled = true;
       text = "Pick a map to walk around in. Click it, or press its number.";
    };
-   new GuiControl(MenuList) { position = "60 150"; extent = "940 400"; };
+   new GuiControl(MenuList) { position = "60 150"; extent = "680 400"; horizSizing = "width"; };
    new GuiTextCtrl(MenuStatus)
    {
       profile = WorldNoteProfile; position = "60 540"; extent = "680 26"; vertSizing = "top"; visible = true; enabled = true;
@@ -73,10 +73,11 @@ function buildMenu()
          text = (%i + 1) @ "   " @ $World::MapTitle[%i];
          command = "pickMap(" @ %i @ ");";
       });
-      MenuList.add(new GuiTextCtrl("MapAbout" @ %i)
+      // The line wraps in the width the window leaves, up to three lines beside the button.
+      MenuList.add(new GuiMLTextCtrl("MapAbout" @ %i)
       {
-         profile = WorldTextProfile; position = "284" SPC %y + 18; extent = "640 20"; visible = true; enabled = true;
-         text = $World::MapAbout[%i];
+         profile = WorldTextProfile; position = "284" SPC %y + 10; extent = "396 72"; horizSizing = "width"; visible = true;
+         enabled = true; text = $World::MapAbout[%i];
       });
    }
 }
@@ -125,11 +126,21 @@ function menuOne(%v) { menuKey(0, %v); }
 function menuTwo(%v) { menuKey(1, %v); }
 function menuThree(%v) { menuKey(2, %v); }
 function menuFour(%v) { menuKey(3, %v); }
+function menuFive(%v) { menuKey(4, %v); }
+function menuSix(%v) { menuKey(5, %v); }
+function menuSeven(%v) { menuKey(6, %v); }
+function menuEight(%v) { menuKey(7, %v); }
+function menuNine(%v) { menuKey(8, %v); }
 function menuQuit(%v) { if (%v) quit(); }
 MenuMap.bind(keyboard, 1, menuOne);
 MenuMap.bind(keyboard, 2, menuTwo);
 MenuMap.bind(keyboard, 3, menuThree);
 MenuMap.bind(keyboard, 4, menuFour);
+MenuMap.bind(keyboard, 5, menuFive);
+MenuMap.bind(keyboard, 6, menuSix);
+MenuMap.bind(keyboard, 7, menuSeven);
+MenuMap.bind(keyboard, 8, menuEight);
+MenuMap.bind(keyboard, 9, menuNine);
 MenuMap.bind(keyboard, escape, menuQuit);
 
 new ActionMap(PlayMap);

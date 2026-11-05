@@ -2,6 +2,7 @@
 //! umbrella crate re-exports it as `torque::app` (its `app` feature).
 //!
 //! - [`files::GameFiles`]: a game folder read once into memory, served to the scripts as their files.
+//! - [`manifest::Manifest`]: the list of a web build's files (`files.json`: paths, sizes, hashes) and its caps.
 //! - [`server::GameServer`]: the server's main loop with TGE's game classes and a network host, on a UDP socket or an in-memory
 //!   link: started, ticked, called, its console drained; [`server::GameServer::run_dedicated`] paces a dedicated one.
 //! - [`client::GameClient`]: a client host (script engine, GUI, action maps, TGE's connection half), its globals and keys, and the
@@ -30,6 +31,7 @@ pub mod ghosts;
 pub mod hosting;
 pub mod interiors;
 pub mod lights;
+pub mod manifest;
 pub mod orbit;
 pub mod server;
 pub mod shots;

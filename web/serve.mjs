@@ -17,7 +17,13 @@ const types = {
 export function serve(folder, port) {
   const root = resolve(folder);
   const server = createServer(async (req, res) => {
-    const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    let path;
+    try {
+      path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+    } catch {
+      res.writeHead(400).end('bad request');
+      return;
+    }
     const file = normalize(join(root, path.endsWith('/') ? path + 'index.html' : path));
     if (file !== root && !file.startsWith(root + sep)) {
       res.writeHead(403).end();

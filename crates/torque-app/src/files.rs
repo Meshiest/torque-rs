@@ -8,6 +8,8 @@
 //! **A pack** is the bytes `TQPK`, the file count (a little-endian `u32`), then each file: its path's length (`u32`), the path
 //! (UTF-8, `/` between folders), its length (`u32`) and its bytes.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io;
 use std::path::Path;
 
@@ -31,19 +33,37 @@ impl GameFiles {
     pub fn add_dir(&mut self, dir: &Path, prefix: &str) -> io::Result<()> {
         let mut found = Vec::new();
         read_tree(dir, dir, &mut found)?;
-        for (path, bytes) in found {
-            let path = format!("{prefix}{path}");
-            self.files.retain(|(p, _)| !p.eq_ignore_ascii_case(&path));
-            self.files.push((path, bytes));
-        }
-        self.files.sort();
+        self.extend(
+            found
+                .into_iter()
+                .map(|(path, bytes)| (format!("{prefix}{path}"), bytes)),
+        );
         Ok(())
     }
 
     /// Adds (or replaces) the file `path`.
     pub fn insert(&mut self, path: &str, bytes: &[u8]) {
-        self.files.retain(|(p, _)| !p.eq_ignore_ascii_case(path));
-        self.files.push((path.to_string(), bytes.to_vec()));
+        self.extend([(path.to_string(), bytes.to_vec())]);
+    }
+
+    /// Adds (or replaces) many files at once, in time linear in their number: of two files whose paths differ only in case, the
+    /// later one stays.
+    pub fn extend(&mut self, files: impl IntoIterator<Item = (String, Vec<u8>)>) {
+        let mut index: HashMap<String, usize> = self
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, (p, _))| (p.to_ascii_lowercase(), i))
+            .collect();
+        for (path, bytes) in files {
+            match index.entry(path.to_ascii_lowercase()) {
+                Entry::Occupied(at) => self.files[*at.get()] = (path, bytes),
+                Entry::Vacant(at) => {
+                    at.insert(self.files.len());
+                    self.files.push((path, bytes));
+                }
+            }
+        }
         self.files.sort();
     }
 
@@ -77,11 +97,11 @@ impl GameFiles {
     /// The files of a pack ([`GameFiles::pack`]).
     pub fn unpack(bytes: &[u8]) -> Result<GameFiles, String> {
         let mut files = GameFiles::default();
-        for (path, bytes) in unpack(bytes)? {
-            files.files.retain(|(p, _)| !p.eq_ignore_ascii_case(path));
-            files.files.push((path.to_string(), bytes.to_vec()));
-        }
-        files.files.sort();
+        files.extend(
+            unpack(bytes)?
+                .into_iter()
+                .map(|(path, bytes)| (path.to_string(), bytes.to_vec())),
+        );
         Ok(files)
     }
 
@@ -200,5 +220,17 @@ mod tests {
             assert!(GameFiles::unpack(&pack[..cut]).is_err(), "cut at {cut}");
         }
         assert!(GameFiles::unpack(b"TQPK\xff\xff\xff\xff").is_err());
+    }
+
+    #[test]
+    fn many_files_added_at_once_replace_by_any_case() {
+        let mut files = GameFiles::default();
+        files.insert("a.cs", b"old");
+        files.extend((0..20_000).map(|i| (format!("f/{i:05}.txt"), vec![0u8; 1])));
+        files.extend([("A.CS".to_string(), b"new".to_vec())]);
+        assert_eq!(files.iter().count(), 20_001);
+        assert_eq!(files.file("a.cs"), Some(&b"new"[..]));
+        let back = GameFiles::unpack(&files.pack()).expect("a pack");
+        assert_eq!(back.iter().count(), 20_001);
     }
 }

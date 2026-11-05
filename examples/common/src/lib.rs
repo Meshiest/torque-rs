@@ -110,21 +110,50 @@ impl<G> GameFiles<G> {
 
     /// The kit and the game folder of a pack ([`GameFiles::pack`]): a game built for the web carries its files so.
     pub fn unpack(bytes: &[u8]) -> Result<GameFiles<G>, String> {
-        let mut kit = HashMap::new();
-        let mut folder = torque::app::GameFiles::default();
-        let prefix = format!("{KIT_DIR}/");
-        for (path, bytes) in torque::app::files::unpack(bytes)? {
-            if path.starts_with(&prefix) {
-                kit.insert(path.to_ascii_lowercase(), bytes.to_vec());
+        Ok(GameFiles::of(
+            torque::app::files::unpack(bytes)?
+                .into_iter()
+                .map(|(path, bytes)| (path.to_string(), bytes.to_vec())),
+        ))
+    }
+
+    /// The kit and the game folder of the files a web build fetched by its list ([`torque::app::manifest`]): the files of each
+    /// pack (a path ending in `.pack`), and every other file at its path.
+    pub fn from_fetched(fetched: Vec<(String, Vec<u8>)>) -> Result<GameFiles<G>, String> {
+        let mut all = Vec::new();
+        for (path, bytes) in fetched {
+            if path.to_ascii_lowercase().ends_with(".pack") {
+                all.extend(
+                    torque::app::files::unpack(&bytes)?
+                        .into_iter()
+                        .map(|(path, bytes)| (path.to_string(), bytes.to_vec())),
+                );
             } else {
-                folder.insert(path, bytes);
+                all.push((path, bytes));
             }
         }
-        Ok(GameFiles {
+        Ok(GameFiles::of(all))
+    }
+
+    /// The kit (the files under [`KIT_DIR`]) and the game folder (the others) of `files`.
+    fn of(files: impl IntoIterator<Item = (String, Vec<u8>)>) -> GameFiles<G> {
+        let mut kit = HashMap::new();
+        let mut rest = Vec::new();
+        let prefix = format!("{KIT_DIR}/");
+        for (path, bytes) in files {
+            if path.starts_with(&prefix) {
+                kit.insert(path.to_ascii_lowercase(), bytes);
+            } else {
+                rest.push((path, bytes));
+            }
+        }
+        let mut folder = torque::app::GameFiles::default();
+        folder.extend(rest);
+        GameFiles {
             kit: KitAssets { files: kit },
             folder,
             game: PhantomData,
-        })
+        }
     }
 
     /// Adds (or replaces) the game folder's file `path`.
@@ -200,5 +229,16 @@ mod tests {
         assert_eq!(back.kit.read("kit/big.dif"), None);
         assert_eq!(back.file("missions/a.mis"), Some(&b"// A"[..]));
         assert_eq!(back.maps(), ["missions/a.mis"]);
+
+        let fetched = GameFiles::<Dir>::from_fetched(vec![
+            ("game.pack".to_string(), pack),
+            ("kit/extra.png".to_string(), vec![7]),
+            ("missions/b.mis".to_string(), b"// B".to_vec()),
+        ])
+        .unwrap();
+        assert_eq!(fetched.kit.read("kit/cube.dts"), Some(vec![1, 2, 3]));
+        assert_eq!(fetched.kit.read("kit/extra.png"), Some(vec![7]));
+        assert_eq!(fetched.maps(), ["missions/a.mis", "missions/b.mis"]);
+        assert!(GameFiles::<Dir>::from_fetched(vec![("bad.pack".to_string(), vec![1])]).is_err());
     }
 }

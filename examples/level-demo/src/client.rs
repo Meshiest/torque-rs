@@ -89,6 +89,7 @@ impl LevelDemo {
                 client: CLIENT_ADDR,
                 server: SERVER_ADDR,
             },
+            layout_fonts: true,
             ..ClientSetup::default()
         })?;
         b.vm.set_global("$World::MapCount", &maps.len().to_string());
