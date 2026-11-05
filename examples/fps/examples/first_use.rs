@@ -75,7 +75,7 @@ fn timed(gpu: &Gpu, seat: &mut S) -> Result<Times, String> {
     })
 }
 
-/// The frames of both seats while `ms` of the clock runs, each labelled `what`.
+/// The frames of both seats while `ms` of the clock runs, each labeled `what`.
 struct Log {
     rows: Vec<(String, Times, Times)>,
 }
@@ -90,7 +90,7 @@ impl Log {
         Ok(())
     }
 
-    /// Frames labelled `before` until Ann's scene has a new bolt hole, then `after` up to `ms` in all.
+    /// Frames labeled `before` until Ann's scene has a new bolt hole, then `after` up to `ms` in all.
     fn run_to_hole(
         &mut self,
         gpu: &Gpu,
