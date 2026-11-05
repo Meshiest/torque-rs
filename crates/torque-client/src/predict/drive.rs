@@ -1050,6 +1050,9 @@ impl GhostVehicle {
                 s.delta_rot = [s.rigid.ang_pos; 2];
                 self.warp.ticks = 0;
                 self.warp.count = 0;
+                // Drawn at the update's pose: no offset left of an earlier update's warp.
+                self.warp.offset = [0.0; 3];
+                self.warp.rot[0] = [0.0, 0.0, 0.0, 1.0];
                 let (p, q) = (s.rigid.lin_pos, s.rigid.ang_pos);
                 s.set_position(p, &q, &mut host);
             }

@@ -2102,3 +2102,62 @@ fn hostile_vehicle_updates_never_draw_another_players_buggy_at_nan_and_the_next_
     }
     a.key(Key::W, false);
 }
+
+#[test]
+fn a_warp_or_first_sight_update_draws_another_players_buggy_at_its_pose_with_no_offset_left() {
+    use torque::client::predict::ClientCollision;
+    use torque::client::records::EngineRecord as _;
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let gb = b.buggy_ghost().unwrap();
+    a.key(Key::W, true);
+    frames_both(&mut a, &mut b, 1500);
+    let newest = |b: &VehicleDemo| {
+        b.with_world(|w| {
+            w.vehicle_updates
+                .iter()
+                .rev()
+                .filter(|u| u.index == gb)
+                .find_map(|u| Some((u.record.vehicle()?, u.position?)))
+        })
+        .flatten()
+        .expect("an update of the buggy")
+    };
+    for (name, warp, added) in [("a warp", true, true), ("first sight", false, false)] {
+        // An update 5 units aside leaves an offset to ease out; then the warp (or first sight) at the buggy's own pose.
+        let (rec, at) = newest(&b);
+        let aside = [at[0] + 5.0, at[1], at[2]];
+        let unpack = |b: &mut VehicleDemo, rec: &_, at: [f32; 3], added: bool| {
+            let mut st = b.client.host.client.borrow_mut();
+            let c = st.conn.conn.as_mut().expect("the connection");
+            let g = c.predict.ghost_vehicles.get_mut(&gb).expect("the ghost");
+            g.unpack(rec, Some(at), added, &mut ClientCollision::empty());
+        };
+        unpack(&mut b, &rec, aside, true);
+        frames_both(&mut a, &mut b, 32);
+        let (mut rec, at) = newest(&b);
+        rec.pose.as_mut().unwrap().warp = warp;
+        // One tick of its own straight after (no other update between).
+        let mut st = b.client.host.client.borrow_mut();
+        let c = st.conn.conn.as_mut().unwrap();
+        let g = c.predict.ghost_vehicles.get_mut(&gb).unwrap();
+        g.unpack(&rec, Some(at), added, &mut ClientCollision::empty());
+        g.tick(&mut ClientCollision::empty(), 0);
+        // Its drawn pose at its tick is its state run on by its lead, nothing more.
+        let s = &g.body.v.s;
+        let want: [f32; 3] =
+            std::array::from_fn(|i| s.rigid.lin_pos[i] + s.rigid.lin_vel[i] * g.warp.lead);
+        assert!(
+            apart(s.delta_pos, want) < 1e-3,
+            "{name}: drawn at {:?}, its state at {want:?}",
+            s.delta_pos
+        );
+        let turn = (0..4)
+            .map(|i| s.delta_rot[1][i] * s.rigid.ang_pos[i])
+            .sum::<f32>()
+            .abs();
+        assert!(turn > 1.0 - 1e-5, "{name}: turned from its state ({turn})");
+    }
+    a.key(Key::W, false);
+}

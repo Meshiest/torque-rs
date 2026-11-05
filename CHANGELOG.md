@@ -283,7 +283,8 @@ The first development version. Nothing is published yet; this is what exists.
   turn; an update's rotation of no length is left out, momenta that give velocities that are not finite leave the body at
   rest, and a tick that makes anything not finite is undone, so a hostile update never draws a vehicle at NaN and the next
   one heals it. The drawn offset from an update shrinks by a share each tick (an update coming before the last one's ease
-  ended slowed it), and past 10 units it is drawn there at once.
+  ended slowed it), and past 10 units it is drawn there at once. A warp or first-sight update draws it at its pose with no
+  offset left of an earlier update.
 - `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
   had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
   head turned as far as it goes).
