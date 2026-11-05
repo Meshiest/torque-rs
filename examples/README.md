@@ -3,7 +3,7 @@
 Small games made on the engine. Each uses the asset kit (shapes, textures, terrains and trees made by code at startup, no
 files in the repository) and the app layer (`torque::app`: the files in memory, a server, a client, a window). Every
 picture here is drawn offscreen by the example itself, the world alone with no HUD (`just examples/showcase` and
-`just examples/showcase --examples`, see [The pictures](#the-pictures)).
+`just examples/showcase <dir> --examples`, see [The pictures](#the-pictures)).
 
 Run the recipes from the repository's root (`just examples/<recipe>`) or from this folder (`just <recipe>`). Each recipe is
 a plain `cargo run`, shown beside it. The web builds need rustup's `wasm32-unknown-unknown` target and Node; the first build
@@ -36,7 +36,7 @@ TorqueScript mission files (`level-demo/game/missions/`): the plaza, the maze, t
 the office is a Blockbench model (`game/levels/office.bbmodel`) built into interiors when the game starts, with its glass
 and ceiling lights; the valley is a terrain with a lake (below).
 
-**Controls:** 1 to 9 pick a map on the menu; W A S D move, Shift walk, Space jump, mouse look, V first or third person
+**Controls:** 1 to 9 pick a map on the menu; W A S D move, Shift walk, Space jump, mouse look, Tab first or third person
 (the camera eases between them), R restart, Esc back to the menu.
 
 **Run it:**
