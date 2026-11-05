@@ -1,6 +1,6 @@
 //! The arena in a browser, join-only: its files, fetched by the page or carried inside the module, the engine's window as a
 //! canvas on the page, and a game socket over WebSocket to the server that served the page (`fps-server --transport web` or
-//! `both`).
+//! `both`), with a WebRTC data channel beside it when the server offers one (`--webrtc`).
 //!
 //! **Its files**, as the level demo's: built with the `embed-pack` feature the module carries them (a pack made by
 //! `fps-client --web-pack`, its path in `TORQUE_WEB_PACK` when it is built) and the page calls [`start_embedded`]; without
@@ -12,8 +12,11 @@
 //! once; when the game ends or the connection is lost the main menu offers only to join again. The page's root element
 //! carries the game's state for a test to wait on: `data-torque-frames` (the frames drawn), `data-torque-map` (the map
 //! being played, empty off it), `data-torque-figure` (`1` once the client predicts its own figure),
-//! `data-torque-position` (where, `x y z`), `data-torque-others` (the other players' figures the client holds) and
-//! `data-torque-status` (the menu's status line).
+//! `data-torque-position` (where, `x y z`), `data-torque-others` (the other players' figures the client holds),
+//! `data-torque-status` (the menu's status line), `data-torque-link` (`websocket`, `connecting` or `datachannel`: which
+//! carries the datagrams), `data-torque-rtc-tried` and `data-torque-rtc-failed` (`1` once a data channel was tried, or
+//! failed or was refused), `data-torque-rtc-in` (the messages the channel brought) and `data-torque-rtc-gap` (the longest
+//! time between two of them, in milliseconds, over the last two seconds or so).
 
 use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -21,6 +24,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use torque::app::manifest::Manifest;
 use torque::app::view::WorldView;
 use torque::app::{App, Host};
+use torque::client::net::web_rtc::{LinkWatch, WebRtcDatagrams};
 use torque::client::net::web_socket::WebSocketDatagrams;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
@@ -118,7 +122,8 @@ fn start(files: GameFiles) -> Result<(), String> {
             .unwrap_or_else(|| "Browser player".to_string()),
         ..ClientOptions::default()
     };
-    let socket = WebSocketDatagrams::open(&url, SERVER)?;
+    let socket = WebRtcDatagrams::new(WebSocketDatagrams::open(&url, SERVER)?);
+    let watch = socket.watch();
     let mut game = ArenaGame::with_socket(files, options, Box::new(socket))?;
     game.set_global("$Arena::JoinOnly", "1");
     game.call("showMainMenu", &[])?;
@@ -126,6 +131,7 @@ fn start(files: GameFiles) -> Result<(), String> {
         game,
         url,
         frames: 0,
+        watch,
     };
     web.join()?;
     torque::app::window::run(web)
@@ -168,6 +174,8 @@ struct WebArena {
     game: ArenaGame,
     url: String,
     frames: u64,
+    /// The links of the present game socket.
+    watch: LinkWatch,
 }
 
 impl WebArena {
@@ -179,7 +187,8 @@ impl WebArena {
 
     /// Opens a new game socket and joins again (the menu's Join).
     fn rejoin(&mut self) -> Result<(), String> {
-        let socket = WebSocketDatagrams::open(&self.url, SERVER)?;
+        let socket = WebRtcDatagrams::new(WebSocketDatagrams::open(&self.url, SERVER)?);
+        self.watch = socket.watch();
         self.game.set_socket(Box::new(socket));
         self.join()
     }
@@ -230,6 +239,17 @@ impl WebArena {
         let _ = root.set_attribute("data-torque-position", &position);
         let _ = root.set_attribute("data-torque-others", &others.to_string());
         let _ = root.set_attribute("data-torque-status", &status);
+        let mut link = self.watch.borrow_mut();
+        let flag = |b: bool| if b { "1" } else { "0" };
+        let _ = root.set_attribute("data-torque-link", link.link.name());
+        let _ = root.set_attribute("data-torque-rtc-tried", flag(link.tried));
+        let _ = root.set_attribute("data-torque-rtc-failed", flag(link.failed));
+        let _ = root.set_attribute("data-torque-rtc-in", &link.messages_in.to_string());
+        let _ = root.set_attribute("data-torque-rtc-gap", &format!("{:.0}", link.max_gap_ms));
+        // A window of about two seconds (eight marks).
+        if self.frames % 120 == 1 {
+            link.max_gap_ms = 0.0;
+        }
     }
 }
 

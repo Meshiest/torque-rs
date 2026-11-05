@@ -16,6 +16,13 @@
 //! These switches need `--transport web` or `both`. TLS handshakes run on the server's thread: an ECDSA (P-256) key makes each
 //! far cheaper than an RSA one. The address rule looks at the bind address only: a private address that a router maps 1:1
 //! to a public one serves plain `http` and `ws` to the internet, so use TLS there.
+//!
+//! Data channels: `--webrtc` (with `--transport web` or `both`) gives browsers a WebRTC data channel beside their game
+//! socket, on a UDP port of its own: `--rtc-port <port>` (default the game's port number plus one; 0 any free one). Its
+//! candidates are the bind address, or with `--bind 0.0.0.0` this computer's LAN addresses, and each `--rtc-public-ip
+//! <address>` (repeatable: a host behind a 1:1 NAT names its public address). Browsers whose channel does not open stay
+//! on their game socket. For checks: `--rtc-loss <percent>` drops that share of the channels' datagrams both ways, and
+//! `--rtc-stats` prints the channels' traffic every 2 s (each peer's longest gap between game messages).
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::Ipv4Addr;
@@ -24,6 +31,8 @@ use std::path::PathBuf;
 
 #[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
+#[cfg(not(target_arch = "wasm32"))]
+use torque::server::net::web::rtc::RtcSetup;
 #[cfg(not(target_arch = "wasm32"))]
 use torque::server::net::web::{Access, Origins, Tls, TlsFiles, WebFiles, WebSetup};
 #[cfg(not(target_arch = "wasm32"))]
@@ -51,6 +60,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut key = None;
     let mut access = Access::default();
     let mut origins = Vec::new();
+    let mut webrtc = false;
+    let mut rtc_port = None;
+    let mut rtc_public = Vec::new();
+    let mut rtc_loss = 0u8;
+    let mut rtc_stats = false;
     let mut args = Args::from_env();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -68,6 +82,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--tls-key" => key = Some(args.dir(&arg)?),
             "--web-host" => access.hosts.push(args.value(&arg, "a host name")?),
             "--allow-origin" => origins.push(args.value(&arg, "an origin")?),
+            "--webrtc" => webrtc = true,
+            "--rtc-port" => rtc_port = Some(args.number(&arg)?),
+            "--rtc-public-ip" => rtc_public.push(args.ipv4(&arg)?),
+            "--rtc-loss" => rtc_loss = args.number::<u8>(&arg)?.min(100),
+            "--rtc-stats" => rtc_stats = true,
             _ => return Err(unknown(&arg).into()),
         }
     }
@@ -86,9 +105,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         || key.is_some()
         || !access.hosts.is_empty()
         || !origins.is_empty();
-    if transports == Transports::Udp && web_flags {
-        return Err("--web-root, --no-files, --tls-cert, --tls-key, --web-host and --allow-origin are for the web: add --transport web or --transport both"
+    if transports == Transports::Udp && (web_flags || webrtc) {
+        return Err("--web-root, --no-files, --tls-cert, --tls-key, --web-host, --allow-origin and --webrtc are for the web: add --transport web or --transport both"
             .into());
+    }
+    if !webrtc && (rtc_port.is_some() || !rtc_public.is_empty() || rtc_loss > 0 || rtc_stats) {
+        return Err("--rtc-port, --rtc-public-ip, --rtc-loss and --rtc-stats are for the data channels: add --webrtc".into());
     }
     let mut server = if transports == Transports::Udp {
         ArenaServer::start_dedicated(&files, &options)?
@@ -123,10 +145,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Origins::List(origins)
         };
+        let rtc = if webrtc {
+            let port = match rtc_port {
+                Some(port) => port,
+                None if options.port == 0 => 0,
+                None => options
+                    .port
+                    .checked_add(1)
+                    .ok_or("--rtc-port is needed when --port is 65535")?,
+            };
+            if options.address.is_unspecified() && rtc_public.is_empty() {
+                rtc_public = lan_addresses();
+            }
+            Some(RtcSetup {
+                port,
+                public: rtc_public,
+                loss_percent: rtc_loss,
+                ..RtcSetup::default()
+            })
+        } else {
+            None
+        };
         let setup = WebSetup {
             files: files_served,
             tls,
             access,
+            rtc,
             ..WebSetup::default()
         };
         ArenaServer::start_dedicated_on(&files, &options, transports, setup)?
@@ -138,6 +182,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         if transports != Transports::Udp {
             println!("fps-server: browsers join {web_scheme}://{addr}/");
+        }
+        if webrtc {
+            for line in server.transport_status() {
+                println!("fps-server: {line}");
+            }
+        }
+        if rtc_stats {
+            server.set_status_every(Some(std::time::Duration::from_secs(2)));
         }
         if options.public {
             let port = addr.port();

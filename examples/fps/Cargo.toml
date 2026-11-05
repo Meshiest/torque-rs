@@ -15,7 +15,7 @@ categories = ["game-development"]
 # address. The game's own scripts are in `game/`; the maps are the `.mis` files in `game/missions/`.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps", "web"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps", "web", "webrtc"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }

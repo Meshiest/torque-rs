@@ -86,6 +86,15 @@ web-fps-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-join.png" 120
 
+# The arena's data-channel checks (build it first as for `web-fps-check`): the browser joins on a WebRTC data channel
+# beside its game socket (`fps-server --webrtc`); then with 10% of the channel's datagrams dropped both ways, its game
+# messages keep arriving with no stall; then with UDP blocked in the browser it plays over the game socket
+web-fps-rtc-check:
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc.png" 120 rtc
+    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-loss.png" 120 rtc-loss
+    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-blocked.png" 120 rtc-blocked
+
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`
 level-demo-shots dir="../target/level-demo-shots":
