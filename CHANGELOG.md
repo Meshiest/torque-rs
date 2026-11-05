@@ -179,8 +179,8 @@ The first development version. Nothing is published yet; this is what exists.
   connections capped in all, per address and per second. `Transport::service` does a transport's work between ticks.
   Requests must name an IP address, `localhost` or one of the server's names in `Host` (421 otherwise, against DNS
   rebinding), and a page's game socket must come from the server's own page or a listed origin (`net::web::Access`, 403
-  otherwise). Game sockets go by stand-in addresses in `240.0.0.0/4`, one per peer address, so they never share an address
-  with a UDP peer; a socket's place under the per-address cap is reserved when its upgrade is answered.
+  otherwise). Game sockets go by stand-in addresses in `240.0.0.0/4`, one fixed IP per peer address (a peer that comes
+  back has the same one, so the host's limits and bans hold), so they never share an address with a UDP peer; a socket's place under the per-address cap is reserved when its upgrade is answered.
 - `torque-client`'s `web-socket` feature: a client's datagrams over WebSocket (`net::web_socket::WebSocketDatagrams`: the
   page's `WebSocket` in a browser, a plain `ws` connection natively). `torque::app`'s `web` feature: a server on
   `Listen::Web` (the web alone, or UDP beside it), whose dedicated loop services the transport between ticks, and
