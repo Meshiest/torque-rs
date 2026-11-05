@@ -1,7 +1,7 @@
-//! A mesh (`.glb`, `.gltf`, `.obj`) into one or more `.dif`s and a `.mis` fragment.
+//! A mesh (`.glb`, `.gltf`, `.obj`, `.bbmodel`) into one or more `.dif`s and a `.mis` fragment.
 //!
 //! ```text
-//! torque-convert <in.glb|in.gltf|in.obj> <out.dif> [--hulls auto|authored|slabs] [--slab <thickness, 0.1>]
+//! torque-convert <in.glb|in.gltf|in.obj|in.bbmodel> <out.dif> [--hulls auto|authored|slabs] [--slab <thickness, 0.1>]
 //!     [--lightmap-texel <units, 0.5>] [--up y|z] [--scale <meters a unit, 1>] [--mission <out.mis>] [--name <object name>]
 //!     [--file <interiorFile path>] [--position "x y z"] [--rotation "ax ay az degrees"] [--instance-scale "x y z"]
 //! ```
@@ -21,7 +21,7 @@ use crate::model;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: torque-convert <in.glb|in.gltf|in.obj> <out.dif> [--hulls auto|authored|slabs] [--slab T] \
+        "usage: torque-convert <in.glb|in.gltf|in.obj|in.bbmodel> <out.dif> [--hulls auto|authored|slabs] [--slab T] \
          [--lightmap-texel T] [--up y|z] [--scale N] [--mission OUT.mis] [--name NAME] [--file PATH] [--position \"x y z\"] \
          [--rotation \"ax ay az deg\"] [--instance-scale \"x y z\"]"
     );

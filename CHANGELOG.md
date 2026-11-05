@@ -57,8 +57,11 @@ The first development version. Nothing is published yet; this is what exists.
   read back makes the same `.dts`, byte for byte.
 - Native glTF shapes: a datablock's `shapeFile` may name a `.glb` (or a `.gltf` with `data:` URIs); the server's preload, the
   client's prediction and eye and the shape drawing read it as the `.dts` it makes.
-- `torque-import`: a Wavefront OBJ reader (`.obj` with its `.mtl` files; every count, number, index and path bounded).
-- `torque-convert`: the converter command, its own crate: models (`.glb`, `.gltf`, `.obj`, `.dts`) into `.dts` (with the
+- `torque-import`: a Wavefront OBJ reader (`.obj` with its `.mtl` files; every count, number, index and path bounded) and
+  a Blockbench reader (`.bbmodel`: cubes with their turns, origins and inflation, meshes, groups as nodes, per-face
+  coordinates and turns, embedded PNG and JPEG textures; the JSON size, element and texture counts and sizes bounded), so a
+  `.bbmodel` converts to a `.dts` or builds into an interior (each cube a closed part: one hull).
+- `torque-convert`: the converter command, its own crate: models (`.glb`, `.gltf`, `.obj`, `.bbmodel`, `.dts`) into `.dts` (with the
   images the model carries) or `.glb`, and `.map` brushes or meshes into interiors (`--hulls auto|authored|slabs`).
 - `torque-shape-builder`: skin meshes, objects with a mesh in several details, primitives of several materials, aligned
   scale keys and blend flags in owned sequence specs; the name table is made at build time (nodes, details, objects,

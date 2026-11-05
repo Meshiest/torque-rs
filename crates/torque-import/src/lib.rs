@@ -5,6 +5,8 @@
 //!   resolver) and writer ([`gltf::write_glb`]), which keeps what a shape needs and glTF has no word for (details, material
 //!   flags, sequence flags, ground frames) in `extras`, so a shape written out and read back is the same shape.
 //! - [`obj`]: the Wavefront OBJ reader ([`obj::read`], `.mtl` files through a resolver): static meshes, groups as meshes.
+//! - [`bbmodel`] (feature `gltf`, for its JSON parser and image headers): the Blockbench reader ([`bbmodel::read`]): cubes,
+//!   meshes, the outliner's groups as nodes, per-face coordinates and the textures the file carries.
 //! - [`dts`]: the model layer as a shape ([`dts::to_dts`], through `torque-shape-builder`) and a shape as the model layer
 //!   ([`dts::from_dts`]).
 //! - [`native`] (feature `gltf`): what the engine calls when a datablock's shape file is a `.glb` or `.gltf`: the shape's
@@ -25,6 +27,8 @@
 //! shape loader, `TSShapeLoader::generateObjects` and `generateSequences` (`Engine/source/ts/loader/tsShapeLoader.cpp`:
 //! Copyright (c) 2012 GarageGames, LLC; MIT). The code here is this crate's own.
 
+#[cfg(feature = "gltf")]
+pub mod bbmodel;
 pub mod caps;
 pub mod dts;
 #[cfg(feature = "gltf")]

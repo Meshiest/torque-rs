@@ -763,4 +763,46 @@ mod tests {
         let r = check_mesh(&input, &shrunk, counts, 1).unwrap();
         assert!(r.solid_mismatches > 0, "{}", r.line());
     }
+
+    #[test]
+    fn a_blockbench_model_builds_with_a_hull_a_cube_and_passes_verification() {
+        let face = r#"{"uv":[0,0,16,16]}"#;
+        let faces = format!(
+            r#"{{"north":{face},"east":{face},"south":{face},"west":{face},"up":{face},"down":{face}}}"#
+        );
+        let cube = |name: &str, from: [i32; 3], to: [i32; 3], extra: &str| {
+            format!(
+                r#"{{"name":"{name}","type":"cube","from":{from:?},"to":{to:?},"origin":[8,0,8]{extra},"faces":{faces}}}"#
+            )
+        };
+        let text = format!(
+            r#"{{"meta":{{"format_version":"4.10"}},"resolution":{{"width":16,"height":16}},"elements":[{},{},{},{}],
+               "outliner":[]}}"#,
+            cube("floor", [-64, -8, -64], [64, 0, 64], ""),
+            cube("crate", [0, 0, 0], [16, 16, 16], r#","rotation":[0,30,0]"#),
+            cube("plinth", [32, 0, 32], [48, 8, 40], r#","inflate":1"#),
+            r#"{"name":"wedge","type":"mesh","origin":[-32,0,-32],"vertices":{"a":[0,0,0],"b":[16,0,0],"c":[0,0,16],
+               "d":[0,16,0]},"faces":{"f1":{"vertices":["a","b","c"]},"f2":{"vertices":["a","d","b"]},
+               "f3":{"vertices":["a","c","d"]},"f4":{"vertices":["b","d","c"]}}}"#,
+        );
+        let options = torque_import::Options {
+            box_hull: false,
+            ..torque_import::Options::default()
+        };
+        let model = torque_import::bbmodel::read(text.as_bytes(), &options, &mut |_| true).unwrap();
+        let input = MeshInput::from_model(&model).unwrap();
+        let built = build_mesh(&input, &MeshOptions::default()).unwrap();
+        // Every cube and the closed wedge (its faces counter-clockwise seen from outside, as Blockbench keeps them) is one closed
+        // part, each one hull.
+        assert_eq!(built.plan.solids.len(), 4);
+        assert_eq!(built.plan.hulls.len(), 4);
+        let r = check_mesh(&input, &built, Counts::scaled(SHARE), 3).unwrap();
+        assert!(
+            r.clean() && r.source_segments > 0,
+            "{}
+{:?}",
+            r.line(),
+            r.first
+        );
+    }
 }

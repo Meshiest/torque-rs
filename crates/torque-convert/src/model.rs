@@ -1,14 +1,14 @@
-//! A model (`.glb`, `.gltf`, `.obj`, `.dts`) into a `.dts` or a `.glb`.
+//! A model (`.glb`, `.gltf`, `.obj`, `.bbmodel`, `.dts`) into a `.dts` or a `.glb`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use torque_import::modelcore::Model;
-use torque_import::{Options, caps, dts, gltf, obj};
+use torque_import::{Options, bbmodel, caps, dts, gltf, obj};
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: torque-convert <in.glb|in.gltf|in.obj|in.dts> <out.dts|out.glb> [--up y|z] [--scale N] [--rate N] \
+        "usage: torque-convert <in.glb|in.gltf|in.obj|in.bbmodel|in.dts> <out.dts|out.glb> [--up y|z] [--scale N] [--rate N] \
          [--no-hull]"
     );
     ExitCode::FAILURE
@@ -57,6 +57,7 @@ pub fn read(input: &str, options: &Options) -> Result<Model, String> {
                 gltf::read(&bytes, &mut side, options, &mut free).map_err(|e| e.to_string())
             }
         }
+        "bbmodel" => bbmodel::read(&bytes, options, &mut free).map_err(|e| e.to_string()),
         other => Err(format!("not a model file (.{other})")),
     }
 }

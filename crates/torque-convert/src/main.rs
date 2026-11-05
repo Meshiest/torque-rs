@@ -1,10 +1,10 @@
 //! `torque-convert`: models and maps into the files the engine reads.
 //!
 //! ```text
-//! torque-convert <in.glb|in.gltf|in.obj|in.dts> <out.dts|out.glb> [--up y|z] [--scale <meters a unit, 1>]
+//! torque-convert <in.glb|in.gltf|in.obj|in.bbmodel|in.dts> <out.dts|out.glb> [--up y|z] [--scale <meters a unit, 1>]
 //!     [--rate <keys a second, 30>] [--no-hull]
 //! torque-convert <in.map> <out.dif> ... (see the interior module)
-//! torque-convert <in.glb|in.gltf|in.obj> <out.dif> ... (see the mesh module)
+//! torque-convert <in.glb|in.gltf|in.obj|in.bbmodel> <out.dif> ... (see the mesh module)
 //! ```
 //!
 //! A model is read into the model layer (`torque-import`) and written as a `.dts` (images the model carries are written beside
@@ -30,8 +30,8 @@ fn main() -> ExitCode {
         Some(_) => model::run(&args),
         None => {
             eprintln!(
-                "usage: torque-convert <in.glb|in.gltf|in.obj|in.dts> <out.dts|out.glb> [options], or \
-                 <in.map|in.glb|in.gltf|in.obj> <out.dif> [options]"
+                "usage: torque-convert <in.glb|in.gltf|in.obj|in.bbmodel|in.dts> <out.dts|out.glb> [options], or \
+                 <in.map|in.glb|in.gltf|in.obj|in.bbmodel> <out.dif> [options]"
             );
             ExitCode::FAILURE
         }
