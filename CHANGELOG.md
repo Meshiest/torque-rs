@@ -288,5 +288,15 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
   had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
   head turned as far as it goes).
+- `torque-client`: a window takes the system cursor (lock, confine, center) only while it is focused and shown. It lets go the
+  moment it loses focus or is hidden, never moves the cursor then, and takes it again when it is focused and shown and the
+  game still wants the hold (a window made in the background held it before). In a browser the pointer lock is asked for
+  only right after a click, never renewed on a timer or after Esc.
+- The web page: `?nolock` stops every pointer-lock request (a non-writable, non-configurable no-op). The browser checks get
+  their browser only from `launchGuarded` (`web/guard.mjs`), whose pages (and popups and frames) cannot take the pointer
+  lock whatever they load, and also load with `?nolock`. `web/guard-scan.mjs` fails any script in the repository that names a
+  browser driver or program or loads a module by a computed name, and `web/guard.test.mjs` shows a page that locks on click
+  never gets it; both run in `just examples/web-guard-test` (first in each check recipe) and in CI. Headless Chrome on
+  Windows confined the real cursor when a check clicked the canvas.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main
