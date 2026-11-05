@@ -155,3 +155,18 @@ fn the_strip_runs_on_to_the_wheel_in_a_head_each_frame() {
     t.update(&[wheel(0.0, 4.9, false)], &slope, 0.016);
     assert_eq!(t.heads().count(), 0);
 }
+
+#[test]
+fn a_forgotten_wheel_starts_a_new_strip() {
+    let mut t = TireTracks::new(rules());
+    for k in 0..4 {
+        t.update(&[wheel(0.0, k as f32 * 0.5, true)], &slope, 0.016);
+    }
+    let laid = t.len();
+    assert!(laid > 0);
+    // Another vehicle took the ghost's index: its wheel lays no segment back to the old strip's end.
+    t.forget(1);
+    t.update(&[wheel(0.0, 2.0, true)], &slope, 0.016);
+    assert_eq!(t.len(), laid, "the old segments stay, none joins them");
+    assert_eq!(t.heads().count(), 0);
+}

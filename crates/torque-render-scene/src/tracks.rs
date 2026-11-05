@@ -145,6 +145,13 @@ impl TireTracks {
         }
     }
 
+    /// Forgets the strips' ends of ghost `index` (another object took its index): its wheels start new strips. The segments
+    /// laid stay and fade.
+    pub fn forget(&mut self, index: u32) {
+        self.ends.retain(|k, _| k.0 != index);
+        self.heads.retain(|k, _| k.0 != index);
+    }
+
     /// The strips' heads this frame (module docs), by wheel.
     pub fn heads(&self) -> impl Iterator<Item = (&(u32, usize), &TrackSegment)> {
         self.heads.iter()
