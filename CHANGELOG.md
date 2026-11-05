@@ -170,6 +170,9 @@ The first development version. Nothing is published yet; this is what exists.
   Chrome, walks the figure and fails on any console error. The engine's parts it needs run on the page's one thread, the
   browser's clock and the browser's fonts; `torque::app::GameFiles::pack` and `unpack` carry a game folder as one block of
   bytes.
+- `torque::app::manifest`: the list of a web build's files (`files.json`: each file's path, size and SHA-256), read with caps
+  on its size, its file count, the files' total bytes, the paths and the hashes' form; a fetched file is taken only when its
+  size and hash are the list's. The examples' `GameFiles::from_fetched` reads the fetched files (packs and loose files).
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
