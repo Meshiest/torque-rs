@@ -42,8 +42,8 @@ use std::sync::Arc;
 
 use torque_shapes::bounds;
 use torque_shapes::shape::{
-    Detail, FileExtras, Material, Mesh, MeshKind, MeshRender, Model, Node, Object, ObjectState,
-    Primitive, Quat16, RawMaterial, RawMaterials, Sequence, Shape, SubShape,
+    Detail, FileExtras, Material, Mesh, MeshExtra, MeshKind, MeshRender, Model, Node, Object,
+    ObjectState, Primitive, Quat16, RawMaterial, RawMaterials, Sequence, Shape, SkinData, SubShape,
 };
 
 pub type Vec3 = [f32; 3];
@@ -75,6 +75,7 @@ const PRIM_NO_MATERIAL: u32 = 0x1000_0000;
 /// `TSShape::Sequence`'s flags for a sequence that loops and for a blend sequence.
 const SEQ_CYCLIC: u32 = 16;
 const SEQ_BLEND: u32 = 8;
+const SEQ_ALIGNED_SCALE: u32 = 2;
 /// The "no map" index of the material list's reflectance, bump and detail maps.
 const NO_MAP: u32 = u32::MAX;
 
@@ -143,6 +144,9 @@ pub struct MeshData {
     pub indices: Vec<u16>,
     /// The material list's index, or None for a collision mesh (no material).
     pub material: Option<u32>,
+    /// The triangles as primitives of their own materials, in order: each an index count and its material. Empty: one
+    /// primitive of [`material`](Self::material) over every index.
+    pub groups: Vec<(usize, Option<u32>)>,
 }
 
 impl MeshData {
@@ -154,6 +158,7 @@ impl MeshData {
             tverts: Vec::new(),
             indices: Vec::new(),
             material,
+            groups: Vec::new(),
         }
     }
 
@@ -305,16 +310,62 @@ impl MeshData {
         m
     }
 
-    /// The mesh and its render arrays as the model holds them.
-    fn into_parts(self) -> (Mesh, MeshRender) {
+    /// The mesh and its render arrays as the model holds them (a skin mesh with `skin`).
+    fn into_parts(self, skin: Option<SkinDef>) -> (Mesh, MeshRender) {
         let c = bounds::compute(&self.positions);
         let n = self.positions.len();
-        let material = match self.material {
+        let word = |m: Option<u32>| match m {
             Some(m) => PRIM_INDEXED | m,
             None => PRIM_INDEXED | PRIM_NO_MATERIAL,
         };
+        let primitives = if self.groups.is_empty() {
+            vec![Primitive {
+                start: 0,
+                num_elements: self.indices.len() as u16,
+                material: word(self.material),
+            }]
+        } else {
+            let mut start = 0usize;
+            self.groups
+                .iter()
+                .map(|&(count, m)| {
+                    let p = Primitive {
+                        start: start as u16,
+                        num_elements: count as u16,
+                        material: word(m),
+                    };
+                    start += count;
+                    p
+                })
+                .collect()
+        };
+        let extra = match skin {
+            Some(skin) => {
+                let (bones, initial): (Vec<i32>, Vec<[f32; 16]>) =
+                    skin.bones.iter().map(|&(b, m)| (b as i32, m)).unzip();
+                MeshExtra::Skin(SkinData {
+                    num_initial_verts: n,
+                    num_transforms: initial.len(),
+                    num_weights: skin.weights.len(),
+                    num_nodes: bones.len(),
+                    initial_verts: Arc::from(self.positions.clone()),
+                    initial_normals: Arc::from(self.normals.clone()),
+                    initial_encoded_normals: Arc::from(vec![0u8; n]),
+                    initial_transforms: Arc::from(initial),
+                    vertex_index: skin.weights.iter().map(|w| w.0 as i32).collect(),
+                    bone_index: skin.weights.iter().map(|w| w.1 as i32).collect(),
+                    weight: skin.weights.iter().map(|w| w.2).collect(),
+                    node_index: Arc::from(bones),
+                })
+            }
+            None => MeshExtra::None,
+        };
         let mesh = Mesh {
-            kind: MeshKind::Standard,
+            kind: if matches!(extra, MeshExtra::Skin(_)) {
+                MeshKind::Skin
+            } else {
+                MeshKind::Standard
+            },
             parent: -1,
             num_frames: 1,
             num_mat_frames: 1,
@@ -327,11 +378,7 @@ impl MeshData {
             num_verts: n,
             num_tverts: self.tverts.len(),
             positions: Arc::from(self.positions),
-            primitives: vec![Primitive {
-                start: 0,
-                num_elements: self.indices.len() as u16,
-                material,
-            }],
+            primitives,
             indices: self.indices,
         };
         let render = MeshRender {
@@ -339,7 +386,7 @@ impl MeshData {
             normals: Arc::from(self.normals),
             encoded_normals: Arc::from(vec![0u8; n]),
             merge_indices: Vec::new(),
-            extra: Default::default(),
+            extra,
         };
         (mesh, render)
     }
@@ -366,9 +413,50 @@ pub struct SequenceDef {
     pub ground: Vec<Vec3>,
 }
 
+/// A sequence with an owned name, a blend flag and aligned scale tracks (factors along the node's axes): what an importer
+/// hands [`ShapeBuilder::add_sequence`]. Keys as in [`SequenceDef`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SequenceSpec {
+    pub name: String,
+    pub duration: f32,
+    pub cyclic: bool,
+    pub blend: bool,
+    pub priority: i32,
+    pub keyframes: usize,
+    pub rotations: Vec<Track<Quat16>>,
+    pub translations: Vec<Track<Vec3>>,
+    pub scales: Vec<Track<Vec3>>,
+    pub ground: Vec<Vec3>,
+}
+
+impl SequenceDef {
+    fn spec(self, blend: bool) -> SequenceSpec {
+        SequenceSpec {
+            name: self.name.to_string(),
+            duration: self.duration,
+            cyclic: self.cyclic,
+            blend,
+            priority: self.priority,
+            keyframes: self.keyframes,
+            rotations: self.rotations,
+            translations: self.translations,
+            scales: Vec::new(),
+            ground: self.ground,
+        }
+    }
+}
+
+/// The bones of a skin mesh: each its node and initial transform (the inverse of the bone's rest transform in the shape's
+/// space: a vertex is placed by the node's transform times this one), and the weights as (vertex, bone, weight) triples.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SkinDef {
+    pub bones: Vec<(usize, [f32; 16])>,
+    pub weights: Vec<(u32, u32, f32)>,
+}
+
 #[derive(Debug, Clone)]
 struct NodeDef {
-    name: i32,
+    name: String,
     parent: Option<usize>,
     translation: Vec3,
     rotation: Quat16,
@@ -376,22 +464,23 @@ struct NodeDef {
 
 #[derive(Debug, Clone)]
 struct ObjectDef {
-    name: i32,
-    node: usize,
-    detail: usize,
-    mesh: MeshData,
+    name: String,
+    /// None for a skin (its vertices are in the shape's space).
+    node: Option<usize>,
+    /// Its mesh in each detail it has one in (a skin mesh with its bones).
+    meshes: Vec<(usize, MeshData, Option<SkinDef>)>,
 }
 
-/// A shape being built (module docs).
+/// A shape being built (module docs). [`build`](Self::build) makes the name table: the nodes' names, then the details', the
+/// objects' and the sequences', each name once.
 #[derive(Debug, Clone, Default)]
 pub struct ShapeBuilder {
     names: Vec<Vec<u8>>,
     nodes: Vec<NodeDef>,
     objects: Vec<ObjectDef>,
-    details: Vec<(i32, f32)>,
+    details: Vec<(String, f32)>,
     materials: Vec<RawMaterial>,
-    /// Each sequence and whether it is a blend sequence.
-    sequences: Vec<(SequenceDef, bool)>,
+    sequences: Vec<SequenceSpec>,
 }
 
 impl ShapeBuilder {
@@ -425,9 +514,8 @@ impl ShapeBuilder {
         translation: Vec3,
         rotation: Quat16,
     ) -> usize {
-        let name = self.name(name);
         self.nodes.push(NodeDef {
-            name,
+            name: name.to_string(),
             parent,
             translation,
             rotation,
@@ -438,14 +526,13 @@ impl ShapeBuilder {
     /// A detail level; `size` is the pixel size it is drawn down to (negative: never drawn, a collision or line-of-sight
     /// detail). Returns its index.
     pub fn detail(&mut self, name: &str, size: f32) -> usize {
-        let name = self.name(name);
-        self.details.push((name, size));
+        self.details.push((name.to_string(), size));
         self.details.len() - 1
     }
 
     /// A material of the list: the texture's name without its extension (`grid` is drawn with `grid.png` beside the shape).
     pub fn material(&mut self, name: &str, flags: u32) -> u32 {
-        self.materials.push(RawMaterial {
+        self.raw_material(RawMaterial {
             name: name.as_bytes().to_vec(),
             flags,
             reflectance_map: NO_MAP,
@@ -453,39 +540,84 @@ impl ShapeBuilder {
             detail_map: NO_MAP,
             detail_scale: 1.0,
             reflection_amount: 1.0,
-        });
+        })
+    }
+
+    /// A material of the list with every field the file keeps; returns its index.
+    pub fn raw_material(&mut self, material: RawMaterial) -> u32 {
+        self.materials.push(material);
         (self.materials.len() - 1) as u32
     }
 
     /// An object on `node` whose mesh in detail `detail` is `mesh` (it has none in the other details).
     pub fn object(&mut self, name: &str, node: usize, detail: usize, mesh: MeshData) {
-        let name = self.name(name);
         self.objects.push(ObjectDef {
-            name,
+            name: name.to_string(),
+            node: Some(node),
+            meshes: vec![(detail, mesh, None)],
+        });
+    }
+
+    /// An object on `node` (None: a skin, placed by its bones) with a mesh in each of several details: `(detail, mesh, skin)`,
+    /// the skin given for a skin mesh.
+    pub fn object_meshes(
+        &mut self,
+        name: &str,
+        node: Option<usize>,
+        meshes: Vec<(usize, MeshData, Option<SkinDef>)>,
+    ) {
+        self.objects.push(ObjectDef {
+            name: name.to_string(),
             node,
-            detail,
-            mesh,
+            meshes,
+        });
+    }
+
+    /// A skin object (no node: its vertices are in the shape's space, placed by its bones) whose mesh in detail `detail` is
+    /// `mesh`.
+    pub fn skin_object(&mut self, name: &str, detail: usize, mesh: MeshData, skin: SkinDef) {
+        self.objects.push(ObjectDef {
+            name: name.to_string(),
+            node: None,
+            meshes: vec![(detail, mesh, Some(skin))],
         });
     }
 
     pub fn sequence(&mut self, def: SequenceDef) {
-        self.name(def.name);
-        self.sequences.push((def, false));
+        self.sequences.push(def.spec(false));
+    }
+
+    /// A sequence as [`SequenceSpec`] gives it.
+    pub fn add_sequence(&mut self, spec: SequenceSpec) {
+        self.sequences.push(spec);
     }
 
     /// A blend sequence: its keys are turns and moves from the rest pose that a thread playing it multiplies onto each node's
     /// pose of the other threads (`handleBlendSequence`), so it adds to whatever else plays rather than replacing it.
     pub fn blend_sequence(&mut self, def: SequenceDef) {
-        self.name(def.name);
-        self.sequences.push((def, true));
+        self.sequences.push(def.spec(true));
     }
 
     /// The model (module docs).
     pub fn build(mut self) -> Model {
         let mut s = Shape::empty();
+        let named: Vec<String> = (self.nodes.iter().map(|n| n.name.clone()))
+            .chain(self.details.iter().map(|d| d.0.clone()))
+            .chain(self.objects.iter().map(|o| o.name.clone()))
+            .chain(self.sequences.iter().map(|q| q.name.clone()))
+            .collect();
+        let mut indices = named
+            .iter()
+            .map(|n| self.name(n))
+            .collect::<Vec<_>>()
+            .into_iter();
+        let node_names: Vec<i32> = indices.by_ref().take(self.nodes.len()).collect();
+        let detail_names: Vec<i32> = indices.by_ref().take(self.details.len()).collect();
+        let object_names: Vec<i32> = indices.by_ref().take(self.objects.len()).collect();
+        let sequence_names: Vec<i32> = indices.collect();
         let parent_of = |n: &NodeDef| n.parent.map_or(-1, |p| p as i32);
         for (i, n) in self.nodes.iter().enumerate() {
-            let first_object = self.objects.iter().position(|o| o.node == i);
+            let first_object = self.objects.iter().position(|o| o.node == Some(i));
             let first_child = self.nodes.iter().position(|c| c.parent == Some(i));
             // `TSShape::init` links only the children of a parent; the roots stay unlinked.
             let next_sibling = n.parent.and_then(|p| {
@@ -497,7 +629,7 @@ impl ShapeBuilder {
                     .map(|(j, _)| j)
             });
             s.nodes.push(Node {
-                name: n.name,
+                name: node_names[i],
                 parent: parent_of(n),
                 first_object: first_object.map_or(-1, |j| j as i32),
                 first_child: first_child.map_or(-1, |j| j as i32),
@@ -516,13 +648,13 @@ impl ShapeBuilder {
                 .iter()
                 .enumerate()
                 .skip(i + 1)
-                .find(|(_, p)| p.node == o.node)
+                .find(|(_, p)| o.node.is_some() && p.node == o.node)
                 .map_or(-1, |(j, _)| j as i32);
             s.objects.push(Object {
-                name: o.name,
+                name: object_names[i],
                 num_meshes: detail_count as i32,
                 start_mesh_index: (i * detail_count) as i32,
-                node: o.node as i32,
+                node: o.node.map_or(-1, |n| n as i32),
                 next_sibling,
                 first_decal: -1,
             });
@@ -533,13 +665,16 @@ impl ShapeBuilder {
             });
         }
         for o in objects {
-            let mut mesh = Some(o.mesh);
-            for (d, count) in polys.iter_mut().enumerate() {
-                if d == o.detail
-                    && let Some(m) = mesh.take()
-                {
+            let mut meshes: Vec<Option<(MeshData, Option<SkinDef>)>> = vec![None; detail_count];
+            for (d, m, skin) in o.meshes {
+                if let Some(slot) = meshes.get_mut(d) {
+                    *slot = Some((m, skin));
+                }
+            }
+            for (slot, count) in meshes.into_iter().zip(polys.iter_mut()) {
+                if let Some((m, skin)) = slot {
                     *count += m.triangles() as i32;
-                    let (m, r) = m.into_parts();
+                    let (m, r) = m.into_parts(skin);
                     s.meshes.push(Some(m));
                     render.push(Some(r));
                 } else {
@@ -559,9 +694,9 @@ impl ShapeBuilder {
 
         s.smallest_visible_dl = -1;
         let mut smallest = f32::MAX;
-        for (i, &(name, size)) in self.details.iter().enumerate() {
+        for (i, &(_, size)) in self.details.iter().enumerate() {
             s.details.push(Detail {
-                name,
+                name: detail_names[i],
                 sub_shape: 0,
                 object_detail: i as i32,
                 size,
@@ -576,12 +711,11 @@ impl ShapeBuilder {
             }
         }
 
-        for (def, blend) in std::mem::take(&mut self.sequences) {
-            let name = self.name(def.name);
-            let mut seq = sequence(&mut s, name, def);
-            if blend {
-                seq.flags |= SEQ_BLEND;
-            }
+        for (spec, name) in std::mem::take(&mut self.sequences)
+            .into_iter()
+            .zip(sequence_names)
+        {
+            let seq = sequence(&mut s, name, spec);
             s.sequences.push(seq);
         }
 
@@ -634,19 +768,28 @@ fn lay_out<T: Copy>(
     (base, set)
 }
 
-fn sequence(s: &mut Shape, name: i32, def: SequenceDef) -> Sequence {
+fn sequence(s: &mut Shape, name: i32, def: SequenceSpec) -> Sequence {
     let k = def.keyframes;
     let (base_rotation, rotation_matters) =
         lay_out(&mut s.node_rotations, def.rotations, k, NO_TURN);
     let (base_translation, translation_matters) =
         lay_out(&mut s.node_translations, def.translations, k, [0.0; 3]);
+    let scaled = !def.scales.is_empty();
+    let (base_scale, scale_matters) = lay_out(&mut s.node_aligned_scales, def.scales, k, [1.0; 3]);
+    let mut flags = if def.cyclic { SEQ_CYCLIC } else { 0 };
+    if def.blend {
+        flags |= SEQ_BLEND;
+    }
+    if scaled {
+        flags |= SEQ_ALIGNED_SCALE;
+    }
     let first_ground_frame = s.ground_translations.len() as i32;
     s.ground_translations.extend(&def.ground);
     s.ground_rotations
         .extend(std::iter::repeat_n(NO_TURN, def.ground.len()));
     Sequence {
         name,
-        flags: if def.cyclic { SEQ_CYCLIC } else { 0 },
+        flags,
         num_keyframes: k as i32,
         duration: def.duration,
         priority: def.priority,
@@ -654,7 +797,7 @@ fn sequence(s: &mut Shape, name: i32, def: SequenceDef) -> Sequence {
         num_ground_frames: def.ground.len() as i32,
         base_rotation,
         base_translation,
-        base_scale: 0,
+        base_scale: if scaled { base_scale } else { 0 },
         // The objects' default states come first; no sequence here animates an object's state.
         base_object_state: s.objects.len() as i32,
         base_decal_state: 0,
@@ -663,7 +806,7 @@ fn sequence(s: &mut Shape, name: i32, def: SequenceDef) -> Sequence {
         tool_begin: 0.0,
         rotation_matters,
         translation_matters,
-        scale_matters: Default::default(),
+        scale_matters,
         decal_matters: Default::default(),
         ifl_matters: Default::default(),
         vis_matters: Default::default(),
