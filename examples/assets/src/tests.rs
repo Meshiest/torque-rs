@@ -420,7 +420,7 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
     let mut names: Vec<_> = a.iter().map(|x| x.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 14);
+    assert_eq!(names.len(), 17);
     // Every material names a texture of the kit.
     for (_, model) in models() {
         for m in &model.shape.materials {
@@ -430,6 +430,12 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
             );
             assert!(names.contains(&file.as_str()), "{file}");
         }
+    }
+    let arena =
+        torque_interior_builder::build(&crate::interiors::arena(), &Default::default()).unwrap();
+    for m in &arena.dif.details[0].materials {
+        let file = format!("{m}.png");
+        assert!(names.contains(&file.as_str()), "{file}");
     }
 }
 
@@ -672,4 +678,28 @@ fn the_recoil_kicks_the_held_arm_up_and_back_and_settles() {
         (0..3).all(|k| (end[k] - held[k]).abs() < 1e-4),
         "{end:?} back at {held:?}"
     );
+}
+
+/// The share of the builder's full counts the arena's check takes (`DIF_VERIFY_SHARE` sets it: 1 for the full counts).
+fn verify_share() -> f64 {
+    std::env::var("DIF_VERIFY_SHARE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.01)
+}
+
+#[test]
+fn the_arena_interior_passes_the_builders_checks() {
+    use torque_interior_builder::verify::{Counts, run};
+    let brushes = crate::interiors::arena();
+    let r = run(
+        &brushes,
+        &torque_interior_builder::Options::default(),
+        Counts::scaled(verify_share()),
+        7,
+    )
+    .unwrap();
+    println!("arena ({} brushes): {}", brushes.len(), r.line());
+    assert!(r.clean(), "{}", r.line());
+    assert_eq!(r.hulls, brushes.len());
 }

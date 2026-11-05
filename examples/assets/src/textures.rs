@@ -3,6 +3,7 @@
 //! | file | size | look |
 //! |---|---|---|
 //! | `grid.png` | 64 x 64 | light gray tiles, 16 px each, alternating a shade, with darker grout and a darker border |
+//! | `arena_floor.png`, `arena_wall.png` | 64 x 64 | the same tiles in a warm sand and a cool slate (the arena interior's) |
 //! | `figure.png` | 64 x 64 | four swatches: skin, shirt (with a hem), trousers (shoes along the bottom), and the eyes' colour |
 //! | `pistol.png` | 32 x 32 | dark metal, lighter along the top rows, faint grip lines lower down |
 //! | `projectile.png` | 16 x 16 | a white core fading to a pale cyan at the edge |
@@ -61,18 +62,32 @@ fn shade(c: Rgb, by: i16) -> Rgb {
 
 /// The cube's tiles.
 pub fn grid() -> io::Result<Vec<u8>> {
+    grid_tinted([255; 3])
+}
+
+/// The arena interior's floor: the tiles in a warm sand.
+pub const SAND: Rgb = [214, 198, 170];
+/// The arena interior's walls and cover: the tiles in a cool slate.
+pub const SLATE: Rgb = [170, 182, 201];
+
+/// The cube's tiles multiplied by `tint` (as the cubes are drawn tinted).
+pub fn grid_tinted(tint: Rgb) -> io::Result<Vec<u8>> {
     let base: Rgb = [176, 181, 189];
-    png(64, 64, |x, y| {
-        if x < 2 || y < 2 || x >= 62 || y >= 62 {
-            shade(base, -64)
-        } else if x % 16 == 0 || y % 16 == 0 {
-            shade(base, -40)
-        } else if (x / 16 + y / 16) % 2 == 0 {
-            shade(base, 10)
-        } else {
-            base
-        }
-    })
+    let tinted = |c: Rgb| [0, 1, 2].map(|k| (u16::from(c[k]) * u16::from(tint[k]) / 255) as u8);
+    png(64, 64, |x, y| tinted(grid_tile(base, x, y)))
+}
+
+/// The tile pattern's pixel at `x`, `y`.
+fn grid_tile(base: Rgb, x: u32, y: u32) -> Rgb {
+    if x < 2 || y < 2 || x >= 62 || y >= 62 {
+        shade(base, -64)
+    } else if x.is_multiple_of(16) || y.is_multiple_of(16) {
+        shade(base, -40)
+    } else if (x / 16 + y / 16).is_multiple_of(2) {
+        shade(base, 10)
+    } else {
+        base
+    }
 }
 
 /// The figure's four swatches.

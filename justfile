@@ -40,6 +40,7 @@ msrv:
 # segments and 1,000,000 BSP points each, read back through the importer and the collision; every map 0 mismatches
 dif-verify:
     cargo run --release -p torque-interior-builder --features verify --example dif-verify
+    $env:DIF_VERIFY_SHARE = "1"; cargo test --release -p torque-example-assets the_arena_interior -- --nocapture
 
 # What CI checks, in one go (rustdoc with warnings as errors is part of it)
 ci: check test deny book

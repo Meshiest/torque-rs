@@ -2106,6 +2106,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "torque-images",
+ "torque-interior-builder",
  "torque-shape-builder",
  "torque-shapes",
 ]

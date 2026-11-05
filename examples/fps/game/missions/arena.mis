@@ -1,9 +1,10 @@
-// The arena: a walled square of 40 units with cover taller than a figure (2.4 units: a standing figure's head tops out near 2),
-// two low platforms with steps and a block in the middle.
+// The arena: one interior (the kit's `arena.dif`, built from boxes in code): a walled square of 40 units with cover taller than
+// a figure (2.4 units: a standing figure's head tops out near 2), two low platforms with steps, a block in the middle and stacks of
+// crates.
 
 new SimGroup(MissionGroup)
 {
-   // Sharp texels: the cubes' textures drawn with nearest-neighbor filtering (a map that names no filter keeps them smooth).
+   // Sharp texels: the arena drawn with nearest-neighbor filtering (a map that names no filter keeps it smooth).
    textureFilter = "nearest";
    // The view reaches far across the arena, with a light haze toward its edges.
    new Sky(ArenaSky)
@@ -13,49 +14,14 @@ new SimGroup(MissionGroup)
       fogColor = "0.72 0.8 0.9 1";
       useSkyTextures = false;
    };
-   // The floor.
-   new StaticShape() { dataBlock = ArenaCube; position = "0 0 -0.5"; scale = "40 40 1"; };
-   // The four walls.
-   new StaticShape() { dataBlock = ArenaCube; position = "0 20.5 1.5"; scale = "42 1 3"; };
-   new StaticShape() { dataBlock = ArenaCube; position = "0 -20.5 1.5"; scale = "42 1 3"; };
-   new StaticShape() { dataBlock = ArenaCube; position = "20.5 0 1.5"; scale = "1 40 3"; };
-   new StaticShape() { dataBlock = ArenaCube; position = "-20.5 0 1.5"; scale = "1 40 3"; };
-   // The block in the middle.
-   new StaticShape() { dataBlock = ArenaCube; position = "0 0 1.3"; scale = "3 3 2.6"; };
+   new InteriorInstance(Arena)
+   {
+      position = "0 0 0";
+      rotation = "1 0 0 0";
+      scale = "1 1 1";
+      interiorFile = "kit/arena.dif";
+   };
 };
-
-function addArenaCube(%position, %scale)
-{
-   MissionGroup.add(new StaticShape() { dataBlock = ArenaCube; position = %position; scale = %scale; });
-}
-
-function buildArena()
-{
-   // Walls to hide behind, in a ring around the middle.
-   for (%i = 0; %i < 8; %i++)
-   {
-      %a = %i * 0.785398;
-      %scale = %i % 2 == 0 ? "1 4 2.4" : "2.5 2.5 2.4";
-      addArenaCube(mCos(%a) * 9 SPC mSin(%a) * 9 SPC "1.2", %scale);
-   }
-   // Two platforms on opposite corners, each with two steps up.
-   for (%side = -1; %side <= 1; %side += 2)
-   {
-      %c = 13 * %side;
-      addArenaCube(%c SPC %c SPC "0.75", "6 6 1.5");
-      addArenaCube(%c - 4 * %side SPC %c SPC "0.25", "2 4 0.5");
-      addArenaCube(%c - 3.5 * %side SPC %c SPC "0.75", "1 4 0.5");
-   }
-   // Crates stacked in the other two corners, two side by side and one on top.
-   for (%side = -1; %side <= 1; %side += 2)
-   {
-      addArenaCube(14 * %side SPC -14 * %side SPC "0.6", "1.2 1.2 1.2");
-      addArenaCube(15.2 * %side SPC -13.4 * %side SPC "0.6", "1.2 1.2 1.2");
-      addArenaCube(14.6 * %side SPC -13.7 * %side SPC "1.8", "1.2 1.2 1.2");
-   }
-}
-
-buildArena();
 
 // Where figures start: "x y z yaw", each facing the middle.
 $Arena::Spawn[0] = "0 -16 0.1 0";
