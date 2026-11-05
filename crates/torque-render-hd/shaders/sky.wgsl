@@ -64,7 +64,7 @@ fn sun_disk(dir: vec3<f32>, frag_angle: f32) -> vec3<f32> {
 
 // A hash of a cell (Hugo Elias's integer hash, our arrangement).
 fn hash3(p: vec3<i32>) -> f32 {
-    var n = u32(p.x) * 73856093u ^ u32(p.y) * 19349663u ^ u32(p.z) * 83492791u;
+    var n = (u32(p.x) * 73856093u) ^ (u32(p.y) * 19349663u) ^ (u32(p.z) * 83492791u);
     n = (n << 13u) ^ n;
     n = n * (n * n * 15731u + 789221u) + 1376312589u;
     return f32(n & 0x7fffffffu) / 2147483647.0;

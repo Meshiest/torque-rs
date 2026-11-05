@@ -94,7 +94,7 @@ const WATER_F0: f32 = 0.02;
 const WATER_ROUGHNESS: f32 = 0.06;
 
 fn hash21(p: vec2<i32>) -> f32 {
-    var h = u32(p.x) * 0x8da6b343u ^ u32(p.y) * 0xd8163841u;
+    var h = (u32(p.x) * 0x8da6b343u) ^ (u32(p.y) * 0xd8163841u);
     h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
     h = (h ^ (h >> 12u)) * 0x297a2d39u;
     h = h ^ (h >> 15u);

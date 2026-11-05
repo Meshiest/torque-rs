@@ -194,7 +194,7 @@ fn grain(c: vec3<f32>, xy: vec2<i32>) -> vec3<f32> {
         return c;
     }
     let seed = u32(post.grain.y);
-    var h = u32(xy.x) * 0x8da6b343u ^ u32(xy.y) * 0xd8163841u ^ seed * 0xcb1ab31fu;
+    var h = (u32(xy.x) * 0x8da6b343u) ^ (u32(xy.y) * 0xd8163841u) ^ (seed * 0xcb1ab31fu);
     h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
     h = (h ^ (h >> 12u)) * 0x297a2d39u;
     h = h ^ (h >> 15u);

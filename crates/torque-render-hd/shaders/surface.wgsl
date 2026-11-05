@@ -3,7 +3,7 @@
 
 // Value noise (quintic fade) and its gradient, our own (prefixed: water.wgsl has its own).
 fn mat_hash(p: vec2<i32>) -> f32 {
-    var h = u32(p.x) * 0x27d4eb2du ^ u32(p.y) * 0x165667b1u;
+    var h = (u32(p.x) * 0x27d4eb2du) ^ (u32(p.y) * 0x165667b1u);
     h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
     h = (h ^ (h >> 12u)) * 0x297a2d39u;
     h = h ^ (h >> 15u);
