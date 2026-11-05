@@ -79,38 +79,16 @@ impl Grade {
     };
 }
 
-/// The neutral curve's shoulder: the identity up to it.
-pub const NEUTRAL_SHOULDER: f32 = 0.8;
-/// The neutral curve's path to white: the overshoot past white (the largest channel, in units of white) at which a color has
-/// gone half way from its hue-kept shoulder to each channel's own.
-pub const WHITE_SPILL: f32 = 24.0;
-
-fn shoulder(v: f32) -> f32 {
-    if v <= NEUTRAL_SHOULDER {
-        return v;
-    }
-    let span = 1.0 - NEUTRAL_SHOULDER;
-    NEUTRAL_SHOULDER + span * (1.0 - (-(v - NEUTRAL_SHOULDER) / span).exp())
-}
-
-/// The neutral hue-keeping shoulder (the CPU form of `tonemap.wgsl`'s `tonemap`): the largest channel brought under 1 and the
-/// others scaled with it, then, far past white, `q / (1 + q)` of the way (`q` the fourth power of the overshoot over
-/// [`WHITE_SPILL`]: under about ten times white all but nothing) to each channel's own shoulder: the light the hue-keeping
-/// shoulder cannot show raises the other channels in the order they fill (a red sun through orange and yellow to white; a pure
-/// primary stays itself), so a brighter color shows brighter (a saturated sun disk no darker than the paler sky about it).
+/// The neutral hue-keeping shoulder (the CPU form of `tonemap.wgsl`'s `tonemap`).
 pub fn neutral_tonemap(c: [f32; 3]) -> [f32; 3] {
+    const SHOULDER: f32 = 0.8;
     let m = c[0].max(c[1]).max(c[2]);
-    if m <= NEUTRAL_SHOULDER {
+    if m <= SHOULDER {
         return c;
     }
-    let mapped = shoulder(m);
-    let x = (m - 1.0).max(0.0) / WHITE_SPILL;
-    let q = (x * x) * (x * x);
-    let g = q / (1.0 + q);
-    c.map(|v| {
-        let h = v * (mapped / m);
-        h + (shoulder(v) - h) * g
-    })
+    let span = 1.0 - SHOULDER;
+    let mapped = SHOULDER + span * (1.0 - (-(m - SHOULDER) / span).exp());
+    c.map(|v| v * (mapped / m))
 }
 
 fn lum(c: [f32; 3]) -> f32 {

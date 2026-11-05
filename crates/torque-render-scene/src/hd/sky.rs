@@ -127,6 +127,42 @@ pub struct SunDisk {
     pub limb: [f32; 3],
 }
 
+/// The neutral tonemap's shoulder (`tonemap.wgsl`'s `SHOULDER`): where the disk's own path to white starts its channels'
+/// curves.
+pub const DISK_SHOULDER: f32 = 0.8;
+/// The overshoot past white (the disk's largest channel, in units of white) at which its color has gone half way to white.
+pub const DISK_WHITE_SPILL: f32 = 16.0;
+
+fn disk_shoulder(v: f32) -> f32 {
+    if v <= DISK_SHOULDER {
+        return v;
+    }
+    let span = 1.0 - DISK_SHOULDER;
+    DISK_SHOULDER + span * (1.0 - (-(v - DISK_SHOULDER) / span).exp())
+}
+
+/// The sun disk's light made white-hot (the CPU form of `sky.wgsl`'s `disk_white_hot`). The neutral tonemap keeps a color's hue
+/// however far past white it is, so a saturated disk a hundred times over white showed as the same orange as the sky about it and
+/// darker than a paler sky. The disk takes its own path to white instead: its hue goes `q / (1 + q)` of the way (`q` the square of
+/// the overshoot over [`DISK_WHITE_SPILL`]) to each channel's own shoulder, so the light the shoulder cannot show raises
+/// the other channels in the order they fill (white overhead; cream, peach and orange as the air dims and reddens it), with its
+/// largest channel kept. Under white it is unchanged.
+pub fn disk_white_hot(d: [f32; 3]) -> [f32; 3] {
+    let m = d[0].max(d[1]).max(d[2]);
+    if m <= 1.0 {
+        return d;
+    }
+    let x = (m - 1.0) / DISK_WHITE_SPILL;
+    let q = x * x;
+    let g = q / (1.0 + q);
+    let shown = d.map(|v| {
+        let h = v / m;
+        h + (disk_shoulder(v) - h) * g
+    });
+    let top = shown[0].max(shown[1]).max(shown[2]).max(1e-6);
+    shown.map(|v| v * m / top)
+}
+
 /// The physical sky's light for a sun of 1 times this (`π` times the scale that makes a sunny day's sky as bright as the fixed-function
 /// sky box beside sunlit surfaces).
 pub const DEFAULT_SKY_GAIN: f32 = 16.0;

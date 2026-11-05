@@ -281,10 +281,10 @@ The first development version. Nothing is published yet; this is what exists.
 ### Fixed
 
 - `torque-render-hd`: the sun disk no longer shows as a dull orange dot darker than the sky about it at golden hour. The
-  neutral tonemap kept every color's hue past white, so a saturated disk 100 times over white showed as the same orange as
-  anything twice over and darker than the paler sky; far past white a color now goes on toward each channel's own shoulder
-  (a path to white: white overhead, cream, peach and orange toward the horizon), and the disk dims with the air it shines
-  through (the atmosphere's transmittance), so it stays the brightest thing in the sky at every elevation.
+  neutral tonemap keeps every color's hue past white, so a saturated disk 100 times over white showed as the same orange as
+  the sky about it and darker than a paler sky. The disk now takes its own path to white (white-hot overhead; cream, peach
+  and orange toward the horizon; the tonemap itself is unchanged) and dims with the air it shines through (the atmosphere's
+  transmittance), so it stays the brightest thing in the sky at every elevation.
 - `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
   Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
   speed).

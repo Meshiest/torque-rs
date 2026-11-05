@@ -134,33 +134,3 @@ fn the_default_grade_stays_near_range_and_keep_black_and_white() {
         assert!(white.iter().all(|v| *v > 0.95), "{white:?}");
     }
 }
-
-#[test]
-fn the_neutral_curve_shows_a_brighter_color_brighter_far_past_white() {
-    let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    // A sunset's orange, a golden hour's and a saturated blue, from under white to far past it: the shown luminance never falls
-    // and, past eight times white, keeps rising (no two brightnesses show alike).
-    for hue in [[1.0, 0.25, 0.02], [1.0, 0.7, 0.4], [0.05, 0.1, 1.0]] {
-        let mut last = 0.0;
-        for k in 0..200 {
-            let s = (k as f32 * 0.05 - 3.0).exp2();
-            let shown = lum(neutral_tonemap(hue.map(|v| v * s)));
-            assert!(shown >= last, "{hue:?} x {s}: {shown} < {last}");
-            if s > 8.0 {
-                assert!(
-                    shown > last + 1e-5,
-                    "{hue:?} x {s}: {shown} not over {last}"
-                );
-            }
-            last = shown;
-        }
-    }
-    // A disk far past white over a paler sky a little past it: the disk shows brighter.
-    let disk = neutral_tonemap([160.0, 110.0, 63.0]);
-    let sky = neutral_tonemap([1.35, 1.23, 1.15]);
-    assert!(lum(disk) > lum(sky) + 0.05, "{disk:?} {sky:?}");
-    // Under white nothing changes, and a little past it the hue is all but kept.
-    assert_eq!(neutral_tonemap([0.5, 0.2, 0.1]), [0.5, 0.2, 0.1]);
-    let c = neutral_tonemap([2.0, 0.5, 0.0]);
-    assert!(c[2] < 0.01 && (c[1] / c[0] - 0.25).abs() < 0.01, "{c:?}");
-}

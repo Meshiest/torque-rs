@@ -3,9 +3,7 @@
 //
 // The tonemap is the identity up to SHOULDER (so the scene's colours stay theirs) and above it an exponential shoulder towards
 // 1 applied to the largest channel, the others scaled with it: the hue and saturation of a bright colour are kept (a per-channel curve
-// would bleach and shift them). Far past white a color goes on toward each channel's own shoulder (the path to white,
-// WHITE_SPILL): without it every color more than about twice white showed alike, and a saturated sun disk showed darker than
-// the paler sky about it.
+// would bleach and shift them).
 //
 // The source is the anti-aliased frame (the TAA's history at the output's size, or the FXAA-style filter's frame at the
 // internal size, scaled up bilinearly when it is smaller). After the TAA (Ultra) our own contrast-adaptive sharpen runs on the
@@ -31,9 +29,6 @@
 // 24 Hz step in display units (static while the time is pinned).
 
 const SHOULDER: f32 = 0.8;
-// The overshoot past white (the largest channel, in units of white) at which a color has gone half way from its hue-kept
-// shoulder to each channel's own (the path to white).
-const WHITE_SPILL: f32 = 24.0;
 // The AgX-style constants (hd::grade's; a test compares them).
 const AGX_INSET: f32 = 0.14;
 const AGX_MIN_EV: f32 = -11.0;
@@ -87,29 +82,14 @@ fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
 }
 
-// The shoulder of one value.
-fn shoulder(v: f32) -> f32 {
-    if v <= SHOULDER {
-        return v;
-    }
-    let span = 1.0 - SHOULDER;
-    return SHOULDER + span * (1.0 - exp(-(v - SHOULDER) / span));
-}
-
 fn tonemap(c: vec3<f32>) -> vec3<f32> {
     let m = max(c.r, max(c.g, c.b));
     if m <= SHOULDER {
         return c;
     }
-    let mapped = shoulder(m);
-    // The path to white: far past white the color goes q / (1 + q) of the way (q the fourth power of the overshoot over
-    // WHITE_SPILL: under about ten times white all but nothing) to each channel's own shoulder, so the light the hue-keeping
-    // shoulder cannot show raises the other channels in the order they fill (a red sun through orange and yellow to white; a
-    // pure primary stays itself).
-    let x = max(m - 1.0, 0.0) / WHITE_SPILL;
-    let q = (x * x) * (x * x);
-    let own = vec3<f32>(shoulder(c.r), shoulder(c.g), shoulder(c.b));
-    return mix(c * (mapped / m), own, q / (1.0 + q));
+    let span = 1.0 - SHOULDER;
+    let mapped = SHOULDER + span * (1.0 - exp(-(m - SHOULDER) / span));
+    return c * (mapped / m);
 }
 
 fn lum(c: vec3<f32>) -> f32 {
