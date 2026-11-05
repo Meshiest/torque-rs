@@ -93,6 +93,48 @@ fn every_map_loads_and_its_figure_spawns_and_walks() {
     }
 }
 
+/// Every map on the menu starts from its number key, as a player picks it.
+#[test]
+fn every_map_starts_from_its_number_key() {
+    const DIGITS: [Key; 9] = [
+        Key::Digit1,
+        Key::Digit2,
+        Key::Digit3,
+        Key::Digit4,
+        Key::Digit5,
+        Key::Digit6,
+        Key::Digit7,
+        Key::Digit8,
+        Key::Digit9,
+    ];
+    let mut game = LevelDemo::new(GameFiles::bundled().expect("the game folder")).unwrap();
+    game.step(64);
+    let maps = game.maps.clone();
+    assert!(maps.len() <= DIGITS.len(), "more maps than number keys");
+    for (index, map) in maps.iter().enumerate() {
+        game.key(DIGITS[index], true);
+        game.key(DIGITS[index], false);
+        let mut started = false;
+        for _ in 0..600 {
+            game.step(32);
+            if game.in_world() && game.ghost_count() > 1 {
+                started = true;
+                break;
+            }
+        }
+        assert!(
+            started,
+            "{} did not start from key {}: {:?}",
+            map.title,
+            index + 1,
+            game.server_log
+        );
+        assert_eq!(game.playing, Some(index), "{}", map.title);
+        hold(&mut game, Key::Escape, 64);
+        assert!(!game.in_world(), "{}", map.title);
+    }
+}
+
 #[test]
 fn the_maps_sky_reaches_the_client_with_its_far_fog() {
     let mut game = LevelDemo::new(GameFiles::bundled().expect("the game folder")).unwrap();

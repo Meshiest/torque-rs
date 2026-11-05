@@ -125,11 +125,21 @@ function menuOne(%v) { menuKey(0, %v); }
 function menuTwo(%v) { menuKey(1, %v); }
 function menuThree(%v) { menuKey(2, %v); }
 function menuFour(%v) { menuKey(3, %v); }
+function menuFive(%v) { menuKey(4, %v); }
+function menuSix(%v) { menuKey(5, %v); }
+function menuSeven(%v) { menuKey(6, %v); }
+function menuEight(%v) { menuKey(7, %v); }
+function menuNine(%v) { menuKey(8, %v); }
 function menuQuit(%v) { if (%v) quit(); }
 MenuMap.bind(keyboard, 1, menuOne);
 MenuMap.bind(keyboard, 2, menuTwo);
 MenuMap.bind(keyboard, 3, menuThree);
 MenuMap.bind(keyboard, 4, menuFour);
+MenuMap.bind(keyboard, 5, menuFive);
+MenuMap.bind(keyboard, 6, menuSix);
+MenuMap.bind(keyboard, 7, menuSeven);
+MenuMap.bind(keyboard, 8, menuEight);
+MenuMap.bind(keyboard, 9, menuNine);
 MenuMap.bind(keyboard, escape, menuQuit);
 
 new ActionMap(PlayMap);
