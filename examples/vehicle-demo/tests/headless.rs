@@ -2022,3 +2022,83 @@ fn at_speed_another_players_buggy_is_drawn_where_the_server_has_it() {
         );
     }
 }
+
+/// Where `game` draws vehicle ghost `index` this frame, its rotation too.
+fn drawn_pose(game: &VehicleDemo, index: u32) -> Option<([f32; 3], [f32; 4])> {
+    game.with_world(|w| match w.vehicle_render.get(&index)? {
+        torque::ghost_world::world::Pose::Quat { position, rotation } => {
+            Some((*position, *rotation))
+        }
+        _ => None,
+    })
+    .flatten()
+}
+
+#[test]
+fn hostile_vehicle_updates_never_draw_another_players_buggy_at_nan_and_the_next_update_heals_it() {
+    use torque::client::predict::ClientCollision;
+    use torque::client::records::EngineRecord as _;
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let gb = b.buggy_ghost().unwrap();
+    a.key(Key::W, true);
+    frames_both(&mut a, &mut b, 1500);
+    type Hostile = fn(&mut torque::client::records::VehicleUpdate, &mut [f32; 3]);
+    let cases: [(&str, Hostile); 6] = [
+        ("a far position", |_, p| *p = [1e38; 3]),
+        ("an infinite velocity", |r, _| {
+            r.pose.as_mut().unwrap().linear = [f32::INFINITY, 0.0, 0.0]
+        }),
+        ("a NaN velocity", |r, _| {
+            r.pose.as_mut().unwrap().linear = [f32::NAN; 3]
+        }),
+        ("a huge momentum", |r, _| {
+            r.pose.as_mut().unwrap().linear = [3e38; 3]
+        }),
+        ("a huge spin", |r, _| {
+            r.pose.as_mut().unwrap().angular = [3e38; 3]
+        }),
+        ("a rotation of no length", |r, _| {
+            r.pose.as_mut().unwrap().rotation = [0.0; 4]
+        }),
+    ];
+    for (name, hostile) in cases {
+        // The newest real update of the buggy, made hostile, as the other client's ghost takes it.
+        let (mut rec, mut at) = b
+            .with_world(|w| {
+                w.vehicle_updates
+                    .iter()
+                    .rev()
+                    .filter(|u| u.index == gb)
+                    .find_map(|u| Some((u.record.vehicle()?, u.position?)))
+            })
+            .flatten()
+            .expect("an update of the buggy");
+        assert!(rec.pose.is_some(), "{name}");
+        hostile(&mut rec, &mut at);
+        {
+            let mut st = b.client.host.client.borrow_mut();
+            let c = st.conn.conn.as_mut().expect("the connection");
+            let g = c.predict.ghost_vehicles.get_mut(&gb).expect("the ghost");
+            g.unpack(&rec, Some(at), true, &mut ClientCollision::empty());
+        }
+        for _ in 0..30 {
+            frames_both(&mut a, &mut b, 16);
+            let (p, q) = drawn_pose(&b, gb).expect(name);
+            assert!(
+                p.iter().chain(&q).all(|c| c.is_finite()),
+                "{name}: drawn at {p:?} {q:?}"
+            );
+        }
+        // The server's next updates bring it back to where the buggy is.
+        frames_both(&mut a, &mut b, 1500);
+        let (p, _) = drawn_pose(&b, gb).unwrap();
+        let truth = server(&a).buggy_position().unwrap();
+        assert!(
+            apart(p, truth) < 3.0,
+            "{name}: drawn at {p:?}, the buggy at {truth:?}"
+        );
+    }
+    a.key(Key::W, false);
+}
