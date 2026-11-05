@@ -575,7 +575,7 @@ def floors():
 
 def wall_run(name, axis, fixed, inside, a0, a1, openings, outside_face, inside_face):
     """An outer wall along `axis` ('x' or 'y') from a0 to a1, its inner face at `fixed` (`inside` +1 when the room is on the
-    + side, -1 when on the - side; the wall is T thick outward), with window openings (centre, width) and doors (centre,
+    + side, -1 when on the - side; the wall is T thick outward), with window openings (center, width) and doors (center,
     width, 'door'; a window over a counter 'bare', without its sill): each window a glass pane with a mullion in the middle of the wall and a sill inside."""
     def put(n, s0, s1, z0, z1, d0=0.0, d1=None, material="plaster", faces=None):
         # d: from the wall's inner face (0), outward negative, inward positive; the whole thickness by default
@@ -623,7 +623,7 @@ def outer_walls():
     wall_run("west wall", "y", 0.0, 1, 0, D, wins([4.0, 8.0, 21.0]), "west", "east")
     # East (x W, room to -x).
     wall_run("east wall", "y", W, -1, 0, D, wins([4.0, 9.0, 19.5]), "east", "west")
-    # A dark plinth round the foot of the facade.
+    # A dark plinth around the foot of the facade.
     box("plinth south", (-T - 0.02, -T - 0.02, -0.2), (3.5, -T, 0.4), "plinth")
     box("plinth south", (6.5, -T - 0.02, -0.2), (W + T + 0.02, -T, 0.4), "plinth")
     box("plinth north", (-T - 0.02, D + T, -0.2), (W + T + 0.02, D + T + 0.02, 0.4), "plinth")
@@ -843,14 +843,14 @@ def mission():
                       'outerAngle = 150; brightness = 1.6; color = "1 0.95 0.86"; castShadows = 1; };'
                       % (round(x + CORNER[0], 3), round(y + CORNER[1], 3), round(H - 0.08, 3)))
     return """// Office
-// An office floor to walk round: a lobby, rows of desks, a kitchen, a meeting room and a private office.
+// An office floor to walk around: a lobby, rows of desks, a kitchen, a meeting room and a private office.
 
 new SimGroup(MissionGroup)
 {
    new ScriptObject(MapInfo) { title = "Office"; spawn = "-12.5 -15 0.2"; spawnYaw = 0; };
    // The sky: a light haze from 1,500 units out, nothing drawn past 3,000.
    new Sky(WorldSky) { visibleDistance = 3000; fogDistance = 1500; fogColor = "0.72 0.8 0.9 1"; };
-   // The ground round the building, a hand below its floor.
+   // The ground around the building, a hand below its floor.
    new StaticShape() { dataBlock = WorldCubeData; position = "0 0 -0.55"; scale = "80 80 1"; };
    // The office: built from levels/office.bbmodel when the example starts.
 %interiors%

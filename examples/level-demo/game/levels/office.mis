@@ -1,12 +1,12 @@
 // Office
-// An office floor to walk round: a lobby, rows of desks, a kitchen, a meeting room and a private office.
+// An office floor to walk around: a lobby, rows of desks, a kitchen, a meeting room and a private office.
 
 new SimGroup(MissionGroup)
 {
    new ScriptObject(MapInfo) { title = "Office"; spawn = "-12.5 -15 0.2"; spawnYaw = 0; };
    // The sky: a light haze from 1,500 units out, nothing drawn past 3,000.
    new Sky(WorldSky) { visibleDistance = 3000; fogDistance = 1500; fogColor = "0.72 0.8 0.9 1"; };
-   // The ground round the building, a hand below its floor.
+   // The ground around the building, a hand below its floor.
    new StaticShape() { dataBlock = WorldCubeData; position = "0 0 -0.55"; scale = "80 80 1"; };
    // The office: built from levels/office.bbmodel when the example starts.
 %interiors%

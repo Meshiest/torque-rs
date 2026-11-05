@@ -46,11 +46,12 @@ struct PlacedInterior {
     shape: InteriorShape,
 }
 
-/// The work an interior's hulls may cost to make the first time, the work one line of sight may cost, and the most interior
-/// files kept.
+/// The work an interior's hulls may cost to make the first time, the work one line of sight may cost, the most interior
+/// files kept, and the most read in one update (the others wait for the next).
 const INTERIOR_BUDGET: u64 = 50_000_000;
 const SIGHT_BUDGET: u64 = 1_000_000;
 const MAX_INTERIOR_FILES: usize = 64;
+const MAX_INTERIOR_READS: usize = 2;
 
 /// The objects of the client's ghosts, frame after frame.
 pub struct WorldScene {
@@ -118,6 +119,7 @@ impl WorldScene {
     /// The interior ghosts of `world` placed for the camera's line of sight (each file read once).
     fn place_interiors(&mut self, assets: &KitAssets, world: &TgeWorld) {
         let mut seen = Vec::new();
+        let mut reads = 0;
         for (&index, ghost) in &world.records.ghosts {
             let (Some(TgeRecord::InteriorInstance(r)), Some(pose)) = (&ghost.record, ghost.pose())
             else {
@@ -131,7 +133,9 @@ impl WorldScene {
             let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
             if !self.interior_files.contains_key(&path)
                 && self.interior_files.len() < MAX_INTERIOR_FILES
+                && reads < MAX_INTERIOR_READS
             {
+                reads += 1;
                 let mut work = 0u64;
                 let read = torque_render_scene::Assets::read(assets, &path).and_then(|bytes| {
                     read_interior(&bytes, &mut |u| {
