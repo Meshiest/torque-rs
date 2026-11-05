@@ -945,3 +945,21 @@ fn a_tls_handshake_has_a_deadline() {
     assert_eq!(t.counters().closed_timeout, 1);
     assert!(closed(&mut s));
 }
+
+#[test]
+fn frames_sent_with_the_upgrade_request_are_refused() {
+    let (mut t, addr) = site(WebLimits::default(), None, None);
+    let status = serve_while(&mut t, move || {
+        let mut s = connect(addr);
+        let mut raw = upgrade_request(&base64(&[3; 16])).into_bytes();
+        // A binary frame left open and empty continuations, pipelined behind the head.
+        raw.extend_from_slice(&[0x02, 0x80, 1, 2, 3, 4]);
+        raw.extend_from_slice(&[0x00, 0x80, 1, 2, 3, 4].repeat(100));
+        s.write_all(&raw).unwrap();
+        let (status, _, said_close) = response(&mut s);
+        (status, said_close && closed(&mut s))
+    });
+    assert_eq!(status, (400, true));
+    assert_eq!(t.counters().upgrades, 0);
+    assert_eq!(t.sockets_from(LOOPBACK), 0, "no place was reserved");
+}

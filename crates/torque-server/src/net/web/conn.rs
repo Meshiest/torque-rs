@@ -341,6 +341,12 @@ impl Conn {
                 && buf.is_empty();
             *out = Some(if request.wants_upgrade {
                 match request.upgrade {
+                    // Bytes after an upgrade's head would reach the socket unmetered (a browser sends no frame before
+                    // the 101): refused.
+                    Some(_) if !buf.is_empty() => {
+                        pass.counters.refusals += 1;
+                        refuse(Status::BadRequest)
+                    }
                     Some(key) => {
                         let open = pass.stand_ins.count(self.peer.ip());
                         if open >= pass.limits.sockets_per_ip || self.stand_in.is_some() {
@@ -416,8 +422,12 @@ impl Conn {
             },
             pass.now,
         );
-        // The bytes read with the head were not metered: they are at most a head's cap.
-        let ws = WebSocket::from_partially_read(metered, buf, Role::Server, Some(config));
+        // Nothing is read while the 101 is written, and an upgrade with bytes after its head was refused: every frame goes
+        // through the meter.
+        if !buf.is_empty() {
+            return Some(Closed::Protocol);
+        }
+        let ws = WebSocket::from_raw_socket(metered, Role::Server, Some(config));
         self.phase = Phase::Socket { ws: Box::new(ws) };
         pass.counters.upgrades += 1;
         self.since = pass.now;
