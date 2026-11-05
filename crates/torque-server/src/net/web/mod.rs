@@ -300,7 +300,7 @@ impl WebTransport {
     }
 
     /// The data channels' pass: their socket read and their peers stepped, then the game sockets of the peers it closed
-    /// told (a browser that broke a cap loses its game socket too).
+    /// told (they stay open: closing a data channel never closes its socket).
     #[cfg(feature = "webrtc")]
     fn rtc_pass(&mut self, now: Instant) {
         let Some(side) = self.rtc.as_mut() else {
@@ -312,7 +312,7 @@ impl WebTransport {
             return;
         }
         let (mut pass, conns) = self.pass_parts(now);
-        for (stand_in, why) in notices {
+        for (stand_in, _why) in notices {
             let Some(i) = conns
                 .iter()
                 .position(|c| c.stand_in == Some(stand_in) && c.is_socket())
@@ -322,14 +322,7 @@ impl WebTransport {
             let Some(conn) = conns.get_mut(i) else {
                 continue;
             };
-            match why {
-                rtc::Why::Rate => conn.shut(conn::Closed::Rate, &mut pass),
-                rtc::Why::Oversize => conn.shut(conn::Closed::Oversize, &mut pass),
-                rtc::Why::Protocol => conn.shut(conn::Closed::Protocol, &mut pass),
-                _ => {
-                    conn.send_text(rtc::signal::CLOSED, &mut pass);
-                }
-            }
+            conn.send_text(rtc::signal::CLOSED, &mut pass);
             if conn.is_gone() {
                 conns.swap_remove(i);
             }
@@ -544,6 +537,28 @@ impl Transport for WebTransport {
     fn take_gone(&mut self) -> Vec<SocketAddr> {
         std::mem::take(&mut self.gone)
     }
+
+    #[cfg(feature = "webrtc")]
+    fn status(&mut self) -> Vec<String> {
+        let Some(side) = self.rtc.as_mut() else {
+            return Vec::new();
+        };
+        let c = side.counters();
+        let mut lines = vec![format!(
+            "rtc: {} channels opened, {} messages in, {} out, {} datagrams dropped by the loss test, {} stray",
+            c.channels, c.messages, c.sent, c.loss_dropped, c.stray
+        )];
+        for (stand_in, s) in side.take_stats() {
+            lines.push(format!(
+                "rtc: {stand_in} {}, {} messages in, {} out, longest gap {} ms",
+                if s.open { "open" } else { "connecting" },
+                s.messages_in,
+                s.messages_out,
+                s.max_gap.as_millis()
+            ));
+        }
+        lines
+    }
 }
 
 /// UDP and the web on one address and port (module docs). Game sockets go by stand-in addresses no UDP peer has
@@ -647,5 +662,9 @@ impl Transport for MultiTransport {
 
     fn take_gone(&mut self) -> Vec<SocketAddr> {
         self.web.take_gone()
+    }
+
+    fn status(&mut self) -> Vec<String> {
+        self.web.status()
     }
 }

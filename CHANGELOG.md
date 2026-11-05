@@ -196,18 +196,26 @@ The first development version. Nothing is published yet; this is what exists.
   hello, an SDP offer and answer); the channel (`ordered: false, maxRetransmits: 0`) then carries the socket's datagrams
   both ways under the socket's stand-in address, so the host's limits and bans hold for both, and the socket carries them
   again when ICE fails or the channel closes. One UDP socket of its own (the game's datagrams share first bytes with STUN
-  and DTLS), ICE-lite, candidates from the bind address and any public addresses named. Every cap counts datagrams as they
-  come off the wire: datagrams per pass in all, per peer and for the peers still connecting, outputs per peer per pass,
-  datagrams and bytes a second per peer, datagrams before the channel opens and a connect deadline (bounding the DTLS
-  handshake), binding requests per source address from addresses no peer answered (anything else from them is dropped
-  unread), messages no larger than a datagram and no more a second than UDP's per-connection cap, one channel a peer, no
-  text or media; peers capped in all, per address and per second, offers per socket. A browser that breaks a cap loses
-  its game socket too. `cargo test -p torque-server --features webrtc --test rtc`.
+  and DTLS), ICE-lite, candidates from the bind address and any public addresses named. Routing: a binding request goes to
+  the peer its USERNAME names, only from that peer's game socket's IP address and at a rate per source; any other datagram
+  goes to the peer whose stack has validated its source by an authenticated check, and a mapping moves only when that
+  peer no longer accepts the address, so another peer cannot take a player's traffic. Every cap counts datagrams as they
+  come off the wire (per pass in all, per peer and for the peers still connecting; outputs per peer per pass; datagrams
+  and bytes a second; datagrams before the channel opens), and what breaks them, or what the stack refuses, is dropped
+  and counted: a forged source address never closes anything. Only authenticated misuse closes a peer (messages larger
+  than a datagram or more a second than UDP's per-connection cap, a second channel, text or media), and then only its
+  data channel: the browser goes on over its game socket. Peers capped in all, per address and per second, offers per
+  socket, a connect deadline. `cargo test -p torque-server --features webrtc --test rtc`.
 - `torque-client`'s `web-socket` feature: a client's datagrams over WebSocket (`net::web_socket::WebSocketDatagrams`: the
   page's `WebSocket` in a browser, a plain `ws` connection natively). `torque::app`'s `web` feature: a server on
   `Listen::Web` (the web alone, or UDP beside it), whose dedicated loop services the transport between ticks, and
   `ClientNet::External` with `ClientBuilder::set_socket` for a client that brings its own socket. `torque`'s `web` feature
   turns both on.
+- `torque-client`'s `webrtc` feature: a client's datagrams over a WebRTC data channel beside its game socket
+  (`net::web_rtc::WebRtcDatagrams`: the page's `RTCPeerConnection` in a browser, str0m over UDP natively). It starts on the
+  socket, answers the server's hello with an offer, moves to the channel when it opens, and stays on the socket when the
+  channel does not open in 10 s, closes, or is refused; `LinkWatch` shows which link carries the datagrams and the
+  channel's longest gap. The game socket keeps the server's text messages (`take_text`, `send_text`).
 - `torque::app::manifest`: the list of a web build's files (`files.json`: each file's path, size and SHA-256), read with caps
   on its size, its file count, the files' total bytes, the paths and the hashes' form; a fetched file is taken only when its
   size and hash are the list's. The examples' `GameFiles::from_fetched` reads the fetched files (packs and loose files).

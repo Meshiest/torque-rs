@@ -20,21 +20,32 @@
 //! candidates are the bind address (unless it is `0.0.0.0`) and [`RtcSetup::public`] (a host behind a 1:1 NAT names its
 //! public address there). The DTLS certificate is made once per transport.
 //!
-//! **Hostile input.** Every cap counts the socket's datagrams and their bytes as they come off the wire, before any parse
-//! ([`RtcLimits`]): a pass reads at most [`RtcLimits::datagrams_per_pass`] datagrams, hands one peer at most
+//! **Hostile input.** Every cap counts the socket's datagrams and their bytes as they come off the wire ([`RtcLimits`]):
+//! a pass reads at most [`RtcLimits::datagrams_per_pass`] datagrams, hands one peer at most
 //! [`RtcLimits::peer_datagrams_per_pass`] and the peers still connecting at most [`RtcLimits::connecting_per_pass`] in
 //! all, and drains at most [`RtcLimits::outputs_per_pass`] outputs of each, so a pass's time is bounded whatever the
-//! peers send. A datagram from an address no peer answered is read only far enough to see whether it is a STUN binding
-//! request naming one of our ICE user fragments (anything else is dropped), and such requests are held to a rate per
-//! source address. A peer is closed past [`RtcLimits::packets_per_s`] datagrams or [`RtcLimits::bytes_per_s`] bytes a
-//! second, past [`RtcLimits::connect_datagrams`] datagrams before its channel opens (the DTLS handshake's work is bounded
-//! by them, and by [`RtcLimits::connect_timeout`]), on a message larger than a datagram ([`RtcLimits::max_message`]), on
-//! more messages a second than [`RtcLimits::messages_per_s`], on a second channel or one that is not the game's
-//! (`ordered: false, maxRetransmits: 0`, label [`signal::CHANNEL_LABEL`]), on text on the channel, media, or anything the
-//! stack refuses; such a browser's game socket is closed too. Peers are capped in all, per address (the game socket's
-//! TCP address) and in new peers a second; offers are capped per game socket. The SCTP layer's own receive buffer bounds
-//! a peer's memory (1 MiB). The server relays nothing: a peer's messages go to the host as that peer's datagrams, there
-//! is no TURN, and answers go only to the address a check came from.
+//! peers send. A peer's datagrams past [`RtcLimits::packets_per_s`] or [`RtcLimits::bytes_per_s`] a second, or past
+//! [`RtcLimits::connect_datagrams`] before its channel opens, are dropped and counted, as is anything the stack refuses:
+//! a UDP source address can be forged, so nothing that arrives unauthenticated closes anything. The DTLS handshake's work
+//! is bounded by those caps and by [`RtcLimits::connect_timeout`].
+//!
+//! **Routing.** A STUN binding request goes to the peer its USERNAME names (our ICE user fragment), and only when it comes
+//! from the IP address of that peer's game socket; requests are also held to a rate per source address. Any other datagram
+//! goes to the peer whose stack has validated its source address by an authenticated check (str0m's `accepts`): the
+//! address is mapped to that peer then, and a mapping moves only when its peer's stack no longer accepts the address, so a
+//! second peer that passes checks from another's address cannot take its traffic. A datagram no peer accepts is dropped
+//! unread. Peers behind one IP address share a NAT (and the per-address caps); one that races another's first DTLS
+//! datagram can at worst make that handshake fail, and the browser stays on its socket.
+//!
+//! **Closing.** What closes a peer is authenticated: a message larger than a datagram ([`RtcLimits::max_message`]), more
+//! messages a second than [`RtcLimits::messages_per_s`], a second channel or one that is not the game's
+//! (`ordered: false, maxRetransmits: 0`, label [`signal::CHANNEL_LABEL`]), text on the channel or media, all of which
+//! come decrypted from the peer's DTLS session; or the deadlines (the channel not open in time, ICE gone quiet). Closing a
+//! peer closes its data channel only: the browser is told ([`signal::CLOSED`]) and goes on over its game socket, which is
+//! closed only for what it does itself. Peers are capped in all, per address (the game socket's TCP address) and in new
+//! peers a second; offers are capped per game socket. The SCTP layer's own receive buffer bounds a peer's memory (1 MiB).
+//! The server relays nothing: a peer's messages go to the host as that peer's datagrams, there is no TURN, and answers go
+//! only to the address a check came from.
 //!
 //! **Voice later.** A peer is one `Rtc` that can take audio sections in a later offer (renegotiation is allowed); until
 //! voice is built, an offer with any section but `m=application` is refused ([`signal::data_only`]).
@@ -62,8 +73,6 @@ use signal::Signal;
 const RECV_BYTES: usize = 2048;
 /// The wire bytes a datagram may carry beyond a message's (DTLS, SCTP and UDP headers, with room to spare).
 const WIRE_ROOM: usize = 128;
-/// The most remote addresses one peer is answered at.
-const MAX_REMOTES: usize = 4;
 /// The most outputs taken from a peer that is closing (its DTLS close notify).
 const CLOSE_OUTPUTS: usize = 16;
 /// The characters of an ICE user fragment and password (RFC 8445's ice-char, without `+` and `/`).
@@ -159,8 +168,13 @@ pub struct RtcSetup {
 pub struct RtcCounters {
     /// Datagrams read off the socket.
     pub datagrams: u64,
-    /// Datagrams dropped unread: from an address no peer answered and not a binding request naming a peer.
+    /// Datagrams dropped unread: no peer accepts their address, and they are not a binding request naming a peer from
+    /// its game socket's IP address.
     pub stray: u64,
+    /// Datagrams dropped by a peer's caps a second, or before its channel opened.
+    pub rate_dropped: u64,
+    /// Datagrams the stack refused (dropped).
+    pub refused: u64,
     /// Binding requests dropped by the per-address rate.
     pub stun_limited: u64,
     /// Datagrams and messages dropped by a per-pass cap.
@@ -213,7 +227,7 @@ pub(crate) enum Why {
     Rate,
     /// A message larger than a datagram.
     Oversize,
-    /// Anything a browser does not send: a second channel, text, media, a datagram the stack refuses.
+    /// Anything a browser does not send on its channel: a second channel, text, media.
     Protocol,
 }
 
@@ -257,7 +271,8 @@ enum Take {
     Ok,
     /// Past the pass's cap: dropped.
     Skip,
-    /// Past a cap a second (or before the channel opens): the peer is closed.
+    /// Past a cap a second (or, for a datagram, before the channel opens): a datagram is dropped, a message (which is
+    /// authenticated) closes the peer.
     Over,
 }
 
@@ -308,16 +323,6 @@ impl Meter {
         Take::Ok
     }
 
-    /// A binding request from an address the peer has not answered: held to the pass's cap only (its source's rate holds
-    /// it a second), so that a third party who learned a user fragment cannot close the peer by sending checks.
-    fn stray_check(&mut self, limits: &RtcLimits) -> Take {
-        if self.pass_datagrams >= limits.peer_datagrams_per_pass {
-            return Take::Skip;
-        }
-        self.pass_datagrams += 1;
-        Take::Ok
-    }
-
     fn message(&mut self, now: Instant, limits: &RtcLimits) -> Take {
         self.roll(now);
         self.messages += 1;
@@ -338,8 +343,6 @@ struct Peer {
     /// The game socket's TCP address (the per-address cap's key).
     ip: IpAddr,
     ufrag: Vec<u8>,
-    /// The addresses it is answered at (each found by a check that passed).
-    remotes: Vec<SocketAddr>,
     channel: Option<ChannelId>,
     opened: Instant,
     /// When its last datagram came.
@@ -382,7 +385,6 @@ impl Loss {
 struct Sink<'a> {
     socket: &'a UdpSocket,
     stand_in: SocketAddr,
-    by_remote: &'a mut HashMap<SocketAddr, SocketAddr>,
     inbox: &'a mut VecDeque<(SocketAddr, Vec<u8>)>,
     queue: usize,
     counters: &'a mut RtcCounters,
@@ -402,7 +404,9 @@ pub(crate) struct RtcSide {
     cert: Option<DtlsCert>,
     /// The peers by their game socket's stand-in address.
     peers: HashMap<SocketAddr, Peer>,
-    by_ufrag: HashMap<Vec<u8>, SocketAddr>,
+    /// The peers by their ICE user fragment, with their game socket's IP address.
+    by_ufrag: HashMap<Vec<u8>, (SocketAddr, IpAddr)>,
+    /// Source addresses mapped to the peer whose stack accepts them.
     by_remote: HashMap<SocketAddr, SocketAddr>,
     /// Binding requests per source address no peer has answered, in the present second.
     stun_sources: HashMap<IpAddr, (Instant, u32)>,
@@ -463,6 +467,18 @@ impl RtcSide {
     /// Each peer's stand-in and traffic.
     pub(crate) fn stats(&self) -> Vec<(SocketAddr, PeerStats)> {
         self.peers.iter().map(|(&a, p)| (a, p.stats)).collect()
+    }
+
+    /// Each peer's stand-in and traffic, its longest gap since the last call (which starts the next window).
+    pub(crate) fn take_stats(&mut self) -> Vec<(SocketAddr, PeerStats)> {
+        self.peers
+            .iter_mut()
+            .map(|(&a, p)| {
+                let stats = p.stats;
+                p.stats.max_gap = Duration::ZERO;
+                (a, stats)
+            })
+            .collect()
     }
 
     /// Whether the peer of `stand_in` has its channel open.
@@ -612,14 +628,13 @@ impl RtcSide {
         };
         self.new_peers.1 += 1;
         self.counters.offers += 1;
-        self.by_ufrag.insert(ufrag.clone(), stand_in);
+        self.by_ufrag.insert(ufrag.clone(), (stand_in, ip));
         self.peers.insert(
             stand_in,
             Peer {
                 rtc,
                 ip,
                 ufrag,
-                remotes: Vec::new(),
                 channel: None,
                 opened: now,
                 heard: now,
@@ -698,8 +713,10 @@ impl RtcSide {
             let Some(data) = self.buf.get(..len) else {
                 continue;
             };
-            let (stand_in, known) = match route(
-                &self.by_remote,
+            let Some(&to) = self.advertised.first() else {
+                continue;
+            };
+            let stun_to = match route_check(
                 &self.by_ufrag,
                 &mut self.stun_sources,
                 limits,
@@ -707,7 +724,7 @@ impl RtcSide {
                 data,
                 now,
             ) {
-                Routed::Peer(stand_in, known) => (stand_in, known),
+                Routed::Peer(stand_in) => Some(stand_in),
                 Routed::Stray => {
                     self.counters.stray += 1;
                     continue;
@@ -716,6 +733,22 @@ impl RtcSide {
                     self.counters.stun_limited += 1;
                     continue;
                 }
+                Routed::NotACheck => None,
+            };
+            let Ok(receive) = Receive::new(Protocol::Udp, from, to, data) else {
+                self.counters.refused += 1;
+                continue;
+            };
+            let input = Input::Receive(now, receive);
+            let stand_in = match stun_to {
+                Some(stand_in) => stand_in,
+                None => match accepting(&self.peers, &mut self.by_remote, from, &input) {
+                    Some(stand_in) => stand_in,
+                    None => {
+                        self.counters.stray += 1;
+                        continue;
+                    }
+                },
             };
             let Some(peer) = self.peers.get_mut(&stand_in) else {
                 continue;
@@ -724,12 +757,7 @@ impl RtcSide {
                 continue;
             }
             let open = peer.channel.is_some();
-            let take = if known {
-                peer.meter.datagram(len, now, limits, open)
-            } else {
-                peer.meter.stray_check(limits)
-            };
-            match take {
+            match peer.meter.datagram(len, now, limits, open) {
                 Take::Ok if open || connecting > 0 => {
                     if !open {
                         connecting -= 1;
@@ -739,31 +767,15 @@ impl RtcSide {
                     self.counters.pass_dropped += 1;
                     continue;
                 }
+                // Unauthenticated: dropped, never a reason to close (the source may be forged).
                 Take::Over => {
-                    peer.close(Why::Rate);
+                    self.counters.rate_dropped += 1;
                     continue;
                 }
             }
-            if known {
-                peer.heard = now;
-            }
-            let Some(&to) = self.advertised.first() else {
-                continue;
-            };
-            // What the stack refuses closes the peer when it came from the peer's own address; from elsewhere it is dropped.
-            let input = match Receive::new(Protocol::Udp, from, to, data) {
-                Ok(r) => Input::Receive(now, r),
-                Err(_) => {
-                    if known {
-                        peer.close(Why::Protocol);
-                    }
-                    continue;
-                }
-            };
+            peer.heard = now;
             if peer.rtc.handle_input(input).is_err() {
-                if known {
-                    peer.close(Why::Protocol);
-                }
+                self.counters.refused += 1;
                 continue;
             }
             drain(
@@ -771,7 +783,6 @@ impl RtcSide {
                 &mut Sink {
                     socket,
                     stand_in,
-                    by_remote: &mut self.by_remote,
                     inbox: &mut *inbox,
                     queue,
                     counters: &mut self.counters,
@@ -795,7 +806,7 @@ impl RtcSide {
                 continue;
             }
             if peer.rtc.handle_input(Input::Timeout(now)).is_err() {
-                peer.close(Why::Protocol);
+                peer.close(Why::Peer);
                 continue;
             }
             drain(
@@ -803,7 +814,6 @@ impl RtcSide {
                 &mut Sink {
                     socket,
                     stand_in,
-                    by_remote: &mut self.by_remote,
                     inbox: &mut *inbox,
                     queue,
                     counters: &mut self.counters,
@@ -842,7 +852,7 @@ impl RtcSide {
         let sent = match written {
             Ok(sent) => sent,
             Err(_) => {
-                peer.close(Why::Protocol);
+                peer.close(Why::Peer);
                 return None;
             }
         };
@@ -857,7 +867,6 @@ impl RtcSide {
             &mut Sink {
                 socket,
                 stand_in: to,
-                by_remote: &mut self.by_remote,
                 inbox,
                 queue,
                 counters: &mut self.counters,
@@ -888,48 +897,47 @@ impl RtcSide {
                 }
             }
         }
-        if self.by_ufrag.get(&peer.ufrag) == Some(&stand_in) {
+        if self.by_ufrag.get(&peer.ufrag).map(|&(s, _)| s) == Some(stand_in) {
             self.by_ufrag.remove(&peer.ufrag);
         }
-        for remote in &peer.remotes {
-            if self.by_remote.get(remote) == Some(&stand_in) {
-                self.by_remote.remove(remote);
-            }
-        }
+        self.by_remote.retain(|_, s| *s != stand_in);
         if notify && self.notices.len() < self.setup.limits.max_peers * 2 {
             self.notices.push((stand_in, why));
         }
     }
 }
 
-/// Where a datagram goes.
+/// Where a binding request goes.
 enum Routed {
-    /// To the peer of this stand-in; true when the peer answers the datagram's address.
-    Peer(SocketAddr, bool),
-    /// Nowhere: from an address no peer answers, and not a binding request naming a peer.
+    /// To the peer of this stand-in (its USERNAME names the peer, from its game socket's IP address).
+    Peer(SocketAddr),
+    /// Nowhere: it names no peer, or comes from another IP address than the peer's game socket.
     Stray,
-    /// Nowhere: a binding request naming a peer, past its source address's rate.
+    /// Nowhere: past its source address's rate.
     Limited,
+    /// Not a binding request: it goes by its source address.
+    NotACheck,
 }
 
-/// The peer a datagram from `from` is for: the one answering that address, else, for a binding request that names a
-/// peer's user fragment (held to a rate per source address), that peer.
-fn route(
-    by_remote: &HashMap<SocketAddr, SocketAddr>,
-    by_ufrag: &HashMap<Vec<u8>, SocketAddr>,
+/// The peer a STUN binding request is for: the one its USERNAME names, when it comes from that peer's game socket's IP
+/// address and within its source address's rate. Whatever address it comes from, it never maps that address.
+fn route_check(
+    by_ufrag: &HashMap<Vec<u8>, (SocketAddr, IpAddr)>,
     stun_sources: &mut HashMap<IpAddr, (Instant, u32)>,
     limits: &RtcLimits,
     from: SocketAddr,
     data: &[u8],
     now: Instant,
 ) -> Routed {
-    if let Some(&stand_in) = by_remote.get(&from) {
-        return Routed::Peer(stand_in, true);
-    }
-    let Some(&stand_in) = stun::binding_ufrag(data).and_then(|u| by_ufrag.get(u)) else {
+    let Some(ufrag) = stun::binding_ufrag(data) else {
+        return Routed::NotACheck;
+    };
+    let Some(&(stand_in, ip)) = by_ufrag.get(ufrag) else {
         return Routed::Stray;
     };
-    let ip = from.ip();
+    if from.ip() != ip {
+        return Routed::Stray;
+    }
     if stun_sources.len() >= NET_LIMITER_ENTRIES && !stun_sources.contains_key(&ip) {
         stun_sources.retain(|_, (start, _)| now.duration_since(*start) < Duration::from_secs(1));
         if stun_sources.len() >= NET_LIMITER_ENTRIES {
@@ -945,7 +953,33 @@ fn route(
     if *count > limits.stun_per_ip_per_s {
         return Routed::Limited;
     }
-    Routed::Peer(stand_in, false)
+    Routed::Peer(stand_in)
+}
+
+/// The peer a datagram that is not a binding request goes to: the one its source address is mapped to while that peer's
+/// stack still accepts the address (validated by an authenticated check), else the first peer of the same IP address
+/// whose stack accepts it, which the address is then mapped to. None: no peer accepts it.
+fn accepting(
+    peers: &HashMap<SocketAddr, Peer>,
+    by_remote: &mut HashMap<SocketAddr, SocketAddr>,
+    from: SocketAddr,
+    input: &Input<'_>,
+) -> Option<SocketAddr> {
+    if let Some(stand_in) = by_remote.get(&from)
+        && let Some(peer) = peers.get(stand_in)
+        && peer.closing.is_none()
+        && peer.rtc.accepts(input)
+    {
+        return Some(*stand_in);
+    }
+    let mut same_ip: Vec<(&SocketAddr, &Peer)> = peers
+        .iter()
+        .filter(|(_, p)| p.ip == from.ip() && p.closing.is_none())
+        .collect();
+    same_ip.sort_by_key(|(a, _)| **a);
+    let (&stand_in, _) = same_ip.into_iter().find(|(_, p)| p.rtc.accepts(input))?;
+    by_remote.insert(from, stand_in);
+    Some(stand_in)
 }
 
 /// Takes a peer's outputs (at most the pass's cap): datagrams sent, events handled, the next wake-up kept.
@@ -954,7 +988,7 @@ fn drain(peer: &mut Peer, sink: &mut Sink<'_>) {
         let output = match peer.rtc.poll_output() {
             Ok(o) => o,
             Err(_) => {
-                peer.close(Why::Protocol);
+                peer.close(Why::Peer);
                 return;
             }
         };
@@ -964,13 +998,6 @@ fn drain(peer: &mut Peer, sink: &mut Sink<'_>) {
                 return;
             }
             Output::Transmit(t) => {
-                if !peer.remotes.contains(&t.destination) {
-                    if peer.remotes.len() >= MAX_REMOTES {
-                        continue;
-                    }
-                    peer.remotes.push(t.destination);
-                    sink.by_remote.entry(t.destination).or_insert(sink.stand_in);
-                }
                 if sink.loss.drop_one() {
                     sink.counters.loss_dropped += 1;
                     continue;

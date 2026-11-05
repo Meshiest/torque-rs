@@ -1,8 +1,10 @@
 //! The web transport's data channels on the loopback address: a client signals over its game socket, opens an
 //! unreliable, unordered channel and sends datagrams on it both ways under its socket's stand-in, falls back to the socket
-//! when the channel goes, and under 10% loss the channel keeps carrying datagrams in order with gaps. Hostile peers
-//! (garbage, STUN, DTLS and SCTP floods, oversized and text messages, a second channel, media offers, too many offers or
-//! peers) are closed or turned away, and no pass takes long.
+//! when the channel goes, and under 10% loss the channel keeps carrying datagrams in order with gaps. Forged datagrams
+//! (garbage, checks and records, even from a peer's own address) are dropped and close nothing; a second peer checking
+//! from another's address cannot take its traffic; a peer that breaks its channel's rules (oversized or text messages, a
+//! second channel, too many messages) loses the channel and keeps its socket; media offers and too many offers or peers
+//! are turned away; no pass takes long.
 
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
@@ -13,7 +15,7 @@ use std::time::{Duration, Instant};
 use str0m::change::{SdpAnswer, SdpPendingOffer};
 use str0m::channel::{ChannelConfig, ChannelId, Reliability};
 use str0m::net::{Protocol, Receive};
-use str0m::{Candidate, Event, Input, Output, Rtc, RtcConfig};
+use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 use torque_server::net::transport::{BindPolicy, LanRules, RECV_BUFFER_BYTES, Recv, Transport};
 use torque_server::net::web::http::base64;
 use torque_server::net::web::rtc::{RtcLimits, RtcSetup, signal};
@@ -106,6 +108,8 @@ struct Client {
     texts: Vec<String>,
     socket_closed: bool,
     channel_closed: bool,
+    /// Whether its ICE checks were answered (the server's stack authenticated them).
+    ice_connected: bool,
 }
 
 impl Client {
@@ -126,6 +130,7 @@ impl Client {
             texts: Vec::new(),
             socket_closed: false,
             channel_closed: false,
+            ice_connected: false,
         }
     }
 
@@ -232,6 +237,11 @@ impl Client {
                 }
                 Ok(Output::Event(Event::ChannelData(d))) => {
                     self.on_channel.push((Instant::now(), d.data));
+                }
+                Ok(Output::Event(Event::IceConnectionStateChange(
+                    IceConnectionState::Connected | IceConnectionState::Completed,
+                ))) => {
+                    self.ice_connected = true;
                 }
                 Ok(Output::Event(Event::ChannelClose(_) | Event::Closed)) => {
                     self.channel_closed = true;
@@ -561,49 +571,153 @@ fn checks_naming_a_peer_from_strangers_are_rate_limited_and_never_close_it() {
     assert!(c.channel.is_some(), "{:?}", t.rtc_counters());
 }
 
+/// Datagrams that look like DTLS records of the session (application data, epoch 1) with random contents.
+fn fake_record(i: u32) -> Vec<u8> {
+    let mut d = noise(i, 300);
+    d[0] = 23;
+    d[1] = 0xfe;
+    d[2] = 0xfd;
+    d[3] = 0;
+    d[4] = 1;
+    d
+}
+
+/// Whether `c`'s channel still carries datagrams both ways under `stand_in`.
+fn both_ways(t: &mut WebTransport, c: &mut Client, stand_in: SocketAddr, tag: &[u8]) -> bool {
+    c.on_channel.clear();
+    let mut up = false;
+    let start = Instant::now();
+    let done = |up: bool, c: &Client| up && !c.on_channel.is_empty();
+    while start.elapsed() < Duration::from_secs(3) && !done(up, c) {
+        c.send_channel(tag, true);
+        t.send_to(stand_in, tag);
+        t.pump();
+        c.step();
+        while let Some((from, data)) = recv(t) {
+            up |= from == stand_in && data == tag;
+        }
+        sleep(Duration::from_millis(5));
+    }
+    up && c.on_channel.iter().any(|(_, d)| d == tag)
+}
+
 #[test]
-fn a_peer_past_its_caps_is_closed_and_loses_its_socket() {
-    // Its own address flooding records (they reach its peer): the datagrams a second close it.
+fn forged_traffic_from_a_peers_own_address_leaves_it_connected() {
     let (mut t, addr) = site(RtcSetup::default());
-    let (mut c, _) = opened(&mut t, addr);
+    let (mut c, stand_in) = opened(&mut t, addr);
+    let ufrag = c
+        .texts
+        .iter()
+        .find_map(|t| t.lines().find_map(|l| l.strip_prefix("a=ice-ufrag:")))
+        .unwrap()
+        .trim()
+        .to_string();
     let to = t.rtc_addr().unwrap();
-    let udp = c.udp.try_clone().unwrap();
-    let longest = flood(&mut t, &mut [&mut c], &udp, to, 1500, |i| {
-        let mut d = noise(i, 300);
-        d[0] = 23;
-        d[1] = 0xfe;
-        d[2] = 0xfd;
-        d
+    // Sent from the peer's own address (as a forger would): records of the session's epoch with random contents, checks
+    // naming the peer with no valid integrity, and bytes of every kind, far past the caps a second.
+    let forger = c.udp.try_clone().unwrap();
+    let longest = flood(&mut t, &mut [], &forger, to, 1500, |i| match i % 3 {
+        0 => fake_record(i),
+        1 => stun_request(&ufrag, i),
+        _ => noise(i, 1 + (i as usize * 13) % 1200),
     });
     assert!(
         longest < Duration::from_millis(20),
         "a pass took {longest:?}"
     );
     let counters = t.rtc_counters();
-    assert_eq!(
-        counters.closed_rate + counters.closed_protocol,
-        1,
+    assert!(
+        counters.rate_dropped + counters.refused + counters.pass_dropped > 1000,
         "{counters:?}"
     );
-    run(&mut t, &mut [&mut c], 1000, |_, c| c[0].socket_closed);
-    assert!(c.socket_closed, "its game socket is closed too");
-    assert_eq!(t.sockets(), 0);
+    assert_eq!(
+        counters.closed + counters.closed_rate + counters.closed_protocol + counters.closed_timeout,
+        0,
+        "nothing was closed: {counters:?}"
+    );
+    // The flood past, the peer and its socket carry on.
+    sleep(Duration::from_millis(1100));
+    assert!(t.rtc_open(stand_in));
+    assert!(
+        both_ways(&mut t, &mut c, stand_in, b"after the flood"),
+        "{:?}",
+        t.rtc_counters()
+    );
+    assert!(!c.socket_closed);
+    assert_eq!(t.sockets(), 1);
+}
+
+#[test]
+fn a_second_peer_checking_from_anothers_address_cannot_take_its_traffic() {
+    let (mut t, addr) = site(RtcSetup::default());
+    let (mut a, a_in) = opened(&mut t, addr);
+    // B signals over its own socket, then sends its (valid) checks and its DTLS handshake from A's address.
+    let mut b = Client::new(&mut t, addr);
+    run(&mut t, &mut [&mut b], 2000, |_, c| {
+        c[0].has_text(signal::HELLO)
+    });
+    b.udp = a.udp.try_clone().unwrap();
+    b.local = a.local;
+    b.offer();
+    run(&mut t, &mut [&mut b], 2000, |_, _| false);
+    assert!(b.ice_connected, "B's checks from A's address passed");
+    assert!(b.channel.is_none(), "B never gets a channel at A's address");
+    let peers = t.rtc_peers();
+    assert_eq!(peers.len(), 2);
+    assert!(peers.iter().any(|(s, p)| *s != a_in && !p.open));
+    // A's traffic still goes to A's peer, both ways (B's client no longer reads A's socket).
+    b.rtc = None;
+    assert!(t.rtc_open(a_in));
+    assert!(
+        both_ways(&mut t, &mut a, a_in, b"still A's"),
+        "{:?}",
+        t.rtc_counters()
+    );
+    assert!(!a.socket_closed && !b.socket_closed);
+}
+
+#[test]
+fn a_peer_that_breaks_its_channels_rules_loses_the_channel_and_keeps_its_socket() {
+    // Fewer messages a second than datagrams, so that the message cap (not the datagrams', which only drops) is reached.
+    let limits = RtcLimits {
+        messages_per_s: 100,
+        ..RtcLimits::default()
+    };
+    let (mut t, addr) = site(RtcSetup {
+        limits,
+        ..RtcSetup::default()
+    });
+    // Each case: the server tells the client its channel is closed, and the game socket carries on.
+    let expect_closed = |t: &mut WebTransport, c: &mut Client, stand_in: SocketAddr, what: &str| {
+        run(t, &mut [&mut *c], 3000, |_, c| {
+            c[0].has_text(signal::CLOSED)
+        });
+        assert!(c.has_text(signal::CLOSED), "{what}: {:?}", t.rtc_counters());
+        assert!(!c.socket_closed, "{what}: the socket stays");
+        assert!(!t.rtc_open(stand_in));
+        // The host's datagrams go on the socket again.
+        assert!(t.send_to(stand_in, what.as_bytes()));
+        run(t, &mut [&mut *c], 2000, |_, c| !c[0].on_socket.is_empty());
+        assert_eq!(
+            c.on_socket.last().map(Vec::as_slice),
+            Some(what.as_bytes()),
+            "{what}"
+        );
+    };
 
     // A message larger than a datagram.
-    let (mut c, _) = opened(&mut t, addr);
+    let (mut c, s) = opened(&mut t, addr);
     c.send_channel(&vec![1u8; 4000], true);
-    run(&mut t, &mut [&mut c], 2000, |_, c| c[0].socket_closed);
-    assert!(c.socket_closed);
+    expect_closed(&mut t, &mut c, s, "oversize");
     assert_eq!(t.rtc_counters().closed_oversize, 1);
 
     // Text on the channel.
-    let (mut c, _) = opened(&mut t, addr);
+    let (mut c, s) = opened(&mut t, addr);
     c.send_channel(b"words", false);
-    run(&mut t, &mut [&mut c], 2000, |_, c| c[0].socket_closed);
-    assert!(c.socket_closed);
+    expect_closed(&mut t, &mut c, s, "text");
 
     // A second channel.
-    let (mut c, _) = opened(&mut t, addr);
+    let (mut c, s) = opened(&mut t, addr);
     let rtc = c.rtc.as_mut().unwrap();
     let mut api = rtc.direct_api();
     api.create_data_channel(ChannelConfig {
@@ -611,14 +725,13 @@ fn a_peer_past_its_caps_is_closed_and_loses_its_socket() {
         ..game_channel()
     });
     c.outputs();
-    run(&mut t, &mut [&mut c], 3000, |_, c| c[0].socket_closed);
-    assert!(c.socket_closed, "a second channel closes the peer");
+    expect_closed(&mut t, &mut c, s, "a second channel");
 
     // More messages a second than the cap.
-    let (mut c, _) = opened(&mut t, addr);
+    let (mut c, s) = opened(&mut t, addr);
     let start = Instant::now();
     let mut longest = Duration::ZERO;
-    while !c.socket_closed && start.elapsed() < Duration::from_secs(3) {
+    while !c.has_text(signal::CLOSED) && start.elapsed() < Duration::from_secs(3) {
         for _ in 0..50 {
             c.send_channel(b"m", true);
         }
@@ -628,14 +741,15 @@ fn a_peer_past_its_caps_is_closed_and_loses_its_socket() {
         c.step();
         while recv(&mut t).is_some() {}
     }
-    assert!(c.socket_closed, "{:?}", t.rtc_counters());
     assert!(
         longest < Duration::from_millis(20),
         "a pass took {longest:?}"
     );
+    expect_closed(&mut t, &mut c, s, "message rate");
     let counters = t.rtc_counters();
-    assert!(counters.closed_protocol >= 2, "{counters:?}");
-    assert!(counters.closed_rate >= 1, "{counters:?}");
+    assert_eq!(counters.closed_protocol, 2, "{counters:?}");
+    assert_eq!(counters.closed_rate, 1, "{counters:?}");
+    assert_eq!(t.sockets(), 4, "every socket stays");
 }
 
 #[test]

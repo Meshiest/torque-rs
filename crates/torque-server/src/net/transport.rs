@@ -109,6 +109,11 @@ pub trait Transport {
     fn take_gone(&mut self) -> Vec<SocketAddr> {
         Vec::new()
     }
+    /// Lines about the transport's links since the last call, for a console (a web transport's data channels). None for a
+    /// datagram socket.
+    fn status(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// A transport shared by the pump and the `Network` that `setNetPort` binds through.
