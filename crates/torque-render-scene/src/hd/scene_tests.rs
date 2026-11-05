@@ -128,3 +128,22 @@ fn a_spot_lights_its_cone_with_a_soft_edge() {
     // Behind the light: none.
     assert_eq!(spot.share([0.0, 0.0, 9.0]), 0.0);
 }
+
+#[test]
+fn a_spot_of_numbers_that_are_not_finite_packs_a_finite_cone() {
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        let spot = HdSpot {
+            light: HdLight {
+                position: [0.0; 3],
+                color: [1.0; 3],
+                radius: 10.0,
+                carrier: None,
+            },
+            direction: [bad, 0.0, 1.0],
+            inner: bad,
+            outer: bad,
+            shadows: false,
+        };
+        assert!(spot.cone().iter().all(|v| v.is_finite()), "{bad}");
+    }
+}

@@ -11,7 +11,8 @@
 //!   quarter turns from sunrise.
 //!
 //! Elevations (the events', [`TimeOfDay::normalized_elevation`]) run 0 to 360 degrees from sunrise: 90 the day's highest, 180
-//! sunset, 270 the lowest. Time is wrapped into 0 to 1 (1 itself stays 1).
+//! sunset, 270 the lowest. Time is wrapped into 0 to 1 (1 itself stays 1). The fields may come from a hostile server: they are
+//! held to sane ranges ([`DayFields::sanitized`]) and nothing loops on them.
 //!
 //! Credit: follows Torque3D's MIT-licensed `environment/timeOfDay.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is
 //! this crate's own.
@@ -90,24 +91,67 @@ impl Default for TimeOfDay {
     }
 }
 
-/// `t` wrapped into 0 to 1 (a whole number of days off; 1 stays 1).
+/// The shortest and longest day (seconds), the largest day and night scales and the fastest `animate` (degrees a second): a
+/// day's fields are held to them ([`DayFields::sanitized`]; they may come from a hostile server).
+pub const MIN_DAY_LENGTH: f32 = 1.0;
+pub const MAX_DAY_LENGTH: f32 = 1.0e7;
+pub const MAX_DAY_SCALE: f32 = 1000.0;
+pub const MAX_ANIMATE_SPEED: f32 = 36_000.0;
+/// The longest step [`TimeOfDay::advance`] takes (seconds).
+pub const MAX_STEP: f32 = 10.0;
+
+/// `v` when finite (held to `lo..=hi`), else `default`.
+fn held(v: f32, lo: f32, hi: f32, default: f32) -> f32 {
+    if v.is_finite() {
+        v.clamp(lo, hi)
+    } else {
+        default
+    }
+}
+
+/// `t` wrapped into 0 to 1 (a whole number of days off; 1 stays 1); 0 for a value that is not finite.
 fn wrap(t: f32) -> f32 {
     if !t.is_finite() {
         return 0.0;
     }
-    let mut t = t;
-    if t > 1.0 {
-        t -= t.floor();
+    if (0.0..=1.0).contains(&t) {
+        return t;
     }
-    if t < 0.0 {
-        t -= t.floor();
+    let w = t.rem_euclid(1.0);
+    if w.is_finite() {
+        w.clamp(0.0, 1.0)
+    } else {
+        0.0
     }
-    t
+}
+
+impl DayFields {
+    /// The fields held to finite, sane ranges: a day of [`MIN_DAY_LENGTH`] to [`MAX_DAY_LENGTH`] seconds, scales of 0 to
+    /// [`MAX_DAY_SCALE`], a tilt short of a quarter turn, the start time wrapped into the day; a value that is not finite takes
+    /// the default's.
+    pub fn sanitized(self) -> DayFields {
+        let d = DayFields::default();
+        DayFields {
+            axis_tilt: held(self.axis_tilt, -89.0, 89.0, d.axis_tilt),
+            day_length: held(
+                self.day_length,
+                MIN_DAY_LENGTH,
+                MAX_DAY_LENGTH,
+                d.day_length,
+            ),
+            start_time: wrap(self.start_time),
+            play: self.play,
+            azimuth_override: held(self.azimuth_override, -1.0e4, 1.0e4, d.azimuth_override),
+            day_scale: held(self.day_scale, 0.0, MAX_DAY_SCALE, d.day_scale),
+            night_scale: held(self.night_scale, 0.0, MAX_DAY_SCALE, d.night_scale),
+        }
+    }
 }
 
 impl TimeOfDay {
     /// A day at the start time (a new object's: `onAdd` sets the time to it).
     pub fn new(fields: DayFields) -> TimeOfDay {
+        let fields = fields.sanitized();
         let mut d = TimeOfDay {
             fields,
             time: wrap(fields.start_time),
@@ -153,6 +197,8 @@ impl TimeOfDay {
 
     /// The azimuth and elevation of the time now (`_updatePosition`).
     pub fn update_position(&mut self) {
+        self.fields = self.fields.sanitized();
+        self.time = wrap(self.time);
         self.prev_elevation = self.next_elevation;
         if self.fields.azimuth_override.abs() > 0.0 {
             self.elevation = self.time * TAU;
@@ -184,6 +230,9 @@ impl TimeOfDay {
 
     /// Adds an event at `elevation` degrees (after those at the same elevation).
     pub fn add_event(&mut self, elevation: f32, identifier: &str) {
+        if !elevation.is_finite() {
+            return;
+        }
         let at = self
             .events
             .iter()
@@ -203,9 +252,14 @@ impl TimeOfDay {
     }
 
     /// Runs the time to `elevation` degrees of its turn (0 to 360: the time times 360) at `speed` degrees a second, forward
-    /// through midnight when it is behind; false when the time is there already (`onAnimateStart` is called on true).
+    /// through midnight when it is behind (the speed held to [`MAX_ANIMATE_SPEED`]); false when the time is there already, or
+    /// either number is not finite, or the speed is not above 0 (`onAnimateStart` is called on true).
     pub fn animate(&mut self, elevation: f32, speed: f32) -> bool {
         self.animating = None;
+        if !elevation.is_finite() || !speed.is_finite() || speed <= 0.0 {
+            return false;
+        }
+        let speed = speed.min(MAX_ANIMATE_SPEED);
         let target = elevation.clamp(0.0, 360.0);
         let current = self.time * 360.0;
         let ahead = if target < current {
@@ -228,10 +282,12 @@ impl TimeOfDay {
     /// One step of `dt` seconds (Torque3D's `processTick` takes a tick's 32 ms): the animation's run, else the day while it
     /// plays; the events passed and the animation's end, in order.
     pub fn advance(&mut self, dt: f32) -> Vec<DayNote> {
+        let dt = held(dt, 0.0, MAX_STEP, 0.0);
+        self.fields = self.fields.sanitized();
         if let Some((target, speed)) = self.animating {
             let mut next = self.time * 360.0 + speed * dt;
-            while next > 360.0 {
-                next -= 360.0;
+            if next > 360.0 {
+                next = held(next.rem_euclid(360.0), 0.0, 360.0, 0.0);
             }
             let done = next >= target;
             if done {
@@ -255,12 +311,7 @@ impl TimeOfDay {
         } else {
             self.fields.night_scale
         };
-        if self.fields.day_length > 0.0 {
-            self.time += dt * scale / self.fields.day_length;
-        }
-        while self.time > 1.0 {
-            self.time -= 1.0;
-        }
+        self.time = wrap(self.time + dt * scale / self.fields.day_length);
         self.update_position();
         self.events_passed()
     }

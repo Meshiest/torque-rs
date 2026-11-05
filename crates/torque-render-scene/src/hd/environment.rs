@@ -7,6 +7,8 @@
 //!   `range` the light's reach. One mounted on a shape rides the shape's `mount<N>` node ([`mounted_transform`]), its own
 //!   transform the offset from the node, and its shape is its carrier (the shape casts no shadow of its own light). A light
 //!   switched off (`isEnabled` 0) gives none.
+//! - **Every number a record brings is held to a finite range** (the server may be hostile): [`spot_of`], [`look_of`] and the
+//!   day's fields ([`torque_scene::time_of_day::DayFields::sanitized`]).
 //! - **The day** starts from the orbit's fields and time and runs on each frame's seconds; a new orbit (the server set the
 //!   time, the length or play) starts it again from what was sent, and an animation the server sent runs once.
 //!
@@ -34,17 +36,23 @@ pub fn spot_gain(range: f32) -> f32 {
 }
 
 /// A SpotLight's light at `transform` (its world matrix), `carrier` the shape it rides.
-pub fn spot_of(u: &SpotUpdate, transform: &Mat, carrier: Option<u32>) -> HdSpot {
-    let range = u.range.get().max(0.05);
-    let outer = u.outer_angle.get().clamp(0.01, 179.0);
-    let inner = u.inner_angle.get().clamp(0.0, outer);
-    let gain = u.brightness.get().max(0.0) * spot_gain(range);
-    HdSpot {
+/// Its numbers held to finite ranges (a hostile server's record): the range [`MIN_SPOT_RANGE`] to [`MAX_SPOT_RANGE`], the
+/// angles within a half turn, the brightness 0 to [`MAX_SPOT_BRIGHTNESS`], the color 0 to 1; None when the transform is not
+/// finite.
+pub fn spot_of(u: &SpotUpdate, transform: &Mat, carrier: Option<u32>) -> Option<HdSpot> {
+    if !transform.m.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let range = held(u.range.get(), MIN_SPOT_RANGE, MAX_SPOT_RANGE, 10.0);
+    let outer = held(u.outer_angle.get(), 0.01, 179.0, 45.0);
+    let inner = held(u.inner_angle.get(), 0.0, outer, outer);
+    let gain = held(u.brightness.get(), 0.0, MAX_SPOT_BRIGHTNESS, 0.0) * spot_gain(range);
+    Some(HdSpot {
         light: HdLight {
             position: transform.column(3),
             color: u
                 .color
-                .map(|c| srgb_to_linear(c.get().clamp(0.0, 1.0)) * gain),
+                .map(|c| srgb_to_linear(held(c.get(), 0.0, 1.0, 0.0)) * gain),
             radius: range,
             carrier,
         },
@@ -52,6 +60,20 @@ pub fn spot_of(u: &SpotUpdate, transform: &Mat, carrier: Option<u32>) -> HdSpot 
         inner: (inner * 0.5).to_radians(),
         outer: (outer * 0.5).to_radians(),
         shadows: u.cast_shadows,
+    })
+}
+
+/// A spot light's shortest and longest range (units) and its greatest brightness.
+pub const MIN_SPOT_RANGE: f32 = 0.05;
+pub const MAX_SPOT_RANGE: f32 = 1000.0;
+pub const MAX_SPOT_BRIGHTNESS: f32 = 100.0;
+
+/// `v` when finite (held to `lo..=hi`), else `default`.
+fn held(v: f32, lo: f32, hi: f32, default: f32) -> f32 {
+    if v.is_finite() {
+        v.clamp(lo, hi)
+    } else {
+        default
     }
 }
 
@@ -82,7 +104,7 @@ pub fn spot_lights<W: ShapeWorld<Set = TgeClientSet> + ?Sized>(
             },
             None => (own, None),
         };
-        out.push(spot_of(u, &transform, carrier));
+        out.extend(spot_of(u, &transform, carrier));
     }
     out
 }
@@ -97,22 +119,31 @@ pub fn scatter_look(w: &ClientWorld<TgeClientSet>) -> Option<ScatterLook> {
 }
 
 /// A ScatterSky record's look.
+/// Its numbers held to finite ranges (a hostile server's record): the scales and the brightness 0 to [`MAX_SKY_SCALE`], the
+/// colors 0 to 1, the moon's angles within a turn (a number that is not finite takes the default's).
 pub fn look_of(u: &ScatterUpdate) -> ScatterLook {
-    let rgb = |c: [ghosts::F32; 3]| c.map(|v| v.get());
+    let d = ScatterLook::default();
+    let scale = |c: [ghosts::F32; 3], d: [f32; 3]| {
+        [0, 1, 2].map(|k| held(c[k].get(), 0.0, MAX_SKY_SCALE, d[k]))
+    };
+    let color = |c: [ghosts::F32; 3]| c.map(|v| held(v.get(), 0.0, 1.0, 0.0));
     ScatterLook {
-        sun_scale: rgb(u.sun_scale),
-        ambient_scale: rgb(u.ambient_scale),
-        fog_scale: rgb(u.fog_scale),
-        brightness: u.brightness.get(),
-        night_color: rgb(u.night_color),
-        night_fog_color: rgb(u.night_fog_color),
+        sun_scale: scale(u.sun_scale, d.sun_scale),
+        ambient_scale: scale(u.ambient_scale, d.ambient_scale),
+        fog_scale: scale(u.fog_scale, d.fog_scale),
+        brightness: held(u.brightness.get(), 0.0, MAX_SKY_SCALE, d.brightness),
+        night_color: color(u.night_color),
+        night_fog_color: color(u.night_fog_color),
         moon_enabled: u.moon_enabled,
-        moon_azimuth: u.moon_azimuth.get(),
-        moon_elevation: u.moon_elevation.get(),
-        moon_light_color: rgb(u.moon_light_color).map(srgb_to_linear),
-        ..ScatterLook::default()
+        moon_azimuth: held(u.moon_azimuth.get(), -360.0, 360.0, d.moon_azimuth),
+        moon_elevation: held(u.moon_elevation.get(), -90.0, 90.0, d.moon_elevation),
+        moon_light_color: color(u.moon_light_color).map(srgb_to_linear),
+        ..d
     }
 }
+
+/// The greatest scale and brightness of a ScatterSky's look.
+pub const MAX_SKY_SCALE: f32 = 10.0;
 
 /// The day as a client runs it: the last orbit the server sent and the day run from it.
 #[derive(Debug, Clone, Default)]

@@ -39,11 +39,14 @@ impl HdSpot {
     /// The cone as the GPU's light takes it: the direction times the reciprocal of the soft edge's width in cosines, and the
     /// outer half angle's cosine (a point light's is all zeros).
     pub fn cone(&self) -> [f32; 4] {
-        let outer = self.outer.clamp(1e-3, std::f32::consts::PI - 1e-3);
-        let inner = self.inner.clamp(0.0, outer);
+        // (A number that is not finite: a quarter turn's cone, its edge hard; no direction: straight down.)
+        let finite = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        let outer = finite(self.outer, std::f32::consts::FRAC_PI_4)
+            .clamp(1e-3, std::f32::consts::PI - 1e-3);
+        let inner = finite(self.inner, outer).clamp(0.0, outer);
         let width = (inner.cos() - outer.cos()).max(1e-3);
         let len = self.direction.iter().map(|v| v * v).sum::<f32>().sqrt();
-        let d = if len > 1e-6 {
+        let d = if len > 1e-6 && len.is_finite() {
             self.direction.map(|v| v / len)
         } else {
             [0.0, 0.0, -1.0]

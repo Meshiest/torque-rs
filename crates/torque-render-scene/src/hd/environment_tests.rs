@@ -158,3 +158,88 @@ fn a_scatter_sky_ghost_gives_its_look() {
     assert_eq!(look.moon_elevation, 30.0);
     assert_eq!(look.moon_light_color, [1.0; 3]);
 }
+
+#[test]
+fn hostile_records_give_finite_bounded_lights_and_a_sane_day() {
+    for bad in [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        1e-30,
+        1e30,
+        -1e30,
+    ] {
+        let u = SpotUpdate {
+            color: [bad; 3].map(F32::new),
+            brightness: F32::new(bad),
+            cast_shadows: true,
+            range: F32::new(bad),
+            inner_angle: F32::new(bad),
+            outer_angle: F32::new(bad),
+        };
+        let s = spot_of(&u, &Mat::IDENTITY, None).expect("a finite transform");
+        assert!(
+            (MIN_SPOT_RANGE..=MAX_SPOT_RANGE).contains(&s.light.radius),
+            "{bad}"
+        );
+        assert!(
+            s.light.color.iter().all(|c| c.is_finite() && *c >= 0.0),
+            "{bad}"
+        );
+        assert!(
+            s.inner.is_finite() && s.outer.is_finite() && s.outer < std::f32::consts::FRAC_PI_2
+        );
+        assert!(s.cone().iter().all(|v| v.is_finite()));
+        let mut m = Mat::IDENTITY;
+        m.m[12] = bad;
+        assert_eq!(spot_of(&u, &m, None).is_none(), !bad.is_finite());
+        let look = look_of(&ScatterUpdate {
+            sun_scale: [bad; 3].map(F32::new),
+            brightness: F32::new(bad),
+            night_color: [bad; 3].map(F32::new),
+            moon_azimuth: F32::new(bad),
+            moon_elevation: F32::new(bad),
+            moon_light_color: [bad; 3].map(F32::new),
+            ..ScatterUpdate::default()
+        });
+        assert!((0.0..=MAX_SKY_SCALE).contains(&look.brightness));
+        let orbit = TimeOrbit {
+            start_time: F32::new(bad),
+            day_length: F32::new(bad),
+            time: F32::new(bad),
+            axis_tilt: F32::new(bad),
+            azimuth_override: F32::new(bad),
+            day_scale: F32::new(bad),
+            night_scale: F32::new(bad),
+            play: true,
+        };
+        let mut w = ClientWorld::<TgeClientSet>::default();
+        w.ghosts.insert(
+            3,
+            ghost(
+                TgeClass::TimeOfDay,
+                TgeRecord::TimeOfDay(DayRecord {
+                    orbit: Some(orbit),
+                    animate: Some([F32::new(bad), F32::new(bad)]),
+                }),
+            ),
+        );
+        let mut day = ClientDay::default();
+        for dt in [bad, 0.016, 1e30] {
+            day.update(&w, dt);
+        }
+        let d = day.day.as_ref().unwrap();
+        assert!((0.0..=1.0).contains(&d.time), "{bad}: {}", d.time);
+        let light = day.light(&look).unwrap();
+        assert!(
+            light
+                .diffuse
+                .iter()
+                .chain(&light.ambient)
+                .chain(&light.fog)
+                .all(|v| v.is_finite()),
+            "{bad}: {light:?}"
+        );
+    }
+}

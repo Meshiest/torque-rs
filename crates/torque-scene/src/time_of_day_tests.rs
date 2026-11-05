@@ -134,3 +134,55 @@ fn set_time_wraps() {
     d.set_time(-0.25);
     assert!(close(d.time, 0.75));
 }
+
+#[test]
+fn hostile_fields_hold_to_sane_ranges_and_return_at_once() {
+    for bad in [
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        0.0,
+        1e-30,
+        1e30,
+        -1e30,
+    ] {
+        let mut d = TimeOfDay::new(DayFields {
+            axis_tilt: bad,
+            day_length: bad,
+            start_time: bad,
+            play: true,
+            azimuth_override: bad,
+            day_scale: bad,
+            night_scale: bad,
+        });
+        let f = d.fields;
+        assert!(
+            (MIN_DAY_LENGTH..=MAX_DAY_LENGTH).contains(&f.day_length),
+            "{bad}: {f:?}"
+        );
+        assert!((0.0..=MAX_DAY_SCALE).contains(&f.day_scale));
+        assert!((0.0..=MAX_DAY_SCALE).contains(&f.night_scale));
+        for dt in [bad, 0.032, 1e30] {
+            d.advance(dt);
+            d.animate(bad, bad);
+            d.animate(90.0, 1e30);
+            d.advance(dt);
+            d.set_time(bad);
+            d.add_event(bad, "x");
+            d.advance(dt);
+            assert!((0.0..=1.0).contains(&d.time), "{bad} {dt}: {}", d.time);
+            assert!(d.towards().iter().all(|v| v.is_finite()), "{bad} {dt}");
+        }
+    }
+    // The largest scale over the shortest day, a step at a time: the time stays in the day.
+    let mut d = TimeOfDay::new(DayFields {
+        day_length: MIN_DAY_LENGTH,
+        day_scale: MAX_DAY_SCALE,
+        night_scale: MAX_DAY_SCALE,
+        ..DayFields::default()
+    });
+    for _ in 0..100 {
+        d.advance(MAX_STEP);
+        assert!((0.0..=1.0).contains(&d.time));
+    }
+}
