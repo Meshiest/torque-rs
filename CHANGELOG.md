@@ -249,6 +249,8 @@ The first development version. Nothing is published yet; this is what exists.
   `walk` plays it instead of `run` under the geometric mean of the two speeds, and backward instead of `back` under that of
   the walk's and the back's, with a 5% margin either way; walk and run keep their place in the loop as they blend. A shape
   without `walk`, and a synced Player, keep TGE's pick.
+- `just examples/walk-clip`: a clip of the kit's figure walking, running and walking backward, its action chosen by the
+  client's Player animation, drawn offscreen from the side and three-quarters (an mp4 through ffmpeg, and a strip).
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
