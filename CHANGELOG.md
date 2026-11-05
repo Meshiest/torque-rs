@@ -261,9 +261,9 @@ The first development version. Nothing is published yet; this is what exists.
   lists); the class specs name TGE's console methods (the crate's natives were refused without them), and `SceneObject`,
   `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
 - `torque-client`: a window takes the system cursor (lock, confine, center) only while it is focused and shown. It lets go the
-  moment it loses focus or is hidden, never moves the cursor then, and takes it again only on a click or when the game
-  takes the mouse anew (a window made in the background held it before). In a browser the pointer lock is asked for only
-  right after a click, never renewed on a timer or after Esc.
+  moment it loses focus or is hidden, never moves the cursor then, and takes it again when it is focused and shown and the
+  game still wants the hold (a window made in the background held it before). In a browser the pointer lock is asked for
+  only right after a click, never renewed on a timer or after Esc.
 - The web page: `?nolock` stops every pointer-lock request; the browser check scripts load their pages with it, refuse a
   page without it, and `just examples/web-guard` (run by each check recipe) fails a check script that could do otherwise.
   Headless Chrome on Windows confined the real cursor when a check clicked the canvas.

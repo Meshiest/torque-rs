@@ -15,15 +15,15 @@
 //!
 //! The hold lets go at once when the window loses focus or is hidden ([`CursorLock::on_focus`], [`CursorLock::on_visible`] return
 //! the release for the caller to apply in the same event, the cursor shown), and never clips or moves the cursor while the window
-//! is unfocused or hidden ([`guard`] checks that again where the action is applied). After a loss the hold is taken again only by
-//! a click in the window ([`CursorLock::on_click`]) or by the game letting go and taking the mouse anew: the focus coming back
-//! is not enough, so a window that was never looked at (a background or headless one) cannot take the cursor. A Windows key
-//! pressed while held ([`CursorLock::on_system_key`]) lets go the same way, before the shell's shortcut opens its overlay
-//! (Win+Shift+S's snipping overlay may not take the focus).
+//! is unfocused or hidden ([`guard`] checks that again where the action is applied). The hold is taken again when the window is
+//! focused and shown again and the game still wants it (as TGE does on `WM_ACTIVATE`); a window that never had the focus (a
+//! background or headless one) never holds. A Windows key pressed while held ([`CursorLock::on_system_key`]) lets go until the
+//! focus comes back or a click, before the shell's shortcut opens its overlay (Win+Shift+S's snipping overlay may not take the
+//! focus).
 //!
 //! In a browser ([`CursorLock::click_required`]) the page may ask for the pointer lock only right after a click: a hold is taken
-//! on the pass that follows a click and never renewed on a timer, and a click while held asks for it again (the user left the
-//! lock with Esc).
+//! on the pass that follows a click, also after a focus loss, and never renewed on a timer, and a click while held asks for it
+//! again (the user left the lock with Esc).
 //!
 //! Credit: follows TGE's Windows window layer as Torque3D carries it (MIT: `platformWin32/winWindow.cpp`, Copyright (c) 2012
 //! GarageGames, LLC).
@@ -60,7 +60,7 @@ pub struct CursorLock {
     renewed_ms: u64,
     /// The focus came back since the last pass (the clip must be applied again).
     refocused: bool,
-    /// The cursor was let go (focus or visibility lost, a Windows key): not held again until a click, or the game letting go.
+    /// A Windows key let go of the cursor: not held again until the focus comes back or a click.
     suspended: bool,
     /// A hold needs a click right before it (a browser grants the pointer lock only on a user's click).
     click_required: bool,
@@ -99,24 +99,24 @@ impl CursorLock {
     }
 
     /// The window's focus changed (`WM_ACTIVATE`). Losing it frees the cursor at once if held and shows it (the action to apply
-    /// now, not at the next pass), and it is taken again only by a click or the game taking the mouse anew.
+    /// now, not at the next pass); getting it back holds again at the next pass if the game still wants the hold.
     pub fn on_focus(&mut self, focused: bool) -> Option<Action> {
-        self.focused = focused;
-        if focused {
-            return None;
+        if focused && !self.focused {
+            self.refocused = true;
+            self.suspended = false;
         }
-        self.suspended = true;
-        self.release()
+        self.focused = focused;
+        if focused { None } else { self.release() }
     }
 
-    /// The window was hidden or shown again (occlusion, minimizing): hiding is a focus loss, showing takes nothing by itself.
+    /// The window was hidden or shown again (occlusion, minimizing): hiding is a focus loss, showing holds again at the next
+    /// pass if the window is focused and the game still wants the hold.
     pub fn on_visible(&mut self, visible: bool) -> Option<Action> {
-        self.visible = visible;
-        if visible {
-            return None;
+        if visible && !self.visible {
+            self.refocused = true;
         }
-        self.suspended = true;
-        self.release()
+        self.visible = visible;
+        if visible { None } else { self.release() }
     }
 
     /// A Windows key went down (the shell's shortcuts open overlays that may not take the focus): the hold lets go now, until the
@@ -126,7 +126,7 @@ impl CursorLock {
         self.release()
     }
 
-    /// A mouse button went down in the window: a hold that was let go of may be taken again. For a window that needs a click
+    /// A mouse button went down in the window: a hold a Windows key let go of may be taken again. For a window that needs a click
     /// to hold ([`CursorLock::click_required`]) the action to ask for the lock again while held, to apply in this event.
     pub fn on_click(&mut self) -> Option<Action> {
         if !(self.focused && self.visible) {
@@ -176,10 +176,6 @@ impl CursorLock {
             && !self.suspended
             && (!self.click_required || self.held || clicked);
         if !wants {
-            // The game letting go and taking the mouse anew is the action that may hold again.
-            if present {
-                self.suspended = false;
-            }
             // The game let go: the cursor goes back where it was (only if this hold moved it).
             let kept = self.kept.take();
             if self.held {

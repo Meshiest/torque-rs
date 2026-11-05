@@ -30,7 +30,7 @@ fn the_game_taking_the_mouse_holds_the_cursor_at_the_centre_every_pass() {
 }
 
 #[test]
-fn focus_loss_frees_the_cursor_and_only_a_click_holds_it_again() {
+fn focus_loss_frees_the_cursor_and_focus_regained_holds_it_again_while_the_game_wants_it() {
     let mut l = CursorLock::new();
     assert!(matches!(
         l.pass(true, true, (5, 5), 0),
@@ -48,51 +48,54 @@ fn focus_loss_frees_the_cursor_and_only_a_click_holds_it_again() {
     assert_eq!(l.pass(true, true, (5, 5), 16), None, "unfocused: nothing");
     assert_eq!(l.pass(true, true, (5, 5), 32), None, "unfocused: nothing");
     l.on_focus(true);
-    // The focus coming back takes nothing: only a click does, with the place first kept (the game never let go).
-    assert_eq!(l.pass(true, true, (90, 90), 48), None, "refocused: free");
-    assert_eq!(l.on_click(), None);
+    // Held again at once, with the place first kept (the game never let go).
+    assert_eq!(
+        l.pass(true, true, (90, 90), 48),
+        Some(Action::Hold { keep: (5, 5) })
+    );
+    // A refocus while held (a focus event pair between passes): freed, then held again at the next pass.
+    assert!(l.on_focus(false).is_some());
+    assert_eq!(l.on_focus(true), None);
     assert_eq!(
         l.pass(true, true, (90, 90), 64),
         Some(Action::Hold { keep: (5, 5) })
     );
-    // A refocus while held (a focus event pair between passes): freed, and held again by the next click.
-    assert!(l.on_focus(false).is_some());
-    assert_eq!(l.on_focus(true), None);
-    assert_eq!(l.pass(true, true, (90, 90), 80), None);
-    l.on_click();
-    assert!(matches!(
-        l.pass(true, true, (90, 90), 96),
-        Some(Action::Hold { .. })
-    ));
 }
 
 #[test]
-fn the_game_taking_the_mouse_anew_holds_after_a_focus_loss_without_a_click() {
+fn focus_regained_holds_only_when_the_game_wants_the_hold() {
     let mut l = CursorLock::new();
-    assert!(l.on_focus(false).is_none());
+    assert!(l.pass(true, true, (5, 5), 0).is_some());
+    assert!(l.on_focus(false).is_some());
+    // the game let go meanwhile (the menus): nothing to hold when the focus comes back.
+    l.pass(false, true, (5, 5), 16);
     l.on_focus(true);
-    assert_eq!(l.pass(true, true, (5, 5), 0), None, "still wanted: free");
-    // The game lets go (the menus) and takes the mouse again (a mission starts): the capturing action holds.
-    assert_eq!(l.pass(false, true, (5, 5), 16), None);
-    assert!(matches!(
-        l.pass(true, true, (5, 5), 32),
-        Some(Action::Hold { .. })
-    ));
+    assert_eq!(l.pass(false, true, (5, 5), 32), None);
+    // or a free-cursor option.
+    assert_eq!(l.pass(true, false, (5, 5), 48), None);
+    assert!(!l.held());
 }
 
 #[test]
-fn a_window_made_without_the_focus_holds_nothing_until_it_is_clicked() {
+fn a_window_that_never_had_the_focus_holds_nothing() {
     let mut l = CursorLock::new();
     assert!(l.on_focus(false).is_none());
     for t in 0..50u64 {
         assert_eq!(l.pass(false, true, (5, 5), t * 10), None);
         assert_eq!(l.pass(true, true, (5, 5), t * 10 + 5), None);
+        assert_eq!(l.on_click(), None, "a click on an unfocused window");
     }
     assert!(!l.held());
+    // it holds when it gets the focus, not before.
+    l.on_focus(true);
+    assert!(matches!(
+        l.pass(true, true, (5, 5), 1000),
+        Some(Action::Hold { .. })
+    ));
 }
 
 #[test]
-fn a_hidden_window_lets_go_and_never_holds() {
+fn a_hidden_window_lets_go_and_never_holds_until_it_is_shown_and_focused() {
     let mut l = CursorLock::new();
     assert!(l.pass(true, true, (5, 5), 0).is_some());
     assert_eq!(
@@ -106,9 +109,11 @@ fn a_hidden_window_lets_go_and_never_holds() {
         assert_eq!(l.pass(true, true, (5, 5), t * 100), None, "hidden at {t}");
         assert_eq!(l.on_click(), None, "a click on a hidden window");
     }
+    // shown but still unfocused: nothing.
+    assert!(l.on_focus(false).is_none());
     assert_eq!(l.on_visible(true), None);
-    assert_eq!(l.pass(true, true, (5, 5), 3000), None, "shown: free");
-    l.on_click();
+    assert_eq!(l.pass(true, true, (5, 5), 3000), None);
+    l.on_focus(true);
     assert!(l.pass(true, true, (5, 5), 3016).is_some());
 }
 
@@ -167,7 +172,11 @@ fn a_browser_holds_only_right_after_a_click_and_never_on_a_timer() {
     }
     // A click while held asks for it again, in the click's own event.
     assert_eq!(l.on_click(), Some(Action::Centre { renew: true }));
-    // Focus lost and back: a click is needed again.
+    assert_eq!(
+        l.pass(true, true, (5, 5), 5016 + 41 * RENEW_MS),
+        Some(Action::Centre { renew: false })
+    );
+    // Focus lost and back: a browser needs a click again.
     assert!(l.on_focus(false).is_some());
     l.on_focus(true);
     assert_eq!(l.pass(true, true, (5, 5), 30_000), None);
@@ -201,7 +210,7 @@ fn an_unfocused_window_never_takes_the_cursor_however_long_it_waits() {
 }
 
 #[test]
-fn a_windows_key_lets_go_until_a_click() {
+fn a_windows_key_lets_go_until_the_focus_comes_back_or_a_click() {
     // the snipping overlay of Win+Shift+S may not take the focus.
     let mut l = CursorLock::new();
     assert!(l.pass(true, true, (5, 5), 0).is_some());
@@ -225,14 +234,17 @@ fn a_windows_key_lets_go_until_a_click() {
         l.pass(true, true, (5, 5), 3000),
         Some(Action::Hold { .. })
     ));
-    // The focus coming back (the overlay took it after all) is not a click.
+    // Or the focus coming back (the overlay took it after all).
     assert!(l.on_system_key().is_some());
     assert!(l.on_focus(false).is_none(), "already free");
     assert_eq!(l.pass(true, true, (5, 5), 3100), None);
     l.on_focus(true);
-    assert_eq!(l.pass(true, true, (5, 5), 3200), None);
+    assert!(matches!(
+        l.pass(true, true, (5, 5), 3200),
+        Some(Action::Hold { .. })
+    ));
     // A click while unfocused takes nothing.
-    assert!(l.on_focus(false).is_none());
+    assert!(l.on_focus(false).is_some());
     l.on_click();
     assert_eq!(l.pass(true, true, (5, 5), 3300), None);
 }
