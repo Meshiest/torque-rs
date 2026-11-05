@@ -431,7 +431,7 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
     let mut names: Vec<_> = a.iter().map(|x| x.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 26);
+    assert_eq!(names.len(), 28 + 10 + crate::trees::chunks().len());
     // Every material names a texture of the kit.
     for (_, model) in models() {
         for m in &model.shape.materials {
@@ -890,4 +890,331 @@ fn the_keep_and_the_yard_pass_the_builders_checks() {
         assert!(r.clean(), "{name}: {}", r.line());
         assert_eq!(r.hulls, brushes.len());
     }
+}
+
+#[test]
+fn the_track_is_a_closed_loop_round_the_field_that_never_comes_near_itself() {
+    let t = crate::track::track();
+    let p = t.points();
+    assert!((1800.0..2400.0).contains(&t.length()), "{}", t.length());
+    // Closed: the last point runs into the first.
+    let (a, b) = (p[0], p[p.len() - 1]);
+    assert!((a[0] - b[0]).hypot(a[1] - b[1]) < 2.0 * crate::track::STEP);
+    // Clear of the start field by its width and more, and of itself wherever it is far along the loop.
+    let r = crate::terrain::FIELD_RADIUS + crate::track::WIDTH;
+    assert!(p.iter().all(|q| q[0].hypot(q[1]) > r));
+    let step = 4;
+    for i in (0..p.len()).step_by(step) {
+        let near = t.nearest(p[i][0], p[i][1]).unwrap();
+        assert!(near.distance < 0.01, "{i}: on the centerline");
+        for j in (0..p.len()).step_by(step) {
+            let along = (i as f32 - j as f32).abs() * crate::track::STEP;
+            let along = along.min(t.length() - along);
+            if along > 100.0 {
+                let d = (p[i][0] - p[j][0]).hypot(p[i][1] - p[j][1]);
+                assert!(d > 50.0, "{i} {j}: {d}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_dirt_covers_the_track_and_leaves_the_field_green() {
+    use crate::track::{HALF_WIDTH, dirt_share, track};
+    let t = track();
+    for k in 0..200 {
+        let (p, h) = t.at(t.length() * k as f32 / 200.0);
+        let across = [h[1], -h[0]];
+        let at = |d: f32| dirt_share(p[0] + across[0] * d, p[1] + across[1] * d);
+        assert!(at(0.0) > 0.9, "{k}: the middle");
+        assert!((at(HALF_WIDTH) - 0.5).abs() < 0.05, "{k}: half at the edge");
+        assert_eq!(at(HALF_WIDTH + 6.0), 0.0, "{k}: none beside it");
+    }
+    assert_eq!(dirt_share(0.0, 0.0), 0.0);
+    // The terrain's two weights sum to 255 everywhere.
+    let ter = crate::terrain::hills();
+    let n = crate::terrain::SIDE * crate::terrain::SIDE;
+    let alpha = &ter[ter.len() - 2 * n..];
+    assert!((0..n).all(|i| u16::from(alpha[i]) + u16::from(alpha[n + i]) == 255));
+    assert!(alpha[n..].contains(&255) && alpha[n..].iter().filter(|&&a| a > 0).count() < n / 20);
+}
+
+#[test]
+fn the_ground_is_shaped_along_the_track_and_left_as_it_was_elsewhere() {
+    use crate::terrain::{height, raw_height};
+    use crate::track::{BANK_MAX, track};
+    assert_eq!(height(0.0, 0.0), raw_height(0.0, 0.0));
+    assert_eq!(height(0.0, 95.0), raw_height(0.0, 95.0), "the hill's top");
+    assert_eq!(height(600.0, 600.0), raw_height(600.0, 600.0));
+    let t = track();
+    let (mut lift, mut bank) = ([0.0f32; 2], 0.0f32);
+    for k in 0..400 {
+        let s = t.length() * k as f32 / 400.0;
+        let (p, h) = t.at(s);
+        let across = [h[1], -h[0]];
+        let z = |d: f32| height(p[0] + across[0] * d, p[1] + across[1] * d);
+        // Across the track a straight line, level or banked no steeper than the cap.
+        let (left, right) = (z(0.0) - z(-4.0), z(4.0) - z(0.0));
+        assert!((left - right).abs() < 0.05, "{k}: {left} {right}");
+        assert!(right.abs() <= 4.0 * BANK_MAX + 0.02, "{k}: {right}");
+        lift = [lift[0].min(t.lift(s)), lift[1].max(t.lift(s))];
+        bank = bank.max(t.bank_at(s).abs());
+    }
+    assert!(lift[0] < -3.9 && lift[1] > 6.0, "{lift:?}");
+    assert!(bank > 0.06, "{bank}");
+    // The start straight and the way over the round hill keep the hills' shape (the track leans with them, at most
+    // LEAN_MAX).
+    for s in [0.0, 60.0, 150.0, t.length() - 20.0] {
+        assert_eq!(t.lift(s), 0.0, "{s}");
+        assert!(t.bank_at(s).abs() <= crate::track::LEAN_MAX, "{s}");
+    }
+}
+
+#[test]
+fn the_track_is_smooth_enough_to_drive_and_its_crests_lift_the_buggy() {
+    use crate::terrain::{SIDE, SQUARE, height, sample_xy};
+    use crate::track::{HALF_WIDTH, track};
+    let t = track();
+    // The terrain as the engine has it: the samples' heights, between them on the triangles' planes (bilinear is close).
+    let samples: Vec<f32> = (0..SIDE * SIDE)
+        .map(|k| {
+            let [x, y] = sample_xy(k % SIDE, k / SIDE);
+            height(x, y)
+        })
+        .collect();
+    let origin = sample_xy(0, 0);
+    let ground = |x: f32, y: f32| {
+        let (u, v) = ((x - origin[0]) / SQUARE, (y - origin[1]) / SQUARE);
+        let (i, j) = (u.floor() as usize, v.floor() as usize);
+        let (a, b) = (u - i as f32, v - j as f32);
+        let h = |i: usize, j: usize| samples[i + j * SIDE];
+        (h(i, j) * (1.0 - a) + h(i + 1, j) * a) * (1.0 - b)
+            + (h(i, j + 1) * (1.0 - a) + h(i + 1, j + 1) * a) * b
+    };
+    // The grade along the centerline, over 4 m, and the change of grade (a lip) between one 4 m and the next.
+    let (mut steepest, mut lip, mut crest) = (0.0f32, 0.0f32, 0.0f32);
+    let n = (t.length() / 4.0) as usize;
+    let z: Vec<f32> = (0..n)
+        .map(|k| {
+            let (p, _) = t.at(k as f32 * 4.0);
+            ground(p[0], p[1])
+        })
+        .collect();
+    for k in 0..n {
+        let g0 = (z[(k + 1) % n] - z[k]) / 4.0;
+        let g1 = (z[(k + 2) % n] - z[(k + 1) % n]) / 4.0;
+        steepest = steepest.max(g0.abs());
+        lip = lip.max((g1 - g0).abs());
+        crest = crest.max(g0 - g1);
+    }
+    println!(
+        "track: steepest grade {steepest:.3}, largest change of grade over 4 m {lip:.3}, sharpest crest {crest:.3}"
+    );
+    assert!(steepest < 0.3, "{steepest}");
+    assert!(lip < 0.15, "{lip}");
+    // A crest bends the road down by a few hundredths of a grade every 4 m: at 20 m/s that is more than gravity holds.
+    assert!(crest > 0.03, "{crest}");
+    // Beside the shaped track, out to the landforms' reach, no seam or step between neighboring samples: no sharper bend
+    // than the track's shoulders have always had (the round hill's steep side, unshaped, bends more).
+    let mut worst = 0.0f32;
+    for j in 1..SIDE - 1 {
+        for i in 1..SIDE - 1 {
+            let [x, y] = sample_xy(i, j);
+            if t.nearest(x, y)
+                .is_none_or(|n| n.distance < HALF_WIDTH || t.shaped(n.along) == 0.0)
+            {
+                continue;
+            }
+            let h = |i: usize, j: usize| samples[i + j * SIDE];
+            let bend = (h(i + 1, j) - 2.0 * h(i, j) + h(i - 1, j))
+                .abs()
+                .max((h(i, j + 1) - 2.0 * h(i, j) + h(i, j - 1)).abs());
+            worst = worst.max(bend);
+        }
+    }
+    println!("beside the shaped track: largest bend between samples {worst:.2} m");
+    assert!(worst < 3.5, "{worst}");
+}
+
+#[test]
+fn the_dirts_uv_runs_along_the_track_and_over_the_loops_start() {
+    use crate::track::{DIRT_ACROSS, dirt_uv, track};
+    let t = track();
+    let (p, h) = t.at(10.0);
+    let q = t.at(14.0).0;
+    let uv = dirt_uv(&[
+        [p[0], p[1], 0.0],
+        [q[0], q[1], 0.0],
+        [p[0] + h[1], p[1] - h[0], 0.0],
+    ]);
+    assert!((uv[0][1] - 0.5).abs() < 0.01, "the middle across");
+    assert!(uv[1][0] > uv[0][0], "on along it");
+    assert!(
+        (uv[2][1] - (0.5 + 1.0 / DIRT_ACROSS)).abs() < 0.01,
+        "a meter to the right"
+    );
+    // A triangle over the loop's start keeps its coordinates together.
+    let (a, b) = (t.at(t.length() - 2.0).0, t.at(2.0).0);
+    let uv = dirt_uv(&[
+        [a[0], a[1], 0.0],
+        [b[0], b[1], 0.0],
+        [a[0], a[1] + 1.0, 0.0],
+    ]);
+    assert!((uv[1][0] - uv[0][0]).abs() < 1.0, "{uv:?}");
+}
+
+#[test]
+fn the_forest_stands_in_dense_patches_off_the_track_the_field_and_the_way_north() {
+    use crate::track::{HALF_WIDTH, track};
+    use crate::trees::{SPACING, TRACK_CLEAR, allowed, chunks, forest};
+    let f = forest();
+    println!("forest: {} trees in {} squares", f.len(), chunks().len());
+    assert!((2000..6000).contains(&f.len()), "{}", f.len());
+    let t = track();
+    for tree in f {
+        let [x, y, z] = tree.foot;
+        assert!(allowed(x, y), "{:?}", tree.foot);
+        assert_eq!(z, crate::terrain::height(x, y));
+        assert!(
+            t.nearest(x, y)
+                .is_none_or(|n| n.distance >= HALF_WIDTH + TRACK_CLEAR)
+        );
+    }
+    // Spaced: no two feet nearer than a core's spacing (sorted along x, so only near neighbors are compared).
+    let mut feet: Vec<[f32; 3]> = f.iter().map(|t| t.foot).collect();
+    feet.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    for (i, a) in feet.iter().enumerate() {
+        for b in feet[i + 1..].iter().take_while(|b| b[0] - a[0] < SPACING.0) {
+            assert!((a[0] - b[0]).hypot(a[1] - b[1]) >= SPACING.0 - 1e-3);
+        }
+    }
+    // Dense cores and open meadows: the trees within 20 m of the densest spot, and the share of 20 m squares between 40 and
+    // 120 m off the track with no tree at all.
+    let crowd = |x: f32, y: f32, r: f32| {
+        feet.iter()
+            .filter(|b| (b[0] - x).hypot(b[1] - y) < r)
+            .count()
+    };
+    let densest = feet
+        .iter()
+        .step_by(7)
+        .map(|a| crowd(a[0], a[1], 20.0))
+        .max()
+        .unwrap();
+    let (mut squares, mut open) = (0, 0);
+    for j in -25..20 {
+        for i in -25..25 {
+            let (x, y) = (i as f32 * 20.0 + 10.0, j as f32 * 20.0 + 10.0);
+            let near = t.nearest(x, y).map(|n| n.distance);
+            if near.is_some_and(|d| d >= 40.0) {
+                squares += 1;
+                open += usize::from(crowd(x, y, 10.0) == 0);
+            }
+        }
+    }
+    println!(
+        "densest: {densest} trees within 20 m; {open} of {squares} squares near the track open"
+    );
+    assert!(densest >= 30, "{densest}");
+    assert!(
+        open * 4 > squares && open * 4 < squares * 3,
+        "{open} {squares}"
+    );
+    // Every tree in one square, each square its own file.
+    let mut seen: Vec<usize> = chunks()
+        .iter()
+        .flat_map(|c| c.trees.iter().copied())
+        .collect();
+    seen.sort_unstable();
+    assert!(seen.iter().copied().eq(0..f.len()));
+    assert!(!allowed(0.0, 0.0) && !allowed(0.0, 100.0));
+    let p = t.points()[100];
+    assert!(!allowed(p[0], p[1]));
+}
+
+#[test]
+fn only_trunks_reach_down_to_a_buggy_and_the_tall_conifers_tower() {
+    use crate::trees::{BARK, BARK_BIRCH, BARK_RED, CLEARANCE, Kind, tree};
+    for kind in Kind::ALL {
+        let mut tallest = 0.0f64;
+        for seed in 0..24u64 {
+            for size in [0.6, 0.85, 1.0, 1.15] {
+                let brushes = tree(kind, [0.0, 0.0, 0.0], size, seed);
+                let mut trunks = 0;
+                for b in &brushes {
+                    let (lo, hi) = b.bounds().unwrap();
+                    tallest = tallest.max(hi[2]);
+                    let material = b.faces[0].material.as_str();
+                    if [BARK, BARK_RED, BARK_BIRCH].contains(&material) {
+                        trunks += 1;
+                        // Not wider than a tall trunk's flared foot.
+                        assert!(hi[0] - lo[0] < 5.0, "{kind:?}");
+                    } else {
+                        // A canopy's lowest reach (a leaning tree's dips a little).
+                        assert!(
+                            lo[2] > CLEARANCE - 0.35,
+                            "{kind:?} {seed} {size}: {}",
+                            lo[2]
+                        );
+                    }
+                }
+                assert!((1..=2).contains(&trunks), "{kind:?}");
+            }
+        }
+        let grown = kind.height();
+        println!("{kind:?}: tallest {tallest:.1} m");
+        assert!(
+            tallest > grown && tallest < grown * 1.5,
+            "{kind:?}: {tallest}"
+        );
+    }
+    assert!(
+        Kind::Redwood.height() > 15.0 && Kind::Fir.height() > 12.0,
+        "several buggies tall"
+    );
+}
+
+#[test]
+fn the_forest_builds_and_stays_within_its_triangle_budget() {
+    let (mut triangles, mut most) = (0, 0);
+    let mut names: Vec<String> = Vec::new();
+    for k in 0..crate::trees::chunks().len() {
+        let built = torque_interior_builder::build(
+            &crate::trees::chunk_brushes(k),
+            &crate::trees::options(),
+        )
+        .unwrap();
+        triangles += built
+            .surfaces
+            .iter()
+            .map(|(_, _, p)| p.len() - 2)
+            .sum::<usize>();
+        let d = &built.dif.details[0];
+        most = most.max(d.bsp_nodes.len());
+        names.extend(d.materials.iter().cloned());
+    }
+    println!("forest: {triangles} triangles, at most {most} BSP nodes an interior");
+    assert!(triangles < 400_000, "{triangles}");
+    names.sort();
+    names.dedup();
+    let kit: Vec<_> = crate::all().unwrap().iter().map(|a| a.name).collect();
+    for m in names {
+        assert!(kit.contains(&format!("{m}.png").as_str()), "{m}");
+    }
+}
+
+#[test]
+fn the_tree_lineup_passes_the_builders_checks() {
+    use torque_interior_builder::verify::{Counts, run};
+    let brushes = crate::trees::lineup();
+    let r = run(
+        &brushes,
+        &crate::trees::options(),
+        Counts::scaled(verify_share()),
+        11,
+    )
+    .unwrap();
+    println!("tree lineup ({} brushes): {}", brushes.len(), r.line());
+    assert!(r.clean(), "{}", r.line());
+    assert_eq!(r.hulls, brushes.len());
 }

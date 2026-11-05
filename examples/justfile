@@ -110,3 +110,13 @@ vehicle-demo-shots dir="../target/vehicle-demo-shots":
 # (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
 vehicle-demo-cloud-shots dir="../target/vehicle-demo-cloud-shots":
     cargo run -p torque-example-vehicle-demo --release -- --cloud-shots {{dir}}
+
+# The vehicle demo's race track, its landforms and forests in pictures (the loop from above, driver's-eye views past the
+# forests, over a crest and along the ridge, up at a forest's edge, trees close up, the kinds of tree, and the low sun at
+# golden hour and sunset), drawn offscreen into `dir`; `vehicle-demo-track-bench` prints the frame times at the start and
+# around the lap instead
+vehicle-demo-track-shots dir="../target/vehicle-demo-track-shots":
+    cargo run -p torque-example-vehicle-demo --release --example track-shots -- {{dir}}
+
+vehicle-demo-track-bench:
+    cargo run -p torque-example-vehicle-demo --release --example track-shots -- --bench

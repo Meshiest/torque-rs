@@ -1680,3 +1680,36 @@ fn a_server_that_sends_a_buggy_at_no_number_puts_nothing_anywhere_on_a_client() 
         }
     }
 }
+
+/// The map places every square of the forest once, each at the origin (the interiors are built in the world's coordinates).
+#[test]
+fn the_map_places_every_square_of_the_forest_once() {
+    use torque_render_scene::Assets as _;
+    let files = GameFiles::bundled().unwrap();
+    let map = String::from_utf8_lossy(
+        files
+            .file(torque_example_vehicle_demo::files::MISSION)
+            .unwrap(),
+    )
+    .into_owned();
+    let placed: Vec<&str> = map
+        .lines()
+        .filter(|l| l.contains("InteriorInstance(Forest"))
+        .map(|l| {
+            assert!(
+                l.contains("position = \"0 0 0\"; rotation = \"1 0 0 0\"; scale = \"1 1 1\";"),
+                "{l}"
+            );
+            let at = l.find("kit/").unwrap() + 4;
+            &l[at..at + l[at..].find('"').unwrap()]
+        })
+        .collect();
+    let squares: Vec<&str> = torque_example_assets::trees::chunks()
+        .iter()
+        .map(|c| c.file.as_str())
+        .collect();
+    assert_eq!(placed, squares);
+    for name in squares {
+        assert!(files.kit.read(&format!("kit/{name}")).is_some(), "{name}");
+    }
+}

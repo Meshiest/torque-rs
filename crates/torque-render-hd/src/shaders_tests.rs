@@ -29,6 +29,7 @@ fn the_shaders_material_numbers_are_the_scenes() {
         ("MAT_ANCHORED", material::ANCHORED),
         ("MAT_SKY_EYE", material::SKY_EYE),
         ("MAT_NODE", material::NODE),
+        ("MAT_LAYER", material::LAYER),
     ] {
         let line = common
             .lines()
@@ -64,6 +65,16 @@ fn constant(file: &str, name: &str) -> f64 {
         .trim_end_matches('u')
         .parse()
         .unwrap()
+}
+
+#[test]
+fn the_terrain_layers_sharpening_is_the_scenes() {
+    let common = FILES[0].0;
+    assert_eq!(
+        constant(common, "LAYER_SHARPNESS") as f32,
+        material::LAYER_SHARPNESS
+    );
+    assert_eq!(constant(common, "LAYER_DIP") as f32, material::LAYER_DIP);
 }
 
 #[test]

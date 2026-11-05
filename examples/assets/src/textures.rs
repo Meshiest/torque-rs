@@ -16,6 +16,13 @@
 //! | `smoke.png` | 64 x 64, with alpha | a soft, uneven puff of light gray smoke |
 //! | `checker.png` | 64 x 64 | the terrain's checkerboard: two squares a side, a light and a dark green |
 //! | `track.png` | 32 x 32 | a tire track's tread: gray block prints darker than 0.5, the strip's edges fading to 0.5 |
+//! | `dirt.png` | 128 x 256, with alpha | the race track's packed brown dirt along (left to right) and across (top to bottom) it:
+//! mottled, fine grit, two darker tire-worn bands streaked along it, looser and lighter at the edges; its alpha the dirt's
+//! height (dipping in patches toward the edges) |
+//! | `tree_bark.png`, `tree_bark_red.png`, `tree_bark_birch.png`, `tree_pine.png`, `tree_fir.png`, `tree_leaves.png`,
+//! `tree_leaves_dark.png`, `tree_leaves_light.png` | 32 x 32 | the trees' bark (brown, streaked up and down; the tall
+//! conifers' red-brown in deeper streaks; a birch's pale with short dark marks round it) and foliage (a blue-green and a darker one for the conifers, a leaf green, a deep green and a yellow-green for
+//! the leafy trees, softly mottled) |
 //! | `buggy.png` | 64 x 64 | the buggy's swatches: orange frame, charcoal panels, trim, seats, lamps, metal, floor, tire, rim and tread |
 
 use std::io;
@@ -349,5 +356,137 @@ pub fn buggy() -> io::Result<Vec<u8>> {
             (2, 2) => [32, 32, 36],
             _ => trim,
         }
+    })
+}
+
+/// A hash of lattice point (x, y) and `seed` in [0, 1).
+fn lattice(x: u32, y: u32, seed: u32) -> f32 {
+    let mut h =
+        x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ seed.wrapping_mul(0xcb1a_b31f);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x5bd1_e995);
+    h ^= h >> 15;
+    (h & 0xff_ffff) as f32 / 0x100_0000 as f32
+}
+
+/// Smooth value noise in [0, 1) at (x, y) (in lattice cells), repeating every `period` cells each way.
+fn noise(x: f32, y: f32, period: [u32; 2], seed: u32) -> f32 {
+    let (fx, fy) = (x.floor(), y.floor());
+    let (tx, ty) = (x - fx, y - fy);
+    let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+    let cell = |dx: i64, dy: i64| {
+        let px = (fx as i64 + dx).rem_euclid(i64::from(period[0])) as u32;
+        let py = (fy as i64 + dy).rem_euclid(i64::from(period[1])) as u32;
+        lattice(px, py, seed)
+    };
+    let top = cell(0, 0) + (cell(1, 0) - cell(0, 0)) * sx;
+    let bottom = cell(0, 1) + (cell(1, 1) - cell(0, 1)) * sx;
+    top + (bottom - top) * sy
+}
+
+/// Value noise over an image of `size` pixels, `cells` lattice cells across it each way at the coarsest of `octaves` (each
+/// twice as fine and half as strong), repeating with the image: in [0, 1).
+fn fbm(x: u32, y: u32, size: [u32; 2], cells: [u32; 2], octaves: u32, seed: u32) -> f32 {
+    let (mut sum, mut weight, mut amp) = (0.0, 0.0, 1.0);
+    for o in 0..octaves {
+        let c = [cells[0] << o, cells[1] << o];
+        let u = (x as f32 + 0.5) * c[0] as f32 / size[0] as f32;
+        let v = (y as f32 + 0.5) * c[1] as f32 / size[1] as f32;
+        sum += noise(u, v, c, seed.wrapping_add(o)) * amp;
+        weight += amp;
+        amp *= 0.5;
+    }
+    sum / weight
+}
+
+fn scaled(c: Rgb, by: f32) -> Rgb {
+    c.map(|v| (f32::from(v) * by).round().clamp(0.0, 255.0) as u8)
+}
+
+/// The race track's packed dirt.
+pub const DIRT: Rgb = [150, 116, 84];
+/// The dirt's size: along the track (one repeat [`crate::track::DIRT_REPEAT`] m) and across it (one repeat
+/// [`crate::track::DIRT_ACROSS`] m, the centerline in the middle row).
+pub const DIRT_SIZE: [u32; 2] = [128, 256];
+
+/// The race track's dirt, along the track left to right and across it top to bottom: packed brown dirt, mottled, with fine
+/// grit; two darker bands where the tires wear it (streaked along the track) either side of a lighter middle, looser and
+/// lighter toward the edges. Its alpha is the dirt's height for the terrain layer's edge: 255 across the middle, dipping in
+/// patches toward the edges so the grass breaks into the dirt's edge unevenly.
+pub fn dirt() -> io::Result<Vec<u8>> {
+    let [w, h] = DIRT_SIZE;
+    let across = crate::track::DIRT_ACROSS;
+    png_rgba(w, h, |x, y| {
+        let side = ((y as f32 + 0.5) / h as f32 - 0.5) * across;
+        let d = side.abs();
+        let mottle = fbm(x, y, DIRT_SIZE, [4, 8], 4, 11) - 0.5;
+        let grit = lattice(x, y, 29) - 0.5;
+        let streak = fbm(x, y, DIRT_SIZE, [2, 64], 2, 37);
+        // The tire bands: about 2.3 m either side of the middle, 1.8 m wide, darker where the streaks run.
+        let band = (1.0 - ((d - 2.3) / 0.9).powi(2)).max(0.0);
+        let wear = band * (0.55 + 0.45 * streak);
+        let middle = (1.0 - (d / 1.2).powi(2)).max(0.0);
+        let loose = crate::terrain::smoothstep(4.5, 6.5, d);
+        let by = 1.0 + 0.10 * mottle + 0.07 * grit * (1.0 + loose) - 0.12 * wear
+            + 0.04 * middle
+            + 0.05 * loose;
+        let c = scaled(DIRT, by);
+        // Tufts: fine patches (a third of a meter and finer) where the grass reaches in, deeper toward the edge.
+        let tufts = fbm(x, y, DIRT_SIZE, [24, 48], 3, 53);
+        let dip =
+            crate::terrain::smoothstep(4.5, 7.0, d) * crate::terrain::smoothstep(0.35, 0.75, tufts);
+        let alpha = (255.0 * (1.0 - 0.8 * dip)).round() as u8;
+        [c[0], c[1], c[2], alpha]
+    })
+}
+
+/// The trees' colors: bark (brown, and a birch's pale bark and its dark marks), the conifers' needles (a blue-green and a
+/// darker one), and the leafy trees' three greens.
+pub const BARK: Rgb = [134, 98, 68];
+pub const BARK_RED: Rgb = [146, 80, 54];
+pub const BARK_BIRCH: Rgb = [222, 216, 200];
+pub const BIRCH_MARK: Rgb = [62, 56, 52];
+pub const PINE: Rgb = [44, 96, 64];
+pub const FIR: Rgb = [30, 74, 58];
+pub const LEAVES: Rgb = [82, 140, 50];
+pub const LEAVES_DARK: Rgb = [56, 108, 44];
+pub const LEAVES_LIGHT: Rgb = [140, 168, 62];
+
+/// A tree's bark: brown, streaked up and down (the trunks' sides take the texture's rows upright).
+pub fn bark() -> io::Result<Vec<u8>> {
+    png(32, 32, |x, y| {
+        let streak = fbm(x, y, [32, 32], [8, 1], 2, 71) - 0.5;
+        let grain = lattice(x, y, 73) - 0.5;
+        scaled(BARK, 1.0 + 0.22 * streak + 0.06 * grain)
+    })
+}
+
+/// The tall conifers' bark: red-brown, in deep fibrous streaks up and down.
+pub fn red_bark() -> io::Result<Vec<u8>> {
+    png(32, 32, |x, y| {
+        let streak = fbm(x, y, [32, 32], [16, 1], 2, 89) - 0.5;
+        let grain = lattice(x, y, 97) - 0.5;
+        scaled(BARK_RED, 1.0 + 0.32 * streak + 0.06 * grain)
+    })
+}
+
+/// A birch's bark: pale, faintly streaked, with short dark marks running round the trunk.
+pub fn birch_bark() -> io::Result<Vec<u8>> {
+    png(32, 32, |x, y| {
+        let streak = fbm(x, y, [32, 32], [8, 1], 2, 79) - 0.5;
+        let marks = fbm(x, y, [32, 32], [2, 8], 2, 83);
+        let c = scaled(BARK_BIRCH, 1.0 + 0.08 * streak);
+        let m = smoothstep(0.62, 0.7, marks);
+        [0, 1, 2]
+            .map(|k| (f32::from(c[k]) * (1.0 - m) + f32::from(BIRCH_MARK[k]) * m).round() as u8)
+    })
+}
+
+/// Foliage of `color`, softly mottled (`seed` its own pattern) so each flat facet reads as a surface without hiding it.
+pub fn foliage(color: Rgb, seed: u32) -> io::Result<Vec<u8>> {
+    png(32, 32, |x, y| {
+        let mottle = fbm(x, y, [32, 32], [4, 4], 3, seed) - 0.5;
+        let grain = lattice(x, y, seed + 7) - 0.5;
+        scaled(color, 1.0 + 0.14 * mottle + 0.05 * grain)
     })
 }

@@ -850,7 +850,7 @@ fn resolve(in: VertexOut, t_in: vec4<f32>, d: Derivs) -> Resolved {
     let lit = (material & (MAT_UNLIT | MAT_GLOW)) == 0u;
     if lit && env != 0u {
         // A plane's texture tiled stochastically, where the extension leaves the plane its texture.
-        if kind == KIND_PLANE && ext_plane_tiles(material) && frame.surf2.y > 0.5 {
+        if kind == KIND_PLANE && (material & MAT_LAYER) == 0u && ext_plane_tiles(material) && frame.surf2.y > 0.5 {
             t = stochastic_sample(uv, d.duvx, d.duvy);
         }
     }
@@ -874,6 +874,10 @@ fn resolve(in: VertexOut, t_in: vec4<f32>, d: Derivs) -> Resolved {
         base = base * t;
     } else if env == 3u {
         base = t;
+    }
+    if kind == KIND_PLANE && (material & MAT_LAYER) != 0u {
+        // A terrain layer: its share at the samples sharpened about one half, lowered by the texture's dips.
+        base.a = clamp((in.color.a - 0.5) * LAYER_SHARPNESS + 0.5 - (1.0 - t.a) * LAYER_DIP, 0.0, 1.0);
     }
     r.alpha = base.a;
     r.unlit = base.rgb;
@@ -945,7 +949,9 @@ fn shaded(in: VertexOut, d: Derivs, t: vec4<f32>, spec_kernel: f32) -> Shaded {
         }
     } else {
         let occlusion = ambient_occlusion(in.clip.xy, in.clip.z);
-        let l = shade_surf(in.clip.xy, in.world, in.rest, r.s, material, r.alpha >= 0.999, occlusion, spec_kernel);
+        // A terrain layer is shaded as the opaque ground under it is.
+        let layer = kind == KIND_PLANE && (material & MAT_LAYER) != 0u;
+        let l = shade_surf(in.clip.xy, in.world, in.rest, r.s, material, r.alpha >= 0.999 || layer, occlusion, spec_kernel);
         out.diffuse = l.diffuse;
         out.spec = l.spec;
         if shadows.config.w == 3u {
@@ -1097,6 +1103,10 @@ fn forward_color(in: VertexOut) -> vec4<f32> {
             wanted = premultiplied(s) + bgr * (1.0 - a);
         }
         return vec4<f32>((wanted - bg * (1.0 - a)) / a, a);
+    }
+    if CLIP && refl.capture.x > 0.5 && kind == KIND_PLANE && (material & MAT_LAYER) != 0u {
+        // A light capture's alpha is its distance: a terrain layer is left out of it.
+        discard;
     }
     if CLIP && refl.capture.x > 0.5 && kind != KIND_SKY {
         // A light capture's face: the distance of what it shows (its lookups from another eye, reflect.wgsl's capture_dir).

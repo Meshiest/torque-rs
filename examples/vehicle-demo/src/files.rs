@@ -1,7 +1,7 @@
 //! The example's files: the asset kit (made in memory), the examples' shared scripts and the game folder (`game/`: the
 //! scripts and the map), read from disk once; and the map's terrain, read from the kit's `.ter` as the server reads it.
 
-use torque::app::terrain::Terrain;
+use torque::app::terrain::{LayerUv, Terrain};
 use torque_example_common::GameDir;
 use torque_render_scene::Assets as _;
 
@@ -21,9 +21,22 @@ pub const MISSION: &str = "missions/hills.mis";
 /// The map's terrain file (the `TerrainBlock`'s `terrainFile`) and its square size.
 pub const TERRAIN_FILE: &str = "kit/hills.ter";
 pub const TERRAIN_SQUARE: i32 = 8;
-/// The terrain's texture and how many units one repeat of it covers (two checker squares a side).
+/// The terrain's first texture and how many units one repeat of it covers (two checker squares a side).
 pub const TERRAIN_TEXTURE: &str = "kit/checker.png";
 pub const TERRAIN_TILE: f32 = 8.0;
+/// The race track's dirt (the terrain's second material).
+pub const DIRT_TEXTURE: &str = "kit/dirt.png";
+
+/// The terrain's materials as the view draws them: the checker repeated over the ground, the dirt along the track and across it.
+pub fn terrain_layers() -> [(&'static str, LayerUv<'static>); 2] {
+    [
+        (TERRAIN_TEXTURE, LayerUv::Tiled(TERRAIN_TILE)),
+        (
+            DIRT_TEXTURE,
+            LayerUv::Mapped(&torque_example_assets::track::dirt_uv),
+        ),
+    ]
+}
 
 /// The map's terrain.
 pub fn terrain(files: &GameFiles) -> Result<Terrain, String> {

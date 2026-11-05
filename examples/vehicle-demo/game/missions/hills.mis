@@ -1,5 +1,6 @@
 // Hills
-// Green checkerboard hills, a buggy parked in the middle of a flat field.
+// Green checkerboard hills, a buggy parked in the middle of a flat field, a brown dirt race track round it (the terrain's second
+// material) over crests, dips, a valley and a ridge, and forests of low-poly trees (interiors) round it.
 
 new SimGroup(MissionGroup)
 {
@@ -20,5 +21,53 @@ new SimGroup(MissionGroup)
       moonLightColor = "0.29 0.32 0.39 1";
    };
    new TerrainBlock(Hills) { terrainFile = "kit/hills.ter"; squareSize = 8; };
+   // The trees: the forests round the track, cut into squares, each an interior built in the world's coordinates.
+   new InteriorInstance(Forest0) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest00.dif"; };
+   new InteriorInstance(Forest1) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest01.dif"; };
+   new InteriorInstance(Forest2) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest02.dif"; };
+   new InteriorInstance(Forest3) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest03.dif"; };
+   new InteriorInstance(Forest4) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest04.dif"; };
+   new InteriorInstance(Forest5) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest05.dif"; };
+   new InteriorInstance(Forest6) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest06.dif"; };
+   new InteriorInstance(Forest7) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest07.dif"; };
+   new InteriorInstance(Forest8) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest08.dif"; };
+   new InteriorInstance(Forest9) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest09.dif"; };
+   new InteriorInstance(Forest10) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest10.dif"; };
+   new InteriorInstance(Forest11) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest11.dif"; };
+   new InteriorInstance(Forest12) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest12.dif"; };
+   new InteriorInstance(Forest13) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest13.dif"; };
+   new InteriorInstance(Forest14) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest14.dif"; };
+   new InteriorInstance(Forest15) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest15.dif"; };
+   new InteriorInstance(Forest16) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest16.dif"; };
+   new InteriorInstance(Forest17) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest17.dif"; };
+   new InteriorInstance(Forest18) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest18.dif"; };
+   new InteriorInstance(Forest19) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest19.dif"; };
+   new InteriorInstance(Forest20) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest20.dif"; };
+   new InteriorInstance(Forest21) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest21.dif"; };
+   new InteriorInstance(Forest22) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest22.dif"; };
+   new InteriorInstance(Forest23) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest23.dif"; };
+   new InteriorInstance(Forest24) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest24.dif"; };
+   new InteriorInstance(Forest25) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest25.dif"; };
+   new InteriorInstance(Forest26) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest26.dif"; };
+   new InteriorInstance(Forest27) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest27.dif"; };
+   new InteriorInstance(Forest28) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest28.dif"; };
+   new InteriorInstance(Forest29) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest29.dif"; };
+   new InteriorInstance(Forest30) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest30.dif"; };
+   new InteriorInstance(Forest31) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest31.dif"; };
+   new InteriorInstance(Forest32) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest32.dif"; };
+   new InteriorInstance(Forest33) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest33.dif"; };
+   new InteriorInstance(Forest34) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest34.dif"; };
+   new InteriorInstance(Forest35) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest35.dif"; };
+   new InteriorInstance(Forest36) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest36.dif"; };
+   new InteriorInstance(Forest37) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest37.dif"; };
+   new InteriorInstance(Forest38) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest38.dif"; };
+   new InteriorInstance(Forest39) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest39.dif"; };
+   new InteriorInstance(Forest40) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest40.dif"; };
+   new InteriorInstance(Forest41) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest41.dif"; };
+   new InteriorInstance(Forest42) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest42.dif"; };
+   new InteriorInstance(Forest43) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest43.dif"; };
+   new InteriorInstance(Forest44) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest44.dif"; };
+   new InteriorInstance(Forest45) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest45.dif"; };
+   new InteriorInstance(Forest46) { position = "0 0 0"; rotation = "1 0 0 0"; scale = "1 1 1"; interiorFile = "kit/forest46.dif"; };
    new WheeledVehicle(Buggy) { dataBlock = BuggyData; position = "0 0 21.2"; rotation = "0 0 1 0"; };
 };

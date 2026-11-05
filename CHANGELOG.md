@@ -113,6 +113,15 @@ The first development version. Nothing is published yet; this is what exists.
   `torque::app`'s ghost scene runs both (`GhostScene::set_tire_tracks`). A vehicle look's wheels carry their slip.
 - `torque::app::terrain`: a `TerrainBlock` over a legacy `.ter` with its collision on the server (`TerrainBlock::onAdd`), the
   same block as a static object of the client's prediction, and `WorldView::set_terrain` to draw it.
+- `torque::app::terrain`: a terrain's material layers drawn (`Terrain::layer_draws`, `WorldView::set_terrain_layers`): the
+  first material opaque, each other one blended over it where its weight is, each with its own texture and texture
+  coordinates (repeated over the ground, or the host's for each triangle, such as a road's along it); the enhanced renderer's
+  terrain layer (`material::LAYER`) sharpens a layer's coarse weight about one half into a narrow edge, broken up by its
+  texture's alpha.
+- `torque::app`: the world view's interiors are static meshes (`WorldView::set_static_mesh`, the enhanced renderer's static
+  cells): uploaded once and kept on the GPU, culled there in parts by their boxes, their shadows in the cached cascades, so a
+  frame costs nothing on the CPU for the interiors that stay put (a map of fifty forest interiors drew its lap at 21.6 ms a
+  frame, now 4.3 ms, the same as without them).
 - `torque-server`: Torque's net game ghosts the simulated vehicles (their records from the vehicle's state, its step's dirty
   bits as TGE's), and a Player that drives a WheeledVehicle sends the vehicle's packet data after its own.
 - `torque-client`: TGE's feed reads a WheeledVehicleData's wheel count from its shape (the game's files,
@@ -134,6 +143,11 @@ The first development version. Nothing is published yet; this is what exists.
   round's scores and the next map's name, and the next map of `$Pref::Server::MapList` (or of `missions/`) loads under the same
   connections, the scores back at 0; the view shows the round's clock. The examples' `loadMission` ends the running map for
   the clients in the game (`endMission`, `'MissionEnd'`, their ghosting reset) and sends them the new one's datablocks.
+- `torque-example-vehicle-demo`: a brown dirt race track of about 2 km round the start field and over the hill's shoulder (the
+  hills' second terrain material, its texture laid along the track with tire-worn bands), the ground shaped along it (crests,
+  dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
+  and young spruces, oaks and birches under them, built from brushes into interiors, one a square of the map);
+  `just examples/vehicle-demo-track-shots` draws them.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
