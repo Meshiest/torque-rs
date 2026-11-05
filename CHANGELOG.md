@@ -249,6 +249,9 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- The level demo's office: textures redrawn as clean pixel art (flat areas, a few shading steps, lit and shaded edges, no
+  noise), the office chairs' bases on the floor (they hovered 4 cm over it), and the screens drawn unlit (monitors, two new
+  laptops on the meeting table, a chart on the meeting room's screen).
 - The level demo: a quick tap of Space held the jump until the next tap (the script counted only the press); now it jumps
   once. Tab switches the camera (it was V), as in the other demos, and every map draws its textures nearest (cubes, tiles,
   figures, interiors; the mipmaps kept).

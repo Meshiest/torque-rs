@@ -7,12 +7,15 @@ side, off a corridor. The outer walls have real windows (openings with glass pan
 room. Sizes suit the level demo's figure (1 m wide, 2 m tall): doors 2 m wide and 2.6 m tall, walls 3.2 m, aisles 1.4 m or
 more.
 
-Textures are pixel art drawn here from code, 32 texels a meter (2 a Blockbench unit) everywhere:
+Textures are pixel art drawn here from code, 32 texels a meter (2 a Blockbench unit) everywhere, in flat areas of a
+five-step ramp (dark to light) with a few deliberate shading steps and lit or shaded edges, and nothing random:
 - the building's large surfaces (floors, walls, ceiling, roof, glass) repeat a seamless tile;
 - every face of the furniture gets its own rectangle in its material's atlas, sized to the face, with a lit top-left edge and
-  a shaded bottom-right one over a five-step ramp (dark to light) with a little dither.
+  a shaded bottom-right one, and its material's few lines (wood grain, a seam, a band of sheen).
 Glass is the only texture with partly see-through texels, so it is the only translucent material. Textures whose name ends
-in `_glow` are drawn unlit (the ceiling lights).
+in `_glow` are drawn unlit: the ceiling lights and the screens (monitors, laptops and the meeting room's chart).
+
+Every piece of furniture stands on the floor, on a rug or on another piece: an office chair's base lies on the floor.
 
 Run: python -I tools/office.py  (from examples/level-demo).
 """
@@ -31,7 +34,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "game", "levels", "office.bbmodel")
 MIS = os.path.join(HERE, "..", "game", "levels", "office.mis")
 
-RNG = random.Random(20261105)
+RNG = random.Random(20261105)        # the furniture's small turns and offsets
+UUID_RNG = random.Random(20261106)   # the elements' ids (apart, so a new element does not move the furniture)
 W, D = 36.0, 24.0          # the floor, meters
 H = 3.2                    # wall height, the ceiling's underside
 ROOF = 0.3                 # the roof slab's thickness
@@ -96,103 +100,129 @@ def solid(c):
     return (c[0], c[1], c[2], 255)
 
 
-# ---- tiled textures: (side in texels, painter(x, y, r) -> rgba) -----------------------------------------------------
+# ---- tiled textures: (side in texels, painter(x, y) -> rgba) ---------------------------------------------------------
+#
+# Flat areas, a few deliberate shading steps and lit or shaded edges; nothing random.
 
-def dither(name, base, x, y, r, lo=0.08, hi=0.06):
-    t = r.random()
-    return solid(ramp(name, base - 1 if t < lo else base + 1 if t > 1 - hi else base))
+def flat(name, k):
+    return solid(ramp(name, k))
 
 
 def carpet(name):
-    def f(x, y, r):
-        tx, ty = x // 16, y // 16
-        if x % 16 == 0 or y % 16 == 0:
-            return solid(ramp(name, 1))
-        grain = (y % 2 == 0) if (tx + ty) % 2 == 0 else (x % 2 == 0)
-        base = 3 if (grain and r.random() < 0.18) else 2
-        return dither(name, base, x, y, r, 0.05, 0.02)
+    """Carpet tiles half a meter across, laid with their pile turned a quarter each: a dark seam, a lit row and column inside
+    each tile's top-left edge, and a few pile lines across each tile (along x in one, along y in the next)."""
+    def f(x, y):
+        tx, ty, u, v = x // 16, y // 16, x % 16, y % 16
+        if u == 0 or v == 0:
+            return flat(name, 1)
+        if u == 1 or v == 1:
+            return flat(name, 3)
+        along = v if (tx + ty) % 2 == 0 else u
+        return flat(name, 3 if along % 5 == 3 else 2)
     return f
 
 
-def planks(x, y, r):
+PLANK_LENGTHS = [40, 56, 48, 64, 36, 52, 44, 60]
+
+
+def planks(x, y):
+    """Oak boards a quarter meter wide in staggered lengths: a dark gap between them, a lit edge along each board's top, and a
+    grain line along its middle; each board one of three shades."""
     row = y // 8
-    lengths = [40, 56, 48, 64, 36, 52, 44, 60]
+    length = PLANK_LENGTHS[row % len(PLANK_LENGTHS)]
     offset = (row * 23) % 64
-    seam_x = (x + offset) % lengths[row % len(lengths)] == 0
-    if y % 8 == 0 or seam_x:
-        return solid(ramp("oak", 0))
-    plank = ((x + offset) // lengths[row % len(lengths)] * 7 + row * 3) % 3 + 1
-    if (y % 8 in (3, 6)) and r.random() < 0.35:
-        return solid(ramp("oak", plank - 1))
-    return dither("oak", plank, x, y, r, 0.02, 0.02)
+    along = (x + offset) % length
+    if y % 8 == 0 or along == 0:
+        return flat("oak", 0)
+    shade = ((x + offset) // length * 7 + row * 3) % 3 + 1
+    if y % 8 == 1:
+        return flat("oak", shade + 1)
+    if y % 8 == 5 and 4 < along < length - 6:
+        return flat("oak", shade - 1)
+    return flat("oak", shade)
 
 
-def kitchen_tiles(x, y, r):
-    if x % 16 == 0 or y % 16 == 0:
-        return solid(ramp("granite", 3))
+def kitchen_tiles(x, y):
+    """Black and white tiles half a meter across, a gray grout line, each tile's top-left edge a step lighter."""
+    u, v = x % 16, y % 16
+    if u == 0 or v == 0:
+        return flat("granite", 3)
     light = (x // 16 + y // 16) % 2 == 0
-    return dither("ceramic" if light else "granite", 3 if light else 4, x, y, r, 0.02, 0.02)
+    name, k = ("ceramic", 3) if light else ("granite", 1)
+    if u == 1 or v == 1:
+        k += 1
+    elif u == 15 or v == 15:
+        k -= 1
+    return flat(name, k)
 
 
-MARBLE_VEINS = set()
-_vr = random.Random(77)
-for _ in range(5):
-    vx, vy = _vr.randrange(64), _vr.randrange(64)
-    for _ in range(_vr.randrange(14, 30)):
-        MARBLE_VEINS.add((vx % 64, vy % 64))
-        vx += _vr.choice((1, 1, 0))
-        vy += _vr.choice((1, 0, -1))
-
-
-def marble_tiles(x, y, r):
-    if x % 32 == 0 or y % 32 == 0:
-        return solid(ramp("marble", 1))
-    if (x, y) in MARBLE_VEINS:
-        return solid(ramp("marble", 2))
+def marble_tiles(x, y):
+    """Marble slabs a meter across in two shades, a lit top-left edge and a shaded bottom-right one, and one drawn vein across
+    each light slab (a stepped diagonal)."""
+    u, v = x % 32, y % 32
+    if u == 0 or v == 0:
+        return flat("marble", 1)
     light = (x // 32 + y // 32) % 2 == 0
-    return dither("marble", 3 if light else 2, x, y, r, 0.02, 0.03)
+    k = 3 if light else 2
+    if u == 1 or v == 1:
+        return flat("marble", k + 1)
+    if u == 31 or v == 31:
+        return flat("marble", k - 1)
+    if light and (u - v // 2) == 9 and 4 < v < 28:
+        return flat("marble", 2)
+    return flat("marble", k)
 
 
-def lino(x, y, r):
-    return dither("beige", 3, x, y, r, 0.06, 0.04)
+def lino(x, y):
+    """Sheet flooring: flat, with a faint seam every meter."""
+    if x % 32 == 0 or y % 32 == 0:
+        return flat("beige", 2)
+    return flat("beige", 3)
 
 
 def wall(name):
-    return lambda x, y, r: dither(name, 3, x, y, r, 0.015, 0.015)
+    return lambda x, y: flat(name, 3)
 
 
-def ceiling_tiles(x, y, r):
-    if x % 16 == 0 or y % 16 == 0:
-        return solid(ramp("ceiling", 1))
-    if x % 16 == 15 or y % 16 == 15:
-        return solid(ramp("ceiling", 2))
-    if (x % 16, y % 16) in ((4, 5), (11, 9), (7, 12), (13, 3)):
-        return solid(ramp("ceiling", 2))
-    return solid(ramp("ceiling", 3))
+def ceiling_tiles(x, y):
+    u, v = x % 16, y % 16
+    if u == 0 or v == 0:
+        return flat("ceiling", 1)
+    if u == 15 or v == 15:
+        return flat("ceiling", 2)
+    if (u, v) in ((4, 5), (11, 9), (7, 12), (13, 3)):
+        return flat("ceiling", 2)
+    return flat("ceiling", 3)
 
 
-def facade(x, y, r):
-    # Concrete panels 2 m wide, 1 m tall, a shadowed joint below and right of each.
+def facade(x, y):
+    # Concrete panels 2 m wide, 1 m tall: a lit joint above and left of each, a shadowed one below and right.
     if x % 64 == 63 or y % 32 == 31:
-        return solid(ramp("facade", 0))
+        return flat("facade", 0)
     if x % 64 == 0 or y % 32 == 0:
-        return solid(ramp("facade", 3))
-    return dither("facade", 2, x, y, r, 0.025, 0.02)
+        return flat("facade", 3)
+    return flat("facade", 2)
 
 
-def plinth(x, y, r):
+def plinth(x, y):
     if y % 16 == 15 or (x + (y // 16) * 16) % 32 == 0:
-        return solid(ramp("plinth", 0))
-    return dither("plinth", 2, x, y, r, 0.1, 0.06)
+        return flat("plinth", 0)
+    if y % 16 == 0:
+        return flat("plinth", 3)
+    return flat("plinth", 2)
 
 
-def gravel(x, y, r):
-    t = r.random()
-    k = 0 if t < 0.1 else 1 if t < 0.35 else 2 if t < 0.7 else 3 if t < 0.92 else 4
-    return solid(ramp("gravel", k))
+def roof_membrane(x, y):
+    """A flat roof's membrane in sheets a meter wide: a raised seam (lit, then shaded) between them."""
+    u = x % 32
+    if u == 0:
+        return flat("gravel", 3)
+    if u == 1:
+        return flat("gravel", 1)
+    return flat("gravel", 2)
 
 
-def glass(x, y, r):
+def glass(x, y):
     # See-through: a pale blue tint, a few diagonal glints a little less clear.
     if (x + y) % 23 in (0, 1) or (x + y) % 23 == 5:
         return (222, 238, 246, 120)
@@ -211,51 +241,70 @@ TILED = {
     "ceiling": (64, ceiling_tiles),
     "facade": (64, facade),
     "plinth": (32, plinth),
-    "roof": (32, gravel),
+    "roof": (32, roof_membrane),
     "glass": (32, glass),
 }
 
 
 # ---- panel textures: each face its own rectangle (atlas per material) -----------------------------------------------
+#
+# A panel is flat (step 2 of its ramp) with a lit top-left edge and a shaded bottom-right one; a pattern adds a few deliberate
+# lines over that (pattern(w, h, x, y, k) -> the step).
 
-def grain_lines(w, h, x, y, k, r):
-    return 1 if (y % 6 == 2 and (x // 3 + y) % 4 != 0 and r.random() < 0.7) else k
-
-
-def weave(w, h, x, y, k, r):
-    return 1 if ((x + y) % 4 == 0 and r.random() < 0.25) else k
-
-
-def brushed(w, h, x, y, k, r):
-    return 3 if (x % 6 == 1 and r.random() < 0.3) else k
+def grain_lines(w, h, x, y, k):
+    """Wood: a grain line every six texels, broken in a fixed rhythm."""
+    return 1 if (y % 6 == 3 and (x + 2 * (y // 6)) % 9 not in (0, 1)) else k
 
 
-def foliage(w, h, x, y, k, r):
-    t = r.random()
-    return 0 if t < 0.12 else 1 if t < 0.35 else 2 if t < 0.65 else 3 if t < 0.88 else 4
+def stitched(w, h, x, y, k):
+    """Upholstery: a dashed seam two texels in from the edge."""
+    if min(w, h) < 8:
+        return k
+    edge = min(x, y, w - 1 - x, h - 1 - y)
+    return 1 if edge == 2 and (x + y) % 3 != 0 else k
 
 
-def speckle(w, h, x, y, k, r):
-    t = r.random()
-    return 0 if t < 0.05 else 1 if t < 0.18 else 3 if t > 0.9 else k
+def sheen(w, h, x, y, k):
+    """Brushed metal: one lit band a third of the way across."""
+    if w < 8:
+        return k
+    return 3 if x in (w // 3, w // 3 + 1) else k
+
+
+LEAF = [[2, 3, 3, 2], [3, 4, 3, 1], [2, 3, 2, 1], [1, 2, 1, 1]]
+
+
+def foliage(w, h, x, y, k):
+    """Leaves: a four-texel leaf stamped in rows, each row shifted by two."""
+    return LEAF[y % 4][(x + 2 * (y // 4)) % 4]
+
+
+def clods(w, h, x, y, k):
+    """Potting soil: dark, with a lighter clod in a fixed scatter."""
+    return 2 if (x % 5, y % 4) in ((1, 1), (3, 3)) else 1
+
+
+def counter(w, h, x, y, k):
+    """A stone top: flat, a lit row along its front edge."""
+    return k
 
 
 PANELS = {
     "wood": ("oak", grain_lines),
     "dark_wood": ("walnut", grain_lines),
-    "metal": ("metal", brushed),
+    "metal": ("metal", sheen),
     "dark_metal": ("dark_metal", None),
     "desk_blue": ("laminate", None),
-    "fabric_black": ("charcoal", weave),
-    "fabric_beige": ("beige", weave),
-    "fabric_orange": ("orange", weave),
+    "fabric_black": ("charcoal", stitched),
+    "fabric_beige": ("beige", stitched),
+    "fabric_orange": ("orange", stitched),
     "leaves": ("leaves", foliage),
     "trunk": ("walnut", grain_lines),
     "terracotta": ("terracotta", None),
-    "soil": ("soil", speckle),
+    "soil": ("soil", clods),
     "paper": ("paper", None),
-    "granite": ("granite", speckle),
-    "steel": ("steel", brushed),
+    "granite": ("granite", counter),
+    "steel": ("steel", sheen),
     "ceramic": ("ceramic", None),
     "water": ("water", None),
     "marble_top": ("marble", None),
@@ -263,8 +312,9 @@ PANELS = {
     "trim": ("plaster", None),
     "gold": ("gold", None),
     "light_glow": ("light", None),
-    # Drawn whole (their own pictures), each over a ramp for the bevel.
-    "screen": ("dark_metal", "screen"),
+    # Drawn whole (their own pictures), each over a ramp for the bevel. The screens' names end in `_glow`: drawn unlit.
+    "screen_glow": ("dark_metal", "screen"),
+    "chart_glow": ("dark_metal", "chart"),
     "keyboard": ("dark_metal", "keyboard"),
     "books": ("walnut", "books"),
     "whiteboard": ("metal", "whiteboard"),
@@ -273,19 +323,38 @@ PANELS = {
 }
 
 
-def picture(kind, w, h, x, y, r):
+def picture(kind, w, h, x, y):
     """The color of texel (x, y) of a `kind` picture w x h, or None for the panel's own."""
     edge = min(x, y, w - 1 - x, h - 1 - y)
+    # The screens are drawn unlit (their own light, which the view's exposure lifts with the room's): the bezel nearly black
+    # so it stays dark, the picture a little dim so it does not wash out.
     if kind == "screen":
-        if edge < 2:
-            return None
-        if edge == 2:
-            return (16, 20, 30)
-        rows = (y - 3) % 4
-        bars = [(90, 200, 140), (240, 180, 80), (110, 160, 240), (220, 90, 110)]
-        if rows in (1, 2) and x < w - 3 - ((y * 7 + x // 6) % max(3, w // 3)):
-            return bars[(y // 4) % len(bars)] if x < 6 else (70, 110, 170)
-        return (26, 40, 72)
+        # A desktop: a bezel, a title bar, and a few rows of text in a window.
+        if edge < 3:
+            return (8, 9, 12) if edge < 2 else (2, 3, 5)
+        if y < 5:
+            return (44, 70, 120)
+        rows = (y - 6) % 3
+        lengths = [0.8, 0.55, 0.7, 0.4, 0.65]
+        if rows == 0 and 5 <= x < 5 + (w - 10) * lengths[(y // 3) % len(lengths)]:
+            return (120, 160, 200)
+        return (16, 26, 48)
+    if kind == "chart":
+        # A presentation: a pale slide with a title and a bar chart.
+        if edge < 3:
+            return (8, 9, 12) if edge < 2 else (2, 3, 5)
+        bars = [(64, 126, 200), (230, 150, 60), (90, 170, 110), (200, 80, 90)]
+        base = h - 6
+        if 4 <= y <= 5 and 6 <= x < w // 2:
+            return (40, 52, 76)
+        if y == base and 5 <= x < w - 5:
+            return (110, 118, 130)
+        slot = (x - 8) // 6
+        if 0 <= slot < 6 and (x - 8) % 6 < 4 and y < base:
+            top = base - (4 + (slot * 5 + 3) % 9) * max(1, (h - 14) // 12)
+            if y >= max(8, top):
+                return bars[slot % len(bars)]
+        return (200, 204, 212)
     if kind == "keyboard":
         if edge < 1:
             return None
@@ -332,21 +401,15 @@ def picture(kind, w, h, x, y, r):
     return None
 
 
-def draw_panel(material, w, h, seed):
+def draw_panel(material, w, h):
     name, pattern = PANELS[material]
-    r = random.Random(seed)
     rows = []
     for y in range(h):
         row = []
         for x in range(w):
             k = 2
-            t = r.random()
-            if t < 0.035:
-                k = 1
-            elif t > 0.98:
-                k = 3
             if callable(pattern):
-                k = pattern(w, h, x, y, k, r)
+                k = pattern(w, h, x, y, k)
             if w >= 4 and h >= 4:
                 if x == 0 and y == 0:
                     k = 4
@@ -358,7 +421,7 @@ def draw_panel(material, w, h, seed):
                     k = min(k, 1)
             c = ramp(name, k)
             if isinstance(pattern, str):
-                p = picture(pattern, w, h, x, y, r)
+                p = picture(pattern, w, h, x, y)
                 if p is not None:
                     c = p
             row.append(solid(c))
@@ -400,9 +463,8 @@ class Atlas:
     def image(self):
         w, h = self.size
         rows = [[(0, 0, 0, 255)] * w for _ in range(h)]
-        for k, ((rw, rh), (x0, y0)) in enumerate(sorted(self.rects.items())):
-            seed = (len(self.material) * 7919 + rw * 131 + rh * 17 + k) & 0xFFFFFF
-            panel = draw_panel(self.material, rw, rh, seed)
+        for (rw, rh), (x0, y0) in sorted(self.rects.items()):
+            panel = draw_panel(self.material, rw, rh)
             for y in range(rh):
                 rows[y0 + y][x0:x0 + rw] = panel[y]
         return rows
@@ -422,7 +484,7 @@ fixtures = []        # ceiling lights: (x, y) in the office's numbers
 
 
 def new_uuid():
-    return str(uuid.UUID(int=RNG.getrandbits(128), version=4))
+    return str(uuid.UUID(int=UUID_RNG.getrandbits(128), version=4))
 
 
 def group(name):
@@ -494,10 +556,11 @@ def chair(name, cx, cy, yaw, fabric="fabric_black", office=True, lift=0.0):
     t = (yaw, (cx, cy))
     put = lifted(lift)
     if office:
-        put(name + "baseA", (cx - 0.3, cy - 0.03, 0.04), (cx + 0.3, cy + 0.03, 0.1), "dark_metal", turn=t)
-        put(name + "baseB", (cx - 0.03, cy - 0.3, 0.04), (cx + 0.03, cy - 0.03, 0.1), "dark_metal", turn=t)
-        put(name + "baseC", (cx - 0.03, cy + 0.03, 0.04), (cx + 0.03, cy + 0.3, 0.1), "dark_metal", turn=t)
-        put(name + "post", (cx - 0.035, cy - 0.035, 0.1), (cx + 0.035, cy + 0.035, 0.42), "dark_metal", turn=t)
+        # The base's arms lie on the floor (casters, four more boxes a chair, would cut the office into two interiors).
+        put(name + "baseA", (cx - 0.3, cy - 0.03, 0), (cx + 0.3, cy + 0.03, 0.06), "dark_metal", turn=t)
+        put(name + "baseB", (cx - 0.03, cy - 0.3, 0), (cx + 0.03, cy - 0.03, 0.06), "dark_metal", turn=t)
+        put(name + "baseC", (cx - 0.03, cy + 0.03, 0), (cx + 0.03, cy + 0.3, 0.06), "dark_metal", turn=t)
+        put(name + "post", (cx - 0.035, cy - 0.035, 0.06), (cx + 0.035, cy + 0.035, 0.42), "dark_metal", turn=t)
     else:
         for i, (dx, dy) in enumerate([(-0.2, -0.2), (0.2, -0.2), (-0.2, 0.2), (0.2, 0.2)]):
             put(name + "leg" + "abcd"[i], (cx + dx - 0.025, cy + dy - 0.025, 0), (cx + dx + 0.025, cy + dy + 0.025, 0.42),
@@ -521,8 +584,17 @@ def monitor(name, cx, cy, yaw):
     t = (yaw, (cx, cy))
     box(name + "foot", (cx - 0.12, cy - 0.08, 0.76), (cx + 0.12, cy + 0.08, 0.78), "dark_metal", turn=t)
     box(name + "neck", (cx - 0.025, cy + 0.02, 0.78), (cx + 0.025, cy + 0.06, 0.95), "dark_metal", turn=t)
-    box(name + "screen", (cx - 0.3, cy + 0.06, 0.9), (cx + 0.3, cy + 0.1, 1.25), "dark_metal", faces={"north": "screen"},
-        turn=t)
+    box(name + "screen", (cx - 0.3, cy + 0.06, 0.9), (cx + 0.3, cy + 0.1, 1.25), "dark_metal",
+        faces={"north": "screen_glow"}, turn=t)
+
+
+def laptop(name, cx, cy, yaw, top=0.78):
+    """A laptop open on a table whose top is at `top`, its screen toward its user (facing yaw)."""
+    t = (yaw, (cx, cy))
+    box(name + "base", (cx - 0.17, cy - 0.12, top), (cx + 0.17, cy + 0.12, top + 0.02), "dark_metal",
+        faces={"up": "keyboard"}, turn=t)
+    box(name + "lid", (cx - 0.17, cy + 0.1, top + 0.02), (cx + 0.17, cy + 0.12, top + 0.25), "dark_metal",
+        faces={"south": "screen_glow"}, turn=t)
 
 
 def desk(name, x0, y0, x1, y1, top="desk_blue", sides=True):
@@ -789,7 +861,9 @@ def meeting_room():
         chair("meeting chair s%s " % "abc"[i], x, 18.1, RNG.uniform(-12, 12))
         chair("meeting chair n%s " % "abc"[i], x, 20.9, 180 + RNG.uniform(-12, 12))
     chair("meeting chair head ", 18.1, 19.5, 90)
-    box("meeting screen", (13.0, 23.8, 1.2), (17.0, 23.9, 2.4), "dark_metal", faces={"south": "screen"})
+    box("meeting screen", (13.0, 23.8, 1.2), (17.0, 23.9, 2.4), "dark_metal", faces={"south": "chart_glow"})
+    laptop("meeting laptop a ", 13.9, 18.95, 0)
+    laptop("meeting laptop b ", 16.1, 20.05, 180)
     box("meeting whiteboard", (10.1, 17.0, 1.0), (10.14, 21.0, 2.2), "metal", faces={"east": "whiteboard"})
     plant("meeting plant", 11.0, 23.2, 1.1)
     ceiling_light("meeting light", 15.0, 19.5)
@@ -875,8 +949,7 @@ def main():
     for i, name in enumerate(MATERIALS):
         if name in TILED:
             side, fn = TILED[name]
-            r = random.Random(i * 7919 + 1)
-            rows = [[fn(x, y, r) for x in range(side)] for y in range(side)]
+            rows = [[fn(x, y) for x in range(side)] for y in range(side)]
             w = h = side
         else:
             a = ATLASES[name]
