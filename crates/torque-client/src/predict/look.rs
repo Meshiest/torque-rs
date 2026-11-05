@@ -6,9 +6,9 @@
 //!   the contact are the client's own vehicle's ([`vehicle_look`]): the server's updates carry no steering for the vehicle's
 //!   controlling client (`Vehicle::packUpdate` writes the flag and returns), so the drawn steering of a driven vehicle was the
 //!   record's first, 0 bits: full left. Engine addition: the drawn steering eases each frame toward the steering the ticks
-//!   set ([`SteeringEase`]: a critically damped follow, frame-rate independent), so the wheels, a `steering` thread and the
-//!   hands on it turn smoothly between ticks and between a ghost's updates instead of in a tick's steps (TGE draws `mSteering`
-//!   as the last tick left it). Each wheel's contact is drawn under the drawn tire: the hub where the frame draws the
+//!   set ([`SteeringEase`]: a critically damped follow, frame-rate independent; another's vehicle's toward a glide between
+//!   the values its updates bring), so the wheels, a `steering` thread and the hands on it turn smoothly between ticks and
+//!   between updates instead of in their steps (TGE draws `mSteering` as the last tick left it). Each wheel's contact is drawn under the drawn tire: the hub where the frame draws the
 //!   vehicle, down the spring by its extension and the tire's radius (`extendWheels` cast its ray from the pose before the
 //!   tick's move, a tick behind the drawn vehicle at speed).
 //! - **A FlyingVehicle ghost** ([`FlyingWarp`]): TGE's client runs every vehicle ghost (`Vehicle::unpackUpdate`'s warp, then its
@@ -82,9 +82,11 @@ impl WheelSpins {
     }
 }
 
-/// How closely a drawn steering follows the ticks' steering (seconds): the time constant of [`SteeringEase`]'s critically
-/// damped follow. A step settles in about four of them; a steady turn is drawn twice this behind.
-pub const STEER_EASE_SECONDS: f32 = 0.04;
+/// How closely a drawn steering follows its target (seconds): the time constant of [`SteeringEase`]'s critically damped
+/// follow. A step settles in about four of them; a steady turn is drawn twice this behind.
+pub const STEER_EASE_SECONDS: f32 = 0.03;
+/// The shortest and the longest a networked steering takes to glide to a new value (ms): a tick, and a quarter of a second.
+pub const STEER_GLIDE_MS: (u32, u32) = (32, 250);
 
 /// A drawn steering and how fast it moves (radians, radians a second).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -108,12 +110,63 @@ impl Eased {
     }
 }
 
+/// A networked steering's target between its values: from where it was when a new value came to that value, in a straight
+/// line over the time the one before took to come ([`STEER_GLIDE_MS`] at most and at least), then held.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Glide {
+    from: f32,
+    to: f32,
+    start_ms: u32,
+    span_ms: u32,
+}
+
+impl Glide {
+    fn at_rest(value: f32, now_ms: u32) -> Glide {
+        Glide {
+            from: value,
+            to: value,
+            start_ms: now_ms,
+            span_ms: STEER_GLIDE_MS.1,
+        }
+    }
+
+    /// The target at `now_ms`.
+    fn at(&self, now_ms: u32) -> f32 {
+        let t = now_ms.wrapping_sub(self.start_ms) as f32 / self.span_ms.max(1) as f32;
+        self.from + (self.to - self.from) * t.clamp(0.0, 1.0)
+    }
+
+    /// `value` taken at `now_ms`: a new value starts a new glide from where this one is, over the time since the last began.
+    fn take(self, value: f32, now_ms: u32) -> Glide {
+        if value == self.to {
+            return self;
+        }
+        Glide {
+            from: self.at(now_ms),
+            to: value,
+            start_ms: now_ms,
+            span_ms: now_ms
+                .wrapping_sub(self.start_ms)
+                .clamp(STEER_GLIDE_MS.0, STEER_GLIDE_MS.1),
+        }
+    }
+}
+
+/// One vehicle's drawn steering, and the glide of a networked one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Drawn {
+    eased: Eased,
+    glide: Option<Glide>,
+}
+
 /// The steering the frames draw for each vehicle the client runs (see the module docs), advanced each frame by the frame's
-/// virtual time. `seconds` is the follow's time constant; `None` draws the last tick's steering, as TGE does.
+/// virtual time: the client's own vehicle's follows its ticks' steering; another's follows a glide between the values its
+/// updates bring ([`Glide`]), so its wheel turns evenly between them. `seconds` is the follow's time constant; `None` draws
+/// the last tick's steering, as TGE does.
 #[derive(Debug, Clone)]
 pub struct SteeringEase {
     pub seconds: Option<f32>,
-    drawn: BTreeMap<u32, Eased>,
+    drawn: BTreeMap<u32, Drawn>,
     last_ms: Option<u32>,
 }
 
@@ -128,43 +181,55 @@ impl Default for SteeringEase {
 }
 
 impl SteeringEase {
-    /// Every vehicle of `vehicles` followed for the time since the last call (at most a second); a vehicle first seen starts at
-    /// its steering, one no longer run is forgotten. The drawn steering stays within the vehicle's lock.
-    pub fn advance<'a>(&mut self, now_ms: u32, vehicles: impl Iterator<Item = &'a DrivenVehicle>) {
+    /// Every vehicle of `vehicles` (each with whether its steering comes from the network: another's vehicle) followed for the
+    /// time since the last call (at most a second); a vehicle first seen starts at its steering, one no longer run is
+    /// forgotten. The drawn steering stays within the vehicle's lock.
+    pub fn advance<'a>(
+        &mut self,
+        now_ms: u32,
+        vehicles: impl Iterator<Item = (&'a DrivenVehicle, bool)>,
+    ) {
         let dt = self
             .last_ms
             .replace(now_ms)
             .map_or(0.0, |l| now_ms.wrapping_sub(l).min(1_000) as f32 / 1000.0);
         let mut kept = BTreeMap::new();
-        for v in vehicles {
-            let target = v.v.s.steering[0];
-            if !target.is_finite() {
+        for (v, networked) in vehicles {
+            let steering = v.v.s.steering[0];
+            if !steering.is_finite() {
                 continue;
             }
             let lock = v.data.base.max_steering_angle.abs();
-            let mut e = match (self.drawn.get(&v.index), self.seconds) {
-                (Some(e), Some(tau)) if tau > 0.0 && e.value.is_finite() => {
-                    e.follow(target, tau, dt)
-                }
+            let last = self
+                .drawn
+                .get(&v.index)
+                .filter(|d| d.eased.value.is_finite());
+            let glide = networked.then(|| match last.and_then(|d| d.glide) {
+                Some(g) => g.take(steering, now_ms),
+                None => Glide::at_rest(steering, now_ms),
+            });
+            let target = glide.map_or(steering, |g| g.at(now_ms));
+            let mut eased = match (last, self.seconds) {
+                (Some(d), Some(tau)) if tau > 0.0 => d.eased.follow(target, tau, dt),
                 _ => Eased {
-                    value: target,
+                    value: steering,
                     rate: 0.0,
                 },
             };
-            if lock.is_finite() && e.value.abs() > lock {
-                e = Eased {
-                    value: e.value.clamp(-lock, lock),
+            if lock.is_finite() && eased.value.abs() > lock {
+                eased = Eased {
+                    value: eased.value.clamp(-lock, lock),
                     rate: 0.0,
                 };
             }
-            kept.insert(v.index, e);
+            kept.insert(v.index, Drawn { eased, glide });
         }
         self.drawn = kept;
     }
 
     /// The steering drawn for vehicle `index` (none before its first frame).
     pub fn steering(&self, index: u32) -> Option<f32> {
-        self.drawn.get(&index).map(|e| e.value)
+        self.drawn.get(&index).map(|d| d.eased.value)
     }
 }
 

@@ -1101,8 +1101,11 @@ impl<W: PredictWorld> Predictor<W> {
         let ghosts = self.ghost_vehicles.values().map(|g| &g.body);
         self.spins
             .advance(now_ms, driven.into_iter().chain(ghosts.clone()));
-        self.steering
-            .advance(now_ms, driven.into_iter().chain(ghosts));
+        let networked = ghosts.map(|g| (g, true));
+        self.steering.advance(
+            now_ms,
+            driven.map(|v| (v, false)).into_iter().chain(networked),
+        );
     }
 
     /// Ghost `index`'s object view in the container the control Player's next tick collides with (`None`: not in it).

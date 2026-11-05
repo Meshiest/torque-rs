@@ -78,3 +78,34 @@ fn the_drawn_steering_moves_evenly_frame_to_frame_while_the_ticks_step_it() {
     }
     assert!(worst < step * 0.25, "a frame's move changed by {worst}");
 }
+
+#[test]
+fn a_networked_steering_glides_between_its_updates_and_is_drawn_moving_evenly() {
+    // Another's turn: its updates bring a step of 0.13 every 96 ms; drawn every 16 ms through the glide and the follow, one
+    // frame's move differs from the next's by a small part of a step once it is under way.
+    let step = 0.13f32;
+    let mut g = Glide::at_rest(0.0, 0);
+    let mut e = Eased::default();
+    let mut moves = Vec::new();
+    let mut last = 0.0f32;
+    for frame in 1..=60u32 {
+        let now = frame * 16;
+        let value = (step * (now / 96) as f32).min(0.55);
+        g = g.take(value, now);
+        e = e.follow(g.at(now), STEER_EASE_SECONDS, 0.016);
+        moves.push(e.value - last);
+        last = e.value;
+    }
+    let steady = &moves[14..28];
+    let worst = steady
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        worst < step * 0.06,
+        "a frame's move changed by {worst}: {steady:?}"
+    );
+    // It ends at the last value, without passing it.
+    assert!((e.value - 0.55).abs() < 0.01, "{e:?}");
+    assert!(moves.iter().all(|m| *m >= -1e-6), "{moves:?}");
+}

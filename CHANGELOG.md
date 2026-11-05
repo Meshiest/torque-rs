@@ -266,8 +266,8 @@ The first development version. Nothing is published yet; this is what exists.
   `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
 - `torque-client`: the steering a vehicle is drawn with (its front wheels, its `steering` thread and the hands of a figure
   on it) eases each frame toward the ticks' steering (`look::SteeringEase`, a critically damped follow, the same at any frame
-  rate; `seconds: None` draws the last tick's, as TGE does), for the client's own vehicle and for the others between their
-  updates; it turned in a tick's steps.
+  rate; `seconds: None` draws the last tick's, as TGE does); another's vehicle eases toward a glide between the values its
+  updates bring, over the time between them. It turned in a tick's steps, and another's in its updates' steps.
 - `torque-client`: a vehicle's drawn wheel contacts, where its tire tracks start and its tires' dust rises, are under the
   tires the frame draws; they were a tick's travel behind them at speed.
 - `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
