@@ -3,6 +3,9 @@ set windows-shell := ["powershell", "-NoProfile", "-Command"]
 # The build folder: CARGO_TARGET_DIR's, else the workspace's (the web builds go into its `web` folder)
 web_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / ".." / "target")
 
+# Where the web check's tools (puppeteer-core) are installed; exported so the recipes need no shell-specific syntax
+export TORQUE_WEB_TOOLS := web_target / "web-tools" / "node"
+
 default:
     @just --list
 
@@ -50,9 +53,9 @@ web-level-demo port="8080":
 # figure, walks it and takes pictures, then loads the menu; fails on any console error. Installs puppeteer-core into the target
 # folder's web-tools the first time and uses the installed Chrome (`CHROME` names another)
 web-level-demo-check:
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent puppeteer-core@24
-    $env:TORQUE_WEB_TOOLS = "{{web_target}}/web-tools/node"; node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 world "?map=office"
-    $env:TORQUE_WEB_TOOLS = "{{web_target}}/web-tools/node"; node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-menu.png" 60 menu
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 world "?map=office"
+    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-menu.png" 60 menu
 
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`
