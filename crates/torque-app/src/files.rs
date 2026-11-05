@@ -1,5 +1,12 @@
 //! A game folder read once into memory: the scripts, the maps (`.mis` files in `missions/`) and whatever else it holds. The
 //! server and every client read their files from it through [`GameFiles::mem_files`].
+//!
+//! **Where the files come from.** A folder on disk ([`GameFiles::add_dir`]: a native game reads its folder when it starts), or a
+//! pack ([`GameFiles::unpack`]): the files of a folder in one block of bytes ([`GameFiles::pack`]), which a game built for the web
+//! carries inside itself, as a browser has no disk to read.
+//!
+//! **A pack** is the bytes `TQPK`, the file count (a little-endian `u32`), then each file: its path's length (`u32`), the path
+//! (UTF-8, `/` between folders), its length (`u32`) and its bytes.
 
 use std::io;
 use std::path::Path;
@@ -62,6 +69,22 @@ impl GameFiles {
             .collect()
     }
 
+    /// Every file in one block of bytes (module docs), sorted by path.
+    pub fn pack(&self) -> Vec<u8> {
+        pack(self.iter())
+    }
+
+    /// The files of a pack ([`GameFiles::pack`]).
+    pub fn unpack(bytes: &[u8]) -> Result<GameFiles, String> {
+        let mut files = GameFiles::default();
+        for (path, bytes) in unpack(bytes)? {
+            files.files.retain(|(p, _)| !p.eq_ignore_ascii_case(path));
+            files.files.push((path.to_string(), bytes.to_vec()));
+        }
+        files.files.sort();
+        Ok(files)
+    }
+
     /// Puts every file into `mem`.
     pub fn fill(&self, mem: &MemFiles) {
         for (path, bytes) in &self.files {
@@ -75,6 +98,61 @@ impl GameFiles {
         self.fill(&mem);
         mem
     }
+}
+
+/// The start of a pack.
+pub const PACK_MAGIC: &[u8; 4] = b"TQPK";
+
+/// `files` (paths and bytes) as a pack (module docs).
+pub fn pack<'a>(files: impl IntoIterator<Item = (&'a str, &'a [u8])>) -> Vec<u8> {
+    let files: Vec<(&str, &[u8])> = files.into_iter().collect();
+    let mut out = PACK_MAGIC.to_vec();
+    out.extend_from_slice(&len_u32(files.len()).to_le_bytes());
+    for (path, bytes) in files {
+        out.extend_from_slice(&len_u32(path.len()).to_le_bytes());
+        out.extend_from_slice(path.as_bytes());
+        out.extend_from_slice(&len_u32(bytes.len()).to_le_bytes());
+        out.extend_from_slice(bytes);
+    }
+    out
+}
+
+/// A length a pack records: a pack holds no file or path of 4 GiB.
+fn len_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// The files of a pack, in its order (Err: not a pack, or cut short).
+pub fn unpack(bytes: &[u8]) -> Result<Vec<(&str, &[u8])>, String> {
+    let mut rest = bytes
+        .strip_prefix(PACK_MAGIC.as_slice())
+        .ok_or("not a pack of files")?;
+    let count = take_len(&mut rest)?;
+    let mut files = Vec::with_capacity(count.min(rest.len() / 8));
+    for _ in 0..count {
+        let n = take_len(&mut rest)?;
+        let path =
+            std::str::from_utf8(take(&mut rest, n)?).map_err(|_| "a pack's path is not UTF-8")?;
+        let n = take_len(&mut rest)?;
+        files.push((path, take(&mut rest, n)?));
+    }
+    Ok(files)
+}
+
+/// The next `n` bytes of `rest`.
+fn take<'a>(rest: &mut &'a [u8], n: usize) -> Result<&'a [u8], String> {
+    if n > rest.len() {
+        return Err("a pack of files cut short".into());
+    }
+    let (got, after) = rest.split_at(n);
+    *rest = after;
+    Ok(got)
+}
+
+/// The next length of `rest`.
+fn take_len(rest: &mut &[u8]) -> Result<usize, String> {
+    let b = take(rest, 4)?;
+    Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
 }
 
 fn read_tree(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> io::Result<()> {
@@ -104,5 +182,23 @@ mod tests {
         assert_eq!(files.file("SERVER.cs"), Some(&b"S"[..]));
         assert_eq!(files.missions(), ["missions/a.mis", "missions/b.mis"]);
         assert_eq!(files.iter().count(), 3);
+    }
+
+    #[test]
+    fn a_pack_gives_back_its_files() {
+        let mut files = GameFiles::default();
+        files.insert("missions/a.mis", b"a map");
+        files.insert("server.cs", b"");
+        files.insert("kit/cube.dts", &[0, 1, 2, 255]);
+        let pack = files.pack();
+        let back = GameFiles::unpack(&pack).expect("a pack");
+        assert_eq!(
+            back.iter().collect::<Vec<_>>(),
+            files.iter().collect::<Vec<_>>()
+        );
+        for cut in 0..pack.len() {
+            assert!(GameFiles::unpack(&pack[..cut]).is_err(), "cut at {cut}");
+        }
+        assert!(GameFiles::unpack(b"TQPK\xff\xff\xff\xff").is_err());
     }
 }
