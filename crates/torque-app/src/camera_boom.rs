@@ -123,7 +123,7 @@ impl CameraBoom {
             full
         };
         let (mut length, mut speed) = match self.length {
-            Some((l, v)) if dt > 0.0 => {
+            Some((l, v)) if dt > 0.0 && dt.is_finite() => {
                 let seconds = if room < l {
                     PULL_IN_SECONDS
                 } else {
@@ -135,8 +135,9 @@ impl CameraBoom {
                 let e = (-w * dt).exp();
                 (room + (x + c * dt) * e, (v - w * c * dt) * e)
             }
-            Some((l, v)) => (l, v),
-            None => (room, 0.0),
+            // An endless frame (or a length that is not finite) is a cut: the camera at the room.
+            Some((l, v)) if dt.is_finite() && l.is_finite() => (l, v),
+            _ => (room, 0.0),
         };
         if length > full {
             (length, speed) = (full, 0.0);

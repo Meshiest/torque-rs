@@ -143,3 +143,22 @@ fn a_wall_the_boom_grazes_keeps_the_near_plane_off_it() {
     let p = boom.follow(PIVOT, BACK, FULL, 1.0 / 60.0, |_, _| None);
     assert_eq!(p, [0.0, -FULL, 1.7]);
 }
+
+#[test]
+fn a_frame_time_that_is_not_a_time_cuts_to_the_room_and_the_boom_goes_on() {
+    for bad in [f32::INFINITY, f32::NAN, f32::NEG_INFINITY] {
+        let mut boom = CameraBoom::default();
+        lengths(&mut boom, &Vec::new(), 60.0, 0.1);
+        let p = boom.follow(PIVOT, BACK, FULL, bad, |a, b| cast(&post(), a, b));
+        assert!(p.iter().all(|x| x.is_finite()), "{bad}: {p:?}");
+        assert!((-p[1] - (2.9 - CLEARANCE)).abs() < 1e-4, "{bad}: {p:?}");
+        // Later frames are lengths again: out slowly once the post is gone.
+        let out = lengths(&mut boom, &Vec::new(), 60.0, 1.5);
+        assert!(out.iter().all(|f| f.1.is_finite()));
+        assert!(
+            (out.last().unwrap().1 - FULL).abs() < 0.01,
+            "{bad}: {:?}",
+            out.last()
+        );
+    }
+}
