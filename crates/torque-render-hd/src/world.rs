@@ -406,11 +406,13 @@ struct Loose {
 /// positions are written.
 type RestPart<'a> = (&'a [(usize, &'a HdDraw, u32)], bool, bool);
 
-/// The place of the planes in the loose buffers: the planes written (each draw's vertex and index lists by address and length:
-/// a scene that hands new planes hands new lists), the vertex the rest starts at, the index the rest's indices start at, and
-/// the planes' vertices and indices (from, to) within the rest's.
+/// The place of the planes in the loose buffers: the planes written (the scene's count of their changes, `planes_generation`,
+/// and each draw's vertex and index lists by address and length, which a copy of a scene or a builder that forgets the count
+/// changes), the vertex the rest starts at, the index the rest's indices start at, and the planes' vertices and indices (from,
+/// to) within the rest's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PlanesAt {
+    generation: u64,
     planes: Vec<[usize; 4]>,
     rest_start: usize,
     index_rest: usize,
@@ -3940,6 +3942,7 @@ impl<E: HdExtension> HdWorld<E> {
         }
         let planes_rest = planes_rest_from..rest.len();
         let planes_at = PlanesAt {
+            generation: scene.planes_generation,
             planes: scene
                 .planes
                 .iter()
