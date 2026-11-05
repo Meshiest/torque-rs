@@ -504,59 +504,18 @@ new GameTSCtrl(PlayGui)
    };
 };
 
-// ---- the pause menu: over the view (the game goes on: others still play), the cursor on and the keys off the figure
+// ---- the pause menu (common/pause.cs): over the view (the game goes on: others still play), the cursor on and the keys off
+// the figure
 
-new GuiControl(PauseGui)
-{
-   profile = ArenaShadeProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
-   new GuiControl(PausePanel)
-   {
-      profile = ArenaPanelProfile; position = "240 160"; extent = "320 280"; horizSizing = "center"; vertSizing = "center";
-      new GuiTextCtrl(PauseTitle)
-      {
-         profile = ArenaHeadProfile; position = "0 26"; extent = "320 40"; visible = true; enabled = true;
-         text = "Paused";
-      };
-      new GuiButtonCtrl(ResumeButton)
-      {
-         profile = ArenaButtonProfile; position = "40 92"; extent = "240 56"; visible = true; enabled = true;
-         text = "Resume"; command = "resumeGame();";
-      };
-      new GuiButtonCtrl(LeaveButton)
-      {
-         profile = ArenaButtonProfile; position = "40 168"; extent = "240 56"; visible = true; enabled = true;
-         text = "Leave game"; command = "leaveGame();";
-      };
-      new GuiTextCtrl(PauseNote)
-      {
-         profile = ArenaHintProfile; position = "0 240"; extent = "320 20"; visible = true; enabled = true;
-         text = "Esc: back to the game";
-      };
-   };
-};
+exec("common/pause.cs");
 
-function pauseGame()
+function pauseAllowed() { return !$Arena::Chatting && $Arena::InGame; }
+function onPause()
 {
-   if ($Arena::Paused || $Arena::Chatting || !$Arena::InGame)
-      return;
-   $Arena::Paused = 1;
    PlayMap.pop();
    releaseKeys();
-   Canvas.pushDialog(PauseGui);
-   Canvas.cursorOn();
-   PauseMap.push();
 }
-
-function resumeGame()
-{
-   if (!$Arena::Paused)
-      return;
-   $Arena::Paused = 0;
-   PauseMap.pop();
-   Canvas.popDialog(PauseGui);
-   Canvas.cursorOff();
-   PlayMap.push();
-}
+function onResume() { PlayMap.push(); }
 
 // ---- the round's end: its scores over the view until the next map is in (the game goes on underneath, without shots)
 
@@ -660,16 +619,6 @@ function showRoundClock()
    RoundHud.setText(%m @ ":" @ (%s < 10 ? "0" : "") @ %s);
    $Arena::RoundLeft = %left - 1;
    $Arena::ClockTimer = schedule(1000, 0, "showRoundClock");
-}
-
-// Leaving from the pause menu closes it first.
-function closePause()
-{
-   if (!$Arena::Paused)
-      return;
-   $Arena::Paused = 0;
-   PauseMap.pop();
-   Canvas.popDialog(PauseGui);
 }
 
 $Arena::ChatRows = 6;
@@ -814,8 +763,6 @@ function look(%v)
    $Arena::LookPitch = %pitch;
 }
 function chatKey(%v) { if (%v) openChat(); }
-function pauseKey(%v) { if (%v) pauseGame(); }
-function resumeKey(%v) { if (%v) resumeGame(); }
 function reloadKey(%v) { if (%v && isObject(ServerConnection)) commandToServer('Reload'); }
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
@@ -829,10 +776,6 @@ PlayMap.bind(mouse, button0, fire);
 PlayMap.bind(mouse, button1, aim);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
-
-// While paused, Esc goes back to the game.
-new ActionMap(PauseMap);
-PauseMap.bind(keyboard, escape, resumeKey);
 
 // ---- in and out
 

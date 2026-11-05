@@ -165,6 +165,10 @@ The first development version. Nothing is published yet; this is what exists.
   dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
   and young spruces, oaks and birches under them, built from brushes into interiors, one a square of the map);
   `just examples/vehicle-demo-track-shots` draws them.
+- The examples' pause menu (`examples/common/game/pause.cs`: Resume, Leave game and Quit over the view, the cursor on and the
+  game's keys off), the FPS example's moved there and shared; in the vehicle demo Esc opens it on foot and at the wheel (it
+  left the game at once). `cargo run -p torque-example-vehicle-demo --release --example steer-clip -- <dir>` draws frame
+  sequences of the steering and of the tracks at speed on the driver's client and another's.
 - The level demo in a browser: `just examples/web-level-demo` builds it for the web (WebGPU) and serves it on
   `http://127.0.0.1:8080/` (`?map=office` starts a map at once). The page fetches the game's files by their list
   (`files.json`) with a progress bar, keeps them in the browser's Cache Storage under their hashes (a second load requests

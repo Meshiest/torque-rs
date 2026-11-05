@@ -628,9 +628,9 @@ fn a_game_played_alone_binds_no_socket_and_the_player_drives() {
     assert!(game.sun().is_some());
     tab(&mut game);
     assert!(game.first_person());
-    // Back to the menu: the client's own socket is given back.
-    game.key(Key::Escape, true);
-    game.key(Key::Escape, false);
+    // Back to the menu (Esc, then Leave game): the client's own socket is given back.
+    press(&mut game, Key::Escape);
+    press_button(&mut game, "LeaveButton");
     steps(&mut [&mut game], 100);
     assert!(game.server.is_none() && !game.local());
     assert!(errors(&game).is_empty(), "{:?}", errors(&game));
@@ -1823,4 +1823,70 @@ fn the_seated_look_stops_at_its_edge_and_turns_back_at_once_and_tab_brings_it_in
     let [_, (low, high)] = a.look_range();
     let pitch = a.number("$Drive::OrbitPitch");
     assert!((low..=high).contains(&pitch), "{pitch} in {low}..{high}");
+}
+
+/// A click on the GUI control `name` (its middle), the canvas drawn first so its place is known.
+fn press_button(game: &mut VehicleDemo, name: &str) {
+    game.host.draw_frame();
+    let [x, y, w, h] = game.control_rect(name).expect(name);
+    let at = (x + w / 2, y + h / 2);
+    game.host.mouse_move(at);
+    game.host.mouse_button(MouseButton::Left, true, at);
+    game.host.mouse_button(MouseButton::Left, false, at);
+}
+
+#[test]
+fn escape_opens_the_pause_menu_at_the_wheel_and_resume_or_escape_gives_the_keys_and_mouse_back() {
+    let mut a = host();
+    get_in(&mut [&mut a], 0);
+    assert!(a.driving());
+    a.host.draw_frame();
+    assert!(a.host.wants_mouse(), "the view holds the mouse");
+    for close in ["ResumeButton", "Escape"] {
+        press(&mut a, Key::Escape);
+        steps(&mut [&mut a], 32);
+        a.host.draw_frame();
+        assert_eq!(a.global("$Client::Paused"), "1", "Esc pauses");
+        assert!(!a.host.wants_mouse(), "the mouse is free over the menu");
+        assert!(a.host.system_cursor(), "the cursor is on");
+        // The keys are off the buggy: W does not drive, the mouse turns nothing.
+        a.key(Key::W, true);
+        assert_eq!(
+            a.global("$Drive::Throttle"),
+            "0",
+            "W does not reach the wheel"
+        );
+        a.key(Key::W, false);
+        let yaw = a.global("$Drive::OrbitYaw");
+        a.host.mouse_motion(50.0, 0.0);
+        assert_eq!(a.global("$Drive::OrbitYaw"), yaw);
+        if close == "Escape" {
+            press(&mut a, Key::Escape);
+        } else {
+            press_button(&mut a, close);
+        }
+        steps(&mut [&mut a], 32);
+        a.host.draw_frame();
+        assert_eq!(a.global("$Client::Paused"), "0", "{close} goes back");
+        assert!(
+            a.host.wants_mouse(),
+            "{close}: the view holds the mouse again"
+        );
+        assert!(a.driving(), "still at the wheel");
+        a.key(Key::W, true);
+        assert_eq!(a.global("$Drive::Throttle"), "1", "{close}: W drives again");
+        a.key(Key::W, false);
+    }
+    // Leave game: the menu, the server stopped.
+    press(&mut a, Key::Escape);
+    press_button(&mut a, "LeaveButton");
+    steps(&mut [&mut a], 100);
+    assert_eq!(a.global("$Client::Paused"), "0");
+    assert!(!a.in_world() && a.server.is_none());
+    assert_eq!(
+        a.call("eval", &["return Canvas.getContent().getName();"])
+            .unwrap(),
+        "MenuGui"
+    );
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
 }
