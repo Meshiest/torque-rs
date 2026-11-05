@@ -285,6 +285,11 @@ The first development version. Nothing is published yet; this is what exists.
 - The showcase's buggy drives through the turn in the late afternoon with its roof lamps on, their beam on the track
   ahead; its valley is seen from over the lake's eastern end, the lake in the middle; `--examples` adds the valley's
   ground close up and the whole valley from far up its eastern end.
+- Water reflects the volumetric clouds: where its reflection is the sky (the planar reflection's sky, which its target now
+  marks with an alpha of -1; a screen-space reflection's miss; the sky cube at Low) the clouds' image of this frame is laid
+  over it along the reflected direction, off a calmer surface than the waves' (a third of their slope), and past the view's
+  top edge the image's edge at the same heading stands in for it, read blurrier. No history of its own: fast clouds leave no
+  trail in it.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
