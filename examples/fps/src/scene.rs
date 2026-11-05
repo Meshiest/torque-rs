@@ -30,11 +30,12 @@ use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::Eye;
+use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Draw, Filter, Vertex};
 
 use crate::style::{ArenaStyle, BoltPath, Kick, ShotFlare, Sights};
 
-pub use crate::style::aim_ease;
+pub use crate::style::{SightsBlend, sights_path};
 pub use torque::app::ghosts::{bolt_trail, fire_emitter, hit_burst};
 
 /// The field of view (degrees, horizontal).
@@ -208,9 +209,10 @@ pub fn options() -> GhostOptions {
         },
         // The server's figures have hitboxes: drawn as posed for hits.
         synced_poses: true,
-        // The drawn eye, not the steady one, until a shot carries the aim the player saw (the steady eye would part the
-        // crosshair from the server's shot by the head's bob).
-        steady_eye: false,
+        // A steady view; the server fires from the same steady eye (`getSteadyEyePoint`), so the shot follows the crosshair.
+        steady_eye: true,
+        // The client has the map's surfaces as the server does: a bolt stops where the server's hits.
+        bolt_stops: true,
         ..GhostOptions::default()
     }
 }
@@ -222,6 +224,8 @@ pub struct ArenaScene {
     cubes: BTreeMap<u32, KeptCube>,
     /// How the cubes and interiors are drawn.
     filter: TextureFilter,
+    /// Whether the style's own textures (the shot's flare) were loaded.
+    style_loaded: bool,
 }
 
 /// The engine's scene: the figures, the bolts and their effects as the last frame left them.
@@ -253,6 +257,7 @@ impl ArenaScene {
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
             filter: TextureFilter::Smooth,
+            style_loaded: false,
         }
     }
 
@@ -302,6 +307,12 @@ impl ArenaScene {
             dt,
             surfaces: &cube_triangles_near,
         };
+        // The flare's texture loaded with the map, not in the first shot's frame (the datablocks' are the engine's to load).
+        if !std::mem::replace(&mut self.style_loaded, true)
+            && let Some(flare) = &self.ghosts.style.flare
+        {
+            let _ = TextureSet::new(assets).get_modulated(&flare.texture);
+        }
         self.ghosts.update(assets, world, &input);
     }
 

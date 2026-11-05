@@ -376,5 +376,19 @@ The first development version. Nothing is published yet; this is what exists.
   browser driver or program or loads a module by a computed name, and `web/guard.test.mjs` shows a page that locks on click
   never gets it; both run in `just examples/web-guard-test` (first in each check recipe) and in CI. Headless Chrome on
   Windows confined the real cursor when a check clicked the canvas.
+- `torque-render-hd`, `torque::app`: the arena's first shot no longer stops the game for a moment. The effects'
+  pipelines (particles, trails, decals) are made on a worker thread when the world view is made
+  (`HdWorld::warm_effects`), and the ghost scene loads the shapes and textures its datablocks name as they arrive; a
+  first shot with a cold shader cache took 0.44-0.68 s (12 pipelines made), now within a millisecond of the median frame
+  (the fps example `first_use` measures it).
+- `examples/fps`: aiming down the sights eases both ways on a critically damped spring (0.18 s, the same at any frame
+  rate, no overshoot; a press let go mid-way turns back from where it is at the speed it had), the pistol arcs in and
+  up, and a synced Player's arm moves between its arm actions over 0.18 s (`ARM_BLEND`) instead of switching at once.
+- `torque::app`: a client draws a projectile on the server's line, from the raw floats every first update carries (the
+  bounce block) instead of the initial block's 10-bit direction and centimeter start (up to 0.18 degrees off: at a
+  wall's corner one screen showed a graze and another a miss, and the trail jumped back when the server's explosion
+  came); with `GhostOptions::bolt_stops` it stops a bolt where that line meets the world (the arena: within a millimeter
+  of the server's hit on both clients, `tests/bolt_line.rs`). The arena fires from `getSteadyEyePoint` (engine addition:
+  the eye at the shape's rest pose), so it keeps the steady first-person eye on with its shots on the crosshair.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

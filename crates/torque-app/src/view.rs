@@ -159,7 +159,8 @@ pub struct WorldView {
 }
 
 impl WorldView {
-    /// A view on `gpu` with the default [`Daylight`], no floor and no objects, drawn at [`Quality::High`].
+    /// A view on `gpu` with the default [`Daylight`], no floor and no objects, drawn at [`Quality::High`]. The effects' pipelines
+    /// start being made on a worker thread ([`HdWorld::warm_effects`]).
     pub fn new(gpu: &Gpu) -> WorldView {
         let mut frame = HdScene::new(StaticCells::default());
         // The physical sky in the server sky's place: the scene has no sky of its own.
@@ -185,6 +186,8 @@ impl WorldView {
             daylight_shadow: Daylight::default().shadow,
         };
         view.set_daylight(&Daylight::default());
+        // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
+        view.world.warm_effects();
         view
     }
 

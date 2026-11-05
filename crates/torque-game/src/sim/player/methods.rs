@@ -4,7 +4,8 @@
 //!   [`crate::library::GameLibrary::set_velocity`] keeps, mask); `"%g %g %g"`; `v + f32(J / mass)`
 //! - `getState`: `Dead`, `Mounted`, `Recover`, `Move`
 //! - `setControlObject`, `getControlObject`, `clearControlObject`: over `Player::setControlObject`
-//! - `getEyeTransform`, `getEyePoint`, `getEyeVector`: over the eye transform (a Player's)
+//! - `getEyeTransform`, `getEyePoint`, `getEyeVector`: over the eye transform (a Player's); `getSteadyEyePoint` (engine
+//!   addition): the eye at the shape's rest pose
 //!
 //! An Item's are its own (`crate::sim::item`). Any other ShapeBase has no velocity here (`getVelocity`
 //! is `0 0 0`, the setters do nothing); the vehicles' are in [`crate::sim::vehicle`].
@@ -265,6 +266,13 @@ pub fn register(vm: &mut Vm) {
     });
     register_method(vm, "ShapeBase", "getEyePoint", |vm, c| {
         let m = c.this_object.map(|id| eye_transform(vm, id));
+        Native::Str(m.map_or_else(Vec::new, |m| text3([m[3], m[7], m[11]], false)))
+    });
+    // Engine addition: the eye at the shape's rest pose ([`super::tick::steady_eye_of`]); a Player's `getEyePoint` otherwise.
+    register_method(vm, "ShapeBase", "getSteadyEyePoint", |vm, c| {
+        let m = c
+            .this_object
+            .map(|id| super::tick::steady_eye_of(vm, id).unwrap_or_else(|| eye_transform(vm, id)));
         Native::Str(m.map_or_else(Vec::new, |m| text3([m[3], m[7], m[11]], false)))
     });
     register_method(vm, "ShapeBase", "getEyeVector", |vm, c| {

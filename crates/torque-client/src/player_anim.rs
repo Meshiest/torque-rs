@@ -43,6 +43,8 @@
 //!
 //! **The arm thread** plays the arm action the record names (the server's `setArmThread`; `look` when the shape has it and
 //! none was named), held at the head's pitch over the look range (`updateLookAnimation`): 0 looking fully up, 1 fully down.
+//! A synced Player's arm moves from one arm action to the next over [`ARM_BLEND`] seconds (engine addition: TGE switches
+//! at once), held at the pitch meanwhile.
 //! **The head thread** plays the shape's `head` sequence, when it has one, at the same position (`mHeadVThread`).
 //! While a death action plays (an action whose name starts with `death`), the death owns the whole body: the arm and head
 //! threads stop (TGE leaves the arm and the look alone once the Player is dead) and start again, on the arm action the record
@@ -68,6 +70,9 @@ pub use torque_game::sim::player::synced::{JUMP_RISE_SPEED, STAND_JUMP_SPEED, TR
 
 /// `PlayerData::maxTimeScale`'s default: the fastest a moving action plays.
 pub const MAX_TIME_SCALE: f32 = 1.5;
+/// How long a synced Player's arm takes from one arm action to the next (seconds): raising a held image to the eye and
+/// lowering it again.
+pub const ARM_BLEND: f32 = 0.18;
 /// The smallest match a moving action must beat to be chosen over `root`.
 pub const MIN_MATCH: f32 = 0.1;
 pub use torque_game::sim::player::synced::{WALK, WALK_MARGIN, walk_limit};
@@ -579,15 +584,37 @@ impl PlayerAnimation {
                     None => return,
                 },
             };
+            let switch = self.synced && self.arm_action.is_some() && self.arm_thread == Some(t);
             self.arm_thread = Some(t);
             self.arm_action = Some(arm);
-            instance.set_sequence(shape, t, seq as i32, m.look);
+            if switch {
+                if let Some(th) = instance.thread_mut(t) {
+                    th.time_scale = 1.0;
+                }
+                instance.transition_to_sequence(shape, t, seq, m.look, ARM_BLEND);
+            } else {
+                instance.set_sequence(shape, t, seq as i32, m.look);
+            }
+        } else if let Some(t) = self.arm_thread
+            && instance
+                .thread(t)
+                .is_some_and(|th| th.transition.in_transition)
+        {
+            // The switch runs on by the frame's time.
+            instance.advance_time(shape, t, dt);
         }
         if let (Some(t), Some(seq)) = (
             self.arm_thread,
             self.arm_action.and_then(|a| self.actions.get(a)?.sequence),
         ) {
-            instance.set_sequence(shape, t, seq as i32, m.look);
+            match instance.thread_mut(t) {
+                // Mid-switch: the new action at the pitch, the switch's blend kept.
+                Some(th) if th.transition.in_transition => {
+                    th.pos = m.look.clamp(0.0, 1.0);
+                    instance.set_all_dirty();
+                }
+                _ => instance.set_sequence(shape, t, seq as i32, m.look),
+            }
         }
         if let Some((t, seq)) = self.head_thread {
             instance.set_sequence(shape, t, seq as i32, m.look);
