@@ -177,6 +177,11 @@ The first development version. Nothing is published yet; this is what exists.
   normalized with no traversal, files served from memory; per connection a head timeout, an idle timeout, a stall timeout
   and a cap on unsent bytes, messages no larger than a datagram and no more a second than UDP's per-connection cap;
   connections capped in all, per address and per second. `Transport::service` does a transport's work between ticks.
+- `torque-client`'s `web-socket` feature: a client's datagrams over WebSocket (`net::web_socket::WebSocketDatagrams`: the
+  page's `WebSocket` in a browser, a plain `ws` connection natively). `torque::app`'s `web` feature: a server on
+  `Listen::Web` (the web alone, or UDP beside it), whose dedicated loop services the transport between ticks, and
+  `ClientNet::External` with `ClientBuilder::set_socket` for a client that brings its own socket. `torque`'s `web` feature
+  turns both on.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

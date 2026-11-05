@@ -8,6 +8,8 @@
 //! the same process ([`ClientNet::Memory`]): every step carries the datagrams each sent to the other, so the connection is the
 //! engine's own handshake, packets and ghosts, with no socket opened. A client with a UDP socket can still run a game alone
 //! that way ([`GameClient::start_local`]): its socket is set aside while the game runs, so nothing of it reaches the network.
+//! A game may also bring its own socket ([`ClientNet::External`], [`ClientBuilder::set_socket`]): a browser's game socket
+//! over WebSocket.
 //!
 //! **A step** ([`GameClient::step`]): as many server ticks as the time covers when hosting, then the client's ticks (its input,
 //! its scripts, its connection, its query), the link carried around each, and the console's lines kept.
@@ -50,6 +52,9 @@ pub enum ClientNet {
         client: SocketAddrV4,
         server: SocketAddr,
     },
+    /// The connection natives with no socket opened here: the game gives its own ([`ClientBuilder::set_socket`], a game
+    /// socket over WebSocket in a browser).
+    External,
 }
 
 /// What a client's script engine is given before the game's own natives.
@@ -127,6 +132,15 @@ impl ClientBuilder {
         })
     }
 
+    /// Gives the client `socket` under `policy` (a client made with [`ClientNet::External`]; any other socket it had is
+    /// closed).
+    pub fn set_socket(&mut self, socket: Box<dyn Datagrams>, policy: NetPolicy) {
+        let st = self.state.borrow();
+        let mut n = st.net.borrow_mut();
+        n.policy = policy;
+        n.socket = Some(socket);
+    }
+
     /// Runs the script file `path` of the files.
     pub fn exec(&mut self, path: &str) -> Result<(), String> {
         if self
@@ -195,7 +209,7 @@ fn open_socket(
     let st = state.borrow();
     let mut n = st.net.borrow_mut();
     match net {
-        ClientNet::None => Ok(None),
+        ClientNet::None | ClientNet::External => Ok(None),
         ClientNet::Loopback | ClientNet::Lan => {
             let (ip, policy, twin) = match net {
                 ClientNet::Loopback => (Ipv4Addr::LOCALHOST, NetPolicy::Loopback, false),

@@ -40,5 +40,9 @@ png = "0.18"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4"
 
+[features]
+# Browsers as players: a server listening on the web (`Listen::Web`) and a client's game socket over WebSocket.
+web = ["torque-server/web", "torque-client/web-socket"]
+
 [lints]
 workspace = true

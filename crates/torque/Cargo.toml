@@ -80,6 +80,9 @@ system-fonts = ["fonts", "torque-fonts/system-fonts"]
 # What a game made on the engine shares (`torque::app`): its files, a server, a client, a window, the world view and offscreen
 # pictures (`torque-app`). Needs a GPU.
 app = ["client-window", "system-fonts", "shapes", "dep:torque-app"]
+# Browsers as players: the server's web transport (HTTP and WebSocket on one port, UDP beside it) and the client's game
+# socket over WebSocket.
+web = ["server", "client", "torque-server/web", "torque-client/web-socket", "torque-app?/web"]
 full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder", "app"]
 
 [[example]]

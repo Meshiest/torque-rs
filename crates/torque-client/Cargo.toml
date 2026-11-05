@@ -37,6 +37,16 @@ winit = { version = "0.30", default-features = false, features = ["rwh_06"], opt
 [target.'cfg(windows)'.dependencies]
 open = { version = "5.4.4", default-features = false, features = ["shellexecute-on-windows"], optional = true }
 
+# A game socket over WebSocket (the `web-socket` feature): natively a plain `ws` connection made with tungstenite...
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tungstenite = { version = "0.30", default-features = false, optional = true }
+
+# ... and in a browser the page's own `WebSocket`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", features = ["BinaryType", "MessageEvent", "WebSocket"], optional = true }
+
 [dev-dependencies]
 # The host tests' draw cache (no font files: nothing is drawn as text).
 fonts = { package = "torque-fonts", path = "../torque-fonts" }
@@ -46,6 +56,8 @@ torque-shape-builder = { path = "../torque-shape-builder" }
 [features]
 # The window glue (`platform`): keys, cursor hold, frame cap, URL opener.
 window = ["dep:winit", "dep:open"]
+# The datagrams over WebSocket (`net::web_socket`): the browser's side of a server's web transport.
+web-socket = ["torque-server/web", "dep:tungstenite", "dep:wasm-bindgen", "dep:js-sys", "dep:web-sys"]
 
 [lints]
 workspace = true

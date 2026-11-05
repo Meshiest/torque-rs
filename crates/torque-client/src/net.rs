@@ -33,6 +33,8 @@ use std::rc::Rc;
 
 pub use crate::{conn, ghost_objects, query};
 pub mod moves;
+#[cfg(feature = "web-socket")]
+pub mod web_socket;
 
 /// The most bytes of a datagram kept (the game's packets are at most 1,500; a longer one is cut and then fails to decode).
 pub const RECV_BYTES: usize = 2048;

@@ -6,7 +6,9 @@
 //! when allowed as public) opens it to players outside the network too (the router must forward its UDP port). The bind policy
 //! refuses any other public address. The LAN list's pings and queries are answered on the same socket. In memory, the server's
 //! transport is bound at an address and its other end ([`GameServer::memory_end`]) carries the datagrams: a client in the same
-//! process joins it with no socket opened ([`crate::client::ClientNet::Memory`]).
+//! process joins it with no socket opened ([`crate::client::ClientNet::Memory`]). On the web (the `web` feature,
+//! [`Listen::Web`]) the server takes browsers' game sockets over WebSocket and serves them the game's page on one TCP port,
+//! with UDP on the same port number beside it or not at all (torque-server's `net::web`).
 //!
 //! **A tick** ([`GameServer::tick`]) is one 32 ms pass of the main loop: the datagrams waiting, the scripts' events, the
 //! objects' ticks and a packet to every client.
@@ -30,11 +32,24 @@ use torque_ts_vm::vm::Vm;
 /// The UDP port number games listen on (and the LAN list asks): TGE's.
 pub const DEFAULT_PORT: u16 = 28_000;
 
+/// How often a dedicated server's wait services its transport ([`GameServer::run_dedicated`]).
+const SERVICE_EVERY: Duration = Duration::from_millis(2);
+
 /// The server's main loop over a network host of Torque's net game.
 pub type NetServer = Server<HostParts<TorqueNet>>;
 
+/// The web side of a server that browsers join ([`Listen::Web`]).
+#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone)]
+pub struct WebListen {
+    /// UDP on the same port number beside the web (desktop and browser players in one game); else no UDP socket is opened.
+    pub udp: bool,
+    /// The files served (none: game sockets only, the page comes from another web server), TLS, and the limits.
+    pub setup: torque_server::net::web::WebSetup,
+}
+
 /// Where a server listens.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Listen {
     /// A UDP socket on `address` (`127.0.0.1`, or this computer's LAN address) and `port` (0 takes any free one). `public`
     /// allows `0.0.0.0` (every interface, so players outside the network can join when their traffic reaches this computer)
@@ -47,11 +62,20 @@ pub enum Listen {
     /// An in-memory transport bound at this address: a client in the same process reaches it through
     /// [`GameServer::memory_end`].
     Memory(SocketAddr),
+    /// HTTP and WebSocket on TCP `address`:`port` (0 takes any free one), and UDP on the same port when `web.udp` says so.
+    /// Without TLS the address must be a private one; `public` allows `0.0.0.0` as for UDP.
+    #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+    Web {
+        address: Ipv4Addr,
+        port: u16,
+        public: bool,
+        web: Rc<WebListen>,
+    },
 }
 
 /// How a server starts: where it listens, the globals set before `server.cs` runs, and the script function that starts the
 /// map, with its arguments.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ServerStart<'a> {
     pub listen: Listen,
     pub globals: &'a [(&'a str, &'a str)],
@@ -108,13 +132,20 @@ impl GameServer {
         start: &ServerStart,
         prepare: impl FnOnce(&mut Vm),
     ) -> Result<GameServer, String> {
-        let (transport, end) = match start.listen {
-            Listen::Udp {
+        let (transport, end) = match &start.listen {
+            &Listen::Udp {
                 address,
                 port,
                 public,
             } => (udp_transport(address, port, public)?, None),
-            Listen::Memory(at) => {
+            #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+            Listen::Web {
+                address,
+                port,
+                public,
+                web,
+            } => (web_transport(*address, *port, *public, web)?, None),
+            &Listen::Memory(at) => {
                 let (transport, end) = MemoryTransport::new();
                 let transport: SharedTransport = Rc::new(RefCell::new(transport));
                 transport
@@ -240,22 +271,81 @@ impl GameServer {
             next += tick;
             let now = Instant::now();
             match next.checked_duration_since(now) {
-                Some(wait) => std::thread::sleep(wait),
+                Some(wait) => self.wait(wait),
                 None => next = now,
             }
         }
     }
+
+    /// Waits `wait` of the wall clock; a transport with work of its own between ticks ([`Transport::service`]: a web
+    /// transport's files and sockets) is serviced every few milliseconds meanwhile.
+    fn wait(&mut self, wait: Duration) {
+        if !self.transport.borrow().wants_service() {
+            std::thread::sleep(wait);
+            return;
+        }
+        let until = Instant::now() + wait;
+        loop {
+            self.transport.borrow_mut().service();
+            let now = Instant::now();
+            let Some(left) = until.checked_duration_since(now) else {
+                break;
+            };
+            std::thread::sleep(left.min(SERVICE_EVERY));
+        }
+    }
+
+    /// The transport's work between ticks, done now ([`Transport::service`]; a harness that paces ticks itself calls it).
+    pub fn service(&mut self) {
+        self.transport.borrow_mut().service();
+    }
+}
+
+/// The bind policy for `address` (`public` allows `0.0.0.0` alone).
+fn bind_policy(address: Ipv4Addr, public: bool) -> Result<BindPolicy, String> {
+    BindPolicy::new(
+        IpAddr::V4(address),
+        public && address.is_unspecified(),
+        &LanRules::PLAIN,
+    )
+    .map_err(|e| {
+        format!(
+            "the address {address} is not a private one; only 0.0.0.0 (every interface) may be public: {e}"
+        )
+    })
+}
+
+/// The web transport (and UDP beside it when `web.udp` says so) bound on `address` and `port` under the bind policy.
+#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+fn web_transport(
+    address: Ipv4Addr,
+    port: u16,
+    public: bool,
+    web: &WebListen,
+) -> Result<SharedTransport, String> {
+    use torque_server::net::web::{MultiTransport, WebTransport};
+    let policy = bind_policy(address, public)?;
+    let ip = IpAddr::V4(address);
+    let site = WebTransport::new(policy, web.setup.clone());
+    let transport: SharedTransport = if web.udp {
+        Rc::new(RefCell::new(MultiTransport::new(
+            UdpTransport::new(policy),
+            site,
+        )))
+    } else {
+        Rc::new(RefCell::new(site))
+    };
+    transport
+        .borrow_mut()
+        .bind(ip, port)
+        .map_err(|e| format!("the server's socket: {e}"))?;
+    Ok(transport)
 }
 
 /// A UDP transport bound on `address` and `port` under the bind policy (`public` allows `0.0.0.0` alone).
 fn udp_transport(address: Ipv4Addr, port: u16, public: bool) -> Result<SharedTransport, String> {
     let ip = IpAddr::V4(address);
-    let policy = BindPolicy::new(ip, public && address.is_unspecified(), &LanRules::PLAIN)
-        .map_err(|e| {
-            format!(
-                "the address {address} is not a private one; only 0.0.0.0 (every interface) may be public: {e}"
-            )
-        })?;
+    let policy = bind_policy(address, public)?;
     let mut udp = UdpTransport::new(policy);
     udp.bind(ip, port)
         .map_err(|e| format!("the server's socket: {e}"))?;

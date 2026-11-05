@@ -2404,6 +2404,7 @@ name = "torque-client"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "js-sys",
  "open",
  "torque-collide",
  "torque-fonts",
@@ -2422,6 +2423,9 @@ dependencies = [
  "torque-ts-text",
  "torque-ts-vm",
  "torque-vehicle",
+ "tungstenite",
+ "wasm-bindgen",
+ "web-sys",
  "web-time",
  "winit",
 ]
