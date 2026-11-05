@@ -804,6 +804,7 @@ pub fn figure() -> Model {
     };
     crate::poses::crouch(&mut b, &body);
     crate::poses::prone(&mut b, &body);
+    crate::poses::ways(&mut b, &body);
     crate::poses::flinches(&mut b, &body);
     b.build()
 }

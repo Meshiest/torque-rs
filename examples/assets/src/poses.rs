@@ -31,9 +31,10 @@ use torque_shapes::shape::Quat16;
 use crate::builder::{SequenceDef, ShapeBuilder, Track, Vec3};
 use crate::gait;
 use crate::shapes::{
-    AIM_ELBOW, AIM_IN, AIM_SHOULDER, GRIP, HOLD_ELBOW, HOLD_SHOULDER, LOOK_KEYS, LOOK_TORSO, Limbs,
-    Rot, SHIN, SOLE, THIGH, UPPER_ARM, X, Y, Z, apply, cross3, dot3, hip_track, leg_tracks,
-    look_pitch, quat16_of, rot_about, rot_mul, rot_t, sub3, travel, travel_along, turns, unit,
+    AIM_ELBOW, AIM_IN, AIM_SHOULDER, FOOT_HEEL, FOOT_TOE, FOREARM, GRIP, HOLD_ELBOW, HOLD_SHOULDER,
+    LOOK_KEYS, LOOK_TORSO, Limbs, Rot, SHIN, SOLE, THIGH, UPPER_ARM, X, Y, Z, apply, cross3, dot3,
+    hip_track, leg_tracks, look_pitch, quat16_of, rot_about, rot_mul, rot_t, sub3, travel,
+    travel_along, turns, unit,
 };
 
 /// The ground speeds of `crouch_forward`, `crouch_side` and `prone_forward` (units a second).
@@ -44,10 +45,24 @@ pub const CRAWL_SPEED: f32 = 0.75;
 pub const CROUCH_HIPS: f32 = 0.56;
 pub const CROUCH_LEAN: f32 = 24.0;
 pub const CROUCH_HEAD: f32 = 20.0;
+/// Crouched still, the ankles' distance to each side and how far ahead the left and the right one are: the balls of the feet
+/// where the standing figure's are, the left a little ahead.
+pub const CROUCH_FEET: [f32; 3] = [0.13, 0.03, -0.02];
+/// Crouched still, the heels are lifted this far (degrees) onto the balls of the feet.
+pub const CROUCH_TOES: f32 = -15.0;
+
+/// The ankle's height crouched on the balls of the feet: the sole's front edge just touching the floor.
+fn crouch_ankle() -> f32 {
+    let (s, c) = CROUCH_TOES.to_radians().sin_cos();
+    -(FOOT_TOE * s - SOLE * c) + TOUCH
+}
 /// Prone: the hips' place along and over the ground, the chest's lift and the head's turn up (degrees).
 pub const PRONE_HIPS: [f32; 2] = [-0.12, 0.22];
 pub const PRONE_CHEST: f32 = 15.0;
 pub const PRONE_HEAD: f32 = 60.0;
+/// Where prone's hands rest ahead of the figure's middle, and its ankles behind its hips.
+pub const PRONE_GRIP_Y: f32 = 0.82;
+pub const PRONE_ANKLE_Y: f32 = -0.74;
 /// How much further `prone_hold` and `prone_aim` raise the arm than `hold` and `aim` (degrees): the torso lies that much
 /// further over.
 pub const PRONE_TILT: f32 = 90.0 - PRONE_CHEST;
@@ -290,8 +305,8 @@ fn stride(phase: f32, stance: f32, land: f32, travel: f32, lift: f32) -> (f32, f
 /// The crouched body at breath `b` (-1 to 1): hips low, leaning forward, the head up, the feet under the hips.
 fn crouch_key(b: f32) -> Key {
     let foot = |side: usize, y: f32| Foot {
-        ankle: [side_x(side) * 0.15, y, SOLE],
-        turn: IDENTITY,
+        ankle: [side_x(side) * CROUCH_FEET[0], y, crouch_ankle()],
+        turn: deg(X, CROUCH_TOES),
         pole: [side_x(side) * 0.25, 1.0, 0.0],
     };
     let forearm = |side: usize| Arm {
@@ -303,7 +318,7 @@ fn crouch_key(b: f32) -> Key {
         root_r: IDENTITY,
         torso: deg(X, -(CROUCH_LEAN + b)),
         head: deg(X, CROUCH_HEAD + 0.5 * b),
-        feet: [foot(0, 0.08), foot(1, -0.05)],
+        feet: [foot(0, CROUCH_FEET[1]), foot(1, CROUCH_FEET[2])],
         arms: [forearm(0), forearm(1)],
     }
 }
@@ -436,6 +451,7 @@ pub(crate) fn crouch(b: &mut ShapeBuilder, body: &Body<'_>) {
                 let base = side_x(side) * 0.2;
                 key.feet[side].ankle = [base - x, [0.06, -0.04][side], SOLE + lift];
                 key.feet[side].pole = [side_x(side) * 0.4, 1.0, 0.0];
+                key.feet[side].turn = IDENTITY;
             }
             key
         })
@@ -450,8 +466,8 @@ pub(crate) fn crouch(b: &mut ShapeBuilder, body: &Body<'_>) {
 
 /// The prone sequences and the prone arm actions (see the module docs).
 pub(crate) fn prone(b: &mut ShapeBuilder, body: &Body<'_>) {
-    let grip_y = 0.66;
-    let ankle_y = -0.74;
+    let grip_y = PRONE_GRIP_Y - 0.24;
+    let ankle_y = PRONE_ANKLE_Y;
     let keys: Vec<Key> = (0..8)
         .map(|k| {
             let breath = (TAU * k as f32 / 8.0).sin();
@@ -683,6 +699,342 @@ pub(crate) fn flinches(b: &mut ShapeBuilder, body: &Body<'_>) {
             translations: Vec::new(),
             ground: Vec::new(),
         });
+    }
+}
+
+/// `prone_down` and `prone_up`'s lengths (seconds): the ticks the step holds the Player still while it gets down or up (24 and
+/// 27 ticks of 32 ms).
+pub const PRONE_DOWN_SECONDS: f32 = 0.768;
+pub const PRONE_UP_SECONDS: f32 = 0.864;
+
+/// One stage of the way down (see [`way_key`]): the pelvis's pitch (degrees, forward negative), the torso's turn on it and the
+/// head's pitch in the world (looking ahead), the hip sockets' middle (along, up), each foot's ankle, pitch (toe down negative)
+/// and knee pole, the left hand's grip and elbow pole, the right hand's reach from its shoulder and elbow pole, how much each
+/// knee and the left hand stand on the ground (0 to 1).
+#[derive(Clone, Copy)]
+struct Stage {
+    pitch: f32,
+    torso: f32,
+    head: f32,
+    socket: [f32; 2],
+    ankles: [Vec3; 2],
+    foot_pitch: [f32; 2],
+    knee_poles: [Vec3; 2],
+    left_grip: Vec3,
+    left_pole: Vec3,
+    right_reach: Vec3,
+    right_pole: Vec3,
+    knees_down: [f32; 2],
+    hand_down: f32,
+}
+
+/// The stages of the way down from the crouch to prone, and when each is reached (shares of the way): crouched; down on the
+/// right knee, leaning forward, the left hand reaching; on both knees with the left hand down where it lies prone; the chest
+/// lowered and the legs sliding back; prone. The right arm reaches ahead throughout (a pistol held ahead stays ahead).
+fn stages() -> [(f32, Stage); 5] {
+    let crouch = Stage {
+        pitch: 0.0,
+        torso: -CROUCH_LEAN,
+        head: CROUCH_HEAD - CROUCH_LEAN,
+        socket: [0.0, CROUCH_HIPS],
+        ankles: [
+            [-CROUCH_FEET[0], CROUCH_FEET[1], crouch_ankle()],
+            [CROUCH_FEET[0], CROUCH_FEET[2], crouch_ankle()],
+        ],
+        foot_pitch: [CROUCH_TOES, CROUCH_TOES],
+        knee_poles: [[-0.25, 1.0, 0.0], [0.25, 1.0, 0.0]],
+        left_grip: [-0.2, 0.36, 0.6],
+        left_pole: [-0.25, -0.6, -0.4],
+        right_reach: [0.0, 0.55, -0.35],
+        right_pole: [0.4, -0.2, -1.0],
+        knees_down: [0.0, 0.0],
+        hand_down: 0.0,
+    };
+    let kneel = Stage {
+        pitch: -8.0,
+        torso: -36.0,
+        head: -6.0,
+        socket: [-0.04, 0.47],
+        ankles: [
+            [-CROUCH_FEET[0], CROUCH_FEET[1], crouch_ankle()],
+            [0.16, -0.36, 0.12],
+        ],
+        foot_pitch: [CROUCH_TOES, -60.0],
+        knee_poles: [[-0.25, 1.0, 0.0], [0.1, 1.0, -0.2]],
+        left_grip: [-0.28, 0.62, 0.22],
+        left_pole: [-0.5, -0.5, -0.3],
+        right_reach: [0.0, 0.6, -0.3],
+        right_pole: [0.4, -0.2, -1.0],
+        knees_down: [0.0, 1.0],
+        hand_down: 0.0,
+    };
+    let hands = Stage {
+        pitch: -18.0,
+        torso: -52.0,
+        head: -8.0,
+        socket: [-0.04, 0.42],
+        ankles: [[-0.16, -0.34, 0.12], [0.16, -0.38, 0.12]],
+        foot_pitch: [-60.0, -60.0],
+        knee_poles: [[-0.1, 1.0, -0.2], [0.1, 1.0, -0.2]],
+        left_grip: [-0.3, PRONE_GRIP_Y, 0.08],
+        left_pole: [-0.7, -0.5, -0.2],
+        right_reach: [0.0, 0.65, -0.2],
+        right_pole: [0.4, -0.2, -1.0],
+        knees_down: [1.0, 1.0],
+        hand_down: 1.0,
+    };
+    let lowering = Stage {
+        pitch: -58.0,
+        torso: -14.0,
+        head: -12.0,
+        socket: [-0.11, 0.27],
+        ankles: [[-0.24, -0.66, 0.16], [0.24, -0.66, 0.16]],
+        foot_pitch: [-80.0, -80.0],
+        knee_poles: [[-0.7, 0.2, -1.0], [0.7, 0.2, -1.0]],
+        left_grip: [-0.3, PRONE_GRIP_Y, 0.08],
+        left_pole: [-0.7, -0.5, -0.2],
+        right_reach: [0.0, 0.75, -0.05],
+        right_pole: [0.4, -0.2, -1.0],
+        knees_down: [0.3, 0.3],
+        hand_down: 1.0,
+    };
+    let prone = Stage {
+        pitch: -90.0,
+        torso: PRONE_CHEST,
+        head: PRONE_HEAD + PRONE_CHEST - 90.0,
+        socket: PRONE_HIPS,
+        ankles: [
+            prone_ankle(0, PRONE_ANKLE_Y, 0.0),
+            prone_ankle(1, PRONE_ANKLE_Y, 0.0),
+        ],
+        foot_pitch: [-90.0, -90.0],
+        knee_poles: [[-1.0, 0.0, -0.15], [1.0, 0.0, -0.15]],
+        left_grip: prone_grip(0, PRONE_GRIP_Y, 0.0),
+        left_pole: [-0.7, -0.5, -0.2],
+        right_reach: [0.0, 0.8, 0.0],
+        right_pole: [0.4, -0.2, -1.0],
+        knees_down: [0.0, 0.0],
+        hand_down: 1.0,
+    };
+    [
+        (0.0, crouch),
+        (0.35, kneel),
+        (0.55, hands),
+        (0.8, lowering),
+        (1.0, prone),
+    ]
+}
+
+/// The stage at share `t` of the way down: each number on a smooth curve through the stages (Catmull-Rom, still at both
+/// ends), so the body moves through them without stopping at each or jumping between them.
+fn stage_at(t: f32) -> Stage {
+    let st = stages();
+    let n = st.len();
+    let t = t.clamp(0.0, 1.0);
+    let i = (0..n - 1).find(|&i| t <= st[i + 1].0).unwrap_or(n - 2);
+    let (t0, t1) = (st[i].0, st[i + 1].0);
+    let u = (t - t0) / (t1 - t0);
+    let at = |k: usize| st[k.min(n - 1)].1;
+    let (a, b) = (at(i), at(i + 1));
+    let before = if i == 0 {
+        None
+    } else {
+        Some((st[i - 1].0, at(i - 1)))
+    };
+    let after = if i + 2 < n {
+        Some((st[i + 2].0, at(i + 2)))
+    } else {
+        None
+    };
+    let span = t1 - t0;
+    let mix = |f: &dyn Fn(&Stage) -> f32| -> f32 {
+        let (p0, p1) = (f(&a), f(&b));
+        // The rate at each stage: the slope between its neighbors (none at the ends), in this span's terms.
+        let m0 = before.map_or(0.0, |(tb, sb)| (p1 - f(&sb)) / (t1 - tb) * span);
+        let m1 = after.map_or(0.0, |(ta, sa)| (f(&sa) - p0) / (ta - t0) * span);
+        hermite(p0, p1, m0, m1, u)
+    };
+    let v3 = |f: &dyn Fn(&Stage) -> Vec3| -> Vec3 { [0, 1, 2].map(|k| mix(&|s: &Stage| f(s)[k])) };
+    Stage {
+        pitch: mix(&|s| s.pitch),
+        torso: mix(&|s| s.torso),
+        head: mix(&|s| s.head),
+        socket: [mix(&|s| s.socket[0]), mix(&|s| s.socket[1])],
+        ankles: [v3(&|s| s.ankles[0]), v3(&|s| s.ankles[1])],
+        foot_pitch: [mix(&|s| s.foot_pitch[0]), mix(&|s| s.foot_pitch[1])],
+        knee_poles: [v3(&|s| s.knee_poles[0]), v3(&|s| s.knee_poles[1])],
+        // The hand keeps still where a stage plants it: eased between stages, not carried past them.
+        left_grip: {
+            let e = u * u * (3.0 - 2.0 * u);
+            [0, 1, 2].map(|k| a.left_grip[k] + (b.left_grip[k] - a.left_grip[k]) * e)
+        },
+        left_pole: v3(&|s| s.left_pole),
+        right_reach: v3(&|s| s.right_reach),
+        right_pole: v3(&|s| s.right_pole),
+        knees_down: [
+            mix(&|s| s.knees_down[0]).clamp(0.0, 1.0),
+            mix(&|s| s.knees_down[1]).clamp(0.0, 1.0),
+        ],
+        hand_down: mix(&|s| s.hand_down).clamp(0.0, 1.0),
+    }
+}
+
+/// The world frames (place and turn) of the nodes a contact is measured on: each knee, ankle and elbow, and the right shoulder.
+struct Frames {
+    thighs: [(Vec3, Rot); 2],
+    knees: [(Vec3, Rot); 2],
+    ankles: [(Vec3, Rot); 2],
+    elbows: [(Vec3, Rot); 2],
+    shoulders: [Vec3; 2],
+}
+
+fn frames(k: &Key, t: &Turned) -> Frames {
+    let torso_at = add3(k.root_t, apply(&k.root_r, [0.0, 0.0, PELVIS]));
+    let torso_turn = rot_mul(&k.root_r, &t.torso);
+    let leg = |side: usize| {
+        let at = add3(
+            k.root_t,
+            apply(&k.root_r, [side_x(side) * HIP_X, 0.0, PELVIS]),
+        );
+        let turn = rot_mul(&k.root_r, &t.legs[side][0]);
+        let knee_at = add3(at, apply(&turn, [0.0, 0.0, -THIGH]));
+        let knee_turn = rot_mul(&turn, &t.legs[side][1]);
+        let ankle_at = add3(knee_at, apply(&knee_turn, [0.0, 0.0, SOLE - SHIN]));
+        let ankle_turn = rot_mul(&knee_turn, &t.legs[side][2]);
+        ((at, turn), (knee_at, knee_turn), (ankle_at, ankle_turn))
+    };
+    let shoulder = |side: usize| {
+        add3(
+            torso_at,
+            apply(
+                &torso_turn,
+                [side_x(side) * SHOULDER[0], SHOULDER[1], SHOULDER[2]],
+            ),
+        )
+    };
+    let elbow = |side: usize| {
+        let turn = rot_mul(&torso_turn, &t.arms[side][0]);
+        let at = add3(shoulder(side), apply(&turn, [0.0, 0.0, -UPPER_ARM]));
+        (at, rot_mul(&turn, &t.arms[side][1]))
+    };
+    let (l, r) = (leg(0), leg(1));
+    Frames {
+        thighs: [l.0, r.0],
+        knees: [l.1, r.1],
+        ankles: [l.2, r.2],
+        elbows: [elbow(0), elbow(1)],
+        shoulders: [shoulder(0), shoulder(1)],
+    }
+}
+
+/// The lowest point of a box `min..max` on a node at `frame`.
+fn lowest(frame: &(Vec3, Rot), min: Vec3, max: Vec3) -> f32 {
+    (0..8)
+        .map(|c| {
+            let p = [
+                if c & 1 == 0 { min[0] } else { max[0] },
+                if c & 2 == 0 { min[1] } else { max[1] },
+                if c & 4 == 0 { min[2] } else { max[2] },
+            ];
+            frame.0[2] + apply(&frame.1, p)[2]
+        })
+        .fold(f32::MAX, f32::min)
+}
+
+/// The shin's, the foot's and the hand's (with the forearm's) boxes, as the figure draws them.
+const SHIN_BOX: (Vec3, Vec3) = ([-0.09, -0.1, -SHIN + 0.08], [0.09, 0.1, 0.0]);
+const THIGH_BOX: (Vec3, Vec3) = ([-0.1, -0.11, -THIGH - 0.02], [0.1, 0.11, 0.0]);
+const FOOT_BOX: (Vec3, Vec3) = ([-0.095, FOOT_HEEL, -SOLE], [0.095, FOOT_TOE, 0.0]);
+const HAND_BOX: (Vec3, Vec3) = ([-0.065, -0.065, -FOREARM], [0.065, 0.065, 0.0]);
+/// How far over the floor a part that stands on it is kept (a hair, so it touches without sinking).
+const TOUCH: f32 = 0.004;
+
+/// The key at share `t` of the way down: the stage's body placed, each foot kept out of the floor, the left hand set on it as much
+/// as it stands there, and the body raised or lowered so a kneeling knee rests on it (a few passes, each placing the limbs
+/// again).
+fn way_key(t: f32) -> Key {
+    let s = stage_at(t);
+    let root_r = deg(X, s.pitch);
+    let mut socket = [0.0, s.socket[0], s.socket[1]];
+    let mut ankles = s.ankles;
+    let mut grip = s.left_grip;
+    let make = |socket: Vec3, ankles: [Vec3; 2], grip: Vec3, right: Vec3| Key {
+        root_t: sub3(socket, apply(&root_r, [0.0, 0.0, PELVIS])),
+        root_r,
+        torso: deg(X, s.torso),
+        head: deg(X, s.head - s.pitch - s.torso),
+        feet: [0, 1].map(|side| Foot {
+            ankle: ankles[side],
+            turn: deg(X, s.foot_pitch[side]),
+            pole: s.knee_poles[side],
+        }),
+        arms: [
+            Arm {
+                grip,
+                pole: s.left_pole,
+            },
+            Arm {
+                grip: right,
+                pole: s.right_pole,
+            },
+        ],
+    };
+    let mut right = [0.0; 3];
+    for _ in 0..6 {
+        let key = make(socket, ankles, grip, right);
+        let f = frames(&key, &solve(&key));
+        right = add3(f.shoulders[1], s.right_reach);
+        // A hand still reaching keeps its elbow bent: its grip no further than most of the arm's reach.
+        let to = sub3(grip, f.shoulders[0]);
+        let d = dot3(to, to).sqrt();
+        let most = 0.9 * (UPPER_ARM + GRIP);
+        if s.hand_down < 1.0 && d > most {
+            grip = add3(f.shoulders[0], scale3(to, most / d));
+        }
+        for (ankle, frame) in ankles.iter_mut().zip(&f.ankles) {
+            ankle[2] += (TOUCH - lowest(frame, FOOT_BOX.0, FOOT_BOX.1)).max(0.0);
+        }
+        let hand = lowest(&f.elbows[0], HAND_BOX.0, HAND_BOX.1);
+        grip[2] += s.hand_down * (TOUCH - hand);
+        // A leg's lowest point: its shin's near the knee, or its thigh's.
+        let legs = [0, 1].map(|side| {
+            lowest(
+                &f.knees[side],
+                [SHIN_BOX.0[0], SHIN_BOX.0[1], -0.15],
+                SHIN_BOX.1,
+            )
+            .min(lowest(&f.thighs[side], THIGH_BOX.0, THIGH_BOX.1))
+        });
+        let (w, low) = (0..2)
+            .filter(|&side| s.knees_down[side] > 0.0)
+            .map(|side| (s.knees_down[side], legs[side]))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap_or((0.0, TOUCH));
+        // A kneeling knee rests on the floor as much as it kneels, and no leg ever sinks into it.
+        let floor = legs[0].min(legs[1]);
+        socket[2] += (w * (TOUCH - low)).max(TOUCH - floor);
+    }
+    make(socket, ankles, grip, right)
+}
+
+/// `prone_down` and `prone_up` (see the module docs): the way down from the crouch to prone and the same way back up, each a
+/// key a tick, played once; over every other thread (priority 2), so a held pistol's arm goes down and up with the body.
+pub(crate) fn ways(b: &mut ShapeBuilder, body: &Body<'_>) {
+    for (name, seconds, up) in [
+        ("prone_down", PRONE_DOWN_SECONDS, false),
+        ("prone_up", PRONE_UP_SECONDS, true),
+    ] {
+        let n = (seconds / 0.032).round() as usize + 1;
+        let keys: Vec<Key> = (0..n)
+            .map(|k| {
+                let t = k as f32 / (n - 1) as f32;
+                way_key(if up { 1.0 - t } else { t })
+            })
+            .collect();
+        let mut def = sequence(name, seconds, tracks(body, &keys), Vec::new());
+        def.cyclic = false;
+        def.priority = 2;
+        b.sequence(def);
     }
 }
 

@@ -280,6 +280,12 @@ The first development version. Nothing is published yet; this is what exists.
   side step and a crawl whose standing feet and hands stay put (the slide test holds them under 6% of the ground's speed);
   `prone_hold` and `prone_aim` hold the pistol ahead lying down. Each pose fits its box (1 x 1 x 1.6 crouched, 2 x 2 x 0.8
   prone), and a crouch lowers the body over feet that stay where they stand.
+- The example kit's figure gets down to prone and up again (`prone_down`, 0.768 s; `prone_up`, 0.864 s): from the crouch it drops
+  to its right knee, puts its left hand down where it lies, comes onto both knees, lowers its chest and slides its legs back
+  to lie flat, the head up and looking ahead; up is the same played back (it pushes up on the hand, brings its knees under and
+  rises). Its feet, knees and hand touch the floor without sinking, the planted hand stays put, the right arm reaches ahead
+  (over a held pistol's arm), and each starts and ends in the pose it joins. Crouched still, the figure is on the balls of
+  its feet, the feet where the standing ones are.
 - The example kit's figure reacts to hits: blend sequences played once over any pose or gait, `flinch_front`, `flinch_back`,
   `flinch_left` and `flinch_right` (the body punched away from the side hit, the hips pushed back and a small step) and
   `flinch_head_front` and the rest (a sharp snap of the head, the torso barely moving), each at rest at its start and end.
