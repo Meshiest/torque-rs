@@ -1976,3 +1976,49 @@ fn at_speed_the_track_runs_on_under_the_wheel_evenly_at_144_and_59_frames_a_seco
         );
     }
 }
+
+#[test]
+fn at_speed_another_players_buggy_is_drawn_where_the_server_has_it() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+    a.key(Key::W, true);
+    // How far behind the server's buggy each client draws it, along its way (m): the driver's (predicted) and the other's.
+    let mut lags = [Vec::new(), Vec::new()];
+    for _ in 0..(7000 / 16) {
+        for g in [&mut a, &mut b] {
+            g.step(16);
+            g.update_scene(0.016);
+        }
+        let v = server(&a).buggy_velocity().unwrap();
+        let speed = horizontal(v);
+        if speed < 15.0 {
+            continue;
+        }
+        let dir = [v[0] / speed, v[1] / speed];
+        let truth = server(&a).buggy_position().unwrap();
+        for (k, (g, ghost)) in [(&a, ga), (&b, gb)].into_iter().enumerate() {
+            let drawn = g
+                .with_world(|w| match w.vehicle_render.get(&ghost)? {
+                    torque::ghost_world::world::Pose::Quat { position, .. } => Some(*position),
+                    _ => None,
+                })
+                .flatten();
+            if let Some(p) = drawn {
+                lags[k].push((truth[0] - p[0]) * dir[0] + (truth[1] - p[1]) * dir[1]);
+            }
+        }
+    }
+    a.key(Key::W, false);
+    for (k, l) in lags.iter().enumerate() {
+        assert!(l.len() > 100, "client {k}: {} frames", l.len());
+        let mean = l.iter().sum::<f32>() / l.len() as f32;
+        let most = l.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        // The other's was drawn its update's age and a warp behind: 1.7 m on average at 15 to 20 m/s, 2 m at most.
+        assert!(
+            mean.abs() < 0.4 && most < 0.8,
+            "client {k}: drawn {mean} m behind on average, {most} m at most"
+        );
+    }
+}

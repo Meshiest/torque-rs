@@ -80,32 +80,38 @@ fn the_drawn_steering_moves_evenly_frame_to_frame_while_the_ticks_step_it() {
 }
 
 #[test]
-fn a_networked_steering_glides_between_its_updates_and_is_drawn_moving_evenly() {
-    // Another's turn: its updates bring a step of 0.13 every 96 ms; drawn every 16 ms through the glide and the follow, one
-    // frame's move differs from the next's by a small part of a step once it is under way.
-    let step = 0.13f32;
-    let mut g = Glide::at_rest(0.0, 0);
+fn a_networked_steering_runs_on_at_its_updates_rate_and_is_drawn_moving_evenly_where_it_is() {
+    // Another's turn at 1.35 a second to the lock: its updates bring it every 96 ms; drawn every 16 ms through the lead and the
+    // follow, one frame's move differs from the next's by a small part of an update's step once under way, and the drawn
+    // steering is near where the turn is now (not an update behind).
+    let rate = 1.35f32;
+    let lock = 0.55f32;
+    let truth = |ms: u32| (rate * ms as f32 / 1000.0).min(lock);
+    let mut l = Lead::at_rest(0.0, 0);
     let mut e = Eased::default();
     let mut moves = Vec::new();
+    let mut behind = Vec::new();
     let mut last = 0.0f32;
     for frame in 1..=60u32 {
         let now = frame * 16;
-        let value = (step * (now / 96) as f32).min(0.55);
-        g = g.take(value, now);
-        e = e.follow(g.at(now), STEER_EASE_SECONDS, 0.016);
+        l = l.take(truth(now / 96 * 96), now);
+        e = e.follow(l.at(now).clamp(-lock, lock), STEER_EASE_SECONDS, 0.016);
         moves.push(e.value - last);
+        behind.push(truth(now) - e.value);
         last = e.value;
     }
-    let steady = &moves[14..28];
+    let steady = &moves[14..24];
     let worst = steady
         .windows(2)
         .map(|w| (w[1] - w[0]).abs())
         .fold(0.0f32, f32::max);
     assert!(
-        worst < step * 0.06,
+        worst < 0.13 * 0.06,
         "a frame's move changed by {worst}: {steady:?}"
     );
-    // It ends at the last value, without passing it.
-    assert!((e.value - 0.55).abs() < 0.01, "{e:?}");
+    // Under way, behind the turn by about the follow's lag only (an update's step is 0.13).
+    let lag = behind[14..24].iter().fold(0.0f32, |a, b| a.max(*b));
+    assert!(lag < 0.1, "behind by {lag}: {behind:?}");
+    assert!((e.value - lock).abs() < 0.01, "{e:?}");
     assert!(moves.iter().all(|m| *m >= -1e-6), "{moves:?}");
 }

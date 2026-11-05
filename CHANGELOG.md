@@ -266,8 +266,8 @@ The first development version. Nothing is published yet; this is what exists.
   `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
 - `torque-client`: the steering a vehicle is drawn with (its front wheels, its `steering` thread and the hands of a figure
   on it) eases each frame toward the ticks' steering (`look::SteeringEase`, a critically damped follow, the same at any frame
-  rate; `seconds: None` draws the last tick's, as TGE does); another's vehicle eases toward a glide between the values its
-  updates bring, over the time between them. It turned in a tick's steps, and another's in its updates' steps.
+  rate; `seconds: None` draws the last tick's, as TGE does); another's vehicle eases toward its newest value run on at
+  the rate its updates bring. It turned in a tick's steps, and another's in its updates' steps.
 - `torque-client`: a vehicle's drawn wheel contacts, where its tire tracks start and its tires' dust rises, are under the
   tires the frame draws; they were a tick's travel behind them at speed.
 - `torque-client`: the client's ticks fall on their 32 ms grid at any frame rate (`conn::tick_time`). A frame that did not end
@@ -275,6 +275,10 @@ The first development version. Nothing is published yet; this is what exists.
   35 ms (fewer moves than the server's ticks) and drew the Players and vehicles unevenly between ticks.
 - `torque-client`: a vehicle's springs are drawn between its last two ticks' extensions, as its body is
   (`look::SpringLooks`); the tires, and the tracks and dust under them, stepped once a tick.
+- `torque-client`: another player's vehicle is drawn where it is now: through the warp its update's state coasts on at its
+  velocities (and by the update's age, measured and eased over updates, at most 0.1 s), and the drawn pose eases to it over
+  five ticks (TGE holds the state while the drawn pose warps to the update's position, the past by then). At 15 to 20 m/s it
+  was drawn 1.7 m behind the server's on average, 2 m at most; now 0.15 m ahead, as the driver's own (0.06 m behind at most).
 - `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
   had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
   head turned as far as it goes).
