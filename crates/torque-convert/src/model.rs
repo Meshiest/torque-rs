@@ -90,9 +90,9 @@ pub fn write_images(model: &Model, output: &Path) -> Result<usize, String> {
 }
 
 /// Whether `name` is safe as a file name on every platform: no folders, no drive or stream colon, no control or
-/// wildcard characters, no leading dot, no trailing dot or space, and not a Windows device name (`CON`, `COM1`, ...).
+/// wildcard characters, no leading dot, no trailing dot or space, and not a Windows device name (`CON`, `CONIN$`, `COM1`, ...).
 fn is_plain_file_name(name: &str) -> bool {
-    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    const DEVICES: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
     if name.is_empty()
         || name.starts_with('.')
         || name.ends_with(['.', ' '])
@@ -215,8 +215,25 @@ mod tests {
             assert!(is_plain_file_name(ok), "{ok}");
         }
         for bad in [
-            "", ".hidden", "a/b", r"a\b", "c:x", "x:stream", "tail.", "tail ", "q?", "t\u{1}",
-            "CON", "con", "Nul.png", "aux .txt", "COM1", "lpt9", "prn",
+            "",
+            ".hidden",
+            "a/b",
+            r"a\b",
+            "c:x",
+            "x:stream",
+            "tail.",
+            "tail ",
+            "q?",
+            "t\u{1}",
+            "CON",
+            "con",
+            "Nul.png",
+            "aux .txt",
+            "COM1",
+            "lpt9",
+            "prn",
+            "CONIN$",
+            "conout$.png",
         ] {
             assert!(!is_plain_file_name(bad), "{bad:?}");
         }

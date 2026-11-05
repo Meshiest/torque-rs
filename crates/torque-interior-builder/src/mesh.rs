@@ -671,7 +671,11 @@ fn solid_leaves(tris: &[&Tri], work: &mut Budget, out: &mut Vec<Brush>) -> Resul
             work,
             (candidates.len() * polys.len()) as u64 + polys.len() as u64,
         )?;
-        let mut best = (u64::MAX, candidates[0]);
+        // A cell of faces with no plane (every triangle too small to have one) bounds nothing.
+        let Some(&first) = candidates.first() else {
+            continue;
+        };
+        let mut best = (u64::MAX, first);
         for c in &candidates {
             let (mut cut, mut front, mut back) = (0u64, 0i64, 0i64);
             for (_, poly) in &polys {
@@ -1052,6 +1056,16 @@ mod tests {
             .iter()
             .flat_map(|f| quad(c(f[0]), c(f[1]), c(f[2]), c(f[3]), 0))
             .collect()
+    }
+
+    #[test]
+    fn a_closed_part_too_small_for_any_plane_makes_no_leaf_and_no_panic() {
+        let tris = box_tris([0.0; 3], [1e-7; 3]);
+        let refs: Vec<&Tri> = tris.iter().collect();
+        assert!(refs.iter().all(|t| t.plane().is_none()));
+        let mut leaves = Vec::new();
+        solid_leaves(&refs, &mut Budget::new(u64::MAX), &mut leaves).unwrap();
+        assert!(leaves.is_empty());
     }
 
     #[test]
