@@ -80,9 +80,7 @@ use wgpu::util::DeviceExt;
 use torque_render_scene::hd::cells::StaticGeometry;
 use torque_render_scene::hd::grade::{ExposureMode, Tonemap};
 use torque_render_scene::hd::lut::{CubeLut, LUT_SIZE};
-use torque_render_scene::hd::post::{
-    AO_RADIUS, AntiAliasing, AoMethod, RenderScale, internal_size, jitter,
-};
+use torque_render_scene::hd::post::{AntiAliasing, AoMethod, RenderScale, internal_size, jitter};
 use torque_render_scene::hd::settings::ImageSettings;
 
 use crate::ext::{
@@ -4873,7 +4871,7 @@ impl<E: HdExtension> HdWorld<E> {
         push_f32(
             &mut post_bytes,
             &[
-                AO_RADIUS,
+                scene.ao_radius,
                 image.ao_strength(),
                 if ao_on { method } else { 0.0 },
                 ao_scale as f32,
@@ -5445,17 +5443,15 @@ impl<E: HdExtension> HdWorld<E> {
                 }),
             caster_reach: E::caster_reach(quality),
             shadow_distance: scene.shadow_distance,
+            ao_sun: scene.ao_sun,
             stamps: self
                 .timer
                 .as_ref()
                 .map(|t| (&t.queries, Q_FRAME_BEGIN, Q_SHADOWS_END)),
         };
-        let done = self.shadows.encode(
-            &self.queue,
-            &mut encoder,
-            &input,
-            torque_render_scene::hd::shadow::SUN_RADIUS_DEG,
-        );
+        let done = self
+            .shadows
+            .encode(&self.queue, &mut encoder, &input, scene.sun_radius);
         self.shadow_patched = self.shadow_dirty.len();
         self.shadow_dirty.clear();
         self.shadow_reset = false;

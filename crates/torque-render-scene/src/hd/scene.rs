@@ -3,7 +3,7 @@
 //! particles and one texture table. What fills it from a world is the world's own.
 
 use crate::hd::cells::StaticGeometry;
-use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, sh, shadow, sky};
+use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, post, sh, shadow, sky};
 use crate::source::Eye;
 use crate::textures::TextureSet;
 use crate::{Blend, Draw};
@@ -58,6 +58,13 @@ pub struct HdScene<G> {
     /// The farthest the sun's cascades reach (units; [`shadow::SHADOW_DISTANCE`], or the visible distance of a scene whose rooms
     /// run past it: past the cascades the floor and walls read sunlit).
     pub shadow_distance: f32,
+    /// The sun's angular radius the soft shadows' penumbrae take (degrees; [`shadow::SUN_RADIUS_DEG`]).
+    pub sun_radius: f32,
+    /// The ambient occlusion's reach (units; [`post::AO_RADIUS`]).
+    pub ao_radius: f32,
+    /// The share of the ambient occlusion the sun's light takes too (0: the ambient's alone): a darkening in the sun where
+    /// surfaces meet.
+    pub ao_sun: f32,
     /// The fixed-function frame's clear (the fog colour quad), gamma 0..1.
     pub clear: [f32; 3],
     /// The sky in TGE's order (box, the remote flare, clouds, bans): drawn first, unlit, no depth.
@@ -142,6 +149,9 @@ impl<G> HdScene<G> {
             },
             clear: [1.0; 3],
             shadow_distance: shadow::SHADOW_DISTANCE,
+            sun_radius: shadow::SUN_RADIUS_DEG,
+            ao_radius: post::AO_RADIUS,
+            ao_sun: 0.0,
             sky: Vec::new(),
             sky_eye: [0.0; 3],
             sky_choice: sky::SkyChoice::Auto,
