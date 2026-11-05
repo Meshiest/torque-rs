@@ -178,6 +178,21 @@ pub fn read(
     let charge = &mut charge;
     pay(charge, bytes.len() as u64)?;
     let (json_bytes, bin) = container::split(bytes)?;
+    if json_bytes.len() > options.max_json_bytes {
+        return Err(ImportError::TooLarge {
+            what: "the JSON",
+            bytes: json_bytes.len() as u64,
+            cap: options.max_json_bytes as u64,
+        });
+    }
+    // The parse builds every object, array and string at once, at many times its text's size: their count is held first.
+    let values = container::json_values(json_bytes, caps::MAX_JSON_VALUES);
+    cap(
+        "objects, arrays and strings in the JSON",
+        values,
+        caps::MAX_JSON_VALUES,
+    )?;
+    pay(charge, values as u64)?;
     let to_error = |e: &dyn std::fmt::Display| {
         let mut s = e.to_string();
         s.truncate(200);

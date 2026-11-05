@@ -73,6 +73,38 @@ pub fn split(bytes: &[u8]) -> Result<(&[u8], Option<&[u8]>), ImportError> {
     Ok((check_json(json)?, bin))
 }
 
+/// The objects, arrays and strings of the JSON `json`, counted in one pass (strings and their escapes skipped), stopping at
+/// `max + 1`.
+pub fn json_values(json: &[u8], max: usize) -> usize {
+    let mut count = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &b in json {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => {
+                in_string = true;
+                count += 1;
+            }
+            b'{' | b'[' => count += 1,
+            _ => continue,
+        }
+        if count > max {
+            break;
+        }
+    }
+    count
+}
+
 fn check_json(json: &[u8]) -> Result<&[u8], ImportError> {
     if json.len() > caps::MAX_JSON_BYTES {
         return Err(ImportError::TooLarge {

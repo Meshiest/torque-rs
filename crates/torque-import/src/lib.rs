@@ -124,6 +124,8 @@ pub struct Options {
     /// Adds a box hull (`Collision-1`) around the drawn meshes of a model that has no collision mesh. Ignored for a file this
     /// crate wrote (it says exactly what the shape has).
     pub box_hull: bool,
+    /// The largest JSON part read ([`caps::MAX_JSON_BYTES`]; less for a file a server can send).
+    pub max_json_bytes: usize,
 }
 
 impl Default for Options {
@@ -133,6 +135,7 @@ impl Default for Options {
             scale: 1.0,
             rate: 30.0,
             box_hull: true,
+            max_json_bytes: caps::MAX_JSON_BYTES,
         }
     }
 }

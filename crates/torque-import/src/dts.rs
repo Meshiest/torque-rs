@@ -705,6 +705,7 @@ pub fn from_dts(dts: &torque_shapes::Model) -> Result<Model, ImportError> {
     let nodes = s.nodes.len();
     for q in &s.sequences {
         let keys = usize::try_from(q.num_keyframes).unwrap_or(0).max(1);
+        cap("keys of a sequence", keys, crate::caps::MAX_KEYS)?;
         let mut a = Animation {
             name: name_of(s, q.name),
             duration: q.duration,

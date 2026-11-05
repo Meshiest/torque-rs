@@ -3,7 +3,7 @@
 //! it. A `.gltf` loads when its buffers are `data:` URIs (side files are for the converter); textures are found by name beside
 //! the shape, as a `.dts`'s are.
 
-use crate::{Charge, ImportError, Options, dts, gltf};
+use crate::{Charge, ImportError, Options, caps, dts, gltf};
 
 /// Whether a shape path names a glTF (`.glb` or `.gltf`, case ignored).
 pub fn is_gltf_path(path: &[u8]) -> bool {
@@ -13,9 +13,39 @@ pub fn is_gltf_path(path: &[u8]) -> bool {
     ends(b".glb") || ends(b".gltf")
 }
 
-/// The `.dts` bytes of the glTF `bytes`, paid for through `charge`.
+/// The work units the shape writing is charged a vertex, index and sampled value of the model.
+const WRITE_WORK_PER_ELEMENT: u64 = 4;
+
+/// The `.dts` bytes of the glTF `bytes` (at most [`caps::MAX_NATIVE_FILE_BYTES`], its JSON at most
+/// [`caps::MAX_NATIVE_JSON_BYTES`]: a server sends these), paid for through `charge`: the read, then the shape made of it.
 pub fn dts_bytes(bytes: &[u8], charge: Charge) -> Result<Vec<u8>, ImportError> {
-    let model = gltf::read(bytes, &mut |_, _| None, &Options::default(), charge)?;
+    if bytes.len() > caps::MAX_NATIVE_FILE_BYTES {
+        return Err(ImportError::TooLarge {
+            what: "a glTF shape file",
+            bytes: bytes.len() as u64,
+            cap: caps::MAX_NATIVE_FILE_BYTES as u64,
+        });
+    }
+    let options = Options {
+        max_json_bytes: caps::MAX_NATIVE_JSON_BYTES,
+        ..Options::default()
+    };
+    let mut charge = charge;
+    let model = gltf::read(bytes, &mut |_, _| None, &options, &mut charge)?;
+    let elements: usize = model
+        .meshes
+        .iter()
+        .map(|m| m.positions.len() + m.primitives.iter().map(|p| p.indices.len()).sum::<usize>())
+        .chain(
+            model
+                .animations
+                .iter()
+                .map(|a| a.keys.saturating_mul(a.tracks.len() + 1)),
+        )
+        .fold(0, usize::saturating_add);
+    if !charge((elements as u64).saturating_mul(WRITE_WORK_PER_ELEMENT)) {
+        return Err(ImportError::OutOfBudget);
+    }
     let shape = dts::to_dts(&model)?;
     let out = torque_shapes::write::write_dts(&shape);
     if out.len() > torque_shapes::MAX_DTS_BYTES {

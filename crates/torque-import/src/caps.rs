@@ -5,6 +5,12 @@
 pub const MAX_FILE_BYTES: usize = 64 << 20;
 /// The largest JSON part of a glTF.
 pub const MAX_JSON_BYTES: usize = 16 << 20;
+/// The largest glTF a datablock may name ([`crate::native`]: a file a server can send), and its largest JSON part.
+pub const MAX_NATIVE_FILE_BYTES: usize = 16 << 20;
+pub const MAX_NATIVE_JSON_BYTES: usize = 2 << 20;
+/// Objects, arrays and strings of a glTF's JSON, counted in one pass before it is parsed: each costs the parse far more
+/// memory than its text, so their number is held under this before any is built.
+pub const MAX_JSON_VALUES: usize = 1 << 18;
 /// All buffers of one model together (the `.glb`'s binary chunk, side files, `data:` URIs decoded).
 pub const MAX_BUFFER_BYTES: usize = 128 << 20;
 /// The longest `data:` URI, in bytes of text.

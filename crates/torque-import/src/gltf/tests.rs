@@ -594,3 +594,53 @@ fn the_reader_never_panics_on_mutated_files() {
     println!("{cases} cases: {panics} panics, {read_back} read back as shapes");
     assert_eq!(panics, 0);
 }
+
+#[test]
+fn a_json_of_many_small_values_is_refused_before_it_is_parsed() {
+    // 8 MB of empty materials: millions of objects the parse would build, each far larger than its two bytes of text.
+    let mut text = br#"{"asset":{"version":"2.0"},"materials":["#.to_vec();
+    while text.len() < 8 << 20 {
+        text.extend_from_slice(b"{},");
+    }
+    text.extend_from_slice(b"{}]}");
+    let r = read_ok(&text);
+    assert!(
+        matches!(
+            r,
+            Err(ImportError::Cap {
+                what: "objects, arrays and strings in the JSON",
+                ..
+            })
+        ),
+        "{r:?}"
+    );
+    // Strings are skipped with their escapes: braces inside them are not counted.
+    assert_eq!(super::container::json_values(br#"{"a":"x\"{[{"}"#, 100), 3);
+    // A file a server sends has a smaller JSON cap.
+    let mut big = br#"{"asset":{"version":"2.0"},"extras":""#.to_vec();
+    big.resize(caps::MAX_NATIVE_JSON_BYTES + 10, b'a');
+    big.extend_from_slice(b"\"}");
+    assert!(read_ok(&big).is_ok());
+    let r = crate::native::dts_bytes(&big, &mut free);
+    assert!(
+        matches!(
+            r,
+            Err(ImportError::TooLarge {
+                what: "the JSON",
+                ..
+            })
+        ),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn a_shape_whose_sequence_claims_too_many_keys_is_refused() {
+    let m = sample();
+    let mut shape = dts::to_dts(&m).unwrap();
+    shape.shape.sequences[0].num_keyframes = i32::MAX;
+    assert!(matches!(
+        dts::from_dts(&shape),
+        Err(ImportError::Cap { .. })
+    ));
+}
