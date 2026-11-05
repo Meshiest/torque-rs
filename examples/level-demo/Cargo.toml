@@ -21,6 +21,9 @@ torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 
+[dev-dependencies]
+torque-interior-builder = { path = "../../crates/torque-interior-builder" }
+
 [[bin]]
 name = "example-level-demo"
 path = "src/main.rs"

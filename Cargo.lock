@@ -2248,6 +2248,7 @@ dependencies = [
  "torque",
  "torque-example-assets",
  "torque-example-common",
+ "torque-interior-builder",
  "torque-render-core",
  "torque-render-scene",
 ]
