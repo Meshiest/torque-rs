@@ -276,6 +276,10 @@ impl Client {
     fn has_text(&self, text: &str) -> bool {
         self.texts.iter().any(|t| t == text)
     }
+
+    fn count_text_prefix(&self, prefix: &str) -> usize {
+        self.texts.iter().filter(|t| t.starts_with(prefix)).count()
+    }
 }
 
 /// Pumps the transport and steps `clients` until `done` or `ms` pass; returns the longest pass.
@@ -832,6 +836,33 @@ fn signaling_is_capped() {
     b.text("candidate\ncandidate:1 1 udp 1 127.0.0.1 9 typ host");
     run(&mut t, &mut [&mut b], 200, |_, _| false);
     assert!(!b.socket_closed);
+}
+
+#[test]
+fn an_ice_restart_drops_the_channel_and_keeps_the_socket() {
+    let (mut t, addr) = site(RtcSetup::default());
+    let (mut c, _) = opened(&mut t, addr);
+    // A renegotiation with its own credentials (what a restart offers): the channel goes, the socket stays.
+    let mut other = RtcConfig::new()
+        .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+        .build(Instant::now());
+    other.add_local_candidate(Candidate::host(c.local, "udp").unwrap());
+    let mut api = other.sdp_api();
+    api.add_channel_with_config(game_channel());
+    let (offer, _) = api.apply().unwrap();
+    c.text(&format!("offer\n{}", offer.to_sdp_string()));
+    run(&mut t, &mut [&mut c], 2000, |_, c| {
+        c[0].has_text(signal::CLOSED)
+    });
+    assert!(c.has_text(signal::CLOSED), "{:?}", t.rtc_counters());
+    assert!(!c.socket_closed);
+    assert_eq!(
+        c.count_text_prefix("answer\n"),
+        1,
+        "the first offer's answer only, none to a restart"
+    );
+    assert_eq!(t.rtc_counters().closed_protocol, 1);
+    assert!(t.rtc_peers().is_empty());
 }
 
 #[test]

@@ -62,6 +62,20 @@ pub fn data_only(sdp: &str) -> bool {
     }) && any
 }
 
+/// The ICE credential lines of an SDP offer (`a=ice-ufrag:` and `a=ice-pwd:`, session and media level), sorted and
+/// without repeats. A renegotiation that keeps them is the same ICE session; one that changes them restarts ICE.
+pub fn ice_credentials(sdp: &str) -> Vec<String> {
+    let mut lines: Vec<String> = sdp
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("a=ice-ufrag:") || l.starts_with("a=ice-pwd:"))
+        .map(str::to_string)
+        .collect();
+    lines.sort();
+    lines.dedup();
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +99,16 @@ mod tests {
             "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
         ));
         assert!(!data_only("v=0\r\n"));
+        let same =
+            "a=ice-ufrag:abcd\r\na=ice-pwd:secret\r\nm=application 9 x\r\na=ice-ufrag:abcd\r\n";
+        assert_eq!(
+            ice_credentials(same),
+            ["a=ice-pwd:secret", "a=ice-ufrag:abcd"]
+        );
+        assert_ne!(
+            ice_credentials(same),
+            ice_credentials("a=ice-ufrag:other\r\na=ice-pwd:secret\r\n")
+        );
         assert!(!data_only(
             "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
         ));

@@ -56,8 +56,10 @@
 //! The server relays nothing: a peer's messages go to the host as that peer's datagrams, there is no TURN, and answers go
 //! only to the address a check came from.
 //!
-//! **Voice later.** A peer is one `Rtc` that can take audio sections in a later offer (renegotiation is allowed); until
-//! voice is built, an offer with any section but `m=application` is refused ([`signal::data_only`]).
+//! **Voice later.** A peer is one `Rtc` that can take audio sections in a later offer (renegotiation is allowed, with the
+//! browser's ICE credentials unchanged: an ICE restart drops the data channel, and the browser stays on its game socket,
+//! since the credentials the stack would mint for it could not be routed); until voice is built, an offer with any
+//! section but `m=application` is refused ([`signal::data_only`]).
 
 pub mod signal;
 mod stun;
@@ -386,6 +388,8 @@ struct Peer {
     /// The game socket's TCP address (the per-address cap's key).
     ip: IpAddr,
     ufrag: Vec<u8>,
+    /// The ICE credential lines of the browser's first offer ([`signal::ice_credentials`]); a renegotiation keeps them.
+    remote_ice: Vec<String>,
     /// The source addresses mapped to it, oldest first.
     remotes: VecDeque<SocketAddr>,
     channel: Option<ChannelId>,
@@ -629,7 +633,12 @@ impl RtcSide {
         }
         let offer = SdpOffer::from_sdp_string(sdp).map_err(|_| ())?;
         if let Some(peer) = self.peers.get_mut(&stand_in) {
-            // A renegotiation of the peer the socket has.
+            // A renegotiation of the peer the socket has. An ICE restart (changed credentials) is refused: the stack would
+            // mint new local credentials no check could be routed by, so the browser stays on its game socket instead.
+            if signal::ice_credentials(sdp) != peer.remote_ice {
+                self.finish(stand_in, Why::Protocol, true);
+                return Ok(Reply::None);
+            }
             let Ok(answer) = peer.rtc.sdp_api().accept_offer(offer) else {
                 self.finish(stand_in, Why::Protocol, false);
                 return Err(());
@@ -654,6 +663,7 @@ impl RtcSide {
             self.counters.busy += 1;
             return busy();
         }
+        let remote_ice = signal::ice_credentials(sdp);
         let Some((creds, ufrag)) = self.fresh_creds() else {
             self.counters.busy += 1;
             return busy();
@@ -687,6 +697,7 @@ impl RtcSide {
                 rtc,
                 ip,
                 ufrag,
+                remote_ice,
                 remotes: VecDeque::new(),
                 channel: None,
                 opened: now,
