@@ -367,9 +367,12 @@ impl VehicleDemo {
 
     /// The buggy's wheels' contact points as the client draws them this frame (the ones on the ground).
     pub fn wheel_contacts(&self) -> Vec<[f32; 3]> {
-        let Some(buggy) = self.buggy_ghost() else {
-            return Vec::new();
-        };
+        self.buggy_ghost()
+            .map_or_else(Vec::new, |g| self.wheel_contacts_of(g))
+    }
+
+    /// [`VehicleDemo::wheel_contacts`] of the buggy whose ghost is `buggy`.
+    pub fn wheel_contacts_of(&self, buggy: u32) -> Vec<[f32; 3]> {
         self.with_world(|w| {
             w.records
                 .vehicle_look

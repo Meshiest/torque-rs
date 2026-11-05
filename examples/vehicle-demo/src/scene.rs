@@ -71,23 +71,24 @@ impl WorldScene {
         self.ghosts.dust.particles()
     }
 
-    /// The tires' dust particles alive: where each was made (where it is less its velocity over its age) and its age (ms).
-    pub fn dust_spots(&self) -> Vec<([f32; 3], i32)> {
+    /// The tires' dust particles of vehicle `ghost` alive: where each was made (where it is less its velocity over its age) and its age (ms).
+    pub fn dust_spots(&self, ghost: u32) -> Vec<([f32; 3], i32)> {
         self.ghosts
             .dust
             .alive()
-            .filter(|(tire, _)| *tire)
-            .map(|(_, p)| {
+            .filter(|(g, tire, _)| *tire && *g == ghost)
+            .map(|(_, _, p)| {
                 let t = p.age_ms as f32 / 1000.0;
                 ([0, 1, 2].map(|k| p.pos[k] - p.vel[k] * t), p.age_ms)
             })
             .collect()
     }
 
-    /// The tire tracks' heads (from each strip's last segment to its wheel): their points.
-    pub fn track_heads(&self) -> Vec<Vec<[f32; 3]>> {
+    /// The tire tracks' heads of vehicle `ghost` (from each strip's last segment to its wheel): their points.
+    pub fn track_heads(&self, ghost: u32) -> Vec<Vec<[f32; 3]>> {
         self.ghosts.tracks.as_ref().map_or_else(Vec::new, |t| {
             t.heads()
+                .filter(|(k, _)| k.0 == ghost)
                 .map(|(_, s)| {
                     s.triangles
                         .iter()

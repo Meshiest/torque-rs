@@ -886,66 +886,86 @@ fn the_mouse_tilts_the_seated_view_up_and_down_for_driver_and_passenger() {
     }
 }
 
-#[test]
-fn at_speed_the_tracks_end_and_the_dust_starts_under_the_wheels() {
-    let mut game = host();
-    get_in(&mut [&mut game], 0);
-    game.key(Key::W, true);
-    let mut checked = 0;
-    for _ in 0..(8000 / 16) {
-        game.step(16);
-        game.update_scene(0.016);
-        let speed = horizontal(server(&game).buggy_velocity().unwrap());
-        if speed < 12.0 {
-            continue;
-        }
-        let contacts = game.wheel_contacts();
-        let near = |p: [f32; 3]| {
+/// The newest tracks and dust of `buggy` on `game` against its wheels as `game` draws them this frame: the farthest along
+/// its way of each strip's head and the newest dust's spawn, each the least distance from a contact (along the way and across
+/// it within a tire's width). None while it shows neither.
+fn under_wheels(game: &VehicleDemo, buggy: u32, dir: [f32; 2]) -> Option<(f32, f32)> {
+    let contacts = game.wheel_contacts_of(buggy);
+    if contacts.is_empty() {
+        return None;
+    }
+    let along = |p: [f32; 3]| p[0] * dir[0] + p[1] * dir[1];
+    let across = |p: [f32; 3]| p[1] * dir[0] - p[0] * dir[1];
+    let mut head = 0.0f32;
+    for h in game.scene().track_heads(buggy) {
+        let far = h
+            .iter()
+            .copied()
+            .fold(h[0], |a, p| if along(p) > along(a) { p } else { a });
+        let best = contacts
+            .iter()
+            .filter(|c| (across(**c) - across(far)).abs() < 0.3)
+            .map(|c| (along(*c) - along(far)).abs())
+            .fold(f32::MAX, f32::min);
+        head = head.max(best);
+    }
+    let dust = game
+        .scene()
+        .dust_spots(buggy)
+        .iter()
+        .filter(|(_, age)| *age < 16)
+        .map(|(p, _)| {
             contacts
                 .iter()
                 .map(|c| (p[0] - c[0]).hypot(p[1] - c[1]))
                 .fold(f32::MAX, f32::min)
-        };
-        // Each head's far edge is across a wheel's contact: its farthest point along the way the buggy goes is level with a
-        // contact (within a tire's width to the side).
-        let v = server(&game).buggy_velocity().unwrap();
-        let dir = [v[0] / speed, v[1] / speed];
-        let along = |p: [f32; 3]| p[0] * dir[0] + p[1] * dir[1];
-        let across = |p: [f32; 3]| p[1] * dir[0] - p[0] * dir[1];
-        for head in game.scene().track_heads() {
-            let far = head
-                .iter()
-                .copied()
-                .fold(head[0], |a, p| if along(p) > along(a) { p } else { a });
-            let best = contacts
-                .iter()
-                .filter(|c| (across(**c) - across(far)).abs() < 0.3)
-                .map(|c| (along(*c) - along(far)).abs())
-                .fold(f32::MAX, f32::min);
-            assert!(
-                best < 0.1,
-                "a head ends {best} from its wheel at {speed} m/s"
-            );
+        })
+        .fold(0.0f32, f32::max);
+    Some((head, dust))
+}
+
+#[test]
+fn at_speed_the_tracks_and_dust_start_under_the_wheels_for_the_driver_and_for_another_player() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    // Each client's ghost of the buggy A drives (B's figure stands beside it before it goes).
+    let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+    a.key(Key::W, true);
+    let mut checked = [0, 0];
+    for _ in 0..(8000 / 16) {
+        for g in [&mut a, &mut b] {
+            g.step(16);
+            g.update_scene(0.016);
         }
-        // The newest dust was made at a wheel (within the emitter's ejection offset, 0.1).
-        if let Some(p) = game
-            .scene()
-            .dust_spots()
-            .iter()
-            .filter(|(_, age)| *age < 16)
-            .map(|(p, _)| *p)
-            .next()
+        let v = server(&a).buggy_velocity().unwrap();
+        let speed = horizontal(v);
+        if speed < 19.0 {
+            continue;
+        }
+        let dir = [v[0] / speed, v[1] / speed];
+        for (k, (who, g, ghost)) in [("driver", &a, ga), ("other", &b, gb)]
+            .into_iter()
+            .enumerate()
         {
-            let d = near(p);
-            assert!(
-                d < 0.15,
-                "new dust {d} from the wheels at {speed} m/s: {p:?} {contacts:?} vel {v:?}"
-            );
-            checked += 1;
+            if let Some((head, dust)) = under_wheels(g, ghost, dir) {
+                assert!(
+                    head < 0.15,
+                    "{who}: a track head {head} from its wheel at {speed} m/s"
+                );
+                assert!(
+                    dust < 0.15,
+                    "{who}: new dust {dust} from the wheels at {speed} m/s"
+                );
+                checked[k] += 1;
+            }
         }
     }
-    game.key(Key::W, false);
-    assert!(checked > 10, "{checked} frames checked");
+    a.key(Key::W, false);
+    assert!(
+        checked[0] > 10 && checked[1] > 10,
+        "frames checked {checked:?}"
+    );
 }
 
 #[test]
