@@ -190,6 +190,25 @@ pub fn bounds(points: impl IntoIterator<Item = V3>) -> (V3, V3) {
     (lo, hi)
 }
 
+/// Work counted against a cap: a loop whose length an untrusted input sets charges its steps here before it runs them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Budget {
+    pub spent: u64,
+    pub cap: u64,
+}
+
+impl Budget {
+    pub fn new(cap: u64) -> Budget {
+        Budget { spent: 0, cap }
+    }
+
+    /// Adds `n` steps; false once the total is over the cap.
+    pub fn charge(&mut self, n: u64) -> bool {
+        self.spent = self.spent.saturating_add(n);
+        self.spent <= self.cap
+    }
+}
+
 /// Whether two boxes meet (grown by `pad`).
 pub fn boxes_meet(a: &(V3, V3), b: &(V3, V3), pad: f64) -> bool {
     (0..3).all(|k| a.0[k] <= b.1[k] + pad && b.0[k] <= a.1[k] + pad)

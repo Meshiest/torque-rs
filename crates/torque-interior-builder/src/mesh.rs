@@ -16,8 +16,9 @@
 //!    longest side, again until every piece builds; each piece is a `.dif` at the same place (polygons and hulls go to the
 //!    piece their middles fall in).
 //!
-//! Inputs are untrusted: every count is capped before the work it sizes, the BSP work is capped, coordinates are finite and
-//! within [`MAX_COORD`].
+//! Inputs are untrusted: every count is capped before the work it sizes, the plan's work (grouping, hulls, convexity tests,
+//! solid leaves) is charged to one cap ([`MAX_PLAN_WORK`]) and the pieces' builds to another ([`MAX_PIECE_ITEMS`]),
+//! coordinates are finite and within [`MAX_COORD`].
 
 use std::collections::HashMap;
 
@@ -27,7 +28,7 @@ use torque_modelcore::naming::{Role, Volume, role};
 use crate::brush::{Brush, Face, TexGen};
 use crate::build::{BuildError, Built, Options, Polygon, build_polygons};
 use crate::convex::{self, HullFail};
-use crate::geom::{self, EPS, Plane, V3};
+use crate::geom::{self, Budget, EPS, Plane, V3};
 use crate::mission::{MissionObject, Shape};
 
 /// The most triangles read from a model.
@@ -36,8 +37,14 @@ pub const MAX_TRIANGLES: usize = 1 << 21;
 pub const MAX_COORD: f64 = 1.0e5;
 /// The most hulls in all.
 pub const MAX_HULLS: usize = 1 << 20;
-/// The most polygon-against-plane tests of all the solid-leaf trees together.
-pub const MAX_LEAF_WORK: u64 = 400_000_000;
+/// The most steps of a plan's work: candidate triangles tested while grouping, hull steps (points against live triangles,
+/// visible triangles, faces merged), convexity tests (triangles against hull planes) and solid-leaf tests (polygons against
+/// planes, a leaf's planes squared).
+pub const MAX_PLAN_WORK: u64 = 400_000_000;
+/// The most authored hulls.
+pub const MAX_AUTHORED_HULLS: usize = 16_384;
+/// The most polygons and hulls handed to piece builds, all attempts together (each build's own work is capped by its size).
+pub const MAX_PIECE_ITEMS: usize = 1 << 22;
 /// A piece's limits before it is built: hulls and drawn polygons.
 pub const PIECE_HULLS: usize = 1_000;
 pub const PIECE_POLYGONS: usize = 8_000;
@@ -137,6 +144,23 @@ fn too_many(what: &'static str, count: usize, cap: usize) -> Result<(), MeshErro
     }
 }
 
+fn over_budget(work: &Budget) -> MeshError {
+    MeshError::TooMany {
+        what: "steps of work",
+        count: usize::try_from(work.spent).unwrap_or(usize::MAX),
+        cap: usize::try_from(work.cap).unwrap_or(usize::MAX),
+    }
+}
+
+/// Charges `n` steps to the plan's work.
+fn charge(work: &mut Budget, n: u64) -> Result<(), MeshError> {
+    if work.charge(n) {
+        Ok(())
+    } else {
+        Err(over_budget(work))
+    }
+}
+
 /// A triangle of a mesh, clockwise seen from the front, with its texture coordinates and material.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tri {
@@ -193,6 +217,8 @@ impl MeshInput {
             .fold(None, |a: Option<f32>, s| Some(a.map_or(s, |a| a.max(s))));
         let mut out = MeshInput::default();
         let mut material_ids: HashMap<String, usize> = HashMap::new();
+        // Triangles kept, two-sided ones twice.
+        let mut kept = 0usize;
         for (mi, mesh) in model.meshes.iter().enumerate() {
             let node_name = model.nodes.get(mesh.node).map_or("", |n| n.name.as_str());
             let name = if mesh.name.is_empty() {
@@ -266,6 +292,8 @@ impl MeshInput {
                     out.materials.push(mname.to_string());
                 }
                 let two_sided = material.is_some_and(|m| m.two_sided) && r == Role::Visible;
+                kept += prim.indices.len() / 3 * if two_sided { 2 } else { 1 };
+                too_many("triangles", kept, MAX_TRIANGLES)?;
                 for t in prim.indices.chunks_exact(3) {
                     let v = [t[0], t[1], t[2]].map(|i| i as usize);
                     let uv = v.map(|i| mesh.uv0.get(i).map_or([0.0; 2], |u| u.map(f64::from)));
@@ -342,18 +370,26 @@ fn convex_corner(a: V3, b: V3, c: V3, n: V3) -> bool {
     s > 0.0 && geom::dot(geom::cross(u, w), n) <= 1e-9 * s
 }
 
+/// The most triangles on one directed edge that a polygon grows across: a manifold edge has one, a two-sided sheet two.
+const MAX_EDGE_TRIANGLES: usize = 2;
+
 /// Triangles grouped into convex polygons: each grows from a seed triangle across its edges by the triangles `joins` lets in
-/// (`joins(seed, other)`), while the polygon stays convex and at most [`MAX_POLYGON`] points. Returns each polygon's points
-/// (welded vertex numbers) and seed; triangles of no area are left out.
+/// (`joins(seed, other)`), while the polygon stays convex and at most [`MAX_POLYGON`] points. It does not grow across an
+/// edge of more than [`MAX_EDGE_TRIANGLES`] triangles; each edge looked at and each triangle tested is a step of `work`.
+/// `planes` are the triangles' planes. Returns each polygon's points (welded vertex numbers) and seed; triangles of no area
+/// are left out.
 fn group(
     w: &mut Welded,
     tris: &[Tri],
+    planes: &[Option<Plane>],
     joins: &dyn Fn(usize, usize) -> bool,
-) -> Vec<(Vec<u32>, usize)> {
+    work: &mut Budget,
+) -> Result<Vec<(Vec<u32>, usize)>, MeshError> {
+    charge(work, tris.len() as u64)?;
     let ids: Vec<[u32; 3]> = tris.iter().map(|t| t.p.map(|p| w.id(p))).collect();
     let mut by_edge: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
     for (k, v) in ids.iter().enumerate() {
-        if v[0] == v[1] || v[1] == v[2] || v[0] == v[2] || tris[k].plane().is_none() {
+        if v[0] == v[1] || v[1] == v[2] || v[0] == v[2] || planes[k].is_none() {
             continue;
         }
         for e in 0..3 {
@@ -363,7 +399,7 @@ fn group(
     let mut used = vec![false; tris.len()];
     let mut out = Vec::new();
     for seed in 0..tris.len() {
-        let Some(plane) = tris[seed].plane() else {
+        let Some(plane) = planes[seed] else {
             continue;
         };
         let v = ids[seed];
@@ -378,9 +414,14 @@ fn group(
             let n = poly.len();
             for i in 0..n {
                 let (a, b) = (poly[i], poly[(i + 1) % n]);
+                charge(work, 1)?;
                 let Some(cands) = by_edge.get(&(b, a)) else {
                     continue;
                 };
+                if cands.len() > MAX_EDGE_TRIANGLES {
+                    continue;
+                }
+                charge(work, cands.len() as u64)?;
                 let found = cands.iter().copied().find_map(|k| {
                     if used[k] || !joins(seed, k) {
                         return None;
@@ -407,26 +448,47 @@ fn group(
         }
         out.push((poly, seed));
     }
-    out
+    Ok(out)
 }
 
-/// Whether triangle `t` lies on `plane` facing its way.
-fn on_plane(t: &Tri, plane: &Plane) -> bool {
-    t.plane()
-        .is_some_and(|q| geom::dot(q.n, plane.n) > 1.0 - 1e-9)
+/// Whether triangle `t` (of plane `own`) lies on `plane` facing its way.
+fn on_plane(t: &Tri, own: Option<Plane>, plane: &Plane) -> bool {
+    own.is_some_and(|q| geom::dot(q.n, plane.n) > 1.0 - 1e-9)
         && t.p.iter().all(|&p| plane.dist(p).abs() < PLANE_TOL)
 }
 
-/// A mesh's drawn polygons (module docs, step 2).
-fn drawn_polygons(mesh: &NamedMesh, materials: &[String], out: &mut Vec<Polygon>) -> usize {
+/// Polygons of one plane each and the triangles' planes.
+type Groups = (Vec<(Vec<u32>, usize)>, Vec<Option<Plane>>);
+
+/// Triangles grouped into convex polygons of one plane ([`group`]).
+fn coplanar_groups(w: &mut Welded, tris: &[Tri], work: &mut Budget) -> Result<Groups, MeshError> {
+    let planes: Vec<Option<Plane>> = tris.iter().map(Tri::plane).collect();
+    let groups = group(
+        w,
+        tris,
+        &planes,
+        &|s, k| planes[s].is_some_and(|p| on_plane(&tris[k], planes[k], &p)),
+        work,
+    )?;
+    Ok((groups, planes))
+}
+
+/// A mesh's drawn polygons (module docs, step 2); returns how many triangles of no area are left out.
+fn drawn_polygons(
+    mesh: &NamedMesh,
+    materials: &[String],
+    out: &mut Vec<Polygon>,
+    work: &mut Budget,
+) -> Result<usize, MeshError> {
     let tris = &mesh.tris;
     let maps: Vec<Option<TexGen>> = tris.iter().map(|t| texgen_of(t.p, t.uv)).collect();
+    let planes: Vec<Option<Plane>> = tris.iter().map(Tri::plane).collect();
     let joins = |s: usize, k: usize| {
-        let (Some(plane), Some(tg)) = (tris[s].plane(), maps[s]) else {
+        let (Some(plane), Some(tg)) = (planes[s], maps[s]) else {
             return false;
         };
         tris[k].material == tris[s].material
-            && on_plane(&tris[k], &plane)
+            && on_plane(&tris[k], planes[k], &plane)
             && (0..3).all(|c| {
                 let want = tg.at(tris[k].p[c]);
                 (0..2)
@@ -434,10 +496,10 @@ fn drawn_polygons(mesh: &NamedMesh, materials: &[String], out: &mut Vec<Polygon>
             })
     };
     let mut w = Welded::default();
-    let groups = group(&mut w, tris, &joins);
+    let groups = group(&mut w, tris, &planes, &joins, work)?;
     let mut skipped = 0;
     for (poly, seed) in groups {
-        let (Some(plane), Some(texgen)) = (tris[seed].plane(), maps[seed]) else {
+        let (Some(plane), Some(texgen)) = (planes[seed], maps[seed]) else {
             skipped += 1;
             continue;
         };
@@ -448,7 +510,7 @@ fn drawn_polygons(mesh: &NamedMesh, materials: &[String], out: &mut Vec<Polygon>
             texgen,
         });
     }
-    skipped
+    Ok(skipped)
 }
 
 /// A hull and what it was made from.
@@ -567,19 +629,15 @@ fn closed(tris: &[&Tri]) -> bool {
 /// The solid leaves of a closed part (module docs, step 3): a BSP of its faces, each splitter one of its faces' planes; a cell
 /// with no face left is solid behind the splitter that made it and empty in front of it. Each leaf's planes are the
 /// splitters on the way down (and the part's box, a unit out), the ones that bound nothing left out.
-fn solid_leaves(tris: &[&Tri], work: &mut u64, out: &mut Vec<Brush>) -> Result<(), MeshError> {
+fn solid_leaves(tris: &[&Tri], work: &mut Budget, out: &mut Vec<Brush>) -> Result<(), MeshError> {
     let mut w = Welded::default();
     let tri_list: Vec<Tri> = tris.iter().map(|t| (*t).clone()).collect();
-    let groups = group(&mut w, &tri_list, &|s, k| {
-        tri_list[s]
-            .plane()
-            .is_some_and(|p| on_plane(&tri_list[k], &p))
-    });
+    let (groups, planes) = coplanar_groups(&mut w, &tri_list, work)?;
     let polys: Vec<(Plane, Vec<V3>)> = groups
         .into_iter()
         .filter_map(|(poly, seed)| {
             Some((
-                tri_list[seed].plane()?,
+                planes[seed]?,
                 poly.iter().map(|&i| w.points[i as usize]).collect(),
             ))
         })
@@ -593,9 +651,11 @@ fn solid_leaves(tris: &[&Tri], work: &mut u64, out: &mut Vec<Brush>) -> Result<(
         n[k] = -1.0;
         boxed.extend(Plane::new(n, geom::sub(lo, [1.0; 3])));
     }
-    // Each task: a cell's faces and the planes on the way down to it.
-    type Cell = (Vec<(Plane, Vec<V3>)>, Vec<Plane>);
-    let mut tasks: Vec<Cell> = vec![(polys, Vec::new())];
+    // The splitters on the way down, each with the one above it.
+    let mut steps: Vec<(Plane, Option<usize>)> = Vec::new();
+    // Each task: a cell's faces and the last step down to it.
+    type Cell = (Vec<(Plane, Vec<V3>)>, Option<usize>);
+    let mut tasks: Vec<Cell> = vec![(polys, None)];
     while let Some((polys, path)) = tasks.pop() {
         // The splitter: of the first planes of the cell's faces, the one cutting fewest, then the most even.
         let mut candidates: Vec<Plane> = Vec::new();
@@ -607,14 +667,10 @@ fn solid_leaves(tris: &[&Tri], work: &mut u64, out: &mut Vec<Brush>) -> Result<(
                 candidates.push(*p);
             }
         }
-        *work = work.saturating_add((candidates.len() * polys.len()) as u64 + polys.len() as u64);
-        if *work > MAX_LEAF_WORK {
-            return Err(MeshError::TooMany {
-                what: "solid-leaf tests",
-                count: *work as usize,
-                cap: MAX_LEAF_WORK as usize,
-            });
-        }
+        charge(
+            work,
+            (candidates.len() * polys.len()) as u64 + polys.len() as u64,
+        )?;
         let mut best = (u64::MAX, candidates[0]);
         for c in &candidates {
             let (mut cut, mut front, mut back) = (0u64, 0i64, 0i64);
@@ -653,20 +709,21 @@ fn solid_leaves(tris: &[&Tri], work: &mut u64, out: &mut Vec<Brush>) -> Result<(
                 }
             }
         }
-        let mut back_path = path.clone();
-        back_path.push(s);
+        steps.push((s, path));
+        let back_path = Some(steps.len() - 1);
         if back.is_empty() {
             too_many("hulls", out.len() + 1, MAX_HULLS)?;
-            let planes: Vec<Plane> = back_path.iter().chain(&boxed).copied().collect();
-            // A leaf's faces are each of its planes clipped by the others.
-            *work = work.saturating_add((planes.len() * planes.len()) as u64);
-            if *work > MAX_LEAF_WORK {
-                return Err(MeshError::TooMany {
-                    what: "solid-leaf tests",
-                    count: *work as usize,
-                    cap: MAX_LEAF_WORK as usize,
-                });
+            let mut planes: Vec<Plane> = Vec::new();
+            let mut at = back_path;
+            while let Some(k) = at {
+                charge(work, 1)?;
+                planes.push(steps[k].0);
+                at = steps[k].1;
             }
+            planes.reverse();
+            planes.extend_from_slice(&boxed);
+            // A leaf's faces are each of its planes clipped by the others.
+            charge(work, (planes.len() * planes.len()) as u64)?;
             if let Some(b) = pruned(planes) {
                 out.push(b);
             }
@@ -674,9 +731,8 @@ fn solid_leaves(tris: &[&Tri], work: &mut u64, out: &mut Vec<Brush>) -> Result<(
             tasks.push((back, back_path));
         }
         if !front.is_empty() {
-            let mut front_path = path;
-            front_path.push(s.flipped());
-            tasks.push((front, front_path));
+            steps.push((s.flipped(), path));
+            tasks.push((front, Some(steps.len() - 1)));
         }
     }
     Ok(())
@@ -718,9 +774,10 @@ impl Plan {
             )));
         }
         let mut plan = Plan::default();
+        let mut work = Budget::new(MAX_PLAN_WORK);
         let mut skipped = 0;
         for m in &input.drawn {
-            skipped += drawn_polygons(m, &input.materials, &mut plan.polygons);
+            skipped += drawn_polygons(m, &input.materials, &mut plan.polygons, &mut work)?;
         }
         if skipped > 0 {
             plan.notes
@@ -731,21 +788,28 @@ impl Plan {
             return Err(MeshError::NoHulls);
         }
         if authored {
+            too_many("authored hulls", input.authored.len(), MAX_AUTHORED_HULLS)?;
             for (k, m) in input.authored.iter().enumerate() {
                 let pts: Vec<V3> = m.tris.iter().flat_map(|t| t.p).collect();
-                let planes = convex::hull_planes(&pts).map_err(|e| {
-                    MeshError::Hull(
-                        m.name.clone(),
-                        match e {
-                            HullFail::Flat => "flat".into(),
-                            HullFail::NotFinite => "a point not finite".into(),
-                            HullFail::TooMany(n) => {
-                                format!("{n} points, over {}", convex::MAX_POINTS)
-                            }
-                        },
-                    )
+                let planes = convex::hull_planes(&pts, &mut work).map_err(|e| {
+                    let why = match e {
+                        HullFail::Work => return over_budget(&work),
+                        HullFail::Flat => "flat".into(),
+                        HullFail::NotFinite => "a point not finite".into(),
+                        HullFail::TooMany(n) => {
+                            format!("{n} points, over {}", convex::MAX_POINTS)
+                        }
+                        HullFail::Faces(n) => {
+                            format!("{n} faces, over {}", convex::MAX_FACES)
+                        }
+                        HullFail::Tangled => {
+                            "points too near each other's faces to make a hull".into()
+                        }
+                    };
+                    MeshError::Hull(m.name.clone(), why)
                 })?;
                 // Convex: every triangle of the mesh on a face of its hull.
+                charge(&mut work, (m.tris.len() * planes.len()) as u64)?;
                 if let Some(t) = m.tris.iter().find(|t| {
                     t.plane().is_some()
                         && !planes
@@ -760,6 +824,7 @@ impl Plan {
                         ),
                     ));
                 }
+                charge(&mut work, (planes.len() * planes.len()) as u64)?;
                 let brush = pruned(planes)
                     .ok_or_else(|| MeshError::Hull(m.name.clone(), "bounds no solid".into()))?;
                 if brush.faces.len() > 255 {
@@ -775,7 +840,6 @@ impl Plan {
             }
             return Ok(plan);
         }
-        let mut work = 0u64;
         for (mi, m) in input.drawn.iter().enumerate() {
             for part in parts(&m.tris) {
                 let tris: Vec<&Tri> = part.iter().map(|&k| &m.tris[k]).collect();
@@ -794,12 +858,10 @@ impl Plan {
                 } else {
                     let list: Vec<Tri> = tris.into_iter().cloned().collect();
                     let mut w = Welded::default();
-                    let groups = group(&mut w, &list, &|s, k| {
-                        list[s].plane().is_some_and(|p| on_plane(&list[k], &p))
-                    });
+                    let (groups, tri_planes) = coplanar_groups(&mut w, &list, &mut work)?;
                     // Each polygon's neighbor across each edge (by its corners' numbers, the other way round).
                     let planes: Vec<Option<Plane>> =
-                        groups.iter().map(|(_, seed)| list[*seed].plane()).collect();
+                        groups.iter().map(|(_, seed)| tri_planes[*seed]).collect();
                     let mut by_edge: HashMap<(u32, u32), usize> = HashMap::new();
                     for (k, (poly, _)) in groups.iter().enumerate() {
                         for i in 0..poly.len() {
@@ -817,7 +879,10 @@ impl Plan {
                                 planes[j].map(|q| q.n)
                             })
                             .collect();
+                        // A slab's faces are each of its planes clipped by the others.
+                        charge(&mut work, ((pts.len() + 2) * (pts.len() + 2)) as u64)?;
                         if let Some(brush) = slab(&pts, plane, &sides, options.slab) {
+                            too_many("hulls", plan.hulls.len() + 1, MAX_HULLS)?;
                             plan.hulls.push(Hull {
                                 brush,
                                 kind: HullKind::Slab,
@@ -877,6 +942,7 @@ pub fn build_mesh(input: &MeshInput, options: &MeshOptions) -> Result<MeshBuilt,
     )];
     let mut pieces = Vec::new();
     let mut failed = 0usize;
+    let mut items = 0usize;
     while let Some((polys, hulls)) = tasks.pop() {
         too_many("pieces", pieces.len() + tasks.len() + 1, MAX_PIECES)?;
         let over =
@@ -884,6 +950,8 @@ pub fn build_mesh(input: &MeshInput, options: &MeshOptions) -> Result<MeshBuilt,
         let attempt = if over {
             None
         } else {
+            items += polys.len() + hulls.len();
+            too_many("polygons and hulls built in pieces", items, MAX_PIECE_ITEMS)?;
             let ps: Vec<Polygon> = polys.iter().map(|&k| plan.polygons[k].clone()).collect();
             let hs: Vec<Brush> = hulls.iter().map(|&k| plan.hulls[k].brush.clone()).collect();
             match build_polygons(&ps, &hs, &options.build) {
@@ -992,7 +1060,7 @@ mod tests {
         let refs: Vec<&Tri> = tris.iter().collect();
         assert!(closed(&refs));
         let mut leaves = Vec::new();
-        solid_leaves(&refs, &mut 0, &mut leaves).unwrap();
+        solid_leaves(&refs, &mut Budget::new(u64::MAX), &mut leaves).unwrap();
         assert_eq!(leaves.len(), 1);
         assert_eq!(leaves[0].faces.len(), 6);
         assert!(leaves[0].contains([1.0, 0.5, 1.5], 0.4));
@@ -1054,7 +1122,7 @@ mod tests {
         let refs: Vec<&Tri> = tris.iter().collect();
         assert!(closed(&refs));
         let mut leaves = Vec::new();
-        solid_leaves(&refs, &mut 0, &mut leaves).unwrap();
+        solid_leaves(&refs, &mut Budget::new(u64::MAX), &mut leaves).unwrap();
         assert!(leaves.len() >= 4);
         for x in [-2.5, -1.5, 0.0, 1.5, 2.5] {
             for y in [-2.5, -1.5, 0.0, 1.5, 2.5] {
@@ -1143,5 +1211,161 @@ mod tests {
             }
             let _ = build_mesh(&input, &MeshOptions::default());
         }
+    }
+
+    /// How long a hostile plan may take: a few seconds in release (where it takes well under one), more unoptimized.
+    fn hostile_budget() -> std::time::Duration {
+        std::time::Duration::from_secs(if cfg!(debug_assertions) { 60 } else { 3 })
+    }
+
+    /// A plan of `input` is refused for its work or made, within [`hostile_budget`].
+    fn quick_or_refused(input: &MeshInput, options: &MeshOptions) -> Result<Plan, MeshError> {
+        let start = std::time::Instant::now();
+        let got = Plan::new(input, options);
+        let took = start.elapsed();
+        eprintln!(
+            "{:.2} s: {:?}",
+            took.as_secs_f64(),
+            got.as_ref().map(|p| p.hulls.len())
+        );
+        assert!(took < hostile_budget(), "{took:?}");
+        if let Err(e) = &got {
+            assert!(
+                matches!(
+                    e,
+                    MeshError::TooMany {
+                        what: "steps of work",
+                        ..
+                    }
+                ),
+                "{e}"
+            );
+        }
+        got
+    }
+
+    #[test]
+    fn a_fan_of_triangles_on_one_edge_is_quick() {
+        // 50,000 triangles on one edge, half each way round it, each on its own plane.
+        let (a, b) = ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+        let n = 50_000;
+        let tris: Vec<Tri> = (0..n)
+            .map(|k| {
+                let t = k as f64 / n as f64 * std::f64::consts::PI;
+                let c = [0.5, t.cos(), t.sin()];
+                Tri {
+                    p: if k % 2 == 0 { [a, b, c] } else { [b, a, c] },
+                    uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+                    material: 0,
+                }
+            })
+            .collect();
+        let input = MeshInput {
+            drawn: vec![NamedMesh {
+                name: "fan".into(),
+                tris,
+            }],
+            materials: vec!["m".into()],
+            ..MeshInput::default()
+        };
+        let plan = quick_or_refused(&input, &MeshOptions::default());
+        assert!(plan.is_ok_and(|p| p.polygons.len() == n));
+    }
+
+    #[test]
+    fn many_badly_ordered_hulls_are_quick() {
+        // 200 hulls of points along a moment curve in order: each point sees more of the hull's triangles so far, and the
+        // points lie so near its faces that the triangles stop closing and multiply.
+        let pts: Vec<V3> = (0..4_095)
+            .map(|i| {
+                let t = i as f64 / 2_047.0 - 1.0;
+                [100.0 * t, 100.0 * t * t, 100.0 * t * t * t]
+            })
+            .collect();
+        let tris: Vec<Tri> = pts
+            .chunks_exact(3)
+            .map(|c| Tri {
+                p: [c[0], c[1], c[2]],
+                uv: [[0.0; 2]; 3],
+                material: 0,
+            })
+            .collect();
+        let input = MeshInput {
+            authored: (0..200)
+                .map(|k| NamedMesh {
+                    name: format!("col_{k}"),
+                    tris: tris.clone(),
+                })
+                .collect(),
+            materials: vec!["m".into()],
+            ..MeshInput::default()
+        };
+        let options = MeshOptions {
+            hulls: HullMode::Authored,
+            ..MeshOptions::default()
+        };
+        let start = std::time::Instant::now();
+        let got = Plan::new(&input, &options);
+        let took = start.elapsed();
+        eprintln!("{:.2} s: {:?}", took.as_secs_f64(), got.as_ref().err());
+        assert!(took < hostile_budget(), "{took:?}");
+        assert!(got.is_err());
+    }
+
+    #[test]
+    fn too_many_authored_hulls_are_refused_first() {
+        let tetra = vec![Tri {
+            p: [[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            uv: [[0.0; 2]; 3],
+            material: 0,
+        }];
+        let input = MeshInput {
+            authored: vec![
+                NamedMesh {
+                    name: "col".into(),
+                    tris: tetra,
+                };
+                MAX_AUTHORED_HULLS + 1
+            ],
+            ..MeshInput::default()
+        };
+        assert!(matches!(
+            Plan::new(&input, &MeshOptions::default()),
+            Err(MeshError::TooMany {
+                what: "authored hulls",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn two_sided_triangles_count_twice_against_the_cap() {
+        use torque_modelcore::{Material, Mesh, Node, Primitive};
+        let n = MAX_TRIANGLES / 2 + 1;
+        let model = Model {
+            nodes: vec![Node::new("sheet", None, [0.0; 3])],
+            meshes: vec![Mesh {
+                name: "sheet".into(),
+                node: 0,
+                positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                primitives: vec![Primitive {
+                    material: Some(0),
+                    indices: [0, 1, 2].repeat(n),
+                }],
+                ..Mesh::default()
+            }],
+            materials: vec![Material {
+                two_sided: true,
+                ..Material::default()
+            }],
+            ..Model::default()
+        };
+        assert!(matches!(
+            MeshInput::from_model(&model),
+            Err(MeshError::TooMany {
+                what: "triangles",
+                ..
+            })
+        ));
     }
 }
