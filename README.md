@@ -27,7 +27,8 @@ debugger, telnet console, journaling) are build-time features, so a finished gam
 | `torque-server` | a dedicated server's main-loop pacing, platform values and datagram transport |
 | `torque-client` | the client's engine half: the connection to a server, the prediction, action maps, the server query, window glue |
 | `torque-mapcore` | the format-neutral map layer |
-| `torque-maps` | Torque interior, terrain and material-list files |
+| `torque-maps` | Torque interior, terrain and material-list files; a `.dif` writer |
+| `torque-interior-builder` | interiors (`.dif`) built from brushes made in code or read from a `.map`; the `torque-convert` command |
 | `torque-net` | NetConnection, ghosting, events, BitStream, string compression |
 | `torque-ghosts` | ghost record codecs: the layout framework, the class registry, the parent parts and the engine's object layouts |
 | `torque-ghost-world` | the client's world of ghosts: records merged, datablocks, the control object, mounted images, script threads, effects |

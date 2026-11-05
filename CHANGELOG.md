@@ -35,7 +35,11 @@ The first development version. Nothing is published yet; this is what exists.
   included), the control object's prediction, action maps and input routing, the LAN server query, the eye, zoom, frame
   rate and HUD feed, the console log file, and the window glue behind the `window` feature.
 - `torque-mapcore` and `torque-maps`: the format-neutral map layer and readers for Torque interior, terrain and
-  material-list files.
+  material-list files, and a `.dif` writer for every interior version the reader takes.
+- `torque-interior-builder`: interiors (`.dif`, version 0 in TGE's form) built from convex brushes made in code or read from a
+  Quake or Valve 220 `.map`: hidden faces removed, a solid BSP, the brushes as collision hulls with emit strings and polygon
+  lists, texture planes and lightmap rectangles; a `.map`'s water, triggers, physical zones and spawn points as a `.mis`
+  fragment; the `torque-convert` command.
 - `torque-net`: connections, the packet layer, events, ghosting, bit streams and string compression.
 - `torque-ghosts`: the networked objects' record codecs: the layout framework, the class registries, the parent parts, and
   TGE 1.4's ghost and datablock layouts (`TgeGhosts`, `TgeDatablocks`).

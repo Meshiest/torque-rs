@@ -1,0 +1,37 @@
+[package]
+name = "torque-interior-builder"
+description = "A builder of Torque interiors (.dif) from convex brushes: hidden faces removed, a solid BSP, collision hulls, texture planes and lightmap rectangles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "interior", "dif", "brush", "gamedev"]
+categories = ["game-development"]
+
+# Brushes made in code or read from a Quake or Valve 220 `.map`, built into a `torque_maps::dif::Dif` that
+# `torque_maps::dif::write` writes. Std only: `.map` files are hostile input like the readers' files.
+
+[dependencies]
+torque-maps = { path = "../torque-maps" }
+# The verification (`verify` feature): the written bytes read back through the importer and collided with as the engine does.
+torque-collide = { path = "../torque-collide", optional = true }
+torque-mapcore = { path = "../torque-mapcore", optional = true }
+
+[dev-dependencies]
+torque-collide = { path = "../torque-collide" }
+torque-mapcore = { path = "../torque-mapcore" }
+
+[features]
+verify = ["dep:torque-collide", "dep:torque-mapcore"]
+
+[[example]]
+name = "dif-verify"
+required-features = ["verify"]
+
+[[bin]]
+name = "torque-convert"
+
+[lints]
+workspace = true

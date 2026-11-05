@@ -2211,6 +2211,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-interior-builder"
+version = "0.1.0"
+dependencies = [
+ "torque-collide",
+ "torque-mapcore",
+ "torque-maps",
+]
+
+[[package]]
 name = "torque-mapcore"
 version = "0.1.0"
 
@@ -2218,6 +2227,7 @@ version = "0.1.0"
 name = "torque-maps"
 version = "0.1.0"
 dependencies = [
+ "torque-images",
  "torque-mapcore",
 ]
 

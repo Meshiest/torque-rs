@@ -134,3 +134,38 @@ fn every_cut_of_a_synthetic_file_is_refused_without_a_panic() {
         assert!(parse(&bytes[..n]).is_err(), "cut at {n}");
     }
 }
+
+#[test]
+fn every_synthetic_file_written_back_reads_the_same() {
+    for s in specs() {
+        let d = parse_with_border_pad(&dif(s)).unwrap_or_else(|e| panic!("{s:?}: {e}"));
+        let bytes = write(&d).unwrap_or_else(|e| panic!("{s:?}: {e}"));
+        let again = parse_with_border_pad(&bytes).unwrap_or_else(|e| panic!("{s:?}: {e}"));
+        assert_eq!(again, d, "{s:?}");
+        // A second writing is the same bytes.
+        assert_eq!(write(&again).unwrap(), bytes, "{s:?}");
+    }
+}
+
+#[test]
+fn a_value_its_field_cannot_hold_is_refused() {
+    let base = parse(&dif(DifSpec {
+        version: 0,
+        plain_surfaces: true,
+        everything: false,
+        border: 0,
+    }))
+    .unwrap();
+    let mut d = base.clone();
+    d.details[0].surfaces[0].winding_count = 256;
+    assert!(matches!(write(&d), Err(MapError::Count { .. })));
+    let mut d = base.clone();
+    d.details[0].bsp_nodes[0].front = BspChild::Node(0x4000);
+    assert!(write(&d).is_err());
+    let mut d = base.clone();
+    d.details[0].surfaces[0].lightmap_texgen.x[0] = 0.3;
+    assert!(write(&d).is_err());
+    let mut d = base;
+    d.details[0].materials[0] = "x".repeat(256);
+    assert!(write(&d).is_err());
+}
