@@ -296,12 +296,14 @@ pub fn hit_burst(
 }
 
 /// A Player as the client animates it between frames: its posed instance, its animation, the node count of the shape they were
-/// made for and the clock they were last run to (ms).
+/// made for, the clock they were last run to (ms) and the ghost's birth ([`ClientWorld::birth_order`]).
 pub struct LivePlayer {
     instance: ShapeInstance,
     anim: PlayerAnimation,
     nodes: usize,
     at_ms: u32,
+    /// A new object at the same ghost index (a respawned Player) starts a new animation at `root`.
+    birth: Option<u64>,
     /// The count of its images' recoils last played ([`ImageRecoil::count`]).
     recoils: Option<u32>,
     /// Its `steering` thread while it drives a WheeledVehicle ([`GhostHooks::advance_live`]).
@@ -394,7 +396,8 @@ impl Hooks<World> for GhostHooks {
         else {
             return (kept, None);
         };
-        let kept = kept.filter(|l| l.nodes == ask.shape.nodes.len());
+        let birth = world.birth_order.get(&ask.index).copied();
+        let kept = kept.filter(|l| l.nodes == ask.shape.nodes.len() && l.birth == birth);
         let mut live = match kept {
             Some(l) => l,
             None => {
@@ -410,6 +413,7 @@ impl Hooks<World> for GhostHooks {
                     anim,
                     nodes: ask.shape.nodes.len(),
                     at_ms: world.anim_ms,
+                    birth,
                     recoils: self
                         .inputs
                         .get(&ask.index)
@@ -537,6 +541,9 @@ pub struct GhostScene<S = Plain> {
     pub style: S,
     hooks: GhostHooks,
     frames: ImageFrames,
+    /// Each ghost's birth as the last frame saw it ([`ClientWorld::birth_order`]): a ghost gone or born again since drops what
+    /// the scene kept of it ([`GhostScene::forget_reborn`]).
+    births: BTreeMap<u32, u64>,
     held: BTreeMap<(u32, usize), Held>,
     bolts: BTreeMap<u32, Bolt>,
     /// The trails of the projectiles gone and the hits' bursts, fading out.
@@ -592,6 +599,7 @@ impl<S: GhostStyle> GhostScene<S> {
                 ..GhostHooks::default()
             },
             frames: ImageFrames::default(),
+            births: BTreeMap::new(),
             held: BTreeMap::new(),
             bolts: BTreeMap::new(),
             fading: Vec::new(),
@@ -635,6 +643,7 @@ impl<S: GhostStyle> GhostScene<S> {
             style: _,
             hooks: self.hooks,
             frames: self.frames,
+            births: self.births,
             held: self.held,
             bolts: self.bolts,
             fading: self.fading,
@@ -727,6 +736,19 @@ impl<S: GhostStyle> GhostScene<S> {
         out
     }
 
+    /// Whether each Player's arm and head threads run as the last frame posed it, by ghost, in ghost order.
+    pub fn player_threads(&self) -> Vec<(u32, bool, bool)> {
+        let Ok(live) = self.hooks.live.lock() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u32, bool, bool)> = live
+            .iter()
+            .map(|(&g, l)| (g, l.anim.arm_running(), l.anim.head_running()))
+            .collect();
+        out.sort_unstable_by_key(|a| a.0);
+        out
+    }
+
     /// Where the projectiles are drawn this frame.
     pub fn bolt_positions(&self) -> Vec<[f32; 3]> {
         self.bolts
@@ -740,6 +762,7 @@ impl<S: GhostStyle> GhostScene<S> {
     /// their trails, bursts and holes.
     pub fn update(&mut self, assets: &dyn Assets, world: &mut TgeWorld, input: &FrameInput<'_>) {
         let dt = input.dt.max(0.0);
+        self.forget_reborn(&world.records.birth_order);
         self.player_inputs(world, input.ghosts);
         self.place_players(assets, world, input.fov);
         self.update_images(assets, &world.records, dt);
@@ -783,6 +806,50 @@ impl<S: GhostStyle> GhostScene<S> {
                 })
                 .collect();
             tracks.update(&wheels, &surfaces, dt);
+        }
+    }
+
+    /// Drops what the scene keeps of each ghost gone or born again since the last frame (`births`: the world's), so an object that
+    /// takes a ghost's index starts fresh: its live pose, its images' clocks and held state, its projectile flight and burst, its
+    /// vehicle dust and tire-track strips.
+    fn forget_reborn(&mut self, births: &BTreeMap<u32, u64>) {
+        if let Ok(mut live) = self.hooks.live.lock() {
+            live.retain(|i, l| l.birth.is_some() && births.get(i).copied() == l.birth);
+        }
+        let reborn: BTreeSet<u32> = self
+            .births
+            .iter()
+            .filter(|&(i, b)| births.get(i) != Some(b))
+            .map(|(&i, _)| i)
+            .collect();
+        self.births.clone_from(births);
+        if reborn.is_empty() {
+            return;
+        }
+        if let Ok(mut clocks) = self.hooks.clocks.lock() {
+            clocks.retain(|(g, _), _| !reborn.contains(g));
+        }
+        let held: Vec<(u32, usize)> = (self.held.keys())
+            .filter(|(g, _)| reborn.contains(g))
+            .copied()
+            .collect();
+        for key in held {
+            if let Some(h) = self.held.remove(&key) {
+                for (mut e, _) in h.emitters {
+                    e.dead = true;
+                    self.fading.push(e);
+                }
+            }
+        }
+        for &i in &reborn {
+            if let Some(bolt) = self.bolts.remove(&i) {
+                self.retire(bolt, None);
+            }
+            self.burst.remove(&i);
+            self.dust.forget(i);
+            if let Some(t) = self.tracks.as_mut() {
+                t.forget(i);
+            }
         }
     }
 
@@ -1308,5 +1375,122 @@ mod tests {
         f.age = 0.2;
         assert_eq!(Plain.projectile(&f).column(3), [0.0, 20.0, 0.0]);
         assert_eq!(f.flown(), 20.0);
+    }
+
+    /// Ghost 7 is deleted and another object made at index 7 between two frames (its birth 1 becomes 3); ghost 8 stays.
+    #[test]
+    fn a_ghost_reborn_on_its_index_starts_with_nothing_kept() {
+        let mut scene = GhostScene::new(GhostOptions::default());
+        scene.set_tire_tracks(Some(TrackRules {
+            width: 0.4,
+            spacing: 0.5,
+            texture: "track.png".to_string(),
+            lifetime: 10.0,
+            fade: 4.0,
+            max_segments: 20,
+        }));
+        let flat = |at: [f32; 3], _: f32| {
+            let (x, y) = (at[0].floor(), at[1].floor());
+            vec![
+                [
+                    [x - 2.0, y - 2.0, 0.0],
+                    [x + 2.0, y - 2.0, 0.0],
+                    [x + 2.0, y + 2.0, 0.0],
+                ],
+                [
+                    [x - 2.0, y - 2.0, 0.0],
+                    [x + 2.0, y + 2.0, 0.0],
+                    [x - 2.0, y + 2.0, 0.0],
+                ],
+            ]
+        };
+        let wheel = |index: u32, y: f32| TrackWheel {
+            key: (index, 0),
+            contact: true,
+            point: [0.0, y, 0.0],
+        };
+        let image = torque_ghost_world::images::MountedImage {
+            datablock: 70,
+            skin: torque_ghosts::NetStr::Null,
+            wet: false,
+            ammo: false,
+            loaded: true,
+            target: false,
+            trigger: false,
+            fire_count: 4,
+            state: 2,
+            delay: 0.0,
+            at_ms: Some(0),
+            ambient_time: 0.0,
+            spin_scale: 0.0,
+            spin_time: 0.0,
+            anim: None,
+            recoil: None,
+            cap_hits: 0,
+            events: Vec::new(),
+        };
+        let clock = torque_render_scene::images::advance_clock(&World::default(), &image, None);
+        scene.forget_reborn(&BTreeMap::from([(7, 1), (8, 2)]));
+        for g in [7, 8] {
+            scene.hooks.clocks.lock().unwrap().insert((g, 0), clock);
+            scene.held.insert(
+                (g, 0),
+                Held {
+                    datablock: 70,
+                    fire_count: 4,
+                    since_fire: 0.5,
+                    emitters: Vec::new(),
+                    emit_ms: 0.0,
+                    muzzle: None,
+                },
+            );
+            scene.bolts.insert(
+                g,
+                Bolt {
+                    flight: Flight {
+                        start: [0.0; 3],
+                        velocity: [0.0, 50.0, 0.0],
+                        age: 0.3,
+                        muzzle: None,
+                    },
+                    trail: None,
+                    ribbon: None,
+                },
+            );
+            scene.burst.insert(g);
+        }
+        let tracks = scene.tracks.as_mut().unwrap();
+        for k in 0..4 {
+            tracks.update(
+                &[wheel(7, k as f32 * 0.5), wheel(8, k as f32 * 0.5)],
+                &flat,
+                0.016,
+            );
+        }
+        let laid = tracks.len();
+
+        scene.forget_reborn(&BTreeMap::from([(7, 3), (8, 2)]));
+        let keys = |m: Vec<(u32, usize)>| m.into_iter().map(|k| k.0).collect::<Vec<_>>();
+        let clocks = keys(scene.hooks.clocks.lock().unwrap().keys().copied().collect());
+        assert_eq!(clocks, [8], "the new object's image clock starts anew");
+        assert_eq!(
+            keys(scene.held.keys().copied().collect()),
+            [8],
+            "and its held image"
+        );
+        assert_eq!(
+            scene.bolts.keys().copied().collect::<Vec<_>>(),
+            [8],
+            "a projectile's flight"
+        );
+        assert_eq!(
+            scene.burst.iter().copied().collect::<Vec<_>>(),
+            [8],
+            "its burst"
+        );
+        // The new object's wheel starts a new strip; ghost 8's runs on.
+        let tracks = scene.tracks.as_mut().unwrap();
+        tracks.update(&[wheel(7, 2.0), wheel(8, 2.0)], &flat, 0.016);
+        assert_eq!(tracks.len(), laid + 1, "only ghost 8's strip runs on");
     }
 }

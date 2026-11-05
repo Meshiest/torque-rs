@@ -64,6 +64,7 @@
 //   gates' picture.
 // - Secondary views (CLIP; the water's mirrored camera, the light capture's faces): with `frame.flags.z` everything but the sky
 //   below the water plane is cut away.
+// - particles.wgsl (appended): the lit particles' shading (fogged here as surfaces are).
 // - skyfog.wgsl (appended): the emitters' HDR gains, the lit cloud layers (linear light), and the fog toward the sky drawn behind
 //   the pixel (with the height fog setting, times a height fog).
 //
@@ -943,6 +944,9 @@ fn shaded(in: VertexOut, d: Derivs, t: vec4<f32>, spec_kernel: f32) -> Shaded {
             out.diffuse = cloud.rgb;
             out.alpha = cloud.a;
         }
+        if lit_particle(material) {
+            out.diffuse = particle_lit(in, r.unlit);
+        }
     } else {
         let occlusion = ambient_occlusion(in.clip.xy, in.clip.z);
         // A terrain layer is shaded as the opaque ground under it is.
@@ -955,7 +959,7 @@ fn shaded(in: VertexOut, d: Derivs, t: vec4<f32>, spec_kernel: f32) -> Shaded {
         }
     }
     out.debug = shadows.config.w != 0u && frame.flags.y < 0.5;
-    if kind != KIND_SKY && frame.fog_color.w > 0.0 {
+    if (kind != KIND_SKY || lit_particle(material)) && frame.fog_color.w > 0.0 {
         var keep = fog_keep(in.world);
         keep = ext_fog_keep(kind, in.world, keep);
         out.diffuse = mix(fog_color_toward(in.clip.xy, in.world, keep), out.diffuse, keep);

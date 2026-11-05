@@ -99,6 +99,17 @@ impl WorldScene {
         })
     }
 
+    /// The tire tracks' segments of vehicle `ghost` by wheel, oldest first: the line along each one's middle.
+    pub fn track_lines(&self, ghost: u32) -> std::collections::BTreeMap<usize, Vec<[[f32; 3]; 2]>> {
+        let mut out = std::collections::BTreeMap::<usize, Vec<_>>::new();
+        for s in self.ghosts.tracks.iter().flat_map(|t| t.segments()) {
+            if s.wheel.0 == ghost {
+                out.entry(s.wheel.1).or_default().push(s.line);
+            }
+        }
+        out
+    }
+
     /// Where each figure at a wheel holds its `steering` thread as the last frame posed it, by ghost.
     pub fn figure_steering(&self) -> Vec<(u32, f32)> {
         self.ghosts.player_steering()

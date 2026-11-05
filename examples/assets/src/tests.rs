@@ -871,3 +871,23 @@ fn every_shape_through_a_glb_makes_the_same_dts() {
         assert!(native == write_dts(&model), "{name}");
     }
 }
+
+#[test]
+fn the_keep_and_the_yard_pass_the_builders_checks() {
+    use torque_interior_builder::verify::{Counts, run};
+    for (name, brushes) in [
+        ("keep", crate::interiors::keep()),
+        ("yard", crate::interiors::yard()),
+    ] {
+        let r = run(
+            &brushes,
+            &torque_interior_builder::Options::default(),
+            Counts::scaled(verify_share()),
+            7,
+        )
+        .unwrap();
+        println!("{name} ({} brushes): {}", brushes.len(), r.line());
+        assert!(r.clean(), "{name}: {}", r.line());
+        assert_eq!(r.hulls, brushes.len());
+    }
+}

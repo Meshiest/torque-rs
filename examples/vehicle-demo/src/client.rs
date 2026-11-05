@@ -26,7 +26,8 @@
 //! turned by the mouse as far as a head turns ([`VehicleDemo::seated_eye_point`]: just ahead of the face, so the head does not
 //! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` eases the camera from one to the other
 //! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden only once the camera has
-//! arrived at its eyes. Getting in or out cuts.
+//! arrived at its eyes. Getting in or out cuts. The wheel moves each camera behind (on foot, behind the buggy) in or out within its
+//! own limits ([`FOOT_ZOOM`], [`DRIVE_ZOOM`]), eased ([`Zoom`]); in the first person it does nothing.
 
 use std::ops::{Deref, DerefMut};
 
@@ -37,6 +38,7 @@ use torque::app::camera_blend::CameraBlend;
 use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
 use torque::app::hosting::{join_address, lan_bind_address, register_join_natives};
 use torque::app::lights::WorldLights;
+use torque::app::orbit::Zoom;
 use torque::app::terrain::Terrain;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
@@ -124,6 +126,9 @@ pub const CAMERA_PITCH: f32 = 0.3;
 /// The camera in a seat: how far from the buggy, how high above its origin it looks, how much it looks down, how fast it
 /// swings round behind the buggy as it turns (per second), and the least it keeps above the ground.
 pub const DRIVE_DISTANCE: f32 = 8.0;
+/// The nearest and farthest the mouse wheel takes the camera on foot and the one behind the buggy ([`Zoom`]).
+pub const FOOT_ZOOM: (f32, f32) = (1.5, 12.0);
+pub const DRIVE_ZOOM: (f32, f32) = (3.0, 20.0);
 pub const DRIVE_TARGET_HEIGHT: f32 = 1.4;
 pub const DRIVE_PITCH: f32 = 0.3;
 pub const DRIVE_FOLLOW: f32 = 4.0;
@@ -175,6 +180,9 @@ pub struct VehicleDemo {
     /// The camera's ease between first and third person, and the mode it last eased to: (first person, seated).
     blend: CameraBlend,
     camera_mode: Option<(bool, bool)>,
+    /// The wheel's distances of the camera on foot and the one behind the buggy, each its own.
+    foot_zoom: Zoom,
+    drive_zoom: Zoom,
 }
 
 impl Deref for VehicleDemo {
@@ -225,6 +233,8 @@ impl VehicleDemo {
             lights: WorldLights::default(),
             blend: CameraBlend::default(),
             camera_mode: None,
+            foot_zoom: Zoom::new(CAMERA_DISTANCE, FOOT_ZOOM.0, FOOT_ZOOM.1),
+            drive_zoom: Zoom::new(DRIVE_DISTANCE, DRIVE_ZOOM.0, DRIVE_ZOOM.1),
         })
     }
 
@@ -609,6 +619,34 @@ impl VehicleDemo {
         })
     }
 
+    /// The distance of the third-person camera the mode has (on foot or behind the buggy), as the wheel left it.
+    pub fn camera_distance(&self) -> f32 {
+        if self.seated() {
+            self.drive_zoom.distance()
+        } else {
+            self.foot_zoom.distance()
+        }
+    }
+
+    /// The wheel's notches since the last frame (`$World::Zoom`, 120 a notch) to the third-person camera of the mode (none in
+    /// the first person), then `dt` seconds of each camera's easing.
+    fn zoom(&mut self, dt: f32) {
+        let wheel = self.number("$World::Zoom");
+        if wheel != 0.0 {
+            self.set_global("$World::Zoom", "0");
+            if !self.first_person() {
+                let zoom = if self.seated() {
+                    &mut self.drive_zoom
+                } else {
+                    &mut self.foot_zoom
+                };
+                zoom.notches(wheel / 120.0);
+            }
+        }
+        self.foot_zoom.advance(dt);
+        self.drive_zoom.advance(dt);
+    }
+
     /// Whether the camera is easing between modes.
     pub fn camera_blending(&self) -> bool {
         !self.blend.arrived()
@@ -654,7 +692,7 @@ impl VehicleDemo {
             f.position[2] + CAMERA_TARGET_HEIGHT,
         ];
         let pitch = (CAMERA_PITCH + f.pitch * 0.6).clamp(-0.6, 1.2);
-        self.orbit(target, f.yaw, pitch, CAMERA_DISTANCE)
+        self.orbit(target, f.yaw, pitch, self.foot_zoom.distance())
     }
 
     fn drive_eye(&mut self, m: &torque_render_scene::math::Mat, dt: f32) -> Eye {
@@ -675,7 +713,7 @@ impl VehicleDemo {
         let orbit_yaw = self.number("$Drive::OrbitYaw");
         let pitch = (DRIVE_PITCH + self.number("$Drive::OrbitPitch"))
             .clamp(DRIVE_PITCH_RANGE.0, DRIVE_PITCH_RANGE.1);
-        self.orbit(target, yaw + orbit_yaw, pitch, DRIVE_DISTANCE)
+        self.orbit(target, yaw + orbit_yaw, pitch, self.drive_zoom.distance())
     }
 
     /// An eye `distance` behind `target` along `yaw`, raised by `pitch`, looking at it, kept above the ground.
@@ -709,6 +747,11 @@ impl VehicleDemo {
         if !self.in_world() {
             return String::new();
         }
+        // A note the day's keys left (the time and its speed, or why it did not change) for a moment.
+        let note = self.global("$World::DayNote");
+        if !note.is_empty() {
+            return note;
+        }
         if self.seated() {
             return format!("E to get out      {:.0} km/h", self.buggy_speed() * 3.6);
         }
@@ -735,6 +778,7 @@ impl VehicleDemo {
             _ => {}
         }
         self.blend.advance(dt);
+        self.zoom(dt);
         let hide = mode.0 && !mode.1 && self.blend.arrived();
         let mut st = self.client.host.client.borrow_mut();
         match st.conn.conn.as_mut() {

@@ -185,6 +185,18 @@ impl VehicleDust {
         self.live = 0;
     }
 
+    /// Forgets the emitters of ghost `index` and their particles (another object took its index): its next dust starts anew.
+    pub fn forget(&mut self, index: u32) {
+        let mut gone = 0;
+        self.emitters.retain(|(g, _), k| {
+            if *g == index {
+                gone += k.emitter.particles.len();
+            }
+            *g != index
+        });
+        self.live = self.live.saturating_sub(gone);
+    }
+
     /// The particles alive, every emitter's: each with its vehicle's ghost and whether its emitter is a tire's (else the
     /// lift-off dust's).
     pub fn alive(&self) -> impl Iterator<Item = (u32, bool, &crate::particles::Particle)> {

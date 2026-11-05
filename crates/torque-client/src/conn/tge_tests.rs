@@ -350,3 +350,14 @@ fn the_packet_rates_follow_the_client_preferences() {
         "the size clamped as checkMaxRate clamps it"
     );
 }
+
+#[test]
+fn a_packet_whose_compression_point_is_not_finite_is_refused() {
+    let mut r = net::bits::BitReader::new(&[]);
+    r.set_compression_point([1.0, 2.0, 3.0]);
+    assert_eq!(stream_point(&r), Ok([1.0, 2.0, 3.0]));
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        r.set_compression_point([0.0, bad, 0.0]);
+        assert!(stream_point(&r).is_err(), "{bad}");
+    }
+}

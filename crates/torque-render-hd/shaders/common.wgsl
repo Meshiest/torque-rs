@@ -21,6 +21,8 @@ const MAT_BILLBOARD: u32 = 0x800000u;
 // A particle sprite, and a decal drawn with them (it does not fade into its surface).
 const MAT_PARTICLE: u32 = 0x1000000u;
 const MAT_DECAL: u32 = 0x20000000u;
+// With MAT_PARTICLE: a lit sprite (particles.wgsl).
+const MAT_LIT: u32 = 0x40000000u;
 const MAT_ANCHORED: u32 = 0x2000000u;
 const MAT_SKY_EYE: u32 = 0x4000000u;
 // A plane's terrain material layer over the layers under it (material::LAYER, LAYER_SHARPNESS and LAYER_DIP: a test compares
@@ -97,7 +99,8 @@ struct Frame {
     // surf3: x 1 for weighted blended transparency, y 1 for coloured sun shadows, z 1 where no TAA averages a per-pixel pattern
     // (a fade is a cut), w 1 under Low's FXAA-style filter (the shadows' filter turns no pattern).
     surf3: vec4<f32>,
-    // x: last frame's effect time (the prepass's previous places of the shape fx's vertices); yzw unused.
+    // x: last frame's effect time (the prepass's previous places of the shape fx's vertices); y: 1 when the scene smooths its
+    // occlusion (the AO's filter, the contact march's jitter per frame); zw unused.
     times: vec4<f32>,
     // xyz: the camera's eye less the eye the sky's draws were built around (they follow the eye between syncs); w: how many of
     // `movers` are set.

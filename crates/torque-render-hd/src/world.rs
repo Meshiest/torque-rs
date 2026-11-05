@@ -447,6 +447,8 @@ struct Targets {
     contact_group: wgpu::BindGroup,
     ao_views: [wgpu::TextureView; 2],
     ao_groups: [wgpu::BindGroup; 2],
+    /// The AO filtered (the scene's smooth occlusion: the forward pass reads it in place of the AO pass's output).
+    ao_smooth_view: wgpu::TextureView,
     history: [wgpu::Texture; 2],
     history_views: [wgpu::TextureView; 2],
     /// The TAA's shown colour (and its luma's second moment), the tonemap's source.
@@ -4502,6 +4504,7 @@ impl<E: HdExtension> HdWorld<E> {
             target,
         ));
         let ao_views = [0, 1].map(|_| view(&tex("hd ao", ao_size, AO_FORMAT, target)));
+        let ao_smooth_view = view(&tex("hd ao smooth", ao_size, AO_FORMAT, target));
         let history = [0, 1].map(|_| {
             tex(
                 "hd taa history",
@@ -4684,6 +4687,7 @@ impl<E: HdExtension> HdWorld<E> {
             contact_group,
             ao_views,
             ao_groups,
+            ao_smooth_view,
             history,
             history_views,
             shown,
@@ -4781,7 +4785,8 @@ impl<E: HdExtension> HdWorld<E> {
             &mut b,
             &[near, far, CLUSTER_GRID[2] as f32 / (far / near).ln(), 0.0],
         );
-        let quality = E::mode(scene).unwrap_or_else(E::fallback_mode).quality;
+        let mode = E::mode(scene).unwrap_or_else(E::fallback_mode);
+        let quality = mode.quality;
         let surfaces = self.ext.surfaces(scene);
         push_f32(&mut b, &surfaces.light);
         let per_cluster = quality.lights_per_cluster();
@@ -4793,7 +4798,8 @@ impl<E: HdExtension> HdWorld<E> {
         push_f32(&mut b, &surfaces.table);
         // x 1 for WBOIT, y 1 for coloured sun shadows; z 1 where no TAA averages a per-pixel pattern (the anti-aliasing off or
         // the FXAA-style filter, a debug view): the near detail's fade is a cut there; w 1 where the frame is shown through the
-        // FXAA-style filter (Low): the shadows' filter keeps a fixed pattern (no speckle). Then last frame's effect time.
+        // FXAA-style filter (Low): the shadows' filter keeps a fixed pattern (no speckle). Then last frame's effect time and 1 when
+        // the scene smooths its occlusion.
         let taa = self.features.anti_aliasing
             && quality.post().aa == torque_render_scene::hd::post::AntiAliasing::Taa
             && self.debug == DebugView::Off;
@@ -4813,7 +4819,7 @@ impl<E: HdExtension> HdWorld<E> {
             &mut b,
             &[
                 self.temporal.prev_time.unwrap_or(E::time(scene)),
-                0.0,
+                flag(scene.smooth_occlusion || mode.image.smooth_occlusion),
                 0.0,
                 0.0,
             ],
@@ -5627,6 +5633,13 @@ impl<E: HdExtension> HdWorld<E> {
         }
 
         let targets = self.targets.as_ref().ok_or("no targets")?;
+        // The AO the forward pass reads: the AO pass's, or with the scene's (or the look's) smooth occlusion its filtered copy.
+        let smooth_ao = ao_on && (scene.smooth_occlusion || image.smooth_occlusion);
+        let ao_shown = if smooth_ao {
+            &targets.ao_smooth_view
+        } else {
+            &targets.ao_views[p]
+        };
         {
             crate::count_pass();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -5658,7 +5671,7 @@ impl<E: HdExtension> HdWorld<E> {
         let frame_group = self.frame_group(
             &targets.background_view,
             &targets.contact_view,
-            &targets.ao_views[p],
+            ao_shown,
             Some(&targets.trans_depth_view),
         );
         // The same with the camera without its jitter (the late over draws).
@@ -5666,14 +5679,14 @@ impl<E: HdExtension> HdWorld<E> {
             &self.frame_still,
             &targets.background_view,
             &targets.contact_view,
-            &targets.ao_views[p],
+            ao_shown,
             &targets.trans_depth_view,
         );
         // The same without the front layer's depth (the passes that draw into it).
         let frame_group_front = self.frame_group(
             &targets.background_view,
             &targets.contact_view,
-            &targets.ao_views[p],
+            ao_shown,
             None,
         );
         self.queue.write_buffer(
@@ -5966,8 +5979,29 @@ impl<E: HdExtension> HdWorld<E> {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.post.ao[&(pq.ao == AoMethod::Gtao)]);
+            let pipes = if smooth_ao {
+                &self.post.ao_moving
+            } else {
+                &self.post.ao
+            };
+            pass.set_pipeline(&pipes[&(pq.ao == AoMethod::Gtao)]);
             pass.set_bind_group(0, &targets.ao_groups[p], &[]);
+            pass.draw(0..3, 0..1);
+            crate::count_draws(1);
+        }
+        if smooth_ao {
+            // The other parity's group reads this frame's AO as its history binding.
+            crate::count_pass();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hd ao filter"),
+                color_attachments: &[Some(colour(&targets.ao_smooth_view))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.post.ao_filter);
+            pass.set_bind_group(0, &targets.ao_groups[1 - p], &[]);
             pass.draw(0..3, 0..1);
             crate::count_draws(1);
         }

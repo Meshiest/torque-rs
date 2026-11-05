@@ -257,9 +257,9 @@ function pollJoinLookup()
 
 // ---- the world's view
 
-$World::FootHelp = "W A S D move   Shift walk   Space jump   Mouse look   Click the buggy to get in   Tab camera   R restart   Esc menu";
-$World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   F light   Mouse turns the camera   Tab camera   E get out   Esc menu";
-$World::RideHelp = "Mouse looks around   Tab camera   E get out   Esc menu";
+$World::FootHelp = "W A S D move   Shift walk   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
+$World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   F light   Mouse turns the camera   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
+$World::RideHelp = "Mouse looks around   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
 
 new GameTSCtrl(PlayGui)
 {
@@ -328,6 +328,12 @@ function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; 
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
 function getIn(%v) { if (%v && isObject(ServerConnection)) commandToServer('GetIn'); }
 function menuKey(%v) { if (%v) leaveWorld(); }
+// The wheel: the camera behind in (away from you) or out; the client takes the notches each frame.
+function zoomCamera(%v) { $World::Zoom += %v; }
+// ] and [: the day faster or slower, \ back to its own pace (the server's day: only the host may).
+function dayFaster(%v) { if (%v && isObject(ServerConnection)) commandToServer('DaySpeed', 1); }
+function daySlower(%v) { if (%v && isObject(ServerConnection)) commandToServer('DaySpeed', -1); }
+function dayNormal(%v) { if (%v && isObject(ServerConnection)) commandToServer('DaySpeed', 0); }
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
@@ -340,6 +346,10 @@ PlayMap.bind(keyboard, escape, menuKey);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
 PlayMap.bind(mouse, button0, getIn);
+PlayMap.bind(mouse, zaxis, zoomCamera);
+PlayMap.bind(keyboard, rbracket, dayFaster);
+PlayMap.bind(keyboard, lbracket, daySlower);
+PlayMap.bind(keyboard, backslash, dayNormal);
 
 // ---- the keys in a seat
 
@@ -367,6 +377,11 @@ DriveMap.bind(keyboard, f, toggleLight);
 DriveMap.bind(keyboard, escape, menuKey);
 DriveMap.bind(mouse, xaxis, orbitYaw);
 DriveMap.bind(mouse, yaxis, orbitPitch);
+DriveMap.bind(mouse, zaxis, zoomCamera);
+DriveMap.bind(keyboard, r, restart);
+DriveMap.bind(keyboard, rbracket, dayFaster);
+DriveMap.bind(keyboard, lbracket, daySlower);
+DriveMap.bind(keyboard, backslash, dayNormal);
 
 // Lets go of every key of both maps (a map change leaves no key held).
 function releaseKeys()
@@ -482,5 +497,33 @@ function clientCmdRespawned()
 {
    showNote("Back to the start.");
 }
+
+// The day's pace changed (%speed times its own, 0 stopped) at %time of the day (0 sunrise, 0.25 noon), or (%speed "") it may
+// not: the hint line says so for a moment.
+function clientCmdDaySpeed(%speed, %time, %why)
+{
+   if (%why !$= "")
+      setDayNote(%why);
+   else
+      setDayNote("Time" SPC dayClock(%time) @ "," SPC (%speed == 0 ? "stopped" : %speed @ "x"));
+}
+
+// The clock at %time of the day (sunrise at 6:00).
+function dayClock(%time)
+{
+   %minutes = mFloor((%time - mFloor(%time)) * 1440 + 360) % 1440;
+   %h = mFloor(%minutes / 60);
+   %m = %minutes % 60;
+   return %h @ ":" @ (%m < 10 ? "0" : "") @ %m;
+}
+
+function setDayNote(%text)
+{
+   $World::DayNote = %text;
+   cancel($World::DayNoteTimer);
+   $World::DayNoteTimer = schedule(2500, 0, "clearDayNote");
+}
+
+function clearDayNote() { $World::DayNote = ""; }
 
 showMenu();

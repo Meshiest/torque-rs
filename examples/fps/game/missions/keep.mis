@@ -1,0 +1,34 @@
+// The keep: one interior (the kit's `keep.dif`, built from boxes in code): a tight court of 32 units a side inside walls 6.5
+// high, a deck 3 up along the north and south walls over low halls, a bridge across the middle joining the decks, stairs at the
+// four corners, and cover on both levels (tall blocks 2.4 high, crates, parapets 1.1 high along the decks' edges).
+
+new SimGroup(MissionGroup)
+{
+   // Sharp texels: the map drawn with nearest-neighbor filtering.
+   textureFilter = "nearest";
+   new Sky(KeepSky)
+   {
+      visibleDistance = 1500;
+      fogDistance = 400;
+      fogColor = "0.72 0.8 0.9 1";
+      useSkyTextures = false;
+   };
+   new InteriorInstance(Keep)
+   {
+      position = "0 0 0";
+      rotation = "1 0 0 0";
+      scale = "1 1 1";
+      interiorFile = "kit/keep.dif";
+   };
+};
+
+// Where figures start: "x y z yaw", each facing the middle: in the halls under the decks, in the court and up on the decks.
+$Arena::Spawn[0] = "-13 -13 0.1 0.7854";
+$Arena::Spawn[1] = "13 13 0.1 -2.3562";
+$Arena::Spawn[2] = "-12 3 0.1 1.8158";
+$Arena::Spawn[3] = "12 -3 0.1 -1.3258";
+$Arena::Spawn[4] = "-8 13 3.1 2.5899";
+$Arena::Spawn[5] = "8 -13 3.1 -0.5517";
+$Arena::Spawn[6] = "13 -13 0.1 -0.7854";
+$Arena::Spawn[7] = "-13 13 0.1 2.3562";
+$Arena::SpawnCount = 8;

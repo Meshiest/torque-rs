@@ -155,3 +155,57 @@ fn the_strip_runs_on_to_the_wheel_in_a_head_each_frame() {
     t.update(&[wheel(0.0, 4.9, false)], &slope, 0.016);
     assert_eq!(t.heads().count(), 0);
 }
+
+#[test]
+fn a_forgotten_wheel_starts_a_new_strip() {
+    let mut t = TireTracks::new(rules());
+    for k in 0..4 {
+        t.update(&[wheel(0.0, k as f32 * 0.5, true)], &slope, 0.016);
+    }
+    let laid = t.len();
+    assert!(laid > 0);
+    // Another vehicle took the ghost's index: its wheel lays no segment back to the old strip's end.
+    t.forget(1);
+    t.update(&[wheel(0.0, 2.0, true)], &slope, 0.016);
+    assert_eq!(t.len(), laid, "the old segments stay, none joins them");
+    assert_eq!(t.heads().count(), 0);
+}
+
+#[test]
+fn a_long_frame_bridges_what_the_wheel_covered_and_a_jump_ends_the_strip() {
+    let mut t = TireTracks::new(TrackRules {
+        max_segments: 200,
+        ..rules()
+    });
+    t.update(&[wheel(0.0, 0.0, true)], &slope, 0.016);
+    // A tenth of a second at 50 units a second: one unbroken strip.
+    t.update(&[wheel(0.0, 5.0, true)], &slope, 0.1);
+    let lines: Vec<_> = t.segments().map(|s| s.line).collect();
+    assert_eq!(lines.len(), 10);
+    assert!(lines.windows(2).all(|w| w[0][1] == w[1][0]));
+    assert_eq!((lines[0][0][1], lines[9][1][1]), (0.0, 5.0));
+    // Thirty units in a frame (a respawn): the strip ends there, nothing laid across.
+    t.update(&[wheel(0.0, 35.0, true)], &slope, 0.016);
+    assert_eq!(t.len(), 10);
+    t.update(&[wheel(0.0, 35.5, true)], &slope, 0.016);
+    assert_eq!(t.segments().last().unwrap().line[0][1], 35.0);
+}
+
+#[test]
+fn a_stall_bridges_no_more_than_a_capped_frame_covers() {
+    let mut t = TireTracks::new(TrackRules {
+        max_segments: 100_000,
+        lifetime: 100.0,
+        ..rules()
+    });
+    t.update(&[wheel(0.0, 0.0, true)], &slope, 0.016);
+    // A ten-second stall and a thousand units on: the strip ends there, nothing laid across.
+    t.update(&[wheel(0.0, 1000.0, true)], &slope, 10.0);
+    assert!(t.is_empty());
+    // Fifteen units in a stall: bridged (within what a capped frame covers at the fastest speed).
+    t.update(&[wheel(0.0, 1015.0, true)], &slope, 10.0);
+    assert_eq!(t.len(), 30);
+    // Past it: a new strip.
+    t.update(&[wheel(0.0, 1040.0, true)], &slope, 10.0);
+    assert_eq!(t.len(), 30);
+}
