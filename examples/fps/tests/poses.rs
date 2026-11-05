@@ -226,3 +226,116 @@ fn a_hit_plays_a_reaction_away_from_the_shot_and_the_heads_for_a_head_shot() {
         reaction(&mut s)
     );
 }
+
+/// The height of the head's node (the object's space) as the server poses the figure now.
+fn head_height(s: &mut GameServer, id: ObjId) -> f32 {
+    let pose = torque::game::scene::hitboxes::pose_now(s.vm_mut(), id)
+        .unwrap()
+        .unwrap();
+    let shape = pose.kept.shape.as_ref().unwrap();
+    let name = shape.find_name(b"head").unwrap();
+    let node = shape.nodes.iter().position(|n| n.name == name).unwrap();
+    pose.nodes[node][11]
+}
+
+fn hold(triggers: &Triggers, held: &[usize]) {
+    let mut t = [false; 6];
+    for &h in held {
+        t[h] = true;
+    }
+    triggers.0.set(t);
+}
+
+#[test]
+fn mid_change_the_drawn_head_and_chest_are_hit_where_they_are() {
+    let poses = torque_example_common::figure_poses().triggers;
+    // Standing to crouched: a few ticks in, the body still eases down and its head is over the crouched box.
+    let triggers = Rc::new(Triggers::default());
+    let mut s = server(&triggers);
+    targets(&mut s, &triggers, &[]);
+    let target = id(&mut s, "Target");
+    hold(&triggers, &[poses.crouch]);
+    for _ in 0..3 {
+        s.tick();
+    }
+    let head = head_height(&mut s, target);
+    assert!(
+        head + 0.15 > 1.6,
+        "the head is still over the crouched box: {head}"
+    );
+    let (part, _) = bolt(&mut s, 0.0, head + 0.15);
+    assert_eq!(part.as_deref(), Some("head"), "mid-crouch, at {head}");
+    // Crouched to prone: on the way down the head and chest are far over the prone box.
+    let triggers = Rc::new(Triggers::default());
+    let mut s = server(&triggers);
+    targets(&mut s, &triggers, &[poses.crouch]);
+    let target = id(&mut s, "Target");
+    hold(&triggers, &[poses.crouch, poses.prone]);
+    for _ in 0..8 {
+        s.tick();
+    }
+    assert_eq!(
+        torque::game::sim::player::state(s.vm_mut(), target)
+            .unwrap()
+            .pose,
+        Pose::Prone
+    );
+    let head = head_height(&mut s, target);
+    assert!(head > 0.8, "the head is over the prone box: {head}");
+    let (part, _) = bolt(&mut s, 0.0, head + 0.12);
+    assert_eq!(part.as_deref(), Some("head"), "mid-way down, at {head}");
+    let (part, _) = bolt(&mut s, 0.0, head - 0.35);
+    assert!(part.is_some(), "the chest mid-way down, at {}", head - 0.35);
+}
+
+#[test]
+fn a_figure_flipping_its_pose_every_tick_keeps_each_for_its_hold_and_never_hides_its_body() {
+    let poses = torque_example_common::figure_poses().triggers;
+    let triggers = Rc::new(Triggers::default());
+    let mut s = server(&triggers);
+    targets(&mut s, &triggers, &[poses.crouch]);
+    let target = id(&mut s, "Target");
+    let mut changes = Vec::new();
+    let mut last = Pose::Crouch;
+    for tick in 0..120 {
+        // Crouch and prone, then crouch and stand, each asked for on alternate ticks.
+        let flip = tick % 2 == 0;
+        let held: &[usize] = match (tick < 60, flip) {
+            (true, true) => &[poses.crouch, poses.prone],
+            (true, false) => &[poses.crouch],
+            (false, true) => &[poses.crouch],
+            (false, false) => &[],
+        };
+        hold(&triggers, held);
+        s.tick();
+        let st = torque::game::sim::player::state(s.vm_mut(), target).unwrap();
+        let (pose, reach) = (st.pose, torque::sim::player::pose::reach_box(st));
+        if pose != last {
+            changes.push(tick);
+            last = pose;
+        }
+        // Every part of the posed body stays inside the box shots reach it through (its nodes, and the head's top).
+        let head = head_height(&mut s, target);
+        assert!(
+            head + 0.3 <= reach.max[2] + 0.02,
+            "tick {tick}: the head at {head} over the reach's top {}",
+            reach.max[2]
+        );
+        // The scene's world box, which the container reaches the figure through, is the reach's.
+        let e = torque::game::scene::ext::get(s.vm_mut().objects(), target).unwrap();
+        let sc = e.scene.unwrap();
+        let z = torque::game::scene::access::matrix_of(s.vm_mut(), target).unwrap()[11];
+        assert!(
+            (sc.world_max[2] - (z + reach.max[2])).abs() < 0.01,
+            "tick {tick}"
+        );
+    }
+    let hold_ticks = torque::sim::player::pose::POSE_HOLD_TICKS as usize;
+    for w in changes.windows(2) {
+        assert!(
+            w[1] - w[0] >= hold_ticks,
+            "changes {changes:?}: closer than the hold of {hold_ticks} ticks"
+        );
+    }
+    assert!(changes.len() >= 3, "it does change: {changes:?}");
+}

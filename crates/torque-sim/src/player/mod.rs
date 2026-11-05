@@ -236,6 +236,8 @@ pub struct PlayerState {
     pub pose: Pose,
     pub pose_from: Pose,
     pub pose_ticks: u32,
+    /// The boxes of the poses the body was still moving from at the last change ([`pose::reach_box`]).
+    pub pose_reach: Box3,
 }
 
 impl PlayerState {
@@ -331,7 +333,9 @@ impl PlayerState {
             ext: None,
             pose: Pose::Stand,
             pose_from: Pose::Stand,
-            pose_ticks: 0,
+            // Long settled: a new Player is not in the middle of a change.
+            pose_ticks: u32::MAX,
+            pose_reach: obj_box,
         };
         s.update_scaled_box();
         s.set_transform_raw(pos, s.rot);

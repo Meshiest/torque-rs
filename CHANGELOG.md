@@ -314,6 +314,10 @@ The first development version. Nothing is published yet; this is what exists.
   and 27 pushing up (`pose::settling`), and crouched two ticks more before it stands; a shape's `prone_down` and `prone_up`
   play to their end on the server and the clients alike (`PoseSets::way`), so the hitboxes and the eased first-person eye
   follow the same timing. C crouches too in every demo (a browser closes its tab on Ctrl+W), and the hints say so.
+- While a Player's body moves between two poses (the blend, or the way down or up), shots reach it through the union of
+  both poses' boxes (`pose::reach_box`: the scene's world box and the lag samples), so its drawn head and chest stay hittable;
+  the movement box changes at once as before. A pose with another box is kept at least 8 ticks, so a client cannot flip its
+  box every tick.
 - `just examples/poses-clip`: a clip of the figure crouching, lying down, walking crouched, crawling, sprinting and reacting
   to hits from four sides and to the head, as another player's client draws it.
 - The guide (mdBook) and the API reference with no rustdoc warnings.

@@ -394,17 +394,14 @@ pub fn mirror_no_bins(vm: &mut Vm, id: ObjId) {
     let Some(s) = state(vm, id) else {
         return;
     };
-    let copy = (s.obj_to_world, s.world_box, s.world_center, s.world_radius);
-    write_copies(vm, id, copy);
+    let (wb, wc, wr) = ::sim::player::pose::reach_world(s);
+    write_copies(vm, id, (s.obj_to_world, wb, wc, wr));
 }
 
 /// [`mirror_no_bins`] from a state that is out of the ext (the Player's own tick).
 pub fn mirror_from(vm: &mut Vm, id: ObjId, s: &PlayerState) {
-    write_copies(
-        vm,
-        id,
-        (s.obj_to_world, s.world_box, s.world_center, s.world_radius),
-    );
+    let (wb, wc, wr) = ::sim::player::pose::reach_world(s);
+    write_copies(vm, id, (s.obj_to_world, wb, wc, wr));
 }
 
 fn write_copies(vm: &mut Vm, id: ObjId, copy: (collide::math::Matrix, Box3, F3, f32)) {

@@ -22,6 +22,10 @@
 //! - **The speeds** ([`super::update_move::move_speed`]): the pose's forward, backward and side speeds
 //!   (`maxCrouchForwardSpeed` and the rest), the underwater ones first as before; the run force is the pose's (`sprintForce`,
 //!   `crouchForce`, `proneForce`).
+//! - **The reach** ([`reach_box`]): while the body still moves between two poses (the blend, or the way down or up), the box
+//!   a shot reaches the Player through is the union of the boxes of the poses it moves between, so its drawn head and chest
+//!   can be hit all the way; the movement box is the new pose's at once.
+//! - **The hold**: a pose with another box is kept at least [`POSE_HOLD_TICKS`], so a Player cannot flip its box every tick.
 //! - **Who may**: a Player in its move state, enabled and not mounted; crouching and lying down also on the ground (not
 //!   falling). A mounted Player stands.
 //!
@@ -50,6 +54,50 @@ pub const KNEEL_TICKS: u32 = 10;
 /// `prone_down` and `prone_up`).
 pub const PRONE_DOWN_TICKS: u32 = 24;
 pub const PRONE_UP_TICKS: u32 = 27;
+
+/// The ticks a pose with another box is kept before the Player may change again (0.256 s).
+pub const POSE_HOLD_TICKS: u32 = 8;
+/// The ticks the body takes to ease between standing and crouching (the 0.3 s blend, a tick more).
+pub const CROUCH_BLEND_TICKS: u32 = 11;
+
+/// The ticks the body moves for after a change from pose `from` to pose `to`: the blend between standing and crouching, the
+/// way down or up between the crouch and prone (a tick more each), none between standing and sprinting.
+pub fn moving_ticks(from: Pose, to: Pose) -> u32 {
+    match (from.lowness(), to.lowness()) {
+        (a, b) if a == b => 0,
+        (_, 2) => PRONE_DOWN_TICKS + 1,
+        (2, _) => PRONE_UP_TICKS + 1,
+        _ => CROUCH_BLEND_TICKS,
+    }
+}
+
+/// The box (object space) a shot reaches the Player through (see the module docs): the movement box, joined with the boxes of
+/// the poses the body is still moving from.
+pub fn reach_box(s: &PlayerState) -> Box3 {
+    if s.pose_ticks < moving_ticks(s.pose_from, s.pose) {
+        union(&s.pose_reach, &s.obj_box)
+    } else {
+        s.obj_box
+    }
+}
+
+/// [`reach_box`] in the world, with its sphere: the world box itself when the two are the same.
+pub fn reach_world(s: &PlayerState) -> (Box3, F3, f32) {
+    let reach = reach_box(s);
+    if reach == s.obj_box {
+        return (s.world_box, s.world_center, s.world_radius);
+    }
+    let w = torque_collide::math::mul_box(&s.obj_to_world, &super::ext::scaled(reach, s.scale));
+    let (c, r) = torque_collide::math::world_sphere(&w);
+    (w, c, r)
+}
+
+fn union(a: &Box3, b: &Box3) -> Box3 {
+    Box3::new(
+        std::array::from_fn(|k| a.min[k].min(b.min[k])),
+        std::array::from_fn(|k| a.max[k].max(b.max[k])),
+    )
+}
 
 /// Whether the Player is getting down or up between the crouch and prone (see the module docs): it does not move meanwhile.
 pub fn settling(s: &PlayerState) -> bool {
@@ -321,6 +369,8 @@ pub fn set_pose(s: &mut PlayerState, db: &PlayerData, pose: Pose) {
     if s.pose == pose {
         return;
     }
+    // The reach keeps every box the body is still moving from.
+    s.pose_reach = reach_box(s);
     s.pose_from = s.pose;
     s.pose_ticks = 0;
     s.pose = pose;
@@ -442,8 +492,17 @@ pub fn update_pose(
         if !can_take(p, db, pose, host)? {
             continue;
         }
-        // Between standing and prone by way of the crouch, kneeling there for its ticks (when it may crouch).
+        // A pose with another box is kept for its hold.
         let s = &p.s;
+        let same_box = s.pose == pose
+            || matches!(
+                (s.pose, pose),
+                (Pose::Stand | Pose::Sprint, Pose::Stand | Pose::Sprint)
+            );
+        if !same_box && s.pose_ticks < POSE_HOLD_TICKS {
+            return Ok(());
+        }
+        // Between standing and prone by way of the crouch, kneeling there for its ticks (when it may crouch).
         let kneeling = s.pose == Pose::Crouch
             && s.pose_from.far_from(pose)
             && s.pose_ticks < kneel_ticks(s.pose_from);

@@ -89,6 +89,14 @@ fn the_triggers_crouch_lie_down_and_stand_with_each_poses_box() {
     );
     assert_eq!(p.s.pose, Pose::Prone);
     assert_eq!(p.s.obj_box.max, [1.0, 1.0, 0.7]);
+    // Prone for its hold.
+    run(
+        &mut p,
+        &db,
+        &mut h,
+        &held(&[3, 4], 0.0),
+        POSE_HOLD_TICKS as usize,
+    );
     // Letting go stands it up again by way of the crouch: crouched while it pushes up and two ticks more, then standing.
     let mut poses = Vec::new();
     for _ in 0..PRONE_UP_TICKS + 3 {
@@ -166,6 +174,13 @@ fn a_pose_without_room_is_refused_and_no_one_stands_up_under_a_low_ceiling() {
     // Lying down is fine under it; letting go of prone crouches (no room to stand).
     run(&mut under, &db, &mut h, &held(&[4], 0.0), 1);
     assert_eq!(under.s.pose, Pose::Prone);
+    run(
+        &mut under,
+        &db,
+        &mut h,
+        &held(&[4], 0.0),
+        POSE_HOLD_TICKS as usize,
+    );
     run(&mut under, &db, &mut h, &Move::default(), 1);
     assert_eq!(under.s.pose, Pose::Crouch);
     // Out from under it (crawling crouched to the open) it stands up.
@@ -329,5 +344,54 @@ fn getting_down_and_up_between_the_crouch_and_prone_holds_the_player_still() {
         p.s.velocity[1] > 1.0,
         "then crouch walking: {:?}",
         p.s.velocity
+    );
+}
+
+#[test]
+fn a_change_reaches_through_both_boxes_while_the_body_moves_and_holds_before_the_next() {
+    let db = posed();
+    let mut h = TestHost::new(vec![floor(100)]);
+    let mut p = player(&db, [0.0, 0.0, 0.0]);
+    run(&mut p, &db, &mut h, &Move::default(), 3);
+    assert_eq!(reach_box(&p.s), p.s.obj_box);
+    run(&mut p, &db, &mut h, &held(&[3], 0.0), 1);
+    assert_eq!(p.s.pose, Pose::Crouch);
+    // The movement box is the crouch's at once; the reach keeps the standing height while the body eases down.
+    assert_eq!(p.s.obj_box.max[2], 1.4);
+    assert_eq!(reach_box(&p.s).max[2], db.bounding_box[2]);
+    // Let go at once: the crouch is held first.
+    let mut ticks = 0;
+    while p.s.pose == Pose::Crouch {
+        run(&mut p, &db, &mut h, &Move::default(), 1);
+        ticks += 1;
+    }
+    assert_eq!(ticks, POSE_HOLD_TICKS as usize, "held from the change");
+    // Settled, the reach is the box again.
+    run(
+        &mut p,
+        &db,
+        &mut h,
+        &Move::default(),
+        CROUCH_BLEND_TICKS as usize,
+    );
+    assert_eq!(reach_box(&p.s), p.s.obj_box);
+    // Flipping every tick changes no faster than the hold, and the reach always covers the standing box it moves from.
+    let mut changes = Vec::new();
+    let mut last = p.s.pose;
+    for tick in 0..80 {
+        let t: &[usize] = if tick % 2 == 0 { &[3] } else { &[] };
+        run(&mut p, &db, &mut h, &held(t, 0.0), 1);
+        if p.s.pose != last {
+            changes.push(tick);
+            last = p.s.pose;
+        }
+        assert_eq!(reach_box(&p.s).max[2], db.bounding_box[2], "tick {tick}");
+    }
+    assert!(changes.len() > 3);
+    assert!(
+        changes
+            .windows(2)
+            .all(|w| w[1] - w[0] >= POSE_HOLD_TICKS as usize),
+        "{changes:?}"
     );
 }
