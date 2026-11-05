@@ -255,10 +255,12 @@ The first development version. Nothing is published yet; this is what exists.
 - The level demo: a quick tap of Space held the jump until the next tap (the script counted only the press); now it jumps
   once. Tab switches the camera (it was V), as in the other demos, and every map draws its textures nearest (cubes, tiles,
   figures, interiors; the mipmaps kept).
-- `torque-render-hd`: a room with more shadowed point or spot lights than the quality's shadow slots no longer switches
-  shadows on and off as the camera turns or walks: a light that holds a slot keeps it against one barely ahead, a light
-  still in view fades its shadow out (or in) over 12 frames when the slots change hands, and within its radius a nearer light
-  ranks higher. Off-screen casters keep shadowing the view (a test with a point light and a low sun).
+- `torque-render-hd`: every point or spot light whose light reaches the view has a shadow cube, sized by its importance (its
+  brightness, the share of the view its sphere takes, its cone): three tiers of cube arrays at the quality's face size, a half
+  and a quarter of it (High: 4 x 512, 8 x 256, 16 x 128, less memory than its 8 equal cubes), where a fixed 8 cubes were
+  traded among the lights in view and a light without one shone unshadowed, so shadows popped on and off as the camera
+  turned or walked. A light that changes tier crossfades from one cube to the other over 12 frames, a light that holds a
+  cube counts 1.25 times as much, and off-screen casters keep shadowing the view (a test with a point light and a low sun).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).

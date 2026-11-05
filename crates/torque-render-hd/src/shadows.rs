@@ -8,17 +8,20 @@
 //!   cascade at all ([`ShadowStats::static_redraws`]).
 //! - **The dynamic overlay**: each frame a cascade (or a face) with shapes in it is copied from the static map and the shapes are
 //!   drawn over the copy; one that had shapes last frame but none now is copied back clean.
-//! - **Point lights**: the lights seen this frame, ranked by brightness times radius squared over their distance squared (how much of
-//!   the frame they may light; within the radius, nearer counts more), take the quality's slots ([`assign_slots`]). A light that holds a slot counts [`SLOT_HOLD`] times
-//!   as much, so a turn or a step does not trade it for one barely ahead. A light that is still in view keeps its shadow through a
-//!   change of slots: one that loses its place fades its shadow out over [`SLOT_FADE_FRAMES`] frames before the slot goes to the
-//!   next, and one given a slot while it was already lighting the view (unshadowed) fades its shadow in; a light that comes into
-//!   view with a slot free has its shadow at once, and one that leaves the view gives its slot up at once (it lights nothing seen).
-//!   Without the fades, a room with more shadowed lights than slots traded slots as the camera turned and walked, and each trade
-//!   switched a light's shadows on or off in one frame. A slot's six faces are a cube
-//!   in one cube-array texture (the atlas), drawn when the slot is given to a light and again only for the faces that changed cells
-//!   meet. A spot that casts shadows takes a slot as a point light does, and only the faces its cone meets are drawn. The static geometry's owners a light is mounted in ([`crate::ext::HdExtension::light_hosts`]: a light that sits inside
-//!   a solid) are left out of its own cube, else their faces hide it from everything around them.
+//! - **Point lights** ([`assign_slots`]): every light whose lit sphere meets the view gets a cube, at a resolution by its importance:
+//!   the shadow maps are three cube arrays ([`point_tiers`]), the quality's face size for the few most important lights, half of
+//!   it for the next, a quarter for the rest (the first tier's size, its count half the quality's point lights; then as many as the
+//!   quality's; then 16), so a room of twenty lamps keeps every lamp's shadow within less memory than equal slots took. A
+//!   light's importance is how much of the frame it may light: its brightness times the share of the view its sphere takes
+//!   (radius over distance, squared, at most 4) times the share of the sphere its cone lights; a light that holds a cube counts
+//!   [`SLOT_HOLD`] times as much, so a turn or a step does not trade tiers for one barely ahead. A light that changes tier
+//!   crossfades from its old cube to its new one over [`SLOT_FADE_FRAMES`] frames (the forward pass blends the two lookups), a
+//!   light that loses its cube while still in view fades its shadow out, one given a cube while it already lit the view fades
+//!   in, and one that comes into view takes its cube whole at once; a light that leaves the view gives its cubes up at once (it
+//!   lights nothing seen). A cube's six faces are drawn when it is given to a light and again only for the faces that changed
+//!   cells meet. A spot that casts shadows takes a cube as a point light does, and only the faces its cone meets are drawn. The
+//!   static geometry's owners a light is mounted in ([`crate::ext::HdExtension::light_hosts`]: a light that sits inside a solid)
+//!   are left out of its own cube, else their faces hide it from everything around them.
 //! - **Coloured shadows** (High and Ultra): beside each cascade a transmittance map at half its side, drawn again with its
 //!   static cascade: the translucent batches of the cells it sees, each fragment nearer the sun than the static cascade's first
 //!   opaque surface multiplying in what it lets through ((1 - a) + a x its linear paint). The forward pass multiplies the sun's light
@@ -40,7 +43,7 @@ use crate::{GpuCell, push_f32, push_u32};
 /// The shadow maps' format.
 pub const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The shadow uniform's bytes (`common.wgsl`'s `Shadows`).
-pub const SHADOWS_BYTES: usize = 608;
+pub const SHADOWS_BYTES: usize = 624;
 /// The transmittance maps' format.
 pub const TRANS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// One caster uniform's stride (the dynamic offset's alignment) and how many there are (the cascades, then six faces a slot).
@@ -49,7 +52,9 @@ const CASTER_STRIDE: u64 = 256;
 const CASTER_BYTES: u64 = 112;
 /// The nearest cascades that are also kept without the client's own Player (the first-person images are inside them).
 const NO_SELF_CASCADES: usize = 1;
-const CASTERS: usize = MAX_CASCADES + 6 * MAX_POINT_SHADOWS;
+/// The most point-light cubes of all tiers ([`point_tiers`]).
+pub const MAX_POINT_SLOTS: usize = 48;
+const CASTERS: usize = MAX_CASCADES + 6 * MAX_POINT_SLOTS;
 pub use crate::ext::NO_HOST;
 /// The most dirty boxes kept; more invalidate every cached map.
 pub const MAX_DIRTY: usize = 256;
@@ -299,72 +304,145 @@ fn patch_clip(r: [u32; 4], size: u32, margin: f32) -> [f32; 4] {
     ]
 }
 
-/// How much more a light that holds a shadow slot counts when the lights are ranked for the slots.
+/// How much more a light that holds a cube counts when the lights are ranked for the tiers.
 pub const SLOT_HOLD: f32 = 1.25;
-/// The frames a shadow takes to fade in or out when its light gains or loses a slot while it is in view.
+/// The frames a shadow takes to fade in or out, or to crossfade from one tier's cube to another's.
 pub const SLOT_FADE_FRAMES: u32 = 12;
+
+/// The point-light cube tiers of `q`: each tier's face size and its number of cubes (the module docs); none without point
+/// shadows.
+pub fn point_tiers(q: &ShadowQuality) -> [(u32, usize); 3] {
+    let n = q.point_lights.min(MAX_POINT_SHADOWS);
+    if n == 0 {
+        return [(0, 0); 3];
+    }
+    let s = q.point_size.max(64);
+    [((s), (n / 2).max(1)), (s / 2, n), (s / 4, 16)]
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct Slot {
     pub light: Option<[u32; 4]>,
     valid: [bool; 6],
     dynamic: [bool; 6],
-    /// How much of the light's shadow is drawn (0 to 1): below 1 while it fades in or out.
+    /// How much of the light's shadow this cube gives (0 to 1): below 1 while it fades in or out.
     pub strength: f32,
+    /// The cube its light is leaving (fading out, or crossfading to a cube of another tier).
+    pub leaving: bool,
 }
 
-/// Gives this frame's slots (module docs): `ranked` is every light in view (its key, how much of the frame it may light),
-/// `seen_last` the lights that were in view the frame before. A light out of view leaves its slot; the most important lights
-/// (one that holds a slot counting [`SLOT_HOLD`] times) take the free slots in order, each at full strength if it was not in view
-/// the frame before, else fading in; a held light no longer among them fades out, keeping its slot until its strength reaches 0.
-pub(crate) fn assign_slots(slots: &mut [Slot], ranked: &[([u32; 4], f32)], seen_last: &[[u32; 4]]) {
-    let held = |slots: &[Slot], k: [u32; 4]| slots.iter().any(|s| s.light == Some(k));
+/// Gives this frame's cubes (module docs). `tiers` holds where each tier's slots end (the slots run tier by tier); `ranked` is
+/// every light in view (its key, its importance); `seen_last` the lights that were in view the frame before.
+pub(crate) fn assign_slots(
+    slots: &mut [Slot],
+    tiers: &[usize],
+    ranked: &[([u32; 4], f32)],
+    seen_last: &[[u32; 4]],
+) {
+    let step = 1.0 / SLOT_FADE_FRAMES as f32;
+    let tier_of = |slot: usize| {
+        tiers
+            .iter()
+            .position(|&end| slot < end)
+            .unwrap_or(tiers.len())
+    };
+    let range = |t: usize| (if t == 0 { 0 } else { tiers[t - 1] })..tiers[t];
+    // A light out of view lights nothing seen: its cubes go at once.
+    for s in slots.iter_mut() {
+        if s.light.is_some_and(|k| !ranked.iter().any(|r| r.0 == k)) {
+            *s = Slot::default();
+        }
+    }
+    let current =
+        |slots: &[Slot], k: [u32; 4]| slots.iter().position(|s| s.light == Some(k) && !s.leaving);
+    let old =
+        |slots: &[Slot], k: [u32; 4]| slots.iter().position(|s| s.light == Some(k) && s.leaving);
     let mut order: Vec<(f32, usize)> = ranked
         .iter()
         .enumerate()
         .map(|(i, &(k, score))| {
-            (
-                if held(slots, k) {
-                    score * SLOT_HOLD
-                } else {
-                    score
-                },
-                i,
-            )
+            let held = current(slots, k).is_some();
+            (if held { score * SLOT_HOLD } else { score }, i)
         })
         .collect();
     order.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    let want: Vec<[u32; 4]> = order
+    // Each light's tier by its rank: the first tier's count first, then the next.
+    let mut room: Vec<usize> = (0..tiers.len()).map(|t| range(t).len()).collect();
+    let targets: Vec<(usize, Option<usize>)> = order
         .iter()
-        .take(slots.len())
-        .map(|&(_, i)| ranked[i].0)
-        .collect();
-    let step = 1.0 / SLOT_FADE_FRAMES as f32;
-    for s in slots.iter_mut() {
-        let Some(k) = s.light else { continue };
-        if !ranked.iter().any(|r| r.0 == k) {
-            *s = Slot::default();
-        } else if want.contains(&k) {
-            s.strength = (s.strength + step).min(1.0);
-        } else {
-            s.strength -= step;
-            if s.strength <= 0.0 {
-                *s = Slot::default();
+        .map(|&(_, i)| {
+            let t = room.iter().position(|&r| r > 0);
+            if let Some(t) = t {
+                room[t] -= 1;
             }
+            (i, t)
+        })
+        .collect();
+    // The tiers to look in for a free cube: the wanted one, then the others nearest it.
+    let near_tiers = |t: usize| {
+        let mut v: Vec<usize> = (0..tiers.len()).collect();
+        v.sort_by_key(|&o| (o.abs_diff(t), o < t));
+        v
+    };
+    let free_in = |slots: &[Slot], t: usize| range(t).find(|&f| slots[f].light.is_none());
+    // First every light in view without a cube takes one (its own tier if it has room, else the nearest with room), so a light
+    // in view is never left unshadowed while cubes are free; then the lights whose rank moved them change tiers.
+    for &(i, target) in &targets {
+        let k = ranked[i].0;
+        let cur = current(slots, k);
+        match (cur, target) {
+            (Some(c), None) => slots[c].leaving = true,
+            (Some(c), Some(_)) => slots[c].strength = (slots[c].strength + step).min(1.0),
+            (None, Some(t)) => {
+                let Some(f) = near_tiers(t).into_iter().find_map(|o| free_in(slots, o)) else {
+                    continue;
+                };
+                let fading = old(slots, k).is_some();
+                slots[f] = Slot {
+                    light: Some(k),
+                    strength: if fading || seen_last.contains(&k) {
+                        step
+                    } else {
+                        1.0
+                    },
+                    ..Slot::default()
+                };
+            }
+            (None, None) => {}
         }
     }
-    for k in want {
-        if held(slots, k) {
+    for &(i, target) in &targets {
+        let k = ranked[i].0;
+        let (Some(c), Some(t)) = (current(slots, k), target) else {
+            continue;
+        };
+        // A crossfade still running finishes before the next change of tier.
+        if tier_of(c) == t || old(slots, k).is_some() {
             continue;
         }
-        let Some(free) = slots.iter().position(|s| s.light.is_none()) else {
-            break;
+        if let Some(f) = free_in(slots, t) {
+            slots[f] = Slot {
+                light: Some(k),
+                strength: step,
+                ..Slot::default()
+            };
+            slots[c].leaving = true;
+        }
+    }
+    // A cube being left gives way to its light's new cube (the two sum to one) or fades out alone; at 0 it is free.
+    for i in 0..slots.len() {
+        let Some(k) = slots[i].light.filter(|_| slots[i].leaving) else {
+            continue;
         };
-        slots[free] = Slot {
-            light: Some(k),
-            strength: if seen_last.contains(&k) { step } else { 1.0 },
-            ..Slot::default()
+        let strength = match current(slots, k) {
+            Some(n) => slots[i].strength.min(1.0 - slots[n].strength),
+            None => slots[i].strength - step,
         };
+        if strength <= 1e-4 {
+            slots[i] = Slot::default();
+        } else {
+            slots[i].strength = strength;
+        }
     }
 }
 
@@ -449,6 +527,18 @@ impl Job {
     }
 }
 
+/// One tier of point-light cubes: their face size, their static and working cube arrays (six layers a cube), each layer's view and
+/// the working array's cube view (the forward pass's).
+struct PointTier {
+    size: u32,
+    count: usize,
+    stat: wgpu::Texture,
+    work: wgpu::Texture,
+    static_layers: Vec<wgpu::TextureView>,
+    work_layers: Vec<wgpu::TextureView>,
+    view: wgpu::TextureView,
+}
+
 struct Maps {
     quality: ShadowQuality,
     /// The static cascades as one array (the transmittance's depth test reads it).
@@ -458,12 +548,8 @@ struct Maps {
     csm_static_layers: Vec<wgpu::TextureView>,
     csm_work_layers: Vec<wgpu::TextureView>,
     csm_view: wgpu::TextureView,
-    point_size: u32,
-    point_static: wgpu::Texture,
-    point_work: wgpu::Texture,
-    point_static_layers: Vec<wgpu::TextureView>,
-    point_work_layers: Vec<wgpu::TextureView>,
-    point_view: wgpu::TextureView,
+    /// The point-light cubes, tier by tier ([`point_tiers`]).
+    points: Vec<PointTier>,
 }
 
 /// The shadow maps, their caches and passes.
@@ -493,8 +579,9 @@ pub(crate) struct Shadows {
     slots: Vec<Slot>,
     /// The lights in view the frame before (their keys): a light given a slot fades its shadow in only if it was.
     seen_last: Vec<[u32; 4]>,
-    /// Each light's slot this frame as the lights' buffer holds it: -1 for none, else the slot plus half its shadow's strength.
-    pub light_slots: Vec<f32>,
+    /// Each light's cubes this frame as the lights' buffer holds them: its cube and that cube's strength, the cube it is leaving
+    /// and that one's (-1 for none).
+    pub light_slots: Vec<[f32; 4]>,
     pub stats: ShadowStats,
     /// Bumped when the maps are made again (the frame's bind group must be made again).
     pub maps_generation: u64,
@@ -618,13 +705,30 @@ impl Maps {
             layers + NO_SELF_CASCADES as u32,
             wk,
         );
-        let (slots, point_size) = if q.point_lights > 0 {
-            (q.point_lights.min(MAX_POINT_SHADOWS) as u32, q.point_size)
-        } else {
-            (1, 16)
-        };
-        let point_static = tex("hd point static", point_size, 6 * slots, st);
-        let point_work = tex("hd point", point_size, 6 * slots, wk);
+        let points = point_tiers(&q)
+            .iter()
+            .map(|&(size, count)| {
+                // Without point shadows, one small cube a tier for the forward pass's bindings.
+                let (size, count) = if count == 0 { (16, 1) } else { (size, count) };
+                let layers = 6 * count as u32;
+                let stat = tex("hd point static", size, layers, st);
+                let work = tex("hd point", size, layers, wk);
+                PointTier {
+                    size,
+                    count,
+                    static_layers: layer_views(&stat, layers),
+                    work_layers: layer_views(&work, layers),
+                    view: work.create_view(&wgpu::TextureViewDescriptor {
+                        label: Some("hd point cubes"),
+                        dimension: Some(wgpu::TextureViewDimension::CubeArray),
+                        array_layer_count: Some(layers),
+                        ..wgpu::TextureViewDescriptor::default()
+                    }),
+                    stat,
+                    work,
+                }
+            })
+            .collect();
         Maps {
             quality: q,
             csm_static_layers: layer_views(&csm_static, layers),
@@ -641,27 +745,44 @@ impl Maps {
             }),
             csm_static,
             csm_work,
-            point_size,
-            point_static_layers: layer_views(&point_static, 6 * slots),
-            point_work_layers: layer_views(&point_work, 6 * slots),
-            point_view: point_work.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("hd point cubes"),
-                dimension: Some(wgpu::TextureViewDimension::CubeArray),
-                array_layer_count: Some(6 * slots),
-                ..wgpu::TextureViewDescriptor::default()
-            }),
-            point_static,
-            point_work,
+            points,
         }
     }
 
+    /// Where each tier's slots end (the slots run tier by tier).
+    fn tier_ends(&self) -> Vec<usize> {
+        point_tiers(&self.quality)
+            .iter()
+            .scan(0, |end, &(_, count)| {
+                *end += count;
+                Some(*end)
+            })
+            .collect()
+    }
+
     fn slots(&self) -> usize {
-        self.quality.point_lights.min(MAX_POINT_SHADOWS)
+        self.tier_ends().last().copied().unwrap_or(0)
+    }
+
+    /// Slot `slot`'s tier and its first layer there.
+    fn point_layer(&self, slot: usize) -> (&PointTier, usize) {
+        let mut at = slot;
+        for t in &self.points {
+            if at < t.count {
+                return (t, at * 6);
+            }
+            at -= t.count;
+        }
+        (&self.points[0], 0)
     }
 
     fn bytes(&self) -> u64 {
         let c = u64::from(self.quality.cascade_size).pow(2) * self.csm_static_layers.len() as u64;
-        let p = u64::from(self.point_size).pow(2) * self.point_static_layers.len() as u64;
+        let p: u64 = self
+            .points
+            .iter()
+            .map(|t| u64::from(t.size).pow(2) * t.static_layers.len() as u64)
+            .sum();
         2 * 4 * (c + p)
     }
 }
@@ -1177,8 +1298,9 @@ impl Shadows {
         self.maps_generation
     }
 
-    pub fn point_view(&self) -> &wgpu::TextureView {
-        &self.maps.point_view
+    /// Tier `tier`'s cube array (the forward pass's).
+    pub fn point_view(&self, tier: usize) -> &wgpu::TextureView {
+        &self.maps.points[tier].view
     }
 
     /// The shadow maps' GPU memory (bytes).
@@ -1196,9 +1318,12 @@ impl Shadows {
         self.seen_last.clear();
     }
 
-    /// The point lights in view, each with how much of the frame it may light: brightness x radius^2 / distance^2 (to its sphere,
-    /// at least 1), times radius / (radius + distance to its centre).
-    fn lights_in_view(lights: &[HdLight], camera: &HdCamera) -> Vec<(f32, usize)> {
+    /// The point lights in view (their spheres meet the view), each with its importance (module docs).
+    fn lights_in_view(
+        lights: &[HdLight],
+        cones: &[[f32; 4]],
+        camera: &HdCamera,
+    ) -> Vec<(f32, usize)> {
         let planes = camera.planes();
         let e = camera.eye;
         lights
@@ -1214,12 +1339,17 @@ impl Shadows {
             })
             .map(|(i, l)| {
                 let d = [0, 1, 2].map(|k| l.position[k] - e[k]);
-                let centre = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-                let dist = (centre - l.radius).max(1.0);
+                let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-3);
                 let lum = 0.2126 * l.color[0] + 0.7152 * l.color[1] + 0.0722 * l.color[2];
-                // Within its radius a nearer light counts more (the lights of a room the eye is in all reach it).
-                let near = l.radius / (l.radius + centre);
-                (lum * l.radius * l.radius / (dist * dist) * near, i)
+                let screen = (l.radius / dist).powi(2).min(4.0);
+                // A spot lights the share of its sphere inside its cone.
+                let cone = cones.get(i).copied().unwrap_or([0.0; 4]);
+                let lit = if cone[..3] == [0.0; 3] {
+                    1.0
+                } else {
+                    ((1.0 - cone[3].clamp(-1.0, 1.0)) * 0.5).max(0.05)
+                };
+                (lum * screen * lit, i)
             })
             .collect()
     }
@@ -1460,10 +1590,10 @@ impl Shadows {
 
         // Point lights.
         let usable = &input.lights[..input.lights.len().min(crate::MAX_LIGHTS)];
-        self.light_slots = vec![-1.0; usable.len()];
+        self.light_slots = vec![[-1.0, 0.0, -1.0, 0.0]; usable.len()];
         let keys: Vec<[u32; 4]> = usable.iter().map(light_key).collect();
         let ranked: Vec<([u32; 4], f32)> = if input.switches.points && !self.slots.is_empty() {
-            Self::lights_in_view(usable, input.camera)
+            Self::lights_in_view(usable, input.cones, input.camera)
                 .into_iter()
                 .map(|(score, i)| (keys[i], score))
                 .collect()
@@ -1471,7 +1601,12 @@ impl Shadows {
             self.invalidate_slots();
             Vec::new()
         };
-        assign_slots(&mut self.slots, &ranked, &self.seen_last);
+        assign_slots(
+            &mut self.slots,
+            &self.maps.tier_ends(),
+            &ranked,
+            &self.seen_last,
+        );
         self.seen_last = ranked.iter().map(|r| r.0).collect();
         let held: Vec<(usize, usize)> = self
             .slots
@@ -1480,7 +1615,10 @@ impl Shadows {
             .filter_map(|(slot, s)| Some((keys.iter().position(|k| Some(*k) == s.light)?, slot)))
             .collect();
         for (li, slot) in held {
-            self.light_slots[li] = slot as f32 + 0.5 * self.slots[slot].strength;
+            let st = &self.slots[slot];
+            let half = if st.leaving { 2 } else { 0 };
+            self.light_slots[li][half] = slot as f32;
+            self.light_slots[li][half + 1] = st.strength;
             let l = usable[li];
             stats.point_lights += 1;
             let cone = input.cones.get(li).copied().unwrap_or([0.0; 4]);
@@ -1590,9 +1728,19 @@ impl Shadows {
             &mut u,
             &[
                 q.point_taps as f32,
-                self.maps.point_size as f32,
+                self.maps.points[0].size as f32,
                 if points_on { 1.0 } else { 0.0 },
                 q.contact_steps as f32,
+            ],
+        );
+        let ends = self.maps.tier_ends();
+        push_f32(
+            &mut u,
+            &[
+                ends[0] as f32,
+                ends[1] as f32,
+                self.maps.points[1].size as f32,
+                self.maps.points[2].size as f32,
             ],
         );
         push_f32(
@@ -1842,13 +1990,14 @@ impl Shadows {
                     );
                 }
                 Job::CopyFace { slot, face } => {
+                    let (t, first) = self.maps.point_layer(*slot);
                     copy_layer(
                         encoder,
-                        &self.maps.point_static,
-                        &self.maps.point_work,
-                        (slot * 6 + face) as u32,
-                        (slot * 6 + face) as u32,
-                        self.maps.point_size,
+                        &t.stat,
+                        &t.work,
+                        (first + face) as u32,
+                        (first + face) as u32,
+                        t.size,
                     );
                 }
                 Job::CascadeOverlay { layer, to, objects } => {
@@ -1873,9 +2022,10 @@ impl Shadows {
                     let Some(culled) = culled[run.start] else {
                         continue;
                     };
+                    let (t, first) = self.maps.point_layer(*slot);
                     let mut pass = depth_pass(
                         encoder,
-                        &self.maps.point_static_layers[index],
+                        &t.static_layers[first + face],
                         true,
                         stamp(pass_no),
                     );
@@ -1926,12 +2076,9 @@ impl Shadows {
                     objects,
                 } => {
                     let index = slot * 6 + face;
-                    let mut pass = depth_pass(
-                        encoder,
-                        &self.maps.point_work_layers[index],
-                        false,
-                        stamp(pass_no),
-                    );
+                    let (t, first) = self.maps.point_layer(*slot);
+                    let mut pass =
+                        depth_pass(encoder, &t.work_layers[first + face], false, stamp(pass_no));
                     pass.set_bind_group(
                         0,
                         &self.caster_group,

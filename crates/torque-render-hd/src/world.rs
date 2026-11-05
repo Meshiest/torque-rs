@@ -115,7 +115,7 @@ pub const LDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const CLUSTER_GRID: [u32; 3] = [16, 9, 24];
 pub const MAX_LIGHTS: usize = 1024;
 /// One light's bytes in the lights buffer (`common.wgsl`'s `Light`).
-pub const LIGHT_BYTES: usize = 48;
+pub const LIGHT_BYTES: usize = 64;
 
 /// The lights a frame uploads, in the buffer's order: the shadowed ones first (the point lights but the glowing surfaces', then
 /// the spots that cast shadows), then the spots that do not and the glowing surfaces' lights (`glow`: else left out); each one's
@@ -1010,7 +1010,7 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     light_bytes: Vec<u8>,
     /// Per light, the static geometry's owners it is mounted in ([`HdExtension::light_hosts`]: left out of its shadow cube).
     light_hosts: Vec<[u32; 4]>,
-    written_slots: Option<Vec<f32>>,
+    written_slots: Option<Vec<[f32; 4]>>,
     /// The lights as uploaded (the scene's point lights and spots in the buffer's order) and each one's packed cone
     /// ([`HdSpot::cone`]; zeros: a point light).
     frame_lights: Vec<HdLight>,
@@ -1744,6 +1744,17 @@ impl<E: HdExtension> HdWorld<E> {
                 storage(15, true, wgpu::ShaderStages::FRAGMENT),
                 // The meshes' places the shapes' vertices in their meshes' own space name (torque_render_scene::hd::NodePlace).
                 storage(16, true, wgpu::ShaderStages::VERTEX),
+                // The point lights' cubes of the second and third tiers (the first is binding 8).
+                texture_entry(
+                    17,
+                    wgpu::TextureSampleType::Depth,
+                    wgpu::TextureViewDimension::CubeArray,
+                ),
+                texture_entry(
+                    18,
+                    wgpu::TextureSampleType::Depth,
+                    wgpu::TextureViewDimension::CubeArray,
+                ),
             ],
         });
         let contact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2607,7 +2618,7 @@ impl<E: HdExtension> HdWorld<E> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 8,
-                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view()),
+                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view(0)),
                 },
                 wgpu::BindGroupEntry {
                     binding: 9,
@@ -2634,6 +2645,14 @@ impl<E: HdExtension> HdWorld<E> {
                 wgpu::BindGroupEntry {
                     binding: 16,
                     resource: self.nodes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 17,
+                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view(1)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 18,
+                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view(2)),
                 },
             ],
         })
@@ -3734,11 +3753,12 @@ impl<E: HdExtension> HdWorld<E> {
                     l.color[0],
                     l.color[1],
                     l.color[2],
-                    // No shadow slot yet (the frame sets them).
-                    -1.0,
+                    0.0,
                 ],
             );
             push_f32(&mut lb, cone);
+            // No shadow cube yet (the frame sets them).
+            push_f32(&mut lb, &[-1.0, 0.0, -1.0, 0.0]);
         }
         if !lb.is_empty() {
             self.queue.write_buffer(&self.lights, 0, &lb);
@@ -5642,9 +5662,11 @@ impl<E: HdExtension> HdWorld<E> {
         if self.written_slots.as_ref() != Some(&self.shadows.light_slots) {
             let mut lb = self.light_bytes.clone();
             for (i, s) in self.shadows.light_slots.iter().enumerate() {
-                let at = i * LIGHT_BYTES + 28;
-                if at + 4 <= lb.len() {
-                    lb[at..at + 4].copy_from_slice(&s.to_le_bytes());
+                let at = i * LIGHT_BYTES + 48;
+                if at + 16 <= lb.len() {
+                    for (k, v) in s.iter().enumerate() {
+                        lb[at + 4 * k..at + 4 * k + 4].copy_from_slice(&v.to_le_bytes());
+                    }
                 }
             }
             if !lb.is_empty() {

@@ -159,22 +159,15 @@ fn oct_encode(n: vec3<f32>) -> vec2<f32> {
 struct Light {
     // xyz: world position; w: radius.
     pos_radius: vec4<f32>,
-    // rgb: linear color times brightness; w: the shadow slot plus half its shadow's strength (negative: none).
+    // rgb: linear color times brightness; w: unused.
     color: vec4<f32>,
     // A spot's cone: xyz its direction over the soft edge's width in cosines, w the outer half angle's cosine (all zeros: a point
     // light).
     spot: vec4<f32>,
+    // Its shadow cubes: x its cube's slot (negative: none) and y how much of the shadow it gives; z, w the cube it is leaving
+    // (fading out, or crossfading to x's tier) and that one's share.
+    shadow: vec4<f32>,
 };
-
-// A light's shadow slot (negative: none).
-fn shadow_slot(light: Light) -> i32 {
-    return i32(floor(light.color.w));
-}
-
-// How much of a light's shadow is drawn (below 1 while it fades in or out as its light gains or loses its slot).
-fn shadow_strength(light: Light) -> f32 {
-    return clamp((light.color.w - floor(light.color.w)) * 2.0, 0.0, 1.0);
-}
 
 // A light's share at the direction `l` toward it: 1 for a point light, a spot's cone with a smooth edge.
 fn cone_share(light: Light, l: vec3<f32>) -> f32 {
@@ -243,8 +236,12 @@ struct Shadows {
     sun: vec4<f32>,
     // rgb: what of the sun's direct light a shadow lets through (the Sun's shadow colour); w: 1 when contact shadows are on.
     tint: vec4<f32>,
-    // x: a point lookup's taps, y: a cube face's side in texels, z: 1 when point shadows are on, w: the contact march's steps.
+    // x: a point lookup's taps, y: a first-tier cube face's side in texels, z: 1 when point shadows are on, w: the contact march's
+    // steps.
     point: vec4<f32>,
+    // The point cubes' tiers: x where the first tier's slots end, y where the second's do (the third's follow), z and w the second
+    // and third tiers' face sides in texels.
+    tiers: vec4<f32>,
     // X 1 when translucent surfaces colour the sun's shadows (the transmittance maps beside the cascades); y: the layer of the
     // first cascade kept without the client's own Player, plus one (the first-person images' lookups), z: how many cascades are,
     // w: the share of the ambient occlusion the sun's light takes.

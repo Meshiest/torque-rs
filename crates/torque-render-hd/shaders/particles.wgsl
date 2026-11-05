@@ -63,12 +63,19 @@ fn particle_point(i: u32, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         return vec3<f32>(0.0);
     }
     var vis = 1.0;
-    let slot = shadow_slot(light);
-    if slot >= 0 && shadows.point.z > 0.0 {
+    if shadows.point.z > 0.0 {
         let radius = max(light.pos_radius.w, 1e-4);
-        let bias = 0.05 + 2.0 * d / max(shadows.point.y, 1.0);
-        let seen = textureSampleCompareLevel(point_maps, shadow_cmp, -l, slot, (d - bias) / radius);
-        vis = mix(1.0, seen, shadow_strength(light));
+        let s = light.shadow;
+        var dark = 0.0;
+        if s.x >= 0.0 && s.y > 0.0 {
+            let bias = 0.05 + 2.0 * d / max(point_face_size(i32(s.x)), 1.0);
+            dark = dark + s.y * (1.0 - point_tap(i32(s.x), -l, (d - bias) / radius));
+        }
+        if s.z >= 0.0 && s.w > 0.0 {
+            let bias = 0.05 + 2.0 * d / max(point_face_size(i32(s.z)), 1.0);
+            dark = dark + s.w * (1.0 - point_tap(i32(s.z), -l, (d - bias) / radius));
+        }
+        vis = clamp(1.0 - dark, 0.0, 1.0);
     }
     return light.color.rgb * (share * vis);
 }
