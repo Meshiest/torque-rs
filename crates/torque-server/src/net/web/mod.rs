@@ -293,6 +293,12 @@ impl WebTransport {
         self.rtc.as_ref().map(|r| r.stats()).unwrap_or_default()
     }
 
+    /// The source addresses the data channels have mapped to peers.
+    #[cfg(feature = "webrtc")]
+    pub fn rtc_routes(&self) -> usize {
+        self.rtc.as_ref().map_or(0, |r| r.routes())
+    }
+
     /// Whether the game socket of `addr` has its data channel open (its datagrams go there).
     #[cfg(feature = "webrtc")]
     pub fn rtc_open(&self, addr: SocketAddr) -> bool {
@@ -544,9 +550,18 @@ impl Transport for WebTransport {
             return Vec::new();
         };
         let c = side.counters();
+        let at = side
+            .local_addr()
+            .map_or_else(|| "nowhere".to_string(), |a| a.to_string());
+        let candidates: Vec<String> = side.advertised().iter().map(|a| a.to_string()).collect();
         let mut lines = vec![format!(
-            "rtc: {} channels opened, {} messages in, {} out, {} datagrams dropped by the loss test, {} stray",
-            c.channels, c.messages, c.sent, c.loss_dropped, c.stray
+            "rtc: data channels on udp {at} (candidates {}): {} opened, {} messages in, {} out, {} datagrams dropped by              the loss test, {} stray",
+            candidates.join(" "),
+            c.channels,
+            c.messages,
+            c.sent,
+            c.loss_dropped,
+            c.stray
         )];
         for (stand_in, s) in side.take_stats() {
             lines.push(format!(

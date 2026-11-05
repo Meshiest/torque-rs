@@ -18,7 +18,7 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 use torque_server::net::transport::{BindPolicy, LanRules, RECV_BUFFER_BYTES, Recv, Transport};
 use torque_server::net::web::http::base64;
-use torque_server::net::web::rtc::{RtcLimits, RtcSetup, signal};
+use torque_server::net::web::rtc::{MAX_REMOTES, RtcLimits, RtcSetup, signal};
 use torque_server::net::web::{
     WEB_SOCKET_PATH, WebLimits, WebSetup, WebTransport, accept_key, is_stand_in,
 };
@@ -110,6 +110,8 @@ struct Client {
     channel_closed: bool,
     /// Whether its ICE checks were answered (the server's stack authenticated them).
     ice_connected: bool,
+    /// More sockets, each a candidate of its own.
+    extra: Vec<(SocketAddr, UdpSocket)>,
 }
 
 impl Client {
@@ -131,6 +133,7 @@ impl Client {
             socket_closed: false,
             channel_closed: false,
             ice_connected: false,
+            extra: Vec::new(),
         }
     }
 
@@ -140,6 +143,9 @@ impl Client {
             .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
             .build(Instant::now());
         rtc.add_local_candidate(Candidate::host(self.local, "udp").unwrap());
+        for (local, _) in &self.extra {
+            rtc.add_local_candidate(Candidate::host(*local, "udp").unwrap());
+        }
         let mut api = rtc.sdp_api();
         for c in channels {
             api.add_channel_with_config(c.clone());
@@ -204,15 +210,19 @@ impl Client {
         let now = Instant::now();
         if let Some(rtc) = self.rtc.as_mut() {
             let mut buf = vec![0u8; 2048];
-            loop {
-                match self.udp.recv_from(&mut buf) {
-                    Ok((n, from)) => {
-                        if let Ok(r) = Receive::new(Protocol::Udp, from, self.local, &buf[..n]) {
-                            let _ = rtc.handle_input(Input::Receive(now, r));
+            let sockets = std::iter::once((self.local, &self.udp))
+                .chain(self.extra.iter().map(|(a, u)| (*a, u)));
+            for (local, udp) in sockets {
+                loop {
+                    match udp.recv_from(&mut buf) {
+                        Ok((n, from)) => {
+                            if let Ok(r) = Receive::new(Protocol::Udp, from, local, &buf[..n]) {
+                                let _ = rtc.handle_input(Input::Receive(now, r));
+                            }
                         }
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                        Err(_) => {}
                     }
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                    Err(_) => {}
                 }
             }
             let _ = rtc.handle_input(Input::Timeout(now));
@@ -228,7 +238,12 @@ impl Client {
             match rtc.poll_output() {
                 Ok(Output::Timeout(_)) | Err(_) => break,
                 Ok(Output::Transmit(t)) => {
-                    let _ = self.udp.send_to(&t.contents, t.destination);
+                    let udp = self
+                        .extra
+                        .iter()
+                        .find(|(a, _)| *a == t.source)
+                        .map_or(&self.udp, |(_, u)| u);
+                    let _ = udp.send_to(&t.contents, t.destination);
                 }
                 Ok(Output::Event(Event::ChannelOpen(id, label))) => {
                     if label == signal::CHANNEL_LABEL {
@@ -810,4 +825,88 @@ fn signaling_is_capped() {
     b.text("candidate\ncandidate:1 1 udp 1 127.0.0.1 9 typ host");
     run(&mut t, &mut [&mut b], 200, |_, _| false);
     assert!(!b.socket_closed);
+}
+
+#[test]
+fn forged_datagrams_never_keep_a_silent_peer_heard() {
+    let limits = RtcLimits {
+        idle_timeout: Duration::from_millis(800),
+        ..RtcLimits::default()
+    };
+    let (mut t, addr) = site(RtcSetup {
+        limits,
+        ..RtcSetup::default()
+    });
+    let (mut c, stand_in) = opened(&mut t, addr);
+    let ufrag = c
+        .texts
+        .iter()
+        .find_map(|t| t.lines().find_map(|l| l.strip_prefix("a=ice-ufrag:")))
+        .unwrap()
+        .trim()
+        .to_string();
+    // The browser goes silent; a forger sends from its address: records that do not decrypt, checks that fail their
+    // integrity, garbage.
+    c.rtc = None;
+    let forger = c.udp.try_clone().unwrap();
+    let to = t.rtc_addr().unwrap();
+    let longest = flood(&mut t, &mut [&mut c], &forger, to, 2500, |i| match i % 3 {
+        0 => fake_record(i),
+        1 => stun_request(&ufrag, i),
+        _ => noise(i, 200),
+    });
+    assert!(
+        longest < Duration::from_millis(20),
+        "a pass took {longest:?}"
+    );
+    assert!(
+        !t.rtc_open(stand_in),
+        "the silent peer was closed at its deadline: {:?}",
+        t.rtc_counters()
+    );
+    let counters = t.rtc_counters();
+    assert_eq!(counters.closed_timeout + counters.closed, 1, "{counters:?}");
+    assert_eq!(
+        counters.rate_dropped, 0,
+        "forged datagrams spent no budget a second: {counters:?}"
+    );
+    run(&mut t, &mut [&mut c], 1000, |_, c| {
+        c[0].has_text(signal::CLOSED)
+    });
+    assert!(c.has_text(signal::CLOSED) && !c.socket_closed);
+}
+
+#[test]
+fn a_peer_maps_at_most_four_source_addresses() {
+    let (mut t, addr) = site(RtcSetup::default());
+    let mut c = Client::new(&mut t, addr);
+    for _ in 0..6 {
+        let u = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        u.set_nonblocking(true).unwrap();
+        c.extra.push((u.local_addr().unwrap(), u));
+    }
+    run(&mut t, &mut [&mut c], 2000, |_, c| {
+        c[0].has_text(signal::HELLO)
+    });
+    c.offer();
+    run(&mut t, &mut [&mut c], 5000, |_, c| c[0].channel.is_some());
+    assert!(c.channel.is_some(), "{:?}", t.rtc_counters());
+    // Let every pair's checks pass, then send a datagram from each address the peer's stack accepts.
+    run(&mut t, &mut [&mut c], 1500, |_, _| false);
+    let to = t.rtc_addr().unwrap();
+    for (i, (_, u)) in c.extra.iter().enumerate() {
+        let _ = u.send_to(&fake_record(i as u32), to);
+    }
+    let _ = c.udp.send_to(&fake_record(99), to);
+    run(&mut t, &mut [&mut c], 300, |_, _| false);
+    assert_eq!(t.rtc_routes(), MAX_REMOTES, "{:?}", t.rtc_counters());
+    // The peer carries on (its own address mapped again when it is needed).
+    assert!(c.send_channel(b"hi", true));
+    let mut got = None;
+    run(&mut t, &mut [&mut c], 2000, |t, _| {
+        got = recv(t);
+        got.is_some()
+    });
+    assert!(got.is_some_and(|(a, d)| is_stand_in(a) && d == b"hi"));
+    assert!(t.rtc_routes() <= MAX_REMOTES);
 }
