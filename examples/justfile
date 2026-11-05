@@ -1,5 +1,8 @@
 set windows-shell := ["powershell", "-NoProfile", "-Command"]
 
+# The build folder: CARGO_TARGET_DIR's, else the workspace's (the web builds go into its `web` folder)
+web_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / ".." / "target")
+
 default:
     @just --list
 
@@ -35,6 +38,21 @@ character-shots dir="../target/character-shots":
 # mouse look, V camera, R restart, Esc menu)
 level-demo:
     cargo run -p torque-example-level-demo --release
+
+# The level demo in a browser (WebGPU): built for the web with its files inside it, then served on http://127.0.0.1:{{port}}/
+# (`?map=office` starts a map at once). Needs rustup's wasm32-unknown-unknown target and Node; wasm-bindgen's command line is
+# installed into the target folder's web-tools the first time
+web-level-demo port="8080":
+    node ../web/build.mjs level-demo
+    node ../web/serve.mjs "{{web_target}}/web/level-demo" {{port}}
+
+# The web level demo's check (build it first with `web-level-demo`): headless Chrome with WebGPU loads the office, waits for the
+# figure, walks it and takes pictures, then loads the menu; fails on any console error. Installs puppeteer-core into the target
+# folder's web-tools the first time and uses the installed Chrome (`CHROME` names another)
+web-level-demo-check:
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent puppeteer-core@24
+    $env:TORQUE_WEB_TOOLS = "{{web_target}}/web-tools/node"; node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 world "?map=office"
+    $env:TORQUE_WEB_TOOLS = "{{web_target}}/web-tools/node"; node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-menu.png" 60 menu
 
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`

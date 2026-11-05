@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>torque-rs</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #12141a; color: #dde2ec; font: 16px system-ui, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; outline: none; }
+  #status { position: fixed; inset: auto 0 1.5rem 0; text-align: center; }
+</style>
+</head>
+<body>
+<p id="status">Loading...</p>
+<noscript>This game needs JavaScript.</noscript>
+<script type="module">
+  const status = document.getElementById('status');
+  if (!navigator.gpu) {
+    status.textContent = 'This game needs a browser with WebGPU (a recent Chrome, Edge or Safari, or Firefox 141 and later).';
+  } else {
+    import('./game.js')
+      .then((game) => game.default())
+      .then(() => status.remove())
+      .catch((e) => { status.textContent = 'The game did not start: ' + e; throw e; });
+  }
+</script>
+</body>
+</html>

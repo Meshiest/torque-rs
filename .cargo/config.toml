@@ -1,0 +1,4 @@
+# Built for the web: the scripts' compiler runs on the page's one thread, whose stack is the module's (1 MiB by default); the
+# deepest script the parser accepts needs far more (the compiler's worker thread natively has 64 MiB).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=33554432"]

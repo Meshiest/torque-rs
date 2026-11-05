@@ -42,3 +42,11 @@ pub fn maps(files: &GameFiles) -> Vec<MapEntry> {
         })
         .collect()
 }
+
+/// The files a build for the web carries ([`GameFiles::pack`]): the kit, the game folder, and the levels already built into
+/// the kit's interiors and their maps (their models and templates left out), so the browser builds nothing when it starts.
+/// The kit's forests (the vehicle demo's, which no map here places) are left out too.
+pub fn web_pack(mut files: GameFiles) -> Result<Vec<u8>, String> {
+    crate::levels::add_levels(&mut files)?;
+    Ok(files.pack(|path| !path.starts_with("levels/") && !path.starts_with("kit/forest")))
+}

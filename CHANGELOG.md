@@ -165,12 +165,18 @@ The first development version. Nothing is published yet; this is what exists.
   dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
   and young spruces, oaks and birches under them, built from brushes into interiors, one a square of the map);
   `just examples/vehicle-demo-track-shots` draws them.
+- The level demo in a browser: `just examples/web-level-demo` builds it for the web (WebGPU) with its files inside it and serves
+  it on `http://127.0.0.1:8080/` (`?map=office` starts a map at once); `just examples/web-level-demo-check` loads it in headless
+  Chrome, walks the figure and fails on any console error. The engine's parts it needs run on the page's one thread, the
+  browser's clock and the browser's fonts; `torque::app::GameFiles::pack` and `unpack` carry a game folder as one block of
+  bytes.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).
 - `torque-client`: the end of the server's ghosting (a mission's end) keeps the connection's datablocks and net strings, as

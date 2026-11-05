@@ -23,6 +23,11 @@ torque-interior-builder = { path = "../../crates/torque-interior-builder" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 
+# Built for the web: a panic shown in the page's console, and the page's address and root element.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Window"] }
+
 [dev-dependencies]
 torque-maps = { path = "../../crates/torque-maps" }
 torque-interior-builder = { path = "../../crates/torque-interior-builder", features = ["verify"] }
