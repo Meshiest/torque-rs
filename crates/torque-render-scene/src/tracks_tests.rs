@@ -88,3 +88,70 @@ fn tracks_are_laid_on_contact_on_the_ground_fade_and_are_capped() {
     t.update(&[], &slope, 4.0);
     assert!(t.is_empty());
 }
+
+/// The longest a segment reaches along y (its triangles' points from its first to its last).
+fn reach_y(s: &TrackSegment) -> f32 {
+    let ys = s.triangles.iter().flat_map(|t| t.iter().map(|(p, _)| p[1]));
+    let (lo, hi) = ys.fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+    hi - lo
+}
+
+#[test]
+fn backing_up_lays_no_segment_ahead_of_the_wheel_and_none_longer_than_twice_the_spacing() {
+    let mut t = TireTracks::new(TrackRules {
+        max_segments: 200,
+        ..rules()
+    });
+    let spacing = t.rules.spacing;
+    // Forward 6 units, stop, back 6 units, forward again: in frames of 0.1, then a frame of 1.4 (a slow one).
+    let mut y = 0.0;
+    let mut path = Vec::new();
+    for _ in 0..60 {
+        y += 0.1;
+        path.push(y);
+    }
+    for _ in 0..60 {
+        y -= 0.1;
+        path.push(y);
+    }
+    for _ in 0..30 {
+        y += 0.1;
+        path.push(y);
+    }
+    y += 1.4;
+    path.push(y);
+    for (k, &y) in path.iter().enumerate() {
+        t.update(&[wheel(0.0, y, true)], &slope, 0.016);
+        for s in t.segments().chain(t.heads().map(|h| h.1)) {
+            assert!(
+                reach_y(s) <= 2.0 * spacing + 1e-3,
+                "frame {k}: a segment {} long",
+                reach_y(s)
+            );
+        }
+    }
+    // Forward, back and forward again: overlapping strips, each on the way the wheel went.
+    assert!(t.len() > 25, "{}", t.len());
+}
+
+#[test]
+fn the_strip_runs_on_to_the_wheel_in_a_head_each_frame() {
+    let mut t = TireTracks::new(rules());
+    for k in 0..10 {
+        t.update(&[wheel(0.0, k as f32 * 0.5, true)], &slope, 0.016);
+    }
+    // 0.3 past the last segment: a head from it to the wheel.
+    t.update(&[wheel(0.0, 4.8, true)], &slope, 0.016);
+    let heads: Vec<_> = t.heads().collect();
+    assert_eq!(heads.len(), 1);
+    let far = heads[0]
+        .1
+        .triangles
+        .iter()
+        .flat_map(|tr| tr.iter().map(|(p, _)| p[1]))
+        .fold(f32::MIN, f32::max);
+    assert!((far - 4.8).abs() < 0.01, "{far}");
+    // Lifted: no head.
+    t.update(&[wheel(0.0, 4.9, false)], &slope, 0.016);
+    assert_eq!(t.heads().count(), 0);
+}

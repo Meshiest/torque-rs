@@ -2,8 +2,10 @@
 //! `Vehicle::updateLiftoffDust`): particles of the datablock's emitters through the particle engine ([`crate::particles`]).
 //!
 //! - **The tires** (`WheeledVehicleData::tireEmitter`, an emitter of its own on each wheel): while the vehicle moves faster than
-//!   [`MIN_SPEED`], each wheel with a tire and a spring that touches the ground emits along the path from where its contact point
-//!   was to where it is, the axis the vehicle's direction of travel and the velocity the vehicle's, for `dt * (speed /
+//!   [`MIN_SPEED`], each wheel with a tire and a spring that touches the ground emits at its contact point where the frame draws
+//!   it (engine choice: TGE emits along the path from where the point was to where it is, which at speed starts the dust a
+//!   frame's travel behind the tire; the particles inherit the vehicle's velocity as their datablock says, so they still trail
+//!   off), the axis the vehicle's direction of travel and the velocity the vehicle's, for `dt * (speed /
 //!   maxWheelSpeed) * slip` of its clock (the wheel's slip, `1 -` the share of its force the friction circle let through): a
 //!   rolling wheel throws little, a spinning or sliding one a cloud. A game may lay a floor under the slip
 //!   ([`DustRules::min_slip`], none in TGE) so a rolling wheel throws a little dust too. A wheel off the ground breaks its path.
@@ -183,6 +185,13 @@ impl VehicleDust {
         self.live = 0;
     }
 
+    /// The particles alive, every emitter's: each with whether its emitter is a tire's (else the lift-off dust's).
+    pub fn alive(&self) -> impl Iterator<Item = (bool, &crate::particles::Particle)> {
+        self.emitters
+            .iter()
+            .flat_map(|((_, w), k)| k.emitter.particles.iter().map(move |p| (*w != LIFTOFF, p)))
+    }
+
     /// The particles alive.
     pub fn particles(&self) -> usize {
         self.emitters
@@ -256,6 +265,7 @@ impl VehicleDust {
                     let slip = wheel.slip.max(min_slip).clamp(0.0, 1.0);
                     let wheel_ms = (dt * (speed / top) * 1000.0 * slip) as u32;
                     if let Some(k) = Self::emitter(&mut self.emitters, world, (index, w), tire) {
+                        k.emitter.break_path();
                         k.emitter.emit_path(
                             wheel.point,
                             axis,
