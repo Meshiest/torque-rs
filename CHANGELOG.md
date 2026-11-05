@@ -266,5 +266,8 @@ The first development version. Nothing is published yet; this is what exists.
   updates; it turned in a tick's steps.
 - `torque-client`: a vehicle's drawn wheel contacts, where its tire tracks start and its tires' dust rises, are under the
   tires the frame draws; they were a tick's travel behind them at speed.
+- `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
+  had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
+  head turned as far as it goes).
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

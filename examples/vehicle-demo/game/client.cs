@@ -360,9 +360,14 @@ function steerLeft(%v) { $Drive::Left = %v; $Drive::Steer = $Drive::Left - $Driv
 function steerRight(%v) { $Drive::Right = %v; $Drive::Steer = $Drive::Left - $Drive::Right; }
 // The brake: the jump trigger held while the key is (a driver's goes to the buggy).
 function brake(%v) { $Drive::Brake = %v; $mvTriggerCount2++; }
-function orbitYaw(%v) { $Drive::OrbitYaw += %v * 0.004; }
-// (mClamp is an integer's: the pitch is kept by getMin and getMax.)
-function orbitPitch(%v) { $Drive::OrbitPitch = getMax(-1.5, getMin($Drive::OrbitPitch + %v * 0.003, 0.9)); }
+// Each move is kept in the range the host gives the camera ($Drive::YawMin to $Drive::YawMax, $Drive::PitchMin to
+// $Drive::PitchMax), so a mouse pushed past the edge turns the view back at once. (mClamp is an integer's: getMin and getMax.)
+function orbitYaw(%v) { $Drive::OrbitYaw = getMax($Drive::YawMin, getMin($Drive::OrbitYaw + %v * 0.004, $Drive::YawMax)); }
+function orbitPitch(%v) { $Drive::OrbitPitch = getMax($Drive::PitchMin, getMin($Drive::OrbitPitch + %v * 0.003, $Drive::PitchMax)); }
+$Drive::YawMin = -1000000;
+$Drive::YawMax = 1000000;
+$Drive::PitchMin = -0.8;
+$Drive::PitchMax = 1.0;
 function getOut(%v) { if (%v && isObject(ServerConnection)) commandToServer('GetOut'); }
 // F: the headlight on or off (the server lets only the driver).
 function toggleLight(%v) { if (%v && isObject(ServerConnection)) commandToServer('ToggleLight'); }

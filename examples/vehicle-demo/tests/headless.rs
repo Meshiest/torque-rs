@@ -1739,3 +1739,88 @@ fn the_map_places_every_square_of_the_forest_once() {
         assert!(files.kit.read(&format!("kit/{name}")).is_some(), "{name}");
     }
 }
+
+/// `ms` of frames of one client (its clock, then its scene), and the eye of the last.
+fn frames_eye(g: &mut VehicleDemo, ms: u32) -> torque_render_scene::source::Eye {
+    let mut eye = None;
+    for _ in 0..ms / 16 {
+        g.step(16);
+        g.update_scene(0.016);
+        eye = Some(g.drawn_eye(0.016));
+    }
+    eye.expect("a frame")
+}
+
+/// The difference of two yaws, the short way round.
+fn yaw_apart(a: f32, b: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let d = a - b;
+    d - tau * (d / tau).round()
+}
+
+#[test]
+fn the_seated_look_stops_at_its_edge_and_turns_back_at_once_and_tab_brings_it_into_range() {
+    use torque_example_vehicle_demo::client::{HEAD_TURN, MOUSE_PITCH, MOUSE_YAW};
+    let mut a = host();
+    get_in(&mut [&mut a], 0);
+    assert!(a.driving());
+    // At the eyes: the mouse pushed 2 radians past the head's turn, then back a tenth of a radian.
+    a.set_first_person(true);
+    let rest = frames_eye(&mut a, 200).yaw;
+    a.host.mouse_motion((HEAD_TURN + 2.0) / MOUSE_YAW, 0.0);
+    let edge = frames_eye(&mut a, 200).yaw;
+    assert!((a.number("$Drive::OrbitYaw") - HEAD_TURN).abs() < 1e-4);
+    assert!(
+        (yaw_apart(edge, rest).abs() - HEAD_TURN).abs() < 0.02,
+        "{rest} {edge}"
+    );
+    a.host.mouse_motion(-0.1 / MOUSE_YAW, 0.0);
+    let back = frames_eye(&mut a, 32).yaw;
+    assert!(
+        (yaw_apart(edge, back).abs() - 0.1).abs() < 0.01,
+        "the view turned back {} of 0.1",
+        yaw_apart(edge, back)
+    );
+    // The same for the tilt, both ways.
+    for dir in [1.0f32, -1.0] {
+        a.host.mouse_motion(0.0, dir * 3.0 / MOUSE_PITCH);
+        let tilted = frames_eye(&mut a, 100).pitch;
+        a.host.mouse_motion(0.0, -dir * 0.1 / MOUSE_PITCH);
+        let eased = frames_eye(&mut a, 32).pitch;
+        assert!(
+            ((tilted - eased).abs() - 0.1).abs() < 0.02,
+            "tilt {dir}: {tilted} then {eased}"
+        );
+    }
+    // Behind the buggy, looking back (a half turn and more); Tab: the head turned as far as it goes, and the mouse moves it
+    // at once.
+    a.set_first_person(false);
+    a.set_global("$Drive::OrbitPitch", "0");
+    frames_eye(&mut a, 100);
+    a.host
+        .mouse_motion((std::f32::consts::PI + 7.0) / MOUSE_YAW, 0.0);
+    frames_eye(&mut a, 100);
+    let behind = a.number("$Drive::OrbitYaw");
+    assert!(behind.abs() <= std::f32::consts::PI + 1e-4, "{behind}");
+    a.key(Key::Tab, true);
+    a.key(Key::Tab, false);
+    let at_eyes = frames_eye(&mut a, 600).yaw;
+    let yaw = a.number("$Drive::OrbitYaw");
+    assert!(yaw.abs() <= HEAD_TURN + 1e-4, "{yaw}");
+    a.host.mouse_motion(-yaw.signum() * 0.1 / MOUSE_YAW, 0.0);
+    let moved = frames_eye(&mut a, 32).yaw;
+    assert!(
+        (yaw_apart(at_eyes, moved).abs() - 0.1).abs() < 0.01,
+        "after Tab the view turned {} of 0.1",
+        yaw_apart(at_eyes, moved)
+    );
+    // And back behind the buggy: the pitch within the camera's range there.
+    a.host.mouse_motion(0.0, -3.0 / MOUSE_PITCH);
+    frames_eye(&mut a, 100);
+    a.key(Key::Tab, true);
+    a.key(Key::Tab, false);
+    frames_eye(&mut a, 100);
+    let [_, (low, high)] = a.look_range();
+    let pitch = a.number("$Drive::OrbitPitch");
+    assert!((low..=high).contains(&pitch), "{pitch} in {low}..{high}");
+}

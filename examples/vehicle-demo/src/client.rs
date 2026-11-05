@@ -150,6 +150,9 @@ pub const HEAD_UP: f32 = 1.05;
 /// How far the camera in a seat looks up (negative) and down at most (radians): above the buggy, short of straight down.
 pub const DRIVE_PITCH_RANGE: (f32, f32) = (-0.5, 1.3);
 pub const EYE_AHEAD: f32 = 0.12;
+/// How far a pixel of the mouse turns and tilts the look in a seat (radians; `orbitYaw` and `orbitPitch` in `client.cs`).
+pub const MOUSE_YAW: f32 = 0.004;
+pub const MOUSE_PITCH: f32 = 0.003;
 
 /// The predicted state of the buggy the client drives that the keys at the wheel read.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -653,6 +656,60 @@ impl VehicleDemo {
         !self.blend.arrived()
     }
 
+    /// The range the mouse turns the look in a seat (`$Drive::OrbitYaw`, `$Drive::OrbitPitch`) for the camera there: at the
+    /// eyes, a head's turn ([`HEAD_TURN`]) and tilt ([`HEAD_UP`], [`HEAD_DOWN`] about [`HEAD_REST`]); behind the buggy, all the
+    /// way round and the camera's pitch range ([`DRIVE_PITCH_RANGE`] about [`DRIVE_PITCH`]). Yaw, then pitch, each low and high.
+    pub fn look_range(&self) -> [(f32, f32); 2] {
+        if self.first_person() {
+            [
+                (-HEAD_TURN, HEAD_TURN),
+                (-HEAD_UP - HEAD_REST, HEAD_DOWN - HEAD_REST),
+            ]
+        } else {
+            [
+                (-std::f32::consts::PI, std::f32::consts::PI),
+                (
+                    DRIVE_PITCH_RANGE.0 - DRIVE_PITCH,
+                    DRIVE_PITCH_RANGE.1 - DRIVE_PITCH,
+                ),
+            ]
+        }
+    }
+
+    /// The seated look kept in the camera's range: the script clamps each mouse move to the range the globals give (so a
+    /// mouse pushed past the edge and turned back moves the view at once), and each frame the look itself is put in range,
+    /// after `Tab` too (a look behind the buggy becomes the head turned as far as it goes that way; the camera eases there).
+    /// Behind the buggy the yaw goes all the way round, kept within a turn either side.
+    fn keep_look_in_range(&mut self) {
+        if !self.seated() {
+            return;
+        }
+        let [(y0, y1), (p0, p1)] = self.look_range();
+        // Behind the buggy the script's yaw has no edge (the frame wraps it).
+        let (s0, s1) = if self.first_person() {
+            (y0, y1)
+        } else {
+            (-1.0e6, 1.0e6)
+        };
+        for (name, v) in [
+            ("$Drive::YawMin", s0),
+            ("$Drive::YawMax", s1),
+            ("$Drive::PitchMin", p0),
+            ("$Drive::PitchMax", p1),
+        ] {
+            self.set_global(name, &v.to_string());
+        }
+        let yaw = self.number("$Drive::OrbitYaw");
+        let pitch = self.number("$Drive::OrbitPitch");
+        let tau = std::f32::consts::TAU;
+        let wrapped = yaw - tau * (yaw / tau).round();
+        let kept = (wrapped.clamp(y0, y1), pitch.clamp(p0, p1));
+        if kept != (yaw, pitch) {
+            self.set_global("$Drive::OrbitYaw", &kept.0.to_string());
+            self.set_global("$Drive::OrbitPitch", &kept.1.to_string());
+        }
+    }
+
     /// The seated figure's look in the buggy's space: along the buggy turned by the mouse (`$Drive::OrbitYaw`,
     /// `$Drive::OrbitPitch`) within a head's turn.
     fn seated_look(&self) -> [f32; 3] {
@@ -778,6 +835,7 @@ impl VehicleDemo {
             Some(last) if last.0 != mode.0 => self.blend.switch(),
             _ => {}
         }
+        self.keep_look_in_range();
         self.blend.advance(dt);
         self.zoom(dt);
         let hide = mode.0 && !mode.1 && self.blend.arrived();
