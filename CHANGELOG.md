@@ -295,6 +295,9 @@ The first development version. Nothing is published yet; this is what exists.
   horizon with the sea open between them; the haze starts at 2,400 units. The level demo's web pack is 4.5 MB with the
   valley. A sixth valley view, low over the sea with the clouds in its reflection (`valley-sea`, also in the showcase's
   `--examples`).
+- The water's mirrored view fogs toward the atmosphere's own sky (its light toward the point, turned up), as the main view
+  fogs toward the sky behind a point, instead of the horizon ban's flat colour: a far shape fogged into the sky reflects
+  in the colour it is seen in. Capture faces and a server's sky box keep the ban's colour.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
