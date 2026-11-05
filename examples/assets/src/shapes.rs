@@ -785,7 +785,7 @@ fn apply(r: &Rot, v: Vec3) -> Vec3 {
     [0, 1, 2].map(|i| dot3(r[i], v))
 }
 
-/// A node rotation (`Quat16`) whose matrix, as the shape's maths makes it, is `r`.
+/// A node rotation (`Quat16`) whose matrix, as the shape's math makes it, is `r`.
 fn quat16_of(r: &Rot) -> Quat16 {
     let tr = r[0][0] + r[1][1] + r[2][2];
     let q = if tr > 0.0 {
@@ -821,7 +821,7 @@ fn quat16_of(r: &Rot) -> Quat16 {
             (r[1][0] - r[0][1]) / s,
         ]
     };
-    // The shape's maths reads its quaternions one way or the other (its matrix routine): the one that makes `r` back.
+    // The shape's math reads its quaternions one way or the other (its matrix routine): the one that makes `r` back.
     let pick = [q, [-q[0], -q[1], -q[2], q[3]]]
         .into_iter()
         .min_by(|a, b| {

@@ -272,12 +272,13 @@ function giveBuggy(%client)
    if (isObject(Buggy) && !isObject(Buggy.owner))
    {
       Buggy.owner = %client;
+      Buggy.ownerLeft = 0;
       %client.buggy = Buggy;
       return;
    }
    if ($World::Buggies >= $World::MaxBuggies)
       return;
-   %k = getMax(%client.joinOrder(), 1);
+   %k = freeBuggySlot();
    %x = %k * $World::BuggyApart;
    %vehicle = new WheeledVehicle()
    {
@@ -288,8 +289,28 @@ function giveBuggy(%client)
    MissionCleanup.add(%vehicle);
    giveHeadlight(%vehicle);
    %vehicle.owner = %client;
+   %vehicle.slot = %k;
    %client.buggy = %vehicle;
    $World::Buggies++;
+}
+
+// The lowest place in the row (1 up; the map's buggy stands at 0) no spawned buggy holds, so a newcomer's buggy never lands
+// on one left standing by a player who went.
+function freeBuggySlot()
+{
+   for (%k = 1; %k <= $World::MaxBuggies; %k++)
+   {
+      %taken = false;
+      for (%i = MissionCleanup.getCount() - 1; %i >= 0 && !%taken; %i--)
+      {
+         %obj = MissionCleanup.getObject(%i);
+         if (%obj.getClassName() $= "WheeledVehicle" && %obj.slot == %k)
+            %taken = true;
+      }
+      if (!%taken)
+         return %k;
+   }
+   return $World::MaxBuggies;
 }
 
 // The client left (its figure already gone): its buggy is let go, and every let-go buggy nobody sits in now goes (the figure
