@@ -1089,3 +1089,182 @@ fn a_typed_name_is_looked_up_and_joined() {
         a.server_log
     );
 }
+
+/// Where `game` draws the vehicle whose ghost is `ghost` this frame (where it runs it, else where its record put it).
+fn drawn_at(game: &VehicleDemo, ghost: u32) -> Option<[f32; 3]> {
+    game.with_world(|w| {
+        w.vehicle_render
+            .get(&ghost)
+            .copied()
+            .or_else(|| w.records.ghosts.get(&ghost).and_then(|g| g.pose()))
+            .and_then(|p| torque_render_scene::mounts::pose_matrix(&p, None))
+            .map(|(m, _)| m.column(3))
+    })
+    .flatten()
+}
+
+/// Frames of `frame_ms` on both clients, `keys` pressed on `a` at their times, `a` getting out at `out_ms`, until `end_ms`;
+/// `each` sees every frame (its time). The most a frame's drawn step of the buggy `a` drives went past what the server's speed
+/// covers in the frame, or back along the server's way, on each client, from half a second before `a` got out.
+fn drive_and_get_out(
+    a: &mut VehicleDemo,
+    b: &mut VehicleDemo,
+    keys: &[(u32, Key, bool)],
+    out_ms: u32,
+    end_ms: u32,
+    frame_ms: u32,
+    mut each: impl FnMut(&mut VehicleDemo, &mut VehicleDemo, u32),
+) -> [f32; 2] {
+    let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+    let id = server(a).buggy().unwrap();
+    let mut last: [Option<[f32; 3]>; 2] = [None, None];
+    let mut worst = [0.0f32; 2];
+    let mut t = 0;
+    while t < end_ms {
+        let now = t..t + frame_ms;
+        for (at, k, down) in keys {
+            if now.contains(at) {
+                a.key(*k, *down);
+            }
+        }
+        if now.contains(&out_ms) {
+            press(a, Key::E);
+        }
+        for g in [&mut *a, &mut *b] {
+            g.step(frame_ms);
+            g.update_scene(frame_ms as f32 / 1000.0);
+        }
+        t += frame_ms;
+        each(a, b, t);
+        let v = server(a).buggy_velocity_of(id).unwrap();
+        let expect = apart(v, [0.0; 3]) * frame_ms as f32 / 1000.0;
+        let drawn = [drawn_at(a, ga), drawn_at(b, gb)];
+        for k in 0..2 {
+            if let (Some(p), Some(q)) = (last[k], drawn[k])
+                && t + 500 > out_ms
+            {
+                // Ahead of the server's way, or back along it.
+                let step = [0, 1, 2].map(|c| q[c] - p[c]);
+                let speed = apart(v, [0.0; 3]).max(1e-3);
+                let along = (0..3).map(|c| step[c] * v[c]).sum::<f32>() / speed;
+                worst[k] = worst[k].max(apart(p, q) - expect).max(-along);
+            }
+        }
+        last = drawn;
+    }
+    worst
+}
+
+#[test]
+fn getting_out_at_speed_or_at_rest_the_buggy_goes_on_smoothly_for_both_players() {
+    // At speed after a long drive (more updates than the client keeps for the drive's end), at a high frame rate, and at rest.
+    let cases = [
+        ("at speed", vec![(0, Key::W, true)], 8000, 16),
+        ("at speed, 7 ms frames", vec![(0, Key::W, true)], 4000, 7),
+        (
+            "at rest",
+            vec![
+                (0, Key::W, true),
+                (2000, Key::W, false),
+                (2000, Key::Space, true),
+            ],
+            5000,
+            16,
+        ),
+    ];
+    for (name, keys, out_ms, frame_ms) in cases {
+        let mut a = host();
+        let mut b = join(&mut a);
+        get_in(&mut [&mut a, &mut b], 0);
+        let ga = a.buggy_ghost().unwrap();
+        let id = server(&a).buggy().unwrap();
+        let worst = drive_and_get_out(
+            &mut a,
+            &mut b,
+            &keys,
+            out_ms,
+            out_ms + 2500,
+            frame_ms,
+            |_, _, _| {},
+        );
+        assert!(!a.seated(), "{name}");
+        // No frame jumps the buggy ahead or back (one back toward where the drive began was tens of units); it may ease off for
+        // a moment while its driver's client goes from its own prediction to the server's updates.
+        assert!(worst[0] < 0.1 && worst[1] < 0.1, "{name}: {worst:?}");
+        let at = server(&a).buggy_position_of(id).unwrap();
+        let drawn = drawn_at(&a, ga).unwrap();
+        assert!(apart(at, drawn) < 2.5, "{name}: drawn {drawn:?}, at {at:?}");
+    }
+}
+
+/// The breaks in `lines` (a strip's segments, oldest first, from `from` on): where one does not start at the last one's end.
+fn breaks(lines: &[[[f32; 3]; 2]], from: usize) -> usize {
+    lines
+        .windows(2)
+        .skip(from.saturating_sub(1))
+        .filter(|w| apart(w[0][1], w[1][0]) > 1e-3)
+        .count()
+}
+
+#[test]
+fn another_players_buggy_and_one_rolling_on_without_a_driver_lay_unbroken_tracks() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+    let id = server(&a).buggy().unwrap();
+    // B watches A drive round at full speed (on the flat round the start), then A gets out and the buggy rolls on.
+    let counts = |g: &VehicleDemo, ghost: u32| -> Vec<usize> {
+        g.scene()
+            .track_lines(ghost)
+            .values()
+            .map(Vec::len)
+            .collect()
+    };
+    let mut from: Option<[Vec<usize>; 2]> = None;
+    let mut fastest = 0.0f32;
+    drive_and_get_out(
+        &mut a,
+        &mut b,
+        &[
+            (0, Key::W, true),
+            (1200, Key::A, true),
+            (5000, Key::W, false),
+            (5000, Key::A, false),
+        ],
+        5000,
+        6500,
+        16,
+        |a, b, t| {
+            let speed = horizontal(server(a).buggy_velocity_of(id).unwrap());
+            if t > 2000 && from.is_none() && speed > 15.0 {
+                from = Some([counts(a, ga), counts(b, gb)]);
+            }
+            fastest = fastest.max(speed);
+        },
+    );
+    let from = from.expect("the buggy got up to speed");
+    assert!(fastest > 18.0, "{fastest}");
+    let spacing = torque_example_vehicle_demo::scene::track_rules().spacing;
+    for (who, g, ghost, k) in [("driver", &a, ga, 0), ("other", &b, gb, 1)] {
+        let lines = g.scene().track_lines(ghost);
+        assert_eq!(lines.len(), 4, "{who}: four strips");
+        for (w, l) in &lines {
+            let start = from[k].get(*w).copied().unwrap_or(0);
+            assert!(
+                l.len() > start + 100,
+                "{who} wheel {w}: {} laid",
+                l.len() - start
+            );
+            assert_eq!(breaks(l, start), 0, "{who} wheel {w}: breaks in its strip");
+            let longest = l[start..]
+                .iter()
+                .map(|s| apart(s[0], s[1]))
+                .fold(0.0, f32::max);
+            assert!(
+                longest < spacing + 0.05,
+                "{who} wheel {w}: a segment {longest} long"
+            );
+        }
+    }
+}
