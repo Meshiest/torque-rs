@@ -3,6 +3,7 @@
 //! particles and one texture table. What fills it from a world is the world's own.
 
 use crate::hd::cells::StaticGeometry;
+use crate::hd::particle_light::{ParticleLight, shape_sprites};
 use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, post, sh, shadow, sky};
 use crate::source::Eye;
 use crate::textures::TextureSet;
@@ -166,6 +167,8 @@ pub struct HdScene<G> {
     pub particles: Vec<(f32, HdDraw)>,
     /// Counts the particle sets (the GPU uploads them again when it changes).
     pub particles_generation: u64,
+    /// Which particle draws are lit (none: all unlit, as TGE draws them).
+    pub particle_light: Option<ParticleLight>,
     /// Whether the last sync put off static geometry textures still being decoded (a live window's build decodes new ones on a
     /// decoder thread).
     pub textures_pending: bool,
@@ -239,6 +242,7 @@ impl<G> HdScene<G> {
             flare: None,
             particles: Vec::new(),
             particles_generation: 0,
+            particle_light: None,
             textures_pending: false,
             lights: Vec::new(),
             spots: Vec::new(),
@@ -255,7 +259,8 @@ impl<G> HdScene<G> {
 
     /// The frame's particles ([`particles`](crate::particles)' draws, each at its eye distance, their textures indices into
     /// `textures`): unlit sprites that fade into what is behind them; the additive ones also emitters, into the range the bloom
-    /// picks up (as the coronas). Replaces the last frame's and counts a new set.
+    /// picks up (as the coronas); those [`HdScene::particle_light`] picks lit instead. Replaces the last frame's and counts a
+    /// new set.
     pub fn set_particles(&mut self, draws: &[(f32, Draw)], textures: TextureSet) {
         self.set_particles_and_decals(draws, &[], textures);
     }
@@ -278,11 +283,14 @@ impl<G> HdScene<G> {
         let sprites = particles.iter().map(|(dist, d)| {
             let hd =
                 HdDraw::from_fixed(d, material::KIND_SKY, &local).with_material(material::PARTICLE);
-            let hd = if d.blend == Blend::Additive {
+            let mut hd = if d.blend == Blend::Additive {
                 hd.with_material(material::EMITTER)
             } else {
                 hd
             };
+            if self.particle_light.is_some_and(|rule| rule.lights(d)) {
+                shape_sprites(&mut hd);
+            }
             (*dist, hd)
         });
         let marks = decals.iter().map(|(dist, d)| {

@@ -4,7 +4,7 @@
 //! list of games on the network or at a typed address. `--solo` plays alone at once (no socket for the game, nobody on the network
 //! sees it), `--host` hosts at once, `--join <address>` joins at once (one of the three), `--name <name>` sets the player's name,
 //! `--bind <address>` hosts on that address instead of this computer's LAN address. `--shots <dir>` draws its pictures offscreen
-//! into `dir` (two clients over the loopback address, no window).
+//! into `dir` (two clients over the loopback address, no window); `--lit-particle-shots <dir>` the tires' dust unlit and lit.
 
 use torque::app::cli::{Args, unknown};
 use torque_example_vehicle_demo::client::{ClientOptions, Start, VehicleDemo};
@@ -17,6 +17,7 @@ const SHOT_SIZE: (u32, u32) = (1280, 720);
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = Args::from_env();
     let mut shots_dir = None;
+    let mut lit_dir = None;
     let mut options = ClientOptions::default();
     let mut host = false;
     let mut solo = false;
@@ -24,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--shots" => shots_dir = Some(args.dir(&arg)?),
+            "--lit-particle-shots" => lit_dir = Some(args.dir(&arg)?),
             "--host" => host = true,
             "--solo" => solo = true,
             "--join" => join = Some(args.value(&arg, "an address")?),
@@ -33,6 +35,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let start = Start::from_flags(solo, host, join)?;
+    if let Some(dir) = lit_dir {
+        for path in shots::write_lit_particles(&dir, SHOT_SIZE, GameFiles::bundled)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
     if let Some(dir) = shots_dir {
         for path in shots::write_all(&dir, SHOT_SIZE, GameFiles::bundled)? {
             println!("{}", path.display());

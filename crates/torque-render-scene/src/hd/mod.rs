@@ -20,6 +20,7 @@ pub mod grade;
 pub mod kit;
 pub mod lut;
 pub mod objects;
+pub mod particle_light;
 pub mod post;
 pub mod reflect;
 pub mod scatter;
@@ -175,7 +176,7 @@ impl Quality {
 }
 
 /// The material word of an [`HdVertex`]: what the shader does with the surface. The renderer never reads bits 0-9 and 19-21,
-/// nor bits 27-30 of kind 0 (bit 29 of the others is [`material::DECAL`]): they are an extension's (kind 0 is the extension's static geometry).
+/// nor bits 27-30 of kind 0 (bits 29 and 30 of the others are [`material::DECAL`] and [`material::LIT`]): they are an extension's (kind 0 is the extension's static geometry).
 pub mod material {
     /// Emissive: drawn unlit at its colour (times the settings' emissive gain).
     pub const GLOW: u32 = 1 << 10;
@@ -223,6 +224,9 @@ pub mod material {
     /// With [`PARTICLE`], a decal (a mark lying on a surface, drawn with the particles): it does not fade into the surface
     /// behind it.
     pub const DECAL: u32 = 1 << 29;
+    /// With [`PARTICLE`] (not [`DECAL`]), a lit sprite ([`super::particle_light`]): its normal is its direction from the
+    /// sprite's center, its `extra` the half diagonal (f32 bits); lit by the sun, the sky and the lights though [`UNLIT`].
+    pub const LIT: u32 = 1 << 30;
     /// With [`BILLBOARD`], one anchored in the world (a light's corona): its position is its centre itself, not less
     /// the eye, and it is not dimmed by the facing (a corona at the light, facing the camera).
     pub const ANCHORED: u32 = 1 << 25;

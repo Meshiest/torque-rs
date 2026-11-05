@@ -627,6 +627,63 @@ pub fn write_polish(
     Ok(shots.paths)
 }
 
+/// The muzzle's smoke after a shot, in the sun and in the cover's shadow, from Ann's eyes: `smoke-sun-unlit.png`,
+/// `smoke-sun-lit.png`, `smoke-shade-unlit.png` and `smoke-shade-lit.png` (unlit as TGE draws particles, and lit by
+/// [`ParticleLight::BLENDED`]) at `size` in `dir`, each with a close crop of the muzzle (`-crop`). Returns the paths.
+pub fn write_lit_smoke(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    use torque_render_scene::hd::particle_light::ParticleLight;
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    let mut shots = Shots::new(dir)?;
+    place(&mut a.game, "Bob", [-12.0, 12.0, 0.1], std::f32::consts::PI)?;
+    // The shade: just out of the cover (x -0.5..0.5, y -11..-7, 2.4 high) on its side away from the sun, facing across it.
+    let sun = a.view.scene().sun.towards;
+    let n = sun[0].hypot(sun[1]).max(1e-3);
+    let g = [-sun[0] / n, -sun[1] / n];
+    let t = [
+        (0.5 + 0.45) / g[0].abs().max(1e-3),
+        (2.0 + 0.45) / g[1].abs().max(1e-3),
+    ];
+    let t = t[0].min(t[1]);
+    let shade = [g[0] * t, -9.0 + g[1] * t, 0.1];
+    for (spot, at, yaw) in [
+        ("sun", [4.0, -16.0, 0.1], 0.0),
+        (
+            "shade",
+            shade,
+            g[0].atan2(g[1]) + std::f32::consts::FRAC_PI_2,
+        ),
+    ] {
+        place(&mut a.game, "Ann", at, yaw)?;
+        run(&gpu, &mut [&mut a, &mut b], 600)?;
+        a.game.set_view_pitch(-0.12);
+        run(&gpu, &mut [&mut a, &mut b], 300)?;
+        let flashes = a.game.scene().flashes;
+        a.game.call("fire", &["1"])?;
+        run_until(&gpu, &mut a, &mut b, "the shot's flash", |a, _| {
+            a.game.scene().flashes > flashes
+        })?;
+        run(&gpu, &mut [&mut a, &mut b], 200)?;
+        for (look, rule) in [("unlit", None), ("lit", Some(ParticleLight::BLENDED))] {
+            a.view.set_particle_light(rule);
+            let frame = a.picture(&gpu)?;
+            shots.save(&frame, &format!("smoke-{spot}-{look}"))?;
+            shots.save(
+                &zoomed(&frame, size.0 / 3, size.1 / 3, 3),
+                &format!("smoke-{spot}-{look}-crop"),
+            )?;
+        }
+        a.view.set_particle_light(None);
+        a.game.call("fire", &["0"])?;
+        run(&gpu, &mut [&mut a, &mut b], 1500)?;
+    }
+    Ok(shots.paths)
+}
+
 /// Turns Ann's view to look at `target` (with the next move, as the mouse would).
 fn look_at_point(a: &mut Seat, target: [f32; 3]) {
     let Some(own) = a.game.scene().own() else {

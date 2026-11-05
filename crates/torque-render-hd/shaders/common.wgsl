@@ -21,6 +21,8 @@ const MAT_BILLBOARD: u32 = 0x800000u;
 // A particle sprite, and a decal drawn with them (it does not fade into its surface).
 const MAT_PARTICLE: u32 = 0x1000000u;
 const MAT_DECAL: u32 = 0x20000000u;
+// With MAT_PARTICLE: a lit sprite (particles.wgsl).
+const MAT_LIT: u32 = 0x40000000u;
 const MAT_ANCHORED: u32 = 0x2000000u;
 const MAT_SKY_EYE: u32 = 0x4000000u;
 // A shape's vertex in its mesh's own space (NodePlace): its extra word names its mesh's place in the frame's table.
