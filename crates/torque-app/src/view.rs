@@ -72,6 +72,25 @@ pub struct Water<'a> {
     pub max: [f32; 2],
 }
 
+impl Water<'_> {
+    /// Whether its height, rectangle and tile are finite numbers, its rectangle's span too.
+    pub fn is_finite(&self) -> bool {
+        let span = [self.max[0] - self.min[0], self.max[1] - self.min[1]];
+        [
+            self.level,
+            self.tile,
+            self.min[0],
+            self.min[1],
+            self.max[0],
+            self.max[1],
+            span[0],
+            span[1],
+        ]
+        .iter()
+        .all(|v| v.is_finite())
+    }
+}
+
 /// The most triangles of one part of a static mesh the GPU culls on its own ([`WorldView::set_static_mesh`]).
 pub const MESH_CLUSTER_TRIANGLES: u32 = 512;
 /// The sampler of a static mesh's untextured surfaces.
@@ -370,7 +389,15 @@ impl WorldView {
     /// surface's opacity) with `texture` (a path the reader finds) repeated every `tile` units, drawn by the renderer as water
     /// (its waves, refraction, reflection and the sun's glint). It is cut into cells of at most [`WATER_CELL`] units so the
     /// fog and the light are interpolated over it. Replaces the water there was.
+    /// A sheet whose height, rectangle or tile is not finite numbers (a map's file is not trusted) is not drawn: the water
+    /// there was is taken away.
     pub fn set_water(&mut self, assets: &dyn Assets, water: &Water<'_>) {
+        if !water.is_finite() {
+            self.scene.water.clear();
+            self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+            self.statics_changed = true;
+            return;
+        }
         let mut set = TextureSet::new(assets);
         let found = set.get(water.texture);
         let local = self.intern(set.into_textures());
@@ -875,5 +902,53 @@ fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sheet of water from a hostile map: a height, a corner or a tile that is not a finite number (or a span that overflows)
+    /// is refused; a plain one is drawn as cells of its rectangle.
+    #[test]
+    fn water_with_numbers_that_are_not_finite_is_refused() {
+        let plain = Water {
+            texture: "kit/water.png",
+            tile: 24.0,
+            color: [64, 112, 120, 200],
+            level: 30.0,
+            min: [-100.0, -50.0],
+            max: [100.0, 50.0],
+        };
+        assert!(plain.is_finite());
+        let d = water_draw(None, &plain);
+        assert_eq!(d.vertices.len(), 7 * 4 * 6);
+        assert!(d.vertices.iter().all(|v| v.position[2] == 30.0));
+        for hostile in [
+            Water {
+                level: f32::NAN,
+                ..plain
+            },
+            Water {
+                tile: f32::INFINITY,
+                ..plain
+            },
+            Water {
+                min: [f32::NEG_INFINITY, 0.0],
+                ..plain
+            },
+            Water {
+                max: [0.0, f32::NAN],
+                ..plain
+            },
+            Water {
+                min: [-3e38, 0.0],
+                max: [3e38, 1.0],
+                ..plain
+            },
+        ] {
+            assert!(!hostile.is_finite(), "{hostile:?}");
+        }
     }
 }

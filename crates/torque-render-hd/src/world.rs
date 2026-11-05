@@ -5553,7 +5553,11 @@ impl<E: HdExtension> HdWorld<E> {
             &self.device,
             &self.queue,
             scene,
-            scene.cloud_time.unwrap_or_else(|| E::time(scene)),
+            // (A clock that is not a finite number is not sent to the GPU: the effect time instead.)
+            scene
+                .cloud_time
+                .filter(|t| t.is_finite())
+                .unwrap_or_else(|| E::time(scene)),
             &icam,
             (iw, ih),
             cloud_quality,

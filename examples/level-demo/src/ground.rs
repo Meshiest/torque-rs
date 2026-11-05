@@ -57,11 +57,8 @@ impl MapGround {
             variation: blocks(text, "ScriptObject").iter().any(|b| {
                 field(b, "groundVariation").is_some_and(|v| v.trim() != "0" && !v.trim().is_empty())
             }),
-            cloud_time_scale: blocks(text, "ScriptObject")
-                .iter()
-                .find_map(|b| field(b, "cloudTimeScale")?.trim().parse::<f32>().ok())
-                .filter(|s| s.is_finite() && *s > 0.0)
-                .unwrap_or(0.0),
+            cloud_time_scale: cloud_time_scale(text),
+            water: water_of(text),
             ..MapGround::default()
         };
         if let Some(block) = blocks(text, "TerrainBlock").into_iter().next() {
@@ -78,23 +75,6 @@ impl MapGround {
                 .map(|m| format!("kit/{m}.png"))
                 .collect();
             ground.terrain = Some(terrain);
-        }
-        if let Some(block) = blocks(text, "WaterBlock").into_iter().next() {
-            let p = numbers(&field(&block, "position").unwrap_or_default());
-            let s = numbers(&field(&block, "scale").unwrap_or_default());
-            let (p, s) = (
-                [0, 1, 2].map(|k| p.get(k).copied().unwrap_or(0.0)),
-                [0, 1, 2].map(|k| s.get(k).copied().unwrap_or(1.0)),
-            );
-            ground.water = Some(WaterSheet {
-                level: p[2] + s[2],
-                min: [p[0].min(p[0] + s[0]), p[1].min(p[1] + s[1])],
-                max: [p[0].max(p[0] + s[0]), p[1].max(p[1] + s[1])],
-                texture: field(&block, "surfaceTexture").unwrap_or_default(),
-                opacity: field(&block, "surfaceOpacity")
-                    .and_then(|v| v.trim().parse().ok())
-                    .unwrap_or(0.75),
-            });
         }
         Ok(ground)
     }
@@ -166,10 +146,63 @@ fn field(block: &str, name: &str) -> Option<String> {
     })
 }
 
-fn numbers(text: &str) -> Vec<f32> {
+/// The numbers of a field (`"1 2 3"`); None when one is not a number or not finite (a map file is not trusted: `nan` and `inf`
+/// parse as numbers).
+fn numbers(text: &str) -> Option<Vec<f32>> {
     text.split_whitespace()
-        .filter_map(|w| w.parse().ok())
+        .map(|w| w.parse::<f32>().ok().filter(|v| v.is_finite()))
         .collect()
+}
+
+/// One finite number of a field.
+fn number(text: &str) -> Option<f32> {
+    text.trim().parse::<f32>().ok().filter(|v| v.is_finite())
+}
+
+/// The most times as fast as the clock a map's clouds may run.
+pub const MAX_CLOUD_TIME_SCALE: f32 = 1_000.0;
+
+/// The map's `MapInfo` `cloudTimeScale`, held to `0..=`[`MAX_CLOUD_TIME_SCALE`] (0: none, or not a finite number).
+pub fn cloud_time_scale(text: &str) -> f32 {
+    blocks(text, "ScriptObject")
+        .iter()
+        .find_map(|b| number(&field(b, "cloudTimeScale")?))
+        .filter(|s| *s > 0.0)
+        .map_or(0.0, |s| s.min(MAX_CLOUD_TIME_SCALE))
+}
+
+/// The map's first `WaterBlock` as a sheet of water: the top of its box. None without one, or when its position, scale or
+/// opacity is not finite numbers (a map file is not trusted).
+pub fn water_of(text: &str) -> Option<WaterSheet> {
+    let block = blocks(text, "WaterBlock").into_iter().next()?;
+    let p = numbers(&field(&block, "position").unwrap_or_default())?;
+    let s = numbers(&field(&block, "scale").unwrap_or_default())?;
+    let (p, s) = (
+        [0, 1, 2].map(|k| p.get(k).copied().unwrap_or(0.0)),
+        [0, 1, 2].map(|k| s.get(k).copied().unwrap_or(1.0)),
+    );
+    let opacity = match field(&block, "surfaceOpacity") {
+        Some(v) => number(&v)?,
+        None => 0.75,
+    };
+    let sheet = WaterSheet {
+        level: p[2] + s[2],
+        min: [p[0].min(p[0] + s[0]), p[1].min(p[1] + s[1])],
+        max: [p[0].max(p[0] + s[0]), p[1].max(p[1] + s[1])],
+        texture: field(&block, "surfaceTexture").unwrap_or_default(),
+        opacity: opacity.clamp(0.0, 1.0),
+    };
+    // Sums of finite numbers can still overflow to infinity.
+    let finite = [
+        sheet.level,
+        sheet.min[0],
+        sheet.min[1],
+        sheet.max[0],
+        sheet.max[1],
+    ]
+    .iter()
+    .all(|v| v.is_finite());
+    finite.then_some(sheet)
 }
 
 #[cfg(test)]
@@ -185,9 +218,48 @@ mod tests {
         assert_eq!(field(&found[0], "position").as_deref(), Some("-10 -20 0"));
         assert_eq!(field(&found[0], "surfaceopacity").as_deref(), Some("0.6"));
         assert_eq!(
-            field(&found[0], "scale").map(|s| numbers(&s)),
+            field(&found[0], "scale").and_then(|s| numbers(&s)),
             Some(vec![40.0, 30.0, 12.0])
         );
         assert!(blocks(text, "TerrainBlock").is_empty());
+    }
+
+    /// A hostile valley: not-a-number and infinite fields leave no water and no cloud timelapse, and a huge cloud speed is
+    /// held to its cap.
+    #[test]
+    fn a_hostile_map_s_numbers_are_refused() {
+        let map = |water: &str, info: &str| {
+            format!(
+                "new SimGroup(MissionGroup) {{\n   new ScriptObject(MapInfo) {{ title = \"Valley\"; {info} }};\n   \
+                 new WaterBlock(Lake) {{ {water} }};\n}};"
+            )
+        };
+        let good = map(
+            "position = \"-10 -20 0\"; scale = \"40 30 12\"; surfaceOpacity = 0.6;",
+            "cloudTimeScale = 150;",
+        );
+        let w = water_of(&good).expect("water");
+        assert_eq!(
+            (w.level, w.min, w.max, w.opacity),
+            (12.0, [-10.0, -20.0], [30.0, 10.0], 0.6)
+        );
+        assert_eq!(cloud_time_scale(&good), 150.0);
+        for water in [
+            "position = \"nan 0 0\"; scale = \"40 30 12\";",
+            "position = \"0 0 0\"; scale = \"inf 30 12\";",
+            "position = \"0 0 -inf\"; scale = \"40 30 12\";",
+            "position = \"0 0 0\"; scale = \"40 30 12\"; surfaceOpacity = NaN;",
+            "position = \"3e38 0 0\"; scale = \"3e38 30 12\";",
+        ] {
+            assert_eq!(water_of(&map(water, "")), None, "{water}");
+        }
+        for (info, scale) in [
+            ("cloudTimeScale = nan;", 0.0),
+            ("cloudTimeScale = inf;", 0.0),
+            ("cloudTimeScale = -5;", 0.0),
+            ("cloudTimeScale = 1e30;", MAX_CLOUD_TIME_SCALE),
+        ] {
+            assert_eq!(cloud_time_scale(&map("", info)), scale, "{info}");
+        }
     }
 }

@@ -296,10 +296,14 @@ The first development version. Nothing is published yet; this is what exists.
   valley. A sixth valley view, low over the sea with the clouds in its reflection (`valley-sea`, also in the showcase's
   `--examples`).
 - The water's mirrored view fogs toward the atmosphere's own sky (its light toward the point, turned up), as the main view
-  fogs toward the sky behind a point, instead of the horizon ban's flat colour: a far shape fogged into the sky reflects
-  in the colour it is seen in. Capture faces, the sky cube's faces and a server's sky box keep the ban's colour.
+  fogs toward the sky behind a point, instead of the horizon ban's flat color: a far shape fogged into the sky reflects
+  in the color it is seen in. Capture faces, the sky cube's faces and a server's sky box keep the ban's color.
 - The showcase's valley is the view low over the sea (`SEA_PICTURE_MS` into the timelapse, when the clouds' reflections read
   best), the far ranges' peaks with more faces, and a valley view's eye kept above the water where the ground is under it.
+- A map's numbers are not trusted: the level demo refuses a `WaterBlock` whose position, scale or opacity is not finite
+  numbers (`nan` and `inf` parse as numbers) and holds `cloudTimeScale` to 0 to 1,000; its clouds' clock starts over when it
+  is not finite; `WorldView::set_water` draws no water of non-finite numbers; the renderer sends the effect time in place of
+  a cloud clock that is not finite.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel

@@ -380,7 +380,7 @@ impl LevelDemo {
         let dt = self.client.take_frame_time();
         let scale = self.ground.cloud_time_scale;
         if scale > 0.0 {
-            self.cloud_clock = (self.cloud_clock + dt * scale) % CLOUD_CLOCK_WRAP;
+            self.cloud_clock = advance_cloud_clock(self.cloud_clock, dt, scale);
             view.set_cloud_time(Some(self.cloud_clock));
         } else {
             view.set_cloud_time(None);
@@ -458,3 +458,24 @@ pub fn with_fov(mut eye: Eye) -> Eye {
 }
 
 pub use torque_example_common::ray_box;
+
+/// The clouds' clock `clock` (seconds) run on `dt` seconds at `scale` times the clock's pace, starting over at
+/// [`CLOUD_CLOCK_WRAP`], and from 0 when it is no longer a finite number.
+pub fn advance_cloud_clock(clock: f32, dt: f32, scale: f32) -> f32 {
+    let next = (clock + dt * scale) % CLOUD_CLOCK_WRAP;
+    if next.is_finite() { next } else { 0.0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cloud_clock_runs_wraps_and_starts_over_when_not_finite() {
+        assert_eq!(advance_cloud_clock(10.0, 0.5, 150.0), 85.0);
+        assert!(advance_cloud_clock(CLOUD_CLOCK_WRAP - 1.0, 1.0, 2.0) < 2.0);
+        assert_eq!(advance_cloud_clock(f32::NAN, 0.5, 150.0), 0.0);
+        assert_eq!(advance_cloud_clock(0.0, f32::INFINITY, 150.0), 0.0);
+        assert_eq!(advance_cloud_clock(0.0, 0.5, f32::NAN), 0.0);
+    }
+}
