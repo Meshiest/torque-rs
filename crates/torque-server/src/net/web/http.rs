@@ -182,6 +182,8 @@ pub enum Status {
     HeadersTooLarge,
     TooManyRequests,
     VersionNotSupported,
+    Forbidden,
+    MisdirectedRequest,
 }
 
 impl Status {
@@ -196,6 +198,8 @@ impl Status {
             Status::HeadersTooLarge => 431,
             Status::TooManyRequests => 429,
             Status::VersionNotSupported => 505,
+            Status::Forbidden => 403,
+            Status::MisdirectedRequest => 421,
         }
     }
 
@@ -210,6 +214,8 @@ impl Status {
             Status::HeadersTooLarge => "Request Header Fields Too Large",
             Status::TooManyRequests => "Too Many Requests",
             Status::VersionNotSupported => "HTTP Version Not Supported",
+            Status::Forbidden => "Forbidden",
+            Status::MisdirectedRequest => "Misdirected Request",
         }
     }
 }
@@ -228,6 +234,105 @@ pub struct Request {
     pub wants_upgrade: bool,
     /// The bytes of the head (what follows is the next request, or the socket's first frames).
     pub head_len: usize,
+    /// The `Host` header (`name` or `name:port`), if there is one.
+    pub host: Option<String>,
+    /// The `Origin` header (a browser's page asking: `http://name:port`), if there is one.
+    pub origin: Option<String>,
+    /// The protocol's minor version (`1` for HTTP/1.1).
+    pub version: u8,
+}
+
+/// Which pages may open game sockets (their `Origin`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Origins {
+    /// The server's own page: an origin whose scheme is the server's (`https` under TLS, else `http`) and whose host and
+    /// port are the request's `Host`.
+    #[default]
+    SameHost,
+    /// These origins only (`https://games.example:8443`, compared without case and a trailing `/`): a page served by
+    /// another web server.
+    List(Vec<String>),
+    /// Any page.
+    Any,
+}
+
+/// Who may reach a web transport ([`check_access`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Access {
+    /// The names a request's `Host` may carry besides IP addresses and `localhost` (`games.example`).
+    pub hosts: Vec<String>,
+    /// The pages that may open game sockets.
+    pub origins: Origins,
+}
+
+/// Whether `request` may be answered under `access`: its `Host` (required by HTTP/1.1) must name an IP address,
+/// `localhost` or one of [`Access::hosts`], else 421 (a name pointed at this server's address by its owner's DNS does not
+/// reach it); a game socket asked for with an `Origin` must come from an origin [`Access::origins`] allows, else 403. A
+/// request with no `Origin` is not a browser page's and is let through.
+pub fn check_access(request: &Request, access: &Access, tls: bool) -> Result<(), Status> {
+    let Some(host) = request.host.as_deref() else {
+        return if request.version >= 1 {
+            Err(Status::BadRequest)
+        } else if request.upgrade.is_some() && request.origin.is_some() {
+            Err(Status::Forbidden)
+        } else {
+            Ok(())
+        };
+    };
+    let name = host_name(host).ok_or(Status::BadRequest)?;
+    let known = name.parse::<std::net::IpAddr>().is_ok()
+        || name.eq_ignore_ascii_case("localhost")
+        || access.hosts.iter().any(|h| h.eq_ignore_ascii_case(name));
+    if !known {
+        return Err(Status::MisdirectedRequest);
+    }
+    if !request.wants_upgrade {
+        return Ok(());
+    }
+    let Some(origin) = request.origin.as_deref() else {
+        return Ok(());
+    };
+    let origin = origin.trim().trim_end_matches('/');
+    let allowed = match &access.origins {
+        Origins::Any => true,
+        Origins::List(list) => list
+            .iter()
+            .any(|o| o.trim().trim_end_matches('/').eq_ignore_ascii_case(origin)),
+        Origins::SameHost => {
+            let scheme = if tls { "https" } else { "http" };
+            origin.eq_ignore_ascii_case(&format!("{scheme}://{host}"))
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(Status::Forbidden)
+    }
+}
+
+/// The name of a `Host` value (`name`, `name:port`, `[v6]` or `[v6]:port`); None when it is malformed.
+fn host_name(host: &str) -> Option<&str> {
+    let host = host.trim();
+    if let Some(rest) = host.strip_prefix('[') {
+        let (inside, after) = rest.split_once(']')?;
+        if !(after.is_empty()
+            || after
+                .strip_prefix(':')
+                .is_some_and(|p| p.parse::<u16>().is_ok()))
+        {
+            return None;
+        }
+        return Some(inside);
+    }
+    let (name, port) = match host.split_once(':') {
+        Some((n, p)) => (n, Some(p)),
+        None => (host, None),
+    };
+    let name_ok = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));
+    (name_ok && port.is_none_or(|p| p.parse::<u16>().is_ok())).then_some(name)
 }
 
 /// What a buffer of request bytes holds.
@@ -299,12 +404,26 @@ pub fn parse_head(buf: &[u8]) -> Parsed {
         }
     })
     .flatten();
+    let single = |name: &'static str| -> Result<Option<String>, ()> {
+        let mut values = header(name);
+        let first = values.next().map(str::to_string);
+        if values.next().is_some() {
+            return Err(());
+        }
+        Ok(first)
+    };
+    let (Ok(host), Ok(origin)) = (single("host"), single("origin")) else {
+        return Parsed::Refuse(Status::BadRequest);
+    };
     Parsed::Request(Request {
         path,
         keep_alive,
         upgrade,
         wants_upgrade,
         head_len,
+        host,
+        origin,
+        version,
     })
 }
 
@@ -553,6 +672,43 @@ mod tests {
             };
             assert!(r.wants_upgrade && r.upgrade.is_none(), "{to}");
         }
+    }
+
+    #[test]
+    fn hosts_must_be_known_and_well_formed() {
+        let access = Access {
+            hosts: vec!["Games.Example".to_string()],
+            origins: Origins::SameHost,
+        };
+        let check = |head: &str| {
+            let Parsed::Request(r) = request(head) else {
+                panic!("a request: {head}");
+            };
+            check_access(&r, &access, false)
+        };
+        assert_eq!(
+            check("GET / HTTP/1.1\r\nHost: games.example:80\r\n\r\n"),
+            Ok(())
+        );
+        assert_eq!(check("GET / HTTP/1.1\r\nHost: [::1]:8080\r\n\r\n"), Ok(()));
+        assert_eq!(check("GET / HTTP/1.1\r\nHost: 10.0.0.2\r\n\r\n"), Ok(()));
+        assert_eq!(check("GET / HTTP/1.0\r\n\r\n"), Ok(()));
+        assert_eq!(check("GET / HTTP/1.1\r\n\r\n"), Err(Status::BadRequest));
+        assert_eq!(
+            check("GET / HTTP/1.1\r\nHost: a.example\r\n\r\n"),
+            Err(Status::MisdirectedRequest)
+        );
+        for bad in ["a b", "x:99999", "[::1", "x/y", ""] {
+            assert_eq!(
+                check(&format!("GET / HTTP/1.1\r\nHost: {bad}\r\n\r\n")),
+                Err(Status::BadRequest),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            request("GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n"),
+            Parsed::Refuse(Status::BadRequest)
+        );
     }
 
     #[test]

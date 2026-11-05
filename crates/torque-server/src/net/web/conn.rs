@@ -1,9 +1,9 @@
 //! One TCP connection of the web transport: an HTTP exchange (a request head read under caps, a file or a refusal written
 //! back) that may become a game socket (a WebSocket whose binary messages are the datagrams).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::rc::Rc;
 
 use tungstenite::protocol::frame::CloseFrame;
@@ -13,8 +13,9 @@ use tungstenite::{Error as WsError, Message};
 use web_time::{Duration, Instant};
 
 use super::http::{self, Parsed, Status, WEB_SOCKET_PATH, WebFiles};
+use super::stand_in::StandIns;
 use super::tls::Pipe;
-use super::{WebCounters, WebLimits};
+use super::{Access, WebCounters, WebLimits};
 
 /// The most bytes one connection writes in one pass (a large file goes out over several passes, so one download does not
 /// hold a pass).
@@ -119,12 +120,20 @@ pub(crate) struct Pass<'a> {
     pub files: Option<&'a WebFiles>,
     pub inbox: &'a mut VecDeque<(SocketAddr, Vec<u8>)>,
     pub counters: &'a mut WebCounters,
-    /// The game sockets open from each address.
-    pub sockets: &'a mut HashMap<IpAddr, usize>,
+    /// The stand-in addresses of the game sockets (and the sockets each peer address holds).
+    pub stand_ins: &'a mut StandIns,
+    /// Who may reach the transport (the Host and Origin checks).
+    pub access: &'a Access,
+    /// Whether the connections are TLS (the page's origin is `https`).
+    pub tls: bool,
 }
 
 pub(crate) struct Conn {
+    /// The TCP peer's address.
     pub peer: SocketAddr,
+    /// The socket's stand-in address ([`super::stand_in`]), taken when the upgrade's answer is queued (it reserves the
+    /// socket's place under the per-address cap) and given back when the connection ends.
+    pub stand_in: Option<SocketAddr>,
     phase: Phase,
     /// When the present wait began: the head's (the connection's start, or the last response's end), or the socket's last
     /// frame.
@@ -138,6 +147,7 @@ impl Conn {
     pub(crate) fn new(peer: SocketAddr, pipe: Pipe, now: Instant) -> Conn {
         Conn {
             peer,
+            stand_in: None,
             phase: Phase::Http {
                 pipe,
                 buf: Vec::new(),
@@ -172,12 +182,12 @@ impl Conn {
     /// Ends the connection (a socket says why in its close frame).
     pub(crate) fn shut(&mut self, why: Closed, pass: &mut Pass<'_>) {
         why.count(pass.counters);
+        if let Some(addr) = self.stand_in.take() {
+            pass.stand_ins.give_back(self.peer.ip(), addr);
+        }
         match std::mem::replace(&mut self.phase, Phase::Gone) {
             Phase::Http { mut pipe, .. } => pipe.shut(),
             Phase::Socket { mut ws, .. } => {
-                if let Some(n) = pass.sockets.get_mut(&self.peer.ip()) {
-                    *n = n.saturating_sub(1);
-                }
                 let code = match why {
                     Closed::Oversize => Some(CloseCode::Size),
                     Closed::Rate | Closed::Stalled => Some(CloseCode::Policy),
@@ -283,17 +293,25 @@ impl Conn {
             buf.drain(..request.head_len);
             self.requests += 1;
             pass.counters.requests += 1;
+            if let Err(status) = http::check_access(&request, pass.access, pass.tls) {
+                pass.counters.refusals += 1;
+                *out = Some(refuse(status));
+                continue;
+            }
             let keep = request.keep_alive
                 && self.requests < pass.limits.requests_per_connection
                 && buf.is_empty();
             *out = Some(if request.wants_upgrade {
                 match request.upgrade {
                     Some(key) => {
-                        let open = pass.sockets.get(&self.peer.ip()).copied().unwrap_or(0);
-                        if open >= pass.limits.sockets_per_ip {
+                        let open = pass.stand_ins.count(self.peer.ip());
+                        if open >= pass.limits.sockets_per_ip || self.stand_in.is_some() {
                             pass.counters.refusals += 1;
                             refuse(Status::TooManyRequests)
                         } else {
+                            // The place is reserved now: a second upgrade from the address while this answer is still
+                            // being written counts it.
+                            self.stand_in = Some(pass.stand_ins.take(self.peer.ip()));
                             Outgoing {
                                 head: http::upgrade_head(&key),
                                 body: None,
@@ -352,7 +370,6 @@ impl Conn {
             ws: Box::new(ws),
             rate: Rate::new(pass.now),
         };
-        *pass.sockets.entry(self.peer.ip()).or_insert(0) += 1;
         pass.counters.upgrades += 1;
         self.since = pass.now;
         self.stalled = None;
@@ -360,7 +377,9 @@ impl Conn {
     }
 
     fn advance_socket(&mut self, pass: &mut Pass<'_>) -> Option<Closed> {
-        let peer = self.peer;
+        let Some(peer) = self.stand_in else {
+            return Some(Closed::Peer);
+        };
         let Phase::Socket { ws, rate } = &mut self.phase else {
             return None;
         };

@@ -2,9 +2,10 @@
 //!
 //! [`WebTransport`] is a [`Transport`] over one non-blocking TCP listener. Every connection starts as HTTP: a `GET` of a file
 //! is answered from [`WebFiles`] in memory (none with `--no-files`: the page then comes from another web server), and a
-//! `GET /ws` that asks for the WebSocket upgrade becomes a game socket. A game socket stands for one client: its TCP peer
-//! address is the datagram address the host sees (so the host's per-address limits apply to it as to a UDP client), and
-//! each binary message is one datagram, both ways. [`MultiTransport`] polls a UDP socket and a web transport on the same
+//! `GET /ws` that asks for the WebSocket upgrade becomes a game socket. A game socket stands for one client: the host sees
+//! it at a stand-in address in a range no datagram comes from ([`stand_in`]: one IP per peer address, so the host's
+//! per-address limits apply to it as to a UDP client, and a port per socket), and each binary message is one datagram,
+//! both ways. [`MultiTransport`] polls a UDP socket and a web transport on the same
 //! address and port: desktop and browser players in one game.
 //!
 //! **No async runtime.** Nothing blocks: a pass ([`WebTransport::pump`]) accepts what is waiting, then reads and writes
@@ -14,6 +15,11 @@
 //! **TLS.** With a certificate and key ([`TlsFiles`]) every connection is TLS (`https` and `wss`, rustls). Without them
 //! the bind policy allows only a private address (loopback and the LAN): plain `ws` and `http` never listen on a public one
 //! ([`PolicyRefusal::PlainWeb`]).
+//!
+//! **Who may reach it** ([`Access`]). A request whose `Host` names neither an IP address, `localhost`, nor one of the
+//! server's names is refused (a page whose name was pointed at this server's address cannot reach it), and a game socket
+//! asked for by a page (its `Origin`) from elsewhere than the server's own page, or than the origins listed, is refused
+//! with 403.
 //!
 //! **Hostile input.** The HTTP side's caps are [`http`]'s (request line, head, headers, `GET` only, no body, paths
 //! normalized without traversal, files from memory). Each connection has its timeouts and caps ([`WebLimits`]): a head must
@@ -27,6 +33,7 @@
 //! so a pass's time is bounded whatever the peers send. IPv6 peers are refused, as by the bind policy.
 
 pub mod http;
+pub mod stand_in;
 pub mod tls;
 
 mod conn;
@@ -40,7 +47,9 @@ use web_time::{Duration, Instant};
 
 use super::transport::{BindError, BindPolicy, PolicyRefusal, Recv, Transport, UdpTransport};
 use conn::{Conn, Pass};
-pub use http::{WEB_SOCKET_PATH, WebFiles, accept_key};
+pub use http::{Access, Origins, WEB_SOCKET_PATH, WebFiles, accept_key};
+use stand_in::StandIns;
+pub use stand_in::{STAND_IN_NET, is_stand_in};
 pub use tls::{Tls, TlsFiles};
 
 /// The caps and timeouts of a web transport's connections (module docs). The defaults match UDP's per-connection caps.
@@ -97,12 +106,13 @@ impl Default for WebLimits {
     }
 }
 
-/// How a web transport serves: its files (none: game sockets only), its TLS (none: plain, private addresses only) and its
-/// limits.
+/// How a web transport serves: its files (none: game sockets only), its TLS (none: plain, private addresses only), who may
+/// reach it (the Host names, the pages' origins) and its limits.
 #[derive(Debug, Clone, Default)]
 pub struct WebSetup {
     pub files: Option<WebFiles>,
     pub tls: Option<Tls>,
+    pub access: Access,
     pub limits: WebLimits,
 }
 
@@ -143,7 +153,7 @@ pub struct WebTransport {
     inbox: VecDeque<(SocketAddr, Vec<u8>)>,
     /// New connections per address in the present second.
     connects: HashMap<IpAddr, (Instant, u32)>,
-    sockets: HashMap<IpAddr, usize>,
+    stand_ins: StandIns,
     counters: WebCounters,
     last_pump: Option<Instant>,
 }
@@ -157,7 +167,7 @@ impl WebTransport {
             conns: Vec::new(),
             inbox: VecDeque::new(),
             connects: HashMap::new(),
-            sockets: HashMap::new(),
+            stand_ins: StandIns::default(),
             counters: WebCounters::default(),
             last_pump: None,
         }
@@ -177,9 +187,24 @@ impl WebTransport {
         self.conns.iter().filter(|c| c.is_socket()).count()
     }
 
-    /// Whether a game socket stands for `addr`.
+    /// Whether a game socket stands for `addr` (a stand-in address, [`stand_in`]).
     pub fn holds(&self, addr: SocketAddr) -> bool {
-        self.conns.iter().any(|c| c.peer == addr && c.is_socket())
+        self.conns
+            .iter()
+            .any(|c| c.stand_in == Some(addr) && c.is_socket())
+    }
+
+    /// The TCP peer of the game socket that stands for `addr`.
+    pub fn peer_of(&self, addr: SocketAddr) -> Option<SocketAddr> {
+        self.conns
+            .iter()
+            .find(|c| c.stand_in == Some(addr) && c.is_socket())
+            .map(|c| c.peer)
+    }
+
+    /// The game sockets open or reserved from the peer address `ip`.
+    pub fn sockets_from(&self, ip: IpAddr) -> usize {
+        self.stand_ins.count(ip)
     }
 
     /// Whether files are served over plain HTTP or under TLS.
@@ -195,7 +220,9 @@ impl WebTransport {
                 files: self.setup.files.as_ref(),
                 inbox: &mut self.inbox,
                 counters: &mut self.counters,
-                sockets: &mut self.sockets,
+                stand_ins: &mut self.stand_ins,
+                access: &self.setup.access,
+                tls: self.setup.tls.is_some(),
             },
             &mut self.conns,
         )
@@ -208,7 +235,6 @@ impl WebTransport {
         self.accept(now);
         let (mut pass, conns) = self.pass_parts(now);
         conns.retain_mut(|c| c.advance(&mut pass));
-        self.sockets.retain(|_, n| *n > 0);
     }
 
     fn accept(&mut self, now: Instant) {
@@ -273,7 +299,7 @@ impl WebTransport {
         for mut c in conns.drain(..) {
             c.shut(conn::Closed::Done, &mut pass);
         }
-        self.sockets.clear();
+        self.stand_ins.clear();
         self.inbox.clear();
     }
 }
@@ -318,7 +344,10 @@ impl Transport for WebTransport {
         }
         let now = Instant::now();
         let (mut pass, conns) = self.pass_parts(now);
-        let Some(conn) = conns.iter_mut().find(|c| c.peer == to && c.is_socket()) else {
+        let Some(conn) = conns
+            .iter_mut()
+            .find(|c| c.stand_in == Some(to) && c.is_socket())
+        else {
             return false;
         };
         let sent = conn.send(data, &mut pass);
@@ -352,8 +381,9 @@ impl Transport for WebTransport {
     }
 }
 
-/// UDP and the web on one address and port (module docs). A datagram on UDP from an address a game socket stands for is
-/// dropped: the address is the socket's.
+/// UDP and the web on one address and port (module docs). Game sockets go by stand-in addresses no UDP peer has
+/// ([`stand_in`]): a datagram goes to the web when its address is a stand-in and to UDP otherwise, and a UDP datagram that
+/// claims a stand-in address is dropped, so a socket and a UDP peer never share an address.
 pub struct MultiTransport {
     udp: UdpTransport,
     web: WebTransport,
@@ -379,7 +409,7 @@ impl MultiTransport {
 
     fn recv_udp(&mut self, buf: &mut [u8]) -> Recv {
         match self.udp.recv(buf) {
-            Recv::Datagram { from, .. } if self.web.holds(from) => Recv::Skipped,
+            Recv::Datagram { from, .. } if is_stand_in(from) => Recv::Skipped,
             got => got,
         }
     }
@@ -422,7 +452,7 @@ impl Transport for MultiTransport {
     }
 
     fn send_to(&mut self, to: SocketAddr, data: &[u8]) -> bool {
-        if self.web.holds(to) {
+        if is_stand_in(to) {
             self.web.send_to(to, data)
         } else {
             self.udp.send_to(to, data)

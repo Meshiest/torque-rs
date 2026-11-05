@@ -14,8 +14,10 @@ use torque_server::net::transport::{
     UdpTransport,
 };
 use torque_server::net::web::http::base64;
+use torque_server::net::web::is_stand_in;
 use torque_server::net::web::{
-    MultiTransport, Tls, WEB_SOCKET_PATH, WebFiles, WebLimits, WebSetup, WebTransport, accept_key,
+    Access, MultiTransport, Origins, Tls, WEB_SOCKET_PATH, WebFiles, WebLimits, WebSetup,
+    WebTransport, accept_key,
 };
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::{Message, Utf8Bytes};
@@ -39,7 +41,24 @@ fn site(
     tls: Option<Tls>,
     files: Option<WebFiles>,
 ) -> (WebTransport, SocketAddr) {
-    let mut t = WebTransport::new(policy(), WebSetup { files, tls, limits });
+    site_with(limits, tls, files, Access::default())
+}
+
+fn site_with(
+    limits: WebLimits,
+    tls: Option<Tls>,
+    files: Option<WebFiles>,
+    access: Access,
+) -> (WebTransport, SocketAddr) {
+    let mut t = WebTransport::new(
+        policy(),
+        WebSetup {
+            files,
+            tls,
+            access,
+            limits,
+        },
+    );
     t.bind(LOOPBACK, 0).unwrap();
     let addr = t.local_addr().unwrap();
     (t, addr)
@@ -130,7 +149,7 @@ fn closed(s: &mut TcpStream) -> bool {
 
 fn upgrade_request(key: &str) -> String {
     format!(
-        "GET {WEB_SOCKET_PATH} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+        "GET {WEB_SOCKET_PATH} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
          Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {key}\r\n\r\n"
     )
 }
@@ -168,12 +187,13 @@ fn files_are_served_and_a_connection_is_kept_for_the_next_request() {
     let (mut t, addr) = site(WebLimits::default(), None, Some(files()));
     let (page, wasm, missing) = serve_while(&mut t, move || {
         let mut s = connect(addr);
-        s.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        s.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
         let page = response(&mut s);
-        s.write_all(b"GET /game_bg.wasm HTTP/1.1\r\nHost: x\r\n\r\n")
+        s.write_all(b"GET /game_bg.wasm HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
             .unwrap();
         let wasm = response(&mut s);
-        s.write_all(b"GET /nothing HTTP/1.1\r\nHost: x\r\n\r\n")
+        s.write_all(b"GET /nothing HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
             .unwrap();
         let missing = response(&mut s);
         (page, wasm, missing)
@@ -307,15 +327,23 @@ fn a_game_socket_carries_datagrams_both_ways() {
         got = recv(t);
         got.is_some()
     });
-    assert_eq!(got, Some((local, vec![1, 2, 3])), "from the peer's address");
-    assert!(t.holds(local));
-    assert!(t.send_to(local, &[9; 1400]));
-    assert!(!t.send_to(local, &[9; 1501]), "larger than a datagram");
+    let (from, data) = got.expect("a datagram");
+    assert_eq!(data, [1, 2, 3]);
+    assert!(is_stand_in(from), "a stand-in address: {from}");
+    assert_eq!(t.peer_of(from), Some(local));
+    assert!(t.holds(from) && !t.holds(local));
+    assert!(t.send_to(from, &[9; 1400]));
+    assert!(
+        !t.send_to(local, &[9; 1400]),
+        "the peer's own address is not the socket's"
+    );
+    assert!(!t.send_to(from, &[9; 1501]), "larger than a datagram");
     assert_eq!(ws.read().unwrap(), Message::binary(vec![9; 1400]));
     // With no files, a page is not found.
     let status = serve_while(&mut t, move || {
         let mut s = connect(addr);
-        s.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        s.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
         response(&mut s).0
     });
     assert_eq!(status, 404);
@@ -401,7 +429,13 @@ fn quiet_sockets_and_slow_readers_are_closed() {
     drop(quiet);
     // A reader that never reads while the server sends: its unsent bytes reach the cap and it is closed.
     let mut slow = serve_while(&mut t, move || ws_open(addr));
-    let local = slow.get_ref().local_addr().unwrap();
+    slow.send(Message::binary(vec![5])).unwrap();
+    let mut first = None;
+    pump_until(&mut t, 2000, |t| {
+        first = recv(t);
+        first.is_some()
+    });
+    let local = first.expect("the slow reader's first datagram").0;
     let start = Instant::now();
     let mut sent = 0usize;
     while t.holds(local) && start.elapsed() < Duration::from_secs(20) {
@@ -454,7 +488,7 @@ fn udp_and_the_web_share_one_port() {
         sleep(Duration::from_millis(1));
     }
     let mut ws = h.join().unwrap();
-    let ws_addr = ws.get_ref().local_addr().unwrap();
+    let ws_peer = ws.get_ref().local_addr().unwrap();
     ws.send(Message::binary(b"\x01web".to_vec())).unwrap();
     let mut got = Vec::new();
     let start = Instant::now();
@@ -464,13 +498,13 @@ fn udp_and_the_web_share_one_port() {
             None => sleep(Duration::from_millis(2)),
         }
     }
-    got.sort();
-    let mut want = vec![
-        (udp.local_addr().unwrap(), b"\x01udp".to_vec()),
-        (ws_addr, b"\x01web".to_vec()),
-    ];
-    want.sort();
-    assert_eq!(got, want);
+    got.sort_by_key(|(from, _)| is_stand_in(*from));
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0], (udp.local_addr().unwrap(), b"\x01udp".to_vec()));
+    assert_eq!(got[1].1, b"\x01web");
+    let ws_addr = got[1].0;
+    assert!(is_stand_in(ws_addr));
+    assert_eq!(t.web().peer_of(ws_addr), Some(ws_peer));
     assert!(t.send_to(ws_addr, b"to the browser"));
     assert!(t.send_to(udp.local_addr().unwrap(), b"to the desktop"));
     assert_eq!(
@@ -537,4 +571,193 @@ fn tls_serves_files_and_game_sockets() {
         status != 200
     });
     assert!(shut);
+}
+
+#[test]
+fn a_udp_peer_at_a_sockets_tcp_address_is_never_taken_for_it() {
+    let mut t = MultiTransport::new(
+        UdpTransport::new(policy()),
+        WebTransport::new(policy(), WebSetup::default()),
+    );
+    t.bind(LOOPBACK, 0).unwrap();
+    let addr = t.local_addr().unwrap();
+    let h = thread::spawn(move || ws_open(addr));
+    while !h.is_finished() {
+        t.service();
+        sleep(Duration::from_millis(1));
+    }
+    let mut ws = h.join().unwrap();
+    // A UDP peer on the socket's own IP and port number (UDP and TCP ports are apart).
+    let twin_addr = ws.get_ref().local_addr().unwrap();
+    let twin = UdpSocket::bind(twin_addr).unwrap();
+    twin.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    twin.send_to(b"\x01twin", addr).unwrap();
+    ws.send(Message::binary(b"\x01sock".to_vec())).unwrap();
+    let mut got = Vec::new();
+    let start = Instant::now();
+    while got.len() < 2 && start.elapsed() < Duration::from_secs(5) {
+        match recv(&mut t) {
+            Some(d) => got.push(d),
+            None => sleep(Duration::from_millis(2)),
+        }
+    }
+    got.sort_by_key(|(from, _)| is_stand_in(*from));
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(
+        got[0],
+        (twin_addr, b"\x01twin".to_vec()),
+        "the UDP peer keeps its own address"
+    );
+    let sock = got[1].0;
+    assert!(is_stand_in(sock) && sock != twin_addr);
+    // Each address reaches its own peer.
+    assert!(t.send_to(twin_addr, b"udp"));
+    assert!(t.send_to(sock, b"web"));
+    let mut b = [0u8; 16];
+    let (n, _) = twin.recv_from(&mut b).unwrap();
+    assert_eq!(&b[..n], b"udp");
+    assert_eq!(ws.read().unwrap(), Message::binary(b"web".to_vec()));
+}
+
+#[test]
+fn the_per_address_socket_cap_is_reserved_when_the_answer_is_queued() {
+    let limits = WebLimits {
+        sockets_per_ip: 1,
+        ..WebLimits::default()
+    };
+    let (mut t, addr) = site(limits, None, None);
+    // Two upgrades from one address arrive in one pass: one socket, one refusal.
+    let mut a = connect(addr);
+    let mut b = connect(addr);
+    let key = base64(&[3; 16]);
+    a.write_all(upgrade_request(&key).as_bytes()).unwrap();
+    b.write_all(upgrade_request(&key).as_bytes()).unwrap();
+    sleep(Duration::from_millis(50));
+    t.pump();
+    pump_until(&mut t, 500, |t| {
+        t.counters().upgrades + t.counters().refusals == 2
+    });
+    assert_eq!(t.counters().upgrades, 1);
+    assert_eq!(t.counters().refusals, 1);
+    assert_eq!(t.sockets_from(LOOPBACK), 1);
+    let statuses: Vec<u16> = [&mut a, &mut b]
+        .into_iter()
+        .map(|s| {
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            String::from_utf8_lossy(&head[9..12]).parse().unwrap()
+        })
+        .collect();
+    let mut sorted = statuses.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, [101, 429], "{statuses:?}");
+    // The socket closes: its place is free again, and a new socket opens.
+    drop(a);
+    drop(b);
+    pump_until(&mut t, 2000, |t| t.connections() == 0);
+    assert_eq!(t.sockets_from(LOOPBACK), 0);
+    let _again = serve_while(&mut t, move || ws_open(addr));
+    assert_eq!(t.sockets_from(LOOPBACK), 1);
+    // An answer that is never written (the peer gone before it) gives its place back too.
+    let mut c = connect(addr);
+    let limits_hit = t.counters().refusals;
+    c.write_all(upgrade_request(&key).as_bytes()).unwrap();
+    drop(c);
+    pump_until(&mut t, 1000, |t| {
+        t.counters().refusals > limits_hit || t.connections() == 1
+    });
+    assert_eq!(t.sockets_from(LOOPBACK), 1);
+}
+
+#[test]
+fn hosts_and_origins_are_checked() {
+    let access = Access {
+        hosts: vec!["games.example".to_string()],
+        origins: Origins::SameHost,
+    };
+    let (mut t, addr) = site_with(WebLimits::default(), None, Some(files()), access);
+    let port = addr.port();
+    let ask = move |host: &str, origin: Option<&str>, upgrade: bool| -> u16 {
+        let mut s = connect(addr);
+        let origin = origin.map_or(String::new(), |o| format!("Origin: {o}\r\n"));
+        let request = if upgrade {
+            format!(
+                "GET {WEB_SOCKET_PATH} HTTP/1.1\r\nHost: {host}\r\n{origin}Upgrade: websocket\r\nConnection: Upgrade\r\n\
+                 Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\n\r\n",
+                base64(&[3; 16])
+            )
+        } else {
+            format!("GET / HTTP/1.1\r\nHost: {host}\r\n{origin}\r\n")
+        };
+        s.write_all(request.as_bytes()).unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).unwrap_or(0) == 1 {
+            head.push(byte[0]);
+        }
+        String::from_utf8_lossy(&head[9..12]).parse().unwrap()
+    };
+    let got = serve_while(&mut t, move || {
+        let own = format!("127.0.0.1:{port}");
+        let page = format!("http://127.0.0.1:{port}");
+        vec![
+            ask(&own, None, false),
+            ask(&format!("localhost:{port}"), None, false),
+            ask(&format!("games.example:{port}"), None, false),
+            // A name of someone else's, pointed at this server's address.
+            ask(&format!("evil.example:{port}"), None, false),
+            ask(
+                &format!("evil.example:{port}"),
+                Some(&format!("http://evil.example:{port}")),
+                true,
+            ),
+            // The server's own page.
+            ask(&own, Some(&page), true),
+            // Another site's page.
+            ask(&own, Some("https://evil.example"), true),
+            ask(&own, Some("null"), true),
+            ask(&own, Some(&format!("https://127.0.0.1:{port}")), true),
+            // Not a browser's page.
+            ask(&own, None, true),
+        ]
+    });
+    assert_eq!(got, [200, 200, 200, 421, 421, 101, 403, 403, 403, 101]);
+    // A page served elsewhere, by the list.
+    let access = Access {
+        hosts: Vec::new(),
+        origins: Origins::List(vec!["https://games.example".to_string()]),
+    };
+    let (mut t, addr) = site_with(WebLimits::default(), None, None, access);
+    let got = serve_while(&mut t, move || {
+        let own = format!("127.0.0.1:{}", addr.port());
+        let mut out = Vec::new();
+        for origin in [
+            "https://games.example/",
+            "https://other.example",
+            &format!("http://{own}"),
+        ] {
+            let mut s = connect(addr);
+            let request = format!(
+                "GET {WEB_SOCKET_PATH} HTTP/1.1\r\nHost: {own}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\n\
+                 Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {}\r\n\r\n",
+                base64(&[3; 16])
+            );
+            s.write_all(request.as_bytes()).unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            out.push(
+                String::from_utf8_lossy(&head[9..12])
+                    .parse::<u16>()
+                    .unwrap(),
+            );
+        }
+        out
+    });
+    assert_eq!(got, [101, 403, 403]);
 }
