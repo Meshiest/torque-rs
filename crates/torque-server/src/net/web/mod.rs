@@ -555,7 +555,7 @@ impl Transport for WebTransport {
             .map_or_else(|| "nowhere".to_string(), |a| a.to_string());
         let candidates: Vec<String> = side.advertised().iter().map(|a| a.to_string()).collect();
         let mut lines = vec![format!(
-            "rtc: data channels on udp {at} (candidates {}): {} opened, {} messages in, {} out, {} datagrams dropped by              the loss test, {} stray",
+            "rtc: data channels on udp {at} (candidates {}): {} opened, {} messages in, {} out, {} datagrams dropped by the loss test, {} stray",
             candidates.join(" "),
             c.channels,
             c.messages,
