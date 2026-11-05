@@ -5,7 +5,12 @@
 //!   its spring by `length * extension` and turned by `steering.x * wheel.steering`. The steering, the spin rate, the extension and
 //!   the contact are the client's own vehicle's ([`vehicle_look`]): the server's updates carry no steering for the vehicle's
 //!   controlling client (`Vehicle::packUpdate` writes the flag and returns), so the drawn steering of a driven vehicle was the
-//!   record's first, 0 bits: full left.
+//!   record's first, 0 bits: full left. Engine addition: the drawn steering eases each frame toward the steering the ticks
+//!   set ([`SteeringEase`]: a critically damped follow, frame-rate independent), so the wheels, a `steering` thread and the
+//!   hands on it turn smoothly between ticks and between a ghost's updates instead of in a tick's steps (TGE draws `mSteering`
+//!   as the last tick left it). Each wheel's contact is drawn under the drawn tire: the hub where the frame draws the
+//!   vehicle, down the spring by its extension and the tire's radius (`extendWheels` cast its ray from the pose before the
+//!   tick's move, a tick behind the drawn vehicle at speed).
 //! - **A FlyingVehicle ghost** ([`FlyingWarp`]): TGE's client runs every vehicle ghost (`Vehicle::unpackUpdate`'s warp, then its
 //!   physics); the engine runs the WheeledVehicles ([`super::drive::GhostVehicle`]) but not the FlyingVehicles. Engine approximation:
 //!   from each update the drawn pose warps from where it was drawn to the update's over the ticks TGE's warp takes (the offset's
@@ -19,6 +24,7 @@
 
 use std::collections::BTreeMap;
 
+use collide::math::{mul_p, quat_matrix};
 use ghost_world::world::{LOOK_WHEELS, Pose, VehicleLook, WheelLook};
 use ghosts::Value;
 
@@ -76,33 +82,145 @@ impl WheelSpins {
     }
 }
 
-/// The look of a vehicle the client runs: its state after the last tick, its wheels' contact points moved to where the frame draws
-/// it (`render`, the frame's position; the tick's own extension and contact, `extendWheels` run at the tick).
+/// How closely a drawn steering follows the ticks' steering (seconds): the time constant of [`SteeringEase`]'s critically
+/// damped follow. A step settles in about four of them; a steady turn is drawn twice this behind.
+pub const STEER_EASE_SECONDS: f32 = 0.04;
+
+/// A drawn steering and how fast it moves (radians, radians a second).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct Eased {
+    value: f32,
+    rate: f32,
+}
+
+impl Eased {
+    /// `dt` seconds of a critically damped follow of `target` (held over the step) with time constant `tau`: the closed form,
+    /// so the same time drawn in many frames or in one ends at the same place.
+    fn follow(self, target: f32, tau: f32, dt: f32) -> Eased {
+        let w = 1.0 / tau;
+        let c1 = self.value - target;
+        let c2 = self.rate + w * c1;
+        let e = (-w * dt).exp();
+        Eased {
+            value: target + (c1 + c2 * dt) * e,
+            rate: (self.rate - w * c2 * dt) * e,
+        }
+    }
+}
+
+/// The steering the frames draw for each vehicle the client runs (see the module docs), advanced each frame by the frame's
+/// virtual time. `seconds` is the follow's time constant; `None` draws the last tick's steering, as TGE does.
+#[derive(Debug, Clone)]
+pub struct SteeringEase {
+    pub seconds: Option<f32>,
+    drawn: BTreeMap<u32, Eased>,
+    last_ms: Option<u32>,
+}
+
+impl Default for SteeringEase {
+    fn default() -> SteeringEase {
+        SteeringEase {
+            seconds: Some(STEER_EASE_SECONDS),
+            drawn: BTreeMap::new(),
+            last_ms: None,
+        }
+    }
+}
+
+impl SteeringEase {
+    /// Every vehicle of `vehicles` followed for the time since the last call (at most a second); a vehicle first seen starts at
+    /// its steering, one no longer run is forgotten. The drawn steering stays within the vehicle's lock.
+    pub fn advance<'a>(&mut self, now_ms: u32, vehicles: impl Iterator<Item = &'a DrivenVehicle>) {
+        let dt = self
+            .last_ms
+            .replace(now_ms)
+            .map_or(0.0, |l| now_ms.wrapping_sub(l).min(1_000) as f32 / 1000.0);
+        let mut kept = BTreeMap::new();
+        for v in vehicles {
+            let target = v.v.s.steering[0];
+            if !target.is_finite() {
+                continue;
+            }
+            let lock = v.data.base.max_steering_angle.abs();
+            let mut e = match (self.drawn.get(&v.index), self.seconds) {
+                (Some(e), Some(tau)) if tau > 0.0 && e.value.is_finite() => {
+                    e.follow(target, tau, dt)
+                }
+                _ => Eased {
+                    value: target,
+                    rate: 0.0,
+                },
+            };
+            if lock.is_finite() && e.value.abs() > lock {
+                e = Eased {
+                    value: e.value.clamp(-lock, lock),
+                    rate: 0.0,
+                };
+            }
+            kept.insert(v.index, e);
+        }
+        self.drawn = kept;
+    }
+
+    /// The steering drawn for vehicle `index` (none before its first frame).
+    pub fn steering(&self, index: u32) -> Option<f32> {
+        self.drawn.get(&index).map(|e| e.value)
+    }
+}
+
+/// The look of a vehicle the client runs: its state after the last tick, drawn with `steering` (its own when none), each
+/// wheel's contact under its tire where the frame draws the vehicle (`render`: the hub down the spring by the tick's extension
+/// and the tire's radius; the tick's own contact, `extendWheels` run at the tick).
 pub fn vehicle_look(
     v: &DrivenVehicle,
     spins: Option<&[f32; LOOK_WHEELS]>,
-    render: [f32; 3],
+    steering: Option<f32>,
+    render: &Pose,
 ) -> VehicleLook {
     let s = &v.v.s;
-    let at = s.position();
-    let shift = [0, 1, 2].map(|k| render[k] - at[k]);
+    let m = match *render {
+        Pose::Quat { position, rotation } => {
+            let mut m = quat_matrix(rotation);
+            m[3] = position[0];
+            m[7] = position[1];
+            m[11] = position[2];
+            m
+        }
+        _ => s.render_to_world,
+    };
     let wheels =
         v.v.k
             .wheels
             .iter()
             .take(LOOK_WHEELS)
             .enumerate()
-            .map(|(k, w)| WheelLook {
-                fitted: w.tire.is_some() && w.spring.is_some(),
-                extension: w.extension,
-                apos: spins.map_or(0.0, |sp| sp[k]),
-                contact: w.contact,
-                point: [0, 1, 2].map(|c| w.point[c] + shift[c]),
-                slip: w.slip,
+            .map(|(k, w)| {
+                let under = match (&w.tire, &w.spring, v.data.wheels.get(k)) {
+                    (Some((_, tire)), Some((_, spring)), Some(rec)) => {
+                        let ext = if w.extension.is_finite() {
+                            w.extension.clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        let drop = spring.length * ext + tire.radius;
+                        Some(mul_p(&m, [rec.pos[0], rec.pos[1], rec.pos[2] - drop]))
+                    }
+                    _ => None,
+                };
+                WheelLook {
+                    fitted: w.tire.is_some() && w.spring.is_some(),
+                    extension: w.extension,
+                    apos: spins.map_or(0.0, |sp| sp[k]),
+                    contact: w.contact,
+                    point: under
+                        .filter(|p| p.iter().all(|c| c.is_finite()))
+                        .unwrap_or(w.point),
+                    slip: w.slip,
+                }
             })
             .collect();
     VehicleLook {
-        steering: s.steering[0],
+        steering: steering.unwrap_or(s.steering[0]),
         velocity: s.rigid.lin_vel,
         wheels,
     }

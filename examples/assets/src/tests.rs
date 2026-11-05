@@ -820,12 +820,9 @@ fn the_seated_hands_stay_on_the_rim_as_the_steering_turns_the_wheel() {
     let center = [0, 1, 2].map(|k| 0.5 * (l[k] + r[k]));
     let (s, c) = COLUMN_DROP.to_radians().sin_cos();
     let along = [0.0f32, c, -s];
-    for place in [
-        0.5f32,
-        0.5 - MAX_STEERING * 0.5,
-        0.5 + MAX_STEERING * 0.5,
-        0.4,
-    ] {
+    // Every place the steering takes, between the keys too: from full right to full left in small steps.
+    for k in 0..=110 {
+        let place = 0.5 - MAX_STEERING * 0.5 + MAX_STEERING * k as f32 / 110.0;
         let turn = ((1.0 - 2.0 * place) / MAX_STEERING * WHEEL_LOCK).to_radians();
         for (grip, elbow) in [(l, "elbow_l"), (r, "elbow_r")] {
             // The grip turned about the column through the wheel's middle (Rodrigues).
@@ -849,7 +846,7 @@ fn the_seated_hands_stay_on_the_rim_as_the_steering_turns_the_wheel() {
                 .map(|k| (hand[k] - want[k]).powi(2))
                 .sum::<f32>()
                 .sqrt();
-            assert!(apart < 0.03, "{elbow} at {place}: {hand:?} for {want:?}");
+            assert!(apart < 0.01, "{elbow} at {place}: {hand:?} for {want:?}");
         }
     }
 }

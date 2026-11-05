@@ -887,13 +887,36 @@ fn the_mouse_tilts_the_seated_view_up_and_down_for_driver_and_passenger() {
 }
 
 /// The newest tracks and dust of `buggy` on `game` against its wheels as `game` draws them this frame: the farthest along
-/// its way of each strip's head and the newest dust's spawn, each the least distance from a contact (along the way and across
-/// it within a tire's width). None while it shows neither.
+/// its way of each strip's head and the newest dust's spawn, each the least distance along the way from the bottom of a tire
+/// as the frame draws it, across it within a tire's width. None while it shows neither.
 fn under_wheels(game: &VehicleDemo, buggy: u32, dir: [f32; 2]) -> Option<(f32, f32)> {
-    let contacts = game.wheel_contacts_of(buggy);
-    if contacts.is_empty() {
+    use torque_example_assets::buggy::{HUB_FRONT, HUB_REAR, HUB_X, HUB_Z, TIRE_RADIUS};
+    // `BuggySpring`'s length (server.cs).
+    const SPRING_LENGTH: f32 = 0.42;
+    if game.wheel_contacts_of(buggy).is_empty() {
         return None;
     }
+    let (pose, extensions) = game
+        .with_world(|w| {
+            let look = w.vehicle_look.get(&buggy)?;
+            Some((
+                *w.vehicle_render.get(&buggy)?,
+                look.wheels.iter().map(|w| w.extension).collect::<Vec<_>>(),
+            ))
+        })
+        .flatten()?;
+    let (m, _) = torque_render_scene::mounts::pose_matrix(&pose, None)?;
+    // The bottom of each tire as the frame draws it: its hub on the buggy, down the spring and the tire's radius.
+    let contacts: Vec<[f32; 3]> = [
+        (-HUB_X, HUB_FRONT),
+        (HUB_X, HUB_FRONT),
+        (-HUB_X, HUB_REAR),
+        (HUB_X, HUB_REAR),
+    ]
+    .into_iter()
+    .zip(extensions)
+    .map(|((x, y), e)| m.mul_p([x, y, HUB_Z - SPRING_LENGTH * e - TIRE_RADIUS]))
+    .collect();
     let along = |p: [f32; 3]| p[0] * dir[0] + p[1] * dir[1];
     let across = |p: [f32; 3]| p[1] * dir[0] - p[0] * dir[1];
     let mut head = 0.0f32;
@@ -915,9 +938,11 @@ fn under_wheels(game: &VehicleDemo, buggy: u32, dir: [f32; 2]) -> Option<(f32, f
         .iter()
         .filter(|(_, age)| *age < 16)
         .map(|(p, _)| {
+            // Along the way (the dust leaves the tire across it, the emitter's offset out to the side).
             contacts
                 .iter()
-                .map(|c| (p[0] - c[0]).hypot(p[1] - c[1]))
+                .filter(|c| (across(**c) - across(*p)).abs() < 0.45)
+                .map(|c| (along(*c) - along(*p)).abs())
                 .fold(f32::MAX, f32::min)
         })
         .fold(0.0f32, f32::max);
@@ -949,12 +974,13 @@ fn at_speed_the_tracks_and_dust_start_under_the_wheels_for_the_driver_and_for_an
             .enumerate()
         {
             if let Some((head, dust)) = under_wheels(g, ghost, dir) {
+                // A tick's travel at this speed is over 0.6: the head and the dust start under the tire drawn this frame.
                 assert!(
-                    head < 0.15,
+                    head < 0.08,
                     "{who}: a track head {head} from its wheel at {speed} m/s"
                 );
                 assert!(
-                    dust < 0.15,
+                    dust < 0.08,
                     "{who}: new dust {dust} from the wheels at {speed} m/s"
                 );
                 checked[k] += 1;

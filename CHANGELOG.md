@@ -260,5 +260,11 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-game`: a shape with fewer than eight collision details (the bounds report and the hull slots read past its
   lists); the class specs name TGE's console methods (the crate's natives were refused without them), and `SceneObject`,
   `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
+- `torque-client`: the steering a vehicle is drawn with (its front wheels, its `steering` thread and the hands of a figure
+  on it) eases each frame toward the ticks' steering (`look::SteeringEase`, a critically damped follow, the same at any frame
+  rate; `seconds: None` draws the last tick's, as TGE does), for the client's own vehicle and for the others between their
+  updates; it turned in a tick's steps.
+- `torque-client`: a vehicle's drawn wheel contacts, where its tire tracks start and its tires' dust rises, are under the
+  tires the frame draws; they were a tick's travel behind them at speed.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

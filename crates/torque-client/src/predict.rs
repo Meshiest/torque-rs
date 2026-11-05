@@ -236,6 +236,8 @@ pub struct Predictor<W: PredictWorld> {
     /// The wheels' spins of the vehicles the client runs (advanced each frame by the window's frame view), and the
     /// FlyingVehicle ghosts' warps ([`look`]).
     pub spins: look::WheelSpins,
+    /// The steering drawn for the vehicles the client runs, eased toward their ticks' ([`look::SteeringEase`]).
+    pub steering: look::SteeringEase,
     pub flying: look::FlyingWarps,
     /// The other Players, run on between their updates and warped to each new one ([`ghost_players`]).
     pub ghost_players: ghost_players::GhostPlayers,
@@ -304,6 +306,7 @@ impl<W: PredictWorld> Predictor<W> {
             aim_input: None,
             prefs: game::GamePrefs::default(),
             spins: look::WheelSpins::default(),
+            steering: look::SteeringEase::default(),
             flying: look::FlyingWarps::default(),
             ghost_players: ghost_players::GhostPlayers::default(),
             sim_ms: 0,
@@ -1096,7 +1099,10 @@ impl<W: PredictWorld> Predictor<W> {
             .as_ref()
             .and_then(|p| p.vehicle.as_ref().filter(|_| p.player.s.mount.is_some()));
         let ghosts = self.ghost_vehicles.values().map(|g| &g.body);
-        self.spins.advance(now_ms, driven.into_iter().chain(ghosts));
+        self.spins
+            .advance(now_ms, driven.into_iter().chain(ghosts.clone()));
+        self.steering
+            .advance(now_ms, driven.into_iter().chain(ghosts));
     }
 
     /// Ghost `index`'s object view in the container the control Player's next tick collides with (`None`: not in it).
@@ -1341,7 +1347,12 @@ impl<W: PredictWorld> Predictor<W> {
             world.vehicle_render.insert(v.index, pose);
             world.vehicle_look.insert(
                 v.index,
-                look::vehicle_look(v, self.spins.spins.get(&v.index), pose_position(&pose)),
+                look::vehicle_look(
+                    v,
+                    self.spins.spins.get(&v.index),
+                    self.steering.steering(v.index),
+                    &pose,
+                ),
             );
         }
         // the vehicles the client runs on its own drawn between their ticks as the driven one is (TGE interpolates every
@@ -1357,7 +1368,12 @@ impl<W: PredictWorld> Predictor<W> {
             world.vehicle_render.insert(*i, pose);
             world.vehicle_look.insert(
                 *i,
-                look::vehicle_look(&g.body, self.spins.spins.get(i), pose_position(&pose)),
+                look::vehicle_look(
+                    &g.body,
+                    self.spins.spins.get(i),
+                    self.steering.steering(*i),
+                    &pose,
+                ),
             );
         }
         // The FlyingVehicle ghosts (not run by the engine's client): warped between their updates ([`look::FlyingWarps`]).
@@ -1638,13 +1654,6 @@ pub fn render_head(s: &sim::player::PlayerState, back: f32) -> [f32; 3] {
     }
     let b = back.min(1.0);
     [0, 1, 2].map(|k| s.head[k] + s.delta_head_vec[k] * b)
-}
-
-fn pose_position(p: &Pose) -> [f32; 3] {
-    match p {
-        Pose::Quat { position, .. } => *position,
-        _ => [0.0; 3],
-    }
 }
 
 /// A vehicle's render pose `back` between its last tick (0) and the one before (1), as `WheeledVehicle::interpolateTick`
