@@ -126,6 +126,10 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
   night, "Play alone" (and `--solo`: no socket for the game, nobody on the network sees it), and Tab easing between the
   eyes and the chase camera.
+- `torque-example-fps`: a map rotation. A round lasts `$Pref::Server::RoundSeconds` (ten minutes); then every player sees the
+  round's scores and the next map's name, and the next map of `$Pref::Server::MapList` (or of `missions/`) loads under the same
+  connections, the scores back at 0; the view shows the round's clock. The examples' `loadMission` ends the running map for
+  the clients in the game (`endMission`, `'MissionEnd'`, their ghosting reset) and sends them the new one's datablocks.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

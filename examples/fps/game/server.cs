@@ -1,4 +1,6 @@
-// The arena's server. The host sets $Pref::Server::Name, execs this file and calls startArena(%file) with the map to play.
+// The arena's server. The host sets $Pref::Server::Name, execs this file and calls startArena(%file) with the first map to
+// play. A round on a map lasts $Pref::Server::RoundSeconds; then every client sees the round's scores for a few seconds and
+// the next map loads (the rotation, at the end of this file).
 // A client that connects is sent the datablocks; when it has them, its ghosting starts and it gets a figure holding a pistol
 // with an 11-round magazine, reloaded as often as it likes (R, or by itself when empty). Bolts hurt figures; three hits knock
 // one out: it falls over, away from the shot, and comes back at a spawn point a moment later. The way in and out is the
@@ -279,10 +281,12 @@ if ($Pref::Server::Name $= "")
    $Pref::Server::Name = "Arena";
 
 // Loads the map %file: a script that builds MissionGroup and sets $Arena::SpawnCount and $Arena::Spawn[i] ("x y z yaw").
-// MissionGroup's textureFilter field ("nearest", or none) is how the clients draw the map's textures.
+// MissionGroup's textureFilter field ("nearest", or none) is how the clients draw the map's textures. The clients already
+// in the game download it in place of the last one, and a new round starts.
 function startArena(%file)
 {
    $Arena::SpawnCount = 0;
+   $Arena::NextSpawn = 0;
    $Arena::Title = fileBase(%file);
    loadMission(%file);
    if ($Arena::SpawnCount == 0)
@@ -293,6 +297,7 @@ function startArena(%file)
    $Server::MissionName = $Arena::Title;
    echo("Arena" SPC $Arena::Title SPC "with" SPC MissionGroup.getCount() SPC "objects and" SPC $Arena::SpawnCount SPC "spawn points");
    schedule(500, 0, "watchFalls");
+   startRound();
 }
 
 // The LAN list's line about this game.
@@ -319,14 +324,19 @@ function GameConnection::onClientConnect(%client, %name)
       %name = "Player" SPC %client;
    %client.name = getSubStr(%name, 0, 24);
    %client.score = 0;
+   %client.entered = false;
    $Server::PlayerCount++;
    echo("Client" SPC %client SPC "joined as" SPC %client.name);
 }
 
+// Called on each map the client enters: the first time it joined the game, after that the map changed under it.
 function GameConnection::onClientEnterGame(%client)
 {
    commandToClient(%client, 'ArenaStarted', $Arena::Title, $Pref::Server::Name, MissionGroup.textureFilter);
-   messageAll("info", %client.name SPC "joined the arena.");
+   commandToClient(%client, 'RoundTime', roundSecondsLeft());
+   if (!%client.entered)
+      messageAll("info", %client.name SPC "joined the arena.");
+   %client.entered = true;
 }
 
 function GameConnection::onClientLeaveGame(%client)
@@ -433,7 +443,8 @@ function ArenaWeapon::onReloaded(%this, %obj, %slot)
 
 function ArenaWeapon::onFire(%this, %obj, %slot)
 {
-   if (%obj.ammo <= 0)
+   // Between the round's end and the next map nobody shoots.
+   if (%obj.ammo <= 0 || $Arena::RoundOver)
       return;
    %obj.ammo--;
    if (%obj.ammo <= 0)
@@ -472,7 +483,7 @@ function ArenaBolt::onCollision(%this, %bolt, %col, %fade, %pos, %normal)
 
 function ArenaFigure::hurt(%this, %obj, %attacker, %amount, %part)
 {
-   if (%obj.getState() $= "Dead")
+   if (%obj.getState() $= "Dead" || $Arena::RoundOver)
       return;
    // Where the shot came from, for the fall (onDisabled): the shooter's figure in front of this one or behind it.
    %obj.hitFromFront = true;
@@ -544,4 +555,132 @@ function serverCmdSay(%client, %text)
    if (%text $= "")
       return;
    messageAll("chat", %client.name, getSubStr(%text, 0, 120));
+}
+
+// ---- rounds and the map rotation
+//
+// A round lasts $Pref::Server::RoundSeconds (ten minutes). When it runs out the shooting stops, every client is shown the
+// round's scores and the next map's name for $Pref::Server::RoundEndSeconds, and the next map loads: the clients stay
+// connected and download it as they downloaded the first, and every score starts again at 0. The maps go round
+// $Pref::Server::MapList (paths in the game folder, separated by spaces), or when it is empty every map that
+// $Server::MissionFileSpec finds, in order of their names.
+//
+// Credit: the round's timer, its end and the next map follow the cycle of TGE's starter game scripts as Torque3D carries them
+// (MIT: `core/scripts/server/game.cs`, `startGame` / `onGameDurationEnd` / `cycleGame` / `onCyclePauseEnd`, Copyright (c)
+// 2012 GarageGames, LLC). The code here is the arena's own.
+
+if ($Pref::Server::RoundSeconds $= "")
+   $Pref::Server::RoundSeconds = 600;
+if ($Pref::Server::RoundEndSeconds $= "")
+   $Pref::Server::RoundEndSeconds = 8;
+$Server::MissionFileSpec = "missions/*.mis";
+
+// A new round on the map that runs: the scores at 0 and the clock started.
+function startRound()
+{
+   cancel($Arena::RoundTimer);
+   $Arena::RoundOver = false;
+   $Arena::Round++;
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+   {
+      %client = ClientGroup.getObject(%i);
+      %client.score = 0;
+   }
+   %ms = mFloor($Pref::Server::RoundSeconds * 1000);
+   $Arena::RoundEndsAt = getSimTime() + %ms;
+   $Arena::RoundTimer = schedule(%ms, 0, "endRound");
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+      commandToClient(ClientGroup.getObject(%i), 'RoundTime', roundSecondsLeft());
+}
+
+// The seconds left in the round (0 once it is over).
+function roundSecondsLeft()
+{
+   if ($Arena::RoundOver)
+      return 0;
+   %left = mCeil(($Arena::RoundEndsAt - getSimTime()) / 1000);
+   return %left < 0 ? 0 : %left;
+}
+
+// The round is over: the scores to everyone, and the next map after a pause.
+function endRound()
+{
+   cancel($Arena::RoundTimer);
+   if ($Arena::RoundOver)
+      return;
+   $Arena::RoundOver = true;
+   $Arena::NextMission = nextMission();
+   %board = scoreBoard();
+   %next = fileBase($Arena::NextMission);
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+   {
+      %client = ClientGroup.getObject(%i);
+      cancel(%client.respawn);
+      commandToClient(%client, 'RoundEnd', %next, $Pref::Server::RoundEndSeconds, %board);
+   }
+   %top = getRecord(%board, 0);
+   if (%top !$= "" && getField(%top, 1) > 0)
+      messageAll("info", getField(%top, 0) SPC "wins the round on" SPC $Arena::Title SPC "with" SPC getField(%top, 1) @ ".");
+   else
+      messageAll("info", "The round on" SPC $Arena::Title SPC "is over.");
+   echo("Round over on" SPC $Arena::Title @ "; next:" SPC $Arena::NextMission);
+   $Arena::RoundTimer = schedule(mFloor($Pref::Server::RoundEndSeconds * 1000), 0, "cycleMissions");
+}
+
+// Loads the map the round's end named.
+function cycleMissions()
+{
+   %file = $Arena::NextMission;
+   if (%file $= "")
+      %file = nextMission();
+   $Arena::NextMission = "";
+   startArena(%file);
+}
+
+// The map after the one that runs, in $Pref::Server::MapList or in the maps the game folder has.
+function nextMission()
+{
+   %list = trim($Pref::Server::MapList);
+   if (%list $= "")
+   {
+      // In order of their names (the search finds them in the file host's own order).
+      %found = 0;
+      for (%file = findFirstFile($Server::MissionFileSpec); %file !$= ""; %file = findNextFile($Server::MissionFileSpec))
+      {
+         for (%i = %found; %i > 0 && stricmp(%maps[%i - 1], %file) > 0; %i--)
+            %maps[%i] = %maps[%i - 1];
+         %maps[%i] = %file;
+         %found++;
+      }
+      for (%i = 0; %i < %found; %i++)
+         %list = %list SPC %maps[%i];
+      %list = trim(%list);
+   }
+   %count = getWordCount(%list);
+   if (%count == 0)
+      return $Server::MissionFile;
+   for (%i = 0; %i < %count; %i++)
+      if (getWord(%list, %i) $= $Server::MissionFile)
+         return getWord(%list, (%i + 1) % %count);
+   return getWord(%list, 0);
+}
+
+// The round's scores, the highest first: a record ("name" TAB score) for each of the first eight players.
+function scoreBoard()
+{
+   %n = ClientGroup.getCount();
+   for (%i = 0; %i < %n; %i++)
+      %order[%i] = ClientGroup.getObject(%i);
+   for (%i = 0; %i < %n; %i++)
+      for (%j = %i + 1; %j < %n; %j++)
+         if (%order[%j].score > %order[%i].score)
+         {
+            %t = %order[%i];
+            %order[%i] = %order[%j];
+            %order[%j] = %t;
+         }
+   %board = "";
+   for (%i = 0; %i < %n && %i < 8; %i++)
+      %board = %board @ (%i > 0 ? "\n" : "") @ %order[%i].name TAB %order[%i].score;
+   return %board;
 }

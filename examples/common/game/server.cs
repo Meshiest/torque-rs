@@ -9,11 +9,12 @@
 //    GameConnection::onFellOff(%client)                its figure fell below $Server::FallHeight
 //
 // $Server::MissionSequence counts the maps loaded: a client's datablocks are those of one map, and a client whose datablocks
-// came for an older map is not let in.
+// came for an older map is not let in. A map loaded while clients play sends each of them 'MissionEnd' (the sequence that
+// ended), then the new map's datablocks; the hooks above run again for it.
 //
 // Credit: the way in (connect, datablocks, ghosting, enter game) and the hooks' names follow TGE's common server scripts as
-// Torque3D carries them (MIT: `core/scripts/server/clientConnection.cs` and `missionDownload.cs`, Copyright (c) 2012
-// GarageGames, LLC). The code here is the examples' own.
+// Torque3D carries them (MIT: `core/scripts/server/clientConnection.cs`, `missionDownload.cs` and `missionLoad.cs`,
+// Copyright (c) 2012 GarageGames, LLC). The code here is the examples' own.
 
 new SimGroup(ClientGroup);
 
@@ -21,17 +22,43 @@ $Server::MissionSequence = 0;
 // A figure below this height has fallen off the map.
 $Server::FallHeight = -30;
 
-// Loads the map %file (a script that builds MissionGroup) in place of the last one.
+// Loads the map %file (a script that builds MissionGroup) in place of the last one. The clients already in the game stay
+// connected: the last map ends for them (endMission) and they download the new one as they downloaded the first (its
+// datablocks, then its ghosts and a new figure).
 function loadMission(%file)
 {
+   endMission();
    $Server::MissionSequence++;
    $Server::MissionFile = %file;
+   new SimGroup(MissionCleanup);
+   exec(%file);
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+      ClientGroup.getObject(%i).transmitDataBlocks($Server::MissionSequence);
+}
+
+// Ends the map that runs, if one does: each client is told (GameConnection::endMission), its figure is gone and its ghosts
+// are dropped; then the map's objects are deleted.
+function endMission()
+{
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+   {
+      %client = ClientGroup.getObject(%i);
+      %client.endMission();
+      if (isObject(%client.player))
+         %client.player.delete();
+      %client.player = "";
+      %client.resetGhosting();
+   }
    if (isObject(MissionGroup))
       MissionGroup.delete();
    if (isObject(MissionCleanup))
       MissionCleanup.delete();
-   new SimGroup(MissionCleanup);
-   exec(%file);
+}
+
+// The client's map ended (a game's server.cs may tell it more).
+function GameConnection::endMission(%client)
+{
+   commandToClient(%client, 'MissionEnd', $Server::MissionSequence);
 }
 
 // ---- a client's way in and out
@@ -88,5 +115,7 @@ function watchFalls()
       if (isObject(%client.player) && getWord(%client.player.getTransform(), 2) < $Server::FallHeight)
          %client.onFellOff();
    }
-   schedule(500, 0, "watchFalls");
+   // One watch however often a game starts it (each map it loads may).
+   cancel($Server::FallWatch);
+   $Server::FallWatch = schedule(500, 0, "watchFalls");
 }

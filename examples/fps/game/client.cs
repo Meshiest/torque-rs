@@ -1,5 +1,5 @@
-// The arena's client: the main menu, the list of games on the local network, the view with its HUD (rounds, health, chat),
-// the pause menu, the keys, and the way in and out.
+// The arena's client: the main menu, the list of games on the local network, the view with its HUD (rounds, health, the
+// round's clock, chat), the pause menu, the round's scores, the keys, and the way in and out.
 //
 // The host watches three globals the scripts set: $Arena::HostAsked (start a server here and join it), $Arena::LeaveAsked (the
 // view was left: stop hosting) and $Arena::QuitAsked. $Arena::Port is the UDP port number the games listen on. $Arena::HostScope
@@ -26,6 +26,9 @@ new GuiControlProfile(ArenaHealthProfile) { fontType = "Arial"; fontSize = 40; f
 new GuiControlProfile(ArenaCrossProfile) { fontType = "Arial"; fontSize = 28; fontColors[0] = "255 255 255 220"; justify = "center"; };
 new GuiControlProfile(ArenaChatProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "236 240 248 255"; };
 new GuiControlProfile(ArenaInfoProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "255 208 120 255"; };
+new GuiControlProfile(ArenaClockProfile) { fontType = "Arial"; fontSize = 28; fontColors[0] = "236 240 248 255"; justify = "center"; };
+new GuiControlProfile(ArenaRowProfile) { fontType = "Arial"; fontSize = 22; fontColors[0] = "226 230 238 255"; };
+new GuiControlProfile(ArenaScoreProfile) { fontType = "Arial"; fontSize = 22; fontColors[0] = "255 236 200 255"; justify = "right"; };
 new GuiControlProfile(ArenaListProfile)
 {
    fontType = "Arial";
@@ -480,6 +483,11 @@ new GameTSCtrl(PlayGui)
       profile = ArenaReloadProfile; position = "556 512"; extent = "220 28"; horizSizing = "left"; vertSizing = "top";
       visible = true; enabled = true; text = "";
    };
+   new GuiTextCtrl(RoundHud)
+   {
+      profile = ArenaClockProfile; position = "300 548"; extent = "200 36"; horizSizing = "center"; vertSizing = "top";
+      visible = true; enabled = true; text = "";
+   };
    new GuiTextCtrl(PlayNote)
    {
       profile = ArenaNoteProfile; position = "100 200"; extent = "600 30"; horizSizing = "center"; visible = true; enabled = true;
@@ -548,6 +556,96 @@ function resumeGame()
    Canvas.popDialog(PauseGui);
    Canvas.cursorOff();
    PlayMap.push();
+}
+
+// ---- the round's end: its scores over the view until the next map is in (the game goes on underneath, without shots)
+
+new GuiControl(RoundEndGui)
+{
+   profile = ArenaShadeProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+   new GuiControl(RoundPanel)
+   {
+      profile = ArenaPanelProfile; position = "220 110"; extent = "360 380"; horizSizing = "center"; vertSizing = "center";
+      new GuiTextCtrl(RoundTitle)
+      {
+         profile = ArenaHeadProfile; position = "0 22"; extent = "360 40"; visible = true; enabled = true;
+         text = "Round over";
+      };
+      new GuiTextCtrl(RoundNext)
+      {
+         profile = ArenaHintProfile; position = "0 336"; extent = "360 22"; visible = true; enabled = true;
+         text = "";
+      };
+   };
+};
+
+// The board's rows: a name and a score each, the highest first.
+$Arena::BoardRows = 8;
+function makeBoardRows()
+{
+   for (%i = 0; %i < $Arena::BoardRows; %i++)
+   {
+      %y = 80 + %i * 30;
+      RoundPanel.add(new GuiTextCtrl("BoardName" @ %i)
+      {
+         profile = ArenaRowProfile; position = "40" SPC %y; extent = "220 28"; visible = true; enabled = true; text = "";
+      });
+      RoundPanel.add(new GuiTextCtrl("BoardScore" @ %i)
+      {
+         profile = ArenaScoreProfile; position = "260" SPC %y; extent = "60 28"; visible = true; enabled = true; text = "";
+      });
+   }
+}
+makeBoardRows();
+
+// Shows the round's scores (%board: a record of "name" TAB score for each player, the highest first) and the map that comes
+// next in %seconds.
+function showRoundEnd(%next, %seconds, %board)
+{
+   %count = getRecordCount(%board);
+   for (%i = 0; %i < $Arena::BoardRows; %i++)
+   {
+      %row = %i < %count ? getRecord(%board, %i) : "";
+      %name = "BoardName" @ %i;
+      %score = "BoardScore" @ %i;
+      %name.setText(%row $= "" ? "" : %i + 1 @ ".  " @ getField(%row, 0));
+      %score.setText(getField(%row, 1));
+   }
+   RoundNext.setText("Next map: " @ %next @ " in " @ %seconds @ " s");
+   if (!$Arena::RoundShown)
+      Canvas.pushDialog(RoundEndGui);
+   $Arena::RoundShown = 1;
+}
+
+function hideRoundEnd()
+{
+   if (!$Arena::RoundShown)
+      return;
+   $Arena::RoundShown = 0;
+   Canvas.popDialog(RoundEndGui);
+}
+
+// The round's clock under the view: minutes and seconds left, counted down here between the server's word.
+function setRoundClock(%seconds)
+{
+   cancel($Arena::ClockTimer);
+   $Arena::RoundLeft = %seconds;
+   showRoundClock();
+}
+
+function showRoundClock()
+{
+   %left = $Arena::RoundLeft;
+   if (%left <= 0)
+   {
+      RoundHud.setText("");
+      return;
+   }
+   %m = mFloor(%left / 60);
+   %s = %left % 60;
+   RoundHud.setText(%m @ ":" @ (%s < 10 ? "0" : "") @ %s);
+   $Arena::RoundLeft = %left - 1;
+   $Arena::ClockTimer = schedule(1000, 0, "showRoundClock");
 }
 
 // Leaving from the pause menu closes it first.
@@ -751,6 +849,8 @@ function leaveGame()
    if ($Arena::Chatting)
       closeChat();
    closePause();
+   hideRoundEnd();
+   setRoundClock(0);
    disconnect();
    releaseKeys();
    $Arena::OwnGhost = -1;
@@ -802,18 +902,52 @@ function GameConnection::onConnectionTimedOut(%this)
 
 // ---- what the server says
 
-// %textureFilter is the map's choice of how its textures are drawn ("nearest": sharp texels; empty: smooth).
+// %textureFilter is the map's choice of how its textures are drawn ("nearest": sharp texels; empty: smooth). It comes on
+// each map: the first when the client joined, the next ones when the map changed (the client stayed in the game).
 function clientCmdArenaStarted(%map, %server, %textureFilter)
 {
+   %changed = $Arena::InGame;
    $Arena::TextureFilter = %textureFilter;
+   $Arena::Map = %map;
+   $Arena::Maps++;
    MainStatus.setText("");
    JoinStatus.setText("");
+   hideRoundEnd();
+   if (%changed)
+   {
+      showNote(%map);
+      return;
+   }
    Canvas.setContent(PlayGui);
    Canvas.cursorOff();
    PlayMap.push();
    $Arena::InGame = 1;
    showHostInfo();
    showNote(%server);
+}
+
+// The map ended: its ghosts are going, the next map's come after its datablocks.
+function clientCmdMissionEnd(%sequence)
+{
+   $Arena::OwnGhost = -1;
+   $Arena::MissionEnds++;
+   setRoundClock(0);
+   RoundNext.setText("Loading the next map...");
+}
+
+// The seconds left in the round.
+function clientCmdRoundTime(%seconds)
+{
+   setRoundClock(%seconds);
+}
+
+// The round is over: its scores, and the next map's name in %seconds.
+function clientCmdRoundEnd(%next, %seconds, %board)
+{
+   $Arena::RoundEnds++;
+   $Arena::Board = %board;
+   setRoundClock(0);
+   showRoundEnd(%next, %seconds, %board);
 }
 
 function clientCmdOwnFigure(%ghost, %yaw)
