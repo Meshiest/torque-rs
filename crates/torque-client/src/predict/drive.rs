@@ -1050,18 +1050,23 @@ impl GhostVehicle {
         let s = &mut *self.body.v.s;
         if w.count < w.ticks {
             w.count += 1;
-            let t = s.obj_to_world;
-            s.delta_pos = [
-                (d(t[3]) + d(w.offset[0])) as f32,
-                (d(t[7]) + d(w.offset[1])) as f32,
-                (d(t[11]) + d(w.offset[2])) as f32,
-            ];
+            // On from where the warp starts (the update's `delta.pos`, which the last frame drew at its fraction), not from the
+            // object's last tick (TGE's `getTransform`): the two differ by up to a tick's travel, which the vehicle would jump by
+            // on the warp's first tick, and the warp would end that far from the update's position.
+            s.delta_pos = std::array::from_fn(|i| (d(s.delta_pos[i]) + d(w.offset[i])) as f32);
             s.delta_rot[0] = s.delta_rot[1];
             let frac = (f64::from(w.count) / f64::from(w.ticks)) as f32;
             s.delta_rot[1] = quat_slerp(w.rot[0], w.rot[1], frac);
             let (p, q) = (s.delta_pos, s.delta_rot[1]);
+            let from = s.world_to_obj;
             s.set_position(p, &q, &mut host);
             s.delta_pos_vec = w.offset.map(|v| -v);
+            // A warp tick runs no physics: the wheels' contacts ride with the body to where the next one finds them, so what
+            // is drawn at them (dust, tracks) goes on with the vehicle.
+            let moved = collide::math::matrix_product(&s.obj_to_world, &from);
+            for wheel in &mut self.body.v.k.wheels {
+                wheel.point = collide::math::mul_p(&moved, wheel.point);
+            }
             return;
         }
         let left = w.prediction;

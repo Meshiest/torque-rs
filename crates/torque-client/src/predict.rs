@@ -201,8 +201,8 @@ pub struct Predictor<W: PredictWorld> {
     /// The vehicles nobody on this client drives, run forward as TGE's client runs its ghosts (by ghost index), the last vehicle
     /// update read, and the end of the move list at the last tick (the client's ticks are its moves).
     pub ghost_vehicles: std::collections::BTreeMap<u32, drive::GhostVehicle>,
-    /// The driven vehicle's updates that carried its state (no driver on the server's side) since the last resend, in order,
-    /// with their positions: applied to it when a resend ends the drive.
+    /// The driven vehicle's updates that carried its state (no driver on the server's side) since the last resend, from the
+    /// last with a pose on, in order, with their positions: applied to it when a resend ends the drive.
     pub driven_pending: Vec<(VehicleUpdate, Option<[f32; 3]>)>,
     /// The Projectile ghosts, run forward every tick as TGE's client runs them (the game's [`game::GhostProjectiles`]), and the explosions their own
     /// steps made since the last view.
@@ -252,6 +252,9 @@ pub type FileReader = Rc<dyn Fn(&[u8]) -> Option<Vec<u8>>>;
 /// The most vehicles the client runs on its own, and the most ghost ticks one packet runs (a stall is not caught up further).
 pub const MAX_GHOST_VEHICLES: usize = 64;
 pub const MAX_GHOST_TICKS: u32 = 8;
+/// The speed (units a second) under which a vehicle let go of takes the poses the server sent before ([`Predictor::driven_pending`]).
+pub const RELEASE_MOVING: f32 = 1.0;
+
 /// The most updates of the driven vehicle kept for the end of the drive ([`Predictor::driven_pending`]).
 pub const MAX_DRIVEN_PENDING: usize = 64;
 
@@ -380,7 +383,7 @@ impl<W: PredictWorld> Predictor<W> {
     /// mask only when it moved). Dropping the driven vehicle would draw it, and collide with it, at the last pose an update had
     /// carried while nobody drove it: where the Player got in. So the driven vehicle becomes the ghost vehicle, then the updates
     /// its ghost got without a driver since the last resend that kept it are applied in order, as TGE's object reads them as they
-    /// come. `before` is the driven vehicle before the resend.
+    /// come; their poses only when it is all but still ([`RELEASE_MOVING`]). `before` is the driven vehicle before the resend.
     fn release_vehicle(&mut self, before: Option<drive::DrivenVehicle>, world: &W) {
         let now = self
             .predicted
@@ -397,9 +400,18 @@ impl<W: PredictWorld> Predictor<W> {
             return;
         }
         let index = v.index;
-        let mut g = drive::GhostVehicle::released(v, FRAME_DT);
-        for (rec, position) in &pending {
-            g.unpack(rec, *position, true, &mut ClientCollision::empty());
+        let mut g = drive::GhostVehicle::released(v, self.back);
+        // A vehicle still moving gets the server's next updates anyway; the poses kept are older than the state the client
+        // predicted, and warping to one would pull the vehicle back along its way.
+        let v = g.body.v.s.rigid.lin_vel;
+        let moving = v.iter().map(|x| x * x).sum::<f32>() > RELEASE_MOVING * RELEASE_MOVING;
+        for (rec, position) in pending {
+            let rec = if moving {
+                VehicleUpdate { pose: None, ..rec }
+            } else {
+                rec
+            };
+            g.unpack(&rec, position, true, &mut ClientCollision::empty());
         }
         self.ghost_vehicles.insert(index, g);
     }
@@ -646,12 +658,18 @@ impl<W: PredictWorld> Predictor<W> {
             let rec = u.record.vehicle().filter(|v| !v.flying);
             if Some(u.index) == driven {
                 // an update with the vehicle's state (the server no longer counts this client its driver) is kept for the
-                // resend that ends the drive; the next resend that keeps the drive supersedes it.
+                // resend that ends the drive; the next resend that keeps the drive supersedes it. One with a pose supersedes
+                // the ones before it: a server that sends its driver the state all along would otherwise have the vehicle warp
+                // back through the whole drive when it ends.
                 if let Some(rec) = rec
                     && !rec.controlled
-                    && self.driven_pending.len() < MAX_DRIVEN_PENDING
                 {
-                    self.driven_pending.push((rec, u.position));
+                    if rec.pose.is_some() {
+                        self.driven_pending.clear();
+                    }
+                    if self.driven_pending.len() < MAX_DRIVEN_PENDING {
+                        self.driven_pending.push((rec, u.position));
+                    }
                 }
                 continue;
             }
@@ -1329,10 +1347,12 @@ impl<W: PredictWorld> Predictor<W> {
         // the vehicles the client runs on its own drawn between their ticks as the driven one is (TGE interpolates every
         // vehicle ghost each frame, `WheeledVehicle::interpolateTick`), not where their last update put them, in tick steps.
         // Their wheels as the client runs them.
-        for (i, g) in &self.ghost_vehicles {
+        for (i, g) in &mut self.ghost_vehicles {
             if world.vehicle_render.contains_key(i) || !world.ghosts.contains_key(i) {
                 continue;
             }
+            // `interpolateTick(dt)` keeps the fraction drawn: the next update's warp starts from where this frame drew it.
+            g.frame(back);
             let pose = vehicle_render_pose(&g.body.v.s, back);
             world.vehicle_render.insert(*i, pose);
             world.vehicle_look.insert(
