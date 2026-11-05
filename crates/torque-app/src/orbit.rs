@@ -74,15 +74,20 @@ pub const ZOOM_RATE: f32 = 12.0;
 /// towards out), kept within its limits, and the distance drawn eases there ([`Zoom::advance`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Zoom {
-    pub min: f32,
-    pub max: f32,
+    min: f32,
+    max: f32,
     target: f32,
     distance: f32,
 }
 
 impl Zoom {
-    /// A zoom at `distance`, within `min` and `max`.
+    /// A zoom at `distance`, within `min` and `max` (either way round; a limit that is not finite is taken as `distance`, and a
+    /// distance that is not finite as the nearer limit).
     pub fn new(distance: f32, min: f32, max: f32) -> Zoom {
+        let finite = |x: f32, or: f32| if x.is_finite() { x } else { or };
+        let distance = finite(distance, finite(min, 1.0));
+        let (a, b) = (finite(min, distance), finite(max, distance));
+        let (min, max) = (a.min(b), a.max(b));
         let d = distance.clamp(min, max);
         Zoom {
             min,
@@ -90,6 +95,11 @@ impl Zoom {
             target: d,
             distance: d,
         }
+    }
+
+    /// The nearest and farthest it goes.
+    pub fn limits(&self) -> (f32, f32) {
+        (self.min, self.max)
     }
 
     /// The wheel turned `notches` (positive away from the user: in).
@@ -139,6 +149,24 @@ mod tests {
         z.notches(-100.0);
         z.advance(2.0);
         assert_eq!(z.distance(), 20.0);
+        z.notches(f32::NAN);
+        assert_eq!(z.target(), 20.0);
+    }
+
+    #[test]
+    fn a_zoom_takes_its_limits_either_way_round_and_never_panics() {
+        let z = Zoom::new(8.0, 20.0, 3.0);
+        assert_eq!((z.limits(), z.distance()), ((3.0, 20.0), 8.0));
+        for (d, a, b) in [
+            (f32::NAN, 3.0, 20.0),
+            (8.0, f32::NAN, f32::INFINITY),
+            (f32::NAN, f32::NAN, f32::NAN),
+        ] {
+            let mut z = Zoom::new(d, a, b);
+            z.notches(2.0);
+            z.advance(1.0);
+            assert!(z.distance().is_finite(), "{d} {a} {b}: {z:?}");
+        }
     }
 
     #[test]
