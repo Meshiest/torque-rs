@@ -74,7 +74,8 @@ impl ShadowQuality {
 impl Quality {
     /// The shadows of this quality: Low 2 x 2048 PCF 9 (1024 went blotchy), no point shadows, no contact; Medium 3 x 2048 PCF
     /// 16, 4 x 256, contact;
-    /// High 4 x 2048 PCSS, 8 x 512; Ultra 4 x 4096 PCSS, 16 x 512.
+    /// High 4 x 2048 PCSS, 8 x 512; Ultra 4 x 4096 PCSS, 16 x 512. The enhanced renderer sizes its point cubes from these in
+    /// three tiers (`torque_render_hd::shadows::point_tiers`: High 4 x 512, 8 x 256 and 16 x 128).
     pub fn shadows(self) -> ShadowQuality {
         match self {
             Quality::Low => ShadowQuality {

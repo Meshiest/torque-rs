@@ -105,7 +105,7 @@ new GameTSCtrl(PlayGui)
       new GuiTextCtrl(PlayHelp)
       {
          profile = WorldDimProfile; position = "170 5"; extent = "620 18"; horizSizing = "width"; visible = true; enabled = true;
-         text = "W A S D move   Shift walk   Space jump   Mouse look   V camera   R restart   Esc menu";
+         text = "W A S D move   Shift walk   Space jump   Mouse look   Tab camera   R restart   Esc menu";
       };
    };
    new GuiTextCtrl(PlayNote)
@@ -157,9 +157,11 @@ function updateMove()
    $mvLeftAction = $World::Left * $World::Pace;
    $mvRightAction = $World::Right * $World::Pace;
 }
-function jump(%v) { if (%v) $mvTriggerCount2++; }
+// The count goes up on the press and on the release: odd while held, so a quick tap (both in one frame) jumps once.
+function jump(%v) { $mvTriggerCount2++; }
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
+// Tab: the camera at the figure's eyes or behind it.
 function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
 function leaveKey(%v) { if (%v) leaveWorld(); }
@@ -169,7 +171,7 @@ PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
 PlayMap.bind(keyboard, lshift, walkSlowly);
 PlayMap.bind(keyboard, space, jump);
-PlayMap.bind(keyboard, v, switchCamera);
+PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
 PlayMap.bind(keyboard, escape, leaveKey);
 PlayMap.bind(mouse, xaxis, turn);

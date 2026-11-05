@@ -202,8 +202,48 @@ fn a_figure_that_walks_into_a_cube_stops_at_it_and_jumps() {
     assert!(errors(&game).is_empty(), "{:?}", errors(&game));
 }
 
+/// Space pressed and let go in the same frame (no step between) jumps once, and the jump is not held after it: the figure lands
+/// and stays on the floor.
 #[test]
-fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
+fn a_tap_of_space_inside_one_frame_jumps_once_and_lets_go() {
+    let mut files = GameFiles::bundled().expect("the game folder");
+    files.insert(WALL_PATH, WALL_MAP.as_bytes());
+    let mut game = LevelDemo::new(files).expect("the client");
+    let map = game
+        .maps
+        .iter()
+        .position(|m| m.path == WALL_PATH)
+        .expect("the test map is listed");
+    assert!(enter(&mut game, map), "the test map did not start");
+    for _ in 0..30 {
+        game.step(32);
+    }
+    assert!(server_position(&game)[2].abs() < 0.1, "standing first");
+    for tap in 0..2 {
+        game.key(Key::Space, true);
+        game.key(Key::Space, false);
+        let (mut takeoffs, mut aloft, mut highest) = (0, false, 0.0f32);
+        // Three seconds: a held jump would leave the floor again and again in that time (its delay is 10 ticks).
+        for _ in 0..94 {
+            game.step(32);
+            let z = server_position(&game)[2];
+            highest = highest.max(z);
+            if !aloft && z > 0.3 {
+                takeoffs += 1;
+            }
+            aloft = z > 0.3;
+        }
+        assert!(highest > 0.5, "tap {tap}: the jump reached {highest}");
+        assert_eq!(takeoffs, 1, "tap {tap}: one jump for one tap");
+        assert!(
+            server_position(&game)[2].abs() < 0.1,
+            "tap {tap}: landed and not jumping again"
+        );
+    }
+}
+
+#[test]
+fn tab_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
     let files = GameFiles::bundled().expect("the game folder");
     let mut game = LevelDemo::new(files).expect("the client");
     assert!(enter(&mut game, 0), "the first map did not start");
@@ -220,8 +260,8 @@ fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
         |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt();
     let behind = frame(&mut game);
     assert!(!game.first_person() && !hidden(&game));
-    game.key(Key::V, true);
-    game.key(Key::V, false);
+    game.key(Key::Tab, true);
+    game.key(Key::Tab, false);
     let mut last = behind;
     let mut biggest = 0.0f32;
     let mut frames = 0;
@@ -245,8 +285,8 @@ fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
         "a step of {biggest} over {whole}"
     );
     // Back: shown at once.
-    game.key(Key::V, true);
-    game.key(Key::V, false);
+    game.key(Key::Tab, true);
+    game.key(Key::Tab, false);
     frame(&mut game);
     assert!(!hidden(&game) && game.camera_blending());
 }

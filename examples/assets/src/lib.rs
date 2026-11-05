@@ -17,6 +17,7 @@
 
 pub use torque_shape_builder as builder;
 pub mod buggy;
+pub mod gait;
 pub mod interiors;
 pub mod shapes;
 pub mod terrain;

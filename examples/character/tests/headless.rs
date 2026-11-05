@@ -43,14 +43,16 @@ fn the_keys_walk_run_and_jump_the_figure_and_it_lands() {
         !thread.transition.in_transition,
         "the blend lasts a quarter second"
     );
-    let walk_foot = left_foot(&game);
-    let moved = (0..3)
-        .map(|k| (walk_foot[k] - idle_foot[k]).abs())
-        .fold(0.0, f32::max);
-    assert!(
-        moved > 0.05,
-        "the walk swings the leg: {idle_foot:?} {walk_foot:?}"
-    );
+    // Over one loop of the walk (any one moment may find the foot passing under the hips).
+    let mut moved = 0.0f32;
+    for _ in 0..(torque_example_assets::gait::WALK.duration * 1000.0) as u32 / FRAME_MS {
+        run(&mut game, FRAME_MS);
+        let walk_foot = left_foot(&game);
+        moved = (0..3)
+            .map(|k| (walk_foot[k] - idle_foot[k]).abs())
+            .fold(moved, f32::max);
+    }
+    assert!(moved > 0.2, "the walk swings the leg: {moved}");
     assert!(
         game.figure().position[1] > 0.3,
         "{:?}",
@@ -60,7 +62,10 @@ fn the_keys_walk_run_and_jump_the_figure_and_it_lands() {
     game.key(Key::ShiftLeft, true);
     run(&mut game, 200);
     let speed = game.figure().ground_speed();
-    assert!(speed > 1.6, "speeding up: {speed}");
+    assert!(
+        speed > torque_example_assets::shapes::WALK_SPEED + 0.3,
+        "speeding up: {speed}"
+    );
     run(&mut game, 600);
     assert_eq!(game.figure().state(), State::Run);
 

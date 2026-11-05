@@ -11,7 +11,7 @@
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
 //! ([`crate::scene`]) and the map's spot lights, the canvas drawn, and the eye: behind the client's own figure (or at its eyes,
-//! `V`), kept in front of the cubes and the interiors' walls between. `V` eases the camera from one to the other
+//! `Tab`), kept in front of the cubes and the interiors' walls between. `Tab` eases the camera from one to the other
 //! ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden only once the camera has arrived at
 //! its eyes.
 //!
@@ -207,7 +207,7 @@ impl LevelDemo {
         self.scene.own()
     }
 
-    /// Whether the camera is at the figure's eyes (`V`).
+    /// Whether the camera is at the figure's eyes (`Tab`).
     pub fn first_person(&self) -> bool {
         self.flag("$World::FirstPerson")
     }
@@ -445,24 +445,4 @@ pub fn with_fov(mut eye: Eye) -> Eye {
     eye
 }
 
-/// Where the ray from `from` along the unit `dir` enters the box `min`..`max` (its distance), if it does ahead.
-pub fn ray_box(from: [f32; 3], dir: [f32; 3], min: [f32; 3], max: [f32; 3]) -> Option<f32> {
-    let (mut near, mut far) = (0.0f32, f32::MAX);
-    for i in 0..3 {
-        if dir[i].abs() < 1e-6 {
-            if from[i] < min[i] || from[i] > max[i] {
-                return None;
-            }
-            continue;
-        }
-        let a = (min[i] - from[i]) / dir[i];
-        let b = (max[i] - from[i]) / dir[i];
-        near = near.max(a.min(b));
-        far = far.min(a.max(b));
-        if near > far {
-            return None;
-        }
-    }
-    // A ray that starts inside a box (the figure's own floor) does not count.
-    (near > 0.0).then_some(near)
-}
+pub use torque_example_common::ray_box;

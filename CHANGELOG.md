@@ -145,12 +145,15 @@ The first development version. Nothing is published yet; this is what exists.
   clouds. `CloudLook::SUNLIT_CUMULUS` gives sunlit cumulus; without a look the clouds are as before. The vehicle demo uses
   it.
 - `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
-  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
+  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's Tab uses it.
 - The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
   meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
   the engine's own classes to every client).
 - The level demo's office map: a Blockbench model (`game/levels/office.bbmodel`, made by `tools/office.py`) built into an
   interior when the demo starts, with pixel textures drawn nearest, glass windows, a roof and ceiling lights.
+- `torque-example-fps`: Tab eases the camera behind the figure (over the shoulder, kept in front of cubes and interior walls)
+  and back to its eyes; backed against a wall it draws the first person's view. `torque-client`'s
+  `Predictor::cast_ray` casts a segment in the client's container (the static index's objects near it and the ghosts).
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
   while it runs.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
@@ -263,12 +266,60 @@ The first development version. Nothing is published yet; this is what exists.
 - `just examples/showcase` (`torque-example-showcase`): the front page's four pictures (the buggy in a turn, a shot in the
   arena, the valley at golden hour, the office), each the world alone at the Ultra quality, set in a 2 x 2 grid with thin
   transparent gutters (`hero.png`, 1920 x 1080, and `hero@2x.png`); `--examples` the examples' other pictures.
+- The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
+  lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
+  down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
+  landing where `run`'s left leg reaches furthest forward. The feet turn at new `ankle_l` and `ankle_r` nodes. A test
+  holds a planted foot to under 5% of the ground's speed.
+- The example kit's figure's `run` is worked out the same way and bounces: a short flight between steps, the hips sinking as
+  the body passes over the planted foot and rising into the air, the heel kicked up and the knee driven forward through the
+  swing, its planted feet held by the same test.
+- `torque-client`: a Player walks at walking pace (`player_anim`, the engine's own `walk` action): a shape with a forward
+  `walk` plays it instead of `run` under the geometric mean of the two speeds, and backward instead of `back` under that of
+  the walk's and the back's, with a 5% margin either way; walk and run keep their place in the loop as they blend. A shape
+  without `walk` keeps TGE's pick.
+- `torque-game`: a synced Player (one with hitboxes) walks by the same rule (`synced::walk_or`), its walk stepped by the
+  ground covered and keeping its place in the loop as it changes to and from the run, so its hitboxes follow the walk the
+  clients draw; a Player without hitboxes keeps TGE's pick.
+- `just examples/walk-clip`: a clip of the kit's figure walking, running and walking backward, its action chosen by the
+  client's Player animation, drawn offscreen from the side and three-quarters (an mp4 through ffmpeg, and a strip).
+- `torque-render-hd`: a ghosting check (`cargo run -p torque-render-hd --release --example ghosting`): scripted scenes (a
+  moving shape's shadow under a still camera, a fast sun, a light switched, a moving camera, smoke) drawn with every history
+  and against a reference of each instant drawn with none and settled, printing per scene the share of pixels off and the
+  frames until the image settles after each change (`--max-settle`, `--max-trail` fail past a limit); `--audit` turns each
+  pass's history off on its own (`HdWorld::histories`, all on by default). The vehicle demo's `ghost-shots` example measures
+  the buggy driving past a still camera at golden hour the same way.
+- `torque::app::ghosts`: a steady first-person view (`GhostOptions::steady_eye`, the engine's own; TGE stands the view at
+  the drawn `eye` node): the own Player's view at its `eye` node at the rest pose, carried by its real motion, while the
+  body and its hitboxes keep their animation; `eye_sway` keeps the sideways sway, and `OwnView::drawn_eye` gives TGE's eye.
+  On in the level, vehicle and arena demos; `just examples/eye-clip` draws a before-and-after clip.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
+  Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
+  speed).
+- `torque-render-hd`: a change of light no longer leaves a smeared copy behind under a still camera (the tree shadows
+  stepping with the running day, a shape's shadow sweeping past, a light switched). The TAA clips its history into the
+  neighborhood's box every frame and starts it again where the neighborhood's mean changes, with no rules for moving shadows,
+  water, the sky or see-through shapes; the ambient occlusion keeps no history (a pattern fixed per pixel, always filtered in
+  space) and the contact shadows' march has a fixed pattern. The ghosting check: the fast sun settles in 7 frames, not
+  never (71 % of the frame off before), the vehicle demo's buggy pass at once, not never.
+- The level demo's office: textures redrawn as clean pixel art (flat areas, a few shading steps, lit and shaded edges, no
+  noise), the office chairs' bases on the floor (they hovered 4 cm over it), and the screens drawn unlit (monitors, two new
+  laptops on the meeting table, a chart on the meeting room's screen).
+- The level demo: a quick tap of Space held the jump until the next tap (the script counted only the press); now it jumps
+  once. Tab switches the camera (it was V), as in the other demos, and every map draws its textures nearest (cubes, tiles,
+  figures, interiors; the mipmaps kept).
+- `torque-render-hd`: every point or spot light whose light reaches the view has a shadow cube, sized by its importance (its
+  brightness, the share of the view its sphere takes, its cone): three tiers of cube arrays at the quality's face size, a half
+  and a quarter of it (High: 4 x 512, 8 x 256, 16 x 128, less memory than its 8 equal cubes), where a fixed 8 cubes were
+  traded among the lights in view and a light without one shone unshadowed, so shadows popped on and off as the camera
+  turned or walked. A light that changes tier crossfades from one cube to the other over 12 frames, a light that holds a
+  cube counts 1.25 times as much, and off-screen casters keep shadowing the view (a test with a point light and a low sun).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).
@@ -307,5 +358,15 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
   had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
   head turned as far as it goes).
+- `torque-client`: a window takes the system cursor (lock, confine, center) only while it is focused and shown. It lets go the
+  moment it loses focus or is hidden, never moves the cursor then, and takes it again when it is focused and shown and the
+  game still wants the hold (a window made in the background held it before). In a browser the pointer lock is asked for
+  only right after a click, never renewed on a timer or after Esc.
+- The web page: `?nolock` stops every pointer-lock request (a non-writable, non-configurable no-op). The browser checks get
+  their browser only from `launchGuarded` (`web/guard.mjs`), whose pages (and popups and frames) cannot take the pointer
+  lock whatever they load, and also load with `?nolock`. `web/guard-scan.mjs` fails any script in the repository that names a
+  browser driver or program or loads a module by a computed name, and `web/guard.test.mjs` shows a page that locks on click
+  never gets it; both run in `just examples/web-guard-test` (first in each check recipe) and in CI. Headless Chrome on
+  Windows confined the real cursor when a check clicked the canvas.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

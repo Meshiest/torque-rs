@@ -208,6 +208,8 @@ pub fn options() -> GhostOptions {
         },
         // The server's figures have hitboxes: drawn as posed for hits.
         synced_poses: true,
+        // A steady first-person view over the figure's bobbing gaits.
+        steady_eye: true,
         ..GhostOptions::default()
     }
 }
@@ -379,6 +381,31 @@ impl ArenaScene {
         eye.fov = Some(FOV);
         eye
     }
+}
+
+/// The boxes (min, max) of the map's cubes (its StaticShapes, each the kit's unit cube scaled and turned as its record says): the
+/// camera behind the figure stays in front of them.
+pub fn cube_boxes(world: &ClientWorld<TgeClientSet>) -> Vec<([f32; 3], [f32; 3])> {
+    let mut out = Vec::new();
+    for ghost in world.ghosts.values() {
+        let (Some(TgeClass::StaticShape), Some(pose)) = (ghost.class, ghost.pose()) else {
+            continue;
+        };
+        let Some((m, scale)) = pose_matrix(&pose, None) else {
+            continue;
+        };
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for corner in 0..8 {
+            let local = [0, 1, 2].map(|k| if corner >> k & 1 != 0 { 0.5 } else { -0.5 } * scale[k]);
+            let p = m.mul_p(local);
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        out.push((lo, hi));
+    }
+    out
 }
 
 /// The faces (as triangles) of the map's cubes (its StaticShapes, each the kit's unit cube scaled and turned as its record

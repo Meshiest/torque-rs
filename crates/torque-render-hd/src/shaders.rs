@@ -93,11 +93,9 @@ pub enum Permutation {
     },
     /// The screen-space contact shadows.
     Contact,
-    /// The ambient occlusion (GTAO, or SSAO) with its history.
+    /// The ambient occlusion (GTAO, or SSAO), each frame's estimate on its own.
     Ao {
         gtao: bool,
-        /// A short history near the shapes that moved (the scene's smooth occlusion).
-        moving_cap: bool,
     },
     /// The ambient occlusion's spatial filter.
     AoFilter,
@@ -136,7 +134,7 @@ pub enum Permutation {
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 29] = [
+    pub const ALL: [Permutation; 27] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -158,22 +156,8 @@ impl Permutation {
         Permutation::Shadow { unclipped: true },
         Permutation::Shadow { unclipped: false },
         Permutation::Contact,
-        Permutation::Ao {
-            gtao: true,
-            moving_cap: false,
-        },
-        Permutation::Ao {
-            gtao: false,
-            moving_cap: false,
-        },
-        Permutation::Ao {
-            gtao: true,
-            moving_cap: true,
-        },
-        Permutation::Ao {
-            gtao: false,
-            moving_cap: true,
-        },
+        Permutation::Ao { gtao: true },
+        Permutation::Ao { gtao: false },
         Permutation::AoFilter,
         Permutation::Taa,
         Permutation::Fxaa,
@@ -202,9 +186,7 @@ impl Permutation {
             Permutation::Tonemap => "tonemap.wgsl".to_string(),
             Permutation::Shadow { unclipped } => format!("shadow.wgsl (UNCLIPPED = {unclipped})"),
             Permutation::Contact => "contact.wgsl".to_string(),
-            Permutation::Ao { gtao, moving_cap } => {
-                format!("ao.wgsl (GTAO = {gtao}, MOVING_CAP = {moving_cap})")
-            }
+            Permutation::Ao { gtao } => format!("ao.wgsl (GTAO = {gtao})"),
             Permutation::AoFilter => "ao_filter.wgsl".to_string(),
             Permutation::Taa => "taa.wgsl".to_string(),
             Permutation::Fxaa => "fxaa.wgsl".to_string(),
@@ -288,8 +270,8 @@ impl Permutation {
                 ext.shadow
             ),
             Permutation::Contact => format!("{}\n{}", common, file("contact.wgsl")),
-            Permutation::Ao { gtao, moving_cap } => format!(
-                "const GTAO: bool = {gtao};\nconst MOVING_CAP: bool = {moving_cap};\n{}\n{}",
+            Permutation::Ao { gtao } => format!(
+                "const GTAO: bool = {gtao};\n{}\n{}",
                 common,
                 file("ao.wgsl")
             ),

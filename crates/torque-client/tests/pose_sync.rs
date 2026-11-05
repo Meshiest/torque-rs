@@ -22,6 +22,12 @@ const X: [f32; 3] = [1.0, 0.0, 0.0];
 /// The run's ground speed (units a second) and the speed the runner slides at (no run force holds it back).
 const RUN_SPEED: f32 = 4.0;
 const MOVE_SPEED: f32 = 5.0;
+/// The walk's ground speed, and a walking pace under the limit between it and the run's.
+const WALK_SPEED: f32 = 1.5;
+const WALK_PACE: f32 = 1.8;
+/// The back's ground speed, and a slow pace backward (a walk backward).
+const BACK_SPEED: f32 = 3.0;
+const BACK_PACE: f32 = 1.2;
 
 fn sequence(
     name: &'static str,
@@ -106,6 +112,50 @@ fn figure() -> ShapeBuilder {
             Track {
                 node: rleg,
                 keys: swing(-1.0),
+            },
+        ],
+        Vec::new(),
+        ground,
+    ));
+    // `back` swings them 20 degrees each way over 0.8 seconds at [`BACK_SPEED`] backward.
+    let back_step = |s: f32| [0.0, 20.0 * s, 0.0, -20.0 * s].map(|d| turn(X, d)).to_vec();
+    let ground = (1..=4)
+        .map(|k| [0.0, -BACK_SPEED * 0.8 * k as f32 / 4.0, 0.0])
+        .collect();
+    b.sequence(sequence(
+        "back",
+        0.8,
+        true,
+        vec![
+            Track {
+                node: lleg,
+                keys: back_step(-1.0),
+            },
+            Track {
+                node: rleg,
+                keys: back_step(1.0),
+            },
+        ],
+        Vec::new(),
+        ground,
+    ));
+    // `walk` swings the legs 15 degrees each way over a second at [`WALK_SPEED`], each furthest forward where `run` has it.
+    let step = |s: f32| [0.0, 15.0 * s, 0.0, -15.0 * s].map(|d| turn(X, d)).to_vec();
+    let ground = (1..=4)
+        .map(|k| [0.0, WALK_SPEED * k as f32 / 4.0, 0.0])
+        .collect();
+    b.sequence(sequence(
+        "walk",
+        1.0,
+        true,
+        vec![
+            Track {
+                node: lleg,
+                keys: step(1.0),
+            },
+            Track {
+                node: rleg,
+                keys: step(-1.0),
             },
         ],
         Vec::new(),
@@ -324,5 +374,106 @@ fn a_jumping_figure_tucks_on_the_server_as_on_the_client() {
     assert!(
         worst < 0.01,
         "the server's nodes are within {worst} of the client's"
+    );
+}
+
+#[test]
+fn a_walking_figure_walks_on_the_server_as_on_the_client_and_its_hitboxes_follow() {
+    let mut s = server();
+    let (id, mut drawn) = runner(&mut s, "Walker", "Posed", 0.0, true);
+    let (old, _) = runner(&mut s, "Strider", "Boxed", 4.0, false);
+    let walk = torque_client::player_anim::action_list(&drawn.shape)
+        .iter()
+        .position(|a| a.name == b"walk")
+        .unwrap() as u32;
+    let rest = served(&mut s, id).0;
+    let (mut worst, mut swing, mut walked, mut ran, mut tge_walked) = (0.0f32, 0.0f32, 0, 0, 0);
+    // Walking for 2.5 seconds, then running: the server and the client change at the same tick and pose alike throughout,
+    // the blend between them included.
+    for tick in 0..140 {
+        let pace = if tick < 80 { WALK_PACE } else { MOVE_SPEED };
+        eval(
+            &mut s,
+            &format!("Walker.setVelocity(\"0 {pace} 0\"); Strider.setVelocity(\"0 {pace} 0\");"),
+        );
+        let (_, detail) = served(&mut s, id);
+        let client = drawn.frames(&s.vm, id, detail);
+        s.run(TICK_MS, |_| false);
+        let server = served(&mut s, id).0;
+        let action = torque_game::sim::player::state(&s.vm, id)
+            .unwrap()
+            .action_anim;
+        let (drawn_action, forward) = drawn.anim.action();
+        if tick >= 20 {
+            assert_eq!(
+                (action, forward),
+                (drawn_action as u32, true),
+                "tick {tick}: the server plays what the client draws"
+            );
+            worst = worst.max(apart(&server, &client));
+            if tick < 80 {
+                swing = swing.max(apart(&server, &rest));
+            }
+        }
+        walked += usize::from(tick < 80 && action == walk);
+        ran += usize::from(tick >= 100 && action == 1);
+        tge_walked += usize::from(
+            torque_game::sim::player::state(&s.vm, old)
+                .unwrap()
+                .action_anim
+                == walk,
+        );
+    }
+    assert!(
+        walked > 70,
+        "the server walks at a walking pace ({walked} ticks)"
+    );
+    assert_eq!(ran, 40, "and runs at a running pace");
+    assert!(
+        swing > 0.1,
+        "the hitboxes' legs swing with the walk ({swing})"
+    );
+    assert!(
+        worst < 0.01,
+        "the server's hitbox nodes are within {worst} of the client's"
+    );
+    // Without hitboxes the server keeps TGE's pick: never the walk.
+    assert_eq!(tge_walked, 0);
+}
+
+#[test]
+fn a_walk_forward_turned_straight_into_a_walk_backward_stays_posed_alike() {
+    let mut s = server();
+    let (id, mut drawn) = runner(&mut s, "Turner", "Posed", 0.0, true);
+    let walk = torque_client::player_anim::action_list(&drawn.shape)
+        .iter()
+        .position(|a| a.name == b"walk")
+        .unwrap() as u32;
+    let (mut worst, mut backward) = (0.0f32, 0);
+    for tick in 0..100 {
+        let pace = if tick < 50 { WALK_PACE } else { -BACK_PACE };
+        eval(&mut s, &format!("Turner.setVelocity(\"0 {pace} 0\");"));
+        let (_, detail) = served(&mut s, id);
+        let client = drawn.frames(&s.vm, id, detail);
+        s.run(TICK_MS, |_| false);
+        let server = served(&mut s, id).0;
+        if tick >= 20 {
+            let action = torque_game::sim::player::state(&s.vm, id)
+                .unwrap()
+                .action_anim;
+            assert_eq!(action, walk, "tick {tick}: the server walks");
+            assert_eq!(
+                drawn.anim.action().0 as u32,
+                walk,
+                "tick {tick}: the client walks"
+            );
+            worst = worst.max(apart(&server, &client));
+        }
+        backward += usize::from(tick >= 60 && !drawn.anim.action().1);
+    }
+    assert_eq!(backward, 40, "the client walks backward");
+    assert!(
+        worst < 0.01,
+        "the server's hitbox nodes are within {worst} of the client's"
     );
 }

@@ -495,11 +495,11 @@ new GameTSCtrl(PlayGui)
    };
    new GuiControl(HelpBand)
    {
-      profile = ArenaBandProfile; position = "428 12"; extent = "360 26"; horizSizing = "left";
+      profile = ArenaBandProfile; position = "328 12"; extent = "460 26"; horizSizing = "left";
       new GuiTextCtrl(PlayHelp)
       {
-         profile = ArenaDimProfile; position = "10 4"; extent = "342 18"; visible = true; enabled = true;
-         text = "Click shoot   R reload   T chat   Esc menu";
+         profile = ArenaDimProfile; position = "10 4"; extent = "442 18"; visible = true; enabled = true;
+         text = "Click shoot   R reload   Tab camera   T chat   Esc menu";
       };
    };
 };
@@ -762,6 +762,8 @@ function look(%v)
    $mvPitch += %pitch - $Arena::LookPitch;
    $Arena::LookPitch = %pitch;
 }
+// Tab: the camera behind the figure or at its eyes.
+function switchCamera(%v) { if (%v) $Arena::ThirdPerson = !$Arena::ThirdPerson; }
 function chatKey(%v) { if (%v) openChat(); }
 function reloadKey(%v) { if (%v && isObject(ServerConnection)) commandToServer('Reload'); }
 PlayMap.bind(keyboard, w, moveForward);
@@ -769,6 +771,7 @@ PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
 PlayMap.bind(keyboard, space, jump);
+PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, t, chatKey);
 PlayMap.bind(keyboard, r, reloadKey);
 PlayMap.bind(keyboard, escape, pauseKey);

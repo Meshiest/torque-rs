@@ -25,6 +25,18 @@
   // its message is on the root element's `data-torque-refused` for a test.
   import { fetchFiles, Refused } from './files.js';
 
+  // `?nolock` (the browser checks load every page with it): the page never takes the pointer lock. In headless Chrome on Windows
+  // a lock confines the real cursor to the invisible window.
+  if (new URLSearchParams(location.search).has('nolock')) {
+    Object.defineProperty(Element.prototype, 'requestPointerLock', {
+      value() {
+        return Promise.resolve();
+      },
+      writable: false,
+      configurable: false,
+    });
+  }
+
   const status = document.getElementById('status');
   const bar = document.getElementById('progress');
   const mib = (n) => (n / 1048576).toFixed(1);

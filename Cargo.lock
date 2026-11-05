@@ -3132,6 +3132,7 @@ dependencies = [
  "torque-example-assets",
  "torque-example-common",
  "torque-render-core",
+ "torque-render-hd",
  "torque-render-scene",
 ]
 

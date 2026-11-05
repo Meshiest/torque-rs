@@ -3,15 +3,15 @@
 //! | file | nodes | sequences | material |
 //! |---|---|---|---|
 //! | `cube.dts` | `cube` | | `grid` |
-//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2`, `sit`, `ride` | `figure` |
+//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r`, `ankle_l`, `ankle_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2`, `sit`, `ride` | `figure` |
 //! | `pistol.dts` | `pistol`, `mountPoint`, `muzzlePoint`, `ejectPoint`, `slide` | `fire` | `pistol` |
 //! | `projectile.dts` | `projectile` | | `projectile` |
 //!
 //! **The cube** is the unit box centred on its origin (-0.5 to 0.5 on each axis; scale it into walls and floors), with a
 //! `Collision-1` detail (its hull, the same box) and an `LOS-9` detail (the box again) beside the drawn `detail1`.
 //!
-//! **The figure** stands on its origin facing +y, 2 units tall: legs from the hips (0.95 up) down, each a thigh (`leg_*`) and a
-//! shin with its foot (`knee_*`); the torso above them, the head on the torso; arms from the shoulders, each an upper arm
+//! **The figure** stands on its origin facing +y, 2 units tall: legs from the hips (0.95 up) down, each a thigh (`leg_*`), a
+//! shin (`knee_*`) and a foot turning at the ankle on top of its sole (`ankle_*`); the torso above them, the head on the torso; arms from the shoulders, each an upper arm
 //! (`arm_*`) and a forearm with its hand (`elbow_*`), the hands reaching mid-thigh. `eye` is in front of the head (a
 //! first-person view), `cam` at its centre (the point a third-person camera orbits), `mount0` in the closed right hand (where a held
 //! item's `mountPoint` goes), turned so the item's +y runs along the forearm. The eyes are two small dark boxes on the face.
@@ -22,11 +22,17 @@
 //!
 //! - `idle` (and `root`, the same keys under the name a player's rest action looks for): 2 s, looped, the arms sway 3°, the
 //!   elbows a little bent.
-//! - `walk`: 1 s, looped, legs ±25° and arms ±20° against them; each knee bends (to 50°) as its leg swings through from
-//!   behind and is straight while its foot is down; the elbows bend 12° to 24°. The ground frames carry it [`WALK_SPEED`]
-//!   units a second.
-//! - `run`: 0.6 s, looped, legs ±45°, the knees bending to 107°, arms ±40° with the elbows bent about 80°, the torso leaned
-//!   10° forward; [`RUN_SPEED`] units a second.
+//! - `walk`: 0.65 s, looped, a relaxed walk at [`WALK_SPEED`] units a second (a held-Shift pace in the demos), worked out
+//!   from where the feet stand ([`crate::gait`]): each foot lands on its heel with the toe up, rolls flat, stays put on the
+//!   ground while the body passes over it, rolls onto its toe and leaves; both feet are down for a moment at each landing, so
+//!   it never leaves the ground. The hips dip a little as each foot lands and rise as it passes under them (`root` moves),
+//!   the knees stay soft, and the arms swing ±18° against the legs, the elbows bent 10° to 22°. The left heel lands a quarter
+//!   in and the right at three quarters, where `run` has each leg furthest forward.
+//! - `run`: 0.55 s, looped, at [`RUN_SPEED`] units a second, its legs worked out like the walk's ([`crate::gait`]): each foot
+//!   is down for under half the loop, so the figure is in the air between steps; the hips sink as the body passes over the
+//!   planted foot and rise into the flight, the foot lands nearly flat and pushes off from its toe, and the knees come up
+//!   high through the swing. Arms ±40° with the elbows bent about 80°, the torso leaned 10° forward. Its feet land where the
+//!   walk's do in the loop, so the two blend in step.
 //! - `back`: 0.7 s, looped, a walk backward: the gait run in reverse, each knee bending as its leg comes back under the hip;
 //!   [`BACK_SPEED`] units a second backward.
 //! - `side`: 0.6 s, looped, a side step to the left: the left leg lifts and swings out, then the right lifts and closes in to
@@ -70,9 +76,10 @@ use crate::builder::{
     FULL_UV, Face, MeshData, NO_TURN, SequenceDef, ShapeBuilder, Track, UvRect, Vec3,
     material_flags, turn,
 };
+use crate::gait;
 
 /// The figure's ground speed in its `walk`, `run`, `back` and `side` sequences, units a second.
-pub const WALK_SPEED: f32 = 1.6;
+pub const WALK_SPEED: f32 = 2.1;
 pub const RUN_SPEED: f32 = 5.0;
 pub const BACK_SPEED: f32 = 4.0;
 pub const SIDE_SPEED: f32 = 4.5;
@@ -177,14 +184,19 @@ pub(crate) fn turns(parts: &[(Vec3, f32)]) -> Quat16 {
 /// reaching mid-thigh), and how far down the forearm the hand grips.
 pub const THIGH: f32 = 0.48;
 pub const SHIN: f32 = 0.47;
+/// The foot: its sole's thickness (the ankle is on top of it) and its back and front edges along y from the ankle.
+pub const SOLE: f32 = 0.08;
+pub const FOOT_HEEL: f32 = -0.11;
+pub const FOOT_TOE: f32 = 0.17;
 pub const UPPER_ARM: f32 = 0.4;
 pub const FOREARM: f32 = 0.46;
 pub const GRIP: f32 = 0.4;
 
-/// The figure's limbs: each side's hip, knee, shoulder and elbow node (left first).
+/// The figure's limbs: each side's hip, knee, ankle, shoulder and elbow node (left first).
 struct Limbs {
     legs: [usize; 2],
     knees: [usize; 2],
+    ankles: [usize; 2],
     arms: [usize; 2],
     elbows: [usize; 2],
 }
@@ -248,6 +260,66 @@ fn gait_tracks_along(
     tracks
 }
 
+/// The keys of the figure's `walk` and `run` loops.
+const GAIT_KEYS: usize = 64;
+/// The walk's arm swing and elbow bend (degrees: always, and more as the arm swings forward).
+const WALK_ARMS: f32 = 18.0;
+const WALK_ELBOWS: f32 = 10.0;
+const WALK_ELBOW_SWING: f32 = 12.0;
+
+/// One side's hip, knee and ankle tracks of gait `g` ([`gait`]) over `n` keys: the joints as the foot stands and swings.
+fn leg_tracks(g: &gait::Gait, limbs: &Limbs, side: usize, n: usize) -> [Track<Quat16>; 3] {
+    let legs: Vec<gait::Leg> = (0..n).map(|k| g.leg(side, k as f32 / n as f32)).collect();
+    [
+        (
+            limbs.legs[side],
+            (|l: &gait::Leg| l.hip) as fn(&gait::Leg) -> f32,
+        ),
+        (limbs.knees[side], |l| l.knee),
+        (limbs.ankles[side], |l| l.ankle),
+    ]
+    .map(|(node, joint)| Track {
+        node,
+        keys: legs.iter().map(|l| turn(X, joint(l))).collect(),
+    })
+}
+
+/// The `root` track of gait `g` over `n` keys: the hips' rise and fall.
+fn hip_track(g: &gait::Gait, root: usize, n: usize) -> Track<Vec3> {
+    Track {
+        node: root,
+        keys: (0..n)
+            .map(|k| [0.0, 0.0, g.hip_height(k as f32 / n as f32) - THIGH - SHIN])
+            .collect(),
+    }
+}
+
+/// The rotation tracks of the `walk` ([`gait::WALK`]): the legs' joints as their feet stand and swing, each arm swinging
+/// against its own side's leg (furthest back as that foot lands), the torso upright.
+fn walk_tracks(torso: usize, limbs: &Limbs, n: usize) -> Vec<Track<Quat16>> {
+    let at = |k: usize| k as f32 / n as f32;
+    let mut tracks = vec![Track {
+        node: torso,
+        keys: vec![NO_TURN],
+    }];
+    for side in 0..2 {
+        tracks.extend(leg_tracks(&gait::WALK, limbs, side, n));
+        let lands = gait::LEFT_LANDS + 0.5 * side as f32;
+        let swing = move |k: usize| -(TAU * (at(k) - lands)).cos();
+        tracks.push(Track {
+            node: limbs.arms[side],
+            keys: (0..n).map(|k| turn(X, WALK_ARMS * swing(k))).collect(),
+        });
+        tracks.push(Track {
+            node: limbs.elbows[side],
+            keys: (0..n)
+                .map(|k| turn(X, WALK_ELBOWS + WALK_ELBOW_SWING * swing(k).max(0.0)))
+                .collect(),
+        });
+    }
+    tracks
+}
+
 /// The figure's hitboxes: an `LOS-9` detail (never drawn) of one box per part on its node, named by the part (`head`, `torso`,
 /// `larm`/`rarm` the upper arms, `lforearm`/`rforearm`, `lhand`/`rhand`, `lleg`/`rleg` the thighs, `lshin`/`rshin`,
 /// `lfoot`/`rfoot`), each within its drawn box; the head stops at 2 units, the top of the arena's `boundingBox`.
@@ -279,7 +351,7 @@ fn hitboxes(b: &mut ShapeBuilder, torso: usize, head: usize, limbs: &Limbs) {
             [-0.05, -0.055, -FOREARM],
             [0.05, 0.055, -wrist],
         );
-        let (leg, knee) = (limbs.legs[side], limbs.knees[side]);
+        let (leg, knee, ankle) = (limbs.legs[side], limbs.knees[side], limbs.ankles[side]);
         part(
             &format!("{s}leg"),
             leg,
@@ -294,9 +366,9 @@ fn hitboxes(b: &mut ShapeBuilder, torso: usize, head: usize, limbs: &Limbs) {
         );
         part(
             &format!("{s}foot"),
-            knee,
-            [-0.09, -0.105, -SHIN],
-            [0.09, 0.165, -SHIN + 0.08],
+            ankle,
+            [-0.09, FOOT_HEEL + 0.005, -SOLE],
+            [0.09, FOOT_TOE - 0.005, 0.0],
         );
     }
 }
@@ -319,6 +391,8 @@ pub fn figure() -> Model {
     let knee_l = b.node("knee_l", Some(leg_l), [0.0, 0.0, -THIGH]);
     let leg_r = b.node("leg_r", Some(root), [0.12, 0.0, 0.95]);
     let knee_r = b.node("knee_r", Some(leg_r), [0.0, 0.0, -THIGH]);
+    let ankle_l = b.node("ankle_l", Some(knee_l), [0.0, 0.0, SOLE - SHIN]);
+    let ankle_r = b.node("ankle_r", Some(knee_r), [0.0, 0.0, SOLE - SHIN]);
     b.detail("detail1", 1.0);
     let m = b.material("figure", OPAQUE);
 
@@ -380,7 +454,7 @@ pub fn figure() -> Model {
             |_| SKIN,
         );
     }
-    for (side, leg, knee) in [("l", leg_l, knee_l), ("r", leg_r, knee_r)] {
+    for (side, leg, knee, ankle) in [("l", leg_l, knee_l, ankle_l), ("r", leg_r, knee_r, ankle_r)] {
         let thigh = ([-0.1, -0.11, -THIGH - 0.02], [0.1, 0.11, 0.0]);
         part(
             &mut b,
@@ -401,11 +475,11 @@ pub fn figure() -> Model {
             shin.1,
             |_| TROUSERS,
         );
-        let foot = ([-0.095, -0.11, -SHIN], [0.095, 0.17, -SHIN + 0.08]);
+        let foot = ([-0.095, FOOT_HEEL, -SOLE], [0.095, FOOT_TOE, 0.0]);
         part(
             &mut b,
             &format!("foot_{side}"),
-            knee,
+            ankle,
             m,
             foot.0,
             foot.1,
@@ -415,6 +489,7 @@ pub fn figure() -> Model {
     let limbs = Limbs {
         legs: [leg_l, leg_r],
         knees: [knee_l, knee_r],
+        ankles: [ankle_l, ankle_r],
         arms: [arm_l, arm_r],
         elbows: [elbow_l, elbow_r],
     };
@@ -453,15 +528,17 @@ pub fn figure() -> Model {
             ground: Vec::new(),
         });
     }
-    let walk = Gait {
-        hips: 25.0,
-        knee_swing: 50.0,
-        knee_always: 0.0,
-        arms: 20.0,
-        elbow_always: 12.0,
-        elbow_swing: 12.0,
-        lean: 0.0,
-    };
+    let n = GAIT_KEYS;
+    b.sequence(SequenceDef {
+        name: "walk",
+        duration: gait::WALK.duration,
+        cyclic: true,
+        priority: 0,
+        keyframes: n,
+        rotations: walk_tracks(torso, &limbs, n),
+        translations: vec![hip_track(&gait::WALK, root, n)],
+        ground: travel(n, WALK_SPEED, gait::WALK.duration),
+    });
     let run = Gait {
         hips: 45.0,
         knee_swing: 95.0,
@@ -471,22 +548,24 @@ pub fn figure() -> Model {
         elbow_swing: 15.0,
         lean: 10.0,
     };
-    for (name, duration, gait, speed) in [
-        ("walk", 1.0, walk, WALK_SPEED),
-        ("run", 0.6, run, RUN_SPEED),
-    ] {
-        let n = 16;
-        b.sequence(SequenceDef {
-            name,
-            duration,
-            cyclic: true,
-            priority: 0,
-            keyframes: n,
-            rotations: gait_tracks(torso, &limbs, n, &gait),
-            translations: Vec::new(),
-            ground: travel(n, speed, duration),
-        });
+    // The run's arms and lean as keyed; its legs from where its feet stand ([`gait::RUN`]).
+    let mut rotations: Vec<Track<Quat16>> = gait_tracks(torso, &limbs, n, &run)
+        .into_iter()
+        .filter(|t| !limbs.legs.contains(&t.node) && !limbs.knees.contains(&t.node))
+        .collect();
+    for side in 0..2 {
+        rotations.extend(leg_tracks(&gait::RUN, &limbs, side, n));
     }
+    b.sequence(SequenceDef {
+        name: "run",
+        duration: gait::RUN.duration,
+        cyclic: true,
+        priority: 0,
+        keyframes: n,
+        rotations,
+        translations: vec![hip_track(&gait::RUN, root, n)],
+        ground: travel(n, RUN_SPEED, gait::RUN.duration),
+    });
     // Walking backward: a gait run in reverse, each knee bending as its leg comes back under the hip.
     let back = Gait {
         hips: 28.0,

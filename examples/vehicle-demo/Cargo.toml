@@ -21,6 +21,10 @@ torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 
+[dev-dependencies]
+# The ghost-shots example's second renderer (the reference it measures the frames against).
+torque-render-hd = { path = "../../crates/torque-render-hd" }
+
 [[bin]]
 name = "vehicle-demo"
 path = "src/main.rs"
