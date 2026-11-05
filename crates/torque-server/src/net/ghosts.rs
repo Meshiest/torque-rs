@@ -397,9 +397,14 @@ pub trait GhostGame: Sized + 'static {
         f: impl FnOnce(&mut dyn EventPackCtx) -> R,
     ) -> Option<R> {
         Self::with_source(hub, env, Some(conn), |src, conns| {
-            let c = conns.get(&conn)?;
+            let c = conns.get_mut(&conn)?;
             let mut ctx = c.mgr.pack_ctx(src);
-            Some(f(&mut ctx))
+            let r = f(&mut ctx);
+            // What a ghost-always pack could not send yet goes out with the ghost's later updates.
+            for (obj, bits) in ctx.into_left() {
+                c.mgr.set_mask(obj, bits);
+            }
+            Some(r)
         })
     }
 }

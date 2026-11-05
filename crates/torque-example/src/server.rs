@@ -685,6 +685,9 @@ impl DedicatedServer {
                 let _ = client
                     .events
                     .write_section_with_stalling(&mut w, &ctx, &mut pack, send_seq, params);
+                for (obj, bits) in pack.into_left() {
+                    client.ghosts.set_mask(obj, bits);
+                }
             }
             client.ghosts.write_section(
                 &mut w,

@@ -544,7 +544,17 @@ impl GhostCodecSet for TgeGhosts {
             TgeClass::TsStatic => (TgeRecord::TsStatic(pack_ts_static(view)), 0),
             TgeClass::VehicleBlocker => (TgeRecord::VehicleBlocker(pack_vehicle_blocker(view)), 0),
             TgeClass::FxLight => (TgeRecord::FxLight(pack_fx_light(view, mask, ctx)), 0),
-            TgeClass::SpotLight => (TgeRecord::SpotLight(pack_spot_light(view, mask, ctx)), 0),
+            TgeClass::SpotLight => {
+                // A light mounted on an object the connection has no ghost of yet sends its mount again once it has.
+                let waiting = mask & crate::light::SPOT_MOUNT_MASK != 0
+                    && matches!(view.link("mount_object"), crate::view::Link::NotGhosted);
+                let ret = if waiting {
+                    crate::light::SPOT_MOUNT_MASK
+                } else {
+                    0
+                };
+                (TgeRecord::SpotLight(pack_spot_light(view, mask, ctx)), ret)
+            }
             TgeClass::TimeOfDay => (TgeRecord::TimeOfDay(pack_time_of_day(view, mask)), 0),
             TgeClass::ScatterSky => (TgeRecord::ScatterSky(pack_scatter_sky(view, mask)), 0),
         }

@@ -14,7 +14,8 @@
 //!             color, F32 x3 night fog color, flag moon enabled, F32 moon azimuth, F32 moon elevation, F32 x3 moon light color,
 //!             flag cast shadows
 //! ```
-//! A mounted object with no ghost index yet goes out as `U32(-1)` cut to the field (all ones), as fxLight's attachment.
+//! A mounted object with no ghost index yet goes out as `U32(-1)` cut to the field (all ones), as fxLight's attachment, and
+//! the mount is sent again once it has one (the pack's return mask keeps [`SPOT_MOUNT_MASK`]).
 //!
 //! **View fields:** SpotLight: `transform`, `color` 0..3, `brightness`, `castShadows`, `range`, `innerAngle`, `outerAngle`,
 //! `isEnabled`, the link `mount_object` and `mount_node`; TimeOfDay: `startTime`, `dayLength`, `time`, `axisTilt`,
