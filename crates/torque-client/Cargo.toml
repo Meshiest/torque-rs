@@ -58,8 +58,19 @@ fonts = { package = "torque-fonts", path = "../torque-fonts" }
 torque-shape-builder = { path = "../torque-shape-builder" }
 
 [features]
-# The window glue (`platform`): keys, cursor hold, frame cap, URL opener.
-window = ["dep:winit", "dep:open"]
+# The window glue (`platform`): keys, cursor hold, frame cap, URL opener; in a browser the page's focus and pointer lock
+# (`platform::web_input`).
+window = [
+    "dep:winit",
+    "dep:open",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+    "web-sys/Document",
+    "web-sys/Element",
+    "web-sys/Event",
+    "web-sys/EventTarget",
+    "web-sys/Window",
+]
 # The datagrams over WebSocket (`net::web_socket`): the browser's side of a server's web transport.
 web-socket = ["torque-server/web", "dep:tungstenite", "dep:wasm-bindgen", "dep:js-sys", "dep:web-sys"]
 # The datagrams over a WebRTC data channel beside the game socket (`net::web_rtc`): the browser's side of a server's data

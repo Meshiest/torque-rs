@@ -12,45 +12,107 @@
   #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
   #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
   #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
+  #fps { position: fixed; top: 0.5rem; left: 0.5rem; padding: 0.2rem 0.5rem; background: #000a; color: #e8ecf4;
+    font: 13px ui-monospace, monospace; border-radius: 4px; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="loading">
   <p id="status">Loading...</p>
-  <progress id="progress" hidden></progress>
+  <progress id="progress"></progress>
 </div>
+<div id="fps" hidden></div>
 <noscript>This game needs JavaScript.</noscript>
 <script type="module">
-  // The module either carries its files or fetches them by `files.json` (files.js). A refused file or list is shown here, and
-  // its message is on the root element's `data-torque-refused` for a test.
+  // The module either carries its files or fetches them by `files.json` (files.js). The loading display shows each stage
+  // (loading.js): the page's (the module's download and compile, the files, the start) and then the game's, which it writes
+  // on the root element's `data-torque-stage`. A refused file or list is shown here, and its message is on the root element's
+  // `data-torque-refused` for a test.
+  //
+  // `?fps` (or F8) shows the game's frames a second and frame time (its `data-torque-fps` and `data-torque-frame-ms`).
+  //
+  // Esc: a browser keeps it for itself while the pointer is locked (it ends the lock) and in full screen (it leaves it). The
+  // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
+  // leaves full screen).
   import { fetchFiles, Refused } from './files.js';
+  import { fpsText, later, readStreamed, stageText } from './loading.js';
 
+  const root = document.documentElement;
   const status = document.getElementById('status');
   const bar = document.getElementById('progress');
-  const mib = (n) => (n / 1048576).toFixed(1);
+  let stage = null;
+
+  // Shows `next`, with a download's bytes; a stage without bytes shows a moving bar.
+  function show(next, done = null, total = null) {
+    stage = next;
+    status.textContent = stageText(next, done, total);
+    if (done !== null && total) {
+      bar.max = total;
+      bar.value = done;
+    } else {
+      bar.removeAttribute('value');
+    }
+  }
+
+  // The game's own stages, as it writes them; the display goes once it is ready.
+  new MutationObserver(() => {
+    const next = root.dataset.torqueStage;
+    if (!next || !later(stage, next)) return;
+    if (next === 'ready') {
+      stage = next;
+      document.getElementById('loading')?.remove();
+    } else {
+      show(next);
+    }
+  }).observe(root, { attributes: true, attributeFilter: ['data-torque-stage'] });
+
+  // The frame-time display.
+  const fps = document.getElementById('fps');
+  fps.hidden = !new URLSearchParams(location.search).has('fps');
+  addEventListener('keydown', (e) => {
+    if (e.code === 'F8' && !e.repeat) fps.hidden = !fps.hidden;
+  }, { capture: true });
+  setInterval(() => {
+    if (!fps.hidden) fps.textContent = fpsText(root.dataset.torqueFps, root.dataset.torqueFrameMs);
+  }, 250);
+
+  // Chromium: in full screen Esc goes to the game (the keyboard lock); out of it the lock is let go.
+  document.addEventListener('fullscreenchange', () => {
+    const keyboard = navigator.keyboard;
+    if (!keyboard?.lock) return;
+    if (document.fullscreenElement) {
+      keyboard.lock(['Escape']).catch((e) => console.warn(`the keyboard lock: ${e?.message ?? e}`));
+    } else {
+      keyboard.unlock();
+    }
+  });
 
   async function start() {
     if (!navigator.gpu) {
       status.textContent = 'This game needs a browser with WebGPU (a recent Chrome, Edge or Safari, or Firefox 141 and later).';
+      bar.hidden = true;
       return;
     }
+    show('module');
     const game = await import('./game.js');
-    await game.default();
+    const wasm = await readStreamed(await fetch(new URL('game_bg.wasm', document.baseURI)), (done, total) =>
+      show('module', done, total));
+    show('compile');
+    await new Promise(requestAnimationFrame);
+    const module = await WebAssembly.compile(wasm);
+    await game.default({ module_or_path: module });
+    if (!game.embedded()) {
+      await fetchFiles(game, (done, total) => show('files', done, total));
+    }
+    show('start');
+    // The start is one call that runs until the game's first frame is asked for: the line is drawn before it.
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
     if (game.embedded()) {
       game.startEmbedded();
     } else {
-      bar.hidden = false;
-      await fetchFiles(game, (done, total) => {
-        bar.max = total;
-        bar.value = done;
-        status.textContent = `Loading the game's files: ${mib(done)} of ${mib(total)} MiB`;
-      });
-      status.textContent = 'Starting...';
-      bar.hidden = true;
-      await new Promise(requestAnimationFrame);
       game.startFetched();
     }
-    document.getElementById('loading').remove();
   }
 
   start().catch((e) => {
@@ -58,7 +120,7 @@
     bar.hidden = true;
     if (e instanceof Refused) {
       status.textContent = `The game's files were refused: ${message}`;
-      document.documentElement.dataset.torqueRefused = message;
+      root.dataset.torqueRefused = message;
       console.warn(status.textContent);
     } else {
       status.textContent = `The game did not start: ${message}`;

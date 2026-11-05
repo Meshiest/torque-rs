@@ -191,4 +191,9 @@ impl App for WebDemo {
         }
         drawn
     }
+
+    /// A map is loading until the client holds its figure.
+    fn loading(&self) -> bool {
+        self.demo.playing.is_some() && self.demo.figure().is_none()
+    }
 }

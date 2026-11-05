@@ -240,12 +240,24 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
+  compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`, tested in Node with
+  `just examples/web-unit`). `?fps` or F8 shows the frames a second and the frame time (the game writes them on the page
+  as `data-torque-fps` and `data-torque-frame-ms`). `?quality=low|medium|high|ultra` picks the renderer's quality;
+  Firefox starts at Low. The module is built in a `web` profile (thin LTO) and run through `wasm-opt -O2` when it is
+  installed.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- `torque-client`: in a browser the window's loop no longer spins between frames: the clock steps and the frame is drawn
+  once per animation frame (a hidden page still runs its clock five times a second).
+- `torque-client`: in a browser, the keys and buttons held are let go when the page loses the focus, is hidden or loses
+  the pointer lock (a key let go meanwhile stayed held in the game). A pointer lock the browser ends while the game holds
+  the mouse (its Esc) is the game's Esc, so the level demo's menu opens; in full screen, Chromium passes Esc on to the
+  game (the page's keyboard lock).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).

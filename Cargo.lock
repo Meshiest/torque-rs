@@ -2970,6 +2970,7 @@ dependencies = [
  "torque-ts-text",
  "torque-ts-vm",
  "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
  "winit",
 ]

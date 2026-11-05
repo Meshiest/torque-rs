@@ -19,6 +19,7 @@
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
+//! - [`web_page`]: in a browser, the quality the page starts at and the loading stages and frame times written on the page.
 //! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
@@ -37,6 +38,7 @@ pub mod server;
 pub mod shots;
 pub mod terrain;
 pub mod view;
+pub mod web_page;
 pub mod window;
 
 use torque_render_core::Gpu;
@@ -76,6 +78,11 @@ pub trait App {
 
     /// The frame: the world into `view`, the canvas drawn (with the world's rectangle) and the eye.
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye);
+
+    /// Whether the game is still loading its map (a browser's page keeps its loading display up until it is not).
+    fn loading(&self) -> bool {
+        false
+    }
 }
 
 /// The system's fonts as the fallback for a face with no font cache in `fonts/` (none where the system has none); in a

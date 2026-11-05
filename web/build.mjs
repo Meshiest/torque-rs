@@ -7,7 +7,8 @@
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
 // <target>/web/<name>-embedded/.
 //
-// The folder, served as it is: index.html, files.js, game.js, game_bg.wasm, and files.json with game.pack when fetched.
+// The folder, served as it is: index.html, files.js, loading.js, game.js, game_bg.wasm, and files.json with game.pack when
+// fetched.
 // The target folder is CARGO_TARGET_DIR's, else the workspace's `target`. wasm-bindgen's command line, at the version
 // Cargo.lock names, is installed into <target>/web-tools at first.
 import { spawnSync } from 'node:child_process';
@@ -48,11 +49,11 @@ mkdirSync(out, { recursive: true });
 const native = ['run', '-p', example.package, '--release', '--bin', example.bin, '--'];
 run('cargo', [...native, ...(embed ? ['--web-pack', pack] : ['--web-files', out])]);
 
-// The module. A rustc wrapper (sccache) is turned off, set in the config or in RUSTC_WRAPPER: its command lines for web-sys
-// are too long for Windows.
+// The module, in the `web` profile (release with thin LTO). A rustc wrapper (sccache) is turned off, set in the config or in
+// RUSTC_WRAPPER: its command lines for web-sys are too long for Windows.
 run(
   'cargo',
-  ['build', '--config', "build.rustc-wrapper=''", '--release', '--target', 'wasm32-unknown-unknown',
+  ['build', '--config', "build.rustc-wrapper=''", '--profile', 'web', '--target', 'wasm32-unknown-unknown',
     '-p', example.package, '--bin', example.bin, ...(embed ? ['--features', 'embed-pack'] : [])],
   { RUSTC_WRAPPER: '', ...(embed ? { TORQUE_WEB_PACK: pack } : {}) },
 );
@@ -70,9 +71,24 @@ if (!have.includes(version)) {
   run('cargo', ['install', 'wasm-bindgen-cli', '--version', version, '--locked', '--root', tools]);
 }
 
-const wasm = join(target, 'wasm32-unknown-unknown', 'release', `${example.bin}.wasm`);
+const wasm = join(target, 'wasm32-unknown-unknown', 'web', `${example.bin}.wasm`);
 run(bindgen, ['--target', 'web', '--no-typescript', '--out-dir', out, '--out-name', 'game', wasm]);
-for (const page of ['index.html', 'files.js']) copyFileSync(join(root, 'web', page), join(out, page));
+
+// Binaryen's optimizer over the module when `wasm-opt` is on the PATH (or `WASM_OPT` names it; `WASM_OPT=0` skips it), on the
+// features rustc's wasm32 target uses; on two cores. The result must still be a module Node's WebAssembly takes.
+const moduleFile = join(out, 'game_bg.wasm');
+const opt = process.env.WASM_OPT ?? `wasm-opt${suffix}`;
+if (opt !== '0' && spawnSync(opt, ['--version'], { encoding: 'utf8' }).status === 0) {
+  const features = ['bulk-memory', 'multivalue', 'mutable-globals', 'nontrapping-float-to-int', 'reference-types', 'sign-ext'];
+  run(opt, ['-O2', ...features.map((f) => `--enable-${f}`), moduleFile, '-o', moduleFile], { BINARYEN_CORES: '2' });
+  if (!WebAssembly.validate(readFileSync(moduleFile))) {
+    console.error(`${moduleFile}: wasm-opt's output is not a valid module`);
+    process.exit(1);
+  }
+} else {
+  console.log('wasm-opt not found: the module is not optimized further (install binaryen for a faster one)');
+}
+for (const page of ['index.html', 'files.js', 'loading.js']) copyFileSync(join(root, 'web', page), join(out, page));
 const mib = (file) => (statSync(file).size / 1048576).toFixed(1);
-const module = `game_bg.wasm ${mib(join(out, 'game_bg.wasm'))} MiB`;
+const module = `game_bg.wasm ${mib(moduleFile)} MiB`;
 console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)`);
