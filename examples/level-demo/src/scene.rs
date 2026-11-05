@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use torque::app::ghosts::{FrameInput, GhostOptions, GhostScene, OwnView};
+use torque::app::ghosts::{FrameInput, GhostScene, OwnView};
 use torque::app::view::{SceneShape, WorldView};
 use torque::client::conn::tge::TgeWorld;
 use torque::client::predict::ghost_players::GhostPlayers;
@@ -67,7 +67,7 @@ pub struct WorldScene {
 impl Default for WorldScene {
     fn default() -> WorldScene {
         WorldScene {
-            ghosts: GhostScene::with_style(GhostOptions::default(), LevelStyle),
+            ghosts: GhostScene::with_style(torque_example_common::ghost_options(), LevelStyle),
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
             interior_files: HashMap::new(),

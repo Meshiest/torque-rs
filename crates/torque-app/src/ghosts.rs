@@ -99,6 +99,14 @@ pub struct GhostOptions {
     /// Players are posed by the synced rules of a server whose Players have hitboxes
     /// ([`PlayerAnimation::set_synced`]), so the figure drawn is the one hits are cast at.
     pub synced_poses: bool,
+    /// A steady first-person view (the engine's own; TGE stands the view at the drawn `eye` node, so the view bobs with the
+    /// walk and the run): the own Player's view stands at its `eye` node at the shape's rest pose, carried by the Player's real
+    /// motion (its position, a landing, a mount), while the body drawn and its hitboxes keep their animation. The first
+    /// person's images ride the view, so they stay steady with it.
+    pub steady_eye: bool,
+    /// With [`Self::steady_eye`], the view keeps the drawn eye's sway across the ground (its height steady); off, the view is
+    /// steady every way.
+    pub eye_sway: bool,
 }
 
 impl Default for GhostOptions {
@@ -109,6 +117,8 @@ impl Default for GhostOptions {
             ribbon_trails: false,
             decals: DecalLimits::default(),
             synced_poses: false,
+            steady_eye: false,
+            eye_sway: false,
         }
     }
 }
@@ -511,8 +521,9 @@ struct Bolt {
 /// The most hit bursts [`GhostScene::hit_bursts`] keeps.
 pub const MAX_HIT_BURSTS: usize = 16;
 
-/// The client's own Player as the last frame placed it: its ghost, its feet, its yaw and head's pitch (positive looks down), and
-/// the eye.
+/// The client's own Player as the last frame placed it: its ghost, its feet, its yaw and head's pitch (positive looks down), the
+/// eye its first-person view stands at (steady with [`GhostOptions::steady_eye`]), and its `eye` node as the body is drawn
+/// (TGE's eye, moving with the animation).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OwnView {
     pub ghost: u32,
@@ -520,6 +531,7 @@ pub struct OwnView {
     pub yaw: f32,
     pub pitch: f32,
     pub eye: [f32; 3],
+    pub drawn_eye: [f32; 3],
 }
 
 /// The faces of `world` near a point, within a reach: the surface a projectile's decal there may lie on.
@@ -924,13 +936,31 @@ impl<S: GhostStyle> GhostScene<S> {
                 self.others.push((index, position, yaw));
                 continue;
             }
-            let eye = eye.unwrap_or_else(|| w.eye().map_or(position, |e| e.position));
+            // A steady view: the eye at the rest pose, where the Player really is (the engine's own, [`GhostOptions::steady_eye`]).
+            let rest = self
+                .options
+                .steady_eye
+                .then(|| {
+                    self.frames
+                        .owner_rest_nodes(w, assets, index, &[b"eye"])
+                        .and_then(|n| n.into_iter().next().flatten())
+                        .map(|m| m.column(3))
+                })
+                .flatten();
+            let fallback = || w.eye().map_or(position, |e| e.position);
+            let drawn_eye = eye.unwrap_or_else(fallback);
+            let eye = match (rest, eye) {
+                (Some(r), Some(d)) if self.options.eye_sway => [d[0], d[1], r[2]],
+                (Some(r), _) => r,
+                (None, _) => drawn_eye,
+            };
             self.own = Some(OwnView {
                 ghost: index,
                 position,
                 yaw,
                 pitch,
                 eye,
+                drawn_eye,
             });
             if world.hide_control {
                 world.records.view = Some(Eye {
