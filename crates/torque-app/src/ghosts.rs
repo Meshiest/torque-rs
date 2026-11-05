@@ -142,7 +142,7 @@ pub trait GhostStyle {
     }
 
     /// An interior's draw of `material` (its triangles in the world, its texture the material's) before it joins the view
-    /// ([`crate::interiors`]): a host may tint it or change its sampler. Asked when an interior's objects are made.
+    /// ([`crate::interiors`]): a host may tint it or change its sampler. Asked when an interior's mesh is made.
     fn interior_draw(&mut self, material: &str, draw: &mut Draw) {
         let _ = (material, draw);
     }
@@ -1232,8 +1232,9 @@ impl<S: GhostStyle> GhostScene<S> {
         }
     }
 
-    /// The frame's objects of the ghosts the engine draws ([`GhostOptions::select`]) as [`GhostScene::update`] left them, and the
-    /// map's interiors ([`crate::interiors`], each draw through [`GhostStyle::interior_draw`]).
+    /// The frame's objects of the ghosts the engine draws ([`GhostOptions::select`]) as [`GhostScene::update`] left them; the
+    /// map's interiors go into the view's static meshes on the way ([`crate::interiors`], each draw through
+    /// [`GhostStyle::interior_draw`]).
     pub fn objects(
         &mut self,
         view: &mut WorldView,
@@ -1266,16 +1267,14 @@ impl<S: GhostStyle> GhostScene<S> {
                 Some(o.0) != control && drawn(&o.0) && !world.mounted_images(o.0).is_empty()
             })
             .count();
-        let mut out = view.ghost_objects(world, &shaped, set);
+        let out = view.ghost_objects(world, &shaped, set);
         let style = &mut self.style;
-        out.extend(
-            self.interiors
-                .objects(view, assets, world, &mut |m, d| style.interior_draw(m, d)),
-        );
+        self.interiors
+            .update(view, assets, world, &mut |m, d| style.interior_draw(m, d));
         out
     }
 
-    /// Makes the interiors' objects again at the next frame (the style's look of them changed).
+    /// Makes the interiors' meshes again at the next frame (the style's look of them changed).
     pub fn restyle_interiors(&mut self) {
         self.interiors.clear();
     }

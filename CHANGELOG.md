@@ -117,7 +117,11 @@ The first development version. Nothing is published yet; this is what exists.
   first material opaque, each other one blended over it where its weight is, each with its own texture and texture
   coordinates (repeated over the ground, or the host's for each triangle, such as a road's along it); the enhanced renderer's
   terrain layer (`material::LAYER`) sharpens a layer's coarse weight about one half into a narrow edge, broken up by its
-  texture's alpha. The world view's interiors keep their meshes on the GPU between frames.
+  texture's alpha.
+- `torque::app`: the world view's interiors are static meshes (`WorldView::set_static_mesh`, the enhanced renderer's static
+  cells): uploaded once and kept on the GPU, culled there in parts by their boxes, their shadows in the cached cascades, so a
+  frame costs nothing on the CPU for the interiors that stay put (a map of fifty forest interiors drew its lap at 21.6 ms a
+  frame, now 4.3 ms, the same as without them).
 - `torque-server`: Torque's net game ghosts the simulated vehicles (their records from the vehicle's state, its step's dirty
   bits as TGE's), and a Player that drives a WheeledVehicle sends the vehicle's packet data after its own.
 - `torque-client`: TGE's feed reads a WheeledVehicleData's wheel count from its shape (the game's files,

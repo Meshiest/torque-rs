@@ -15,7 +15,8 @@ use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
-use torque_render_scene::hd::cells::StaticCells;
+use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture, StaticCells};
+use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
 use torque_render_scene::hd::environment::ClientDay;
 use torque_render_scene::hd::objects::objects_of;
 use torque_render_scene::hd::particle_light::ParticleLight;
@@ -26,6 +27,7 @@ use torque_render_scene::hd::{
 use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
 use torque_render_scene::moving::ShapeDraws;
+use torque_render_scene::shapecache::next_stamp;
 use torque_render_scene::shapes::{Loaded, ShapeParts, highest_detail, load, shape_draws};
 use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
@@ -48,6 +50,24 @@ pub const DEFAULT_FOV: u8 = 75;
 pub const SUN_RADIUS: f32 = 0.27;
 pub const AO_RADIUS: f32 = 1.0;
 pub const AO_SUN: f32 = 0.5;
+
+/// The most triangles of one part of a static mesh the GPU culls on its own ([`WorldView::set_static_mesh`]).
+pub const MESH_CLUSTER_TRIANGLES: u32 = 512;
+/// The sampler of a static mesh's untextured surfaces.
+const MESH_SAMPLER: Sampler = Sampler {
+    repeat: true,
+    mag: Filter::Linear,
+    min: Filter::Linear,
+    mip: Filter::Linear,
+    mipmaps: true,
+};
+
+/// The key of static mesh `index` among the view's static geometry ([`WorldView::set_static_mesh`]): a cell key of its own,
+/// far from any cell of the world's grid.
+pub fn static_mesh_key(index: u32) -> [i32; 3] {
+    const FAR: i32 = -(1 << 28);
+    [(index & 0x0fff_ffff) as i32, FAR, FAR]
+}
 
 /// The sun, the ambient light and the fog of a scene. Colors are gamma-space 0 to 1, as a mission's Sun and Sky give them.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -419,8 +439,8 @@ impl WorldView {
         }
     }
 
-    /// Draws already in the world (their textures indices into `set`) as the object `id`, which no animation moves: a static mesh
-    /// (an interior's surfaces, [`crate::interiors`], or a host's own geometry).
+    /// Draws already in the world (their textures indices into `set`) as the moving object `id`, which no animation moves (a
+    /// host's own geometry; geometry that stays put is cheaper as a static mesh, [`WorldView::set_static_mesh`]).
     pub fn mesh_object(&mut self, set: TextureSet, draws: &[Draw], id: u32) -> DynamicObject {
         let local = self.intern(set.into_textures());
         let translucent = draws.iter().any(|d| d.blend != Blend::Opaque);
@@ -440,6 +460,114 @@ impl WorldView {
             previous: None,
             stamp: None,
             nodes: Vec::new(),
+        }
+    }
+
+    /// Puts `draws` (in the world, their textures in `set`) into the view's static geometry as the mesh `key` (a key of
+    /// [`static_mesh_key`]'s), replacing the one there: the renderer uploads it once and keeps it on the GPU, culls it on the
+    /// GPU by its parts' boxes and casts its shadows into the cached cascades, so a frame costs nothing for it on the CPU.
+    /// Each draw is drawn as an opaque or alpha-blended (`blend` not opaque), back-face culled (clockwise front) surface.
+    pub fn set_static_mesh(&mut self, key: [i32; 3], set: TextureSet, draws: &[Draw]) {
+        let local = self.intern(set.into_textures());
+        let draws: Vec<HdDraw> = draws
+            .iter()
+            .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, &local))
+            .collect();
+        let cells = &mut self.scene.frame.cells;
+        let mut slot_of = |texture: Option<(usize, Sampler)>| -> u32 {
+            let want = SlotTexture {
+                texture: texture.map(|t| t.0),
+                sampler: texture.map_or(MESH_SAMPLER, |t| t.1),
+            };
+            if let Some((&k, _)) = cells.slots.iter().find(|(_, s)| **s == want) {
+                return k;
+            }
+            let k = cells.slots.keys().next_back().map_or(0, |k| k + 1);
+            cells.slots.insert(k, want);
+            k
+        };
+        // One batch a slot and blending, the opaque ones first.
+        let mut groups: Vec<(bool, u32, Vec<&HdDraw>)> = Vec::new();
+        for d in &draws {
+            let (translucent, slot) = (d.blend != Blend::Opaque, slot_of(d.texture));
+            match groups
+                .iter_mut()
+                .find(|g| g.0 == translucent && g.1 == slot)
+            {
+                Some(g) => g.2.push(d),
+                None => groups.push((translucent, slot, vec![d])),
+            }
+        }
+        groups.sort_by_key(|g| (g.0, g.1));
+        let mut cell = Cell {
+            key,
+            bounds: [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]],
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            batches: Vec::new(),
+            clusters: Vec::new(),
+            generation: next_stamp(),
+            resident: false,
+            ext: (),
+        };
+        for (translucent, slot, group) in &groups {
+            let first = cell.indices.len() as u32;
+            for d in group {
+                let base = cell.vertices.len() as u32;
+                cell.vertices.extend_from_slice(&d.vertices);
+                cell.indices.extend(d.indices.iter().map(|i| base + i));
+            }
+            let count = cell.indices.len() as u32 - first;
+            cell.batches.push(Batch {
+                slot: *slot,
+                translucent: *translucent,
+                first,
+                count,
+            });
+            // The GPU culls the batch in runs of nearby triangles (the meshes come in the order they were built in).
+            let mut at = first;
+            while at < first + count {
+                let n = (first + count - at).min(3 * MESH_CLUSTER_TRIANGLES);
+                let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
+                for &i in &cell.indices[at as usize..(at + n) as usize] {
+                    let p = cell.vertices[i as usize].position;
+                    for k in 0..3 {
+                        bounds[0][k] = bounds[0][k].min(p[k]);
+                        bounds[1][k] = bounds[1][k].max(p[k]);
+                    }
+                }
+                cell.clusters.push(Cluster {
+                    slot: *slot,
+                    translucent: *translucent,
+                    first: at,
+                    count: n,
+                    bounds,
+                });
+                at += n;
+            }
+        }
+        if cell.clusters.len() > MAX_CELL_CLUSTERS {
+            // One a batch, its box the mesh's.
+            cell.clusters.clear();
+        }
+        for v in &cell.vertices {
+            for k in 0..3 {
+                cell.bounds[0][k] = cell.bounds[0][k].min(v.position[k]);
+                cell.bounds[1][k] = cell.bounds[1][k].max(v.position[k]);
+            }
+        }
+        if cell.indices.is_empty() {
+            cells.cells.remove(&key);
+        } else {
+            cells.cells.insert(key, cell);
+        }
+        self.statics_changed = true;
+    }
+
+    /// Takes the static mesh `key` out of the view (nothing if there is none).
+    pub fn remove_static_mesh(&mut self, key: [i32; 3]) {
+        if self.scene.frame.cells.cells.remove(&key).is_some() {
+            self.statics_changed = true;
         }
     }
 

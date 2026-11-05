@@ -1,17 +1,19 @@
 //! The map's interiors as the view draws them: each `InteriorInstance` ghost's `.dif` (its first detail level's drawn surfaces,
 //! the legacy importer's triangles, [`torque_maps::legacy::IMPORTER`]) at the place its record gives ([`placed`]: a hostile
-//! transform or scale is not drawn), as a static mesh object of the view ([`WorldView::mesh_object`]), one draw a material.
-//! A material's texture is found beside the file as the resource manager finds it ([`find_texture`]); the host's look may change each material's draw first (a tint, a filter). Every triangle is
-//! wound clockwise seen from its front (its plane's normal). The interior's faces in the world are kept for the surfaces a
+//! transform or scale is not drawn), as a static mesh of the view ([`WorldView::set_static_mesh`]: uploaded once, kept on the
+//! GPU, culled there by its parts' boxes, its shadows in the cached cascades), one batch a material. A frame costs nothing for
+//! an interior that stays as it was. A material's texture is found beside the file as the resource manager finds it
+//! ([`find_texture`]); the host's look may change each material's draw first (a tint, a filter). Every triangle is wound
+//! clockwise seen from its front (its plane's normal). The interior's faces in the world are kept for the surfaces a
 //! projectile's hole may lie on ([`Interiors::faces_near`]). A file is read once ([`MAX_FILES`] kept, at most
-//! [`MAX_READS_PER_FRAME`] new ones a frame; the importer caps each file's size and work); an interior's object is kept until
-//! its record moves it, its ghost names another file or [`Interiors::clear`].
+//! [`MAX_READS_PER_FRAME`] new ones a frame; the importer caps each file's size and work); an interior's mesh is kept until its
+//! record moves it, its ghost names another file or its ghost goes; [`Interiors::clear`] makes them all again.
 //!
 //! Credit: follows TGE 1.4's `interior/interiorInstance.cc` and `interior/interiorRender.cc` (Copyright (C) GarageGames.com,
 //! Inc.) as Torque3D 2.0, its MIT-licensed release, keeps them in `interior/interiorInstance.cpp` and
 //! `interior/interiorRender.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use torque_ghost_world::tge::TgeClientSet;
@@ -20,14 +22,13 @@ use torque_ghosts::TgeRecord;
 use torque_mapcore::Importer as _;
 use torque_mapcore::geometry::Surfaces;
 use torque_render_scene::decals::Triangle;
-use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::map::{find_texture, folder_of};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Vertex};
 
-use crate::view::WorldView;
+use crate::view::{WorldView, static_mesh_key};
 
 /// The smallest scale part an interior is placed with (as `InteriorShape::new` takes it).
 pub const MIN_SCALE: f32 = 1e-4;
@@ -48,17 +49,16 @@ pub fn placed(pose: &Pose) -> Option<(Mat, [f32; 3])> {
     ok.then_some((m, scale))
 }
 
-/// The id of interior ghost `index`'s object among the frame's objects.
-pub fn object_id(index: u32) -> u32 {
-    0x5000_0000 | (index & 0x0fff_ffff)
+/// The key of interior ghost `index`'s mesh among the view's static meshes.
+pub fn mesh_key(index: u32) -> [i32; 3] {
+    static_mesh_key(index)
 }
 
-/// An interior's object (one draw a material), kept with the file and the pose it was made of, and its faces in the world
+/// An interior whose mesh is in the view, kept with the file and the pose it was made of, and its faces in the world
 /// (counter-clockwise seen from the front, as the decals take them).
 struct Kept {
     path: String,
     pose: Pose,
-    object: DynamicObject,
     faces: Arc<Vec<Triangle>>,
 }
 
@@ -68,6 +68,8 @@ pub struct Interiors {
     /// The files read, by path (`None` for one that did not read).
     files: HashMap<String, Option<Arc<Surfaces>>>,
     kept: BTreeMap<u32, Kept>,
+    /// The ghosts whose meshes are in the view (those no longer kept are taken out at the next update).
+    placed: BTreeSet<u32>,
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -87,20 +89,20 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 impl Interiors {
-    /// Forgets every interior's objects (made again at the next frame: a new connection, or a new look); the files stay read.
+    /// Forgets every interior's mesh (made again at the next update: a new connection, or a new look); the files stay read.
     pub fn clear(&mut self) {
         self.kept.clear();
     }
 
-    /// The frame's interior objects: one an interior's material, `look` handed each draw (in the world) before it joins its
-    /// object.
-    pub fn objects(
+    /// Brings the view's interior meshes up to the world's interiors: each new or moved one made (`look` handed each draw, in
+    /// the world, first), each gone one taken out. An interior that stays as it was costs nothing.
+    pub fn update(
         &mut self,
         view: &mut WorldView,
         assets: &dyn Assets,
         world: &ClientWorld<TgeClientSet>,
         look: &mut dyn FnMut(&str, &mut Draw),
-    ) -> Vec<DynamicObject> {
+    ) {
         let mut seen = Vec::new();
         let mut reads = 0;
         for (&index, ghost) in &world.ghosts {
@@ -135,10 +137,20 @@ impl Interiors {
             let Some(surfaces) = surfaces else { continue };
             if let Some(k) = build(view, assets, &surfaces, &path, pose, index, look) {
                 self.kept.insert(index, k);
+                self.placed.insert(index);
             }
         }
         self.kept.retain(|i, _| seen.contains(i));
-        self.kept.values().map(|k| k.object.clone()).collect()
+        let gone: Vec<u32> = self
+            .placed
+            .iter()
+            .copied()
+            .filter(|i| !self.kept.contains_key(i))
+            .collect();
+        for index in gone {
+            self.placed.remove(&index);
+            view.remove_static_mesh(mesh_key(index));
+        }
     }
 
     /// Every interior's faces, each list shared (for a host's own surface lookups).
@@ -168,7 +180,7 @@ pub fn faces_near(lists: &[Arc<Vec<Triangle>>], at: [f32; 3], reach: f32) -> Vec
         .collect()
 }
 
-/// An interior's objects and faces at `pose`.
+/// An interior's mesh at `pose` put in the view, and its faces.
 fn build(
     view: &mut WorldView,
     assets: &dyn Assets,
@@ -235,13 +247,10 @@ fn build(
         look(material, &mut draw);
         draws.push(draw);
     }
-    let mut object = view.mesh_object(set, &draws, object_id(index));
-    // Stamped: the renderer keeps its vertices where it wrote them while it stays the same.
-    object.stamp = Some(torque_render_scene::shapecache::next_stamp());
+    view.set_static_mesh(mesh_key(index), set, &draws);
     Some(Kept {
         path: path.to_string(),
         pose,
-        object,
         faces: Arc::new(faces),
     })
 }
