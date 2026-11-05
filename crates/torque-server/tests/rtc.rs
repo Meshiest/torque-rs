@@ -112,6 +112,8 @@ struct Client {
     ice_connected: bool,
     /// More sockets, each a candidate of its own.
     extra: Vec<(SocketAddr, UdpSocket)>,
+    /// Drops its own DTLS records (its checks still go): a handshake that never completes.
+    no_dtls: bool,
 }
 
 impl Client {
@@ -134,6 +136,7 @@ impl Client {
             channel_closed: false,
             ice_connected: false,
             extra: Vec::new(),
+            no_dtls: false,
         }
     }
 
@@ -238,6 +241,10 @@ impl Client {
             match rtc.poll_output() {
                 Ok(Output::Timeout(_)) | Err(_) => break,
                 Ok(Output::Transmit(t)) => {
+                    if self.no_dtls && (20..64).contains(&t.contents.first().copied().unwrap_or(0))
+                    {
+                        continue;
+                    }
                     let udp = self
                         .extra
                         .iter()
@@ -909,4 +916,57 @@ fn a_peer_maps_at_most_four_source_addresses() {
     });
     assert!(got.is_some_and(|(a, d)| is_stand_in(a) && d == b"hi"));
     assert!(t.rtc_routes() <= MAX_REMOTES);
+}
+
+#[test]
+fn a_handshake_that_never_completes_stops_costing_work_after_its_budget() {
+    let limits = RtcLimits {
+        connect_timeout: Duration::from_millis(2500),
+        ..RtcLimits::default()
+    };
+    let budget = limits.connect_datagrams;
+    let (mut t, addr) = site(RtcSetup {
+        limits,
+        ..RtcSetup::default()
+    });
+    let mut c = Client::new(&mut t, addr);
+    c.no_dtls = true;
+    run(&mut t, &mut [&mut c], 2000, |_, c| {
+        c[0].has_text(signal::HELLO)
+    });
+    c.offer();
+    run(&mut t, &mut [&mut c], 2000, |_, c| c[0].ice_connected);
+    assert!(
+        c.ice_connected,
+        "its checks passed, so its address reaches its peer"
+    );
+    // Handshake records from its own (validated) address, far past the budget.
+    let udp = c.udp.try_clone().unwrap();
+    let to = t.rtc_addr().unwrap();
+    let handled = t.rtc_counters().handled;
+    let longest = flood(&mut t, &mut [&mut c], &udp, to, 1500, |i| {
+        let mut d = fake_record(i);
+        d[0] = 22;
+        d[4] = 0;
+        d
+    });
+    assert!(
+        longest < Duration::from_millis(20),
+        "a pass took {longest:?}"
+    );
+    let counters = t.rtc_counters();
+    assert!(counters.connect_spent > 1000, "{counters:?}");
+    assert!(
+        // The budget, and the client's own checks meanwhile (outside it).
+        counters.handled - handled <= u64::from(budget) + 100,
+        "the stack was handed {} datagrams during the flood (budget {budget})",
+        counters.handled - handled
+    );
+    // It is dropped at its deadline; its socket stays.
+    run(&mut t, &mut [&mut c], 2000, |_, c| {
+        c[0].has_text(signal::CLOSED)
+    });
+    assert!(c.has_text(signal::CLOSED), "{:?}", t.rtc_counters());
+    assert!(!c.socket_closed);
+    assert_eq!(t.rtc_counters().closed_timeout, 1);
 }

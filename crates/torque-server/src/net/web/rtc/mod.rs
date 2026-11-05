@@ -30,8 +30,12 @@
 //! it answered, or one that brought the DTLS session's events or messages), past them the peer's datagrams are dropped
 //! for the rest of the second, and only authenticated datagrams count as the peer being heard (its idle deadline).
 //! Anything else (checks that fail their integrity, records that do not decrypt, garbage) is held to the per-pass caps
-//! alone, dropped by the stack, and counted. The DTLS handshake's work is bounded by those caps and by
-//! [`RtcLimits::connect_timeout`].
+//! alone, dropped by the stack, and counted. The DTLS handshake's work is bounded per pass by those caps and in all by a
+//! budget per peer: until its channel opens, a peer's datagrams other than checks are handed to the stack only within
+//! [`RtcLimits::connect_datagrams`] and [`RtcLimits::connect_bytes`] (counted as they are admitted); past them they are
+//! dropped, and a peer that has not opened its channel by [`RtcLimits::connect_timeout`] is dropped (its browser stays on
+//! its socket). Checks are left out of the budget (forged ones, which fail their integrity, could spend it), on their own
+//! per-pass cap.
 //!
 //! **Routing.** A STUN binding request goes to the peer its USERNAME names (our ICE user fragment), and only when it comes
 //! from the IP address of that peer's game socket; requests are also held to a rate per source address. Any other datagram
@@ -116,6 +120,10 @@ pub struct RtcLimits {
     pub packets_per_s: u32,
     /// The most bytes a peer may send in a second, counted as they come off the wire.
     pub bytes_per_s: usize,
+    /// The most datagrams other than checks the stack is handed for a peer before its channel opens (the DTLS handshake).
+    pub connect_datagrams: u32,
+    /// The most bytes of those.
+    pub connect_bytes: usize,
     /// The most STUN binding requests a second from one source address no peer has answered yet.
     pub stun_per_ip_per_s: u32,
     /// The most messages a peer's channel may carry in a second.
@@ -144,6 +152,8 @@ impl Default for RtcLimits {
             datagrams_per_pass: 256,
             peer_datagrams_per_pass: 64,
             checks_per_pass: 8,
+            connect_datagrams: 256,
+            connect_bytes: 256 << 10,
             connecting_per_pass: 32,
             packets_per_s: NET_PACKETS_PER_CONN_PER_S,
             bytes_per_s: NET_PACKETS_PER_CONN_PER_S as usize * (NET_MAX_DATAGRAM + WIRE_ROOM),
@@ -182,6 +192,10 @@ pub struct RtcCounters {
     pub rate_dropped: u64,
     /// Datagrams the stack refused (dropped).
     pub refused: u64,
+    /// Datagrams handed to the stack.
+    pub handled: u64,
+    /// Datagrams dropped because their peer spent its budget before its channel opened.
+    pub connect_spent: u64,
     /// Binding requests dropped by the per-address rate.
     pub stun_limited: u64,
     /// Datagrams and messages dropped by a per-pass cap.
@@ -271,6 +285,9 @@ struct Meter {
     pass_datagrams: usize,
     pass_checks: usize,
     pass_messages: usize,
+    /// Datagrams other than checks, and their bytes, admitted before the channel opened.
+    before_open: u32,
+    before_open_bytes: usize,
 }
 
 /// What a meter says of one more datagram or message.
@@ -293,6 +310,8 @@ impl Meter {
             pass_datagrams: 0,
             pass_checks: 0,
             pass_messages: 0,
+            before_open: 0,
+            before_open_bytes: 0,
         }
     }
 
@@ -328,6 +347,17 @@ impl Meter {
         }
         *taken += 1;
         Take::Ok
+    }
+
+    /// Whether the budget before the channel opens has room for one more datagram.
+    fn connect_room(&self, limits: &RtcLimits) -> bool {
+        self.before_open < limits.connect_datagrams && self.before_open_bytes < limits.connect_bytes
+    }
+
+    /// An admitted datagram before the channel opens spends the budget.
+    fn spend_connect(&mut self, len: usize) {
+        self.before_open += 1;
+        self.before_open_bytes += len;
     }
 
     /// A datagram the stack authenticated spends the caps a second.
@@ -783,10 +813,19 @@ impl RtcSide {
                 map_route(&mut self.by_remote, peer, stand_in, from, limits);
             }
             let open = peer.channel.is_some();
-            match peer.meter.admit(stun_to.is_some(), now, limits) {
+            let check = stun_to.is_some();
+            // A peer whose handshake spent its budget gets no more of the stack's time; its deadline drops it.
+            if !open && !check && !peer.meter.connect_room(limits) {
+                self.counters.connect_spent += 1;
+                continue;
+            }
+            match peer.meter.admit(check, now, limits) {
                 Take::Ok if open || connecting > 0 => {
                     if !open {
                         connecting -= 1;
+                        if !check {
+                            peer.meter.spend_connect(len);
+                        }
                     }
                 }
                 Take::Ok | Take::Skip => {
@@ -799,6 +838,7 @@ impl RtcSide {
                     continue;
                 }
             }
+            self.counters.handled += 1;
             if peer.rtc.handle_input(input).is_err() {
                 self.counters.refused += 1;
                 continue;
