@@ -161,6 +161,7 @@ function saveName()
 function hostGame()
 {
    saveName();
+   cancelJoinLookup();
    MenuStatus.setText("Starting a game...");
    $World::HostAsked = 1;
 }
@@ -201,11 +202,12 @@ function joinSelected()
       MenuStatus.setText("Pick a game first.");
       return;
    }
+   cancelJoinLookup();
    MenuStatus.setText("Joining " @ $ServerInfo::Name @ "...");
    connectTo($ServerInfo::Address);
 }
 
-// Joins the address typed in the box (host:port, or just the numbers: port 28000).
+// Joins the address or name typed in the box (with :port, or without: port 28000); a name is looked up first.
 function joinAddress()
 {
    saveName();
@@ -215,9 +217,35 @@ function joinAddress()
       MenuStatus.setText(getSubStr(%address, 1, 200));
       return;
    }
+   if (getSubStr(%address, 0, 1) $= "?")
+   {
+      MenuStatus.setText("Looking up " @ getSubStr(%address, 1, 260) @ "...");
+      schedule(50, 0, pollJoinLookup);
+      return;
+   }
    MenuStatus.setText("Connecting to " @ %address @ "...");
    armPublicJoin(%address);
    connectTo(%address);
+}
+
+// Connects once the typed name's lookup ends; leaving the menu drops it.
+function pollJoinLookup()
+{
+   if (Canvas.getContent() != MenuGui.getId())
+   {
+      cancelJoinLookup();
+      return;
+   }
+   %address = joinLookupResult();
+   if (%address $= "?")
+      schedule(50, 0, pollJoinLookup);
+   else if (getSubStr(%address, 0, 1) $= "!")
+      MenuStatus.setText(getSubStr(%address, 1, 200));
+   else if (%address !$= "")
+   {
+      MenuStatus.setText("Connecting to " @ %address @ "...");
+      connectTo(%address);
+   }
 }
 
 // ---- the world's view

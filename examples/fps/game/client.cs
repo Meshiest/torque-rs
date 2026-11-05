@@ -287,7 +287,7 @@ new GuiControl(JoinGui)
       new GuiTextEditCtrl(AddressEdit)
       {
          profile = ArenaEditProfile; position = "82 368"; extent = "738 32"; horizSizing = "width"; vertSizing = "top";
-         visible = true; enabled = true; maxLength = 64; text = ""; placeholderText = "127.0.0.1:28000";
+         visible = true; enabled = true; maxLength = 260; text = ""; placeholderText = "127.0.0.1:28000";
          altCommand = "connectAddress();";
       };
       new GuiButtonCtrl(ConnectButton)
@@ -399,11 +399,12 @@ function joinSelected()
       JoinStatus.setText("Pick a game first.");
       return;
    }
+   cancelJoinLookup();
    JoinStatus.setText("Joining " @ $ServerInfo::Name @ "...");
    connectTo($ServerInfo::Address);
 }
 
-// Connects to the address typed in the box (host:port, or just the numbers: port 28000).
+// Connects to the address or name typed in the box (with :port, or without: port 28000); a name is looked up first.
 function connectAddress()
 {
    saveName();
@@ -415,9 +416,35 @@ function connectAddress()
       return;
    }
    $Pref::Client::LastAddress = %typed;
+   if (getSubStr(%address, 0, 1) $= "?")
+   {
+      JoinStatus.setText("Looking up " @ getSubStr(%address, 1, 260) @ "...");
+      schedule(50, 0, pollJoinLookup);
+      return;
+   }
    JoinStatus.setText("Connecting to " @ %address @ "...");
    armPublicJoin(%address);
    connectTo(%address);
+}
+
+// Connects once the typed name's lookup ends; leaving the screen drops it.
+function pollJoinLookup()
+{
+   if (Canvas.getContent() != JoinGui.getId())
+   {
+      cancelJoinLookup();
+      return;
+   }
+   %address = joinLookupResult();
+   if (%address $= "?")
+      schedule(50, 0, pollJoinLookup);
+   else if (getSubStr(%address, 0, 1) $= "!")
+      JoinStatus.setText(getSubStr(%address, 1, 200));
+   else if (%address !$= "")
+   {
+      JoinStatus.setText("Connecting to " @ %address @ "...");
+      connectTo(%address);
+   }
 }
 
 // ---- the view
