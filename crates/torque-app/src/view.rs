@@ -145,6 +145,8 @@ impl WorldView {
         frame.sun_radius = SUN_RADIUS;
         frame.ao_radius = AO_RADIUS;
         frame.ao_sun = AO_SUN;
+        // The occlusion without grain where it is strong.
+        frame.smooth_occlusion = true;
         let scene = PlainScene {
             frame,
             ..PlainScene::default()

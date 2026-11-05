@@ -3,7 +3,7 @@
 //! every permutation with naga (the same front end wgpu compiles them with): the `shaders N of N valid`.
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 26] = [
+pub const FILES: [(&str, &str); 27] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
     ("clusters.wgsl", include_str!("../shaders/clusters.wgsl")),
@@ -11,6 +11,7 @@ pub const FILES: [(&str, &str); 26] = [
     ("shadow.wgsl", include_str!("../shaders/shadow.wgsl")),
     ("contact.wgsl", include_str!("../shaders/contact.wgsl")),
     ("ao.wgsl", include_str!("../shaders/ao.wgsl")),
+    ("ao_filter.wgsl", include_str!("../shaders/ao_filter.wgsl")),
     ("taa.wgsl", include_str!("../shaders/taa.wgsl")),
     ("fxaa.wgsl", include_str!("../shaders/fxaa.wgsl")),
     ("reflect.wgsl", include_str!("../shaders/reflect.wgsl")),
@@ -94,7 +95,11 @@ pub enum Permutation {
     /// The ambient occlusion (GTAO, or SSAO) with its history.
     Ao {
         gtao: bool,
+        /// A short history near the shapes that moved (the scene's smooth occlusion).
+        moving_cap: bool,
     },
+    /// The ambient occlusion's spatial filter.
+    AoFilter,
     /// The temporal anti-aliasing resolve.
     Taa,
     /// The Low quality's FXAA-style edge filter.
@@ -130,7 +135,7 @@ pub enum Permutation {
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 26] = [
+    pub const ALL: [Permutation; 29] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -152,8 +157,23 @@ impl Permutation {
         Permutation::Shadow { unclipped: true },
         Permutation::Shadow { unclipped: false },
         Permutation::Contact,
-        Permutation::Ao { gtao: true },
-        Permutation::Ao { gtao: false },
+        Permutation::Ao {
+            gtao: true,
+            moving_cap: false,
+        },
+        Permutation::Ao {
+            gtao: false,
+            moving_cap: false,
+        },
+        Permutation::Ao {
+            gtao: true,
+            moving_cap: true,
+        },
+        Permutation::Ao {
+            gtao: false,
+            moving_cap: true,
+        },
+        Permutation::AoFilter,
         Permutation::Taa,
         Permutation::Fxaa,
         Permutation::View,
@@ -181,7 +201,10 @@ impl Permutation {
             Permutation::Tonemap => "tonemap.wgsl".to_string(),
             Permutation::Shadow { unclipped } => format!("shadow.wgsl (UNCLIPPED = {unclipped})"),
             Permutation::Contact => "contact.wgsl".to_string(),
-            Permutation::Ao { gtao } => format!("ao.wgsl (GTAO = {gtao})"),
+            Permutation::Ao { gtao, moving_cap } => {
+                format!("ao.wgsl (GTAO = {gtao}, MOVING_CAP = {moving_cap})")
+            }
+            Permutation::AoFilter => "ao_filter.wgsl".to_string(),
             Permutation::Taa => "taa.wgsl".to_string(),
             Permutation::Fxaa => "fxaa.wgsl".to_string(),
             Permutation::View => {
@@ -263,11 +286,12 @@ impl Permutation {
                 ext.shadow
             ),
             Permutation::Contact => format!("{}\n{}", common, file("contact.wgsl")),
-            Permutation::Ao { gtao } => format!(
-                "const GTAO: bool = {gtao};\n{}\n{}",
+            Permutation::Ao { gtao, moving_cap } => format!(
+                "const GTAO: bool = {gtao};\nconst MOVING_CAP: bool = {moving_cap};\n{}\n{}",
                 common,
                 file("ao.wgsl")
             ),
+            Permutation::AoFilter => format!("{}\n{}", common, file("ao_filter.wgsl")),
             Permutation::Taa => format!("{}\n{}", common, file("taa.wgsl")),
             Permutation::Fxaa => file("fxaa.wgsl").to_string(),
             Permutation::Atmosphere => {

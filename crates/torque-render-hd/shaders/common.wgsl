@@ -92,7 +92,8 @@ struct Frame {
     // surf3: x 1 for weighted blended transparency, y 1 for coloured sun shadows, z 1 where no TAA averages a per-pixel pattern
     // (a fade is a cut), w 1 under Low's FXAA-style filter (the shadows' filter turns no pattern).
     surf3: vec4<f32>,
-    // x: last frame's effect time (the prepass's previous places of the shape fx's vertices); yzw unused.
+    // x: last frame's effect time (the prepass's previous places of the shape fx's vertices); y: 1 when the scene smooths its
+    // occlusion (the AO's filter, the contact march's jitter per frame); zw unused.
     times: vec4<f32>,
     // xyz: the camera's eye less the eye the sky's draws were built around (they follow the eye between syncs); w: how many of
     // `movers` are set.

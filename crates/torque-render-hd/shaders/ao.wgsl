@@ -13,7 +13,11 @@
 //   (cosine-distributed, turned per pixel), each occluded where the depth buffer holds a surface in front of it that lies within the
 //   reach of the pixel's point.
 // - Temporal accumulation: the texel's point is found in the last frame by its motion; where the history's depth there is the point's
-//   previous distance (within 5 %) the estimate is averaged in (1 / n, n up to HISTORY), else the history starts again.
+//   previous distance (within 5 %) the estimate is averaged in (1 / n, n up to HISTORY), else the history starts again. With
+//   MOVING_CAP (the scene's smooth_occlusion) a texel within the occlusion's reach of a shape that moved this frame keeps none
+//   (MOVING_HISTORY 1): the occlusion a moving shape casts moves with it, which the depth test does not see, and a history on the
+//   ground it passes trailed it in bands (even three frames of it at a car's speed); the spatial filter after this pass keeps
+//   the single frame's estimate smooth.
 //
 // Writes r: the occlusion (1 none), g: the pixel's eye distance (the forward pass's upsampling by depth), b: the frames averaged.
 
@@ -27,6 +31,7 @@ const SLICES: u32 = 2u;
 const STEPS: u32 = 6u;
 const TAPS: u32 = 8u;
 const HISTORY: f32 = 16.0;
+const MOVING_HISTORY: f32 = 1.0;
 // The share of the reach over which a sample's weight fades out.
 const FALLOFF: f32 = 0.1;
 // The reach's largest screen size (internal pixels) and the closest a sample is taken (pixels).
@@ -158,6 +163,21 @@ fn ssao(p: vec3<f32>, n: vec3<f32>, noise: vec2<f32>) -> f32 {
     return 1.0 - occ / f32(TAPS);
 }
 
+// Whether the world point `w` is within the occlusion's reach of a shape that moved this frame (`frame.movers`, the particles'
+// negative radii aside).
+fn near_mover(w: vec3<f32>) -> bool {
+    let n = min(u32(max(frame.sky_shift.w, 0.0)), MOVING_CASTERS);
+    for (var i = 0u; i < n; i = i + 1u) {
+        let c = frame.movers[i];
+        let r = c.w + frame.ao.x;
+        let v = c.xyz - w;
+        if c.w > 0.0 && dot(v, v) < r * r {
+            return true;
+        }
+    }
+    return false;
+}
+
 @fragment
 fn fs_ao(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let scale = i32(max(frame.ao.w, 1.0));
@@ -193,7 +213,15 @@ fn fs_ao(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         if m.w > 0.5 && all(prev >= vec2<f32>(0.0)) && all(hp < hs) {
             let h = textureLoad(history, hp, 0);
             if h.b > 0.0 && abs(h.g - m.z) <= 0.05 * m.z {
-                count = min(h.b + 1.0, HISTORY);
+                var cap = HISTORY;
+                if MOVING_CAP {
+                    let ndc = vec2<f32>(centre.x * frame.screen.z * 2.0 - 1.0, 1.0 - centre.y * frame.screen.w * 2.0);
+                    let wp = frame.inv_unjit_view_proj * vec4<f32>(ndc, d, 1.0);
+                    if near_mover(wp.xyz / wp.w) {
+                        cap = MOVING_HISTORY;
+                    }
+                }
+                count = min(h.b + 1.0, cap);
                 ao = mix(h.r, raw, 1.0 / count);
             }
         }
