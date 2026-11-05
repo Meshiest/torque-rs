@@ -8,7 +8,8 @@
 //! - **Surfaces** ([`Legacy::surfaces`]): the resource's first detail level. Each drawn surface is a triangle strip
 //!   of its windings (`Interior`'s draw, as Torque3D's `interior.cpp` walks it), its UVs from its texgen planes (`u = x . p + x[3]`), its normal
 //!   its plane's (negated when the plane index carries the flip bit). Surfaces of the editor's special materials (TGE's
-//!   [`SPECIAL`], or the importer's own [`Legacy::special`]) are left out. Each surface's lightmap rectangle comes from its lightmap planes and its place in the file's lightmap,
+//!   [`SPECIAL`], or the importer's own [`Legacy::special`]) are left out. A material whose surfaces carry this engine's
+//!   [`dif::surface_flags::TRANSLUCENT`] or [`dif::surface_flags::NEAREST`] has them in the surfaces' `material_flags`. Each surface's lightmap rectangle comes from its lightmap planes and its place in the file's lightmap,
 //!   bounded by [`torque_mapcore::budget::MAX_SOURCE_SIDE`] and [`torque_mapcore::budget::MAX_RECT_SIDE`].
 //! - **Convexes** ([`Legacy::convexes`]): the first detail level's hulls: points `hullIndices` from `hullStart`, planes
 //!   `hullPlaneIndices` from `planeStart` to the next hull's start (a plane index's high bit flips it), the ranges as the file
@@ -26,7 +27,7 @@ use torque_mapcore::collision::{
     ConvexSet, Heightfield, HeightfieldPlacement, HullRange, Layer, Plane, PlaneRef, Split,
 };
 use torque_mapcore::geometry::{LightRect, LightmapTri, NO_RECT, Surfaces};
-use torque_mapcore::material::{EncodedImage, Encoding};
+use torque_mapcore::material::{EncodedImage, Encoding, MaterialFlags};
 use torque_mapcore::{FileKind, ImportError, Importer};
 
 use crate::dif::{self, Interior, PLANE_FLIPPED};
@@ -305,6 +306,17 @@ pub fn surfaces_with(d: &dif::Dif, special: fn(&str) -> bool) -> Surfaces {
                 None => [0.0; 2],
             }
         };
+        let mut marks = MaterialFlags::default();
+        if s.flags & dif::surface_flags::TRANSLUCENT != 0 {
+            marks = marks.with(MaterialFlags::TRANSLUCENT);
+        }
+        if s.flags & dif::surface_flags::NEAREST != 0 {
+            marks = marks.with(MaterialFlags::NEAREST);
+        }
+        if marks != MaterialFlags::default() {
+            let kept = out.material_flags.entry(material.clone()).or_default();
+            *kept = kept.with(marks);
+        }
         let mut lms = Vec::new();
         let list = out.by_material.entry(material.clone()).or_default();
         for k in 0..pts.len().saturating_sub(2) {

@@ -1,7 +1,10 @@
 //! The map's interiors as the view draws them: each `InteriorInstance` ghost's `.dif` (its first detail level's drawn surfaces,
 //! the legacy importer's triangles, [`torque_maps::legacy::IMPORTER`]) at the place its record gives ([`placed`]: a hostile
 //! transform or scale is not drawn), as a static mesh object of the view ([`WorldView::mesh_object`]), one draw a material.
-//! A material's texture is found beside the file as the resource manager finds it ([`find_texture`]); the host's look may change each material's draw first (a tint, a filter). Every triangle is
+//! A material's texture is found beside the file as the resource manager finds it ([`find_texture`]); the host's look may change each material's draw first (a tint, a filter).
+//! A material the file marks ([`MaterialFlags`]) is sampled with nearest-neighbor filtering ([`interior_sampler`]) or drawn
+//! see-through: alpha blended, writing no depth, each of its panes ([`panes`]) an object of its own so the translucent pass
+//! sorts them back to front. Any other material is drawn as before. Every triangle is
 //! wound clockwise seen from its front (its plane's normal). The interior's faces in the world are kept for the surfaces a
 //! projectile's hole may lie on ([`Interiors::faces_near`]). A file is read once ([`MAX_FILES`] kept, at most
 //! [`MAX_READS_PER_FRAME`] new ones a frame; the importer caps each file's size and work); an interior's object is kept until
@@ -19,6 +22,7 @@ use torque_ghost_world::world::{ClientWorld, Pose};
 use torque_ghosts::TgeRecord;
 use torque_mapcore::Importer as _;
 use torque_mapcore::geometry::Surfaces;
+use torque_mapcore::material::MaterialFlags;
 use torque_render_scene::decals::Triangle;
 use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::map::{find_texture, folder_of};
@@ -53,11 +57,73 @@ pub fn object_id(index: u32) -> u32 {
     0x5000_0000 | (index & 0x0fff_ffff)
 }
 
-/// An interior's object (one draw a material), kept with the pose it was made at, and its faces in the world
-/// (counter-clockwise seen from the front, as the decals take them).
+/// The most panes of one interior drawn as objects of their own (the rest join the last).
+pub const MAX_PANES: usize = 0x0fff;
+
+/// The id of pane `pane` (from 0) of interior ghost `index` (a ghost index fits 16 bits).
+pub fn pane_id(index: u32, pane: usize) -> u32 {
+    0x5000_0000 | (((pane.min(MAX_PANES - 1) as u32 + 1) & 0x0fff) << 16) | (index & 0xffff)
+}
+
+/// The sampler of an interior's texture: linear (TGE's), or with `nearest` sharp texels near and far, the mipmap levels
+/// still blended between (`GL_NEAREST_MIPMAP_LINEAR`), so a far wall does not shimmer.
+pub fn interior_sampler(nearest: bool) -> Sampler {
+    let near = if nearest {
+        Filter::Nearest
+    } else {
+        Filter::Linear
+    };
+    Sampler {
+        repeat: true,
+        mag: near,
+        min: near,
+        mip: Filter::Linear,
+        mipmaps: true,
+    }
+}
+
+/// `vertices` (three a triangle) split into panes: triangles that share a corner are one pane. At most [`MAX_PANES`].
+pub fn panes(vertices: &[Vertex]) -> Vec<Vec<Vertex>> {
+    let tris = vertices.len() / 3;
+    let mut parent: Vec<usize> = (0..tris).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let key = |p: [f32; 3]| p.map(|c| (c * 1024.0).round() as i64);
+    let mut first: HashMap<[i64; 3], usize> = HashMap::new();
+    for t in 0..tris {
+        for c in 0..3 {
+            let k = key(vertices[3 * t + c].position);
+            let other = *first.entry(k).or_insert(t);
+            let (a, b) = (root(&mut parent, t), root(&mut parent, other));
+            if a != b {
+                parent[a] = b;
+            }
+        }
+    }
+    let mut index: HashMap<usize, usize> = HashMap::new();
+    let mut out: Vec<Vec<Vertex>> = Vec::new();
+    for t in 0..tris {
+        let r = root(&mut parent, t);
+        let next = index.len().min(MAX_PANES - 1);
+        let k = *index.entry(r).or_insert(next);
+        if k == out.len() {
+            out.push(Vec::new());
+        }
+        out[k].extend_from_slice(&vertices[3 * t..3 * t + 3]);
+    }
+    out
+}
+
+/// An interior's objects (its opaque draws, then each pane of its translucent ones), kept with the pose they were made at, and
+/// its faces in the world (counter-clockwise seen from the front, as the decals take them).
 struct Kept {
     pose: Pose,
-    object: DynamicObject,
+    objects: Vec<DynamicObject>,
     faces: Arc<Vec<Triangle>>,
 }
 
@@ -136,7 +202,10 @@ impl Interiors {
             }
         }
         self.kept.retain(|i, _| seen.contains(i));
-        self.kept.values().map(|k| k.object.clone()).collect()
+        self.kept
+            .values()
+            .flat_map(|k| k.objects.iter().cloned())
+            .collect()
     }
 
     /// Every interior's faces, each list shared (for a host's own surface lookups).
@@ -179,8 +248,14 @@ fn build(
     let (m, scale) = placed(&pose)?;
     let mut set = TextureSet::new(assets);
     let mut draws = Vec::new();
+    let mut see_through = Vec::new();
     let mut faces = Vec::new();
     for (material, corners) in &surfaces.by_material {
+        let marks = surfaces
+            .material_flags
+            .get(material)
+            .copied()
+            .unwrap_or_default();
         let mut vertices = Vec::with_capacity(corners.len());
         for t in corners.chunks_exact(3) {
             let mut v = [0, 1, 2].map(|c| {
@@ -204,38 +279,97 @@ fn build(
             faces.push([v[0].position, v[2].position, v[1].position]);
             vertices.extend(v);
         }
-        let texture = find_texture(&mut set, material, &[folder_of(path)]).map(|(i, _)| {
-            (
-                i,
-                Sampler {
-                    repeat: true,
-                    mag: Filter::Linear,
-                    min: Filter::Linear,
-                    mip: Filter::Linear,
-                    mipmaps: true,
-                },
-            )
-        });
+        let sampler = interior_sampler(marks.has(MaterialFlags::NEAREST));
+        let texture =
+            find_texture(&mut set, material, &[folder_of(path)]).map(|(i, _)| (i, sampler));
+        let translucent = marks.has(MaterialFlags::TRANSLUCENT);
         let mut draw = Draw {
             label: material.clone(),
             vertices,
             lighting: true,
             tex_env: TexEnv::Modulate,
             texture,
-            blend: Blend::Opaque,
+            blend: if translucent {
+                Blend::Alpha
+            } else {
+                Blend::Opaque
+            },
             cull: Cull::BackCw,
             depth_test: true,
-            depth_write: true,
+            depth_write: !translucent,
             fog: true,
             lights: Vec::new(),
             vertex_key: None,
         };
         look(material, &mut draw);
-        draws.push(draw);
+        if translucent {
+            see_through.push(draw);
+        } else {
+            draws.push(draw);
+        }
     }
+    // Each pane its own object, so the translucent pass sorts the panes back to front.
+    let mut groups = vec![(draws, object_id(index))];
+    let mut pane_draws: Vec<Vec<Draw>> = Vec::new();
+    for draw in see_through {
+        for (k, vertices) in panes(&draw.vertices).into_iter().enumerate() {
+            if k == pane_draws.len() {
+                pane_draws.push(Vec::new());
+            }
+            pane_draws[k].push(Draw {
+                vertices,
+                ..draw.clone()
+            });
+        }
+    }
+    groups.extend(
+        pane_draws
+            .into_iter()
+            .enumerate()
+            .map(|(k, d)| (d, pane_id(index, k))),
+    );
     Some(Kept {
         pose,
-        object: view.mesh_object(set, &draws, object_id(index)),
+        objects: view.mesh_objects(set, &groups),
         faces: Arc::new(faces),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tri(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [Vertex; 3] {
+        [a, b, c].map(|position| Vertex {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            color: [255; 4],
+            uv: [0.0; 2],
+        })
+    }
+
+    #[test]
+    fn triangles_that_share_a_corner_are_one_pane() {
+        let mut v = Vec::new();
+        // A quad of two triangles, and a triangle apart.
+        v.extend(tri([0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]));
+        v.extend(tri([5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [6.0, 1.0, 0.0]));
+        v.extend(tri([0.0; 3], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]));
+        let p = panes(&v);
+        assert_eq!(p.iter().map(Vec::len).collect::<Vec<_>>(), [6, 3]);
+    }
+
+    #[test]
+    fn panes_have_their_own_ids_and_nearest_keeps_its_mipmaps() {
+        assert_ne!(pane_id(7, 0), object_id(7));
+        assert_ne!(pane_id(7, 0), pane_id(7, 1));
+        assert_ne!(pane_id(7, 0), pane_id(8, 0));
+        let s = interior_sampler(true);
+        assert_eq!(
+            (s.mag, s.min, s.mip),
+            (Filter::Nearest, Filter::Nearest, Filter::Linear)
+        );
+        assert!(s.mipmaps);
+        assert_eq!(interior_sampler(false).mag, Filter::Linear);
+    }
 }

@@ -9,6 +9,9 @@
 //! through [`torque_maps::dif::write`]. The engine draws the surfaces and collides with the hulls; the BSP, the emit strings and
 //! the polygon lists are written for TGE and Torque3D and checked by this crate's tests.
 //!
+//! **Materials.** How a model's materials are drawn (nearest-neighbor filtering, see-through glass) is carried as this
+//! engine's surface flags ([`materials`]: [`materials::surface_flags`] of the model, [`materials::mark`] on the built `.dif`).
+//!
 //! **Mission objects.** A water volume, a trigger or a physical zone is not interior geometry in Torque: each is an object of
 //! the mission beside the `InteriorInstance`. A `.map`'s brush entities of those classes, and its point entities, are passed
 //! through as [`mission::MissionObject`]s, placed with the interior ([`mission::Placement`]) and written as a `.mis` fragment;
@@ -26,6 +29,7 @@ pub mod geom;
 pub mod hull;
 pub mod lightmap;
 pub mod map;
+pub mod materials;
 pub mod mesh;
 pub mod mission;
 #[cfg(any(test, feature = "verify"))]

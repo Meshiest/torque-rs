@@ -21,9 +21,17 @@ impl MaterialFlags {
     /// Not lit (full bright).
     pub const UNLIT: MaterialFlags = MaterialFlags(64);
     pub const TWO_SIDED: MaterialFlags = MaterialFlags(128);
+    /// Its texture sampled with nearest-neighbor filtering (pixel art): sharp texels up close, its mipmaps still taken far
+    /// away.
+    pub const NEAREST: MaterialFlags = MaterialFlags(256);
 
     pub fn has(self, other: MaterialFlags) -> bool {
         self.0 & other.0 == other.0
+    }
+
+    /// Both sets of bits.
+    pub fn with(self, other: MaterialFlags) -> MaterialFlags {
+        MaterialFlags(self.0 | other.0)
     }
 }
 

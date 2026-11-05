@@ -622,6 +622,10 @@ impl Reader<'_> {
                         !matches!(w, Checked::Valid(json::texture::WrappingMode::ClampToEdge))
                     };
                     out.wrap = [repeats(&s.wrap_s), repeats(&s.wrap_t)];
+                    out.nearest = matches!(
+                        s.mag_filter,
+                        Some(Checked::Valid(json::texture::MagFilter::Nearest))
+                    );
                 }
             }
             if let Some(n) = &m.normal_texture {

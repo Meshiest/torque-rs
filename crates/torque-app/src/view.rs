@@ -388,24 +388,21 @@ impl WorldView {
     /// (an interior's surfaces, [`crate::interiors`], or a host's own geometry).
     pub fn mesh_object(&mut self, set: TextureSet, draws: &[Draw], id: u32) -> DynamicObject {
         let local = self.intern(set.into_textures());
-        let translucent = draws.iter().any(|d| d.blend != Blend::Opaque);
-        let draws: Vec<HdDraw> = draws
+        mesh_object_of(&local, draws, id)
+    }
+
+    /// Several static mesh objects whose draws share `set`'s textures: each `(draws, id)` one object as
+    /// [`WorldView::mesh_object`] makes it.
+    pub fn mesh_objects(
+        &mut self,
+        set: TextureSet,
+        objects: &[(Vec<Draw>, u32)],
+    ) -> Vec<DynamicObject> {
+        let local = self.intern(set.into_textures());
+        objects
             .iter()
-            .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, &local))
-            .collect();
-        let (centre, radius) = bounding_sphere(&draws);
-        DynamicObject {
-            ghost: id,
-            transform: Mat::IDENTITY,
-            prev_transform: Mat::IDENTITY,
-            translucent,
-            centre,
-            radius,
-            draws,
-            previous: None,
-            stamp: None,
-            nodes: Vec::new(),
-        }
+            .map(|(draws, id)| mesh_object_of(&local, draws, *id))
+            .collect()
     }
 
     /// The objects of a frame's moving shapes ([`torque_render_scene::moving::draws_culled`] over `world`, their textures in
@@ -565,5 +562,27 @@ fn floor_draw(texture: Option<usize>, color: [u8; 3], half: f32, tile: f32) -> D
         fog: true,
         lights: Vec::new(),
         vertex_key: None,
+    }
+}
+
+/// A static mesh object of `draws` (their textures indices into `local`, the frame's table): translucent when a draw blends.
+fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
+    let translucent = draws.iter().any(|d| d.blend != Blend::Opaque);
+    let draws: Vec<HdDraw> = draws
+        .iter()
+        .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, local))
+        .collect();
+    let (centre, radius) = bounding_sphere(&draws);
+    DynamicObject {
+        ghost: id,
+        transform: Mat::IDENTITY,
+        prev_transform: Mat::IDENTITY,
+        translucent,
+        centre,
+        radius,
+        draws,
+        previous: None,
+        stamp: None,
+        nodes: Vec::new(),
     }
 }

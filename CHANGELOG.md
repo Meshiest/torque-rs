@@ -61,6 +61,11 @@ The first development version. Nothing is published yet; this is what exists.
   a Blockbench reader (`.bbmodel`: cubes with their turns, origins and inflation, meshes, groups as nodes, per-face
   coordinates and turns, embedded PNG and JPEG textures; the JSON size, element and texture counts and sizes bounded), so a
   `.bbmodel` converts to a `.dts` or builds into an interior (each cube a closed part: one hull).
+- Interiors carry how their materials are drawn as this engine's own surface flags (two bits TGE's tools never set and its
+  reader ignores): nearest-neighbor filtering (a Blockbench model's textures, a glTF `NEAREST` sampler: sharp texels, the
+  mipmaps still blended so a far wall does not shimmer) and see-through glass (a blended material, or a texture with partly
+  see-through texels), drawn alpha blended in the translucent pass, each pane sorted on its own, and solid to collision as
+  before (`torque_interior_builder::materials`, the importer's `Surfaces::material_flags`). Other interiors draw as they did.
 - `torque-convert`: the converter command, its own crate: models (`.glb`, `.gltf`, `.obj`, `.bbmodel`, `.dts`) into `.dts` (with the
   images the model carries) or `.glb`, and `.map` brushes or meshes into interiors (`--hulls auto|authored|slabs`).
 - `torque-shape-builder`: skin meshes, objects with a mesh in several details, primitives of several materials, aligned

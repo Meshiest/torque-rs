@@ -707,6 +707,8 @@ fn an_interiors_rectangle_is_lit_in_its_atlas_place_with_a_gutter_and_its_pass_s
         group: "floor".into(),
         texture: TexRef::None,
         opaque: true,
+        nearest: false,
+        see_through: false,
     }]];
     let meshes = interior::meshes(&instances, &materials, 1, Some(&lit), &mut Vec::new());
     assert_eq!(meshes.len(), 2);
@@ -731,6 +733,17 @@ fn an_interiors_rectangle_is_lit_in_its_atlas_place_with_a_gutter_and_its_pass_s
     let meshes = interior::meshes(&instances, &glass, 1, Some(&lit), &mut Vec::new());
     assert!(meshes[0].lighting);
     assert!(meshes[1].vertices.is_empty());
+    assert_eq!(
+        (meshes[0].blend, meshes[0].sampler),
+        (Blend::Opaque, super::SAMPLER)
+    );
+    // Marked by the file: see-through and sampled nearest.
+    glass[0][0].see_through = true;
+    glass[0][0].nearest = true;
+    let meshes = interior::meshes(&instances, &glass, 1, Some(&lit), &mut Vec::new());
+    assert_eq!(meshes[0].blend, Blend::Alpha);
+    assert!(!meshes[0].depth_write);
+    assert_eq!(meshes[0].sampler, interior::NEAREST_SAMPLER);
 }
 
 #[test]

@@ -2338,7 +2338,9 @@ dependencies = [
 name = "torque-interior-builder"
 version = "0.1.0"
 dependencies = [
+ "png",
  "torque-collide",
+ "torque-images",
  "torque-import",
  "torque-mapcore",
  "torque-maps",
