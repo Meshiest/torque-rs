@@ -530,6 +530,96 @@ impl CloudLook {
         fine_budget: 3.0,
     };
 
+    /// The most samples a layer the refined march takes, as a multiple of the quality's.
+    pub const MAX_FINE_BUDGET: f32 = 8.0;
+
+    /// This look with every value the renderer can take: non-finite numbers the engine's (or none), the coverage within the
+    /// server's range (0 to [`MAX_COVERAGE`]), the ground's shadow 0 to 1, the sunlight not negative, the fine step not negative
+    /// and its budget 1 to [`CloudLook::MAX_FINE_BUDGET`], each volume layer at least [`MIN_THICKNESS`] thick (a top under its
+    /// base swapped with it), a sheet's top its base, the noise periods positive, a layer's steps at most [`MAX_STEP_SHARE`] of
+    /// the quality's and the octaves at most [`MAX_OCTAVES`] (the march's loops stay bounded). The engine's looks are unchanged by it.
+    pub fn sanitized(&self) -> CloudLook {
+        let finite = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        let positive = |v: f32, d: f32| if v.is_finite() && v > 0.0 { v } else { d };
+        let mut layers = self.layers;
+        for (l, d) in layers.iter_mut().zip(&FAIR_WEATHER) {
+            let (a, b) = (finite(l.base, d.base), finite(l.top, d.top));
+            l.base = a.min(b);
+            l.top = if l.form == LayerForm::Sheet {
+                l.base
+            } else {
+                a.max(b).max(l.base + MIN_THICKNESS)
+            };
+            l.coverage = finite(l.coverage, d.coverage).max(0.0);
+            l.coverage_add = finite(l.coverage_add, d.coverage_add);
+            l.extinction = finite(l.extinction, d.extinction).max(0.0);
+            l.shape_period = positive(l.shape_period, d.shape_period);
+            l.detail_period = positive(l.detail_period, d.detail_period);
+            l.weather_period = positive(l.weather_period, d.weather_period);
+            l.variation = finite(l.variation, d.variation);
+            l.detail = finite(l.detail, d.detail);
+            l.turn = finite(l.turn, d.turn);
+            l.wind_turn = finite(l.wind_turn, d.wind_turn);
+            l.wind_speed = finite(l.wind_speed, d.wind_speed);
+            l.edge_base = finite(l.edge_base, d.edge_base);
+            l.edge_top = finite(l.edge_top, d.edge_top);
+            l.top_density = finite(l.top_density, d.top_density);
+            l.aerial = positive(l.aerial, d.aerial);
+            let (f0, f1) = (finite(l.fade.0, d.fade.0), finite(l.fade.1, d.fade.1));
+            l.fade = (f0.min(f1), f0.max(f1));
+            l.reach = finite(l.reach, d.reach).max(0.0);
+            l.sun = finite(l.sun, d.sun).max(0.0);
+            l.ambient = finite(l.ambient, d.ambient).max(0.0);
+            l.steps = finite(l.steps, d.steps).clamp(0.0, MAX_STEP_SHARE);
+            l.evolve = finite(l.evolve, d.evolve);
+            l.blur = finite(l.blur, d.blur);
+        }
+        let (l, d) = (self.light, CLOUD_LIGHT);
+        let light = CloudLight {
+            forward_g: finite(l.forward_g, d.forward_g).clamp(-0.99, 0.99),
+            back_g: finite(l.back_g, d.back_g).clamp(-0.99, 0.99),
+            back_share: finite(l.back_share, d.back_share),
+            octaves: l.octaves.min(MAX_OCTAVES),
+            octave_energy: finite(l.octave_energy, d.octave_energy),
+            octave_extinction: finite(l.octave_extinction, d.octave_extinction),
+            octave_eccentricity: finite(l.octave_eccentricity, d.octave_eccentricity),
+            multiple: finite(l.multiple, d.multiple),
+            multiple_decay: finite(l.multiple_decay, d.multiple_decay),
+            ambient_floor: finite(l.ambient_floor, d.ambient_floor),
+            sun_tint: finite(l.sun_tint, d.sun_tint),
+            powder: finite(l.powder, d.powder),
+            light_step: positive(l.light_step, d.light_step),
+            bounce: finite(l.bounce, d.bounce),
+            underside: finite(l.underside, d.underside),
+            layer_shadow: finite(l.layer_shadow, d.layer_shadow),
+            layer_slant: positive(l.layer_slant, d.layer_slant),
+            far_shadow: finite(l.far_shadow, d.far_shadow),
+            near_steps: l.near_steps.min(MAX_OCTAVES * 2),
+            far_view: (
+                finite(l.far_view.0, d.far_view.0),
+                finite(l.far_view.1, d.far_view.1),
+            ),
+            thin_slant: positive(l.thin_slant, d.thin_slant),
+            thin_power: finite(l.thin_power, d.thin_power),
+            thin_density: finite(l.thin_density, d.thin_density),
+        };
+        CloudLook {
+            layers,
+            light,
+            coverage: self
+                .coverage
+                .filter(|c| c.is_finite())
+                .map(|c| c.clamp(0.0, MAX_COVERAGE)),
+            ground_shadow: self
+                .ground_shadow
+                .filter(|s| s.is_finite())
+                .map(|s| s.clamp(0.0, 1.0)),
+            sun: self.sun.map(|c| c.map(|v| finite(v, 0.0).max(0.0))),
+            fine_step: finite(self.fine_step, 0.0).max(0.0),
+            fine_budget: finite(self.fine_budget, 1.0).clamp(1.0, Self::MAX_FINE_BUDGET),
+        }
+    }
+
     /// `q` as this look asks for it (the ground's shadows when it casts them).
     pub fn quality(&self, q: CloudQuality) -> CloudQuality {
         CloudQuality {
@@ -568,6 +658,14 @@ pub fn keep_chroma(c: [f32; 3], keep: f32) -> [f32; 3] {
     let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     c.map(|v| l + (v - l) * keep.clamp(0.0, 1.0))
 }
+
+/// The most coverage the server's layers or a look give the sky.
+pub const MAX_COVERAGE: f32 = 0.92;
+/// The thinnest a volume layer is (units), the most of the quality's steps a layer of a look takes and the most
+/// multiple-scattering octaves.
+pub const MIN_THICKNESS: f32 = 1.0;
+pub const MAX_STEP_SHARE: f32 = 4.0;
+pub const MAX_OCTAVES: u32 = 8;
 
 // The coverage with no cloud layers (a fair-weather sky), and how the layers' combined opacity maps onto it.
 pub const DEFAULT_COVERAGE: f32 = 0.47;
@@ -636,7 +734,7 @@ impl CloudSky {
                 srgb_to_linear(1.0 + (own - 1.0) * LAYER_TINT_SHARE)
             });
             (
-                (LAYER_COVERAGE_FLOOR + LAYER_COVERAGE_GAIN * combined).clamp(0.0, 0.92),
+                (LAYER_COVERAGE_FLOOR + LAYER_COVERAGE_GAIN * combined).clamp(0.0, MAX_COVERAGE),
                 1.0 + 0.5 * combined,
                 tint,
             )

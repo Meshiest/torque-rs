@@ -631,7 +631,9 @@ impl Clouds {
             return SkyClouds::default();
         };
         // The scene's look (the engine's without one): its layers, light and coverage, and what it asks of the quality.
-        let look = scene.cloud_look.unwrap_or(CloudLook::DEFAULT);
+        let look = scene
+            .cloud_look
+            .map_or(CloudLook::DEFAULT, |l| l.sanitized());
         let q = look.quality(q);
         let coverage = look.coverage.unwrap_or(sky.coverage);
         let mut layers = cl::drawn_layers(&look.layers, q.layers);
@@ -885,7 +887,7 @@ impl Clouds {
             &[
                 overcast,
                 if physical.is_some() { 1.0 } else { 0.0 },
-                look.fine_step.max(0.0),
+                look.fine_step,
                 look.fine_budget,
             ],
         );

@@ -147,9 +147,9 @@ const CIRRUS_VEIL: vec4<f32> = vec4<f32>(0.55, 0.9, 0.65, 0.5);
 const SPIN_EASE: f32 = 0.35;
 // The view's transmittance under which a sample's light march takes one step fewer, and under which two.
 const DEEP_SEEN: vec2<f32> = vec2<f32>(0.35, 0.12);
-// The altocumulus' rows: how many across a shape period, and how much of an element's density they set where it lies in rows.
 // The refined march's fine steps in a row that find no cloud before it takes long steps again.
 const FINE_EMPTY: u32 = 3u;
+// The altocumulus' rows: how many across a shape period, and how much of an element's density they set where it lies in rows.
 const ELEMENT_ROWS: f32 = 3.0;
 const ELEMENT_ROW_SHARE: f32 = 0.7;
 // The breaks along the rows: the coarse cells' noise (s.g) under x leaves a gap, over y the row runs on (runs of a few cells to
@@ -198,7 +198,7 @@ fn element_present(b: f32) -> f32 {
 // `detail`: the detail volume's erosion; `lod`: the shape volume's mip level.
 fn cloud_density(li: u32, p: vec3<f32>, detail: bool, lod: f32, spread: f32) -> vec2<f32> {
     let l = clouds.layers[li];
-    let h = (p.z - l.slab.x) / (l.slab.y - l.slab.x);
+    let h = (p.z - l.slab.x) / max(l.slab.y - l.slab.x, 1e-3);
     if h <= 0.0 || h >= 1.0 {
         return vec2<f32>(0.0, h);
     }
