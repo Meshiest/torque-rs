@@ -145,12 +145,15 @@ The first development version. Nothing is published yet; this is what exists.
   clouds. `CloudLook::SUNLIT_CUMULUS` gives sunlit cumulus; without a look the clouds are as before. The vehicle demo uses
   it.
 - `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
-  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
+  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's Tab uses it.
 - The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
   meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
   the engine's own classes to every client).
 - The level demo's office map: a Blockbench model (`game/levels/office.bbmodel`, made by `tools/office.py`) built into an
   interior when the demo starts, with pixel textures drawn nearest, glass windows, a roof and ceiling lights.
+- `torque-example-fps`: Tab eases the camera behind the figure (over the shoulder, kept in front of cubes and interior walls)
+  and back to its eyes; backed against a wall it draws the first person's view. `torque-client`'s
+  `Predictor::cast_ray` casts a segment in the client's container (the static index's objects near it and the ghosts).
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
   while it runs.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
@@ -282,6 +285,18 @@ The first development version. Nothing is published yet; this is what exists.
   water, the sky or see-through shapes; the ambient occlusion keeps no history (a pattern fixed per pixel, always filtered in
   space) and the contact shadows' march has a fixed pattern. The ghosting check: the fast sun settles in 7 frames, not
   never (71 % of the frame off before), the vehicle demo's buggy pass at once, not never.
+- The level demo's office: textures redrawn as clean pixel art (flat areas, a few shading steps, lit and shaded edges, no
+  noise), the office chairs' bases on the floor (they hovered 4 cm over it), and the screens drawn unlit (monitors, two new
+  laptops on the meeting table, a chart on the meeting room's screen).
+- The level demo: a quick tap of Space held the jump until the next tap (the script counted only the press); now it jumps
+  once. Tab switches the camera (it was V), as in the other demos, and every map draws its textures nearest (cubes, tiles,
+  figures, interiors; the mipmaps kept).
+- `torque-render-hd`: every point or spot light whose light reaches the view has a shadow cube, sized by its importance (its
+  brightness, the share of the view its sphere takes, its cone): three tiers of cube arrays at the quality's face size, a half
+  and a quarter of it (High: 4 x 512, 8 x 256, 16 x 128, less memory than its 8 equal cubes), where a fixed 8 cubes were
+  traded among the lights in view and a light without one shone unshadowed, so shadows popped on and off as the camera
+  turned or walked. A light that changes tier crossfades from one cube to the other over 12 frames, a light that holds a
+  cube counts 1.25 times as much, and off-screen casters keep shadowing the view (a test with a point light and a low sun).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).

@@ -1133,6 +1133,29 @@ impl<W: PredictWorld> Predictor<W> {
         collide::World::object(&c, drive::ghost_id(index))
     }
 
+    /// The first of `mask`'s objects the segment from `start` to `end` meets in the client's container, built about `start` (the
+    /// game's static objects near it and the ghosts; the control Player left out): a game's own camera behind its Player kept in
+    /// front of a wall. `None` when it meets nothing (or the container's work budget runs out).
+    pub fn cast_ray(&mut self, world: &W, start: F3, end: F3, mask: u32) -> Option<RayHit> {
+        let pr = self.predicted.as_ref();
+        let me = pr.map_or(u32::MAX, |p| p.index);
+        let mut c = ClientCollision::new(
+            world,
+            me,
+            TICK_WORK,
+            Some(Ctx {
+                near: start,
+                static_world: &mut self.static_world,
+                shapes: &mut self.shapes,
+                driven: pr.and_then(|p| p.vehicle.as_ref()),
+                ghosts: Some(&self.ghost_vehicles),
+                disabled: None,
+                player_at: None,
+            }),
+        );
+        c.cast_ray(start, end, mask)
+    }
+
     pub fn camera_advance(&mut self, first_person: bool, speed: f32, now_ms: u32) {
         let last = self.camera_ms.replace(now_ms);
         let dt = last.map_or(0.0, |t| now_ms.wrapping_sub(t) as f32 / 1000.0);

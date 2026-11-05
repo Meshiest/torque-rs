@@ -200,3 +200,64 @@ fn the_built_office_marks_its_glass_see_through_and_every_texture_nearest() {
         Some(&MaterialFlags::NEAREST)
     );
 }
+
+/// Nothing in the built office hovers over the floor: every face of the `.dif` that looks down from less than 0.3 units above
+/// the floor (the underside of a chair's base, a sofa, a table's foot) has a face looking up at its height under it (a rug, a
+/// caster, the piece it stands on). The floor's top is at 0.
+#[test]
+fn every_piece_of_furniture_stands_on_the_floor_or_on_something() {
+    use torque_maps::dif::PLANE_FLIPPED;
+    let mut files = GameFiles::bundled().expect("the game folder");
+    torque_example_level_demo::levels::add_levels(&mut files).unwrap();
+    let bytes =
+        torque_render_scene::Assets::read(&files.kit, "kit/office.dif").expect("the office's .dif");
+    let dif = torque_maps::dif::parse(&bytes).unwrap();
+    let i = &dif.details[0];
+    // Each surface: its normal's z, its height (for a level face) and its rectangle in x and y.
+    let faces: Vec<(f32, f32, [f32; 4])> = i
+        .surfaces
+        .iter()
+        .map(|s| {
+            let plane = &i.planes[usize::from(s.plane & !PLANE_FLIPPED)];
+            let nz = if s.plane & PLANE_FLIPPED != 0 {
+                -plane.normal[2]
+            } else {
+                plane.normal[2]
+            };
+            let (mut rect, mut z) = ([f32::MAX, f32::MAX, f32::MIN, f32::MIN], 0.0);
+            let points = &i.windings[s.winding_start as usize..][..s.winding_count as usize];
+            for &p in points {
+                let [x, y, pz] = i.points[p as usize];
+                rect = [
+                    rect[0].min(x),
+                    rect[1].min(y),
+                    rect[2].max(x),
+                    rect[3].max(y),
+                ];
+                z += pz / points.len() as f32;
+            }
+            (nz, z, rect)
+        })
+        .collect();
+    let overlap = |a: [f32; 4], b: [f32; 4]| {
+        a[0] < b[2] - 1e-3 && b[0] < a[2] - 1e-3 && a[1] < b[3] - 1e-3 && b[1] < a[3] - 1e-3
+    };
+    let mut hovering = Vec::new();
+    for &(nz, z, rect) in &faces {
+        if nz > -0.99 || z <= 1e-3 || z >= 0.3 {
+            continue;
+        }
+        let held = faces
+            .iter()
+            .any(|&(up, uz, under)| up > 0.99 && (uz - z).abs() < 1e-3 && overlap(rect, under));
+        if !held {
+            hovering.push((z, rect));
+        }
+    }
+    assert!(
+        hovering.is_empty(),
+        "{} faces hover over the floor, the first {:?}",
+        hovering.len(),
+        &hovering[..hovering.len().min(4)]
+    );
+}

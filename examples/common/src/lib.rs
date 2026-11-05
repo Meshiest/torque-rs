@@ -5,6 +5,7 @@
 //! - [`GameFiles`]: the kit, the shared scripts (`game/` here, under `common/`) and an example's own game folder.
 //! - [`prediction`]: what the client's prediction of its own figure asks a game of kit cubes (the cubes it collides with, smooth
 //!   aim).
+//! - [`ray_box`]: a ray against a box, for a camera behind a figure kept in front of the cubes.
 
 pub mod prediction;
 
@@ -189,6 +190,28 @@ impl<G: GameDir> GameFiles<G> {
     pub fn bundled() -> io::Result<GameFiles<G>> {
         GameFiles::load(Path::new(G::DIR))
     }
+}
+
+/// Where the ray from `from` along the unit `dir` enters the box `min`..`max` (its distance), if it does ahead.
+pub fn ray_box(from: [f32; 3], dir: [f32; 3], min: [f32; 3], max: [f32; 3]) -> Option<f32> {
+    let (mut near, mut far) = (0.0f32, f32::MAX);
+    for i in 0..3 {
+        if dir[i].abs() < 1e-6 {
+            if from[i] < min[i] || from[i] > max[i] {
+                return None;
+            }
+            continue;
+        }
+        let a = (min[i] - from[i]) / dir[i];
+        let b = (max[i] - from[i]) / dir[i];
+        near = near.max(a.min(b));
+        far = far.min(a.max(b));
+        if near > far {
+            return None;
+        }
+    }
+    // A ray that starts inside a box (the figure's own floor) does not count.
+    (near > 0.0).then_some(near)
 }
 
 #[cfg(test)]

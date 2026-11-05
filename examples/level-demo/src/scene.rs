@@ -8,6 +8,7 @@
 //! - **Figures** (Players) are the engine's ([`GhostScene`]): the client's own where it predicts it (the cubes are its
 //!   collision world, [`torque_example_common::prediction`]), each playing the actions its shape has for the way it moves
 //!   (`root`, `run`, `back`, `side`, the jump and the fall) as TGE's client picks them.
+//! - **Nearest texels** ([`crate::levels::nearest`]): the cubes' tiles and every texture of the figures and what they hold.
 //! - **The camera's line of sight** ([`WorldScene::sight_hit`]) meets the cubes' boxes and the interiors' hulls (each
 //!   InteriorInstance's `.dif` read as the server reads it, placed where its record puts it), so the camera behind the figure
 //!   stays in front of a wall or a ceiling.
@@ -203,6 +204,13 @@ impl WorldScene {
         eye: &Eye,
     ) -> Vec<DynamicObject> {
         let mut out = self.ghosts.objects(view, assets, world);
+        for object in &mut out {
+            for draw in &mut object.draws {
+                if let Some((_, sampler)) = draw.texture.as_mut() {
+                    crate::levels::nearest(sampler);
+                }
+            }
+        }
         let mut seen = Vec::new();
         for (&index, ghost) in &world.records.ghosts {
             let (Some(TgeClass::StaticShape), Some(_), Some(db)) =
@@ -271,6 +279,7 @@ fn retexture(d: &mut Draw, tint: [u8; 3]) {
     }
     if let Some((_, sampler)) = d.texture.as_mut() {
         sampler.repeat = true;
+        crate::levels::nearest(sampler);
     }
 }
 

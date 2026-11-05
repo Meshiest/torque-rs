@@ -78,6 +78,7 @@
 @group(0) @binding(5) var csm: texture_depth_2d_array;
 @group(0) @binding(6) var shadow_cmp: sampler_comparison;
 @group(0) @binding(7) var shadow_gather: sampler;
+// The point lights' cubes in three tiers of resolution (binding 8 the finest; 17 and 18 the half and quarter sizes).
 @group(0) @binding(8) var point_maps: texture_depth_cube_array;
 @group(0) @binding(9) var contact: texture_2d<f32>;
 @group(0) @binding(10) var ao_tex: texture_2d<f32>;
@@ -88,6 +89,8 @@
 // The meshes' places (NodePlace: nine vec4 each, the rows of its placement now, of its normals' turn and of its placement at the
 // last frame) that a shape's vertex in its mesh's own space (MAT_NODE) names by its extra word.
 @group(0) @binding(16) var<storage, read> nodes: array<vec4<f32>>;
+@group(0) @binding(17) var point_maps_half: texture_depth_cube_array;
+@group(0) @binding(18) var point_maps_quarter: texture_depth_cube_array;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 // The prepass's motion slots: the matrix taking a shape's current world point to where it was (the identity for everything else, and
@@ -490,6 +493,41 @@ fn sun_shadow(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>) -> f32 {
     return mix(lit, 1.0, smoothstep(shadows.sun.z, shadows.sun.y, view_depth));
 }
 
+// A cube slot's face side in texels (its tier's).
+fn point_face_size(slot: i32) -> f32 {
+    if slot < i32(shadows.tiers.x) {
+        return shadows.point.y;
+    }
+    return select(shadows.tiers.w, shadows.tiers.z, slot < i32(shadows.tiers.y));
+}
+
+// One comparison in cube slot `slot` (its tier's array) along `d` at `depth`.
+fn point_tap(slot: i32, d: vec3<f32>, depth: f32) -> f32 {
+    let first = i32(shadows.tiers.x);
+    let second = i32(shadows.tiers.y);
+    if slot < first {
+        return textureSampleCompareLevel(point_maps, shadow_cmp, d, slot, depth);
+    }
+    if slot < second {
+        return textureSampleCompareLevel(point_maps_half, shadow_cmp, d, slot - first, depth);
+    }
+    return textureSampleCompareLevel(point_maps_quarter, shadow_cmp, d, slot - second, depth);
+}
+
+// A light's shadow visibility through its cubes (`Light::shadow`): each cube's darkness by its share, so a cube fading in or out
+// gives part of its shadow and two crossfading cubes blend.
+fn light_shadow(light: Light, p: vec3<f32>, n: vec3<f32>, frag: vec2<f32>) -> f32 {
+    let s = light.shadow;
+    var dark = 0.0;
+    if s.x >= 0.0 && s.y > 0.0 {
+        dark = dark + s.y * (1.0 - point_shadow(i32(s.x), light, p, n, frag));
+    }
+    if s.z >= 0.0 && s.w > 0.0 {
+        dark = dark + s.w * (1.0 - point_shadow(i32(s.z), light, p, n, frag));
+    }
+    return clamp(1.0 - dark, 0.0, 1.0);
+}
+
 // A point light's shadow visibility at `p` (normal `n`) from its cube in slot `slot`.
 fn point_shadow(slot: i32, light: Light, p: vec3<f32>, n: vec3<f32>, frag: vec2<f32>) -> f32 {
     let radius = max(light.pos_radius.w, 1e-4);
@@ -499,7 +537,7 @@ fn point_shadow(slot: i32, light: Light, p: vec3<f32>, n: vec3<f32>, frag: vec2<
         return 1.0;
     }
     // A texel's angle at a face's centre, and its size at the receiver.
-    let texel = 2.0 / max(shadows.point.y, 1.0);
+    let texel = 2.0 / max(point_face_size(slot), 1.0);
     let w_texel = dist * texel;
     let nl = clamp(-dot(n, to) / dist, 0.0, 1.0);
     let q = to + n * (NORMAL_OFFSET_TEXELS * w_texel);
@@ -522,7 +560,7 @@ fn point_shadow(slot: i32, light: Light, p: vec3<f32>, n: vec3<f32>, frag: vec2<
         let d = normalize(w + t1 * o.x + t2 * o.y);
         let dn = dot(n, d);
         let t = select(qd, clamp(plane / dn, 0.5 * qd, 2.0 * qd), dn < -1e-3);
-        lit = lit + textureSampleCompareLevel(point_maps, shadow_cmp, d, slot, (t - bias) / radius);
+        lit = lit + point_tap(slot, d, (t - bias) / radius);
     }
     return lit / f32(taps);
 }
@@ -577,9 +615,9 @@ fn point_light(i: u32, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, albedo: vec3<f3
     let nl = max(dot(n, l), 0.0);
     let cone = cone_share(light, l);
     var e = light.color.rgb * (nl * cone * falloff(d, light.pos_radius.w));
-    let slot = i32(light.color.w);
-    if slot >= 0 && shadows.point.z > 0.0 && nl > 0.0 && cone > 0.0 && d < light.pos_radius.w {
-        let vis = point_shadow(slot, light, p, n, frag);
+    let shadowed = (light.shadow.x >= 0.0 && light.shadow.y > 0.0) || (light.shadow.z >= 0.0 && light.shadow.w > 0.0);
+    if shadowed && shadows.point.z > 0.0 && nl > 0.0 && cone > 0.0 && d < light.pos_radius.w {
+        let vis = light_shadow(light, p, n, frag);
         e = e * vis;
         if i == 0u && shadows.config.w == 2u {
             debug_out = vec4<f32>(vis, nl, 0.0, 1.0);
