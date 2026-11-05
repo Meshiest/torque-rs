@@ -577,9 +577,9 @@ fn point_light(i: u32, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, albedo: vec3<f3
     let nl = max(dot(n, l), 0.0);
     let cone = cone_share(light, l);
     var e = light.color.rgb * (nl * cone * falloff(d, light.pos_radius.w));
-    let slot = i32(light.color.w);
+    let slot = shadow_slot(light);
     if slot >= 0 && shadows.point.z > 0.0 && nl > 0.0 && cone > 0.0 && d < light.pos_radius.w {
-        let vis = point_shadow(slot, light, p, n, frag);
+        let vis = mix(1.0, point_shadow(slot, light, p, n, frag), shadow_strength(light));
         e = e * vis;
         if i == 0u && shadows.config.w == 2u {
             debug_out = vec4<f32>(vis, nl, 0.0, 1.0);

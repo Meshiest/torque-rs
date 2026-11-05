@@ -159,12 +159,22 @@ fn oct_encode(n: vec3<f32>) -> vec2<f32> {
 struct Light {
     // xyz: world position; w: radius.
     pos_radius: vec4<f32>,
-    // rgb: linear color times brightness; w: the shadow slot (negative: none).
+    // rgb: linear color times brightness; w: the shadow slot plus half its shadow's strength (negative: none).
     color: vec4<f32>,
     // A spot's cone: xyz its direction over the soft edge's width in cosines, w the outer half angle's cosine (all zeros: a point
     // light).
     spot: vec4<f32>,
 };
+
+// A light's shadow slot (negative: none).
+fn shadow_slot(light: Light) -> i32 {
+    return i32(floor(light.color.w));
+}
+
+// How much of a light's shadow is drawn (below 1 while it fades in or out as its light gains or loses its slot).
+fn shadow_strength(light: Light) -> f32 {
+    return clamp((light.color.w - floor(light.color.w)) * 2.0, 0.0, 1.0);
+}
 
 // A light's share at the direction `l` toward it: 1 for a point light, a spot's cone with a smooth edge.
 fn cone_share(light: Light, l: vec3<f32>) -> f32 {

@@ -246,6 +246,10 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-render-hd`: a room with more shadowed point or spot lights than the quality's shadow slots no longer switches
+  shadows on and off as the camera turns or walks: a light that holds a slot keeps it against one barely ahead, a light
+  still in view fades its shadow out (or in) over 12 frames when the slots change hands, and within its radius a nearer light
+  ranks higher. Off-screen casters keep shadowing the view (a test with a point light and a low sun).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).

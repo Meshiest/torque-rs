@@ -1010,7 +1010,7 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     light_bytes: Vec<u8>,
     /// Per light, the static geometry's owners it is mounted in ([`HdExtension::light_hosts`]: left out of its shadow cube).
     light_hosts: Vec<[u32; 4]>,
-    written_slots: Option<Vec<i32>>,
+    written_slots: Option<Vec<f32>>,
     /// The lights as uploaded (the scene's point lights and spots in the buffer's order) and each one's packed cone
     /// ([`HdSpot::cone`]; zeros: a point light).
     frame_lights: Vec<HdLight>,
@@ -5644,7 +5644,7 @@ impl<E: HdExtension> HdWorld<E> {
             for (i, s) in self.shadows.light_slots.iter().enumerate() {
                 let at = i * LIGHT_BYTES + 28;
                 if at + 4 <= lb.len() {
-                    lb[at..at + 4].copy_from_slice(&(*s as f32).to_le_bytes());
+                    lb[at..at + 4].copy_from_slice(&s.to_le_bytes());
                 }
             }
             if !lb.is_empty() {

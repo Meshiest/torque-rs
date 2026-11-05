@@ -9,7 +9,13 @@
 //! - **The dynamic overlay**: each frame a cascade (or a face) with shapes in it is copied from the static map and the shapes are
 //!   drawn over the copy; one that had shapes last frame but none now is copied back clean.
 //! - **Point lights**: the lights seen this frame, ranked by brightness times radius squared over their distance squared (how much of
-//!   the frame they may light), take the quality's slots; a light keeps its slot while it stays chosen. A slot's six faces are a cube
+//!   the frame they may light; within the radius, nearer counts more), take the quality's slots ([`assign_slots`]). A light that holds a slot counts [`SLOT_HOLD`] times
+//!   as much, so a turn or a step does not trade it for one barely ahead. A light that is still in view keeps its shadow through a
+//!   change of slots: one that loses its place fades its shadow out over [`SLOT_FADE_FRAMES`] frames before the slot goes to the
+//!   next, and one given a slot while it was already lighting the view (unshadowed) fades its shadow in; a light that comes into
+//!   view with a slot free has its shadow at once, and one that leaves the view gives its slot up at once (it lights nothing seen).
+//!   Without the fades, a room with more shadowed lights than slots traded slots as the camera turned and walked, and each trade
+//!   switched a light's shadows on or off in one frame. A slot's six faces are a cube
 //!   in one cube-array texture (the atlas), drawn when the slot is given to a light and again only for the faces that changed cells
 //!   meet. A spot that casts shadows takes a slot as a point light does, and only the faces its cone meets are drawn. The static geometry's owners a light is mounted in ([`crate::ext::HdExtension::light_hosts`]: a light that sits inside
 //!   a solid) are left out of its own cube, else their faces hide it from everything around them.
@@ -293,11 +299,73 @@ fn patch_clip(r: [u32; 4], size: u32, margin: f32) -> [f32; 4] {
     ]
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct Slot {
-    light: Option<[u32; 4]>,
+/// How much more a light that holds a shadow slot counts when the lights are ranked for the slots.
+pub const SLOT_HOLD: f32 = 1.25;
+/// The frames a shadow takes to fade in or out when its light gains or loses a slot while it is in view.
+pub const SLOT_FADE_FRAMES: u32 = 12;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Slot {
+    pub light: Option<[u32; 4]>,
     valid: [bool; 6],
     dynamic: [bool; 6],
+    /// How much of the light's shadow is drawn (0 to 1): below 1 while it fades in or out.
+    pub strength: f32,
+}
+
+/// Gives this frame's slots (module docs): `ranked` is every light in view (its key, how much of the frame it may light),
+/// `seen_last` the lights that were in view the frame before. A light out of view leaves its slot; the most important lights
+/// (one that holds a slot counting [`SLOT_HOLD`] times) take the free slots in order, each at full strength if it was not in view
+/// the frame before, else fading in; a held light no longer among them fades out, keeping its slot until its strength reaches 0.
+pub(crate) fn assign_slots(slots: &mut [Slot], ranked: &[([u32; 4], f32)], seen_last: &[[u32; 4]]) {
+    let held = |slots: &[Slot], k: [u32; 4]| slots.iter().any(|s| s.light == Some(k));
+    let mut order: Vec<(f32, usize)> = ranked
+        .iter()
+        .enumerate()
+        .map(|(i, &(k, score))| {
+            (
+                if held(slots, k) {
+                    score * SLOT_HOLD
+                } else {
+                    score
+                },
+                i,
+            )
+        })
+        .collect();
+    order.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let want: Vec<[u32; 4]> = order
+        .iter()
+        .take(slots.len())
+        .map(|&(_, i)| ranked[i].0)
+        .collect();
+    let step = 1.0 / SLOT_FADE_FRAMES as f32;
+    for s in slots.iter_mut() {
+        let Some(k) = s.light else { continue };
+        if !ranked.iter().any(|r| r.0 == k) {
+            *s = Slot::default();
+        } else if want.contains(&k) {
+            s.strength = (s.strength + step).min(1.0);
+        } else {
+            s.strength -= step;
+            if s.strength <= 0.0 {
+                *s = Slot::default();
+            }
+        }
+    }
+    for k in want {
+        if held(slots, k) {
+            continue;
+        }
+        let Some(free) = slots.iter().position(|s| s.light.is_none()) else {
+            break;
+        };
+        slots[free] = Slot {
+            light: Some(k),
+            strength: if seen_last.contains(&k) { step } else { 1.0 },
+            ..Slot::default()
+        };
+    }
 }
 
 enum Job {
@@ -423,8 +491,10 @@ pub(crate) struct Shadows {
     cascade_stale: Vec<Option<u64>>,
     frames: u64,
     slots: Vec<Slot>,
-    /// The slot of each light this frame (-1: none).
-    pub light_slots: Vec<i32>,
+    /// The lights in view the frame before (their keys): a light given a slot fades its shadow in only if it was.
+    seen_last: Vec<[u32; 4]>,
+    /// Each light's slot this frame as the lights' buffer holds it: -1 for none, else the slot plus half its shadow's strength.
+    pub light_slots: Vec<f32>,
     pub stats: ShadowStats,
     /// Bumped when the maps are made again (the frame's bind group must be made again).
     pub maps_generation: u64,
@@ -1067,6 +1137,7 @@ impl Shadows {
             cmp_sampler,
             gather_sampler,
             light_slots: Vec::new(),
+            seen_last: Vec::new(),
             stats: ShadowStats::default(),
             maps_generation: 0,
         }
@@ -1080,6 +1151,7 @@ impl Shadows {
             self.cascade_dynamic = vec![false; MAX_CASCADES];
             self.cascade_stale = vec![None; MAX_CASCADES];
             self.slots = vec![Slot::default(); self.maps.slots()];
+            self.seen_last.clear();
             self.maps_generation += 1;
             self.trans_group = trans_group(device, &self.trans_layout, &self.maps);
             self.trans = None;
@@ -1121,16 +1193,15 @@ impl Shadows {
 
     fn invalidate_slots(&mut self) {
         self.slots.iter_mut().for_each(|s| *s = Slot::default());
+        self.seen_last.clear();
     }
 
-    /// The point lights this frame shadows: the most of `n` seen ones by brightness x radius^2 / distance^2.
-    fn choose_lights(lights: &[HdLight], camera: &HdCamera, n: usize) -> Vec<usize> {
-        if n == 0 {
-            return Vec::new();
-        }
+    /// The point lights in view, each with how much of the frame it may light: brightness x radius^2 / distance^2 (to its sphere,
+    /// at least 1), times radius / (radius + distance to its centre).
+    fn lights_in_view(lights: &[HdLight], camera: &HdCamera) -> Vec<(f32, usize)> {
         let planes = camera.planes();
         let e = camera.eye;
-        let mut scored: Vec<(f32, usize)> = lights
+        lights
             .iter()
             .enumerate()
             .filter(|(_, l)| {
@@ -1143,14 +1214,14 @@ impl Shadows {
             })
             .map(|(i, l)| {
                 let d = [0, 1, 2].map(|k| l.position[k] - e[k]);
-                let dist = ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - l.radius).max(1.0);
+                let centre = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                let dist = (centre - l.radius).max(1.0);
                 let lum = 0.2126 * l.color[0] + 0.7152 * l.color[1] + 0.0722 * l.color[2];
-                (lum * l.radius * l.radius / (dist * dist), i)
+                // Within its radius a nearer light counts more (the lights of a room the eye is in all reach it).
+                let near = l.radius / (l.radius + centre);
+                (lum * l.radius * l.radius / (dist * dist) * near, i)
             })
-            .collect();
-        scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        scored.truncate(n);
-        scored.into_iter().map(|(_, i)| i).collect()
+            .collect()
     }
 
     /// Plans and encodes this frame's shadow passes (before everything else of the frame) and writes the shadow uniform: whether a
@@ -1389,34 +1460,27 @@ impl Shadows {
 
         // Point lights.
         let usable = &input.lights[..input.lights.len().min(crate::MAX_LIGHTS)];
-        self.light_slots = vec![-1; usable.len()];
-        let chosen = if input.switches.points {
-            Self::choose_lights(usable, input.camera, self.slots.len())
+        self.light_slots = vec![-1.0; usable.len()];
+        let keys: Vec<[u32; 4]> = usable.iter().map(light_key).collect();
+        let ranked: Vec<([u32; 4], f32)> = if input.switches.points && !self.slots.is_empty() {
+            Self::lights_in_view(usable, input.camera)
+                .into_iter()
+                .map(|(score, i)| (keys[i], score))
+                .collect()
         } else {
             self.invalidate_slots();
             Vec::new()
         };
-        let keys: Vec<[u32; 4]> = chosen.iter().map(|&i| light_key(&usable[i])).collect();
-        for s in &mut self.slots {
-            if s.light.is_some_and(|k| !keys.contains(&k)) {
-                *s = Slot::default();
-            }
-        }
-        for (&li, key) in chosen.iter().zip(&keys) {
-            let slot = match self.slots.iter().position(|s| s.light == Some(*key)) {
-                Some(s) => s,
-                None => {
-                    let Some(free) = self.slots.iter().position(|s| s.light.is_none()) else {
-                        continue;
-                    };
-                    self.slots[free] = Slot {
-                        light: Some(*key),
-                        ..Slot::default()
-                    };
-                    free
-                }
-            };
-            self.light_slots[li] = slot as i32;
+        assign_slots(&mut self.slots, &ranked, &self.seen_last);
+        self.seen_last = ranked.iter().map(|r| r.0).collect();
+        let held: Vec<(usize, usize)> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, s)| Some((keys.iter().position(|k| Some(*k) == s.light)?, slot)))
+            .collect();
+        for (li, slot) in held {
+            self.light_slots[li] = slot as f32 + 0.5 * self.slots[slot].strength;
             let l = usable[li];
             stats.point_lights += 1;
             let cone = input.cones.get(li).copied().unwrap_or([0.0; 4]);
