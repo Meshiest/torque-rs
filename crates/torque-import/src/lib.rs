@@ -4,6 +4,9 @@
 //! - [`gltf`] (feature `gltf`): the glTF 2.0 reader ([`gltf::read`]: `.glb`, or `.gltf` with its side files through a
 //!   resolver) and writer ([`gltf::write_glb`]), which keeps what a shape needs and glTF has no word for (details, material
 //!   flags, sequence flags, ground frames) in `extras`, so a shape written out and read back is the same shape.
+//! - [`obj`]: the Wavefront OBJ reader ([`obj::read`], `.mtl` files through a resolver): static meshes, groups as meshes.
+//! - [`bbmodel`] (feature `gltf`, for its JSON parser and image headers): the Blockbench reader ([`bbmodel::read`]): cubes,
+//!   meshes, the outliner's groups as nodes, per-face coordinates and the textures the file carries.
 //! - [`dts`]: the model layer as a shape ([`dts::to_dts`], through `torque-shape-builder`) and a shape as the model layer
 //!   ([`dts::from_dts`]).
 //! - [`native`] (feature `gltf`): what the engine calls when a datablock's shape file is a `.glb` or `.gltf`: the shape's
@@ -12,7 +15,7 @@
 //! **Frames.** Readers turn every file into Torque's frame (x right, y forward, z up, meters). glTF is y up: a glTF point
 //! `(x, y, z)` is Torque's `(x, -z, y)`, the inverse of the axis change Blender's glTF exporter makes, so a model built in
 //! Blender facing +y (Torque's way) comes out as it was built. Triangle fronts turn from glTF's counter-clockwise to the shape's
-//! clockwise.
+//! clockwise. OBJ takes the same turn, and its texture v the other way up.
 //!
 //! **Hostile input.** A glTF can come from a server. Every count, size, offset and stride a file gives is checked against the
 //! bytes there and a named cap ([`caps`]) before it is used; work is paid through a [`Charge`] callback before it is done; URIs
@@ -24,12 +27,15 @@
 //! shape loader, `TSShapeLoader::generateObjects` and `generateSequences` (`Engine/source/ts/loader/tsShapeLoader.cpp`:
 //! Copyright (c) 2012 GarageGames, LLC; MIT). The code here is this crate's own.
 
+#[cfg(feature = "gltf")]
+pub mod bbmodel;
 pub mod caps;
 pub mod dts;
 #[cfg(feature = "gltf")]
 pub mod gltf;
 #[cfg(feature = "gltf")]
 pub mod native;
+pub mod obj;
 
 pub use torque_modelcore as modelcore;
 pub use torque_shapes::Charge;
@@ -138,4 +144,63 @@ impl Default for Options {
             max_json_bytes: caps::MAX_JSON_BYTES,
         }
     }
+}
+
+/// A box hull (`Col-1` in `Collision-1`) around every drawn mesh at rest, on the first root node, for a model with no
+/// collision mesh.
+pub fn add_box_hull(model: &mut modelcore::Model) {
+    let has_collision = model.meshes.iter().any(|m| {
+        m.detail
+            .and_then(|d| model.details.get(d))
+            .is_some_and(|d| modelcore::naming::role(&d.name) == modelcore::naming::Role::Collision)
+    });
+    let Some(root) = model.nodes.iter().position(|n| n.parent.is_none()) else {
+        return;
+    };
+    if has_collision || model.check().is_err() {
+        return;
+    }
+    let world = model.rest_world();
+    let to_root = modelcore::math::inverse(&world[root]);
+    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for (i, m) in model.meshes.iter().enumerate() {
+        let drawn = m
+            .detail
+            .and_then(|d| model.details.get(d))
+            .is_some_and(|d| d.size >= 0.0);
+        if !drawn {
+            continue;
+        }
+        for p in model.placed_positions(i, &world) {
+            let p = modelcore::math::point(&to_root, p);
+            for k in 0..3 {
+                min[k] = min[k].min(p[k]);
+                max[k] = max[k].max(p[k]);
+            }
+        }
+    }
+    if min[0] > max[0] {
+        return;
+    }
+    let hull = torque_shape_builder::MeshData::hull_box(min, max);
+    model.details.push(modelcore::Detail {
+        name: "Collision-1".into(),
+        size: -1.0,
+    });
+    model
+        .notes
+        .push("no collision mesh: a box hull was added".into());
+    model.meshes.push(modelcore::Mesh {
+        name: "Col-1".into(),
+        node: root,
+        detail: Some(model.details.len() - 1),
+        positions: hull.positions,
+        normals: hull.normals,
+        uv0: hull.tverts,
+        primitives: vec![modelcore::Primitive {
+            material: None,
+            indices: hull.indices.iter().map(|&i| u32::from(i)).collect(),
+        }],
+        ..modelcore::Mesh::default()
+    });
 }

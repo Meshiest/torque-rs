@@ -29,7 +29,7 @@ use gltf::json;
 use gltf::json::validation::Checked;
 use serde_json::Value;
 use torque_modelcore::math::{self, Mat4, Quat, Vec3};
-use torque_modelcore::naming::{self, mesh_detail};
+use torque_modelcore::naming::mesh_detail;
 use torque_modelcore::{
     Alpha, Animation, Detail, Image, Material, Mesh, Model, Node, Primitive, Skin, Source, Track,
 };
@@ -1279,61 +1279,4 @@ fn smooth_normals(positions: &[Vec3], tris: &[u32]) -> Vec<Vec3> {
         .collect()
 }
 
-/// A box hull (`Col-1` in `Collision-1`) around every drawn mesh at rest, on the first root node, for a model with no
-/// collision mesh.
-pub fn add_box_hull(model: &mut Model) {
-    let has_collision = model.meshes.iter().any(|m| {
-        m.detail
-            .and_then(|d| model.details.get(d))
-            .is_some_and(|d| naming::role(&d.name) == naming::Role::Collision)
-    });
-    let Some(root) = model.nodes.iter().position(|n| n.parent.is_none()) else {
-        return;
-    };
-    if has_collision || model.check().is_err() {
-        return;
-    }
-    let world = model.rest_world();
-    let to_root = math::inverse(&world[root]);
-    let (mut min, mut max) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for (i, m) in model.meshes.iter().enumerate() {
-        let drawn = m
-            .detail
-            .and_then(|d| model.details.get(d))
-            .is_some_and(|d| d.size >= 0.0);
-        if !drawn {
-            continue;
-        }
-        for p in model.placed_positions(i, &world) {
-            let p = math::point(&to_root, p);
-            for k in 0..3 {
-                min[k] = min[k].min(p[k]);
-                max[k] = max[k].max(p[k]);
-            }
-        }
-    }
-    if min[0] > max[0] {
-        return;
-    }
-    let hull = torque_shape_builder::MeshData::hull_box(min, max);
-    model.details.push(Detail {
-        name: "Collision-1".into(),
-        size: -1.0,
-    });
-    model
-        .notes
-        .push("no collision mesh: a box hull was added".into());
-    model.meshes.push(Mesh {
-        name: "Col-1".into(),
-        node: root,
-        detail: Some(model.details.len() - 1),
-        positions: hull.positions,
-        normals: hull.normals,
-        uv0: hull.tverts,
-        primitives: vec![Primitive {
-            material: None,
-            indices: hull.indices.iter().map(|&i| u32::from(i)).collect(),
-        }],
-        ..Mesh::default()
-    });
-}
+pub use crate::add_box_hull;

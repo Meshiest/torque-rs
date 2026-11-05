@@ -39,7 +39,8 @@ pub struct Bsp {
     pub root: Option<Child>,
 }
 
-/// The most part-against-plane tests one tree may take (a splitter weighs each candidate against each part of its cell).
+/// The most part-against-plane tests one tree may take (a splitter weighs each candidate against each part of its cell; a
+/// part cut in two costs its planes squared).
 pub const MAX_WORK: u64 = 400_000_000;
 
 /// A tree past a cap: its nodes, or the tests making it took.
@@ -115,7 +116,10 @@ pub fn build(brushes: &[Brush], max_nodes: usize) -> Result<Bsp, TooMuch> {
                 return Err(TooMuch::Nodes(max_nodes));
             }
             let s = splitter(&parts, &mut work)?;
-            let (front, back) = divide(parts, &s, brushes);
+            let (front, back) = divide(parts, &s, brushes, &mut work);
+            if work > MAX_WORK {
+                return Err(TooMuch::Work(work));
+            }
             let at = bsp.nodes.len();
             bsp.nodes.push(Node {
                 plane: s,
@@ -186,7 +190,13 @@ fn splitter(parts: &[Part], work: &mut u64) -> Result<Plane, TooMuch> {
     Ok(best.1)
 }
 
-fn divide(parts: Vec<Part>, s: &Plane, brushes: &[Brush]) -> (Vec<Part>, Vec<Part>) {
+/// The parts in front of and behind `s`; each part cut in two costs `work` its planes squared (its corners made again).
+fn divide(
+    parts: Vec<Part>,
+    s: &Plane,
+    brushes: &[Brush],
+    work: &mut u64,
+) -> (Vec<Part>, Vec<Part>) {
     let (mut front, mut back) = (Vec::new(), Vec::new());
     let flipped = s.flipped();
     for mut p in parts {
@@ -205,6 +215,8 @@ fn divide(parts: Vec<Part>, s: &Plane, brushes: &[Brush]) -> (Vec<Part>, Vec<Par
             1 => front.push(p),
             -1 => back.push(p),
             0 => {
+                let planes = (brushes[p.brush].faces.len() + p.clip.len() + 1) as u64;
+                *work = work.saturating_add(2 * planes * planes);
                 for (half, out) in [(flipped, &mut front), (*s, &mut back)] {
                     let mut clip = p.clip.clone();
                     clip.push(half);
