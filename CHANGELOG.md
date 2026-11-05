@@ -260,6 +260,9 @@ The first development version. Nothing is published yet; this is what exists.
   asset kit makes it (`torque_example_assets::valley`: the terrain with grass, rock and sand, and woods of the hills'
   trees; `trees::chunks_of` and `trees::build_chunks` cut any trees into interiors); the level demo adds it to the kit
   when it starts and to its web pack. `just examples/level-demo-valley-shots` draws it from a few places.
+- `just examples/showcase` (`torque-example-showcase`): the front page's four pictures (the buggy in a turn, a shot in the
+  arena, the valley at golden hour, the office), each the world alone at the Ultra quality, set in a 2 x 2 grid with thin
+  transparent gutters (`hero.png`, 1920 x 1080, and `hero@2x.png`); `--examples` the examples' other pictures.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

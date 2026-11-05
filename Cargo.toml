@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "examples/*"]
+# The examples' pictures (`examples/README.md`'s), not a crate.
+exclude = ["examples/screenshots"]
 
 [workspace.package]
 version = "0.1.0"
