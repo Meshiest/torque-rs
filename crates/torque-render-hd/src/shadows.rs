@@ -11,7 +11,7 @@
 //! - **Point lights**: the lights seen this frame, ranked by brightness times radius squared over their distance squared (how much of
 //!   the frame they may light), take the quality's slots; a light keeps its slot while it stays chosen. A slot's six faces are a cube
 //!   in one cube-array texture (the atlas), drawn when the slot is given to a light and again only for the faces that changed cells
-//!   meet. The static geometry's owners a light is mounted in ([`crate::ext::HdExtension::light_hosts`]: a light that sits inside
+//!   meet. A spot that casts shadows takes a slot as a point light does, and only the faces its cone meets are drawn. The static geometry's owners a light is mounted in ([`crate::ext::HdExtension::light_hosts`]: a light that sits inside
 //!   a solid) are left out of its own cube, else their faces hide it from everything around them.
 //! - **Coloured shadows** (High and Ultra): beside each cascade a transmittance map at half its side, drawn again with its
 //!   static cascade: the translucent batches of the cells it sees, each fragment nearer the sun than the static cascade's first
@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use torque_render_core::wgpu;
 use torque_render_scene::hd::shadow::{
-    Cascade, MAX_CASCADES, MAX_POINT_SHADOWS, ShadowQuality, cascades, casts_into, cube_face,
-    face_sees, face_sees_sphere, holds_shadow, light_basis, rect_union, rects_meet,
+    Cascade, MAX_CASCADES, MAX_POINT_SHADOWS, ShadowQuality, cascades, casts_into, cone_meets_face,
+    cube_face, face_sees, face_sees_sphere, holds_shadow, light_basis, rect_union, rects_meet,
     shadow_range_within, texel_rect,
 };
 use torque_render_scene::hd::{HdCamera, HdLight, HdSun};
@@ -108,6 +108,8 @@ pub(crate) struct ShadowInput<'a> {
     pub camera: &'a HdCamera,
     pub sun: &'a HdSun,
     pub lights: &'a [HdLight],
+    /// Per light, its packed cone (`HdSpot::cone`; zeros: a point light): a spot's cube draws only the faces its cone meets.
+    pub cones: &'a [[f32; 4]],
     /// Per light, the static geometry's owners it is mounted in (up to 4, the rest [`NO_HOST`]): left out of its cube.
     pub hosts: &'a [[u32; 4]],
     pub cells: &'a BTreeMap<[i32; 3], GpuCell>,
@@ -683,6 +685,13 @@ fn depth_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Whether a light's face is drawn: every face of a point light's cube, a spot's only where its cone (packed: the direction over
+/// the soft edge's width, the outer cosine) meets it.
+fn cone_face(cone: [f32; 4], face: usize) -> bool {
+    let d = [cone[0], cone[1], cone[2]];
+    d == [0.0; 3] || cone_meets_face(d, cone[3].clamp(-1.0, 1.0).acos(), face)
 }
 
 /// The bits a light is known by (its position and radius).
@@ -1410,7 +1419,15 @@ impl Shadows {
             self.light_slots[li] = slot as i32;
             let l = usable[li];
             stats.point_lights += 1;
+            let cone = input.cones.get(li).copied().unwrap_or([0.0; 4]);
             for face in 0..6 {
+                if !cone_face(cone, face) {
+                    // Drawn again in full should the cone turn to it.
+                    let st = &mut self.slots[slot];
+                    st.valid[face] = false;
+                    st.dynamic[face] = false;
+                    continue;
+                }
                 let m = cube_face(l.position, l.radius, face);
                 put_caster(
                     MAX_CASCADES + slot * 6 + face,

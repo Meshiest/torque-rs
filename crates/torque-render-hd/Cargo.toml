@@ -16,5 +16,10 @@ pollster = "0.4"
 # The shaders' validation (every file and permutation; the same naga wgpu compiles them with).
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
 
+[dev-dependencies]
+# The lights-sky example: the day's sun and its pictures.
+torque-scene = { path = "../torque-scene" }
+png = "0.18"
+
 [lints]
 workspace = true

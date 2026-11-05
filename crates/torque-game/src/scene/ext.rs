@@ -105,6 +105,10 @@ pub struct ObjectExt {
     pub zone_inactive: bool,
     /// The object an `fxLight` follows (`attachToObject`).
     pub attached_object: Option<ObjId>,
+    /// The shape a `SpotLight` rides and its mount node ([`super::lights::mount_spot`]).
+    pub spot_mount: Option<(ObjId, u32)>,
+    /// A `TimeOfDay`'s day ([`super::lights::add_day`]).
+    pub day: Option<Box<torque_scene::time_of_day::TimeOfDay>>,
     /// A `Camera`'s state, made by the class's `on_add`.
     pub camera: Option<CameraExt>,
     /// The server's process list, set by `GameBase`'s `on_add`: the hooks that change an object's place in it reach it from

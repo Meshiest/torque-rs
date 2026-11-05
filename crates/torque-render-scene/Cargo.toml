@@ -22,6 +22,8 @@ maps = { package = "torque-maps", path = "../torque-maps" }
 rayon = "1.11"
 # The shape files the shapes draw (`shapes`).
 shapes = { package = "torque-shapes", path = "../torque-shapes" }
+# The day's sun the TimeOfDay ghost runs on the client (`hd::environment`).
+torque-scene = { path = "../torque-scene" }
 
 [lints]
 workspace = true

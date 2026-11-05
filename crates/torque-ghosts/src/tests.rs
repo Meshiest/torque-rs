@@ -19,6 +19,7 @@ use crate::props::{pack_ts_static, pack_vehicle_blocker};
 use crate::weather::pack_lightning;
 use crate::{Link, ObjectView, PackCtx, Value, free_charge};
 
+mod engine_lights;
 mod tge_db;
 mod tge_set;
 mod tge_shapes;
