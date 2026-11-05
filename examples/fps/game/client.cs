@@ -287,7 +287,7 @@ new GuiControl(JoinGui)
       new GuiTextEditCtrl(AddressEdit)
       {
          profile = ArenaEditProfile; position = "82 368"; extent = "738 32"; horizSizing = "width"; vertSizing = "top";
-         visible = true; enabled = true; maxLength = 64; text = ""; placeholderText = "127.0.0.1:28000";
+         visible = true; enabled = true; maxLength = 260; text = ""; placeholderText = "127.0.0.1:28000";
          altCommand = "connectAddress();";
       };
       new GuiButtonCtrl(ConnectButton)
