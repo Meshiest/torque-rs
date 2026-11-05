@@ -30,8 +30,5 @@ verify = ["dep:torque-collide", "dep:torque-mapcore"]
 name = "dif-verify"
 required-features = ["verify"]
 
-[[bin]]
-name = "torque-convert"
-
 [lints]
 workspace = true
