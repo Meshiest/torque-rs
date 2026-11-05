@@ -6,10 +6,11 @@
 //!     [--position "x y z"] [--rotation "ax ay az degrees"] [--instance-scale "x y z"]
 //! ```
 //!
-//! The textures' sizes come from the PNG or JPEG of each name in `--textures` (a missing one is taken as 256 x 256 with a
-//! warning). The fragment holds the `InteriorInstance` (its `interiorFile` the `--file` path, else the output's file name) and
-//! the map's mission objects, placed with it; it goes to `--mission`, else beside the `.dif` with the `.mis` extension.
+//! The textures' sizes come from the PNG or JPEG of each name in `--textures` (the folder listed once, each texture's header
+//! read once; a missing one is taken as 256 x 256 with a warning). The fragment holds the `InteriorInstance` (its
+//! `interiorFile` the `--file` path, else the output's file name) and the map's mission objects, placed with it; it goes to `--mission`, else beside the `.dif` with the `.mis` extension.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -50,22 +51,33 @@ fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-/// The size of texture `name` in `dir`: its last path part with `.png`, `.jpg` or `.jpeg`, any case.
-fn texture_size(dir: &Path, name: &str) -> Option<(u32, u32)> {
-    let base = name.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+/// The most image files of the textures folder looked at.
+const MAX_TEXTURE_FILES: usize = 65_536;
+
+/// The textures folder's PNG and JPEG files by their name without the extension, lower case (read once).
+fn texture_files(dir: &Path) -> HashMap<String, PathBuf> {
+    let mut out = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten().take(MAX_TEXTURE_FILES) {
         let file = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        let Some((stem, ext)) = file.rsplit_once('.') else {
-            continue;
-        };
-        if stem == base && ["png", "jpg", "jpeg"].contains(&ext) {
-            let mut head = vec![0u8; 64 << 10];
-            let n = std::io::Read::read(&mut std::fs::File::open(entry.path()).ok()?, &mut head)
-                .ok()?;
-            return image_size(&head[..n]);
+        if let Some((stem, ext)) = file.rsplit_once('.')
+            && ["png", "jpg", "jpeg"].contains(&ext)
+        {
+            out.entry(stem.to_string()).or_insert_with(|| entry.path());
         }
     }
-    None
+    out
+}
+
+/// The size of texture `name` (its last path part, any case) among `files`, from the file's first 64 KiB.
+fn texture_size(files: &HashMap<String, PathBuf>, name: &str) -> Option<(u32, u32)> {
+    let base = name.rsplit(['/', '\\']).next()?.to_ascii_lowercase();
+    let path = files.get(&base)?;
+    let mut head = vec![0u8; 64 << 10];
+    let n = std::io::Read::read(&mut std::fs::File::open(path).ok()?, &mut head).ok()?;
+    image_size(&head[..n])
 }
 
 fn floats<const N: usize>(s: &str) -> Option<[f64; N]> {
@@ -146,7 +158,8 @@ fn main() -> ExitCode {
             }
         },
     };
-    let sizes = |n: &str| textures.as_deref().and_then(|d| texture_size(d, n));
+    let files = textures.as_deref().map(texture_files).unwrap_or_default();
+    let sizes = |n: &str| texture_size(&files, n);
     let parsed = match map::parse(
         &text,
         &MapOptions {

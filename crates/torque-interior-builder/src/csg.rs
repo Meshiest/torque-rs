@@ -53,15 +53,26 @@ fn outside(poly: Vec<V3>, plane: &Plane, i: usize, j: usize, other: &Brush) -> V
     out
 }
 
+/// The most part-against-plane tests the removal may take in all.
+pub const MAX_WORK: u64 = 400_000_000;
+
+/// A removal past a cap: its parts, or its tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TooMuch {
+    Parts(usize),
+    Work(u64),
+}
+
 /// The visible parts of every brush's faces (`polys[b][f]`: brush `b`'s face `f`'s polygon), in brush and face order; `Err`
-/// with the count reached as soon as the parts (those kept and those still being cut) would pass `max`.
+/// as soon as the parts (those kept and those still being cut) would pass `max` or the tests [`MAX_WORK`].
 pub fn visible(
     brushes: &[Brush],
     polys: &[Vec<Vec<V3>>],
     boxes: &[(V3, V3)],
     max: usize,
-) -> Result<Vec<Fragment>, usize> {
+) -> Result<Vec<Fragment>, TooMuch> {
     let mut out = Vec::new();
+    let mut work = 0u64;
     for (i, b) in brushes.iter().enumerate() {
         for (fi, face) in b.faces.iter().enumerate() {
             let poly = &polys[i][fi];
@@ -74,12 +85,16 @@ pub fn visible(
                 if j == i || !geom::boxes_meet(&pbox, &boxes[j], geom::EPS) {
                     continue;
                 }
+                work = work.saturating_add((parts.len() * other.faces.len()) as u64);
+                if work > MAX_WORK {
+                    return Err(TooMuch::Work(work));
+                }
                 parts = parts
                     .into_iter()
                     .flat_map(|p| outside(p, &face.plane, i, j, other))
                     .collect();
                 if out.len() + parts.len() > max {
-                    return Err(out.len() + parts.len());
+                    return Err(TooMuch::Parts(out.len() + parts.len()));
                 }
                 if parts.is_empty() {
                     break;

@@ -5,15 +5,16 @@
 //!   engine's client has no static collision world of its own (a game gives one, [`StaticIndex`]), so without them the own figure
 //!   the client predicts falls through the floor between the server's corrections. Each cube's ghost becomes an object of the
 //!   client's container as the server's container holds it: the cube shape's collision hulls (read from the kit), its pose and
-//!   scale, a StaticShape's type bits. Each interior's ghost becomes its `.dif`'s hulls (read once and kept) at its pose and
-//!   scale, with an interior's type bits, read as the server reads them
-//!   ([`torque::game::scene::interior::read_interior`]).
+//!   scale, a StaticShape's type bits. Each interior's ghost becomes its `.dif`'s hulls (read once and kept, at most 256
+//!   files, each one's hulls within a work budget) at its pose and scale (none for a hostile one), with an interior's type
+//!   bits, read as the server reads them ([`torque::game::scene::interior::read_interior`]).
 //! - **Smooth aim** ([`PredictGame::smooth_aim`]): the view turns with the mouse within the frame, ahead of the last tick by
 //!   what the next move will make of the waiting turn, instead of a tick or two behind it. The moves are unchanged.
 //!
 //! Credit: a cube's collision object follows `ShapeBase::buildConvex` and the StaticShape type bits in Torque3D's MIT-licensed
 //! `T3D/shapeBase.cpp` and `T3D/staticShape.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc. for
-//! `shapeBase.cpp`), an interior's its `interior/interiorInstance.cpp` (Copyright (c) 2012 GarageGames, LLC). The code here is
+//! `shapeBase.cpp`), an interior's its Torque3D 2.0 `interior/interiorInstance.cpp` (Copyright (c) 2012 GarageGames,
+//! LLC). The code here is
 //! the examples' own.
 
 use std::any::Any;
@@ -46,6 +47,11 @@ pub const STATIC_SHAPE_TYPE_MASK: u32 = torque::collide::types::STATIC
 
 /// The work a cube's shape may cost to read the first time.
 const SHAPE_BUDGET: u64 = 50_000_000;
+/// The work an interior's hulls may cost to make the first time, the most interior files kept (each a name a server sent), and
+/// the longest name taken.
+const INTERIOR_BUDGET: u64 = 50_000_000;
+const MAX_INTERIORS: usize = 256;
+const MAX_INTERIOR_PATH: usize = 1_024;
 
 /// A game's answers to the client's engine half: Torque's, with the cubes' prediction.
 pub struct CubeClient {
@@ -110,14 +116,25 @@ pub struct CubeStatics {
 }
 
 impl CubeStatics {
+    /// The interior file `path` read (kept, read or refused once), at most [`MAX_INTERIORS`] kept: its hulls' cost charged
+    /// against [`INTERIOR_BUDGET`].
     fn interior(&self, path: &[u8]) -> Option<KeptInterior> {
-        let mut kept = self.interiors.borrow_mut();
-        kept.entry(path.to_ascii_lowercase())
-            .or_insert_with(|| {
-                let bytes = (self.reader)(path)?;
-                read_interior(&bytes, &mut |_| true)
+        let key = path.to_ascii_lowercase();
+        if let Some(k) = self.interiors.borrow().get(&key) {
+            return k.clone();
+        }
+        if self.interiors.borrow().len() >= MAX_INTERIORS || path.len() > MAX_INTERIOR_PATH {
+            return None;
+        }
+        let mut work = 0u64;
+        let read = (self.reader)(path).and_then(|bytes| {
+            read_interior(&bytes, &mut |u| {
+                work = work.saturating_add(u);
+                work <= INTERIOR_BUDGET
             })
-            .clone()
+        });
+        self.interiors.borrow_mut().insert(key, read.clone());
+        read
     }
 
     /// An InteriorInstance ghost: its file's hulls at its pose and scale.

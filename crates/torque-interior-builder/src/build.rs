@@ -2,7 +2,7 @@
 //!
 //! 1. Each brush's face polygons ([`Brush::polygons`]), then the visible parts ([`crate::csg`]).
 //! 2. A drawn part whose lightmap rectangle would pass [`lightmap::MAX_RECT`] texels is cut on the lightmap axes; then every
-//!    part gets the corners of its neighbours that lie on its edges (no T-junctions: the windings meet point for point) and one
+//!    part gets the corners of its neighbors that lie on its edges (no T-junctions: the windings meet point for point) and one
 //!    of more than 32 points is cut into fans of 32 (a surface's fan mask is a 32-bit word).
 //! 3. The tables: planes (each once, the opposite of a kept plane by the flip bit), points (each once), texture planes and
 //!    materials. A part of an editor material ([`is_null_material`]) is a null surface: collided with, never drawn.
@@ -156,7 +156,7 @@ struct Weld {
     by_x: Vec<(f64, usize)>,
 }
 
-/// The side of a weld cell: points within [`EPS`] are in the same or a neighbouring cell.
+/// The side of a weld cell: points within [`EPS`] are in the same or a neighboring cell.
 const WELD_CELL: f64 = EPS * 4.0;
 
 impl Weld {
@@ -434,14 +434,19 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
         polys.push(p);
     }
 
-    // 1-2: the visible parts, cut to fit the lightmaps, welded, with their neighbours' corners on their edges.
+    // 1-2: the visible parts, cut to fit the lightmaps, welded, with their neighbors' corners on their edges.
     let mut parts: Vec<Part> = Vec::new();
-    let fragments = csg::visible(brushes, &polys, &boxes, MAX_SURFACES).map_err(|count| {
-        BuildError::TooMany {
+    let fragments = csg::visible(brushes, &polys, &boxes, MAX_SURFACES).map_err(|e| match e {
+        csg::TooMuch::Parts(count) => BuildError::TooMany {
             what: "surfaces",
             count,
             cap: MAX_SURFACES,
-        }
+        },
+        csg::TooMuch::Work(w) => BuildError::TooMany {
+            what: "hidden-face tests",
+            count: w as usize,
+            cap: csg::MAX_WORK as usize,
+        },
     })?;
     // Every drawn piece is a surface: the lightmap cuts stop once the surfaces would pass the cap.
     let mut left = MAX_SURFACES;

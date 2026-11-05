@@ -3,7 +3,7 @@
 //! A surface's lightmap planes read two world axes, each scaled by a power of two (the only form a `.dif` stores,
 //! `writeLMapTexGen`): one texel every [`crate::Options::lightmap_texel`] units, a texel of border round the surface. Pages are
 //! [`PAGE`] texels a side (a version-0 rectangle's offsets and sizes are bytes); a rectangle is at most [`MAX_RECT`] a side
-//! (a larger surface is cut first, [`crate::build`]). Rectangles are packed in rows, tallest first.
+//! (a larger surface is cut first, [`crate::build()`]). Rectangles are packed in rows, tallest first.
 
 use crate::brush::main_axis;
 use crate::geom::V3;

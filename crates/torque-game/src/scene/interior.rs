@@ -9,7 +9,7 @@
 //! before it is made ([`collide::map::interior::build_cost`]).
 //!
 //! Credit: follows TGE 1.4's `interior/interiorInstance.cc` (`InteriorInstance::onAdd`, the constructor's type mask) as
-//! Torque3D, its MIT-licensed release, keeps it in `interior/interiorInstance.cpp` (Copyright (c) 2012 GarageGames, LLC);
+//! Torque3D 2.0, its MIT-licensed release, keeps it in `interior/interiorInstance.cpp` (Copyright (c) 2012 GarageGames, LLC);
 //! the code here is this crate's own.
 
 use std::cell::RefCell;

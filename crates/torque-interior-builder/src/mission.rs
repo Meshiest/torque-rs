@@ -7,9 +7,10 @@
 //! `0 0 0 1 0 0 0 -1 0 0 0 1` (x from 0 to 1, y from -1 to 0, z from 0 to 1: the position is the corner of low x, high y and low
 //! z). Each object is placed as the interior is: moved, turned and scaled with it.
 //!
-//! Credit: the box layouts follow `WaterBlock`'s constructor and the `Trigger` and `PhysicalZone` polyhedron fields of TGE as
-//! Torque3D keeps them (`T3D/trigger.cpp`, `T3D/physicalZone.cpp`, Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
-//! Faust Logic, Inc.); the code here is this crate's own.
+//! Credit: the box layouts follow TGE as Torque3D keeps it: `WaterBlock`'s object box in `environment/waterBlock.cpp`
+//! (Copyright (c) 2012 GarageGames, LLC), the `Trigger` polyhedron field in `T3D/trigger.cpp` (Copyright (c) 2012
+//! GarageGames, LLC) and the `PhysicalZone` one in `T3D/physicalZone.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright
+//! (C) 2015 Faust Logic, Inc.); the code here is this crate's own.
 
 use crate::geom::{self, V3};
 

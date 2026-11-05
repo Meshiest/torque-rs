@@ -1,14 +1,15 @@
 //! The map's interiors as the view draws them: each `InteriorInstance` ghost's `.dif` (its first detail level's drawn surfaces,
-//! the legacy importer's triangles, [`torque_maps::legacy::IMPORTER`]) at the place its record gives, as static mesh objects of
-//! the view ([`WorldView::mesh_object`]), one a material. A material's texture is found beside the file as the resource manager
-//! finds it ([`find_texture`]); the host's look may change each material's draw first (a tint, a filter). Every triangle is
+//! the legacy importer's triangles, [`torque_maps::legacy::IMPORTER`]) at the place its record gives ([`placed`]: a hostile
+//! transform or scale is not drawn), as a static mesh object of the view ([`WorldView::mesh_object`]), one draw a material.
+//! A material's texture is found beside the file as the resource manager finds it ([`find_texture`]); the host's look may change each material's draw first (a tint, a filter). Every triangle is
 //! wound clockwise seen from its front (its plane's normal). The interior's faces in the world are kept for the surfaces a
-//! projectile's hole may lie on ([`Interiors::faces_near`]). A file is read once; an interior's objects are kept until its
-//! record moves it or [`Interiors::clear`].
+//! projectile's hole may lie on ([`Interiors::faces_near`]). A file is read once ([`MAX_FILES`] kept, at most
+//! [`MAX_READS_PER_FRAME`] new ones a frame; the importer caps each file's size and work); an interior's object is kept until
+//! its record moves it or [`Interiors::clear`].
 //!
 //! Credit: follows TGE 1.4's `interior/interiorInstance.cc` and `interior/interiorRender.cc` (Copyright (C) GarageGames.com,
-//! Inc.) as Torque3D, its MIT-licensed release, keeps them in `interior/interiorInstance.cpp` and `interior/interiorRender.cpp`
-//! (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
+//! Inc.) as Torque3D 2.0, its MIT-licensed release, keeps them in `interior/interiorInstance.cpp` and
+//! `interior/interiorRender.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -28,24 +29,35 @@ use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Ve
 
 use crate::view::WorldView;
 
-/// Where a ghost's pose places it: its matrix and scale (a matrix pose, as an InteriorInstance's record sends, as it is).
+/// The smallest scale part an interior is placed with (as `InteriorShape::new` takes it).
+pub const MIN_SCALE: f32 = 1e-4;
+/// The most interior files kept read.
+pub const MAX_FILES: usize = 256;
+/// The most interior files read in one frame (the others wait for the next).
+pub const MAX_READS_PER_FRAME: usize = 2;
+
+/// Where a ghost's pose places it: its matrix and scale (a matrix pose, as an InteriorInstance's record sends, as it is); `None`
+/// for a matrix or a scale that is not finite or a scale part under [`MIN_SCALE`] (a hostile record).
 pub fn placed(pose: &Pose) -> Option<(Mat, [f32; 3])> {
-    match *pose {
-        Pose::Matrix { m, scale } => Some((Mat { m }, scale)),
-        ref other => pose_matrix(other, None),
-    }
+    let (m, scale) = match *pose {
+        Pose::Matrix { m, scale } => (Mat { m }, scale),
+        ref other => pose_matrix(other, None)?,
+    };
+    let ok = m.m.iter().all(|v| v.is_finite())
+        && scale.iter().all(|s| s.is_finite() && s.abs() >= MIN_SCALE);
+    ok.then_some((m, scale))
 }
 
-/// The id of interior ghost `index`'s object of material `k` among the frame's objects.
-pub fn object_id(index: u32, k: usize) -> u32 {
-    0x5000_0000 | (index << 6) | (k as u32 & 0x3f)
+/// The id of interior ghost `index`'s object among the frame's objects.
+pub fn object_id(index: u32) -> u32 {
+    0x5000_0000 | (index & 0x0fff_ffff)
 }
 
-/// An interior's objects, kept with the pose they were made at, and its faces in the world (counter-clockwise seen from the
-/// front, as the decals take them).
+/// An interior's object (one draw a material), kept with the pose it was made at, and its faces in the world
+/// (counter-clockwise seen from the front, as the decals take them).
 struct Kept {
     pose: Pose,
-    objects: Vec<DynamicObject>,
+    object: DynamicObject,
     faces: Arc<Vec<Triangle>>,
 }
 
@@ -89,6 +101,7 @@ impl Interiors {
         look: &mut dyn FnMut(&str, &mut Draw),
     ) -> Vec<DynamicObject> {
         let mut seen = Vec::new();
+        let mut reads = 0;
         for (&index, ghost) in &world.ghosts {
             let (Some(TgeRecord::InteriorInstance(r)), Some(pose)) = (&ghost.record, ghost.pose())
             else {
@@ -100,27 +113,30 @@ impl Interiors {
                 continue;
             }
             let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
-            let surfaces = self
-                .files
-                .entry(path.clone())
-                .or_insert_with(|| {
-                    let bytes = assets.read(&path)?;
-                    torque_maps::legacy::IMPORTER
-                        .surfaces(&bytes)
-                        .ok()
-                        .map(Arc::new)
-                })
-                .clone();
+            let surfaces = match self.files.get(&path) {
+                Some(kept) => kept.clone(),
+                None => {
+                    if self.files.len() >= MAX_FILES || reads >= MAX_READS_PER_FRAME {
+                        continue;
+                    }
+                    reads += 1;
+                    let read = assets.read(&path).and_then(|bytes| {
+                        torque_maps::legacy::IMPORTER
+                            .surfaces(&bytes)
+                            .ok()
+                            .map(Arc::new)
+                    });
+                    self.files.insert(path.clone(), read.clone());
+                    read
+                }
+            };
             let Some(surfaces) = surfaces else { continue };
             if let Some(k) = build(view, assets, &surfaces, &path, pose, index, look) {
                 self.kept.insert(index, k);
             }
         }
         self.kept.retain(|i, _| seen.contains(i));
-        self.kept
-            .values()
-            .flat_map(|k| k.objects.iter().cloned())
-            .collect()
+        self.kept.values().map(|k| k.object.clone()).collect()
     }
 
     /// Every interior's faces, each list shared (for a host's own surface lookups).
@@ -161,9 +177,10 @@ fn build(
     look: &mut dyn FnMut(&str, &mut Draw),
 ) -> Option<Kept> {
     let (m, scale) = placed(&pose)?;
-    let mut objects = Vec::new();
+    let mut set = TextureSet::new(assets);
+    let mut draws = Vec::new();
     let mut faces = Vec::new();
-    for (k, (material, corners)) in surfaces.by_material.iter().enumerate() {
+    for (material, corners) in &surfaces.by_material {
         let mut vertices = Vec::with_capacity(corners.len());
         for t in corners.chunks_exact(3) {
             let mut v = [0, 1, 2].map(|c| {
@@ -187,7 +204,6 @@ fn build(
             faces.push([v[0].position, v[2].position, v[1].position]);
             vertices.extend(v);
         }
-        let mut set = TextureSet::new(assets);
         let texture = find_texture(&mut set, material, &[folder_of(path)]).map(|(i, _)| {
             (
                 i,
@@ -215,11 +231,11 @@ fn build(
             vertex_key: None,
         };
         look(material, &mut draw);
-        objects.push(view.mesh_object(set, &[draw], object_id(index, k)));
+        draws.push(draw);
     }
     Some(Kept {
         pose,
-        objects,
+        object: view.mesh_object(set, &draws, object_id(index)),
         faces: Arc::new(faces),
     })
 }

@@ -15,7 +15,7 @@
 //! `audioProfile`, `audioEnvironment`, `useGLLighting`.
 //!
 //! Credit: this follows TGE 1.4's `interior/interiorInstance.cc` (`InteriorInstance::packUpdate`, Copyright (C)
-//! GarageGames.com, Inc.), whose MIT-licensed successor is Torque3D's `interior/interiorInstance.cpp` (Copyright (c) 2012
+//! GarageGames.com, Inc.), whose MIT-licensed successor is Torque3D 2.0's `interior/interiorInstance.cpp` (Copyright (c) 2012
 //! GarageGames, LLC). The layout is TGE's; the code is this crate's own.
 
 use crate::codec::{Codec, F32, Layout, R, datablock_id, opt};

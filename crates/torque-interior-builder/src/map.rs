@@ -2,10 +2,12 @@
 //! brushes of face lines, each face three points on its plane, a texture and its alignment.
 //!
 //! - **Planes.** The points `a b c` give the plane facing along `(a - b) x (c - b)` (out of the brush), in map units; the
-//!   interior is in [`MapOptions::units_per_meter`] (32 by default, map2dif's) map units a unit.
-//! - **Texture planes.** A Valve 220 face names its axes: `u = (p . U) / su + ou` texels. A Quake face takes the world axes across
-//!   its normal's main axis (`TextureAxisFromPlane` of `qbsp`), turned by its rotation, scaled and shifted. Texels become
-//!   repeats by the texture's size ([`MapOptions::texture_size`]; [`DEFAULT_TEXTURE_SIZE`] for one not known, with a warning).
+//!   interior is in [`MapOptions::units_per_meter`] map units a unit (32 by default, this crate's choice: a 64-unit wall
+//!   texture over two units).
+//! - **Texture planes.** A Valve 220 face names its axes: `u = (p . U) / su + ou` texels. A Quake face is textured by the
+//!   format's projection: onto the world plane across the axis its normal points most along, then turned by its rotation,
+//!   scaled and shifted ([`quake_axes`]). Texels become repeats by the texture's size ([`MapOptions::texture_size`];
+//!   [`DEFAULT_TEXTURE_SIZE`] for one not known, with a warning).
 //! - **Entities.** `worldspawn`'s brushes, and those of `func_group` and `func_detail`, are the interior. A brush entity of
 //!   class `water`, `trigger` or `physical_zone` (or `WaterBlock`, `Trigger`, `PhysicalZone`) is a mission object over its
 //!   brushes' box; `info_player_start` and `info_player_deathmatch` are `SpawnSphere`s; another point entity whose class is
@@ -16,9 +18,11 @@
 //!
 //! The file is untrusted: its size, its entities and their keys, brushes, faces, names, numbers and each brush's size are
 //! capped ([`MAX_MAP_BYTES`], [`MAX_ENTITIES`], [`MAX_KEYS`], [`MAX_BRUSHES`], [`MAX_FACES`], [`MAX_NAME`], [`MAX_VALUE`],
-//! [`MAX_COORD`], [`MAX_BRUSH_SIZE`]) before anything is built, and every error names its line.
+//! [`MAX_TEXTURES`], [`MAX_COORD`], [`MAX_BRUSH_SIZE`]) before anything is built, and every error names its line.
 
-use crate::brush::{Brush, Face, TexGen};
+use crate::brush::{Brush, Face, TexGen, main_axis};
+use std::collections::HashMap;
+
 use crate::geom::{Plane, V3};
 use crate::mission::{MissionObject, Shape};
 
@@ -30,6 +34,8 @@ pub const MAX_BRUSHES: usize = crate::build::MAX_BRUSHES;
 pub const MAX_KEYS: usize = 256;
 /// The longest key or texture name (a `.dif` or a mission names it in at most 255 bytes).
 pub const MAX_NAME: usize = 255;
+/// The most distinct texture names of a file (a `.dif`'s material numbers are 16-bit).
+pub const MAX_TEXTURES: usize = 0xffff;
 /// The longest key value.
 pub const MAX_VALUE: usize = 4_096;
 /// The largest side of a brush's box (map units; 2,048 units of the interior at the default scale).
@@ -152,26 +158,30 @@ fn key_value(line: usize, s: &str) -> Result<(String, String), MapError> {
     Ok((parts[1].to_string(), parts[3].to_string()))
 }
 
-/// The world axes `qbsp`'s `TextureAxisFromPlane` gives a normal: the first of the six whose normal is nearest.
-fn quake_axes(n: V3) -> (V3, V3) {
-    const BASE: [[V3; 3]; 6] = [
-        [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
-        [[0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
-        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
-        [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
-        [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
-        [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
-    ];
-    let mut best = 0.0;
-    let mut at = 0;
-    for (i, b) in BASE.iter().enumerate() {
-        let d = crate::geom::dot(n, b[0]);
-        if d > best {
-            best = d;
-            at = i;
-        }
-    }
-    (BASE[at][1], BASE[at][2])
+/// A Quake face's texture axes, the format's projection: the world plane across the axis the normal points most along (z
+/// before x before y where two are equal), `u` along the first of that plane's two world axes and `v` down the second (an
+/// image's rows run down), both turned by `degrees` within the plane (from the first axis toward the second).
+pub fn quake_axes(n: V3, degrees: f64) -> (V3, V3) {
+    let (a, b) = match main_axis(n) {
+        2 => (0, 1),
+        0 => (1, 2),
+        _ => (0, 2),
+    };
+    // Quarter turns exactly.
+    let (sin, cos) = match degrees {
+        0.0 => (0.0, 1.0),
+        90.0 => (1.0, 0.0),
+        180.0 => (0.0, -1.0),
+        270.0 => (-1.0, 0.0),
+        d => d.to_radians().sin_cos(),
+    };
+    let mut u = [0.0; 3];
+    let mut v = [0.0; 3];
+    u[a] = cos;
+    u[b] = sin;
+    v[a] = sin;
+    v[b] = -cos;
+    (u, v)
 }
 
 /// A face line: `( x y z ) ( x y z ) ( x y z ) TEXTURE` then `xoff yoff rot xs ys` (Quake) or `[ ux uy uz uo ] [ vx vy vz vo ]
@@ -229,22 +239,7 @@ fn face(line: usize, s: &str) -> Result<RawFace, MapError> {
             nums[2],
             [scale(nums[3]), scale(nums[4])],
         );
-        let (mut a, mut b) = quake_axes(plane.n);
-        let (sinv, cosv) = match rot {
-            0.0 => (0.0, 1.0),
-            90.0 => (1.0, 0.0),
-            180.0 => (0.0, -1.0),
-            270.0 => (-1.0, 0.0),
-            r => r.to_radians().sin_cos(),
-        };
-        let first = |v: V3| (0..3).find(|&k| v[k] != 0.0).unwrap_or(2);
-        let (sv_, tv_) = (first(a), first(b));
-        for vec in [&mut a, &mut b] {
-            let ns = cosv * vec[sv_] - sinv * vec[tv_];
-            let nt = sinv * vec[sv_] + cosv * vec[tv_];
-            vec[sv_] = ns;
-            vec[tv_] = nt;
-        }
+        let (a, b) = quake_axes(plane.n, rot);
         (
             [a[0] / s[0], a[1] / s[0], a[2] / s[0], shift[0]],
             [b[0] / s[1], b[1] / s[1], b[2] / s[1], shift[1]],
@@ -337,7 +332,7 @@ pub fn parse(text: &str, options: &MapOptions) -> Result<MapFile, MapError> {
         return Err(err(text.lines().count(), "the file ends inside a block"));
     }
     let mut out = MapFile::default();
-    let mut sizes: Vec<(String, (u32, u32))> = Vec::new();
+    let mut sizes: HashMap<String, (u32, u32)> = HashMap::new();
     for e in &entities {
         let class = e.key("classname").unwrap_or("").to_string();
         let lower = class.to_ascii_lowercase();
@@ -461,16 +456,19 @@ fn make_brush(
     line: usize,
     faces: &[RawFace],
     options: &MapOptions,
-    sizes: &mut Vec<(String, (u32, u32))>,
+    sizes: &mut HashMap<String, (u32, u32)>,
     warnings: &mut Vec<String>,
 ) -> Result<Brush, MapError> {
     let k = options.units_per_meter;
     let mut out = Vec::with_capacity(faces.len());
     for f in faces {
         let mat = material(&f.texture);
-        let (w, h) = match sizes.iter().find(|(n, _)| *n == f.texture) {
-            Some(&(_, s)) => s,
+        let (w, h) = match sizes.get(&f.texture) {
+            Some(&s) => s,
             None => {
+                if sizes.len() >= MAX_TEXTURES {
+                    return Err(err(line, format!("more than {MAX_TEXTURES} textures")));
+                }
                 let s = (options.texture_size)(&f.texture)
                     .filter(|&(w, h)| w > 0 && h > 0)
                     .unwrap_or_else(|| {
@@ -482,7 +480,7 @@ fn make_brush(
                         }
                         DEFAULT_TEXTURE_SIZE
                     });
-                sizes.push((f.texture.clone(), s));
+                sizes.insert(f.texture.clone(), s);
                 s
             }
         };
@@ -572,29 +570,23 @@ mod tests {
     fn box_brush(lo: [i64; 3], hi: [i64; 3]) -> String {
         let [a, b, c] = lo;
         let [x, y, z] = hi;
-        format!(
-            "{{
-( {a} {b} {c} ) ( {a} {} {c} ) ( {a} {b} {} ) m 0 0 0 1 1
-             ( {a} {b} {c} ) ( {a} {b} {} ) ( {} {b} {c} ) m 0 0 0 1 1
-             ( {a} {b} {c} ) ( {} {b} {c} ) ( {a} {} {c} ) m 0 0 0 1 1
-             ( {x} {y} {z} ) ( {x} {} {z} ) ( {} {y} {z} ) m 0 0 0 1 1
-             ( {x} {y} {z} ) ( {} {y} {z} ) ( {x} {y} {} ) m 0 0 0 1 1
-             ( {x} {y} {z} ) ( {x} {y} {} ) ( {x} {} {z} ) m 0 0 0 1 1
-}}
-",
-            b + 1,
-            c + 1,
-            c + 1,
-            a + 1,
-            a + 1,
-            b + 1,
-            y + 1,
-            x + 1,
-            x + 1,
-            z + 1,
-            z + 1,
-            y + 1,
-        )
+        let faces = [
+            [[a, b, c], [a, b + 1, c], [a, b, c + 1]],
+            [[a, b, c], [a, b, c + 1], [a + 1, b, c]],
+            [[a, b, c], [a + 1, b, c], [a, b + 1, c]],
+            [[x, y, z], [x, y + 1, z], [x + 1, y, z]],
+            [[x, y, z], [x + 1, y, z], [x, y, z + 1]],
+            [[x, y, z], [x, y, z + 1], [x, y + 1, z]],
+        ];
+        let mut out = String::from("{\n");
+        for f in faces {
+            for p in f {
+                out.push_str(&format!("( {} {} {} ) ", p[0], p[1], p[2]));
+            }
+            out.push_str("m 0 0 0 1 1\n");
+        }
+        out.push_str("}\n");
+        out
     }
 
     #[test]
@@ -611,6 +603,57 @@ mod tests {
             m.brushes[0].bounds().unwrap(),
             ([-1.0, -2.0, 0.0], [1.0, 2.0, 0.5])
         );
+    }
+
+    #[test]
+    fn the_quake_projection_turns_its_axes_within_the_face_plane() {
+        assert_eq!(
+            quake_axes([0.0, 0.0, 1.0], 0.0),
+            ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0])
+        );
+        assert_eq!(
+            quake_axes([1.0, 0.0, 0.0], 90.0),
+            ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+        );
+        assert_eq!(
+            quake_axes([0.0, -1.0, 0.0], 0.0),
+            ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0])
+        );
+        // Two axes as near: z before x before y.
+        assert_eq!(quake_axes([0.6, 0.0, 0.6], 0.0).0, [1.0, 0.0, 0.0]);
+        assert_eq!(quake_axes([0.6, 0.6, 0.0], 0.0).0, [0.0, 1.0, 0.0]);
+        let (u, v) = quake_axes([0.0, 0.0, 1.0], 30.0);
+        assert!(
+            (u[0] - 30f64.to_radians().cos()).abs() < 1e-12
+                && (v[1] + 30f64.to_radians().cos()).abs() < 1e-12
+        );
+    }
+
+    #[test]
+    fn too_many_textures_are_refused() {
+        // Brushes of 128 faces: a box, then copies of its first face, each face a texture of its own.
+        let mut text = String::from("{\n\"classname\" \"worldspawn\"\n");
+        let mut names = 0;
+        let mut i = 0i64;
+        while names <= MAX_TEXTURES {
+            let faces: Vec<String> = box_brush([i * 2, 0, 0], [i * 2 + 1, 1, 1])
+                .lines()
+                .filter(|l| l.starts_with('('))
+                .map(str::to_string)
+                .collect();
+            text.push_str("{\n");
+            for k in 0..MAX_FACES {
+                let f = &faces[if k < 6 { k } else { 0 }];
+                text.push_str(&f.replace(" m ", &format!(" t{names} ")));
+                text.push('\n');
+                names += 1;
+            }
+            text.push_str("}\n");
+            i += 1;
+        }
+        text.push_str("}\n");
+        let e = parse(&text, &MapOptions::default()).unwrap_err();
+        assert!(e.what.contains("textures"), "{e}");
     }
 
     #[test]
