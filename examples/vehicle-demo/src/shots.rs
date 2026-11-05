@@ -420,3 +420,122 @@ pub fn write_all(
     a.game.set_global("$Drive::Throttle", "0");
     Ok(shots.paths)
 }
+
+/// The frames each GPU time is the median of (the clock held).
+pub const TIMED_FRAMES: usize = 60;
+
+/// A picture of `seat` from `at` unlit as TGE draws particles, then one lit by [`ParticleLight::BLENDED`]: `{name}-unlit.png`
+/// and `{name}-lit.png`. Returns the median GPU time (ms) of [`TIMED_FRAMES`] frames of each (none without timestamps).
+fn unlit_and_lit(
+    gpu: &Gpu,
+    seat: &mut Seat<VehicleDemo>,
+    at: Eye,
+    shots: &mut Shots,
+    name: &str,
+) -> Result<[Option<f64>; 2], String> {
+    use torque_render_scene::hd::particle_light::ParticleLight;
+    let mut times = [None; 2];
+    for (k, (look, rule)) in [("unlit", None), ("lit", Some(ParticleLight::BLENDED))]
+        .into_iter()
+        .enumerate()
+    {
+        seat.view.set_particle_light(rule);
+        shots.save(&picture(gpu, seat, Some(at))?, &format!("{name}-{look}"))?;
+        seat.eye = Some(at);
+        let mut ms = Vec::with_capacity(TIMED_FRAMES);
+        for _ in 0..TIMED_FRAMES {
+            seat.frame(gpu)?;
+            ms.extend(seat.view.gpu_ms());
+        }
+        seat.eye = None;
+        ms.sort_by(f64::total_cmp);
+        times[k] = ms.get(ms.len() / 2).copied();
+    }
+    seat.view.set_particle_light(None);
+    Ok(times)
+}
+
+/// The tires' dust unlit and lit at `size` in `dir`: `dust-day` (pulling away in the afternoon sun, seen low from the side
+/// the buggy's shadow falls on) and `dust-night` (backing away from its own dust at night, the headlight on it), each
+/// `-unlit.png` and `-lit.png`; `gpu-ms.txt` the median GPU frame times of each. Returns the paths.
+pub fn write_lit_particles(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let seat = |name: &str| -> Result<Seat<VehicleDemo>, String> {
+        let files = make_files().map_err(|e| e.to_string())?;
+        let game = VehicleDemo::new(
+            files,
+            ClientOptions {
+                net: NetMode::Loopback,
+                name: name.to_string(),
+                port: 0,
+                ..ClientOptions::default()
+            },
+        )?;
+        Seat::new(game, &gpu, size)
+    };
+    let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
+    let mut shots = Shots::new(dir)?;
+    a.game.host_game()?;
+    run_until(&gpu, &mut a, &mut b, "the hosted game", |a, _| {
+        a.in_world() && a.figure().is_some()
+    })?;
+    let address = a.game.hosted_address().ok_or("no hosted address")?;
+    b.game.join(&address.to_string())?;
+    run_until(&gpu, &mut a, &mut b, "the second player", |a, b| {
+        b.in_world() && b.figure().is_some() && a.ghost_count() > 3
+    })?;
+    run(&gpu, &mut [&mut a, &mut b], 3000)?;
+    a.game.host.mouse_motion(0.0, 110.0);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    click(&mut a.game);
+    run_until(&gpu, &mut a, &mut b, "the driver's seat", |a, _| {
+        a.driving()
+    })?;
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+
+    set_day(&gpu, &mut a, &mut b, GOLDEN_HOUR - 0.08)?;
+    a.game.set_global("$Drive::Throttle", "1");
+    run(&gpu, &mut [&mut a, &mut b], 900)?;
+    let m = a.game.buggy_pose().ok_or("no buggy")?;
+    let away = sun_ground(&a.game, false, 0.0);
+    let x = m.column(0);
+    let side = if away[0] * x[0] + away[1] * x[1] >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let day = eye(
+        on_buggy(&m, [side * 5.5, -5.5, 1.3]),
+        on_buggy(&m, [side * 1.0, -1.6, 0.5]),
+    );
+    let mut report = format!(
+        "dust-day gpu ms (unlit, lit): {:?}
+",
+        unlit_and_lit(&gpu, &mut a, day, &mut shots, "dust-day")?
+    );
+
+    a.game.set_global("$Drive::Throttle", "0");
+    run(&gpu, &mut [&mut a, &mut b], 3000)?;
+    set_day(&gpu, &mut a, &mut b, NIGHT)?;
+    a.game.key(Key::F, true);
+    a.game.key(Key::F, false);
+    a.game.set_global("$Drive::Throttle", "-1");
+    run(&gpu, &mut [&mut a, &mut b], 1200)?;
+    let m = a.game.buggy_pose().ok_or("no buggy")?;
+    let night = eye(on_buggy(&m, [4.0, 7.0, 1.8]), on_buggy(&m, [0.0, 3.0, 0.6]));
+    report += &format!(
+        "dust-night gpu ms (unlit, lit): {:?}
+",
+        unlit_and_lit(&gpu, &mut a, night, &mut shots, "dust-night")?
+    );
+    a.game.set_global("$Drive::Throttle", "0");
+    let times = dir.join("gpu-ms.txt");
+    std::fs::write(&times, report).map_err(|e| e.to_string())?;
+    let mut paths = shots.paths;
+    paths.push(times);
+    Ok(paths)
+}

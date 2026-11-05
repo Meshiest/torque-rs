@@ -18,6 +18,7 @@ use torque_render_hd::ext::{NoExtension, PlainScene};
 use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::environment::ClientDay;
 use torque_render_scene::hd::objects::objects_of;
+use torque_render_scene::hd::particle_light::ParticleLight;
 use torque_render_scene::hd::scatter::ScatterLook;
 use torque_render_scene::hd::{
     DynamicObject, HdCamera, HdDraw, HdMode, HdScene, HdSpot, Quality, bounding_sphere, material,
@@ -431,6 +432,17 @@ impl WorldView {
     /// with). Every frame hands its own (none: an empty list).
     pub fn set_particles(&mut self, draws: &[(f32, Draw)], textures: TextureSet) {
         self.scene.set_particles(draws, textures);
+    }
+
+    /// Waits for the GPU and returns the last frame's GPU time in ms (`None` without timestamps).
+    pub fn gpu_ms(&mut self) -> Option<f64> {
+        self.world.gpu_ms()
+    }
+
+    /// Which particle draws the enhanced renderer lights (none: all unlit, as TGE draws them; [`ParticleLight::BLENDED`]: smoke
+    /// and dust lit, glows not), from the next frame's particles on.
+    pub fn set_particle_light(&mut self, rule: Option<ParticleLight>) {
+        self.scene.particle_light = rule;
     }
 
     /// The frame's particles and decals (the decals' draws lie on surfaces: not faded into them as the particles are), their

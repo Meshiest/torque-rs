@@ -3,9 +3,10 @@
 //! every permutation with naga (the same front end wgpu compiles them with): the `shaders N of N valid`.
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 26] = [
+pub const FILES: [(&str, &str); 27] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
+    ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
     ("clusters.wgsl", include_str!("../shaders/clusters.wgsl")),
     ("tonemap.wgsl", include_str!("../shaders/tonemap.wgsl")),
     ("shadow.wgsl", include_str!("../shaders/shadow.wgsl")),
@@ -215,10 +216,11 @@ impl Permutation {
         let common = &format!("{}\n{}", file("common.wgsl"), ext.common);
         // The surface helpers and the extension's hooks come before the forward pass's functions.
         let forward = &format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             file("surface.wgsl"),
             ext.forward,
-            file("forward.wgsl")
+            file("forward.wgsl"),
+            file("particles.wgsl")
         );
         match self {
             Permutation::Forward {
