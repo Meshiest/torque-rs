@@ -25,6 +25,10 @@ torque-render-scene = { path = "../../crates/torque-render-scene" }
 # The ghost-shots example's second renderer (the reference it measures the frames against).
 torque-render-hd = { path = "../../crates/torque-render-hd" }
 
+# Built for the web: the functions the page calls (`torque::app::web_exports!`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
 [[bin]]
 name = "vehicle-demo"
 path = "src/main.rs"

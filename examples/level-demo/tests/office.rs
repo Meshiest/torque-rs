@@ -260,4 +260,35 @@ fn every_piece_of_furniture_stands_on_the_floor_or_on_something() {
         hovering.len(),
         &hovering[..hovering.len().min(4)]
     );
+
+/// A web build's pack carries the office built (its interior, textures and map), not its model: the browser builds nothing
+/// when it starts, and the client starts on the pack as it is.
+#[test]
+fn the_web_pack_carries_the_office_built_not_its_model() {
+    use torque_example_level_demo::files::web_pack;
+    let pack = web_pack(GameFiles::bundled().expect("the game folder")).expect("the pack");
+    let files = GameFiles::unpack(&pack).expect("the pack reads back");
+    assert!(
+        files.file("levels/office.bbmodel").is_none(),
+        "the model is not carried"
+    );
+    assert!(
+        files.file("levels/office.mis").is_none(),
+        "the template is not carried"
+    );
+    let mission =
+        String::from_utf8_lossy(files.file("missions/office.mis").expect("the office's map"))
+            .into_owned();
+    assert!(
+        !mission.contains(torque_example_level_demo::levels::INTERIORS),
+        "the interiors are placed"
+    );
+    assert!(mission.contains("kit/office"), "{mission}");
+    assert!(
+        files.kit.paths().any(|p| p == "kit/office.dif"),
+        "the built interior is in the kit"
+    );
+    // the client starts on it with nothing left to build
+    let game = LevelDemo::new(files).expect("the client");
+    assert!(game.maps.iter().any(|m| m.path == "missions/office.mis"));
 }

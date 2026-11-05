@@ -24,7 +24,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{CursorGrabMode, CursorIcon, Fullscreen, Window, WindowId};
 
-use super::{cursor_lock, frame_cap, keymap};
+use super::{cursor_lock, frame_cap, keymap, web_input};
 use crate::conn::ConnGame;
 use crate::host::{ClientHost, CursorShape, GameServer};
 use crate::input::{Key, MouseButton};
@@ -259,7 +259,22 @@ struct WindowApp<G: WindowGame> {
     display_mhz: Option<u32>,
     /// The monitor the host lists the modes of ([`ClientHost::set_monitor`]): read again when the window moves to another.
     monitor: Option<winit::monitor::MonitorHandle>,
+    /// The keys held down (let go when the page loses the focus or the pointer lock: [`web_input`]).
+    held: web_input::HeldKeys,
+    /// When an Esc last reached the game (ms of `started`).
+    last_escape_ms: Option<u64>,
+    /// When the window's loop last ran a pass.
+    last_pass: Instant,
+    /// In a browser: when the next animation frame was asked for, while it has not come.
+    redraw_asked: Option<Instant>,
+    /// In a browser: the page's focus and pointer lock ([`web_input::PageEvents`]).
+    #[cfg(target_arch = "wasm32")]
+    page: web_input::PageEvents,
 }
+
+/// In a browser, a page whose animation frames stopped (a hidden tab) still runs its clock this often (its network, its
+/// server).
+pub const WEB_IDLE_PASS: Duration = Duration::from_millis(200);
 
 /// Runs `game`'s window on `event_loop` until it is closed or a script quits; gives the game back for its end.
 pub fn run<G: WindowGame>(game: G, event_loop: EventLoop<()>) -> Result<G, (G, String)> {
@@ -308,6 +323,12 @@ fn window_app<G: WindowGame>(game: G, event_loop: &EventLoop<()>) -> WindowApp<G
         drew_world: false,
         display_mhz: None,
         monitor: None,
+        held: web_input::HeldKeys::default(),
+        last_escape_ms: None,
+        last_pass: Instant::now(),
+        redraw_asked: None,
+        #[cfg(target_arch = "wasm32")]
+        page: web_input::PageEvents::listen(),
     }
 }
 impl<G: WindowGame> WindowApp<G> {
@@ -335,6 +356,35 @@ impl<G: WindowGame> WindowApp<G> {
     fn focus_lost(&mut self) {
         for (m, w, l) in self.input.focus_lost(self.cursor) {
             self.game.host().post(m, w, l);
+        }
+        // A browser sends no release for a key let go while the page had no focus (a native window's are synthetic events).
+        if cfg!(target_arch = "wasm32") {
+            for key in self.held.take() {
+                if let Some((m, w, l)) = self.input.key(key, false, false, false) {
+                    self.game.host().post(m, w, l);
+                }
+            }
+        }
+    }
+
+    /// In a browser: what the page said since the last pass ([`web_input`]). A lost focus or pointer lock lets go of the keys
+    /// and buttons held; a lock the browser took back while the game held the mouse is the game's Esc.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn page_news(&mut self, news: web_input::PageNews) {
+        if !news.focus_lost && !news.lock_lost {
+            return;
+        }
+        self.focus_lost();
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let wants = self.game.host_ref().wants_mouse();
+        if news.lock_lost && web_input::lock_loss_is_escape(wants, self.last_escape_ms, now_ms) {
+            self.game.note("the pointer lock ended: Esc");
+            self.last_escape_ms = Some(now_ms);
+            for down in [true, false] {
+                if let Some((m, w, l)) = self.input.key(Key::Escape, down, false, false) {
+                    self.game.host().post(m, w, l);
+                }
+            }
         }
     }
 
@@ -523,6 +573,12 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                     && let Some(key) = Key::from_winit(code)
                 {
                     let down = event.state == ElementState::Pressed;
+                    if !is_synthetic {
+                        self.held.key(key, down);
+                    }
+                    if down && key == Key::Escape {
+                        self.last_escape_ms = Some(self.started.elapsed().as_millis() as u64);
+                    }
                     // a Windows key lets go of the cursor before the shell's shortcut opens its overlay.
                     if down && !is_synthetic && matches!(key, Key::SuperLeft | Key::SuperRight) {
                         let release = self.lock.on_system_key();
@@ -534,6 +590,15 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // In a browser the frame's pass runs here, at the page's animation frame ([`WindowApp::web_wait`]).
+                if cfg!(target_arch = "wasm32") {
+                    self.redraw_asked = None;
+                    let began = Instant::now();
+                    if self.pass_work(event_loop, true).is_none() {
+                        return;
+                    }
+                    self.game.pass_work(began.elapsed());
+                }
                 let began = Instant::now();
                 match self.game.draw() {
                     Ok(Some(world)) => {
@@ -571,8 +636,14 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if cfg!(target_arch = "wasm32") {
+            self.web_wait(event_loop);
+            return;
+        }
         let began = Instant::now();
-        self.pass(event_loop);
+        if let Some(fps) = self.pass_work(event_loop, true) {
+            self.schedule(event_loop, fps);
+        }
         self.game.pass_work(began.elapsed());
     }
 
@@ -587,9 +658,19 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
 }
 
 impl<G: WindowGame> WindowApp<G> {
-    /// One pass of the window's loop: the clock's step, the upkeep, the cursor and the next frame asked for.
-    fn pass(&mut self, event_loop: &ActiveEventLoop) {
+    /// One pass of the window's loop: the clock's step, the upkeep, the cursor and the screen mode. The menus' frame cap
+    /// (frames a second, 0: none) for the next frame; None when the loop is ending or there is no window yet.
+    ///
+    /// `window_too`: the cursor's hold and the screen mode too. A browser's pass between animation frames leaves them: winit's
+    /// web window may hold its canvas borrowed while it hands the loop an event (a resize), and these borrow it again.
+    fn pass_work(&mut self, event_loop: &ActiveEventLoop, window_too: bool) -> Option<u32> {
         let now = Instant::now();
+        self.last_pass = now;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let news = self.page.take();
+            self.page_news(news);
+        }
         self.owed += now.duration_since(self.last).as_secs_f64() * 1000.0;
         self.last = now;
         let ms = (self.owed as u32).min(MAX_FRAME_MS);
@@ -602,14 +683,15 @@ impl<G: WindowGame> WindowApp<G> {
         }
         if self.game.host_ref().server.vm().quit_requested() {
             event_loop.exit();
-            return;
+            return None;
         }
         self.game.upkeep();
         let wants = self.game.host_ref().wants_mouse();
         self.grabbed = wants;
-        let Some(window) = self.window.clone() else {
-            return;
-        };
+        let window = self.window.clone()?;
+        if !window_too {
+            return Some(self.cap_fps);
+        }
         let now_ms = self.started.elapsed().as_millis() as u64;
         let may_grab = self.game.may_grab();
         // a window made without the focus (started in the background) gets no event for it: the window is asked.
@@ -645,11 +727,50 @@ impl<G: WindowGame> WindowApp<G> {
                     .note(&format!("the menus' frames capped at {n} a second")),
             }
         }
+        Some(fps)
+    }
+
+    /// The next frame asked for now, or the loop sleeping until the menus' cap (`fps`) lets it be drawn.
+    fn schedule(&mut self, event_loop: &ActiveEventLoop, fps: u32) {
+        let Some(window) = &self.window else {
+            return;
+        };
         match self.cap.wait_until(Instant::now(), fps, self.drew_world) {
             Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
             None => {
                 event_loop.set_control_flow(ControlFlow::Poll);
                 window.request_redraw();
+            }
+        }
+    }
+
+    /// In a browser the loop never spins: a frame's pass runs at the page's animation frame, just before the frame is drawn
+    /// (`RedrawRequested`), so the clock steps once a frame and the page's event loop sleeps between frames. After any event
+    /// the next animation frame is asked for (once, until it comes) and the loop sleeps until then or [`WEB_IDLE_PASS`]: a
+    /// page whose frames stopped (a hidden tab) runs its pass then, without drawing.
+    fn web_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if now.duration_since(self.last_pass) >= WEB_IDLE_PASS
+            && self.pass_work(event_loop, false).is_none()
+        {
+            return;
+        }
+        let Some(window) = &self.window else {
+            return;
+        };
+        let wake = now + WEB_IDLE_PASS;
+        match self.cap.wait_until(now, self.cap_fps, self.drew_world) {
+            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at.min(wake))),
+            None => {
+                // An animation frame asked for and not come by now (the page was hidden) is asked for again.
+                if self
+                    .redraw_asked
+                    .is_none_or(|asked| now.duration_since(asked) >= WEB_IDLE_PASS)
+                {
+                    window.request_redraw();
+                    self.redraw_asked = Some(now);
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
             }
         }
     }

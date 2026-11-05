@@ -247,6 +247,23 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
+  compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
+  picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time
+  (also F8); both are kept in the browser's storage, and Firefox starts at Low until the player picks
+  (`web/settings.js`). `just examples/web-unit` tests both in Node. The module is built in a `web` profile (thin LTO) and
+  run through `wasm-opt -O2` when it is installed.
+- `torque::app::web_page`: the entry web builds share: the page's calls (`web_exports!`), the files the page fetches by
+  its list, its settings, the loading stages and the frame times.
+- `torque::app::page_bridge` and `web/bridge.js`: a web build's page and the game's scripts call each other. The page's
+  `torque.call`, `eval` (a syntax error comes back with its line and column, and nothing runs), `getVar` and `setVar` are
+  served at the next frame; script's `callPage(name, args...)` reaches only the handlers the page registered
+  (`torque.on`). Arguments are strings within caps (count, size, calls a frame, requests waiting). The level demo emits
+  `mapLoaded` and `playerFell`. The guide's "Games in a browser" shows it and the rule that a server reaches the page only
+  through the game's own `clientCmd` functions.
+- The vehicle demo in a browser, played alone (the server on an in-memory link in the page): `just
+  examples/web-vehicle-demo` builds and serves it, `vehicle-demo --web-files <dir>` writes its pack and list,
+  `just examples/web-vehicle-demo-check` walks its figure in headless Chrome.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
@@ -280,6 +297,12 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-client`: in a browser the window's loop no longer spins between frames: the clock steps and the frame is drawn
+  once per animation frame (a hidden page still runs its clock five times a second).
+- `torque-client`: in a browser, the keys and buttons held are let go when the page loses the focus, is hidden or loses
+  the pointer lock (a key let go meanwhile stayed held in the game). A pointer lock the browser ends while the game holds
+  the mouse (its Esc) is the game's Esc, so the level demo's menu opens; in full screen, Chromium passes Esc on to the
+  game (the page's keyboard lock).
 - `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
   Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
   speed).

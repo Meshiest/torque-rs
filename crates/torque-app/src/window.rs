@@ -88,6 +88,11 @@ struct AppWindow<G> {
     /// In a browser: the canvas's device, asked for when the window is made and answered later ([`WebDevice`]).
     #[cfg(target_arch = "wasm32")]
     web: Option<WebDevice>,
+    /// In a browser: the loading stage last written on the page and the frame times ([`crate::web_page`]).
+    #[cfg(target_arch = "wasm32")]
+    stage: &'static str,
+    #[cfg(target_arch = "wasm32")]
+    frame_times: crate::web_page::FrameTimes,
 }
 
 /// A canvas's device on its way: the browser answers WebGPU's requests on its own event loop, so the window keeps running (and
@@ -140,6 +145,15 @@ impl<G: App> AppWindow<G> {
         self.surface = Some(surface);
     }
 
+    /// In a browser: the loading stage `stage` on the page, when it is a new one.
+    #[cfg(target_arch = "wasm32")]
+    fn stage(&mut self, stage: &'static str) {
+        if self.stage != stage {
+            self.stage = stage;
+            crate::web_page::mark("stage", stage);
+        }
+    }
+
     /// In a browser: the canvas's device once it is here (Err: the browser has none to give).
     #[cfg(target_arch = "wasm32")]
     fn web_device(&mut self) -> Result<(), String> {
@@ -181,6 +195,12 @@ impl<G: App> WindowGame for AppWindow<G> {
         #[cfg(target_arch = "wasm32")]
         {
             self.web = Some(WebDevice::ask(window, size));
+            self.stage("gpu");
+            // The page bridge: `callPage` and `setRenderQuality` for the scripts, the page's requests served each pass.
+            crate::page_bridge::install(torque_client::host::GameServer::vm_mut(
+                &mut self.game.host().server,
+            ));
+            crate::page_bridge::page::connect();
             Ok(())
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -205,6 +225,14 @@ impl<G: App> WindowGame for AppWindow<G> {
         self.game.advance(ms);
     }
 
+    /// In a browser: the page's requests to the scripts, once a pass ([`crate::page_bridge::serve`]).
+    fn upkeep(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        crate::page_bridge::serve(torque_client::host::GameServer::vm_mut(
+            &mut self.game.host().server,
+        ));
+    }
+
     fn draw(&mut self) -> Result<Option<bool>, String> {
         #[cfg(target_arch = "wasm32")]
         self.web_device()?;
@@ -212,6 +240,12 @@ impl<G: App> WindowGame for AppWindow<G> {
             return Ok(None);
         };
         self.game.host().surface_size(surface.size());
+        // The page's settings: the quality it asked for, from this frame on.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(quality) = crate::web_page::take_quality() {
+            view.set_quality(quality);
+            crate::web_page::mark("quality", quality.name());
+        }
         let (gui, eye) = self.game.frame(view);
         let Some(frame) = surface.frame() else {
             return Ok(None);
@@ -221,6 +255,15 @@ impl<G: App> WindowGame for AppWindow<G> {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let drew = view.draw(&surface.gpu, &target, &gui, eye)?;
         surface.present(frame);
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(s) = self.frame_times.frame(web_time::Instant::now()) {
+                crate::web_page::mark_frames(&s);
+            }
+            if self.stage != "ready" {
+                self.stage(if self.game.loading() { "map" } else { "ready" });
+            }
+        }
         Ok(Some(drew))
     }
 
@@ -243,6 +286,10 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
         view: None,
         #[cfg(target_arch = "wasm32")]
         web: None,
+        #[cfg(target_arch = "wasm32")]
+        stage: "",
+        #[cfg(target_arch = "wasm32")]
+        frame_times: crate::web_page::FrameTimes::new(),
     };
     #[cfg(target_arch = "wasm32")]
     {

@@ -46,3 +46,8 @@ pub fn terrain(files: &GameFiles) -> Result<Terrain, String> {
         .ok_or_else(|| format!("{TERRAIN_FILE} is not in the kit"))?;
     Terrain::read(&bytes, TERRAIN_SQUARE)
 }
+
+/// The files a build for the web fetches ([`GameFiles::pack`]): the kit and the game folder, as they are.
+pub fn web_pack(files: &GameFiles) -> Vec<u8> {
+    files.pack(|_| true)
+}

@@ -33,6 +33,8 @@ export function serve(folder, port) {
       const body = await readFile(file);
       res.writeHead(200, {
         'Content-Type': types[extname(file)] ?? 'application/octet-stream',
+        // the page shows a download's percent by it
+        'Content-Length': body.length,
         'Cache-Control': 'no-cache',
       });
       res.end(body);

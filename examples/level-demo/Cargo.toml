@@ -28,11 +28,9 @@ torque-render-scene = { path = "../../crates/torque-render-scene" }
 # fetching them by the list beside the page (`files.json`).
 embed-pack = []
 
-# Built for the web: a panic shown in the page's console, the page's address and root element, and the functions the page calls.
+# Built for the web: the functions the page calls (`torque::app::web_exports!`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-console_error_panic_hook = "0.1"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Window"] }
 
 [dev-dependencies]
 torque-maps = { path = "../../crates/torque-maps" }

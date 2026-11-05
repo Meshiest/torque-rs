@@ -2950,6 +2950,8 @@ dependencies = [
 name = "torque-app"
 version = "0.1.0"
 dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
  "png",
  "serde_json",
  "sha2",
@@ -2967,9 +2969,12 @@ dependencies = [
  "torque-render-scene",
  "torque-server",
  "torque-shapes",
+ "torque-ts-compiler",
  "torque-ts-text",
  "torque-ts-vm",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
  "web-time",
  "winit",
 ]
@@ -3097,7 +3102,6 @@ dependencies = [
 name = "torque-example-level-demo"
 version = "0.1.0"
 dependencies = [
- "console_error_panic_hook",
  "torque",
  "torque-example-assets",
  "torque-example-common",
@@ -3107,7 +3111,6 @@ dependencies = [
  "torque-render-core",
  "torque-render-scene",
  "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]
@@ -3120,6 +3123,7 @@ dependencies = [
  "torque-render-core",
  "torque-render-hd",
  "torque-render-scene",
+ "wasm-bindgen",
 ]
 
 [[package]]
