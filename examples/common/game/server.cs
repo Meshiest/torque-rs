@@ -63,8 +63,12 @@ function GameConnection::endMission(%client)
 
 // ---- a client's way in and out
 
-function GameConnection::onConnect(%client, %name)
+// %key is the second connect argument: the host's own client sends the key its process gave the server in $Server::HostKey
+// (a game that has a host sets it when it starts the server; a dedicated server has none), and that is what marks the
+// connection as the host's (%client.isHost). Nothing a client says about itself marks it.
+function GameConnection::onConnect(%client, %name, %key)
 {
+   %client.isHost = $Server::HostKey !$= "" && %key $= $Server::HostKey;
    %client.onClientConnect(%name);
    %client.transmitDataBlocks($Server::MissionSequence);
 }

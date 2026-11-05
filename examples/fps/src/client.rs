@@ -56,6 +56,22 @@ pub use torque::app::hosting::{NetMode, parse_join_address};
 use torque::app::hosting::{join_address, lan_bind_address, lan_reach, register_join_natives};
 use torque_example_common::prediction::CubeClient;
 
+/// A fresh secret (128 random bits from the operating system, in hex) a hosted game's server and its own client share: the
+/// connection that presents it is the host's.
+#[cfg(not(target_arch = "wasm32"))]
+fn host_key() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| format!("no secure random source for the host key: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// A page joins games and never hosts one, so it has no host key.
+#[cfg(target_arch = "wasm32")]
+fn host_key() -> Result<String, String> {
+    Err("a page cannot host a game".into())
+}
+
 /// The camera behind the figure: how far back along its look, how far above its eye, and the nearest it comes to a wall.
 pub const CAMERA_DISTANCE: f32 = 3.5;
 pub const CAMERA_SIDE: f32 = 0.6;
@@ -212,7 +228,7 @@ impl ArenaGame {
         } else {
             self.lan_bind_address()
         };
-        let server = ArenaServer::start(
+        let mut server = ArenaServer::start(
             &self.files,
             &ServerOptions {
                 address,
@@ -222,12 +238,16 @@ impl ArenaGame {
                 public,
             },
         )?;
+        // The secret that marks this process's own connection as the host's: only the server and the connection that
+        // follows ever see it.
+        let key = host_key()?;
+        server.vm_mut().set_global("$Server::HostKey", &key);
         let bound = server.address().ok_or("the server has no socket")?;
         let join = join_address(bound).to_string();
         self.client.start_hosting(server);
         self.set_host_info(public, bound.port());
         self.vm_mut()
-            .invoke(None, b"connectTo", &[join.into_bytes()])
+            .invoke(None, b"connectTo", &[join.into_bytes(), key.into_bytes()])
             .map_err(|e| format!("connectTo: {e}"))?;
         Ok(())
     }
