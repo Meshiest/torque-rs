@@ -12,7 +12,7 @@
 //!   ShapeBase part), [`shapes`] (Camera, StaticShape, ScopeAlwaysShape, Item), [`player`] (Player, AIPlayer), [`vehicle`] (the
 //!   Vehicle part, WheeledVehicle, FlyingVehicle, HoverVehicle), [`projectile`], [`props`] (TSStatic, VehicleBlocker), [`fx`]
 //!   (ParticleEmitterNode, fxLight), [`zone`] (PhysicalZone), [`weather`] (Lightning, Precipitation), [`sky`] (Sky, Sun),
-//!   [`audio`] (AudioEmitter).
+//!   [`audio`] (AudioEmitter); and the engine's own, after Torque3D's: [`light`] (SpotLight, TimeOfDay, ScatterSky).
 //! - [`tails`]: the control objects' packet data and their class-directed reader.
 //! - [`tge`]: [`TgeGhosts`], the engine's default [`GhostCodecSet`], and TGE's networked class list.
 //! - [`datablocks`]: [`DatablockCodecSet`], a game's registry of datablock classes, and [`TgeDatablocks`], TGE's datablock
@@ -26,6 +26,7 @@ pub mod audio;
 pub mod codec;
 pub mod datablocks;
 pub mod fx;
+pub mod light;
 pub mod markers;
 pub mod motion;
 pub mod parts;

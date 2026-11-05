@@ -9,6 +9,7 @@ use super::tge_shapes::{ALL, Wheels, shape_view};
 use super::tge_tails::Rng;
 use super::*;
 use crate::codec::{ClientFacts, ObjCtx};
+use crate::light::ENGINE_OBJECT_CLASSES;
 use crate::set::GhostCodecSet;
 use crate::tge::{
     TGE_DATABLOCK_CLASSES, TGE_OBJECT_CLASSES, TgeClass, TgeGhosts, TgeRecord, tge_reps,
@@ -18,12 +19,21 @@ use crate::tge::{
 fn the_codec_classes_are_tges_and_the_ids_derive_from_the_list() {
     for class in TgeClass::ALL {
         assert!(
-            TGE_OBJECT_CLASSES.contains(&class.name()),
+            TGE_OBJECT_CLASSES.contains(&class.name())
+                || ENGINE_OBJECT_CLASSES.contains(&class.name()),
             "{}",
             class.name()
         );
         assert_eq!(TgeGhosts::class_by_name(class.name()), Some(class));
     }
+    // The engine's own classes are not TGE's: they take the ids past the table, in order.
+    for (k, name) in ENGINE_OBJECT_CLASSES.iter().enumerate() {
+        assert!(!TGE_OBJECT_CLASSES.contains(name));
+        let class = TgeGhosts::class_past_table(45 + k as u32, 45);
+        assert_eq!(class.map(TgeClass::name), Some(*name));
+    }
+    assert_eq!(TgeGhosts::class_past_table(44, 45), None);
+    assert_eq!(TgeGhosts::class_past_table(48, 45), None);
     assert_eq!(TgeGhosts::class_by_name("TerrainBlock"), None);
     let classes = NetClasses::derive(&tge_reps(&EventRegistry::torque())).unwrap();
     assert_eq!(
@@ -85,6 +95,9 @@ fn default_bits(class: TgeClass) -> Option<usize> {
         TgeClass::TsStatic => 512 + 96 + string_bits(&[b""]),
         TgeClass::VehicleBlocker => 704,
         TgeClass::FxLight => 98 + 2 + 193 + 8 + 32,
+        TgeClass::SpotLight => 194 + 226 + 2 + 2,
+        TgeClass::TimeOfDay => 226 + 65,
+        TgeClass::ScatterSky => 675,
         // Its own test pins its forms.
         TgeClass::AudioEmitter => return None,
     })
@@ -145,6 +158,9 @@ fn stringless(class: TgeClass) -> bool {
             | TgeClass::Sun
             | TgeClass::VehicleBlocker
             | TgeClass::FxLight
+            | TgeClass::SpotLight
+            | TgeClass::TimeOfDay
+            | TgeClass::ScatterSky
     )
 }
 

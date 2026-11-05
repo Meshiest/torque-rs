@@ -227,12 +227,24 @@ fn fail(r: Result<(), VmError>) -> Option<Native> {
 
 /// The console methods.
 pub fn register(vm: &mut Vm) {
-    // `mountObject(obj, node)`: the object by name or id (a ShapeBase, else false); the node by `%d` (-1 when unparsed); a
-    // node 0..31 mounts. True whenever the object was found.
+    // `mountObject(obj, node)`: the object by name or id (a ShapeBase or a SpotLight, else false); the node by `%d` (-1 when
+    // unparsed); a node 0..31 mounts. True whenever the object was found.
     register_method(vm, "ShapeBase", "mountObject", |vm, c| {
         let Some(this) = c.this_object else {
             return Native::Bool(false);
         };
+        // A SpotLight (the engine's own, after Torque3D's `SceneObject::mountObject`) rides the node; nothing of the shape changes.
+        if let Some(light) = vm.objects().find(arg(c, 2))
+            && crate::scene::lights::is_spot(vm, light)
+        {
+            let node = scan_int(arg(c, 3)).unwrap_or(-1);
+            if let Ok(node) = u32::try_from(node)
+                && node < MOUNT_NODES
+            {
+                crate::scene::lights::mount_spot(vm, light, Some((this, node)));
+            }
+            return Native::Bool(true);
+        }
         let Some(obj) = shape_base(vm, arg(c, 2)) else {
             return Native::Bool(false);
         };
@@ -250,6 +262,14 @@ pub fn register(vm: &mut Vm) {
         let Some(this) = c.this_object else {
             return Native::Bool(false);
         };
+        if let Some(light) = vm.objects().find(arg(c, 2))
+            && crate::scene::lights::is_spot(vm, light)
+        {
+            if crate::scene::lights::spot_mount(vm, light).is_some_and(|(on, _)| on == this) {
+                crate::scene::lights::mount_spot(vm, light, None);
+            }
+            return Native::Bool(true);
+        }
         let Some(obj) = shape_base(vm, arg(c, 2)) else {
             return Native::Bool(false);
         };

@@ -24,6 +24,7 @@ use torque_ghosts::codec::NetWidths;
 use torque_ghosts::datablocks::{
     DatablockCodecSet, ScriptField, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks,
 };
+use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
 use torque_ghosts::set::GhostCodecSet;
 use torque_ghosts::tails::{PlayerTail, PlayerTailMotion, ShapeTail, TailData};
 use torque_ghosts::tge::{TGE_DATABLOCK_CLASSES, TgeClass, TgeGhosts, tge_reps};
@@ -142,13 +143,25 @@ pub trait NetCodecs: Debug {
     }
 
     /// The ghostable class of an object of class `name` (none: the object is not ghosted). By default TGE 1.4's classes that
-    /// `torque_ghosts`' TGE set has a record codec for, each numbered by its place in [`TgeClass::ALL`] and with the net flags its
+    /// `torque_ghosts`' TGE set has a record codec for (and the engine's own, `torque_ghosts::light`'s, past the table's ids), each numbered by its place in [`TgeClass::ALL`] and with the net flags its
     /// constructor chain sets ([`TgeClass::net_flags`]: a `Camera` is registered but not Ghostable).
     fn ghost_class(&self, name: &str) -> Option<GhostClassInfo> {
         let class = TgeGhosts::class_by_name(name)?;
+        let classes = self.object_classes();
+        // The engine's own classes: the ids past the table's, in order (a connection's source shows them to engine peers only).
+        let class_id = match ENGINE_OBJECT_CLASSES
+            .iter()
+            .position(|n| *n == class.name())
+        {
+            Some(k) => {
+                let id = u32::try_from(classes.count(Kind::Object) + k).ok()?;
+                (id < 1 << self.ghost_class_bits()).then_some(id)?
+            }
+            None => classes.id_of(Kind::Object, class.name())?,
+        };
         Some(GhostClassInfo {
             code: class.code(),
-            class_id: self.object_classes().id_of(Kind::Object, class.name())?,
+            class_id,
             flags: class.net_flags(),
             sky: class == TgeClass::Sky,
         })

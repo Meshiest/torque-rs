@@ -1,9 +1,9 @@
 //! The enhanced renderer's plain data: the quality ladder ([`Quality`]) and the image settings ([`ImageSettings`]), the vertex and its
 //! [`material`] word, draws and moving objects, the camera with its jitter, the physical sky's tables, the sky's irradiance as
 //! spherical harmonics, the sky's parts, the volumetric clouds, the image formation (exposure, tonemap, bloom, grade table), the
-//! anti-aliasing and ambient occlusion ladder, the shadow cascades, the texture table, the colour-space conversions and the day's
-//! light from the physical sky ([`scatter`]); and the frame itself ([`HdScene`]) over a provider's static geometry
-//! ([`cells::StaticGeometry`]).
+//! anti-aliasing and ambient occlusion ladder, the shadow cascades, the texture table, the colour-space conversions, the day's
+//! light from the physical sky ([`scatter`]) and the engine's own light and sky ghosts ([`environment`]); and the frame itself
+//! ([`HdScene`]) over a provider's static geometry ([`cells::StaticGeometry`]).
 
 use std::collections::HashMap;
 
@@ -15,6 +15,7 @@ pub mod camera;
 pub mod cells;
 pub mod clouds;
 pub mod clusters;
+pub mod environment;
 pub mod grade;
 pub mod kit;
 pub mod lut;

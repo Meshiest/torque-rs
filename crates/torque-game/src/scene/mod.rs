@@ -23,6 +23,7 @@ pub mod ext;
 pub mod ghost;
 pub mod hitboxes;
 pub mod lag;
+pub mod lights;
 pub mod object;
 pub mod rays;
 pub mod shapebase;

@@ -16,6 +16,11 @@
 //! Copyright (c) 2012 GarageGames, LLC; `fxFoliageReplicator.cpp` also Copyright (C) 2015 Faust Logic, Inc.). Enumerated fields and types this layer does not model yet are kept as written (`FieldType::Opaque`); two
 //! fields of one class that name the same member share its storage (`position` and `rotation`, the `hudImageName` aliases).
 //!
+//! The engine's own classes after Torque3D's, not TGE's (`SpotLight`, `TimeOfDay`, `ScatterSky`), take their fields and defaults
+//! from Torque3D's MIT-licensed `T3D/lightBase.cpp`, `T3D/spotLight.cpp`, `environment/timeOfDay.cpp` and
+//! `environment/scatterSky.cpp` (each Copyright (c) 2012 GarageGames, LLC; `lightBase.cpp` also Copyright (C) 2015 Faust Logic,
+//! Inc.); a TimeOfDay's `time` starts at its `startTime`.
+//!
 //! A host whose own table lacks some of these classes on purpose (a class it registers only in some modes) does not call
 //! [`install`]: it would make them exist everywhere. One that registers the world classes only while it runs a mission calls
 //! [`install_map_classes`] then, with its own fields on them ([`ClassExtra`]).
@@ -1252,6 +1257,125 @@ pub static CLASSES: &[ClassSpec] = &[
         ],
         methods: &[],
         defaults: None,
+    },
+    // The engine's own classes after Torque3D's (`T3D/lightBase.cpp`, `T3D/spotLight.cpp`, `environment/timeOfDay.cpp`,
+    // `environment/scatterSky.cpp`): not TGE's, ghosted to the engine's own clients only.
+    ClassSpec {
+        name: "SpotLight",
+        parent: Some("SceneObject"),
+        sim_object: true,
+        inherits_fields: true,
+        fields: &[
+            field("isEnabled", FieldType::Bool, 1),
+            field("color", FieldType::ColorF, 1),
+            field("brightness", FieldType::F32, 1),
+            field("castShadows", FieldType::Bool, 1),
+            field("priority", FieldType::F32, 1),
+            field("range", FieldType::F32, 1),
+            field("innerAngle", FieldType::F32, 1),
+            field("outerAngle", FieldType::F32, 1),
+        ],
+        methods: &[
+            method("setLightEnabled", 3, 3, "(bool state)", Returns::Void),
+            method("inspectPostApply", 2, 2, "()", Returns::Void),
+        ],
+        defaults: Some(&[
+            TRANSFORM[0],
+            TRANSFORM[1],
+            TRANSFORM[2],
+            ("isEnabled", "1"),
+            ("color", "1 1 1 1"),
+            ("brightness", "1"),
+            ("castShadows", "0"),
+            ("priority", "1"),
+            ("range", "10"),
+            ("innerAngle", "40"),
+            ("outerAngle", "45"),
+        ]),
+    },
+    ClassSpec {
+        name: "TimeOfDay",
+        parent: Some("SceneObject"),
+        sim_object: true,
+        inherits_fields: true,
+        fields: &[
+            field("axisTilt", FieldType::F32, 1),
+            field("dayLength", FieldType::F32, 1),
+            field("startTime", FieldType::F32, 1),
+            field("time", FieldType::F32, 1),
+            field("play", FieldType::Bool, 1),
+            field("azimuthOverride", FieldType::F32, 1),
+            field("dayScale", FieldType::F32, 1),
+            field("nightScale", FieldType::F32, 1),
+        ],
+        methods: &[
+            method(
+                "addTimeOfDayEvent",
+                4,
+                4,
+                "(float elevation, string identifier)",
+                Returns::Void,
+            ),
+            method("setTimeOfDay", 3, 3, "(float time)", Returns::Void),
+            method("setPlay", 3, 3, "(bool enabled)", Returns::Void),
+            method("setDayLength", 3, 3, "(float seconds)", Returns::Void),
+            method(
+                "animate",
+                4,
+                4,
+                "(float elevation, float degreesPerSecond)",
+                Returns::Void,
+            ),
+        ],
+        defaults: Some(&[
+            TRANSFORM[0],
+            TRANSFORM[1],
+            TRANSFORM[2],
+            ("axisTilt", "23.44"),
+            ("dayLength", "120"),
+            ("startTime", "0.5"),
+            ("time", "0.5"),
+            ("play", "1"),
+            ("azimuthOverride", "1"),
+            ("dayScale", "1"),
+            ("nightScale", "1.5"),
+        ]),
+    },
+    ClassSpec {
+        name: "ScatterSky",
+        parent: Some("SceneObject"),
+        sim_object: true,
+        inherits_fields: true,
+        fields: &[
+            field("sunScale", FieldType::ColorF, 1),
+            field("ambientScale", FieldType::ColorF, 1),
+            field("fogScale", FieldType::ColorF, 1),
+            field("brightness", FieldType::F32, 1),
+            field("nightColor", FieldType::ColorF, 1),
+            field("nightFogColor", FieldType::ColorF, 1),
+            field("moonEnabled", FieldType::Bool, 1),
+            field("moonAzimuth", FieldType::F32, 1),
+            field("moonElevation", FieldType::F32, 1),
+            field("moonLightColor", FieldType::ColorF, 1),
+            field("castShadows", FieldType::Bool, 1),
+        ],
+        methods: &[method("inspectPostApply", 2, 2, "()", Returns::Void)],
+        defaults: Some(&[
+            TRANSFORM[0],
+            TRANSFORM[1],
+            TRANSFORM[2],
+            ("sunScale", "1 1 1 1"),
+            ("ambientScale", "1 1 1 1"),
+            ("fogScale", "1 1 1 1"),
+            ("brightness", "1"),
+            ("nightColor", "0 0 0 1"),
+            ("nightFogColor", "0 0 0 1"),
+            ("moonEnabled", "1"),
+            ("moonAzimuth", "0"),
+            ("moonElevation", "45"),
+            ("moonLightColor", "0.192157 0.192157 0.192157 1"),
+            ("castShadows", "1"),
+        ]),
     },
     ClassSpec {
         name: "MissionArea",
