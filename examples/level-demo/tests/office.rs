@@ -260,6 +260,7 @@ fn every_piece_of_furniture_stands_on_the_floor_or_on_something() {
         hovering.len(),
         &hovering[..hovering.len().min(4)]
     );
+}
 
 /// A web build's pack carries the office built (its interior, textures and map), not its model: the browser builds nothing
 /// when it starts, and the client starts on the pack as it is.
