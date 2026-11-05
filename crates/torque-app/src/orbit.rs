@@ -1,5 +1,5 @@
 //! A third-person camera that circles a point at a distance, turned by yaw (about z, 0 looking along +y) and pitch (positive
-//! looks down).
+//! looks down), and [`Zoom`]: a camera distance the mouse wheel moves in eased steps.
 
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::Eye;
@@ -65,9 +65,81 @@ impl Orbit {
     }
 }
 
+/// How much one wheel notch away from the user scales a [`Zoom`]'s distance (towards the user: its inverse).
+pub const ZOOM_NOTCH: f32 = 0.85;
+/// How quickly a [`Zoom`] eases to its target (the share of the way left that goes in a second is `1 - e^-rate`).
+pub const ZOOM_RATE: f32 = 12.0;
+
+/// A camera distance the mouse wheel moves: each notch scales the distance it aims at by [`ZOOM_NOTCH`] (away from the user in,
+/// towards out), kept within its limits, and the distance drawn eases there ([`Zoom::advance`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Zoom {
+    pub min: f32,
+    pub max: f32,
+    target: f32,
+    distance: f32,
+}
+
+impl Zoom {
+    /// A zoom at `distance`, within `min` and `max`.
+    pub fn new(distance: f32, min: f32, max: f32) -> Zoom {
+        let d = distance.clamp(min, max);
+        Zoom {
+            min,
+            max,
+            target: d,
+            distance: d,
+        }
+    }
+
+    /// The wheel turned `notches` (positive away from the user: in).
+    pub fn notches(&mut self, notches: f32) {
+        if notches.is_finite() {
+            self.target = (self.target * ZOOM_NOTCH.powf(notches)).clamp(self.min, self.max);
+        }
+    }
+
+    /// `dt` seconds of easing towards the distance aimed at.
+    pub fn advance(&mut self, dt: f32) {
+        let k = 1.0 - (-ZOOM_RATE * dt.max(0.0)).exp();
+        self.distance += (self.target - self.distance) * k;
+        if (self.target - self.distance).abs() < 1e-3 {
+            self.distance = self.target;
+        }
+    }
+
+    /// The distance drawn now.
+    pub fn distance(&self) -> f32 {
+        self.distance
+    }
+
+    /// The distance the zoom eases to.
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_wheel_zooms_in_eased_steps_within_the_limits() {
+        let mut z = Zoom::new(8.0, 3.0, 20.0);
+        z.notches(1.0);
+        assert!((z.target() - 8.0 * ZOOM_NOTCH).abs() < 1e-5);
+        assert_eq!(z.distance(), 8.0);
+        z.advance(0.05);
+        assert!(z.distance() < 8.0 && z.distance() > z.target());
+        z.advance(2.0);
+        assert_eq!(z.distance(), z.target());
+        z.notches(100.0);
+        z.advance(2.0);
+        assert_eq!(z.distance(), 3.0);
+        z.notches(-100.0);
+        z.advance(2.0);
+        assert_eq!(z.distance(), 20.0);
+    }
 
     #[test]
     fn the_eye_looks_at_its_point_from_behind_and_above() {

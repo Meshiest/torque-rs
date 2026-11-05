@@ -13,7 +13,7 @@
 //! - [`hosting`]: hosting a game and joining one: the client's network mode, the address a hosted game binds and is joined by,
 //!   a typed address and the join screen's natives.
 //! - [`lights::WorldLights`]: the engine's spot lights and the day (TimeOfDay, ScatterSky) of a client's world, into the view.
-//! - [`orbit::Orbit`]: a third-person camera that circles a point.
+//! - [`orbit::Orbit`]: a third-person camera that circles a point; [`orbit::Zoom`]: a camera distance the wheel moves.
 //! - [`camera_blend::CameraBlend`]: a camera that eases from one mode's eye to another's on a switch.
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
