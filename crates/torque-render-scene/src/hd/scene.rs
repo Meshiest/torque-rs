@@ -145,6 +145,9 @@ pub struct HdScene<G> {
     /// Opaque planes (the ground) and blended ones (water).
     pub planes: Vec<HdDraw>,
     pub water: Vec<HdDraw>,
+    /// Counts the changes of `planes`: whoever builds them again bumps it (the GPU side writes them again only when it, or the
+    /// lists' places, changed: a window's every frame keeps a terrain of hundreds of thousands of vertices in place).
+    pub planes_generation: u64,
     pub cells: G,
     pub objects: Vec<DynamicObject>,
     /// The objects as the last frame drew them, kept by a whole sync for the control sync of the same frame (the shapes it makes
@@ -221,6 +224,7 @@ impl<G> HdScene<G> {
             painted_key: None,
             follow_painted_sun: true,
             planes: Vec::new(),
+            planes_generation: 0,
             water: Vec::new(),
             cells,
             objects: Vec::new(),

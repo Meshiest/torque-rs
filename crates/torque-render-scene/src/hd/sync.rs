@@ -343,6 +343,7 @@ impl<G> HdScene<G> {
             .collect();
         self.planes.clear();
         self.water.clear();
+        self.planes_generation = self.planes_generation.wrapping_add(1);
         for (blended, d) in &draws.planes {
             let mut hd = HdDraw::from_fixed(d, material::KIND_PLANE, local);
             if let Some(t) = hd.texture.and_then(|(i, _)| self.textures.textures.get(i)) {
