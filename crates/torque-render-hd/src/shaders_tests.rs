@@ -112,6 +112,8 @@ fn the_sky_and_tonemap_constants_are_the_scenes() {
         ("AGX_SLOPE", g::AGX_SLOPE),
         ("AGX_MID_GREY_DISPLAY", g::AGX_MID_GREY_DISPLAY),
         ("AGX_OUTSET", g::AGX_OUTSET),
+        ("SHOULDER", torque_render_scene::hd::lut::NEUTRAL_SHOULDER),
+        ("WHITE_SPILL", torque_render_scene::hd::lut::WHITE_SPILL),
     ] {
         assert_eq!(constant("tonemap.wgsl", name) as f32, value, "{name}");
     }

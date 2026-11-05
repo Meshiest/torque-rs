@@ -7,7 +7,8 @@
 //   sun, darker away from it, the box's colours kept), the colour procedural stars where the server's sky is dark: one in a few
 //   hundred cells of a cube-map-like grid of directions holds a star at a hashed spot, its brightness a hashed power law, dimmed by
 //   the transmittance toward it (so they fade at the horizon) and twinkling with the effect time.
-// - fs_sun_disk (always): only the disk with limb darkening (a linear law per channel, I(mu) = 1 - u (1 - mu)), added over the
+// - fs_sun_disk (always): only the disk with limb darkening (a linear law per channel, I(mu) = 1 - u (1 - mu)), dimmed toward the
+//   horizon by the air it shines through (sun_air_mass_dimming), added over the
 //   sky box before the clouds and the fog bans (they cover it as they cover the box), its colour the fixed-function sun's, at the sun as
 //   the sky shows it (sky.drawn: on the sun the server's box paints where it paints one off the Sun's direction).
 // - fs_clouds (where the settings and quality have them): the volumetric clouds' image (clouds.wgsl, its own history at a reduced
@@ -59,7 +60,15 @@ fn sun_disk(dir: vec3<f32>, frag_angle: f32) -> vec3<f32> {
     let mu = sqrt(max(1.0 - x * x, 0.0));
     let limb = vec3<f32>(1.0) - sky.limb.rgb * (1.0 - mu);
     let edge = clamp((radius - ang) / max(frag_angle, 1e-6) + 0.5, 0.0, 1.0);
-    return sky.disk.rgb * limb * edge;
+    return sky.disk.rgb * limb * edge * sun_air_mass_dimming(dir);
+}
+
+// How much dimmer the disk is toward dir than overhead: the luminance of the atmosphere's transmittance toward it over the
+// zenith's (1 overhead, falling toward the horizon, 0 behind the planet). A scalar: the disk's color (the sun's) is already
+// reddened.
+fn sun_air_mass_dimming(dir: vec3<f32>) -> f32 {
+    let zenith = sky_luminance(sky_transmittance_toward(vec3<f32>(0.0, 0.0, 1.0)));
+    return clamp(sky_luminance(sky_transmittance_toward(dir)) / max(zenith, 1e-6), 0.0, 1.0);
 }
 
 // A hash of a cell (Hugo Elias's integer hash, our arrangement).
