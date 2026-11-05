@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::material::EncodedImage;
+use crate::material::{EncodedImage, MaterialFlags};
 
 /// A triangle corner in the model's space: position, normal, texture UV.
 pub type Corner = ([f32; 3], [f32; 3], [f32; 2]);
@@ -47,6 +47,9 @@ pub struct LightRect {
 pub struct Surfaces {
     pub by_material: BTreeMap<String, Vec<Corner>>,
     pub lightmap_tris: BTreeMap<String, Vec<LightmapTri>>,
+    /// How the materials the file marks are drawn ([`MaterialFlags::TRANSLUCENT`], [`MaterialFlags::NEAREST`]); a material
+    /// missing here is drawn as its format draws it by default.
+    pub material_flags: BTreeMap<String, MaterialFlags>,
     pub rects: Vec<LightRect>,
     pub lightmaps: Vec<EncodedImage>,
     /// The model's box in its own space (min, max), as its file gives it.

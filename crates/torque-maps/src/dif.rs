@@ -62,6 +62,14 @@ pub mod surface_flags {
     pub const SHARED_LMAPS: u8 = 8;
     pub const OUTSIDE_VISIBLE: u8 = 16;
     pub const STATIC_MESH: u8 = 32;
+    /// This engine's own bits, above TGE's: TGE's map2dif masks every surface's flags with `SurfaceFlagMask` (bits 0 to 5) and
+    /// its reader keeps the byte as it is, so a file those tools made never has them and TGE ignores them. Every surface of a
+    /// material carries the same ones.
+    ///
+    /// Drawn see-through (alpha blended, in the translucent pass); it still collides as its hulls do.
+    pub const TRANSLUCENT: u8 = 64;
+    /// Its texture sampled with nearest-neighbor filtering (pixel art).
+    pub const NEAREST: u8 = 128;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

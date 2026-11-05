@@ -61,6 +61,11 @@ The first development version. Nothing is published yet; this is what exists.
   a Blockbench reader (`.bbmodel`: cubes with their turns, origins and inflation, meshes, groups as nodes, per-face
   coordinates and turns, embedded PNG and JPEG textures; the JSON size, element and texture counts and sizes bounded), so a
   `.bbmodel` converts to a `.dts` or builds into an interior (each cube a closed part: one hull).
+- Interiors carry how their materials are drawn as this engine's own surface flags (two bits TGE's tools never set and its
+  reader ignores): nearest-neighbor filtering (a Blockbench model's textures, a glTF `NEAREST` sampler: sharp texels, the
+  mipmaps still blended so a far wall does not shimmer) and see-through glass (a blended material, or a texture with partly
+  see-through texels), drawn alpha blended in the translucent pass, each pane sorted on its own, and solid to collision as
+  before (`torque_interior_builder::materials`, the importer's `Surfaces::material_flags`). Other interiors draw as they did.
 - `torque-convert`: the converter command, its own crate: models (`.glb`, `.gltf`, `.obj`, `.bbmodel`, `.dts`) into `.dts` (with the
   images the model carries) or `.glb`, and `.map` brushes or meshes into interiors (`--hulls auto|authored|slabs`).
 - `torque-shape-builder`: skin meshes, objects with a mesh in several details, primitives of several materials, aligned
@@ -141,6 +146,11 @@ The first development version. Nothing is published yet; this is what exists.
   it.
 - `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
   to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
+- The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
+  meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
+  the engine's own classes to every client).
+- The level demo's office map: a Blockbench model (`game/levels/office.bbmodel`, made by `tools/office.py`) built into an
+  interior when the demo starts, with pixel textures drawn nearest, glass windows, a roof and ceiling lights.
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
   while it runs.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and

@@ -38,6 +38,12 @@ impl KitAssets {
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }
+
+    /// Adds (or replaces) the file `name` under the kit's folder (`office.dif` is `kit/office.dif`): files an example
+    /// builds when it starts.
+    pub fn insert(&mut self, name: &str, bytes: Vec<u8>) {
+        self.files.insert(kit_path(name), bytes);
+    }
 }
 
 impl Assets for KitAssets {

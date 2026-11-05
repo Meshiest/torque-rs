@@ -9,6 +9,7 @@
 //! threads were advanced and animated) into an object whose vertices are in the world. [`WorldView::set_objects`] hands the
 //! frame its objects and keeps the last frame's, which give each object its motion (the anti-aliasing's history follows it).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use torque_gui::GuiDraws;
@@ -449,24 +450,7 @@ impl WorldView {
     /// host's own geometry; geometry that stays put is cheaper as a static mesh, [`WorldView::set_static_mesh`]).
     pub fn mesh_object(&mut self, set: TextureSet, draws: &[Draw], id: u32) -> DynamicObject {
         let local = self.intern(set.into_textures());
-        let translucent = draws.iter().any(|d| d.blend != Blend::Opaque);
-        let draws: Vec<HdDraw> = draws
-            .iter()
-            .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, &local))
-            .collect();
-        let (centre, radius) = bounding_sphere(&draws);
-        DynamicObject {
-            ghost: id,
-            transform: Mat::IDENTITY,
-            prev_transform: Mat::IDENTITY,
-            translucent,
-            centre,
-            radius,
-            draws,
-            previous: None,
-            stamp: None,
-            nodes: Vec::new(),
-        }
+        mesh_object_of(&local, draws, id)
     }
 
     /// Puts `draws` (in the world, their textures in `set`) into the view's static geometry as the mesh `key` (a key of
@@ -475,9 +459,31 @@ impl WorldView {
     /// Each draw is drawn as an opaque or alpha-blended (`blend` not opaque), back-face culled (clockwise front) surface.
     pub fn set_static_mesh(&mut self, key: [i32; 3], set: TextureSet, draws: &[Draw]) {
         let local = self.intern(set.into_textures());
+        self.put_static_mesh(key, &local, draws);
+    }
+
+    /// [`WorldView::set_static_mesh`] with moving objects whose draws share `set`'s textures (each `(draws, id)` one object as
+    /// [`WorldView::mesh_object`] makes it, for the frames to draw): a static mesh's see-through parts the translucent pass
+    /// sorts one by one.
+    pub fn set_static_mesh_with_objects(
+        &mut self,
+        key: [i32; 3],
+        set: TextureSet,
+        draws: &[Draw],
+        objects: &[(Vec<Draw>, u32)],
+    ) -> Vec<DynamicObject> {
+        let local = self.intern(set.into_textures());
+        self.put_static_mesh(key, &local, draws);
+        objects
+            .iter()
+            .map(|(draws, id)| mesh_object_of(&local, draws, *id))
+            .collect()
+    }
+
+    fn put_static_mesh(&mut self, key: [i32; 3], local: &[usize], draws: &[Draw]) {
         let draws: Vec<HdDraw> = draws
             .iter()
-            .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, &local))
+            .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, local))
             .collect();
         let cells = &mut self.scene.frame.cells;
         let mut slot_of = |texture: Option<(usize, Sampler)>| -> u32 {
@@ -592,8 +598,10 @@ impl WorldView {
     /// The frame's moving objects. Each takes its motion from the last frame's object of the same id: its transform then and
     /// where its vertices were.
     pub fn set_objects(&mut self, mut objects: Vec<DynamicObject>) {
+        let before: HashMap<u32, &DynamicObject> =
+            self.scene.objects.iter().map(|b| (b.ghost, b)).collect();
         for o in &mut objects {
-            if let Some(before) = self.scene.objects.iter().find(|b| b.ghost == o.ghost) {
+            if let Some(before) = before.get(&o.ghost) {
                 o.prev_transform = before.transform;
                 o.previous = o.previous_from(before);
             }
@@ -734,5 +742,27 @@ fn floor_draw(texture: Option<usize>, color: [u8; 3], half: f32, tile: f32) -> D
         fog: true,
         lights: Vec::new(),
         vertex_key: None,
+    }
+}
+
+/// A static mesh object of `draws` (their textures indices into `local`, the frame's table): translucent when a draw blends.
+fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
+    let translucent = draws.iter().any(|d| d.blend != Blend::Opaque);
+    let draws: Vec<HdDraw> = draws
+        .iter()
+        .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, local))
+        .collect();
+    let (centre, radius) = bounding_sphere(&draws);
+    DynamicObject {
+        ghost: id,
+        transform: Mat::IDENTITY,
+        prev_transform: Mat::IDENTITY,
+        translucent,
+        centre,
+        radius,
+        draws,
+        previous: None,
+        stamp: None,
+        nodes: Vec::new(),
     }
 }

@@ -8,16 +8,25 @@
 //! - **Figures** (Players) are the engine's ([`GhostScene`]): the client's own where it predicts it (the cubes are its
 //!   collision world, [`torque_example_common::prediction`]), each playing the actions its shape has for the way it moves
 //!   (`root`, `run`, `back`, `side`, the jump and the fall) as TGE's client picks them.
+//! - **The camera's line of sight** ([`WorldScene::sight_hit`]) meets the cubes' boxes and the interiors' hulls (each
+//!   InteriorInstance's `.dif` read as the server reads it, placed where its record puts it), so the camera behind the figure
+//!   stays in front of a wall or a ceiling.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use torque::app::ghosts::{FrameInput, GhostOptions, GhostScene, OwnView};
 use torque::app::view::{SceneShape, WorldView};
 use torque::client::conn::tge::TgeWorld;
 use torque::client::predict::ghost_players::GhostPlayers;
+use torque::collide::map::interior::InteriorShape;
+use torque::game::scene::interior::{KeptInterior, read_interior};
 use torque::ghost_world::world::Pose;
-use torque::ghosts::TgeClass;
+use torque::ghosts::{TgeClass, TgeRecord};
 use torque_example_common::KitAssets;
+use torque_example_common::prediction::placed;
+
+use crate::levels::LevelStyle;
 use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::Eye;
@@ -31,19 +40,37 @@ struct KeptCube {
     bounds: ([f32; 3], [f32; 3]),
 }
 
+/// An interior's hulls in the world, kept with the pose they were placed at.
+struct PlacedInterior {
+    pose: Pose,
+    shape: InteriorShape,
+}
+
+/// The work an interior's hulls may cost to make the first time, the work one line of sight may cost, the most interior
+/// files kept, and the most read in one update (the others wait for the next).
+const INTERIOR_BUDGET: u64 = 50_000_000;
+const SIGHT_BUDGET: u64 = 1_000_000;
+const MAX_INTERIOR_FILES: usize = 64;
+const MAX_INTERIOR_READS: usize = 2;
+
 /// The objects of the client's ghosts, frame after frame.
 pub struct WorldScene {
-    ghosts: GhostScene,
+    ghosts: GhostScene<LevelStyle>,
     shapes: HashMap<String, Option<SceneShape>>,
     cubes: BTreeMap<u32, KeptCube>,
+    /// The interior files read (by path; `None` for one that did not read) and each interior ghost's hulls.
+    interior_files: HashMap<String, Option<KeptInterior>>,
+    interiors: BTreeMap<u32, PlacedInterior>,
 }
 
 impl Default for WorldScene {
     fn default() -> WorldScene {
         WorldScene {
-            ghosts: GhostScene::new(GhostOptions::default()),
+            ghosts: GhostScene::with_style(GhostOptions::default(), LevelStyle),
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
+            interior_files: HashMap::new(),
+            interiors: BTreeMap::new(),
         }
     }
 }
@@ -58,6 +85,77 @@ impl WorldScene {
     pub fn clear(&mut self) {
         self.ghosts.clear();
         self.cubes.clear();
+        self.interiors.clear();
+    }
+
+    /// How far along the unit `dir` from `from` the line first meets a cube's box or an interior's hull, if it does within
+    /// `reach` (a box the line starts in does not count).
+    pub fn sight_hit(&self, from: [f32; 3], dir: [f32; 3], reach: f32) -> Option<f32> {
+        let mut best: Option<f32> = None;
+        let mut take = |t: f32| {
+            if t < reach && best.is_none_or(|b| t < b) {
+                best = Some(t);
+            }
+        };
+        for (min, max) in self.cube_bounds() {
+            if let Some(t) = crate::client::ray_box(from, dir, min, max) {
+                take(t);
+            }
+        }
+        let end = [0, 1, 2].map(|i| from[i] + dir[i] * reach);
+        let mut work = 0u64;
+        for placed in self.interiors.values() {
+            let mut pay = |u: u64| {
+                work = work.saturating_add(u);
+                work <= SIGHT_BUDGET
+            };
+            if let Ok(Some((t, _))) = placed.shape.cast_ray(from, end, &mut pay) {
+                take(t * reach);
+            }
+        }
+        best
+    }
+
+    /// The interior ghosts of `world` placed for the camera's line of sight (each file read once).
+    fn place_interiors(&mut self, assets: &KitAssets, world: &TgeWorld) {
+        let mut seen = Vec::new();
+        let mut reads = 0;
+        for (&index, ghost) in &world.records.ghosts {
+            let (Some(TgeRecord::InteriorInstance(r)), Some(pose)) = (&ghost.record, ghost.pose())
+            else {
+                continue;
+            };
+            let Some(init) = &r.init else { continue };
+            seen.push(index);
+            if self.interiors.get(&index).is_some_and(|k| k.pose == pose) {
+                continue;
+            }
+            let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
+            if !self.interior_files.contains_key(&path)
+                && self.interior_files.len() < MAX_INTERIOR_FILES
+                && reads < MAX_INTERIOR_READS
+            {
+                reads += 1;
+                let mut work = 0u64;
+                let read = torque_render_scene::Assets::read(assets, &path).and_then(|bytes| {
+                    read_interior(&bytes, &mut |u| {
+                        work = work.saturating_add(u);
+                        work <= INTERIOR_BUDGET
+                    })
+                });
+                self.interior_files.insert(path.clone(), read);
+            }
+            let Some(Some(kept)) = self.interior_files.get(&path) else {
+                continue;
+            };
+            let Some((m, scale)) = placed(&pose) else {
+                continue;
+            };
+            if let Some(shape) = InteriorShape::new(Arc::clone(&kept.geom), m.m, scale) {
+                self.interiors.insert(index, PlacedInterior { pose, shape });
+            }
+        }
+        self.interiors.retain(|i, _| seen.contains(i));
     }
 
     fn shape(&mut self, assets: &KitAssets, path: &[u8]) -> Option<SceneShape> {
@@ -93,6 +191,7 @@ impl WorldScene {
             surfaces: &|_, _, _| Vec::new(),
         };
         self.ghosts.update(assets, world, &input);
+        self.place_interiors(assets, world);
     }
 
     /// The frame's objects: the figures as [`WorldScene::update`] left them and `world`'s cubes.

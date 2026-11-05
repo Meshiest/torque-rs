@@ -10,15 +10,17 @@
 //! (`$World::Pick`: the map's server starts and the client joins it) or the world left (`$World::Leave`: the server stops).
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
-//! ([`crate::scene`]), the canvas drawn, and the eye: behind the client's own figure (or at its eyes, `V`), kept in front of the
-//! cubes between. `V` eases the camera from one to the other ([`CameraBlend`], kept in front of the cubes as the camera behind
-//! is); the figure is hidden only once the camera has arrived at its eyes.
+//! ([`crate::scene`]) and the map's spot lights, the canvas drawn, and the eye: behind the client's own figure (or at its eyes,
+//! `V`), kept in front of the cubes and the interiors' walls between. `V` eases the camera from one to the other
+//! ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden only once the camera has arrived at
+//! its eyes.
 
 use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
 
 use torque::app::camera_blend::CameraBlend;
 use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+use torque::app::lights::WorldLights;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
 use torque::gui::GuiDraws;
@@ -56,6 +58,8 @@ pub struct LevelDemo {
     /// The camera's ease between first and third person, and the mode it last eased to (first person).
     blend: CameraBlend,
     camera_mode: Option<bool>,
+    /// The map's spot lights (SpotLight objects), drawn where their ghosts are.
+    lights: WorldLights,
 }
 
 impl Deref for LevelDemo {
@@ -74,7 +78,8 @@ impl DerefMut for LevelDemo {
 
 impl LevelDemo {
     /// The client over `files`: `client.cs` run, the menu built from the maps found.
-    pub fn new(files: GameFiles) -> Result<LevelDemo, String> {
+    pub fn new(mut files: GameFiles) -> Result<LevelDemo, String> {
+        crate::levels::add_levels(&mut files)?;
         let maps = crate::files::maps(&files);
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
@@ -101,6 +106,7 @@ impl LevelDemo {
             playing: None,
             daylight: Daylight::default(),
             blend: CameraBlend::default(),
+            lights: WorldLights::default(),
             camera_mode: None,
         })
     }
@@ -204,8 +210,8 @@ impl LevelDemo {
         look_at(at, target)
     }
 
-    /// The point `distance` from `target` along unit `back`, brought in front of the first cube between (no nearer than
-    /// `nearest`, or the distance when that is nearer).
+    /// The point `distance` from `target` along unit `back`, brought in front of the first cube or interior wall between (no
+    /// nearer than `nearest`, or the distance when that is nearer).
     fn kept_clear(
         &self,
         target: [f32; 3],
@@ -213,14 +219,10 @@ impl LevelDemo {
         distance: f32,
         nearest: f32,
     ) -> [f32; 3] {
-        let mut reach = distance;
-        for (min, max) in self.scene.cube_bounds() {
-            if let Some(t) = ray_box(target, back, min, max)
-                && t < reach
-            {
-                reach = (t - CAMERA_CLEARANCE).max(nearest.min(distance));
-            }
-        }
+        let reach = match self.scene.sight_hit(target, back, distance) {
+            Some(t) => (t - CAMERA_CLEARANCE).max(nearest.min(distance)),
+            None => distance,
+        };
         [0, 1, 2].map(|i| target[i] + back[i] * reach)
     }
 
@@ -339,6 +341,14 @@ impl LevelDemo {
             }
         };
         view.set_objects(objects);
+        let spots = {
+            let st = self.client.host.client.borrow();
+            match st.conn.conn.as_ref() {
+                Some(conn) => self.lights.spots(&self.files.kit, &conn.world.records),
+                None => Vec::new(),
+            }
+        };
+        view.set_spots(spots);
         // The client's camera is the example's own: the GameTSCtrl draws the world whatever the connection's camera is.
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
@@ -387,7 +397,7 @@ fn camera_target(f: &OwnView) -> [f32; 3] {
     ]
 }
 
-fn with_fov(mut eye: Eye) -> Eye {
+pub fn with_fov(mut eye: Eye) -> Eye {
     eye.fov = None;
     eye
 }

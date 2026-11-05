@@ -2248,6 +2248,9 @@ dependencies = [
  "torque",
  "torque-example-assets",
  "torque-example-common",
+ "torque-import",
+ "torque-interior-builder",
+ "torque-maps",
  "torque-render-core",
  "torque-render-scene",
 ]
@@ -2338,7 +2341,9 @@ dependencies = [
 name = "torque-interior-builder"
 version = "0.1.0"
 dependencies = [
+ "png",
  "torque-collide",
+ "torque-images",
  "torque-import",
  "torque-mapcore",
  "torque-maps",

@@ -1232,9 +1232,9 @@ impl<S: GhostStyle> GhostScene<S> {
         }
     }
 
-    /// The frame's objects of the ghosts the engine draws ([`GhostOptions::select`]) as [`GhostScene::update`] left them; the
-    /// map's interiors go into the view's static meshes on the way ([`crate::interiors`], each draw through
-    /// [`GhostStyle::interior_draw`]).
+    /// The frame's objects of the ghosts the engine draws ([`GhostOptions::select`]) as [`GhostScene::update`] left them, and
+    /// the interiors' see-through panes; the map's interiors go into the view's static meshes on the way
+    /// ([`crate::interiors`], each draw through [`GhostStyle::interior_draw`]).
     pub fn objects(
         &mut self,
         view: &mut WorldView,
@@ -1267,10 +1267,12 @@ impl<S: GhostStyle> GhostScene<S> {
                 Some(o.0) != control && drawn(&o.0) && !world.mounted_images(o.0).is_empty()
             })
             .count();
-        let out = view.ghost_objects(world, &shaped, set);
+        let mut out = view.ghost_objects(world, &shaped, set);
         let style = &mut self.style;
-        self.interiors
-            .update(view, assets, world, &mut |m, d| style.interior_draw(m, d));
+        out.extend(
+            self.interiors
+                .update(view, assets, world, &mut |m, d| style.interior_draw(m, d)),
+        );
         out
     }
 

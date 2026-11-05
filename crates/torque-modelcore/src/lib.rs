@@ -159,6 +159,8 @@ pub struct Material {
     pub unlit: bool,
     /// The shape material flags when the source states them (a file this crate's writer made).
     pub flags: Option<u32>,
+    /// Its textures sampled with nearest-neighbor filtering (pixel art: a Blockbench model's, a glTF sampler's `NEAREST`).
+    pub nearest: bool,
 }
 
 impl Default for Material {
@@ -178,6 +180,7 @@ impl Default for Material {
             roughness: 1.0,
             unlit: false,
             flags: None,
+            nearest: false,
         }
     }
 }

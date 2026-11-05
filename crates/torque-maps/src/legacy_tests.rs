@@ -123,3 +123,18 @@ fn the_border_word_layout_reads_only_through_an_importer_that_asks_for_it() {
     };
     assert!(lenient.convexes(&padded).is_ok());
 }
+
+#[test]
+fn the_engine_s_surface_flags_mark_their_material_and_an_unmarked_file_marks_none() {
+    let mut d = dif::parse(&crate::synth::dif(SPEC)).unwrap();
+    assert!(surfaces(&d).material_flags.is_empty());
+    for s in &mut d.details[0].surfaces {
+        s.flags |= dif::surface_flags::TRANSLUCENT | dif::surface_flags::NEAREST;
+    }
+    let back = dif::parse(&dif::write(&d).unwrap()).unwrap();
+    let out = surfaces(&back);
+    assert_eq!(
+        out.material_flags.get("wall"),
+        Some(&MaterialFlags::TRANSLUCENT.with(MaterialFlags::NEAREST))
+    );
+}

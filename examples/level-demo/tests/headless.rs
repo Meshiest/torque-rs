@@ -208,3 +208,51 @@ fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
     frame(&mut game);
     assert!(!hidden(&game) && game.camera_blending());
 }
+
+/// A test map: a floor, and an interior over the spawn point (which faces +y) with a ceiling 2.6 units up and a wall 5 units
+/// behind; the camera behind the figure would be 6.5 units back and above the ceiling without them.
+#[test]
+fn the_camera_behind_the_figure_stays_under_an_interior_ceiling_and_in_front_of_its_wall() {
+    use torque_interior_builder::mission::{Placement, fragment};
+    use torque_interior_builder::{Brush, Options, TexGen, build};
+    let texgen = |n| TexGen::world(n, 1.0);
+    let room = build(
+        &[
+            Brush::cuboid([-6.0, -8.0, 2.6], [6.0, 8.0, 2.9], "roof", texgen),
+            Brush::cuboid([-6.0, -5.4, 0.0], [6.0, -5.0, 2.6], "wall", texgen),
+        ],
+        &Options::default(),
+    )
+    .expect("the room builds");
+    let mut files = GameFiles::bundled().expect("the game folder");
+    files
+        .kit
+        .insert("camera-room.dif", room.bytes().expect("the room's bytes"));
+    let map = format!(
+        "// Camera room test\n// A ceiling and a wall behind.\nnew SimGroup(MissionGroup)\n{{\n   new ScriptObject(MapInfo) {{ \
+         title = \"Camera room test\"; spawn = \"0 0 0.2\"; spawnYaw = 0; }};\n   new StaticShape() {{ dataBlock = WorldCubeData; \
+         position = \"0 0 -0.5\"; scale = \"20 20 1\"; }};\n{}\n}};\n",
+        fragment("", "kit/camera-room.dif", &Placement::default(), &[])
+    );
+    let path = "missions/zz-camera-room-test.mis";
+    files.insert(path, map.as_bytes());
+    let mut game = LevelDemo::new(files).expect("the client");
+    let index = game
+        .maps
+        .iter()
+        .position(|m| m.path == path)
+        .expect("listed");
+    assert!(enter(&mut game, index), "the test map did not start");
+    for _ in 0..30 {
+        game.step(32);
+        game.update_scene(0.032);
+    }
+    assert!(!game.first_person());
+    let eye = game.drawn_eye().position;
+    let figure = server_position(&game);
+    assert!(figure[2].abs() < 0.1, "the figure on the floor: {figure:?}");
+    assert!(
+        eye[2] < 2.6 && eye[1] > -5.0 && eye[1] < figure[1],
+        "the camera at {eye:?} behind the figure at {figure:?}"
+    );
+}

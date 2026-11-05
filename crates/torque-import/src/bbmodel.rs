@@ -6,7 +6,8 @@
 //! and faces of three or more of them, each corner with its pixel `uv`). The outliner's groups are nodes (each turned by its
 //! `rotation` about its `origin`, inside its parent's turn); an element is a mesh on its group's node (or a root node), named
 //! as the element is. Textures carried as `data:` PNGs are the images, one material each (named after the texture's file name
-//! without its extension); a face of no texture takes the `default` material. Animations are not read (a note says so).
+//! without its extension), sampled with nearest-neighbor filtering as Blockbench draws them; a face of no texture takes the
+//! `default` material. Animations are not read (a note says so).
 //!
 //! **Frames.** Blockbench is y up with 16 units a block: a point `(x, y, z)` is Torque's `(x, -z, y) / 16` times
 //! [`Options::scale`] (so a block is a meter, as Blockbench's own glTF export makes it). Turns are Euler angles in degrees,
@@ -612,6 +613,7 @@ pub fn read(bytes: &[u8], options: &Options, mut charge: Charge) -> Result<Model
         r.model.materials.push(Material {
             name,
             base_texture: Some(r.model.images.len() - 1),
+            nearest: true,
             ..Material::default()
         });
         r.textures.push((r.model.materials.len() - 1, size));

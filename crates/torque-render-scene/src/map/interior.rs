@@ -7,7 +7,9 @@
 //!
 //! **Merging.** Every instance's triangles of one texture go into one mesh over the whole map (a map's hundred interiors draw in
 //! about as many draws as it has materials). A material's texture is looked up beside the `.dif` (the resource manager's search up
-//! the folders included, [`crate::textures::candidates`]); one with alpha is drawn blended.
+//! the folders included, [`crate::textures::candidates`]); one with alpha is drawn blended. A material the file marks is drawn
+//! see-through ([`mapcore::material::MaterialFlags::TRANSLUCENT`]: blended, never lightmapped) or sampled with nearest-neighbor
+//! filtering ([`NEAREST_SAMPLER`]), in meshes apart from the same texture unmarked.
 //!
 //! **Lighting.** With the sun's relight ([`super::light`]) an opaque material's surfaces are drawn unlit and multiplied by
 //! their instance's lightmap rectangles in a pass of their own (one draw an atlas page, after the materials): each surface's
@@ -29,6 +31,7 @@ use super::{MapClass, MapProfile};
 use crate::math::Mat;
 use crate::textures::TextureSet;
 use crate::{Assets, Blend, Cull, TexEnv, Vertex};
+use mapcore::material::MaterialFlags;
 
 /// The most distinct `.dif` files kept parsed on a thread.
 pub const MAX_KEPT_FILES: usize = 256;
@@ -149,6 +152,10 @@ pub(crate) struct Material {
     pub group: String,
     pub texture: TexRef,
     pub opaque: bool,
+    /// Sampled with nearest-neighbor filtering ([`mapcore::material::MaterialFlags::NEAREST`]).
+    pub nearest: bool,
+    /// Drawn see-through whatever its texture ([`mapcore::material::MaterialFlags::TRANSLUCENT`]).
+    pub see_through: bool,
 }
 
 /// Each instance's materials (in `by_material`'s order), their textures looked up once a folder and name.
@@ -157,7 +164,7 @@ pub(crate) fn materials(
     profile: &MapProfile,
     textures: &mut TextureSet<'_>,
 ) -> Vec<Vec<Material>> {
-    let mut found: HashMap<(String, String), Material> = HashMap::new();
+    let mut found: HashMap<(String, String, u32), Material> = HashMap::new();
     instances
         .iter()
         .map(|inst| {
@@ -165,8 +172,16 @@ pub(crate) fn materials(
                 .by_material
                 .keys()
                 .map(|material| {
+                    let marks = inst
+                        .local
+                        .material_flags
+                        .get(material)
+                        .copied()
+                        .unwrap_or_default();
+                    let nearest = marks.has(MaterialFlags::NEAREST);
+                    let see_through = marks.has(MaterialFlags::TRANSLUCENT);
                     found
-                        .entry((inst.folder.clone(), material.clone()))
+                        .entry((inst.folder.clone(), material.clone(), marks.0))
                         .or_insert_with(|| {
                             let folder = &inst.folder;
                             match find_texture(
@@ -175,16 +190,23 @@ pub(crate) fn materials(
                                 &[folder, profile.interior_fallback],
                             ) {
                                 Some((t, n)) => Material {
-                                    group: n.to_ascii_lowercase(),
+                                    group: marked(n.to_ascii_lowercase(), marks),
                                     texture: TexRef::Name(n),
-                                    opaque: !textures.has_alpha(t),
+                                    opaque: !textures.has_alpha(t) && !see_through,
+                                    nearest,
+                                    see_through,
                                 },
                                 None => {
                                     let n = format!("{folder}/{material}");
                                     Material {
-                                        group: format!("missing {}", n.to_ascii_lowercase()),
+                                        group: marked(
+                                            format!("missing {}", n.to_ascii_lowercase()),
+                                            marks,
+                                        ),
                                         texture: TexRef::Missing(n),
-                                        opaque: true,
+                                        opaque: !see_through,
+                                        nearest,
+                                        see_through,
                                     }
                                 }
                             }
@@ -194,6 +216,15 @@ pub(crate) fn materials(
                 .collect()
         })
         .collect()
+}
+
+/// A group's name with the marks that change its draw (a marked material is never merged with the same texture unmarked).
+fn marked(group: String, marks: MaterialFlags) -> String {
+    if marks == MaterialFlags::default() {
+        group
+    } else {
+        format!("{group} marked {}", marks.0)
+    }
 }
 
 /// The light's view of the instances.
@@ -212,6 +243,16 @@ pub(crate) fn light_inputs(
         })
         .collect()
 }
+
+/// The sampler of a material marked nearest: sharp texels near and far, the mipmap levels still blended between
+/// (`GL_NEAREST_MIPMAP_LINEAR`), so a far wall does not shimmer.
+pub const NEAREST_SAMPLER: crate::Sampler = crate::Sampler {
+    repeat: true,
+    mag: crate::Filter::Nearest,
+    min: crate::Filter::Nearest,
+    mip: crate::Filter::Linear,
+    mipmaps: true,
+};
 
 /// The sampler of a lightmap page: clamped (each rectangle has its gutter), linear, level 0 only.
 pub const LIGHTMAP_SAMPLER: crate::Sampler = crate::Sampler {
@@ -250,8 +291,9 @@ pub(crate) fn meshes_capped(
     cap: usize,
 ) -> Vec<Mesh> {
     let mut merged = 0usize;
-    // By group: texture, whether lightmapped, the vertices and the sum of their positions (the mesh's centre).
-    type Group = (TexRef, bool, Vec<Vertex>, [f64; 3]);
+    // By group: texture, whether lightmapped, the vertices and the sum of their positions (the mesh's centre), and its
+    // material (whether see-through, whether sampled nearest).
+    type Group = (TexRef, bool, Vec<Vertex>, [f64; 3], (bool, bool));
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     let pages = lit.map_or(0, |l| l.pages.len());
     let mut passes: Vec<(Vec<Vertex>, [f64; 3])> = vec![(Vec::new(), [0.0; 3]); pages];
@@ -309,9 +351,15 @@ pub(crate) fn meshes_capped(
                 } else {
                     mat.group.clone()
                 };
-                let entry = groups
-                    .entry(label)
-                    .or_insert_with(|| (mat.texture.clone(), lightmapped, Vec::new(), [0.0; 3]));
+                let entry = groups.entry(label).or_insert_with(|| {
+                    (
+                        mat.texture.clone(),
+                        lightmapped,
+                        Vec::new(),
+                        [0.0; 3],
+                        (mat.see_through, mat.nearest),
+                    )
+                });
                 for x in v {
                     for c in 0..3 {
                         entry.3[c] += f64::from(x.position[c]);
@@ -342,28 +390,38 @@ pub(crate) fn meshes_capped(
     let mut out: Vec<Mesh> = groups
         .into_iter()
         .enumerate()
-        .map(|(n, (label, (texture, lightmapped, vertices, sum)))| {
-            let count = vertices.len().max(1) as f64;
-            let mut h = Fnv::new("map interior mesh");
-            h.u64(key);
-            h.u64(light_key);
-            h.u64(n as u64);
-            Mesh {
-                label: format!("interiors {label}"),
-                texture,
-                vertices: Arc::new(vertices),
-                lighting: !lightmapped,
-                tex_env: TexEnv::Modulate,
-                blend: Blend::Opaque,
-                cull: Cull::BackCw,
-                depth_write: true,
-                sampler: super::SAMPLER,
-                alpha_from_texture: true,
-                overlay: false,
-                centre: sum.map(|c| (c / count) as f32),
-                key: h.0,
-            }
-        })
+        .map(
+            |(n, (label, (texture, lightmapped, vertices, sum, (see_through, nearest))))| {
+                let count = vertices.len().max(1) as f64;
+                let mut h = Fnv::new("map interior mesh");
+                h.u64(key);
+                h.u64(light_key);
+                h.u64(n as u64);
+                Mesh {
+                    label: format!("interiors {label}"),
+                    texture,
+                    vertices: Arc::new(vertices),
+                    lighting: !lightmapped,
+                    tex_env: TexEnv::Modulate,
+                    blend: if see_through {
+                        Blend::Alpha
+                    } else {
+                        Blend::Opaque
+                    },
+                    cull: Cull::BackCw,
+                    depth_write: !see_through,
+                    sampler: if nearest {
+                        NEAREST_SAMPLER
+                    } else {
+                        super::SAMPLER
+                    },
+                    alpha_from_texture: true,
+                    overlay: false,
+                    centre: sum.map(|c| (c / count) as f32),
+                    key: h.0,
+                }
+            },
+        )
         .collect();
     if let Some(l) = lit {
         for (n, (vertices, sum)) in passes.into_iter().enumerate() {

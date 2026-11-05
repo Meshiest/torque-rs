@@ -2,6 +2,9 @@
 // connects is sent the datablocks; when it has them, its ghosting starts and it is given a figure to walk (the way in and out
 // is the examples' shared common/server.cs, which calls this file's hooks).
 
+// Every client is the engine's: the engine's own classes (a map's SpotLights) are ghosted to all.
+$Server::EngineClasses = 1;
+
 // ---- datablocks
 
 datablock StaticShapeData(WorldCubeData)

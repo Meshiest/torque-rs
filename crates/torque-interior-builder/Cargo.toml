@@ -14,6 +14,7 @@ categories = ["game-development"]
 # `torque_maps::dif::write` writes. Std only: `.map` files are hostile input like the readers' files.
 
 [dependencies]
+torque-images = { path = "../torque-images" }
 torque-maps = { path = "../torque-maps" }
 torque-modelcore = { path = "../torque-modelcore" }
 # The verification (`verify` feature): the written bytes read back through the importer and collided with as the engine does.
@@ -23,6 +24,7 @@ torque-mapcore = { path = "../torque-mapcore", optional = true }
 torque-import = { path = "../torque-import", optional = true }
 
 [dev-dependencies]
+png = "0.18"
 torque-collide = { path = "../torque-collide" }
 torque-mapcore = { path = "../torque-mapcore" }
 torque-import = { path = "../torque-import" }
