@@ -159,3 +159,52 @@ fn a_figure_that_walks_into_a_cube_stops_at_it_and_jumps() {
     assert!(server_position(&game)[2].abs() < 0.1, "landed again");
     assert!(errors(&game).is_empty(), "{:?}", errors(&game));
 }
+
+#[test]
+fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
+    let files = GameFiles::bundled().expect("the game folder");
+    let mut game = LevelDemo::new(files).expect("the client");
+    assert!(enter(&mut game, 0), "the first map did not start");
+    let frame = |game: &mut LevelDemo| {
+        game.step(16);
+        game.update_scene(0.016);
+        game.drawn_eye()
+    };
+    for _ in 0..30 {
+        frame(&mut game);
+    }
+    let hidden = |g: &LevelDemo| g.with_world(|w| w.hide_control).unwrap();
+    let apart =
+        |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt();
+    let behind = frame(&mut game);
+    assert!(!game.first_person() && !hidden(&game));
+    game.key(Key::V, true);
+    game.key(Key::V, false);
+    let mut last = behind;
+    let mut biggest = 0.0f32;
+    let mut frames = 0;
+    while frames == 0 || game.camera_blending() {
+        let e = frame(&mut game);
+        assert!(game.camera_blending() || hidden(&game));
+        assert!(
+            !game.camera_blending() || !hidden(&game),
+            "hidden before the eyes"
+        );
+        biggest = biggest.max(apart(last.position, e.position));
+        last = e;
+        frames += 1;
+        assert!(frames < 60);
+    }
+    let eyes = game.eye();
+    assert_eq!(last, eyes);
+    let whole = apart(behind.position, eyes.position);
+    assert!(
+        biggest < whole * 2.0 / 18.0 + 0.05,
+        "a step of {biggest} over {whole}"
+    );
+    // Back: shown at once.
+    game.key(Key::V, true);
+    game.key(Key::V, false);
+    frame(&mut game);
+    assert!(!hidden(&game) && game.camera_blending());
+}
