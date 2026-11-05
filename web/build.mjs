@@ -1,7 +1,7 @@
 // Builds an example for the web into <target>/web/<name>/: the module for wasm32-unknown-unknown, wasm-bindgen's JavaScript
 // glue, the page and its file loader, and the example's files, packed by the native build.
 //
-// Usage: node build.mjs <example> [--embed]      (level-demo)
+// Usage: node build.mjs <example> [--embed]      (level-demo, fps)
 // By default the files are fetched by the page: the folder holds `files.json` (each file's path, size and SHA-256) and
 // `game.pack`, which the native build writes (`--web-files`), and the module carries none of them. With `--embed` the module
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const EXAMPLES = {
   'level-demo': { package: 'torque-example-level-demo', bin: 'example-level-demo' },
+  fps: { package: 'torque-example-fps', bin: 'fps-client' },
 };
 
 const name = process.argv[2];

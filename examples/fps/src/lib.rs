@@ -9,6 +9,7 @@
 //! - [`style`]: the arena's own touches on the engine's ghosts (the pistol's kick and sights, the bolts' curve, the shots'
 //!   flares).
 //! - [`shots`]: the example without a window: review pictures drawn offscreen.
+//! - `web` (built for the web only): the client in a browser, join-only, over a game socket to the page's server.
 //!
 //! The window is the engine's ([`torque::app::window::run`]).
 
@@ -20,3 +21,5 @@ pub mod scene;
 pub mod server;
 pub mod shots;
 pub mod style;
+#[cfg(target_arch = "wasm32")]
+pub mod web;

@@ -72,6 +72,20 @@ web-level-demo-embedded-check:
     node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-office.png" 90 world "?map=office"
     node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-menu.png" 60 menu
 
+# The arena for browsers and desktops in one game: its browser build (join-only), then its dedicated server on UDP and the web
+# on 127.0.0.1:{{port}}, serving that build; a browser joins at http://127.0.0.1:{{port}}/ and a desktop `fps-client` joins
+# 127.0.0.1:{{port}}. More of fps-server's switches go after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--map`)
+web-fps port="28000" *args:
+    node ../web/build.mjs fps
+    cargo run -p torque-example-fps --release --bin fps-server -- --transport both --port {{port}} {{args}}
+
+# The arena's cross-play check (build it first with `web-fps` or `node web/build.mjs fps`): fps-server on UDP and the web, a
+# desktop player with no window joined over UDP, and headless Chrome joining from the server's page; both must hold the other's
+# figure, the browser's walks, and no console error. Pictures into the target folder's `web`
+web-fps-check:
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-join.png" 120
+
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`
 level-demo-shots dir="../target/level-demo-shots":

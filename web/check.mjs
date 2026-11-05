@@ -1,7 +1,7 @@
 // Loads a web build of an example in headless Chrome with WebGPU on, waits until the page says its world is drawn, takes a
 // screenshot and fails on any console error, page error or failed request, or on a picture of one flat color.
 //
-// Usage: node check.mjs <url or folder> <screenshot.png> [seconds] [world|menu|cached|refused] [query]
+// Usage: node check.mjs <url or folder> <screenshot.png> [seconds] [world|menu|cached|refused|join] [query]
 // A folder (a web build, `<target>/web/level-demo`) is served on a free port of 127.0.0.1 for the check; a URL may carry the
 // page's query (`?map=office`), and after a folder the query is the fifth argument.
 // Needs puppeteer-core in the folder `TORQUE_WEB_TOOLS` names (`npm install --prefix <folder> puppeteer-core`) and Chrome
@@ -12,6 +12,8 @@
 // - `world`: waits for `data-torque-figure="1"`, then for 120 more frames, and takes the screenshot; then it holds W for two
 //   seconds, checks the figure walked, and takes a second one (`<screenshot>-walked.png`).
 // - `menu`: waits for 120 frames of the menu instead.
+// - `join` (a client that joins a server, the arena's): `world`, and before the screenshot another player's figure must be
+//   held (`data-torque-others`).
 // - `cached` (a build that fetches its files): `world`, then the page loaded again in the same browser (`<screenshot>-again`);
 //   the first load must request the files `files.json` names and the second none of them (read from the page's cache).
 // - `refused`: a fresh browser profile whose every file `files.json` names comes back with one byte changed; the page must
@@ -21,7 +23,7 @@ import { join, resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { serve } from './serve.mjs';
 
-const MODES = ['world', 'menu', 'cached', 'refused'];
+const MODES = ['world', 'menu', 'cached', 'refused', 'join'];
 const [where, out, seconds = '90', mode = 'world', query = ''] = process.argv.slice(2);
 if (!where || !out || !MODES.includes(mode)) {
   console.error(`usage: node check.mjs <url or folder> <screenshot.png> [seconds] [${MODES.join('|')}] [query]`);
@@ -85,6 +87,7 @@ const state = (page) =>
       figure: r.dataset.torqueFigure === '1',
       position: (r.dataset.torquePosition ?? '').split(' ').filter(Boolean).map(Number),
       refused: r.dataset.torqueRefused ?? null,
+      others: Number(r.dataset.torqueOthers ?? 0),
     };
   });
 
@@ -111,6 +114,11 @@ async function play(page, file) {
   let s = await wait(page, deadline, (s) => (menu ? s.frames > 0 : s.figure) || s.refused !== null);
   if (s.refused !== null) problems.push(`the page refused its files: ${s.refused}`);
   if (!menu && !s.figure) problems.push(`no figure within ${seconds} s (frames ${s.frames}, map "${s.map}")`);
+  if (mode === 'join' && s.figure) {
+    s = await wait(page, deadline, (s) => s.others > 0);
+    if (!(s.others > 0)) problems.push(`no other player's figure within ${seconds} s`);
+    console.log(`other players' figures held: ${s.others}`);
+  }
   const loaded = Date.now();
   const target = s.frames + 120;
   s = await wait(page, deadline + 60_000, (s) => s.frames >= target);

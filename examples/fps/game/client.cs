@@ -1,8 +1,8 @@
 // The arena's client: the main menu, the list of games on the local network, the view with its HUD (rounds, health, the
 // round's clock, chat), the pause menu, the round's scores, the keys, and the way in and out.
 //
-// The host watches three globals the scripts set: $Arena::HostAsked (start a server here and join it), $Arena::LeaveAsked (the
-// view was left: stop hosting) and $Arena::QuitAsked. $Arena::Port is the UDP port number the games listen on. $Arena::HostScope
+// The host watches the globals the scripts set: $Arena::HostAsked (start a server here and join it), $Arena::LeaveAsked (the
+// view was left: stop hosting), $Arena::JoinAsked (a browser's client: join the page's game again) and $Arena::QuitAsked. $Arena::Port is the UDP port number the games listen on. $Arena::HostScope
 // ("lan" or "public") says who may join the game the host starts.
 
 exec("common/client.cs");
@@ -844,6 +844,27 @@ function showMainMenu()
    NameEdit.setValue($Pref::Player::Name);
    Canvas.setContent(MainMenuGui);
    Canvas.cursorOn();
+   if ($Arena::JoinOnly)
+      showJoinOnly();
+}
+
+// A browser's client ($Arena::JoinOnly) joins the one game its page came from: the main menu offers that and nothing else.
+// $Arena::JoinAsked asks the host to open a new connection to that game and join it.
+function showJoinOnly()
+{
+   HostButton.setVisible(0);
+   HostNote.setVisible(0);
+   QuitButton.setVisible(0);
+   JoinButton.setText("Join the game");
+   JoinButton.command = "joinPage();";
+   JoinNote.setText("Join the game this page came from.");
+}
+
+function joinPage()
+{
+   saveName();
+   MainStatus.setText("Joining...");
+   $Arena::JoinAsked = 1;
 }
 
 // The lines the hosting client sets for the view's chat box: where the others join, and what a public game needs.

@@ -13,3 +13,9 @@ impl GameDir for Arena {
 
 /// The kit, the shared scripts and the arena's game folder.
 pub type GameFiles = torque_example_common::GameFiles<Arena>;
+
+/// The files a build for the web carries ([`GameFiles::pack`]): the kit and the game folder, without the kit's forests (the
+/// vehicle demo's; no map here places them). The client builds nothing when it starts: the arena's interiors are in the kit.
+pub fn web_pack(files: &GameFiles) -> Vec<u8> {
+    files.pack(|path| !path.starts_with("kit/forest"))
+}

@@ -11,15 +11,28 @@ keywords = ["torque", "example", "multiplayer", "gamedev"]
 categories = ["game-development"]
 
 # The server (torque-server's main loop and network host over torque-game's classes) and each client (torque-client's
-# connection over TGE's records) talk over UDP; a host runs its server in the same process and joins it over the loopback
+# connection over TGE's records) talk over UDP, or a browser's client over WebSocket (`fps-server --transport both`); a host runs its server in the same process and joins it over the loopback
 # address. The game's own scripts are in `game/`; the maps are the `.mis` files in `game/missions/`.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps", "web"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
+
+[features]
+# Built for the web: the module carries its files (the pack whose path is in `TORQUE_WEB_PACK` when it is built) instead of
+# fetching them by the list beside the page (`files.json`).
+embed-pack = []
+
+# Built for the web: a panic shown in the page's console, the page's address and root element, and the functions the page
+# calls.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Window"] }
 
 [[bin]]
 name = "fps-client"

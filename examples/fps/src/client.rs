@@ -28,10 +28,11 @@ use std::net::Ipv4Addr;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
+use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
 use torque::client::conn::tge::TgeWorld as World;
+use torque::client::net::{Datagrams, NetPolicy};
 use torque::ghost_world::world::Pose;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
@@ -102,15 +103,41 @@ impl DerefMut for ArenaGame {
 impl ArenaGame {
     /// The client over `files`: `client.cs` run, the main menu showing.
     pub fn new(files: GameFiles, options: ClientOptions) -> Result<ArenaGame, String> {
+        ArenaGame::build(files, options, None)
+    }
+
+    /// The client over `files` on `socket` (a game socket over WebSocket: a browser's, or a test's), its address rule
+    /// the loopback one (the socket names its server by a stand-in loopback address); `options.net` is not used.
+    pub fn with_socket(
+        files: GameFiles,
+        options: ClientOptions,
+        socket: Box<dyn Datagrams>,
+    ) -> Result<ArenaGame, String> {
+        ArenaGame::build(files, options, Some(socket))
+    }
+
+    fn build(
+        files: GameFiles,
+        options: ClientOptions,
+        socket: Option<Box<dyn Datagrams>>,
+    ) -> Result<ArenaGame, String> {
+        let net = if socket.is_some() {
+            ClientNet::External
+        } else {
+            options.net.client_net()
+        };
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
             game_classes: true,
             client_game: Some(Rc::new(CubeClient::new(files.mem_files()))),
             // The controls that measure text as they lay out (the list of games) find their fonts where the drawing does.
             layout_fonts: true,
-            net: options.net.client_net(),
+            net,
             server_query: true,
         })?;
+        if let Some(socket) = socket {
+            b.set_socket(socket, NetPolicy::Loopback);
+        }
         register_join_natives(&mut b.vm, &b.state);
         b.vm.set_global("$Arena::Port", &options.port.to_string());
         b.exec("client.cs")?;
@@ -228,6 +255,14 @@ impl ArenaGame {
         for (i, line) in lines.iter().enumerate() {
             self.set_global(&format!("$Arena::HostInfo{}", i + 1), line);
         }
+    }
+
+    /// Replaces the client's socket (a browser's client opens a new game socket to join again).
+    pub fn set_socket(&mut self, socket: Box<dyn Datagrams>) {
+        let st = self.client.host.client.borrow();
+        let mut n = st.net.borrow_mut();
+        n.socket = Some(socket);
+        n.policy = NetPolicy::Loopback;
     }
 
     /// Stops the hosted server, if there is one.

@@ -2554,11 +2554,15 @@ dependencies = [
 name = "torque-example-fps"
 version = "0.1.0"
 dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
  "torque",
  "torque-example-assets",
  "torque-example-common",
  "torque-render-core",
  "torque-render-scene",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

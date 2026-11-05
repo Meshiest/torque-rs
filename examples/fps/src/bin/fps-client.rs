@@ -10,16 +10,79 @@
 //! flight frame by frame, the bolts' holes, a hit from both sides and aiming down the sights; `--polish2-shots <dir>` a shot's
 //! flares and smoke frame by frame, a bolt's ribbon from the side, bolt holes at a wall's middle and edge and in the floor, and
 //! the sights aimed (also at 1920 x 1080); `--hitbox-shots <dir>` the other figure's hitboxes drawn over it in its poses;
-//! `--lit-particle-shots <dir>` the muzzle's smoke unlit and lit, in the sun and in shade.
+//! `--lit-particle-shots <dir>` the muzzle's smoke unlit and lit, in the sun and in shade. `--web-files <dir>` writes the files
+//! a build for the web fetches into `dir`: the pack (`files::web_pack`) as `game.pack` and the list beside the page
+//! (`files.json`, `torque::app::manifest`); `--web-pack <file>` writes the pack alone, for a build that carries it (the
+//! `embed-pack` feature).
+//!
+//! Built for the web, it is the page's client (the library's `web` module): join-only, over a game socket to the server that
+//! served the page; the page calls the functions of `page`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
+#[cfg(not(target_arch = "wasm32"))]
+use torque::app::manifest::{self, Manifest};
+#[cfg(not(target_arch = "wasm32"))]
 use torque_example_fps::client::{ArenaGame, ClientOptions};
-use torque_example_fps::files::GameFiles;
+#[cfg(not(target_arch = "wasm32"))]
+use torque_example_fps::files::{self, GameFiles};
+#[cfg(not(target_arch = "wasm32"))]
 use torque_example_fps::shots;
 
+/// The pack's file name in a web build's folder.
+#[cfg(not(target_arch = "wasm32"))]
+const WEB_PACK: &str = "game.pack";
+
 /// The pictures' size.
+#[cfg(not(target_arch = "wasm32"))]
 const SHOT_SIZE: (u32, u32) = (1280, 720);
 
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    torque_example_fps::web::init();
+}
+
+/// What the page calls (`web/index.html` and `web/files.js`): the library's `web` module.
+#[cfg(target_arch = "wasm32")]
+mod page {
+    use torque::app::manifest;
+    use torque_example_fps::web;
+    use wasm_bindgen::prelude::wasm_bindgen;
+
+    /// Whether the module carries its files; if not, the page fetches them by `files.json`.
+    #[wasm_bindgen]
+    pub fn embedded() -> bool {
+        web::embedded()
+    }
+
+    /// The most bytes `files.json` may have.
+    #[wasm_bindgen(js_name = manifestMaxBytes)]
+    pub fn manifest_max_bytes() -> u32 {
+        u32::try_from(manifest::MAX_BYTES).unwrap_or(u32::MAX)
+    }
+
+    #[wasm_bindgen(js_name = startEmbedded)]
+    pub fn start_embedded() -> Result<(), String> {
+        web::start_embedded()
+    }
+
+    #[wasm_bindgen(js_name = readManifest)]
+    pub fn read_manifest(text: &str) -> Result<(), String> {
+        web::read_manifest(text)
+    }
+
+    #[wasm_bindgen(js_name = addFile)]
+    pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
+        web::add_file(path, bytes)
+    }
+
+    #[wasm_bindgen(js_name = startFetched)]
+    pub fn start_fetched() -> Result<(), String> {
+        web::start_fetched()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = Args::from_env();
     let mut shots_dir = None;
@@ -29,6 +92,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut polish2_dir = None;
     let mut hitbox_dir = None;
     let mut lit_dir = None;
+    let mut pack_file = None;
+    let mut web_dir = None;
     let mut options = ClientOptions::default();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -39,10 +104,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--polish2-shots" => polish2_dir = Some(args.dir(&arg)?),
             "--hitbox-shots" => hitbox_dir = Some(args.dir(&arg)?),
             "--lit-particle-shots" => lit_dir = Some(args.dir(&arg)?),
+            "--web-pack" => pack_file = Some(args.dir(&arg)?),
+            "--web-files" => web_dir = Some(args.dir(&arg)?),
             "--bind" => options.host_address = args.ipv4(&arg)?,
             "--name" => options.name = args.value(&arg, "a name")?,
             _ => return Err(unknown(&arg).into()),
         }
+    }
+    if let Some(file) = pack_file {
+        let pack = files::web_pack(&GameFiles::bundled()?);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&file, &pack)?;
+        println!("{} ({} bytes)", file.display(), pack.len());
+        return Ok(());
+    }
+    if let Some(dir) = web_dir {
+        let pack = files::web_pack(&GameFiles::bundled()?);
+        let list = Manifest::of([(WEB_PACK, pack.as_slice())])?;
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join(WEB_PACK), &pack)?;
+        std::fs::write(dir.join(manifest::FILE_NAME), list.to_json())?;
+        println!("{} ({} bytes)", dir.join(WEB_PACK).display(), pack.len());
+        return Ok(());
     }
     if let Some(dir) = menu_dir {
         let sizes = [(1280, 720), (1920, 1080), (2560, 1080)];

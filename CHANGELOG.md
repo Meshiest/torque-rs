@@ -183,7 +183,8 @@ The first development version. Nothing is published yet; this is what exists.
   Requests must name an IP address, `localhost` or one of the server's names in `Host` (421 otherwise, against DNS
   rebinding), and a page's game socket must come from the server's own page or a listed origin (`net::web::Access`, 403
   otherwise). Game sockets go by stand-in addresses in `240.0.0.0/4`, one fixed IP per peer address (a peer that comes
-  back has the same one, so the host's limits and bans hold), so they never share an address with a UDP peer; a socket's place under the per-address cap is reserved when its upgrade is answered.
+  back has the same one, so the host's limits and bans hold), so they never share an address with a UDP peer; a socket's
+  place under the per-address cap is reserved when its upgrade is answered.
 - `torque-client`'s `web-socket` feature: a client's datagrams over WebSocket (`net::web_socket::WebSocketDatagrams`: the
   page's `WebSocket` in a browser, a plain `ws` connection natively). `torque::app`'s `web` feature: a server on
   `Listen::Web` (the web alone, or UDP beside it), whose dedicated loop services the transport between ticks, and
@@ -192,6 +193,14 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque::app::manifest`: the list of a web build's files (`files.json`: each file's path, size and SHA-256), read with caps
   on its size, its file count, the files' total bytes, the paths and the hashes' form; a fetched file is taken only when its
   size and hash are the list's. The examples' `GameFiles::from_fetched` reads the fetched files (packs and loose files).
+- The arena for browsers: `fps-server --transport udp|web|both` (default `udp`) serves the browser build's folder over HTTP
+  (`--web-root`, or `--no-files`) and takes game sockets over WebSocket on the same port, with TLS from `--tls-cert` and
+  `--tls-key`, host names from `--web-host` and other pages' origins from `--allow-origin`; `node web/build.mjs fps` builds
+  the join-only browser client (files fetched by `files.json`, or carried with `--embed`), which joins the server that
+  served its page. `just examples/web-fps` builds and serves it; `just examples/web-fps-check` puts a desktop player with
+  no window and headless Chrome in one game. `cargo test -p torque-example-fps --test web`: a UDP and a WebSocket client
+  see each other, chat and hit each other; hostile peers are closed with the ticks' time unchanged; a banned browser that
+  comes back is still refused.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
