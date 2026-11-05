@@ -4,6 +4,8 @@
 
 // Every client is the engine's: the engine's own classes (a map's SpotLights) are ghosted to all.
 $Server::EngineClasses = 1;
+// A packet to each client every tick (it sends at the slower of this and the client's rate).
+$pref::Net::PacketRateToClient = 32;
 
 // ---- datablocks
 

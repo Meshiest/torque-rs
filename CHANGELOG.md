@@ -270,6 +270,14 @@ The first development version. Nothing is published yet; this is what exists.
   tiling: every terrain layer's texture tiled stochastically and tinted by a large-scale noise. Off, the planes are drawn as
   before. `HdScene::cloud_time` (opt-in, `WorldView::set_cloud_time`): the volumetric clouds' own clock (their drift,
   change of shape and shadows) in place of the effect time.
+- The valley made larger and wilder: jagged mountains of up to about 500 m from ridged noise (crests, crags and gullies)
+  with the block's rim raised so no edge shows, its haze from 1,400 units and its sky to 3,500. Its woods are a few trees
+  and groves of three to five trees built once (`valley_tree_*.dif`, `valley_grove_*.dif`) and placed, turned and scaled
+  by about 500 `InteriorInstance`s (`trees::tree_sunk` sinks a grove's trunks deeper): the level demo's web pack is
+  3.4 MB with the valley. Its map asks for the ground's variation (`groundVariation = 1`) and runs its clouds 30 times as
+  fast as the clock (`cloudTimeScale = 30`, a timelapse over the held golden hour), both read by the level demo from the
+  map's `MapInfo`; the level demo asks for a packet every tick at the largest size (the valley's places ghost in about
+  7 s). `--valley-shots` writes each view's GPU frame time, and `--valley-clip` eight seconds of the sky moving.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel

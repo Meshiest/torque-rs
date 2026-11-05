@@ -4,6 +4,11 @@
 //! every [`GROUND_TILE`] m), the water from the top of its box (TGE's fluid sits at its box's top: `position` plus `scale`'s
 //! height), with its `surfaceTexture` at its `surfaceOpacity` and the demo's own tint ([`WATER_TINT`]).
 //!
+//! A map whose `MapInfo` says `groundVariation = 1` has its ground's textures varied against visible tiling (the renderer's
+//! [`WorldView::set_ground_variation`]); the others are drawn as before. One whose `MapInfo` gives a `cloudTimeScale` has its
+//! volumetric clouds run that many times as fast as the clock (a timelapse: their drift, change of shape and shadows,
+//! [`WorldView::set_cloud_time`]).
+//!
 //! Only a block's fields written in its `new` statement are read (`new TerrainBlock(Name) { terrainFile = "..."; ... };`), as
 //! the maps here write them; a map without either has neither.
 
@@ -39,12 +44,26 @@ pub struct MapGround {
     /// The terrain's materials' textures, in the file's order.
     pub layers: Vec<String>,
     pub water: Option<WaterSheet>,
+    /// Whether the ground's textures are varied against visible tiling.
+    pub variation: bool,
+    /// How many times as fast as the clock the clouds run (0: on the effect time, as every other map's).
+    pub cloud_time_scale: f32,
 }
 
 impl MapGround {
     /// The ground of the map whose script is `text`, its files read from `files`.
     pub fn read(files: &GameFiles, text: &str) -> Result<MapGround, String> {
-        let mut ground = MapGround::default();
+        let mut ground = MapGround {
+            variation: blocks(text, "ScriptObject").iter().any(|b| {
+                field(b, "groundVariation").is_some_and(|v| v.trim() != "0" && !v.trim().is_empty())
+            }),
+            cloud_time_scale: blocks(text, "ScriptObject")
+                .iter()
+                .find_map(|b| field(b, "cloudTimeScale")?.trim().parse::<f32>().ok())
+                .filter(|s| s.is_finite() && *s > 0.0)
+                .unwrap_or(0.0),
+            ..MapGround::default()
+        };
         if let Some(block) = blocks(text, "TerrainBlock").into_iter().next() {
             let file = field(&block, "terrainFile").ok_or("a TerrainBlock names no terrainFile")?;
             let square = field(&block, "squareSize")
@@ -88,6 +107,7 @@ impl MapGround {
     /// The ground drawn in `view` (or taken away when there is none).
     pub fn apply(&self, view: &mut WorldView, kit: &KitAssets) {
         view.clear_ground();
+        view.set_ground_variation(self.variation);
         if let Some(terrain) = &self.terrain {
             let layers: Vec<(&str, LayerUv<'_>)> = self
                 .layers

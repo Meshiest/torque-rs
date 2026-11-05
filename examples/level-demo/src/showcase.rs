@@ -17,10 +17,10 @@ const OFFICE_CORNER: [f32; 2] = [-18.0, -12.0];
 
 /// The valley's views: a name, the eye (x, y and its height over the ground) and what it looks at (x, y, z).
 pub const VALLEY_VIEWS: [(&str, [f32; 3], [f32; 3]); 5] = [
-    ("valley-shore", [90.0, -95.0, 14.0], [-360.0, 10.0, 40.0]),
-    ("valley-high", [340.0, -200.0, 60.0], [-320.0, 0.0, 30.0]),
-    ("valley-north", [40.0, 230.0, 20.0], [-330.0, -40.0, 40.0]),
-    ("valley-south", [-60.0, -250.0, 15.0], [-330.0, 60.0, 34.0]),
+    ("valley-lake", [400.0, -15.0, 120.0], [-260.0, 0.0, 30.0]),
+    ("valley-high", [520.0, -260.0, 160.0], [-420.0, 0.0, 60.0]),
+    ("valley-close", [-120.0, -175.0, 9.0], [-170.0, -70.0, 26.0]),
+    ("valley-far", [900.0, 120.0, 260.0], [-700.0, -40.0, 80.0]),
     ("valley-start", [200.0, -34.0, 3.5], [-100.0, -10.0, 34.0]),
 ];
 
@@ -76,7 +76,32 @@ pub fn view(
     frame
 }
 
-/// The valley's views ([`VALLEY_VIEWS`]) at `size`, written into `dir`. Returns the paths.
+/// The frames a median GPU time is taken over.
+pub const TIMED_FRAMES: usize = 60;
+
+/// The median GPU time (ms) of [`TIMED_FRAMES`] frames of the world from `from` looking at `to` at `quality` (none without
+/// timestamps).
+pub fn gpu_ms(
+    gpu: &Gpu,
+    seat: &mut Seat<LevelDemo>,
+    from: [f32; 3],
+    to: [f32; 3],
+    quality: Quality,
+) -> Result<Option<f64>, String> {
+    seat.view.set_quality(quality);
+    seat.eye = Some(with_fov(look_at(from, to)));
+    let mut ms = Vec::with_capacity(TIMED_FRAMES);
+    for _ in 0..TIMED_FRAMES {
+        seat.frame(gpu)?;
+        ms.extend(seat.view.gpu_ms());
+    }
+    seat.eye = None;
+    ms.sort_by(f64::total_cmp);
+    Ok(ms.get(ms.len() / 2).copied())
+}
+
+/// The valley's views ([`VALLEY_VIEWS`]) at `size`, written into `dir`, and `gpu-ms.txt`: each view's median GPU frame time
+/// at the High quality (a window's) and at Ultra. Returns the paths.
 pub fn write_valley(
     gpu: &Gpu,
     files: GameFiles,
@@ -85,13 +110,57 @@ pub fn write_valley(
 ) -> Result<Vec<PathBuf>, String> {
     let mut seat = seat_on(gpu, files, size, "valley")?;
     let mut shots = Shots::new(dir)?;
+    let mut report = String::new();
     for (name, from, to) in VALLEY_VIEWS {
-        shots.save(&view(gpu, &mut seat, valley_eye(from), to)?, name)?;
+        let from = valley_eye(from);
+        shots.save(&view(gpu, &mut seat, from, to)?, name)?;
+        let high = gpu_ms(gpu, &mut seat, from, to, Quality::High)?;
+        let ultra = gpu_ms(gpu, &mut seat, from, to, Quality::Ultra)?;
+        report += &format!("{name} gpu ms: high {high:?}, ultra {ultra:?}\n");
     }
+    let times = dir.join("gpu-ms.txt");
+    std::fs::write(&times, report).map_err(|e| e.to_string())?;
+    shots.paths.push(times);
     Ok(shots.paths)
 }
 
-/// The front page's valley: the lake at golden hour from its eastern shore, the sun low over the pass.
+/// The valley clip's view: from over the eastern shore (its height over the ground) up the valley into the sky.
+pub const CLIP_VIEW: ([f32; 3], [f32; 3]) = ([300.0, -15.0, 45.0], [-500.0, 0.0, 280.0]);
+
+/// The valley's sky moving: `seconds` of the clock from [`CLIP_VIEW`], the world alone drawn every frame and every `every`th
+/// frame written into `dir` as `0000.png` on (for a clip at `1000 / (FRAME_MS * every)` frames a second). Returns the paths.
+pub fn write_valley_clip(
+    gpu: &Gpu,
+    files: GameFiles,
+    dir: &Path,
+    size: (u32, u32),
+    seconds: f32,
+    every: u32,
+) -> Result<Vec<PathBuf>, String> {
+    use torque::app::App as _;
+    use torque::app::shots::{FRAME_MS, write_png};
+    let mut seat = seat_on(gpu, files, size, "valley")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let (from, to) = CLIP_VIEW;
+    let eye = with_fov(look_at(valley_eye(from), to));
+    let rect = [0, 0, seat.target.width, seat.target.height];
+    let frames = (seconds * 1000.0 / FRAME_MS as f32) as u32;
+    let mut paths = Vec::new();
+    for k in 0..frames {
+        seat.game.advance(FRAME_MS);
+        let _ = seat.game.frame(&mut seat.view);
+        seat.view.draw_world(&seat.target.color, rect, eye)?;
+        if k % every.max(1) == 0 {
+            let frame = gpu.read_back(&seat.target).map_err(|e| e.to_string())?;
+            let path = dir.join(format!("{:04}.png", paths.len()));
+            write_png(&frame, &path).map_err(|e| e.to_string())?;
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+/// The front page's valley: the lake at golden hour from above its eastern end, the sun low over the pass.
 pub fn valley_picture(gpu: &Gpu, files: GameFiles, size: (u32, u32)) -> Result<Frame, String> {
     let mut seat = seat_on(gpu, files, size, "valley")?;
     let (_, from, to) = VALLEY_VIEWS[0];

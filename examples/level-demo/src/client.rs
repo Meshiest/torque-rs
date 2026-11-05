@@ -48,6 +48,8 @@ pub const CLIENT_ADDR: SocketAddrV4 = SocketAddrV4::new(std::net::Ipv4Addr::LOCA
 pub const CAMERA_DISTANCE: f32 = 6.5;
 pub const CAMERA_TARGET_HEIGHT: f32 = 1.7;
 pub const CAMERA_PITCH: f32 = 0.3;
+/// Where a map's own cloud clock starts over (seconds): long past any session, short enough to keep its precision.
+pub const CLOUD_CLOCK_WRAP: f32 = 100_000.0;
 /// The nearest the camera comes to a cube between it and the figure.
 pub const CAMERA_CLEARANCE: f32 = 0.3;
 
@@ -72,6 +74,8 @@ pub struct LevelDemo {
     /// The map's terrain and water, and whether the view has yet to be given them.
     pub ground: MapGround,
     ground_changed: bool,
+    /// The clouds' own clock of a map that runs them faster ([`MapGround::cloud_time_scale`]).
+    cloud_clock: f32,
 }
 
 impl Deref for LevelDemo {
@@ -126,6 +130,7 @@ impl LevelDemo {
             cube,
             ground: MapGround::default(),
             ground_changed: false,
+            cloud_clock: 0.0,
         })
     }
 
@@ -373,6 +378,13 @@ impl LevelDemo {
             self.daylight = d;
         }
         let dt = self.client.take_frame_time();
+        let scale = self.ground.cloud_time_scale;
+        if scale > 0.0 {
+            self.cloud_clock = (self.cloud_clock + dt * scale) % CLOUD_CLOCK_WRAP;
+            view.set_cloud_time(Some(self.cloud_clock));
+        } else {
+            view.set_cloud_time(None);
+        }
         self.update_scene(dt);
         let eye = self.drawn_eye();
         let objects = {

@@ -406,6 +406,12 @@ fn canopy(blobs: &[(V3, V3)], middle: f64, rng: &mut Rng) -> (Vec<Solid>, f64) {
 
 /// A tree of `kind` standing at `foot` (on the ground), `size` times a grown one, its look (lean, shape, greens) from `seed`.
 pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
+    tree_sunk(kind, foot, size, seed, SINK)
+}
+
+/// [`tree`] with its trunk reaching `sink` m below its foot instead of [`SINK`] (a tree of a group placed as one, on ground
+/// that may fall away under it).
+pub fn tree_sunk(kind: Kind, foot: V3, size: f64, seed: u64, sink: f64) -> Vec<Brush> {
     let mut rng = Rng(seed);
     let s = size;
     // The conifers stand straight: a leaning tier's box would reach down into the one below's, and the builder cuts every
@@ -432,7 +438,7 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
             let r0 = 0.028 * h * rng.range(0.9, 1.1);
             add(
                 vec![frustum(
-                    -SINK,
+                    -sink,
                     base - GAP,
                     1.3 * r0,
                     0.5 * r0,
@@ -458,7 +464,7 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
             let r0 = 0.022 * h * rng.range(0.9, 1.1);
             add(
                 vec![frustum(
-                    -SINK,
+                    -sink,
                     base - GAP,
                     r0,
                     0.5 * r0,
@@ -488,7 +494,7 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
                 sides: 5,
             };
             let trunk = frustum(
-                -SINK,
+                -sink,
                 CLEARANCE - GAP,
                 0.3 * s,
                 0.2 * s,
@@ -507,7 +513,7 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
             let w = h / 10.5;
             let crown = (0.6 * h).max(CLEARANCE);
             let trunk = frustum(
-                -SINK,
+                -sink,
                 crown - GAP,
                 0.27 * w,
                 0.16 * w,
@@ -546,7 +552,7 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
             let leaves = rng.pick(&[(LEAVES, 0.45), (LEAVES_DARK, 0.4), (LEAVES_LIGHT, 0.15)]);
             // Up into the main blob's underside.
             let trunk = frustum(
-                -SINK,
+                -sink,
                 low + 0.25 * j,
                 0.38 * s,
                 0.22 * s,
@@ -562,7 +568,7 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
             let (solids, low) = canopy(&blobs, 0.52 * h, &mut rng);
             let leaves = rng.pick(&[(LEAVES_LIGHT, 0.65), (LEAVES, 0.35)]);
             let trunk = frustum(
-                -SINK,
+                -sink,
                 low + 0.3 * s,
                 0.18 * s,
                 0.1 * s,

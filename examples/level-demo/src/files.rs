@@ -59,8 +59,10 @@ pub const VALLEY_MAP: &str = "missions/valley.mis";
 pub const WOODS: &str = "%woods%";
 
 /// The valley's files added to the kit when the game folder has its map and the kit has them not yet (a web build's pack
-/// carries them made), and its map's [`WOODS`] line replaced by an `InteriorInstance` of each square of the woods.
+/// carries them made), and its map's [`WOODS`] line replaced by an `InteriorInstance` of each tree of the woods (one of the
+/// few trees' interiors, placed, turned and scaled).
 pub fn add_valley(files: &mut GameFiles) -> Result<(), String> {
+    use std::fmt::Write as _;
     use torque_example_assets::valley;
     let terrain = torque_example_common::kit_path(valley::TERRAIN_FILE);
     let Some(map) = files.file(VALLEY_MAP) else {
@@ -70,20 +72,21 @@ pub fn add_valley(files: &mut GameFiles) -> Result<(), String> {
         return Ok(());
     }
     let mut map = String::from_utf8_lossy(map).into_owned();
-    for asset in valley::files().map_err(|e| e.to_string())? {
-        files.kit.insert(asset.name, asset.bytes);
+    for (name, bytes) in valley::files().map_err(|e| e.to_string())? {
+        files.kit.insert(&name, bytes);
     }
-    let woods: String = valley::chunks()
-        .iter()
-        .enumerate()
-        .map(|(k, c)| {
-            format!(
-                "   new InteriorInstance(Woods{k}) {{ position = \"0 0 0\"; rotation = \"1 0 0 0\"; scale = \"1 1 1\"; \
-                 interiorFile = \"kit/{}\"; }};\n",
-                c.file
-            )
-        })
-        .collect();
+    let mut woods = String::new();
+    for t in valley::instances() {
+        let [x, y, z] = t.foot;
+        let _ = writeln!(
+            woods,
+            "   new InteriorInstance() {{ position = \"{x} {y} {z}\"; rotation = \"0 0 1 {}\"; scale = \"{s} {s} {s}\"; \
+             interiorFile = \"kit/{}\"; }};",
+            t.turn,
+            t.file,
+            s = t.scale
+        );
+    }
     map = map
         .replace(&format!("{WOODS}\n"), &woods)
         .replace(WOODS, &woods);
