@@ -495,11 +495,16 @@ new GameTSCtrl(PlayGui)
    };
    new GuiControl(HelpBand)
    {
-      profile = ArenaBandProfile; position = "328 12"; extent = "460 26"; horizSizing = "left";
+      profile = ArenaBandProfile; position = "328 12"; extent = "460 46"; horizSizing = "left";
       new GuiTextCtrl(PlayHelp)
       {
          profile = ArenaDimProfile; position = "10 4"; extent = "442 18"; visible = true; enabled = true;
          text = "Click shoot   R reload   Tab camera   T chat   Esc menu";
+      };
+      new GuiTextCtrl(PoseHelp)
+      {
+         profile = ArenaDimProfile; position = "10 24"; extent = "442 18"; visible = true; enabled = true;
+         text = "W A S D walk   Shift sprint   Ctrl crouch   Z prone   Space jump";
       };
    };
 };
@@ -710,11 +715,15 @@ function say(%text)
 // ---- the keys
 
 new ActionMap(PlayMap);
-// The keys held, and the moves made of them: slower while aiming down the sights.
+// The keys held, and the moves made of them: a walk (a share of the full speed), the full speed while Shift is held (a
+// sprint), and no faster than $Arena::AimWalk while aiming down the sights.
 $Arena::AimWalk = 0.6;
+$Arena::WalkPace = 0.35;
 function applyMoves()
 {
-   %speed = $Arena::Aiming ? $Arena::AimWalk : 1;
+   %speed = $Arena::Sprint ? 1 : $Arena::WalkPace;
+   if ($Arena::Aiming && %speed > $Arena::AimWalk)
+      %speed = $Arena::AimWalk;
    $mvForwardAction = $Arena::KeyForward * %speed;
    $mvBackwardAction = $Arena::KeyBack * %speed;
    $mvLeftAction = $Arena::KeyLeft * %speed;
@@ -723,14 +732,17 @@ function applyMoves()
 function releaseKeys()
 {
    $Arena::KeyForward = $Arena::KeyBack = $Arena::KeyLeft = $Arena::KeyRight = 0;
+   $Arena::Sprint = 0;
    if ($Arena::Aiming)
       aim(0);
    applyMoves();
+   releasePoseKeys();
 }
 function moveForward(%v) { $Arena::KeyForward = %v; applyMoves(); }
 function moveBack(%v) { $Arena::KeyBack = %v; applyMoves(); }
 function moveLeft(%v) { $Arena::KeyLeft = %v; applyMoves(); }
 function moveRight(%v) { $Arena::KeyRight = %v; applyMoves(); }
+function sprint(%v) { $Arena::Sprint = %v != 0; applyMoves(); }
 function jump(%v) { $mvTriggerCount2++; }
 // The trigger counts once going down and once coming up.
 function fire(%v) { $mvTriggerCount0++; }
@@ -771,6 +783,8 @@ PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
 PlayMap.bind(keyboard, space, jump);
+PlayMap.bind(keyboard, lshift, sprint);
+bindPoseKeys(PlayMap);
 PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, t, chatKey);
 PlayMap.bind(keyboard, r, reloadKey);

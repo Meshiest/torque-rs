@@ -49,6 +49,8 @@ pub trait PredictWorld: PoseView<Set: EngineSet> + DerefMut + 'static {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlState {
     pub crouched: bool,
+    /// The pose the client predicts (the engine's own after Torque3D's: `::sim::player::pose`).
+    pub pose: sim::player::Pose,
     pub jetting: bool,
     pub falling: bool,
     pub on_ground: bool,

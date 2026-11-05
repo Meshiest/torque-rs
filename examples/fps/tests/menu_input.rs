@@ -198,7 +198,7 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
     assert!(!g.host.system_cursor());
 
     g.key(Key::W, true);
-    assert_eq!(g.global("$mvForwardAction"), "1", "W moves forward");
+    assert_eq!(g.global("$mvForwardAction"), "0.35", "W walks forward");
     g.key(Key::W, false);
     assert_eq!(g.global("$mvForwardAction"), "0");
 
@@ -285,7 +285,7 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     assert_eq!(g.global("$Client::Paused"), "0", "Resume goes back");
     assert!(g.host.wants_mouse(), "the arena holds the mouse again");
     g.key(Key::W, true);
-    assert_eq!(g.global("$mvForwardAction"), "1", "W moves again");
+    assert_eq!(g.global("$mvForwardAction"), "0.35", "W walks again");
     g.key(Key::W, false);
 
     // Escape twice: paused, then back.
@@ -296,7 +296,7 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     g.step(32);
     assert_eq!(g.global("$Client::Paused"), "0", "Escape again goes back");
     g.key(Key::W, true);
-    assert_eq!(g.global("$mvForwardAction"), "1");
+    assert_eq!(g.global("$mvForwardAction"), "0.35");
     g.key(Key::W, false);
 
     // T still opens the chat when not paused.

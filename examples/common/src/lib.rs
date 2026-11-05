@@ -57,11 +57,46 @@ impl Assets for KitAssets {
 }
 
 /// The ghost scene's options the examples share: TGE's, with the first-person view held steady over the figure's bobbing
-/// gaits ([`torque::app::ghosts::GhostOptions::steady_eye`], the engine's own).
+/// gaits ([`torque::app::ghosts::GhostOptions::steady_eye`], the engine's own) and the other figures drawn in the pose their
+/// server chose ([`figure_poses`]).
 pub fn ghost_options() -> torque::app::ghosts::GhostOptions {
     torque::app::ghosts::GhostOptions {
         steady_eye: true,
+        poses: Some(figure_poses()),
         ..Default::default()
+    }
+}
+
+/// The figure's poses as the examples' servers give them (the engine's own after Torque3D's: the figure datablocks'
+/// `crouchBoundingBox`, `maxCrouchForwardSpeed` and the rest, and `common/server.cs`'s `$player::crouchTrigger` 3 and
+/// `$player::proneTrigger` 1). A client cannot read a datablock's dynamic fields, so the client's prediction takes them from
+/// here ([`prediction::CubePrediction`]); a test holds the two the same.
+pub fn figure_poses() -> torque::game::sim::player::poses::PoseData {
+    use torque::game::sim::player::poses::{PoseData, PoseSpeeds, PoseTriggers};
+    PoseData {
+        crouch: true,
+        prone: true,
+        sprint: false,
+        crouch_box: [1.0, 1.0, 1.6],
+        prone_box: [2.0, 2.0, 0.8],
+        crouch_speeds: PoseSpeeds {
+            forward: 1.3,
+            backward: 1.1,
+            side: 1.0,
+        },
+        prone_speeds: PoseSpeeds {
+            forward: 0.75,
+            backward: 0.6,
+            side: 0.0,
+        },
+        crouch_force: 3600.0,
+        prone_force: 2400.0,
+        triggers: PoseTriggers {
+            crouch: 3,
+            prone: 1,
+            sprint: 5,
+        },
+        ..PoseData::default()
     }
 }
 

@@ -331,17 +331,22 @@ fn holding_the_right_button_raises_the_sights_narrows_the_view_and_slows_the_tur
     frame(&mut a, 16);
     let turned = a.global("$Arena::LookYaw").parse::<f32>().unwrap() - before;
     assert!((turned - 0.3 * want).abs() < 1e-3, "turned {turned}");
-    // Walking while aiming is slower.
+    // Sprinting while aiming is slower (a walk is slower still, and stays a walk).
     a.key(Key::W, true);
     frame(&mut a, 16);
+    assert_eq!(a.global("$mvForwardAction"), "0.35");
+    a.key(Key::ShiftLeft, true);
+    frame(&mut a, 16);
     assert_eq!(a.global("$mvForwardAction"), "0.6");
-    // Let go: back to the hip, the full view and the full walk.
+    // Let go: back to the hip, the full view and the full sprint.
     a.host.mouse_button(MouseButton::Right, false, at);
     frames(&mut a, 300);
     assert_eq!(a.global("$Arena::Aiming"), "0");
     assert_eq!(a.scene().aim(), 0.0);
     assert_eq!(a.eye().fov, Some(FOV));
     assert_eq!(a.global("$mvForwardAction"), "1");
+    a.key(Key::ShiftLeft, false);
+    assert_eq!(a.global("$mvForwardAction"), "0.35");
     a.key(Key::W, false);
 }
 

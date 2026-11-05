@@ -767,11 +767,30 @@ impl ImageFrames {
         ghost: u32,
         names: &[&[u8]],
     ) -> Option<Vec<Option<Mat>>> {
+        self.owner_held_nodes(world, assets, ghost, names, None)
+    }
+
+    /// [`Self::owner_rest_nodes`] with the shape held at the start of its sequence named `sequence` instead of its rest pose
+    /// (a pose's own root, `crouch_root` say), the rest pose when it has none of that name: where a node is in that pose with the
+    /// animation's motion taken away.
+    pub fn owner_held_nodes<W: ShapeWorld + ?Sized>(
+        &mut self,
+        world: &W,
+        assets: &dyn Assets,
+        ghost: u32,
+        names: &[&[u8]],
+        sequence: Option<&[u8]>,
+    ) -> Option<Vec<Option<Mat>>> {
         let mut notes = Vec::new();
         let (owner, xform, scale) = self.owner_frame(world, assets, ghost, &mut notes)?;
         let shape = &owner.model.shape;
         let mut charge = |_: u64| true;
         let mut instance = ShapeInstance::new(shape, &mut charge).ok()?;
+        if let Some(seq) = sequence.and_then(|n| shapes::instance::find_sequence(shape, n))
+            && let Some(t) = instance.create_thread(shape)
+        {
+            instance.set_sequence(shape, t, seq as i32, 0.0);
+        }
         let dl =
             (shape.smallest_visible_dl.max(0) as usize).min(shape.details.len().saturating_sub(1));
         instance.animate(shape, dl, None, &mut charge).ok()?;

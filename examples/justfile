@@ -29,7 +29,8 @@ min-client *args:
 assets dir="../target/example-assets":
     cargo run -p torque-example-assets -- {{dir}}
 
-# The animated character example in a window (W A S D move, Shift run, Space jump, F pistol, mouse or Q/E orbit, Esc quit)
+# The animated character example in a window (W A S D walk, Shift sprint, Ctrl crouch, Z prone, Space jump, F pistol, mouse
+# or Q/E orbit, Esc quit)
 character:
     cargo run -p torque-example-character --release
 
@@ -37,8 +38,8 @@ character:
 character-shots dir="../target/character-shots":
     cargo run -p torque-example-character --release -- --shots {{dir}}
 
-# The level demo in a window: a menu of maps, then the box figure on them (W A S D move, Shift walk, Space jump,
-# mouse look, Tab camera, R restart, Esc menu)
+# The level demo in a window: a menu of maps, then the box figure on them (W A S D walk, Shift sprint, Ctrl crouch, Z prone,
+# Space jump, mouse look, Tab camera, R restart, Esc menu)
 level-demo:
     cargo run -p torque-example-level-demo --release
 
@@ -124,6 +125,11 @@ walk-clip dir="../target/walk-clip":
 # into `dir` as an mp4 (needs ffmpeg)
 eye-clip dir="../target/eye-clip":
     cargo run -p torque-example-common --release --example eye-clip -- {{dir}}
+
+# A clip of the figure crouching, lying down, moving in each pose and reacting to hits from four sides and to the head, as
+# another player's client draws it (side and three-quarter views), drawn offscreen into `dir`
+poses-clip dir="../target/poses-clip":
+    cargo run -p torque-example-common --release --example poses-clip -- {{dir}}
 
 # The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
 # `--name`, `--map`, `--ticks N` (stop after N ticks)

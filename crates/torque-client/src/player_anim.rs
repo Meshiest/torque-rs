@@ -41,6 +41,17 @@
 //! the Player was drawn covering ([`PlayerMotion::position`]) along its direction over its speed instead of by the velocity, so
 //! its phase follows the server's path rather than the client's clock.
 //!
+//! **Poses** (the engine's own after Torque3D's, [`torque_game::sim::player::poses`]): a Player crouched, prone or sprinting
+//! ([`PlayerMotion::pose`]: the client's own as it predicts it, another's as its record's move shows it, [`record_pose`])
+//! plays its pose's own actions when the shape has them (`crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`,
+//! `prone_root`, ...), picked as the standing ones are; its server picks by the same rule. An action of another pose blends in
+//! over a longer, eased transition ([`poses::pose_blend`]), so the body lowers and rises. A pose's moving action steps like
+//! the walk (by the ground covered when synced, held to [`synced::WALK_MAX_TIME_SCALE`]). An unheld pose action a record
+//! carries changes nothing (the client picks it itself).
+//!
+//! **Script threads** ([`PlayerAnimation::script_threads`]): the threads a server's `playThread` runs on the Player (a hit's
+//! flinch, say) play over its own, each at the place its record puts it, as the server's hitboxes play them.
+//!
 //! **The arm thread** plays the arm action the record names (the server's `setArmThread`; `look` when the shape has it and
 //! none was named), held at the head's pitch over the look range (`updateLookAnimation`): 0 looking fully up, 1 fully down.
 //! **The head thread** plays the shape's `head` sequence, when it has one, at the same position (`mHeadVThread`).
@@ -61,8 +72,10 @@ use ghosts::TgeRecord;
 use ghosts::player::VELOCITY_NORMAL_BITS;
 use shapes::Shape;
 use shapes::instance::{ShapeInstance, ThreadId, find_sequence};
+use sim::player::{Pose, PoseData};
 use torque_game::scene::shapebase::{TGE_ACTIONS, player_actions};
 use torque_game::sim::player::ground::{ActionMotion, ground_info};
+use torque_game::sim::player::poses::{self, PoseSets};
 use torque_game::sim::player::synced;
 pub use torque_game::sim::player::synced::{JUMP_RISE_SPEED, STAND_JUMP_SPEED, TRANSITION};
 
@@ -166,6 +179,18 @@ pub struct PlayerMotion {
     pub position: Option<F3>,
     /// The Player is mounted on an object (its record's mount block names a ghost the client holds).
     pub mounted: bool,
+    /// The Player's pose (standing unless its datablock allows others).
+    pub pose: Pose,
+}
+
+/// The pose a Player record's move shows (its server's choice, with the datablock's poses `poses`); none for another record
+/// or one without its move block.
+pub fn record_pose(record: &TgeRecord, poses: &PoseData) -> Option<Pose> {
+    let (TgeRecord::Player(p) | TgeRecord::AiPlayer(p)) = record else {
+        return None;
+    };
+    let m = p.motion.as_ref()?;
+    Some(poses.shown(&m.mv.triggers))
 }
 
 impl PlayerMotion {
@@ -190,6 +215,7 @@ impl PlayerMotion {
             server_action: ServerAction::of_record(record),
             position: None,
             mounted: false,
+            pose: Pose::Stand,
         })
     }
 
@@ -240,6 +266,20 @@ pub struct PlayerAnimation {
     mounted: bool,
     /// The `walk` action, when the shape has one that moves it forward (see the module docs).
     walk: Option<usize>,
+    /// Each pose's own actions.
+    pose_sets: PoseSets,
+    /// The script threads played over the Player's own: each slot's thread and sequence.
+    script: [Option<(ThreadId, usize)>; SCRIPT_SLOTS],
+}
+
+/// `ShapeBase::MaxScriptThreads`.
+pub const SCRIPT_SLOTS: usize = 4;
+
+/// A script thread to play over a Player's own ([`PlayerAnimation::script_threads`]): its sequence and its position (0 to 1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScriptPlay {
+    pub sequence: usize,
+    pub pos: f32,
 }
 
 impl PlayerAnimation {
@@ -283,6 +323,11 @@ impl PlayerAnimation {
             instance.set_sequence(shape, action_thread, seq as i32, 0.0);
         }
         let walk = walk_action(&actions);
+        let pose_sets = PoseSets::of(
+            actions
+                .iter()
+                .map(|a| (a.name.as_slice(), a.sequence.is_some(), &a.motion)),
+        );
         Some(PlayerAnimation {
             actions,
             action: action::ROOT,
@@ -304,7 +349,47 @@ impl PlayerAnimation {
             last_position: None,
             mounted: false,
             walk,
+            pose_sets,
+            script: [None; SCRIPT_SLOTS],
         })
+    }
+
+    /// Each pose's own actions.
+    pub fn pose_sets(&self) -> &PoseSets {
+        &self.pose_sets
+    }
+
+    /// The script threads to play over the Player's own threads this frame, by slot (see the module docs): a slot's thread is
+    /// made on its first play, put on its sequence at its place, and let go when the slot is empty.
+    pub fn script_threads(
+        &mut self,
+        shape: &Shape,
+        instance: &mut ShapeInstance,
+        slots: &[Option<ScriptPlay>; SCRIPT_SLOTS],
+    ) {
+        for (kept, play) in self.script.iter_mut().zip(slots) {
+            match play {
+                Some(p) if p.sequence < shape.sequences.len() => {
+                    let t = match kept {
+                        Some((t, _)) => *t,
+                        None => match instance.create_thread(shape) {
+                            Some(t) => t,
+                            None => continue,
+                        },
+                    };
+                    instance.set_sequence(shape, t, p.sequence as i32, p.pos.clamp(0.0, 1.0));
+                    if let Some(th) = instance.thread_mut(t) {
+                        th.time_scale = 0.0;
+                    }
+                    *kept = Some((t, p.sequence));
+                }
+                _ => {
+                    if let Some((t, _)) = kept.take() {
+                        instance.destroy_thread(shape, t);
+                    }
+                }
+            }
+        }
     }
 
     /// `onImageRecoil`: a mounted image's state asked for recoil `kind` (1 light, 2 medium, 3 heavy): the recoil thread plays
@@ -338,6 +423,11 @@ impl PlayerAnimation {
     /// The action list.
     pub fn actions(&self) -> &[Action] {
         &self.actions
+    }
+
+    /// The action thread.
+    pub fn action_thread(&self) -> ThreadId {
+        self.action_thread
     }
 
     /// The action playing and whether it plays forward.
@@ -392,6 +482,11 @@ impl PlayerAnimation {
             synced::keeps_phase((self.action, self.forward), (action, forward), self.walk)
                 .then(|| instance.thread(self.action_thread).map(|t| t.pos))
                 .flatten();
+        // An action of another pose blends in slower and eased (the engine's poses).
+        let pose_blend = poses::pose_blend(
+            self.pose_sets.pose_of(self.action),
+            self.pose_sets.pose_of(action),
+        );
         self.action = action;
         self.forward = forward;
         self.wait = wait;
@@ -403,7 +498,14 @@ impl PlayerAnimation {
             let speed = t.time_scale.abs().max(f32::MIN_POSITIVE);
             t.time_scale = if forward { speed } else { -speed };
         }
-        instance.transition_to_sequence(shape, self.action_thread, seq, pos, TRANSITION);
+        match pose_blend {
+            Some(seconds) => {
+                instance.transition_to_sequence_eased(shape, self.action_thread, seq, pos, seconds)
+            }
+            None => {
+                instance.transition_to_sequence(shape, self.action_thread, seq, pos, TRANSITION)
+            }
+        }
     }
 
     /// `pickActionAnimation`.
@@ -426,7 +528,14 @@ impl PlayerAnimation {
                 (best, chosen, forward) = (-d, i, false);
             }
         }
-        let (chosen, forward) = self.walk_or(chosen, forward, best);
+        let (mut chosen, mut forward) = self.walk_or(chosen, forward, best);
+        // A pose with actions of its own picks among them, by the server's rule.
+        if let Some(set) = self.pose_sets.of_pose(m.pose) {
+            let dir_of = |a: usize| self.actions.get(a).map_or([0.0; 3], |x| x.motion.dir);
+            if let Some((a, f)) = poses::pick_in(set, vel, dir_of) {
+                (chosen, forward) = (a, f);
+            }
+        }
         self.set_action(shape, instance, chosen, forward, false);
     }
 
@@ -510,7 +619,7 @@ impl PlayerAnimation {
         }
         let a = &self.actions[self.action.min(self.actions.len() - 1)];
         let mut scale = 1.0;
-        let walking = self.walk == Some(self.action);
+        let walking = self.walk == Some(self.action) || self.pose_sets.is_moving(self.action);
         if walking {
             if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
                 let step = m.local([0, 1, 2].map(|i| to[i] - from[i]));
@@ -583,11 +692,20 @@ impl PlayerAnimation {
             self.arm_action = Some(arm);
             instance.set_sequence(shape, t, seq as i32, m.look);
         }
-        if let (Some(t), Some(seq)) = (
-            self.arm_thread,
-            self.arm_action.and_then(|a| self.actions.get(a)?.sequence),
-        ) {
-            instance.set_sequence(shape, t, seq as i32, m.look);
+        if let (Some(t), Some(arm)) = (self.arm_thread, self.arm_action) {
+            // The pose's own version of the arm action when the shape has one (`prone_hold`), as the server plays it.
+            let names = self
+                .actions
+                .iter()
+                .map(|a| (a.name.as_slice(), a.sequence.is_some()));
+            let played = self
+                .actions
+                .get(arm)
+                .and_then(|a| poses::pose_arm(names, &a.name, m.pose))
+                .unwrap_or(arm);
+            if let Some(seq) = self.actions.get(played).and_then(|a| a.sequence) {
+                instance.set_sequence(shape, t, seq as i32, m.look);
+            }
         }
         if let Some((t, seq)) = self.head_thread {
             instance.set_sequence(shape, t, seq as i32, m.look);
@@ -603,7 +721,8 @@ impl PlayerAnimation {
         let action = a.action as usize;
         if a.action == ghosts::player::NULL_ANIMATION
             || a.action < ghosts::player::NUM_TABLE_ACTION_ANIMS
-            || (Some(action) == self.walk && !a.hold)
+            || ((Some(action) == self.walk || self.pose_sets.pose_of(action) != Pose::Stand)
+                && !a.hold)
             || self.actions.get(action).and_then(|x| x.sequence).is_none()
         {
             return;

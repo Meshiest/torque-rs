@@ -151,7 +151,10 @@ fn the_figure_walks_in_through_the_doors_and_is_stopped_by_furniture() {
         for _ in 0..30 {
             game.step(32);
         }
+        // At full speed (Shift held: a sprint), as the walks' distances were measured.
+        game.key(Key::ShiftLeft, true);
         hold(&mut game, Key::W, w.ms);
+        game.key(Key::ShiftLeft, false);
         for _ in 0..20 {
             game.step(32);
         }

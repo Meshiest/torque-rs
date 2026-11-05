@@ -283,6 +283,29 @@ The first development version. Nothing is published yet; this is what exists.
 - The example kit's figure reacts to hits: blend sequences played once over any pose or gait, `flinch_front`, `flinch_back`,
   `flinch_left` and `flinch_right` (the body punched away from the side hit, the hips pushed back and a small step) and
   `flinch_head_front` and the rest (a sharp snap of the head, the torso barely moving), each at rest at its start and end.
+- `torque-sim`: poses after Torque3D's (`player::pose`, the engine's own): standing, sprinting, crouched and prone, each with
+  its own box (`crouchBoundingBox`, `proneBoundingBox`), speeds (`maxCrouchForwardSpeed`, `maxProneForwardSpeed`,
+  `maxSprintForwardSpeed` and the rest) and run force, picked from the move's pose triggers (`$player::crouchTrigger`,
+  `$player::proneTrigger`, `$player::sprintTrigger`). A pose with no room for its box is refused (no standing up under a low
+  ceiling), between standing and prone the Player kneels in the crouch for 10 ticks, it cannot jump lying down, and a mounted
+  Player stands. A datablock without the fields is TGE's.
+- `torque-game`: a `PlayerData`'s pose fields (`sim::player::poses`), and each pose's own actions (`crouch_root`,
+  `crouch_forward`, `prone_root`, ...) picked on the server by the rule its clients use, an action of another pose blending
+  in over a longer, eased transition; a pose's own arm action (`prone_hold` for `hold`) on both sides. A Player record's move
+  shows the pose its server chose in its pose triggers, so clients draw the pose taken, not the one asked for. Hitboxes and
+  lag compensation follow the pose, and a script thread's reaction.
+- `torque-shapes`: an eased transition (`ShapeInstance::transition_to_sequence_eased`, the engine's own).
+- `torque-client`: a Player's animation plays its pose's actions (`PlayerMotion::pose`, `record_pose`) and the script
+  threads its server runs on it over its own (`PlayerAnimation::script_threads`); the prediction keeps the own Player's pose
+  (`ControlState::pose`), from the pose fields a game gives in `PredictGame::player_preload`.
+- `torque::app::ghosts`: other Players drawn in the pose their server chose (`GhostOptions::poses`), and the script threads on
+  every Player, so a hit's reaction drawn is the one its hitboxes have; the steady first-person eye lowers with crouching and
+  lying down and rises again, eased with the body (a hit's reaction never moves it).
+- The demos walk by default and sprint with Shift held (was: run, and walk with Shift); Ctrl held crouches and Z lies down or
+  gets up, in the level, vehicle and arena demos and the character example, their hints and the justfile saying so. A hit in
+  the arena plays a reaction away from the shot (`playerFlinch`, common/server.cs), the head's for a head shot.
+- `just examples/poses-clip`: a clip of the figure crouching, lying down, walking crouched, crawling, sprinting and reacting
+  to hits from four sides and to the head, as another player's client draws it.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

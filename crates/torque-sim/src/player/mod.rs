@@ -25,6 +25,7 @@ pub mod driver;
 pub mod ext;
 pub mod host;
 pub mod look;
+pub mod pose;
 pub mod shape_base;
 pub mod transform;
 pub mod update_move;
@@ -41,6 +42,7 @@ use torque_collide::{
 pub use data::{ActionNumbers, PlayerData, TGE_ACTION_NUMBERS};
 pub use ext::{PlayerClass, PlayerFields, TorquePlayer};
 pub use host::{NoSkeleton, PlayerHost, Skeleton, Thread};
+pub use pose::{Pose, PoseData, PoseSpeeds, PoseTriggers};
 pub use transform::{
     ImageMuzzle, affine_inverse, eye_transform, mount_transform, muzzle_transform,
 };
@@ -229,6 +231,11 @@ pub struct PlayerState {
     // ---- a subclass ----
     /// The fields a subclass adds ([`PlayerFields`]); `None` for Torque's Player.
     pub ext: Option<Box<dyn PlayerFields>>,
+    /// The pose (the engine's own after Torque3D's, [`pose`]): standing unless the datablock allows others; the one before it
+    /// and the ticks since it changed.
+    pub pose: Pose,
+    pub pose_from: Pose,
+    pub pose_ticks: u32,
 }
 
 impl PlayerState {
@@ -322,6 +329,9 @@ impl PlayerState {
             working_nonempty: false,
             ai: None,
             ext: None,
+            pose: Pose::Stand,
+            pose_from: Pose::Stand,
+            pose_ticks: 0,
         };
         s.update_scaled_box();
         s.set_transform_raw(pos, s.rot);

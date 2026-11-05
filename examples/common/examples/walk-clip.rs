@@ -1,4 +1,4 @@
-//! A clip of the kit's figure walking and running, drawn offscreen for review: it walks at a held-Shift pace, speeds up to a
+//! A clip of the kit's figure walking and running, drawn offscreen for review: it walks at the demos' walking pace, speeds up to a
 //! run, runs, slows back to a walk, then walks backward, its action thread driven by the client's animation choice
 //! ([`torque::client::player_anim`]) as a ghost's would be. Each frame shows a side view and a three-quarter view side by side
 //! over a floor marked every half unit (so a sliding foot shows), with a bar under them: its length the speed, green while
@@ -24,7 +24,7 @@ const VIEW: (u32, u32) = (640, 480);
 const FPS: u32 = 30;
 const BAR: u32 = 24;
 const STRIP_AT: [f32; 6] = [1.0, 1.15, 3.0, 3.4, 5.0, 8.6];
-/// A held-Shift pace (0.35 of a 6 units a second run, the demos' `walkSlowly`) and the run's.
+/// The demos' walking pace (0.35 of a 6 units a second sprint, Shift held) and the run's.
 const WALK_PACE: f32 = 2.1;
 const RUN_PACE: f32 = 6.0;
 

@@ -210,6 +210,8 @@ pub fn options() -> GhostOptions {
         synced_poses: true,
         // A steady first-person view over the figure's bobbing gaits.
         steady_eye: true,
+        // The other figures crouched or prone as their server chose.
+        poses: Some(torque_example_common::figure_poses()),
         ..GhostOptions::default()
     }
 }

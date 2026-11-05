@@ -1428,6 +1428,7 @@ impl<W: PredictWorld> Predictor<W> {
                 let water_root = self.game().water_root(s, on_ground);
                 game::ControlState {
                     crouched: pr.kind.crouched(s),
+                    pose: s.pose,
                     jetting: pr.kind.jetting(s),
                     falling: s.falling,
                     on_ground,

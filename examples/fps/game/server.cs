@@ -48,6 +48,19 @@ datablock PlayerData(ArenaFigure)
    minImpactSpeed = 40;
    maxLookAngle = 1.4;
    minLookAngle = -1.4;
+
+   // Crouched and prone (the engine's own poses, after Torque3D's: its fields, by their names): each pose's box and speeds.
+   // The kit's figure has the poses' sequences (crouch_root, prone_root and the rest).
+   crouchBoundingBox = "1 1 1.6";
+   maxCrouchForwardSpeed = 1.3;
+   maxCrouchBackwardSpeed = 1.1;
+   maxCrouchSideSpeed = 1;
+   crouchForce = 3600;
+   proneBoundingBox = "2 2 0.8";
+   maxProneForwardSpeed = 0.75;
+   maxProneBackwardSpeed = 0.6;
+   maxProneSideSpeed = 0;
+   proneForce = 2400;
 };
 
 // The bolt's trail: small bright sparks added over what is behind them, fading from white through a pale cyan to nothing as
@@ -476,7 +489,15 @@ function ArenaBolt::onCollision(%this, %bolt, %col, %fade, %pos, %normal)
    if (%col.getClassName() !$= "Player")
       return;
    // The part hit (head, torso, rarm, ...): every part takes the same damage; the shooter is told which.
-   %col.getDataBlock().hurt(%col, %bolt.client, %this.directDamage, %col.getDamageLocation(%pos));
+   %part = %col.getDamageLocation(%pos);
+   %col.getDataBlock().hurt(%col, %bolt.client, %this.directDamage, %part);
+   // The figure flinches away from the shot (common/server.cs), its head snapped back for a head shot.
+   playerFlinch(%col, %bolt.initialVelocity, %part);
+}
+
+function ArenaFigure::onEndSequence(%this, %obj, %slot)
+{
+   playerFlinchEnded(%obj, %slot);
 }
 
 // ---- hits and knock-outs

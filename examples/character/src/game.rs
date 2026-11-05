@@ -2,7 +2,7 @@
 //! help line, the figure and its state machine ([`crate::motion`]), and the orbit camera.
 //!
 //! **Input.** The keys and the mouse go through the host's platform layer to an action map (`CharacterMap`, the script below),
-//! whose functions set script globals; each step reads them: `W A S D` move, `Shift` runs, `Space` jumps, the mouse (the
+//! whose functions set script globals; each step reads them: `W A S D` walk, `Shift` sprints, `Ctrl` crouches, `Z` lies down or gets up, `Space` jumps, the mouse (the
 //! cursor is off, so the window holds it) or `Q`/`E` orbit, the wheel zooms, `Escape` quits.
 //!
 //! **A frame** ([`CharacterGame::frame`]): the figure as the world view's moving object, the canvas drawn (its `GameTSCtrl`
@@ -142,6 +142,8 @@ impl CharacterGame {
             right: self.number("$charRight") - self.number("$charLeft"),
             run: self.number("$charRun") != 0.0,
             jump: self.number("$charJump") != 0.0,
+            crouch: self.number("$charCrouch") != 0.0,
+            prone: self.number("$charProne") != 0.0,
         };
         let keys_turn = self.number("$charTurnRight") - self.number("$charTurnLeft");
         let (yaw, pitch, zoom) = (

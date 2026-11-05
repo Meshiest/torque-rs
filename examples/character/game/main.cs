@@ -12,7 +12,7 @@ new GameTSCtrl(CharacterView) {
         profile = CharacterBandProfile; position = "0 0"; extent = "800 28"; horizSizing = "width";
         new GuiTextCtrl(CharacterHelp) {
             profile = CharacterTextProfile; position = "10 5"; extent = "700 18"; visible = true; enabled = true;
-            text = "W A S D move    Shift run    Space jump    F pistol    Mouse or Q / E orbit    Wheel zoom    Esc quit";
+            text = "W A S D walk    Shift sprint    Ctrl crouch    Z prone    Space jump    F pistol    Mouse or Q / E orbit    Wheel zoom    Esc quit";
         };
         new GuiTextCtrl(CharacterState) {
             profile = CharacterStateProfile; position = "700 5"; extent = "90 18"; horizSizing = "left"; visible = true; enabled = true; text = "idle";
@@ -28,6 +28,8 @@ function charLeft(%v) { $charLeft = %v; }
 function charRight(%v) { $charRight = %v; }
 function charRun(%v) { $charRun = %v; }
 function charJump(%v) { $charJump = %v; }
+function charCrouch(%v) { $charCrouch = %v; }
+function charProne(%v) { if (%v) $charProne = !$charProne; }
 function charTurnLeft(%v) { $charTurnLeft = %v; }
 function charTurnRight(%v) { $charTurnRight = %v; }
 function charYaw(%v) { $charYaw += %v; }
@@ -44,6 +46,8 @@ CharacterMap.bind(keyboard, a, charLeft);
 CharacterMap.bind(keyboard, d, charRight);
 CharacterMap.bind(keyboard, lshift, charRun);
 CharacterMap.bind(keyboard, space, charJump);
+CharacterMap.bind(keyboard, lcontrol, charCrouch);
+CharacterMap.bind(keyboard, z, charProne);
 CharacterMap.bind(keyboard, q, charTurnLeft);
 CharacterMap.bind(keyboard, e, charTurnRight);
 CharacterMap.bind(keyboard, f, charPistol);

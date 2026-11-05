@@ -250,11 +250,9 @@ pub(super) fn move_speed(s: &PlayerState, db: &PlayerData, mv: &Move) -> f32 {
             db.max_underwater_side_speed,
         ]
     } else {
-        [
-            db.max_forward_speed,
-            db.max_backward_speed,
-            db.max_side_speed,
-        ]
+        // The pose's own speeds (the datablock's standing ones unless it allows poses, [`super::pose`]).
+        let p = db.poses.speeds(db, s.pose);
+        [p.forward, p.backward, p.side]
     };
     let sideways = side * mv.x.abs();
     let along = if mv.y > 0.0 {
@@ -309,7 +307,7 @@ pub(super) fn run_surface(
         target = scale(target, cap / len);
     }
     let push = sub(target, add(s.velocity, *acc));
-    let mut most = (db.run_force / s.mass) * DT;
+    let mut most = (db.poses.force(db, s.pose) / s.mass) * DT;
     if s.action_state == 2 {
         most *= db.recover_run_force_scale;
     }
@@ -369,7 +367,14 @@ pub(super) fn integrate(s: &mut PlayerState, db: &PlayerData, acc: &F3, run: boo
 /// `Player::canJump`: in the move state, enabled, not mounted, no jump delay, the energy for it, and a jump surface touched
 /// within the last [`JUMP_SKIP_CONTACTS_MAX`] contacts.
 pub fn can_jump(s: &PlayerState, db: &PlayerData) -> bool {
-    s.action_state == 1
+    // The poses (the engine's own after Torque3D's): no jump lying down, nor sprinting without `sprintCanJump`.
+    let posed = match s.pose {
+        super::pose::Pose::Prone => false,
+        super::pose::Pose::Sprint => db.poses.sprint_can_jump,
+        _ => true,
+    };
+    posed
+        && s.action_state == 1
         && s.damage_state == 0
         && s.mount.is_none()
         && s.jump_delay == 0
