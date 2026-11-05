@@ -106,3 +106,38 @@ fn no_sun_in_a_plain_or_white_box_nor_in_a_speck() {
         None
     );
 }
+
+#[test]
+fn the_white_hot_disk_shows_brighter_than_the_sky_about_it() {
+    use crate::hd::lut::neutral_tonemap;
+    let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let add = |a: [f32; 3], b: [f32; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+    // The disk and the sky about it as the vehicle demo draws them (linear HDR), from noon to just over the horizon: through the
+    // neutral tonemap the disk over the sky shows brighter than the sky alone, and the white-hot disk keeps its largest channel.
+    for (disk, sky) in [
+        ([92.6, 81.1, 66.4], [1.05, 1.17, 1.48]),
+        ([96.8, 68.9, 39.6], [1.35, 1.23, 1.15]),
+        ([45.8, 22.3, 5.7], [2.78, 1.46, 0.54]),
+        ([29.3, 10.8, 1.5], [3.23, 1.13, 0.24]),
+        ([16.6, 4.0, 0.37], [3.46, 0.68, 0.094]),
+    ] {
+        let hot = disk_white_hot(disk);
+        assert!(
+            (hot[0].max(hot[1]).max(hot[2]) - disk[0]).abs() < 1e-3,
+            "{hot:?}"
+        );
+        let shown = lum(neutral_tonemap(add(sky, hot)));
+        let around = lum(neutral_tonemap(sky));
+        assert!(
+            shown > around + 0.04,
+            "{disk:?} over {sky:?}: {shown} against {around}"
+        );
+    }
+    // White overhead; peach to orange near the horizon (green and blue under red).
+    let noon = neutral_tonemap(disk_white_hot([92.6, 81.1, 66.4]));
+    assert!(noon.iter().all(|&v| v > 0.99), "{noon:?}");
+    let low = neutral_tonemap(disk_white_hot([16.6, 4.0, 0.37]));
+    assert!(low[1] < 0.75 * low[0] && low[2] < 0.5 * low[0], "{low:?}");
+    // Under white nothing changes.
+    assert_eq!(disk_white_hot([0.9, 0.5, 0.2]), [0.9, 0.5, 0.2]);
+}
