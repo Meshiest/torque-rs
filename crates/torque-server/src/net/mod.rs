@@ -3,7 +3,8 @@
 //! and the host itself over a game's parts ([`host`]: [`NetShared`], [`NetGame`]): the passes ([`pump`]), the connections
 //! ([`conn`], [`local`]), the ghosting natives and the `NetObject` behaviour ([`ghosting`]), the event layer ([`events`],
 //! [`hostevent`]), the datablock chain ([`datablocks`]), the ghost hub ([`ghosts`]), the command natives ([`commands`]) and the server query's answers ([`query`]); [`torque`] is Torque's
-//! own net game and the network host the main loop drives.
+//! own net game and the network host the main loop drives. With the `web` feature, [`web`] is the transport browsers join
+//! over (WebSocket, with the game's page served on the same port) and the one that takes UDP and the web together.
 
 pub mod codecs;
 pub mod commands;
@@ -21,5 +22,7 @@ pub mod pump;
 pub mod query;
 pub mod torque;
 pub mod transport;
+#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+pub mod web;
 
 pub use host::*;

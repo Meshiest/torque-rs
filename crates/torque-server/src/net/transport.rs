@@ -97,6 +97,13 @@ pub trait Transport {
     /// port of a stopped server: a dropped server drops its transport, and the socket with it. An in-process test server can
     /// call it as well when it stops.
     fn close(&mut self) {}
+    /// Work that is not a datagram, done when the host has time (a dedicated server between its ticks): a web transport
+    /// accepts connections, serves files and moves the sockets' bytes. Nothing for a datagram socket.
+    fn service(&mut self) {}
+    /// Whether [`Transport::service`] has work to do (a host that waits may call it while it waits).
+    fn wants_service(&self) -> bool {
+        false
+    }
 }
 
 /// A transport shared by the pump and the `Network` that `setNetPort` binds through.
@@ -167,6 +174,8 @@ pub enum PolicyRefusal {
     Unparsable,
     /// An IPv6 address: the per-source limiters key on the full address, which one /64 would multiply.
     Ipv6(IpAddr),
+    /// Plain (unencrypted) HTTP and WebSocket on an address outside the private set: only TLS listens on a public one.
+    PlainWeb(IpAddr),
 }
 
 impl fmt::Display for PolicyRefusal {
@@ -183,6 +192,10 @@ impl fmt::Display for PolicyRefusal {
             PolicyRefusal::Ipv6(ip) => write!(
                 f,
                 "{ip} is an IPv6 address; the server is IPv4-only (the per-source limits key on the full address)"
+            ),
+            PolicyRefusal::PlainWeb(ip) => write!(
+                f,
+                "{ip} is not a private address; the web transport listens on one only with TLS (a certificate and its key)"
             ),
         }
     }

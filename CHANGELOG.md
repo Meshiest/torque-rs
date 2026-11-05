@@ -170,6 +170,13 @@ The first development version. Nothing is published yet; this is what exists.
   Chrome, walks the figure and fails on any console error. The engine's parts it needs run on the page's one thread, the
   browser's clock and the browser's fonts; `torque::app::GameFiles::pack` and `unpack` carry a game folder as one block of
   bytes.
+- `torque-server`'s web transport (the `web` feature): browsers join over WebSocket and are served the game's page over HTTP
+  on the same port, through the `Transport` trait as UDP is (`net::web::WebTransport`; `MultiTransport` takes UDP and the web
+  on one port number). TLS through rustls with certificate and key files; plain HTTP and WebSocket listen on private
+  addresses only. Hostile input is capped: the request line, the head and its headers, `GET` only, no body, paths
+  normalized with no traversal, files served from memory; per connection a head timeout, an idle timeout, a stall timeout
+  and a cap on unsent bytes, messages no larger than a datagram and no more a second than UDP's per-connection cap;
+  connections capped in all, per address and per second. `Transport::service` does a transport's work between ticks.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
