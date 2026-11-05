@@ -112,11 +112,7 @@ impl Interiors {
             seen.push(index);
             let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
             // A ghost index a new map's interior took (the server reset its ghosting) is made again from its own file.
-            if self
-                .kept
-                .get(&index)
-                .is_some_and(|k| k.pose == pose && k.path == path)
-            {
+            if still_kept(&mut self.kept, index, |k| k.pose == pose && k.path == path) {
                 continue;
             }
             let surfaces = match self.files.get(&path) {
@@ -245,4 +241,37 @@ fn build(
         object: view.mesh_object(set, &draws, object_id(index)),
         faces: Arc::new(faces),
     })
+}
+
+/// Whether the object kept at `index` is still the one to draw (`same`: made of the file and at the pose the ghost now
+/// gives). One that is not is dropped at once, so an interior whose new file cannot be made (not read yet, unreadable, over
+/// the caps) draws nothing rather than the one it replaced.
+fn still_kept<K>(kept: &mut BTreeMap<u32, K>, index: u32, same: impl Fn(&K) -> bool) -> bool {
+    match kept.get(&index) {
+        Some(k) if same(k) => true,
+        Some(_) => {
+            kept.remove(&index);
+            false
+        }
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kept_interior_stays_only_while_its_file_and_pose_do() {
+        let mut kept = BTreeMap::from([(3, ("kit/arena.dif", 0)), (4, ("kit/keep.dif", 0))]);
+        let current = |file: &'static str, pose: u32| move |k: &(&str, u32)| *k == (file, pose);
+        assert!(still_kept(&mut kept, 3, current("kit/arena.dif", 0)));
+        // Another map's interior at the same index: the old one is gone even before the new one is made.
+        assert!(!still_kept(&mut kept, 3, current("kit/yard.dif", 0)));
+        assert!(!kept.contains_key(&3));
+        // Moved: made again.
+        assert!(!still_kept(&mut kept, 4, current("kit/keep.dif", 1)));
+        assert!(!kept.contains_key(&4));
+        assert!(!still_kept(&mut kept, 5, current("kit/keep.dif", 0)));
+    }
 }

@@ -560,8 +560,9 @@ function serverCmdSay(%client, %text)
 // ---- rounds and the map rotation
 //
 // A round lasts $Pref::Server::RoundSeconds (ten minutes). When it runs out the shooting stops, every client is shown the
-// round's scores and the next map's name for $Pref::Server::RoundEndSeconds, and the next map loads: the clients stay
-// connected and download it as they downloaded the first, and every score starts again at 0. The maps go round
+// round's scores and the next map's name for $Pref::Server::RoundEndSeconds, and the next map loads (each pref held to at
+// least $Arena::MinRoundSeconds and $Arena::MinRoundEndSeconds): the clients stay
+// connected and download it as they downloaded the first, and every score starts again at 0. The maps go around
 // $Pref::Server::MapList (paths in the game folder, separated by spaces), or when it is empty every map that
 // $Server::MissionFileSpec finds, in order of their names.
 //
@@ -574,6 +575,22 @@ if ($Pref::Server::RoundSeconds $= "")
 if ($Pref::Server::RoundEndSeconds $= "")
    $Pref::Server::RoundEndSeconds = 8;
 $Server::MissionFileSpec = "missions/*.mis";
+// The shortest round and pause the prefs may ask for (a test lowers them).
+$Arena::MinRoundSeconds = 30;
+$Arena::MinRoundEndSeconds = 1;
+
+// The round's length and the pause after it in ms, as the prefs ask but no shorter than the least allowed.
+function roundMs()
+{
+   %s = $Pref::Server::RoundSeconds;
+   return mFloor((%s < $Arena::MinRoundSeconds ? $Arena::MinRoundSeconds : %s) * 1000);
+}
+
+function roundEndMs()
+{
+   %s = $Pref::Server::RoundEndSeconds;
+   return mFloor((%s < $Arena::MinRoundEndSeconds ? $Arena::MinRoundEndSeconds : %s) * 1000);
+}
 
 // A new round on the map that runs: the scores at 0 and the clock started.
 function startRound()
@@ -586,7 +603,7 @@ function startRound()
       %client = ClientGroup.getObject(%i);
       %client.score = 0;
    }
-   %ms = mFloor($Pref::Server::RoundSeconds * 1000);
+   %ms = roundMs();
    $Arena::RoundEndsAt = getSimTime() + %ms;
    $Arena::RoundTimer = schedule(%ms, 0, "endRound");
    for (%i = 0; %i < ClientGroup.getCount(); %i++)
@@ -605,9 +622,10 @@ function roundSecondsLeft()
 // The round is over: the scores to everyone, and the next map after a pause.
 function endRound()
 {
-   cancel($Arena::RoundTimer);
+   // Asked again during the pause (the next map is already timed): nothing more.
    if ($Arena::RoundOver)
       return;
+   cancel($Arena::RoundTimer);
    $Arena::RoundOver = true;
    $Arena::NextMission = nextMission();
    %board = scoreBoard();
@@ -616,7 +634,7 @@ function endRound()
    {
       %client = ClientGroup.getObject(%i);
       cancel(%client.respawn);
-      commandToClient(%client, 'RoundEnd', %next, $Pref::Server::RoundEndSeconds, %board);
+      commandToClient(%client, 'RoundEnd', %next, mCeil(roundEndMs() / 1000), %board);
    }
    %top = getRecord(%board, 0);
    if (%top !$= "" && getField(%top, 1) > 0)
@@ -624,7 +642,7 @@ function endRound()
    else
       messageAll("info", "The round on" SPC $Arena::Title SPC "is over.");
    echo("Round over on" SPC $Arena::Title @ "; next:" SPC $Arena::NextMission);
-   $Arena::RoundTimer = schedule(mFloor($Pref::Server::RoundEndSeconds * 1000), 0, "cycleMissions");
+   $Arena::RoundTimer = schedule(roundEndMs(), 0, "cycleMissions");
 }
 
 // Loads the map the round's end named.

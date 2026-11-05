@@ -1,6 +1,6 @@
 //! The map rotation: with a short round, the round ends on both screens with its scores (the highest first) and the next map's
 //! name, then the next map loads under the same connections (no reconnect), the scores start again at 0 and both figures
-//! stand on the new map, pistol in hand; twice, so the list wraps round to the first map. With no list, the next map is the
+//! stand on the new map, pistol in hand; twice, so the list wraps around to the first map. With no list, the next map is the
 //! one after the running one among `game/missions/`, in order of their names.
 
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
@@ -95,7 +95,7 @@ fn rounds_end_with_scores_and_the_next_map_loads_in_place() {
     // A round of two seconds, a second of scores, two maps; Bob leads this round.
     eval(
         &mut a,
-        "$Pref::Server::RoundSeconds = 2; $Pref::Server::RoundEndSeconds = 1; \
+        "$Arena::MinRoundSeconds = 1; $Pref::Server::RoundSeconds = 2; $Pref::Server::RoundEndSeconds = 1; \
          $Pref::Server::MapList = \"fixtures/floor.mis fixtures/aim.mis\"; startRound();",
     );
     eval(
@@ -112,6 +112,8 @@ fn rounds_end_with_scores_and_the_next_map_loads_in_place() {
         assert!(g.global("$Arena::LastChat").contains("Bob wins the round"));
     }
     assert_eq!(eval(&mut a, "return $Arena::RoundOver;"), "1");
+    // Asked to end again during the pause, the round keeps the next map's timer.
+    eval(&mut a, "endRound();");
 
     for (round, map) in [(1, "aim"), (2, "floor")] {
         assert!(
@@ -150,7 +152,7 @@ fn rounds_end_with_scores_and_the_next_map_loads_in_place() {
         }
     }
 
-    // No list: the map after the running one among the game folder's missions, wrapping round.
+    // No list: the map after the running one among the game folder's missions, wrapping around.
     let maps = GameFiles::bundled().unwrap().maps();
     assert!(!maps.is_empty());
     for (i, map) in maps.iter().enumerate() {
@@ -163,4 +165,12 @@ fn rounds_end_with_scores_and_the_next_map_loads_in_place() {
         );
         assert_eq!(next, maps[(i + 1) % maps.len()], "after {map}");
     }
+
+    // The prefs are held to the shortest round and pause the arena allows.
+    let bounded = eval(
+        &mut a,
+        "$Arena::MinRoundSeconds = 30; $Pref::Server::RoundSeconds = 5; $Pref::Server::RoundEndSeconds = 0; \
+         return roundMs() SPC roundEndMs();",
+    );
+    assert_eq!(bounded, "30000 1000");
 }

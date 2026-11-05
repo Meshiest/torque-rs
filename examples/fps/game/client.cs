@@ -615,6 +615,20 @@ function showRoundEnd(%next, %seconds, %board)
    if (!$Arena::RoundShown)
       Canvas.pushDialog(RoundEndGui);
    $Arena::RoundShown = 1;
+   sizeRoundPanel(%count);
+}
+
+// The panel as tall as its rows of scores (one at least), the next map's line under them, in the middle of the view.
+function sizeRoundPanel(%rows)
+{
+   %rows = mClamp(%rows, 1, $Arena::BoardRows);
+   %next = 80 + %rows * 30 + 14;
+   %height = %next + 22 + 22;
+   %view = RoundEndGui.getExtent();
+   %x = mFloor((getWord(%view, 0) - 360) / 2);
+   %y = mFloor((getWord(%view, 1) - %height) / 2);
+   RoundPanel.resize(%x, %y, 360, %height);
+   RoundNext.resize(0, %next, 360, 22);
 }
 
 function hideRoundEnd()
