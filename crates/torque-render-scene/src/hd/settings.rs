@@ -43,12 +43,15 @@ pub struct ImageSettings {
     /// Translucent surfaces blend in linear light (glass: its reflections not scaled by its alpha); else in display (gamma) space, as
     /// the fixed-function blend does (a translucent colour over a light background stays far more saturated).
     pub linear_blend: bool,
+    /// The scene's smooth occlusion whatever the scene says ([`crate::hd::HdScene::smooth_occlusion`]: the AO filtered, without a
+    /// history near moving shapes, the contact march turned per frame).
+    pub smooth_occlusion: bool,
 }
 
 impl ImageSettings {
     /// The engine's settings: fixed exposure, the neutral tonemap and grade, the whole frame mixed into a low bloom, a small bright sun
     /// disk with strong limb darkening, volumetrics and volumetric clouds always on, full AO, a light sharpen, clear water, linear
-    /// light and blending, the physical sky and the height fog.
+    /// light and blending, the physical sky and the height fog; the occlusion smooth only where the scene asks.
     pub const DEFAULT: ImageSettings = ImageSettings {
         exposure: ExposureMode::Fixed(1.0),
         tonemap: Tonemap::Neutral,
@@ -84,6 +87,7 @@ impl ImageSettings {
         physical_sky: true,
         height_fog: true,
         linear_blend: true,
+        smooth_occlusion: false,
     };
     pub fn exposure(self) -> ExposureMode {
         self.exposure
