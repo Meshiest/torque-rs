@@ -215,7 +215,8 @@ struct Shadows {
     // x: a point lookup's taps, y: a cube face's side in texels, z: 1 when point shadows are on, w: the contact march's steps.
     point: vec4<f32>,
     // X 1 when translucent surfaces colour the sun's shadows (the transmittance maps beside the cascades); y: the layer of the
-    // first cascade kept without the client's own Player, plus one (the first-person images' lookups), z: how many cascades are.
+    // first cascade kept without the client's own Player, plus one (the first-person images' lookups), z: how many cascades are,
+    // w: the share of the ambient occlusion the sun's light takes.
     colour: vec4<f32>,
 };
 

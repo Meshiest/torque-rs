@@ -139,6 +139,8 @@ pub(crate) struct ShadowInput<'a> {
     pub caster_reach: f32,
     /// The farthest the cascades reach (the scene's `shadow_distance`).
     pub shadow_distance: f32,
+    /// The share of the ambient occlusion the sun's light takes (the scene's `ao_sun`).
+    pub ao_sun: f32,
     /// The timestamp queries for the passes' start and end, when timed.
     pub stamps: Option<(&'a wgpu::QuerySet, u32, u32)>,
 }
@@ -1518,7 +1520,7 @@ impl Shadows {
                 if coloured { 1.0 } else { 0.0 },
                 (layers + 1) as f32,
                 no_self as f32,
-                0.0,
+                input.ao_sun,
             ],
         );
         debug_assert_eq!(u.len(), SHADOWS_BYTES);
