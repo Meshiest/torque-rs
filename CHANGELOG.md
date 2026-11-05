@@ -132,6 +132,10 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
+  file (the old one stayed).
+- `torque-client`: the end of the server's ghosting (a mission's end) keeps the connection's datablocks and net strings, as
+  TGE's client does (the next mission's figures came without their mounted images).
 - `torque-net`: a ghost-always object's update keeps the mask bits its pack could not send (a light mounted on an object
   the connection had no ghost of yet), so a later update sends them.
 - `torque-server`: Torque's net game sends a ShapeBase's script threads (`playThread`; it sent none).

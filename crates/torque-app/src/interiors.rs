@@ -5,7 +5,7 @@
 //! wound clockwise seen from its front (its plane's normal). The interior's faces in the world are kept for the surfaces a
 //! projectile's hole may lie on ([`Interiors::faces_near`]). A file is read once ([`MAX_FILES`] kept, at most
 //! [`MAX_READS_PER_FRAME`] new ones a frame; the importer caps each file's size and work); an interior's object is kept until
-//! its record moves it or [`Interiors::clear`].
+//! its record moves it, its ghost names another file or [`Interiors::clear`].
 //!
 //! Credit: follows TGE 1.4's `interior/interiorInstance.cc` and `interior/interiorRender.cc` (Copyright (C) GarageGames.com,
 //! Inc.) as Torque3D 2.0, its MIT-licensed release, keeps them in `interior/interiorInstance.cpp` and
@@ -53,9 +53,10 @@ pub fn object_id(index: u32) -> u32 {
     0x5000_0000 | (index & 0x0fff_ffff)
 }
 
-/// An interior's object (one draw a material), kept with the pose it was made at, and its faces in the world
+/// An interior's object (one draw a material), kept with the file and the pose it was made of, and its faces in the world
 /// (counter-clockwise seen from the front, as the decals take them).
 struct Kept {
+    path: String,
     pose: Pose,
     object: DynamicObject,
     faces: Arc<Vec<Triangle>>,
@@ -109,10 +110,15 @@ impl Interiors {
             };
             let Some(init) = &r.init else { continue };
             seen.push(index);
-            if self.kept.get(&index).is_some_and(|k| k.pose == pose) {
+            let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
+            // A ghost index a new map's interior took (the server reset its ghosting) is made again from its own file.
+            if self
+                .kept
+                .get(&index)
+                .is_some_and(|k| k.pose == pose && k.path == path)
+            {
                 continue;
             }
-            let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
             let surfaces = match self.files.get(&path) {
                 Some(kept) => kept.clone(),
                 None => {
@@ -234,6 +240,7 @@ fn build(
         draws.push(draw);
     }
     Some(Kept {
+        path: path.to_string(),
         pose,
         object: view.mesh_object(set, &draws, object_id(index)),
         faces: Arc::new(faces),

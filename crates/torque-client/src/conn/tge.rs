@@ -227,6 +227,30 @@ pub fn client_rates(vm: &Vm) -> RateConfig {
     )
 }
 
+/// The server ended its ghosting (connection message 2: a mission's end): the ghosts and everything the world kept of them
+/// go, the control object with them. What belongs to the connection stays, as TGE's client keeps it: the datablocks (the next
+/// mission's download may send only the ones that changed), the net strings both ways, the commands' state, the clock and the
+/// counters that number births, effects and moves (a ghost born at a reused index is still a new birth).
+fn end_ghosting(world: &mut ClientWorld<TgeClientSet>) {
+    let old = std::mem::take(world);
+    world.datablocks = old.datablocks;
+    world.strings = old.strings;
+    world.client_strings = old.client_strings;
+    world.commands = old.commands;
+    world.resets = old.resets;
+    world.births = old.births;
+    world.clock_ms = old.clock_ms;
+    world.animate = old.animate;
+    world.anim_ms = old.anim_ms;
+    world.hide_own_items = old.hide_own_items;
+    world.max_view_distance = old.max_view_distance;
+    world.effect_seq = old.effect_seq;
+    world.effects_dropped = old.effects_dropped;
+    world.player_move_seq = old.player_move_seq;
+    world.camera_move_seq = old.camera_move_seq;
+    world.vehicle_update_seq = old.vehicle_update_seq;
+}
+
 // ---- the datablocks
 
 /// A datablock event as TGE's feed hands it over: the server's id and the fields its codec read.
@@ -704,7 +728,7 @@ impl TgeFeed {
                 if let Some(ghosts) = self.ghosts.as_mut() {
                     ghosts.clear();
                 }
-                world.records = ClientWorld::default();
+                end_ghosting(&mut world.records);
             }
             3 => self
                 .events
