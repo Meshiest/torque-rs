@@ -4,7 +4,8 @@
 // Usage: node check.mjs <url or folder> <screenshot.png> [seconds] [world|menu|cached|refused|join|rtc|rtc-loss|rtc-blocked]
 // [query]
 // A folder (a web build, `<target>/web/level-demo`) is served on a free port of 127.0.0.1 for the check; a URL may carry the
-// page's query (`?map=office`), and after a folder the query is the fifth argument.
+// page's query (`?map=office`), and after a folder the query is the fifth argument. The check adds `nolock` to it: the page
+// then never asks for the pointer lock (headless Chrome on Windows confines the real cursor to its window when one does).
 // Needs puppeteer-core in the folder `TORQUE_WEB_TOOLS` names (`npm install --prefix <folder> puppeteer-core`) and Chrome
 // (the installed stable channel, or the program `CHROME` names).
 //
@@ -29,6 +30,7 @@ import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { serve } from './serve.mjs';
+import { assertNoLock, noLock, open } from './guard.mjs';
 
 const MODES = ['world', 'menu', 'cached', 'refused', 'join', 'rtc', 'rtc-loss', 'rtc-blocked'];
 const [where, out, seconds = '90', mode = 'world', query = ''] = process.argv.slice(2);
@@ -43,7 +45,9 @@ const tools = resolve(process.env.TORQUE_WEB_TOOLS ?? '.');
 const puppeteer = createRequire(join(tools, 'package.json'))('puppeteer-core');
 
 const server = /^https?:/.test(where) ? null : await serve(where, 0);
-const url = server ? `http://127.0.0.1:${server.address().port}/${query}` : where;
+// Every page carries `?nolock`: a page's pointer lock would confine the real cursor (guard.mjs).
+const url = noLock(server ? `http://127.0.0.1:${server.address().port}/${query}` : where);
+assertNoLock(url);
 const stem = out.replace(/\.png$/, '');
 
 // The files `files.json` names, by their URL's path (empty for a check that does not need them).
@@ -124,7 +128,7 @@ async function wait(page, deadline, done) {
 async function play(page, file) {
   const started = Date.now();
   const deadline = started + Number(seconds) * 1000;
-  await page.goto(url, { waitUntil: 'load' });
+  await open(page, url, { waitUntil: 'load' });
   const adapter = await page.evaluate(async () => {
     const a = await navigator.gpu?.requestAdapter();
     return a ? `${a.info?.vendor ?? '?'} ${a.info?.architecture ?? ''} ${a.info?.description ?? ''}`.trim() : null;
@@ -217,7 +221,7 @@ async function refused(page) {
     bytes[bytes.length >> 1] ^= 0x5a;
     r.respond({ status: 200, contentType: 'application/octet-stream', body: bytes });
   });
-  await page.goto(url, { waitUntil: 'load' });
+  await open(page, url, { waitUntil: 'load' });
   const s = await wait(page, Date.now() + Number(seconds) * 1000, (s) => s.refused !== null);
   const shown = await page.$eval('#status', (e) => e.textContent).catch(() => '');
   console.log(`the page shows: ${shown}`);
