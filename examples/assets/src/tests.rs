@@ -1187,7 +1187,7 @@ fn the_forest_builds_and_stays_within_its_triangle_budget() {
         triangles += built
             .surfaces
             .iter()
-            .map(|(_, _, p)| p.len() - 2)
+            .map(|(_, p)| p.len() - 2)
             .sum::<usize>();
         let d = &built.dif.details[0];
         most = most.max(d.bsp_nodes.len());
