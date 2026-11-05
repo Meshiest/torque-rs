@@ -16,12 +16,13 @@ use crate::shots::{START_LIMIT_MS, map_name};
 const OFFICE_CORNER: [f32; 2] = [-18.0, -12.0];
 
 /// The valley's views: a name, the eye (x, y and its height over the ground) and what it looks at (x, y, z).
-pub const VALLEY_VIEWS: [(&str, [f32; 3], [f32; 3]); 5] = [
+pub const VALLEY_VIEWS: [(&str, [f32; 3], [f32; 3]); 6] = [
     ("valley-lake", [400.0, -15.0, 120.0], [-260.0, 0.0, 30.0]),
     ("valley-high", [520.0, -260.0, 160.0], [-420.0, 0.0, 60.0]),
     ("valley-close", [-120.0, -175.0, 9.0], [-170.0, -70.0, 26.0]),
     ("valley-far", [900.0, 120.0, 260.0], [-700.0, -40.0, 80.0]),
     ("valley-start", [200.0, -34.0, 3.5], [-100.0, -10.0, 34.0]),
+    ("valley-sea", [-330.0, -60.0, 8.0], [-1400.0, 120.0, 150.0]),
 ];
 
 /// The eye of a view of [`VALLEY_VIEWS`]: its height over the valley's ground made a height.

@@ -87,6 +87,13 @@ pub fn add_valley(files: &mut GameFiles) -> Result<(), String> {
             s = t.scale
         );
     }
+    // The far ranges, each mountain an interior in the world's coordinates.
+    for (file, _) in valley::far_ranges() {
+        let _ = writeln!(
+            woods,
+            "   new InteriorInstance() {{ position = \"0 0 0\"; rotation = \"1 0 0 0\"; scale = \"1 1 1\"; interiorFile = \"kit/{file}\"; }};"
+        );
+    }
     map = map
         .replace(&format!("{WOODS}\n"), &woods)
         .replace(WOODS, &woods);

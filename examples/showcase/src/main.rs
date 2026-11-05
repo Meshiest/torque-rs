@@ -8,7 +8,8 @@
 //! grid of [`WIDTH`] x [`HEIGHT`] with thin transparent gutters (car and shot on top, valley and office below), and
 //! `hero@2x.png` at twice that. `--examples` draws the examples' other pictures instead (no grid): `plaza.png` (the level
 //! demo's plaza from above), `valley-wide.png` (the valley from high on its eastern slope), `valley-close.png` (its ground close up: grass, rock and
-//! sand), `valley-far.png` (the whole valley from far up its eastern end) and `character.png` (the character
+//! sand), `valley-far.png` (the whole valley from far up its eastern end), `valley-sea.png` (the sea from low over it, the clouds in
+//! its reflection) and `character.png` (the character
 //! example's figure mid-stride). `--only <name>` draws that one picture alone (no grid); `--grid` sets the grid again from the
 //! four pictures already in `dir`.
 
@@ -29,11 +30,12 @@ const PANEL: (u32, u32) = (1920, 1080);
 /// The panels in the grid's order: top left, top right, bottom left, bottom right.
 const PANELS: [&str; 4] = ["car", "shot", "valley", "office"];
 /// The examples' other pictures (`--examples`).
-const EXTRAS: [&str; 5] = [
+const EXTRAS: [&str; 6] = [
     "plaza",
     "valley-wide",
     "valley-close",
     "valley-far",
+    "valley-sea",
     "character",
 ];
 
@@ -71,7 +73,7 @@ fn draw(gpu: &Gpu, name: &str, size: (u32, u32), dir: &Path) -> Result<Frame, St
             };
             picture(gpu, files, size)
         }
-        "plaza" | "valley-wide" | "valley-close" | "valley-far" => {
+        "plaza" | "valley-wide" | "valley-close" | "valley-far" | "valley-sea" => {
             use torque_example_level_demo::showcase::{VALLEY_VIEWS, seat_on, valley_eye, view};
             let files = torque_example_level_demo::files::GameFiles::bundled()
                 .map_err(|e| e.to_string())?;
@@ -84,6 +86,7 @@ fn draw(gpu: &Gpu, name: &str, size: (u32, u32), dir: &Path) -> Result<Frame, St
                 let k = match name {
                     "valley-wide" => 1,
                     "valley-close" => 2,
+                    "valley-sea" => 5,
                     _ => 3,
                 };
                 let (_, from, to) = VALLEY_VIEWS[k];

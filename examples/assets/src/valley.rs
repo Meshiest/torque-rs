@@ -357,5 +357,143 @@ pub fn files() -> std::io::Result<Vec<(String, Vec<u8>)>> {
         ("valley_water.png".to_string(), textures::valley_water()?),
     ];
     out.extend(tree_difs()?);
+    out.extend(far_difs()?);
     Ok(out)
+}
+
+/// The far ranges: [`FAR_LAYERS`] layers of mountains on each side of the sea, each mountain (a summit and its shoulders) one
+/// interior (one interior of many overlapping peaks would pass a hull's surface count).
+pub const FAR_LAYERS: usize = 3;
+/// The far ranges' lightmap texel (m): they are far and lit by the world view, so the lightmaps stay coarsest.
+pub const FAR_LIGHTMAP_TEXEL: f64 = 512.0;
+/// How far out from the sea's middle line the nearest far range stands, and how much farther each layer behind it (m).
+pub const FAR_OFFSET: (f32, f32) = (700.0, 480.0);
+/// Where each layer's row starts behind the valley (x, m): the nearest only past the valley's mouth, the others behind its
+/// rim.
+pub const FAR_START: [f64; FAR_LAYERS] = [-850.0, 900.0, 1400.0];
+
+/// The file of mountain `k` of far range layer `layer` on the north side (`north`) or the south.
+pub fn far_file(north: bool, layer: usize, k: usize) -> String {
+    format!(
+        "valley_far_{}{layer}_{k:02}.dif",
+        if north { "north" } else { "south" }
+    )
+}
+
+/// A jagged peak: a pyramid of `sides` faces from a base of radius `r` (its corners at their own radii) under the sea up to a
+/// small top `h` m high, the top moved by `lean` off the middle so each face has its own slope.
+fn peak(
+    at: [f64; 2],
+    r: f64,
+    h: f64,
+    lean: [f64; 2],
+    rng: &mut Rng,
+) -> torque_interior_builder::Brush {
+    use torque_interior_builder::{Brush, Plane, TexGen};
+    let sides = 4 + (rng.next() % 3) as usize;
+    let turn = rng.range(0.0, std::f64::consts::TAU);
+    let z0 = f64::from(WATER_LEVEL) - 60.0;
+    let top = 0.04;
+    let base: Vec<[f64; 3]> = (0..sides)
+        .map(|k| {
+            let a = turn + std::f64::consts::TAU * k as f64 / sides as f64;
+            [at[0] + r * a.cos(), at[1] + r * a.sin(), z0]
+        })
+        .collect();
+    let apex = [at[0] + lean[0], at[1] + lean[1], z0 + h];
+    let up = |b: [f64; 3]| {
+        [
+            apex[0] + (b[0] - at[0]) * top,
+            apex[1] + (b[1] - at[1]) * top,
+            apex[2],
+        ]
+    };
+    let mut planes = Vec::with_capacity(sides + 2);
+    for k in 0..sides {
+        let (b0, b1) = (base[k], base[(k + 1) % sides]);
+        let t0 = up(b0);
+        let e = [b1[0] - b0[0], b1[1] - b0[1], b1[2] - b0[2]];
+        let f = [t0[0] - b0[0], t0[1] - b0[1], t0[2] - b0[2]];
+        let mut n = [
+            e[1] * f[2] - e[2] * f[1],
+            e[2] * f[0] - e[0] * f[2],
+            e[0] * f[1] - e[1] * f[0],
+        ];
+        // Outward: away from the middle.
+        let mid = [(b0[0] + b1[0]) / 2.0 - at[0], (b0[1] + b1[1]) / 2.0 - at[1]];
+        if n[0] * mid[0] + n[1] * mid[1] < 0.0 {
+            n = n.map(|v| -v);
+        }
+        planes.extend(Plane::new(n, b0));
+    }
+    planes.extend(Plane::new([0.0, 0.0, -1.0], [at[0], at[1], z0]));
+    planes.extend(Plane::new([0.0, 0.0, 1.0], apex));
+    Brush::from_planes(&planes, "valley_rock", |n| TexGen::world(n, 64.0))
+}
+
+/// The far ranges: on each side of the sea, [`FAR_LAYERS`] rows of jagged peaks along it from behind the valley out past
+/// the terrain's edge toward the horizon, each row farther out, broader and taller than the one before (so its tops show over
+/// it) and fading into the haze; the sea between them kept open. Each mountain's file and brushes (in the world's coordinates).
+pub fn far_ranges() -> Vec<(String, Vec<torque_interior_builder::Brush>)> {
+    let mut out = Vec::new();
+    for north in [true, false] {
+        for (layer, &start) in FAR_START.iter().enumerate() {
+            let mut rng = Rng(0x0fa7_0000 + layer as u64 * 31 + u64::from(north) * 7);
+            let side = if north { 1.0 } else { -1.0 };
+            let l = layer as f64;
+            let spacing = 330.0 * (1.0 + 0.45 * l);
+            let mut x = start - rng.range(0.0, spacing);
+            while x > -5600.0 - 600.0 * l {
+                // The rows run out toward the horizon, opening a little to keep the sea between them.
+                let out_far = f64::from(FAR_OFFSET.0 + FAR_OFFSET.1 * layer as f32)
+                    + 0.12 * (-x).max(0.0)
+                    + if layer > 0 && x > -900.0 { 450.0 } else { 0.0 };
+                let y = side * (out_far + rng.range(-160.0, 160.0) * (1.0 + 0.5 * l));
+                // A summit and its shoulders: lower, leaning peaks about it, so the crest is ragged.
+                let h = rng.range(300.0, 640.0) * (1.0 + 0.4 * l);
+                let shoulders = 1 + (rng.next() % 3) as usize;
+                let mut brushes = Vec::new();
+                for k in 0..=shoulders {
+                    let (dx, dy, hk) = if k == 0 {
+                        (0.0, 0.0, h)
+                    } else {
+                        (
+                            rng.range(-0.55, 0.55) * h,
+                            rng.range(-0.35, 0.35) * h,
+                            h * rng.range(0.45, 0.8),
+                        )
+                    };
+                    let r = hk * rng.range(0.55, 0.85);
+                    let lean = [rng.range(-0.35, 0.35) * r, rng.range(-0.35, 0.35) * r];
+                    brushes.push(peak(
+                        [x + dx, y + side * dy.abs() * 0.5 + dy],
+                        r,
+                        hk,
+                        lean,
+                        &mut rng,
+                    ));
+                }
+                out.push((far_file(north, layer, out.len()), brushes));
+                x -= spacing * rng.range(0.75, 1.25);
+            }
+        }
+    }
+    out
+}
+
+/// Each far range's `.dif` with its file name.
+pub fn far_difs() -> std::io::Result<Vec<(String, Vec<u8>)>> {
+    far_ranges()
+        .into_iter()
+        .map(|(name, brushes)| {
+            let options = torque_interior_builder::Options {
+                lightmap_texel: FAR_LIGHTMAP_TEXEL,
+                ..crate::trees::options()
+            };
+            torque_interior_builder::build(&brushes, &options)
+                .and_then(|b| b.bytes())
+                .map(|bytes| (name, bytes))
+                .map_err(std::io::Error::other)
+        })
+        .collect()
 }

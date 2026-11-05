@@ -290,6 +290,11 @@ The first development version. Nothing is published yet; this is what exists.
   over it along the reflected direction, off a calmer surface than the waves' (a third of their slope), and past the view's
   top edge the image's edge at the same heading stands in for it, read blurrier. No history of its own: fast clouds leave no
   trail in it.
+- The valley's far ranges: three rows of jagged mountains on each side of the sea (a summit and its shoulders each, one
+  interior a mountain: 84 small interiors), farther, broader and taller row by row, fading into the haze toward the
+  horizon with the sea open between them; the haze starts at 2,400 units. The level demo's web pack is 4.5 MB with the
+  valley. A sixth valley view, low over the sea with the clouds in its reflection (`valley-sea`, also in the showcase's
+  `--examples`).
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
