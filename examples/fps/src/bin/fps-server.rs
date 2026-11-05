@@ -20,8 +20,9 @@
 //! Data channels: `--webrtc` (with `--transport web` or `both`) gives browsers a WebRTC data channel beside their game
 //! socket, on a UDP port of its own: `--rtc-port <port>` (default the game's port number plus one; 0 any free one). Its
 //! candidates are the bind address and each `--rtc-public-ip <address>` (repeatable: a host behind a 1:1 NAT names its
-//! public address). With `--bind 0.0.0.0` (a public server) at least one `--rtc-public-ip` is required, and the computer's
-//! private LAN addresses are left out of the candidates (every browser would be told them) unless `--rtc-lan` adds them.
+//! public address). With `--bind 0.0.0.0` (a public server) `--rtc-public-ip` or `--rtc-lan` is required, and the computer's
+//! private LAN addresses are left out of the candidates (every browser would be told them) unless `--rtc-lan` adds them
+//! (with no public address named, only players on the network get a data channel; the rest stay on their game socket).
 //! Browsers whose channel does not open stay on their game socket. For checks only, each printing a warning at startup:
 //! `--rtc-loss <percent>` drops that share of the channels' datagrams both ways, and `--rtc-stats` prints the channels'
 //! traffic every 2 s (each peer's longest gap between game messages).
@@ -66,6 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rtc_port = None;
     let mut rtc_public = Vec::new();
     let mut rtc_lan = false;
+    let mut rtc_lan_only = false;
     let mut rtc_loss = 0u8;
     let mut rtc_stats = false;
     let mut args = Args::from_env();
@@ -170,6 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .checked_add(1)
                     .ok_or("--rtc-port is needed when --port is 65535")?,
             };
+            rtc_lan_only = options.public && rtc_public.is_empty();
             rtc_public = rtc_candidates(options.public, &rtc_public, rtc_lan, &lan_addresses())?;
             Some(RtcSetup {
                 port,
@@ -200,6 +203,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if webrtc {
             for line in server.transport_status() {
                 println!("fps-server: {line}");
+            }
+            if rtc_lan_only {
+                println!(
+                    "fps-server: data channels advertise only this computer's LAN addresses: players outside the network cannot use WebRTC and stay on the WebSocket (add --rtc-public-ip for them)"
+                );
             }
         }
         if rtc_stats {

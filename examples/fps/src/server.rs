@@ -25,7 +25,8 @@ pub use torque::app::server::{DEFAULT_PORT, lan_addresses};
 /// The extra addresses a dedicated server's data channels advertise to browsers beside the bind address: `named` (each
 /// `--rtc-public-ip`), and on `0.0.0.0` the computer's `lan` addresses, which are private. A public server (`0.0.0.0`) is
 /// seen by the internet, so it leaves the private ones out unless `with_lan` asks for them (a LAN address told to every
-/// browser discloses the network behind the server), and refuses to run data channels with no public address named.
+/// browser discloses the network behind the server). With neither a public address named nor `with_lan`, it refuses to run
+/// data channels; with `with_lan` alone the candidates are the LAN's, which only players on that network can use.
 pub fn rtc_candidates(
     public: bool,
     named: &[Ipv4Addr],
@@ -35,8 +36,8 @@ pub fn rtc_candidates(
     if !public {
         return Ok(named.to_vec());
     }
-    if named.is_empty() {
-        return Err("--webrtc on a public server (--bind 0.0.0.0) needs --rtc-public-ip <address>, the address browsers reach this computer by: without one the data channels have nothing to advertise but private addresses".to_string());
+    if named.is_empty() && !with_lan {
+        return Err("--webrtc on a public server (--bind 0.0.0.0) needs --rtc-public-ip <address>, the address browsers reach this computer by, or --rtc-lan to advertise this computer's private LAN addresses (only players on that network can use them)".to_string());
     }
     let mut found = named.to_vec();
     if with_lan {
@@ -200,7 +201,7 @@ mod tests {
         );
         // A public bind needs a public address, and does not add the LAN's on its own.
         assert!(rtc_candidates(true, &[], false, &[LAN]).is_err());
-        assert!(rtc_candidates(true, &[], true, &[LAN]).is_err());
+        assert_eq!(rtc_candidates(true, &[], true, &[LAN]), Ok(vec![LAN]));
         assert_eq!(
             rtc_candidates(true, &[PUBLIC], false, &[LAN]),
             Ok(vec![PUBLIC])
