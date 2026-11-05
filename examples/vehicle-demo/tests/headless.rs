@@ -1268,3 +1268,100 @@ fn another_players_buggy_and_one_rolling_on_without_a_driver_lay_unbroken_tracks
         }
     }
 }
+
+/// Runs `code` on `game`'s server, its value.
+fn eval(game: &mut VehicleDemo, code: &str) -> String {
+    let out = server_mut(game).0.vm_mut().eval(code.as_bytes());
+    String::from_utf8_lossy(&out.expect("the script")).into_owned()
+}
+
+/// Puts each client's own buggy at its place ("x y yaw") on the ground, stopped, and seats the client at its wheel.
+fn place_and_seat(games: &mut [&mut VehicleDemo], places: &[(f32, f32, f32)]) {
+    for (k, (x, y, yaw)) in places.iter().enumerate() {
+        eval(
+            games[0],
+            &format!(
+                "%c = ClientGroup.getObject({k}); %v = %c.buggy; \
+                 %v.setTransform(\"{x} {y}\" SPC groundAt({x}, {y}) + 1.2 SPC \"0 0 1 {yaw}\"); \
+                 %v.setVelocity(\"0 0 0\"); \
+                 %p = %c.player; %v.mountObject(%p, 0); %p.setTransform(\"0 0 0 0 0 1 0\"); \
+                 %p.setActionThread(\"sit\", true, true); straightenWheels(%v); %p.setControlObject(%v); \
+                 commandToClient(%c, 'Seated', 0);"
+            ),
+        );
+    }
+    steps(games, 1500);
+}
+
+#[test]
+fn buggies_driven_into_each_other_head_on_and_side_on_both_stay_where_the_server_has_them() {
+    for (name, places) in [
+        (
+            "head-on",
+            [
+                (0.0f32, -30.0f32, 0.0f32),
+                (0.0, 30.0, std::f32::consts::PI),
+            ],
+        ),
+        (
+            "side-on",
+            [(0.0, -30.0, 0.0), (-30.0, 0.0, std::f32::consts::FRAC_PI_2)],
+        ),
+    ] {
+        let mut a = host();
+        let mut b = join(&mut a);
+        place_and_seat(&mut [&mut a, &mut b], &places);
+        assert!(a.driving() && b.driving(), "{name}");
+        let ids: Vec<u32> = server(&a)
+            .client_buggies()
+            .into_iter()
+            .map(|b| b.unwrap())
+            .collect();
+        a.key(Key::W, true);
+        b.key(Key::W, true);
+        let mut met = 0.0f32;
+        for f in 0..(6000 / 16) {
+            for g in [&mut a, &mut b] {
+                g.step(16);
+                g.update_scene(0.016);
+            }
+            let at: Vec<[f32; 3]> = ids
+                .iter()
+                .map(|&i| server(&a).buggy_position_of(i).expect("both buggies"))
+                .collect();
+            met = met.max(-apart(at[0], at[1]));
+            // Each client draws both buggies near where the server has them (one read against the wrong compression point
+            // was drawn some twenty units down, under the ground).
+            for (who, g) in [("A", &a), ("B", &b)] {
+                let drawn: Vec<[f32; 3]> = g
+                    .with_world(|w| {
+                        w.records
+                            .of_class(TgeClass::WheeledVehicle)
+                            .filter_map(|(i, _)| drawn_at(g, i))
+                            .collect()
+                    })
+                    .unwrap();
+                assert_eq!(drawn.len(), 2, "{name}: {who} draws {drawn:?} at frame {f}");
+                for p in &at {
+                    let near = drawn.iter().map(|d| apart(*d, *p)).fold(f32::MAX, f32::min);
+                    assert!(
+                        near < 4.0,
+                        "{name}: {who} draws {drawn:?}, the server has {at:?} at frame {f}"
+                    );
+                }
+            }
+        }
+        // They met, and both are on the map, upright enough to drive on.
+        let at: Vec<[f32; 3]> = ids
+            .iter()
+            .map(|&i| server(&a).buggy_position_of(i).unwrap())
+            .collect();
+        assert!(met > -4.0, "{name}: the buggies never met");
+        for p in at {
+            assert!(p.iter().all(|c| c.is_finite()), "{name}: {p:?}");
+            let ground = a.terrain.height(p[0], p[1]).expect("over the terrain");
+            assert!((p[2] - ground).abs() < 3.0, "{name}: {p:?} over {ground}");
+        }
+        assert_eq!(server(&a).buggy_count(), 2, "{name}");
+    }
+}
