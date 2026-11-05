@@ -594,7 +594,7 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                 if cfg!(target_arch = "wasm32") {
                     self.redraw_asked = None;
                     let began = Instant::now();
-                    if self.pass_work(event_loop).is_none() {
+                    if self.pass_work(event_loop, true).is_none() {
                         return;
                     }
                     self.game.pass_work(began.elapsed());
@@ -641,7 +641,7 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
             return;
         }
         let began = Instant::now();
-        if let Some(fps) = self.pass_work(event_loop) {
+        if let Some(fps) = self.pass_work(event_loop, true) {
             self.schedule(event_loop, fps);
         }
         self.game.pass_work(began.elapsed());
@@ -660,7 +660,10 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
 impl<G: WindowGame> WindowApp<G> {
     /// One pass of the window's loop: the clock's step, the upkeep, the cursor and the screen mode. The menus' frame cap
     /// (frames a second, 0: none) for the next frame; None when the loop is ending or there is no window yet.
-    fn pass_work(&mut self, event_loop: &ActiveEventLoop) -> Option<u32> {
+    ///
+    /// `window_too`: the cursor's hold and the screen mode too. A browser's pass between animation frames leaves them: winit's
+    /// web window may hold its canvas borrowed while it hands the loop an event (a resize), and these borrow it again.
+    fn pass_work(&mut self, event_loop: &ActiveEventLoop, window_too: bool) -> Option<u32> {
         let now = Instant::now();
         self.last_pass = now;
         #[cfg(target_arch = "wasm32")]
@@ -686,6 +689,9 @@ impl<G: WindowGame> WindowApp<G> {
         let wants = self.game.host_ref().wants_mouse();
         self.grabbed = wants;
         let window = self.window.clone()?;
+        if !window_too {
+            return Some(self.cap_fps);
+        }
         let now_ms = self.started.elapsed().as_millis() as u64;
         let may_grab = self.game.may_grab();
         // a window made without the focus (started in the background) gets no event for it: the window is asked.
@@ -745,7 +751,7 @@ impl<G: WindowGame> WindowApp<G> {
     fn web_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         if now.duration_since(self.last_pass) >= WEB_IDLE_PASS
-            && self.pass_work(event_loop).is_none()
+            && self.pass_work(event_loop, false).is_none()
         {
             return;
         }
