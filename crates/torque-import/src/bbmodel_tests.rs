@@ -305,6 +305,20 @@ fn hostile_files_are_errors() {
 }
 
 #[test]
+fn texture_names_never_repeat() {
+    let mut f = file(vec![cube("box", [0.0; 3], [16.0; 3])], vec![json!("u-box")]);
+    f["textures"] =
+        json!(["a_2.png", "a.png", "a.png", "A.png", "a_3", "a.jpg"].map(|n| texture(n, 16, 16)));
+    let names: Vec<String> = read_json(&f)
+        .unwrap()
+        .images
+        .into_iter()
+        .map(|i| i.name)
+        .collect();
+    assert_eq!(names, ["a_2", "a", "a_3", "A_4", "a_3_2", "a_5"]);
+}
+
+#[test]
 fn the_reader_never_panics() {
     let mut g = file(
         vec![

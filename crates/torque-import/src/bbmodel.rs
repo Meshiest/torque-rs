@@ -19,7 +19,7 @@
 //! capped; every number must be finite and coordinates within [`MAX_COORD`]; textures are base64 `data:` PNGs or JPEGs whose
 //! decoded size and header size are capped (never decoded here). What a bound refuses is an [`ImportError`], never a panic.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 use torque_modelcore::math::{self, Quat, Vec3};
@@ -53,11 +53,16 @@ fn malformed<T>(what: impl Into<String>) -> Result<T, ImportError> {
 
 /// A name cut to [`caps::MAX_NAME_BYTES`].
 fn short(name: &str) -> String {
-    let mut end = name.len().min(caps::MAX_NAME_BYTES);
+    short_to(name, caps::MAX_NAME_BYTES).to_string()
+}
+
+/// `name` cut to at most `max` bytes, at a character's end.
+fn short_to(name: &str, max: usize) -> &str {
+    let mut end = name.len().min(max);
     while !name.is_char_boundary(end) {
         end -= 1;
     }
-    name[..end].to_string()
+    &name[..end]
 }
 
 fn num(v: &Value, what: &str) -> Result<f64, ImportError> {
@@ -502,7 +507,9 @@ pub fn read(bytes: &[u8], options: &Options, mut charge: Charge) -> Result<Model
         .unwrap_or(&empty);
     cap("textures", textures.len(), caps::MAX_IMAGES)?;
     let mut image_bytes = 0usize;
-    let mut names: HashMap<String, usize> = HashMap::new();
+    // Names taken (lowercase: a file system may not tell case apart), and each name's next number to try.
+    let mut taken: HashSet<String> = HashSet::new();
+    let mut next: HashMap<String, usize> = HashMap::new();
     for (i, t) in textures.iter().enumerate() {
         let Some(t) = t.as_object() else {
             return malformed(format!("texture {i} is not an object"));
@@ -526,10 +533,18 @@ pub fn read(bytes: &[u8], options: &Options, mut charge: Charge) -> Result<Model
         } else {
             &base
         });
-        // Two textures of one name: the later ones numbered.
-        let n = names.entry(base.clone()).or_insert(0);
-        *n += 1;
-        let name = if *n == 1 { base } else { format!("{base}_{n}") };
+        // Two textures of one name: the later ones numbered, past any name already taken.
+        let mut name = base.clone();
+        while taken.contains(&name.to_ascii_lowercase()) {
+            let n = next.entry(base.to_ascii_lowercase()).or_insert(2);
+            let suffix = format!("_{n}");
+            *n += 1;
+            name = format!(
+                "{}{suffix}",
+                short_to(&base, caps::MAX_NAME_BYTES.saturating_sub(suffix.len()))
+            );
+        }
+        taken.insert(name.to_ascii_lowercase());
         let mut image = Image {
             name: name.clone(),
             ..Image::default()
