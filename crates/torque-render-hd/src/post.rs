@@ -95,6 +95,10 @@ pub struct PostPipes {
     pub motion_layout: wgpu::BindGroupLayout,
     /// The AO pass by method (true: GTAO, false: SSAO).
     pub ao: HashMap<bool, wgpu::RenderPipeline>,
+    /// The same with a short history near the shapes that moved, and the AO's spatial filter on the AO pass's layout (the scene's
+    /// smooth occlusion).
+    pub ao_moving: HashMap<bool, wgpu::RenderPipeline>,
+    pub ao_filter: wgpu::RenderPipeline,
     pub taa: wgpu::RenderPipeline,
     pub fxaa: wgpu::RenderPipeline,
     pub linear: wgpu::Sampler,
@@ -149,16 +153,29 @@ impl PostPipes {
                 count: None,
             }],
         });
-        let ao = [true, false]
-            .into_iter()
-            .map(|gtao| {
-                let m = module(device, Permutation::Ao { gtao });
-                (
-                    gtao,
-                    full_frame(device, "hd ao", &ao_layout, &m, "fs_ao", &[AO_FORMAT]),
-                )
-            })
-            .collect();
+        let ao_of = |moving_cap: bool| -> HashMap<bool, wgpu::RenderPipeline> {
+            [true, false]
+                .into_iter()
+                .map(|gtao| {
+                    let m = module(device, Permutation::Ao { gtao, moving_cap });
+                    (
+                        gtao,
+                        full_frame(device, "hd ao", &ao_layout, &m, "fs_ao", &[AO_FORMAT]),
+                    )
+                })
+                .collect()
+        };
+        let ao = ao_of(false);
+        let ao_moving = ao_of(true);
+        let ao_filter_module = module(device, Permutation::AoFilter);
+        let ao_filter = full_frame(
+            device,
+            "hd ao filter",
+            &ao_layout,
+            &ao_filter_module,
+            "fs_ao_filter",
+            &[AO_FORMAT],
+        );
         let taa_module = module(device, Permutation::Taa);
         let taa = full_frame(
             device,
@@ -194,6 +211,8 @@ impl PostPipes {
             fxaa_layout,
             motion_layout,
             ao,
+            ao_moving,
+            ao_filter,
             taa,
             fxaa,
             linear,

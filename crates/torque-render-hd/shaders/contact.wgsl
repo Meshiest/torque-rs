@@ -1,8 +1,9 @@
 // Screen-space contact shadows: the small shadows the sun's cascades are too coarse for, where a surface meets what it stands
 // on. From each pixel of the depth prepass a short ray (0.6 units, `shadows.point.w` steps, its start jittered by interleaved gradient
-// noise) is marched toward the sun in view space; it is blocked where the depth buffer holds a surface in front of the ray by less than
-// a thickness that is not the pixel's own plane (the plane is rebuilt from the neighbouring depths, so a flat face never shadows
-// itself however grazing the sun is). Written as a visibility in [0, 1], faded toward the ray's end.
+// noise, turned per frame with the scene's smooth_occlusion) is marched toward the sun in view space; it is blocked where the depth
+// buffer holds a surface in front of the ray by less than a thickness that is not the pixel's own plane (the plane is rebuilt from
+// the neighbouring depths, so a flat face never shadows itself however grazing the sun is). Written as a visibility in [0, 1], faded
+// toward the ray's end.
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -67,7 +68,11 @@ fn fs_contact(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         return vec4<f32>(1.0);
     }
     let steps = max(u32(shadows.point.w), 1u);
-    let jitter = ign(frag.xy);
+    // Turned per frame where the TAA averages it and the scene smooths its occlusion (else a fixed stipple in a partial shadow).
+    var jitter = ign(frag.xy);
+    if frame.times.y > 0.5 && frame.surf3.z < 0.5 {
+        jitter = ign(frag.xy + 5.588238 * f32(u32(frame.temporal.z) % 64u));
+    }
     let dist = length(p);
     let start = p + n * (0.002 + 0.0005 * dist);
     let plane_eps = 0.004 + 0.002 * dist;
