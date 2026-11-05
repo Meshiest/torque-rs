@@ -78,7 +78,8 @@ impl DerefMut for LevelDemo {
 
 impl LevelDemo {
     /// The client over `files`: `client.cs` run, the menu built from the maps found.
-    pub fn new(files: GameFiles) -> Result<LevelDemo, String> {
+    pub fn new(mut files: GameFiles) -> Result<LevelDemo, String> {
+        crate::levels::add_levels(&mut files)?;
         let maps = crate::files::maps(&files);
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
@@ -396,7 +397,7 @@ fn camera_target(f: &OwnView) -> [f32; 3] {
     ]
 }
 
-fn with_fov(mut eye: Eye) -> Eye {
+pub fn with_fov(mut eye: Eye) -> Eye {
     eye.fov = None;
     eye
 }

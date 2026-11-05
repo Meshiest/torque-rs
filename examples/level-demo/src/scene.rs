@@ -25,6 +25,8 @@ use torque::ghost_world::world::Pose;
 use torque::ghosts::{TgeClass, TgeRecord};
 use torque_example_common::KitAssets;
 use torque_example_common::prediction::placed;
+
+use crate::levels::LevelStyle;
 use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::Eye;
@@ -52,7 +54,7 @@ const MAX_INTERIOR_FILES: usize = 64;
 
 /// The objects of the client's ghosts, frame after frame.
 pub struct WorldScene {
-    ghosts: GhostScene,
+    ghosts: GhostScene<LevelStyle>,
     shapes: HashMap<String, Option<SceneShape>>,
     cubes: BTreeMap<u32, KeptCube>,
     /// The interior files read (by path; `None` for one that did not read) and each interior ghost's hulls.
@@ -63,7 +65,7 @@ pub struct WorldScene {
 impl Default for WorldScene {
     fn default() -> WorldScene {
         WorldScene {
-            ghosts: GhostScene::new(GhostOptions::default()),
+            ghosts: GhostScene::with_style(GhostOptions::default(), LevelStyle),
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
             interior_files: HashMap::new(),

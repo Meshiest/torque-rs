@@ -136,6 +136,8 @@ The first development version. Nothing is published yet; this is what exists.
 - The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
   meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
   the engine's own classes to every client).
+- The level demo's office map: a Blockbench model (`game/levels/office.bbmodel`, made by `tools/office.py`) built into an
+  interior when the demo starts, with pixel textures drawn nearest, glass windows, a roof and ceiling lights.
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
   while it runs.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and

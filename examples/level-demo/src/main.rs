@@ -15,13 +15,21 @@ const SHOT_SIZE: (u32, u32) = (1280, 720);
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = Args::from_env();
     let mut shots_dir = None;
+    let mut office_dir = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--shots" => shots_dir = Some(args.dir(&arg)?),
+            "--office-shots" => office_dir = Some(args.dir(&arg)?),
             _ => return Err(unknown(&arg).into()),
         }
     }
     let files = GameFiles::bundled()?;
+    if let Some(dir) = office_dir {
+        for path in shots::write_office(files, &dir, SHOT_SIZE)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
     match shots_dir {
         Some(dir) => {
             for path in shots::write_all(files, &dir, SHOT_SIZE)? {

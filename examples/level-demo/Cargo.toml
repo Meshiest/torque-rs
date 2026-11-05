@@ -18,11 +18,14 @@ categories = ["game-development"]
 torque = { path = "../../crates/torque", default-features = false, features = ["app"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
+torque-import = { path = "../../crates/torque-import" }
+torque-interior-builder = { path = "../../crates/torque-interior-builder" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 
 [dev-dependencies]
-torque-interior-builder = { path = "../../crates/torque-interior-builder" }
+torque-maps = { path = "../../crates/torque-maps" }
+torque-interior-builder = { path = "../../crates/torque-interior-builder", features = ["verify"] }
 
 [[bin]]
 name = "example-level-demo"
