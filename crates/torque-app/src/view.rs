@@ -146,6 +146,8 @@ impl WorldView {
         frame.sun_radius = SUN_RADIUS;
         frame.ao_radius = AO_RADIUS;
         frame.ao_sun = AO_SUN;
+        // Smoke and dust lit by the sun, the sky and the lights; additive glows stay unlit.
+        frame.particle_light = Some(ParticleLight::BLENDED);
         let scene = PlainScene {
             frame,
             ..PlainScene::default()
