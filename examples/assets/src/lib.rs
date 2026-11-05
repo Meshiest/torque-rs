@@ -1,7 +1,7 @@
-//! The example games' shared asset kit: a unit cube, a box figure with idle, walk, run, back, side, jump, look and death
-//! sequences, a pistol, a projectile, their textures and a particle's, all made by this crate's code ([`shapes`],
-//! [`textures`]; the shape builder is the `torque-shape-builder` crate, [`builder`]) and written as `.dts` (version 24,
-//! through `torque_shapes::write`) and `.png`.
+//! The example games' shared asset kit: a unit cube, a box figure with idle, walk, run, back, side, jump, look, death and
+//! sit sequences, a pistol, a projectile, a dune buggy and its wheel, a terrain of hills, their textures and a particle's, all made
+//! by this crate's code ([`shapes`], [`buggy`], [`terrain`], [`textures`]; the shape builder is the `torque-shape-builder`
+//! crate, [`builder`]) and written as `.dts` (version 24, through `torque_shapes::write`), `.ter` and `.png`.
 //!
 //! **Made at run time, not kept in the repository.** The code is the source of the assets; an example calls [`write_all`] at
 //! start-up (a few kilobytes, a millisecond), or `just examples/assets <dir>` (the `make-example-assets` tool) writes them
@@ -12,7 +12,9 @@
 //! `mount0`, the collision and LOS details), and the figure's sequences pose its limbs the way their names say.
 
 pub use torque_shape_builder as builder;
+pub mod buggy;
 pub mod shapes;
+pub mod terrain;
 pub mod textures;
 
 use std::io;
@@ -37,6 +39,12 @@ pub fn all() -> io::Result<Vec<Asset>> {
         shape("figure.dts", shapes::figure()),
         shape("pistol.dts", shapes::pistol()),
         shape("projectile.dts", shapes::projectile()),
+        shape("buggy.dts", buggy::buggy()),
+        shape("buggy_wheel.dts", buggy::wheel()),
+        Asset {
+            name: "hills.ter",
+            bytes: terrain::hills(),
+        },
         Asset {
             name: "grid.png",
             bytes: textures::grid()?,
@@ -76,6 +84,18 @@ pub fn all() -> io::Result<Vec<Asset>> {
         Asset {
             name: "smoke.png",
             bytes: textures::smoke()?,
+        },
+        Asset {
+            name: "checker.png",
+            bytes: textures::checker()?,
+        },
+        Asset {
+            name: "buggy.png",
+            bytes: textures::buggy()?,
+        },
+        Asset {
+            name: "track.png",
+            bytes: textures::track()?,
         },
     ])
 }

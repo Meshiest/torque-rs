@@ -13,6 +13,9 @@
 //! | `flare_star.png` | 256 x 256 | a muzzle flash seen head on: a hot white core in a soft bloom with uneven petals, smoothed
 //! (drawn added: black adds nothing) |
 //! | `smoke.png` | 64 x 64, with alpha | a soft, uneven puff of light gray smoke |
+//! | `checker.png` | 64 x 64 | the terrain's checkerboard: two squares a side, a light and a dark green |
+//! | `track.png` | 32 x 32 | a tire track's tread: gray block prints darker than 0.5, the strip's edges fading to 0.5 |
+//! | `buggy.png` | 64 x 64 | the buggy's swatches: orange frame, charcoal panels, trim, seats, lamps, metal, floor, tire, rim and tread |
 
 use std::io;
 
@@ -268,5 +271,68 @@ pub fn smoke() -> io::Result<Vec<u8>> {
         let alpha = (puff * puff * inner).clamp(0.0, 1.0);
         let v = (205.0 + 20.0 * (1.0 - d)).min(235.0) as u8;
         [v, v, v.saturating_add(4), (alpha * 255.0).round() as u8]
+    })
+}
+
+/// The two greens of the terrain's checkerboard.
+pub const CHECKER_LIGHT: Rgb = [112, 178, 76];
+pub const CHECKER_DARK: Rgb = [58, 118, 50];
+
+/// The terrain's checkerboard: 2 x 2 squares of 32 px, light and dark green, a faint speckle in each so the ground reads as a
+/// surface up close (one repeat of the texture is two squares a side).
+pub fn checker() -> io::Result<Vec<u8>> {
+    png(64, 64, |x, y| {
+        let base = if (x / 32 + y / 32) % 2 == 0 {
+            CHECKER_LIGHT
+        } else {
+            CHECKER_DARK
+        };
+        let n = (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) % 7;
+        shade(base, n as i16 - 3)
+    })
+}
+
+/// A tire track's tread, multiplied over the ground (0.5 gray leaves it as it is): two rows of block prints across the strip,
+/// darker in the middle of each print, the edges of the strip fading out; one repeat a strip's width along it.
+pub fn track() -> io::Result<Vec<u8>> {
+    png(32, 32, |x, y| {
+        let across = (x as f32 + 0.5) / 32.0;
+        let edge = (1.0 - ((across - 0.5).abs() * 2.0).powi(4)).max(0.0);
+        // Two rows of blocks (left and right half), the right row a half repeat on.
+        let row = if x < 16 { y } else { (y + 16) % 32 };
+        let print = if (row % 16) < 10 && (x % 16) > 1 && (x % 16) < 14 {
+            0.5
+        } else {
+            0.68
+        };
+        let v = 0.5 + (print - 0.5 - 0.5) * 0.5 * edge;
+        let g = (v.clamp(0.0, 1.0) * 255.0) as u8;
+        [g, g, g]
+    })
+}
+
+/// The buggy's swatches: a 4 x 4 grid of 16 px cells (see `buggy.rs`): the frame's orange paint, the charcoal body panels,
+/// the trim, the seats; the lamps, the taillights, bare metal, the floor's tread plate; the tire, the rim and the tread blocks
+/// (darker, with grooves). The rest is the trim.
+pub fn buggy() -> io::Result<Vec<u8>> {
+    let paint: Rgb = [236, 128, 30];
+    let trim: Rgb = [36, 38, 44];
+    png(64, 64, |x, y| {
+        let (cx, cy, u, v) = (x / 16, y / 16, x % 16, y % 16);
+        match (cx, cy) {
+            (0, 0) => paint,
+            (1, 0) => [58, 64, 74],
+            (3, 0) => [150, 34, 30],
+            (0, 1) => [255, 248, 214],
+            (1, 1) => [214, 28, 24],
+            (2, 1) => [170, 174, 180],
+            (3, 1) if (u + v) % 6 == 0 => [110, 114, 120],
+            (3, 1) => [84, 88, 94],
+            (0, 2) => [44, 44, 48],
+            (1, 2) => [206, 208, 212],
+            (2, 2) if u % 5 == 0 => [16, 16, 18],
+            (2, 2) => [32, 32, 36],
+            _ => trim,
+        }
     })
 }
