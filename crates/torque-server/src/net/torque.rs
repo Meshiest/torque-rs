@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use torque_ghosts::codec::NetWidths;
+use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
 use torque_ghosts::set::GhostCodecSet;
 use torque_ghosts::tge::{TgeClass, TgeGhosts};
 use torque_ghosts::{Link, ObjectView, PackCtx, Value};
@@ -118,11 +119,14 @@ impl GhostGame for TgeGhostGame {
     fn with_source<R>(
         hub: &GhostHub<Self>,
         env: SourceEnv<'_>,
-        _conn: Option<ConnId>,
+        conn: Option<ConnId>,
         f: impl FnOnce(&mut TgeSource<'_>, &mut HashMap<ConnId, Conns<Self>>) -> R,
     ) -> R {
         let mut guard = hub.0.borrow_mut();
         let hub = &mut *guard;
+        let engine_peer = conn
+            .and_then(|c| hub.conns.get(&c))
+            .is_some_and(|c| c.engine_peer);
         let always = ghost_always_of(env.vm, &hub.reg);
         let controlled = hub.conns.values().filter_map(|c| c.control).collect();
         let mut src = TgeSource {
@@ -132,6 +136,7 @@ impl GhostGame for TgeGhostGame {
             ghost_bits: env.ghost_bits,
             always,
             controlled,
+            engine_peer,
         };
         f(&mut src, &mut hub.conns)
     }
@@ -157,6 +162,11 @@ fn ghost_always_of(vm: &Vm, reg: &Registry) -> Vec<ObjId> {
     ids
 }
 
+/// The global that makes a server ghost the engine's own classes (`torque_ghosts::light`'s) to every client, not only to the
+/// engine's own (the local connection, a client granted the handshake's extension): set it to 1 when every client is the
+/// engine's (a TGE client cannot read their records).
+pub const ENGINE_CLASSES_GLOBAL: &str = "$Server::EngineClasses";
+
 /// The world as one connection's ghost manager sees it, for the length of one call.
 pub struct TgeSource<'a> {
     pub vm: &'a Vm,
@@ -167,6 +177,8 @@ pub struct TgeSource<'a> {
     always: Vec<ObjId>,
     /// The objects some connection controls (the ShapeBase part's `controlled` flag).
     controlled: Vec<ObjId>,
+    /// The connection's peer is the engine's own client: the engine's own classes are ghosted to it (to no other).
+    engine_peer: bool,
 }
 
 impl TgeSource<'_> {
@@ -174,6 +186,23 @@ impl TgeSource<'_> {
         let objects = self.vm.objects();
         let name = objects.classes.name(objects.get(obj)?.class());
         TgeGhosts::class_by_name(std::str::from_utf8(name).ok()?)
+    }
+
+    /// Whether the connection may know the object's class: TGE's always, the engine's own on an engine peer, or on any
+    /// connection of a server that says all its clients are the engine's ([`ENGINE_CLASSES_GLOBAL`] true).
+    fn known(&self, obj: ObjId) -> bool {
+        let engine = self
+            .reg
+            .entries
+            .get(&obj)
+            .and_then(|e| TgeClass::of_code(e.code))
+            .is_some_and(|c| ENGINE_OBJECT_CLASSES.contains(&c.name()));
+        !engine
+            || self.engine_peer
+            || self
+                .vm
+                .global(ENGINE_CLASSES_GLOBAL)
+                .is_some_and(|v| torque_ts_vm::text::atof(&v) != 0.0)
     }
 }
 
@@ -413,17 +442,21 @@ impl GameView<'_> {
 }
 
 impl ObjectView for GameView<'_> {
-    /// A simulated Projectile's `source_object`: its source's ghost on the connection (`NotGhosted` while it has none).
+    /// A simulated Projectile's `source_object` and a SpotLight's `mount_object`: the object's ghost on the connection
+    /// (`NotGhosted` while it has none).
     fn link(&self, field: &str) -> Link {
-        let source = match field {
-            "source_object" => torque_game::sim::projectile::state(self.fields.vm, self.fields.obj)
-                .and_then(|s| s.source),
+        let (vm, obj) = (self.fields.vm, self.fields.obj);
+        let linked = match field {
+            "source_object" => {
+                torque_game::sim::projectile::state(vm, obj).and_then(|s| s.source.map(|s| s.0))
+            }
+            "mount_object" => torque_game::scene::lights::spot_mount(vm, obj).map(|m| m.0),
             _ => None,
         };
-        let (Some(source), Some(ghost_of)) = (source, self.ghost_of) else {
+        let (Some(linked), Some(ghost_of)) = (linked, self.ghost_of) else {
             return Link::Null;
         };
-        match ghost_of(source.0) {
+        match ghost_of(linked) {
             Some(g) => Link::Ghost(g),
             None => Link::NotGhosted,
         }
@@ -471,6 +504,15 @@ impl ObjectView for GameView<'_> {
                 .get(index)
                 .map_or(Value::Null, |f| Value::F32(*f)),
             "fade_value" => Value::F32(1.0),
+            // A SpotLight's mount node and a TimeOfDay's animation.
+            "mount_node" => torque_game::scene::lights::spot_mount(self.fields.vm, self.fields.obj)
+                .map_or(Value::Int(0), |m| Value::Int(i64::from(m.1))),
+            "animate_time" | "animate_speed" => {
+                torque_game::scene::lights::day_animation(self.fields.vm, self.fields.obj)
+                    .map_or(Value::F32(0.0), |(t, s)| {
+                        Value::F32(if field == "animate_time" { t } else { s })
+                    })
+            }
             "thread_sequence" => Value::Int(-1),
             "max_damage" => Value::F32(self.db_float(b"maxDamage", 1.0)),
             "max_energy" => Value::F32(self.db_float(b"maxEnergy", 0.0)),
@@ -504,7 +546,7 @@ fn sky_field(field: &str) -> Option<&'static str> {
 
 impl ObjectSource for TgeSource<'_> {
     fn exists(&self, obj: ObjId) -> bool {
-        self.vm.objects().contains(obj) && self.reg.entries.contains_key(&obj)
+        self.vm.objects().contains(obj) && self.reg.entries.contains_key(&obj) && self.known(obj)
     }
 
     fn class_id(&self, obj: ObjId) -> Option<u32> {
@@ -512,6 +554,9 @@ impl ObjectSource for TgeSource<'_> {
     }
 
     fn net_flags(&self, obj: ObjId) -> u32 {
+        if !self.known(obj) {
+            return 0;
+        }
         self.reg.entries.get(&obj).map_or(0, |e| e.flags)
     }
 

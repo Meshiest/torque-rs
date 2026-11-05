@@ -510,7 +510,7 @@ impl SkyGpu {
         let e = image.emissive;
         let vol = image.volumetric;
         let vq = quality.volumetrics();
-        let t = s.towards;
+        let t = scene.atmosphere_towards();
         let mut b = Vec::with_capacity(SKY_BYTES as usize);
         let flag = |on: bool| if on { 1.0 } else { 0.0 };
         // w: 1 with the physical sky, 2 when it is drawn in place of the server's box (`HdScene::atmosphere`).

@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use ghosts::audio::AudioEmitter;
 use ghosts::fx::{FxLight, ParticleEmitterNode};
 use ghosts::interior::InteriorInstance;
+use ghosts::light::{ScatterSky, SpotLight, TimeOfDay};
 use ghosts::markers::{MissionMarker, SpawnSphere, WayPoint};
 use ghosts::parts::GameBase;
 use ghosts::player::{HEAD_BITS, Player, VELOCITY_NORMAL_BITS, YAW_BITS};
@@ -360,6 +361,10 @@ impl ClientRecord<TgeClientSet> for TgeRecord {
                 xf: r.transform?,
                 scale: None,
             },
+            R::SpotLight(r) => Pose::Affine {
+                xf: r.transform?,
+                scale: None,
+            },
             R::Camera(r) => {
                 let [x, y, z, pitch, yaw] = floats(r.pose?);
                 Pose::Euler {
@@ -395,6 +400,9 @@ impl ClientRecord<TgeClientSet> for TgeRecord {
     }
 
     fn mount(&self) -> Option<(u32, u32)> {
+        if let TgeRecord::SpotLight(r) = self {
+            return r.mount.flatten().map(|m| (m.object, u32::from(m.node)));
+        }
         body(self)?.mount.flatten().map(|m| (m.object, m.node))
     }
 
@@ -689,6 +697,29 @@ impl Merge for InteriorInstance {
     }
 }
 
+impl Merge for SpotLight {
+    fn merge(&mut self, sent: &SpotLight) {
+        set(&mut self.transform, &sent.transform);
+        set(&mut self.update, &sent.update);
+        set(&mut self.enabled, &sent.enabled);
+        set(&mut self.mount, &sent.mount);
+    }
+}
+
+impl Merge for TimeOfDay {
+    /// An animation is a one-off order: kept only from the update that sent it.
+    fn merge(&mut self, sent: &TimeOfDay) {
+        set(&mut self.orbit, &sent.orbit);
+        self.animate = sent.animate;
+    }
+}
+
+impl Merge for ScatterSky {
+    fn merge(&mut self, sent: &ScatterSky) {
+        set(&mut self.update, &sent.update);
+    }
+}
+
 impl Merge for PhysicalZone {
     fn merge(&mut self, sent: &PhysicalZone) {
         set(&mut self.initial, &sent.initial);
@@ -787,6 +818,9 @@ impl Merge for TgeRecord {
             (R::WayPoint(k), R::WayPoint(s)) => k.merge(s),
             (R::FxLight(k), R::FxLight(s)) => k.merge(s),
             (R::InteriorInstance(k), R::InteriorInstance(s)) => k.merge(s),
+            (R::SpotLight(k), R::SpotLight(s)) => k.merge(s),
+            (R::TimeOfDay(k), R::TimeOfDay(s)) => k.merge(s),
+            (R::ScatterSky(k), R::ScatterSky(s)) => k.merge(s),
             (kept, sent) => kept.clone_from(sent),
         }
     }
@@ -906,11 +940,13 @@ impl GhostCodec for TgeCodec {
         let ClassForm::Id(id) = class else {
             return Err(NetError::Invalid("implied class"));
         };
+        // Past the table: the engine's own classes (a server of the engine's own sends them to its own clients only).
         let class = self
             .classes
             .get(id as usize)
             .copied()
             .flatten()
+            .or_else(|| TgeGhosts::class_past_table(id, self.classes.len()))
             .ok_or(NetError::Invalid("object class"))?;
         let record = self.read(class, true, None, r)?;
         self.serial += 1;

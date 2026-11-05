@@ -1,9 +1,9 @@
 //! The client's ghosts as the world view's objects, and the eye.
 //!
 //! The figures, the pistols they hold (in the hand, and the client's own before its eye), the bolts with their trails and the
-//! holes they leave are the engine's ([`GhostScene`]): the arena sets how they look ([`options`]: the recoil's kick, the
-//! sights, a bolt's curve out of the muzzle, its growth and spin, ribbon trails, the shot's flare, multiplied bolt holes). The
-//! arena draws its own:
+//! holes they leave are the engine's ([`GhostScene`]): the arena sets how they look ([`options`]: ribbon trails, multiplied bolt
+//! holes; [`style`]: the recoil's kick, the sights, a bolt's curve out of the muzzle, its growth and spin, the shot's flare).
+//! The arena draws its own:
 //!
 //! - **Cubes** (StaticShapes) are scaled as their records say, their texture coordinates made from where each vertex is (one
 //!   grid tile a unit) and tinted by height. A cube's object is kept until its record moves it. A map that asks for sharp
@@ -20,9 +20,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use torque::app::ghosts::{
-    BoltPath, DecalLimits, FrameInput, GhostOptions, GhostScene, Kick, ShotFlare, Sights,
-};
+use torque::app::ghosts::{DecalLimits, FrameInput, GhostOptions, GhostScene};
 use torque::app::view::{SceneShape, WorldView};
 use torque::client::conn::tge::TgeWorld;
 use torque::client::predict::ghost_players::GhostPlayers;
@@ -40,7 +38,10 @@ use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::Eye;
 use torque_render_scene::{Assets as _, Draw, Filter, Vertex};
 
-pub use torque::app::ghosts::{aim_ease, bolt_trail, fire_emitter, hit_burst};
+use crate::style::{ArenaStyle, BoltPath, Kick, ShotFlare, Sights};
+
+pub use crate::style::aim_ease;
+pub use torque::app::ghosts::{bolt_trail, fire_emitter, hit_burst};
 
 /// The field of view (degrees, horizontal).
 pub const FOV: u8 = 90;
@@ -191,27 +192,33 @@ fn cube_id(index: u32) -> u32 {
     0x4000_0000 | index
 }
 
-/// The engine's options for the arena's look.
-pub fn options() -> GhostOptions {
-    GhostOptions {
-        kick: Some(KICK),
-        sights: Sights {
+/// The arena's own touches on the engine's ghosts: the recoil, the sights, the bolts' curve and the shots' flares.
+pub fn style() -> ArenaStyle {
+    ArenaStyle::new(
+        Some(KICK),
+        Sights {
             seconds: AIM_SECONDS,
             rear: AIM_REAR_DISTANCE,
             fallback: AIM_OFFSET,
         },
-        bolt: BoltPath {
+        BoltPath {
             blend: BOLT_BLEND,
             start_size: BOLT_START_SIZE,
             grow: BOLT_GROW,
             spin: BOLT_SPIN,
         },
-        ribbon_trails: true,
-        flare: Some(ShotFlare {
+        Some(ShotFlare {
             texture: FLARE_STAR_TEXTURE.to_string(),
             seconds: FLARE_SECONDS,
             size: FLARE_STAR,
         }),
+    )
+}
+
+/// The engine's options for the arena's look.
+pub fn options() -> GhostOptions {
+    GhostOptions {
+        ribbon_trails: true,
         decals: DecalLimits {
             max: MAX_DECALS,
             seconds: DECAL_SECONDS,
@@ -226,7 +233,7 @@ pub fn options() -> GhostOptions {
 
 /// The arena's scene: the engine's ghosts and the arena's cubes.
 pub struct ArenaScene {
-    ghosts: GhostScene,
+    ghosts: GhostScene<ArenaStyle>,
     shapes: HashMap<String, Option<SceneShape>>,
     cubes: BTreeMap<u32, KeptCube>,
     interiors: BTreeMap<u32, KeptInterior>,
@@ -238,15 +245,15 @@ pub struct ArenaScene {
 
 /// The engine's scene: the figures, the bolts and their effects as the last frame left them.
 impl std::ops::Deref for ArenaScene {
-    type Target = GhostScene;
+    type Target = GhostScene<ArenaStyle>;
 
-    fn deref(&self) -> &GhostScene {
+    fn deref(&self) -> &GhostScene<ArenaStyle> {
         &self.ghosts
     }
 }
 
 impl std::ops::DerefMut for ArenaScene {
-    fn deref_mut(&mut self) -> &mut GhostScene {
+    fn deref_mut(&mut self) -> &mut GhostScene<ArenaStyle> {
         &mut self.ghosts
     }
 }
@@ -261,7 +268,7 @@ impl ArenaScene {
     /// A scene with nothing in it yet.
     pub fn new() -> ArenaScene {
         ArenaScene {
-            ghosts: GhostScene::new(options()),
+            ghosts: GhostScene::with_style(options(), style()),
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
             interiors: BTreeMap::new(),
@@ -275,6 +282,21 @@ impl ArenaScene {
         self.ghosts.clear();
         self.cubes.clear();
         self.interiors.clear();
+    }
+
+    /// `dt` seconds of the sights' blend toward the sights (`aiming`) or the hip; returns how far up they are (eased).
+    pub fn update_aim(&mut self, aiming: bool, dt: f32) -> f32 {
+        self.ghosts.style.update_aim(aiming, dt)
+    }
+
+    /// How far the sights are up (eased, 0 to 1).
+    pub fn aim(&self) -> f32 {
+        self.ghosts.style.aim()
+    }
+
+    /// Where the own figure's pistol's sights (`sightFront`, `sightRear`) were drawn in the last frame.
+    pub fn own_sights(&self) -> Option<[[f32; 3]; 2]> {
+        self.ghosts.style.own_sights()
     }
 
     /// Draws the cubes with `filter` from now on (the ones made with another are made again).

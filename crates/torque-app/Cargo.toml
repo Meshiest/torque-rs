@@ -1,0 +1,35 @@
+[package]
+name = "torque-app"
+description = "What a game made on the torque-rs engine shares: its files, a server, a client, a window, the world view and offscreen pictures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "game-engine", "gamedev"]
+categories = ["game-engines", "game-development"]
+
+# Needs a GPU: the drawing crates, the window and the pictures' encoder. The umbrella crate re-exports it as `torque::app`
+# (its `app` feature).
+
+[dependencies]
+torque-client = { path = "../torque-client", features = ["window"] }
+torque-collide = { path = "../torque-collide" }
+torque-fonts = { path = "../torque-fonts", features = ["system-fonts"] }
+torque-game = { path = "../torque-game" }
+torque-ghost-world = { path = "../torque-ghost-world" }
+torque-ghosts = { path = "../torque-ghosts" }
+torque-gui = { path = "../torque-gui" }
+torque-render-core = { path = "../torque-render-core" }
+torque-render-hd = { path = "../torque-render-hd" }
+torque-render-scene = { path = "../torque-render-scene" }
+torque-server = { path = "../torque-server" }
+torque-shapes = { path = "../torque-shapes" }
+torque-ts-text = { path = "../torque-ts-text" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+png = "0.18"
+
+[lints]
+workspace = true

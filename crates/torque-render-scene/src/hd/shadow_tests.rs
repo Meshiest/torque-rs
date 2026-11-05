@@ -365,3 +365,21 @@ fn a_maps_range_has_two_more_cascades_spread_logarithmically_past_the_first() {
         assert_eq!(c.far_depth, *s);
     }
 }
+
+#[test]
+fn a_cone_meets_the_faces_it_points_into() {
+    let down = [0.0, 0.0, -1.0];
+    let narrow = 30f32.to_radians();
+    let met: Vec<usize> = (0..6)
+        .filter(|&f| cone_meets_face(down, narrow, f))
+        .collect();
+    // Straight down, narrower than a face: the -Z face and the four around it (their corners reach within 55 degrees), never +Z.
+    assert!(met.contains(&5));
+    assert!(!met.contains(&4), "{met:?}");
+    // Along a face's diagonal: the three faces of that corner, not the opposite ones.
+    let diag = [1.0, 1.0, -1.0];
+    let met: Vec<usize> = (0..6).filter(|&f| cone_meets_face(diag, 0.1, f)).collect();
+    assert_eq!(met, vec![0, 2, 5]);
+    // A cone past a hemisphere meets every face.
+    assert!((0..6).all(|f| cone_meets_face(down, 2.5, f)));
+}

@@ -3,7 +3,7 @@
 //! particles and one texture table. What fills it from a world is the world's own.
 
 use crate::hd::cells::StaticGeometry;
-use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, sh, shadow, sky};
+use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, post, sh, shadow, sky};
 use crate::source::Eye;
 use crate::textures::TextureSet;
 use crate::{Blend, Draw};
@@ -20,6 +20,61 @@ pub struct HdLight {
     /// The shape the light is attached to (its ghost: a player's held light, with its mounted images), left out of the light's
     /// own shadow casters: the light sits on or in it, and its body would cast a wedge of dark from beside the source.
     pub carrier: Option<u32>,
+}
+
+/// A spot light (Torque3D's `SpotLight`): a point light whose light is cut to a cone about `direction`, whole inside the `inner`
+/// half angle, none past the `outer` one, a smooth step between (radians). One that casts shadows takes a point light's shadow
+/// slot, of which only the cube faces its cone meets are drawn ([`crate::hd::shadow::cone_meets_face`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdSpot {
+    pub light: HdLight,
+    /// Where the cone points (unit).
+    pub direction: [f32; 3],
+    pub inner: f32,
+    pub outer: f32,
+    pub shadows: bool,
+}
+
+impl HdSpot {
+    /// The cone as the GPU's light takes it: the direction times the reciprocal of the soft edge's width in cosines, and the
+    /// outer half angle's cosine (a point light's is all zeros).
+    pub fn cone(&self) -> [f32; 4] {
+        // (A number that is not finite: a quarter turn's cone, its edge hard; no direction: straight down.)
+        let finite = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        let outer = finite(self.outer, std::f32::consts::FRAC_PI_4)
+            .clamp(1e-3, std::f32::consts::PI - 1e-3);
+        let inner = finite(self.inner, outer).clamp(0.0, outer);
+        let width = (inner.cos() - outer.cos()).max(1e-3);
+        let len = self.direction.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let d = if len > 1e-6 && len.is_finite() {
+            self.direction.map(|v| v / len)
+        } else {
+            [0.0, 0.0, -1.0]
+        };
+        [d[0] / width, d[1] / width, d[2] / width, outer.cos()]
+    }
+
+    /// The cone's share of the light at `p` (1 inside the inner half angle, 0 past the outer, smooth between): what the forward
+    /// pass takes.
+    pub fn share(&self, p: [f32; 3]) -> f32 {
+        cone_share(self.cone(), self.light.position, p)
+    }
+}
+
+/// [`HdSpot::share`] of a cone as [`HdSpot::cone`] packs it, for a light at `at`.
+pub fn cone_share(cone: [f32; 4], at: [f32; 3], p: [f32; 3]) -> f32 {
+    let k = (cone[0] * cone[0] + cone[1] * cone[1] + cone[2] * cone[2]).sqrt();
+    if k == 0.0 {
+        return 1.0;
+    }
+    let to = [p[0] - at[0], p[1] - at[1], p[2] - at[2]];
+    let d = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+    if d < 1e-6 {
+        return 1.0;
+    }
+    let c = (to[0] * cone[0] + to[1] * cone[1] + to[2] * cone[2]) / (d * k);
+    let x = ((c - cone[3]) * k).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 /// The sun as the fixed-function frame lights with it (the sun light's colours, gamma-space 0..1), and the Sun's shadow colour.
@@ -58,6 +113,13 @@ pub struct HdScene<G> {
     /// The farthest the sun's cascades reach (units; [`shadow::SHADOW_DISTANCE`], or the visible distance of a scene whose rooms
     /// run past it: past the cascades the floor and walls read sunlit).
     pub shadow_distance: f32,
+    /// The sun's angular radius the soft shadows' penumbrae take (degrees; [`shadow::SUN_RADIUS_DEG`]).
+    pub sun_radius: f32,
+    /// The ambient occlusion's reach (units; [`post::AO_RADIUS`]).
+    pub ao_radius: f32,
+    /// The share of the ambient occlusion the sun's light takes too (0: the ambient's alone): a darkening in the sun where
+    /// surfaces meet.
+    pub ao_sun: f32,
     /// The fixed-function frame's clear (the fog colour quad), gamma 0..1.
     pub clear: [f32; 3],
     /// The sky in TGE's order (box, the remote flare, clouds, bans): drawn first, unlit, no depth.
@@ -72,6 +134,9 @@ pub struct HdScene<G> {
     /// The sun the server's box paints near the Sun's direction ([`sky::painted_sun`]; None with our own sky or a box without one):
     /// the disk, the flares and the sky's glow about the sun sit on it ([`HdScene::sky_sun`]); the light keeps the Sun's direction.
     pub painted_sun: Option<sky::PaintedSun>,
+    /// The sun the physical sky is made for when the light comes from elsewhere (the moon at night, [`crate::hd::scatter`]);
+    /// None: the Sun's direction.
+    pub atmosphere_sun: Option<[f32; 3]>,
     /// The last search's key: the box's textures and the Sun's direction (bits) it was made for.
     pub(crate) painted_key: Option<(Vec<usize>, [u32; 3])>,
     /// Whether a sync looks for a painted sun at all (off: the disk, the flares and the glow stay on the Sun's direction; the
@@ -98,6 +163,8 @@ pub struct HdScene<G> {
     /// decoder thread).
     pub textures_pending: bool,
     pub lights: Vec<HdLight>,
+    /// The spot lights (their changes counted by `lights_generation` too).
+    pub spots: Vec<HdSpot>,
     /// How many of `lights`, at its end, cast no shadows (glowing surfaces' and shaded lamps' lights).
     pub glow_lights: usize,
     /// Counts the changes of `lights` (a control sync moves a light attached to the control object; the GPU uploads them again
@@ -142,11 +209,15 @@ impl<G> HdScene<G> {
             },
             clear: [1.0; 3],
             shadow_distance: shadow::SHADOW_DISTANCE,
+            sun_radius: shadow::SUN_RADIUS_DEG,
+            ao_radius: post::AO_RADIUS,
+            ao_sun: 0.0,
             sky: Vec::new(),
             sky_eye: [0.0; 3],
             sky_choice: sky::SkyChoice::Auto,
             atmosphere: false,
             painted_sun: None,
+            atmosphere_sun: None,
             painted_key: None,
             follow_painted_sun: true,
             planes: Vec::new(),
@@ -161,6 +232,7 @@ impl<G> HdScene<G> {
             particles_generation: 0,
             textures_pending: false,
             lights: Vec::new(),
+            spots: Vec::new(),
             glow_lights: 0,
             lights_generation: 0,
             textures: TextureTable::default(),
@@ -213,11 +285,17 @@ impl<G> HdScene<G> {
         self.particles_generation = self.particles_generation.wrapping_add(1);
     }
 
-    /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the Sun's direction.
+    /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the physical sky's
+    /// ([`HdScene::atmosphere_towards`]).
     pub fn sky_sun(&self) -> [f32; 3] {
         self.painted_sun
             .and_then(|p| p.drawn())
-            .unwrap_or(self.sun.towards)
+            .unwrap_or(self.atmosphere_towards())
+    }
+
+    /// Towards the sun the physical sky is made for: [`HdScene::atmosphere_sun`], else the Sun's direction.
+    pub fn atmosphere_towards(&self) -> [f32; 3] {
+        self.atmosphere_sun.unwrap_or(self.sun.towards)
     }
 }
 

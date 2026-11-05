@@ -1,6 +1,6 @@
 //! The enhanced renderer's shadows as plain data:
-//! the quality ladder ([`ShadowQuality`]), the sun's cascades ([`cascades`]) and the point lights' cube faces ([`cube_face`]), and
-//! the CPU references the shadow checks measure the GPU against (rays against boxes, shadow polygons).
+//! the quality ladder ([`ShadowQuality`]), the sun's cascades ([`cascades`]) and the point lights' cube faces ([`cube_face`]; a spot
+//! light's only those its cone meets, [`cone_meets_face`]), and the CPU references the shadow checks measure the GPU against (rays against boxes, shadow polygons).
 //!
 //! **Cascades** (cascaded shadow maps, Engel 2006; Zhang et al. 2006's practical split): the view from the near plane to the shadow
 //! distance cut at `λ log + (1 - λ) linear` with λ = [`SPLIT_LAMBDA`]; each slice's light view fitted to its bounding sphere (the
@@ -534,6 +534,31 @@ pub fn cube_face(light: [f32; 3], far: f32, face: usize) -> [f32; 16] {
         }
     }
     m
+}
+
+/// The angle (radians) a cone of light reaches past its outer half angle for a face to be drawn: the lookup's filter taps spread a
+/// little past the cone's edge.
+pub const CONE_FACE_MARGIN: f32 = 0.1;
+
+/// Whether a spot light's cone about `direction` (unit), of outer half angle `outer` (radians), meets cube face `face`'s pyramid
+/// (the faces of [`cube_face`]; conservative: the pyramid taken as the cone about its axis through its corners).
+pub fn cone_meets_face(direction: [f32; 3], outer: f32, face: usize) -> bool {
+    let axis = match face {
+        0 => [1.0, 0.0, 0.0],
+        1 => [-1.0, 0.0, 0.0],
+        2 => [0.0, 1.0, 0.0],
+        3 => [0.0, -1.0, 0.0],
+        4 => [0.0, 0.0, 1.0],
+        _ => [0.0, 0.0, -1.0],
+    };
+    let len = direction.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if len < 1e-6 {
+        return true;
+    }
+    let c = (0..3).map(|k| axis[k] * direction[k]).sum::<f32>() / len;
+    // The face's corners lie acos(1 / sqrt 3) off its axis.
+    let reach = outer + CONE_FACE_MARGIN + (1.0f32 / 3.0f32.sqrt()).acos();
+    reach >= std::f32::consts::PI || c.clamp(-1.0, 1.0).acos() <= reach
 }
 
 /// Whether a box may be seen by a light's cube face (inside its pyramid and the light's sphere).

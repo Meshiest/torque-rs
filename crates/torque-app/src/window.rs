@@ -1,4 +1,4 @@
-//! A game in a window: [`run`] drives an [`App`] through the client's window driver ([`crate::client::platform::window`]),
+//! A game in a window: [`run`] drives an [`App`] through the client's window driver ([`torque_client::platform::window`]),
 //! drawing each frame into a [`WindowSurface`] (a window's GPU device and surface, kept to the window's size).
 
 use std::sync::Arc;
@@ -7,10 +7,10 @@ use torque_render_core::window::{WINDOW_BACKENDS, configure_surface_vsync, windo
 use torque_render_core::{Gpu, RenderError, wgpu};
 use winit::window::Window;
 
-use crate::client::conn::tge::TgeConn;
-use crate::client::platform::window::{self as driver, WindowGame};
-use crate::client::screen::{ScreenRules, TgeScreen};
-use crate::server::server::Server;
+use torque_client::conn::tge::TgeConn;
+use torque_client::platform::window::{self as driver, WindowGame};
+use torque_client::screen::{ScreenRules, TgeScreen};
+use torque_server::server::Server;
 
 use super::view::WorldView;
 use super::{App, Host};

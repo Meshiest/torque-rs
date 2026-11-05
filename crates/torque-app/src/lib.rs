@@ -1,4 +1,5 @@
-//! What a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures.
+//! What a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures. The
+//! umbrella crate re-exports it as `torque::app` (its `app` feature).
 //!
 //! - [`files::GameFiles`]: a game folder read once into memory, served to the scripts as their files.
 //! - [`server::GameServer`]: the server's main loop with TGE's game classes and a network host, on a UDP socket or an in-memory
@@ -27,11 +28,11 @@ pub mod window;
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
-use crate::client::conn::tge::TgeConn;
-use crate::client::host::ClientHost;
-use crate::fonts::{Fallback, FontCache, NoFallback};
-use crate::gui::{DrawCache, GuiDraws};
-use crate::server::server::Server;
+use torque_client::conn::tge::TgeConn;
+use torque_client::host::ClientHost;
+use torque_fonts::{Fallback, FontCache, NoFallback};
+use torque_gui::{DrawCache, GuiDraws};
+use torque_server::server::Server;
 
 pub use client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 pub use files::GameFiles;
@@ -65,7 +66,7 @@ pub trait App {
 
 /// The system's fonts as the fallback for a face with no font cache in `fonts/` (none where the system has none).
 fn system_fallback() -> Box<dyn Fallback> {
-    match crate::fonts::system::SystemFonts::new() {
+    match torque_fonts::system::SystemFonts::new() {
         Some(system) => Box::new(system),
         None => Box::new(NoFallback),
     }

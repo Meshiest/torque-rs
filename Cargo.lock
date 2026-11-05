@@ -2016,7 +2016,7 @@ dependencies = [
 name = "torque"
 version = "0.1.0"
 dependencies = [
- "png",
+ "torque-app",
  "torque-audio",
  "torque-client",
  "torque-collide",
@@ -2029,9 +2029,6 @@ dependencies = [
  "torque-mapcore",
  "torque-maps",
  "torque-net",
- "torque-render-core",
- "torque-render-hd",
- "torque-render-scene",
  "torque-resource",
  "torque-scene",
  "torque-server",
@@ -2043,6 +2040,27 @@ dependencies = [
  "torque-ts-text",
  "torque-ts-vm",
  "torque-vehicle",
+]
+
+[[package]]
+name = "torque-app"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "torque-client",
+ "torque-collide",
+ "torque-fonts",
+ "torque-game",
+ "torque-ghost-world",
+ "torque-ghosts",
+ "torque-gui",
+ "torque-render-core",
+ "torque-render-hd",
+ "torque-render-scene",
+ "torque-server",
+ "torque-shapes",
+ "torque-ts-text",
+ "torque-ts-vm",
  "winit",
 ]
 
@@ -2252,9 +2270,11 @@ name = "torque-render-hd"
 version = "0.1.0"
 dependencies = [
  "naga",
+ "png",
  "pollster",
  "torque-render-core",
  "torque-render-scene",
+ "torque-scene",
 ]
 
 [[package]]
@@ -2268,6 +2288,7 @@ dependencies = [
  "torque-images",
  "torque-mapcore",
  "torque-maps",
+ "torque-scene",
  "torque-shapes",
 ]
 

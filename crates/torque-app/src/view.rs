@@ -11,9 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::gui::GuiDraws;
-use crate::shapes::instance::ShapeInstance;
-use crate::shapes::shape::Shape;
+use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
@@ -30,9 +28,18 @@ use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::world::ShapeWorld;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
+use torque_shapes::instance::ShapeInstance;
+use torque_shapes::shape::Shape;
 
 /// The field of view a frame is drawn with when its eye names none (degrees, horizontal).
 pub const DEFAULT_FOV: u8 = 75;
+
+/// The sun's angular radius the shadows' penumbrae take (degrees: the real sun's), the ambient occlusion's reach (units: about
+/// half a figure's width) and the share of it the sun's light takes (a darkening in the sun under feet and where walls meet the
+/// floor).
+pub const SUN_RADIUS: f32 = 0.27;
+pub const AO_RADIUS: f32 = 1.0;
+pub const AO_SUN: f32 = 0.5;
 
 /// The sun, the ambient light and the fog of a scene. Colors are gamma-space 0 to 1, as a mission's Sun and Sky give them.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,7 +63,7 @@ impl Default for Daylight {
             towards: [-0.45, -0.55, 0.7],
             diffuse: [0.95, 0.92, 0.85],
             ambient: [0.42, 0.45, 0.52],
-            shadow: [0.35, 0.38, 0.45],
+            shadow: [0.25, 0.27, 0.32],
             fog: [0.72, 0.8, 0.9],
             fog_start: 60.0,
             visible: 220.0,
@@ -123,6 +130,10 @@ impl WorldView {
         let mut frame = HdScene::new(StaticCells::default());
         // The physical sky in the server sky's place: the scene has no sky of its own.
         frame.atmosphere = true;
+        // Sharper penumbrae, a wider occlusion and some of it in the sun.
+        frame.sun_radius = SUN_RADIUS;
+        frame.ao_radius = AO_RADIUS;
+        frame.ao_sun = AO_SUN;
         let scene = PlainScene {
             frame,
             ..PlainScene::default()

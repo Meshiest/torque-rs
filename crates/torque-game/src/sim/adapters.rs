@@ -7,6 +7,7 @@
 //! - `Projectile` (Torque: `Projectile::processTick`): the host's ([`GameTickers`]) when it names one, else
 //!   [`super::projectile::ProjectileTicker`]
 //! - `WheeledVehicle`, `FlyingVehicle` (Torque: `Vehicle::processTick`): [`super::vehicle_tick::VehicleTicker`]
+//! - `TimeOfDay` (Torque3D: `TimeOfDay::processTick`, the engine's own class): [`DayTicker`]
 //! - every other `GameBase` class (Torque: its own): [`NoopTicker`] (not simulated here)
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree:
@@ -71,6 +72,22 @@ impl Ticking<TickCx<'_>> for CameraTicker {
     }
 }
 
+/// A `TimeOfDay`'s tick ([`crate::scene::lights::tick_day`]).
+pub struct DayTicker {
+    pub id: ObjId,
+}
+
+impl Ticking<TickCx<'_>> for DayTicker {
+    fn class(&self) -> &'static str {
+        "TimeOfDay"
+    }
+
+    fn process_tick(&mut self, cx: &mut TickCx<'_>, _mv: Option<&Move>) {
+        // A callback that fails has printed its error; the tick is over.
+        let _ = crate::scene::lights::tick_day(cx.vm, self.id);
+    }
+}
+
 /// The tick of a class with no tick of its own: nothing happens.
 pub struct NoopTicker {
     class: &'static str,
@@ -100,6 +117,7 @@ const KNOWN: &[&str] = &[
     "WayPoint",
     "Trigger",
     "PathCamera",
+    "TimeOfDay",
 ];
 
 /// The host's tickers for classes it simulates itself (a `Vm` extension, [`set_game_tickers`]): asked first, by class name.
@@ -120,6 +138,9 @@ pub fn ticker_for(
 ) -> Ticker {
     if is_camera(vm, id) {
         return Box::new(CameraTicker { id });
+    }
+    if crate::scene::camera::is_class(vm, id, "TimeOfDay") {
+        return Box::new(DayTicker { id });
     }
     let objects = vm.objects();
     let name = objects

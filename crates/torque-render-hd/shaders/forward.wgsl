@@ -8,8 +8,8 @@
 // - Specular: GGX (Walter et al. 2007) with Smith's height-correlated visibility (Heitz 2014) and Schlick's Fresnel, F0 0.04 and
 //   the material table's roughness, from the sun and every point light.
 // - Point lights: Lambert plus the specular, an inverse-square falloff with a 2-unit core, windowed to the fxLight's radius
-//   ((1 - (d/r)^4)^2, as Karis 2013), found through the cluster masks (forward+, Olsson et al. 2012) or, in the brute-force
-//   permutation, all of them in order (the gate compares the two).
+//   ((1 - (d/r)^4)^2, as Karis 2013), a spot's cut to its cone with a smooth edge, found through the cluster masks (forward+,
+//   Olsson et al. 2012) or, in the brute-force permutation, all of them in order (the gate compares the two).
 // - Fog: from the Sky's fog distance to the visible distance (1 - ((end - d) / (end - start))^2), the horizon ban's colour.
 // - Unlit and glow surfaces are their colour.
 // - Textures: GL_DECAL mixes in gamma space, as the fixed-function pipeline does; MODULATE and REPLACE in linear.
@@ -50,7 +50,8 @@
 //   TAA's and the AO's disocclusion test), and its normal (octahedral) for the AO.
 // - Ambient occlusion: the AO pass's result, upsampled to the pixel from the four nearest AO texels weighted bilinearly and by
 //   how close their depth is to the pixel's (a texel of another surface gets no weight; none near: no occlusion), takes away the
-//   settings' share of the ambient (and of a reflective surface's sky reflection); the direct light is not occluded.
+//   settings' share of the ambient (and of a reflective surface's sky reflection); the sun's light only by the scene's share of it
+//   (`shadows.colour.w`, 0 by default: a darkening in the sun where surfaces meet).
 // - Specular anti-aliasing (Kaplanyan and Hill 2016's normal-variance filtering): GGX's alpha squared is widened by twice the
 //   screen-space variance of the normal (its derivatives across the pixel, kernel variance 1/4), at most 0.18, so a normal that turns
 //   within a pixel (curved shapes, a metal, a face's rounded edge) gets the blurrier highlight its pixel covers instead of sparkling.
@@ -573,9 +574,10 @@ fn point_light(i: u32, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, albedo: vec3<f3
     let d = length(to);
     let l = select(n, to / d, d > 1e-6);
     let nl = max(dot(n, l), 0.0);
-    var e = light.color.rgb * (nl * falloff(d, light.pos_radius.w));
+    let cone = cone_share(light, l);
+    var e = light.color.rgb * (nl * cone * falloff(d, light.pos_radius.w));
     let slot = i32(light.color.w);
-    if slot >= 0 && shadows.point.z > 0.0 && nl > 0.0 && d < light.pos_radius.w {
+    if slot >= 0 && shadows.point.z > 0.0 && nl > 0.0 && cone > 0.0 && d < light.pos_radius.w {
         let vis = point_shadow(slot, light, p, n, frag);
         e = e * vis;
         if i == 0u && shadows.config.w == 2u {
@@ -678,6 +680,10 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
         }
     }
     vis = vis * s.sun;
+    // The scene's share of the ambient occlusion on the sun's light (none by default).
+    if shadows.colour.w > 0.0 {
+        vis = vis * mix(1.0, mix(1.0, occlusion, frame.ao.y), shadows.colour.w);
+    }
     // The volumetric clouds' shadows on the ground (Ultra; cloudshadow.wgsl); under a low sun, wherever clouds are drawn, the
     // sun as the eye sees it through them (its light and its glint on every surface dim as a cloud covers it).
     vis = vis * cloud_sun(rest, sky.cloud_use.x);

@@ -8,17 +8,16 @@
 //!   Player in its first-person view casts only its shadow ([`GhostOptions::shadow_body`]), and the view is at its drawn `eye`
 //!   node (`getRenderEyeTransform`).
 //! - **Mounted images** are placed and posed by the engine ([`torque_render_scene::images`]): in the hand, or before the eye in the
-//!   first person. A host's own motion of them ([`HeldMotion`]): raised to their sights while the client aims
-//!   ([`GhostScene::update_aim`], [`Sights`]: the `sightRear` and `sightFront` nodes on the eye's line) and kicked by a shot
-//!   ([`Kick`]). A shot (the slot's fire count changed) starts the fire state's `stateEmitter` at the muzzle, following it as the
-//!   image moves, and flares there ([`ShotFlare`]).
+//!   first person, moved as the game's style asks ([`GhostStyle::held_motion`]). A shot (the slot's fire count changed) starts the
+//!   fire state's `stateEmitter` at the muzzle, following it as the image moves.
 //! - **Projectiles** fly on from their first record along its velocity (the client runs them on its own, as TGE's client runs a
 //!   projectile ghost) until their explosion record hides them, drawn by the engine from
-//!   [`ClientWorld::projectile_render`]. One whose source object the client holds is
-//!   drawn leaving the source image's muzzle and curving onto its flight ([`BoltPath`]), growing out of it, turning about its
-//!   flight. Its `particleEmitter` leaves a trail of particles, or a ribbon ([`GhostOptions::ribbon_trails`], [`Ribbon`]); its
+//!   [`ClientWorld::projectile_render`], where the game's style puts them ([`GhostStyle::projectile`]: on their flight by
+//!   default). Its `particleEmitter` leaves a trail of particles, or a ribbon ([`GhostOptions::ribbon_trails`], [`Ribbon`]); its
 //!   explosion on a Player bursts its explosion's particles there, on anything else leaves one of its decals on the surface
 //!   the host gives ([`DecalManager`]).
+//! - **A game's style** ([`GhostStyle`]): what a game adds to TGE's rules, such as a held image's kick or its rise to its
+//!   sights, a projectile's drawn path out of the muzzle, or a shot's flare; [`Plain`] adds nothing.
 //!
 //! Credit: the image's state emitter and the hit burst follow `ShapeBase::updateImageAnimation` and `Explosion::explode` in
 //! Torque3D's MIT-licensed `T3D/shapeImage.cpp` (Copyright (c) 2012 GarageGames, LLC) and `T3D/fx/explosion.cpp` (Copyright
@@ -29,10 +28,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
-use crate::ghost_world::images::ImageRecoil;
+use torque_ghost_world::images::ImageRecoil;
 use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
 use torque_render_scene::hd::DynamicObject;
-use torque_render_scene::images::{HeldMotion, ImageClock, ImageDb, node_named, sight_offset};
+use torque_render_scene::images::{HeldMotion, ImageClock};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::render_pose;
 use torque_render_scene::moving::{
@@ -40,19 +39,19 @@ use torque_render_scene::moving::{
 };
 use torque_render_scene::particles::{Emitter, Rng};
 use torque_render_scene::ribbons::{Ribbon, projectile_ribbon};
-use torque_render_scene::shapes::{DetailPolicy, load};
+use torque_render_scene::shapes::DetailPolicy;
 use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
-use torque_render_scene::{Assets, Draw, Filter, Vertex};
+use torque_render_scene::{Assets, Draw};
 
 use super::view::WorldView;
-use crate::client::conn::tge::TgeWorld;
-use crate::client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
-use crate::client::predict::ghost_players::GhostPlayers;
-use crate::ghost_world::tge::TgeClientSet;
-use crate::ghost_world::world::{ClientWorld, Pose, ProjectileLook};
-use crate::ghosts::{TgeClass, TgeRecord, Value};
-use crate::shapes::instance::ShapeInstance;
+use torque_client::conn::tge::TgeWorld;
+use torque_client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
+use torque_client::predict::ghost_players::GhostPlayers;
+use torque_ghost_world::tge::TgeClientSet;
+use torque_ghost_world::world::{ClientWorld, Pose, ProjectileLook};
+use torque_ghosts::{TgeClass, TgeRecord, Value};
+use torque_shapes::instance::ShapeInstance;
 
 /// The record world the scene draws.
 type World = ClientWorld<TgeClientSet>;
@@ -61,87 +60,6 @@ type World = ClientWorld<TgeClientSet>;
 pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 /// The most a frame advances a Player's animation (seconds: a stall or a clock that jumped).
 const MAX_FRAME_STEP: f32 = 0.25;
-
-/// A shot's kick of the image that fired it (none in TGE: its `fire` sequence and its owner's recoil sequence alone): how long it
-/// takes to reach its height and how fast it settles after (seconds), how far it goes at its height in the first person (back,
-/// units; up, radians) and in the hand (up, radians; 0 leaves the hand's kick to the owner's recoil sequence).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Kick {
-    pub rise: f32,
-    pub settle: f32,
-    pub back: f32,
-    pub up: f32,
-    pub up_hand: f32,
-}
-
-impl Kick {
-    /// How far into its kick the image is `t` seconds after a shot: 0 at rest, 1 at its height (a quick rise, then a settle).
-    pub fn at(&self, t: f32) -> f32 {
-        if !(0.0..1.0).contains(&t) {
-            0.0
-        } else if t < self.rise {
-            t / self.rise
-        } else {
-            (-(t - self.rise) / self.settle).exp()
-        }
-    }
-}
-
-/// Aiming down the sights: how long an image takes to come up to its sights (seconds), how far ahead of the eye its rear sight is
-/// held ([`sight_offset`]), and where an image without sights is held there (its place in the eye's frame).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Sights {
-    pub seconds: f32,
-    pub rear: f32,
-    pub fallback: [f32; 3],
-}
-
-impl Default for Sights {
-    fn default() -> Sights {
-        Sights {
-            seconds: 0.18,
-            rear: 0.36,
-            fallback: [0.0, 0.42, -0.057],
-        }
-    }
-}
-
-/// The ease of the sights' blend: `t` (0 to 1 of [`Sights::seconds`]) smoothed at both ends.
-pub fn aim_ease(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// How a projectile is drawn leaving its source's muzzle: curving from there onto its flight over its first `blend` units, its
-/// size growing from `start_size` of its own to all of it over its first `grow` units, and turning about its flight at `spin`
-/// radians a second. The defaults draw it on its flight from the first frame, whole and unturned.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BoltPath {
-    pub blend: f32,
-    pub start_size: f32,
-    pub grow: f32,
-    pub spin: f32,
-}
-
-impl Default for BoltPath {
-    fn default() -> BoltPath {
-        BoltPath {
-            blend: 0.0,
-            start_size: 1.0,
-            grow: 0.0,
-            spin: 0.0,
-        }
-    }
-}
-
-/// A shot's flare at the muzzle: a star facing the eye (`texture`, `size` units wide head on), shrinking and fading over
-/// `seconds`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ShotFlare {
-    pub texture: String,
-    pub seconds: f32,
-    pub size: f32,
-}
 
 /// The bolt holes kept: at most `max`, each for `seconds`, fading out over its last `fade`; multiplied over the surface they
 /// lie on (`Blend::Modulate2x`) with `multiply`.
@@ -172,12 +90,8 @@ pub struct GhostOptions {
     pub select: ShapeSelect,
     /// The client's own Player in its first-person view casts its shadow (else it is not drawn).
     pub shadow_body: bool,
-    pub kick: Option<Kick>,
-    pub sights: Sights,
-    pub bolt: BoltPath,
     /// A projectile's trail is a ribbon ([`projectile_ribbon`]) instead of its emitter's particles.
     pub ribbon_trails: bool,
-    pub flare: Option<ShotFlare>,
     pub decals: DecalLimits,
     /// Players are posed by the synced rules of a server whose Players have hitboxes
     /// ([`PlayerAnimation::set_synced`]), so the figure drawn is the one hits are cast at.
@@ -189,15 +103,117 @@ impl Default for GhostOptions {
         GhostOptions {
             select: ShapeSelect::Moving,
             shadow_body: true,
-            kick: None,
-            sights: Sights::default(),
-            bolt: BoltPath::default(),
             ribbon_trails: false,
-            flare: None,
             decals: DecalLimits::default(),
             synced_poses: false,
         }
     }
+}
+
+/// What a game adds to how a [`GhostScene`] draws its ghosts, beyond TGE's rules. Each method's default adds nothing, as
+/// [`Plain`] draws them.
+pub trait GhostStyle {
+    /// Forgets what it keeps of the ghosts ([`GhostScene::clear`]: a new connection's ghosts are new).
+    fn clear(&mut self) {}
+
+    /// The host's motion of a held image this frame (e.g. kicked by a shot, raised to its sights), asked of every image each
+    /// frame; none leaves it where its datablock places it.
+    fn held_motion(&mut self, image: &HeldImage<'_>) -> HeldMotion {
+        let _ = image;
+        HeldMotion::default()
+    }
+
+    /// The client's own Player's first image once the frame placed it (none: it holds none), each frame: `node` gives where one
+    /// of the image shape's nodes is drawn.
+    fn own_image(
+        &mut self,
+        image: Option<&HeldImage<'_>>,
+        node: &mut dyn FnMut(usize) -> Option<[f32; 3]>,
+    ) {
+        let _ = (image, node);
+    }
+
+    /// A projectile's render transform ([`Flight::transform`]: on its flight).
+    fn projectile(&self, flight: &Flight) -> Mat {
+        flight.transform()
+    }
+
+    /// Draws added to the frame's particles, each with its distance from the eye (e.g. a shot's flare at a muzzle).
+    fn effects(&mut self, frame: &EffectsFrame<'_>, set: &mut TextureSet) -> Vec<(f32, Draw)> {
+        let _ = (frame, set);
+        Vec::new()
+    }
+}
+
+/// The style that adds nothing: TGE's rules alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Plain;
+
+impl GhostStyle for Plain {}
+
+/// A mounted image as the frame holds it: its owner's ghost, its slot and datablock, the seconds since its last shot (a new fire
+/// count; `f32::MAX` before one) and whether it is the client's own Player's before the eye in the first person.
+pub struct HeldImage<'a> {
+    pub world: &'a ClientWorld<TgeClientSet>,
+    pub assets: &'a dyn Assets,
+    pub ghost: u32,
+    pub slot: usize,
+    pub datablock: u32,
+    pub since_fire: f32,
+    pub own_eye: bool,
+}
+
+/// A projectile as the client runs it: where its first record put it, its velocity, its age (seconds) and where its source
+/// image's muzzle was drawn when it appeared (when the client holds the source).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flight {
+    pub start: [f32; 3],
+    pub velocity: [f32; 3],
+    pub age: f32,
+    pub muzzle: Option<[f32; 3]>,
+}
+
+impl Flight {
+    /// How far it has flown (units).
+    pub fn flown(&self) -> f32 {
+        self.velocity.iter().map(|v| v * v).sum::<f32>().sqrt() * self.age
+    }
+
+    /// Where its flight has it: its first record's place moved on by its velocity.
+    pub fn position(&self) -> [f32; 3] {
+        [0, 1, 2].map(|i| self.start[i] + self.velocity[i] * self.age)
+    }
+
+    /// Its turn along its flight (yaw, then pitch), at the origin.
+    pub fn heading(&self) -> Mat {
+        let v = self.velocity;
+        let yaw = v[0].atan2(v[1]);
+        let pitch = -v[2].atan2((v[0] * v[0] + v[1] * v[1]).sqrt());
+        Mat::mul(&Mat::euler_z(yaw), &Mat::euler_x(pitch))
+    }
+
+    /// Its render transform: turned along its flight, at [`Flight::position`].
+    pub fn transform(&self) -> Mat {
+        let mut m = self.heading();
+        m.set_column3(self.position());
+        m
+    }
+}
+
+/// A held image's muzzle as the frame draws it (its place and the barrel's direction) and the seconds since its last shot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Muzzle {
+    pub at: [f32; 3],
+    pub dir: [f32; 3],
+    pub since_fire: f32,
+}
+
+/// What [`GhostStyle::effects`] draws for: the eye, the camera's right and up, and the held images' muzzles.
+pub struct EffectsFrame<'a> {
+    pub eye: [f32; 3],
+    pub right: [f32; 3],
+    pub up: [f32; 3],
+    pub muzzles: &'a [Muzzle],
 }
 
 /// The emitter an image's shot starts: the `stateEmitter` of its datablock's fire state (the state with `stateFire`), when
@@ -226,67 +242,6 @@ pub fn fire_emitter(world: &World, image: u32) -> Option<(Emitter, f32)> {
 
 /// The longest an image's emitter emits after a shot (seconds; a server's datablock names it).
 pub const MAX_EMITTER_SECONDS: f32 = 5.0;
-
-/// A quad draw of `corners` (with `uv`s), added over what is behind it, `alpha` its strength.
-fn sprite(label: &str, corners: [[f32; 3]; 4], texture: usize, alpha: f32) -> Draw {
-    let uv = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
-    let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
-    let v = |i: usize| Vertex {
-        position: corners[i],
-        normal: [0.0, 0.0, 1.0],
-        color: [255, 255, 255, a],
-        uv: uv[i],
-    };
-    Draw {
-        label: label.to_string(),
-        vertices: vec![v(0), v(1), v(2), v(0), v(2), v(3)],
-        lighting: false,
-        tex_env: torque_render_scene::TexEnv::Modulate,
-        texture: Some((
-            texture,
-            torque_render_scene::Sampler {
-                repeat: false,
-                mag: Filter::Linear,
-                min: Filter::Linear,
-                mip: Filter::Linear,
-                mipmaps: true,
-            },
-        )),
-        blend: torque_render_scene::Blend::Additive,
-        cull: torque_render_scene::Cull::None,
-        depth_test: true,
-        depth_write: false,
-        fog: false,
-        lights: Vec::new(),
-        vertex_key: None,
-    }
-}
-
-/// A shot's flare ([`ShotFlare`]) at the muzzle `at` along `dir`, `t` (0 to 1) through its time, seen from `eye` with the camera's `right` and
-/// `up`: the star facing the eye at the muzzle.
-fn flare_draws(
-    flare: &ShotFlare,
-    at: [f32; 3],
-    dir: [f32; 3],
-    t: f32,
-    eye: [f32; 3],
-    (right, up): ([f32; 3], [f32; 3]),
-    set: &mut TextureSet,
-) -> Vec<(f32, Draw)> {
-    let mut out = Vec::new();
-    let fade = 1.0 - t.clamp(0.0, 1.0);
-    let dist = (0..3).map(|k| (at[k] - eye[k]).powi(2)).sum::<f32>().sqrt();
-    if let Some(tex) = set.get_modulated(&flare.texture) {
-        let h = 0.5 * flare.size * (0.45 + 0.55 * fade);
-        let c = [0, 1, 2].map(|k| at[k] + dir[k] * 0.01);
-        let p = |sx: f32, sy: f32| [0, 1, 2].map(|k| c[k] + (right[k] * sx + up[k] * sy) * h);
-        let corners = [p(-1.0, -1.0), p(1.0, -1.0), p(1.0, 1.0), p(-1.0, 1.0)];
-        // Drawn twice: the additive passes add up to a brighter flash than the texture alone.
-        out.push((dist, sprite("flare star", corners, tex, fade)));
-        out.push((dist, sprite("flare star", corners, tex, fade)));
-    }
-    out
-}
 
 /// A new trail for a bolt of ProjectileData `db`: its `particleEmitter`, when the client holds it as a `ParticleEmitterData`
 /// with its particles.
@@ -493,57 +448,11 @@ struct Held {
     muzzle: Option<([f32; 3], [f32; 3])>,
 }
 
-/// A projectile the scene runs: where its first record put it, its velocity and age, and where it is drawn from at first less
-/// where it is (its source's muzzle), taken back over [`BoltPath::blend`]; its trail.
+/// A projectile the scene runs: its flight and its trail.
 struct Bolt {
-    start: [f32; 3],
-    velocity: [f32; 3],
-    age: f32,
-    offset: [f32; 3],
+    flight: Flight,
     trail: Option<Emitter>,
     ribbon: Option<Ribbon>,
-}
-
-impl Bolt {
-    /// How far it has flown (units).
-    fn flown(&self) -> f32 {
-        self.velocity.iter().map(|v| v * v).sum::<f32>().sqrt() * self.age
-    }
-
-    /// Where it is drawn: on its flight, from the muzzle curving onto it.
-    fn drawn(&self, path: &BoltPath) -> [f32; 3] {
-        let k = if path.blend > 0.0 {
-            (1.0 - (self.flown() / path.blend).clamp(0.0, 1.0)).powi(2)
-        } else {
-            0.0
-        };
-        [0, 1, 2].map(|i| self.start[i] + self.velocity[i] * self.age + self.offset[i] * k)
-    }
-
-    /// Its size as drawn (a share of its shape's): growing out of the muzzle.
-    fn size(&self, path: &BoltPath) -> f32 {
-        if path.grow <= 0.0 {
-            return 1.0;
-        }
-        path.start_size + (1.0 - path.start_size) * (self.flown() / path.grow).clamp(0.0, 1.0)
-    }
-
-    /// Its render transform: turned along its flight and about it, sized, at its drawn place.
-    fn transform(&self, path: &BoltPath) -> Mat {
-        let v = self.velocity;
-        let yaw = v[0].atan2(v[1]);
-        let pitch = -v[2].atan2((v[0] * v[0] + v[1] * v[1]).sqrt());
-        let spin = Mat::from_axis_angle([0.0, 1.0, 0.0], path.spin * self.age);
-        let mut m = Mat::mul(&Mat::mul(&Mat::euler_z(yaw), &Mat::euler_x(pitch)), &spin);
-        let size = self.size(path);
-        for r in 0..3 {
-            for c in 0..3 {
-                m.m[r * 4 + c] *= size;
-            }
-        }
-        m.set_column3(self.drawn(path));
-        m
-    }
 }
 
 /// The most hit bursts [`GhostScene::hit_bursts`] keeps.
@@ -573,9 +482,10 @@ pub struct FrameInput<'a> {
     pub surfaces: &'a Surfaces,
 }
 
-/// A client's ghosts frame after frame (see the module docs).
-pub struct GhostScene {
+/// A client's ghosts frame after frame (see the module docs), with a game's style `S`.
+pub struct GhostScene<S = Plain> {
     pub options: GhostOptions,
+    pub style: S,
     hooks: GhostHooks,
     frames: ImageFrames,
     held: BTreeMap<(u32, usize), Held>,
@@ -594,13 +504,8 @@ pub struct GhostScene {
     live: usize,
     /// The frame time the trails have not run yet (ms, under one).
     trail_ms: f32,
-    /// How far the sights' blend has run (0 at the hip, 1 at the sights; not eased).
-    aim: f32,
-    /// Each image shape's sights ([`sight_offset`]) and its `sightFront` and `sightRear` nodes, by path.
-    sights: HashMap<String, Option<SightNodes>>,
     own: Option<OwnView>,
     own_muzzle: Option<[f32; 3]>,
-    own_sights: Option<[[f32; 3]; 2]>,
     /// The other Players as the last frame placed them: ghost, feet, yaw.
     others: Vec<(u32, [f32; 3], f32)>,
     /// The projectiles drawn in the last frame, and the other Players holding an image.
@@ -613,19 +518,20 @@ pub struct GhostScene {
     pub flashes: usize,
 }
 
-/// An image shape's sights: where they are held ([`sight_offset`]) and their nodes (front, rear).
-#[derive(Debug, Clone, Copy)]
-struct SightNodes {
-    place: Option<([f32; 3], f32)>,
-    nodes: Option<[usize; 2]>,
+impl GhostScene {
+    /// A scene with nothing in it yet, in the plain style.
+    pub fn new(options: GhostOptions) -> GhostScene {
+        GhostScene::with_style(options, Plain)
+    }
 }
 
-impl GhostScene {
-    /// A scene with nothing in it yet.
-    pub fn new(options: GhostOptions) -> GhostScene {
+impl<S: GhostStyle> GhostScene<S> {
+    /// A scene with nothing in it yet, in `style`.
+    pub fn with_style(options: GhostOptions, style: S) -> GhostScene<S> {
         let (d, synced) = (options.decals, options.synced_poses);
         GhostScene {
             options,
+            style,
             hooks: GhostHooks {
                 synced,
                 ..GhostHooks::default()
@@ -641,11 +547,8 @@ impl GhostScene {
             rng: Rng::new(0x5eed),
             live: 0,
             trail_ms: 0.0,
-            aim: 0.0,
-            sights: HashMap::new(),
             own: None,
             own_muzzle: None,
-            own_sights: None,
             others: Vec::new(),
             bolts_drawn: 0,
             holders_drawn: 0,
@@ -655,28 +558,33 @@ impl GhostScene {
         }
     }
 
-    /// Forgets every ghost (a new connection's ghosts are new).
+    /// Forgets every ghost (a new connection's ghosts are new), and the style what it keeps of them; the shots seen so far stay.
     pub fn clear(&mut self) {
-        let options = self.options.clone();
-        let flashes = self.flashes;
-        *self = GhostScene::new(options);
-        self.flashes = flashes;
-    }
-
-    /// `dt` seconds of the sights' blend toward the sights (`aiming`) or the hip; returns how far up they are (eased).
-    pub fn update_aim(&mut self, aiming: bool, dt: f32) -> f32 {
-        let step = dt.max(0.0) / self.options.sights.seconds.max(1e-3);
-        self.aim = if aiming {
-            (self.aim + step).min(1.0)
-        } else {
-            (self.aim - step).max(0.0)
-        };
-        aim_ease(self.aim)
-    }
-
-    /// How far the sights are up (eased, 0 to 1).
-    pub fn aim(&self) -> f32 {
-        aim_ease(self.aim)
+        self.style.clear();
+        GhostScene {
+            options: _,
+            style: _,
+            hooks: self.hooks,
+            frames: self.frames,
+            held: self.held,
+            bolts: self.bolts,
+            fading: self.fading,
+            fading_ribbons: self.fading_ribbons,
+            burst: self.burst,
+            hit_bursts: self.hit_bursts,
+            decals: self.decals,
+            rng: self.rng,
+            live: self.live,
+            trail_ms: self.trail_ms,
+            own: self.own,
+            own_muzzle: self.own_muzzle,
+            others: self.others,
+            bolts_drawn: self.bolts_drawn,
+            holders_drawn: self.holders_drawn,
+            trail_particles: self.trail_particles,
+            ribbons_drawn: self.ribbons_drawn,
+            flashes: _,
+        } = GhostScene::new(self.options.clone());
     }
 
     /// The client's own Player as the last frame placed it.
@@ -687,11 +595,6 @@ impl GhostScene {
     /// Where the own Player's first image's muzzle was drawn in the last frame.
     pub fn own_muzzle(&self) -> Option<[f32; 3]> {
         self.own_muzzle
-    }
-
-    /// Where the own Player's first image's sights (`sightFront`, `sightRear`) were drawn in the last frame.
-    pub fn own_sights(&self) -> Option<[[f32; 3]; 2]> {
-        self.own_sights
     }
 
     /// The other Players' feet and yaws as the last frame placed them, in ghost order.
@@ -724,12 +627,12 @@ impl GhostScene {
     pub fn bolt_positions(&self) -> Vec<[f32; 3]> {
         self.bolts
             .values()
-            .map(|b| b.drawn(&self.options.bolt))
+            .map(|b| self.style.projectile(&b.flight).column(3))
             .collect()
     }
 
     /// The frame's motion, with nothing drawn: the Players posed, the own view placed (the eye at its Player's drawn `eye` node,
-    /// with `input.fov`), the images' shots, kicks and emitters, the projectiles moved on and put where the engine draws them,
+    /// with `input.fov`), the images' shots, motions and emitters, the projectiles moved on and put where the engine draws them,
     /// their trails, bursts and holes.
     pub fn update(&mut self, assets: &dyn Assets, world: &mut TgeWorld, input: &FrameInput<'_>) {
         let dt = input.dt.max(0.0);
@@ -737,7 +640,6 @@ impl GhostScene {
         self.place_players(assets, world, input.fov);
         self.update_images(assets, &world.records, dt);
         self.update_bolts(assets, &world.records, input, dt);
-        let path = self.options.bolt;
         world
             .records
             .projectile_render
@@ -748,8 +650,8 @@ impl GhostScene {
                 index,
                 ProjectileLook {
                     birth,
-                    transform: b.transform(&path).m,
-                    velocity: b.velocity,
+                    transform: self.style.projectile(&b.flight).m,
+                    velocity: b.flight.velocity,
                     fade: 1.0,
                 },
             );
@@ -846,34 +748,8 @@ impl GhostScene {
         }
     }
 
-    /// The sights of the image shape at `path`, loaded once.
-    fn sight_nodes(
-        &mut self,
-        assets: &dyn Assets,
-        world: &World,
-        path: &str,
-    ) -> Option<SightNodes> {
-        let rear = self.options.sights.rear;
-        *self.sights.entry(path.to_string()).or_insert_with(|| {
-            let mut notes = Vec::new();
-            let loaded = load(
-                &|p| world.constructor_sequences(p),
-                assets,
-                path,
-                &mut notes,
-            )?;
-            let shape = &loaded.model.shape;
-            let nodes = node_named(shape, b"sightFront").zip(node_named(shape, b"sightRear"));
-            Some(SightNodes {
-                place: sight_offset(shape, rear),
-                nodes: nodes.map(|(f, r)| [f, r]),
-            })
-        })
-    }
-
-    /// The mounted images' frame: each shot (a new fire count) kicks the image, flares and starts the fire state's emitter; the
-    /// host's motion of each (kicked, raised to the sights in the first person); the muzzles where the frame draws them and the
-    /// emitters run there.
+    /// The mounted images' frame: each shot (a new fire count) starts the fire state's emitter; the style's motion of each; the
+    /// muzzles where the frame draws them and the emitters run there; the style's look at the own Player's first image.
     fn update_images(&mut self, assets: &dyn Assets, world: &World, dt: f32) {
         let control = world
             .control
@@ -932,37 +808,19 @@ impl GhostScene {
                 }
             }
         }
-        // The host's motion of each image: its kick, and in the first person its rise to the sights.
+        // The style's motion of each image.
         self.hooks.motions.clear();
-        let aim = self.aim();
-        let keys: Vec<(u32, usize)> = self.held.keys().copied().collect();
-        for (ghost, slot) in keys {
-            let h = &self.held[&(ghost, slot)];
-            let kick = self.options.kick.map_or(0.0, |k| k.at(h.since_fire));
-            let db = h.datablock;
-            let mut motion = HeldMotion::default();
-            if let Some(k) = self.options.kick.filter(|k| kick > 0.0 && k.up_hand != 0.0) {
-                motion.hand = Some(Mat::euler_x(-k.up_hand * kick));
-            }
-            let own_eye = first_person && Some(ghost) == control;
-            if own_eye
-                && let Some(image) = ImageDb::of(world, db)
-                && let Some(eye_offset) = image.eye_offset
-                && (aim > 0.0 || kick > 0.0)
-            {
-                let sights = self.sight_nodes(assets, world, &image.shape_file);
-                let fallback = (self.options.sights.fallback, 0.0);
-                let (place, pitch) = sights.and_then(|s| s.place).unwrap_or(fallback);
-                let (back, up) = self.options.kick.map_or((0.0, 0.0), |k| (k.back, k.up));
-                let mut m = Mat::mul(
-                    &eye_offset,
-                    &Mat::mul(&Mat::euler_x(-up * kick), &Mat::euler_x(pitch * aim)),
-                );
-                let from = eye_offset.column(3);
-                let [x, y, z] = [0, 1, 2].map(|k| from[k] + (place[k] - from[k]) * aim);
-                m.set_column3([x, y - back * kick, z + 0.2 * back * kick]);
-                motion.eye = Some(m);
-            }
+        for (&(ghost, slot), h) in &self.held {
+            let image = HeldImage {
+                world,
+                assets,
+                ghost,
+                slot,
+                datablock: h.datablock,
+                since_fire: h.since_fire,
+                own_eye: first_person && Some(ghost) == control,
+            };
+            let motion = self.style.held_motion(&image);
             if motion != HeldMotion::default() {
                 self.hooks.motions.insert((ghost, slot), motion);
             }
@@ -994,30 +852,36 @@ impl GhostScene {
             }
         }
         self.fading.extend(done);
-        // The own Player's first image: its muzzle and sights as drawn.
+        // The own Player's first image: its muzzle as drawn, and the style's look at it.
         self.own_muzzle = None;
-        self.own_sights = None;
-        if let Some(own) = self.own
-            && let Some(((_, slot), h)) = self
+        let own = self.own.and_then(|own| {
+            let ((_, slot), h) = self
                 .held
                 .range((own.ghost, 0)..=(own.ghost, usize::MAX))
-                .next()
-        {
-            let (slot, muzzle) = (*slot, h.muzzle);
-            self.own_muzzle = muzzle.map(|m| m.0);
-            let nodes = ImageDb::of(world, h.datablock)
-                .and_then(|image| self.sight_nodes(assets, world, &image.shape_file))
-                .and_then(|s| s.nodes);
-            if let Some(nodes) = nodes {
-                let mut at = nodes.map(|n| {
-                    self.frames
-                        .node_frame(world, &self.hooks, assets, own.ghost, slot, n as i32)
+                .next()?;
+            Some((own.ghost, *slot, h.datablock, h.since_fire, h.muzzle))
+        });
+        let (frames, hooks) = (&mut self.frames, &self.hooks);
+        match own {
+            Some((ghost, slot, datablock, since_fire, muzzle)) => {
+                self.own_muzzle = muzzle.map(|m| m.0);
+                let image = HeldImage {
+                    world,
+                    assets,
+                    ghost,
+                    slot,
+                    datablock,
+                    since_fire,
+                    own_eye: first_person && Some(ghost) == control,
+                };
+                let mut node = |n: usize| {
+                    frames
+                        .node_frame(world, hooks, assets, ghost, slot, n as i32)
                         .map(|(m, _)| m.column(3))
-                });
-                if let [Some(front), Some(rear)] = [at[0].take(), at[1].take()] {
-                    self.own_sights = Some([front, rear]);
-                }
+                };
+                self.style.own_image(Some(&image), &mut node);
             }
+            None => self.style.own_image(None, &mut |_| None),
         }
     }
 
@@ -1030,7 +894,6 @@ impl GhostScene {
         input: &FrameInput<'_>,
         dt: f32,
     ) {
-        let path = self.options.bolt;
         // The trails run whole milliseconds; the rest waits for the next frame.
         self.trail_ms += dt * 1000.0;
         let ms = self.trail_ms.floor().clamp(0.0, 1000.0) as u32;
@@ -1053,7 +916,7 @@ impl GhostScene {
                     let end = x.position.map(|v| v.get());
                     self.retire(bolt, Some(end));
                 }
-                use crate::collide::types::{PLAYER, VEHICLE};
+                use torque_collide::types::{PLAYER, VEHICLE};
                 if x.hit_type != 0 && self.burst.insert(index) {
                     let at = x.position.map(|v| v.get());
                     let normal = x.normal.map(|v| v.get());
@@ -1086,7 +949,7 @@ impl GhostScene {
                     continue;
                 };
                 let velocity = initial.velocity.map_or([0.0; 3], |v| {
-                    v.value(crate::ghosts::projectile::VELOCITY_NORMAL_BITS)
+                    v.value(torque_ghosts::projectile::VELOCITY_NORMAL_BITS)
                 });
                 // Drawn from its source's muzzle as the frame draws it.
                 let muzzle = initial.source.as_ref().and_then(|s| {
@@ -1094,17 +957,15 @@ impl GhostScene {
                         .node_frame(world, &self.hooks, assets, s.object, s.slot as usize, -1)
                         .map(|(m, _)| m.column(3))
                 });
-                let offset = match muzzle {
-                    Some(m) if path.blend > 0.0 => [0, 1, 2].map(|k| m[k] - start[k]),
-                    _ => [0.0; 3],
-                };
                 self.bolts.insert(
                     index,
                     Bolt {
-                        start,
-                        velocity,
-                        age: 0.0,
-                        offset,
+                        flight: Flight {
+                            start,
+                            velocity,
+                            age: 0.0,
+                            muzzle,
+                        },
                         trail: None,
                         ribbon: None,
                     },
@@ -1119,15 +980,18 @@ impl GhostScene {
                 match projectile_ribbon(world, db).filter(|_| self.options.ribbon_trails) {
                     Some(data) => {
                         let mut r = Ribbon::new(data);
-                        r.add_point(bolt.drawn(&path));
+                        r.add_point(self.style.projectile(&bolt.flight).column(3));
                         bolt.ribbon = Some(r);
                     }
                     None => bolt.trail = bolt_trail(world, db),
                 }
             }
-            let from = bolt.drawn(&path);
-            bolt.age += dt;
-            let (at, v) = (bolt.drawn(&path), bolt.velocity);
+            let from = self.style.projectile(&bolt.flight).column(3);
+            bolt.flight.age += dt;
+            let (at, v) = (
+                self.style.projectile(&bolt.flight).column(3),
+                bolt.flight.velocity,
+            );
             if let Some(trail) = bolt.trail.as_mut()
                 && ms > 0
             {
@@ -1208,7 +1072,7 @@ impl GhostScene {
         view.ghost_objects(world, &shaped, set)
     }
 
-    /// The frame's particles (the trails, the bursts, the images' emitters, the ribbons and the shots' flares, facing `eye`) and
+    /// The frame's particles (the trails, the bursts, the images' emitters, the ribbons and the style's own, facing `eye`) and
     /// the projectiles' holes, into `view`.
     pub fn effects(&mut self, view: &mut WorldView, assets: &dyn Assets, eye: &Eye) {
         let camera = Mat::mul(&Mat::euler_z(eye.yaw), &Mat::euler_x(eye.pitch));
@@ -1253,25 +1117,26 @@ impl GhostScene {
             self.ribbons_drawn += 1;
             draws.push((dist(center), d));
         }
-        // The shots' flares at the muzzles the frame draws.
-        if let Some(flare) = &self.options.flare {
-            for h in self.held.values() {
-                if let Some((at, dir)) = h.muzzle
-                    && h.since_fire < flare.seconds
-                {
-                    let t = h.since_fire / flare.seconds;
-                    draws.extend(flare_draws(
-                        flare,
-                        at,
-                        dir,
-                        t,
-                        eye.position,
-                        (right, up),
-                        &mut set,
-                    ));
-                }
-            }
-        }
+        // The style's own at the muzzles the frame draws.
+        let muzzles: Vec<Muzzle> = self
+            .held
+            .values()
+            .filter_map(|h| {
+                let (at, dir) = h.muzzle?;
+                Some(Muzzle {
+                    at,
+                    dir,
+                    since_fire: h.since_fire,
+                })
+            })
+            .collect();
+        let frame = EffectsFrame {
+            eye: eye.position,
+            right,
+            up,
+            muzzles: &muzzles,
+        };
+        draws.extend(self.style.effects(&frame, &mut set));
         let decals = self.decals.draws(eye.position, &mut set);
         view.set_particles_and_decals(&draws, &decals, set);
     }
@@ -1282,66 +1147,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_kick_rises_quickly_and_settles() {
-        let k = Kick {
-            rise: 0.04,
-            settle: 0.08,
-            back: 0.06,
-            up: 0.14,
-            up_hand: 0.3,
-        };
-        assert_eq!(k.at(0.0), 0.0);
-        assert_eq!(k.at(0.04), 1.0);
-        assert!(k.at(0.02) > 0.4);
-        assert!(k.at(0.08) > k.at(0.15) && k.at(0.3) < 0.05);
-        assert_eq!(k.at(f32::MAX), 0.0);
-    }
-
-    #[test]
-    fn a_bolt_leaves_the_muzzle_grows_and_curves_onto_its_flight() {
-        let path = BoltPath {
-            blend: 12.0,
-            start_size: 0.3,
-            grow: 1.5,
-            spin: std::f32::consts::TAU,
-        };
-        let mut b = Bolt {
+    fn the_plain_style_draws_a_projectile_on_its_flight() {
+        let mut f = Flight {
             start: [0.0; 3],
             velocity: [0.0, 100.0, 0.0],
             age: 0.0,
-            offset: [0.2, 0.0, -0.1],
-            trail: None,
-            ribbon: None,
+            muzzle: Some([0.2, 0.0, -0.1]),
         };
-        assert_eq!(b.drawn(&path), [0.2, 0.0, -0.1], "at the muzzle");
-        assert!((b.size(&path) - 0.3).abs() < 1e-6);
-        b.age = 0.05;
-        let mid = b.drawn(&path);
-        assert!(mid[0] > 0.0 && mid[0] < 0.2 && mid[1] == 5.0, "{mid:?}");
-        assert_eq!(b.size(&path), 1.0);
-        b.age = 0.2;
-        assert_eq!(
-            b.drawn(&path),
-            [0.0, 20.0, 0.0],
-            "on its flight past the curve"
-        );
-        // The defaults draw it on its flight, whole.
-        let plain = BoltPath::default();
-        b.age = 0.0;
-        assert_eq!((b.drawn(&plain), b.size(&plain)), ([0.0; 3], 1.0));
-        let m = b.transform(&plain);
+        let m = Plain.projectile(&f);
         assert_eq!(m.column(3), [0.0; 3]);
         assert!(
             (m.mul_v([0.0, 1.0, 0.0])[1] - 1.0).abs() < 1e-6,
             "along its flight"
         );
-    }
-
-    #[test]
-    fn the_sights_come_up_eased_and_go_down() {
-        let mut g = GhostScene::new(GhostOptions::default());
-        assert_eq!(g.update_aim(true, 0.09), aim_ease(0.5));
-        assert_eq!(g.update_aim(true, 1.0), 1.0);
-        assert_eq!(g.update_aim(false, 1.0), 0.0);
+        f.age = 0.2;
+        assert_eq!(Plain.projectile(&f).column(3), [0.0, 20.0, 0.0]);
+        assert_eq!(f.flown(), 20.0);
     }
 }

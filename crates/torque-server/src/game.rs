@@ -8,7 +8,9 @@
 //!   process list, and the write observer that rebuilds a Player's datablock after a script changes it;
 //! - `GameBase::onAdd`: an object with no datablock is refused (its script `onRemove` runs first); otherwise it takes the type
 //!   mask its class's constructor sets, the classes' `onNewDataBlock` run (the camera's, the shape's, the Player's, the Item's, the vehicles'), then the datablock's script
-//!   `onNewDataBlock(%obj)`, and the object joins the process list at the tail. `onRemove` takes it out again.
+//!   `onNewDataBlock(%obj)`, and the object joins the process list at the tail. `onRemove` takes it out again;
+//! - the engine's own light and sky classes' methods ([`torque_game::scene::lights`]), and a `TimeOfDay` joins the process list
+//!   when it is added (it ticks its day).
 //!
 //! A network host ([`crate::net::attach_host`]) given the same container ghosts these objects; without one they still tick.
 //!
@@ -77,6 +79,28 @@ impl EngineClass for GameBaseClass {
     }
 }
 
+/// `TimeOfDay`'s behavior over the server's process list (the engine's own class: a scene object that ticks, after Torque3D's):
+/// its day made from its fields, then the object joins the process list. `onRemove` takes it out again.
+struct TimeOfDayClass {
+    process: ProcessHandle,
+}
+
+impl EngineClass for TimeOfDayClass {
+    fn on_add(&self, vm: &mut Vm, id: ObjId) -> Result<bool, VmError> {
+        torque_game::scene::lights::add_day(vm, id);
+        if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
+            e.process = Some(self.process.clone());
+        }
+        self.process.register(vm, id);
+        Ok(true)
+    }
+
+    fn on_remove(&self, _vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
+        self.process.unregister(id);
+        Ok(())
+    }
+}
+
 /// Gives `vm` (whose class table has TGE's game classes: [`torque_game::specs::install`]) the game classes' behaviours and
 /// methods over a new container, and the server's process list the movers' environment. Run it before the scripts that make
 /// datablocks and objects, and before a network host is attached (pass it [`GameParts::container`]).
@@ -99,6 +123,13 @@ pub fn install<N: NetParts>(vm: &mut Vm, state: &Rc<RefCell<ServerState<N>>>) ->
     torque_game::scene::container::register_natives(vm, &container, &shapes);
     torque_game::scene::shapebase::register(vm, &container);
     torque_game::scene::interior::register(vm, &container);
+    torque_game::scene::lights::register(vm);
+    vm.set_class_behaviour(
+        "TimeOfDay",
+        Rc::new(TimeOfDayClass {
+            process: process.clone(),
+        }),
+    );
     torque_game::sim::player::register(vm, &container);
     torque_game::sim::item::register(vm, &container);
     torque_game::sim::projectile::register(vm, &container);
