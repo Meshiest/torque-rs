@@ -205,7 +205,7 @@ The first development version. Nothing is published yet; this is what exists.
   served its page. `just examples/web-fps` builds and serves it; `just examples/web-fps-check` puts a desktop player with
   no window and headless Chrome in one game. `cargo test -p torque-example-fps --test web`: a UDP and a WebSocket client
   see each other, chat and hit each other; hostile peers are closed with the ticks' time unchanged; a banned browser that
-  comes back is still refused.
+  comes back is still refused. The web switches without `--transport web` or `both` are refused with an error.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

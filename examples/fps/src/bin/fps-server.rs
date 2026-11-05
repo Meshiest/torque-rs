@@ -13,6 +13,9 @@
 //! `wss`; without them the web listens on a private address only. A request must name an IP address, `localhost` or a
 //! `--web-host <name>` (repeatable) as its host; a browser's game socket must come from the page this server serves, or
 //! from an `--allow-origin <origin>` (repeatable, `https://games.example`; `*` takes any page) when the page is elsewhere.
+//! These switches need `--transport web` or `both`. TLS handshakes run on the server's thread: an ECDSA (P-256) key makes each
+//! far cheaper than an RSA one. The address rule looks at the bind address only: a private address that a router maps 1:1
+//! to a public one serves plain `http` and `ws` to the internet, so use TLS there.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::Ipv4Addr;
@@ -77,6 +80,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("no map in the game folder's missions")?;
     }
     let mut web_scheme = "http";
+    let web_flags = web_root.is_some()
+        || no_files
+        || cert.is_some()
+        || key.is_some()
+        || !access.hosts.is_empty()
+        || !origins.is_empty();
+    if transports == Transports::Udp && web_flags {
+        return Err("--web-root, --no-files, --tls-cert, --tls-key, --web-host and --allow-origin are for the web: add --transport web or --transport both"
+            .into());
+    }
     let mut server = if transports == Transports::Udp {
         ArenaServer::start_dedicated(&files, &options)?
     } else {

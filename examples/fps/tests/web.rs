@@ -216,6 +216,8 @@ fn attack(addr: SocketAddr, until: Instant) -> Vec<String> {
     ws("text", &|s| {
         s.send_text("hello");
     });
+    // A binary frame left open, then empty continuation frames as fast as the link takes them.
+    seen.push(format!("continuations: {}", continuations(addr)));
     let http = |raw: &[u8]| -> String {
         let Ok(mut t) = TcpStream::connect(addr) else {
             return "refused".to_string();
@@ -249,14 +251,68 @@ fn attack(addr: SocketAddr, until: Instant) -> Vec<String> {
     seen
 }
 
+/// Opens a game socket by hand and floods it with empty continuation frames for up to two seconds: "closed" when the server
+/// closed it.
+fn continuations(addr: SocketAddr) -> &'static str {
+    let Ok(mut s) = TcpStream::connect(addr) else {
+        return "refused";
+    };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = s.set_write_timeout(Some(Duration::from_millis(200)));
+    let request = "GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                   Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: AwMDAwMDAwMDAwMDAwMDAw==\r\n\r\n";
+    if s.write_all(request.as_bytes()).is_err() {
+        return "refused";
+    }
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match s.read(&mut b) {
+            Ok(1) => head.push(b[0]),
+            _ => return "refused",
+        }
+    }
+    if !head.starts_with(b"HTTP/1.1 101 ") {
+        eprintln!("continuations: {}", String::from_utf8_lossy(&head));
+        return "refused";
+    }
+    let _ = s.write_all(&[0x02, 0x80, 1, 2, 3, 4]);
+    let chunk: Vec<u8> = [0x00, 0x80, 1, 2, 3, 4].repeat(4096);
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(2) {
+        match s.write(&chunk) {
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return "closed",
+        }
+    }
+    let mut rest = [0u8; 256];
+    loop {
+        match s.read(&mut rest) {
+            Ok(0) | Err(_) => return "closed",
+            Ok(_) => {}
+        }
+    }
+}
+
 /// One tick of the server, timed, then its wait serviced as a dedicated server's is (2 ms steps to the tick's end).
-fn paced_tick(s: &mut GameServer, client: &mut ArenaGame) -> Duration {
+fn paced_tick(
+    s: &mut GameServer,
+    client: &mut ArenaGame,
+    longest_service: &mut Duration,
+) -> Duration {
     let start = Instant::now();
     s.tick();
     let took = start.elapsed();
     client.step(32);
     while start.elapsed() < Duration::from_millis(32) {
+        let pass = Instant::now();
         s.service();
+        *longest_service = (*longest_service).max(pass.elapsed());
         thread::sleep(Duration::from_millis(2));
     }
     took
@@ -273,14 +329,18 @@ fn hostile_peers_are_closed_and_the_ticks_keep_their_time() {
         }
     }
     assert!(ann.in_game());
-    let mut quiet: Vec<Duration> = (0..60).map(|_| paced_tick(&mut s, &mut ann)).collect();
+    let mut service = Duration::ZERO;
+    let mut quiet: Vec<Duration> = (0..60)
+        .map(|_| paced_tick(&mut s, &mut ann, &mut service))
+        .collect();
+    let mut busy_service = Duration::ZERO;
     let sim_before = s.vm().sim_time();
     let addr = s.address().unwrap();
     let until = Instant::now() + Duration::from_secs(4);
     let h = thread::spawn(move || attack(addr, until));
     let mut busy = Vec::new();
     while !h.is_finished() {
-        busy.push(paced_tick(&mut s, &mut ann));
+        busy.push(paced_tick(&mut s, &mut ann, &mut busy_service));
     }
     let seen = h.join().unwrap();
     let ticks = busy.len() as u32;
@@ -296,7 +356,7 @@ fn hostile_peers_are_closed_and_the_ticks_keep_their_time() {
         );
     }
     assert!(
-        seen.iter().filter(|l| l.ends_with("closed")).count() == 3,
+        seen.iter().filter(|l| l.ends_with("closed")).count() == 4,
         "{seen:?}"
     );
     quiet.sort_unstable();
@@ -321,6 +381,11 @@ fn hostile_peers_are_closed_and_the_ticks_keep_their_time() {
         p90(&busy) < Duration::from_millis(32),
         "the 90th tick took {:?}",
         p90(&busy)
+    );
+    println!("longest service pass {service:?} -> {busy_service:?}");
+    assert!(
+        busy_service < Duration::from_millis(16),
+        "a pass between ticks took {busy_service:?}"
     );
     run(&mut s, &mut [&mut ann], 500);
     assert!(ann.in_game(), "the desktop player is still in the game");
@@ -360,6 +425,11 @@ fn a_banned_browser_that_comes_back_is_still_refused() {
     // The browser leaves: its socket closes, and it comes back on a new one.
     drop(bob);
     run(&mut s, &mut [], 320);
+    assert_eq!(
+        s.call("eval", &["return ClientGroup.getCount();"]).unwrap(),
+        "0",
+        "the connection went with its socket, not at its timeout"
+    );
     let mut again = web_client(&mut s, "Bob");
     for _ in 0..200 {
         run(&mut s, &mut [&mut again], 32);
