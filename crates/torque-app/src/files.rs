@@ -4,7 +4,7 @@
 use std::io;
 use std::path::Path;
 
-use crate::script::vm::host::MemFiles;
+use torque_ts_vm::host::MemFiles;
 
 /// A game folder's files: their paths under the folder (with `/`) and their bytes, sorted by path.
 #[derive(Debug, Clone, Default)]

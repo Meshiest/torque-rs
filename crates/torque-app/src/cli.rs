@@ -2,7 +2,7 @@
 //! value an error that names its flag.
 //!
 //! ```
-//! use torque::app::cli::Args;
+//! use torque_app::cli::Args;
 //!
 //! let mut args = Args::new(["--port", "28001", "--name"].map(String::from));
 //! assert_eq!(args.next().as_deref(), Some("--port"));

@@ -15,18 +15,18 @@ use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
-use crate::client::conn::tge::{TgeConn, TgeWorld};
-use crate::client::game::ClientGame;
-use crate::client::host::{ClientHost, EnginePass};
-use crate::client::hud::HudWorld as _;
-use crate::client::input::{Key, key_message};
-use crate::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy, UdpDatagrams};
-use crate::client::state::ClientState;
-use crate::gui::Gui;
-use crate::script::text::{atof, atoi};
-use crate::script::vm::host::MemFiles;
-use crate::script::vm::vm::Vm;
-use crate::server::server::{GameServer as _, Server, TICK_MS};
+use torque_client::conn::tge::{TgeConn, TgeWorld};
+use torque_client::game::ClientGame;
+use torque_client::host::{ClientHost, EnginePass};
+use torque_client::hud::HudWorld as _;
+use torque_client::input::{Key, key_message};
+use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy, UdpDatagrams};
+use torque_client::state::ClientState;
+use torque_gui::Gui;
+use torque_server::server::{GameServer as _, Server, TICK_MS};
+use torque_ts_text::{atof, atoi};
+use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::vm::Vm;
 
 use super::server::GameServer;
 use super::{Host, draw_cache, layout_fonts};
@@ -94,29 +94,29 @@ impl ClientBuilder {
     pub fn new(setup: ClientSetup) -> Result<ClientBuilder, String> {
         let mut vm = Vm::new();
         if setup.game_classes {
-            crate::game::specs::install(&mut vm);
+            torque_game::specs::install(&mut vm);
         }
         if let Some(files) = setup.files {
             vm.set_file_host(files);
         }
         if let Some(game) = setup.client_game {
-            crate::client::game::set_client_game(&mut vm, game);
+            torque_client::game::set_client_game(&mut vm, game);
         }
-        let gui = crate::gui::register(&mut vm);
+        let gui = torque_gui::register(&mut vm);
         if setup.layout_fonts {
             // The controls that measure text as they lay out (a list of games) find their fonts where the drawing does.
-            gui.0.borrow_mut().fonts = crate::gui::SharedFonts::new(Box::new(layout_fonts()));
+            gui.0.borrow_mut().fonts = torque_gui::SharedFonts::new(Box::new(layout_fonts()));
         }
         let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
         let link = open_socket(&state, setup.net)?;
         vm.register_class("ActionMap", "SimObject", &[]);
-        crate::client::actionmap::register(&mut vm, &state);
-        crate::client::screen::register(&mut vm, &gui, &state);
+        torque_client::actionmap::register(&mut vm, &state);
+        torque_client::screen::register(&mut vm, &gui, &state);
         if setup.net != ClientNet::None {
-            crate::client::conn::register(&mut vm, &state, &gui);
+            torque_client::conn::register(&mut vm, &state, &gui);
         }
         if setup.server_query {
-            crate::client::query::register(&mut vm, &state);
+            torque_client::query::register(&mut vm, &state);
         }
         Ok(ClientBuilder {
             vm,
@@ -357,7 +357,7 @@ impl<S> GameClient<S> {
             w.records
                 .ghosts
                 .values()
-                .any(|g| g.class == Some(crate::ghosts::TgeClass::Sky))
+                .any(|g| g.class == Some(torque_ghosts::TgeClass::Sky))
                 .then(|| w.view_distances())
         })
         .flatten()
