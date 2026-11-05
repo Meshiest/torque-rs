@@ -4,15 +4,17 @@
 //! The block is TGE's default: [`SIDE`] samples a side, [`SQUARE`] m apart, centered on the origin (`TerrainBlock::onAdd`
 //! puts sample (0, 0) at `-128 * squareSize` in x and y), so it covers 2,048 m a side. [`height`] gives the ground at any
 //! point: a flat field [`FIELD_RADIUS`] m round the origin at [`BASE`] m, gentle rolling hills beyond it, a single round hill
-//! [`HILL_AT`] north of the field to drive over (steep on the field's side), and higher hills toward the edges. One material, `checker` (its texture is
-//! `checker.png`), weighs everything.
+//! [`HILL_AT`] north of the field to drive over (steep on the field's side), and higher hills toward the edges, shaped round
+//! the race track: crests, dips, a valley, a ridge and banked turns ([`crate::track::Track::ground`]). Two materials:
+//! `checker` (its texture is `checker.png`) everywhere but the track, and `dirt` (`dirt.png`) on the track, its weight
+//! [`crate::track::dirt_share`] (the two weights sum to 255 at every sample).
 //!
 //! ```text
 //! u8   version 2
 //! u16  heights, 256 x 256 (x fastest), each in 1/32 m
 //! u8   material map, 256 x 256 (the base material slot: 0)
 //! 8 x  material names (a length byte and the bytes; empty: an unused slot)
-//! u8   an alpha map, 256 x 256, for the one material named
+//! u8   an alpha map, 256 x 256, for each material named, in order
 //! ```
 //!
 //! Credit: the layout is the legacy one Torque3D reads in `TerrainFile::_loadLegacy` (`terrain/terrFile.cpp`, MIT, Copyright
@@ -33,13 +35,18 @@ pub const HILL_STEEP_WIDTH: f32 = 14.0;
 /// The height words a meter (`.ter`'s fixed point).
 const WORDS_PER_METER: f32 = 32.0;
 
-fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
+pub(crate) fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
 /// The ground's height at world (x, y) (m), the block centered on the origin.
 pub fn height(x: f32, y: f32) -> f32 {
+    crate::track::track().ground(x, y, raw_height(x, y))
+}
+
+/// The hills' height at world (x, y) before the race track shapes it.
+pub fn raw_height(x: f32, y: f32) -> f32 {
     let r = (x * x + y * y).sqrt();
     let rolling = 4.5 * (x / 61.0 + 0.7).sin() * (y / 53.0 + 1.3).sin()
         + 2.6 * ((x + y) / 37.0).sin()
@@ -79,9 +86,18 @@ pub fn hills() -> Vec<u8> {
         }
     }
     out.extend(std::iter::repeat_n(0u8, samples));
-    out.push(7);
-    out.extend(b"checker");
-    out.extend([0u8; 7]);
-    out.extend(std::iter::repeat_n(255u8, samples));
+    for name in [&b"checker"[..], b"dirt"] {
+        out.push(name.len() as u8);
+        out.extend(name);
+    }
+    out.extend([0u8; 6]);
+    let dirt: Vec<u8> = (0..samples)
+        .map(|k| {
+            let [x, y] = sample_xy(k % SIDE, k / SIDE);
+            (crate::track::dirt_share(x, y) * 255.0).round() as u8
+        })
+        .collect();
+    out.extend(dirt.iter().map(|&d| 255 - d));
+    out.extend(dirt);
     out
 }

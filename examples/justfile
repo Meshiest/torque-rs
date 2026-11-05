@@ -105,3 +105,13 @@ vehicle-demo *args:
 # passenger's view, the climb up the hill), drawn offscreen into `dir`
 vehicle-demo-shots dir="../target/vehicle-demo-shots":
     cargo run -p torque-example-vehicle-demo --release -- --shots {{dir}}
+
+# The vehicle demo's race track, its landforms and forests in pictures (the loop from above, driver's-eye views past the
+# forests, over a crest and along the ridge, up at a forest's edge, trees close up, the kinds of tree, and the low sun at
+# golden hour and sunset), drawn offscreen into `dir`; `vehicle-demo-track-bench` prints the frame times at the start and
+# round the lap instead
+vehicle-demo-track-shots dir="../target/vehicle-demo-track-shots":
+    cargo run -p torque-example-vehicle-demo --release --example track-shots -- {{dir}}
+
+vehicle-demo-track-bench:
+    cargo run -p torque-example-vehicle-demo --release --example track-shots -- --bench

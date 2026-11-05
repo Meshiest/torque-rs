@@ -1,6 +1,7 @@
 //! The example games' shared asset kit: a unit cube, a box figure with idle, walk, run, back, side, jump, look, death and
-//! sit sequences, a pistol, a projectile, a dune buggy and its wheel, a terrain of hills, the arena's interior, their textures
-//! and a particle's, all made by this crate's code ([`shapes`], [`buggy`], [`terrain`], [`interiors`], [`textures`]; the shape
+//! sit sequences, a pistol, a projectile, a dune buggy and its wheel, a terrain of hills with a race track, the arena's
+//! interior, forests of low-poly trees, their textures and a particle's, all made by this crate's code ([`shapes`], [`buggy`],
+//! [`terrain`], [`track`], [`interiors`], [`trees`], [`textures`]; the shape
 //! builder is the `torque-shape-builder` crate, [`builder`], the interior builder `torque-interior-builder`) and written as
 //! `.dts` (version 24, through `torque_shapes::write`), `.ter`, `.dif` (version 0, through `torque_maps::dif::write`) and
 //! `.png`.
@@ -19,6 +20,8 @@ pub mod interiors;
 pub mod shapes;
 pub mod terrain;
 pub mod textures;
+pub mod track;
+pub mod trees;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -50,7 +53,7 @@ pub fn all() -> io::Result<Vec<Asset>> {
         })
     };
     let (cube, figure, pistol) = (shapes::cube(), shapes::figure(), shapes::pistol());
-    Ok(vec![
+    let mut out = vec![
         shape("cube.dts", &cube),
         shape("figure.dts", &figure),
         shape("pistol.dts", &pistol),
@@ -136,7 +139,53 @@ pub fn all() -> io::Result<Vec<Asset>> {
             name: "track.png",
             bytes: textures::track()?,
         },
-    ])
+        Asset {
+            name: "dirt.png",
+            bytes: textures::dirt()?,
+        },
+        Asset {
+            name: "tree_bark.png",
+            bytes: textures::bark()?,
+        },
+        Asset {
+            name: "tree_bark_red.png",
+            bytes: textures::red_bark()?,
+        },
+        Asset {
+            name: "tree_bark_birch.png",
+            bytes: textures::birch_bark()?,
+        },
+        Asset {
+            name: "tree_pine.png",
+            bytes: textures::foliage(textures::PINE, 101)?,
+        },
+        Asset {
+            name: "tree_fir.png",
+            bytes: textures::foliage(textures::FIR, 113)?,
+        },
+        Asset {
+            name: "tree_leaves.png",
+            bytes: textures::foliage(textures::LEAVES, 131)?,
+        },
+        Asset {
+            name: "tree_leaves_dark.png",
+            bytes: textures::foliage(textures::LEAVES_DARK, 141)?,
+        },
+        Asset {
+            name: "tree_leaves_light.png",
+            bytes: textures::foliage(textures::LEAVES_LIGHT, 151)?,
+        },
+        Asset {
+            name: trees::LINEUP_FILE,
+            bytes: trees::lineup_dif()?,
+        },
+    ];
+    out.extend(
+        trees::chunk_difs()?
+            .into_iter()
+            .map(|(name, bytes)| Asset { name, bytes }),
+    );
+    Ok(out)
 }
 
 /// Writes every asset into `dir` (made if missing; files already there are replaced) and returns the paths written.

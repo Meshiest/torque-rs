@@ -139,6 +139,11 @@ The first development version. Nothing is published yet; this is what exists.
   round's scores and the next map's name, and the next map of `$Pref::Server::MapList` (or of `missions/`) loads under the same
   connections, the scores back at 0; the view shows the round's clock. The examples' `loadMission` ends the running map for
   the clients in the game (`endMission`, `'MissionEnd'`, their ghosting reset) and sends them the new one's datablocks.
+- `torque-example-vehicle-demo`: a brown dirt race track of about 2 km round the start field and over the hill's shoulder (the
+  hills' second terrain material, its texture laid along the track with tire-worn bands), the ground shaped along it (crests,
+  dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
+  and young spruces, oaks and birches under them, built from brushes into interiors, one a square of the map);
+  `just examples/vehicle-demo-track-shots` draws them.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

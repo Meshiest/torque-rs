@@ -49,7 +49,7 @@ use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::{Eye, SceneSource as _};
 
-use crate::files::{GameFiles, TERRAIN_TEXTURE, TERRAIN_TILE};
+use crate::files::GameFiles;
 use crate::scene::WorldScene;
 use crate::seats::SeatedPlayerKind;
 use crate::server::{ALONE_ADDR, DEFAULT_PORT, ServerOptions, WorldServer};
@@ -284,11 +284,10 @@ impl VehicleDemo {
     /// A world view on `gpu`, the terrain its ground.
     pub fn view(&self, gpu: &Gpu) -> WorldView {
         let mut view = WorldView::new(gpu);
-        view.set_terrain(
+        view.set_terrain_layers(
             &self.files.kit,
             &self.terrain,
-            TERRAIN_TEXTURE,
-            TERRAIN_TILE,
+            &crate::files::terrain_layers(),
         );
         view
     }
