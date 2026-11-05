@@ -352,6 +352,47 @@ fn hostile_joiners_are_turned_away_and_the_host_stays_quick() {
             "a pass took {longest:?}"
         );
     }
+    // A joiner that names another machine as its candidate (in its offer and trickled) cannot aim the host's checks
+    // at it: the loopback address, and every other address the host may not check, is refused.
+    let victim = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    victim.set_nonblocking(true).unwrap();
+    let port = victim.local_addr().unwrap().port();
+    let mut aiming = Joiner::new(&rooms.url());
+    aiming.say(&ToService::Join(&code));
+    run(&mut h, &mut [&mut aiming, &mut good], 3000, |_, j| {
+        j[0].peer.is_some()
+    });
+    aiming.offer_with(move |s| {
+        s + &format!(
+            "a=candidate:9 1 udp 2122260223 127.0.0.1 {port} typ host
+"
+        )
+    });
+    for target in [
+        "127.0.0.1",
+        "10.0.0.1",
+        "192.168.1.1",
+        "224.0.0.1",
+        "169.254.169.254",
+        "0.0.0.0",
+    ] {
+        aiming.say(&ToService::Signal(&format!(
+            "candidate
+candidate:7 1 udp 2122260223 {target} {port} typ host"
+        )));
+    }
+    let refused_before = h.counters().candidates_refused;
+    run(&mut h, &mut [&mut aiming, &mut good], 3000, |_, _| false);
+    let mut buf = [0u8; 2048];
+    assert!(
+        victim.recv_from(&mut buf).is_err(),
+        "the host sent nothing to the named address"
+    );
+    assert!(
+        h.counters().candidates_refused >= refused_before + 6,
+        "{:?}",
+        h.counters()
+    );
     // Floods of candidates and offers: the room caps the joiner's messages, the host caps what it takes.
     let mut chatty = Joiner::new(&rooms.url());
     chatty.say(&ToService::Join(&code));

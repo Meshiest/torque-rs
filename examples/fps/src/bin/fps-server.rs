@@ -31,7 +31,8 @@
 //! players join with the code over WebRTC data channels straight to this computer, with no port forwarded and no UDP game
 //! socket. The channels' socket binds `--bind` and `--port`: the default `127.0.0.1` reaches only this computer, so pass the
 //! computer's LAN address for players elsewhere (the room's STUN server, if it gives one, finds the address the internet
-//! sees). Not with `--transport web` or `both`.
+//! sees). Not with `--transport web` or `both`. `--rtc-lan` takes joiners' private (LAN) addresses too, for players on
+//! this computer's network (off by default: a joiner could aim the host's checks at machines on the network).
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::Ipv4Addr;
@@ -124,7 +125,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .into());
     }
     if !webrtc
-        && (rtc_port.is_some() || !rtc_public.is_empty() || rtc_lan || rtc_loss > 0 || rtc_stats)
+        && (rtc_port.is_some()
+            || !rtc_public.is_empty()
+            || (rtc_lan && room.is_none())
+            || rtc_loss > 0
+            || rtc_stats)
     {
         return Err("--rtc-port, --rtc-public-ip, --rtc-lan, --rtc-loss and --rtc-stats are for the data channels: add --webrtc".into());
     }
@@ -144,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "--room hosts over data channels alone: leave out --transport and --webrtc".into(),
             );
         }
-        let (mut server, code) = ArenaServer::start_hosted(&files, &options, &room)?;
+        let (mut server, code) = ArenaServer::start_hosted(&files, &options, &room, rtc_lan)?;
         println!(
             "fps-server: {} hosted through {room}, map {}",
             options.name, options.mission

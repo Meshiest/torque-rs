@@ -145,12 +145,14 @@ impl ArenaServer {
     /// A dedicated server hosted through a room service (`room`: its `ws://` URL): players find it by the room's code and
     /// join over WebRTC data channels, with no port forwarded. The channels' UDP socket binds the options' address and port
     /// (a LAN address lets players outside the computer reach it, with the room's STUN server's help outside the network).
-    /// Returns the server and the room's code.
+    /// `lan` takes joiners' private (LAN) addresses as candidates: players on this computer's network (off, a joiner
+    /// could aim the host's checks at machines on that network). Returns the server and the room's code.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn start_hosted(
         files: &GameFiles,
         options: &ServerOptions,
         room: &str,
+        lan: bool,
     ) -> Result<(GameServer, String), String> {
         use std::cell::RefCell;
         use std::net::IpAddr;
@@ -166,7 +168,10 @@ impl ArenaServer {
             P2pSetup {
                 service: room.to_string(),
                 queue: 4096,
-                ..P2pSetup::default()
+                rtc: torque::server::net::web::rtc::RtcSetup {
+                    lan_candidates: lan,
+                    ..Default::default()
+                },
             },
         );
         if let Err(e) = host.bind(ip, options.port) {

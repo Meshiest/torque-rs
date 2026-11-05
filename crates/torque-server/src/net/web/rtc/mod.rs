@@ -90,8 +90,10 @@ const RECV_BYTES: usize = 2048;
 const WIRE_ROOM: usize = 128;
 /// The most source addresses mapped to one peer (its oldest is given up for a new one).
 pub const MAX_REMOTES: usize = 4;
-/// The most trickled candidates a player's host takes from one joiner (its checks go to each).
-pub const MAX_REMOTE_CANDIDATES: u32 = 16;
+/// The most candidates a player's host takes from one joiner, in its offer and trickled (its checks go to each).
+pub const MAX_REMOTE_CANDIDATES: u32 = 8;
+/// The most distinct candidate IP addresses a player's host holds across every joiner, per peer it may have.
+pub const CANDIDATE_IPS_PER_PEER: usize = 2;
 /// The most outputs taken from a peer that is closing (its DTLS close notify).
 const CLOSE_OUTPUTS: usize = 16;
 /// The characters of an ICE user fragment and password (RFC 8445's ice-char, without `+` and `/`).
@@ -144,6 +146,11 @@ pub struct RtcLimits {
     pub outputs_per_pass: usize,
     /// The most bytes waiting on a peer's channel to be sent (past it a send fails, as on a full socket).
     pub send_buffer: usize,
+    /// The most checks a player's host sends one peer's unverified addresses in a second (an address is verified once
+    /// an authenticated datagram came from it); past it a check is held back (the stack sends it again later).
+    pub unverified_checks_per_s: u32,
+    /// The same, for every peer together.
+    pub unverified_checks_per_s_all: u32,
 }
 
 impl Default for RtcLimits {
@@ -171,6 +178,8 @@ impl Default for RtcLimits {
             max_message: NET_MAX_DATAGRAM,
             outputs_per_pass: 256,
             send_buffer: 64 << 10,
+            unverified_checks_per_s: 20,
+            unverified_checks_per_s_all: 200,
         }
     }
 }
@@ -189,9 +198,12 @@ pub struct RtcSetup {
     /// A player's host (`net::p2p`) rather than a server browsers reach directly: full ICE (the host sends checks too, so
     /// a NAT in front of it opens), checks taken from any address (a joiner has no game socket whose address they must
     /// share; they are still held to the rate per source address), the joiner's trickled candidates taken (at most
-    /// [`MAX_REMOTE_CANDIDATES`], IPv4 UDP, no `.local` names), and a server-reflexive candidate once a STUN server
-    /// answered.
+    /// [`MAX_REMOTE_CANDIDATES`], IPv4 UDP, no `.local` names, only addresses [`candidate_allowed`] takes: the host
+    /// sends its checks there), and a server-reflexive candidate once a STUN server answered.
     pub host: bool,
+    /// A player's host also takes joiners' private (LAN) candidates: players on its own network (off by default, as a
+    /// joiner could otherwise aim the host's checks at machines on the host's network).
+    pub lan_candidates: bool,
 }
 
 /// What the data channels have done, for tests and the console.
@@ -212,6 +224,10 @@ pub struct RtcCounters {
     pub connect_spent: u64,
     /// Binding requests dropped by the per-address rate.
     pub stun_limited: u64,
+    /// A joiner's candidates a player's host did not take (an address it may not check, past a cap, malformed).
+    pub candidates_refused: u64,
+    /// Checks to unverified addresses held back by their rate.
+    pub checks_held: u64,
     /// Datagrams and messages dropped by a per-pass cap.
     pub pass_dropped: u64,
     /// Datagrams dropped by the loss test, both ways.
@@ -415,8 +431,12 @@ struct Peer {
     closing: Option<Why>,
     meter: Meter,
     stats: PeerStats,
-    /// Trickled candidates taken.
+    /// Candidates offered (taken or not).
     candidates: u32,
+    /// The IP addresses of the candidates taken (each counted once in the side's set).
+    candidate_ips: Vec<IpAddr>,
+    /// Checks sent to its unverified addresses in the present second.
+    unverified: (Instant, u32),
 }
 
 impl Peer {
@@ -456,6 +476,8 @@ struct Sink<'a> {
     now: Instant,
     /// Set when the outputs show the stack authenticated what it was given (a check answered, the session's events).
     authentic: bool,
+    /// Checks sent to unverified addresses by every peer in the present second.
+    unverified: &'a mut (Instant, u32),
 }
 
 /// The data channels of a web transport (module docs).
@@ -487,6 +509,10 @@ pub(crate) struct RtcSide {
     /// A binding request out to a STUN server (its address and transaction), and the address it saw this socket at.
     reflexive_query: Option<(SocketAddr, [u8; 12])>,
     reflexive: Option<SocketAddr>,
+    /// Joiners' candidate IP addresses taken, and how many peers hold each.
+    candidate_ips: HashMap<IpAddr, u32>,
+    /// Checks sent to unverified addresses by every peer in the present second.
+    unverified: (Instant, u32),
 }
 
 impl RtcSide {
@@ -514,6 +540,8 @@ impl RtcSide {
             buf: vec![0; RECV_BYTES],
             reflexive_query: None,
             reflexive: None,
+            candidate_ips: HashMap::new(),
+            unverified: (Instant::now(), 0),
         }
     }
 
@@ -605,6 +633,47 @@ impl RtcSide {
         Ok(())
     }
 
+    /// A joiner's candidate, for a player's host: taken when it is well formed and its address one the host may check
+    /// ([`candidate_allowed`]), within [`MAX_REMOTE_CANDIDATES`] a joiner and [`CANDIDATE_IPS_PER_PEER`] distinct IP
+    /// addresses a peer across all joiners; otherwise counted and dropped.
+    fn take_candidate(&mut self, stand_in: SocketAddr, line: &str) {
+        let mut own: Vec<IpAddr> = self.advertised.iter().map(|a| a.ip()).collect();
+        own.extend(self.reflexive.map(|a| a.ip()));
+        own.extend(
+            self.socket
+                .as_ref()
+                .and_then(|s| s.local_addr().ok())
+                .map(|a| a.ip()),
+        );
+        let ips_cap = self.setup.limits.max_peers * CANDIDATE_IPS_PER_PEER;
+        let lan = self.setup.lan_candidates;
+        let Some(peer) = self.peers.get_mut(&stand_in) else {
+            return;
+        };
+        peer.candidates += 1;
+        let mut taken = None;
+        if peer.candidates <= MAX_REMOTE_CANDIDATES
+            && let Some(candidate) = remote_candidate(line)
+            && let IpAddr::V4(ip) = candidate.addr().ip()
+            && candidate_allowed(ip, lan, &own)
+            && (peer.candidate_ips.contains(&candidate.addr().ip())
+                || self.candidate_ips.contains_key(&candidate.addr().ip())
+                || self.candidate_ips.len() < ips_cap)
+        {
+            taken = Some(candidate);
+        }
+        let Some(candidate) = taken else {
+            self.counters.candidates_refused += 1;
+            return;
+        };
+        let ip = candidate.addr().ip();
+        if !peer.candidate_ips.contains(&ip) {
+            peer.candidate_ips.push(ip);
+            *self.candidate_ips.entry(ip).or_insert(0) += 1;
+        }
+        peer.rtc.add_remote_candidate(candidate);
+    }
+
     /// Asks the STUN server at `server` which address this socket is seen at (a player's host behind a NAT gives its
     /// joiners that address too): the answer is read by the next passes, and peers made after it get the candidate.
     pub(crate) fn query_reflexive(&mut self, server: SocketAddr) -> bool {
@@ -662,13 +731,8 @@ impl RtcSide {
         let signal = signal::parse(text).ok_or(())?;
         let sdp = match signal {
             Signal::Candidate(line) => {
-                if self.setup.host
-                    && let Some(peer) = self.peers.get_mut(&stand_in)
-                    && peer.candidates < MAX_REMOTE_CANDIDATES
-                    && let Some(candidate) = remote_candidate(line)
-                {
-                    peer.candidates += 1;
-                    peer.rtc.add_remote_candidate(candidate);
+                if self.setup.host {
+                    self.take_candidate(stand_in, line);
                 }
                 return Ok(Reply::None);
             }
@@ -683,7 +747,19 @@ impl RtcSide {
         if *offers > self.setup.limits.offers_per_socket || !signal::data_only(sdp) {
             return Err(());
         }
+        // A player's host takes no candidate in the offer as it is: each goes through the same checks as a trickled one.
+        let (sdp, offered) = if self.setup.host {
+            split_candidates(sdp)
+        } else {
+            (sdp.to_string(), Vec::new())
+        };
+        let sdp = sdp.as_str();
         let offer = SdpOffer::from_sdp_string(sdp).map_err(|_| ())?;
+        if self.peers.contains_key(&stand_in) {
+            for line in &offered {
+                self.take_candidate(stand_in, line);
+            }
+        }
         if let Some(peer) = self.peers.get_mut(&stand_in) {
             // A renegotiation of the peer the socket has. An ICE restart (changed credentials) is refused: the stack would
             // mint new local credentials no check could be routed by, so the browser stays on its game socket instead.
@@ -765,8 +841,13 @@ impl RtcSide {
                 meter: Meter::new(now),
                 stats: PeerStats::default(),
                 candidates: 0,
+                candidate_ips: Vec::new(),
+                unverified: (now, 0),
             },
         );
+        for line in &offered {
+            self.take_candidate(stand_in, line);
+        }
         Ok(Reply::Text(signal::message(
             signal::ANSWER,
             &answer.to_sdp_string(),
@@ -934,6 +1015,7 @@ impl RtcSide {
                 limits,
                 now,
                 authentic: false,
+                unverified: &mut self.unverified,
             };
             drain(peer, &mut sink);
             if sink.authentic {
@@ -969,6 +1051,7 @@ impl RtcSide {
                     limits,
                     now,
                     authentic: false,
+                    unverified: &mut self.unverified,
                 },
             );
         }
@@ -1023,6 +1106,7 @@ impl RtcSide {
                 limits: &self.setup.limits,
                 now,
                 authentic: false,
+                unverified: &mut self.unverified,
             },
         );
         Some(sent)
@@ -1047,6 +1131,14 @@ impl RtcSide {
                 }
             }
         }
+        for ip in peer.candidate_ips.drain(..) {
+            if let Some(n) = self.candidate_ips.get_mut(&ip) {
+                *n -= 1;
+                if *n == 0 {
+                    self.candidate_ips.remove(&ip);
+                }
+            }
+        }
         if self.by_ufrag.get(&peer.ufrag).map(|&(s, _)| s) == Some(stand_in) {
             self.by_ufrag.remove(&peer.ufrag);
         }
@@ -1057,8 +1149,81 @@ impl RtcSide {
     }
 }
 
-/// A joiner's trickled candidate a player's host takes: a well-formed candidate line on IPv4 UDP (a `.local` name, which
-/// only the joiner's own network resolves, an IPv6 address or a TCP candidate is left out).
+/// Whether one more check may go to an unverified address of `peer`: within its rate a second and every peer's.
+fn allow_unverified(peer: &mut Peer, sink: &mut Sink<'_>) -> bool {
+    take_check(
+        &mut peer.unverified,
+        sink.unverified,
+        sink.now,
+        sink.limits.unverified_checks_per_s,
+        sink.limits.unverified_checks_per_s_all,
+    )
+}
+
+/// Counts one check in a peer's window and in every peer's (each a second long, from its first check): false when
+/// either is at its cap.
+fn take_check(
+    peer: &mut (Instant, u32),
+    all: &mut (Instant, u32),
+    now: Instant,
+    peer_cap: u32,
+    all_cap: u32,
+) -> bool {
+    let second = Duration::from_secs(1);
+    for window in [&mut *peer, &mut *all] {
+        if now.duration_since(window.0) >= second {
+            *window = (now, 0);
+        }
+    }
+    if peer.1 >= peer_cap || all.1 >= all_cap {
+        return false;
+    }
+    peer.1 += 1;
+    all.1 += 1;
+    true
+}
+
+/// Whether a player's host may send its checks to `ip`, a joiner's candidate: a public unicast address, or a private one
+/// when `lan` allows players on its network, and never one of the host's `own`. Refused: loopback, unspecified,
+/// broadcast, multicast, link-local, the documentation, benchmarking, shared (carrier NAT) and reserved ranges, and
+/// `0.0.0.0/8`.
+pub fn candidate_allowed(ip: Ipv4Addr, lan: bool, own: &[IpAddr]) -> bool {
+    let [a, b, c, _] = ip.octets();
+    let reserved = a == 0
+        || a >= 224
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || (a == 100 && (64..128).contains(&b))
+        || (a == 198 && (b == 18 || b == 19))
+        || (a == 192 && b == 0 && c == 0);
+    if reserved || own.contains(&IpAddr::V4(ip)) {
+        return false;
+    }
+    lan || !ip.is_private()
+}
+
+/// An offer without its candidate lines, and those lines (a player's host takes each as a trickled one).
+fn split_candidates(sdp: &str) -> (String, Vec<String>) {
+    let mut kept = String::with_capacity(sdp.len());
+    let mut lines = Vec::new();
+    for line in sdp.split_inclusive('\n') {
+        if let Some(c) = line.trim_end().strip_prefix("a=")
+            && c.starts_with("candidate:")
+        {
+            if lines.len() < MAX_REMOTE_CANDIDATES as usize * 4 {
+                lines.push(c.to_string());
+            }
+            continue;
+        }
+        kept.push_str(line);
+    }
+    (kept, lines)
+}
+
+/// A joiner's candidate line a player's host may take: well formed, IPv4 UDP with a port (a `.local` name, which only
+/// the joiner's own network resolves, an IPv6 address or a TCP candidate is left out).
 fn remote_candidate(line: &str) -> Option<Candidate> {
     let line = line.trim();
     let line = line.strip_prefix("a=").unwrap_or(line);
@@ -1197,6 +1362,14 @@ fn drain(peer: &mut Peer, sink: &mut Sink<'_>) {
                     peer.heard = sink.now;
                     sink.authentic = true;
                 }
+                // A check of our own to an address nothing authenticated came from yet: held to its rates.
+                if t.contents.get(..2) == Some(&[0x00, 0x01][..])
+                    && !peer.remotes.contains(&t.destination)
+                    && !allow_unverified(peer, sink)
+                {
+                    sink.counters.checks_held += 1;
+                    continue;
+                }
                 if sink.loss.drop_one() {
                     sink.counters.loss_dropped += 1;
                     continue;
@@ -1279,5 +1452,102 @@ fn event_of(peer: &mut Peer, event: Event, sink: &mut Sink<'_>) {
             peer.close(Why::Protocol)
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_host_checks_only_addresses_it_may() {
+        let own = [
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)),
+            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+        ];
+        let public = Ipv4Addr::new(93, 184, 216, 35);
+        assert!(candidate_allowed(public, false, &own));
+        for refused in [
+            Ipv4Addr::new(127, 0, 0, 1),
+            Ipv4Addr::new(127, 9, 9, 9),
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::new(0, 1, 2, 3),
+            Ipv4Addr::BROADCAST,
+            Ipv4Addr::new(224, 0, 0, 251),
+            Ipv4Addr::new(239, 255, 255, 250),
+            Ipv4Addr::new(169, 254, 169, 254),
+            Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(198, 51, 100, 1),
+            Ipv4Addr::new(203, 0, 113, 1),
+            Ipv4Addr::new(198, 18, 0, 1),
+            Ipv4Addr::new(100, 64, 0, 1),
+            Ipv4Addr::new(192, 0, 0, 8),
+            Ipv4Addr::new(240, 0, 0, 1),
+            Ipv4Addr::new(93, 184, 216, 34),
+        ] {
+            assert!(!candidate_allowed(refused, true, &own), "{refused}");
+        }
+        for private in [
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(172, 16, 0, 2),
+            Ipv4Addr::new(192, 168, 1, 2),
+        ] {
+            assert!(
+                !candidate_allowed(private, false, &own),
+                "{private} without LAN play"
+            );
+            assert!(
+                candidate_allowed(private, true, &own),
+                "{private} with LAN play"
+            );
+        }
+    }
+
+    #[test]
+    fn offers_lose_their_candidates_to_the_checks() {
+        let sdp = "v=0
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+a=candidate:1 1 udp 1 127.0.0.1 9 typ host
+a=mid:0
+";
+        let (kept, lines) = split_candidates(sdp);
+        assert_eq!(
+            kept,
+            "v=0
+m=application 9 UDP/DTLS/SCTP webrtc-datachannel
+a=mid:0
+"
+        );
+        assert_eq!(lines, ["candidate:1 1 udp 1 127.0.0.1 9 typ host"]);
+        let many = "a=candidate:1 1 udp 1 1.2.3.4 9 typ host
+"
+        .repeat(100);
+        assert_eq!(
+            split_candidates(&many).1.len(),
+            MAX_REMOTE_CANDIDATES as usize * 4
+        );
+        assert!(remote_candidate("candidate:1 1 udp 1 abcd.local 9 typ host").is_none());
+        assert!(
+            remote_candidate("candidate:1 1 tcp 1 1.2.3.4 9 typ host tcptype passive").is_none()
+        );
+        assert!(remote_candidate("candidate:1 1 udp 1 1.2.3.4 0 typ host").is_none());
+        assert!(remote_candidate("garbage").is_none());
+        assert!(remote_candidate("a=candidate:1 1 udp 1 1.2.3.4 9 typ host").is_some());
+    }
+
+    #[test]
+    fn checks_to_unverified_addresses_are_rated() {
+        let t0 = Instant::now();
+        let (mut a, mut b, mut all) = ((t0, 0), (t0, 0), (t0, 0));
+        let sent = (0..30)
+            .filter(|_| take_check(&mut a, &mut all, t0, 20, 25))
+            .count();
+        assert_eq!(sent, 20, "a peer's cap");
+        let sent = (0..30)
+            .filter(|_| take_check(&mut b, &mut all, t0, 20, 25))
+            .count();
+        assert_eq!(sent, 5, "every peer's cap");
+        let later = t0 + Duration::from_secs(1);
+        assert!(take_check(&mut b, &mut all, later, 20, 25), "a new second");
     }
 }

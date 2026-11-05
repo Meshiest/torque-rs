@@ -251,8 +251,12 @@ The first development version. Nothing is published yet; this is what exists.
   transport's `close_socket`, and its sends capped by its message limit (unchanged by default).
 - `torque-server`'s `p2p` feature: a player's host (`net::web::p2p::P2pHost`), a `Transport` that opens a room on a
   room service and takes joiners over WebRTC data channels with no port forwarded: W4's data channels in a host mode
-  (full ICE, so the host's own checks open its NAT; checks from any address under the per-source rate; at most 16
-  trickled IPv4 UDP candidates a joiner, no `.local` names; a server-reflexive candidate from the room's STUN server).
+  (full ICE, so the host's own checks open its NAT; checks from any address under the per-source rate; a server-reflexive
+  candidate from the room's STUN server). A joiner cannot aim the host's checks: its candidates, offered or trickled, are
+  taken only as IPv4 UDP (no `.local` names), at most 8 a joiner, with distinct addresses capped across joiners, and never
+  loopback, unspecified, broadcast, multicast, link-local, documentation, benchmarking, shared, reserved or the host's
+  own; private ones only with `--rtc-lan`. Checks to addresses nothing authenticated came from are rated per joiner and
+  in all.
   Each joiner goes by a stand-in of the IP the service saw, so per-address limits and bans hold; every signaling message
   goes through the data channels' caps, and a joiner whose channel closes is reported gone. `net::relay::RelayTransport`:
   the same caps (links in all, per address and a second; messages and wire bytes a second; oversize) for a server whose
