@@ -53,6 +53,25 @@ pub const SUN_RADIUS: f32 = 0.27;
 pub const AO_RADIUS: f32 = 1.0;
 pub const AO_SUN: f32 = 0.5;
 
+/// The largest cell of a sheet of water ([`WorldView::set_water`]).
+pub const WATER_CELL: f32 = 32.0;
+/// The most cells on a side of a sheet of water.
+pub const WATER_MAX_CELLS: usize = 64;
+
+/// A sheet of water ([`WorldView::set_water`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Water<'a> {
+    /// Its texture (a path the reader finds) and how many units one repeat of it covers.
+    pub texture: &'a str,
+    pub tile: f32,
+    /// Its tint (gamma bytes; the alpha is the surface's opacity): the renderer's light absorption under it follows it.
+    pub color: [u8; 4],
+    /// Its surface's height, and the rectangle it covers (x, y).
+    pub level: f32,
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+}
+
 /// The most triangles of one part of a static mesh the GPU culls on its own ([`WorldView::set_static_mesh`]).
 pub const MESH_CLUSTER_TRIANGLES: u32 = 512;
 /// The sampler of a static mesh's untextured surfaces.
@@ -344,6 +363,37 @@ impl WorldView {
             })
             .collect();
         self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+        self.statics_changed = true;
+    }
+
+    /// A sheet of water: the plane at height `level` over the rectangle `min`..`max` (x, y), tinted `color` (its alpha the
+    /// surface's opacity) with `texture` (a path the reader finds) repeated every `tile` units, drawn by the renderer as water
+    /// (its waves, refraction, reflection and the sun's glint). It is cut into cells of at most [`WATER_CELL`] units so the
+    /// fog and the light are interpolated over it. Replaces the water there was.
+    pub fn set_water(&mut self, assets: &dyn Assets, water: &Water<'_>) {
+        let mut set = TextureSet::new(assets);
+        let found = set.get(water.texture);
+        let local = self.intern(set.into_textures());
+        let draw = water_draw(found, water);
+        self.scene.water = vec![HdDraw::from_fixed(&draw, material::KIND_PLANE, &local)];
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+        self.statics_changed = true;
+    }
+
+    /// No ground and no water: the floor, the terrain and the water taken away.
+    pub fn clear_ground(&mut self) {
+        self.scene.planes.clear();
+        self.scene.water.clear();
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+        self.statics_changed = true;
+    }
+
+    /// Forgets the day's light ([`WorldView::set_day`]): the sky made for its sun and its clouds' light. The view is lit by
+    /// the next [`Daylight`] it is given (a world without a day after one with it).
+    pub fn clear_day(&mut self) {
+        self.scene.atmosphere_sun = None;
+        self.scene.clouds = None;
+        self.day_sun = None;
         self.statics_changed = true;
     }
 
@@ -739,6 +789,55 @@ fn floor_draw(texture: Option<usize>, color: [u8; 3], half: f32, tile: f32) -> D
         cull: Cull::None,
         depth_test: true,
         depth_write: true,
+        fog: true,
+        lights: Vec::new(),
+        vertex_key: None,
+    }
+}
+
+/// A sheet of water's draw: its rectangle cut into cells of at most [`WATER_CELL`] units, blended, both sides drawn, no depth
+/// written (the renderer draws a blended plane as water).
+fn water_draw(texture: Option<usize>, w: &Water<'_>) -> Draw {
+    let cells = |len: f32| ((len.abs() / WATER_CELL).ceil() as usize).clamp(1, WATER_MAX_CELLS);
+    let size = [w.max[0] - w.min[0], w.max[1] - w.min[1]];
+    let (nx, ny) = (cells(size[0]), cells(size[1]));
+    let tile = w.tile.max(1e-3);
+    let point = |i: usize, j: usize| {
+        let x = w.min[0] + size[0] * i as f32 / nx as f32;
+        let y = w.min[1] + size[1] * j as f32 / ny as f32;
+        Vertex {
+            position: [x, y, w.level],
+            normal: [0.0, 0.0, 1.0],
+            color: w.color,
+            uv: [x / tile, y / tile],
+        }
+    };
+    let mut vertices = Vec::with_capacity(nx * ny * 6);
+    for j in 0..ny {
+        for i in 0..nx {
+            let q = [
+                point(i, j),
+                point(i + 1, j),
+                point(i + 1, j + 1),
+                point(i, j + 1),
+            ];
+            vertices.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+        }
+    }
+    Draw {
+        label: "water".to_string(),
+        vertices,
+        lighting: true,
+        tex_env: if texture.is_some() {
+            TexEnv::Modulate
+        } else {
+            TexEnv::None
+        },
+        texture: texture.map(|i| (i, MESH_SAMPLER)),
+        blend: Blend::Alpha,
+        cull: Cull::None,
+        depth_test: true,
+        depth_write: false,
         fog: true,
         lights: Vec::new(),
         vertex_key: None,

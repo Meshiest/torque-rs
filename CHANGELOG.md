@@ -244,6 +244,17 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- Pictures of the world alone: `Seat::world_picture` draws a game's world without its GUI (no HUD, hints or menus) over the
+  whole picture, and the character example's `Step::WorldShot` does the same. `WorldView::set_water` draws a sheet of
+  water (`Water`: its height, rectangle, texture and tint) as the enhanced renderer's water; `WorldView::clear_ground` and
+  `WorldView::clear_day` take a map's ground and its day's light away again.
+- The level demo draws a map's `TerrainBlock` and `WaterBlock` (read from the map the server runs, as the server reads
+  them): the terrain also the own figure's ground in the prediction (`CubeClient::set_terrain`, changed as each map
+  starts) and the floor of the camera behind it. A map's `TimeOfDay` under its `ScatterSky` lights its world, with sunlit
+  clouds.
+- The examples' `showcase` modules (the vehicle demo, the arena, the level demo): the buggy taken through the race
+  track's tightest turn, its dust and tracks behind it; a shot in the arena from the side, frame by frame from its flash
+  (the muzzle's flare, the bolt, the hit); the office's desks; each the world alone at the Ultra quality.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

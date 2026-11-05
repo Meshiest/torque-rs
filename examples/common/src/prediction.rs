@@ -9,7 +9,8 @@
 //!   files, each one's hulls within a work budget) at its pose and scale (none for a hostile one), with an interior's type
 //!   bits, read as the server reads them ([`torque::game::scene::interior::read_interior`]).
 //! - **A terrain** ([`CubeClient::with_terrain`]): a map's `TerrainBlock` read from the same file the server reads, offered as
-//!   the index's static object ([`TerrainSet`]), so the own figure stands on it and the vehicles the client runs drive on it.
+//!   the index's static object ([`TerrainSet`]), so the own figure stands on it and the vehicles the client runs drive on it. A
+//!   game of several maps changes it as it starts each map ([`CubeClient::set_terrain`]).
 //! - **Smooth aim** ([`PredictGame::smooth_aim`]): the view turns with the mouse within the frame, ahead of the last tick by
 //!   what the next move will make of the waiting turn, instead of a tick or two behind it. The moves are unchanged.
 //!
@@ -62,6 +63,8 @@ const MAX_INTERIOR_PATH: usize = 1_024;
 pub struct CubeClient {
     prediction: Rc<Prediction<TgeWorld>>,
     files: MemFiles,
+    /// The map's terrain, shared with the prediction's static index.
+    terrain: Rc<RefCell<TerrainSet>>,
 }
 
 impl std::fmt::Debug for CubeClient {
@@ -83,18 +86,28 @@ impl CubeClient {
         terrain: Option<&Terrain>,
         player: Option<Rc<dyn PlayerKind>>,
     ) -> CubeClient {
-        let terrain = terrain.map_or_else(TerrainSet::default, |t| {
-            TerrainSet::new(std::slice::from_ref(t))
-        });
+        let terrain = Rc::new(RefCell::new(terrain_set(terrain)));
         CubeClient {
             prediction: Rc::new(Prediction(Rc::new(CubePrediction {
                 files: files.clone(),
-                terrain,
+                terrain: Rc::clone(&terrain),
                 player,
             }))),
             files,
+            terrain,
         }
     }
+
+    /// The terrain the own figure meets from now on (none: the map has none).
+    pub fn set_terrain(&self, terrain: Option<&Terrain>) {
+        *self.terrain.borrow_mut() = terrain_set(terrain);
+    }
+}
+
+fn terrain_set(terrain: Option<&Terrain>) -> TerrainSet {
+    terrain.map_or_else(TerrainSet::default, |t| {
+        TerrainSet::new(std::slice::from_ref(t))
+    })
 }
 
 impl ClientGame for CubeClient {
@@ -115,7 +128,7 @@ impl ClientGame for CubeClient {
 #[derive(Debug)]
 pub struct CubePrediction {
     files: MemFiles,
-    terrain: TerrainSet,
+    terrain: Rc<RefCell<TerrainSet>>,
     player: Option<Rc<dyn PlayerKind>>,
 }
 
@@ -129,7 +142,7 @@ impl PredictGame<TgeWorld> for CubePrediction {
             reader,
             shapes: ShapeCache::default(),
             interiors: Rc::default(),
-            terrain: self.terrain.clone(),
+            terrain: Rc::clone(&self.terrain),
         }))
     }
 
@@ -156,7 +169,7 @@ pub struct CubeStatics {
     shapes: ShapeCache,
     /// The interiors' files read (by path; `None` for one that did not read).
     interiors: Rc<RefCell<HashMap<Vec<u8>, Option<KeptInterior>>>>,
-    terrain: TerrainSet,
+    terrain: Rc<RefCell<TerrainSet>>,
 }
 
 impl CubeStatics {
@@ -221,7 +234,8 @@ impl StaticIndex<TgeWorld> for CubeStatics {
         budget: u64,
     ) -> Option<Box<dyn StaticSet>> {
         let _ = (world, reader, near, work, budget);
-        (!self.terrain.is_empty()).then(|| Box::new(self.terrain.clone()) as Box<dyn StaticSet>)
+        let terrain = self.terrain.borrow();
+        (!terrain.is_empty()).then(|| Box::new(terrain.clone()) as Box<dyn StaticSet>)
     }
 
     /// A StaticShape ghost: its shape's collision hulls at its pose and scale; an InteriorInstance ghost: its interior's hulls.

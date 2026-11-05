@@ -14,9 +14,14 @@
 //! `V`), kept in front of the cubes and the interiors' walls between. `V` eases the camera from one to the other
 //! ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden only once the camera has arrived at
 //! its eyes.
+//!
+//! **The ground.** A map with a terrain or water ([`MapGround`]) has them drawn as the map starts, the terrain also
+//! the own figure's ground in the prediction ([`CubeClient::set_terrain`]) and the camera kept above it; its day (a
+//! `TimeOfDay` under a `ScatterSky`) lights the view and the sky's clouds are sunlit cumulus ([`WorldLights`]).
 
 use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
 use torque::app::camera_blend::CameraBlend;
 use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
@@ -25,10 +30,12 @@ use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
+use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::{GameFiles, MapEntry};
+use crate::ground::MapGround;
 use crate::scene::WorldScene;
 use crate::server::{SERVER_ADDR, WorldServer};
 use torque::app::ghosts::OwnView;
@@ -58,8 +65,13 @@ pub struct LevelDemo {
     /// The camera's ease between first and third person, and the mode it last eased to (first person).
     blend: CameraBlend,
     camera_mode: Option<bool>,
-    /// The map's spot lights (SpotLight objects), drawn where their ghosts are.
+    /// The map's spot lights (SpotLight objects), drawn where their ghosts are, and its day.
     lights: WorldLights,
+    /// The prediction's answers (the terrain the own figure meets).
+    cube: Rc<CubeClient>,
+    /// The map's terrain and water, and whether the view has yet to be given them.
+    pub ground: MapGround,
+    ground_changed: bool,
 }
 
 impl Deref for LevelDemo {
@@ -81,10 +93,11 @@ impl LevelDemo {
     pub fn new(mut files: GameFiles) -> Result<LevelDemo, String> {
         crate::levels::add_levels(&mut files)?;
         let maps = crate::files::maps(&files);
+        let cube = Rc::new(CubeClient::new(files.mem_files()));
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
             game_classes: true,
-            client_game: Some(std::rc::Rc::new(CubeClient::new(files.mem_files()))),
+            client_game: Some(Rc::clone(&cube) as _),
             net: ClientNet::Memory {
                 client: CLIENT_ADDR,
                 server: SERVER_ADDR,
@@ -109,18 +122,29 @@ impl LevelDemo {
             blend: CameraBlend::default(),
             lights: WorldLights::default(),
             camera_mode: None,
+            cube,
+            ground: MapGround::default(),
+            ground_changed: false,
         })
     }
 
-    /// A world view on `gpu`.
+    /// A world view on `gpu`, the sky's clouds sunlit cumulus (a map with a day has them), the ground of the map being played.
     pub fn view(&self, gpu: &Gpu) -> WorldView {
-        WorldView::new(gpu)
+        let mut view = WorldView::new(gpu);
+        view.set_cloud_look(Some(CloudLook::SUNLIT_CUMULUS));
+        self.ground.apply(&mut view, &self.files.kit);
+        view
     }
 
     /// Starts map `index`: its server, and the client joins it.
     pub fn start_map(&mut self, index: usize) -> Result<(), String> {
         let map = self.maps.get(index).ok_or("no such map")?.clone();
         self.leave();
+        let text =
+            String::from_utf8_lossy(self.files.file(&map.path).unwrap_or_default()).into_owned();
+        self.ground = MapGround::read(&self.files, &text)?;
+        self.cube.set_terrain(self.ground.terrain.as_ref());
+        self.ground_changed = true;
         let server = WorldServer::start(&self.files, &map.path)?;
         self.client.start_hosting(server);
         self.playing = Some(index);
@@ -135,6 +159,12 @@ impl LevelDemo {
         self.playing = None;
         self.blend.reset();
         self.camera_mode = None;
+        self.lights.clear();
+        if !self.ground.is_empty() {
+            self.ground = MapGround::default();
+            self.cube.set_terrain(None);
+            self.ground_changed = true;
+        }
     }
 
     /// `ms` of the clock (see the module docs).
@@ -207,7 +237,10 @@ impl LevelDemo {
         let pitch = (CAMERA_PITCH + f.pitch * 0.6).clamp(-0.6, 1.2);
         let (s, c) = pitch.sin_cos();
         let back = [-f.yaw.sin() * c, -f.yaw.cos() * c, s];
-        let at = self.kept_clear(target, back, CAMERA_DISTANCE, 0.4);
+        let mut at = self.kept_clear(target, back, CAMERA_DISTANCE, 0.4);
+        if let Some(ground) = self.ground.height(at[0], at[1]) {
+            at[2] = at[2].max(ground + CAMERA_CLEARANCE * 2.0);
+        }
         look_at(at, target)
     }
 
@@ -317,6 +350,7 @@ impl LevelDemo {
                         &conn.predict.ghost_players,
                         dt,
                     );
+                    self.lights.update(&conn.world.records, dt);
                 }
                 None => self.scene.clear(),
             }
@@ -325,6 +359,12 @@ impl LevelDemo {
 
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
     pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
+        if std::mem::take(&mut self.ground_changed) {
+            self.ground.apply(view, &self.files.kit);
+            // The last map's day is forgotten: the next is lit by its own (or by its Sky's daylight alone).
+            view.clear_day();
+            view.set_daylight(&self.daylight);
+        }
         if let Some(d) = self.sky_daylight()
             && d != self.daylight
         {
@@ -342,14 +382,15 @@ impl LevelDemo {
             }
         };
         view.set_objects(objects);
-        let spots = {
+        {
             let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
-                Some(conn) => self.lights.spots(&self.files.kit, &conn.world.records),
-                None => Vec::new(),
+                Some(conn) => self
+                    .lights
+                    .apply(view, &self.files.kit, &conn.world.records),
+                None => view.set_spots(Vec::new()),
             }
-        };
-        view.set_spots(spots);
+        }
         // The client's camera is the example's own: the GameTSCtrl draws the world whatever the connection's camera is.
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
