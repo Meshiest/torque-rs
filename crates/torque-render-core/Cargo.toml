@@ -14,5 +14,9 @@ torque-gui = { path = "../torque-gui" }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "metal", "wgsl"] }
 pollster = "0.4"
 
+# In a browser: WebGPU, its handles Send and Sync as the native ones are (the page has one thread: no wasm threads are used).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu", "wgsl", "fragile-send-sync-non-atomic-wasm"] }
+
 [lints]
 workspace = true

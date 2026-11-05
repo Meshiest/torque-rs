@@ -90,6 +90,26 @@ fn window_gpu_with<T>(
 where
     T: Into<wgpu::SurfaceTarget<'static>>,
 {
+    pollster::block_on(window_gpu_async(target, backends))
+}
+
+/// A browser canvas's device: [`window_gpu`] on WebGPU, without blocking (the browser answers on its own event loop).
+pub async fn web_gpu<T>(
+    target: T,
+) -> Result<(Gpu, wgpu::Surface<'static>, wgpu::Adapter), RenderError>
+where
+    T: Into<wgpu::SurfaceTarget<'static>>,
+{
+    window_gpu_async(target, wgpu::Backends::BROWSER_WEBGPU).await
+}
+
+async fn window_gpu_async<T>(
+    target: T,
+    backends: wgpu::Backends,
+) -> Result<(Gpu, wgpu::Surface<'static>, wgpu::Adapter), RenderError>
+where
+    T: Into<wgpu::SurfaceTarget<'static>>,
+{
     let target = target.into();
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends,
@@ -99,13 +119,15 @@ where
     let surface = instance
         .create_surface(target)
         .map_err(|e| RenderError::NoAdapter(format!("the window's surface: {e}")))?;
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        force_fallback_adapter: false,
-        compatible_surface: Some(&surface),
-        apply_limit_buckets: false,
-    }))
-    .map_err(|e| RenderError::NoAdapter(e.to_string()))?;
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            compatible_surface: Some(&surface),
+            apply_limit_buckets: false,
+        })
+        .await
+        .map_err(|e| RenderError::NoAdapter(e.to_string()))?;
     if !surface
         .get_capabilities(&adapter)
         .formats
@@ -115,7 +137,7 @@ where
             "the window's surface does not offer {SURFACE_FORMAT:?}"
         )));
     }
-    let gpu = Gpu::on_adapter(&adapter)?;
+    let gpu = Gpu::on_adapter_async(&adapter).await?;
     Ok((gpu, surface, adapter))
 }
 

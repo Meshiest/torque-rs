@@ -15,7 +15,7 @@
 //! keeps it, `platformWin32/winWindow.cpp` (Copyright (c) 2012 GarageGames, LLC). The code is this crate's own.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -254,8 +254,30 @@ struct WindowApp<G: WindowGame> {
 
 /// Runs `game`'s window on `event_loop` until it is closed or a script quits; gives the game back for its end.
 pub fn run<G: WindowGame>(game: G, event_loop: EventLoop<()>) -> Result<G, (G, String)> {
+    let mut app = window_app(game, &event_loop);
+    let ran = event_loop.run_app(&mut app);
+    let error = match ran {
+        Err(e) => Some(format!("the event loop: {e}")),
+        Ok(()) => app.error,
+    };
+    match error {
+        Some(e) => Err((app.game, e)),
+        None => Ok(app.game),
+    }
+}
+
+/// [`run`] in a browser: the page's event loop drives `game`'s canvas from now on, and this returns at once (the game is
+/// never given back; an error ends the loop and is logged).
+#[cfg(target_arch = "wasm32")]
+pub fn spawn<G: WindowGame + 'static>(game: G, event_loop: EventLoop<()>) {
+    use winit::platform::web::EventLoopExtWebSys as _;
+    let app = window_app(game, &event_loop);
+    event_loop.spawn_app(app);
+}
+
+fn window_app<G: WindowGame>(game: G, event_loop: &EventLoop<()>) -> WindowApp<G> {
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = WindowApp {
+    WindowApp {
         game,
         window: None,
         last: Instant::now(),
@@ -273,15 +295,6 @@ pub fn run<G: WindowGame>(game: G, event_loop: EventLoop<()>) -> Result<G, (G, S
         drew_world: false,
         display_mhz: None,
         monitor: None,
-    };
-    let ran = event_loop.run_app(&mut app);
-    let error = match ran {
-        Err(e) => Some(format!("the event loop: {e}")),
-        Ok(()) => app.error,
-    };
-    match error {
-        Some(e) => Err((app.game, e)),
-        None => Ok(app.game),
     }
 }
 impl<G: WindowGame> WindowApp<G> {
@@ -379,6 +392,12 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                 size.0.max(1) as u32,
                 size.1.max(1) as u32,
             ));
+        // In a browser the window is a canvas added to the page's body.
+        #[cfg(target_arch = "wasm32")]
+        let attrs = {
+            use winit::platform::web::WindowAttributesExtWebSys as _;
+            attrs.with_append(true)
+        };
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -538,6 +557,15 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
         let began = Instant::now();
         self.pass(event_loop);
         self.game.pass_work(began.elapsed());
+    }
+
+    /// In a browser nobody is given the error back ([`spawn`]): it is raised as a panic, which the page's console shows.
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::panic)]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(e) = self.error.take() {
+            panic!("{e}");
+        }
     }
 }
 

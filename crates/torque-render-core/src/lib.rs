@@ -198,16 +198,24 @@ impl Gpu {
     /// own texture format features when it has them (sample counts beyond WebGPU's 4); single-sampled draws use none
     /// of them.
     pub fn on_adapter(adapter: &wgpu::Adapter) -> Result<Gpu, RenderError> {
+        pollster::block_on(Gpu::on_adapter_async(adapter))
+    }
+
+    /// [`Gpu::on_adapter`] without blocking (a browser answers the device's request on its own event loop). The features and
+    /// limits asked for are only ever the ones the adapter offers.
+    pub async fn on_adapter_async(adapter: &wgpu::Adapter) -> Result<Gpu, RenderError> {
         let info = adapter.get_info();
         let wanted = hd_wanted() | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("render"),
-            required_features: adapter.features() & wanted,
-            required_limits: adapter.limits(),
-            memory_hints: MEMORY_HINTS,
-            ..wgpu::DeviceDescriptor::default()
-        }))
-        .map_err(|e| RenderError::NoDevice(e.to_string()))?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("render"),
+                required_features: adapter.features() & wanted,
+                required_limits: adapter.limits(),
+                memory_hints: MEMORY_HINTS,
+                ..wgpu::DeviceDescriptor::default()
+            })
+            .await
+            .map_err(|e| RenderError::NoDevice(e.to_string()))?;
         let sample_counts = supported_sample_counts(adapter, device.features());
         let downlevel = adapter.get_downlevel_capabilities().flags;
         Ok(Gpu {

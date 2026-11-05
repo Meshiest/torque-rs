@@ -34,13 +34,23 @@ impl WindowSurface {
     /// ahead of it), its client area `size`, frames shown at the display's refresh.
     pub fn new(window: &Arc<Window>, size: (u32, u32)) -> Result<WindowSurface, String> {
         let (gpu, surface, _adapter) = window_gpu(window.clone()).map_err(|e| e.to_string())?;
+        Ok(WindowSurface::of(window, gpu, surface, size))
+    }
+
+    /// The surface of `window` on `gpu`, configured for `size`.
+    fn of(
+        window: &Arc<Window>,
+        gpu: Gpu,
+        surface: wgpu::Surface<'static>,
+        size: (u32, u32),
+    ) -> WindowSurface {
         configure_surface_vsync(&gpu, &surface, size.0, size.1, true);
-        Ok(WindowSurface {
+        WindowSurface {
             _window: window.clone(),
             gpu,
             surface,
             size,
-        })
+        }
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -75,6 +85,76 @@ struct AppWindow<G> {
     game: G,
     surface: Option<WindowSurface>,
     view: Option<WorldView>,
+    /// In a browser: the canvas's device, asked for when the window is made and answered later ([`WebDevice`]).
+    #[cfg(target_arch = "wasm32")]
+    web: Option<WebDevice>,
+}
+
+/// A canvas's device on its way: the browser answers WebGPU's requests on its own event loop, so the window keeps running (and
+/// draws nothing) until it is here.
+#[cfg(target_arch = "wasm32")]
+struct WebDevice {
+    window: Arc<Window>,
+    size: (u32, u32),
+    answer: WebAnswer,
+}
+
+/// The browser's answer to a canvas's device request, once it has come.
+#[cfg(target_arch = "wasm32")]
+type WebAnswer =
+    std::rc::Rc<std::cell::RefCell<Option<Result<(Gpu, wgpu::Surface<'static>), String>>>>;
+
+#[cfg(target_arch = "wasm32")]
+impl WebDevice {
+    fn ask(window: &Arc<Window>, size: (u32, u32)) -> WebDevice {
+        let answer: WebAnswer = std::rc::Rc::default();
+        let slot = std::rc::Rc::clone(&answer);
+        let target = window.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let made = torque_render_core::window::web_gpu(target)
+                .await
+                .map(|(gpu, surface, _adapter)| (gpu, surface))
+                .map_err(|e| e.to_string());
+            *slot.borrow_mut() = Some(made);
+        });
+        WebDevice {
+            window: window.clone(),
+            size,
+            answer,
+        }
+    }
+}
+
+impl<G: App> AppWindow<G> {
+    /// The window's surface and the game's view on its device.
+    fn made(&mut self, surface: WindowSurface) {
+        let size = surface.size();
+        println!(
+            "{}: {}x{} on {}",
+            self.game.log_name(),
+            size.0,
+            size.1,
+            surface.gpu.adapter()
+        );
+        self.view = Some(self.game.view(&surface.gpu));
+        self.surface = Some(surface);
+    }
+
+    /// In a browser: the canvas's device once it is here (Err: the browser has none to give).
+    #[cfg(target_arch = "wasm32")]
+    fn web_device(&mut self) -> Result<(), String> {
+        let Some(web) = self.web.as_ref() else {
+            return Ok(());
+        };
+        let Some(answer) = web.answer.borrow_mut().take() else {
+            return Ok(());
+        };
+        let web = self.web.take().ok_or("no device asked for")?;
+        let (gpu, surface) = answer.map_err(|e| format!("WebGPU: {e}"))?;
+        let surface = WindowSurface::of(&web.window, gpu, surface, web.size);
+        self.made(surface);
+        Ok(())
+    }
 }
 
 impl<G: App> WindowGame for AppWindow<G> {
@@ -98,20 +178,24 @@ impl<G: App> WindowGame for AppWindow<G> {
     }
 
     fn window_made(&mut self, window: &Arc<Window>, size: (u32, u32)) -> Result<(), String> {
-        let surface = WindowSurface::new(window, size)?;
-        println!(
-            "{}: {}x{} on {}",
-            self.game.log_name(),
-            size.0,
-            size.1,
-            surface.gpu.adapter()
-        );
-        self.view = Some(self.game.view(&surface.gpu));
-        self.surface = Some(surface);
-        Ok(())
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.web = Some(WebDevice::ask(window, size));
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let surface = WindowSurface::new(window, size)?;
+            self.made(surface);
+            Ok(())
+        }
     }
 
     fn resized(&mut self, size: (u32, u32)) {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(web) = self.web.as_mut() {
+            web.size = size;
+        }
         if let Some(s) = self.surface.as_mut() {
             s.resize(size);
         }
@@ -122,6 +206,8 @@ impl<G: App> WindowGame for AppWindow<G> {
     }
 
     fn draw(&mut self) -> Result<Option<bool>, String> {
+        #[cfg(target_arch = "wasm32")]
+        self.web_device()?;
         let (Some(surface), Some(view)) = (self.surface.as_mut(), self.view.as_mut()) else {
             return Ok(None);
         };
@@ -147,13 +233,22 @@ impl<G: App> WindowGame for AppWindow<G> {
     }
 }
 
-/// Opens the window and runs `game` until it is closed or quits.
-pub fn run<G: App>(game: G) -> Result<(), String> {
+/// Opens the window and runs `game` until it is closed or quits. In a browser the window is a canvas on the page and this
+/// returns at once: the page's event loop runs the game from then on.
+pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
     let w = AppWindow {
         game,
         surface: None,
         view: None,
+        #[cfg(target_arch = "wasm32")]
+        web: None,
     };
+    #[cfg(target_arch = "wasm32")]
+    {
+        driver::spawn(w, event_loop);
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     driver::run(w, event_loop).map(|_| ()).map_err(|(_, e)| e)
 }
