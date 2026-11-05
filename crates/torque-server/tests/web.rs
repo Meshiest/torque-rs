@@ -50,15 +50,18 @@ fn site_with(
     files: Option<WebFiles>,
     access: Access,
 ) -> (WebTransport, SocketAddr) {
-    let mut t = WebTransport::new(
-        policy(),
-        WebSetup {
-            files,
-            tls,
-            access,
-            limits,
-        },
-    );
+    #[allow(
+        clippy::needless_update,
+        reason = "the setup has more fields with the webrtc feature"
+    )]
+    let setup = WebSetup {
+        files,
+        tls,
+        access,
+        limits,
+        ..WebSetup::default()
+    };
+    let mut t = WebTransport::new(policy(), setup);
     t.bind(LOOPBACK, 0).unwrap();
     let addr = t.local_addr().unwrap();
     (t, addr)

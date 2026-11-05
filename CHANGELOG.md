@@ -191,6 +191,18 @@ The first development version. Nothing is published yet; this is what exists.
   otherwise). Game sockets go by stand-in addresses in `240.0.0.0/4`, one fixed IP per peer address (a peer that comes
   back has the same one, so the host's limits and bans hold), so they never share an address with a UDP peer; a socket's
   place under the per-address cap is reserved when its upgrade is answered.
+- `torque-server`'s `webrtc` feature: WebRTC data channels for the web transport's browsers (`net::web::rtc`, str0m with
+  no I/O of its own, driven by the transport's passes). A game socket carries the signaling as text messages (the server's
+  hello, an SDP offer and answer); the channel (`ordered: false, maxRetransmits: 0`) then carries the socket's datagrams
+  both ways under the socket's stand-in address, so the host's limits and bans hold for both, and the socket carries them
+  again when ICE fails or the channel closes. One UDP socket of its own (the game's datagrams share first bytes with STUN
+  and DTLS), ICE-lite, candidates from the bind address and any public addresses named. Every cap counts datagrams as they
+  come off the wire: datagrams per pass in all, per peer and for the peers still connecting, outputs per peer per pass,
+  datagrams and bytes a second per peer, datagrams before the channel opens and a connect deadline (bounding the DTLS
+  handshake), binding requests per source address from addresses no peer answered (anything else from them is dropped
+  unread), messages no larger than a datagram and no more a second than UDP's per-connection cap, one channel a peer, no
+  text or media; peers capped in all, per address and per second, offers per socket. A browser that breaks a cap loses
+  its game socket too. `cargo test -p torque-server --features webrtc --test rtc`.
 - `torque-client`'s `web-socket` feature: a client's datagrams over WebSocket (`net::web_socket::WebSocketDatagrams`: the
   page's `WebSocket` in a browser, a plain `ws` connection natively). `torque::app`'s `web` feature: a server on
   `Listen::Web` (the web alone, or UDP beside it), whose dedicated loop services the transport between ticks, and

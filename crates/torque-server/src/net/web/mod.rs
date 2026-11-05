@@ -37,8 +37,14 @@
 //! [`WebLimits::bytes_per_pass`] bytes and [`WebLimits::messages_per_pass`] messages of each socket and writes at most a
 //! few MiB to each connection, so a pass's time is bounded whatever the peers send. IPv6 peers are refused, as by the
 //! bind policy. A game socket that closes is reported to the host ([`Transport::take_gone`]), which drops its connection.
+//!
+//! **Data channels** (the `webrtc` feature, [`rtc`]). With [`WebSetup::rtc`] a game socket also carries the signaling of a
+//! WebRTC data channel (text messages; binary ones stay datagrams), and once the channel is open the socket's datagrams go
+//! on it both ways, under the same stand-in address.
 
 pub mod http;
+#[cfg(feature = "webrtc")]
+pub mod rtc;
 pub mod stand_in;
 pub mod tls;
 
@@ -148,6 +154,9 @@ pub struct WebSetup {
     pub tls: Option<Tls>,
     pub access: Access,
     pub limits: WebLimits,
+    /// WebRTC data channels beside the game sockets (none: the sockets alone).
+    #[cfg(feature = "webrtc")]
+    pub rtc: Option<rtc::RtcSetup>,
 }
 
 /// What a web transport has done, for tests and the console.
@@ -194,11 +203,17 @@ pub struct WebTransport {
     last_pump: Option<Instant>,
     /// The stand-ins of game sockets closed since the host last asked.
     gone: Vec<SocketAddr>,
+    #[cfg(feature = "webrtc")]
+    rtc: Option<rtc::RtcSide>,
 }
 
 impl WebTransport {
     pub fn new(policy: BindPolicy, setup: WebSetup) -> WebTransport {
+        #[cfg(feature = "webrtc")]
+        let rtc = setup.rtc.clone().map(|r| rtc::RtcSide::new(policy, r));
         WebTransport {
+            #[cfg(feature = "webrtc")]
+            rtc,
             policy,
             setup,
             listener: None,
@@ -251,6 +266,76 @@ impl WebTransport {
         self.setup.tls.is_some()
     }
 
+    /// The data channels' UDP address (none: no data channels, or not bound).
+    #[cfg(feature = "webrtc")]
+    pub fn rtc_addr(&self) -> Option<SocketAddr> {
+        self.rtc.as_ref().and_then(|r| r.local_addr())
+    }
+
+    /// The addresses the data channels give browsers as candidates.
+    #[cfg(feature = "webrtc")]
+    pub fn rtc_candidates(&self) -> Vec<SocketAddr> {
+        self.rtc
+            .as_ref()
+            .map(|r| r.advertised().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// What the data channels have done.
+    #[cfg(feature = "webrtc")]
+    pub fn rtc_counters(&self) -> rtc::RtcCounters {
+        self.rtc.as_ref().map(|r| r.counters()).unwrap_or_default()
+    }
+
+    /// The peers open (each game socket's stand-in, and its traffic).
+    #[cfg(feature = "webrtc")]
+    pub fn rtc_peers(&self) -> Vec<(SocketAddr, rtc::PeerStats)> {
+        self.rtc.as_ref().map(|r| r.stats()).unwrap_or_default()
+    }
+
+    /// Whether the game socket of `addr` has its data channel open (its datagrams go there).
+    #[cfg(feature = "webrtc")]
+    pub fn rtc_open(&self, addr: SocketAddr) -> bool {
+        self.rtc.as_ref().is_some_and(|r| r.is_open(addr))
+    }
+
+    /// The data channels' pass: their socket read and their peers stepped, then the game sockets of the peers it closed
+    /// told (a browser that broke a cap loses its game socket too).
+    #[cfg(feature = "webrtc")]
+    fn rtc_pass(&mut self, now: Instant) {
+        let Some(side) = self.rtc.as_mut() else {
+            return;
+        };
+        side.pump(now, &mut self.inbox, self.setup.limits.queue);
+        let notices = side.take_notices();
+        if notices.is_empty() {
+            return;
+        }
+        let (mut pass, conns) = self.pass_parts(now);
+        for (stand_in, why) in notices {
+            let Some(i) = conns
+                .iter()
+                .position(|c| c.stand_in == Some(stand_in) && c.is_socket())
+            else {
+                continue;
+            };
+            let Some(conn) = conns.get_mut(i) else {
+                continue;
+            };
+            match why {
+                rtc::Why::Rate => conn.shut(conn::Closed::Rate, &mut pass),
+                rtc::Why::Oversize => conn.shut(conn::Closed::Oversize, &mut pass),
+                rtc::Why::Protocol => conn.shut(conn::Closed::Protocol, &mut pass),
+                _ => {
+                    conn.send_text(rtc::signal::CLOSED, &mut pass);
+                }
+            }
+            if conn.is_gone() {
+                conns.swap_remove(i);
+            }
+        }
+    }
+
     fn pass_parts(&mut self, now: Instant) -> (Pass<'_>, &mut Vec<Conn>) {
         (
             Pass {
@@ -264,6 +349,8 @@ impl WebTransport {
                 tls: self.setup.tls.is_some(),
                 handshakes: self.setup.limits.handshakes_per_pass,
                 gone: &mut self.gone,
+                #[cfg(feature = "webrtc")]
+                rtc: self.rtc.as_mut(),
             },
             &mut self.conns,
         )
@@ -274,6 +361,8 @@ impl WebTransport {
         let now = Instant::now();
         self.last_pump = Some(now);
         self.accept(now);
+        #[cfg(feature = "webrtc")]
+        self.rtc_pass(now);
         let (mut pass, conns) = self.pass_parts(now);
         conns.retain_mut(|c| c.advance(&mut pass));
     }
@@ -359,6 +448,10 @@ impl WebTransport {
         }
         self.stand_ins.clear();
         self.inbox.clear();
+        #[cfg(feature = "webrtc")]
+        if let Some(side) = self.rtc.as_mut() {
+            side.close();
+        }
     }
 }
 
@@ -374,6 +467,10 @@ impl Transport for WebTransport {
         listener
             .set_nonblocking(true)
             .map_err(|e| BindError::Os(e.kind()))?;
+        #[cfg(feature = "webrtc")]
+        if let Some(side) = self.rtc.as_mut() {
+            side.bind(ip)?;
+        }
         self.listener = Some(listener);
         Ok(())
     }
@@ -401,6 +498,12 @@ impl Transport for WebTransport {
             return false;
         }
         let now = Instant::now();
+        #[cfg(feature = "webrtc")]
+        if let Some(side) = self.rtc.as_mut()
+            && let Some(sent) = side.send(to, data, now, &mut self.inbox, self.setup.limits.queue)
+        {
+            return sent;
+        }
         let (mut pass, conns) = self.pass_parts(now);
         let Some(conn) = conns
             .iter_mut()

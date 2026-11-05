@@ -40,10 +40,17 @@ tungstenite = { version = "0.30", default-features = false, optional = true }
 httparse = { version = "1.10", optional = true }
 sha1 = { version = "0.11", optional = true }
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+# WebRTC data channels beside the web transport (the `webrtc` feature): ICE, DTLS and SCTP with no I/O of their own, driven
+# by the server's passes, with the aws-lc crypto backend (constant-time; its certificate maker needs it anyway).
+str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"], optional = true }
+# The data channels' ICE credentials, from the system's random source (the TLS provider's).
+ring = { version = "0.17", default-features = false, optional = true }
 
 [features]
 # The web transport: HTTP and WebSocket on one port, and UDP beside it (`net::web`).
 web = ["dep:tungstenite", "dep:httparse", "dep:sha1", "dep:rustls"]
+# WebRTC data channels for the web transport's browsers, signaled over their game sockets (`net::web::rtc`).
+webrtc = ["web", "dep:str0m", "dep:ring"]
 
 [dev-dependencies]
 # The web transport's TLS tests: a certificate made for the test.
@@ -63,6 +70,10 @@ torque-interior-builder = { path = "../torque-interior-builder" }
 [[test]]
 name = "web"
 required-features = ["web"]
+
+[[test]]
+name = "rtc"
+required-features = ["webrtc"]
 
 [lints]
 workspace = true

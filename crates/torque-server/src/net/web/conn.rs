@@ -131,6 +131,69 @@ pub(crate) struct Pass<'a> {
     pub handshakes: usize,
     /// The stand-ins of the game sockets closed since the host last asked ([`super::WebTransport`]'s `take_gone`).
     pub gone: &'a mut Vec<SocketAddr>,
+    /// The data channels, when the transport takes them.
+    #[cfg(feature = "webrtc")]
+    pub rtc: Option<&'a mut super::rtc::RtcSide>,
+}
+
+/// What a game socket's signaling asked for.
+#[cfg_attr(not(feature = "webrtc"), allow(dead_code))]
+enum Signaled {
+    Nothing,
+    Reply(String),
+    Refused,
+}
+
+impl Pass<'_> {
+    /// The largest message a game socket may send: a datagram, or a signaling message when data channels are on.
+    fn max_socket_message(&self) -> usize {
+        #[cfg(feature = "webrtc")]
+        if let Some(rtc) = self.rtc.as_deref() {
+            return self.limits.max_message.max(rtc.limits().max_signal);
+        }
+        self.limits.max_message
+    }
+
+    /// The most text (signaling) messages a game socket may send (none without data channels).
+    fn signals_per_socket(&self) -> u32 {
+        #[cfg(feature = "webrtc")]
+        if let Some(rtc) = self.rtc.as_deref() {
+            return rtc.limits().signals_per_socket;
+        }
+        0
+    }
+
+    /// A signaling message from the game socket of `stand_in` (TCP address `peer`).
+    #[cfg_attr(not(feature = "webrtc"), allow(unused_variables))]
+    fn signal(&mut self, stand_in: SocketAddr, peer: SocketAddr, text: &str) -> Signaled {
+        #[cfg(feature = "webrtc")]
+        if let Some(rtc) = self.rtc.as_deref_mut() {
+            return match rtc.signal(stand_in, peer.ip(), text, self.now) {
+                Ok(super::rtc::Reply::None) => Signaled::Nothing,
+                Ok(super::rtc::Reply::Text(t)) => Signaled::Reply(t),
+                Err(()) => Signaled::Refused,
+            };
+        }
+        Signaled::Refused
+    }
+
+    /// When the data channel of `stand_in` last carried a game message.
+    #[cfg_attr(not(feature = "webrtc"), allow(unused_variables))]
+    fn rtc_heard(&self, stand_in: SocketAddr) -> Option<Instant> {
+        #[cfg(feature = "webrtc")]
+        return self.rtc.as_deref().and_then(|r| r.last_heard(stand_in));
+        #[cfg(not(feature = "webrtc"))]
+        None
+    }
+
+    /// The game socket of `stand_in` closed: its data channel goes with it.
+    #[cfg_attr(not(feature = "webrtc"), allow(unused_variables))]
+    fn rtc_remove(&mut self, stand_in: SocketAddr) {
+        #[cfg(feature = "webrtc")]
+        if let Some(rtc) = self.rtc.as_deref_mut() {
+            rtc.remove(stand_in);
+        }
+    }
 }
 
 /// The most closed sockets kept for the host to drop their connections (the rest time out as before).
@@ -151,6 +214,8 @@ pub(crate) struct Conn {
     /// Since when writes have made no progress (None while they go through).
     stalled: Option<Instant>,
     requests: u32,
+    /// The signaling (text) messages the game socket sent.
+    signals: u32,
 }
 
 impl Conn {
@@ -167,6 +232,7 @@ impl Conn {
             since: now,
             stalled: None,
             requests: 0,
+            signals: 0,
         }
     }
 
@@ -213,10 +279,11 @@ impl Conn {
         match std::mem::replace(&mut self.phase, Phase::Gone) {
             Phase::Http { mut pipe, .. } => pipe.shut(),
             Phase::Socket { mut ws, .. } => {
-                if let Some(addr) = closed_stand_in
-                    && pass.gone.len() < GONE_MAX
-                {
-                    pass.gone.push(addr);
+                if let Some(addr) = closed_stand_in {
+                    pass.rtc_remove(addr);
+                    if pass.gone.len() < GONE_MAX {
+                        pass.gone.push(addr);
+                    }
                 }
                 let code = match why {
                     Closed::Oversize => Some(CloseCode::Size),
@@ -247,6 +314,29 @@ impl Conn {
         match ws.send(Message::binary(data.to_vec())) {
             Ok(()) => true,
             // Queued: the next flush sends it.
+            Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => {
+                self.stalled.get_or_insert(pass.now);
+                true
+            }
+            Err(WsError::WriteBufferFull(_)) => {
+                self.shut(Closed::Stalled, pass);
+                false
+            }
+            Err(_) => {
+                self.shut(Closed::Peer, pass);
+                false
+            }
+        }
+    }
+
+    /// Sends a text (signaling) message on a game socket: false when it was not (as [`Conn::send`]).
+    #[cfg_attr(not(feature = "webrtc"), allow(dead_code))]
+    pub(crate) fn send_text(&mut self, text: &str, pass: &mut Pass<'_>) -> bool {
+        let Phase::Socket { ws, .. } = &mut self.phase else {
+            return false;
+        };
+        match ws.send(Message::text(text)) {
+            Ok(()) => true,
             Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => {
                 self.stalled.get_or_insert(pass.now);
                 true
@@ -431,12 +521,14 @@ impl Conn {
             return Some(Closed::Peer);
         };
         pipe.set_caps(socket_wire_caps(pass.limits));
+        // With data channels a text (signaling) message may be larger than a datagram; a binary one never is.
+        let max_message = pass.max_socket_message();
         let config = WebSocketConfig::default()
             .read_buffer_size(SOCKET_READ_BUFFER)
             .write_buffer_size(0)
             .max_write_buffer_size(pass.limits.write_buffer)
-            .max_message_size(Some(pass.limits.max_message))
-            .max_frame_size(Some(pass.limits.max_message));
+            .max_message_size(Some(max_message))
+            .max_frame_size(Some(max_message));
         let limits = pass.limits;
         let metered = Metered::new(
             pipe,
@@ -458,6 +550,11 @@ impl Conn {
         pass.counters.upgrades += 1;
         self.since = pass.now;
         self.stalled = None;
+        // A transport that takes data channels says so first.
+        #[cfg(feature = "webrtc")]
+        if pass.rtc.is_some() && !self.send_text(super::rtc::signal::HELLO, pass) {
+            return None;
+        }
         self.advance_socket(pass)
     }
 
@@ -469,6 +566,12 @@ impl Conn {
             return None;
         };
         ws.get_mut().refill(pass.now);
+        // Game messages on the socket's data channel keep it open as its own do.
+        if let Some(heard) = pass.rtc_heard(peer)
+            && heard > self.since
+        {
+            self.since = heard;
+        }
         // A socket gone quiet is closed before anything more is read from it.
         if pass.now.duration_since(self.since) > pass.limits.idle_timeout {
             return Some(Closed::Timeout);
@@ -491,6 +594,9 @@ impl Conn {
                 Err(_) => return Some(Closed::Peer),
             };
             match message {
+                Message::Binary(data) if data.len() > pass.limits.max_message => {
+                    return Some(Closed::Oversize);
+                }
                 Message::Binary(data) => {
                     self.since = pass.now;
                     if pass.inbox.len() < pass.limits.queue {
@@ -500,7 +606,25 @@ impl Conn {
                         pass.counters.queue_full += 1;
                     }
                 }
-                Message::Text(_) => return Some(Closed::Protocol),
+                // Signaling for a data channel, when the transport takes them; else a browser never sends text.
+                Message::Text(text) => {
+                    self.signals += 1;
+                    if self.signals > pass.signals_per_socket() {
+                        return Some(Closed::Protocol);
+                    }
+                    match pass.signal(peer, self.peer, text.as_str()) {
+                        Signaled::Nothing => {}
+                        Signaled::Refused => return Some(Closed::Protocol),
+                        Signaled::Reply(reply) => match ws.send(Message::text(reply)) {
+                            Ok(()) => {}
+                            Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => {
+                                self.stalled.get_or_insert(pass.now);
+                            }
+                            Err(WsError::WriteBufferFull(_)) => return Some(Closed::Stalled),
+                            Err(_) => return Some(Closed::Peer),
+                        },
+                    }
+                }
                 // Pings are answered by the socket itself; a close is answered on the next read, which then ends it.
                 Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {}
             }

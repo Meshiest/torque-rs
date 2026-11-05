@@ -181,6 +181,8 @@ pub enum PolicyRefusal {
     Ipv6(IpAddr),
     /// Plain (unencrypted) HTTP and WebSocket on an address outside the private set: only TLS listens on a public one.
     PlainWeb(IpAddr),
+    /// WebRTC data channels on `0.0.0.0` with no address to give browsers as a candidate.
+    NoRtcAddress,
 }
 
 impl fmt::Display for PolicyRefusal {
@@ -201,6 +203,9 @@ impl fmt::Display for PolicyRefusal {
             PolicyRefusal::PlainWeb(ip) => write!(
                 f,
                 "{ip} is not a private address; the web transport listens on one only with TLS (a certificate and its key)"
+            ),
+            PolicyRefusal::NoRtcAddress => f.write_str(
+                "the data channels need an address to give browsers: bind a specific address or name the public one"
             ),
         }
     }
