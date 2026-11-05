@@ -296,12 +296,14 @@ pub fn hit_burst(
 }
 
 /// A Player as the client animates it between frames: its posed instance, its animation, the node count of the shape they were
-/// made for and the clock they were last run to (ms).
+/// made for, the clock they were last run to (ms) and the ghost's birth ([`ClientWorld::birth_order`]).
 pub struct LivePlayer {
     instance: ShapeInstance,
     anim: PlayerAnimation,
     nodes: usize,
     at_ms: u32,
+    /// A new object at the same ghost index (a respawned Player) starts a new animation at `root`.
+    birth: Option<u64>,
     /// The count of its images' recoils last played ([`ImageRecoil::count`]).
     recoils: Option<u32>,
     /// Its `steering` thread while it drives a WheeledVehicle ([`GhostHooks::advance_live`]).
@@ -394,7 +396,8 @@ impl Hooks<World> for GhostHooks {
         else {
             return (kept, None);
         };
-        let kept = kept.filter(|l| l.nodes == ask.shape.nodes.len());
+        let birth = world.birth_order.get(&ask.index).copied();
+        let kept = kept.filter(|l| l.nodes == ask.shape.nodes.len() && l.birth == birth);
         let mut live = match kept {
             Some(l) => l,
             None => {
@@ -410,6 +413,7 @@ impl Hooks<World> for GhostHooks {
                     anim,
                     nodes: ask.shape.nodes.len(),
                     at_ms: world.anim_ms,
+                    birth,
                     recoils: self
                         .inputs
                         .get(&ask.index)
@@ -727,6 +731,19 @@ impl<S: GhostStyle> GhostScene<S> {
         out
     }
 
+    /// Whether each Player's arm and head threads run as the last frame posed it, by ghost, in ghost order.
+    pub fn player_threads(&self) -> Vec<(u32, bool, bool)> {
+        let Ok(live) = self.hooks.live.lock() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u32, bool, bool)> = live
+            .iter()
+            .map(|(&g, l)| (g, l.anim.arm_running(), l.anim.head_running()))
+            .collect();
+        out.sort_unstable_by_key(|a| a.0);
+        out
+    }
+
     /// Where the projectiles are drawn this frame.
     pub fn bolt_positions(&self) -> Vec<[f32; 3]> {
         self.bolts
@@ -740,6 +757,11 @@ impl<S: GhostStyle> GhostScene<S> {
     /// their trails, bursts and holes.
     pub fn update(&mut self, assets: &dyn Assets, world: &mut TgeWorld, input: &FrameInput<'_>) {
         let dt = input.dt.max(0.0);
+        // A deleted ghost's pose goes with it, so an object that takes its index later starts fresh.
+        if let Ok(mut live) = self.hooks.live.lock() {
+            let births = &world.records.birth_order;
+            live.retain(|i, l| l.birth.is_some() && births.get(i).copied() == l.birth);
+        }
         self.player_inputs(world, input.ghosts);
         self.place_players(assets, world, input.fov);
         self.update_images(assets, &world.records, dt);
