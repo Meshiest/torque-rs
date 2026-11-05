@@ -119,6 +119,10 @@ The first development version. Nothing is published yet; this is what exists.
   `ClientGame::file_reader`, which the prediction reads the driven vehicle's shape from too).
 - `torque::app::lights`: a client's engine spot lights and its day (TimeOfDay, ScatterSky) into the world view
   (`WorldView::set_spots`, `WorldView::set_day`: the sun, ambient, fog, sky and clouds follow the day).
+- `torque-render-hd`: a scene's cloud look (`HdScene::cloud_look`, `CloudLook`, `WorldView::set_cloud_look`): the layers,
+  their light, coverage and ground shadow, sunlight reddened by the air at each layer's height, and finer steps inside the
+  clouds. `CloudLook::SUNLIT_CUMULUS` gives sunlit cumulus; without a look the clouds are as before. The vehicle demo uses
+  it.
 - `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
   to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside

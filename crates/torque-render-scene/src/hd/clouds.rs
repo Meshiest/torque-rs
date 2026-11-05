@@ -24,6 +24,9 @@
 //!   mean colour of its box above (the clouds' tops) and at the horizon (their undersides), so a dusk sky's clouds take some of its
 //!   colours ([`OVERCAST`]: half of them; under an overcast none, and the sun's light and the tint none either: a closed deck is
 //!   grey-white). A scene without a server sky (a synthetic check scene) has no clouds.
+//! - **The look** ([`CloudLook`]): a scene may name its own layers, light and coverage, the sunlight through the air in place of
+//!   the ground's sun, the clouds' shadows on the ground at every quality and a march refined through the clouds
+//!   ([`CloudLook::SUNLIT_CUMULUS`]); without one the engine's ([`CloudLook::DEFAULT`]), drawn as before.
 //! - **The noise** ([`noise`]): our own tiling gradient (Perlin-style) and cell (Worley-style) noise, every octave at least four
 //!   texels a cell (finer ones only alias). The shape volume (128³ RGBA8) holds the Perlin-Worley base in r and Worley fBm at three
 //!   rising frequencies in gba; the detail volume (64³) Worley fBm at three frequencies; the weather map (256², 2D) the coverage's
@@ -457,6 +460,82 @@ impl CloudQuality {
             },
         };
         Some(q)
+    }
+}
+
+/// How the volumetric clouds look: the layers in [`FAIR_WEATHER`]'s place (the same order: a quality's mask picks from them), their
+/// light, the sky's coverage in place of the server's (None: the server's or the fair-weather default) and the clouds' shadows on
+/// the ground at every quality that draws them (the share of the sun a full cloud takes away; None: only at Ultra, the engine's
+/// share). With `sun` the clouds take that sunlight (linear) through the air at each layer's height, dimmed and reddened as the
+/// atmosphere's transmittance has it (a sunset's clouds glow orange); without it, or under the moon, the scene's sun's light, its
+/// color taken from the air but its strength the ground's. With a `fine_step` the march is refined: through clear air in the
+/// quality's steps, through cloud in steps of that many units (no shorter than a pixel there), at most `fine_budget` times the
+/// quality's samples a layer; the even march's first sample in a cloud lies a long step deep, where the sun's light has gone, so
+/// the sunlit shell that gives a cumulus its lit side, its dark side and its bright rim is only found by the fine steps.
+///
+/// A scene names a look ([`crate::hd::HdScene::cloud_look`]); without one the engine's ([`CloudLook::DEFAULT`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloudLook {
+    pub layers: [CloudLayerDef; MAX_LAYERS],
+    pub light: CloudLight,
+    pub coverage: Option<f32>,
+    pub ground_shadow: Option<f32>,
+    pub sun: Option<[f32; 3]>,
+    pub fine_step: f32,
+    pub fine_budget: f32,
+}
+
+impl CloudLook {
+    /// The engine's clouds: the fair-weather layers and their light, the scene's sun, the even march.
+    pub const DEFAULT: CloudLook = CloudLook {
+        layers: FAIR_WEATHER,
+        light: CLOUD_LIGHT,
+        coverage: None,
+        ground_shadow: None,
+        sun: None,
+        fine_step: 0.0,
+        fine_budget: 1.0,
+    };
+
+    /// Sunlit fair-weather cumulus: a deeper deck (to 2 km) whose heads the sun lights bright white over gray-blue bases (a
+    /// strong sun on them, little of the sky's light, the powder whole, the light scattered inside kept near the sunlit
+    /// surface), the march refined through the clouds, the sunlight through the air (golden, then orange and red at sunset),
+    /// the cirrus thinner and the clouds' shadows on the ground at every quality.
+    pub const SUNLIT_CUMULUS: CloudLook = CloudLook {
+        layers: [
+            CloudLayerDef {
+                top: 3000.0,
+                edge_top: 0.13,
+                sun: 8.0,
+                ambient: 0.4,
+                ..CUMULUS
+            },
+            CloudLayerDef {
+                coverage: 0.7,
+                ..CIRRUS
+            },
+            ALTOCUMULUS,
+        ],
+        light: CloudLight {
+            powder: 1.0,
+            multiple: 2.0,
+            multiple_decay: 0.6,
+            ambient_floor: 0.1,
+            ..CLOUD_LIGHT
+        },
+        coverage: None,
+        ground_shadow: Some(0.6),
+        sun: Some([1.0, 0.96, 0.9]),
+        fine_step: 30.0,
+        fine_budget: 3.0,
+    };
+
+    /// `q` as this look asks for it (the ground's shadows when it casts them).
+    pub fn quality(&self, q: CloudQuality) -> CloudQuality {
+        CloudQuality {
+            ground_shadows: self.ground_shadow.map_or(q.ground_shadows, |s| s > 0.0),
+            ..q
+        }
     }
 }
 

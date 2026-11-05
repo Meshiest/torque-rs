@@ -278,3 +278,31 @@ fn an_overcast_is_neutral_and_fair_weather_keeps_its_colour() {
     let kept = keep_chroma(lavender, 1.0);
     assert!(kept.iter().zip(lavender).all(|(a, b)| (a - b).abs() < 1e-6));
 }
+
+#[test]
+fn the_default_look_is_the_engines_and_a_look_can_cast_shadows_at_any_quality() {
+    let d = CloudLook::DEFAULT;
+    assert_eq!(d.layers, FAIR_WEATHER);
+    assert_eq!(d.light, CLOUD_LIGHT);
+    assert_eq!((d.sun, d.fine_step, d.coverage), (None, 0.0, None));
+    for quality in [Quality::Medium, Quality::High, Quality::Ultra] {
+        let q = CloudQuality::of(quality).unwrap();
+        assert_eq!(d.quality(q), q);
+        let sunlit = CloudLook::SUNLIT_CUMULUS.quality(q);
+        assert!(sunlit.ground_shadows);
+        assert_eq!(
+            CloudQuality {
+                ground_shadows: q.ground_shadows,
+                ..sunlit
+            },
+            q
+        );
+    }
+    // The sunlit cumulus keeps the layers' order and kinds: a quality's mask draws the same layers.
+    let s = CloudLook::SUNLIT_CUMULUS;
+    for (a, b) in s.layers.iter().zip(&FAIR_WEATHER) {
+        assert_eq!((a.name, a.form, a.profile), (b.name, b.form, b.profile));
+        assert!(a.top > a.base || a.form == LayerForm::Sheet);
+    }
+    assert!(s.fine_step > 0.0 && s.fine_budget >= 1.0);
+}

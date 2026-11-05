@@ -189,6 +189,8 @@ pub struct HdScene<G> {
     pub control_generation: u64,
     /// What the server's Sky gives the volumetric clouds (None without a Sky: no clouds).
     pub clouds: Option<clouds::CloudSky>,
+    /// How the volumetric clouds look (None: [`clouds::CloudLook::DEFAULT`], the engine's).
+    pub cloud_look: Option<clouds::CloudLook>,
     /// The frame size of the last sync (a control sync's coronas are placed for it).
     pub size: (u32, u32),
     /// Control syncs keep each moving shape's vertices in its meshes' own space and the GPU places them
@@ -253,6 +255,7 @@ impl<G> HdScene<G> {
             generation: 0,
             control_generation: 0,
             clouds: None,
+            cloud_look: None,
             size: (1, 1),
         }
     }
