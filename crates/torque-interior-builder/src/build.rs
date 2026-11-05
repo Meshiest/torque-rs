@@ -60,7 +60,7 @@ impl Default for Options {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BuildError {
     NoBrushes,
-    /// Brush `index` bounds no solid.
+    /// Brush (or hull) `index` bounds no solid, or polygon `index` has a value that is not finite.
     Brush {
         index: usize,
         error: BrushError,
@@ -107,14 +107,34 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
+/// Where a surface came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// Face `face` of brush `brush` ([`build`]).
+    Face { brush: usize, face: usize },
+    /// Polygon `n` of the polygons drawn ([`build_polygons`]).
+    Polygon(usize),
+    /// Face `face` of hull `hull` ([`build_polygons`]: a null surface the hull's polygon list reads).
+    HullFace { hull: usize, face: usize },
+}
+
+/// A convex polygon to draw, clockwise seen from the front of `plane` (the mesh input of [`build_polygons`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Polygon {
+    pub points: Vec<V3>,
+    pub plane: Plane,
+    pub material: String,
+    pub texgen: TexGen,
+}
+
 /// What was built.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Built {
     pub dif: Dif,
-    /// Each drawn surface's source: its brush, its face and its polygon (clockwise seen from the front), in surface order.
-    pub surfaces: Vec<(usize, usize, Vec<V3>)>,
+    /// Each drawn surface's source and its polygon (clockwise seen from the front), in surface order.
+    pub surfaces: Vec<(Source, Vec<V3>)>,
     /// Each null surface's source, in order.
-    pub null_surfaces: Vec<(usize, usize, Vec<V3>)>,
+    pub null_surfaces: Vec<(Source, Vec<V3>)>,
 }
 
 impl Built {
@@ -219,12 +239,20 @@ impl Weld {
     }
 }
 
-/// A part to become a surface: its brush, face and polygon.
+/// A part to become a surface: where it came from, the hull it lies on, its face and its polygon.
 struct Part {
-    brush: usize,
+    source: Source,
+    hull: Option<usize>,
     face: usize,
     poly: Vec<V3>,
     null: bool,
+}
+
+/// A face as the surfaces take it: its plane, material and texture planes.
+struct FaceSpec<'a> {
+    plane: Plane,
+    material: &'a str,
+    texgen: TexGen,
 }
 
 /// Cuts `poly` until its lightmap rectangle fits [`MAX_RECT`].
@@ -413,13 +441,18 @@ fn aabb(points: impl IntoIterator<Item = [f32; 3]>) -> Aabb {
     b
 }
 
+fn check_texel(texel: f64) -> Result<(), BuildError> {
+    let log = texel.log2();
+    if texel.is_finite() && log.fract() == 0.0 && (-10.0..=10.0).contains(&log) {
+        Ok(())
+    } else {
+        Err(BuildError::LightmapTexel(texel))
+    }
+}
+
 /// Builds `brushes` (each a solid in the interior's space) into a `.dif` (module docs).
 pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> {
-    let texel = options.lightmap_texel;
-    let log = texel.log2();
-    if !(texel.is_finite() && log.fract() == 0.0 && (-10.0..=10.0).contains(&log)) {
-        return Err(BuildError::LightmapTexel(texel));
-    }
+    check_texel(options.lightmap_texel)?;
     if brushes.is_empty() {
         return Err(BuildError::NoBrushes);
     }
@@ -433,9 +466,6 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
         boxes.push(geom::bounds(p.iter().flatten().copied()));
         polys.push(p);
     }
-
-    // 1-2: the visible parts, cut to fit the lightmaps, welded, with their neighbors' corners on their edges.
-    let mut parts: Vec<Part> = Vec::new();
     let fragments = csg::visible(brushes, &polys, &boxes, MAX_SURFACES).map_err(|e| match e {
         csg::TooMuch::Parts(count) => BuildError::TooMany {
             what: "surfaces",
@@ -448,23 +478,122 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
             cap: csg::MAX_WORK as usize,
         },
     })?;
+    // One face spec a brush face, numbered brush by brush.
+    let mut specs = Vec::new();
+    let mut first_face = Vec::with_capacity(brushes.len());
+    for b in brushes {
+        first_face.push(specs.len());
+        specs.extend(b.faces.iter().map(|f| FaceSpec {
+            plane: f.plane,
+            material: &f.material,
+            texgen: f.texgen,
+        }));
+    }
+    let parts = fragments
+        .into_iter()
+        .map(|f| Part {
+            source: Source::Face {
+                brush: f.brush,
+                face: f.face,
+            },
+            hull: Some(f.brush),
+            face: first_face[f.brush] + f.face,
+            null: is_null_material(&brushes[f.brush].faces[f.face].material),
+            poly: f.poly,
+        })
+        .collect();
+    assemble(brushes, polys, parts, &specs, options)
+}
+
+/// Builds drawn `polygons` and collision `hulls` (each a convex solid) into a `.dif`: the mesh input. The polygons are drawn as
+/// they are (no hidden faces removed); a polygon of an editor material ([`is_null_material`]) is left out. Each hull face is a
+/// null surface, so a hull's polygon list is its faces.
+pub fn build_polygons(
+    polygons: &[Polygon],
+    hulls: &[Brush],
+    options: &Options,
+) -> Result<Built, BuildError> {
+    check_texel(options.lightmap_texel)?;
+    if hulls.is_empty() && polygons.is_empty() {
+        return Err(BuildError::NoBrushes);
+    }
+    cap("hulls", hulls.len(), MAX_BRUSHES)?;
+    cap("polygons", polygons.len(), MAX_SURFACES)?;
+    let mut polys = Vec::with_capacity(hulls.len());
+    for (index, b) in hulls.iter().enumerate() {
+        polys.push(
+            b.polygons()
+                .map_err(|error| BuildError::Brush { index, error })?,
+        );
+    }
+    let mut specs = Vec::new();
+    let mut parts = Vec::new();
+    for (k, p) in polygons.iter().enumerate() {
+        if is_null_material(&p.material) || p.points.len() < 3 {
+            continue;
+        }
+        if p.points.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(BuildError::Brush {
+                index: k,
+                error: BrushError::NotFinite,
+            });
+        }
+        parts.push(Part {
+            source: Source::Polygon(k),
+            hull: None,
+            face: specs.len(),
+            poly: p.points.clone(),
+            null: false,
+        });
+        specs.push(FaceSpec {
+            plane: p.plane,
+            material: &p.material,
+            texgen: p.texgen,
+        });
+    }
+    for (h, (b, faces)) in hulls.iter().zip(&polys).enumerate() {
+        for (fi, poly) in faces.iter().enumerate() {
+            if poly.is_empty() {
+                continue;
+            }
+            parts.push(Part {
+                source: Source::HullFace { hull: h, face: fi },
+                hull: Some(h),
+                face: specs.len(),
+                poly: poly.clone(),
+                null: true,
+            });
+            specs.push(FaceSpec {
+                plane: b.faces[fi].plane,
+                material: "NULL",
+                texgen: b.faces[fi].texgen,
+            });
+        }
+    }
+    assemble(hulls, polys, parts, &specs, options)
+}
+
+/// Steps 2 to 6 (module docs) over the hulls (`polys[h]`: hull `h`'s face polygons) and the parts to become surfaces.
+fn assemble(
+    brushes: &[Brush],
+    polys: Vec<Vec<Vec<V3>>>,
+    fragments: Vec<Part>,
+    specs: &[FaceSpec],
+    options: &Options,
+) -> Result<Built, BuildError> {
+    let texel = options.lightmap_texel;
+    // 2: the parts cut to fit the lightmaps, welded, with their neighbors' corners on their edges.
+    let mut parts: Vec<Part> = Vec::new();
     // Every drawn piece is a surface: the lightmap cuts stop once the surfaces would pass the cap.
     let mut left = MAX_SURFACES;
     for f in fragments {
-        let face = &brushes[f.brush].faces[f.face];
-        let null = is_null_material(&face.material);
         let mut cut = Vec::new();
-        if null {
+        if f.null {
             cut.push(f.poly);
         } else {
-            fit_lightmap(f.poly, face.plane.n, texel, &mut cut, &mut left)?;
+            fit_lightmap(f.poly, specs[f.face].plane.n, texel, &mut cut, &mut left)?;
         }
-        parts.extend(cut.into_iter().map(|poly| Part {
-            brush: f.brush,
-            face: f.face,
-            poly,
-            null,
-        }));
+        parts.extend(cut.into_iter().map(|poly| Part { poly, ..f }));
     }
     let mut weld = Weld::default();
     for p in &mut parts {
@@ -500,20 +629,10 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
             let head: Vec<V3> = rest[..MAX_WINDING].to_vec();
             let mut tail = vec![rest[0]];
             tail.extend_from_slice(&rest[MAX_WINDING - 1..]);
-            pieces.push(Part {
-                brush: p.brush,
-                face: p.face,
-                poly: head,
-                null: p.null,
-            });
+            pieces.push(Part { poly: head, ..p });
             rest = tail;
         }
-        pieces.push(Part {
-            brush: p.brush,
-            face: p.face,
-            poly: rest,
-            null: p.null,
-        });
+        pieces.push(Part { poly: rest, ..p });
     }
 
     // 3-4: the tables and the surfaces.
@@ -527,7 +646,7 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
     // Per brush: its surface references (with the null bit for null surfaces) and their polygon-list form.
     let mut brush_surfaces: Vec<Vec<(u32, HullSurface)>> = vec![Vec::new(); brushes.len()];
     for p in &pieces {
-        let face = &brushes[p.brush].faces[p.face];
+        let face = &specs[p.face];
         let plane = t.plane(&face.plane)?;
         let ids: Vec<u32> = p.poly.iter().map(|&v| t.point(v)).collect();
         let n = ids.len();
@@ -540,9 +659,11 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
                 flags: 0,
                 winding_count: n as u32,
             });
-            null_src.push((p.brush, p.face, p.poly.clone()));
+            null_src.push((p.source, p.poly.clone()));
             let r = (null_surfaces.len() as u32 - 1) | dif::NULL_SURFACE;
-            brush_surfaces[p.brush].push((r, HullSurface { plane, points: ids }));
+            if let Some(h) = p.hull {
+                brush_surfaces[h].push((r, HullSurface { plane, points: ids }));
+            }
             continue;
         }
         let mut fan_mask = 0u32;
@@ -561,7 +682,7 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
             winding_start: at,
             winding_count: n as u32,
             plane,
-            texture: t.material(&face.material)?,
+            texture: t.material(face.material)?,
             texgen: t.texgen(&face.texgen),
             flags: surface_flags::OUTSIDE_VISIBLE,
             fan_mask,
@@ -574,11 +695,13 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
             map_offset: [0, 0],
             map_size: [0, 0],
         });
-        surface_src.push((p.brush, p.face, p.poly.clone()));
-        brush_surfaces[p.brush].push((
-            surfaces.len() as u32 - 1,
-            HullSurface { plane, points: fan },
-        ));
+        surface_src.push((p.source, p.poly.clone()));
+        if let Some(h) = p.hull {
+            brush_surfaces[h].push((
+                surfaces.len() as u32 - 1,
+                HullSurface { plane, points: fan },
+            ));
+        }
     }
     cap("surfaces", surfaces.len(), MAX_SURFACES)?;
 
@@ -718,6 +841,16 @@ pub fn build(brushes: &[Brush], options: &Options) -> Result<Built, BuildError> 
             plane: t.plane(&n.plane)?,
             front: child(n.front),
             back: child(n.back),
+        });
+    }
+    // A tree of one leaf (no hull at all) as one node with that leaf on both sides: a walk always starts at node 0.
+    if bsp_nodes.is_empty() {
+        let leaf = tree.root.map_or(BspChild::Empty(0), child);
+        let up = Plane::new([0.0, 0.0, 1.0], [0.0; 3]).ok_or(BuildError::NoBrushes)?;
+        bsp_nodes.push(BspNode {
+            plane: t.plane(&up)?,
+            front: leaf,
+            back: leaf,
         });
     }
     let mut solid_leaf_surfaces = Vec::new();

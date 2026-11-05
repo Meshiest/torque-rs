@@ -43,7 +43,10 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-interior-builder`: interiors (`.dif`, version 0 in TGE's form) built from convex brushes made in code or read from a
   Quake or Valve 220 `.map`: hidden faces removed, a solid BSP, the brushes as collision hulls with emit strings and polygon
   lists, texture planes and lightmap rectangles; a `.map`'s water, triggers, physical zones and spawn points as a `.mis`
-  fragment.
+  fragment. Meshes too (glTF, OBJ, through the model layer): triangles joined into convex polygons of one plane, material and
+  texture map, drawn as they are; hulls authored (`col_*`, `hull_*`, `Col-N`, each its mesh's convex hull), cut from a closed
+  part's solid BSP leaves, or slabs under an open part's polygons; sets over a version-0 interior's caps cut into pieces;
+  `water*`, `trigger*` and `physical_zone*` meshes as mission objects.
 - `torque-modelcore`: the format-neutral model layer (nodes with rest transforms, meshes with two UV sets, colors and up to
   four weights a vertex, skins, materials with their PBR textures, detail levels, animations sampled at even keys), in
   Torque's frame, with the naming conventions of Torque's shape loader (`detailN`, `Col-N`, `LOSCol-N`, `col_*` and `hull_*`
@@ -54,8 +57,9 @@ The first development version. Nothing is published yet; this is what exists.
   read back makes the same `.dts`, byte for byte.
 - Native glTF shapes: a datablock's `shapeFile` may name a `.glb` (or a `.gltf` with `data:` URIs); the server's preload, the
   client's prediction and eye and the shape drawing read it as the `.dts` it makes.
-- `torque-convert`: the converter command, its own crate: models (`.glb`, `.gltf`, `.dts`) into `.dts` (with the images the
-  model carries) or `.glb`, and `.map` brushes into interiors.
+- `torque-import`: a Wavefront OBJ reader (`.obj` with its `.mtl` files; every count, number, index and path bounded).
+- `torque-convert`: the converter command, its own crate: models (`.glb`, `.gltf`, `.obj`, `.dts`) into `.dts` (with the
+  images the model carries) or `.glb`, and `.map` brushes or meshes into interiors (`--hulls auto|authored|slabs`).
 - `torque-shape-builder`: skin meshes, objects with a mesh in several details, primitives of several materials, aligned
   scale keys and blend flags in owned sequence specs; the name table is made at build time (nodes, details, objects,
   sequences).

@@ -36,10 +36,12 @@ deny:
 msrv:
     cargo +{{msrv}} check --workspace --all-targets --all-features
 
-# The interior builder's verification at its full counts on 20 generated brush maps: 100,000 surface points, 1,000,000
-# segments and 1,000,000 BSP points each, read back through the importer and the collision; every map 0 mismatches
+# The interior builder's verification at its full counts on 20 generated brush maps, then on 20 generated glTF and OBJ meshes
+# (closed, open, authored hulls, volumes, a 200,344-triangle terrain cut into pieces): 100,000 surface points, 1,000,000
+# segments and 1,000,000 BSP points each, read back through the importer and the collision; every one 0 mismatches
 dif-verify:
     cargo run --release -p torque-interior-builder --features verify --example dif-verify
+    cargo run --release -p torque-interior-builder --features verify --example dif-mesh-verify
     $env:DIF_VERIFY_SHARE = "1"; cargo test --release -p torque-example-assets the_arena_interior -- --nocapture
 
 # The glTF import's pass condition: 20 generated glTF files read back as `.dts` (equal node, mesh, vertex and sequence

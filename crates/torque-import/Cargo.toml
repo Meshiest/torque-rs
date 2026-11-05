@@ -1,6 +1,6 @@
 [package]
 name = "torque-import"
-description = "Model readers and writers for torque-rs: glTF 2.0 into the model layer, the model layer into DTS shapes, and back"
+description = "Model readers and writers for torque-rs: glTF 2.0 and OBJ into the model layer, the model layer into DTS shapes, and back"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

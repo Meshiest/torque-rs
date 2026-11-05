@@ -23,7 +23,7 @@ use torque_mapcore::Importer;
 use torque_maps::dif::{self, BspChild, Interior, NULL_SURFACE, PLANE_FLIPPED};
 
 use crate::brush::{Brush, TexGen};
-use crate::build::{Built, Options, build, is_null_material};
+use crate::build::{Built, Options, Source, build, is_null_material};
 use crate::geom::{self, Plane, V3};
 use crate::hull;
 
@@ -89,6 +89,16 @@ pub struct Report {
     pub bsp_mismatches: usize,
     pub emit_differences: usize,
     pub poly_list_differences: usize,
+    /// Meshes: the `.dif`s the input was cut into.
+    pub pieces: usize,
+    /// Meshes: segments against the source's solids (closed parts, authored hulls) and slabs, and those not compared (they
+    /// start inside one, or graze one).
+    pub source_segments: usize,
+    pub source_skipped: usize,
+    pub source_mismatches: usize,
+    /// Meshes: points inside a hull exactly when inside the source's solids.
+    pub solid_checked: usize,
+    pub solid_mismatches: usize,
     /// The first mismatch, described.
     pub first: Option<String>,
 }
@@ -105,6 +115,8 @@ impl Report {
             && self.bsp_mismatches == 0
             && self.emit_differences == 0
             && self.poly_list_differences == 0
+            && self.source_mismatches == 0
+            && self.solid_mismatches == 0
     }
 
     /// The numbers on one line.
@@ -133,7 +145,19 @@ impl Report {
             self.bsp_mismatches,
             self.emit_differences,
             self.poly_list_differences
-        )
+        ) + &if self.pieces > 0 {
+            format!(
+                "; {} pieces; source segments {} ({} skipped) mismatches {}; solid points {} mismatches {}",
+                self.pieces,
+                self.source_segments,
+                self.source_skipped,
+                self.source_mismatches,
+                self.solid_checked,
+                self.solid_mismatches
+            )
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -631,8 +655,15 @@ pub fn check(
         *drawn_area.entry(t.material).or_default() += t.area;
     }
     let mut built_area: HashMap<usize, f64> = HashMap::new();
-    for (bi, fi, poly) in &built.surfaces {
-        if let Some(m) = material_of(&brushes[*bi].faces[*fi].material) {
+    for (src, poly) in &built.surfaces {
+        let Source::Face {
+            brush: bi,
+            face: fi,
+        } = *src
+        else {
+            continue;
+        };
+        if let Some(m) = material_of(&brushes[bi].faces[fi].material) {
             *built_area.entry(m).or_default() += geom::area(poly);
         }
     }
@@ -740,6 +771,13 @@ pub fn check(
     }
 
     // Emit strings and polygon lists.
+    hull_strings(i, &faces.polys, &mut report);
+    Ok(report)
+}
+
+/// Each hull's emit strings decoded against its faces (`polys[k]`: hull `k`'s face polygons) and its polygon list against its
+/// surfaces.
+fn hull_strings(i: &Interior, polys: &[Vec<Vec<V3>>], report: &mut Report) {
     let h = &i.hulls;
     for (k, hull) in h.hulls.iter().enumerate() {
         let points: Vec<V3> = (0..hull.hull_count as usize)
@@ -752,21 +790,30 @@ pub fn check(
         let planes: Vec<u16> = h.hull_plane_indices[hull.plane_start as usize..plane_end].to_vec();
         // The brush's faces as (plane index, sorted hull point numbers).
         let mut want: Vec<(u16, Vec<u8>)> = Vec::new();
-        for poly in faces.polys[k].iter().filter(|p| !p.is_empty()) {
+        for poly in polys[k].iter().filter(|p| !p.is_empty()) {
             let n = geom::area_vector(poly);
-            let Some(pl) = planes.iter().find(|&&pi| {
-                geom::dot(file_plane(i, pi).n, n) < 0.0
-                    && poly.iter().all(|&v| file_plane(i, pi).dist(v).abs() < 1e-3)
-            }) else {
+            // The file's plane nearest the face (facing its way), and each corner's nearest hull point: faces and corners a
+            // hair apart stay apart.
+            let off = |pi: u16| {
+                poly.iter()
+                    .map(|&v| file_plane(i, pi).dist(v).abs())
+                    .fold(0.0, f64::max)
+            };
+            let Some(pl) = planes
+                .iter()
+                .filter(|&&pi| geom::dot(file_plane(i, pi).n, n) < 0.0 && off(pi) < 1e-3)
+                .min_by(|&&a, &&b| off(a).total_cmp(&off(b)))
+            else {
                 report.emit_differences += 1;
                 continue;
             };
             let mut pts: Vec<u8> = poly
                 .iter()
                 .filter_map(|&v| {
-                    points
-                        .iter()
-                        .position(|&q| geom::length(geom::sub(q, v)) < 1e-3)
+                    let d = |q: &V3| geom::length(geom::sub(*q, v));
+                    (0..points.len())
+                        .min_by(|&a, &b| d(&points[a]).total_cmp(&d(&points[b])))
+                        .filter(|&x| d(&points[x]) < 1e-3)
                         .map(|x| x as u8)
                 })
                 .collect();
@@ -821,7 +868,6 @@ pub fn check(
             _ => report.poly_list_differences += 1,
         }
     }
-    Ok(report)
 }
 
 /// A surface's collision polygon as `collisionFanFromSurface` makes it (a null surface: its windings as they are).
@@ -906,3 +952,9 @@ pub fn enter(b: &Brush, s: V3, dir: V3) -> Option<(f64, V3)> {
 #[cfg(test)]
 #[path = "verify_tests.rs"]
 mod tests;
+
+#[path = "verify_mesh.rs"]
+pub mod mesh;
+
+#[path = "mesh_fixtures.rs"]
+pub mod fixtures;

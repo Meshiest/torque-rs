@@ -2339,8 +2339,10 @@ name = "torque-interior-builder"
 version = "0.1.0"
 dependencies = [
  "torque-collide",
+ "torque-import",
  "torque-mapcore",
  "torque-maps",
+ "torque-modelcore",
 ]
 
 [[package]]

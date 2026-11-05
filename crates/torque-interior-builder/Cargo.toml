@@ -15,19 +15,27 @@ categories = ["game-development"]
 
 [dependencies]
 torque-maps = { path = "../torque-maps" }
+torque-modelcore = { path = "../torque-modelcore" }
 # The verification (`verify` feature): the written bytes read back through the importer and collided with as the engine does.
 torque-collide = { path = "../torque-collide", optional = true }
 torque-mapcore = { path = "../torque-mapcore", optional = true }
+# The mesh verification's fixtures are written as glTF and OBJ files and read back through the readers.
+torque-import = { path = "../torque-import", optional = true }
 
 [dev-dependencies]
 torque-collide = { path = "../torque-collide" }
 torque-mapcore = { path = "../torque-mapcore" }
+torque-import = { path = "../torque-import" }
 
 [features]
-verify = ["dep:torque-collide", "dep:torque-mapcore"]
+verify = ["dep:torque-collide", "dep:torque-mapcore", "dep:torque-import"]
 
 [[example]]
 name = "dif-verify"
+required-features = ["verify"]
+
+[[example]]
+name = "dif-mesh-verify"
 required-features = ["verify"]
 
 [lints]
