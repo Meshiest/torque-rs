@@ -239,6 +239,12 @@ impl CameraBlend {
     pub fn eye(&mut self, target: Eye, keep: impl FnOnce([f32; 3]) -> [f32; 3]) -> Eye {
         let dt = std::mem::take(&mut self.dt);
         let goal = parts(&target);
+        // An eye that is not a place (a NaN or an infinite part) is drawn as it is and leaves the blend alone; its time counts
+        // toward the next eye's.
+        if goal.iter().any(|x| !x.is_finite()) {
+            self.dt += dt;
+            return target;
+        }
         let switching = self.switched && self.last.is_some();
         let previous_goal = self.last_target.replace(goal);
         if let Some(before) = previous_goal
@@ -261,8 +267,11 @@ impl CameraBlend {
             if !fov_blends {
                 offset[FOV] = Spring::default();
             }
-            self.offset = Some(offset);
-            self.measuring = Some(m);
+            let finite = offset
+                .iter()
+                .all(|s| s.x.is_finite() && s.v.is_finite() && s.a.is_finite());
+            self.offset = finite.then_some(offset);
+            self.measuring = finite.then_some(m);
         } else if self.offset.is_some() && dt > 0.0 {
             let offset = match self.measuring.take() {
                 // The frame after: the spring from the switch again, with the new eye's motion measured.
@@ -286,7 +295,11 @@ impl CameraBlend {
                 && offset[YAW].x.abs() < DONE_ANGLE
                 && offset[4].x.abs() < DONE_ANGLE
                 && offset[FOV].x.abs() < DONE_FOV;
-            self.offset = (!done).then_some(offset);
+            // An offset that is not finite (from a frame time or eye the spring cannot follow) ends the blend.
+            let finite = offset
+                .iter()
+                .all(|s| s.x.is_finite() && s.v.is_finite() && s.a.is_finite());
+            self.offset = (!done && finite).then_some(offset);
         }
         let eye = match &self.offset {
             Some(offset) => {

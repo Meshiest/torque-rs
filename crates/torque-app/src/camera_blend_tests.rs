@@ -366,3 +366,43 @@ fn the_look_turns_the_short_way_round_and_eyes_are_kept_where_the_game_says() {
         assert!(e.position[2] >= ground, "{e:?}");
     }
 }
+
+#[test]
+fn an_eye_that_is_not_a_place_leaves_the_blend_as_it_was() {
+    let nan = eye([f32::NAN, 0.0, 1.7], 0.0, 0.0, None);
+    let finite = |e: &Eye| {
+        e.position
+            .iter()
+            .chain([&e.yaw, &e.pitch])
+            .all(|x| x.is_finite())
+    };
+    // A NaN eye, then a switch on the next frame or the one after, then places again: every eye drawn after is finite.
+    for delay in 0..2 {
+        let mut b = CameraBlend::default();
+        let mut behind = false;
+        for k in 0..5 {
+            b.advance(1.0 / 60.0);
+            b.eye(walking(4.0, k as f32 / 60.0, behind), |p| p);
+        }
+        b.advance(1.0 / 60.0);
+        assert!(b.eye(nan, |p| p).position[0].is_nan());
+        for k in 0..60 {
+            if k == delay {
+                behind = !behind;
+                b.switch();
+            }
+            b.advance(1.0 / 60.0);
+            let e = b.eye(walking(4.0, (k + 6) as f32 / 60.0, behind), |p| p);
+            assert!(finite(&e), "delay {delay}, frame {k}: {e:?}");
+        }
+        assert!(b.arrived());
+    }
+    // An infinite yaw is not a place either.
+    let mut b = CameraBlend::default();
+    b.eye(walking(0.0, 0.0, true), |p| p);
+    b.switch();
+    b.advance(1.0 / 60.0);
+    b.eye(eye([0.0; 3], f32::INFINITY, 0.0, None), |p| p);
+    b.advance(1.0 / 60.0);
+    assert!(finite(&b.eye(walking(0.0, 0.0, false), |p| p)));
+}
