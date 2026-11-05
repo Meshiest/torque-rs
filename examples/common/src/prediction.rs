@@ -12,8 +12,8 @@
 //!   what the next move will make of the waiting turn, instead of a tick or two behind it. The moves are unchanged.
 //!
 //! Credit: a cube's collision object follows `ShapeBase::buildConvex` and the StaticShape type bits in Torque3D's MIT-licensed
-//! `T3D/shapeBase.cpp` and `T3D/staticShape.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc. for
-//! `shapeBase.cpp`), an interior's its Torque3D 2.0 `interior/interiorInstance.cpp` (Copyright (c) 2012 GarageGames,
+//! `T3D/shapeBase.cpp` and `T3D/staticShape.cpp` (each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
+//! Faust Logic, Inc.), an interior's its Torque3D 2.0 `interior/interiorInstance.cpp` (Copyright (c) 2012 GarageGames,
 //! LLC). The code here is
 //! the examples' own.
 
