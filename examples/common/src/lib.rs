@@ -111,15 +111,17 @@ impl<G> GameFiles<G> {
     /// The kit and the game folder of a pack ([`GameFiles::pack`]): a game built for the web carries its files so.
     pub fn unpack(bytes: &[u8]) -> Result<GameFiles<G>, String> {
         let mut kit = HashMap::new();
-        let mut folder = torque::app::GameFiles::default();
+        let mut rest = Vec::new();
         let prefix = format!("{KIT_DIR}/");
         for (path, bytes) in torque::app::files::unpack(bytes)? {
             if path.starts_with(&prefix) {
                 kit.insert(path.to_ascii_lowercase(), bytes.to_vec());
             } else {
-                folder.insert(path, bytes);
+                rest.push((path.to_string(), bytes.to_vec()));
             }
         }
+        let mut folder = torque::app::GameFiles::default();
+        folder.extend(rest);
         Ok(GameFiles {
             kit: KitAssets { files: kit },
             folder,
