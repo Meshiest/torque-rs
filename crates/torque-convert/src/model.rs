@@ -43,11 +43,13 @@ fn read(input: &str, options: &Options) -> Result<Model, String> {
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_default();
-            // The reader hands only relative paths with no `..`; each is read under the input's folder.
-            let mut side = |rel: &str| -> Option<Vec<u8>> {
-                let path: PathBuf = rel.split('/').fold(dir.clone(), |p, part| p.join(part));
-                read_capped(&path, caps::MAX_BUFFER_BYTES).ok()
+            let dir = if dir.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                dir
             };
+            // Side files under the input's folder, each read only as far as its buffer's declared length.
+            let mut side = gltf::side_files(&dir);
             gltf::read(&bytes, &mut side, options, &mut free).map_err(|e| e.to_string())
         }
         other => Err(format!("not a model file (.{other})")),

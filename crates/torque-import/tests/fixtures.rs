@@ -963,7 +963,7 @@ fn twenty_fixtures_read_back_with_equal_counts_positions_and_poses() {
     for i in 0..20 {
         let f = fixture(i);
         let glb = f.glb();
-        let model = gltf::read(&glb, &mut |_| None, &Options::default(), &mut free)
+        let model = gltf::read(&glb, &mut |_, _| None, &Options::default(), &mut free)
             .unwrap_or_else(|e| panic!("fixture {i}: {e}"));
         let bytes = torque_shapes::write::write_dts(&dts::to_dts(&model).unwrap());
         let back = torque_shapes::dts::parse(&bytes, &mut free)

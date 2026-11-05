@@ -42,8 +42,37 @@ use container::{UriSource, image_size, resolve_uri};
 /// The key of this crate's object in a glTF's `extras`.
 pub const EXTRAS_KEY: &str = "torque";
 
-/// Gives a side file's bytes by its relative path (`/`-separated, no `..`), or None.
-pub type Resolver<'a> = &'a mut dyn FnMut(&str) -> Option<Vec<u8>>;
+/// Gives the first bytes of a side file, at most the second argument's count, by its relative path (`/`-separated, no `..`),
+/// or None. The reader asks for a buffer's declared length (already under [`caps::MAX_BUFFER_BYTES`] with every other
+/// buffer's) and refuses a longer answer, so a resolver must read no more than it is asked for ([`side_files`] does not).
+pub type Resolver<'a> = &'a mut dyn FnMut(&str, usize) -> Option<Vec<u8>>;
+
+/// A resolver reading side files under the folder `dir`: at most the asked-for bytes of each (a file longer than that is read
+/// only that far), regular files only, and none that resolves (through a link) outside `dir`.
+pub fn side_files(dir: &std::path::Path) -> impl FnMut(&str, usize) -> Option<Vec<u8>> + use<> {
+    let dir = dir.to_path_buf();
+    move |rel: &str, max: usize| {
+        use std::io::Read;
+        let root = dir.canonicalize().ok()?;
+        let path = rel
+            .split('/')
+            .fold(root.clone(), |p, part| p.join(part))
+            .canonicalize()
+            .ok()?;
+        if !path.starts_with(&root) {
+            return None;
+        }
+        let file = std::fs::File::open(&path).ok()?;
+        let meta = file.metadata().ok()?;
+        if !meta.is_file() {
+            return None;
+        }
+        let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+        let mut out = Vec::with_capacity(len.min(max));
+        file.take(max as u64).read_to_end(&mut out).ok()?;
+        Some(out)
+    }
+}
 
 fn malformed<T>(what: impl Into<String>) -> Result<T, ImportError> {
     Err(ImportError::Malformed(what.into()))
@@ -238,10 +267,12 @@ fn load_buffers(
     }
     pay(charge, total)?;
     let mut out = Vec::with_capacity(root.buffers.len());
+    // The bytes actually held, against the same cap as the declared lengths (a resolver that answers with more is refused).
+    let mut held = 0usize;
     for (i, b) in root.buffers.iter().enumerate() {
         let want = b.byte_length.0 as usize;
         let mut bytes = match (&b.uri, i, bin) {
-            (None, 0, Some(bin)) => bin.to_vec(),
+            (None, 0, Some(bin)) => bin.get(..want).unwrap_or(bin).to_vec(),
             (None, _, _) => {
                 return malformed(format!(
                     "buffer {i} has no URI and is not the .glb's binary chunk"
@@ -249,9 +280,21 @@ fn load_buffers(
             }
             (Some(uri), _, _) => match resolve_uri(uri, want)? {
                 UriSource::Data(data, _) => data,
-                UriSource::File(path) => resolve(&path).ok_or(ImportError::Missing(path))?,
+                UriSource::File(path) => {
+                    let bytes = resolve(&path, want).ok_or(ImportError::Missing(path))?;
+                    if bytes.len() > want {
+                        return Err(ImportError::TooLarge {
+                            what: "a side file's answer",
+                            bytes: bytes.len() as u64,
+                            cap: want as u64,
+                        });
+                    }
+                    bytes
+                }
             },
         };
+        held = held.saturating_add(bytes.len());
+        cap("bytes of buffers held", held, caps::MAX_BUFFER_BYTES)?;
         if bytes.len() < want {
             return malformed(format!("buffer {i} is shorter than its byteLength"));
         }

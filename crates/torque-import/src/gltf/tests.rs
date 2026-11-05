@@ -135,7 +135,7 @@ fn free(_: u64) -> bool {
 }
 
 fn read_ok(bytes: &[u8]) -> Result<Model, ImportError> {
-    read(bytes, &mut |_| None, &Options::default(), &mut free)
+    read(bytes, &mut |_, _| None, &Options::default(), &mut free)
 }
 
 /// A `.glb`'s JSON as a value and its binary chunk.
@@ -197,15 +197,15 @@ fn a_gltf_with_data_uris_and_side_files_reads_like_its_glb() {
     let mut asked = Vec::new();
     let side = read(
         &text,
-        &mut |p| {
-            asked.push(p.to_string());
+        &mut |p, max| {
+            asked.push((p.to_string(), max));
             Some(bin.clone())
         },
         &Options::default(),
         &mut free,
     )
     .unwrap();
-    assert_eq!(asked, ["parts/sample data.bin"]);
+    assert_eq!(asked, [("parts/sample data.bin".to_string(), bin.len())]);
     let b64 = {
         const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut s = String::new();
@@ -227,7 +227,7 @@ fn a_gltf_with_data_uris_and_side_files_reads_like_its_glb() {
     doc["buffers"] = json!([{ "byteLength": bin.len(), "uri": "missing.bin" }]);
     let e = read(
         &serde_json::to_vec(&doc).unwrap(),
-        &mut |_| None,
+        &mut |_, _| None,
         &Options::default(),
         &mut free,
     );
@@ -432,7 +432,7 @@ fn the_node_tree_is_checked() {
 fn a_budget_that_runs_out_stops_the_read() {
     let glb = write_glb(&sample()).unwrap();
     let mut left = 200u64;
-    let r = read(&glb, &mut |_| None, &Options::default(), &mut |u| {
+    let r = read(&glb, &mut |_, _| None, &Options::default(), &mut |u| {
         left = left.saturating_sub(u);
         left > 0
     });
@@ -573,7 +573,7 @@ fn the_reader_never_panics_on_mutated_files() {
             };
             let Ok(model) = read(
                 &bytes,
-                &mut |_| Some(vec![0; 64]),
+                &mut |_, max| Some(vec![0; max.min(64)]),
                 &Options::default(),
                 &mut charge,
             ) else {

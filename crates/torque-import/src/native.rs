@@ -15,7 +15,7 @@ pub fn is_gltf_path(path: &[u8]) -> bool {
 
 /// The `.dts` bytes of the glTF `bytes`, paid for through `charge`.
 pub fn dts_bytes(bytes: &[u8], charge: Charge) -> Result<Vec<u8>, ImportError> {
-    let model = gltf::read(bytes, &mut |_| None, &Options::default(), charge)?;
+    let model = gltf::read(bytes, &mut |_, _| None, &Options::default(), charge)?;
     let shape = dts::to_dts(&model)?;
     let out = torque_shapes::write::write_dts(&shape);
     if out.len() > torque_shapes::MAX_DTS_BYTES {

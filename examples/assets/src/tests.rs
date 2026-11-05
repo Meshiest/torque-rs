@@ -772,7 +772,7 @@ fn a_riding_figure_rests_its_hands_on_its_thighs() {
 fn every_shape_through_a_glb_makes_the_same_dts() {
     for (name, model) in models() {
         let glb = crate::glb_of(&model).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let read = torque_import::gltf::read(&glb, &mut |_| None, &Default::default(), &mut free)
+        let read = torque_import::gltf::read(&glb, &mut |_, _| None, &Default::default(), &mut free)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         let back = torque_import::dts::to_dts(&read).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(
