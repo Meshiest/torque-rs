@@ -21,10 +21,16 @@
 //!   follow the same path, not two clocks.
 //! - **The bones**: the server lets the spine bones go, as a client draws another Player.
 //!
+//! - **The walk** (the engine's own, on both sides): a shape with a `walk` sequence that moves it forward walks at walking
+//!   pace instead of playing `run` or `back` slowly ([`walk_or`]); its thread steps by the ground covered like a moving
+//!   action's, held to no `maxTimeScale` ([`walk_limit`] keeps it near 1).
+//!
 //! The server reads it from the datablock's `hitboxes` field; the client from its host's option (a client cannot read a
 //! datablock's dynamic fields). With neither, both sides are TGE's.
 
 use collide::math::F3;
+
+use super::ground::ActionMotion;
 
 /// `sAnimationTransitionTime`: the seconds a new action blends in over.
 pub const TRANSITION: f32 = 0.25;
@@ -51,4 +57,73 @@ pub fn step_scale(step: F3, dt: f32, dir: F3, speed: f32, max: f32) -> f32 {
     }
     let along = step[0] * dir[0] + step[1] * dir[1] + step[2] * dir[2];
     (along / dt / speed).abs().min(max)
+}
+
+/// The name of the engine's walk action.
+pub const WALK: &[u8] = b"walk";
+/// The share past [`walk_limit`] a Player must go to change from walking to the faster action (and under it to change back).
+pub const WALK_MARGIN: f32 = 0.05;
+/// The table's run and back actions, which the walk stands in for at walking pace.
+const RUN: usize = 1;
+const BACK: usize = 2;
+
+/// The speed under which a Player walks instead of playing a faster moving action: the geometric mean of the two actions'
+/// own speeds, where each plays the same share off its pace (the walk faster than its own, the other slower).
+pub fn walk_limit(walk_speed: f32, faster_speed: f32) -> f32 {
+    (walk_speed * faster_speed).sqrt()
+}
+
+/// The walk action of an action list (`name`, whether it has a sequence, and its ground motion, in the list's order; the
+/// first `fixed` are the table's): `walk`, after the table, with a sequence whose ground motion goes forward.
+pub fn walk_action<'a>(
+    actions: impl IntoIterator<Item = (&'a [u8], bool, &'a ActionMotion)>,
+    fixed: usize,
+) -> Option<usize> {
+    actions
+        .into_iter()
+        .enumerate()
+        .skip(fixed)
+        .find_map(|(i, (name, has, m))| {
+            (name.eq_ignore_ascii_case(WALK) && has && m.speed > 0.0 && m.dir[1] > 0.5).then_some(i)
+        })
+}
+
+/// The walk in place of the pick `(chosen, forward)` at `speed` along the chosen action's direction, with the action now
+/// playing `now` (and whether forward) and `speed_of` each action's ground speed: `run` under its limit walks forward,
+/// `back` under its limit walks backward, past the limit by [`WALK_MARGIN`] from a walk and under it by as much from
+/// anything else.
+pub fn walk_or(
+    chosen: usize,
+    forward: bool,
+    speed: f32,
+    walk: usize,
+    speed_of: impl Fn(usize) -> Option<f32>,
+    now: (usize, bool),
+) -> (usize, bool) {
+    if !matches!(chosen, RUN | BACK) {
+        return (chosen, forward);
+    }
+    let (Some(w), Some(c)) = (speed_of(walk), speed_of(chosen)) else {
+        return (chosen, forward);
+    };
+    let ahead = chosen == RUN;
+    let walking = now == (walk, ahead);
+    let limit = walk_limit(w, c)
+        * if walking {
+            1.0 + WALK_MARGIN
+        } else {
+            1.0 - WALK_MARGIN
+        };
+    if speed < limit {
+        (walk, ahead)
+    } else {
+        (chosen, forward)
+    }
+}
+
+/// Whether a change from action `from` to `to` (each with whether it plays forward) keeps the thread's place in the loop:
+/// between the walk and `run`, both forward (their feet land at the same places in the loop).
+pub fn keeps_phase(from: (usize, bool), to: (usize, bool), walk: Option<usize>) -> bool {
+    let gait = |(a, f): (usize, bool)| f && (a == RUN || Some(a) == walk);
+    gait(from) && gait(to)
 }

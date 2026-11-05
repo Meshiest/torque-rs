@@ -581,12 +581,25 @@ fn walking_pace_walks_forward_and_backward_and_running_pace_runs() {
         anim.update(&shape, &mut instance, &moving(speed), 0.016);
         assert_eq!(anim.action(), want, "{speed}");
     }
-    // Synced: the server's TGE pick, so the run.
+    // Synced: the server walks by the same rule, so the walk.
     let shape = gait_shape(true);
     let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
     let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
     anim.set_synced(true);
     anim.update(&shape, &mut instance, &moving(2.1), 0.016);
+    assert_eq!(anim.action(), (anim.walk.unwrap(), true));
+    // The record carries the walk the synced server picked (an action past the table): the client picks it itself, so the
+    // record changes nothing, and a run picks the run.
+    let walk = anim.walk.unwrap();
+    let carried = PlayerMotion {
+        server_action: Some(ServerAction {
+            action: walk as u32,
+            hold: false,
+            at_end: false,
+        }),
+        ..moving(6.0)
+    };
+    anim.update(&shape, &mut instance, &carried, 0.016);
     assert_eq!(anim.action(), (1, true));
 }
 

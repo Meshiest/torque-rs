@@ -31,8 +31,9 @@
 //! margin ([`WALK_MARGIN`]) either way so a speed hovering at it does not flip the two. A change between `walk` and `run`
 //! keeps the thread's position (the walk's feet land where the run's legs reach furthest forward) and blends over
 //! [`TRANSITION`] seconds like any other. The walk's rate is the speed over its own, not held to `maxTimeScale` (the limit
-//! keeps it near 1). `side` stays TGE's at any speed, slowed by it. A shape without `walk`, a synced Player (its server picks
-//! by TGE's rules) and a shape whose `walk` has no forward ground motion keep TGE's pick.
+//! keeps it near 1). `side` stays TGE's at any speed, slowed by it. A shape without `walk`, or whose `walk` has no forward
+//! ground motion, keeps TGE's pick. A synced Player walks by the same rule as its server ([`synced::walk_or`]), its walk
+//! stepped by the ground covered.
 //!
 //! **Synced** ([`PlayerAnimation::set_synced`], a host's opt-in for a server whose Players have hitboxes): the rules above are the
 //! ones a hitbox Player's server follows too ([`torque_game::sim::player::synced`]), and a moving action steps by the ground
@@ -68,16 +69,7 @@ pub use torque_game::sim::player::synced::{JUMP_RISE_SPEED, STAND_JUMP_SPEED, TR
 pub const MAX_TIME_SCALE: f32 = 1.5;
 /// The smallest match a moving action must beat to be chosen over `root`.
 pub const MIN_MATCH: f32 = 0.1;
-/// The name of the engine's walk action (see the module docs).
-pub const WALK: &[u8] = b"walk";
-/// The share past [`walk_limit`] a Player must go to change from walking to the faster action (and under it to change back).
-pub const WALK_MARGIN: f32 = 0.05;
-
-/// The speed under which a Player walks instead of playing a faster moving action: the geometric mean of the two actions'
-/// own speeds, where each plays the same share off its pace (the walk faster than its own, the other slower).
-pub fn walk_limit(walk_speed: f32, faster_speed: f32) -> f32 {
-    (walk_speed * faster_speed).sqrt()
-}
+pub use torque_game::sim::player::synced::{WALK, WALK_MARGIN, walk_limit};
 
 /// TGE's action numbers.
 pub mod action {
@@ -395,13 +387,10 @@ impl PlayerAnimation {
             return;
         };
         // Walking and running forward keep their place in the loop (the engine's walk; TGE starts every action anew).
-        let gaits = [Some(action::FIRST_MOVE), self.walk];
-        let carried = (self.forward
-            && forward
-            && gaits.contains(&Some(self.action))
-            && gaits.contains(&Some(action)))
-        .then(|| instance.thread(self.action_thread).map(|t| t.pos))
-        .flatten();
+        let carried =
+            synced::keeps_phase((self.action, self.forward), (action, forward), self.walk)
+                .then(|| instance.thread(self.action_thread).map(|t| t.pos))
+                .flatten();
         self.action = action;
         self.forward = forward;
         self.wait = wait;
@@ -443,29 +432,18 @@ impl PlayerAnimation {
     /// The engine's walk in place of TGE's pick `(chosen, forward)` at `speed` along the chosen action's direction (see the
     /// module docs): `run` under its limit walks forward, `back` under its limit walks backward.
     fn walk_or(&self, chosen: usize, forward: bool, speed: f32) -> (usize, bool) {
-        const BACK: usize = 2;
-        let Some(walk) = self
-            .walk
-            .filter(|_| !self.synced && matches!(chosen, action::FIRST_MOVE | BACK))
-        else {
+        let Some(walk) = self.walk else {
             return (chosen, forward);
         };
-        let limit = walk_limit(
-            self.actions[walk].motion.speed,
-            self.actions[chosen].motion.speed,
-        );
-        let walking = self.action == walk && self.forward == (chosen == action::FIRST_MOVE);
-        let limit = limit
-            * if walking {
-                1.0 + WALK_MARGIN
-            } else {
-                1.0 - WALK_MARGIN
-            };
-        if speed < limit {
-            (walk, chosen == action::FIRST_MOVE)
-        } else {
-            (chosen, forward)
-        }
+        let speed_of = |i: usize| self.actions.get(i).map(|a| a.motion.speed);
+        synced::walk_or(
+            chosen,
+            forward,
+            speed,
+            walk,
+            speed_of,
+            (self.action, self.forward),
+        )
     }
 
     /// A mount began or ended. `onUnmount` plays `root` forward, neither held nor waited for, so the moves pick the actions
@@ -533,9 +511,15 @@ impl PlayerAnimation {
         let mut scale = 1.0;
         let walking = self.walk == Some(self.action);
         if walking {
-            let v = m.local_velocity();
-            let along = v[0] * a.motion.dir[0] + v[1] * a.motion.dir[1] + v[2] * a.motion.dir[2];
-            scale = (along / a.motion.speed).abs();
+            if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
+                let step = m.local([0, 1, 2].map(|i| to[i] - from[i]));
+                scale = synced::step_scale(step, dt, a.motion.dir, a.motion.speed, f32::INFINITY);
+            } else {
+                let v = m.local_velocity();
+                let along =
+                    v[0] * a.motion.dir[0] + v[1] * a.motion.dir[1] + v[2] * a.motion.dir[2];
+                scale = (along / a.motion.speed).abs();
+            }
         } else if self.action < action::MOVES && a.motion.velocity_scale && a.motion.speed != 0.0 {
             if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
                 let step = m.local([0, 1, 2].map(|i| to[i] - from[i]));
@@ -602,12 +586,13 @@ impl PlayerAnimation {
     }
 
     /// A new action from the server (`unpackUpdate`'s `setActionThread(action, true, hold, true, ...)`): one of the table's
-    /// changes nothing (the client picks those itself); another plays forward to its end, from its start, or at its end
-    /// already when the server's had ended.
+    /// changes nothing (the client picks those itself), nor does the walk a synced server picked unheld (the client picks it
+    /// by the same rule); another plays forward to its end, from its start, or at its end already when the server's had ended.
     fn server_set(&mut self, shape: &Shape, instance: &mut ShapeInstance, a: ServerAction) {
         let action = a.action as usize;
         if a.action == ghosts::player::NULL_ANIMATION
             || a.action < ghosts::player::NUM_TABLE_ACTION_ANIMS
+            || (Some(action) == self.walk && !a.hold)
             || self.actions.get(action).and_then(|x| x.sequence).is_none()
         {
             return;
@@ -628,14 +613,12 @@ impl PlayerAnimation {
 /// The engine's walk action of `actions` (see the module docs): `walk`, after the table, with a sequence whose ground motion
 /// goes forward.
 fn walk_action(actions: &[Action]) -> Option<usize> {
-    let fixed = TGE_ACTIONS.fixed.len();
-    actions.iter().enumerate().skip(fixed).find_map(|(i, a)| {
-        (a.name.eq_ignore_ascii_case(WALK)
-            && a.sequence.is_some()
-            && a.motion.speed > 0.0
-            && a.motion.dir[1] > 0.5)
-            .then_some(i)
-    })
+    synced::walk_action(
+        actions
+            .iter()
+            .map(|a| (a.name.as_slice(), a.sequence.is_some(), &a.motion)),
+        TGE_ACTIONS.fixed.len(),
+    )
 }
 
 #[cfg(test)]

@@ -11,8 +11,8 @@
 //! rate follows the velocity along the action's direction over its speed, at most `maxTimeScale`.
 //!
 //! A synced Player (one with hitboxes) follows its clients' rules instead ([`synced`]): the action thread steps every tick
-//! after the pick, by the ground covered for a moving action, a jump plays on the rise, a new action blends in and the spine
-//! bones are let go.
+//! after the pick, by the ground covered for a moving action, a jump plays on the rise, a new action blends in, the spine
+//! bones are let go, and it walks at walking pace when its shape has a walk (the engine's own, [`synced::walk_or`]).
 //!
 //! The shape work (`animate`, thread steps) is counted here and charged to the run by the tick when it next holds the `Vm`.
 //!
@@ -120,6 +120,12 @@ impl HostSkeleton {
         wait: bool,
         fsp: bool,
     ) {
+        // A synced walk and run keep their place in the loop, as the clients' do.
+        let now = self.threads().map(|p| (p.action as usize, p.forward));
+        let walk = self.info.walk.map(|w| w as usize);
+        let start = now
+            .filter(|&n| self.synced && synced::keeps_phase(n, (action as usize, forward), walk))
+            .and_then(|_| self.pos_of(self.threads().and_then(|p| p.action_thread)));
         let Some(st) = self.st.as_mut() else {
             return;
         };
@@ -130,6 +136,7 @@ impl HostSkeleton {
             fsp,
             force: false,
             blend: self.synced,
+            start,
         };
         // The out-of-range line needs the console; the server's own calls never ask past the table.
         let _ = action_thread(st, action as usize, request);
@@ -175,9 +182,31 @@ impl HostSkeleton {
             held: self.threads().is_some_and(|p| p.hold),
             synced: self.synced,
         };
-        let Some((action, forward)) = self.info.class.pick_action(&pick) else {
+        let Some((mut action, mut forward)) = self.info.class.pick_action(&pick) else {
             return;
         };
+        // A synced Player walks at walking pace, by its clients' rule (the engine's own).
+        if self.synced
+            && let Some(walk) = self.info.walk
+            && let Some(m) = self.info.motions.get(action as usize)
+        {
+            let along = pick.velocity[0] * m.dir[0]
+                + pick.velocity[1] * m.dir[1]
+                + pick.velocity[2] * m.dir[2];
+            let speed_of = |i: usize| self.info.motions.get(i).map(|m| m.speed);
+            let now = self
+                .threads()
+                .map_or((usize::MAX, true), |p| (p.action as usize, p.forward));
+            let (a, f) = synced::walk_or(
+                action as usize,
+                forward,
+                along,
+                walk as usize,
+                speed_of,
+                now,
+            );
+            (action, forward) = (u32::try_from(a).unwrap_or(action), f);
+        }
         self.set_action(s, action, forward, false, false, false);
     }
 
@@ -216,16 +245,23 @@ impl HostSkeleton {
             return;
         }
         let mut scale = 1.0f32;
-        if action < MOVES
+        let walking = self.info.walk == Some(action);
+        if (action < MOVES || walking)
             && let Some(m) = self.info.motions.get(action as usize)
-            && m.velocity_scale
+            && (m.velocity_scale || walking)
             && m.speed != 0.0
         {
             let moved = from.map_or(s.velocity.map(|v| v * dt), |(f, _)| {
                 [0, 1, 2].map(|i| position[i] - f[i])
             });
             let step = mul_v(&s.world_to_obj, moved);
-            scale = synced::step_scale(step, dt, m.dir, m.speed, self.info.max_time_scale);
+            // The walk is held to no maxTimeScale (its limit keeps it near 1), as on the clients.
+            let max = if walking {
+                f32::INFINITY
+            } else {
+                self.info.max_time_scale
+            };
+            scale = synced::step_scale(step, dt, m.dir, m.speed, max);
         }
         self.with_thread(th, |inst, _, t| {
             if let Some(th) = inst.thread_mut(t) {
