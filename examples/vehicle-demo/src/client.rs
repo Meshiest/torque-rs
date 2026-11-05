@@ -5,32 +5,38 @@
 //! **The socket** ([`NetMode`], the engine's [`torque::app::hosting`]). [`NetMode::Loopback`] binds the client's socket to
 //! `127.0.0.1` (the tests, a game for one); [`NetMode::Lan`] binds it as TGE binds one and talks to the local network. A game
 //! hosted here binds this computer's LAN address (or `--bind`'s; in [`NetMode::Loopback`] the loopback address), and the hosting
-//! client joins it at once.
+//! client joins it at once. A game played alone ([`VehicleDemo::play_alone`]) binds no socket: its server runs here on an
+//! in-memory link ([`GameClient::start_local`]), the client's socket set aside while it runs.
 //!
 //! **A step** ([`VehicleDemo::step`]): the keys in a seat, then the engine's client step ([`GameClient::step`]: the hosted
-//! server's ticks, then the client's); then what the scripts asked of the host: a game hosted (`$World::HostAsked`) or the
-//! world left (`$World::LeaveAsked`: the server stops).
+//! server's ticks, then the client's); then what the scripts asked of the host: a game played alone (`$World::AloneAsked`), a
+//! game hosted (`$World::HostAsked`) or the world left (`$World::LeaveAsked`: the server stops).
 //!
 //! **In a seat.** The keys set script globals ($Drive::Throttle, $Drive::Steer); before each step the driver's client turns them
 //! into the move's globals ([`VehicleDemo::drive_input`]): the throttle is the move's forward or backward action; the
 //! steering, a TGE WheeledVehicle's sum of the moves' yaws, is moved toward the held side's full lock (or back to the middle
 //! with no key held) at [`STEER_SECONDS`] a full lock, by a yaw of the difference to where the client predicts it now. Space
-//! holds the jump trigger, which the demo's Player hands to the buggy it drives: the brake ([`crate::seats`]). A passenger's
+//! holds the jump trigger, which the demo's Player hands to the buggy it drives: the brake ([`crate::seats`]). The moves made at
+//! the wheel hold [`crate::seats::DRIVE_TRIGGER`] (only their yaw steers); none other does. A passenger's
 //! keys move nothing.
 //!
 //! **A frame** ([`VehicleDemo::frame`]): the own figure where the client predicts it, the buggy where the client runs it, the
 //! canvas drawn, the hint line, and the eye: on foot behind the figure (or at its eyes, `Tab`); in a seat behind and above the
 //! buggy, turned round it by the mouse, kept above the ground, or (`Tab`) at the seated figure's eyes, looking along the buggy
 //! turned by the mouse as far as a head turns ([`VehicleDemo::seated_eye_point`]: just ahead of the face, so the head does not
-//! fill the view while the body, the hands on the wheel and the buggy are drawn).
+//! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` eases the camera from one to the other
+//! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden only once the camera has
+//! arrived at its eyes. Getting in or out cuts.
 
 use std::ops::{Deref, DerefMut};
 
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 
+use torque::app::camera_blend::CameraBlend;
 use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
 use torque::app::hosting::{join_address, lan_bind_address, register_join_natives};
+use torque::app::lights::WorldLights;
 use torque::app::terrain::Terrain;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
@@ -44,7 +50,7 @@ use torque_render_scene::source::{Eye, SceneSource as _};
 use crate::files::{GameFiles, TERRAIN_TEXTURE, TERRAIN_TILE};
 use crate::scene::WorldScene;
 use crate::seats::SeatedPlayerKind;
-use crate::server::{DEFAULT_PORT, ServerOptions, WorldServer};
+use crate::server::{ALONE_ADDR, DEFAULT_PORT, ServerOptions, WorldServer};
 use torque::app::ghosts::OwnView;
 pub use torque::app::hosting::NetMode;
 use torque_example_common::prediction::CubeClient;
@@ -72,6 +78,45 @@ impl Default for ClientOptions {
     }
 }
 
+/// How the program starts: on the menu, or in a game at once (`--solo`, `--host`, `--join <address>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    Menu,
+    Alone,
+    Host,
+    Join(String),
+}
+
+impl Start {
+    /// The start the flags ask for; more than one game is an error.
+    pub fn from_flags(solo: bool, host: bool, join: Option<String>) -> Result<Start, String> {
+        match (solo, host, join) {
+            (false, false, None) => Ok(Start::Menu),
+            (true, false, None) => Ok(Start::Alone),
+            (false, true, None) => Ok(Start::Host),
+            (false, false, Some(address)) => Ok(Start::Join(address)),
+            _ => Err("--solo, --host and --join each start a game: give one of them".to_string()),
+        }
+    }
+
+    /// Starts it on `game`.
+    pub fn apply(self, game: &mut VehicleDemo) -> Result<(), String> {
+        match self {
+            Start::Menu => Ok(()),
+            Start::Alone => game.play_alone(),
+            Start::Host => game.host_game(),
+            Start::Join(address) => {
+                let address = torque::app::hosting::parse_join_address(&address)?;
+                game.join(&address.to_string())
+            }
+        }
+    }
+}
+
+/// The client's address on the in-memory link of a game played alone.
+pub const ALONE_CLIENT: std::net::SocketAddrV4 =
+    std::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_000);
+
 /// The camera on foot: how far behind the figure, how high above its feet it looks, and how much it looks down.
 pub const CAMERA_DISTANCE: f32 = 5.5;
 pub const CAMERA_TARGET_HEIGHT: f32 = 1.7;
@@ -85,6 +130,8 @@ pub const DRIVE_FOLLOW: f32 = 4.0;
 pub const DRIVE_CLEARANCE: f32 = 0.8;
 /// Seconds from the middle to full lock.
 pub const STEER_SECONDS: f32 = 0.4;
+/// A tick of the client's moves (seconds).
+const TICK_SECONDS: f32 = 0.032;
 /// How near the buggy the figure must be for the hint to offer a ride (units).
 pub const HINT_REACH: f32 = 7.0;
 /// The seated first-person view: how far the head turns each way and looks down and up (radians), and how far ahead of the
@@ -92,8 +139,10 @@ pub const HINT_REACH: f32 = 7.0;
 pub const HEAD_TURN: f32 = 1.75;
 /// How far the seated head looks down at rest (radians): the hood, the hands and the road ahead in view.
 pub const HEAD_REST: f32 = 0.45;
-pub const HEAD_DOWN: f32 = 0.7;
-pub const HEAD_UP: f32 = 0.5;
+pub const HEAD_DOWN: f32 = 1.05;
+pub const HEAD_UP: f32 = 1.05;
+/// How far the camera in a seat looks up (negative) and down at most (radians): above the buggy, short of straight down.
+pub const DRIVE_PITCH_RANGE: (f32, f32) = (-0.5, 1.3);
 pub const EYE_AHEAD: f32 = 0.12;
 
 /// The predicted state of the buggy the client drives that the keys at the wheel read.
@@ -121,6 +170,11 @@ pub struct VehicleDemo {
     hint: String,
     /// The seated figure's `eye` node in the buggy's space, by seat.
     seat_eyes: [[f32; 3]; 2],
+    /// The headlights and the day of the world ([`WorldLights`]).
+    lights: WorldLights,
+    /// The camera's ease between first and third person, and the mode it last eased to: (first person, seated).
+    blend: CameraBlend,
+    camera_mode: Option<(bool, bool)>,
 }
 
 impl Deref for VehicleDemo {
@@ -168,6 +222,9 @@ impl VehicleDemo {
             drive_yaw: None,
             hint: String::new(),
             seat_eyes: [0, 1].map(torque_example_assets::buggy::seated_eye),
+            lights: WorldLights::default(),
+            blend: CameraBlend::default(),
+            camera_mode: None,
         })
     }
 
@@ -190,6 +247,16 @@ impl VehicleDemo {
         Ok(())
     }
 
+    /// Starts a game here that nobody else can join (module docs), and the client joins it.
+    pub fn play_alone(&mut self) -> Result<(), String> {
+        self.stop_hosting();
+        let name = format!("{}'s game", self.global("$Pref::Player::Name"));
+        let server = WorldServer::start_alone(&self.files, &name)?;
+        self.client.start_local(server, ALONE_CLIENT, ALONE_ADDR);
+        self.call("connectTo", &[ALONE_ADDR.to_string().as_str()])?;
+        Ok(())
+    }
+
     /// Joins the game at `address` (`a.b.c.d:port`).
     pub fn join(&mut self, address: &str) -> Result<(), String> {
         self.stop_hosting();
@@ -200,6 +267,8 @@ impl VehicleDemo {
     pub fn stop_hosting(&mut self) {
         self.client.stop_hosting();
         self.scene.clear();
+        self.blend.reset();
+        self.camera_mode = None;
     }
 
     /// A world view on `gpu`, the terrain its ground.
@@ -240,9 +309,11 @@ impl VehicleDemo {
         self.flag("$World::FirstPerson")
     }
 
-    /// Sets where the camera on foot is.
+    /// Puts the camera there at once, without easing (the shots).
     pub fn set_first_person(&mut self, on: bool) {
         self.set_global("$World::FirstPerson", if on { "1" } else { "0" });
+        self.camera_mode = Some((on, self.seated()));
+        self.blend.reset();
     }
 
     /// The scene of the client's ghosts as the last frame left it (the buggy's dust and tracks).
@@ -255,16 +326,112 @@ impl VehicleDemo {
         self.scene.own()
     }
 
-    /// The buggy's ghost.
+    /// The buggy the client's figure is in, else the one nearest it (each player has one), else the first.
     pub fn buggy_ghost(&self) -> Option<u32> {
         self.with_world(|w| {
-            w.records
-                .ghosts
+            let r = &w.records;
+            let at = |i: u32| {
+                r.ghosts
+                    .get(&i)
+                    .and_then(|g| g.pose())
+                    .and_then(|p| match p {
+                        torque::ghost_world::world::Pose::Euler { position, .. }
+                        | torque::ghost_world::world::Pose::Quat { position, .. } => Some(position),
+                        _ => None,
+                    })
+            };
+            let own = r.control.object;
+            if let Some((on, _)) = own.and_then(|o| r.mount_of(o)) {
+                return Some(on);
+            }
+            let me = self
+                .scene
+                .own()
+                .map(|f| f.position)
+                .or_else(|| own.and_then(at));
+            r.ghosts
                 .iter()
-                .find(|(_, g)| g.class == Some(TgeClass::WheeledVehicle))
-                .map(|(&i, _)| i)
+                .filter(|(_, g)| g.class == Some(TgeClass::WheeledVehicle))
+                .map(|(&i, _)| {
+                    let d = match (me, at(i)) {
+                        (Some(a), Some(b)) => (a[0] - b[0]).hypot(a[1] - b[1]),
+                        _ => f32::MAX,
+                    };
+                    (d, i)
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                .map(|(_, i)| i)
         })
         .flatten()
+    }
+
+    /// The buggy's wheels' contact points as the client draws them this frame (the ones on the ground).
+    pub fn wheel_contacts(&self) -> Vec<[f32; 3]> {
+        let Some(buggy) = self.buggy_ghost() else {
+            return Vec::new();
+        };
+        self.with_world(|w| {
+            w.records
+                .vehicle_look
+                .get(&buggy)
+                .map_or_else(Vec::new, |l| {
+                    l.wheels
+                        .iter()
+                        .filter(|w| w.fitted && w.contact)
+                        .map(|w| w.point)
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+    }
+
+    /// Where the client sits the buggy's `steering` thread (0 full right, 0.5 straight ahead, 1 full left).
+    pub fn steering_place(&self) -> Option<f32> {
+        let buggy = self.buggy_ghost()?;
+        self.with_world(|w| torque_render_scene::world::steering_place(&w.records, buggy))
+            .flatten()
+    }
+
+    /// The buggy's fitted wheels as the client draws them this frame: each one's spin (turns, 0 to 1) and whether it is in
+    /// contact; none while the client does not run the buggy.
+    pub fn wheel_spins(&self) -> Vec<(f32, bool)> {
+        self.buggy_ghost()
+            .map_or_else(Vec::new, |g| self.wheel_spins_of(g))
+    }
+
+    /// [`VehicleDemo::wheel_spins`] of the buggy whose ghost is `buggy`.
+    pub fn wheel_spins_of(&self, buggy: u32) -> Vec<(f32, bool)> {
+        self.with_world(|w| {
+            w.records
+                .vehicle_look
+                .get(&buggy)
+                .map(|l| {
+                    l.wheels
+                        .iter()
+                        .filter(|w| w.fitted)
+                        .map(|w| (w.apos, w.contact))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Whether the client plays a script thread on the buggy (its roof lamps lit while the headlight is on; a stopped one is
+    /// back at its start, the lamps out).
+    pub fn roof_lamps_lit(&self) -> bool {
+        let Some(buggy) = self.buggy_ghost() else {
+            return false;
+        };
+        self.with_world(|w| {
+            w.records.threads.get(&buggy).is_some_and(|slots| {
+                slots
+                    .iter()
+                    .flatten()
+                    .any(|t| t.state == torque::ghost_world::threads::ThreadState::Play)
+            })
+        })
+        .unwrap_or(false)
     }
 
     /// What the client's ghost of its own figure is mounted on (a ghost and its node), as the figure's record says.
@@ -281,8 +448,9 @@ impl VehicleDemo {
         self.with_world(|w| {
             w.records
                 .ghosts
-                .keys()
-                .filter_map(|&g| match w.records.mount_of(g) {
+                .iter()
+                .filter(|(_, g)| g.class == Some(TgeClass::Player))
+                .filter_map(|(&g, _)| match w.records.mount_of(g) {
                     Some((on, node)) if on == buggy => Some((g, node)),
                     _ => None,
                 })
@@ -345,30 +513,49 @@ impl VehicleDemo {
 
     /// The keys at the wheel made into the next move's globals (module docs); `ms` the time the step covers.
     pub fn drive_input(&mut self, ms: u32) {
-        if !self.driving() {
-            return;
-        }
-        let Some(d) = self.driven() else {
+        let at_wheel = self.driving().then(|| self.driven()).flatten();
+        self.hold_trigger(crate::seats::DRIVE_TRIGGER, at_wheel.is_some());
+        let Some(d) = at_wheel else {
+            if self.driving() {
+                self.set_global("$mvYaw", "0");
+            }
             return;
         };
         let throttle = self.number("$Drive::Throttle").clamp(-1.0, 1.0);
         let steer = self.number("$Drive::Steer").clamp(-1.0, 1.0);
         self.set_global("$mvForwardAction", &throttle.max(0.0).to_string());
         self.set_global("$mvBackwardAction", &(-throttle).max(0.0).to_string());
-        // The steering: a yaw of the difference to the held side's lock (A steers left: the steering's negative side).
+        // The steering: a yaw of the difference to the held side's lock (A steers left: the steering's negative side), at most
+        // a tick's share of the rate: the next move takes the global as it stands when its tick comes (a step shorter than a tick
+        // sets it again, it does not add), and the predicted steering moves a tick at a time.
+        let _ = ms;
         let target = -steer * d.max_steering;
-        let rate = d.max_steering / STEER_SECONDS * ms as f32 / 1000.0;
+        let rate = d.max_steering / STEER_SECONDS * TICK_SECONDS;
         let turn = (target - d.steering).clamp(-rate, rate);
         self.set_global("$mvYaw", &turn.to_string());
+    }
+
+    /// Holds trigger `i` on the next moves (an odd `$mvTriggerCount<i>`) or lets it go.
+    fn hold_trigger(&mut self, i: usize, on: bool) {
+        let name = format!("$mvTriggerCount{i}");
+        let count = self.number(&name) as i64;
+        if (count % 2 == 1) != on {
+            self.set_global(&name, &(count + 1).to_string());
+        }
     }
 
     /// `ms` of the clock (module docs).
     pub fn step(&mut self, ms: u32) {
         self.drive_input(ms);
         self.client.step(ms);
-        if self.take_flag("$World::HostAsked")
-            && let Err(e) = self.host_game()
-        {
+        let asked = if self.take_flag("$World::AloneAsked") {
+            Some(self.play_alone())
+        } else if self.take_flag("$World::HostAsked") {
+            Some(self.host_game())
+        } else {
+            None
+        };
+        if let Some(Err(e)) = asked {
             eprintln!("vehicle-demo: {e}");
             if let Some(status) = self.vm().objects().find(b"MenuStatus") {
                 let text = format!("Could not start the game: {e}");
@@ -405,6 +592,23 @@ impl VehicleDemo {
             Some(f) => with_fov(self.foot_eye(&f)),
             None => with_fov(look_at([-12.0, -14.0, 28.0], [0.0, 0.0, 20.0])),
         }
+    }
+
+    /// The eye drawn this frame: [`VehicleDemo::eye`], eased from the last mode's after a switch (module docs).
+    pub fn drawn_eye(&mut self, dt: f32) -> Eye {
+        let target = self.eye(dt);
+        let terrain = &self.terrain;
+        self.blend.eye(target, |mut p| {
+            if let Some(ground) = terrain.height(p[0], p[1]) {
+                p[2] = p[2].max(ground + DRIVE_CLEARANCE);
+            }
+            p
+        })
+    }
+
+    /// Whether the camera is easing between modes.
+    pub fn camera_blending(&self) -> bool {
+        !self.blend.arrived()
     }
 
     /// The seated figure's look in the buggy's space: along the buggy turned by the mouse (`$Drive::OrbitYaw`,
@@ -466,7 +670,8 @@ impl VehicleDemo {
         self.drive_yaw = Some(yaw);
         let target = [p[0], p[1], p[2] + DRIVE_TARGET_HEIGHT];
         let orbit_yaw = self.number("$Drive::OrbitYaw");
-        let pitch = DRIVE_PITCH + self.number("$Drive::OrbitPitch");
+        let pitch = (DRIVE_PITCH + self.number("$Drive::OrbitPitch"))
+            .clamp(DRIVE_PITCH_RANGE.0, DRIVE_PITCH_RANGE.1);
         self.orbit(target, yaw + orbit_yaw, pitch, DRIVE_DISTANCE)
     }
 
@@ -520,7 +725,14 @@ impl VehicleDemo {
     /// drawn to the frame, the figures posed, the buggy's dust and tracks laid.
     pub fn update_scene(&mut self, dt: f32) {
         self.client.predict_frame();
-        let hide = self.first_person() && !self.seated();
+        let mode = (self.first_person(), self.seated());
+        match self.camera_mode.replace(mode) {
+            Some(last) if last.1 != mode.1 => self.blend.reset(),
+            Some(last) if last.0 != mode.0 => self.blend.switch(),
+            _ => {}
+        }
+        self.blend.advance(dt);
+        let hide = mode.0 && !mode.1 && self.blend.arrived();
         let mut st = self.client.host.client.borrow_mut();
         match st.conn.conn.as_mut() {
             Some(conn) => {
@@ -534,8 +746,41 @@ impl VehicleDemo {
                     &self.terrain,
                     dt,
                 );
+                self.lights.update(&conn.world.records, dt);
             }
-            None => self.scene.clear(),
+            None => {
+                self.scene.clear();
+                self.lights.clear();
+            }
+        }
+    }
+
+    /// Where the day's sun (or moon) is as the client runs the server's TimeOfDay, towards it; none before one is ghosted.
+    pub fn sun(&self) -> Option<[f32; 3]> {
+        self.lights.sun()
+    }
+
+    /// Whether the buggy's headlight is on, as the client's ghost of it says; none before it is ghosted.
+    pub fn headlight_on(&self) -> Option<bool> {
+        let buggy = self.buggy_ghost()?;
+        self.with_world(|w| {
+            w.records
+                .of_class(TgeClass::SpotLight)
+                .filter(|(i, _)| w.records.mount_of(*i).is_some_and(|m| m.0 == buggy))
+                .find_map(|(_, g)| match g.record.as_ref() {
+                    Some(torque::ghosts::TgeRecord::SpotLight(r)) => r.enabled,
+                    _ => None,
+                })
+        })
+        .flatten()
+    }
+
+    /// The spot lights the client draws (each on, where it rides).
+    pub fn spot_lights(&mut self) -> Vec<torque_render_scene::hd::HdSpot> {
+        let st = self.client.host.client.borrow();
+        match st.conn.conn.as_ref() {
+            Some(conn) => self.lights.spots(&self.files.kit, &conn.world.records),
+            None => Vec::new(),
         }
     }
 
@@ -549,7 +794,7 @@ impl VehicleDemo {
         }
         let dt = self.client.take_frame_time();
         self.update_scene(dt);
-        let eye = self.eye(dt);
+        let eye = self.drawn_eye(dt);
         let objects = {
             let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
@@ -558,6 +803,13 @@ impl VehicleDemo {
             }
         };
         view.set_objects(objects);
+        {
+            let st = self.client.host.client.borrow();
+            if let Some(conn) = st.conn.conn.as_ref() {
+                self.lights
+                    .apply(view, &self.files.kit, &conn.world.records);
+            }
+        }
         let hint = self.hint_text();
         if hint != self.hint {
             let _ = self.call("setHint", &[&hint]);

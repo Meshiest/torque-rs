@@ -2,8 +2,9 @@
 //! map (`startWorld`), its Players the demo's ([`crate::seats`]).
 //!
 //! **The socket.** The server binds one UDP socket on the address it is given: `127.0.0.1` keeps the game on this computer (the
-//! tests, a game for one), a private LAN address opens it to the local network. The LAN list's pings and queries are answered
-//! on the same socket.
+//! tests), a private LAN address opens it to the local network. The LAN list's pings and queries are answered on the same
+//! socket. A game played alone ([`WorldServer::start_alone`]) binds none: the server listens on an in-memory transport at
+//! [`ALONE_ADDR`] that only the client in this process reaches, so nobody on the network sees or joins it.
 //!
 //! **Files.** The server reads its files from memory: the asset kit under `kit/` (the shapes the datablocks load, the terrain
 //! the `TerrainBlock` reads) and the game folder's scripts and map ([`GameFiles`]).
@@ -13,7 +14,7 @@
 //! client.
 
 use std::borrow::{Borrow, BorrowMut};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::{Deref, DerefMut};
 
 use torque::app::server::{GameServer, Listen, ServerStart};
@@ -23,6 +24,10 @@ use torque::vehicle::VehicleState;
 use crate::files::{GameFiles, MISSION};
 
 pub use torque::app::server::DEFAULT_PORT;
+
+/// The server's address on the in-memory link of a game played alone.
+pub const ALONE_ADDR: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
 
 /// How a server is started.
 #[derive(Debug, Clone)]
@@ -41,15 +46,26 @@ pub struct WorldServer(pub GameServer);
 impl WorldServer {
     /// A server bound as `options` say that has run `server.cs` and started the map.
     pub fn start(files: &GameFiles, options: &ServerOptions) -> Result<WorldServer, String> {
+        let listen = Listen::Udp {
+            address: options.address,
+            port: options.port,
+            public: false,
+        };
+        WorldServer::start_on(files, listen, &options.name)
+    }
+
+    /// A server for a game played alone, on the in-memory transport at [`ALONE_ADDR`] (module docs), that has run `server.cs`
+    /// and started the map.
+    pub fn start_alone(files: &GameFiles, name: &str) -> Result<WorldServer, String> {
+        WorldServer::start_on(files, Listen::Memory(ALONE_ADDR), name)
+    }
+
+    fn start_on(files: &GameFiles, listen: Listen, name: &str) -> Result<WorldServer, String> {
         GameServer::start_with(
             files.mem_files(),
             &ServerStart {
-                listen: Listen::Udp {
-                    address: options.address,
-                    port: options.port,
-                    public: false,
-                },
-                globals: &[("$Pref::Server::Name", &options.name)],
+                listen,
+                globals: &[("$Pref::Server::Name", name)],
                 start: "startWorld",
                 args: &[MISSION],
             },
@@ -96,6 +112,35 @@ impl WorldServer {
         self.figure_position_of(self.figure()?)
     }
 
+    /// Sets the map's day (`WorldDay`) to `time` (0 sunrise, 0.25 noon, 0.5 sunset), running on or held there.
+    pub fn set_day(&mut self, time: f32, play: bool) -> Result<(), String> {
+        let day = self
+            .vm()
+            .objects()
+            .find(b"WorldDay")
+            .ok_or("the map has no WorldDay")?;
+        let vm = self.0.vm_mut();
+        vm.call_method(day, b"setTimeOfDay", &[time.to_string().into_bytes()])
+            .map_err(|e| e.to_string())?;
+        vm.call_method(
+            day,
+            b"setPlay",
+            &[if play { b"1".to_vec() } else { b"0".to_vec() }],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// The action figure `id` plays (its action thread's).
+    pub fn figure_action_of(&self, id: u32) -> Option<String> {
+        let st = torque::game::scene::ext::get(self.vm().objects(), id)?
+            .shape
+            .as_ref()?;
+        let p = st.player.as_ref()?;
+        let a = p.actions.get(usize::try_from(p.action).ok()?)?;
+        Some(String::from_utf8_lossy(&a.name).into_owned())
+    }
+
     /// What figure `id` is mounted on and its seat (the mount node).
     pub fn seat_of(&self, id: u32) -> Option<(u32, u32)> {
         let (on, node) = torque::game::sim::mount::link(self.vm(), id);
@@ -110,6 +155,35 @@ impl WorldServer {
     /// The buggy (`$World::Buggy`).
     pub fn buggy(&self) -> Option<u32> {
         self.object("$World::Buggy")
+    }
+
+    /// Each client's own buggy (`%client.buggy`), in the order the clients joined (none: it was given none).
+    pub fn client_buggies(&self) -> Vec<Option<u32>> {
+        let objects = self.vm().objects();
+        let Some(members) = objects
+            .find(b"ClientGroup")
+            .and_then(|g| objects.get(g))
+            .and_then(|g| g.members())
+        else {
+            return Vec::new();
+        };
+        members
+            .as_slice()
+            .iter()
+            .map(|&c| objects.find(&objects.field(c, b"buggy", b"")?))
+            .collect()
+    }
+
+    /// How many buggies the world has (`$World::Buggies`).
+    pub fn buggy_count(&self) -> i64 {
+        self.vm()
+            .global("$World::Buggies")
+            .map_or(0, |v| i64::from(torque::script::text::atoi(&v)))
+    }
+
+    /// Where buggy `id` is, as the server's step holds it.
+    pub fn buggy_position_of(&self, id: u32) -> Option<F3> {
+        torque::game::sim::vehicle::state(self.vm(), id).map(VehicleState::position)
     }
 
     /// The buggy's state as the server's step holds it.

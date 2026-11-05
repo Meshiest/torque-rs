@@ -92,12 +92,27 @@ The first development version. Nothing is published yet; this is what exists.
   bits as TGE's), and a Player that drives a WheeledVehicle sends the vehicle's packet data after its own.
 - `torque-client`: TGE's feed reads a WheeledVehicleData's wheel count from its shape (the game's files,
   `ClientGame::file_reader`, which the prediction reads the driven vehicle's shape from too).
+- `torque::app::lights`: a client's engine spot lights and its day (TimeOfDay, ScatterSky) into the world view
+  (`WorldView::set_spots`, `WorldView::set_day`: the sun, ambient, fog, sky and clouds follow the day).
+- `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
+  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
+- `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
+  while it runs.
+- `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
+  night, "Play alone" (and `--solo`: no socket for the game, nobody on the network sees it), and Tab easing between the
+  eyes and the chase camera.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- `torque-net`: a ghost-always object's update keeps the mask bits its pack could not send (a light mounted on an object
+  the connection had no ghost of yet), so a later update sends them.
+- `torque-server`: Torque's net game sends a ShapeBase's script threads (`playThread`; it sent none).
+- `torque::app::view`: a day whose ScatterSky names no shadow color keeps the daylight's (the shadows were black).
+- `torque-client`: a Player that gets off its mount plays `root` and picks its actions by its moves again (it went on
+  showing the seated action the server had set).
 - `torque-game`: a shape with fewer than eight collision details (the bounds report and the hull slots read past its
   lists); the class specs name TGE's console methods (the crate's natives were refused without them), and `SceneObject`,
   `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
