@@ -134,7 +134,8 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
   to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
 - The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
-  meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world.
+  meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
+  the engine's own classes to every client).
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
   while it runs.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
