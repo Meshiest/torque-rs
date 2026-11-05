@@ -18,7 +18,10 @@ debugger, telnet console, journaling) are build-time features, so a finished gam
 | `torque-ts-compiler` | the TorqueScript compiler |
 | `torque-collide` | convexes, GJK, polygon lists, working sets, object type masks |
 | `torque-shapes` | DTS shapes and DSQ sequences |
-| `torque-shape-builder` | a builder of shape models from code: nodes, box and prism meshes, details, materials and sequences |
+| `torque-shape-builder` | a builder of shape models from code: nodes, box and prism meshes, skin meshes, details, materials and sequences |
+| `torque-modelcore` | the format-neutral model layer: nodes, meshes, skins, materials, detail levels, sampled animations |
+| `torque-import` | model readers and writers: glTF 2.0 into the model layer, the model layer into `.dts` shapes and back; native glTF shapes |
+| `torque-convert` | the converter command: models (glTF, DTS) into `.dts` or `.glb`, `.map` brushes into interiors |
 | `torque-sim` | the process list, Player, AIPlayer, Item, Projectile, ShapeBase images |
 | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
 | `torque-scene` | the scene container: bins, searches, a scene object's transform maths |
@@ -28,7 +31,7 @@ debugger, telnet console, journaling) are build-time features, so a finished gam
 | `torque-client` | the client's engine half: the connection to a server, the prediction, action maps, the server query, window glue |
 | `torque-mapcore` | the format-neutral map layer |
 | `torque-maps` | Torque interior, terrain and material-list files; a `.dif` writer |
-| `torque-interior-builder` | interiors (`.dif`) built from brushes made in code or read from a `.map`; the `torque-convert` command |
+| `torque-interior-builder` | interiors (`.dif`) built from brushes made in code or read from a `.map` |
 | `torque-net` | NetConnection, ghosting, events, BitStream, string compression |
 | `torque-ghosts` | ghost record codecs: the layout framework, the class registry, the parent parts and the engine's object layouts |
 | `torque-ghost-world` | the client's world of ghosts: records merged, datablocks, the control object, mounted images, script threads, effects |
