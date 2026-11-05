@@ -216,11 +216,13 @@ impl WorldView {
             .iter()
             .map(|d| HdDraw::from_fixed(d, material::KIND_PLANE, &local))
             .collect();
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
         self.statics_changed = true;
     }
 
     fn put_floor(&mut self, floor: Draw, local: &[usize]) {
         self.scene.planes = vec![HdDraw::from_fixed(&floor, material::KIND_PLANE, local)];
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
         self.statics_changed = true;
     }
 
