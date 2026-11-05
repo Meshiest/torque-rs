@@ -22,6 +22,7 @@ pub mod terrain;
 pub mod textures;
 pub mod track;
 pub mod trees;
+pub mod walk;
 
 use std::io;
 use std::path::{Path, PathBuf};

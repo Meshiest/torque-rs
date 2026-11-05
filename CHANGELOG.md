@@ -240,12 +240,20 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::walk`): each foot
+  lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
+  down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
+  landing where `run`'s left leg reaches furthest forward. The feet turn at new `ankle_l` and `ankle_r` nodes. A test
+  holds a planted foot to under 5% of the ground's speed.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
+  Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
+  speed).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).
