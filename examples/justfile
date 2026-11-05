@@ -115,6 +115,11 @@ level-demo-shots dir="../target/level-demo-shots":
 kit-shots dir="../target/kit-shots":
     cargo run -p torque-example-common --release --example kit-shots -- {{dir}}
 
+# A clip of the kit's figure walking, running and walking backward (side and three-quarter views), drawn offscreen into
+# `dir` as an mp4 (needs ffmpeg) and a strip of frames
+walk-clip dir="../target/walk-clip":
+    cargo run -p torque-example-common --release --example walk-clip -- {{dir}}
+
 # The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
 # `--name`, `--map`, `--ticks N` (stop after N ticks)
 fps-server *args:

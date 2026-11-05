@@ -244,12 +244,32 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
+  lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
+  down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
+  landing where `run`'s left leg reaches furthest forward. The feet turn at new `ankle_l` and `ankle_r` nodes. A test
+  holds a planted foot to under 5% of the ground's speed.
+- The example kit's figure's `run` is worked out the same way and bounces: a short flight between steps, the hips sinking as
+  the body passes over the planted foot and rising into the air, the heel kicked up and the knee driven forward through the
+  swing, its planted feet held by the same test.
+- `torque-client`: a Player walks at walking pace (`player_anim`, the engine's own `walk` action): a shape with a forward
+  `walk` plays it instead of `run` under the geometric mean of the two speeds, and backward instead of `back` under that of
+  the walk's and the back's, with a 5% margin either way; walk and run keep their place in the loop as they blend. A shape
+  without `walk` keeps TGE's pick.
+- `torque-game`: a synced Player (one with hitboxes) walks by the same rule (`synced::walk_or`), its walk stepped by the
+  ground covered and keeping its place in the loop as it changes to and from the run, so its hitboxes follow the walk the
+  clients draw; a Player without hitboxes keeps TGE's pick.
+- `just examples/walk-clip`: a clip of the kit's figure walking, running and walking backward, its action chosen by the
+  client's Player animation, drawn offscreen from the side and three-quarters (an mp4 through ffmpeg, and a strip).
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
+  Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
+  speed).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).

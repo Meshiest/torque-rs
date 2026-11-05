@@ -56,6 +56,9 @@ pub struct PlayerInfo {
     pub max_time_scale: f32,
     /// `maxFreelookAngle` as the ghost record divides by it.
     pub max_freelook: f32,
+    /// The engine's walk action, when the shape has one that moves it forward ([`synced::walk_action`]): a synced Player
+    /// walks at walking pace.
+    pub walk: Option<u32>,
 }
 
 impl PartialEq for PlayerInfo {
@@ -67,6 +70,7 @@ impl PartialEq for PlayerInfo {
             && self.look_action == other.look_action
             && self.max_time_scale == other.max_time_scale
             && self.max_freelook == other.max_freelook
+            && self.walk == other.walk
     }
 }
 
@@ -224,6 +228,7 @@ pub fn build_info(vm: &Vm, db: ObjId) -> Option<PlayerInfo> {
     let max_time_scale = float(vm, db, b"maxTimeScale", 1.5);
     let mut motions = Vec::new();
     let mut look_action = 0;
+    let mut walk_action = None;
     if let Some(kept) = shape_of(vm, db)
         && let Some(shape) = kept.shape.as_ref()
     {
@@ -250,6 +255,14 @@ pub fn build_info(vm: &Vm, db: ObjId) -> Option<PlayerInfo> {
                 look_action = u32::try_from(i).unwrap_or(0);
             }
         }
+        walk_action = synced::walk_action(
+            actions
+                .iter()
+                .zip(&motions)
+                .map(|(a, m)| (a.name.as_slice(), a.sequence != -1, m)),
+            table.fixed.len(),
+        )
+        .and_then(|i| u32::try_from(i).ok());
         d.action_count = u32::try_from(actions.len()).unwrap_or(0);
         d.action_list = motions
             .iter()
@@ -265,6 +278,7 @@ pub fn build_info(vm: &Vm, db: ObjId) -> Option<PlayerInfo> {
         motions,
         look_action,
         max_time_scale,
+        walk: walk_action,
     })
 }
 
@@ -450,6 +464,7 @@ pub fn play_action(
         fsp,
         force: false,
         blend,
+        start: None,
     };
     let message = shapebase::action_thread(&mut st, action as usize, request);
     let none = crate::sim_classes::sim_classes(vm).action_table().none;
@@ -588,6 +603,7 @@ impl EngineClass for PlayerClass {
                 fsp: false,
                 force: true,
                 blend: false,
+                start: None,
             };
             let _ = shapebase::action_thread(&mut st, 0, request);
             let none = crate::sim_classes::sim_classes(vm).action_table().none;
