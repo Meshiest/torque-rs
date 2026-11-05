@@ -393,3 +393,21 @@ fn the_tires_throw_dust_and_lay_tracks_on_the_terrain_only_while_they_roll_on_it
     assert_eq!(game.scene().dust_particles(), 0);
     assert_eq!(game.scene().track_segments(), stopped);
 }
+
+/// A name typed in the menu is looked up off the frame (`localhost`, from the system's hosts), then joined.
+#[test]
+fn a_typed_name_is_looked_up_and_joined() {
+    let mut a = host();
+    let mut b = client("Bob");
+    let port = a.hosted_address().expect("the hosted address").port();
+    let typed = format!("AddressEdit.setValue(\"localhost:{port}\");");
+    b.call("eval", &[typed.as_str()]).unwrap();
+    b.call("joinAddress", &[]).unwrap();
+    let said = b.call("eval", &["return MenuStatus.getValue();"]).unwrap();
+    assert_eq!(said, "Looking up localhost...");
+    assert!(
+        until(&mut [&mut a, &mut b], |g| g[1].in_world()),
+        "{:#?}",
+        a.server_log
+    );
+}

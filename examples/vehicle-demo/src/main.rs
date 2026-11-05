@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if host {
         game.host_game()?;
     } else if let Some(address) = join {
-        let address = torque::app::hosting::parse_join_address(&address)?;
+        let address = torque::app::hosting::resolve_join_address(&address)?;
         game.join(&address.to_string())?;
     }
     torque::app::window::run(game)?;
