@@ -809,6 +809,34 @@ impl HdFeatures {
     };
 }
 
+/// Which passes read what earlier frames left (all by default). The ghosting check (`examples/ghosting.rs`) turns each off on
+/// its own to measure its share of a trail: off, that pass starts its history again every frame (its per-frame noise still turns).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Histories {
+    /// The TAA's history (off: each frame's jittered image as it is).
+    pub taa: bool,
+    /// The ambient occlusion's accumulation.
+    pub ao: bool,
+    /// The screen-space reflections' history.
+    pub ssr: bool,
+    /// The volumetric clouds' reprojected history.
+    pub clouds: bool,
+    /// The automatic exposure's adaptation.
+    pub exposure: bool,
+}
+
+impl Default for Histories {
+    fn default() -> Histories {
+        Histories {
+            taa: true,
+            ao: true,
+            ssr: true,
+            clouds: true,
+            exposure: true,
+        }
+    }
+}
+
 /// What the forward pass writes: the shaded frame, or a visibility the shadows' checks read from the HDR target.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DebugView {
@@ -1034,6 +1062,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     /// The brute-force light loop instead of the clusters (the clusters check's reference).
     pub brute_force_lights: bool,
     pub features: HdFeatures,
+    /// The histories the passes keep ([`Histories`]: all by default).
+    pub histories: Histories,
     pub debug: DebugView,
     /// What the last frame drew.
     pub stats: DrawStats,
@@ -2290,6 +2320,7 @@ impl<E: HdExtension> HdWorld<E> {
             output: Output::Hdr,
             brute_force_lights: false,
             features: HdFeatures::default(),
+            histories: Histories::default(),
             debug: DebugView::Off,
             stats: DrawStats::default(),
             refl,
@@ -4962,6 +4993,12 @@ impl<E: HdExtension> HdWorld<E> {
         if remade || self.temporal.is_cut(E::mode(scene), camera.eye) {
             self.reset_history();
         }
+        if !self.histories.clouds {
+            self.clouds.reset();
+        }
+        if !self.histories.exposure {
+            self.exposure.reset();
+        }
         cpu_mark!("begin: targets");
         let icam = camera.sized(iw, ih);
         let j = if taa {
@@ -5004,7 +5041,11 @@ impl<E: HdExtension> HdWorld<E> {
                 j[0],
                 j[1],
                 (self.temporal.frame % 1024) as f32,
-                if self.temporal.taa_written { 1.0 } else { 0.0 },
+                if self.temporal.taa_written && self.histories.taa {
+                    1.0
+                } else {
+                    0.0
+                },
             ],
         );
         let method = match pq.ao {
@@ -5024,7 +5065,11 @@ impl<E: HdExtension> HdWorld<E> {
         push_f32(
             &mut post_bytes,
             &[
-                if self.temporal.ao_written { 1.0 } else { 0.0 },
+                if self.temporal.ao_written && self.histories.ao {
+                    1.0
+                } else {
+                    0.0
+                },
                 0.0,
                 0.0,
                 0.0,

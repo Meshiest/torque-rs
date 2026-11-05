@@ -818,7 +818,7 @@ impl<E: HdExtension> HdWorld<E> {
             ext,
             levels,
             rq.ssr_steps.max(32),
-            self.refl.history_valid && ssr,
+            self.refl.history_valid && ssr && self.histories.ssr,
             time,
             false,
             &shifts,

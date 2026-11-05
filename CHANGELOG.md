@@ -240,6 +240,12 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- `torque-render-hd`: a ghosting check (`cargo run -p torque-render-hd --release --example ghosting`): scripted scenes (a
+  moving shape's shadow under a still camera, a fast sun, a light switched, a moving camera, smoke) drawn with every history
+  and against a reference of each instant drawn with none and settled, printing per scene the share of pixels off and the
+  frames until the image settles after each change (`--max-settle`, `--max-trail` fail past a limit); `--audit` turns each
+  pass's history off on its own (`HdWorld::histories`, all on by default). The vehicle demo's `ghost-shots` example measures
+  the buggy driving past a still camera at golden hour the same way.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
