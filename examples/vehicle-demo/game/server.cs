@@ -1,0 +1,296 @@
+// The vehicle demo's server, for one player or a few on the same network. The host execs this file and then startWorld(%file)
+// with the map. A client that connects is sent the datablocks; when it has them, its ghosting starts and it is given a figure
+// beside the buggy (the way in and out is the examples' shared common/server.cs, which calls this file's hooks).
+//
+// Getting in: the client asks (serverCmdGetIn) when its player clicks; a ray from the figure's eye along its look, $World::Reach
+// long, that meets the buggy seats the figure in the free seat nearest the point it met: the driver's (node 0, on the left),
+// whose figure controls the buggy (the client's moves drive it), or the passenger's (node 1, on the right), who rides. Getting
+// out (serverCmdGetOut) puts the figure on its feet beside its seat's side.
+//
+// The brake: the demo's Player hands a driver's jump trigger to the buggy (its brake), and no key of a move dismounts
+// (src/seats.rs); off the throttle the buggy coasts.
+//
+// Credit: the buggy's datablocks take the fields of TGE's WheeledVehicleData, WheeledVehicleTire and WheeledVehicleSpring, and
+// the way in and out follows the mount and control calls of Torque3D's vehicle scripts (MIT: `scripts/server/player.cs` and
+// `vehicle.cs` of its templates, Copyright (c) 2012 GarageGames, LLC). The values and the code here are the example's own.
+
+// ---- datablocks
+
+datablock PlayerData(WorldFigureData)
+{
+   category = "World";
+   shapeFile = "kit/figure.dts";
+
+   mass = 90;
+   drag = 0.3;
+   maxDamage = 100;
+   boundingBox = "1 1 2";
+
+   runForce = 3600;
+   maxForwardSpeed = 6;
+   maxBackwardSpeed = 4;
+   maxSideSpeed = 5;
+   maxStepHeight = 0.6;
+   runSurfaceAngle = 60;
+
+   jumpForce = 720;
+   jumpDelay = 10;
+   minJumpSpeed = 15;
+   maxJumpSpeed = 30;
+   jumpSurfaceAngle = 70;
+
+   minImpactSpeed = 40;
+   maxLookAngle = 1.4;
+   minLookAngle = -1.4;
+};
+
+// The dust the tires kick up on the grass: soft, short-lived puffs of dry earth and torn grass, a little drift up, no wall of
+// smoke (the engine runs the tire emitter as TGE does: more the faster the buggy goes and the more its tires slip).
+datablock ParticleData(BuggyDustPuff)
+{
+   textureName = "kit/smoke";
+   dragCoefficient = 2.5;
+   gravityCoefficient = -0.04;
+   inheritedVelFactor = 0.05;
+   lifetimeMS = 900;
+   lifetimeVarianceMS = 300;
+   useInvAlpha = true;
+   spinRandomMin = -60;
+   spinRandomMax = 60;
+
+   colors[0] = "0.64 0.57 0.38 0.0";
+   colors[1] = "0.6 0.56 0.38 0.6";
+   colors[2] = "0.54 0.57 0.4 0.0";
+   sizes[0] = 0.6;
+   sizes[1] = 1.4;
+   sizes[2] = 2.2;
+   times[0] = 0;
+   times[1] = 0.25;
+   times[2] = 1;
+};
+
+datablock ParticleEmitterData(BuggyDust)
+{
+   ejectionPeriodMS = 4;
+   periodVarianceMS = 1;
+   ejectionVelocity = 1.4;
+   velocityVariance = 0.6;
+   ejectionOffset = 0.1;
+   thetaMin = 70;
+   thetaMax = 110;
+   phiReferenceVel = 0;
+   phiVariance = 360;
+   particles = "BuggyDustPuff";
+};
+
+datablock WheeledVehicleTire(BuggyTire)
+{
+   shapeFile = "kit/buggy_wheel.dts";
+   // The tire's grip: how hard it holds the ground at rest and sliding, and its springiness along and across its roll.
+   staticFriction = 4.4;
+   kineticFriction = 3.4;
+   lateralForce = 17000;
+   lateralDamping = 4000;
+   lateralRelaxation = 1;
+   longitudinalForce = 17000;
+   longitudinalDamping = 4000;
+   longitudinalRelaxation = 1;
+   radius = 0.5;
+};
+
+datablock WheeledVehicleSpring(BuggySpring)
+{
+   // Long and soft enough to show over the hills; the anti-sway force keeps it flat in a turn.
+   length = 0.42;
+   force = 3400;
+   damping = 1400;
+   antiSwayForce = 8;
+};
+
+datablock WheeledVehicleData(BuggyData)
+{
+   category = "Vehicles";
+   shapeFile = "kit/buggy.dts";
+
+   maxDamage = 1000;
+   mass = 380;
+   // Low and in the middle, the box it turns about as long and wide as the frame: not tippy.
+   massCenter = "0 0 0.2";
+   massBox = "1.6 3.8 0.9";
+   drag = 0.6;
+   bodyFriction = 0.6;
+   bodyRestitution = 0.3;
+   minImpactSpeed = 5;
+   integration = 8;
+   collisionTol = 0.1;
+   contactTol = 0.4;
+
+   maxSteeringAngle = 0.55;
+   engineTorque = 5200;
+   // Off the throttle the wheels slow gently (it coasts); the brake (Space) holds them hard.
+   engineBrake = 250;
+   brakeTorque = 9000;
+   maxWheelSpeed = 22;
+
+   cameraMaxDist = 7.5;
+   cameraOffset = 1.5;
+   tireEmitter = BuggyDust;
+};
+
+// Every wheel takes the tire and the spring, all four are driven, the front pair steers.
+function BuggyData::onAdd(%this, %obj)
+{
+   for (%i = 0; %i < %obj.getWheelCount(); %i++)
+   {
+      %obj.setWheelTire(%i, BuggyTire);
+      %obj.setWheelSpring(%i, BuggySpring);
+      %obj.setWheelPowered(%i, true);
+   }
+   %obj.setWheelSteering(0, 1);
+   %obj.setWheelSteering(1, 1);
+}
+
+// The seats: where a seated figure's hips are in the buggy's space (its mount node and the hips above it), and the side a
+// figure gets out on (-1 left, 1 right).
+$Buggy::SeatCount = 2;
+$Buggy::Seat[0] = "-0.32 -0.3 0.66";
+$Buggy::Seat[1] = "0.32 -0.3 0.66";
+$Buggy::Side[0] = -1;
+$Buggy::Side[1] = 1;
+
+// ---- the world
+
+exec("common/server.cs");
+
+// How far a click reaches from the figure's eye, and what it looks for (VehicleObjectType).
+$World::Reach = 5.5;
+$World::VehicleMask = 65536;
+// TerrainObjectType: what the ground is.
+$World::TerrainMask = 4;
+
+// The ground's height at %x %y (0 off the terrain).
+function groundAt(%x, %y)
+{
+   %hit = containerRayCast(%x SPC %y SPC 1000, %x SPC %y SPC -100, $World::TerrainMask);
+   if (%hit $= "")
+      return 0;
+   return getWord(%hit, 3);
+}
+
+// Loads the map %file (a script that builds MissionGroup and a MapInfo object with the title and the spawn points).
+function startWorld(%file)
+{
+   loadMission(%file);
+   $World::Title = MapInfo.title;
+   $World::Buggy = Buggy.getId();
+   echo("World" SPC $World::Title SPC "with" SPC MissionGroup.getCount() SPC "objects");
+   schedule(500, 0, "watchFalls");
+}
+
+// ---- a client's way in
+
+function GameConnection::onClientConnect(%client, %name)
+{
+   echo("Client" SPC %client SPC "connected");
+}
+
+// A figure at the client's spawn point: the first client's on the buggy's left, the others' on its right.
+function GameConnection::spawnFigure(%client)
+{
+   %k = ClientGroup.getObject(0) == %client ? 0 : 1;
+   %x = getWord(MapInfo.spawn[%k], 0);
+   %y = getWord(MapInfo.spawn[%k], 1);
+   %at = %x SPC %y SPC groundAt(%x, %y) + 0.1;
+   %client.createFigure(WorldFigureData, %at SPC "0 0 1" SPC MapInfo.spawnYaw[%k]);
+}
+
+function GameConnection::onClientEnterGame(%client)
+{
+   commandToClient(%client, 'WorldStarted', $World::Title);
+}
+
+function GameConnection::onClientLeaveGame(%client)
+{
+}
+
+// The client asked to start again at the spawn point.
+function serverCmdRespawn(%client)
+{
+   if (isObject(%client.player) && %client.player.isMounted())
+      serverCmdGetOut(%client);
+   %client.spawnFigure();
+   commandToClient(%client, 'Respawned');
+}
+
+// A figure that fell off the map starts again.
+function GameConnection::onFellOff(%client)
+{
+   %client.spawnFigure();
+   commandToClient(%client, 'Fell');
+}
+
+// ---- in and out of the buggy
+
+// The client clicked: the free seat of the vehicle the figure looks at within reach, the one nearest the point it looked at.
+function serverCmdGetIn(%client)
+{
+   %player = %client.player;
+   if (!isObject(%player) || %player.isMounted())
+      return;
+   %eye = %player.getEyePoint();
+   %end = VectorAdd(%eye, VectorScale(%player.getEyeVector(), $World::Reach));
+   %hit = containerRayCast(%eye, %end, $World::VehicleMask, %player);
+   %vehicle = getWord(%hit, 0);
+   if (!isObject(%vehicle))
+      return;
+   %at = getWords(%hit, 1, 3);
+   %xf = %vehicle.getTransform();
+   %seat = -1;
+   for (%i = 0; %i < $Buggy::SeatCount; %i++)
+   {
+      if (isObject(%vehicle.getMountNodeObject(%i)))
+         continue;
+      %d = VectorLen(VectorSub(MatrixMulPoint(%xf, $Buggy::Seat[%i]), %at));
+      if (%seat < 0 || %d < %best)
+      {
+         %seat = %i;
+         %best = %d;
+      }
+   }
+   if (%seat < 0)
+      return;
+   %vehicle.mountObject(%player, %seat);
+   // Seated facing the way the seat faces: a mounted object's transform is its place on the mount.
+   %player.setTransform("0 0 0 0 0 1 0");
+   %player.setActionThread(%seat == 0 ? "sit" : "ride", true, true);
+   // The driver controls the vehicle; the passenger rides.
+   if (%seat == 0)
+      %player.setControlObject(%vehicle);
+   commandToClient(%client, 'Seated', %seat);
+}
+
+// The client asked to get out: the figure stands beside its seat's side of the vehicle, facing the way it faces.
+function serverCmdGetOut(%client)
+{
+   %player = %client.player;
+   if (!isObject(%player) || !%player.isMounted())
+      return;
+   %vehicle = %player.getObjectMount();
+   %side = 0;
+   for (%i = 0; %i < $Buggy::SeatCount; %i++)
+      if (%vehicle.getMountNodeObject(%i) == %player.getId())
+         %side = $Buggy::Side[%i];
+   %player.unmount();
+   %player.setControlObject(0);
+   %player.setActionThread("root");
+   %xf = %vehicle.getTransform();
+   %beside = VectorAdd(getWords(%xf, 0, 2), MatrixMulVector(%xf, 2.4 * %side SPC "0 0"));
+   %x = getWord(%beside, 0);
+   %y = getWord(%beside, 1);
+   %z = getMax(groundAt(%x, %y), getWord(%beside, 2) - 1) + 0.2;
+   %forward = MatrixMulVector(%xf, "0 1 0");
+   %yaw = mAtan(getWord(%forward, 0), getWord(%forward, 1));
+   %player.setTransform(%x SPC %y SPC %z SPC "0 0 1" SPC %yaw);
+   %player.setVelocity("0 0 0");
+   commandToClient(%client, 'Seated', -1);
+}

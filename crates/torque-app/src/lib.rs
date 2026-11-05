@@ -9,7 +9,11 @@
 //! - [`view::WorldView`]: the per-frame world view, drawn by the enhanced renderer under the GUI.
 //! - [`ghosts::GhostScene`]: the client's ghosts drawn through the engine's moving shapes, with live Players, held images and
 //!   projectiles.
+//! - [`hosting`]: hosting a game and joining one: the client's network mode, the address a hosted game binds and is joined by,
+//!   a typed address and the join screen's natives.
 //! - [`orbit::Orbit`]: a third-person camera that circles a point.
+//! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
+//!   and its ground drawn.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
 //! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
 //! - [`cli`]: the command line's flags and their values.
@@ -19,9 +23,11 @@ pub mod cli;
 pub mod client;
 pub mod files;
 pub mod ghosts;
+pub mod hosting;
 pub mod orbit;
 pub mod server;
 pub mod shots;
+pub mod terrain;
 pub mod view;
 pub mod window;
 

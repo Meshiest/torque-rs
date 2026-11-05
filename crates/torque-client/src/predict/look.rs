@@ -98,6 +98,7 @@ pub fn vehicle_look(
                 apos: spins.map_or(0.0, |sp| sp[k]),
                 contact: w.contact,
                 point: [0, 1, 2].map(|c| w.point[c] + shift[c]),
+                slip: w.slip,
             })
             .collect();
     VehicleLook {

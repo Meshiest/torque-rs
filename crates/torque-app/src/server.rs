@@ -98,6 +98,16 @@ impl GameServer {
     /// A server over `files`, listening as `start` says, that has run `server.cs` and the start function and takes
     /// connections.
     pub fn start(files: MemFiles, start: &ServerStart) -> Result<GameServer, String> {
+        GameServer::start_with(files, start, |_| {})
+    }
+
+    /// [`GameServer::start`] with `prepare` run on the script engine before the game classes are installed (a game's own
+    /// subclasses of the simulated classes: `torque_game::sim_classes::set_sim_classes`).
+    pub fn start_with(
+        files: MemFiles,
+        start: &ServerStart,
+        prepare: impl FnOnce(&mut Vm),
+    ) -> Result<GameServer, String> {
         let (transport, end) = match start.listen {
             Listen::Udp {
                 address,
@@ -118,8 +128,10 @@ impl GameServer {
         let mut vm = Vm::new();
         torque_game::specs::install(&mut vm);
         vm.set_file_host(files);
+        prepare(&mut vm);
         let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
         let game = torque_server::game::install(&mut vm, &state);
+        super::terrain::install(&mut vm, &game.container);
         let mut server = Server::with_state(vm, Rc::clone(&state));
         let shared = attach_host(
             &mut server.vm,

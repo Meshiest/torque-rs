@@ -3,7 +3,7 @@
 //! | file | nodes | sequences | material |
 //! |---|---|---|---|
 //! | `cube.dts` | `cube` | | `grid` |
-//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2` | `figure` |
+//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2`, `sit`, `ride` | `figure` |
 //! | `pistol.dts` | `pistol`, `mountPoint`, `muzzlePoint`, `ejectPoint`, `slide` | `fire` | `pistol` |
 //! | `projectile.dts` | `projectile` | | `projectile` |
 //!
@@ -47,6 +47,10 @@
 //! - `death1` and `death2`: 0.6 s, played once and held: the knees give, the body tips over at the feet, backward
 //!   (`death1`, hit from the front) or forward (`death2`, hit from behind), lands flat with a small bounce and lies still, the
 //!   arms flung out to the sides.
+//! - `sit`: one held key, seated low at a wheel: the torso leaned back, the thighs near level and the shins reaching forward and
+//!   down, the hands brought in to a wheel in front of the chest (a vehicle places its wheel at them: [`crate::buggy`]). A
+//!   driver's seat plays it.
+//! - `ride`: as `sit`, the upper arms hanging and the forearms resting on the thighs: a passenger's seat plays it.
 //!
 //! **The pistol** is a large semi-automatic, 26 cm long: a long squared top (the slide, the whole length from the hammer to
 //! the muzzle, with the front and rear sights on it, over a fixed barrel whose end shows as it runs back), an exposed hammer, a trigger in its guard and a grip raked back. It points
@@ -81,8 +85,9 @@ pub const LOOK_HEAD: f32 = 0.35;
 
 const X: Vec3 = [1.0, 0.0, 0.0];
 const Y: Vec3 = [0.0, 1.0, 0.0];
-const Z: Vec3 = [0.0, 0.0, 1.0];
-const OPAQUE: u32 = material_flags::S_WRAP | material_flags::T_WRAP | material_flags::NEVER_ENV_MAP;
+pub(crate) const Z: Vec3 = [0.0, 0.0, 1.0];
+pub(crate) const OPAQUE: u32 =
+    material_flags::S_WRAP | material_flags::T_WRAP | material_flags::NEVER_ENV_MAP;
 
 /// The unit cube.
 pub fn cube() -> Model {
@@ -148,7 +153,7 @@ fn travel_along(n: usize, dir: Vec3, speed: f32, duration: f32) -> Vec<Vec3> {
 }
 
 /// One rotation made of turns `(axis, degrees)`, the first applied last (outermost).
-fn turns(parts: &[(Vec3, f32)]) -> Quat16 {
+pub(crate) fn turns(parts: &[(Vec3, f32)]) -> Quat16 {
     let mut q = [0.0f32, 0.0, 0.0, 1.0];
     for &(axis, degrees) in parts {
         let (s, c) = (0.5 * degrees.to_radians()).sin_cos();
@@ -633,9 +638,76 @@ pub fn figure() -> Model {
         translations: Vec::new(),
         ground: Vec::new(),
     });
+    // Seated low at a wheel: leaned back, the legs reaching forward, the hands brought in to the wheel in front of the chest.
+    b.sequence(SequenceDef {
+        name: "sit",
+        duration: 1.0,
+        cyclic: false,
+        priority: 0,
+        keyframes: 1,
+        rotations: vec![
+            track(torso, &[SIT_LEAN]),
+            track(leg_l, &[SIT_HIPS]),
+            track(knee_l, &[-SIT_KNEES]),
+            track(leg_r, &[SIT_HIPS]),
+            track(knee_r, &[-SIT_KNEES]),
+            Track {
+                node: arm_l,
+                keys: vec![turns(&[(Z, -SIT_IN), (X, SIT_SHOULDERS)])],
+            },
+            track(elbow_l, &[SIT_ELBOWS]),
+            Track {
+                node: arm_r,
+                keys: vec![turns(&[(Z, SIT_IN), (X, SIT_SHOULDERS)])],
+            },
+            track(elbow_r, &[SIT_ELBOWS]),
+        ],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
+    // Seated as a passenger: as `sit`, the upper arms hanging and the forearms resting on the thighs.
+    b.sequence(SequenceDef {
+        name: "ride",
+        duration: 1.0,
+        cyclic: false,
+        priority: 0,
+        keyframes: 1,
+        rotations: vec![
+            track(torso, &[SIT_LEAN]),
+            track(leg_l, &[SIT_HIPS]),
+            track(knee_l, &[-SIT_KNEES]),
+            track(leg_r, &[SIT_HIPS]),
+            track(knee_r, &[-SIT_KNEES]),
+            Track {
+                node: arm_l,
+                keys: vec![turns(&[(Z, -RIDE_IN), (X, RIDE_SHOULDERS)])],
+            },
+            track(elbow_l, &[RIDE_ELBOWS]),
+            Track {
+                node: arm_r,
+                keys: vec![turns(&[(Z, RIDE_IN), (X, RIDE_SHOULDERS)])],
+            },
+            track(elbow_r, &[RIDE_ELBOWS]),
+        ],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
     death_sequences(&mut b, root, torso, head, &limbs);
     b.build()
 }
+
+/// The `sit` pose (degrees): the torso leaned back, the thighs near level and the shins reaching forward and down, the
+/// shoulders raising the arms forward and turning them in, the elbows bent.
+pub const SIT_LEAN: f32 = 10.0;
+pub const SIT_HIPS: f32 = 80.0;
+pub const SIT_KNEES: f32 = 28.0;
+pub const SIT_SHOULDERS: f32 = 22.0;
+pub const SIT_IN: f32 = 17.0;
+pub const SIT_ELBOWS: f32 = 76.0;
+/// The `ride` pose's arms (degrees): the upper arms hanging (turned in), the forearms forward onto the thighs.
+pub const RIDE_SHOULDERS: f32 = 0.0;
+pub const RIDE_IN: f32 = 21.0;
+pub const RIDE_ELBOWS: f32 = 68.0;
 
 /// `light_recoil`: how long it lasts (seconds) and its keys (degrees, evenly spaced: the height at 0.04 s).
 pub const RECOIL_SECONDS: f32 = 0.14;

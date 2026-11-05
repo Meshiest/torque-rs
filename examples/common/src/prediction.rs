@@ -5,6 +5,8 @@
 //!   its own (a game gives one, [`StaticIndex`]), so without them the own figure the client predicts falls through the floor
 //!   between the server's corrections. Each cube's ghost becomes an object of the client's container as the server's container
 //!   holds it: the cube shape's collision hulls (read from the kit), its pose and scale, a StaticShape's type bits.
+//! - **A terrain** ([`CubeClient::with_terrain`]): a map's `TerrainBlock` read from the same file the server reads, offered as
+//!   the index's static object ([`TerrainSet`]), so the own figure stands on it and the vehicles the client runs drive on it.
 //! - **Smooth aim** ([`PredictGame::smooth_aim`]): the view turns with the mouse within the frame, ahead of the last tick by
 //!   what the next move will make of the waiting turn, instead of a tick or two behind it. The moves are unchanged.
 //!
@@ -15,12 +17,15 @@
 use std::any::Any;
 use std::rc::Rc;
 
+use torque::app::terrain::{Terrain, TerrainSet};
 use torque::client::conn::tge::TgeWorld;
 use torque::client::game::ClientGame;
 use torque::client::predict::drive::ShapeCache;
 use torque::client::predict::game::{PredictGame, Prediction};
-use torque::client::predict::{FileReader, Object, Source, StaticIndex, view_of};
+use torque::client::predict::{FileReader, Object, Source, StaticIndex, StaticSet, view_of};
 use torque::collide::convex::ConvexSource;
+use torque::collide::math::F3;
+use torque::game::sim_classes::{PlayerKind, TorquePlayerKind};
 use torque::ghost_world::Ghost;
 use torque::ghost_world::tge::TgeClientSet;
 use torque::ghosts::TgeClass;
@@ -41,6 +46,7 @@ const SHAPE_BUDGET: u64 = 50_000_000;
 /// A game's answers to the client's engine half: Torque's, with the cubes' prediction.
 pub struct CubeClient {
     prediction: Rc<Prediction<TgeWorld>>,
+    files: MemFiles,
 }
 
 impl std::fmt::Debug for CubeClient {
@@ -52,8 +58,26 @@ impl std::fmt::Debug for CubeClient {
 impl CubeClient {
     /// The answers over the game's files `files` (the kit's shapes the cubes collide with).
     pub fn new(files: MemFiles) -> CubeClient {
+        CubeClient::with_terrain(files, None, None)
+    }
+
+    /// The answers over `files`, a map's terrain (its block as the server reads it from the same file) and the game's Player
+    /// class (the one its server runs; none: TGE's).
+    pub fn with_terrain(
+        files: MemFiles,
+        terrain: Option<&Terrain>,
+        player: Option<Rc<dyn PlayerKind>>,
+    ) -> CubeClient {
+        let terrain = terrain.map_or_else(TerrainSet::default, |t| {
+            TerrainSet::new(std::slice::from_ref(t))
+        });
         CubeClient {
-            prediction: Rc::new(Prediction(Rc::new(CubePrediction { files }))),
+            prediction: Rc::new(Prediction(Rc::new(CubePrediction {
+                files: files.clone(),
+                terrain,
+                player,
+            }))),
+            files,
         }
     }
 }
@@ -62,12 +86,22 @@ impl ClientGame for CubeClient {
     fn prediction(&self) -> Option<Rc<dyn Any>> {
         Some(Rc::clone(&self.prediction) as Rc<dyn Any>)
     }
+
+    /// The game's files: a vehicle's shape for its wheel count and the drive the client predicts.
+    fn file_reader(&self) -> Option<FileReader> {
+        let files = self.files.clone();
+        Some(Rc::new(move |path: &[u8]| {
+            files.get(&String::from_utf8_lossy(path).replace('\\', "/"))
+        }))
+    }
 }
 
 /// The prediction over the cubes, with smooth aim.
 #[derive(Debug)]
 pub struct CubePrediction {
     files: MemFiles,
+    terrain: TerrainSet,
+    player: Option<Rc<dyn PlayerKind>>,
 }
 
 impl PredictGame<TgeWorld> for CubePrediction {
@@ -79,12 +113,21 @@ impl PredictGame<TgeWorld> for CubePrediction {
         Some(Box::new(CubeStatics {
             reader,
             shapes: ShapeCache::default(),
+            terrain: self.terrain.clone(),
         }))
     }
 
     fn smooth_aim(&self, vm: &Vm) -> bool {
         let _ = vm;
         true
+    }
+
+    /// The game's Player class when it has its own, else TGE's.
+    fn player_kind(&self, world: &TgeWorld, db: u32) -> Rc<dyn PlayerKind> {
+        let _ = (world, db);
+        self.player
+            .clone()
+            .unwrap_or_else(|| Rc::new(TorquePlayerKind))
     }
 }
 
@@ -93,6 +136,7 @@ impl PredictGame<TgeWorld> for CubePrediction {
 pub struct CubeStatics {
     reader: FileReader,
     shapes: ShapeCache,
+    terrain: TerrainSet,
 }
 
 impl StaticIndex<TgeWorld> for CubeStatics {
@@ -106,6 +150,19 @@ impl StaticIndex<TgeWorld> for CubeStatics {
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+
+    /// The terrain, if the map has one.
+    fn set_near(
+        &mut self,
+        world: &TgeWorld,
+        reader: Option<&FileReader>,
+        near: F3,
+        work: &mut u64,
+        budget: u64,
+    ) -> Option<Box<dyn StaticSet>> {
+        let _ = (world, reader, near, work, budget);
+        (!self.terrain.is_empty()).then(|| Box::new(self.terrain.clone()) as Box<dyn StaticSet>)
     }
 
     /// A StaticShape ghost: its shape's collision hulls at its pose and scale.

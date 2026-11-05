@@ -94,3 +94,14 @@ fps-polish2-shots dir="../target/fps-polish2-shots":
 # stepping aside, looking up and down, jumping, aiming down the sights and falling, offscreen into `dir`
 fps-hitbox-shots dir="../target/fps-hitbox-shots":
     cargo run -p torque-example-fps --release --bin fps-client -- --hitbox-shots {{dir}}
+
+# The vehicle demo in a window: host a game or join one, the box figure beside a buggy on green checkerboard hills (W A S D
+# move, Space jump, mouse look, click the buggy to take a seat; driving W throttle, S reverse, A D steer, Space brake, mouse
+# turns the camera, E get out). `--host`, `--join <address>`, `--name <name>`, `--bind <LAN address>`
+vehicle-demo *args:
+    cargo run -p torque-example-vehicle-demo --release -- {{args}}
+
+# The vehicle demo's pictures over the loopback address (the menu, the start, the buggy, its cockpit, two players seated, the
+# passenger's view, the climb up the hill), drawn offscreen into `dir`
+vehicle-demo-shots dir="../target/vehicle-demo-shots":
+    cargo run -p torque-example-vehicle-demo --release -- --shots {{dir}}

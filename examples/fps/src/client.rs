@@ -2,7 +2,7 @@
 //! server query) on its own UDP socket, whose canvas is the menu, the list of games or the arena's view, and while it hosts, an
 //! [`ArenaServer`] on the same clock.
 //!
-//! **The socket.** [`NetMode::Loopback`] binds the client's socket to `127.0.0.1` and reads only loopback datagrams (the tests,
+//! **The socket** ([`NetMode`], the engine's [`torque::app::hosting`]). [`NetMode::Loopback`] binds the client's socket to `127.0.0.1` and reads only loopback datagrams (the tests,
 //! a game for one); [`NetMode::Lan`] binds it as TGE binds one (every address, with a loopback twin so a server on `127.0.0.1`
 //! hears its LAN query) and talks to LAN addresses only, but for the one public address the player types into the join screen
 //! and connects to (the engine's internet policy with a permit the typed address arms, see [`parse_join_address`]).
@@ -24,36 +24,27 @@
 //! MIT-licensed `T3D/player.cpp` and `T3D/gameBase/processList.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
 //! Faust Logic, Inc. for `player.cpp`). The code here is this example's own.
 
-use std::cell::RefCell;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::Ipv4Addr;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
-use torque::client::conn::tge::TgeConn;
 use torque::client::conn::tge::TgeWorld as World;
-use torque::client::state::ClientState;
 use torque::ghost_world::world::Pose;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
-use torque::script::vm::vm::{Native, Vm};
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
 use crate::effects::{ScreenMarks, insert_over_world};
 use crate::files::GameFiles;
 use crate::scene::{ArenaScene, OwnLook, TextureFilter};
-use crate::server::{ArenaServer, DEFAULT_PORT, ServerOptions, lan_addresses};
+use crate::server::{ArenaServer, DEFAULT_PORT, ServerOptions};
+pub use torque::app::hosting::{NetMode, parse_join_address};
+use torque::app::hosting::{join_address, lan_bind_address, lan_reach, register_join_natives};
 use torque_example_common::prediction::CubeClient;
-
-/// Where the client's socket binds and what it reaches (see the module docs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetMode {
-    Loopback,
-    Lan,
-}
 
 /// How a client is made.
 #[derive(Debug, Clone)]
@@ -117,10 +108,7 @@ impl ArenaGame {
             client_game: Some(Rc::new(CubeClient::new(files.mem_files()))),
             // The controls that measure text as they lay out (the list of games) find their fonts where the drawing does.
             layout_fonts: true,
-            net: match options.net {
-                NetMode::Loopback => ClientNet::Loopback,
-                NetMode::Lan => ClientNet::Lan,
-            },
+            net: options.net.client_net(),
             server_query: true,
         })?;
         register_join_natives(&mut b.vm, &b.state);
@@ -180,13 +168,7 @@ impl ArenaGame {
             },
         )?;
         let bound = server.address().ok_or("the server has no socket")?;
-        // A server on every interface is joined through this computer's own loopback address.
-        let ip = if bound.ip().is_unspecified() {
-            Ipv4Addr::LOCALHOST.into()
-        } else {
-            bound.ip()
-        };
-        let join = SocketAddr::new(ip, bound.port()).to_string();
+        let join = join_address(bound).to_string();
         self.client.start_hosting(server);
         self.set_host_info(public, bound.port());
         self.vm_mut()
@@ -198,19 +180,13 @@ impl ArenaGame {
     /// The addresses other players on this computer's network join a hosted game by: the one `--bind` named, else this
     /// computer's own LAN addresses; none for a harness ([`NetMode::Loopback`]).
     fn lan_reach(&self) -> Vec<Ipv4Addr> {
-        let named = self.options.host_address;
-        match self.options.net {
-            NetMode::Loopback => Vec::new(),
-            NetMode::Lan if named.is_loopback() => lan_addresses(),
-            NetMode::Lan => vec![named],
-        }
+        lan_reach(self.options.net, self.options.host_address)
     }
 
     /// The address a LAN game binds: the first of [`ArenaGame::lan_reach`], else the host address (loopback: only this computer
     /// can join).
     fn lan_bind_address(&self) -> Ipv4Addr {
-        let reach = self.lan_reach();
-        reach.first().copied().unwrap_or(self.options.host_address)
+        lan_bind_address(self.options.net, self.options.host_address)
     }
 
     /// The lines the view's chat box shows when the hosted game starts (`$Arena::HostInfo1` to `3`): where the others join, and
@@ -448,70 +424,4 @@ impl App for ArenaGame {
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
         ArenaGame::frame(self, view)
     }
-}
-
-/// Why a typed address cannot be joined, or the address: `a.b.c.d:port`, a bare `a.b.c.d` (port [`DEFAULT_PORT`]) or `localhost`,
-/// with or without an `IP:` in front. The engine resolves no names, so a host name gets a plain message asking for the numbers.
-pub fn parse_join_address(text: &str) -> Result<SocketAddrV4, &'static str> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err("Type the game's address, like 192.168.1.20:28000.");
-    }
-    let Some(address) = torque::client::net::query::parse_address(text.as_bytes()) else {
-        let name = !text.contains(':') && text.chars().any(|c| c.is_ascii_alphabetic());
-        return Err(if name {
-            "Names are not looked up. Type the address in numbers, like 192.168.1.20."
-        } else {
-            "That is not an address. Use numbers like 192.168.1.20:28000."
-        });
-    };
-    let ip = *address.ip();
-    if address.port() == 0 {
-        return Err("Ports are numbers from 1 to 65535.");
-    }
-    // Not a game's address: this network (0/8), multicast, reserved (240/4) and broadcasts (a last number of 255, as on a /24 LAN).
-    if ip.octets()[0] == 0 || ip.octets()[0] >= 224 || ip.octets()[3] == 255 {
-        return Err("That address cannot be a game.");
-    }
-    Ok(address)
-}
-
-/// The join screen's natives: `checkJoinAddress(text)` gives the address as `a.b.c.d:port`, or `!` and the reason it cannot be
-/// joined; `armPublicJoin(address)` lets the connect that follows reach a public address the player typed (it does nothing
-/// unless the player's own click or key is being handled, and for an address on the LAN).
-fn register_join_natives(vm: &mut Vm, state: &Rc<RefCell<ClientState<TgeConn>>>) {
-    vm.register(
-        "checkJoinAddress",
-        2,
-        2,
-        "checkJoinAddress(text);",
-        |_, c| {
-            let text = String::from_utf8_lossy(c.argv.get(1).map_or(&[][..], Vec::as_slice));
-            Native::Str(
-                match parse_join_address(&text) {
-                    Ok(address) => address.to_string(),
-                    Err(why) => format!("!{why}"),
-                }
-                .into_bytes(),
-            )
-        },
-    );
-    let state = Rc::clone(state);
-    vm.register(
-        "armPublicJoin",
-        2,
-        2,
-        "armPublicJoin(address);",
-        move |vm, c| {
-            let text = String::from_utf8_lossy(c.argv.get(1).map_or(&[][..], Vec::as_slice));
-            let (Ok(address), now) = (parse_join_address(&text), vm.sim_time()) else {
-                return Native::Void;
-            };
-            let st = state.borrow();
-            if st.user_input {
-                st.net.borrow_mut().internet.arm(address, now);
-            }
-            Native::Void
-        },
-    );
 }

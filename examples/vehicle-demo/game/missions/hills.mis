@@ -1,0 +1,14 @@
+// Hills
+// Green checkerboard hills, a buggy parked in the middle of a flat field.
+
+new SimGroup(MissionGroup)
+{
+   // The first player starts on the buggy's left, facing it, the others on its right; the buggy faces north, toward the round
+   // hill.
+   new ScriptObject(MapInfo) { title = "Hills"; spawn0 = "-3.4 -0.3"; spawnYaw0 = 1.5708; spawn1 = "3.4 -0.3"; spawnYaw1 = -1.5708; };
+   // The sky: a light haze from 450 units out, nothing drawn past 1,400.
+   new Sky(WorldSky) { visibleDistance = 1400; fogDistance = 450; fogColor = "0.72 0.8 0.9 1"; };
+   // The ground: TGE's default block, 256 squares of 8 units a side, centered on the origin.
+   new TerrainBlock(Hills) { terrainFile = "kit/hills.ter"; squareSize = 8; };
+   new WheeledVehicle(Buggy) { dataBlock = BuggyData; position = "0 0 21.2"; rotation = "0 0 1 0"; };
+};
