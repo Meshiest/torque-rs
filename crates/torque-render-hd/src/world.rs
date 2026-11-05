@@ -4785,7 +4785,8 @@ impl<E: HdExtension> HdWorld<E> {
             &mut b,
             &[near, far, CLUSTER_GRID[2] as f32 / (far / near).ln(), 0.0],
         );
-        let quality = E::mode(scene).unwrap_or_else(E::fallback_mode).quality;
+        let mode = E::mode(scene).unwrap_or_else(E::fallback_mode);
+        let quality = mode.quality;
         let surfaces = self.ext.surfaces(scene);
         push_f32(&mut b, &surfaces.light);
         let per_cluster = quality.lights_per_cluster();
@@ -4818,7 +4819,7 @@ impl<E: HdExtension> HdWorld<E> {
             &mut b,
             &[
                 self.temporal.prev_time.unwrap_or(E::time(scene)),
-                flag(scene.smooth_occlusion),
+                flag(scene.smooth_occlusion || mode.image.smooth_occlusion),
                 0.0,
                 0.0,
             ],
@@ -5632,8 +5633,8 @@ impl<E: HdExtension> HdWorld<E> {
         }
 
         let targets = self.targets.as_ref().ok_or("no targets")?;
-        // The AO the forward pass reads: the AO pass's, or with the scene's smooth occlusion its filtered copy.
-        let smooth_ao = ao_on && scene.smooth_occlusion;
+        // The AO the forward pass reads: the AO pass's, or with the scene's (or the look's) smooth occlusion its filtered copy.
+        let smooth_ao = ao_on && (scene.smooth_occlusion || image.smooth_occlusion);
         let ao_shown = if smooth_ao {
             &targets.ao_smooth_view
         } else {
