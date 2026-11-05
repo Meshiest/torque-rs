@@ -91,13 +91,13 @@ fn scene(ao_sun: f32) -> PlainScene {
     );
     s.planes = vec![HdDraw::from_fixed(&floor, material::KIND_PLANE, &[])];
     let draws = vec![HdDraw::from_fixed(&box_draw(), material::KIND_SHAPE, &[])];
-    let (centre, radius) = bounding_sphere(&draws);
+    let (center, radius) = bounding_sphere(&draws);
     s.objects = vec![DynamicObject {
         ghost: 1,
         transform: Mat::IDENTITY,
         prev_transform: Mat::IDENTITY,
         translucent: false,
-        centre,
+        centre: center,
         radius,
         draws,
         previous: None,
