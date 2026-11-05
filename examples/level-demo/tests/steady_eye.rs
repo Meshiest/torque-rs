@@ -43,7 +43,7 @@ fn the_first_person_eye_stays_level_while_the_body_bobs() {
     assert!(enter(&mut game, 0), "the first map did not start");
     game.set_first_person(true);
     heights(&mut game, 30);
-    // Running, then walking (Shift), past the blend into each.
+    // Walking, then running (Shift held: a sprint), past the blend into each.
     game.key(Key::W, true);
     heights(&mut game, 40);
     let (view, drawn) = heights(&mut game, 60);
@@ -54,12 +54,12 @@ fn the_first_person_eye_stays_level_while_the_body_bobs() {
     );
     assert!(
         spread(&view) < 0.003,
-        "the running view bobs {}",
+        "the walking view bobs {}",
         spread(&view)
     );
     assert!(
-        spread(&drawn) > 0.03,
-        "the running body bobs {}",
+        spread(&drawn) > 0.01,
+        "the walking body bobs {}",
         spread(&drawn)
     );
     game.key(Key::ShiftLeft, true);
@@ -67,12 +67,12 @@ fn the_first_person_eye_stays_level_while_the_body_bobs() {
     let (view, drawn) = heights(&mut game, 60);
     assert!(
         spread(&view) < 0.003,
-        "the walking view bobs {}",
+        "the running view bobs {}",
         spread(&view)
     );
     assert!(
-        spread(&drawn) > 0.01,
-        "the walking body bobs {}",
+        spread(&drawn) > 0.03,
+        "the running body bobs {}",
         spread(&drawn)
     );
     game.key(Key::ShiftLeft, false);

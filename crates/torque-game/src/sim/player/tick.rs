@@ -197,7 +197,13 @@ pub fn tick(vm: &mut Vm, calls: &mut dyn TriggerCalls, env: &SimEnv, id: ObjId, 
     if let Some(name) = info.class.after_step(&mut player.s) {
         host.call_own_method(&mut player.s, name);
     }
-    if host.moved {
+    // A change of pose changes the box shots reach it through, and its end shrinks that back (the engine's poses): the scene's
+    // copies follow it, not only a move.
+    let s = &player.s;
+    if host.moved
+        || (s.pose_from != s.pose
+            && s.pose_ticks <= ::sim::player::pose::moving_ticks(s.pose_from, s.pose))
+    {
         host.flush_move(&player.s);
     }
     let HostImpl {

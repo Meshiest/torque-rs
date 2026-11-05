@@ -10,6 +10,7 @@
 //!   bits, read as the server reads them ([`torque::game::scene::interior::read_interior`]).
 //! - **A terrain** ([`CubeClient::with_terrain`]): a map's `TerrainBlock` read from the same file the server reads, offered as
 //!   the index's static object ([`TerrainSet`]), so the own figure stands on it and the vehicles the client runs drive on it.
+//! - **The figure's poses** ([`crate::figure_poses`]): crouched and prone, as the servers' datablocks give them.
 //! - **Smooth aim** ([`PredictGame::smooth_aim`]): the view turns with the mouse within the frame, ahead of the last tick by
 //!   what the next move will make of the waiting turn, instead of a tick or two behind it. The moves are unchanged.
 //!
@@ -136,6 +137,13 @@ impl PredictGame<TgeWorld> for CubePrediction {
     fn smooth_aim(&self, vm: &Vm) -> bool {
         let _ = vm;
         true
+    }
+
+    /// TGE's products, with the figure's poses: the servers give them in fields a datablock record does not carry
+    /// ([`crate::figure_poses`]).
+    fn player_preload(&self, d: &mut torque::sim::player::PlayerData) {
+        d.preload();
+        d.poses = crate::figure_poses();
     }
 
     /// The game's Player class when it has its own, else TGE's.

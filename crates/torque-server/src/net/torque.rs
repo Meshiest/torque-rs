@@ -398,8 +398,14 @@ impl GameView<'_> {
             }
             "move_angles" => Value::Int(0),
             "move_free_look" => Value::Bool(s.last_move.free_look),
+            // A Player with poses (the engine's own after Torque3D's): the move's pose triggers show the pose the server chose,
+            // so its clients draw the pose it took, not the one asked for.
             "move_triggers" => {
-                Value::Bool(s.last_move.triggers.get(index).copied().unwrap_or(false))
+                let mut t = s.last_move.triggers;
+                if let Some(d) = info.as_ref().map(|i| &i.data.poses).filter(|d| d.any()) {
+                    d.show(s.pose, &mut t);
+                }
+                Value::Bool(t.get(index).copied().unwrap_or(false))
             }
             _ => return None,
         })

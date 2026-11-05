@@ -112,6 +112,8 @@ pub struct PlayerData {
     /// `runSurfaceCos` and `jumpSurfaceCos` (preload).
     pub run_surface_cos: f32,
     pub jump_surface_cos: f32,
+    /// The poses the datablock allows and their boxes and speeds (the engine's own after Torque3D's; none by default).
+    pub poses: super::pose::PoseData,
 }
 
 impl Default for PlayerData {
@@ -166,6 +168,7 @@ impl Default for PlayerData {
             pickup_delta: 0,
             run_surface_cos: 0.0,
             jump_surface_cos: 0.0,
+            poses: super::pose::PoseData::default(),
         }
     }
 }

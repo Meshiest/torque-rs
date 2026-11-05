@@ -105,7 +105,7 @@ new GameTSCtrl(PlayGui)
       new GuiTextCtrl(PlayHelp)
       {
          profile = WorldDimProfile; position = "170 5"; extent = "620 18"; horizSizing = "width"; visible = true; enabled = true;
-         text = "W A S D move   Shift walk   Space jump   Mouse look   Tab camera   R restart   Esc menu";
+         text = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump   Mouse look   Tab camera   R restart   Esc menu";
       };
    };
    new GuiTextCtrl(PlayNote)
@@ -144,12 +144,14 @@ MenuMap.bind(keyboard, 9, menuNine);
 MenuMap.bind(keyboard, escape, menuQuit);
 
 new ActionMap(PlayMap);
-$World::Pace = 1;
+// The figure walks (a share of its full speed) and sprints at its full speed while Shift is held.
+$World::WalkPace = 0.35;
+$World::Pace = $World::WalkPace;
 function moveForward(%v) { $World::Forward = %v; updateMove(); }
 function moveBack(%v) { $World::Back = %v; updateMove(); }
 function moveLeft(%v) { $World::Left = %v; updateMove(); }
 function moveRight(%v) { $World::Right = %v; updateMove(); }
-function walkSlowly(%v) { $World::Pace = %v ? 0.35 : 1; updateMove(); }
+function sprint(%v) { $World::Pace = %v ? 1 : $World::WalkPace; updateMove(); }
 function updateMove()
 {
    $mvForwardAction = $World::Forward * $World::Pace;
@@ -169,7 +171,8 @@ PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
-PlayMap.bind(keyboard, lshift, walkSlowly);
+PlayMap.bind(keyboard, lshift, sprint);
+bindPoseKeys(PlayMap);
 PlayMap.bind(keyboard, space, jump);
 PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
@@ -183,6 +186,10 @@ function showMenu()
 {
    $World::InWorld = 0;
    PlayMap.pop();
+   releasePoseKeys();
+   $World::Forward = $World::Back = $World::Left = $World::Right = 0;
+   $World::Pace = $World::WalkPace;
+   updateMove();
    MenuMap.push();
    Canvas.setContent(MenuGui);
    Canvas.cursorOn();

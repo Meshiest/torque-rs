@@ -20,6 +20,7 @@
 
 use std::f32::consts::{PI, TAU};
 
+use crate::poses::CROUCH_SPEED;
 use crate::shapes::{FOOT_HEEL, FOOT_TOE, RUN_SPEED, SHIN, SOLE, THIGH, WALK_SPEED};
 
 /// One gait's numbers (lengths in units, angles in degrees, shares of the loop or of the time on the ground).
@@ -50,7 +51,7 @@ pub struct Gait {
     pub lift_early: f32,
 }
 
-/// The walk: a relaxed stride at a held-Shift pace, a foot always down.
+/// The walk: a relaxed stride at the demos' walking pace (Shift sprints), a foot always down.
 pub const WALK: Gait = Gait {
     speed: WALK_SPEED,
     duration: 0.65,
@@ -82,6 +83,23 @@ pub const RUN: Gait = Gait {
     lift: 0.3,
     swing_toe_up: 10.0,
     lift_early: 0.6,
+};
+
+/// The crouched walk: short, careful steps with the hips held low, a foot always down.
+pub const CROUCH: Gait = Gait {
+    speed: CROUCH_SPEED,
+    duration: 0.9,
+    stance: 0.64,
+    strike_ahead: 0.3,
+    strike_pitch: 6.0,
+    push_pitch: -18.0,
+    heel_roll: 0.15,
+    flat_until: 0.6,
+    hip_height: 0.56,
+    hip_bob: 0.012,
+    lift: 0.1,
+    swing_toe_up: 16.0,
+    lift_early: 1.0,
 };
 
 /// The loop position at which the left heel lands (the right's half a loop later).

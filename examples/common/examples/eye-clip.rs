@@ -1,7 +1,7 @@
 //! A first-person clip of the kit's figure walking and running, drawn offscreen for review, before and after the steady eye:
 //! on the left the view stands at the `eye` node of the body as it is drawn (TGE's eye, bobbing with the gait), on the right
 //! at the `eye` node of the rest pose carried by the figure's motion (the engine's own `GhostOptions::steady_eye`). The
-//! figure walks at a held-Shift pace, then runs, its action thread driven by the client's animation choice; posts stand
+//! figure walks at the demos' walking pace, then runs, its action thread driven by the client's animation choice; posts stand
 //! along the way so the view's motion shows.
 //!
 //! The frames go to `ffmpeg` (on the path) as `eye-clip.mp4`.
@@ -23,7 +23,7 @@ use torque_render_scene::hd::kit::{box_object, look_at};
 /// One view's size and the frame rate.
 const VIEW: (u32, u32) = (640, 400);
 const FPS: u32 = 30;
-/// A held-Shift pace and the run's (units a second), and the seconds of each.
+/// The demos' walking pace and the run's (units a second), and the seconds of each.
 const WALK_PACE: f32 = 2.1;
 const RUN_PACE: f32 = 6.0;
 const WALK_FOR: f32 = 2.5;

@@ -20,6 +20,7 @@
 
 pub mod ground;
 pub mod methods;
+pub mod poses;
 pub mod skeleton;
 pub mod synced;
 pub mod tick;
@@ -59,6 +60,8 @@ pub struct PlayerInfo {
     /// The engine's walk action, when the shape has one that moves it forward ([`synced::walk_action`]): a synced Player
     /// walks at walking pace.
     pub walk: Option<u32>,
+    /// Each pose's own actions ([`poses::PoseSets`]).
+    pub pose_sets: poses::PoseSets,
 }
 
 impl PartialEq for PlayerInfo {
@@ -71,6 +74,7 @@ impl PartialEq for PlayerInfo {
             && self.max_time_scale == other.max_time_scale
             && self.max_freelook == other.max_freelook
             && self.walk == other.walk
+            && self.pose_sets == other.pose_sets
     }
 }
 
@@ -229,6 +233,7 @@ pub fn build_info(vm: &Vm, db: ObjId) -> Option<PlayerInfo> {
     let mut motions = Vec::new();
     let mut look_action = 0;
     let mut walk_action = None;
+    let mut pose_sets = poses::PoseSets::default();
     if let Some(kept) = shape_of(vm, db)
         && let Some(shape) = kept.shape.as_ref()
     {
@@ -263,6 +268,17 @@ pub fn build_info(vm: &Vm, db: ObjId) -> Option<PlayerInfo> {
             table.fixed.len(),
         )
         .and_then(|i| u32::try_from(i).ok());
+        pose_sets = poses::PoseSets::of(
+            actions
+                .iter()
+                .zip(&motions)
+                .map(|(a, m)| (a.name.as_slice(), a.sequence != -1, m)),
+        );
+        d.poses = poses::pose_data(vm, db, |name| {
+            actions
+                .iter()
+                .any(|a| a.sequence != -1 && a.name.eq_ignore_ascii_case(name))
+        });
         d.action_count = u32::try_from(actions.len()).unwrap_or(0);
         d.action_list = motions
             .iter()
@@ -279,6 +295,7 @@ pub fn build_info(vm: &Vm, db: ObjId) -> Option<PlayerInfo> {
         look_action,
         max_time_scale,
         walk: walk_action,
+        pose_sets,
     })
 }
 
@@ -377,17 +394,14 @@ pub fn mirror_no_bins(vm: &mut Vm, id: ObjId) {
     let Some(s) = state(vm, id) else {
         return;
     };
-    let copy = (s.obj_to_world, s.world_box, s.world_center, s.world_radius);
-    write_copies(vm, id, copy);
+    let (wb, wc, wr) = ::sim::player::pose::reach_world(s);
+    write_copies(vm, id, (s.obj_to_world, wb, wc, wr));
 }
 
 /// [`mirror_no_bins`] from a state that is out of the ext (the Player's own tick).
 pub fn mirror_from(vm: &mut Vm, id: ObjId, s: &PlayerState) {
-    write_copies(
-        vm,
-        id,
-        (s.obj_to_world, s.world_box, s.world_center, s.world_radius),
-    );
+    let (wb, wc, wr) = ::sim::player::pose::reach_world(s);
+    write_copies(vm, id, (s.obj_to_world, wb, wc, wr));
 }
 
 fn write_copies(vm: &mut Vm, id: ObjId, copy: (collide::math::Matrix, Box3, F3, f32)) {
@@ -464,6 +478,7 @@ pub fn play_action(
         fsp,
         force: false,
         blend,
+        pose_blend: None,
         start: None,
     };
     let message = shapebase::action_thread(&mut st, action as usize, request);
@@ -603,6 +618,7 @@ impl EngineClass for PlayerClass {
                 fsp: false,
                 force: true,
                 blend: false,
+                pose_blend: None,
                 start: None,
             };
             let _ = shapebase::action_thread(&mut st, 0, request);

@@ -213,6 +213,8 @@ pub fn options() -> GhostOptions {
         steady_eye: true,
         // The client has the map's surfaces as the server does: a bolt stops where the server's hits.
         bolt_stops: true,
+        // The other figures crouched or prone as their server chose.
+        poses: Some(torque_example_common::figure_poses()),
         ..GhostOptions::default()
     }
 }

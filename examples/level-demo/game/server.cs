@@ -39,7 +39,26 @@ datablock PlayerData(WorldFigureData)
    minImpactSpeed = 40;
    maxLookAngle = 1.4;
    minLookAngle = -1.4;
+
+   // Crouched and prone (the engine's own poses, after Torque3D's: its fields, by their names): each pose's box and speeds.
+   // The kit's figure has the poses' sequences (crouch_root, prone_root and the rest).
+   crouchBoundingBox = "1 1 1.6";
+   maxCrouchForwardSpeed = 1.3;
+   maxCrouchBackwardSpeed = 1.1;
+   maxCrouchSideSpeed = 1;
+   crouchForce = 3600;
+   proneBoundingBox = "2 2 0.8";
+   maxProneForwardSpeed = 0.75;
+   maxProneBackwardSpeed = 0.6;
+   maxProneSideSpeed = 0;
+   proneForce = 2400;
 };
+
+// A hit's reaction over (common/server.cs).
+function WorldFigureData::onEndSequence(%this, %obj, %slot)
+{
+   playerFlinchEnded(%obj, %slot);
+}
 
 // ---- the world
 

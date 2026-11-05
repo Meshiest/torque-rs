@@ -35,3 +35,39 @@ function clearNote()
 {
    PlayNote.setText("");
 }
+
+// ---- the figure's poses
+//
+// Ctrl (or C: a browser closes its tab on Ctrl+W) held crouches and Z lies down or gets up again: each is a move trigger the
+// server reads as Torque3D names them ($player::crouchTrigger 3 and $player::proneTrigger 1, set in common/server.cs), held while its count is odd. The server
+// refuses a pose with no room for it (no standing up under a low ceiling) and shows the others the pose it chose. (The
+// figure walks by default and Shift sprints: each game's own moves.)
+$Pose::CrouchTrigger = 3;
+$Pose::ProneTrigger = 1;
+function setTriggerHeld(%trigger, %held)
+{
+   %count = $mvTriggerCount[%trigger];
+   if ((%count % 2 == 1) != (%held != 0))
+      $mvTriggerCount[%trigger] = %count + 1;
+}
+function crouchKey(%v) { setTriggerHeld($Pose::CrouchTrigger, %v); }
+// C's own function: an action map keeps one key for each function.
+function crouchKeyC(%v) { crouchKey(%v); }
+function proneKey(%v)
+{
+   if (%v)
+      setTriggerHeld($Pose::ProneTrigger, $mvTriggerCount[$Pose::ProneTrigger] % 2 == 0);
+}
+// Lets go of both pose keys (a map change or a seat leaves neither held: the figure stands up when there is room).
+function releasePoseKeys()
+{
+   setTriggerHeld($Pose::CrouchTrigger, false);
+   setTriggerHeld($Pose::ProneTrigger, false);
+}
+// Binds the pose keys in action map %map.
+function bindPoseKeys(%map)
+{
+   %map.bind(keyboard, lcontrol, crouchKey);
+   %map.bind(keyboard, c, crouchKeyC);
+   %map.bind(keyboard, z, proneKey);
+}

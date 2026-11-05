@@ -166,7 +166,14 @@ fn sample_of(vm: &mut Vm, id: ObjId, step: u64) -> Option<Sample> {
         None
     };
     let matrix = matrix_of(vm, id)?;
-    let (min, max) = object_box(vm, id);
+    // A Player moving between poses is reached through the boxes of both (the engine's poses: `::sim::player::pose`).
+    let (min, max) = crate::sim::player::state(vm, id).map_or_else(
+        || object_box(vm, id),
+        |s| {
+            let b = ::sim::player::pose::reach_box(s);
+            (b.min, b.max)
+        },
+    );
     Some(Sample {
         step,
         matrix,
