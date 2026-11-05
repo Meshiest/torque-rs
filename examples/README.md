@@ -9,12 +9,21 @@ Run the recipes from the repository's root (`just examples/<recipe>`) or from th
 a plain `cargo run`, shown beside it. The web builds need rustup's `wasm32-unknown-unknown` target and Node; the first build
 installs wasm-bindgen's command line into the target folder.
 
-- [The level demo](#the-level-demo) and [its valley](#the-valley)
-- [The arena shooter](#the-arena-shooter)
-- [The vehicle demo](#the-vehicle-demo)
-- [The character](#the-character)
-- [The asset kit](#the-asset-kit)
-- [The minimal server and client](#the-minimal-server-and-client)
+<table>
+<tr>
+<td align="center"><a href="#the-level-demo"><img src="screenshots/level-demo-plaza.webp" width="200" alt="The level demo"><br>The level demo</a></td>
+<td align="center"><a href="#the-level-demo"><img src="screenshots/level-demo-office.webp" width="200" alt="Its office"><br>Its office</a></td>
+<td align="center"><a href="#the-valley"><img src="screenshots/level-demo-valley.webp" width="200" alt="Its valley"><br>Its valley</a></td>
+<td align="center"><a href="#the-arena-shooter"><img src="screenshots/fps-shot.webp" width="200" alt="The arena shooter"><br>The arena shooter</a></td>
+</tr>
+<tr>
+<td align="center"><a href="#the-vehicle-demo"><img src="screenshots/vehicle-demo-turn.webp" width="200" alt="The vehicle demo"><br>The vehicle demo</a></td>
+<td align="center"><a href="#the-character"><img src="screenshots/character-walk.webp" width="200" alt="The character"><br>The character</a></td>
+<td align="center"><a href="#the-asset-kit"><img src="screenshots/assets-figure.webp" width="200" alt="The asset kit"><br>The asset kit</a></td>
+</tr>
+</table>
+
+Also: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts.
 
 ## The level demo
 
