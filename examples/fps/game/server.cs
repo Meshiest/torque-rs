@@ -1,6 +1,7 @@
 // The arena's server. The host sets $Pref::Server::Name, execs this file and calls startArena(%file) with the first map to
-// play. A round on a map lasts $Pref::Server::RoundSeconds; then every client sees the round's scores for a few seconds and
-// the next map loads (the rotation, at the end of this file).
+// play. A round on a map lasts $Pref::Server::RoundSeconds (five minutes) or until a player's score reaches
+// $Pref::Server::ScoreLimit; then every client sees the round's scores for a few seconds and the next map loads (the
+// rotation, at the end of this file). The host may also pick the map from the pause menu.
 // A client that connects is sent the datablocks; when it has them, its ghosting starts and it gets a figure holding a pistol
 // with an 11-round magazine, reloaded as often as it likes (R, or by itself when empty). Bolts hurt figures; three hits knock
 // one out: it falls over, away from the shot, and comes back at a spawn point a moment later. The way in and out is the
@@ -334,6 +335,8 @@ function GameConnection::onClientEnterGame(%client)
 {
    commandToClient(%client, 'ArenaStarted', $Arena::Title, $Pref::Server::Name, MissionGroup.textureFilter);
    commandToClient(%client, 'RoundTime', roundSecondsLeft());
+   if (%client.isHost)
+      sendMapChoices(%client);
    if (!%client.entered)
       messageAll("info", %client.name SPC "joined the arena.");
    %client.entered = true;
@@ -539,6 +542,12 @@ function knockOut(%client, %attacker)
       messageAll("info", %client.name SPC "was knocked out.");
    commandToClient(%client, 'KnockedOut', $Arena::RespawnMs);
    %client.respawn = %client.schedule($Arena::RespawnMs, "spawnFigure");
+   // The score limit ends the round at once (after the respawn is scheduled: endRound cancels it).
+   if (isObject(%attacker) && %attacker != %client && $Pref::Server::ScoreLimit > 0 && %attacker.score >= $Pref::Server::ScoreLimit)
+   {
+      messageAll("info", %attacker.name SPC "reached the score limit of" SPC $Pref::Server::ScoreLimit @ ".");
+      endRound();
+   }
 }
 
 // A figure that fell off the map starts again.
@@ -559,10 +568,11 @@ function serverCmdSay(%client, %text)
 
 // ---- rounds and the map rotation
 //
-// A round lasts $Pref::Server::RoundSeconds (ten minutes). When it runs out the shooting stops, every client is shown the
-// round's scores and the next map's name for $Pref::Server::RoundEndSeconds, and the next map loads (each pref held to at
-// least $Arena::MinRoundSeconds and $Arena::MinRoundEndSeconds): the clients stay
-// connected and download it as they downloaded the first, and every score starts again at 0. The maps go around
+// A round lasts $Pref::Server::RoundSeconds (five minutes), or until a player's score reaches $Pref::Server::ScoreLimit (10;
+// 0 turns the limit off). Then the shooting stops, every client is shown the round's scores and the next map's name for
+// $Pref::Server::RoundEndSeconds, and the next map loads (each time pref held to at least $Arena::MinRoundSeconds and
+// $Arena::MinRoundEndSeconds): the clients stay connected and download it as they downloaded the first, and every score
+// starts again at 0. The host can load a map of the list at once from the pause menu (serverCmdChangeMap). The maps go around
 // $Pref::Server::MapList (paths in the game folder, separated by spaces), or when it is empty every map that
 // $Server::MissionFileSpec finds, in order of their names.
 //
@@ -571,13 +581,17 @@ function serverCmdSay(%client, %text)
 // 2012 GarageGames, LLC). The code here is the arena's own.
 
 if ($Pref::Server::RoundSeconds $= "")
-   $Pref::Server::RoundSeconds = 600;
+   $Pref::Server::RoundSeconds = 300;
+if ($Pref::Server::ScoreLimit $= "")
+   $Pref::Server::ScoreLimit = 10;
 if ($Pref::Server::RoundEndSeconds $= "")
    $Pref::Server::RoundEndSeconds = 8;
 $Server::MissionFileSpec = "missions/*.mis";
 // The shortest round and pause the prefs may ask for (a test lowers them).
 $Arena::MinRoundSeconds = 30;
 $Arena::MinRoundEndSeconds = 1;
+// The least time between two map changes the host asks for.
+$Arena::MapChangeGapMs = 3000;
 
 // The round's length and the pause after it in ms, as the prefs ask but no shorter than the least allowed.
 function roundMs()
@@ -655,25 +669,31 @@ function cycleMissions()
    startArena(%file);
 }
 
-// The map after the one that runs, in $Pref::Server::MapList or in the maps the game folder has.
-function nextMission()
+// The maps the rotation goes around and the host may pick from, as paths separated by spaces: $Pref::Server::MapList, or
+// when it is empty every map the game folder has, in order of their names.
+function mapList()
 {
    %list = trim($Pref::Server::MapList);
-   if (%list $= "")
+   if (%list !$= "")
+      return %list;
+   // In order of their names (the search finds them in the file host's own order).
+   %found = 0;
+   for (%file = findFirstFile($Server::MissionFileSpec); %file !$= ""; %file = findNextFile($Server::MissionFileSpec))
    {
-      // In order of their names (the search finds them in the file host's own order).
-      %found = 0;
-      for (%file = findFirstFile($Server::MissionFileSpec); %file !$= ""; %file = findNextFile($Server::MissionFileSpec))
-      {
-         for (%i = %found; %i > 0 && stricmp(%maps[%i - 1], %file) > 0; %i--)
-            %maps[%i] = %maps[%i - 1];
-         %maps[%i] = %file;
-         %found++;
-      }
-      for (%i = 0; %i < %found; %i++)
-         %list = %list SPC %maps[%i];
-      %list = trim(%list);
+      for (%i = %found; %i > 0 && stricmp(%maps[%i - 1], %file) > 0; %i--)
+         %maps[%i] = %maps[%i - 1];
+      %maps[%i] = %file;
+      %found++;
    }
+   for (%i = 0; %i < %found; %i++)
+      %list = %list SPC %maps[%i];
+   return trim(%list);
+}
+
+// The map after the one that runs, in the rotation's list.
+function nextMission()
+{
+   %list = mapList();
    %count = getWordCount(%list);
    if (%count == 0)
       return $Server::MissionFile;
@@ -681,6 +701,58 @@ function nextMission()
       if (getWord(%list, %i) $= $Server::MissionFile)
          return getWord(%list, (%i + 1) % %count);
    return getWord(%list, 0);
+}
+
+// ---- the host's map change
+
+// Tells the host's client the maps it may pick (the pause menu's Change map).
+function sendMapChoices(%client)
+{
+   %list = mapList();
+   %count = getWordCount(%list);
+   commandToClient(%client, 'MapChoices', %count);
+   for (%i = 0; %i < %count; %i++)
+      commandToClient(%client, 'MapChoice', getWord(%list, %i));
+}
+
+// The host picked %name from the pause menu: that map loads at once, every client stays connected and the scores start
+// again. Only the host's own connection may ask (the server marked it when it connected, by the key only the host's process
+// holds), and only for a map of the server's own list: the path that loads is the list's, never the client's text.
+function serverCmdChangeMap(%client, %name)
+{
+   if (!%client.isHost)
+   {
+      echo("Refused a map change from" SPC %client SPC "(" @ %client.name @ "): not the host.");
+      return;
+   }
+   %name = trim(%name);
+   %list = mapList();
+   %file = "";
+   for (%i = 0; %i < getWordCount(%list); %i++)
+      if (%name $= getWord(%list, %i))
+         %file = getWord(%list, %i);
+   if (%file $= "")
+   {
+      echo("Refused a map change from" SPC %client SPC "(" @ %client.name @ "): not in the map list.");
+      return;
+   }
+   %now = getSimTime();
+   if ($Arena::MapChangeAt !$= "" && %now - $Arena::MapChangeAt < $Arena::MapChangeGapMs)
+   {
+      echo("Refused a map change from" SPC %client SPC "(" @ %client.name @ "): too soon after the last.");
+      return;
+   }
+   $Arena::MapChangeAt = %now;
+   messageAll("info", %client.name SPC "changed the map to" SPC fileBase(%file) @ ".");
+   echo("Map change to" SPC %file SPC "by the host.");
+   // Like the round's end, without the pause: nobody respawns into the map that is going.
+   cancel($Arena::RoundTimer);
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+      cancel(ClientGroup.getObject(%i).respawn);
+   $Arena::RoundOver = true;
+   $Arena::NextMission = %file;
+   // From the next event, not from inside the packet that carried the command.
+   $Arena::RoundTimer = schedule(0, 0, "cycleMissions");
 }
 
 // The round's scores, the highest first: a record ("name" TAB score) for each of the first eight players.

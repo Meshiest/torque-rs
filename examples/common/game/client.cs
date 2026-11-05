@@ -2,12 +2,15 @@
 // client.cs execs this first; its view has a GuiTextCtrl named PlayNote.
 
 // Connects to the server at %address ("a.b.c.d:port"), in place of any connection there is, as $Pref::Player::Name when the
-// game names its player.
-function connectTo(%address)
+// game names its player. A host's client passes %key, the secret its own server gave it (it marks the connection as the host's).
+function connectTo(%address, %key)
 {
    disconnect();
+   $Client::MapCount = 0;
    %conn = new GameConnection(ServerConnection);
-   if ($Pref::Player::Name !$= "")
+   if (%key !$= "")
+      %conn.setConnectArgs($Pref::Player::Name, %key);
+   else if ($Pref::Player::Name !$= "")
       %conn.setConnectArgs($Pref::Player::Name);
    %conn.connect(%address);
 }
@@ -15,6 +18,7 @@ function connectTo(%address)
 // Ends the connection, if there is one.
 function disconnect()
 {
+   $Client::MapCount = 0;
    if (isObject(ServerConnection))
       ServerConnection.delete();
 }

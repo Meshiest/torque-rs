@@ -159,10 +159,14 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
   night, "Play alone" (and `--solo`: no socket for the game, nobody on the network sees it), and Tab easing between the
   eyes and the chase camera.
-- `torque-example-fps`: a map rotation. A round lasts `$Pref::Server::RoundSeconds` (ten minutes); then every player sees the
+- `torque-example-fps`: a map rotation. A round lasts `$Pref::Server::RoundSeconds` (five minutes); then every player sees the
   round's scores and the next map's name, and the next map of `$Pref::Server::MapList` (or of `missions/`) loads under the same
   connections, the scores back at 0; the view shows the round's clock. The examples' `loadMission` ends the running map for
   the clients in the game (`endMission`, `'MissionEnd'`, their ghosting reset) and sends them the new one's datablocks.
+- `torque-example-fps`: a round also ends when a player's score reaches `$Pref::Server::ScoreLimit` (10; 0 turns it off), and
+  the host of a game picks the next map from the pause menu's Change map entry (`serverCmdChangeMap`): only the connection that
+  presents the key its own process gave the server may ask, only for a map of the server's list, and not twice within three
+  seconds; the map loads at once under the same connections, the scores back at 0. The examples' `connectTo` takes that key.
 - `torque-example-vehicle-demo`: a brown dirt race track of about 2 km round the start field and over the hill's shoulder (the
   hills' second terrain material, its texture laid along the track with tire-worn bands), the ground shaped along it (crests,
   dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
