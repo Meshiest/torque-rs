@@ -17,6 +17,9 @@
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+/// The list's file name, beside the page.
+pub const FILE_NAME: &str = "files.json";
+
 /// The most bytes of text a list may have.
 pub const MAX_BYTES: usize = 512 * 1024;
 /// The most files a list may name.

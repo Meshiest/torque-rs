@@ -1,11 +1,20 @@
-//! The level demo in a browser: the files it carries (a pack made by `example-level-demo --web-pack`, embedded when it is
-//! built: the path in `TORQUE_WEB_PACK`), and the engine's window as a canvas on the page.
+//! The level demo in a browser: its files, fetched by the page or carried inside the module, and the engine's window as a
+//! canvas on the page.
+//!
+//! **Its files.** Built with the `embed-pack` feature, the module carries them (a pack made by `example-level-demo --web-pack`,
+//! its path in `TORQUE_WEB_PACK` when it is built) and the page calls [`start_embedded`]. Without it the page fetches the files
+//! its list names (`files.json`, which `example-level-demo --web-files` writes beside the pack) and hands them over:
+//! [`read_manifest`], [`add_file`] for each file (taken only when its size and hash are the list's), then [`start_fetched`].
+//! Either way the files become the same `GameFiles`.
 //!
 //! **The page.** `?map=<name>` starts the map `missions/<name>.mis` at once instead of showing the menu. The page's root element
 //! carries the game's state for a test to wait on: `data-torque-frames` (the frames drawn), `data-torque-map` (the map being
 //! played, empty on the menu), `data-torque-figure` (`1` once the client holds its figure's ghost) and `data-torque-position`
 //! (where the client sees its figure, `x y z`).
 
+use std::cell::RefCell;
+
+use torque::app::manifest::Manifest;
 use torque::app::view::WorldView;
 use torque::app::{App, Host};
 use torque::gui::GuiDraws;
@@ -16,19 +25,83 @@ use crate::client::LevelDemo;
 use crate::files::GameFiles;
 
 /// The files the build carries.
+#[cfg(feature = "embed-pack")]
 static PACK: &[u8] = include_bytes!(env!("TORQUE_WEB_PACK"));
 
-/// Starts the game on the page (panics, shown in the page's console, when it cannot).
-#[allow(clippy::panic)]
-pub fn start() {
-    console_error_panic_hook::set_once();
-    if let Err(e) = run() {
-        panic!("the level demo: {e}");
-    }
+/// The files fetched so far and the list they were fetched by.
+struct Fetched {
+    manifest: Manifest,
+    files: Vec<(String, Vec<u8>)>,
 }
 
-fn run() -> Result<(), String> {
-    let files = GameFiles::unpack(PACK)?;
+thread_local! {
+    static FETCHED: RefCell<Option<Fetched>> = const { RefCell::new(None) };
+}
+
+/// Shows a panic in the page's console.
+pub fn init() {
+    console_error_panic_hook::set_once();
+}
+
+/// Whether the module carries its files (the `embed-pack` feature).
+pub fn embedded() -> bool {
+    cfg!(feature = "embed-pack")
+}
+
+/// Starts the game on the files the module carries.
+#[cfg(feature = "embed-pack")]
+pub fn start_embedded() -> Result<(), String> {
+    start(GameFiles::unpack(PACK)?)
+}
+
+/// Starts the game on the files the module carries: this build carries none.
+#[cfg(not(feature = "embed-pack"))]
+pub fn start_embedded() -> Result<(), String> {
+    Err("this build carries no files: the page fetches them by its list".into())
+}
+
+/// Reads the list of the files to fetch (Err: it is not one, or it breaks a cap), forgetting any files added before.
+pub fn read_manifest(text: &str) -> Result<(), String> {
+    let manifest = Manifest::parse(text)?;
+    FETCHED.with_borrow_mut(|f| {
+        *f = Some(Fetched {
+            manifest,
+            files: Vec::new(),
+        })
+    });
+    Ok(())
+}
+
+/// Takes the fetched file `path` (Err, the file left out: the list does not name it, or its size or hash is not the list's).
+pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
+    FETCHED.with_borrow_mut(|f| {
+        let f = f.as_mut().ok_or("no list of files was read")?;
+        let entry = f
+            .manifest
+            .file(path)
+            .ok_or_else(|| format!("{path} is not in the list of files"))?;
+        entry.check(&bytes)?;
+        let path = entry.path.clone();
+        f.files.retain(|(p, _)| *p != path);
+        f.files.push((path, bytes));
+        Ok(())
+    })
+}
+
+/// Starts the game on the fetched files (Err: one the list names is missing, or a pack is broken).
+pub fn start_fetched() -> Result<(), String> {
+    let Fetched { manifest, files } = FETCHED.take().ok_or("no list of files was read")?;
+    if let Some(missing) = manifest
+        .files
+        .iter()
+        .find(|m| !files.iter().any(|(p, _)| *p == m.path))
+    {
+        return Err(format!("{} was not fetched", missing.path));
+    }
+    start(GameFiles::from_fetched(files)?)
+}
+
+fn start(files: GameFiles) -> Result<(), String> {
     let mut demo = LevelDemo::new(files)?;
     if let Some(name) = query("map") {
         let want = format!("missions/{name}.mis");

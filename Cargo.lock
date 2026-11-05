@@ -2340,6 +2340,7 @@ dependencies = [
  "torque-maps",
  "torque-render-core",
  "torque-render-scene",
+ "wasm-bindgen",
  "web-sys",
 ]
 
