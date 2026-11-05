@@ -86,6 +86,14 @@ pub(crate) enum Pipe {
 }
 
 impl Pipe {
+    /// Whether a TLS handshake is still going on.
+    pub(crate) fn is_handshaking(&self) -> bool {
+        match self {
+            Pipe::Plain(_) => false,
+            Pipe::Tls(s) => s.conn.is_handshaking(),
+        }
+    }
+
     /// Ends the connection: TLS says goodbye first (best effort), then the stream is shut.
     pub(crate) fn shut(&mut self) {
         let tcp = match self {

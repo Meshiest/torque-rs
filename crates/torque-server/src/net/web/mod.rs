@@ -22,21 +22,28 @@
 //! with 403.
 //!
 //! **Hostile input.** The HTTP side's caps are [`http`]'s (request line, head, headers, `GET` only, no body, paths
-//! normalized without traversal, files from memory). Each connection has its timeouts and caps ([`WebLimits`]): a head must
-//! come within [`WebLimits::head_timeout`] of the connection's start or of the last response; a game socket that is quiet
-//! for [`WebLimits::idle_timeout`] is closed; writes that make no progress for [`WebLimits::stall_timeout`], or a socket
-//! whose unsent bytes pass [`WebLimits::write_buffer`] (a slow reader), close the connection; a message larger than a
-//! datagram ([`NET_MAX_DATAGRAM`]) or more messages a second than UDP's per-connection cap
-//! ([`NET_PACKETS_PER_CONN_PER_S`]) closes the socket. Connections are capped in all, per address, and in game sockets
-//! per address, and new connections per address per second; one pass accepts at most [`WebLimits::accepts_per_pass`],
-//! reads at most [`WebLimits::messages_per_pass`] messages of each socket and writes at most a few MiB to each connection,
-//! so a pass's time is bounded whatever the peers send. IPv6 peers are refused, as by the bind policy.
+//! normalized without traversal, files from memory). Each connection has its timeouts and caps ([`WebLimits`]): a TLS
+//! handshake must end within [`WebLimits::handshake_timeout`] and a head come within [`WebLimits::head_timeout`] of the
+//! connection's start or of the last response; a response must be read within the stall timeout plus its bytes at
+//! [`WebLimits::min_send_rate`]; a game socket with no game message for [`WebLimits::idle_timeout`] is closed (pings do
+//! not keep it); writes that make no progress for [`WebLimits::stall_timeout`], or a socket whose unsent bytes pass
+//! [`WebLimits::write_buffer`] (a slow reader), close the connection. A game socket's bytes are metered beneath the
+//! WebSocket layer (`meter`): a message larger than a datagram ([`NET_MAX_DATAGRAM`]), more frames a second than UDP's
+//! per-connection packet cap ([`NET_PACKETS_PER_CONN_PER_S`], control frames and continuations included), more bytes a
+//! second than that many full datagrams, or a message in more than [`WebLimits::frames_per_message`] frames closes it.
+//! Connections are capped in all (when every place is taken, the HTTP connection idle the longest makes room), per
+//! address, and in game sockets per address, and new connections per address per second. One pass accepts at most
+//! [`WebLimits::accepts_per_pass`], steps at most [`WebLimits::handshakes_per_pass`] TLS handshakes, reads at most
+//! [`WebLimits::bytes_per_pass`] bytes and [`WebLimits::messages_per_pass`] messages of each socket and writes at most a
+//! few MiB to each connection, so a pass's time is bounded whatever the peers send. IPv6 peers are refused, as by the
+//! bind policy. A game socket that closes is reported to the host ([`Transport::take_gone`]), which drops its connection.
 
 pub mod http;
 pub mod stand_in;
 pub mod tls;
 
 mod conn;
+mod meter;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
@@ -67,12 +74,25 @@ pub struct WebLimits {
     pub accepts_per_pass: usize,
     /// How long a request head may take (and a TLS handshake before it).
     pub head_timeout: Duration,
-    /// How long a game socket may stay quiet.
+    /// How long a TLS handshake may take.
+    pub handshake_timeout: Duration,
+    /// The most TLS handshakes one pass steps (the rest wait for the next pass).
+    pub handshakes_per_pass: usize,
+    /// How long a game socket may go without a game message (pings and other control frames do not count).
     pub idle_timeout: Duration,
     /// How long writes may make no progress.
     pub stall_timeout: Duration,
-    /// The most messages (and control frames) a game socket may send in a second.
+    /// The slowest a response may be read, in bytes a second: a response must be written within the stall timeout plus
+    /// its bytes at this rate.
+    pub min_send_rate: usize,
+    /// The most frames (control frames and continuations included) a game socket may send in a second.
     pub messages_per_s: u32,
+    /// The most bytes a game socket may send in a second.
+    pub bytes_per_s: usize,
+    /// The most bytes one pass reads from one game socket.
+    pub bytes_per_pass: usize,
+    /// The most frames one message may be sent in.
+    pub frames_per_message: u32,
     /// The largest message a game socket may send.
     pub max_message: usize,
     /// The most unsent bytes a game socket may hold.
@@ -94,9 +114,16 @@ impl Default for WebLimits {
             connects_per_ip_per_s: 16,
             accepts_per_pass: 16,
             head_timeout: Duration::from_secs(10),
+            handshake_timeout: Duration::from_secs(5),
+            handshakes_per_pass: 8,
             idle_timeout: Duration::from_secs(20),
             stall_timeout: Duration::from_secs(10),
+            min_send_rate: 32 << 10,
             messages_per_s: NET_PACKETS_PER_CONN_PER_S,
+            // A datagram's frame is at most the datagram and a 14-byte header.
+            bytes_per_s: NET_PACKETS_PER_CONN_PER_S as usize * (NET_MAX_DATAGRAM + 14),
+            bytes_per_pass: 64 * (NET_MAX_DATAGRAM + 14),
+            frames_per_message: 16,
             max_message: NET_MAX_DATAGRAM,
             write_buffer: 256 << 10,
             requests_per_connection: 64,
@@ -142,6 +169,8 @@ pub struct WebCounters {
     pub closed_oversize: u64,
     pub closed_rate: u64,
     pub closed_protocol: u64,
+    /// Idle HTTP connections closed to make room when every place was taken.
+    pub evicted: u64,
 }
 
 /// The web transport (module docs).
@@ -156,6 +185,8 @@ pub struct WebTransport {
     stand_ins: StandIns,
     counters: WebCounters,
     last_pump: Option<Instant>,
+    /// The stand-ins of game sockets closed since the host last asked.
+    gone: Vec<SocketAddr>,
 }
 
 impl WebTransport {
@@ -170,6 +201,7 @@ impl WebTransport {
             stand_ins: StandIns::default(),
             counters: WebCounters::default(),
             last_pump: None,
+            gone: Vec::new(),
         }
     }
 
@@ -223,6 +255,8 @@ impl WebTransport {
                 stand_ins: &mut self.stand_ins,
                 access: &self.setup.access,
                 tls: self.setup.tls.is_some(),
+                handshakes: self.setup.limits.handshakes_per_pass,
+                gone: &mut self.gone,
             },
             &mut self.conns,
         )
@@ -269,10 +303,27 @@ impl WebTransport {
                 }
             };
             let refused = ip.is_ipv6()
-                || self.conns.len() >= limits.max_connections
                 || from_ip >= limits.connections_per_ip
                 || !rate_ok
                 || stream.set_nonblocking(true).is_err();
+            // Every place taken: the HTTP connection idle the longest makes room, else the new one is turned away.
+            let full = !refused && self.conns.len() >= limits.max_connections;
+            let oldest_idle = self
+                .conns
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| c.idle_since().map(|t| (t, i)))
+                .min()
+                .map(|(_, i)| i);
+            let room = match oldest_idle {
+                Some(i) if full => {
+                    let mut old = self.conns.swap_remove(i);
+                    old.evict(&mut self.counters);
+                    true
+                }
+                _ => false,
+            };
+            let refused = refused || (full && !room);
             if refused {
                 self.counters.refused += 1;
                 drop(stream);
@@ -379,6 +430,10 @@ impl Transport for WebTransport {
     fn wants_service(&self) -> bool {
         self.listener.is_some()
     }
+
+    fn take_gone(&mut self) -> Vec<SocketAddr> {
+        std::mem::take(&mut self.gone)
+    }
 }
 
 /// UDP and the web on one address and port (module docs). Game sockets go by stand-in addresses no UDP peer has
@@ -478,5 +533,9 @@ impl Transport for MultiTransport {
 
     fn wants_service(&self) -> bool {
         self.web.wants_service()
+    }
+
+    fn take_gone(&mut self) -> Vec<SocketAddr> {
+        self.web.take_gone()
     }
 }

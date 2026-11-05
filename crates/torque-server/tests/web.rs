@@ -761,3 +761,187 @@ fn hosts_and_origins_are_checked() {
     });
     assert_eq!(got, [101, 403, 403]);
 }
+
+/// A raw game socket: the handshake made, the stream left for hand-made frames.
+fn raw_socket(t: &mut WebTransport, addr: SocketAddr) -> TcpStream {
+    serve_while(t, move || {
+        let mut s = connect(addr);
+        s.write_all(upgrade_request(&base64(&[3; 16])).as_bytes())
+            .unwrap();
+        let mut head = Vec::new();
+        let mut b = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            assert_eq!(s.read(&mut b).unwrap(), 1);
+            head.push(b[0]);
+        }
+        assert!(head.starts_with(b"HTTP/1.1 101 "));
+        s
+    })
+}
+
+/// Floods `s` from a thread with a binary frame left open and empty continuation frames after it (6 bytes each, masked),
+/// for at most `ms`; returns the bytes it got out.
+fn flood_continuations(mut s: TcpStream, ms: u64) -> thread::JoinHandle<usize> {
+    thread::spawn(move || {
+        let _ = s.set_write_timeout(Some(Duration::from_millis(200)));
+        let mut sent = 0;
+        if s.write_all(&[0x02, 0x80, 1, 2, 3, 4]).is_err() {
+            return sent;
+        }
+        let chunk: Vec<u8> = [0x00, 0x80, 1, 2, 3, 4].repeat(4096);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(ms) {
+            match s.write(&chunk) {
+                Ok(n) => sent += n,
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(_) => break,
+            }
+        }
+        sent
+    })
+}
+
+#[test]
+fn endless_continuation_frames_are_metered_and_closed() {
+    // As the limits are: the message's frame count closes it.
+    let (mut t, addr) = site(WebLimits::default(), None, None);
+    let s = raw_socket(&mut t, addr);
+    let h = flood_continuations(s, 3000);
+    let longest = pump_until(&mut t, 3000, |t| t.sockets() == 0);
+    assert_eq!(t.sockets(), 0);
+    assert_eq!(t.counters().closed_protocol, 1, "{:?}", t.counters());
+    assert!(
+        longest < Duration::from_millis(20),
+        "a pass took {longest:?}"
+    );
+    h.join().unwrap();
+
+    // With no frame cap per message, the frames a second close it, and no pass reads more than its byte budget.
+    let limits = WebLimits {
+        frames_per_message: u32::MAX,
+        ..WebLimits::default()
+    };
+    let budget = limits.bytes_per_pass;
+    let (mut t, addr) = site(limits, None, None);
+    let s = raw_socket(&mut t, addr);
+    let h = flood_continuations(s, 3000);
+    let longest = pump_until(&mut t, 3000, |t| t.sockets() == 0);
+    assert_eq!(t.sockets(), 0);
+    assert_eq!(t.counters().closed_rate, 1, "{:?}", t.counters());
+    assert!(
+        longest < Duration::from_millis(20),
+        "a pass took {longest:?}"
+    );
+    let sent = h.join().unwrap();
+    assert!(
+        sent > budget,
+        "the flood outran one pass's budget ({sent} bytes)"
+    );
+}
+
+#[test]
+fn pings_alone_do_not_keep_a_socket() {
+    let limits = WebLimits {
+        idle_timeout: Duration::from_millis(300),
+        ..WebLimits::default()
+    };
+    let (mut t, addr) = site(limits, None, None);
+    let mut ws = serve_while(&mut t, move || ws_open(addr));
+    ws.get_mut().set_nonblocking(true).unwrap();
+    let start = Instant::now();
+    while t.sockets() == 1 && start.elapsed() < Duration::from_secs(3) {
+        let _ = ws.send(Message::Ping(vec![1].into()));
+        let _ = ws.read();
+        t.pump();
+        sleep(Duration::from_millis(20));
+    }
+    assert_eq!(t.sockets(), 0);
+    assert_eq!(t.counters().closed_timeout, 1);
+    // The host hears of it, to drop the connection.
+    assert_eq!(t.take_gone().len(), 1);
+    assert!(t.take_gone().is_empty());
+}
+
+#[test]
+fn an_idle_connection_makes_room_when_every_place_is_taken() {
+    let limits = WebLimits {
+        max_connections: 3,
+        ..WebLimits::default()
+    };
+    let (mut t, addr) = site(limits, None, Some(files()));
+    let mut idle: Vec<TcpStream> = (0..3).map(|_| connect(addr)).collect();
+    pump_until(&mut t, 500, |t| t.connections() == 3);
+    let page = serve_while(&mut t, move || {
+        let mut s = connect(addr);
+        s.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        response(&mut s).0
+    });
+    assert_eq!(page, 200, "the new connection is served");
+    assert_eq!(t.counters().evicted, 1);
+    assert_eq!(t.counters().refused, 0);
+    assert_eq!(
+        idle.iter_mut().map(closed).filter(|&c| c).count(),
+        1,
+        "the oldest idle one was closed"
+    );
+}
+
+#[test]
+fn a_response_read_too_slowly_is_closed() {
+    let limits = WebLimits {
+        stall_timeout: Duration::from_millis(200),
+        min_send_rate: 16 << 20,
+        ..WebLimits::default()
+    };
+    let mut big = files();
+    big.insert("big.bin", vec![9; 32 << 20]);
+    let (mut t, addr) = site(limits, None, Some(big));
+    let read = serve_while(&mut t, move || {
+        let mut s = connect(addr);
+        s.write_all(b"GET /big.bin HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        // A trickle: 16 KiB every 20 ms, always some progress, far below the rate allowed.
+        let mut total = 0usize;
+        let mut b = vec![0u8; 16 << 10];
+        loop {
+            match s.read(&mut b) {
+                Ok(0) | Err(_) => return total,
+                Ok(n) => total += n,
+            }
+            sleep(Duration::from_millis(20));
+        }
+    });
+    assert!(
+        read < 32 << 20,
+        "the reader got {read} bytes before it was cut"
+    );
+    assert_eq!(t.counters().closed_stalled, 1);
+}
+
+#[test]
+fn a_tls_handshake_has_a_deadline() {
+    let made = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let tls = Tls::from_pem(
+        made.cert.pem().as_bytes(),
+        made.key_pair.serialize_pem().as_bytes(),
+    )
+    .unwrap();
+    let limits = WebLimits {
+        handshake_timeout: Duration::from_millis(300),
+        ..WebLimits::default()
+    };
+    let (mut t, addr) = site(limits, Some(tls), Some(files()));
+    // A peer that never says hello.
+    let mut s = connect(addr);
+    pump_until(&mut t, 2000, |t| t.counters().accepted == 1);
+    let start = Instant::now();
+    pump_until(&mut t, 2000, |t| t.connections() == 0);
+    assert!(
+        start.elapsed() >= Duration::from_millis(250),
+        "closed by the deadline"
+    );
+    assert_eq!(t.connections(), 0);
+    assert_eq!(t.counters().closed_timeout, 1);
+    assert!(closed(&mut s));
+}

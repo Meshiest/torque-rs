@@ -104,6 +104,11 @@ pub trait Transport {
     fn wants_service(&self) -> bool {
         false
     }
+    /// The addresses whose link closed since the last call (a web transport's game sockets): the host drops their
+    /// connections at once instead of waiting for them to time out. None for a datagram socket.
+    fn take_gone(&mut self) -> Vec<SocketAddr> {
+        Vec::new()
+    }
 }
 
 /// A transport shared by the pump and the `Network` that `setNetPort` binds through.

@@ -220,6 +220,20 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
             sh.source_work.clear();
         }
     }
+    // Links the transport saw close (a web transport's game sockets): their connections go now.
+    let gone = transport.borrow_mut().take_gone();
+    for addr in gone {
+        let conn = shared.borrow().hs.lookup(addr);
+        if let Some(conn) = conn {
+            drop_conn(
+                vm,
+                shared,
+                conn,
+                Some(b"Disconnected."),
+                DeleteMode::Immediate,
+            );
+        }
+    }
     let local = transport.borrow().local_addr();
     let mut buf = vec![0u8; RECV_BUFFER_BYTES];
     let mut seen = 0usize;

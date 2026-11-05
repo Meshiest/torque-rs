@@ -177,9 +177,14 @@ The first development version. Nothing is published yet; this is what exists.
   on the same port, through the `Transport` trait as UDP is (`net::web::WebTransport`; `MultiTransport` takes UDP and the web
   on one port number). TLS through rustls with certificate and key files; plain HTTP and WebSocket listen on private
   addresses only. Hostile input is capped: the request line, the head and its headers, `GET` only, no body, paths
-  normalized with no traversal, files served from memory; per connection a head timeout, an idle timeout, a stall timeout
-  and a cap on unsent bytes, messages no larger than a datagram and no more a second than UDP's per-connection cap;
-  connections capped in all, per address and per second. `Transport::service` does a transport's work between ticks.
+  normalized with no traversal, files served from memory; per connection a TLS handshake deadline and a budget of
+  handshakes per pass, a head timeout, an idle timeout on game messages (pings do not count), a stall timeout, a deadline
+  for each response at a slowest read rate, and a cap on unsent bytes; a game socket's bytes metered beneath the WebSocket
+  layer: messages no larger than a datagram, no more frames a second (continuations and control frames included) than UDP's
+  per-connection packet cap, as many full datagrams' bytes a second, at most 16 frames a message and a byte budget per
+  pass; connections capped in all (the longest-idle HTTP connection makes room when full), per address and per second.
+  `Transport::service` does a transport's work between ticks, and `Transport::take_gone` reports closed sockets, whose
+  connections the host drops at once.
   Requests must name an IP address, `localhost` or one of the server's names in `Host` (421 otherwise, against DNS
   rebinding), and a page's game socket must come from the server's own page or a listed origin (`net::web::Access`, 403
   otherwise). Game sockets go by stand-in addresses in `240.0.0.0/4`, one fixed IP per peer address (a peer that comes

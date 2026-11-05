@@ -13,6 +13,7 @@ use tungstenite::{Error as WsError, Message};
 use web_time::{Duration, Instant};
 
 use super::http::{self, Parsed, Status, WEB_SOCKET_PATH, WebFiles};
+use super::meter::{Caps, Metered, Over};
 use super::stand_in::StandIns;
 use super::tls::Pipe;
 use super::{Access, WebCounters, WebLimits};
@@ -40,10 +41,12 @@ pub(crate) enum Closed {
     Stalled,
     /// A message larger than a datagram.
     Oversize,
-    /// More messages a second than the cap.
+    /// More bytes or frames a second than the caps.
     Rate,
-    /// A text message or a broken frame.
+    /// A text message, a broken frame, or more frames in one message than the cap.
     Protocol,
+    /// An idle HTTP connection closed to make room for a new one when every place was taken.
+    Evicted,
 }
 
 impl Closed {
@@ -55,6 +58,7 @@ impl Closed {
             Closed::Oversize => &mut counters.closed_oversize,
             Closed::Rate => &mut counters.closed_rate,
             Closed::Protocol => &mut counters.closed_protocol,
+            Closed::Evicted => &mut counters.evicted,
         };
         *slot += 1;
     }
@@ -66,6 +70,9 @@ struct Outgoing {
     body: Option<Rc<[u8]>>,
     sent: usize,
     after: After,
+    /// When the response must be all written (set when its writing starts): the stall timeout plus its bytes at the
+    /// slowest rate allowed ([`WebLimits::min_send_rate`]), so a reader that takes a byte now and then is not kept forever.
+    deadline: Option<Instant>,
 }
 
 /// What follows a response.
@@ -83,34 +90,9 @@ enum Phase {
         out: Option<Outgoing>,
     },
     Socket {
-        ws: Box<WebSocket<Pipe>>,
-        rate: Rate,
+        ws: Box<WebSocket<Metered>>,
     },
     Gone,
-}
-
-/// Messages counted over one second.
-struct Rate {
-    start: Instant,
-    count: u32,
-}
-
-impl Rate {
-    fn new(now: Instant) -> Rate {
-        Rate {
-            start: now,
-            count: 0,
-        }
-    }
-
-    fn allow(&mut self, now: Instant, limit: u32) -> bool {
-        if now.duration_since(self.start) >= Duration::from_secs(1) {
-            self.start = now;
-            self.count = 0;
-        }
-        self.count += 1;
-        self.count <= limit
-    }
 }
 
 /// What a pass hands every connection.
@@ -126,7 +108,14 @@ pub(crate) struct Pass<'a> {
     pub access: &'a Access,
     /// Whether the connections are TLS (the page's origin is `https`).
     pub tls: bool,
+    /// The TLS handshakes this pass may still step ([`WebLimits::handshakes_per_pass`]).
+    pub handshakes: usize,
+    /// The stand-ins of the game sockets closed since the host last asked ([`super::WebTransport`]'s `take_gone`).
+    pub gone: &'a mut Vec<SocketAddr>,
 }
+
+/// The most closed sockets kept for the host to drop their connections (the rest time out as before).
+const GONE_MAX: usize = 4096;
 
 pub(crate) struct Conn {
     /// The TCP peer's address.
@@ -135,8 +124,10 @@ pub(crate) struct Conn {
     /// socket's place under the per-address cap) and given back when the connection ends.
     pub stand_in: Option<SocketAddr>,
     phase: Phase,
+    /// When the connection was taken.
+    opened: Instant,
     /// When the present wait began: the head's (the connection's start, or the last response's end), or the socket's last
-    /// frame.
+    /// game message (pings and other control frames do not keep a socket open).
     since: Instant,
     /// Since when writes have made no progress (None while they go through).
     stalled: Option<Instant>,
@@ -153,6 +144,7 @@ impl Conn {
                 buf: Vec::new(),
                 out: None,
             },
+            opened: now,
             since: now,
             stalled: None,
             requests: 0,
@@ -162,6 +154,19 @@ impl Conn {
     /// Whether this is a game socket.
     pub(crate) fn is_socket(&self) -> bool {
         matches!(self.phase, Phase::Socket { .. })
+    }
+
+    /// Since when an HTTP connection has waited for a request with nothing of one read and nothing to write (None for any
+    /// other: one mid-request, mid-response, still in its TLS handshake, or a socket).
+    pub(crate) fn idle_since(&self) -> Option<Instant> {
+        match &self.phase {
+            Phase::Http { pipe, buf, out }
+                if out.is_none() && buf.is_empty() && !pipe.is_handshaking() =>
+            {
+                Some(self.since)
+            }
+            _ => None,
+        }
     }
 
     /// One pass: what can be read and written without blocking. False when the connection is to be dropped (it has been
@@ -182,18 +187,24 @@ impl Conn {
     /// Ends the connection (a socket says why in its close frame).
     pub(crate) fn shut(&mut self, why: Closed, pass: &mut Pass<'_>) {
         why.count(pass.counters);
+        let closed_stand_in = self.stand_in;
         if let Some(addr) = self.stand_in.take() {
             pass.stand_ins.give_back(self.peer.ip(), addr);
         }
         match std::mem::replace(&mut self.phase, Phase::Gone) {
             Phase::Http { mut pipe, .. } => pipe.shut(),
             Phase::Socket { mut ws, .. } => {
+                if let Some(addr) = closed_stand_in
+                    && pass.gone.len() < GONE_MAX
+                {
+                    pass.gone.push(addr);
+                }
                 let code = match why {
                     Closed::Oversize => Some(CloseCode::Size),
                     Closed::Rate | Closed::Stalled => Some(CloseCode::Policy),
                     Closed::Protocol => Some(CloseCode::Unsupported),
                     Closed::Timeout => Some(CloseCode::Away),
-                    Closed::Peer | Closed::Done => None,
+                    Closed::Peer | Closed::Done | Closed::Evicted => None,
                 };
                 if let Some(code) = code {
                     let _ = ws.close(Some(CloseFrame {
@@ -236,18 +247,45 @@ impl Conn {
         matches!(self.phase, Phase::Gone)
     }
 
+    /// Closes an idle HTTP connection to make room ([`Conn::idle_since`]; it holds no stand-in).
+    pub(crate) fn evict(&mut self, counters: &mut WebCounters) {
+        Closed::Evicted.count(counters);
+        if let Phase::Http { mut pipe, .. } = std::mem::replace(&mut self.phase, Phase::Gone) {
+            pipe.shut();
+        }
+    }
+
     fn advance_http(&mut self, pass: &mut Pass<'_>) -> Option<Closed> {
         for _ in 0..REQUESTS_PER_PASS {
             let Phase::Http { pipe, buf, out } = &mut self.phase else {
                 return None;
             };
+            // A TLS handshake: bounded in time, and in how many step in one pass (each is work on the server's thread).
+            if pipe.is_handshaking() {
+                if pass.now.duration_since(self.opened) > pass.limits.handshake_timeout {
+                    return Some(Closed::Timeout);
+                }
+                if pass.handshakes == 0 {
+                    return None;
+                }
+                pass.handshakes -= 1;
+            }
             if let Some(o) = out {
+                let deadline = *o.deadline.get_or_insert_with(|| {
+                    let bytes = o.head.len() + o.body.as_ref().map_or(0, |b| b.len());
+                    let rate = pass.limits.min_send_rate.max(1);
+                    pass.now
+                        + pass.limits.stall_timeout
+                        + Duration::from_millis((bytes as u64).saturating_mul(1000) / rate as u64)
+                });
                 let (done, progressed) = match write_out(pipe, o) {
                     Ok(r) => r,
                     Err(_) => return Some(Closed::Peer),
                 };
                 if !done {
-                    return stall_check(&mut self.stalled, progressed, pass.now, pass.limits)
+                    let late = pass.now > deadline;
+                    return (stall_check(&mut self.stalled, progressed, pass.now, pass.limits)
+                        || late)
                         .then_some(Closed::Stalled);
                 }
                 self.stalled = None;
@@ -317,6 +355,7 @@ impl Conn {
                                 body: None,
                                 sent: 0,
                                 after: After::Upgrade,
+                                deadline: None,
                             }
                         }
                     }
@@ -342,6 +381,7 @@ impl Conn {
                             body: Some(Rc::clone(&file.bytes)),
                             sent: 0,
                             after: if keep { After::KeepAlive } else { After::Close },
+                            deadline: None,
                         }
                     }
                     None => {
@@ -365,11 +405,20 @@ impl Conn {
             .max_write_buffer_size(pass.limits.write_buffer)
             .max_message_size(Some(pass.limits.max_message))
             .max_frame_size(Some(pass.limits.max_message));
-        let ws = WebSocket::from_partially_read(pipe, buf, Role::Server, Some(config));
-        self.phase = Phase::Socket {
-            ws: Box::new(ws),
-            rate: Rate::new(pass.now),
-        };
+        let limits = pass.limits;
+        let metered = Metered::new(
+            pipe,
+            Caps {
+                bytes_per_pass: limits.bytes_per_pass,
+                bytes_per_s: limits.bytes_per_s,
+                frames_per_s: limits.messages_per_s,
+                frames_per_message: limits.frames_per_message,
+            },
+            pass.now,
+        );
+        // The bytes read with the head were not metered: they are at most a head's cap.
+        let ws = WebSocket::from_partially_read(metered, buf, Role::Server, Some(config));
+        self.phase = Phase::Socket { ws: Box::new(ws) };
         pass.counters.upgrades += 1;
         self.since = pass.now;
         self.stalled = None;
@@ -380,9 +429,10 @@ impl Conn {
         let Some(peer) = self.stand_in else {
             return Some(Closed::Peer);
         };
-        let Phase::Socket { ws, rate } = &mut self.phase else {
+        let Phase::Socket { ws } = &mut self.phase else {
             return None;
         };
+        ws.get_mut().refill(pass.now);
         let flushed = match ws.flush() {
             Ok(()) => true,
             Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => false,
@@ -400,12 +450,9 @@ impl Conn {
                 }
                 Err(_) => return Some(Closed::Peer),
             };
-            self.since = pass.now;
-            if !rate.allow(pass.now, pass.limits.messages_per_s) {
-                return Some(Closed::Rate);
-            }
             match message {
                 Message::Binary(data) => {
+                    self.since = pass.now;
                     if pass.inbox.len() < pass.limits.queue {
                         pass.counters.messages += 1;
                         pass.inbox.push_back((peer, data.to_vec()));
@@ -417,6 +464,11 @@ impl Conn {
                 // Pings are answered by the socket itself; a close is answered on the next read, which then ends it.
                 Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {}
             }
+        }
+        match ws.get_ref().over() {
+            Some(Over::Rate) => return Some(Closed::Rate),
+            Some(Over::Frames) => return Some(Closed::Protocol),
+            None => {}
         }
         if stall_check(&mut self.stalled, flushed, pass.now, pass.limits) {
             return Some(Closed::Stalled);
@@ -447,6 +499,7 @@ fn refuse(status: Status) -> Outgoing {
         body: None,
         sent: 0,
         after: After::Close,
+        deadline: None,
     }
 }
 
