@@ -36,13 +36,13 @@ function run(cmd, args, env = {}) {
 // The files, packed by the native build.
 run('cargo', ['run', '-p', example.package, '--release', '--bin', example.bin, '--', '--web-pack', pack]);
 
-// The module, the pack embedded. A rustc wrapper (sccache) is turned off: its command lines for web-sys are too long for
-// Windows.
+// The module, the pack embedded. A rustc wrapper (sccache) is turned off, set in the config or in RUSTC_WRAPPER: its command
+// lines for web-sys are too long for Windows.
 run(
   'cargo',
   ['build', '--config', "build.rustc-wrapper=''", '--release', '--target', 'wasm32-unknown-unknown',
     '-p', example.package, '--bin', example.bin],
-  { TORQUE_WEB_PACK: pack },
+  { TORQUE_WEB_PACK: pack, RUSTC_WRAPPER: '' },
 );
 
 // wasm-bindgen's command line at the version the module was built with.
