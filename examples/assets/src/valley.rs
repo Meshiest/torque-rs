@@ -3,9 +3,11 @@
 //! placed many times.
 //!
 //! The block is TGE's default (256 samples a side, 8 m apart, centered on the origin). [`height`] gives the ground: the
-//! valley runs west to east along a gentle curve ([`center_y`]), its floor at about [`FLOOR`] m, rising to the east and to a
-//! low pass in the west (the sun sets over it); its walls climb through foothills to jagged mountains of up to about 500 m
-//! (ridged noise: sharp crests, crags and gullies), and the block's rim is raised so no edge shows against the sky. The lake
+//! valley runs west to east along a gentle curve ([`center_y`]), its floor at about [`FLOOR`] m, rising to the east; west of
+//! the lake it sinks under the sea ([`SEA`]), its mountains running out as headlands, all of it under the water before the
+//! block's western edge (the sun sets over the sea). Its walls climb through foothills to jagged mountains of up to about
+//! 500 m (ridged noise: sharp crests, crags and gullies), and the block's rim is raised on the other sides so no edge shows
+//! against the sky. The lake
 //! ([`LAKE_AT`], [`LAKE_RADII`], its outline wavy) is a basin a few meters under [`WATER_LEVEL`], with a sandy shore.
 //!
 //! Three materials ([`MATERIALS`]): grass everywhere but the steep and the high ground (rock) and the lake's shore and bed
@@ -28,6 +30,11 @@ pub const LAKE_AT: [f32; 2] = [-150.0, 0.0];
 pub const LAKE_RADII: [f32; 2] = [240.0, 105.0];
 /// The deepest the lake goes under its surface.
 pub const LAKE_DEPTH: f32 = 7.0;
+/// Where the valley runs into the sea (x, m: the land from the first to under the water by the second, its middle; the
+/// headlands reach [`SEA_HEADLANDS`] of their distance across farther out), and the sea's depth under the water.
+pub const SEA: (f32, f32) = (-230.0, -560.0);
+pub const SEA_HEADLANDS: f32 = 0.3;
+pub const SEA_DEPTH: f32 = 14.0;
 /// The meadow kept open around the spawn: its middle and radius.
 pub const MEADOW: ([f32; 2], f32) = ([180.0, -30.0], 40.0);
 /// The ground's materials, in the file's order (their textures are the kit's `<name>.png`).
@@ -62,10 +69,7 @@ pub fn center_y(x: f32) -> f32 {
 
 /// The valley's floor before the lake: rising to the east and to the pass in the west.
 fn floor(x: f32, y: f32) -> f32 {
-    FLOOR
-        + 30.0 * smoothstep(80.0, 900.0, x)
-        + 14.0 * smoothstep(-380.0, -950.0, x)
-        + 2.5 * (fbm(x / 90.0, y / 90.0, 301) - 0.5)
+    FLOOR + 30.0 * smoothstep(80.0, 900.0, x) + 2.5 * (fbm(x / 90.0, y / 90.0, 301) - 0.5)
 }
 
 /// How far out of the lake (x, y) is: below 1 inside its wavy outline.
@@ -109,15 +113,19 @@ pub fn height(x: f32, y: f32) -> f32 {
     let massif = 0.35 + 0.9 * fbm(x / 300.0, y / 260.0 - 2.2, 337);
     let peaks = ridged(x / 330.0, y / 290.0, 4, 311);
     let crags = 120.0 * ridged(x / 120.0 + 7.7, y / 105.0 + 1.9, 3, 341) * range;
-    let rim = 260.0
-        * smoothstep(780.0, 1010.0, x.abs().max(y.abs()))
-        * smoothstep(-700.0, -300.0, x).max(0.35);
+    let rim =
+        260.0 * smoothstep(780.0, 1010.0, x.abs().max(y.abs())) * smoothstep(-650.0, -300.0, x);
     let land = floor(x, y) + hills + tall * range * (0.45 * massif + 0.75 * peaks) + crags + rim;
     // The lake: a basin under the water, its shore sloping up to the floor.
     let d = lake_distance(x, y);
     let shore = smoothstep(0.8, 1.25, d);
     let bed = WATER_LEVEL - 0.8 - LAKE_DEPTH * (1.0 - d).clamp(0.0, 1.0).sqrt();
-    bed + (land - bed) * shore
+    let ground = bed + (land - bed) * shore;
+    // The sea: west of the lake the valley sinks under the water, the mountains on either side running out as headlands
+    // (farther out than the middle), all of it under the sea before the block's western edge.
+    let sea = smoothstep(SEA.0, SEA.1, x + SEA_HEADLANDS * across.min(700.0));
+    let sea_floor = WATER_LEVEL - SEA_DEPTH;
+    (ground + (sea_floor - ground) * sea).min(ground)
 }
 
 /// How steep the ground is at (x, y) (rise over run).

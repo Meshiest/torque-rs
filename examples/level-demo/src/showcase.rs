@@ -128,7 +128,9 @@ pub fn write_valley(
 pub const CLIP_VIEW: ([f32; 3], [f32; 3]) = ([300.0, -15.0, 45.0], [-500.0, 0.0, 280.0]);
 
 /// The valley's sky moving: `seconds` of the clock from [`CLIP_VIEW`], the world alone drawn every frame and every `every`th
-/// frame written into `dir` as `0000.png` on (for a clip at `1000 / (FRAME_MS * every)` frames a second). Returns the paths.
+/// frame written into `dir` as `0000.png` on (for a clip at `1000 / (FRAME_MS * every)` frames a second), then the last frame
+/// as `last.png` and again held still and settled as `held.png` (the moving clouds' sharpness against the still ones'). Returns
+/// the paths.
 pub fn write_valley_clip(
     gpu: &Gpu,
     files: GameFiles,
@@ -157,6 +159,17 @@ pub fn write_valley_clip(
             paths.push(path);
         }
     }
+    // The last frame again, the clock held and the renderer settled: the clouds without their motion (their sharpness to
+    // compare the moving frames' with).
+    let frame = gpu.read_back(&seat.target).map_err(|e| e.to_string())?;
+    let last = dir.join("last.png");
+    write_png(&frame, &last).map_err(|e| e.to_string())?;
+    seat.eye = Some(eye);
+    let held = seat.world_picture(gpu)?;
+    seat.eye = None;
+    let path = dir.join("held.png");
+    write_png(&held, &path).map_err(|e| e.to_string())?;
+    paths.extend([last, path]);
     Ok(paths)
 }
 

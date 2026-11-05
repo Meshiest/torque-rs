@@ -270,6 +270,10 @@ The first development version. Nothing is published yet; this is what exists.
   tiling: every terrain layer's texture tiled stochastically and tinted by a large-scale noise. Off, the planes are drawn as
   before. `HdScene::cloud_time` (opt-in, `WorldView::set_cloud_time`): the volumetric clouds' own clock (their drift,
   change of shape and shadows) in place of the effect time.
+- The valley opens onto the sea: west of the lake it sinks under the water, its mountains running out as headlands, and
+  one water block runs from the lake out past the terrain's western edge into the haze (the sky drawn to 6,000 units), the
+  low sun's glint along it. Its clouds run 150 times as fast as the clock; `--valley-clip` also writes its last frame
+  moving and held still (the moving clouds keep their sharpness: no trail from their history).
 - The valley made larger and wilder: jagged mountains of up to about 500 m from ridged noise (crests, crags and gullies)
   with the block's rim raised so no edge shows, its haze from 1,400 units and its sky to 3,500. Its woods are a few trees
   and groves of three to five trees built once (`valley_tree_*.dif`, `valley_grove_*.dif`) and placed, turned and scaled
