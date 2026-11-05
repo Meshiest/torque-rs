@@ -425,3 +425,99 @@ fn aimed_the_front_post_sits_in_the_rear_notch_on_the_crosshair() {
 }
 
 const AIM_SIGHT_TO_MUZZLE: f32 = 0.3;
+
+/// Script `text` run on the server, its result.
+fn server_eval(a: &mut ArenaGame, text: &str) -> String {
+    let vm = a.server.as_mut().unwrap().vm_mut();
+    String::from_utf8(vm.eval(text.as_bytes()).unwrap()).unwrap()
+}
+
+/// The server's steady eye of the own figure (`getSteadyEyePoint`, where its shots start from).
+fn server_eye(a: &mut ArenaGame) -> F3 {
+    let t = server_eval(
+        a,
+        "return ClientGroup.getObject(0).player.getSteadyEyePoint();",
+    );
+    let v: Vec<f32> = t.split(' ').map(|w| w.parse().unwrap()).collect();
+    [v[0], v[1], v[2]]
+}
+
+/// Holds the pose keys for `pose` (stand, crouch or prone) and lets the body settle into it.
+fn take_pose(a: &mut ArenaGame, pose: &str) {
+    a.call("releasePoseKeys", &[]).unwrap();
+    match pose {
+        "crouch" => {
+            a.call("crouchKey", &["1"]).unwrap();
+        }
+        "prone" => {
+            a.call("proneKey", &["1"]).unwrap();
+        }
+        _ => {}
+    }
+    frames(a, 2000);
+}
+
+#[test]
+fn in_every_pose_the_shot_starts_at_the_view_and_bursts_where_the_crosshair_meets_the_block() {
+    let mut a = host();
+    // Toward the block's near face, a little above level so the line clears the floor lying down too.
+    turn(&mut a, 0.6, 0.3);
+    turn(&mut a, -0.37, -0.33);
+    let mut heights = Vec::new();
+    for pose in ["stand", "crouch", "prone", "crouch", "stand"] {
+        take_pose(&mut a, pose);
+        let (eye, aim) = crosshair(&a);
+        let server = server_eye(&mut a);
+        let apart = len(sub(server, eye));
+        assert!(
+            apart < 0.02,
+            "{pose}: the server's steady eye is {apart} from the view ({server:?}, {eye:?})"
+        );
+        heights.push(eye[2]);
+        let Some(hit) = block_hit(eye, aim) else {
+            panic!("{pose}: the crosshair is on the block ({eye:?} {aim:?})");
+        };
+        let before: Vec<u32> = bolts(&mut a).iter().map(|b| b.0).collect();
+        fire(&mut a);
+        let mut burst = None;
+        for _ in 0..60 {
+            frame(&mut a, 16);
+            if let Some(b) = bolts(&mut a)
+                .into_iter()
+                .find(|b| b.3 && !before.contains(&b.0))
+            {
+                burst = Some(b.4);
+                break;
+            }
+        }
+        let burst = burst.unwrap_or_else(|| panic!("{pose}: the bolt burst"));
+        let miss = len(sub(burst, hit));
+        assert!(
+            miss < 0.1,
+            "{pose}: the bolt burst {miss} from where the crosshair meets the block ({burst:?}, {hit:?})"
+        );
+        // The sights still line up on the crosshair.
+        a.call("aim", &["1"]).unwrap();
+        frames(&mut a, 400);
+        let own = a.scene().own().unwrap();
+        let [front, rear] = a.scene().own_sights().expect("the pistol's sights");
+        let fov = f32::from(a.eye().fov.unwrap());
+        for (name, p) in [("front post", front), ("rear notch", rear)] {
+            let (x, y) = project(p, own.eye, own.yaw, own.pitch, fov, (1280.0, 720.0));
+            assert!(
+                x.abs() <= 1.0 && y.abs() <= 1.0,
+                "{pose}: {name} {x:.2},{y:.2} px from the center"
+            );
+        }
+        a.call("aim", &["0"]).unwrap();
+        frames(&mut a, 400);
+    }
+    assert!(
+        heights[0] > heights[1] + 0.2 && heights[1] > heights[2] + 0.2,
+        "the eye lowers crouched and lower prone: {heights:?}"
+    );
+    assert!(
+        (heights[0] - heights[4]).abs() < 0.01 && (heights[1] - heights[3]).abs() < 0.01,
+        "and rises again: {heights:?}"
+    );
+}

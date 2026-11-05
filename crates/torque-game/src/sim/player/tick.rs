@@ -444,32 +444,55 @@ pub fn eye_of(vm: &mut Vm, id: ObjId) -> Option<Matrix> {
 /// A Player's steady eye (engine addition, `getSteadyEyePoint`): `getEyeTransform` with the eye node at the shape's rest pose
 /// (no thread played) instead of as the walk or run animates it, so it does not bob. A client with a steady first-person view
 /// (`torque::app::ghosts::GhostOptions::steady_eye`) draws its view and crosshair from this point: a shot fired from it goes
-/// where the crosshair is. The server's own state alone; nothing a client sends. `None` for an object that is not a Player
-/// or whose shape has no eye node.
+/// where the crosshair is. Crouched or prone (the engine's poses, [`super::poses`]) the eye is the one of the pose's root
+/// (`crouch_root`, `prone_root`) held at its start, as that client lowers its view, eased from the last pose's over the
+/// body's blend ([`super::poses::pose_blend`]) the same way. The server's own state alone; nothing a client sends. `None` for
+/// an object that is not a Player or whose shape has no eye node.
 pub fn steady_eye_of(vm: &mut Vm, id: ObjId) -> Option<Matrix> {
     let s = super::state(vm, id)?;
     let (obj_to_world, head, scale) = (s.obj_to_world, s.head, s.scale);
+    let (pose, from, ticks) = (s.pose, s.pose_from, s.pose_ticks);
     let body = ext::get(vm.objects(), id)?.shape.as_ref()?.body.as_ref()?;
     let kept = Rc::clone(&body.kept);
     let shape = kept.shape.as_ref()?;
     let eye = usize::try_from(kept.facts.as_ref()?.eye_node).ok()?;
     let mut work = 0u64;
-    let mut charge = |n: u64| {
-        work += n;
-        true
+    let mut eye_in = |pose: super::poses::Pose| -> Option<F3> {
+        let mut charge = |n: u64| {
+            work += n;
+            true
+        };
+        let mut instance = shapes::instance::ShapeInstance::new(shape, &mut charge).ok()?;
+        let root = pose.action_prefix().map(|p| format!("{p}_root"));
+        if let Some(seq) = root.and_then(|n| shapes::instance::find_sequence(shape, n.as_bytes()))
+            && let Some(t) = instance.create_thread(shape)
+        {
+            instance.set_sequence(shape, t, seq as i32, 0.0);
+        }
+        let dl =
+            (shape.smallest_visible_dl.max(0) as usize).min(shape.details.len().saturating_sub(1));
+        instance.animate(shape, dl, None, &mut charge).ok()?;
+        let n = instance.node_transform(eye)?;
+        Some([n[3], n[7], n[11]])
     };
-    let mut instance = shapes::instance::ShapeInstance::new(shape, &mut charge).ok()?;
-    let dl = (shape.smallest_visible_dl.max(0) as usize).min(shape.details.len().saturating_sub(1));
-    instance.animate(shape, dl, None, &mut charge).ok()?;
-    let n = *instance.node_transform(eye)?;
+    let mut p = eye_in(pose)?;
+    if let Some(seconds) = super::poses::pose_blend(from, pose)
+        && seconds > 0.0
+        && let Some(old) = eye_in(from)
+    {
+        // The eye eases from the last pose's to this one's (smoothstep), as the client's view does.
+        let u = (ticks as f32 * ::sim::player::DT / seconds).clamp(0.0, 1.0);
+        let w = 1.0 - u * u * (3.0 - 2.0 * u);
+        p = std::array::from_fn(|k| p[k] + (old[k] - p[k]) * w);
+    }
     let _ = vm.charge_work(work);
     let mut t = matrix_product(
         &collide::math::set_euler([0.0, 0.0, head[2]]),
         &collide::math::set_euler([head[0], 0.0, 0.0]),
     );
-    t[3] = n[3] * scale[0];
-    t[7] = n[7] * scale[1];
-    t[11] = n[11] * scale[2];
+    t[3] = p[0] * scale[0];
+    t[7] = p[1] * scale[1];
+    t[11] = p[2] * scale[2];
     Some(matrix_product(&obj_to_world, &t))
 }
 

@@ -462,5 +462,9 @@ The first development version. Nothing is published yet; this is what exists.
   came); with `GhostOptions::bolt_stops` it stops a bolt where that line meets the world (the arena: within a millimeter
   of the server's hit on both clients, `tests/bolt_line.rs`). The arena fires from `getSteadyEyePoint` (engine addition:
   the eye at the shape's rest pose), so it keeps the steady first-person eye on with its shots on the crosshair.
+  Crouched or prone `getSteadyEyePoint` is the eye of the pose's root held at its start, eased from the last pose's over the
+  body's blend as the client's view is, so shots leave from the lowered view in every pose (`tests/aim.rs`).
+- The camera behind the figure rides lower with a crouched or prone figure: the arena's boom from the lowered eye, the level
+  demo's looking no higher than the eye; lying down and looking up, the boom stops above the floor.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main
