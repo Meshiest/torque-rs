@@ -127,3 +127,16 @@ fn tires_throw_dust_only_on_the_ground_and_moving_by_their_slip() {
     }
     assert_eq!(dust.particles(), 0);
 }
+
+#[test]
+fn a_forgotten_vehicle_drops_its_emitters() {
+    let w = world();
+    let mut dust = VehicleDust::default();
+    run(&mut dust, &w, &look(15.0, true, 1.0), 10);
+    assert!(dust.particles() > 0);
+    dust.forget(2);
+    assert!(dust.particles() > 0, "another ghost's emitters stay");
+    dust.forget(1);
+    assert_eq!(dust.particles(), 0);
+    assert_eq!(dust.live, 0);
+}
