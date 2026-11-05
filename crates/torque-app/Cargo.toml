@@ -14,6 +14,8 @@ categories = ["game-engines", "game-development"]
 # (its `app` feature).
 
 [dependencies]
+# The clock: `std::time` natively, the browser's clock on the web.
+web-time = "1.1"
 torque-client = { path = "../torque-client", features = ["window"] }
 torque-collide = { path = "../torque-collide" }
 torque-fonts = { path = "../torque-fonts", features = ["system-fonts"] }
@@ -33,6 +35,10 @@ torque-ts-text = { path = "../torque-ts-text" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 png = "0.18"
+
+# In a browser: the canvas's device is asked for without blocking.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
 
 [lints]
 workspace = true

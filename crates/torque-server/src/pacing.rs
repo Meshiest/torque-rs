@@ -14,7 +14,7 @@
 //! hands them to the server, and the pass drains the socket, ticks and advances the events. Nothing runs between two passes
 //! (the loop reads its socket once a turn), so an idle server wakes 64 times a second.
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// One turn of the dedicated loop: a 1 ms sleep on the default 64 Hz system timer (15.625 ms).
 pub const PASS_PERIOD: Duration = Duration::from_micros(15_625);

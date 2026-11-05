@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// The frames' intervals over the last `window` (when each frame was presented, its interval in ms) and their sum.
 #[derive(Debug, Clone)]

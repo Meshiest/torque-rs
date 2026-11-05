@@ -14,6 +14,8 @@ categories = ["game-development"]
 # `torque_maps::dif::write` writes. Std only: `.map` files are hostile input like the readers' files.
 
 [dependencies]
+# The clock: `std::time` natively, the browser's clock on the web.
+web-time = "1.1"
 torque-images = { path = "../torque-images" }
 torque-maps = { path = "../torque-maps" }
 torque-modelcore = { path = "../torque-modelcore" }

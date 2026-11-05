@@ -11,6 +11,8 @@ keywords = ["torque", "client", "networking", "gamedev"]
 categories = ["game-development", "network-programming"]
 
 [dependencies]
+# The clock: `std::time` natively, the browser's clock on the web.
+web-time = "1.1"
 torque-scene = { path = "../torque-scene" }
 torque-game = { path = "../torque-game" }
 torque-server = { path = "../torque-server" }

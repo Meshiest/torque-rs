@@ -858,7 +858,7 @@ impl<G: GhostGame> GhostHub<G> {
                 rec_left = rec_left.saturating_sub(i64::try_from(units).unwrap_or(i64::MAX));
                 rec_left >= 0
             };
-            let timer = std::time::Instant::now();
+            let timer = web_time::Instant::now();
             G::set_quiet(src, G::quiet(mgr));
             let stats = mgr.write_section(
                 w,

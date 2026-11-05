@@ -62,7 +62,7 @@ pub type NativeEventHandler = std::rc::Rc<dyn Fn(&mut Vm, NativeEvent) -> Result
 #[derive(Debug, Clone, Copy)]
 pub struct PassRoom {
     /// When the pass began, when it has a time slice of the wall ([`EventLimits::per_pass_wall`]).
-    pub started: Option<std::time::Instant>,
+    pub started: Option<web_time::Instant>,
     pub wall: Option<std::time::Duration>,
     /// The pass's slice of steps ([`EventLimits::per_pass_steps`]) and its total budget of steps, when steps are counted.
     pub slice: Option<u64>,
@@ -461,7 +461,7 @@ impl Vm {
             per_pass_wall,
             ..
         } = self.event_limits;
-        let started = per_pass_wall.map(|_| std::time::Instant::now());
+        let started = per_pass_wall.map(|_| web_time::Instant::now());
         // Without a step limit no steps are counted, so no slice either.
         let slice = per_pass_steps.filter(|_| self.step_limit.is_some());
         let step_budget =
@@ -598,7 +598,7 @@ impl Vm {
         let Some((name, args)) = argv.split_first() else {
             return Ok(());
         };
-        let started = self.profile.is_some().then(std::time::Instant::now);
+        let started = self.profile.is_some().then(web_time::Instant::now);
         let result = if on_object {
             self.call_method(event.dest, name, args).map(|_| ())
         } else {

@@ -588,7 +588,7 @@ thread_local! {
 /// A moving shapes' build timed by part: each lap's time since the last goes to its part, the vertices filled in it to the fill.
 struct Laps {
     on: bool,
-    at: std::time::Instant,
+    at: web_time::Instant,
     spent: [u64; 5],
 }
 
@@ -597,7 +597,7 @@ impl Laps {
         take_inline_fill();
         Laps {
             on,
-            at: std::time::Instant::now(),
+            at: web_time::Instant::now(),
             spent: [0; 5],
         }
     }
@@ -606,7 +606,7 @@ impl Laps {
         if !self.on {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         let ns = (now - self.at).as_nanos() as u64;
         let fill = take_inline_fill().min(ns);
         self.spent[part as usize] += ns - fill;

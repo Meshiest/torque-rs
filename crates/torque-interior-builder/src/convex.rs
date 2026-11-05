@@ -329,7 +329,7 @@ mod tests {
                 [100.0 * t, 100.0 * t * t, 100.0 * t * t * t]
             })
             .collect();
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         assert_eq!(
             hull_planes(&curve, &mut Budget::new(u64::MAX)),
             Err(HullFail::Tangled)

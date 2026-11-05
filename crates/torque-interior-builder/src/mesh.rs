@@ -1234,7 +1234,7 @@ mod tests {
 
     /// A plan of `input` is refused for its work or made, within [`hostile_budget`].
     fn quick_or_refused(input: &MeshInput, options: &MeshOptions) -> Result<Plan, MeshError> {
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         let got = Plan::new(input, options);
         let took = start.elapsed();
         eprintln!(
@@ -1318,7 +1318,7 @@ mod tests {
             hulls: HullMode::Authored,
             ..MeshOptions::default()
         };
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         let got = Plan::new(&input, &options);
         let took = start.elapsed();
         eprintln!("{:.2} s: {:?}", took.as_secs_f64(), got.as_ref().err());

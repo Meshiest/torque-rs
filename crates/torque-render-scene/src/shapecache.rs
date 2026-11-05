@@ -126,7 +126,7 @@ pub fn fill_nanos() -> u64 {
 
 /// The vertices of this run's builds, made over a few threads ([`crate::par`]: each build's draws on one).
 fn fill_pending(c: &mut Cache) {
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     fill_pending_now(c);
     FILL_NS.fetch_add(
         t.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,

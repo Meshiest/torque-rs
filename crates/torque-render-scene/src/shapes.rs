@@ -1005,7 +1005,7 @@ fn shape_draws_built(
     let (mut draws, translucent, fill) = shape_draws_planned(
         model, instance, parts, xform, rotation, unscaled, point, textures, label,
     );
-    let t = std::time::Instant::now();
+    let t = web_time::Instant::now();
     fill.view().run(&mut draws, None);
     INLINE_FILL.with(|f| f.set(f.get() + t.elapsed().as_nanos() as u64));
     (draws, translucent)

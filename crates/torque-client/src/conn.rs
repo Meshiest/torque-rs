@@ -725,7 +725,7 @@ pub fn tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
         // The collision shapes' share of this tick (`predict::SHAPE_TICK_WORK`) starts again.
         c.predict.static_world.start_tick();
         let mut failed = None;
-        let t_decode = std::time::Instant::now();
+        let t_decode = web_time::Instant::now();
         let pumped = c.feed.pump(&mut c.world);
         let decode = t_decode.elapsed();
         st.live_perf.decode += decode;
@@ -758,14 +758,14 @@ pub fn tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
         events.push(FeedEvent::Dropped(reason.into_bytes()));
     }
     // The game's work before this tick's events.
-    let t_scripts = std::time::Instant::now();
+    let t_scripts = web_time::Instant::now();
     G::tick(vm, client);
     run_events(vm, client, obj, events);
-    let t_sync = std::time::Instant::now();
+    let t_sync = web_time::Instant::now();
     if vm.objects().contains(obj) {
         crate::net::ghost_objects::sync(vm, client, obj);
     }
-    let t_predict = std::time::Instant::now();
+    let t_predict = web_time::Instant::now();
     send_tick(vm, client, now);
     let load = {
         let mut st = client.borrow_mut();
@@ -819,7 +819,7 @@ pub fn tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
     drop(st);
     sync_door(&client.borrow());
     // The game's work at the tick's end (the world's sounds and the listener at the eye).
-    let t_sounds = std::time::Instant::now();
+    let t_sounds = web_time::Instant::now();
     G::ticked(vm, client);
     client.borrow_mut().live_perf.sounds += t_sounds.elapsed();
 }

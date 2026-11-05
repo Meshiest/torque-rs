@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use web_time::{Instant, SystemTime, UNIX_EPOCH};
 
 use torque_ts_bytecode::DsoFile;
 /// How a compile is used (TGE's `CodeBlock::compile` or `compileExec`), see [`Compiler`].

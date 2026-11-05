@@ -14,7 +14,7 @@
 use std::cell::RefCell;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use torque_server::game::GameParts;
 use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};

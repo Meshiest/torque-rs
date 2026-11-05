@@ -176,7 +176,7 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         let mut errors = std::mem::take(&mut self.draw_errors);
         let mut perf = std::mem::take(&mut self.perf);
         let end = self.server.run_ticks(limit_ms, |server| {
-            let t = std::time::Instant::now();
+            let t = web_time::Instant::now();
             pass.net(server.vm_mut(), &client);
             let t_net = t.elapsed();
             gui.0.borrow_mut().world_camera = crate::conn::has_camera(&client);
@@ -188,10 +188,10 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
             // The canvas's frame (its layout, then its draw for the callbacks), unless the host draws the frame after the pass
             // itself (`draw_each_tick` off).
             if draw {
-                let t_layout = std::time::Instant::now();
+                let t_layout = web_time::Instant::now();
                 gui.frame(server.vm_mut());
                 perf.layout += t_layout.elapsed();
-                let t_draw = std::time::Instant::now();
+                let t_draw = web_time::Instant::now();
                 draw_callbacks(server.vm_mut(), &gui, &mut cache, &mut errors);
                 perf.draw += t_draw.elapsed();
             }
@@ -375,7 +375,7 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         wall: std::time::Duration,
         mut until: impl FnMut(&mut Self) -> bool,
     ) -> RunEnd {
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         let mut ran_ms: u64 = 0;
         loop {
             let elapsed = start.elapsed();

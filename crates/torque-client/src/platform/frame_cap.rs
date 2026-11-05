@@ -8,7 +8,7 @@
 //! The frames are due on a fixed beat from the first one (each a period after the last one's due time), not a period after the last
 //! one ended: a frame's own work and the timer's wake-up delay are inside the period, so the menu holds the cap.
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 /// The cap when the preference is unset and the display's refresh rate is not known.
 pub const UNKNOWN_DISPLAY_FPS: u32 = 240;

@@ -9,6 +9,8 @@ license.workspace = true
 # scene's source). No GPU and no wgpu. Everything here is Send + Sync.
 
 [dependencies]
+# The clock: `std::time` natively, the browser's clock on the web.
+web-time = "1.1"
 # The client's world of ghosts a frame draws from (its eye, its ghosts and their records: `source`, `world`).
 ghost_world = { package = "torque-ghost-world", path = "../torque-ghost-world" }
 # The records and datablock values of TGE's own set (`world`).

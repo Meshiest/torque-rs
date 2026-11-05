@@ -993,7 +993,7 @@ mod tests {
     fn an_enormous_brush_fails_before_its_lightmap_cuts() {
         // 200,000 units a side at half a unit a texel: about 2.5 million rectangles a face, refused before one is cut.
         let b = Brush::cuboid([-1.0e5; 3], [1.0e5; 3], "m", grid);
-        let started = std::time::Instant::now();
+        let started = web_time::Instant::now();
         let e = build(&[b], &Options::default()).unwrap_err();
         assert!(
             matches!(

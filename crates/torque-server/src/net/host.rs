@@ -65,7 +65,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
-use std::time::Instant;
+use web_time::Instant;
 
 use torque_net::handshake::{ConnId, RateWindow, Server as Handshake};
 use torque_net::huffman::Table;
@@ -510,7 +510,7 @@ fn digest_key() -> [u8; 16] {
     for (i, half) in key.chunks_mut(8).enumerate() {
         let mut hasher = RandomState::new().build_hasher();
         hasher.write_usize(i);
-        if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        if let Ok(now) = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH) {
             hasher.write_u128(now.as_nanos());
         }
         half.copy_from_slice(&hasher.finish().to_le_bytes());

@@ -9,6 +9,8 @@ license.workspace = true
 # the helpers they share, over a `torque-render-core` device and `torque-render-scene`'s frame data.
 
 [dependencies]
+# The clock: `std::time` natively, the browser's clock on the web.
+web-time = "1.1"
 torque-render-core = { path = "../torque-render-core" }
 torque-render-scene = { path = "../torque-render-scene" }
 # Waits on an error scope (the arena checks its buffers were made).

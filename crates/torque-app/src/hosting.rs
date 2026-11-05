@@ -17,7 +17,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use super::client::ClientNet;
 use super::server::lan_addresses;

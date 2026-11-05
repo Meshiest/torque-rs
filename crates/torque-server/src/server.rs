@@ -697,7 +697,7 @@ impl<N: NetParts> Server<N> {
             if host.as_mut().vm.quit_requested() {
                 return RunEnd::Quit;
             }
-            let t_until = std::time::Instant::now();
+            let t_until = web_time::Instant::now();
             let stop = until(host);
             let this = host.as_mut();
             this.perf.until += t_until.elapsed();
@@ -743,7 +743,7 @@ impl<N: NetParts> Server<N> {
             let net = this.net.clone();
             let mut now = 0;
             this.perf.passes += 1;
-            let t_receive = std::time::Instant::now();
+            let t_receive = web_time::Instant::now();
             if let Some(net) = &net {
                 // 1. The socket is drained first, with the scripts it runs inside the drain. The network's scripts run under
                 // the network's own limits, not this run's budget (what a script schedules for later is a Sim event and does
@@ -758,7 +758,7 @@ impl<N: NetParts> Server<N> {
             // only if a tick ran. The batch is the 32 ms steps the clock moves (the first pass: 32). A server with no network
             // host ticks every object too.
             this.perf.receive += t_receive.elapsed();
-            let t_tick = std::time::Instant::now();
+            let t_tick = web_time::Instant::now();
             if tick_ran {
                 this.perf.tick_passes += 1;
                 this.perf.ticks += u64::from(steps_in_batch);
@@ -780,7 +780,7 @@ impl<N: NetParts> Server<N> {
                 steps = steps.saturating_add(outcome.steps);
                 this.keep_errors(outcome.errors);
                 this.perf.tick += t_tick.elapsed();
-                let t_send = std::time::Instant::now();
+                let t_send = web_time::Instant::now();
                 if let Some(net) = &net {
                     net.phase(Phase::Send);
                     net.send(&mut this.vm, now);
@@ -788,7 +788,7 @@ impl<N: NetParts> Server<N> {
                 this.perf.send += t_send.elapsed();
                 this.perf.max_tick_send = this.perf.max_tick_send.max(t_tick.elapsed());
             }
-            let t_events = std::time::Instant::now();
+            let t_events = web_time::Instant::now();
             // The game's work of the pass between the tick and the events.
             let hooks = Rc::clone(&this.hooks);
             hooks.before_events(&mut this.vm, delta);
@@ -828,7 +828,7 @@ impl<N: NetParts> Server<N> {
             this.run_steps_total = this.run_steps_total.saturating_add(tick.steps);
             this.keep_errors(tick.errors);
             // 5. The timeouts.
-            let t_timeouts = std::time::Instant::now();
+            let t_timeouts = web_time::Instant::now();
             if let Some(net) = &net {
                 let now = net.clock_ms(this.vm.sim_time());
                 net.phase(Phase::Timeouts);
