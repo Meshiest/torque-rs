@@ -215,9 +215,15 @@ fn the_pause_menu_stays_in_the_middle_of_the_view() {
         let p = check(
             &mut g,
             "PausePanel",
-            &["PauseTitle", "ResumeButton", "LeaveButton", "PauseNote"],
+            &[
+                "PauseTitle",
+                "ResumeButton",
+                "LeaveButton",
+                "PauseQuitButton",
+                "PauseNote",
+            ],
             size,
         );
-        assert_eq!((p[2], p[3]), (320, 280), "the pause panel keeps its size");
+        assert_eq!((p[2], p[3]), (320, 356), "the pause panel keeps its size");
     }
 }

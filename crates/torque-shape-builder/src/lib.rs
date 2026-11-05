@@ -72,9 +72,11 @@ pub mod material_flags {
 /// `TSDrawPrimitive`'s bits: an indexed triangle list, and a primitive with no material.
 const PRIM_INDEXED: u32 = 0x2000_0000;
 const PRIM_NO_MATERIAL: u32 = 0x1000_0000;
-/// `TSShape::Sequence`'s flags for a sequence that loops and for a blend sequence.
+/// `TSShape::Sequence`'s flags for a sequence that loops, for a blend sequence and for one with ground frames (`MakePath`, which
+/// TGE's exporter sets on a sequence that carries the shape over the ground: a Player finds its speed by it).
 const SEQ_CYCLIC: u32 = 16;
 const SEQ_BLEND: u32 = 8;
+const SEQ_MAKE_PATH: u32 = 32;
 const SEQ_ALIGNED_SCALE: u32 = 2;
 /// The "no map" index of the material list's reflectance, bump and detail maps.
 const NO_MAP: u32 = u32::MAX;
@@ -400,7 +402,8 @@ pub struct Track<T> {
 }
 
 /// A sequence: `keyframes` evenly spaced keys over `duration` seconds for each track (a missing key holds the track's last
-/// one), and the shape's travel at the end of each ground frame (none: the sequence does not move the shape).
+/// one), and the shape's travel at the end of each ground frame (none: the sequence does not move the shape; any: it is a
+/// path-making sequence, `MakePath`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequenceDef {
     pub name: &'static str,
@@ -782,6 +785,9 @@ fn sequence(s: &mut Shape, name: i32, def: SequenceSpec) -> Sequence {
     }
     if scaled {
         flags |= SEQ_ALIGNED_SCALE;
+    }
+    if !def.ground.is_empty() {
+        flags |= SEQ_MAKE_PATH;
     }
     let first_ground_frame = s.ground_translations.len() as i32;
     s.ground_translations.extend(&def.ground);

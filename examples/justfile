@@ -60,19 +60,30 @@ web-level-demo-embedded port="8080":
 web-unit:
     node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs
 
+# Fails when any script in the repository could open a browser other than through `launchGuarded` (web/guard.mjs), whose pages
+# cannot take the pointer lock: a lock confines the real cursor in headless Chrome on Windows
+web-guard:
+    node ../web/guard-scan.mjs
+
+# `web-guard`, then the guard's test: a page that asks for the pointer lock on click never gets it. Every check recipe runs it
+# first
+web-guard-test: web-guard
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/guard.test.mjs
+
 # The web level demo's check (build it first with `web-level-demo`): headless Chrome with WebGPU loads the office, waits for the
 # figure, walks it and takes pictures, loads it again and counts the requests for the listed files (none: they come from the
 # cache), loads it with a changed file (refused, with the message on the page), then loads the menu; fails on any console
 # error. Installs puppeteer-core into the target folder's web-tools the first time and uses the installed Chrome (`CHROME`
 # names another)
-web-level-demo-check:
+web-level-demo-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 cached "?map=office"
     node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-refused.png" 60 refused "?map=office"
     node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-menu.png" 60 menu
 
 # The check of the build with its files inside it (`web-level-demo-embedded`): the office walked, then the menu
-web-level-demo-embedded-check:
+web-level-demo-embedded-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-office.png" 90 world "?map=office"
     node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-menu.png" 60 menu
@@ -85,9 +96,8 @@ web-vehicle-demo port="8080":
 
 # The web vehicle demo's check (build it first with `web-vehicle-demo`): headless Chrome from the cursor guard (`web/guard.mjs`,
 # its pages never take the pointer lock) loads it, waits for the figure on the hills, walks it with W and takes pictures;
-# fails on any console error. The guard's scan runs first: without it no browser is opened
-web-vehicle-demo-check:
-    node ../web/guard-scan.mjs
+# fails on any console error
+web-vehicle-demo-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-demo-hills.png" 120 world
 
@@ -101,14 +111,14 @@ web-fps port="28000" *args:
 # The arena's cross-play check (build it first with `web-fps` or `node web/build.mjs fps`): fps-server on UDP and the web, a
 # desktop player with no window joined over UDP, and headless Chrome joining from the server's page; both must hold the other's
 # figure, the browser's walks, and no console error. Pictures into the target folder's `web`
-web-fps-check:
+web-fps-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-join.png" 120
 
 # The arena's data-channel checks (build it first as for `web-fps-check`): the browser joins on a WebRTC data channel
 # beside its game socket (`fps-server --webrtc`); then with 10% of the channel's datagrams dropped both ways, its game
 # messages keep arriving with no stall; then with UDP blocked in the browser it plays over the game socket
-web-fps-rtc-check:
+web-fps-rtc-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc.png" 120 rtc
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-loss.png" 120 rtc-loss
@@ -122,6 +132,11 @@ level-demo-shots dir="../target/level-demo-shots":
 # Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
 kit-shots dir="../target/kit-shots":
     cargo run -p torque-example-common --release --example kit-shots -- {{dir}}
+
+# A clip of the kit's figure walking, running and walking backward (side and three-quarter views), drawn offscreen into
+# `dir` as an mp4 (needs ffmpeg) and a strip of frames
+walk-clip dir="../target/walk-clip":
+    cargo run -p torque-example-common --release --example walk-clip -- {{dir}}
 
 # The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
 # `--name`, `--map`, `--ticks N` (stop after N ticks)
@@ -188,6 +203,11 @@ vehicle-demo-shots dir="../target/vehicle-demo-shots":
 # (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
 vehicle-demo-cloud-shots dir="../target/vehicle-demo-cloud-shots":
     cargo run -p torque-example-vehicle-demo --release -- --cloud-shots {{dir}}
+
+# The vehicle demo's steering and tire tracks as frame sequences (A held and let go at the wheel, then full throttle; on the
+# driver's client and another's) and the pause menu over the view, drawn offscreen into `dir`
+vehicle-demo-steer-clip dir="../target/vehicle-demo-steer-clip":
+    cargo run -p torque-example-vehicle-demo --release --example steer-clip -- {{dir}}
 
 # The vehicle demo's race track, its landforms and forests in pictures (the loop from above, driver's-eye views past the
 # forests, over a crest and along the ridge, up at a forest's edge, trees close up, the kinds of tree, and the low sun at

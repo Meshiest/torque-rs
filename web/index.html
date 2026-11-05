@@ -77,6 +77,18 @@
   import * as settings from './settings.js';
   import { createTorque } from './bridge.js';
 
+  // `?nolock` (the browser checks load every page with it): the page never takes the pointer lock. In headless Chrome on Windows
+  // a lock confines the real cursor to the invisible window.
+  if (new URLSearchParams(location.search).has('nolock')) {
+    Object.defineProperty(Element.prototype, 'requestPointerLock', {
+      value() {
+        return Promise.resolve();
+      },
+      writable: false,
+      configurable: false,
+    });
+  }
+
   const root = document.documentElement;
   const status = document.getElementById('status');
   const bar = document.getElementById('progress');

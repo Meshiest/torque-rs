@@ -243,8 +243,8 @@ impl<G: App> WindowGame for AppWindow<G> {
         // The page's settings: the quality it asked for, from this frame on.
         #[cfg(target_arch = "wasm32")]
         if let Some(quality) = crate::web_page::take_quality() {
-            println!("{}: the {} quality", self.game.log_name(), quality.name());
             view.set_quality(quality);
+            crate::web_page::mark("quality", quality.name());
         }
         let (gui, eye) = self.game.frame(view);
         let Some(frame) = surface.frame() else {

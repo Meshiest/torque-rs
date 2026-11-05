@@ -165,6 +165,10 @@ The first development version. Nothing is published yet; this is what exists.
   dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
   and young spruces, oaks and birches under them, built from brushes into interiors, one a square of the map);
   `just examples/vehicle-demo-track-shots` draws them.
+- The examples' pause menu (`examples/common/game/pause.cs`: Resume, Leave game and Quit over the view, the cursor on and the
+  game's keys off), the FPS example's moved there and shared; in the vehicle demo Esc opens it on foot and at the wheel (it
+  left the game at once). `cargo run -p torque-example-vehicle-demo --release --example steer-clip -- <dir>` draws frame
+  sequences of the steering and of the tracks at speed on the driver's client and another's.
 - The level demo in a browser: `just examples/web-level-demo` builds it for the web (WebGPU) and serves it on
   `http://127.0.0.1:8080/` (`?map=office` starts a map at once). The page fetches the game's files by their list
   (`files.json`) with a progress bar, keeps them in the browser's Cache Storage under their hashes (a second load requests
@@ -257,6 +261,23 @@ The first development version. Nothing is published yet; this is what exists.
 - The vehicle demo in a browser, played alone (the server on an in-memory link in the page): `just
   examples/web-vehicle-demo` builds and serves it, `vehicle-demo --web-files <dir>` writes its pack and list,
   `just examples/web-vehicle-demo-check` walks its figure in headless Chrome.
+- The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
+  lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
+  down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
+  landing where `run`'s left leg reaches furthest forward. The feet turn at new `ankle_l` and `ankle_r` nodes. A test
+  holds a planted foot to under 5% of the ground's speed.
+- The example kit's figure's `run` is worked out the same way and bounces: a short flight between steps, the hips sinking as
+  the body passes over the planted foot and rising into the air, the heel kicked up and the knee driven forward through the
+  swing, its planted feet held by the same test.
+- `torque-client`: a Player walks at walking pace (`player_anim`, the engine's own `walk` action): a shape with a forward
+  `walk` plays it instead of `run` under the geometric mean of the two speeds, and backward instead of `back` under that of
+  the walk's and the back's, with a 5% margin either way; walk and run keep their place in the loop as they blend. A shape
+  without `walk` keeps TGE's pick.
+- `torque-game`: a synced Player (one with hitboxes) walks by the same rule (`synced::walk_or`), its walk stepped by the
+  ground covered and keeping its place in the loop as it changes to and from the run, so its hitboxes follow the walk the
+  clients draw; a Player without hitboxes keeps TGE's pick.
+- `just examples/walk-clip`: a clip of the kit's figure walking, running and walking backward, its action chosen by the
+  client's Player animation, drawn offscreen from the side and three-quarters (an mp4 through ffmpeg, and a strip).
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
@@ -269,6 +290,9 @@ The first development version. Nothing is published yet; this is what exists.
   the pointer lock (a key let go meanwhile stayed held in the game). A pointer lock the browser ends while the game holds
   the mouse (its Esc) is the game's Esc, so the level demo's menu opens; in full screen, Chromium passes Esc on to the
   game (the page's keyboard lock).
+- `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
+  Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
+  speed).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).
@@ -283,5 +307,39 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-game`: a shape with fewer than eight collision details (the bounds report and the hull slots read past its
   lists); the class specs name TGE's console methods (the crate's natives were refused without them), and `SceneObject`,
   `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
+- `torque-client`: the steering a vehicle is drawn with (its front wheels, its `steering` thread and the hands of a figure
+  on it) eases each frame toward the ticks' steering (`look::SteeringEase`, a critically damped follow, the same at any frame
+  rate; `seconds: None` draws the last tick's, as TGE does); another's vehicle eases toward its newest value run on at
+  the rate its updates bring. It turned in a tick's steps, and another's in its updates' steps.
+- `torque-client`: a vehicle's drawn wheel contacts, where its tire tracks start and its tires' dust rises, are under the
+  tires the frame draws; they were a tick's travel behind them at speed.
+- `torque-client`: the client's ticks fall on their 32 ms grid at any frame rate (`conn::tick_time`). A frame that did not end
+  on the grid ran the tick late and counted the next tick from the frame, so at 144 frames a second the client ticked every
+  35 ms (fewer moves than the server's ticks) and drew the Players and vehicles unevenly between ticks.
+- `torque-client`: a vehicle's springs are drawn between its last two ticks' extensions, as its body is
+  (`look::SpringLooks`); the tires, and the tracks and dust under them, stepped once a tick.
+- `torque-client`: another player's vehicle is drawn where it is now: through the warp its update's state coasts on at its
+  velocities (and by the update's age, measured and eased over updates, at most 0.1 s), and the drawn pose eases to it
+  (TGE holds the state while the drawn pose warps to the update's position, the past by then). At 15 to 20 m/s it
+  was drawn 1.7 m behind the server's on average, 2 m at most; now 0.15 m ahead, as the driver's own (0.06 m behind at most).
+- `torque-client`: a ghost vehicle's update age never turns into NaN and is capped at 3 units of travel and half a radian of
+  turn; an update's rotation of no length is left out, momenta that give velocities that are not finite leave the body at
+  rest, and a tick that makes anything not finite is undone, so a hostile update never draws a vehicle at NaN and the next
+  one heals it. The drawn offset from an update shrinks by a share each tick (an update coming before the last one's ease
+  ended slowed it), and past 10 units it is drawn there at once. A warp or first-sight update draws it at its pose with no
+  offset left of an earlier update.
+- `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
+  had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
+  head turned as far as it goes).
+- `torque-client`: a window takes the system cursor (lock, confine, center) only while it is focused and shown. It lets go the
+  moment it loses focus or is hidden, never moves the cursor then, and takes it again when it is focused and shown and the
+  game still wants the hold (a window made in the background held it before). In a browser the pointer lock is asked for
+  only right after a click, never renewed on a timer or after Esc.
+- The web page: `?nolock` stops every pointer-lock request (a non-writable, non-configurable no-op). The browser checks get
+  their browser only from `launchGuarded` (`web/guard.mjs`), whose pages (and popups and frames) cannot take the pointer
+  lock whatever they load, and also load with `?nolock`. `web/guard-scan.mjs` fails any script in the repository that names a
+  browser driver or program or loads a module by a computed name, and `web/guard.test.mjs` shows a page that locks on click
+  never gets it; both run in `just examples/web-guard-test` (first in each check recipe) and in CI. Headless Chrome on
+  Windows confined the real cursor when a check clicked the canvas.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

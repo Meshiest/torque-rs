@@ -14,6 +14,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { noLock } from './guard.mjs';
 
 const [folder, out, seconds = '120', mode = 'join'] = process.argv.slice(2);
 if (!folder || !out || !['join', 'rtc', 'rtc-loss', 'rtc-blocked'].includes(mode)) {
@@ -76,7 +77,7 @@ try {
   console.log('the desktop player is in the game');
   // Not spawnSync: the server's and the player's output must go on being read meanwhile.
   // The check's lines are passed on, and the moment it holds the other player's figure (the browser in the game) kept.
-  const check = spawn(process.execPath, [join(here, 'check.mjs'), url, out, seconds, mode], {
+  const check = spawn(process.execPath, [join(here, 'check.mjs'), noLock(url), out, seconds, mode], {
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   let inGameAt = null;

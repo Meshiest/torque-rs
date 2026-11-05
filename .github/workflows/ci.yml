@@ -10,6 +10,8 @@
 # a test that finds no adapter returns early instead of failing, so neither the crates nor the workflow need an
 # `--exclude` or a feature switch for a headless runner.
 #
+# The browser check guard (web/guard.mjs) is scanned and tested on Linux, where the runner has Chrome.
+#
 # Linux also needs the ALSA headers for the `torque-audio/device` feature (cpal), which `--all-features` turns on.
 
 name: CI
@@ -112,6 +114,18 @@ jobs:
           tool: mdbook@0.5.2
       - name: The guide
         run: mdbook build book
+
+  web-guard:
+    name: browser check guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: No script opens a browser except through the guard
+        run: node web/guard-scan.mjs
+      - name: A guarded page never gets the pointer lock
+        run: |
+          npm install --prefix web-tools --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+          TORQUE_WEB_TOOLS="$PWD/web-tools" node web/guard.test.mjs
 
   msrv:
     name: MSRV

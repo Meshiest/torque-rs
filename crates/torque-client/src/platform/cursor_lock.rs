@@ -13,12 +13,17 @@
 //! a clip on focus loss, and other programs may change it, so the grab is renewed on focus and every [`RENEW_MS`]), and put back where
 //! it was when the game lets go. A window that may not grab (`may_grab` false, a free-cursor option) never clips or moves it.
 //!
-//! The hold lets go at once when the window loses focus or is hidden ([`CursorLock::on_focus`] returns the release for the
-//! caller to apply in the same event, the cursor shown), and never takes the cursor while the window is unfocused (the renewal is
-//! a held pass's, and a pass holds only when focused). A Windows key pressed while held ([`CursorLock::on_system_key`]) lets go
-//! too, before the shell's shortcut opens its overlay (Win+Shift+S's snipping overlay may not take the focus): the hold is taken
-//! again only when the focus comes back or on a click in the window ([`CursorLock::on_click`]), as TGE takes it again on
-//! `WM_ACTIVATE` or a GameTSCtrl click.
+//! The hold lets go at once when the window loses focus or is hidden ([`CursorLock::on_focus`], [`CursorLock::on_visible`] return
+//! the release for the caller to apply in the same event, the cursor shown), and never clips or moves the cursor while the window
+//! is unfocused or hidden ([`guard`] checks that again where the action is applied). The hold is taken again when the window is
+//! focused and shown again and the game still wants it (as TGE does on `WM_ACTIVATE`); a window that never had the focus (a
+//! background or headless one) never holds. A Windows key pressed while held ([`CursorLock::on_system_key`]) lets go until the
+//! focus comes back or a click, before the shell's shortcut opens its overlay (Win+Shift+S's snipping overlay may not take the
+//! focus).
+//!
+//! In a browser ([`CursorLock::click_required`]) the page may ask for the pointer lock only right after a click: a hold is taken
+//! on the pass that follows a click, also after a focus loss, and never renewed on a timer, and a click while held asks for it
+//! again (the user left the lock with Esc).
 //!
 //! Credit: follows TGE's Windows window layer as Torque3D carries it (MIT: `platformWin32/winWindow.cpp`, Copyright (c) 2012
 //! GarageGames, LLC).
@@ -47,6 +52,8 @@ pub struct CursorLock {
     /// Whether the clip is applied now.
     held: bool,
     focused: bool,
+    /// Whether the window is shown (not occluded or minimized).
+    visible: bool,
     /// Where the cursor was in the client area when the game took the mouse.
     kept: Option<(i32, i32)>,
     /// When the clip was last renewed (ms of the caller's clock).
@@ -55,6 +62,10 @@ pub struct CursorLock {
     refocused: bool,
     /// A Windows key let go of the cursor: not held again until the focus comes back or a click.
     suspended: bool,
+    /// A hold needs a click right before it (a browser grants the pointer lock only on a user's click).
+    click_required: bool,
+    /// A click came since the last pass.
+    clicked: bool,
 }
 
 impl CursorLock {
@@ -62,7 +73,16 @@ impl CursorLock {
     pub fn new() -> CursorLock {
         CursorLock {
             focused: true,
+            visible: true,
             ..CursorLock::default()
+        }
+    }
+
+    /// A window as the browser has it: a hold only right after a click (see the module docs).
+    pub fn click_required() -> CursorLock {
+        CursorLock {
+            click_required: true,
+            ..CursorLock::new()
         }
     }
 
@@ -70,8 +90,16 @@ impl CursorLock {
         self.held
     }
 
-    /// The window's focus changed (`WM_ACTIVATE`; a hidden or minimised window counts as unfocused). Losing it while held frees
-    /// the cursor at once and shows it: the action to apply now, not at the next pass.
+    pub fn focused(&self) -> bool {
+        self.focused
+    }
+
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// The window's focus changed (`WM_ACTIVATE`). Losing it frees the cursor at once if held and shows it (the action to apply
+    /// now, not at the next pass); getting it back holds again at the next pass if the game still wants the hold.
     pub fn on_focus(&mut self, focused: bool) -> Option<Action> {
         if focused && !self.focused {
             self.refocused = true;
@@ -81,6 +109,16 @@ impl CursorLock {
         if focused { None } else { self.release() }
     }
 
+    /// The window was hidden or shown again (occlusion, minimizing): hiding is a focus loss, showing holds again at the next
+    /// pass if the window is focused and the game still wants the hold.
+    pub fn on_visible(&mut self, visible: bool) -> Option<Action> {
+        if visible && !self.visible {
+            self.refocused = true;
+        }
+        self.visible = visible;
+        if visible { None } else { self.release() }
+    }
+
     /// A Windows key went down (the shell's shortcuts open overlays that may not take the focus): the hold lets go now, until the
     /// focus comes back or a click.
     pub fn on_system_key(&mut self) -> Option<Action> {
@@ -88,12 +126,21 @@ impl CursorLock {
         self.release()
     }
 
-    /// A mouse button went down in the window: a hold a Windows key let go of may be taken again.
-    pub fn on_click(&mut self) {
-        if self.suspended && self.focused {
+    /// A mouse button went down in the window: a hold a Windows key let go of may be taken again. For a window that needs a click
+    /// to hold ([`CursorLock::click_required`]) the action to ask for the lock again while held, to apply in this event.
+    pub fn on_click(&mut self) -> Option<Action> {
+        if !(self.focused && self.visible) {
+            return None;
+        }
+        if self.suspended {
             self.suspended = false;
             self.refocused = true;
         }
+        if !self.click_required {
+            return None;
+        }
+        self.clicked = true;
+        self.held.then_some(Action::Centre { renew: true })
     }
 
     fn release(&mut self) -> Option<Action> {
@@ -121,7 +168,13 @@ impl CursorLock {
         cursor: (i32, i32),
         now_ms: u64,
     ) -> Option<Action> {
-        let hold = wants && may_grab && self.focused && !self.suspended;
+        let clicked = std::mem::take(&mut self.clicked);
+        let present = self.focused && self.visible;
+        let hold = wants
+            && may_grab
+            && present
+            && !self.suspended
+            && (!self.click_required || self.held || clicked);
         if !wants {
             // The game let go: the cursor goes back where it was (only if this hold moved it).
             let kept = self.kept.take();
@@ -140,7 +193,7 @@ impl CursorLock {
                 self.held = false;
                 return Some(Action::Free {
                     restore: None,
-                    show: !self.focused || self.suspended,
+                    show: !present || self.suspended,
                 });
             }
             return None;
@@ -152,12 +205,34 @@ impl CursorLock {
             let keep = *self.kept.get_or_insert(cursor);
             return Some(Action::Hold { keep });
         }
-        let renew = std::mem::take(&mut self.refocused)
-            || now_ms.saturating_sub(self.renewed_ms) >= RENEW_MS;
+        // A browser's lock is asked for again by a click only, never on a timer.
+        let renew = !self.click_required
+            && (std::mem::take(&mut self.refocused)
+                || now_ms.saturating_sub(self.renewed_ms) >= RENEW_MS);
         if renew {
             self.renewed_ms = now_ms;
         }
         Some(Action::Centre { renew })
+    }
+}
+
+/// What may be done to the system cursor now: `action` as the lock decided it, with whether the window is `focused` and
+/// `visible`. A window that is not both never clips or moves the cursor: a hold becomes a release (the cursor shown), and a
+/// release does not put the cursor anywhere. Applied where the action is, so no path takes the cursor of a window that is not in
+/// front.
+pub fn guard(action: Action, focused: bool, visible: bool) -> Action {
+    if focused && visible {
+        return action;
+    }
+    match action {
+        Action::Hold { .. } | Action::Centre { .. } => Action::Free {
+            restore: None,
+            show: true,
+        },
+        Action::Free { show, .. } => Action::Free {
+            restore: None,
+            show,
+        },
     }
 }
 

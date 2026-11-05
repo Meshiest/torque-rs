@@ -15,7 +15,13 @@
 //! - [`ClientVehicleHost`]: no script runs on the client, so every callback is the default (nothing).
 //!
 //! **Engine-only, listed.** A FlyingVehicle is not predicted; another vehicle's shape is not cast by a wheel's ray (its LOS
-//! meshes).
+//! meshes). A ghost is drawn where it is now ([`GhostVehicle::unpack`], [`GhostVehicle::tick`]): TGE holds the physics while
+//! the drawn pose warps to the update's position, which is already the past when it comes (the network's delay), so the
+//! vehicle was drawn that delay plus the warp behind where it is. Here the update's state coasts on through the warp at its
+//! velocities (no physics, as TGE's warp), by the update's age as well (measured from how far ahead of each update the
+//! vehicle is drawn, eased over updates, at most [`MAX_UPDATE_AGE`]: the whole ticks coasted, the rest a lead along its
+//! velocity), and the drawn pose's offset from where it was going to that shrinks each tick ([`GHOST_OFFSET_KEEP`]; past
+//! [`GHOST_SNAP`] it is drawn there at once). Values that are not finite are left out or undone ([`GhostVehicle::tick`]).
 //!
 //! Credit: follows TGE's vehicles and Player as Torque3D carries them (MIT: `T3D/vehicles/vehicle.cpp`,
 //! `T3D/vehicles/wheeledVehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC; `T3D/player.cpp`, Copyright (c) 2012 GarageGames,
@@ -36,6 +42,7 @@ use vehicle::data::{
     PreloadShape, ShapeBaseData, SpringData, TireData, VehicleData, WheeledVehicleData,
 };
 use vehicle::host::{RayHit, VehicleHost};
+use vehicle::math::{quat_inverse, quat_mul};
 use vehicle::wheeled::{self, Wheeled, WheeledClass};
 use vehicle::words::VehicleWords;
 use vehicle::{Vehicle, VehicleState};
@@ -809,8 +816,10 @@ pub fn vehicle_view(m: &Matrix, shape: &ClientShape) -> collide::ObjectView {
 
 // ---- the vehicles nobody on this client drives
 
-/// `Vehicle::unpackUpdate`'s warp state of a ghost (`mDelta`): the frame fraction, the warp's ticks and count, its offset per
-/// tick and rotations, the ticks left to run the last move.
+/// A ghost's warp state (`mDelta` as the engine keeps it, module docs): the frame fraction, the warp's ticks and count, the
+/// offset of the drawn pose from the state at the warp's first tick, the rotations it turns between, the ticks left to run the
+/// last move; and the updates' age (seconds, eased over updates), the whole ticks of it run at the warp's first tick and the
+/// rest the drawn pose leads the state by along its velocity.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Warp {
     pub dt: f32,
@@ -819,12 +828,32 @@ pub struct Warp {
     pub offset: F3,
     pub rot: [[f32; 4]; 2],
     pub prediction: i32,
+    pub age: Option<f32>,
+    pub catch_up: i32,
+    pub lead: f32,
 }
 
 /// `sMaxPredictionTicks`: a ghost runs its last move this many ticks after an update.
 pub const MAX_PREDICTION_TICKS: i32 = 30;
-/// `sMaxWarpTicks` (compared as a double, stored as a float).
-pub const MAX_WARP_TICKS: f32 = 3.0;
+/// The ticks a ghost coasts after an update before its physics runs again.
+pub const GHOST_WARP_TICKS: i32 = 5;
+/// The share of a ghost's drawn offset from its state left after each tick (a new update's offset, taken from where the
+/// vehicle is drawn, goes on from there at the same pace).
+pub const GHOST_OFFSET_KEEP: f32 = 0.7;
+/// The farthest (units) a ghost's drawn pose eases to its state from; past it (a teleport, a hostile update) it is drawn there
+/// at once.
+pub const GHOST_SNAP: f32 = 10.0;
+/// The oldest an update is taken to be (seconds): no ghost is run on further than this past its update, besides its prediction.
+pub const MAX_UPDATE_AGE: f32 = 0.1;
+/// The share of each update's measured age taken into the eased age.
+pub const AGE_EASE: f32 = 0.2;
+/// The least speed (units a second) an update's age is measured at.
+pub const AGE_MIN_SPEED: f32 = 1.0;
+/// The farthest (units) and the most turn (radians) the update's age runs a ghost on by.
+pub const AGE_MAX_TRAVEL: f32 = 3.0;
+pub const AGE_MAX_TURN: f32 = 0.5;
+/// A tick (seconds).
+const TICK_S: f32 = 0.032;
 
 /// A vehicle the client runs on its own (a ghost of a vehicle it does not drive): its step's object, and the warp.
 #[derive(Debug, Clone)]
@@ -869,39 +898,9 @@ pub fn quat_slerp(q1: [f32; 4], q2: [f32; 4], t: f32) -> [f32; 4] {
     std::array::from_fn(|i| (d(q1[i]) * s1 + d(q2[i]) * s2) as f32)
 }
 
-/// The warp's rotation extrapolation: `cr` the rotation at the frame, `r1` the new end; `om = acos(dot) / dt`.
-fn quat_extrapolate(r1: [f32; 4], cr: [f32; 4], dt: f32) -> [f32; 4] {
-    let mut dot =
-        ((d(cr[1]) * d(r1[1]) + d(cr[0]) * d(r1[0])) + d(cr[2]) * d(r1[2])) + d(r1[3]) * d(cr[3]);
-    let sign = if 0.0 > dot {
-        dot = -dot;
-        -1.0f64
-    } else {
-        1.0
-    };
-    let dtd = d(dt);
-    let (a, b) = if 1.0 - dot <= SLERP_LINEAR {
-        (sign / dtd, (1.0 - dtd) / dtd)
-    } else {
-        let om = collide::math::transcendental::acos(dot) / dtd;
-        let inv = 1.0 / collide::math::transcendental::sin(om * dtd);
-        (
-            collide::math::transcendental::sin(om) * sign * inv,
-            collide::math::transcendental::sin(om * (1.0 - dtd)) * inv,
-        )
-    };
-    std::array::from_fn(|i| (d(cr[i]) * a - d(r1[i]) * b) as f32)
-}
-
 /// Whether every value the server sent is finite.
 pub fn finite_state(values: &[&[f32]]) -> bool {
     values.iter().all(|v| v.iter().all(|x| x.is_finite()))
-}
-
-/// `vec *= f32(1 / f)` per component.
-fn scale_inv(v: F3, f: f32) -> F3 {
-    let inv = (1.0 / d(f)) as f32;
-    v.map(|x| (d(x) * d(inv)) as f32)
 }
 
 impl GhostVehicle {
@@ -982,10 +981,14 @@ impl GhostVehicle {
             .pose
             .as_ref()
             .zip(position)
-            .filter(|(p, pos)| finite_state(&[pos, &p.rotation, &p.linear, &p.angular]));
+            .filter(|(p, pos)| finite_state(&[pos, &p.rotation, &p.linear, &p.angular]))
+            // A rotation of no length (or one whose length overflows) turns nothing into a rotation: left out too.
+            .filter(|(p, _)| {
+                let n: f32 = p.rotation.iter().map(|c| c * c).sum();
+                n.is_finite() && n > 1e-12
+            });
         if let Some((pose, pos)) = pose {
             self.warp.prediction = MAX_PREDICTION_TICKS;
-            let old_vel = s.rigid.lin_vel;
             self.warp.rot[0] = s.rigid.ang_pos;
             let r = &mut s.rigid;
             r.lin_pos = pos;
@@ -994,6 +997,12 @@ impl GhostVehicle {
             r.ang_mom = pose.angular;
             r.at_rest = pose.at_rest;
             r.update_velocity();
+            // Momenta the body's mass and inertia turn into velocities that are not finite: the body at rest.
+            if !finite_state(&[&r.lin_vel, &r.ang_vel]) {
+                r.lin_mom = [0.0; 3];
+                r.ang_mom = [0.0; 3];
+                r.update_velocity();
+            }
             let mut host = ClientVehicleHost {
                 world,
                 sim_time: 0,
@@ -1001,51 +1010,39 @@ impl GhostVehicle {
                 masks: self.body.masks,
             };
             if !pose.warp && added {
+                // Engine addition (module docs): the drawn pose goes on as it was until the next tick, which runs the update's
+                // state on to where it is now and warps the drawn pose to it. The update's age: how far ahead of it along
+                // its way the vehicle is drawn now, over its speed, eased over updates (the network's delay, not one update's
+                // error), at most `MAX_UPDATE_AGE`.
                 let w = &mut self.warp;
                 let dt = w.dt;
-                let cp: F3 = std::array::from_fn(|i| {
-                    (d((d(s.delta_pos_vec[i]) * d(dt)) as f32) + d(s.delta_pos[i])) as f32
-                });
-                w.offset = std::array::from_fn(|i| (d(s.rigid.lin_pos[i]) - d(cp[i])) as f32);
-                let old_speed = len3(old_vel);
-                let speed =
-                    (((d(len3(s.rigid.lin_vel)) + d(old_speed)) * 0.5) * d(0.032f32)) as f32;
-                let dtd = d(dt);
-                let result: f64 = if speed == 0.0 {
-                    dtd + 3.0
+                let cp: F3 = std::array::from_fn(|i| s.delta_pos[i] + s.delta_pos_vec[i] * dt);
+                let v = s.rigid.lin_vel;
+                let speed = len3(v);
+                let turning = len3(s.rigid.ang_vel);
+                let measured = (speed.is_finite() && turning.is_finite() && speed > AGE_MIN_SPEED)
+                    .then(|| (0..3).map(|i| (cp[i] - pos[i]) * v[i]).sum::<f32>() / speed)
+                    .map(|ahead| ahead / speed)
+                    .filter(|age| age.is_finite());
+                if let Some(age) = measured {
+                    let age = age.clamp(0.0, MAX_UPDATE_AGE);
+                    let eased = w.age.map_or(age, |a| a + (age - a) * AGE_EASE);
+                    w.age = eased.is_finite().then_some(eased).or(w.age);
+                }
+                // At most `AGE_MAX_TRAVEL` along its way and `AGE_MAX_TURN` round (a hostile speed or spin runs it on by
+                // nothing).
+                let age = w.age.filter(|a| a.is_finite()).unwrap_or(0.0);
+                let age = if speed.is_finite() && turning.is_finite() {
+                    age.min(AGE_MAX_TRAVEL / speed.max(1e-6))
+                        .min(AGE_MAX_TURN / turning.max(1e-6))
                 } else {
-                    let dtw = (d(len3(w.offset)) / d(speed)) as f32;
-                    if dtw > MAX_WARP_TICKS {
-                        dtd + 3.0
-                    } else if dtd < d(dtw) {
-                        let c = (d(dtw) - dtd) as f32;
-                        let c = d(c).ceil() as f32;
-                        d(c) + dtd
-                    } else {
-                        dtd
-                    }
+                    0.0
                 };
-                let result = result as f32;
-                if dt != 0.0 {
-                    let f = (dtd / d(result)) as f32;
-                    let np: F3 = std::array::from_fn(|i| {
-                        (d((d(w.offset[i]) * d(f)) as f32) + d(cp[i])) as f32
-                    });
-                    s.delta_pos = np;
-                    let diff: F3 = std::array::from_fn(|i| (d(cp[i]) - d(np[i])) as f32);
-                    s.delta_pos_vec = scale_inv(diff, dt);
-                    let cr = quat_slerp(s.delta_rot[1], s.delta_rot[0], dt);
-                    s.delta_rot[1] = quat_slerp(cr, s.rigid.ang_pos, f);
-                    s.delta_rot[0] = quat_extrapolate(s.delta_rot[1], cr, dt);
-                }
+                w.catch_up = (age / TICK_S).floor() as i32;
+                w.lead = age - w.catch_up as f32 * TICK_S;
                 w.count = 0;
-                w.ticks = collide::math::float_to_int(d(d(result).floor() as f32));
-                if w.ticks != 0 {
-                    let off: F3 =
-                        std::array::from_fn(|i| (d(s.rigid.lin_pos[i]) - d(s.delta_pos[i])) as f32);
-                    w.offset = scale_inv(off, w.ticks as f32);
-                    w.rot = [s.delta_rot[1], s.rigid.ang_pos];
-                }
+                w.ticks = GHOST_WARP_TICKS;
+                w.rot = [s.delta_rot[1], s.rigid.ang_pos];
             } else {
                 s.delta_pos = s.rigid.lin_pos;
                 self.warp.dt = 0.0;
@@ -1053,6 +1050,9 @@ impl GhostVehicle {
                 s.delta_rot = [s.rigid.ang_pos; 2];
                 self.warp.ticks = 0;
                 self.warp.count = 0;
+                // Drawn at the update's pose: no offset left of an earlier update's warp.
+                self.warp.offset = [0.0; 3];
+                self.warp.rot[0] = [0.0, 0.0, 0.0, 1.0];
                 let (p, q) = (s.rigid.lin_pos, s.rigid.ang_pos);
                 s.set_position(p, &q, &mut host);
             }
@@ -1074,6 +1074,48 @@ impl GhostVehicle {
     /// `WheeledVehicle::processTick(NULL)` of a ghost: `ShapeBase::processTick`, then the next step of the warp, else the
     /// last move run while the prediction lasts.
     pub fn tick(&mut self, world: &mut ClientCollision, sim_time: u32) {
+        let s = &self.body.v.s;
+        let kept = (s.rigid, s.delta_pos, s.delta_rot);
+        self.tick_state(world, sim_time);
+        let s = &mut *self.body.v.s;
+        let r = &s.rigid;
+        if finite_state(&[
+            &r.lin_pos,
+            &r.ang_pos,
+            &r.lin_vel,
+            &r.ang_vel,
+            &s.delta_pos,
+            &s.delta_pos_vec,
+            &s.delta_rot[0],
+            &s.delta_rot[1],
+        ]) {
+            return;
+        }
+        // A state that is not finite (hostile values the update's checks let through): the tick undone, the body at rest where
+        // it was drawn, no warp and no prediction until the next update.
+        s.rigid = kept.0;
+        s.rigid.lin_mom = [0.0; 3];
+        s.rigid.ang_mom = [0.0; 3];
+        s.rigid.update_velocity();
+        s.delta_pos = kept.1;
+        s.delta_pos_vec = [0.0; 3];
+        s.delta_rot = [kept.2[1]; 2];
+        self.warp.count = self.warp.ticks;
+        self.warp.prediction = 0;
+        let mut host = ClientVehicleHost {
+            world,
+            sim_time,
+            class: self.body.class.clone(),
+            masks: self.body.masks,
+        };
+        let (p, q) = (s.rigid.lin_pos, s.rigid.ang_pos);
+        if finite_state(&[&p, &q]) {
+            s.set_position(p, &q, &mut host);
+        }
+    }
+
+    /// [`GhostVehicle::tick`]'s step, before its check.
+    fn tick_state(&mut self, world: &mut ClientCollision, sim_time: u32) {
         let db = Rc::clone(&self.body.data);
         let mut host = ClientVehicleHost {
             world,
@@ -1082,27 +1124,48 @@ impl GhostVehicle {
             masks: self.body.masks,
         };
         vehicle::state::shape_base_tick(&mut self.body.v.s, &db.base.shape, None, &mut host);
+        // Engine addition (module docs). Through the warp no physics runs (TGE's), but the state coasts on at its velocities
+        // (the warp's first tick also by the whole ticks of the update's age), so the physics after the warp goes on from where
+        // the vehicle is; the drawn pose is the state `lead` seconds on along its velocity, plus what is left of the offset from
+        // where it would have been drawn (position and turn), shrinking each tick.
+        let (from_pos, from_rot) = (self.body.v.s.delta_pos, self.body.v.s.delta_rot[1]);
         let w = &mut self.warp;
         let s = &mut *self.body.v.s;
         if w.count < w.ticks {
+            let steps = if w.count == 0 {
+                1 + w.catch_up.clamp(0, 3)
+            } else {
+                1
+            };
             w.count += 1;
-            // On from where the warp starts (the update's `delta.pos`, which the last frame drew at its fraction), not from the
-            // object's last tick (TGE's `getTransform`): the two differ by up to a tick's travel, which the vehicle would jump by
-            // on the warp's first tick, and the warp would end that far from the update's position.
-            s.delta_pos = std::array::from_fn(|i| (d(s.delta_pos[i]) + d(w.offset[i])) as f32);
-            s.delta_rot[0] = s.delta_rot[1];
-            let frac = (f64::from(w.count) / f64::from(w.ticks)) as f32;
-            s.delta_rot[1] = quat_slerp(w.rot[0], w.rot[1], frac);
-            let (p, q) = (s.delta_pos, s.delta_rot[1]);
-            let from = s.world_to_obj;
-            s.set_position(p, &q, &mut host);
-            s.delta_pos_vec = w.offset.map(|v| -v);
-            // A warp tick runs no physics: the wheels' contacts ride with the body to where the next one finds them, so what
-            // is drawn at them (dust, tracks) goes on with the vehicle.
-            let moved = collide::math::matrix_product(&s.obj_to_world, &from);
-            for wheel in &mut self.body.v.k.wheels {
-                wheel.point = collide::math::mul_p(&moved, wheel.point);
+            let mut before = s.rigid.ang_pos;
+            for _ in 0..steps {
+                before = s.rigid.ang_pos;
+                s.rigid.force = [0.0; 3];
+                s.rigid.torque = [0.0; 3];
+                s.rigid.integrate(TICK_S);
             }
+            let (p, q) = (s.rigid.lin_pos, s.rigid.ang_pos);
+            s.set_position(p, &q, &mut host);
+            let vel = s.rigid.lin_vel;
+            let led: F3 = std::array::from_fn(|i| p[i] + vel[i] * w.lead);
+            if w.count == 1 {
+                // The offsets of where it would have been drawn this tick from the state: the position, and the turn that takes
+                // the state's rotation a tick before to the drawn one (the state turns on by its own this tick). Past
+                // `GHOST_SNAP`, none.
+                w.offset = std::array::from_fn(|i| from_pos[i] + vel[i] * TICK_S - led[i]);
+                w.rot[0] = quat_mul(&quat_inverse(&before), &from_rot);
+                let far = len3(w.offset);
+                if far.is_nan() || far > GHOST_SNAP {
+                    w.offset = [0.0; 3];
+                    w.rot[0] = [0.0, 0.0, 0.0, 1.0];
+                }
+            }
+            let left = GHOST_OFFSET_KEEP.powi(w.count);
+            s.delta_pos = std::array::from_fn(|i| led[i] + w.offset[i] * left);
+            let turn = quat_slerp([0.0, 0.0, 0.0, 1.0], w.rot[0], left);
+            s.delta_rot = [from_rot, quat_mul(&q, &turn)];
+            s.delta_pos_vec = std::array::from_fn(|i| from_pos[i] - s.delta_pos[i]);
             return;
         }
         let left = w.prediction;
@@ -1110,8 +1173,24 @@ impl GhostVehicle {
         if left < 1 {
             return;
         }
+        // What is left of the offset goes on shrinking after the warp.
+        w.count = w.count.saturating_add(1);
+        let (lead, keep, offset, turn) = (
+            w.lead,
+            GHOST_OFFSET_KEEP.powi(w.count.min(64)),
+            w.offset,
+            w.rot[0],
+        );
         let mv = s.last_move;
         let _ = vehicle::tick::process_tick_rest(&mut self.body.v, &db, Some(&mv), &mut host);
+        let s = &mut *self.body.v.s;
+        let (p, vel, q) = (s.rigid.lin_pos, s.rigid.lin_vel, s.rigid.ang_pos);
+        s.delta_pos = std::array::from_fn(|i| p[i] + vel[i] * lead + offset[i] * keep);
+        s.delta_rot = [
+            from_rot,
+            quat_mul(&q, &quat_slerp([0.0, 0.0, 0.0, 1.0], turn, keep)),
+        ];
+        s.delta_pos_vec = std::array::from_fn(|i| from_pos[i] - s.delta_pos[i]);
     }
 
     /// The frame after a tick (`interpolateTick`): the warp state keeps the fraction the next update reads.

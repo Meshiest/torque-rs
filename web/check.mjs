@@ -4,7 +4,8 @@
 // Usage: node check.mjs <url or folder> <screenshot.png> [seconds] [world|menu|cached|refused|join|rtc|rtc-loss|rtc-blocked]
 // [query]
 // A folder (a web build, `<target>/web/level-demo`) is served on a free port of 127.0.0.1 for the check; a URL may carry the
-// page's query (`?map=office`), and after a folder the query is the fifth argument.
+// page's query (`?map=office`), and after a folder the query is the fifth argument. The check adds `nolock` to it: the page
+// then never asks for the pointer lock (headless Chrome on Windows confines the real cursor to its window when one does).
 // Needs puppeteer-core in the folder `TORQUE_WEB_TOOLS` names (`npm install --prefix <folder> puppeteer-core`) and Chrome
 // (the installed stable channel, or the program `CHROME` names).
 //
@@ -25,10 +26,9 @@
 //   tried, given up, and the game goes on over the game socket.
 // - `refused`: a fresh browser profile whose every file `files.json` names comes back with one byte changed; the page must
 //   show the refusal, start no game and keep nothing in its cache.
-import { createRequire } from 'node:module';
-import { join, resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { serve } from './serve.mjs';
+import { launchGuarded, noLock } from './guard.mjs';
 
 const MODES = ['world', 'menu', 'cached', 'refused', 'join', 'rtc', 'rtc-loss', 'rtc-blocked'];
 const [where, out, seconds = '90', mode = 'world', query = ''] = process.argv.slice(2);
@@ -39,11 +39,11 @@ if (!where || !out || !MODES.includes(mode)) {
 const menu = mode === 'menu';
 const rtc = mode.startsWith('rtc');
 const joins = mode === 'join' || rtc;
-const tools = resolve(process.env.TORQUE_WEB_TOOLS ?? '.');
-const puppeteer = createRequire(join(tools, 'package.json'))('puppeteer-core');
 
 const server = /^https?:/.test(where) ? null : await serve(where, 0);
-const url = server ? `http://127.0.0.1:${server.address().port}/${query}` : where;
+// Every page carries `?nolock`, and the browser is guard.mjs's, whose pages cannot take the pointer lock at all: a lock would
+// confine the real cursor.
+const url = noLock(server ? `http://127.0.0.1:${server.address().port}/${query}` : where);
 const stem = out.replace(/\.png$/, '');
 
 // The files `files.json` names, by their URL's path (empty for a check that does not need them).
@@ -57,9 +57,7 @@ async function listed() {
 }
 const files = await listed();
 
-const browser = await puppeteer.launch({
-  ...(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: 'chrome' }),
-  headless: true,
+const browser = await launchGuarded({
   args: [
     '--enable-unsafe-webgpu',
     '--enable-gpu',

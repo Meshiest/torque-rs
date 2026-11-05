@@ -118,9 +118,18 @@ pub fn start_size(
 }
 
 /// Does `action` to the system cursor over `window` (see [`cursor_lock`]); `system`: whether the system cursor stands in for
-/// the canvas's ([`ClientHost::system_cursor`]). Returns whether the system cursor is shown now.
-pub fn hold_cursor(window: &Window, action: cursor_lock::Action, system: bool) -> bool {
+/// the canvas's ([`ClientHost::system_cursor`]). Returns whether the system cursor is shown now. A window that is not focused
+/// and `visible` never clips or moves the cursor ([`cursor_lock::guard`]), whatever `action` says.
+pub fn hold_cursor(
+    window: &Window,
+    action: cursor_lock::Action,
+    system: bool,
+    visible: bool,
+) -> bool {
     use cursor_lock::Action;
+    // a browser reports its focus through events only (the lock's); elsewhere the window itself is asked.
+    let focused = cfg!(target_arch = "wasm32") || window.has_focus();
+    let action = cursor_lock::guard(action, focused, visible);
     let size = window.inner_size();
     let centre =
         winit::dpi::PhysicalPosition::new(f64::from(size.width / 2), f64::from(size.height / 2));
@@ -301,7 +310,11 @@ fn window_app<G: WindowGame>(game: G, event_loop: &EventLoop<()>) -> WindowApp<G
         cursor: (0, 0),
         grabbed: false,
         input: keymap::WindowInput::default(),
-        lock: cursor_lock::CursorLock::new(),
+        lock: if cfg!(target_arch = "wasm32") {
+            cursor_lock::CursorLock::click_required()
+        } else {
+            cursor_lock::CursorLock::new()
+        },
         system_cursor: false,
         cursor_shape: CursorShape::Arrow,
         started: Instant::now(),
@@ -379,7 +392,7 @@ impl<G: WindowGame> WindowApp<G> {
     fn release_cursor(&mut self, release: Option<cursor_lock::Action>) {
         if let (Some(action), Some(window)) = (release, &self.window) {
             let system = self.game.host_ref().system_cursor();
-            self.system_cursor = hold_cursor(window, action, system);
+            self.system_cursor = hold_cursor(window, action, system, self.lock.visible());
         }
     }
 
@@ -514,10 +527,12 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                     self.focus_lost();
                 }
             }
-            WindowEvent::Occluded(true) => {
-                let release = self.lock.on_focus(false);
+            WindowEvent::Occluded(hidden) => {
+                let release = self.lock.on_visible(!hidden);
                 self.release_cursor(release);
-                self.focus_lost();
+                if hidden {
+                    self.focus_lost();
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 // TGE posts no mouse moves while the window holds the cursor (it is put back at the centre each pass).
@@ -528,7 +543,9 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if state == ElementState::Pressed {
-                    self.lock.on_click();
+                    // in a browser a click may ask for the pointer lock again (the player left it with Esc).
+                    let again = self.lock.on_click();
+                    self.release_cursor(again);
                 }
                 if let Some(button) = MouseButton::from_winit(button) {
                     let (m, w, l) =
@@ -671,9 +688,15 @@ impl<G: WindowGame> WindowApp<G> {
         let window = self.window.clone()?;
         let now_ms = self.started.elapsed().as_millis() as u64;
         let may_grab = self.game.may_grab();
+        // a window made without the focus (started in the background) gets no event for it: the window is asked.
+        #[cfg(not(target_arch = "wasm32"))]
+        if window.has_focus() != self.lock.focused() {
+            let release = self.lock.on_focus(window.has_focus());
+            self.release_cursor(release);
+        }
         if let Some(action) = self.lock.pass(wants, may_grab, self.cursor, now_ms) {
             let system = self.game.host_ref().system_cursor();
-            self.system_cursor = hold_cursor(&window, action, system);
+            self.system_cursor = hold_cursor(&window, action, system, self.lock.visible());
         }
         self.sync_system_cursor(&window);
         if let Some(mode) = self.game.host().take_screen_mode() {

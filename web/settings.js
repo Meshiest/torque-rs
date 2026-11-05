@@ -10,14 +10,14 @@ export const QUALITIES = ['low', 'medium', 'high', 'ultra'];
 // The storage key.
 export const KEY = 'torque-settings';
 
-// Whether `userAgent` is Firefox's.
-export function isFirefox(userAgent) {
-  return /\bFirefox\//.test(String(userAgent ?? ''));
+// Whether `userAgent` is a Gecko browser's (Firefox and its kin say `Gecko/<date>`; the others say only "like Gecko").
+export function isGecko(userAgent) {
+  return /\bGecko\/\d/.test(String(userAgent ?? ''));
 }
 
 // The settings before the player picks any (`picked`: whether the player picked the quality).
 export function defaults(userAgent) {
-  return { quality: isFirefox(userAgent) ? 'low' : 'high', picked: false, fps: false };
+  return { quality: isGecko(userAgent) ? 'low' : 'high', picked: false, fps: false };
 }
 
 // The settings kept in `storage` (a `localStorage`), over the defaults for `userAgent`; a value that is not a setting's is
