@@ -175,3 +175,22 @@ fn a_long_frame_bridges_what_the_wheel_covered_and_a_jump_ends_the_strip() {
     t.update(&[wheel(0.0, 35.5, true)], &slope, 0.016);
     assert_eq!(t.segments().last().unwrap().line[0][1], 35.0);
 }
+
+#[test]
+fn a_stall_bridges_no_more_than_a_capped_frame_covers() {
+    let mut t = TireTracks::new(TrackRules {
+        max_segments: 100_000,
+        lifetime: 100.0,
+        ..rules()
+    });
+    t.update(&[wheel(0.0, 0.0, true)], &slope, 0.016);
+    // A ten-second stall and a thousand units on: the strip ends there, nothing laid across.
+    t.update(&[wheel(0.0, 1000.0, true)], &slope, 10.0);
+    assert!(t.is_empty());
+    // Fifteen units in a stall: bridged (within what a capped frame covers at the fastest speed).
+    t.update(&[wheel(0.0, 1015.0, true)], &slope, 10.0);
+    assert_eq!(t.len(), 30);
+    // Past it: a new strip.
+    t.update(&[wheel(0.0, 1040.0, true)], &slope, 10.0);
+    assert_eq!(t.len(), 30);
+}

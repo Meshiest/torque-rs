@@ -38,8 +38,11 @@ pub const FADE_STEPS: u32 = 16;
 /// the frame's time.
 pub const MAX_GAP: f32 = 4.0;
 
-/// The fastest a wheel is taken to roll (units a second): a long frame (a hitch) bridges what it covers at that speed.
+/// The fastest a wheel is taken to roll (units a second): a long frame (a hitch) bridges what it covers at that speed, over at
+/// most [`MAX_BRIDGE_DT`] (a strip's longest bridge, so a stall lays no more than a few hundred segments in a frame).
 pub const MAX_SPEED: f32 = 60.0;
+/// The longest frame (seconds) a strip bridges at [`MAX_SPEED`].
+pub const MAX_BRIDGE_DT: f32 = 0.25;
 
 /// The sharpest turn between a strip's last segment and its next that still joins them (the cosine of the angle between their
 /// ways): past it the next starts square across its own way.
@@ -205,7 +208,7 @@ impl TireTracks {
             };
             let d = [0, 1, 2].map(|k| w.point[k] - end.point[k]);
             let gone = d[0].hypot(d[1]);
-            if gone > MAX_GAP + MAX_SPEED * dt {
+            if gone > MAX_GAP + MAX_SPEED * dt.min(MAX_BRIDGE_DT) {
                 kept.insert(
                     w.key,
                     End {
