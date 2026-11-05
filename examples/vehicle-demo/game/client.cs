@@ -1,8 +1,8 @@
-// The vehicle demo's client: the menu (host a game, or join one on the network or at an address), the world's view with its
-// help line and hint, the keys on foot and in a seat, and the way in.
+// The vehicle demo's client: the menu (play alone, host a game, or join one on the network or at an address), the world's view
+// with its help line and hint, the keys on foot and in a seat, and the way in.
 //
-// The host watches the globals the menu sets: $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the
-// world was left: stop hosting). $World::Port is the UDP port number the games listen on. On foot the keys move the figure (as the level demo's); a click asks
+// The host watches the globals the menu sets: $World::AloneAsked (start a game here that nobody else can join and join it),
+// $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on. On foot the keys move the figure (as the level demo's); a click asks
 // the server for a seat (serverCmdGetIn). In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
@@ -75,7 +75,7 @@ new GuiControl(MenuGui)
    profile = WorldBackProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
    new GuiControl(MenuPanel)
    {
-      position = "50 30"; extent = "700 540"; horizSizing = "center"; vertSizing = "center";
+      position = "50 20"; extent = "700 560"; horizSizing = "center"; vertSizing = "center";
       new GuiTextCtrl(MenuTitle)
       {
          profile = WorldTitleProfile; position = "0 0"; extent = "700 52"; visible = true; enabled = true;
@@ -95,24 +95,24 @@ new GuiControl(MenuGui)
          profile = WorldEditProfile; position = "120 98"; extent = "300 32"; visible = true; enabled = true; maxLength = 24;
          text = "";
       };
-      new GuiButtonCtrl(HostButton)
+      new GuiButtonCtrl(AloneButton)
       {
          profile = WorldButtonProfile; position = "0 150"; extent = "260 50"; visible = true; enabled = true;
-         text = "Host a game"; command = "hostGame();";
+         text = "Play alone"; command = "playAlone();";
       };
-      new GuiTextCtrl(HostNote)
+      new GuiButtonCtrl(HostButton)
       {
-         profile = WorldDimProfile; position = "280 165"; extent = "420 20"; visible = true; enabled = true;
-         text = "Start a game here. Others on your network can join it.";
+         profile = WorldButtonProfile; position = "0 210"; extent = "260 50"; visible = true; enabled = true;
+         text = "Host a game"; command = "hostGame();";
       };
       new GuiTextCtrl(GamesLabel)
       {
-         profile = WorldLabelProfile; position = "2 226"; extent = "400 24"; visible = true; enabled = true;
+         profile = WorldLabelProfile; position = "2 284"; extent = "400 24"; visible = true; enabled = true;
          text = "Games on your network";
       };
       new GuiScrollCtrl(GamesScroll)
       {
-         profile = WorldScrollProfile; position = "0 254"; extent = "700 130"; visible = true; enabled = true;
+         profile = WorldScrollProfile; position = "0 312"; extent = "700 100"; visible = true; enabled = true;
          hScrollBar = "alwaysOff"; vScrollBar = "dynamic";
          new GuiTextListCtrl(GamesList)
          {
@@ -121,31 +121,31 @@ new GuiControl(MenuGui)
       };
       new GuiButtonCtrl(RefreshButton)
       {
-         profile = WorldButtonProfile; position = "0 394"; extent = "200 40"; visible = true; enabled = true;
+         profile = WorldButtonProfile; position = "0 422"; extent = "200 40"; visible = true; enabled = true;
          text = "Refresh"; command = "refreshGames();";
       };
       new GuiButtonCtrl(JoinSelectedButton)
       {
-         profile = WorldButtonProfile; position = "500 394"; extent = "200 40"; visible = true; enabled = true;
+         profile = WorldButtonProfile; position = "500 422"; extent = "200 40"; visible = true; enabled = true;
          text = "Join"; command = "joinSelected();";
       };
       new GuiTextCtrl(AddressLabel)
       {
-         profile = WorldLabelProfile; position = "2 456"; extent = "80 24"; visible = true; enabled = true; text = "Address";
+         profile = WorldLabelProfile; position = "2 482"; extent = "80 24"; visible = true; enabled = true; text = "Address";
       };
       new GuiTextEditCtrl(AddressEdit)
       {
-         profile = WorldEditProfile; position = "90 452"; extent = "400 32"; visible = true; enabled = true; maxLength = 64;
+         profile = WorldEditProfile; position = "90 478"; extent = "400 32"; visible = true; enabled = true; maxLength = 260;
          text = ""; placeholderText = "127.0.0.1:28000"; altCommand = "joinAddress();";
       };
       new GuiButtonCtrl(JoinAddressButton)
       {
-         profile = WorldButtonProfile; position = "500 448"; extent = "200 40"; visible = true; enabled = true;
+         profile = WorldButtonProfile; position = "500 474"; extent = "200 40"; visible = true; enabled = true;
          text = "Join address"; command = "joinAddress();";
       };
       new GuiTextCtrl(MenuStatus)
       {
-         profile = WorldNoteProfile; position = "0 504"; extent = "700 28"; visible = true; enabled = true; text = "";
+         profile = WorldNoteProfile; position = "0 526"; extent = "700 28"; visible = true; enabled = true; text = "";
       };
    };
 };
@@ -156,6 +156,13 @@ function saveName()
    if (%name !$= "")
       $Pref::Player::Name = %name;
    NameEdit.setValue($Pref::Player::Name);
+}
+
+function playAlone()
+{
+   saveName();
+   MenuStatus.setText("Starting a game...");
+   $World::AloneAsked = 1;
 }
 
 function hostGame()
@@ -251,7 +258,7 @@ function pollJoinLookup()
 // ---- the world's view
 
 $World::FootHelp = "W A S D move   Shift walk   Space jump   Mouse look   Click the buggy to get in   Tab camera   R restart   Esc menu";
-$World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   Mouse turns the camera   Tab camera   E get out   Esc menu";
+$World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   F light   Mouse turns the camera   Tab camera   E get out   Esc menu";
 $World::RideHelp = "Mouse looks around   Tab camera   E get out   Esc menu";
 
 new GameTSCtrl(PlayGui)
@@ -344,8 +351,11 @@ function steerRight(%v) { $Drive::Right = %v; $Drive::Steer = $Drive::Left - $Dr
 // The brake: the jump trigger held while the key is (a driver's goes to the buggy).
 function brake(%v) { $Drive::Brake = %v; $mvTriggerCount2++; }
 function orbitYaw(%v) { $Drive::OrbitYaw += %v * 0.004; }
-function orbitPitch(%v) { $Drive::OrbitPitch = mClamp($Drive::OrbitPitch + %v * 0.003, -0.6, 0.9); }
+// (mClamp is an integer's: the pitch is kept by getMin and getMax.)
+function orbitPitch(%v) { $Drive::OrbitPitch = getMax(-1.5, getMin($Drive::OrbitPitch + %v * 0.003, 0.9)); }
 function getOut(%v) { if (%v && isObject(ServerConnection)) commandToServer('GetOut'); }
+// F: the headlight on or off (the server lets only the driver).
+function toggleLight(%v) { if (%v && isObject(ServerConnection)) commandToServer('ToggleLight'); }
 DriveMap.bind(keyboard, w, driveForward);
 DriveMap.bind(keyboard, s, driveBack);
 DriveMap.bind(keyboard, a, steerLeft);
@@ -353,6 +363,7 @@ DriveMap.bind(keyboard, d, steerRight);
 DriveMap.bind(keyboard, space, brake);
 DriveMap.bind(keyboard, e, getOut);
 DriveMap.bind(keyboard, tab, switchCamera);
+DriveMap.bind(keyboard, f, toggleLight);
 DriveMap.bind(keyboard, escape, menuKey);
 DriveMap.bind(mouse, xaxis, orbitYaw);
 DriveMap.bind(mouse, yaxis, orbitPitch);
@@ -442,6 +453,9 @@ function clientCmdWorldStarted(%title)
 function clientCmdSeated(%seat)
 {
    releaseKeys();
+   // The mouse's turn on foot goes nowhere: it would steer.
+   $mvYaw = 0;
+   $mvPitch = 0;
    $Drive::Seat = %seat;
    $Drive::OrbitYaw = 0;
    $Drive::OrbitPitch = 0;

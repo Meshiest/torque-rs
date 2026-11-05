@@ -7,6 +7,16 @@
 // whose figure controls the buggy (the client's moves drive it), or the passenger's (node 1, on the right), who rides. Getting
 // out (serverCmdGetOut) puts the figure on its feet beside its seat's side.
 //
+// The headlight: each buggy carries a SpotLight on its `mount2` node (between the lamps on its roof), off until its driver
+// presses F (serverCmdToggleLight); while it is on, the buggy plays `lights_on` (the roof lamps' faces lit). The day
+// (TimeOfDay, ScatterSky) and the headlight are the engine's own classes: every client of the demo is the engine's
+// ($Server::EngineClasses).
+//
+// A buggy for each player: the map's (Buggy) is the first player's; each later player is given one of its own as it enters
+// (giveBuggy), in a row along +x, $World::BuggyApart apart, beside the player's spawn point, at most $World::MaxBuggies in all.
+// Anyone may take any free seat of any buggy. A player's buggy goes when the player leaves, at once when nobody sits in it,
+// else once its last rider gets out (dropIfEmpty).
+//
 // The brake: the demo's Player hands a driver's jump trigger to the buggy (its brake), and no key of a move dismounts
 // (src/seats.rs); off the throttle the buggy coasts.
 //
@@ -51,7 +61,7 @@ datablock ParticleData(BuggyDustPuff)
    textureName = "kit/smoke";
    dragCoefficient = 2.5;
    gravityCoefficient = -0.04;
-   inheritedVelFactor = 0.05;
+   inheritedVelFactor = 0.8;
    lifetimeMS = 900;
    lifetimeVarianceMS = 300;
    useInvAlpha = true;
@@ -162,8 +172,13 @@ $Buggy::Side[1] = 1;
 
 exec("common/server.cs");
 
+// Every client is the engine's: the engine's own classes (the headlight, the day) are ghosted to all.
+$Server::EngineClasses = 1;
+
 // How far a click reaches from the figure's eye, and what it looks for (VehicleObjectType).
 $World::Reach = 5.5;
+$World::MaxBuggies = 16;
+$World::BuggyApart = 8;
 $World::VehicleMask = 65536;
 // TerrainObjectType: what the ground is.
 $World::TerrainMask = 4;
@@ -183,8 +198,28 @@ function startWorld(%file)
    loadMission(%file);
    $World::Title = MapInfo.title;
    $World::Buggy = Buggy.getId();
+   $World::Buggies = 1;
+   giveHeadlight(Buggy);
    echo("World" SPC $World::Title SPC "with" SPC MissionGroup.getCount() SPC "objects");
    schedule(500, 0, "watchFalls");
+}
+
+// A headlight between the lamps on %vehicle's roof (its mount2 node), off.
+function giveHeadlight(%vehicle)
+{
+   %lamp = new SpotLight()
+   {
+      range = 50;
+      innerAngle = 24;
+      outerAngle = 52;
+      brightness = 0.85;
+      color = "1 0.98 0.94";
+      castShadows = 1;
+   };
+   MissionCleanup.add(%lamp);
+   %vehicle.mountObject(%lamp, 2);
+   %lamp.setLightEnabled(false);
+   %vehicle.headlight = %lamp;
 }
 
 // ---- a client's way in
@@ -194,23 +229,123 @@ function GameConnection::onClientConnect(%client, %name)
    echo("Client" SPC %client SPC "connected");
 }
 
-// A figure at the client's spawn point: the first client's on the buggy's left, the others' on its right.
+// The client's place in ClientGroup (the order the clients came in).
+function GameConnection::joinOrder(%client)
+{
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+      if (ClientGroup.getObject(%i) == %client)
+         return %i;
+   return 0;
+}
+
+// A figure at the client's spawn point: the first client's on the map's buggy's left, the second's on its right, each later
+// one's on the left of its own buggy's place.
 function GameConnection::spawnFigure(%client)
 {
-   %k = ClientGroup.getObject(0) == %client ? 0 : 1;
-   %x = getWord(MapInfo.spawn[%k], 0);
-   %y = getWord(MapInfo.spawn[%k], 1);
+   %k = %client.joinOrder();
+   if (%k < 2)
+   {
+      %x = getWord(MapInfo.spawn[%k], 0);
+      %y = getWord(MapInfo.spawn[%k], 1);
+      %yaw = MapInfo.spawnYaw[%k];
+   }
+   else
+   {
+      %x = %k * $World::BuggyApart + getWord(MapInfo.spawn0, 0);
+      %y = getWord(MapInfo.spawn0, 1);
+      %yaw = MapInfo.spawnYaw0;
+   }
    %at = %x SPC %y SPC groundAt(%x, %y) + 0.1;
-   %client.createFigure(WorldFigureData, %at SPC "0 0 1" SPC MapInfo.spawnYaw[%k]);
+   %client.createFigure(WorldFigureData, %at SPC "0 0 1" SPC %yaw);
 }
 
 function GameConnection::onClientEnterGame(%client)
 {
    commandToClient(%client, 'WorldStarted', $World::Title);
+   giveBuggy(%client);
 }
 
+// The client's own buggy: the map's for the first client, a new one in its place along the row for each later one (none past
+// $World::MaxBuggies).
+function giveBuggy(%client)
+{
+   if (isObject(Buggy) && !isObject(Buggy.owner))
+   {
+      Buggy.owner = %client;
+      Buggy.ownerLeft = 0;
+      %client.buggy = Buggy;
+      return;
+   }
+   if ($World::Buggies >= $World::MaxBuggies)
+      return;
+   %k = freeBuggySlot();
+   %x = %k * $World::BuggyApart;
+   %vehicle = new WheeledVehicle()
+   {
+      dataBlock = BuggyData;
+      position = %x SPC "0" SPC groundAt(%x, 0) + 1.2;
+      rotation = "0 0 1 0";
+   };
+   MissionCleanup.add(%vehicle);
+   giveHeadlight(%vehicle);
+   %vehicle.owner = %client;
+   %vehicle.slot = %k;
+   %client.buggy = %vehicle;
+   $World::Buggies++;
+}
+
+// The lowest place in the row (1 up; the map's buggy stands at 0) no spawned buggy holds, so a newcomer's buggy never lands
+// on one left standing by a player who went.
+function freeBuggySlot()
+{
+   for (%k = 1; %k <= $World::MaxBuggies; %k++)
+   {
+      %taken = false;
+      for (%i = MissionCleanup.getCount() - 1; %i >= 0 && !%taken; %i--)
+      {
+         %obj = MissionCleanup.getObject(%i);
+         if (%obj.getClassName() $= "WheeledVehicle" && %obj.slot == %k)
+            %taken = true;
+      }
+      if (!%taken)
+         return %k;
+   }
+   return $World::MaxBuggies;
+}
+
+// The client left (its figure already gone): its buggy is let go, and every let-go buggy nobody sits in now goes (the figure
+// may have been riding in one).
 function GameConnection::onClientLeaveGame(%client)
 {
+   if (isObject(%client.buggy))
+   {
+      %client.buggy.owner = 0;
+      %client.buggy.ownerLeft = 1;
+   }
+   for (%i = MissionCleanup.getCount() - 1; %i >= 0; %i--)
+   {
+      %obj = MissionCleanup.getObject(%i);
+      if (%obj.getClassName() $= "WheeledVehicle")
+         dropIfEmpty(%obj);
+   }
+   dropIfEmpty(Buggy);
+}
+
+// Deletes a buggy whose owner left once nobody sits in it (its headlight with it).
+function dropIfEmpty(%vehicle)
+{
+   if (!isObject(%vehicle) || !%vehicle.ownerLeft)
+      return;
+   for (%i = 0; %i < $Buggy::SeatCount; %i++)
+   {
+      %rider = %vehicle.getMountNodeObject(%i);
+      if (isObject(%rider) && %rider.getClassName() $= "Player" && %rider.client.player == %rider)
+         return;
+   }
+   if (isObject(%vehicle.headlight))
+      %vehicle.headlight.delete();
+   %vehicle.delete();
+   $World::Buggies--;
 }
 
 // The client asked to start again at the spawn point.
@@ -265,8 +400,33 @@ function serverCmdGetIn(%client)
    %player.setActionThread(%seat == 0 ? "sit" : "ride", true, true);
    // The driver controls the vehicle; the passenger rides.
    if (%seat == 0)
+   {
+      straightenWheels(%vehicle);
       %player.setControlObject(%vehicle);
+   }
    commandToClient(%client, 'Seated', %seat);
+}
+
+// The client asked to switch its vehicle's headlight: only the driver may.
+function serverCmdToggleLight(%client)
+{
+   %player = %client.player;
+   if (!isObject(%player) || !%player.isMounted())
+      return;
+   %vehicle = %player.getObjectMount();
+   if (%vehicle.getMountNodeObject(0) != %player.getId() || !isObject(%vehicle.headlight))
+      return;
+   setHeadlight(%vehicle, !%vehicle.headlight.isEnabled);
+}
+
+// Switches %vehicle's headlight and its roof lamps' glow (thread 0) on or off.
+function setHeadlight(%vehicle, %on)
+{
+   %vehicle.headlight.setLightEnabled(%on);
+   if (%on)
+      %vehicle.playThread(0, "lights_on");
+   else
+      %vehicle.stopThread(0);
 }
 
 // The client asked to get out: the figure stands beside its seat's side of the vehicle, facing the way it faces.
@@ -293,4 +453,5 @@ function serverCmdGetOut(%client)
    %player.setTransform(%x SPC %y SPC %z SPC "0 0 1" SPC %yaw);
    %player.setVelocity("0 0 0");
    commandToClient(%client, 'Seated', -1);
+   dropIfEmpty(%vehicle);
 }

@@ -20,7 +20,8 @@
 //! there until the server sets another. A new action blends in over [`TRANSITION`] seconds
 //! (`transitionToSequence`); an action the shape has no sequence for changes nothing. A moving action's rate is the velocity
 //! along its direction over its speed, at most `maxTimeScale` ([`MAX_TIME_SCALE`]), negative backwards
-//! (`updateActionThread`).
+//! (`updateActionThread`). A Player that gets off its mount ([`PlayerMotion::mounted`]) plays `root` forward, neither held nor
+//! waited for (`onUnmount`), so its moves pick its actions again; one that gets on takes the action its record carries anew.
 //!
 //! **Synced** ([`PlayerAnimation::set_synced`], a host's opt-in for a server whose Players have hitboxes): the rules above are the
 //! ones a hitbox Player's server follows too ([`torque_game::sim::player::synced`]), and a moving action steps by the ground
@@ -38,9 +39,9 @@
 //! `light_recoil`, `medium_recoil` or `heavy_recoil` (when it has that one) to its end.
 //!
 //! Credit: follows TGE 1.4's `game/player.cc` (`pickActionAnimation`, `setActionThread`, `updateActionThread`,
-//! `updateLookAnimation`, `onImageRecoil`, `PlayerData::preload`; Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
-//! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code is this
-//! crate's own.
+//! `updateLookAnimation`, `onImageRecoil`, `onUnmount`, `PlayerData::preload`; Copyright (C) GarageGames.com, Inc.), whose
+//! MIT-licensed successor is Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic,
+//! Inc.). The code is this crate's own.
 
 use collide::math::F3;
 use ghosts::TgeRecord;
@@ -149,6 +150,8 @@ pub struct PlayerMotion {
     pub server_action: Option<ServerAction>,
     /// Where the Player is drawn (its feet): a synced animation steps a moving action by its change.
     pub position: Option<F3>,
+    /// The Player is mounted on an object (its record's mount block names a ghost the client holds).
+    pub mounted: bool,
 }
 
 impl PlayerMotion {
@@ -172,6 +175,7 @@ impl PlayerMotion {
             look: ((head + 1.0) * 0.5).clamp(0.0, 1.0),
             server_action: ServerAction::of_record(record),
             position: None,
+            mounted: false,
         })
     }
 
@@ -218,6 +222,8 @@ pub struct PlayerAnimation {
     synced: bool,
     /// Where the last frame drew the Player.
     last_position: Option<F3>,
+    /// The Player was mounted in the last frame.
+    mounted: bool,
 }
 
 impl PlayerAnimation {
@@ -279,6 +285,7 @@ impl PlayerAnimation {
             recoil_sequences,
             synced: false,
             last_position: None,
+            mounted: false,
         })
     }
 
@@ -399,6 +406,19 @@ impl PlayerAnimation {
         self.set_action(shape, instance, chosen, forward, false);
     }
 
+    /// A mount began or ended. `onUnmount` plays `root` forward, neither held nor waited for, so the moves pick the actions
+    /// again (the record keeps the action the server set while seated, which is not sent again). A new mount takes the action
+    /// the record carries again, even the one an earlier mount set: the server sets it anew on every mount.
+    fn mount_changed(&mut self, shape: &Shape, instance: &mut ShapeInstance) {
+        if self.mounted {
+            self.server_action = None;
+            return;
+        }
+        self.hold = false;
+        self.wait = false;
+        self.set_action(shape, instance, action::ROOT, true, false);
+    }
+
     /// Whether the action thread is at its end (its start, backwards).
     fn at_end(&self, instance: &ShapeInstance) -> bool {
         instance.thread(self.action_thread).is_some_and(|t| {
@@ -424,6 +444,10 @@ impl PlayerAnimation {
         let rose = synced::rose(self.last_rise, m.velocity[2]);
         self.last_rise = m.velocity[2];
         let from = std::mem::replace(&mut self.last_position, m.position);
+        if m.mounted != self.mounted {
+            self.mounted = m.mounted;
+            self.mount_changed(shape, instance);
+        }
         if !self.hold && ((took_off && m.jumping) || rose) {
             let has = |a: usize| self.actions.get(a).is_some_and(|x| x.sequence.is_some());
             let jump = if synced::standing_jump(m.velocity) && has(action::STAND_JUMP) {

@@ -12,7 +12,9 @@
 //! - [`interiors::Interiors`]: the map's interiors (InteriorInstance ghosts) as static mesh objects of the view.
 //! - [`hosting`]: hosting a game and joining one: the client's network mode, the address a hosted game binds and is joined by,
 //!   a typed address and the join screen's natives.
+//! - [`lights::WorldLights`]: the engine's spot lights and the day (TimeOfDay, ScatterSky) of a client's world, into the view.
 //! - [`orbit::Orbit`]: a third-person camera that circles a point.
+//! - [`camera_blend::CameraBlend`]: a camera that eases from one mode's eye to another's on a switch.
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
@@ -20,12 +22,14 @@
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
 
+pub mod camera_blend;
 pub mod cli;
 pub mod client;
 pub mod files;
 pub mod ghosts;
 pub mod hosting;
 pub mod interiors;
+pub mod lights;
 pub mod orbit;
 pub mod server;
 pub mod shots;

@@ -728,9 +728,25 @@ fn the_buggy_has_its_hubs_two_seats_and_a_body_hull() {
     }
     assert_eq!(facts.mount_nodes[0], node("mount0"));
     assert_eq!(facts.mount_nodes[1], node("mount1"));
+    assert_eq!(facts.mount_nodes[2], node("mount2"));
     assert_eq!(facts.eye_node, node("eye"));
     assert_eq!(facts.slots.hulls(), 1);
     assert_eq!(facts.slots.own_los(), 1);
+    // The headlight between the roof's lamps, just ahead of them; their lit faces inside them until `lights_on` plays.
+    use crate::buggy::{HEADLIGHT, LIGHTS_ON, ROOF_LAMP_DEPTH, ROOF_LAMP_Y, ROOF_LAMP_Z};
+    assert!(HEADLIGHT[1] > ROOF_LAMP_Y && (HEADLIGHT[2] - ROOF_LAMP_Z).abs() < 1e-6);
+    let rest = shape.default_translations[node("lamps_lit") as usize];
+    assert!(
+        rest[1] < ROOF_LAMP_Y && rest[1] > ROOF_LAMP_Y - ROOF_LAMP_DEPTH,
+        "{rest:?}"
+    );
+    let out = posed(&shape, LIGHTS_ON, 0.0, "lamps_lit", [0.0; 3]);
+    assert!(out[1] < ROOF_LAMP_Y, "{out:?}");
+    let lit = posed(&shape, LIGHTS_ON, 1.0, "lamps_lit", [0.0; 3]);
+    assert!(
+        lit[1] > ROOF_LAMP_Y && lit[1] < ROOF_LAMP_Y + 0.02,
+        "{lit:?}"
+    );
 }
 
 #[test]
@@ -765,5 +781,75 @@ fn a_riding_figure_rests_its_hands_on_its_thighs() {
         assert!((0.2..0.45).contains(&hand[1]), "{elbow}: {hand:?}");
         assert!((1.02..1.25).contains(&hand[2]), "{elbow}: {hand:?}");
         assert!((0.12..0.28).contains(&hand[0].abs()), "{elbow}: {hand:?}");
+    }
+}
+
+#[test]
+fn the_steering_sequence_turns_the_wheel_about_its_column_clockwise_for_the_right() {
+    use crate::buggy::{MAX_STEERING, WHEEL_LOCK, steering_wheel, wheel_turn};
+    let shape = Shape::for_server(crate::buggy::buggy());
+    let (center, radius) = steering_wheel();
+    // The rim's top in the wheel's own space (the wheel faces back up the column; its up is across the column).
+    let (s, c) = crate::buggy::COLUMN_DROP.to_radians().sin_cos();
+    let up = [0.0, s, c];
+    let top = up.map(|v| v * radius);
+    let at = |place: f32| posed(&shape, "steering", place, "steering_wheel", top);
+    let straight = at(0.5);
+    assert!(
+        (straight[0] - center[0]).abs() < 1e-3,
+        "{straight:?} {center:?}"
+    );
+    // Full right: the thread at 0.5 - lock / 2, the top swung right by the wheel's lock.
+    assert!((wheel_turn(MAX_STEERING) - WHEEL_LOCK).abs() < 1e-3);
+    let right = at(0.5 - MAX_STEERING * 0.5);
+    let left = at(0.5 + MAX_STEERING * 0.5);
+    let side = |p: [f32; 3]| p[0] - center[0];
+    let expect = radius * WHEEL_LOCK.to_radians().sin();
+    assert!(
+        (side(right) - expect).abs() < 0.02,
+        "{right:?} for {expect}"
+    );
+    assert!((side(left) + expect).abs() < 0.02, "{left:?} for {expect}");
+}
+
+#[test]
+fn the_seated_hands_stay_on_the_rim_as_the_steering_turns_the_wheel() {
+    use crate::buggy::{COLUMN_DROP, MAX_STEERING, WHEEL_LOCK, grips};
+    let shape = Shape::for_server(shapes::figure());
+    let [l, r] = grips();
+    let center = [0, 1, 2].map(|k| 0.5 * (l[k] + r[k]));
+    let (s, c) = COLUMN_DROP.to_radians().sin_cos();
+    let along = [0.0f32, c, -s];
+    for place in [
+        0.5f32,
+        0.5 - MAX_STEERING * 0.5,
+        0.5 + MAX_STEERING * 0.5,
+        0.4,
+    ] {
+        let turn = ((1.0 - 2.0 * place) / MAX_STEERING * WHEEL_LOCK).to_radians();
+        for (grip, elbow) in [(l, "elbow_l"), (r, "elbow_r")] {
+            // The grip turned about the column through the wheel's middle (Rodrigues).
+            let v = [0, 1, 2].map(|k| grip[k] - center[k]);
+            let (sn, cs) = turn.sin_cos();
+            let cr = [
+                along[1] * v[2] - along[2] * v[1],
+                along[2] * v[0] - along[0] * v[2],
+                along[0] * v[1] - along[1] * v[0],
+            ];
+            let d: f32 = (0..3).map(|k| along[k] * v[k]).sum();
+            let want =
+                [0, 1, 2].map(|k| center[k] + v[k] * cs + cr[k] * sn + along[k] * d * (1.0 - cs));
+            let hand = posed_with(
+                &shape,
+                &[("sit", 0.0), ("steering", place)],
+                elbow,
+                [0.0, 0.0, -shapes::GRIP],
+            );
+            let apart = (0..3)
+                .map(|k| (hand[k] - want[k]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            assert!(apart < 0.03, "{elbow} at {place}: {hand:?} for {want:?}");
+        }
     }
 }

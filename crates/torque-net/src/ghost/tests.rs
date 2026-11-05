@@ -513,6 +513,37 @@ fn an_always_event_reflects_the_object_when_it_is_written() {
 }
 
 #[test]
+fn an_always_pack_keeps_the_bits_it_could_not_send() {
+    let mut rig = Rig::new();
+    rig.add(10);
+    rig.add(11);
+    rig.world.objs.get_mut(&10).unwrap().unsent = 0x10;
+    rig.world.always.extend([10, 11]);
+    let events = rig.mgr.activate(&rig.world).unwrap();
+    let table = crate::testids::table();
+    let ids = crate::testids::ids();
+    let ctx = EventCtx {
+        table: &table,
+        ids: &ids,
+        ghost_bits: 12,
+        datablock_bits: crate::profile::DEFAULT_DATABLOCK_BITS,
+    };
+    let mut left = Vec::new();
+    for e in &events {
+        let mut w = BitWriter::with_limit(12_000);
+        let mut p = rig.mgr.pack_ctx(&mut rig.world);
+        e.pack_with(&mut w, &ctx, &mut p);
+        left.extend(p.into_left());
+    }
+    assert_eq!(left, vec![(10, 0x10)]);
+    for (obj, bits) in left {
+        rig.mgr.set_mask(obj, bits);
+    }
+    assert_eq!(rig.mgr.view_of(10).unwrap().mask, 0x10);
+    assert_eq!(rig.mgr.view_of(11).unwrap().mask, 0);
+}
+
+#[test]
 fn always_events_go_through_the_event_queue_with_the_pack_context() {
     let mut rig = Rig::new();
     for o in 10..13 {

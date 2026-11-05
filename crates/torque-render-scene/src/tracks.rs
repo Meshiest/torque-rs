@@ -2,12 +2,17 @@
 //! ([`TrackRules`]; TGE has none, and no datablock carries them, so the wire stays TGE's).
 //!
 //! - **Laid** ([`TireTracks::update`]): a wheel in contact with the ground lays a segment each time its contact point has gone
-//!   [`TrackRules::spacing`] from the end of its strip, as wide as [`TrackRules::width`] (the game's: its tires' width). The
-//!   segment is the ground's triangles under it (the host's `surfaces` near the point, [`crate::decals::Triangle`]) clipped
-//!   to it: between the plane across the strip at its last end (the plane the last segment ended on, so a curve leaves no
-//!   gap and no overlap) and the plane across its new end, and between its two sides, each triangle facing up within
-//!   [`crate::decals::CLIP_ANGLE_COS`]. So it lies on the terrain over the hills, cut where the triangles meet, never in the
-//!   air. A wheel that leaves the ground, or jumps further than [`MAX_GAP`] (a respawn), ends its strip.
+//!   [`TrackRules::spacing`] from the end of its strip, as wide as [`TrackRules::width`] (the game's: its tires' width); a
+//!   longer way since the last frame is laid in pieces of at most the spacing. The segment is the ground's triangles under it
+//!   (the host's `surfaces` near the point, [`crate::decals::Triangle`]) clipped to it: between the plane across the strip at
+//!   its last end (the plane the last segment ended on, so a curve leaves no gap and no overlap) and the plane across its new
+//!   end, and between its two sides, each triangle facing up within [`crate::decals::CLIP_ANGLE_COS`]. So it lies on the
+//!   terrain over the hills, cut where the triangles meet, never in the air. A wheel that turns back on its strip (backing up,
+//!   or a turn sharper than [`MAX_TURN_COS`] in one segment) starts the next segment square across its own way: the end's
+//!   plane would face the other way and the segment would run on ahead of the wheel. A wheel that leaves the ground, or
+//!   jumps further than [`MAX_GAP`] (a respawn), ends its strip.
+//! - **The head** ([`TireTracks::heads`]): each strip runs on from its last segment to the wheel's contact point this frame,
+//!   in a head laid again every frame (replaced by the next segment), so the strip ends under the tire.
 //! - **Textured**: [`TrackRules::texture`] across the strip (u from side to side) and repeating along it every strip's width
 //!   (v by the distance laid).
 //! - **Kept**: each segment for [`TrackRules::lifetime`] seconds, fading over its last [`TrackRules::fade`]; past
@@ -31,6 +36,13 @@ pub const FADE_STEPS: u32 = 16;
 
 /// The furthest a contact point may move between frames and still continue its strip (units).
 pub const MAX_GAP: f32 = 4.0;
+
+/// The sharpest turn between a strip's last segment and its next that still joins them (the cosine of the angle between their
+/// ways): past it the next starts square across its own way.
+pub const MAX_TURN_COS: f32 = 0.5;
+
+/// The shortest head laid (units): a wheel nearer its strip's end than this draws none.
+pub const MIN_HEAD: f32 = 0.05;
 
 /// A game's tire tracks.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +112,7 @@ pub struct TireTracks {
     pub rules: TrackRules,
     segments: VecDeque<TrackSegment>,
     ends: BTreeMap<(u32, usize), End>,
+    heads: BTreeMap<(u32, usize), TrackSegment>,
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -111,13 +124,30 @@ fn flat(v: [f32; 3]) -> Option<[f32; 2]> {
     (l > 1e-4 && l.is_finite()).then(|| [v[0] / l, v[1] / l])
 }
 
+/// The way a segment from `end` along `along` starts across: the end's own (the plane the last segment ended on), or square
+/// across `along` for a strip's first segment and one that turns back on it (module docs).
+fn start_of(end: End, along: [f32; 2]) -> [f32; 2] {
+    let turn = end.along[0] * along[0] + end.along[1] * along[1];
+    if end.along == [0.0, 0.0] || turn < MAX_TURN_COS {
+        along
+    } else {
+        end.along
+    }
+}
+
 impl TireTracks {
     pub fn new(rules: TrackRules) -> TireTracks {
         TireTracks {
             rules,
             segments: VecDeque::new(),
             ends: BTreeMap::new(),
+            heads: BTreeMap::new(),
         }
+    }
+
+    /// The strips' heads this frame (module docs), by wheel.
+    pub fn heads(&self) -> impl Iterator<Item = (&(u32, usize), &TrackSegment)> {
+        self.heads.iter()
     }
 
     /// The segments kept, oldest first.
@@ -137,6 +167,7 @@ impl TireTracks {
     pub fn clear(&mut self) {
         self.segments.clear();
         self.ends.clear();
+        self.heads.clear();
     }
 
     /// The frame, `dt` seconds after the last: the segments aged (the ones past their lifetime gone), then each wheel's strip
@@ -148,6 +179,7 @@ impl TireTracks {
         }
         let lifetime = self.rules.lifetime;
         self.segments.retain(|s| s.age < lifetime);
+        self.heads.clear();
         let mut kept = BTreeMap::new();
         for w in wheels {
             if !w.contact || w.point.iter().any(|c| !c.is_finite()) {
@@ -177,47 +209,65 @@ impl TireTracks {
                 );
                 continue;
             }
-            if gone < self.rules.spacing.max(0.01) {
-                kept.insert(w.key, end);
-                continue;
-            }
+            let spacing = self.rules.spacing.max(0.01);
             let Some(along) = flat(d) else {
                 kept.insert(w.key, end);
                 continue;
             };
-            // The strip's first segment starts square across its own direction.
-            let start_along = if end.along == [0.0, 0.0] {
-                along
-            } else {
-                end.along
-            };
-            let v = end.v + gone / self.rules.width.max(0.01);
-            self.lay(end, w.point, start_along, along, surfaces);
-            kept.insert(
-                w.key,
-                End {
-                    point: w.point,
+            if gone < spacing {
+                // The head: from the strip's end to the wheel, as the next segment will start.
+                if gone >= MIN_HEAD
+                    && let Some(head) =
+                        self.segment(end, w.point, start_of(end, along), along, surfaces)
+                {
+                    self.heads.insert(w.key, head);
+                }
+                kept.insert(w.key, end);
+                continue;
+            }
+            // In pieces of at most the spacing, each from the last one's end.
+            let pieces = (gone / spacing).ceil().max(1.0) as usize;
+            let mut at = end;
+            for k in 1..=pieces {
+                let f = k as f32 / pieces as f32;
+                let to = [0, 1, 2].map(|c| end.point[c] + d[c] * f);
+                let step = (to[0] - at.point[0]).hypot(to[1] - at.point[1]);
+                let start_along = start_of(at, along);
+                if let Some(seg) = self.segment(at, to, start_along, along, surfaces) {
+                    self.push(seg);
+                }
+                at = End {
+                    point: to,
                     along,
-                    v,
-                },
-            );
+                    v: at.v + step / self.rules.width.max(0.01),
+                };
+            }
+            kept.insert(w.key, at);
         }
         self.ends = kept;
     }
 
+    /// Keeps a segment laid (the oldest let go past [`TrackRules::max_segments`]).
+    fn push(&mut self, seg: TrackSegment) {
+        if self.rules.max_segments == 0 {
+            return;
+        }
+        while self.segments.len() >= self.rules.max_segments {
+            self.segments.pop_front();
+        }
+        self.segments.push_back(seg);
+    }
+
     /// A segment from `end` to `to`: the ground's triangles between the plane across `start_along` at the end and the plane
-    /// across `along` at `to`, and within half the width of the line between them.
-    fn lay(
-        &mut self,
+    /// across `along` at `to`, and within half the width of the line between them; none when no triangle is under it.
+    fn segment(
+        &self,
         end: End,
         to: [f32; 3],
         start_along: [f32; 2],
         along: [f32; 2],
         surfaces: &Surfaces<'_>,
-    ) {
-        if self.rules.max_segments == 0 {
-            return;
-        }
+    ) -> Option<TrackSegment> {
         let half = 0.5 * self.rules.width;
         let a = end.point;
         let mid = [0, 1, 2].map(|k| 0.5 * (a[k] + to[k]));
@@ -257,17 +307,11 @@ impl TireTracks {
                 triangles.push([point(poly[0]), point(poly[i]), point(poly[i + 1])]);
             }
         }
-        if triangles.is_empty() {
-            return;
-        }
-        while self.segments.len() >= self.rules.max_segments {
-            self.segments.pop_front();
-        }
-        self.segments.push_back(TrackSegment {
+        (!triangles.is_empty()).then_some(TrackSegment {
             triangles,
             center: mid,
             age: 0.0,
-        });
+        })
     }
 
     /// A segment's opacity now: 1 until its fade starts, then down to 0 at the end of its lifetime.
@@ -286,7 +330,7 @@ impl TireTracks {
             return Vec::new();
         };
         let mut steps: BTreeMap<u8, (f32, Vec<Vertex>)> = BTreeMap::new();
-        for s in &self.segments {
+        for s in self.segments.iter().chain(self.heads.values()) {
             let step = (self.opacity(s) * FADE_STEPS as f32).ceil() as u8;
             if step == 0 {
                 continue;

@@ -624,11 +624,22 @@ impl Merge for Projectile {
 }
 
 impl Merge for VehiclePart {
+    /// The state's steering and move travel with every update to a connection that does not control the vehicle; its rigid
+    /// state (`PositionMask`) and energy (`EnergyMask`) only when they changed: an update without them keeps the last ones
+    /// (`Vehicle::unpackUpdate` leaves them as they are).
     fn merge(&mut self, sent: &VehiclePart) {
         self.shape.merge(&sent.shape);
         self.jetting = sent.jetting;
         self.controlled = sent.controlled;
-        set(&mut self.state, &sent.state);
+        match (&mut self.state, &sent.state) {
+            (Some(kept), Some(s)) => {
+                kept.steering = s.steering;
+                kept.mv = s.mv;
+                set(&mut kept.rigid, &s.rigid);
+                set(&mut kept.energy, &s.energy);
+            }
+            (kept, sent) => set(kept, sent),
+        }
     }
 }
 
@@ -975,5 +986,35 @@ impl GhostCodec for TgeCodec {
         object.record = Some(record);
         object.updates += 1;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod vehicle_merge_tests {
+    use super::*;
+    use ghosts::vehicle::{RigidState, VehicleState};
+
+    #[test]
+    fn a_vehicle_update_without_its_position_keeps_the_last_one() {
+        let rigid = RigidState {
+            at_rest: true,
+            ..RigidState::default()
+        };
+        let mut kept = WheeledVehicle::default();
+        kept.vehicle.state = Some(VehicleState {
+            steering: [1, 0],
+            rigid: Some(rigid),
+            energy: Some(7),
+            ..VehicleState::default()
+        });
+        let mut sent = WheeledVehicle::default();
+        sent.vehicle.state = Some(VehicleState {
+            steering: [300, 2],
+            ..VehicleState::default()
+        });
+        kept.merge(&sent);
+        let s = kept.vehicle.state.unwrap();
+        assert_eq!(s.steering, [300, 2]);
+        assert_eq!((s.rigid, s.energy), (Some(rigid), Some(7)));
     }
 }

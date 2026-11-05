@@ -11,11 +11,13 @@
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
 //! ([`crate::scene`]), the canvas drawn, and the eye: behind the client's own figure (or at its eyes, `V`), kept in front of the
-//! cubes between.
+//! cubes between. `V` eases the camera from one to the other ([`CameraBlend`], kept in front of the cubes as the camera behind
+//! is); the figure is hidden only once the camera has arrived at its eyes.
 
 use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
 
+use torque::app::camera_blend::CameraBlend;
 use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
@@ -51,6 +53,9 @@ pub struct LevelDemo {
     pub playing: Option<usize>,
     /// The daylight the view was last given (the map's Sky over the default).
     daylight: Daylight,
+    /// The camera's ease between first and third person, and the mode it last eased to (first person).
+    blend: CameraBlend,
+    camera_mode: Option<bool>,
 }
 
 impl Deref for LevelDemo {
@@ -95,6 +100,8 @@ impl LevelDemo {
             scene: WorldScene::default(),
             playing: None,
             daylight: Daylight::default(),
+            blend: CameraBlend::default(),
+            camera_mode: None,
         })
     }
 
@@ -119,6 +126,8 @@ impl LevelDemo {
         self.client.stop_hosting();
         self.scene.clear();
         self.playing = None;
+        self.blend.reset();
+        self.camera_mode = None;
     }
 
     /// `ms` of the clock (see the module docs).
@@ -165,9 +174,11 @@ impl LevelDemo {
         self.flag("$World::FirstPerson")
     }
 
-    /// Sets where the camera is (the shots' second picture).
+    /// Puts the camera there at once, without easing (the shots' second picture).
     pub fn set_first_person(&mut self, on: bool) {
         self.set_global("$World::FirstPerson", if on { "1" } else { "0" });
+        self.camera_mode = Some(on);
+        self.blend.reset();
     }
 
     /// The eye this frame: behind the figure or at its eyes; a fixed view of the middle of the map before there is one.
@@ -185,24 +196,58 @@ impl LevelDemo {
     }
 
     fn third_person(&self, f: &OwnView) -> Eye {
-        let target = [
-            f.position[0],
-            f.position[1],
-            f.position[2] + CAMERA_TARGET_HEIGHT,
-        ];
+        let target = camera_target(f);
         let pitch = (CAMERA_PITCH + f.pitch * 0.6).clamp(-0.6, 1.2);
         let (s, c) = pitch.sin_cos();
         let back = [-f.yaw.sin() * c, -f.yaw.cos() * c, s];
-        let mut distance = CAMERA_DISTANCE;
+        let at = self.kept_clear(target, back, CAMERA_DISTANCE, 0.4);
+        look_at(at, target)
+    }
+
+    /// The point `distance` from `target` along unit `back`, brought in front of the first cube between (no nearer than
+    /// `nearest`, or the distance when that is nearer).
+    fn kept_clear(
+        &self,
+        target: [f32; 3],
+        back: [f32; 3],
+        distance: f32,
+        nearest: f32,
+    ) -> [f32; 3] {
+        let mut reach = distance;
         for (min, max) in self.scene.cube_bounds() {
             if let Some(t) = ray_box(target, back, min, max)
-                && t < distance
+                && t < reach
             {
-                distance = (t - CAMERA_CLEARANCE).max(0.4);
+                reach = (t - CAMERA_CLEARANCE).max(nearest.min(distance));
             }
         }
-        let at = [0, 1, 2].map(|i| target[i] + back[i] * distance);
-        look_at(at, target)
+        [0, 1, 2].map(|i| target[i] + back[i] * reach)
+    }
+
+    /// The eye drawn this frame: [`LevelDemo::eye`], eased from the last mode's after a switch (module docs).
+    pub fn drawn_eye(&mut self) -> Eye {
+        let target = self.eye();
+        let figure = self.figure();
+        let mut blend = self.blend;
+        let eye = blend.eye(target, |p| match figure {
+            Some(f) => {
+                let from = camera_target(&f);
+                let d = [0, 1, 2].map(|i| p[i] - from[i]);
+                let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                if length < 1e-4 {
+                    return p;
+                }
+                self.kept_clear(from, d.map(|x| x / length), length, 0.0)
+            }
+            None => p,
+        });
+        self.blend = blend;
+        eye
+    }
+
+    /// Whether the camera is easing between modes.
+    pub fn camera_blending(&self) -> bool {
+        !self.blend.arrived()
     }
 
     /// An eye looking at the whole map from above and to its south (the shots' overview).
@@ -242,24 +287,27 @@ impl LevelDemo {
         Some(d)
     }
 
-    /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
-    pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
-        if let Some(d) = self.sky_daylight()
-            && d != self.daylight
-        {
-            view.set_daylight(&d);
-            self.daylight = d;
-        }
-        let dt = self.client.take_frame_time();
+    /// The frame's motion `dt` seconds after the last, with nothing drawn (a frame's first half): the client's prediction
+    /// drawn to the frame, the camera's ease advanced, the figures posed.
+    pub fn update_scene(&mut self, dt: f32) {
         self.client.predict_frame();
         let first_person = self.first_person();
+        if self
+            .camera_mode
+            .replace(first_person)
+            .is_some_and(|m| m != first_person)
+        {
+            self.blend.switch();
+        }
+        self.blend.advance(dt);
+        let hidden = first_person && self.blend.arrived();
         {
             let mut st = self.client.host.client.borrow_mut();
             match st.conn.conn.as_mut() {
                 Some(conn) => {
                     let conn = &mut **conn;
                     // The camera is the example's own: the figure is seen unless the view is at its eyes.
-                    conn.world.hide_control = first_person;
+                    conn.world.hide_control = hidden;
                     self.scene.update(
                         &self.files.kit,
                         &mut conn.world,
@@ -270,7 +318,19 @@ impl LevelDemo {
                 None => self.scene.clear(),
             }
         }
-        let eye = self.eye();
+    }
+
+    /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
+    pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
+        if let Some(d) = self.sky_daylight()
+            && d != self.daylight
+        {
+            view.set_daylight(&d);
+            self.daylight = d;
+        }
+        let dt = self.client.take_frame_time();
+        self.update_scene(dt);
+        let eye = self.drawn_eye();
         let objects = {
             let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
@@ -316,6 +376,15 @@ impl App for LevelDemo {
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
         LevelDemo::frame(self, view)
     }
+}
+
+/// What the camera behind the figure looks at: above its feet.
+fn camera_target(f: &OwnView) -> [f32; 3] {
+    [
+        f.position[0],
+        f.position[1],
+        f.position[2] + CAMERA_TARGET_HEIGHT,
+    ]
 }
 
 fn with_fov(mut eye: Eye) -> Eye {

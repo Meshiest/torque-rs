@@ -106,6 +106,22 @@ fn a_wheeled_vehicles_steering_is_unpacked_against_its_datablocks_angle() {
     // TGE draws no tint and hides nothing; the mount scale is the object's own.
     assert!(w.mesh_colors(&g).is_none() && w.hidden_nodes(&g).is_none());
     assert_eq!(w.mount_scale(&g, [2.0; 3]), [2.0; 3]);
+    // The steering thread: full right (0.5 rad of 0.5) at 0.5 - (0.5 * 0.5 / 0.5) / 2; the client's own
+    // steering for a vehicle it runs.
+    w.ghosts.insert(4, g);
+    let place = crate::world::steering_place(&w, 4).unwrap();
+    assert!((place - 0.25).abs() < 1e-5, "{place}");
+    w.vehicle_look.insert(
+        4,
+        ghost_world::world::VehicleLook {
+            steering: -0.25,
+            velocity: [0.0; 3],
+            wheels: Vec::new(),
+        },
+    );
+    let place = crate::world::steering_place(&w, 4).unwrap();
+    assert!((place - (0.5 + 0.0625 / 0.5 * 0.5)).abs() < 1e-5, "{place}");
+    assert_eq!(crate::world::steering_place(&w, 5), None);
 }
 
 /// TGE's Player at rest: the arm (`look`), `head` and `headside` threads held at the head pitch, then the action thread on `root`.

@@ -9,6 +9,16 @@ new SimGroup(MissionGroup)
    // The sky: a light haze from 450 units out, nothing drawn past 1,400.
    new Sky(WorldSky) { visibleDistance = 1400; fogDistance = 450; fogColor = "0.72 0.8 0.9 1"; };
    // The ground: TGE's default block, 256 squares of 8 units a side, centered on the origin.
+   // The day: ten minutes round, starting mid-morning, the sun rising in the east and setting in the west; its sky and light
+   // the physical sky's.
+   new TimeOfDay(WorldDay) { dayLength = 600; startTime = 0.12; azimuthOverride = 1.5708; play = 1; };
+   new ScatterSky(WorldScatter) {
+      nightColor = "0.15 0.17 0.24 1";
+      nightFogColor = "0.04 0.05 0.08 1";
+      moonAzimuth = 200;
+      moonElevation = 50;
+      moonLightColor = "0.29 0.32 0.39 1";
+   };
    new TerrainBlock(Hills) { terrainFile = "kit/hills.ter"; squareSize = 8; };
    new WheeledVehicle(Buggy) { dataBlock = BuggyData; position = "0 0 21.2"; rotation = "0 0 1 0"; };
 };

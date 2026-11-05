@@ -155,6 +155,15 @@ pub struct GhostPackCtx<'a, S: ObjectSource> {
     table: &'a Table,
     sequence: u32,
     class_bits: u8,
+    left: Vec<(ObjId, u32)>,
+}
+
+impl<S: ObjectSource> GhostPackCtx<'_, S> {
+    /// The mask bits each ghost-always pack returned (a part it could not send yet, such as a mount on an object the connection
+    /// has no ghost of). The host gives them back to the ghosts with [`GhostManager::set_mask`] once the section is written.
+    pub fn into_left(self) -> Vec<(ObjId, u32)> {
+        self.left
+    }
 }
 
 /// `getGhostIndex` over a table.
@@ -168,6 +177,9 @@ impl<S: ObjectSource> PackCtx for GhostPackCtx<'_, S> {
     /// `flag(object exists now)`, then `int(6) classId` (never the implied form) and `packUpdate(conn, 0xFFFFFFFF)`. **Addition:**
     /// an event made for an earlier ghosting sequence (a reset came between) packs the empty form (a standard event carries no sequence
     /// and would pack whatever object has the id with the stale index).
+    ///
+    /// **Addition:** the mask `packUpdate` returns is kept ([`GhostPackCtx::into_left`]) where the event drops it, so a part
+    /// that waited for another object's ghost is sent by a later update.
     fn pack_ghost_always(&mut self, obj: u32, seq: u32, w: &mut BitWriter) {
         let class = if seq == self.sequence && self.src.exists(obj) {
             self.src.class_id(obj)
@@ -179,8 +191,12 @@ impl<S: ObjectSource> PackCtx for GhostPackCtx<'_, S> {
                 w.write_flag(true);
                 w.write_bits(class, self.class_bits);
                 let table = self.table;
-                self.src
+                let left = self
+                    .src
                     .pack_update(obj, 0xFFFF_FFFF, w, &|t| index_in(table, t));
+                if left != 0 {
+                    self.left.push((obj, left));
+                }
             }
             None => w.write_flag(false),
         }
@@ -471,6 +487,7 @@ impl<P: GhostPolicy> GhostManager<P> {
             table: &self.table,
             sequence: self.sequence,
             class_bits: self.cfg.class_bits,
+            left: Vec::new(),
         }
     }
 

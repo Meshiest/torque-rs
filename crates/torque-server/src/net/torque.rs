@@ -259,8 +259,9 @@ impl ObjectView for FieldView<'_> {
 ///
 /// - every object: `datablock` (the `dataBlock` field), `transform` (the object's matrix as a position and a unit quaternion,
 ///   `QuatF::set(MatrixF)`), `matrix` (its 16 floats), `position` (its translation), `scale`; an interior's `crc` (its file's,
-///   [`torque_game::scene::interior::crc_of`]); a ShapeBase is fully visible (`fade_value` 1) and runs no
-///   script thread (`thread_sequence` -1), its damage over the datablock's `maxDamage`;
+///   [`torque_game::scene::interior::crc_of`]); a ShapeBase is fully visible (`fade_value` 1), its script threads
+///   `playThread`'s (`thread_sequence`, -1 for none, `thread_state`, `thread_forward`, `thread_at_end`), its damage over the
+///   datablock's `maxDamage`;
 /// - a simulated Player ([`torque_game::sim::player::state`]): `velocity`, `rotation` (its yaw at 2), `head`, `falling`,
 ///   `state` (the action state), `action` (the action animation), `arm_action` (`setArmThread`'s), `energy`, and from its
 ///   datablock `look_action`, `max_look_angle`,
@@ -512,6 +513,25 @@ impl GameView<'_> {
             _ => return None,
         })
     }
+
+    /// A ShapeBase's script thread `index` (`playThread`'s): its sequence (-1 for none), state, direction and end.
+    fn thread(&self, field: &str, index: usize) -> Option<Value> {
+        if !field.starts_with("thread_") {
+            return None;
+        }
+        let none = torque_game::scene::shapebase::ScriptThread::default();
+        let st = torque_game::scene::ext::get(self.fields.vm.objects(), self.fields.obj)
+            .and_then(|e| e.shape.as_deref())
+            .and_then(|s| s.scripts.get(index))
+            .unwrap_or(&none);
+        Some(match field {
+            "thread_sequence" => Value::Int(i64::from(st.sequence)),
+            "thread_state" => Value::Int(i64::from(st.state)),
+            "thread_forward" => Value::Bool(st.forward),
+            "thread_at_end" => Value::Bool(st.at_end),
+            _ => return None,
+        })
+    }
 }
 
 impl ObjectView for GameView<'_> {
@@ -544,6 +564,9 @@ impl ObjectView for GameView<'_> {
             return v;
         }
         if let Some(v) = self.image(field, index) {
+            return v;
+        }
+        if let Some(v) = self.thread(field, index) {
             return v;
         }
         if let Some(v) = self.projectile(field, index) {
@@ -595,7 +618,6 @@ impl ObjectView for GameView<'_> {
                         Value::F32(if field == "animate_time" { t } else { s })
                     })
             }
-            "thread_sequence" => Value::Int(-1),
             "max_damage" => Value::F32(self.db_float(b"maxDamage", 1.0)),
             "max_energy" => Value::F32(self.db_float(b"maxEnergy", 0.0)),
             "controlled" => Value::Bool(self.controlled),

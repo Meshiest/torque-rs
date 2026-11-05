@@ -24,6 +24,15 @@ pub const HILL_SHOT_Y: f32 = 80.0;
 pub const TRACKS_FADED_MS: u32 = 24_000;
 /// The age (seconds) under which a track was laid by the S over the hill (the picture from above frames those).
 pub const S_TRACK_AGE: f32 = 4.0;
+/// The times of day of the day's pictures (0 sunrise, 0.25 noon, 0.5 sunset), and how long each is left to reach the client.
+pub const NOON: f32 = 0.25;
+pub const GOLDEN_HOUR: f32 = 0.44;
+pub const SUNSET: f32 = 0.5;
+pub const DUSK: f32 = 0.515;
+pub const NIGHT: f32 = 0.75;
+pub const DAY_SETTLE_MS: u32 = 500;
+/// The steps of the camera's ease the strip shows (ms after Tab).
+pub const BLEND_STRIP_MS: [u32; 4] = [0, 100, 200, 300];
 
 /// An eye at `at` looking at `target`, the view's own field of view.
 fn eye(at: [f32; 3], target: [f32; 3]) -> Eye {
@@ -64,6 +73,47 @@ fn picture(gpu: &Gpu, seat: &mut Seat<VehicleDemo>, at: Option<Eye>) -> Result<F
     frame
 }
 
+/// An eye `distance` from the buggy at `p`, at `height`, along the ground direction `dir` (unit), looking at it.
+fn round_buggy(p: [f32; 3], dir: [f32; 2], distance: f32, height: f32) -> Eye {
+    eye(
+        [
+            p[0] + dir[0] * distance,
+            p[1] + dir[1] * distance,
+            p[2] + height,
+        ],
+        [p[0], p[1], p[2] + 0.9],
+    )
+}
+
+/// The ground direction toward the sun (or away from it), turned `turn` radians.
+fn sun_ground(game: &VehicleDemo, toward: bool, turn: f32) -> [f32; 2] {
+    // A sun nearly overhead gives no ground direction: from the south-east then.
+    let s = game
+        .sun()
+        .filter(|s| s[0].hypot(s[1]) > 0.1)
+        .unwrap_or([0.6, -0.8, 0.0]);
+    let n = s[0].hypot(s[1]);
+    let k = if toward { 1.0 } else { -1.0 };
+    let (x, y) = (k * s[0] / n, k * s[1] / n);
+    let (sn, cs) = turn.sin_cos();
+    [x * cs - y * sn, x * sn + y * cs]
+}
+
+/// The map's day set to `time` and held there, then the clocks run while it reaches the clients.
+fn set_day(
+    gpu: &Gpu,
+    a: &mut Seat<VehicleDemo>,
+    b: &mut Seat<VehicleDemo>,
+    time: f32,
+) -> Result<(), String> {
+    a.game
+        .server
+        .as_mut()
+        .ok_or("no server")?
+        .set_day(time, false)?;
+    run(gpu, &mut [&mut *a, &mut *b], DAY_SETTLE_MS)
+}
+
 /// A click of the left button in the middle of the view.
 fn click(game: &mut VehicleDemo) {
     game.host.mouse_button(MouseButton::Left, true, (640, 360));
@@ -75,7 +125,11 @@ fn click(game: &mut VehicleDemo) {
 /// up), `two-seated.png` (the driver and the passenger from outside), `passenger.png` (the passenger's view while the other
 /// drives), `driver-eyes.png` and `passenger-eyes.png` (the same moment from each seated figure's eyes) `hill.png` (climbing the round hill's steep side, from the side), `dust.png` (the tires' dust pulling away),
 /// `tracks-behind.png` and `tracks-above.png` (the tracks curving over the hill from behind and from above) and
-/// `tracks-fading.png` (the same tracks most of their lifetime later). Returns the paths.
+/// `tracks-fading.png` (the same tracks most of their lifetime later); then the day: `day-noon.png`, `day-golden.png` and
+/// `day-sunset.png` (the buggy on the hill at noon, at golden hour and at sunset), `dusk-headlight.png` (at dusk with its
+/// headlight on), `dusk-roof-lamps.png` (its lit roof lamps from ahead), `night-headlight-behind.png` and `night-headlight-driver.png` (at night, from the camera behind and from the
+/// driver's eyes), and `blend-0.png` to `blend-3.png` (the camera easing from behind to the driver's eyes after Tab). Returns
+/// the paths.
 pub fn write_all(
     dir: &Path,
     size: (u32, u32),
@@ -253,5 +307,116 @@ pub fn write_all(
     // Most of their lifetime later the tracks fade into the grass.
     run(&gpu, &mut [&mut a, &mut b], TRACKS_FADED_MS)?;
     save(&picture(&gpu, &mut a, Some(above))?, "tracks-fading")?;
+
+    // The day on the hill: noon and golden hour with the sun on the buggy's side, sunset and dusk looking into the glow.
+    let p = a.game.buggy_pose().ok_or("no buggy")?.column(3);
+    for (time, name, toward) in [
+        (NOON, "day-noon", false),
+        (GOLDEN_HOUR, "day-golden", false),
+        (SUNSET, "day-sunset", true),
+    ] {
+        set_day(&gpu, &mut a, &mut b, time)?;
+        let dir = sun_ground(&a.game, !toward, 0.6);
+        save(
+            &picture(&gpu, &mut a, Some(round_buggy(p, dir, 9.0, 2.6)))?,
+            name,
+        )?;
+    }
+    set_day(&gpu, &mut a, &mut b, DUSK)?;
+    a.game.key(Key::F, true);
+    a.game.key(Key::F, false);
+    run(&gpu, &mut [&mut a, &mut b], 400)?;
+    let m = a.game.buggy_pose().ok_or("no buggy")?;
+    save(
+        &picture(
+            &gpu,
+            &mut a,
+            Some(eye(
+                on_buggy(&m, [4.5, -2.5, 2.4]),
+                on_buggy(&m, [0.0, 5.0, 0.3]),
+            )),
+        )?,
+        "dusk-headlight",
+    )?;
+    // The lit lamps on the roof from ahead and to the side.
+    save(
+        &picture(
+            &gpu,
+            &mut a,
+            Some(eye(
+                on_buggy(&m, [3.2, 6.0, 2.4]),
+                on_buggy(&m, [0.0, 0.4, 1.4]),
+            )),
+        )?,
+        "dusk-roof-lamps",
+    )?;
+    set_day(&gpu, &mut a, &mut b, NIGHT)?;
+    save(&picture(&gpu, &mut a, None)?, "night-headlight-behind")?;
+    a.game.set_first_person(true);
+    save(&picture(&gpu, &mut a, None)?, "night-headlight-driver")?;
+    a.game.set_first_person(false);
+
+    // Tab at the wheel: the camera eases from behind the buggy to the driver's eyes.
+    set_day(&gpu, &mut a, &mut b, GOLDEN_HOUR - 0.06)?;
+    a.game.key(Key::F, true);
+    a.game.key(Key::F, false);
+    run(&gpu, &mut [&mut a, &mut b], 400)?;
+    a.game.key(Key::Tab, true);
+    a.game.key(Key::Tab, false);
+    let mut at = 0;
+    for (k, ms) in BLEND_STRIP_MS.into_iter().enumerate() {
+        run(&gpu, &mut [&mut a, &mut b], ms - at)?;
+        at = ms;
+        save(&picture(&gpu, &mut a, None)?, &format!("blend-{k}"))?;
+    }
+
+    // The steering wheel turned by D, straight, turned by A: from ahead of it, over the dash, looking back at the driver.
+    a.game.set_first_person(false);
+    set_day(&gpu, &mut a, &mut b, NOON)?;
+    let (wheel, _) = torque_example_assets::buggy::steering_wheel();
+    let cockpit = |m: &Mat| {
+        eye(
+            on_buggy(m, [wheel[0] + 0.1, wheel[1] + 1.0, wheel[2] + 0.55]),
+            on_buggy(m, wheel),
+        )
+    };
+    for (name, key) in [
+        ("steer-right", Some(Key::D)),
+        ("steer-center", None),
+        ("steer-left", Some(Key::A)),
+    ] {
+        if let Some(k) = key {
+            a.game.key(k, true);
+        }
+        run(&gpu, &mut [&mut a, &mut b], 1000)?;
+        let m = a.game.buggy_pose().ok_or("no buggy")?;
+        save(&picture(&gpu, &mut a, Some(cockpit(&m)))?, name)?;
+        if let Some(k) = key {
+            a.game.key(k, false);
+        }
+        run(&gpu, &mut [&mut a, &mut b], 700)?;
+    }
+    // The front left wheel rolling at a walking pace, three frames 40 ms apart (its spokes turn); then a rear wheel at speed
+    // close up, its dust and track starting under the tire.
+    a.game.set_global("$Drive::Throttle", "0.25");
+    run(&gpu, &mut [&mut a, &mut b], 1500)?;
+    for k in 0..3 {
+        let m = a.game.buggy_pose().ok_or("no buggy")?;
+        let side = eye(
+            on_buggy(&m, [-3.2, 1.6, 0.9]),
+            on_buggy(&m, [-1.1, 1.3, 0.6]),
+        );
+        save(&picture(&gpu, &mut a, Some(side))?, &format!("tread-{k}"))?;
+        run(&gpu, &mut [&mut a, &mut b], 40)?;
+    }
+    a.game.set_global("$Drive::Throttle", "1");
+    run(&gpu, &mut [&mut a, &mut b], 2500)?;
+    let m = a.game.buggy_pose().ok_or("no buggy")?;
+    let rear = eye(
+        on_buggy(&m, [-2.6, -3.4, 0.7]),
+        on_buggy(&m, [-1.1, -1.4, 0.3]),
+    );
+    save(&picture(&gpu, &mut a, Some(rear))?, "rear-wheel")?;
+    a.game.set_global("$Drive::Throttle", "0");
     Ok(shots.paths)
 }
