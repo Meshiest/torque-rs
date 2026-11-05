@@ -392,9 +392,30 @@ struct Loose {
     flare: Option<DrawRef>,
     /// The last upload's shapes or parts this one lacks: their bounds, the radius negative (`HdWorld::reactive_now`).
     vanished: Vec<[f32; 4]>,
+    /// Where the planes' vertices and indices were written, for which static sync ([`PlanesAt`]), and whether the previous
+    /// positions' buffer holds them too: an upload with the same place leaves them as they are (a terrain is hundreds of
+    /// thousands of vertices, and a window uploads every frame).
+    planes_at: Option<PlanesAt>,
+    planes_previous: bool,
     /// The shapes that moved since the last frame (`DynamicObject::moving_bound`): where the TAA keeps little history under their
     /// shadows.
     movers: Vec<[f32; 4]>,
+}
+
+/// A part of the loose rest's draws written side by side (each from its vertex), and whether its vertices and its previous
+/// positions are written.
+type RestPart<'a> = (&'a [(usize, &'a HdDraw, u32)], bool, bool);
+
+/// The place of the planes in the loose buffers: the planes written (each draw's vertex and index lists by address and length:
+/// a scene that hands new planes hands new lists), the vertex the rest starts at, the index the rest's indices start at, and
+/// the planes' vertices and indices (from, to) within the rest's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanesAt {
+    planes: Vec<[usize; 4]>,
+    rest_start: usize,
+    index_rest: usize,
+    vertices: (usize, usize),
+    indices: (usize, usize),
 }
 
 /// The frame's targets. The output's size (`width` x `height`: the TAA's history, the LDR image) and the internal frame's (`iw` x
@@ -3909,12 +3930,33 @@ impl<E: HdExtension> HdWorld<E> {
             rest.push((d, 0));
         }
         loose.sky_labels = scene.sky.iter().map(|d| d.label.clone()).collect();
+        let (planes_from, planes_indices_from, planes_rest_from) =
+            (rest_count, indices.len(), rest.len());
         for d in &scene.planes {
             loose
                 .planes
                 .push(add_rest(d, &mut rest_count, &mut indices));
             rest.push((d, 0));
         }
+        let planes_rest = planes_rest_from..rest.len();
+        let planes_at = PlanesAt {
+            planes: scene
+                .planes
+                .iter()
+                .map(|d| {
+                    [
+                        d.vertices.as_ptr() as usize,
+                        d.vertices.len(),
+                        d.indices.as_ptr() as usize,
+                        d.indices.len(),
+                    ]
+                })
+                .collect(),
+            rest_start,
+            index_rest,
+            vertices: (planes_from, rest_count),
+            indices: (planes_indices_from, indices.len()),
+        };
         for d in &scene.water {
             loose.water.push(add_rest(d, &mut rest_count, &mut indices));
             rest.push((d, 0));
@@ -4099,9 +4141,13 @@ impl<E: HdExtension> HdWorld<E> {
             if made {
                 self.runs.forget_vertices();
             }
+            // The planes as the last upload wrote them, in the buffer kept: not written again.
+            let planes_kept = !made && old.planes_at.as_ref() == Some(&planes_at);
+            let old_previous_planes = old.previous.is_some() && old.planes_previous;
             // (An upload that needs none keeps the buffer aside, its runs as they are: a cells-only sync clears the shapes' own
             // previous positions for a frame.)
             let kept_previous = old.previous.or_else(|| self.spare_previous.take());
+            let mut previous_made = false;
             let previous = if own_previous.is_empty() {
                 self.spare_previous = kept_previous;
                 None
@@ -4115,8 +4161,10 @@ impl<E: HdExtension> HdWorld<E> {
                 if made {
                     self.runs.forget_previous();
                 }
+                previous_made = made;
                 Some(b)
             };
+            let previous_planes_kept = planes_kept && old_previous_planes && !previous_made;
             // The shapes' own last-frame positions written over the vertex bytes `bytes` (from vertex `start` on).
             let patch = |bytes: &mut [u8], start: usize| {
                 let end = start + bytes.len() / HD_VERTEX_BYTES;
@@ -4196,49 +4244,58 @@ impl<E: HdExtension> HdWorld<E> {
                     None => self.node_baked.remove(ghost),
                 };
             }
-            // The rest's draws in a few parts side by side (each part's vertices from its first on).
+            // The rest's draws in a few parts side by side (each part's vertices from its first on), the planes' parts apart: a
+            // buffer that keeps them is not written there.
             let mut firsts = Vec::with_capacity(rest.len());
             let mut at = rest_start;
             for (d, base) in &rest {
                 firsts.push((at, *d, *base));
                 at += d.vertices.len();
             }
-            let parts: Vec<&[(usize, &HdDraw, u32)]> = firsts
-                .chunks(
-                    firsts
-                        .len()
-                        .div_ceil(torque_render_scene::par::MAX_THREADS)
-                        .max(1),
-                )
-                .collect();
+            let chunk = |v: &[(usize, &HdDraw, u32)]| {
+                v.len()
+                    .div_ceil(torque_render_scene::par::MAX_THREADS)
+                    .max(1)
+            };
+            let (head, tail) = firsts.split_at(planes_rest.end);
+            let (before, planes) = head.split_at(planes_rest.start);
+            let mut parts: Vec<RestPart<'_>> = Vec::new();
+            parts.extend(before.chunks(chunk(before)).map(|p| (p, true, true)));
+            parts.extend(
+                planes
+                    .chunks(chunk(planes))
+                    .map(|p| (p, !planes_kept, !previous_planes_kept)),
+            );
+            parts.extend(tail.chunks(chunk(tail)).map(|p| (p, true, true)));
+            parts.retain(|p| p.1 || (p.2 && previous.is_some()));
             let rest_bytes = torque_render_scene::par::map(
                 &parts,
-                |p| p.iter().map(|(_, d, _)| d.vertices.len()).sum(),
-                |p| {
+                |p| p.0.iter().map(|(_, d, _)| d.vertices.len()).sum(),
+                |&(p, write_vertices, write_previous)| {
                     let start = p.first().map_or(rest_start, |(s, _, _)| *s);
                     let mut bytes = Vec::new();
                     for (_, d, base) in p.iter() {
                         HdVertex::extend_bytes_based(&d.vertices, *base, &mut bytes);
                     }
-                    let prev = has_previous.then(|| {
+                    let prev = (has_previous && write_previous).then(|| {
                         let mut b = bytes.clone();
                         patch(&mut b, start);
                         b
                     });
-                    (start, bytes, prev)
+                    (start, write_vertices.then_some(bytes), prev)
                 },
             );
             for (start, bytes, prev) in &rest_bytes {
-                if bytes.is_empty() {
-                    continue;
-                }
                 let offset = (start * HD_VERTEX_BYTES) as u64;
-                self.queue.write_buffer(&vertices, offset, bytes);
-                if let (Some(pb), Some(p)) = (&previous, prev) {
+                if let Some(b) = bytes.as_ref().filter(|b| !b.is_empty()) {
+                    self.queue.write_buffer(&vertices, offset, b);
+                }
+                if let (Some(pb), Some(p)) = (&previous, prev.as_ref().filter(|p| !p.is_empty())) {
                     self.queue.write_buffer(pb, offset, p);
                 }
             }
             loose.vertices = Some(vertices);
+            loose.planes_previous = previous.is_some();
             loose.previous = previous;
             // The indices: the stamped objects' runs that do not hold their stamps' (all when the buffer is new), then the rest's.
             let (ibuf, made) = self.buffer_of(
@@ -4250,6 +4307,7 @@ impl<E: HdExtension> HdWorld<E> {
             if made {
                 self.index_runs.forget_vertices();
             }
+            let index_planes_kept = planes_kept && !made;
             for (r, ghost, draws, stamp) in &index_writes {
                 if r.written == Some(*stamp) && !made {
                     continue;
@@ -4263,11 +4321,22 @@ impl<E: HdExtension> HdWorld<E> {
                 }
                 self.index_runs.set(*ghost, Some(*stamp), None);
             }
-            if !indices.is_empty() {
-                let mut ib = Vec::with_capacity(indices.len() * 4 + 4);
-                push_u32(&mut ib, &indices);
-                ib.resize(ib.len().next_multiple_of(4), 0);
-                self.queue.write_buffer(&ibuf, (index_rest * 4) as u64, &ib);
+            // The rest's indices, the planes' left out when the buffer keeps them.
+            let (pf, pt) = planes_at.indices;
+            loose.planes_at = Some(planes_at);
+            let spans: Vec<(usize, &[u32])> = if index_planes_kept {
+                vec![(0, &indices[..pf]), (pt, &indices[pt..])]
+            } else {
+                vec![(0, &indices[..])]
+            };
+            for (from, part) in spans {
+                if part.is_empty() {
+                    continue;
+                }
+                let mut ib = Vec::with_capacity(part.len() * 4);
+                push_u32(&mut ib, part);
+                self.queue
+                    .write_buffer(&ibuf, ((index_rest + from) * 4) as u64, &ib);
             }
             loose.indices = Some(ibuf);
         }
