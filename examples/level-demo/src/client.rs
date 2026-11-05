@@ -440,12 +440,14 @@ fn boom_direction(f: &OwnView) -> [f32; 3] {
     [-f.yaw.sin() * c, -f.yaw.cos() * c, s]
 }
 
-/// What the camera behind the figure looks at: above its feet.
+/// What the camera behind the figure looks at: above its feet, no higher than its eye (crouched or prone the camera rides lower
+/// with the eye, eased as the eye is).
 fn camera_target(f: &OwnView) -> [f32; 3] {
+    let eye = (f.eye[2] - f.position[2]).max(0.0);
     [
         f.position[0],
         f.position[1],
-        f.position[2] + CAMERA_TARGET_HEIGHT,
+        f.position[2] + CAMERA_TARGET_HEIGHT.min(eye),
     ]
 }
 

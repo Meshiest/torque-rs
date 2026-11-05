@@ -4,7 +4,7 @@
 
 use torque::client::input::Key;
 use torque_example_fps::client::{
-    ArenaGame, CAMERA_DISTANCE, CAMERA_LIFT, CAMERA_SIDE, ClientOptions, NetMode,
+    ArenaGame, CAMERA_DISTANCE, CAMERA_LIFT, CAMERA_NEAREST, CAMERA_SIDE, ClientOptions, NetMode,
 };
 use torque_example_fps::files::GameFiles;
 use torque_render_scene::source::Eye;
@@ -112,4 +112,40 @@ fn tab_eases_the_camera_behind_the_figure_keeps_it_off_a_block_and_back() {
     assert!(!a.third_person() && !a.camera_blending());
     assert_eq!(back_home.position, a.eye().position);
     assert!(hidden(&a), "hidden once the camera is at the eye");
+}
+
+#[test]
+fn behind_a_crouched_or_prone_figure_the_camera_rides_lower_and_stays_above_the_floor() {
+    let mut a = host();
+    tab(&mut a);
+    let stand = frames(&mut a, 60).position;
+    a.call("crouchKey", &["1"]).unwrap();
+    let crouch = frames(&mut a, 60).position;
+    let crouch_eye = a.eye().position;
+    a.call("proneKey", &["1"]).unwrap();
+    let prone = frames(&mut a, 120).position;
+    let prone_eye = a.eye().position;
+    assert!(
+        stand[2] > crouch[2] + 0.2 && crouch[2] > prone[2] + 0.2,
+        "the camera rides lower with the eye: {stand:?} {crouch:?} {prone:?} (eyes {crouch_eye:?} {prone_eye:?})"
+    );
+    let back = apart(prone, prone_eye);
+    assert!(back > CAMERA_DISTANCE * 0.8, "{back} behind the eye");
+    // Looking up: the boom swings down behind the figure toward the floor (its top at 0) and stops above it, behind the
+    // figure while there is room for the camera there; with none (the head right up), the view is the eye's (`CAMERA_NEAREST`).
+    for _ in 0..8 {
+        a.host.mouse_motion(0.0, -20.0);
+        frame(&mut a);
+    }
+    let up = frames(&mut a, 60).position;
+    let eye = a.eye().position;
+    assert!(
+        up[2] > 0.05 && up[2] < eye[2] + 0.1 && apart(up, eye) > CAMERA_NEAREST,
+        "the camera above the floor, low behind the figure: {up:?} (eye {eye:?})"
+    );
+    for _ in 0..30 {
+        a.host.mouse_motion(0.0, -20.0);
+        let at = frame(&mut a).position;
+        assert!(at[2] > 0.05, "never under the floor: {at:?}");
+    }
 }
