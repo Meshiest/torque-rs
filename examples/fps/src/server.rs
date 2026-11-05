@@ -22,6 +22,33 @@ use crate::files::GameFiles;
 
 pub use torque::app::server::{DEFAULT_PORT, lan_addresses};
 
+/// The extra addresses a dedicated server's data channels advertise to browsers beside the bind address: `named` (each
+/// `--rtc-public-ip`), and on `0.0.0.0` the computer's `lan` addresses, which are private. A public server (`0.0.0.0`) is
+/// seen by the internet, so it leaves the private ones out unless `with_lan` asks for them (a LAN address told to every
+/// browser discloses the network behind the server), and refuses to run data channels with no public address named.
+pub fn rtc_candidates(
+    public: bool,
+    named: &[Ipv4Addr],
+    with_lan: bool,
+    lan: &[Ipv4Addr],
+) -> Result<Vec<Ipv4Addr>, String> {
+    if !public {
+        return Ok(named.to_vec());
+    }
+    if named.is_empty() {
+        return Err("--webrtc on a public server (--bind 0.0.0.0) needs --rtc-public-ip <address>, the address browsers reach this computer by: without one the data channels have nothing to advertise but private addresses".to_string());
+    }
+    let mut found = named.to_vec();
+    if with_lan {
+        for &ip in lan {
+            if !found.contains(&ip) {
+                found.push(ip);
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// How a server is started.
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
@@ -153,5 +180,35 @@ fn udp_listen(options: &ServerOptions) -> Listen {
         address: options.address,
         port: options.port,
         public: options.public,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PUBLIC: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
+    const LAN: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
+
+    #[test]
+    fn a_public_server_advertises_no_private_address_unless_asked() {
+        // A private bind keeps what it is given (the library adds the bind address).
+        assert_eq!(rtc_candidates(false, &[], false, &[LAN]), Ok(vec![]));
+        assert_eq!(
+            rtc_candidates(false, &[PUBLIC], false, &[LAN]),
+            Ok(vec![PUBLIC])
+        );
+        // A public bind needs a public address, and does not add the LAN's on its own.
+        assert!(rtc_candidates(true, &[], false, &[LAN]).is_err());
+        assert!(rtc_candidates(true, &[], true, &[LAN]).is_err());
+        assert_eq!(
+            rtc_candidates(true, &[PUBLIC], false, &[LAN]),
+            Ok(vec![PUBLIC])
+        );
+        // The flag adds them, once each.
+        assert_eq!(
+            rtc_candidates(true, &[PUBLIC], true, &[LAN, LAN, PUBLIC]),
+            Ok(vec![PUBLIC, LAN])
+        );
     }
 }

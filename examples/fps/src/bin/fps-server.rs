@@ -19,10 +19,12 @@
 //!
 //! Data channels: `--webrtc` (with `--transport web` or `both`) gives browsers a WebRTC data channel beside their game
 //! socket, on a UDP port of its own: `--rtc-port <port>` (default the game's port number plus one; 0 any free one). Its
-//! candidates are the bind address, or with `--bind 0.0.0.0` this computer's LAN addresses, and each `--rtc-public-ip
-//! <address>` (repeatable: a host behind a 1:1 NAT names its public address). Browsers whose channel does not open stay
-//! on their game socket. For checks: `--rtc-loss <percent>` drops that share of the channels' datagrams both ways, and
-//! `--rtc-stats` prints the channels' traffic every 2 s (each peer's longest gap between game messages).
+//! candidates are the bind address and each `--rtc-public-ip <address>` (repeatable: a host behind a 1:1 NAT names its
+//! public address). With `--bind 0.0.0.0` (a public server) at least one `--rtc-public-ip` is required, and the computer's
+//! private LAN addresses are left out of the candidates (every browser would be told them) unless `--rtc-lan` adds them.
+//! Browsers whose channel does not open stay on their game socket. For checks only, each printing a warning at startup:
+//! `--rtc-loss <percent>` drops that share of the channels' datagrams both ways, and `--rtc-stats` prints the channels'
+//! traffic every 2 s (each peer's longest gap between game messages).
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::Ipv4Addr;
@@ -39,7 +41,7 @@ use torque::server::net::web::{Access, Origins, Tls, TlsFiles, WebFiles, WebSetu
 use torque_example_fps::files::GameFiles;
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_fps::server::{
-    ArenaServer, DEFAULT_PORT, ServerOptions, Transports, lan_addresses,
+    ArenaServer, DEFAULT_PORT, ServerOptions, Transports, lan_addresses, rtc_candidates,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -63,6 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut webrtc = false;
     let mut rtc_port = None;
     let mut rtc_public = Vec::new();
+    let mut rtc_lan = false;
     let mut rtc_loss = 0u8;
     let mut rtc_stats = false;
     let mut args = Args::from_env();
@@ -85,6 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--webrtc" => webrtc = true,
             "--rtc-port" => rtc_port = Some(args.number(&arg)?),
             "--rtc-public-ip" => rtc_public.push(args.ipv4(&arg)?),
+            "--rtc-lan" => rtc_lan = true,
             "--rtc-loss" => rtc_loss = args.number::<u8>(&arg)?.min(100),
             "--rtc-stats" => rtc_stats = true,
             _ => return Err(unknown(&arg).into()),
@@ -109,8 +113,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("--web-root, --no-files, --tls-cert, --tls-key, --web-host, --allow-origin and --webrtc are for the web: add --transport web or --transport both"
             .into());
     }
-    if !webrtc && (rtc_port.is_some() || !rtc_public.is_empty() || rtc_loss > 0 || rtc_stats) {
-        return Err("--rtc-port, --rtc-public-ip, --rtc-loss and --rtc-stats are for the data channels: add --webrtc".into());
+    if !webrtc
+        && (rtc_port.is_some() || !rtc_public.is_empty() || rtc_lan || rtc_loss > 0 || rtc_stats)
+    {
+        return Err("--rtc-port, --rtc-public-ip, --rtc-lan, --rtc-loss and --rtc-stats are for the data channels: add --webrtc".into());
+    }
+    if rtc_loss > 0 {
+        eprintln!(
+            "fps-server: warning: --rtc-loss {rtc_loss} drops {rtc_loss}% of the data channels' datagrams both ways; it is for checks, not for a server players use"
+        );
+    }
+    if rtc_stats {
+        eprintln!(
+            "fps-server: warning: --rtc-stats prints each data channel peer's traffic every 2 s; it is for checks, not for a server players use"
+        );
     }
     let mut server = if transports == Transports::Udp {
         ArenaServer::start_dedicated(&files, &options)?
@@ -154,9 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .checked_add(1)
                     .ok_or("--rtc-port is needed when --port is 65535")?,
             };
-            if options.address.is_unspecified() && rtc_public.is_empty() {
-                rtc_public = lan_addresses();
-            }
+            rtc_public = rtc_candidates(options.public, &rtc_public, rtc_lan, &lan_addresses())?;
             Some(RtcSetup {
                 port,
                 public: rtc_public,
