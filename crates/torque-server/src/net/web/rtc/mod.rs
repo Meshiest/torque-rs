@@ -25,7 +25,7 @@
 //! [`RtcLimits::peer_datagrams_per_pass`] datagrams and [`RtcLimits::checks_per_pass`] binding requests, and the peers
 //! still connecting at most [`RtcLimits::connecting_per_pass`] in all, and drains at most [`RtcLimits::outputs_per_pass`]
 //! outputs of each, so a pass's time is bounded whatever the peers send. A UDP source address can be forged, so what the
-//! stack has not authenticated never closes anything and never spends a peer's budget: the caps a second
+//! stack has not authenticated never closes anything and never spends a peer's caps a second: those
 //! ([`RtcLimits::packets_per_s`], [`RtcLimits::bytes_per_s`]) are spent only by datagrams the stack authenticated (a check
 //! it answered, or one that brought the DTLS session's events or messages), past them the peer's datagrams are dropped
 //! for the rest of the second, and only authenticated datagrams count as the peer being heard (its idle deadline).
@@ -35,7 +35,11 @@
 //! [`RtcLimits::connect_datagrams`] and [`RtcLimits::connect_bytes`] (counted as they are admitted); past them they are
 //! dropped, and a peer that has not opened its channel by [`RtcLimits::connect_timeout`] is dropped (its browser stays on
 //! its socket). Checks are left out of the budget (forged ones, which fail their integrity, could spend it), on their own
-//! per-pass cap.
+//! per-pass cap. The budget does spend on forged DTLS datagrams, though: the stack cannot tell a handshake record's
+//! sender before the handshake completes, so a datagram that arrives from the exact address a peer's checks validated is
+//! handed to that peer and counted, whoever sent it. Someone who spoofs a connecting browser's NAT-mapped address within
+//! its connect window can use its budget up and fail its handshake; the worst case is that browser staying on its game
+//! socket.
 //!
 //! **Routing.** A STUN binding request goes to the peer its USERNAME names (our ICE user fragment), and only when it comes
 //! from the IP address of that peer's game socket; requests are also held to a rate per source address. Any other datagram
