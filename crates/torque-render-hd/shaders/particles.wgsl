@@ -1,10 +1,10 @@
 // Lit particles (composed after forward.wgsl): a particle sprite marked MAT_LIT is lit as a small volume instead of drawn at its
-// colour. Its own functions only; forward.wgsl's `shaded` calls `particle_lit` and fogs it.
+// color. Its own functions only; forward.wgsl's `shaded` calls `particle_lit` and fogs it.
 //
 // - The sprite's center: the pixel less the interpolated normal (each corner's direction from the center) times the half
 //   diagonal (`extra`). The shading normal is the eye's direction bent outward by that normal: a dome over the sprite.
 // - The sun: one bilinear comparison in the first cascade that holds the center (no filter, no contact shadows), faded out toward
-//   the shadow distance, times the clouds' shadow, through the shadow colour as surfaces take it. Half-Lambert wrap (Mitchell,
+//   the shadow distance, times the clouds' shadow, through the shadow color as surfaces take it. Half-Lambert wrap (Mitchell,
 //   McTaggart and Green 2006) on the bent normal plus a forward-scattering lobe when the eye looks toward the sun.
 // - The ambient: the sky's (`ambient`, the scene's ambient shaped by the sky's SH) on the bent normal; it dims at dusk and night
 //   with everything else.
@@ -72,7 +72,7 @@ fn particle_point(i: u32, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     return light.color.rgb * (share * vis);
 }
 
-// The lit colour (linear) of a lit particle's pixel of linear colour `albedo`.
+// The lit color (linear) of a lit particle's pixel of linear color `albedo`.
 fn particle_lit(in: VertexOut, albedo: vec3<f32>) -> vec3<f32> {
     let p = in.world;
     let v = normalize(frame.eye.xyz - p);
