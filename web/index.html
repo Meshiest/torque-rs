@@ -62,9 +62,12 @@
   // on the root element's `data-torque-stage`. A refused file or list is shown here, and its message is on the root element's
   // `data-torque-refused` for a test.
   //
-  // The settings (the gear, top right; settings.js): the renderer's quality, applied at the game's next frame
-  // (`setQuality`), and the frame-rate display (also F8), from the game's `data-torque-fps` and `data-torque-frame-ms`. Both
-  // are kept in the browser's storage.
+  // The settings (the gear, top right; settings.js): the renderer's quality, through the scripts' `setRenderQuality` and
+  // applied at the game's next frame, and the frame-rate display (also F8), from the game's `data-torque-fps` and
+  // `data-torque-frame-ms`. Both are kept in the browser's storage.
+  //
+  // `torque` (bridge.js, also `window.torque`): the page calls the game's scripts (`torque.call`, `eval`, `getVar`,
+  // `setVar`) and registers handlers the scripts call (`torque.on`, `callPage` in script).
   //
   // Esc: a browser keeps it for itself while the pointer is locked (it ends the lock) and in full screen (it leaves it). The
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
@@ -72,12 +75,14 @@
   import { fetchFiles, Refused } from './files.js';
   import { fpsText, later, readStreamed, stageText } from './loading.js';
   import * as settings from './settings.js';
+  import { createTorque } from './bridge.js';
 
   const root = document.documentElement;
   const status = document.getElementById('status');
   const bar = document.getElementById('progress');
   let stage = null;
-  let game = null;
+  const torque = createTorque();
+  globalThis.torque = torque;
 
   // Shows `next`, with a download's bytes; a stage without bytes shows a moving bar.
   function show(next, done = null, total = null) {
@@ -119,21 +124,22 @@
   showFps.checked = chosen.fps;
   fps.hidden = !chosen.fps;
 
-  // The quality to the game (once its module is here; it applies it at its next frame).
+  // The quality to the game's scripts (a request made before the game runs waits for it; the game applies it at its next
+  // frame).
   function applyQuality() {
-    if (!game) return;
-    if (!game.setQuality) {
-      // a game whose page calls offer no quality
-      quality.disabled = true;
-      return;
-    }
-    try {
-      game.setQuality(chosen.quality);
-      note.hidden = true;
-    } catch (e) {
-      note.textContent = `The quality was not changed: ${e?.message ?? e}`;
-      note.hidden = false;
-    }
+    torque.call('setRenderQuality', chosen.quality).then(
+      () => {
+        note.hidden = true;
+      },
+      (e) => {
+        // a game whose page has no bridge to its scripts offers no quality
+        if (e.kind === 'no-bridge') quality.disabled = true;
+        else {
+          note.textContent = `The quality was not changed: ${e.message}`;
+          note.hidden = false;
+        }
+      },
+    );
   }
   function keep() {
     if (!settings.save(storage, chosen)) {
@@ -200,7 +206,8 @@
     show('compile');
     await new Promise(requestAnimationFrame);
     await module.default({ module_or_path: await WebAssembly.compile(wasm) });
-    game = module;
+    const game = module;
+    torque.attach(game);
     // The game's first frame is drawn at the quality chosen.
     applyQuality();
     if (!game.embedded()) {

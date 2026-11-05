@@ -19,6 +19,7 @@
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
+//! - [`page_bridge`]: a web build's page and the game's scripts calling each other (`torque.call`, `callPage`), within caps.
 //! - [`web_page`]: the entry web builds share: the page's calls ([`web_exports!`]), the files it fetches, its settings, and
 //!   the loading stages and frame times written on the page.
 //! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
@@ -35,6 +36,7 @@ pub mod interiors;
 pub mod lights;
 pub mod manifest;
 pub mod orbit;
+pub mod page_bridge;
 pub mod server;
 pub mod shots;
 pub mod terrain;

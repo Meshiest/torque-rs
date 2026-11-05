@@ -7,8 +7,8 @@
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
 // <target>/web/<name>-embedded/.
 //
-// The folder, served as it is: index.html, files.js, loading.js, settings.js, game.js, game_bg.wasm, and files.json with
-// game.pack when fetched.
+// The folder, served as it is: index.html, files.js, loading.js, settings.js, bridge.js, game.js, game_bg.wasm, and
+// files.json with game.pack when fetched.
 // The target folder is CARGO_TARGET_DIR's, else the workspace's `target`. wasm-bindgen's command line, at the version
 // Cargo.lock names, is installed into <target>/web-tools at first.
 import { spawnSync } from 'node:child_process';
@@ -94,7 +94,7 @@ if (opt !== '0' && spawnSync(opt, ['--version'], { encoding: 'utf8' }).status ==
 } else {
   console.log('wasm-opt not found: the module is not optimized further (install binaryen for a faster one)');
 }
-for (const page of ['index.html', 'files.js', 'loading.js', 'settings.js']) copyFileSync(join(root, 'web', page), join(out, page));
+for (const page of ['index.html', 'files.js', 'loading.js', 'settings.js', 'bridge.js']) copyFileSync(join(root, 'web', page), join(out, page));
 const mib = (file) => (statSync(file).size / 1048576).toFixed(1);
 const module = `game_bg.wasm ${mib(moduleFile)} MiB`;
 console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)`);

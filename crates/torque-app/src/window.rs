@@ -196,6 +196,11 @@ impl<G: App> WindowGame for AppWindow<G> {
         {
             self.web = Some(WebDevice::ask(window, size));
             self.stage("gpu");
+            // The page bridge: `callPage` and `setRenderQuality` for the scripts, the page's requests served each pass.
+            crate::page_bridge::install(torque_client::host::GameServer::vm_mut(
+                &mut self.game.host().server,
+            ));
+            crate::page_bridge::page::connect();
             Ok(())
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -218,6 +223,14 @@ impl<G: App> WindowGame for AppWindow<G> {
 
     fn step(&mut self, ms: u32) {
         self.game.advance(ms);
+    }
+
+    /// In a browser: the page's requests to the scripts, once a pass ([`crate::page_bridge::serve`]).
+    fn upkeep(&mut self) {
+        #[cfg(target_arch = "wasm32")]
+        crate::page_bridge::serve(torque_client::host::GameServer::vm_mut(
+            &mut self.game.host().server,
+        ));
     }
 
     fn draw(&mut self) -> Result<Option<bool>, String> {

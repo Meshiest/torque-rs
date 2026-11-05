@@ -222,8 +222,17 @@ function GameConnection::onConnectionDropped(%this, %reason)
    MenuStatus.setText("Left the world: " @ %reason);
 }
 
+// An event for the page of a web build (`torque.on(name, ...)` there; the page bridge's `callPage`), with a fixed name: what the
+// server sends is only ever an argument. Off the web there is no page and nothing happens.
+function pageEvent(%name, %arg)
+{
+   if (isFunction("callPage"))
+      callPage(%name, %arg);
+}
+
 function clientCmdWorldStarted(%title)
 {
+   pageEvent("mapLoaded", %title);
    PlayTitle.setText(%title);
    MenuMap.pop();
    PlayMap.push();
@@ -235,6 +244,7 @@ function clientCmdWorldStarted(%title)
 
 function clientCmdFell()
 {
+   pageEvent("playerFell");
    showNote("You fell off. Back to the start.");
 }
 

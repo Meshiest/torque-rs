@@ -56,9 +56,9 @@ web-level-demo-embedded port="8080":
     node ../web/build.mjs level-demo --embed
     node ../web/serve.mjs "{{web_target}}/web/level-demo-embedded" {{port}}
 
-# The web pages' loading display and settings, tested in Node (no browser)
+# The web pages' loading display, settings and script bridge, tested in Node (no browser)
 web-unit:
-    node --test ../web/loading.test.mjs ../web/settings.test.mjs
+    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs
 
 # The web level demo's check (build it first with `web-level-demo`): headless Chrome with WebGPU loads the office, waits for the
 # figure, walks it and takes pictures, loads it again and counts the requests for the listed files (none: they come from the

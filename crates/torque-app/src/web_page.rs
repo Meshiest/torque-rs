@@ -3,10 +3,11 @@
 //! **The page's calls.** [`web_exports!`](crate::web_exports) gives a game's program the functions the page calls: whether
 //! the module carries its files, the list's cap, `readManifest` and `addFile` for the files the page fetches by `files.json`
 //! ([`read_manifest`], [`add_file`]: a file is taken only when its size and hash are the list's), the game's start (on the files
-//! fetched, [`take_fetched`], or on those the module carries) and `setQuality` ([`request_quality`]: the page's settings).
+//! fetched, [`take_fetched`], or on those the module carries) and the page bridge's ([`crate::page_bridge`]).
 //!
-//! **The quality** is the page's to pick (its settings panel; Firefox starts at Low until the player picks): `setQuality`
-//! asks for it, and the window applies it at its next frame ([`take_quality`]), before the first one too.
+//! **The quality** is the page's to pick (its settings panel; Firefox starts at Low until the player picks): the panel calls
+//! the script engine's `setRenderQuality` through the bridge ([`request_quality`]), and the window applies it at its next
+//! frame ([`take_quality`]).
 //!
 //! **The page's displays.** The window writes on the page's root element the loading stage (`data-torque-stage`: `gpu` while the
 //! canvas's device is asked for, `map` while the game says it is loading ([`crate::App::loading`]), then `ready`) and, every
@@ -222,9 +223,9 @@ pub fn mark_play(frames: u64, map: &str, figure: Option<[f32; 3]>) {
     mark("position", &position);
 }
 
-/// The functions a web build's page calls (`web/index.html`, `web/files.js`), in the game's program (the module's exports
-/// must be the program's own): `embedded`, `manifestMaxBytes`, `startEmbedded`, `readManifest`, `addFile`, `startFetched` and
-/// `setQuality`. `embedded` is whether the module carries its files; `start_embedded` and `start_fetched` start the game
+/// The functions a web build's page calls (`web/index.html`, `web/files.js`, `web/bridge.js`), in the game's program (the
+/// module's exports must be the program's own): `embedded`, `manifestMaxBytes`, `startEmbedded`, `readManifest`, `addFile`,
+/// `startFetched`, and the page bridge's `torqueRequest`, `torqueOn` and `torqueOff` ([`crate::page_bridge`]). `embedded` is whether the module carries its files; `start_embedded` and `start_fetched` start the game
 /// (functions returning `Result<(), String>`). The program depends on `wasm-bindgen`.
 ///
 /// ```ignore
@@ -273,10 +274,29 @@ macro_rules! web_exports {
                 $start_fetched()
             }
 
-            /// The page's settings: the renderer's quality, from the next frame on.
-            #[wasm_bindgen(js_name = setQuality)]
-            pub fn set_quality(name: &str) -> Result<(), String> {
-                $crate::web_page::request_quality(name)
+            /// The page bridge: a request of the page's (`torque.call`, `eval`, `getVar`, `setVar`).
+            #[wasm_bindgen(js_name = torqueRequest)]
+            pub fn torque_request(
+                kind: &str,
+                a: String,
+                b: String,
+                args: Vec<String>,
+                resolve: wasm_bindgen::JsValue,
+                reject: wasm_bindgen::JsValue,
+            ) {
+                $crate::page_bridge::page::request(kind, a, b, args, resolve, reject)
+            }
+
+            /// The page bridge: the page registers its handler `name` (`torque.on`).
+            #[wasm_bindgen(js_name = torqueOn)]
+            pub fn torque_on(name: &str) -> Result<(), String> {
+                $crate::page_bridge::register_handler(name).map_err(|e| e.to_json())
+            }
+
+            /// The page bridge: the page drops its handler `name` (`torque.off`).
+            #[wasm_bindgen(js_name = torqueOff)]
+            pub fn torque_off(name: &str) {
+                $crate::page_bridge::unregister_handler(name)
             }
         }
     };
