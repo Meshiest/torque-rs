@@ -1,6 +1,6 @@
 [package]
 name = "torque-example-vehicle-demo"
-description = "A singleplayer drive in a window: the box figure walks up to a jeep, clicks to get in and drives it over green checkerboard hills"
+description = "A drive for one player or a few on a local network: the box figure walks up to a buggy, clicks to get in and drives it over green checkerboard hills"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ categories = ["game-development"]
 
 # The server (torque-server's main loop and network host over torque-game's classes) and the client (torque-client's
 # connection over TGE's records) run in one process and talk through an in-memory datagram link. The game's own scripts are
-# in `game/`, the map in `game/missions/hills.mis`; the terrain, the jeep and the figure are the asset kit's.
+# in `game/`, the map in `game/missions/hills.mis`; the terrain, the buggy and the figure are the asset kit's.
 
 [dependencies]
 torque = { path = "../../crates/torque", default-features = false, features = ["app"] }

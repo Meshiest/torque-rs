@@ -15,7 +15,7 @@
 //!
 //! Credit: the placement and the type bits follow `TerrainBlock::onAdd` in TGE 1.4's `terrain/terrData.cc` (Copyright (C)
 //! GarageGames.com, Inc.) as Torque3D carries it under the MIT license (`Engine/source/terrain/terrData.cpp`, Copyright (c)
-//! 2012 GarageGames, LLC). The code here is this crate's own.
+//! 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
 
 use std::rc::Rc;
 use std::sync::Arc;
