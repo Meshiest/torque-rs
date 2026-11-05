@@ -435,6 +435,38 @@ pub fn eye_of(vm: &mut Vm, id: ObjId) -> Option<Matrix> {
     m
 }
 
+/// A Player's steady eye (engine addition, `getSteadyEyePoint`): `getEyeTransform` with the eye node at the shape's rest pose
+/// (no thread played) instead of as the walk or run animates it, so it does not bob. A client with a steady first-person view
+/// (`torque::app::ghosts::GhostOptions::steady_eye`) draws its view and crosshair from this point: a shot fired from it goes
+/// where the crosshair is. The server's own state alone; nothing a client sends. `None` for an object that is not a Player
+/// or whose shape has no eye node.
+pub fn steady_eye_of(vm: &mut Vm, id: ObjId) -> Option<Matrix> {
+    let s = super::state(vm, id)?;
+    let (obj_to_world, head, scale) = (s.obj_to_world, s.head, s.scale);
+    let body = ext::get(vm.objects(), id)?.shape.as_ref()?.body.as_ref()?;
+    let kept = Rc::clone(&body.kept);
+    let shape = kept.shape.as_ref()?;
+    let eye = usize::try_from(kept.facts.as_ref()?.eye_node).ok()?;
+    let mut work = 0u64;
+    let mut charge = |n: u64| {
+        work += n;
+        true
+    };
+    let mut instance = shapes::instance::ShapeInstance::new(shape, &mut charge).ok()?;
+    let dl = (shape.smallest_visible_dl.max(0) as usize).min(shape.details.len().saturating_sub(1));
+    instance.animate(shape, dl, None, &mut charge).ok()?;
+    let n = *instance.node_transform(eye)?;
+    let _ = vm.charge_work(work);
+    let mut t = matrix_product(
+        &collide::math::set_euler([0.0, 0.0, head[2]]),
+        &collide::math::set_euler([head[0], 0.0, 0.0]),
+    );
+    t[3] = n[3] * scale[0];
+    t[7] = n[7] * scale[1];
+    t[11] = n[11] * scale[2];
+    Some(matrix_product(&obj_to_world, &t))
+}
+
 /// A zone's view (the object box's six planes moved to the world: a polyhedron that is not a box is taken as its bounds,
 /// listed).
 fn zone_view(vm: &Vm, id: ObjId) -> Option<ZoneView> {

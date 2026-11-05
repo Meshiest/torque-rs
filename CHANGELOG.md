@@ -357,5 +357,11 @@ The first development version. Nothing is published yet; this is what exists.
 - `examples/fps`: aiming down the sights eases both ways on a critically damped spring (0.18 s, the same at any frame
   rate, no overshoot; a press let go mid-way turns back from where it is at the speed it had), the pistol arcs in and
   up, and a synced Player's arm moves between its arm actions over 0.18 s (`ARM_BLEND`) instead of switching at once.
+- `torque::app`: a client draws a projectile on the server's line, from the raw floats every first update carries (the
+  bounce block) instead of the initial block's 10-bit direction and centimeter start (up to 0.18 degrees off: at a
+  wall's corner one screen showed a graze and another a miss, and the trail jumped back when the server's explosion
+  came); with `GhostOptions::bolt_stops` it stops a bolt where that line meets the world (the arena: within a millimeter
+  of the server's hit on both clients, `tests/bolt_line.rs`). The arena fires from `getSteadyEyePoint` (engine addition:
+  the eye at the shape's rest pose), so it keeps the steady first-person eye on with its shots on the crosshair.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

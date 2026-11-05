@@ -123,6 +123,15 @@ impl Ribbon {
         self.points.iter().map(|p| p.0)
     }
 
+    /// Drops the newest points past `end` along `dir`: a path that ran on past where its projectile hit ends there instead of
+    /// folding back to it.
+    pub fn cut_past(&mut self, end: [f32; 3], dir: [f32; 3]) {
+        let past = |p: &[f32; 3]| (0..3).map(|k| (p[k] - end[k]) * dir[k]).sum::<f32>() > 0.0;
+        while self.points.front().is_some_and(|(p, _)| past(p)) {
+            self.points.pop_front();
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.points.is_empty()
     }

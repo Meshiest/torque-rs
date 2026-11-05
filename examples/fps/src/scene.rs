@@ -209,9 +209,10 @@ pub fn options() -> GhostOptions {
         },
         // The server's figures have hitboxes: drawn as posed for hits.
         synced_poses: true,
-        // The drawn eye, not the steady one, until a shot carries the aim the player saw (the steady eye would part the
-        // crosshair from the server's shot by the head's bob).
-        steady_eye: false,
+        // A steady view; the server fires from the same steady eye (`getSteadyEyePoint`), so the shot follows the crosshair.
+        steady_eye: true,
+        // The client has the map's surfaces as the server does: a bolt stops where the server's hits.
+        bolt_stops: true,
         ..GhostOptions::default()
     }
 }

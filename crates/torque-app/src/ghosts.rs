@@ -107,6 +107,10 @@ pub struct GhostOptions {
     /// With [`Self::steady_eye`], the view keeps the drawn eye's sway across the ground (its height steady); off, the view is
     /// steady every way.
     pub eye_sway: bool,
+    /// A projectile stops where its line meets the world's surfaces as the client has them, waiting there for the server's
+    /// explosion, instead of flying on through them until it comes (the line is the server's: its first update's raw floats).
+    /// For a game whose client has the world's surfaces as the server collides with them.
+    pub bolt_stops: bool,
 }
 
 impl Default for GhostOptions {
@@ -119,6 +123,7 @@ impl Default for GhostOptions {
             synced_poses: false,
             steady_eye: false,
             eye_sway: false,
+            bolt_stops: false,
         }
     }
 }
@@ -516,6 +521,48 @@ struct Bolt {
     flight: Flight,
     trail: Option<Emitter>,
     ribbon: Option<Ribbon>,
+    /// Where its flight met the world's surfaces as the client has them ([`first_hit`]): it waits there for the server's
+    /// explosion instead of flying on through the wall.
+    stop: Option<[f32; 3]>,
+}
+
+/// Where the segment `from`..`to` first crosses one of `faces` (either side), as its share of the way (0 to 1).
+pub fn first_hit(from: [f32; 3], to: [f32; 3], faces: &[Triangle]) -> Option<f32> {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let d = sub(to, from);
+    let mut best: Option<f32> = None;
+    for [a, b, c] in faces {
+        let (e1, e2) = (sub(*b, *a), sub(*c, *a));
+        let h = cross(d, e2);
+        let det = dot(e1, h);
+        if det.abs() < 1e-9 {
+            continue;
+        }
+        let inv = 1.0 / det;
+        let s = sub(from, *a);
+        let u = dot(s, h) * inv;
+        if !(0.0..=1.0).contains(&u) {
+            continue;
+        }
+        let q = cross(s, e1);
+        let v = dot(d, q) * inv;
+        if v < 0.0 || u + v > 1.0 {
+            continue;
+        }
+        let t = dot(e2, q) * inv;
+        if (0.0..=1.0).contains(&t) && best.is_none_or(|b| t < b) {
+            best = Some(t);
+        }
+    }
+    best
 }
 
 /// The most hit bursts [`GhostScene::hit_bursts`] keeps.
@@ -763,6 +810,11 @@ impl<S: GhostStyle> GhostScene<S> {
             .collect();
         out.sort_unstable_by_key(|a| a.0);
         out
+    }
+
+    /// Where the projectiles stopped at the world's surfaces as this client has them (the ones that did).
+    pub fn bolt_stops(&self) -> Vec<[f32; 3]> {
+        self.bolts.values().filter_map(|b| b.stop).collect()
     }
 
     /// Where the projectiles are drawn this frame.
@@ -1214,9 +1266,19 @@ impl<S: GhostStyle> GhostScene<S> {
                 let (Some(start), Some(initial)) = (ghost.position, p.initial.as_ref()) else {
                     continue;
                 };
-                let velocity = initial.velocity.map_or([0.0; 3], |v| {
-                    v.value(torque_ghosts::projectile::VELOCITY_NORMAL_BITS)
-                });
+                // Its flight as its first update sends it whole: the bounce block (raw floats, in every first update: TGE's
+                // `packUpdate` of all bits) over the initial block's 10-bit direction and centimeter start, which put the line
+                // up to 0.18 degrees and a centimeter off the server's (decimeters at the far wall; a graze or a miss at a
+                // corner).
+                let (start, velocity) = match p.bounce {
+                    Some((at, v)) => (at.map(|c| c.get()), v.map(|c| c.get())),
+                    None => (
+                        start,
+                        initial.velocity.map_or([0.0; 3], |v| {
+                            v.value(torque_ghosts::projectile::VELOCITY_NORMAL_BITS)
+                        }),
+                    ),
+                };
                 // Drawn from its source's muzzle as the frame draws it.
                 let muzzle = initial.source.as_ref().and_then(|s| {
                     self.frames
@@ -1234,6 +1296,7 @@ impl<S: GhostStyle> GhostScene<S> {
                         },
                         trail: None,
                         ribbon: None,
+                        stop: None,
                     },
                 );
                 continue;
@@ -1253,7 +1316,29 @@ impl<S: GhostStyle> GhostScene<S> {
                 }
             }
             let from = self.style.projectile(&bolt.flight).column(3);
-            bolt.flight.age += dt;
+            if !self.options.bolt_stops {
+                bolt.flight.age += dt;
+            } else if bolt.stop.is_none() {
+                let line_from = bolt.flight.position();
+                bolt.flight.age += dt;
+                let line_to = bolt.flight.position();
+                // Its line through the world as the client has it: stopped at the first surface it meets, where the server's
+                // flight (the same line) explodes.
+                let mid = [0, 1, 2].map(|k| 0.5 * (line_from[k] + line_to[k]));
+                let reach = 0.5
+                    * (0..3)
+                        .map(|k| (line_to[k] - line_from[k]).powi(2))
+                        .sum::<f32>()
+                        .sqrt()
+                    + 0.05;
+                let mut faces = (input.surfaces)(world, mid, reach);
+                faces.extend(self.interiors.faces_near(mid, reach));
+                if let Some(t) = first_hit(line_from, line_to, &faces) {
+                    let hit = [0, 1, 2].map(|k| line_from[k] + (line_to[k] - line_from[k]) * t);
+                    bolt.flight.age -= dt * (1.0 - t);
+                    bolt.stop = Some(hit);
+                }
+            }
             let (at, v) = (
                 self.style.projectile(&bolt.flight).column(3),
                 bolt.flight.velocity,
@@ -1295,6 +1380,7 @@ impl<S: GhostStyle> GhostScene<S> {
         }
         if let Some(mut r) = bolt.ribbon {
             if let Some(end) = end {
+                r.cut_past(end, bolt.flight.velocity);
                 r.add_point(end);
             }
             r.dead = true;
@@ -1526,6 +1612,7 @@ mod tests {
                     },
                     trail: None,
                     ribbon: None,
+                    stop: None,
                 },
             );
             scene.burst.insert(g);
