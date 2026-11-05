@@ -185,11 +185,15 @@ impl VehicleDust {
         self.live = 0;
     }
 
-    /// The particles alive, every emitter's: each with whether its emitter is a tire's (else the lift-off dust's).
-    pub fn alive(&self) -> impl Iterator<Item = (bool, &crate::particles::Particle)> {
-        self.emitters
-            .iter()
-            .flat_map(|((_, w), k)| k.emitter.particles.iter().map(move |p| (*w != LIFTOFF, p)))
+    /// The particles alive, every emitter's: each with its vehicle's ghost and whether its emitter is a tire's (else the
+    /// lift-off dust's).
+    pub fn alive(&self) -> impl Iterator<Item = (u32, bool, &crate::particles::Particle)> {
+        self.emitters.iter().flat_map(|((g, w), k)| {
+            k.emitter
+                .particles
+                .iter()
+                .map(move |p| (*g, *w != LIFTOFF, p))
+        })
     }
 
     /// The particles alive.
