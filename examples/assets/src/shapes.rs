@@ -23,13 +23,16 @@
 //! - `idle` (and `root`, the same keys under the name a player's rest action looks for): 2 s, looped, the arms sway 3°, the
 //!   elbows a little bent.
 //! - `walk`: 0.65 s, looped, a relaxed walk at [`WALK_SPEED`] units a second (a held-Shift pace in the demos), worked out
-//!   from where the feet stand ([`crate::walk`]): each foot lands on its heel with the toe up, rolls flat, stays put on the
+//!   from where the feet stand ([`crate::gait`]): each foot lands on its heel with the toe up, rolls flat, stays put on the
 //!   ground while the body passes over it, rolls onto its toe and leaves; both feet are down for a moment at each landing, so
 //!   it never leaves the ground. The hips dip a little as each foot lands and rise as it passes under them (`root` moves),
 //!   the knees stay soft, and the arms swing ±18° against the legs, the elbows bent 10° to 22°. The left heel lands a quarter
 //!   in and the right at three quarters, where `run` has each leg furthest forward.
-//! - `run`: 0.6 s, looped, legs ±45°, the knees bending to 107°, arms ±40° with the elbows bent about 80°, the torso leaned
-//!   10° forward; [`RUN_SPEED`] units a second.
+//! - `run`: 0.55 s, looped, at [`RUN_SPEED`] units a second, its legs worked out like the walk's ([`crate::gait`]): each foot
+//!   is down for under half the loop, so the figure is in the air between steps; the hips sink as the body passes over the
+//!   planted foot and rise into the flight, the foot lands nearly flat and pushes off from its toe, and the knees come up
+//!   high through the swing. Arms ±40° with the elbows bent about 80°, the torso leaned 10° forward. Its feet land where the
+//!   walk's do in the loop, so the two blend in step.
 //! - `back`: 0.7 s, looped, a walk backward: the gait run in reverse, each knee bending as its leg comes back under the hip;
 //!   [`BACK_SPEED`] units a second backward.
 //! - `side`: 0.6 s, looped, a side step to the left: the left leg lifts and swings out, then the right lifts and closes in to
@@ -73,7 +76,7 @@ use crate::builder::{
     FULL_UV, Face, MeshData, NO_TURN, SequenceDef, ShapeBuilder, Track, UvRect, Vec3,
     material_flags, turn,
 };
-use crate::walk;
+use crate::gait;
 
 /// The figure's ground speed in its `walk`, `run`, `back` and `side` sequences, units a second.
 pub const WALK_SPEED: f32 = 2.1;
@@ -257,15 +260,42 @@ fn gait_tracks_along(
     tracks
 }
 
-/// The keys of the figure's `walk` loop.
-const WALK_KEYS: usize = 64;
+/// The keys of the figure's `walk` and `run` loops.
+const GAIT_KEYS: usize = 64;
 /// The walk's arm swing and elbow bend (degrees: always, and more as the arm swings forward).
 const WALK_ARMS: f32 = 18.0;
 const WALK_ELBOWS: f32 = 10.0;
 const WALK_ELBOW_SWING: f32 = 12.0;
 
-/// The rotation tracks of the `walk` ([`walk`]): the legs' joints as their feet stand and swing, each arm swinging against
-/// its own side's leg (furthest back as that foot lands), the torso upright.
+/// One side's hip, knee and ankle tracks of gait `g` ([`gait`]) over `n` keys: the joints as the foot stands and swings.
+fn leg_tracks(g: &gait::Gait, limbs: &Limbs, side: usize, n: usize) -> [Track<Quat16>; 3] {
+    let legs: Vec<gait::Leg> = (0..n).map(|k| g.leg(side, k as f32 / n as f32)).collect();
+    [
+        (
+            limbs.legs[side],
+            (|l: &gait::Leg| l.hip) as fn(&gait::Leg) -> f32,
+        ),
+        (limbs.knees[side], |l| l.knee),
+        (limbs.ankles[side], |l| l.ankle),
+    ]
+    .map(|(node, joint)| Track {
+        node,
+        keys: legs.iter().map(|l| turn(X, joint(l))).collect(),
+    })
+}
+
+/// The `root` track of gait `g` over `n` keys: the hips' rise and fall.
+fn hip_track(g: &gait::Gait, root: usize, n: usize) -> Track<Vec3> {
+    Track {
+        node: root,
+        keys: (0..n)
+            .map(|k| [0.0, 0.0, g.hip_height(k as f32 / n as f32) - THIGH - SHIN])
+            .collect(),
+    }
+}
+
+/// The rotation tracks of the `walk` ([`gait::WALK`]): the legs' joints as their feet stand and swing, each arm swinging
+/// against its own side's leg (furthest back as that foot lands), the torso upright.
 fn walk_tracks(torso: usize, limbs: &Limbs, n: usize) -> Vec<Track<Quat16>> {
     let at = |k: usize| k as f32 / n as f32;
     let mut tracks = vec![Track {
@@ -273,21 +303,8 @@ fn walk_tracks(torso: usize, limbs: &Limbs, n: usize) -> Vec<Track<Quat16>> {
         keys: vec![NO_TURN],
     }];
     for side in 0..2 {
-        let legs: Vec<walk::Leg> = (0..n).map(|k| walk::leg(side, at(k))).collect();
-        for (node, joint) in [
-            (
-                limbs.legs[side],
-                (|l: &walk::Leg| l.hip) as fn(&walk::Leg) -> f32,
-            ),
-            (limbs.knees[side], |l| l.knee),
-            (limbs.ankles[side], |l| l.ankle),
-        ] {
-            tracks.push(Track {
-                node,
-                keys: legs.iter().map(|l| turn(X, joint(l))).collect(),
-            });
-        }
-        let lands = walk::LEFT_LANDS + 0.5 * side as f32;
+        tracks.extend(leg_tracks(&gait::WALK, limbs, side, n));
+        let lands = gait::LEFT_LANDS + 0.5 * side as f32;
         let swing = move |k: usize| -(TAU * (at(k) - lands)).cos();
         tracks.push(Track {
             node: limbs.arms[side],
@@ -511,23 +528,16 @@ pub fn figure() -> Model {
             ground: Vec::new(),
         });
     }
+    let n = GAIT_KEYS;
     b.sequence(SequenceDef {
         name: "walk",
-        duration: walk::WALK_DURATION,
+        duration: gait::WALK.duration,
         cyclic: true,
         priority: 0,
-        keyframes: WALK_KEYS,
-        rotations: walk_tracks(torso, &limbs, WALK_KEYS),
-        translations: vec![Track {
-            node: root,
-            keys: (0..WALK_KEYS)
-                .map(|k| {
-                    let pos = k as f32 / WALK_KEYS as f32;
-                    [0.0, 0.0, walk::hip_height(pos) - THIGH - SHIN]
-                })
-                .collect(),
-        }],
-        ground: travel(WALK_KEYS, WALK_SPEED, walk::WALK_DURATION),
+        keyframes: n,
+        rotations: walk_tracks(torso, &limbs, n),
+        translations: vec![hip_track(&gait::WALK, root, n)],
+        ground: travel(n, WALK_SPEED, gait::WALK.duration),
     });
     let run = Gait {
         hips: 45.0,
@@ -538,16 +548,23 @@ pub fn figure() -> Model {
         elbow_swing: 15.0,
         lean: 10.0,
     };
-    let n = 16;
+    // The run's arms and lean as keyed; its legs from where its feet stand ([`gait::RUN`]).
+    let mut rotations: Vec<Track<Quat16>> = gait_tracks(torso, &limbs, n, &run)
+        .into_iter()
+        .filter(|t| !limbs.legs.contains(&t.node) && !limbs.knees.contains(&t.node))
+        .collect();
+    for side in 0..2 {
+        rotations.extend(leg_tracks(&gait::RUN, &limbs, side, n));
+    }
     b.sequence(SequenceDef {
         name: "run",
-        duration: 0.6,
+        duration: gait::RUN.duration,
         cyclic: true,
         priority: 0,
         keyframes: n,
-        rotations: gait_tracks(torso, &limbs, n, &run),
-        translations: Vec::new(),
-        ground: travel(n, RUN_SPEED, 0.6),
+        rotations,
+        translations: vec![hip_track(&gait::RUN, root, n)],
+        ground: travel(n, RUN_SPEED, gait::RUN.duration),
     });
     // Walking backward: a gait run in reverse, each knee bending as its leg comes back under the hip.
     let back = Gait {

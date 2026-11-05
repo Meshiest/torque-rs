@@ -16,13 +16,13 @@
 
 pub use torque_shape_builder as builder;
 pub mod buggy;
+pub mod gait;
 pub mod interiors;
 pub mod shapes;
 pub mod terrain;
 pub mod textures;
 pub mod track;
 pub mod trees;
-pub mod walk;
 
 use std::io;
 use std::path::{Path, PathBuf};

@@ -136,7 +136,7 @@ fn posed(shape: &Shape, sequence: &str, pos: f32, name: &str, local: [f32; 3]) -
 fn walking_and_running_swing_the_legs_against_each_other() {
     let shape = Shape::for_server(shapes::figure());
     let foot = [0.0, 0.0, -shapes::SHIN];
-    for (seq, reach) in [("walk", 0.3), ("run", 0.5)] {
+    for (seq, reach) in [("walk", 0.3), ("run", 0.25)] {
         let (l, r) = (
             posed(&shape, seq, 0.25, "knee_l", foot),
             posed(&shape, seq, 0.25, "knee_r", foot),
@@ -180,7 +180,7 @@ fn bend(shape: &Shape, seq: &str, pos: f32, upper: &str, joint: &str, lower: f32
 fn the_knees_bend_as_the_legs_come_through_and_the_elbows_bend_running() {
     let shape = Shape::for_server(shapes::figure());
     let shin = shapes::SHIN;
-    for (seq, more) in [("walk", 20.0), ("run", 30.0)] {
+    for (seq, more) in [("walk", 20.0), ("run", 15.0)] {
         // A quarter in: the left leg forward (its foot about to land), the right behind (coming through).
         let front = bend(&shape, seq, 0.25, "leg_l", "knee_l", shin);
         let back = bend(&shape, seq, 0.25, "leg_r", "knee_r", shin);
@@ -343,82 +343,106 @@ fn walk_and_run_carry_their_ground_speed() {
     }
 }
 
-/// Where each foot's heel and toe edges are (the bottom of the sole, midway across) at `pos` of the walk, on the ground the
-/// figure has covered by then.
-fn walk_feet(shape: &Shape, pos: f32) -> [[[f32; 3]; 2]; 2] {
-    let travel = shapes::WALK_SPEED * crate::walk::WALK_DURATION * pos;
+/// Where each foot's heel and toe edges are (the bottom of the sole, midway across) at `pos` of gait `name`, on the ground
+/// the figure has covered by then.
+fn gait_feet(shape: &Shape, name: &str, g: &crate::gait::Gait, pos: f32) -> [[[f32; 3]; 2]; 2] {
+    let travel = g.speed * g.duration * pos;
     ["ankle_l", "ankle_r"].map(|ankle| {
         [shapes::FOOT_HEEL, shapes::FOOT_TOE].map(|y| {
-            let p = posed(shape, "walk", pos, ankle, [0.0, y, -shapes::SOLE]);
+            let p = posed(shape, name, pos, ankle, [0.0, y, -shapes::SOLE]);
             [p[0], p[1] + travel, p[2]]
         })
     })
 }
 
 #[test]
-fn the_walks_feet_stay_where_they_land_heel_first_and_clear_the_ground_between() {
+fn the_gaits_feet_stay_where_they_land_heel_first_and_clear_the_ground_between() {
     let shape = Shape::for_server(shapes::figure());
-    let duration = crate::walk::WALK_DURATION;
     let n = 256;
-    let feet: Vec<_> = (0..=n)
-        .map(|k| walk_feet(&shape, k as f32 / n as f32))
-        .collect();
     // A foot within this of the floor is down; an edge within `planted` of it at both ends of a step stands on it.
     let (down, planted) = (0.004, 0.001);
-    for side in 0..2 {
-        let (mut on, mut slide, mut lift, mut heel_first) = (0, 0.0f32, 0.0f32, 0);
-        let foot: Vec<_> = feet.iter().map(|f| f[side]).collect();
-        for k in 0..n {
-            let (now, next) = (foot[k], foot[k + 1]);
-            let low = now[0][2].min(now[1][2]);
-            assert!(low > -down, "{side} at {k}: below the floor by {low}");
-            lift = lift.max(low);
-            if low < down {
-                on += 1;
-            }
-            // An edge on the ground through a step stays put on the ground covered: the foot moves back under the figure
-            // at the ground's speed.
-            for edge in 0..2 {
-                if now[edge][2] < planted && next[edge][2] < planted {
-                    let speed = (next[edge][1] - now[edge][1]).abs() * n as f32 / duration;
-                    slide = slide.max(speed);
+    for (name, g) in [("walk", crate::gait::WALK), ("run", crate::gait::RUN)] {
+        let feet: Vec<_> = (0..=n)
+            .map(|k| gait_feet(&shape, name, &g, k as f32 / n as f32))
+            .collect();
+        for side in 0..2 {
+            let (mut on, mut slide, mut lift, mut heel_first) = (0, 0.0f32, 0.0f32, 0);
+            let foot: Vec<_> = feet.iter().map(|f| f[side]).collect();
+            for k in 0..n {
+                let (now, next) = (foot[k], foot[k + 1]);
+                let low = now[0][2].min(now[1][2]);
+                assert!(
+                    low > -down,
+                    "{name} {side} at {k}: below the floor by {low}"
+                );
+                lift = lift.max(low);
+                if low < down {
+                    on += 1;
+                }
+                // An edge on the ground through a step stays put on the ground covered: the foot moves back under the
+                // figure at the ground's speed.
+                for edge in 0..2 {
+                    if now[edge][2] < planted && next[edge][2] < planted {
+                        let speed = (next[edge][1] - now[edge][1]).abs() * n as f32 / g.duration;
+                        slide = slide.max(speed);
+                    }
+                }
+                // A foot coming down touches with its heel first.
+                let before = foot[(k + n - 1) % n];
+                if before[0][2].min(before[1][2]) >= down && low < down {
+                    assert!(
+                        now[0][2] < now[1][2],
+                        "{name} {side} at {k}: lands toe first {now:?}"
+                    );
+                    heel_first += 1;
                 }
             }
-            // A foot coming down touches with its heel first.
-            let before = foot[(k + n - 1) % n];
-            if before[0][2].min(before[1][2]) >= down && low < down {
-                assert!(
-                    now[0][2] < now[1][2],
-                    "{side} at {k}: lands toe first {now:?}"
-                );
-                heel_first += 1;
-            }
+            assert!(
+                slide < 0.05 * g.speed,
+                "{name} {side}: a planted foot slides at {slide} (the ground goes by at {})",
+                g.speed
+            );
+            let share = on as f32 / n as f32;
+            assert!(
+                (share - g.stance).abs() < 0.04,
+                "{name} {side}: down {share} of the loop"
+            );
+            assert_eq!(heel_first, 1, "{name} {side}: lands once a loop");
+            assert!(
+                lift > 0.04,
+                "{name} {side}: the swinging foot clears the ground by {lift}"
+            );
         }
-        assert!(
-            slide < 0.05 * shapes::WALK_SPEED,
-            "{side}: a planted foot slides at {slide} (the ground goes by at {})",
-            shapes::WALK_SPEED
-        );
-        let share = on as f32 / n as f32;
-        assert!(
-            (share - crate::walk::STANCE).abs() < 0.04,
-            "{side}: down {share} of the loop"
-        );
-        assert_eq!(heel_first, 1, "{side}: lands once a loop");
-        assert!(
-            lift > 0.04,
-            "{side}: the swinging foot clears the ground by {lift}"
-        );
+        // The left lands a quarter in, the right half a loop later.
+        for (side, pos) in [(0, 0.25), (1, 0.75)] {
+            let k = (pos * n as f32) as usize;
+            let foot = feet[k][side];
+            assert!(
+                foot[0][2] < down && foot[1][2] > 0.01,
+                "{name} {side}: heel down, toe up: {foot:?}"
+            );
+        }
+        // The walk always has a foot down; the run is in the air between steps.
+        let airborne = (0..n)
+            .filter(|&k| (0..2).all(|s| feet[k][s].iter().all(|e| e[2] > down)))
+            .count() as f32
+            / n as f32;
+        if name == "walk" {
+            assert_eq!(airborne, 0.0, "the walk never leaves the ground");
+        } else {
+            assert!(airborne > 0.1, "the run flies {airborne} of the loop");
+        }
     }
-    // The left lands as the run's left leg reaches furthest, a quarter in; the right half a loop later.
-    for (side, pos) in [(0, 0.25), (1, 0.75)] {
-        let k = (pos * n as f32) as usize;
-        let foot = feet[k][side];
-        assert!(
-            foot[0][2] < down && foot[1][2] > 0.04,
-            "{side}: heel down, toe up: {foot:?}"
-        );
-    }
+    // The run bobs more than the walk, lowest as the body passes over the planted foot.
+    let span = |g: crate::gait::Gait| {
+        let h: Vec<f32> = (0..64).map(|k| g.hip_height(k as f32 / 64.0)).collect();
+        h.iter().copied().fold(f32::MIN, f32::max) - h.iter().copied().fold(f32::MAX, f32::min)
+    };
+    let (walk, run) = (span(crate::gait::WALK), span(crate::gait::RUN));
+    assert!(run > 1.5 * walk && run > 0.05, "{walk} {run}");
+    let r = crate::gait::RUN;
+    let mid_stance = crate::gait::LEFT_LANDS + 0.5 * r.stance;
+    assert!(r.hip_height(mid_stance) < r.hip_height(mid_stance + 0.25));
 }
 
 #[test]
