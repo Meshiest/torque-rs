@@ -36,6 +36,8 @@ torque-vehicle = { path = "../torque-vehicle" }
 torque-shapes = { path = "../torque-shapes" }
 # The hitbox tests' figure: bones with a box each.
 torque-shape-builder = { path = "../torque-shape-builder" }
+# The interior tests' wall, built from brushes.
+torque-interior-builder = { path = "../torque-interior-builder" }
 
 [lints]
 workspace = true

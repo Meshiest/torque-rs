@@ -2126,6 +2126,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "torque-images",
+ "torque-interior-builder",
  "torque-shape-builder",
  "torque-shapes",
 ]
@@ -2200,6 +2201,8 @@ name = "torque-game"
 version = "0.1.0"
 dependencies = [
  "torque-collide",
+ "torque-mapcore",
+ "torque-maps",
  "torque-net",
  "torque-resource",
  "torque-scene",
@@ -2242,6 +2245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-interior-builder"
+version = "0.1.0"
+dependencies = [
+ "torque-collide",
+ "torque-mapcore",
+ "torque-maps",
+]
+
+[[package]]
 name = "torque-mapcore"
 version = "0.1.0"
 
@@ -2249,6 +2261,7 @@ version = "0.1.0"
 name = "torque-maps"
 version = "0.1.0"
 dependencies = [
+ "torque-images",
  "torque-mapcore",
 ]
 
@@ -2311,6 +2324,7 @@ dependencies = [
  "torque-collide",
  "torque-game",
  "torque-ghosts",
+ "torque-interior-builder",
  "torque-net",
  "torque-scene",
  "torque-shape-builder",

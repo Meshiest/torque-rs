@@ -112,6 +112,146 @@ pub(crate) fn read(r: &mut Reader, what: &'static str) -> Result<Png, MapError> 
     })
 }
 
+/// An 8-bit RGB PNG of `width` x `height` from `rgb` (rows top first, three bytes a pixel; missing bytes are black). Its image
+/// data is one fixed-Huffman deflate block whose only matches repeat the byte before (runs: a flat lightmap is a few hundred
+/// bytes); what a writer needs without a compressor.
+pub fn encode_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
+    let row = width as usize * 3;
+    let mut raw = Vec::new();
+    for y in 0..height as usize {
+        raw.push(0);
+        let start = (y * row).min(rgb.len());
+        let end = (start + row).min(rgb.len());
+        raw.extend_from_slice(&rgb[start..end]);
+        raw.resize(raw.len() + row - (end - start), 0);
+    }
+    let mut z = Vec::from([0x78, 0x01]);
+    deflate_runs(&raw, &mut z);
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + u32::from(x)) % 65_521;
+        b = (b + a) % 65_521;
+    }
+    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut out = Vec::from(SIGNATURE);
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&width.to_be_bytes());
+    ihdr.extend_from_slice(&height.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// Bits into bytes, least significant first (deflate's order).
+struct Bits<'a> {
+    out: &'a mut Vec<u8>,
+    acc: u32,
+    n: u32,
+}
+
+impl Bits<'_> {
+    /// `n` bits of `v`, low first.
+    fn put(&mut self, v: u32, n: u32) {
+        self.acc |= v << self.n;
+        self.n += n;
+        while self.n >= 8 {
+            self.out.push(self.acc as u8);
+            self.acc >>= 8;
+            self.n -= 8;
+        }
+    }
+
+    /// A Huffman code of `n` bits, its first bit the code's highest.
+    fn code(&mut self, v: u32, n: u32) {
+        self.put(v.reverse_bits() >> (32 - n), n);
+    }
+
+    /// A literal or length symbol of the fixed code.
+    fn symbol(&mut self, s: u32) {
+        match s {
+            0..=143 => self.code(0x30 + s, 8),
+            144..=255 => self.code(0x190 + s - 144, 9),
+            256..=279 => self.code(s - 256, 7),
+            _ => self.code(0xc0 + s - 280, 8),
+        }
+    }
+
+    fn finish(mut self) {
+        if self.n > 0 {
+            self.out.push(self.acc as u8);
+        }
+        self.n = 0;
+    }
+}
+
+/// The base length of each length symbol from 257, and its extra bits.
+const LENGTHS: [(u32, u32); 29] = [
+    (3, 0),
+    (4, 0),
+    (5, 0),
+    (6, 0),
+    (7, 0),
+    (8, 0),
+    (9, 0),
+    (10, 0),
+    (11, 1),
+    (13, 1),
+    (15, 1),
+    (17, 1),
+    (19, 2),
+    (23, 2),
+    (27, 2),
+    (31, 2),
+    (35, 3),
+    (43, 3),
+    (51, 3),
+    (59, 3),
+    (67, 4),
+    (83, 4),
+    (99, 4),
+    (115, 4),
+    (131, 5),
+    (163, 5),
+    (195, 5),
+    (227, 5),
+    (258, 0),
+];
+
+/// `data` as one final fixed-Huffman block: literals, and each run of a repeated byte as matches at distance 1.
+fn deflate_runs(data: &[u8], out: &mut Vec<u8>) {
+    let mut w = Bits { out, acc: 0, n: 0 };
+    w.put(1, 1);
+    w.put(1, 2);
+    let mut i = 0;
+    while i < data.len() {
+        let b = data[i];
+        w.symbol(u32::from(b));
+        i += 1;
+        let mut run = data[i..].iter().take_while(|&&x| x == b).count();
+        i += run;
+        while run >= 3 {
+            let len = run.min(258) as u32;
+            // A match of 258 leaves the rest; a leftover of one or two goes as literals.
+            let k = LENGTHS
+                .iter()
+                .rposition(|&(base, _)| base <= len)
+                .unwrap_or(0);
+            let (base, extra) = LENGTHS[k];
+            w.symbol(257 + k as u32);
+            w.put(len - base, extra);
+            w.code(0, 5);
+            run -= len as usize;
+        }
+        for _ in 0..run {
+            w.symbol(u32::from(b));
+        }
+    }
+    w.symbol(256);
+    w.finish();
+}
+
 /// Writes a chunk (for the synthetic files).
 pub fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
     out.extend_from_slice(&(data.len() as u32).to_be_bytes());

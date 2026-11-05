@@ -107,12 +107,27 @@ pub fn plain() -> Vec<u8> {
     torque_shapes::write::write_dts(&b.build())
 }
 
+/// An interior: a wall 4 wide (x -2 to 2), 0.5 thick (y -0.25 to 0.25) and 3 high, standing on a floor slab.
+pub fn wall() -> Vec<u8> {
+    use torque_interior_builder::{Brush, Options, TexGen, build};
+    let grid = |n| TexGen::world(n, 1.0);
+    let brushes = [
+        Brush::cuboid([-2.0, -0.25, 0.0], [2.0, 0.25, 3.0], "wall", grid),
+        Brush::cuboid([-4.0, -4.0, -1.0], [4.0, 4.0, 0.0], "floor", grid),
+    ];
+    build(&brushes, &Options::default())
+        .unwrap()
+        .bytes()
+        .unwrap()
+}
+
 pub fn game_server() -> Server {
     let mut vm = Vm::new();
     torque_game::specs::install(&mut vm);
     let files = MemFiles::new();
     files.insert("figure.dts", &figure());
     files.insert("plain.dts", &plain());
+    files.insert("wall.dif", &wall());
     vm.set_file_host(files);
     let state = Rc::new(RefCell::new(ServerState::default()));
     torque_server::game::install(&mut vm, &state);

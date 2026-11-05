@@ -26,6 +26,7 @@ pub mod audio;
 pub mod codec;
 pub mod datablocks;
 pub mod fx;
+pub mod interior;
 pub mod light;
 pub mod markers;
 pub mod motion;

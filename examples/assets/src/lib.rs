@@ -1,7 +1,9 @@
 //! The example games' shared asset kit: a unit cube, a box figure with idle, walk, run, back, side, jump, look, death and
-//! sit sequences, a pistol, a projectile, a dune buggy and its wheel, a terrain of hills, their textures and a particle's, all made
-//! by this crate's code ([`shapes`], [`buggy`], [`terrain`], [`textures`]; the shape builder is the `torque-shape-builder`
-//! crate, [`builder`]) and written as `.dts` (version 24, through `torque_shapes::write`), `.ter` and `.png`.
+//! sit sequences, a pistol, a projectile, a dune buggy and its wheel, a terrain of hills, the arena's interior, their textures
+//! and a particle's, all made by this crate's code ([`shapes`], [`buggy`], [`terrain`], [`interiors`], [`textures`]; the shape
+//! builder is the `torque-shape-builder` crate, [`builder`], the interior builder `torque-interior-builder`) and written as
+//! `.dts` (version 24, through `torque_shapes::write`), `.ter`, `.dif` (version 0, through `torque_maps::dif::write`) and
+//! `.png`.
 //!
 //! **Made at run time, not kept in the repository.** The code is the source of the assets; an example calls [`write_all`] at
 //! start-up (a few kilobytes, a millisecond), or `just examples/assets <dir>` (the `make-example-assets` tool) writes them
@@ -13,6 +15,7 @@
 
 pub use torque_shape_builder as builder;
 pub mod buggy;
+pub mod interiors;
 pub mod shapes;
 pub mod terrain;
 pub mod textures;
@@ -46,8 +49,20 @@ pub fn all() -> io::Result<Vec<Asset>> {
             bytes: terrain::hills(),
         },
         Asset {
+            name: "arena.dif",
+            bytes: interiors::arena_dif()?,
+        },
+        Asset {
             name: "grid.png",
             bytes: textures::grid()?,
+        },
+        Asset {
+            name: "arena_floor.png",
+            bytes: textures::grid_tinted(textures::SAND)?,
+        },
+        Asset {
+            name: "arena_wall.png",
+            bytes: textures::grid_tinted(textures::SLATE)?,
         },
         Asset {
             name: "figure.png",

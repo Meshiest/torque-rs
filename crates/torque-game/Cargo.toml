@@ -29,6 +29,9 @@ net = { package = "torque-net", path = "../torque-net" }
 torque-scene = { path = "../torque-scene" }
 # The game folder's files the shapes are read from.
 torque-resource = { path = "../torque-resource" }
+# The interiors' files (`.dif`) and the importer that makes their hulls.
+torque-maps = { path = "../torque-maps" }
+torque-mapcore = { path = "../torque-mapcore" }
 
 [lints]
 workspace = true

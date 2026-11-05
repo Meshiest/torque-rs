@@ -47,6 +47,7 @@ use torque_render_scene::vehicle_dust::{VehicleDust, ground_under, running_vehic
 use torque_render_scene::{Assets, Draw};
 
 use super::view::WorldView;
+use crate::interiors::Interiors;
 use torque_client::conn::tge::TgeWorld;
 use torque_client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
 use torque_client::predict::ghost_players::GhostPlayers;
@@ -138,6 +139,12 @@ pub trait GhostStyle {
     /// A projectile's render transform ([`Flight::transform`]: on its flight).
     fn projectile(&self, flight: &Flight) -> Mat {
         flight.transform()
+    }
+
+    /// An interior's draw of `material` (its triangles in the world, its texture the material's) before it joins the view
+    /// ([`crate::interiors`]): a host may tint it or change its sampler. Asked when an interior's objects are made.
+    fn interior_draw(&mut self, material: &str, draw: &mut Draw) {
+        let _ = (material, draw);
     }
 
     /// Draws added to the frame's particles, each with its distance from the eye (e.g. a shot's flare at a muzzle).
@@ -518,6 +525,8 @@ pub struct GhostScene<S = Plain> {
     pub ribbons_drawn: usize,
     /// The shots seen so far.
     pub flashes: usize,
+    /// The map's interiors.
+    interiors: Interiors,
     /// The dust the vehicles the client runs kick up ([`VehicleDust`]: TGE's tire and lift-off dust).
     pub dust: VehicleDust,
     /// The tire tracks they leave, when the game asks for them ([`GhostScene::set_tire_tracks`]).
@@ -561,6 +570,7 @@ impl<S: GhostStyle> GhostScene<S> {
             trail_particles: 0,
             ribbons_drawn: 0,
             flashes: 0,
+            interiors: Interiors::default(),
             dust: VehicleDust::default(),
             tracks: None,
         }
@@ -574,6 +584,7 @@ impl<S: GhostStyle> GhostScene<S> {
     /// Forgets every ghost (a new connection's ghosts are new), and the style what it keeps of them; the shots seen so far stay.
     pub fn clear(&mut self) {
         self.style.clear();
+        self.interiors.clear();
         let tracks = self
             .tracks
             .as_ref()
@@ -602,6 +613,7 @@ impl<S: GhostStyle> GhostScene<S> {
             trail_particles: self.trail_particles,
             ribbons_drawn: self.ribbons_drawn,
             flashes: _,
+            interiors: _,
             dust: _,
             tracks: _,
         } = GhostScene::new(self.options.clone());
@@ -984,7 +996,8 @@ impl<S: GhostStyle> GhostScene<S> {
                         }
                         let angle = self.rng.f() * std::f32::consts::TAU;
                         let reach = d.size[0].max(d.size[1]);
-                        let surface = (input.surfaces)(world, at, reach);
+                        let mut surface = (input.surfaces)(world, at, reach);
+                        surface.extend(self.interiors.faces_near(at, reach));
                         self.decals.add_clipped(&d, at, normal, angle, &surface);
                     }
                 }
@@ -1082,7 +1095,8 @@ impl<S: GhostStyle> GhostScene<S> {
         }
     }
 
-    /// The frame's objects of the ghosts the engine draws ([`GhostOptions::select`]) as [`GhostScene::update`] left them.
+    /// The frame's objects of the ghosts the engine draws ([`GhostOptions::select`]) as [`GhostScene::update`] left them, and the
+    /// map's interiors ([`crate::interiors`], each draw through [`GhostStyle::interior_draw`]).
     pub fn objects(
         &mut self,
         view: &mut WorldView,
@@ -1115,7 +1129,18 @@ impl<S: GhostStyle> GhostScene<S> {
                 Some(o.0) != control && drawn(&o.0) && !world.mounted_images(o.0).is_empty()
             })
             .count();
-        view.ghost_objects(world, &shaped, set)
+        let mut out = view.ghost_objects(world, &shaped, set);
+        let style = &mut self.style;
+        out.extend(
+            self.interiors
+                .objects(view, assets, world, &mut |m, d| style.interior_draw(m, d)),
+        );
+        out
+    }
+
+    /// Makes the interiors' objects again at the next frame (the style's look of them changed).
+    pub fn restyle_interiors(&mut self) {
+        self.interiors.clear();
     }
 
     /// The frame's particles (the trails, the bursts, the images' emitters, the ribbons and the style's own, facing `eye`) and

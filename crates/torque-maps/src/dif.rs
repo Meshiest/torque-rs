@@ -29,7 +29,11 @@
 
 use crate::png::{self, Png};
 use crate::read::Reader;
+
+#[path = "dif_write.rs"]
+mod writer;
 use crate::{MAX_DIF_BYTES, MAX_ENTRIES, MAX_INTERIORS, MapError, size_ok};
+pub use writer::write;
 
 /// The only resource version read (`InteriorResource::smFileVersion`).
 pub const RESOURCE_VERSION: u32 = 44;

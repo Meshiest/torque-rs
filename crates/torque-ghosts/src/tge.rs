@@ -1,7 +1,7 @@
 //! [`TgeGhosts`], the engine's default [`GhostCodecSet`]: TGE 1.4's object classes with their record codecs, and TGE's
 //! networked class list ([`TGE_OBJECT_CLASSES`], [`TGE_DATABLOCK_CLASSES`], [`tge_reps`]) that a connection's class ids are
-//! derived from (`torque_net::classes::NetClasses::derive`). A class of the list with no codec here (TerrainBlock,
-//! InteriorInstance, WaterBlock, ...) stays unsupported, by name.
+//! derived from (`torque_net::classes::NetClasses::derive`). A class of the list with no codec here (TerrainBlock, WaterBlock,
+//! ...) stays unsupported, by name.
 //!
 //! The class ids are the derivation's, so they are only meaningful between two ends that register the same list. The engine's
 //! own classes ([`crate::light`]: not TGE's) take the ids past the end of the table ([`GhostCodecSet::class_past_table`]).
@@ -28,6 +28,7 @@ use torque_net::huffman::Table;
 use crate::audio::{self, AudioEmitter};
 use crate::codec::{Layout, NetWidths, R, ReadCtx, decode, encode};
 use crate::fx::{FxLight, ParticleEmitterNode, pack_fx_light, pack_particle_emitter_node};
+use crate::interior::{InteriorInstance, pack_interior_instance};
 use crate::light::{
     ENGINE_OBJECT_CLASSES, ScatterSky, SpotLight, TimeOfDay, pack_scatter_sky, pack_spot_light,
     pack_time_of_day,
@@ -190,6 +191,7 @@ pub enum TgeClass {
     WayPoint,
     WheeledVehicle,
     FxLight,
+    InteriorInstance,
     /// The engine's own classes ([`crate::light`]): ghosted to the engine's own clients only, their class ids past TGE's.
     SpotLight,
     TimeOfDay,
@@ -197,7 +199,7 @@ pub enum TgeClass {
 }
 
 impl TgeClass {
-    pub const ALL: [TgeClass; 27] = [
+    pub const ALL: [TgeClass; 28] = [
         TgeClass::AiPlayer,
         TgeClass::AiWheeledVehicle,
         TgeClass::AudioEmitter,
@@ -222,6 +224,7 @@ impl TgeClass {
         TgeClass::WayPoint,
         TgeClass::WheeledVehicle,
         TgeClass::FxLight,
+        TgeClass::InteriorInstance,
         TgeClass::SpotLight,
         TgeClass::TimeOfDay,
         TgeClass::ScatterSky,
@@ -254,6 +257,7 @@ impl TgeClass {
             TgeClass::WayPoint => "WayPoint",
             TgeClass::WheeledVehicle => "WheeledVehicle",
             TgeClass::FxLight => "fxLight",
+            TgeClass::InteriorInstance => "InteriorInstance",
             TgeClass::SpotLight => "SpotLight",
             TgeClass::TimeOfDay => "TimeOfDay",
             TgeClass::ScatterSky => "ScatterSky",
@@ -301,6 +305,7 @@ impl TgeClass {
             | TgeClass::VehicleBlocker
             | TgeClass::WayPoint
             | TgeClass::FxLight
+            | TgeClass::InteriorInstance
             | TgeClass::SpotLight
             | TgeClass::TimeOfDay
             | TgeClass::ScatterSky => GHOSTABLE | SCOPE_ALWAYS,
@@ -355,6 +360,7 @@ pub enum TgeRecord {
     WayPoint(WayPoint<TgeShapeBase>),
     WheeledVehicle(WheeledVehicle),
     FxLight(FxLight),
+    InteriorInstance(InteriorInstance),
     SpotLight(SpotLight),
     TimeOfDay(TimeOfDay),
     ScatterSky(ScatterSky),
@@ -388,6 +394,7 @@ macro_rules! each_record {
             TgeRecord::WayPoint($r) => $body,
             TgeRecord::WheeledVehicle($r) => $body,
             TgeRecord::FxLight($r) => $body,
+            TgeRecord::InteriorInstance($r) => $body,
             TgeRecord::SpotLight($r) => $body,
             TgeRecord::TimeOfDay($r) => $body,
             TgeRecord::ScatterSky($r) => $body,
@@ -422,6 +429,7 @@ impl TgeRecord {
             TgeRecord::WayPoint(_) => TgeClass::WayPoint,
             TgeRecord::WheeledVehicle(_) => TgeClass::WheeledVehicle,
             TgeRecord::FxLight(_) => TgeClass::FxLight,
+            TgeRecord::InteriorInstance(_) => TgeClass::InteriorInstance,
             TgeRecord::SpotLight(_) => TgeClass::SpotLight,
             TgeRecord::TimeOfDay(_) => TgeClass::TimeOfDay,
             TgeRecord::ScatterSky(_) => TgeClass::ScatterSky,
@@ -544,6 +552,10 @@ impl GhostCodecSet for TgeGhosts {
             TgeClass::TsStatic => (TgeRecord::TsStatic(pack_ts_static(view)), 0),
             TgeClass::VehicleBlocker => (TgeRecord::VehicleBlocker(pack_vehicle_blocker(view)), 0),
             TgeClass::FxLight => (TgeRecord::FxLight(pack_fx_light(view, mask, ctx)), 0),
+            TgeClass::InteriorInstance => (
+                TgeRecord::InteriorInstance(pack_interior_instance(view, mask)),
+                0,
+            ),
             TgeClass::SpotLight => (TgeRecord::SpotLight(pack_spot_light(view, mask, ctx)), 0),
             TgeClass::TimeOfDay => (TgeRecord::TimeOfDay(pack_time_of_day(view, mask)), 0),
             TgeClass::ScatterSky => (TgeRecord::ScatterSky(pack_scatter_sky(view, mask)), 0),
@@ -584,6 +596,7 @@ impl GhostCodecSet for TgeGhosts {
             TgeClass::WayPoint => read(r, table, charge, ctx, TgeRecord::WayPoint),
             TgeClass::WheeledVehicle => read(r, table, charge, ctx, TgeRecord::WheeledVehicle),
             TgeClass::FxLight => read(r, table, charge, ctx, TgeRecord::FxLight),
+            TgeClass::InteriorInstance => read(r, table, charge, ctx, TgeRecord::InteriorInstance),
             TgeClass::SpotLight => read(r, table, charge, ctx, TgeRecord::SpotLight),
             TgeClass::TimeOfDay => read(r, table, charge, ctx, TgeRecord::TimeOfDay),
             TgeClass::ScatterSky => read(r, table, charge, ctx, TgeRecord::ScatterSky),

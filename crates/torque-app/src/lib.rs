@@ -9,6 +9,7 @@
 //! - [`view::WorldView`]: the per-frame world view, drawn by the enhanced renderer under the GUI.
 //! - [`ghosts::GhostScene`]: the client's ghosts drawn through the engine's moving shapes, with live Players, held images and
 //!   projectiles.
+//! - [`interiors::Interiors`]: the map's interiors (InteriorInstance ghosts) as static mesh objects of the view.
 //! - [`hosting`]: hosting a game and joining one: the client's network mode, the address a hosted game binds and is joined by,
 //!   a typed address and the join screen's natives.
 //! - [`orbit::Orbit`]: a third-person camera that circles a point.
@@ -24,6 +25,7 @@ pub mod client;
 pub mod files;
 pub mod ghosts;
 pub mod hosting;
+pub mod interiors;
 pub mod orbit;
 pub mod server;
 pub mod shots;
