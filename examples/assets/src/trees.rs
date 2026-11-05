@@ -163,10 +163,10 @@ pub struct Tree {
 
 /// A small fixed-seed random stream (SplitMix64).
 #[derive(Debug, Clone)]
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -175,16 +175,16 @@ impl Rng {
     }
 
     /// A number in [0, 1).
-    fn unit(&mut self) -> f64 {
+    pub(crate) fn unit(&mut self) -> f64 {
         (self.next() >> 11) as f64 / (1u64 << 53) as f64
     }
 
-    fn range(&mut self, lo: f64, hi: f64) -> f64 {
+    pub(crate) fn range(&mut self, lo: f64, hi: f64) -> f64 {
         lo + (hi - lo) * self.unit()
     }
 
     /// One of `items`, each as likely as its weight.
-    fn pick<T: Copy>(&mut self, items: &[(T, f64)]) -> T {
+    pub(crate) fn pick<T: Copy>(&mut self, items: &[(T, f64)]) -> T {
         let total: f64 = items.iter().map(|i| i.1).sum();
         let mut at = self.unit() * total;
         for &(item, weight) in items {
@@ -753,59 +753,60 @@ pub struct Chunk {
 /// columns, their files `forest00.dif` on (the map's `InteriorInstance`s name them under `kit/`).
 pub fn chunks() -> &'static [Chunk] {
     static CHUNKS: OnceLock<Vec<Chunk>> = OnceLock::new();
-    CHUNKS.get_or_init(|| {
-        let all = forest();
-        let mut squares: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
-        for (k, t) in all.iter().enumerate() {
-            let key = (
-                (t.foot[1] / CHUNK).floor() as i32,
-                (t.foot[0] / CHUNK).floor() as i32,
-            );
-            squares.entry(key).or_default().push(k);
+    CHUNKS.get_or_init(|| chunks_of(forest(), "forest"))
+}
+
+/// The squares of the trees `all` as [`chunks`] cuts the forest, their files `<prefix>00.dif` on.
+pub fn chunks_of(all: &[Tree], prefix: &str) -> Vec<Chunk> {
+    let mut squares: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
+    for (k, t) in all.iter().enumerate() {
+        let key = (
+            (t.foot[1] / CHUNK).floor() as i32,
+            (t.foot[0] / CHUNK).floor() as i32,
+        );
+        squares.entry(key).or_default().push(k);
+    }
+    // Quarters of a crowded square, about its middle, until each holds few enough.
+    fn split(
+        trees: Vec<usize>,
+        middle: [f32; 2],
+        half: f32,
+        all: &[Tree],
+        out: &mut Vec<Vec<usize>>,
+    ) {
+        if trees.iter().map(|&k| all[k].kind.surfaces()).sum::<usize>() <= CHUNK_SURFACES {
+            out.push(trees);
+            return;
         }
-        // Quarters of a crowded square, about its middle, until each holds few enough.
-        fn split(
-            trees: Vec<usize>,
-            middle: [f32; 2],
-            half: f32,
-            all: &[Tree],
-            out: &mut Vec<Vec<usize>>,
-        ) {
-            if trees.iter().map(|&k| all[k].kind.surfaces()).sum::<usize>() <= CHUNK_SURFACES {
-                out.push(trees);
-                return;
-            }
-            let mut quarters: [Vec<usize>; 4] = Default::default();
-            for k in trees {
-                let f = all[k].foot;
-                quarters[usize::from(f[0] >= middle[0]) + 2 * usize::from(f[1] >= middle[1])]
-                    .push(k);
-            }
-            for (q, trees) in quarters.into_iter().enumerate() {
-                let h = half / 2.0;
-                let m = [
-                    middle[0] + if q % 2 == 1 { h } else { -h },
-                    middle[1] + if q / 2 == 1 { h } else { -h },
-                ];
-                if !trees.is_empty() {
-                    split(trees, m, h, all, out);
-                }
+        let mut quarters: [Vec<usize>; 4] = Default::default();
+        for k in trees {
+            let f = all[k].foot;
+            quarters[usize::from(f[0] >= middle[0]) + 2 * usize::from(f[1] >= middle[1])].push(k);
+        }
+        for (q, trees) in quarters.into_iter().enumerate() {
+            let h = half / 2.0;
+            let m = [
+                middle[0] + if q % 2 == 1 { h } else { -h },
+                middle[1] + if q / 2 == 1 { h } else { -h },
+            ];
+            if !trees.is_empty() {
+                split(trees, m, h, all, out);
             }
         }
-        let mut pieces = Vec::new();
-        for ((row, column), trees) in squares {
-            let middle = [(column as f32 + 0.5) * CHUNK, (row as f32 + 0.5) * CHUNK];
-            split(trees, middle, CHUNK / 2.0, all, &mut pieces);
-        }
-        pieces
-            .into_iter()
-            .enumerate()
-            .map(|(k, trees)| Chunk {
-                file: format!("forest{k:02}.dif"),
-                trees,
-            })
-            .collect()
-    })
+    }
+    let mut pieces = Vec::new();
+    for ((row, column), trees) in squares {
+        let middle = [(column as f32 + 0.5) * CHUNK, (row as f32 + 0.5) * CHUNK];
+        split(trees, middle, CHUNK / 2.0, all, &mut pieces);
+    }
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(k, trees)| Chunk {
+            file: format!("{prefix}{k:02}.dif"),
+            trees,
+        })
+        .collect()
 }
 
 /// How the trees' interiors are built: the coarse lightmaps ([`LIGHTMAP_TEXEL`]).
@@ -824,8 +825,12 @@ fn interior(brushes: &[Brush]) -> io::Result<Vec<u8>> {
 
 /// Square `index`'s brushes (in the world's coordinates).
 pub fn chunk_brushes(index: usize) -> Vec<Brush> {
-    let all = forest();
-    chunks()[index]
+    brushes_of(forest(), &chunks()[index])
+}
+
+/// The brushes of `chunk`'s trees of `all` (in the world's coordinates).
+pub fn brushes_of(all: &[Tree], chunk: &Chunk) -> Vec<Brush> {
+    chunk
         .trees
         .iter()
         .flat_map(|&k| {
@@ -838,44 +843,47 @@ pub fn chunk_brushes(index: usize) -> Vec<Brush> {
 /// Every square as a `.dif` with its file name, built once (the kit is made many times in a run of the tests).
 pub fn chunk_difs() -> io::Result<Vec<(&'static str, Vec<u8>)>> {
     static DIFS: OnceLock<Result<Vec<Vec<u8>>, String>> = OnceLock::new();
-    let difs = DIFS.get_or_init(|| {
-        let n = chunks().len();
-        let workers = std::thread::available_parallelism().map_or(1, |w| w.get().min(4));
-        let next = AtomicUsize::new(0);
-        let mut built: Vec<(usize, io::Result<Vec<u8>>)> = std::thread::scope(|scope| {
-            let jobs: Vec<_> = (0..workers)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let mut done = Vec::new();
-                        loop {
-                            let k = next.fetch_add(1, Ordering::Relaxed);
-                            if k >= n {
-                                return done;
-                            }
-                            done.push((k, interior(&chunk_brushes(k))));
-                        }
-                    })
-                })
-                .collect();
-            jobs.into_iter()
-                .flat_map(|j| j.join().unwrap_or_default())
-                .collect()
-        });
-        if built.len() != n {
-            return Err("a forest square's build panicked".to_string());
-        }
-        built.sort_by_key(|b| b.0);
-        built
-            .into_iter()
-            .map(|(_, b)| b.map_err(|e| e.to_string()))
-            .collect()
-    });
+    let difs = DIFS.get_or_init(|| build_chunks(forest(), chunks()));
     let difs = difs.as_ref().map_err(|e| io::Error::other(e.clone()))?;
     Ok(chunks()
         .iter()
         .zip(difs)
         .map(|(c, d)| (c.file.as_str(), d.clone()))
         .collect())
+}
+
+/// The `.dif` of each of `chunks` (of the trees `all`), built on a few threads, in order.
+pub fn build_chunks(all: &[Tree], chunks: &[Chunk]) -> Result<Vec<Vec<u8>>, String> {
+    let n = chunks.len();
+    let workers = std::thread::available_parallelism().map_or(1, |w| w.get().min(4));
+    let next = AtomicUsize::new(0);
+    let mut built: Vec<(usize, io::Result<Vec<u8>>)> = std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        if k >= n {
+                            return done;
+                        }
+                        done.push((k, interior(&brushes_of(all, &chunks[k]))));
+                    }
+                })
+            })
+            .collect();
+        jobs.into_iter()
+            .flat_map(|j| j.join().unwrap_or_default())
+            .collect()
+    });
+    if built.len() != n {
+        return Err("a forest square's build panicked".to_string());
+    }
+    built.sort_by_key(|b| b.0);
+    built
+        .into_iter()
+        .map(|(_, b)| b.map_err(|e| e.to_string()))
+        .collect()
 }
 
 /// The lineup's file.

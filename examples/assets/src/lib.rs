@@ -4,7 +4,8 @@
 //! [`terrain`], [`track`], [`interiors`], [`trees`], [`textures`]; the shape
 //! builder is the `torque-shape-builder` crate, [`builder`], the interior builder `torque-interior-builder`) and written as
 //! `.dts` (version 24, through `torque_shapes::write`), `.ter`, `.dif` (version 0, through `torque_maps::dif::write`) and
-//! `.png`.
+//! `.png`. The valley ([`valley`]: a terrain with a lake and woods, and its ground's textures) is made only by a game that asks
+//! for it ([`valley::files`]).
 //!
 //! **Made at run time, not kept in the repository.** The code is the source of the assets; an example calls [`write_all`] at
 //! start-up (a few kilobytes, a millisecond), or `just examples/assets <dir>` (the `make-example-assets` tool) writes them
@@ -22,6 +23,7 @@ pub mod terrain;
 pub mod textures;
 pub mod track;
 pub mod trees;
+pub mod valley;
 
 use std::io;
 use std::path::{Path, PathBuf};

@@ -100,6 +100,11 @@ web-fps-rtc-check:
 level-demo-shots dir="../target/level-demo-shots":
     cargo run -p torque-example-level-demo --release -- --shots {{dir}}
 
+# The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
+# into `dir`
+level-demo-valley-shots dir="../target/level-demo-valley-shots":
+    cargo run -p torque-example-level-demo --release -- --valley-shots {{dir}}
+
 # Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
 kit-shots dir="../target/kit-shots":
     cargo run -p torque-example-common --release --example kit-shots -- {{dir}}

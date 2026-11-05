@@ -255,6 +255,11 @@ The first development version. Nothing is published yet; this is what exists.
 - The examples' `showcase` modules (the vehicle demo, the arena, the level demo): the buggy taken through the race
   track's tightest turn, its dust and tracks behind it; a shot in the arena from the side, frame by frame from its flash
   (the muzzle's flare, the bolt, the hit); the office's desks; each the world alone at the Ultra quality.
+- The level demo's valley map (`missions/valley.mis`, 6 on the menu, `?map=valley` on the web): a lake in a long valley
+  between mountains, the sun held low over a pass at its western end, woods on the lower slopes and sunlit clouds. The
+  asset kit makes it (`torque_example_assets::valley`: the terrain with grass, rock and sand, and woods of the hills'
+  trees; `trees::chunks_of` and `trees::build_chunks` cut any trees into interiors); the level demo adds it to the kit
+  when it starts and to its web pack. `just examples/level-demo-valley-shots` draws it from a few places.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

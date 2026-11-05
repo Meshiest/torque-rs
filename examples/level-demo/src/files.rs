@@ -48,5 +48,45 @@ pub fn maps(files: &GameFiles) -> Vec<MapEntry> {
 /// The kit's forests (the vehicle demo's, which no map here places) are left out too.
 pub fn web_pack(mut files: GameFiles) -> Result<Vec<u8>, String> {
     crate::levels::add_levels(&mut files)?;
+    add_valley(&mut files)?;
     Ok(files.pack(|path| !path.starts_with("levels/") && !path.starts_with("kit/forest")))
+}
+
+/// The map that has the valley's terrain, woods and textures ([`torque_example_assets::valley`]).
+pub const VALLEY_MAP: &str = "missions/valley.mis";
+
+/// The line of the valley's map its woods' interiors take the place of.
+pub const WOODS: &str = "%woods%";
+
+/// The valley's files added to the kit when the game folder has its map and the kit has them not yet (a web build's pack
+/// carries them made), and its map's [`WOODS`] line replaced by an `InteriorInstance` of each square of the woods.
+pub fn add_valley(files: &mut GameFiles) -> Result<(), String> {
+    use torque_example_assets::valley;
+    let terrain = torque_example_common::kit_path(valley::TERRAIN_FILE);
+    let Some(map) = files.file(VALLEY_MAP) else {
+        return Ok(());
+    };
+    if torque_render_scene::Assets::read(&files.kit, &terrain).is_some() {
+        return Ok(());
+    }
+    let mut map = String::from_utf8_lossy(map).into_owned();
+    for asset in valley::files().map_err(|e| e.to_string())? {
+        files.kit.insert(asset.name, asset.bytes);
+    }
+    let woods: String = valley::chunks()
+        .iter()
+        .enumerate()
+        .map(|(k, c)| {
+            format!(
+                "   new InteriorInstance(Woods{k}) {{ position = \"0 0 0\"; rotation = \"1 0 0 0\"; scale = \"1 1 1\"; \
+                 interiorFile = \"kit/{}\"; }};\n",
+                c.file
+            )
+        })
+        .collect();
+    map = map
+        .replace(&format!("{WOODS}\n"), &woods)
+        .replace(WOODS, &woods);
+    files.insert(VALLEY_MAP, map.as_bytes());
+    Ok(())
 }

@@ -15,7 +15,7 @@
 //! ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden only once the camera has arrived at
 //! its eyes.
 //!
-//! **The ground.** A map with a terrain or water ([`MapGround`]) has them drawn as the map starts, the terrain also
+//! **The ground.** A map with a terrain or water ([`MapGround`]: the valley) has them drawn as the map starts, the terrain also
 //! the own figure's ground in the prediction ([`CubeClient::set_terrain`]) and the camera kept above it; its day (a
 //! `TimeOfDay` under a `ScatterSky`) lights the view and the sky's clouds are sunlit cumulus ([`WorldLights`]).
 
@@ -92,6 +92,7 @@ impl LevelDemo {
     /// The client over `files`: `client.cs` run, the menu built from the maps found.
     pub fn new(mut files: GameFiles) -> Result<LevelDemo, String> {
         crate::levels::add_levels(&mut files)?;
+        crate::files::add_valley(&mut files)?;
         let maps = crate::files::maps(&files);
         let cube = Rc::new(CubeClient::new(files.mem_files()));
         let mut b = ClientBuilder::new(ClientSetup {
