@@ -466,3 +466,204 @@ fn getting_off_a_mount_lets_the_moves_pick_again_and_the_next_mount_sets_its_act
     anim.update(&shape, &mut instance, &seated, 0.032);
     assert_eq!(anim.action(), (hold, true));
 }
+
+/// A shape whose one leg node the gaits swing about x, each furthest forward a quarter into its loop and carrying the shape
+/// along y: `run` 45 degrees each way over 0.6 seconds at 5 units a second, `back` 30 degrees over 0.7 seconds at 4 backward,
+/// and (`walk` true) `walk` 20 degrees over 0.8 seconds at 2.
+fn gait_shape(walk: bool) -> Shape {
+    use torque_shape_builder::{NO_TURN, SequenceDef, ShapeBuilder, Track, turn};
+    const N: usize = 16;
+    let mut b = ShapeBuilder::new();
+    let base = b.node("base", None, [0.0; 3]);
+    let leg = b.node("leg", Some(base), [0.0, 0.0, 1.0]);
+    b.detail("detail1", 1.0);
+    let gait = |name, duration: f32, degrees: f32, speed: f32| SequenceDef {
+        name,
+        duration,
+        cyclic: true,
+        priority: 0,
+        keyframes: N,
+        rotations: vec![Track {
+            node: leg,
+            keys: (0..N)
+                .map(|k| {
+                    turn(
+                        [1.0, 0.0, 0.0],
+                        degrees * (std::f32::consts::TAU * k as f32 / N as f32).sin(),
+                    )
+                })
+                .collect(),
+        }],
+        translations: Vec::new(),
+        ground: (1..=N)
+            .map(|k| [0.0, speed * duration * k as f32 / N as f32, 0.0])
+            .collect(),
+    };
+    b.sequence(SequenceDef {
+        name: "root",
+        duration: 1.0,
+        cyclic: true,
+        priority: 0,
+        keyframes: 1,
+        rotations: vec![Track {
+            node: leg,
+            keys: vec![NO_TURN],
+        }],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
+    b.sequence(gait("run", 0.6, 45.0, 5.0));
+    b.sequence(gait("back", 0.7, 30.0, -4.0));
+    if walk {
+        b.sequence(gait("walk", 0.8, 20.0, 2.0));
+    }
+    Shape::for_server(b.build())
+}
+
+/// The leg's swing (degrees forward) as the instance is posed now.
+fn leg_swing(shape: &Shape, instance: &mut ShapeInstance) -> f32 {
+    instance.animate(shape, 0, None, &mut |_| true).unwrap();
+    let n = shape.find_name(b"leg").unwrap();
+    let node = shape.nodes.iter().position(|x| x.name == n).unwrap();
+    let foot = shapes::math::mul_p(&instance.node_transforms()[node], [0.0, 0.0, -1.0]);
+    foot[1].atan2(1.0 - foot[2]).to_degrees()
+}
+
+fn moving(speed: f32) -> PlayerMotion {
+    PlayerMotion {
+        velocity: [0.0, speed, 0.0],
+        ..PlayerMotion::default()
+    }
+}
+
+#[test]
+fn walking_pace_walks_forward_and_backward_and_running_pace_runs() {
+    let shape = gait_shape(true);
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    let walk = anim.actions().iter().position(|a| a.name == WALK).unwrap();
+    assert_eq!(anim.walk, Some(walk));
+    assert!((walk_limit(2.0, 5.0) - 10f32.sqrt()).abs() < 1e-6);
+    for (speed, want, name) in [
+        (2.1, (walk, true), "a walking pace ahead walks"),
+        (6.0, (1, true), "a running pace runs"),
+        (
+            -1.4,
+            (walk, false),
+            "a walking pace backward walks backward",
+        ),
+        (-4.0, (2, true), "a fast pace backward plays back"),
+        (2.1, (walk, true), "and back to the walk"),
+    ] {
+        for _ in 0..20 {
+            anim.update(&shape, &mut instance, &moving(speed), 0.016);
+        }
+        assert_eq!(anim.action(), want, "{name}");
+        let seq = sequence_of(&shape, &instance, anim.action_thread);
+        assert_eq!(
+            seq.as_deref(),
+            Some(&anim.actions()[want.0].name[..]),
+            "{name}"
+        );
+    }
+    // The walk's rate is the speed over its own, past maxTimeScale while under the limit.
+    anim.update(&shape, &mut instance, &moving(3.2), 0.016);
+    assert_eq!(anim.action(), (walk, true));
+    let scale = instance.thread(anim.action_thread).unwrap().time_scale;
+    assert!((scale - 1.6).abs() < 1e-4, "{scale}");
+
+    // Without a walk sequence: TGE's run at any pace, and back.
+    let shape = gait_shape(false);
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    assert_eq!(anim.walk, None);
+    for (speed, want) in [(2.1, (1, true)), (-1.4, (2, true))] {
+        anim.update(&shape, &mut instance, &moving(speed), 0.016);
+        assert_eq!(anim.action(), want, "{speed}");
+    }
+    // Synced: the server's TGE pick, so the run.
+    let shape = gait_shape(true);
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    anim.set_synced(true);
+    anim.update(&shape, &mut instance, &moving(2.1), 0.016);
+    assert_eq!(anim.action(), (1, true));
+}
+
+#[test]
+fn speeding_up_changes_walk_to_run_past_the_limit_in_step_and_without_a_pop() {
+    let shape = gait_shape(true);
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    let walk = anim.walk.unwrap();
+    let dt = 1.0 / 60.0;
+    let limit = walk_limit(2.0, 5.0);
+    // The fastest the leg turns in a frame running flat out.
+    let mut last = leg_swing(&shape, &mut instance);
+    let mut steady = 0.0f32;
+    for k in 0..120 {
+        anim.update(&shape, &mut instance, &moving(5.0), dt);
+        let now = leg_swing(&shape, &mut instance);
+        if k > 30 {
+            steady = steady.max((now - last).abs());
+        }
+        last = now;
+    }
+    // Walk, then speed up from 2 to 5 over 3 seconds and back down over 3.
+    for _ in 0..60 {
+        anim.update(&shape, &mut instance, &moving(2.0), dt);
+    }
+    assert_eq!(anim.action(), (walk, true));
+    let mut last = leg_swing(&shape, &mut instance);
+    let (mut up, mut down, mut worst) = (None, None, 0.0f32);
+    for k in 0..360 {
+        let speed = if k < 180 {
+            2.0 + 3.0 * k as f32 / 180.0
+        } else {
+            5.0 - 3.0 * (k - 180) as f32 / 180.0
+        };
+        let (before, pos) = (
+            anim.action().0,
+            instance.thread(anim.action_thread).unwrap().pos,
+        );
+        anim.update(&shape, &mut instance, &moving(speed), dt);
+        let after = anim.action().0;
+        if before == walk && after == 1 {
+            assert!(up.is_none(), "one change up");
+            up = Some(speed);
+            // The run takes up the walk's place in the loop (one frame on).
+            let now = instance.thread(anim.action_thread).unwrap().pos;
+            assert!((now - pos).rem_euclid(1.0) < 0.05, "{pos} {now}");
+        } else if before == 1 && after == walk {
+            assert!(down.is_none(), "one change down");
+            down = Some(speed);
+        }
+        let now = leg_swing(&shape, &mut instance);
+        worst = worst.max((now - last).abs());
+        last = now;
+    }
+    let (up, down) = (up.unwrap(), down.unwrap());
+    assert!(
+        up >= limit * (1.0 + WALK_MARGIN) && up < limit * (1.0 + WALK_MARGIN) + 0.03,
+        "up at {up}"
+    );
+    assert!(
+        down < limit * (1.0 - WALK_MARGIN) && down > limit * (1.0 - WALK_MARGIN) - 0.03,
+        "down at {down}"
+    );
+    assert!(
+        worst <= steady * 1.05,
+        "no frame turns the leg faster than running flat out: {worst} > {steady}"
+    );
+
+    // A pace wavering at the limit does not flip between them.
+    let mut changes = 0;
+    let mut was = anim.action();
+    for k in 0..240 {
+        let speed = limit * (1.0 + 0.03 * (k as f32 * 0.3).sin());
+        anim.update(&shape, &mut instance, &moving(speed), dt);
+        changes += usize::from(anim.action() != was);
+        was = anim.action();
+    }
+    assert_eq!(changes, 0);
+}

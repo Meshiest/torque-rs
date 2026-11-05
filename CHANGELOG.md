@@ -245,6 +245,10 @@ The first development version. Nothing is published yet; this is what exists.
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
   landing where `run`'s left leg reaches furthest forward. The feet turn at new `ankle_l` and `ankle_r` nodes. A test
   holds a planted foot to under 5% of the ground's speed.
+- `torque-client`: a Player walks at walking pace (`player_anim`, the engine's own `walk` action): a shape with a forward
+  `walk` plays it instead of `run` under the geometric mean of the two speeds, and backward instead of `back` under that of
+  the walk's and the back's, with a 5% margin either way; walk and run keep their place in the loop as they blend. A shape
+  without `walk`, and a synced Player, keep TGE's pick.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
