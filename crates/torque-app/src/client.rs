@@ -391,6 +391,8 @@ impl<S> GameClient<S> {
         c.predict.back = 1.0 - since as f32 / TICK_MS as f32;
         c.world.anim_ms = now;
         c.predict.set_aim_input(vm);
+        // The wheels of the vehicles the client runs spin by the frame's time (`WheeledVehicle::advanceTime`).
+        c.predict.frame_vehicles(now);
         c.predict.update_view(&mut c.world);
     }
 }
