@@ -1,0 +1,32 @@
+[package]
+name = "torque-rooms"
+description = "A room service for player-hosted games: room codes, the signaling of WebRTC data channels between a host and its joiners, and STUN and TURN details, with no game traffic through it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "webrtc", "signaling", "gamedev"]
+categories = ["game-development", "network-programming"]
+
+# The rooms themselves (`rooms`) are a state machine with no I/O; the service (`service`) runs them over torque-server's web
+# transport (HTTP and WebSocket with its TLS, access checks and caps); the binary is the service's command line.
+
+[dependencies]
+torque-server = { path = "../torque-server", features = ["web", "rooms"] }
+# The datagram cap the web transport's buffers start from.
+torque-net = { path = "../torque-net" }
+# Room codes from the system's random source; the TURN credentials' HMAC-SHA1.
+ring = { version = "0.17", default-features = false }
+
+[dev-dependencies]
+# The tests' clients.
+tungstenite = { version = "0.30", default-features = false }
+
+[[bin]]
+name = "torque-rooms"
+path = "src/main.rs"
+
+[lints]
+workspace = true

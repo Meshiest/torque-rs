@@ -4,7 +4,9 @@
 //! ([`conn`], [`local`]), the ghosting natives and the `NetObject` behaviour ([`ghosting`]), the event layer ([`events`],
 //! [`hostevent`]), the datablock chain ([`datablocks`]), the ghost hub ([`ghosts`]), the command natives ([`commands`]) and the server query's answers ([`query`]); [`torque`] is Torque's
 //! own net game and the network host the main loop drives. With the `web` feature, [`web`] is the transport browsers join
-//! over (WebSocket, with the game's page served on the same port) and the one that takes UDP and the web together.
+//! over (WebSocket, with the game's page served on the same port) and the one that takes UDP and the web together. With the
+//! `rooms` feature, [`room`] is the protocol of a room service, by which a player who hosts a game and the players who
+//! join it find each other.
 
 pub mod codecs;
 pub mod commands;
@@ -20,6 +22,8 @@ pub mod local;
 pub mod payload;
 pub mod pump;
 pub mod query;
+#[cfg(feature = "rooms")]
+pub mod room;
 pub mod torque;
 pub mod transport;
 #[cfg(all(feature = "web", not(target_arch = "wasm32")))]

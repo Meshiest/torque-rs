@@ -3277,6 +3277,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-rooms"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "torque-net",
+ "torque-server",
+ "tungstenite",
+]
+
+[[package]]
 name = "torque-scene"
 version = "0.1.0"
 

@@ -240,6 +240,15 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- `torque-rooms`: a room service for player-hosted games (library and `torque-rooms` binary). A host opens a room and
+  gets a code (8 characters, 40 bits); joiners name the code, and the service carries only the signaling of one WebRTC
+  data channel between each joiner and the host (a body must be an offer, answer, candidate, busy or closed message, so
+  no game traffic can pass). It runs on torque-server's web transport with its TLS, Host and Origin checks, per-address
+  caps and wire meters, and adds caps on rooms in all and per address, joins per address a minute and failed joins a
+  second (code guessing), joiners per room, signaling messages per joiner, and room, joiner and idle lifetimes. It hands
+  each room's players STUN URLs and TURN credentials in the TURN REST API form (HMAC-SHA1 of `<expiry>:<id>` under a
+  secret shared with the TURN server). torque-server's `rooms` feature: the room protocol (`net::room`); the web
+  transport's `close_socket`, and its sends capped by its message limit (unchanged by default).
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
