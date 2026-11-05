@@ -10,7 +10,8 @@
 //!   the values its updates bring), so the wheels, a `steering` thread and the hands on it turn smoothly between ticks and
 //!   between updates instead of in their steps (TGE draws `mSteering` as the last tick left it). Each wheel's contact is drawn under the drawn tire: the hub where the frame draws the
 //!   vehicle, down the spring by its extension and the tire's radius (`extendWheels` cast its ray from the pose before the
-//!   tick's move, a tick behind the drawn vehicle at speed).
+//!   tick's move, a tick behind the drawn vehicle at speed); the springs are drawn between the last two ticks' as the body is
+//!   ([`SpringLooks`]).
 //! - **A FlyingVehicle ghost** ([`FlyingWarp`]): TGE's client runs every vehicle ghost (`Vehicle::unpackUpdate`'s warp, then its
 //!   physics); the engine runs the WheeledVehicles ([`super::drive::GhostVehicle`]) but not the FlyingVehicles. Engine approximation:
 //!   from each update the drawn pose warps from where it was drawn to the update's over the ticks TGE's warp takes (the offset's
@@ -233,13 +234,67 @@ impl SteeringEase {
     }
 }
 
-/// The look of a vehicle the client runs: its state after the last tick, drawn with `steering` (its own when none), each
-/// wheel's contact under its tire where the frame draws the vehicle (`render`: the hub down the spring by the tick's extension
-/// and the tire's radius; the tick's own contact, `extendWheels` run at the tick).
+/// A vehicle's springs at its last two ticks (the tick told by its end position, or by the springs moving at rest).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TickSprings {
+    at: [f32; 3],
+    now: [f32; LOOK_WHEELS],
+    before: [f32; LOOK_WHEELS],
+}
+
+/// The springs' extensions the frames draw for each vehicle the client runs: between the last two ticks' by the frame's place
+/// between them, as the body is drawn ([`super::vehicle_render_pose`]); the tick's own would step the tires (and the contacts
+/// under them) up and down once a tick.
+#[derive(Debug, Clone, Default)]
+pub struct SpringLooks {
+    ticks: BTreeMap<u32, TickSprings>,
+}
+
+impl SpringLooks {
+    /// Vehicle `v`'s extensions drawn `back` between its last tick (0) and the one before (1).
+    pub fn drawn(&mut self, v: &DrivenVehicle, back: f32) -> [f32; LOOK_WHEELS] {
+        let mut ext = [1.0; LOOK_WHEELS];
+        for (e, w) in ext.iter_mut().zip(&v.v.k.wheels) {
+            if w.extension.is_finite() {
+                *e = w.extension.clamp(0.0, 1.0);
+            }
+        }
+        let at = v.v.s.delta_pos;
+        let t = self.ticks.entry(v.index).or_insert(TickSprings {
+            at,
+            now: ext,
+            before: ext,
+        });
+        if t.at != at || t.now != ext {
+            *t = TickSprings {
+                at,
+                now: ext,
+                before: t.now,
+            };
+        }
+        let b = if back.is_finite() {
+            back.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        std::array::from_fn(|k| t.now[k] + (t.before[k] - t.now[k]) * b)
+    }
+
+    /// Forgets the vehicles `keep` turns down.
+    pub fn retain(&mut self, keep: impl Fn(u32) -> bool) {
+        self.ticks.retain(|i, _| keep(*i));
+    }
+}
+
+/// The look of a vehicle the client runs: its state after the last tick, drawn with `steering` (its own when none) and the
+/// springs at `springs` (the tick's when none), each wheel's contact under its tire where the frame draws the vehicle
+/// (`render`: the hub down the spring by its extension and the tire's radius; the tick's own contact, `extendWheels` run at the
+/// tick).
 pub fn vehicle_look(
     v: &DrivenVehicle,
     spins: Option<&[f32; LOOK_WHEELS]>,
     steering: Option<f32>,
+    springs: Option<&[f32; LOOK_WHEELS]>,
     render: &Pose,
 ) -> VehicleLook {
     let s = &v.v.s;
@@ -260,10 +315,11 @@ pub fn vehicle_look(
             .take(LOOK_WHEELS)
             .enumerate()
             .map(|(k, w)| {
+                let extension = springs.map_or(w.extension, |e| e[k]);
                 let under = match (&w.tire, &w.spring, v.data.wheels.get(k)) {
                     (Some((_, tire)), Some((_, spring)), Some(rec)) => {
-                        let ext = if w.extension.is_finite() {
-                            w.extension.clamp(0.0, 1.0)
+                        let ext = if extension.is_finite() {
+                            extension.clamp(0.0, 1.0)
                         } else {
                             1.0
                         };
@@ -274,7 +330,7 @@ pub fn vehicle_look(
                 };
                 WheelLook {
                     fitted: w.tire.is_some() && w.spring.is_some(),
-                    extension: w.extension,
+                    extension,
                     apos: spins.map_or(0.0, |sp| sp[k]),
                     contact: w.contact,
                     point: under

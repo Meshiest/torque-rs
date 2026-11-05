@@ -1088,6 +1088,17 @@ fn event_steps<G: ConnGame>(
     }
 }
 
+/// When a tick due at `now` falls: on the 32 ms grid of the last one (a frame that does not end on the grid runs the tick a
+/// little after its time, and the next is due a tick after its time, not after the frame's), or `now` when the client fell
+/// a tick or more behind (a hitch: it starts a new grid). The time between ticks stays a tick at any frame rate, and the
+/// frame's place between them ([`crate::predict::Predictor::back`]) moves evenly.
+pub fn tick_time(last: Option<u32>, now: u32) -> u32 {
+    match last {
+        Some(t) if now.wrapping_sub(t) < 2 * TICK_MS => t.wrapping_add(TICK_MS),
+        _ => now,
+    }
+}
+
 /// The tick's move and packet, once the connection is accepted and a tick is due.
 fn send_tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, now: u32) {
     let pending = {
@@ -1120,7 +1131,7 @@ fn send_tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, now
     };
     let c = &mut **c;
     c.triggers = triggers;
-    c.last_tick = Some(now);
+    c.last_tick = Some(tick_time(c.last_tick, now));
     // The game's world before the moves ([`ConnGame::moving`]).
     G::moving(&mut c.world, c.finished_initial_ghost);
     if let Some(m) = mv {

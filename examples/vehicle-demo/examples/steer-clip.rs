@@ -11,7 +11,8 @@
 //! - `other-wheel/` and `other-chase/`: the second player's client, the same two views of the buggy the first drives;
 //! - `own-tracks/` and `other-tracks/`: at speed, from above and beside the left rear wheel, on each client;
 //!
-//! and `pause-menu.png`: the pause menu (Esc at the wheel) over the view behind the buggy.
+//! and `pause-menu.png`: the pause menu (Esc at the wheel) over the view behind the buggy. Beside each folder, `<folder>.csv`
+//! has a line a frame: the frame, where the buggy is drawn and where its left rear wheel's track ends, along its way (m).
 
 use std::path::{Path, PathBuf};
 
@@ -83,12 +84,47 @@ impl Seq {
         Ok(Seq { dir, n: 0 })
     }
 
-    fn save(&mut self, gpu: &Gpu, seat: &Seat<VehicleDemo>) -> Result<(), String> {
+    /// The frame drawn, and a line of `<dir>.csv`: the frame, where the buggy (ghost `buggy`) is drawn and where the left rear
+    /// wheel's track ends, along the buggy's way (m).
+    fn save(&mut self, gpu: &Gpu, seat: &Seat<VehicleDemo>, buggy: u32) -> Result<(), String> {
         let frame = gpu.read_back(&seat.target).map_err(|e| e.to_string())?;
         let path = self.dir.join(format!("{:04}.png", self.n));
+        write_png(&frame, &path).map_err(|e| e.to_string())?;
+        if let Some((body, front)) = along_way(&seat.game, buggy) {
+            use std::io::Write as _;
+            let mut csv = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.dir.with_extension("csv"))
+                .map_err(|e| e.to_string())?;
+            let front = front.map_or(String::new(), |f| format!("{f:.4}"));
+            writeln!(csv, "{},{body:.4},{front}", self.n).map_err(|e| e.to_string())?;
+        }
         self.n += 1;
-        write_png(&frame, &path).map_err(|e| e.to_string())
+        Ok(())
     }
+}
+
+/// Where `game` draws ghost `buggy` and where its left rear wheel's track ends (its head's end, or its newest segment's), along
+/// the buggy's way on the ground.
+fn along_way(game: &VehicleDemo, buggy: u32) -> Option<(f32, Option<f32>)> {
+    let m = pose_of(game, buggy)?;
+    let f = m.column(1);
+    let n = f[0].hypot(f[1]).max(1e-6);
+    let along = |p: [f32; 3]| (p[0] * f[0] + p[1] * f[1]) / n;
+    let tracks = game.scene().tracks();
+    let front = tracks.and_then(|t| {
+        t.heads()
+            .find(|(k, _)| **k == (buggy, 2))
+            .map(|(_, s)| s.line[1])
+            .or_else(|| {
+                t.segments()
+                    .filter(|s| s.wheel == (buggy, 2))
+                    .last()
+                    .map(|s| s.line[1])
+            })
+    });
+    Some((along(m.column(3)), front.map(along)))
 }
 
 fn run_until(
@@ -171,13 +207,15 @@ fn pass(
         for _ in 0..ms.div_ceil(FRAME_MS) {
             for (s, g, v) in [(&mut *a, ga, views.0), (&mut *b, gb, views.1)] {
                 s.game.advance(FRAME_MS);
-                // The eye from the pose the last frame drew (this frame's is not posed before it is drawn).
+                // The eye on the buggy where this frame draws it: the frame's prediction first (the client's ticks pose it at
+                // the tick's time; the frame draws it between ticks), as the frame itself does again (the same time: no change).
+                s.game.client.predict_frame();
                 s.eye = pose_of(&s.game, g).and_then(|m| view_eye(&m, v));
                 s.frame(gpu)?;
             }
             if let Some((sa, sb)) = seqs.as_mut() {
-                sa.save(gpu, a)?;
-                sb.save(gpu, b)?;
+                sa.save(gpu, a, ga)?;
+                sb.save(gpu, b, gb)?;
             }
         }
         Ok(())

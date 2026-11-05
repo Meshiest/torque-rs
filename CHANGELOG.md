@@ -270,6 +270,11 @@ The first development version. Nothing is published yet; this is what exists.
   updates bring, over the time between them. It turned in a tick's steps, and another's in its updates' steps.
 - `torque-client`: a vehicle's drawn wheel contacts, where its tire tracks start and its tires' dust rises, are under the
   tires the frame draws; they were a tick's travel behind them at speed.
+- `torque-client`: the client's ticks fall on their 32 ms grid at any frame rate (`conn::tick_time`). A frame that did not end
+  on the grid ran the tick late and counted the next tick from the frame, so at 144 frames a second the client ticked every
+  35 ms (fewer moves than the server's ticks) and drew the Players and vehicles unevenly between ticks.
+- `torque-client`: a vehicle's springs are drawn between its last two ticks' extensions, as its body is
+  (`look::SpringLooks`); the tires, and the tracks and dust under them, stepped once a tick.
 - `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
   had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
   head turned as far as it goes).

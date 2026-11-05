@@ -1890,3 +1890,89 @@ fn escape_opens_the_pause_menu_at_the_wheel_and_resume_or_escape_gives_the_keys_
     );
     assert!(errors(&a).is_empty(), "{:?}", errors(&a));
 }
+
+/// The front of the strip wheel `wheel` of `buggy` lays on `game`: its head's end, or its newest segment's when it has no head.
+fn track_front(game: &VehicleDemo, buggy: u32, wheel: usize) -> Option<[f32; 3]> {
+    let t = game.scene().tracks()?;
+    t.heads()
+        .find(|(k, _)| **k == (buggy, wheel))
+        .map(|(_, s)| s.line[1])
+        .or_else(|| {
+            t.segments()
+                .filter(|s| s.wheel == (buggy, wheel))
+                .last()
+                .map(|s| s.line[1])
+        })
+}
+
+#[test]
+fn at_speed_the_track_runs_on_under_the_wheel_evenly_at_144_and_59_frames_a_second() {
+    for frame_ms in [7u32, 17] {
+        let mut a = host();
+        let mut b = join(&mut a);
+        get_in(&mut [&mut a, &mut b], 0);
+        let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+        a.key(Key::W, true);
+        // Each client's last front and how far it went the frame before; the most a frame's move differed from the last's, and
+        // how many frames differed by more than a few mm (the springs' own motion over the hill's bumps, which grows with the
+        // frame's time squared: 3 mm at 144 frames a second, 6 mm at 59).
+        let scale = (frame_ms as f32 / 7.0).powi(2).min(2.0);
+        let mut last: [Option<([f32; 3], Option<f32>)>; 2] = [None, None];
+        let mut worst = [0.0f32; 2];
+        let mut over = [0; 2];
+        let mut checked = [0; 2];
+        for _ in 0..(6000 / frame_ms) {
+            for g in [&mut a, &mut b] {
+                g.step(frame_ms);
+                g.update_scene(frame_ms as f32 / 1000.0);
+            }
+            let v = server(&a).buggy_velocity().unwrap();
+            let speed = horizontal(v);
+            if speed < 19.0 {
+                continue;
+            }
+            let dir = [v[0] / speed, v[1] / speed];
+            let along = |p: [f32; 3]| p[0] * dir[0] + p[1] * dir[1];
+            for (k, (g, ghost)) in [(&a, ga), (&b, gb)].into_iter().enumerate() {
+                // A wheel off the ground (a bump at speed) ends its strip: the measure starts again once it is down.
+                let down = g
+                    .with_world(|w| w.vehicle_look.get(&ghost)?.wheels.get(2).map(|w| w.contact))
+                    .flatten()
+                    .unwrap_or(false);
+                let Some(front) = track_front(g, ghost, 2).filter(|_| down) else {
+                    last[k] = None;
+                    continue;
+                };
+                if let Some((before, moved)) = last[k] {
+                    let m = along(front) - along(before);
+                    assert!(
+                        m >= 0.0,
+                        "{frame_ms} ms, client {k}: the track's front went back {m}"
+                    );
+                    if let Some(prev) = moved {
+                        worst[k] = worst[k].max((m - prev).abs());
+                        over[k] += usize::from((m - prev).abs() > 0.003 * scale);
+                        checked[k] += 1;
+                    }
+                    last[k] = Some((front, Some(m)));
+                } else {
+                    last[k] = Some((front, None));
+                }
+            }
+        }
+        a.key(Key::W, false);
+        assert!(checked[0] > 50 && checked[1] > 50, "{checked:?}");
+        // A frame drawn at the tick's springs, or a tick's place between frames off its time, moved it by a share of a frame's
+        // travel (13 cm at 144 frames a second, 4 cm at 59).
+        let most = 0.01 * scale;
+        assert!(
+            worst[0] < most && worst[1] < most,
+            "{frame_ms} ms: a frame's move of the track's front changed by {worst:?}"
+        );
+        assert!(
+            over[0] * 20 <= checked[0] && over[1] * 20 <= checked[1],
+            "{frame_ms} ms: {over:?} of {checked:?} frames changed by more than {} mm",
+            3.0 * scale
+        );
+    }
+}

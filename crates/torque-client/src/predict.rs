@@ -238,6 +238,8 @@ pub struct Predictor<W: PredictWorld> {
     pub spins: look::WheelSpins,
     /// The steering drawn for the vehicles the client runs, eased toward their ticks' ([`look::SteeringEase`]).
     pub steering: look::SteeringEase,
+    /// The springs drawn for the vehicles the client runs, between their last two ticks' ([`look::SpringLooks`]).
+    pub springs: look::SpringLooks,
     pub flying: look::FlyingWarps,
     /// The other Players, run on between their updates and warped to each new one ([`ghost_players`]).
     pub ghost_players: ghost_players::GhostPlayers,
@@ -307,6 +309,7 @@ impl<W: PredictWorld> Predictor<W> {
             prefs: game::GamePrefs::default(),
             spins: look::WheelSpins::default(),
             steering: look::SteeringEase::default(),
+            springs: look::SpringLooks::default(),
             flying: look::FlyingWarps::default(),
             ghost_players: ghost_players::GhostPlayers::default(),
             sim_ms: 0,
@@ -1348,12 +1351,14 @@ impl<W: PredictWorld> Predictor<W> {
         {
             let pose = vehicle_render_pose(&v.v.s, back);
             world.vehicle_render.insert(v.index, pose);
+            let springs = self.springs.drawn(v, back);
             world.vehicle_look.insert(
                 v.index,
                 look::vehicle_look(
                     v,
                     self.spins.spins.get(&v.index),
                     self.steering.steering(v.index),
+                    Some(&springs),
                     &pose,
                 ),
             );
@@ -1369,16 +1374,20 @@ impl<W: PredictWorld> Predictor<W> {
             g.frame(back);
             let pose = vehicle_render_pose(&g.body.v.s, back);
             world.vehicle_render.insert(*i, pose);
+            let springs = self.springs.drawn(&g.body, back);
             world.vehicle_look.insert(
                 *i,
                 look::vehicle_look(
                     &g.body,
                     self.spins.spins.get(i),
                     self.steering.steering(*i),
+                    Some(&springs),
                     &pose,
                 ),
             );
         }
+        let looked = &world.vehicle_look;
+        self.springs.retain(|i| looked.contains_key(&i));
         // The FlyingVehicle ghosts (not run by the engine's client): warped between their updates ([`look::FlyingWarps`]).
         self.flying.update(world, self.sim_ms);
         let flying: Vec<_> = self.flying.poses(self.sim_ms).collect();
