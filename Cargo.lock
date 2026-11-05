@@ -2758,6 +2758,7 @@ version = "0.1.0"
 dependencies = [
  "httparse",
  "rcgen",
+ "ring",
  "rustls",
  "sha1",
  "torque-collide",

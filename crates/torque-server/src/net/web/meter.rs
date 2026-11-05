@@ -5,7 +5,7 @@
 //! counts for it: each pass gives it a byte budget, after which it reports that nothing is waiting, and it follows the
 //! frames' headers in the bytes it hands up, so that it can hold the peer to a cap of bytes a second, of frames a second
 //! (every frame, control frames and continuations included) and of frames per message. A peer past a cap is marked; the
-//! connection closes it.
+//! connection closes it. Beneath, the pipe meters the wire's bytes (under TLS, records that carry no plaintext count too).
 
 use std::io::{self, ErrorKind, Read, Write};
 
@@ -74,6 +74,7 @@ impl Metered {
 
     /// A new pass at `now`: the byte budget is full again.
     pub(crate) fn refill(&mut self, now: Instant) {
+        self.pipe.refill(now);
         self.budget = self.caps.bytes_per_pass;
         if now.duration_since(self.window) >= Duration::from_secs(1) {
             self.window = now;
@@ -82,9 +83,9 @@ impl Metered {
         }
     }
 
-    /// Whether the peer went past a cap.
+    /// Whether the peer went past a cap (the wire's included).
     pub(crate) fn over(&self) -> Option<Over> {
-        self.over
+        self.over.or(self.pipe.over().then_some(Over::Rate))
     }
 
     pub(crate) fn shut(&mut self) {

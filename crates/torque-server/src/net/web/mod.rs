@@ -91,6 +91,11 @@ pub struct WebLimits {
     pub bytes_per_s: usize,
     /// The most bytes one pass reads from one game socket.
     pub bytes_per_pass: usize,
+    /// The most bytes one pass reads off the wire from one HTTP connection (encrypted bytes under TLS, the handshake's
+    /// included). A game socket's wire caps are its byte caps above, with a TLS record's room for each frame.
+    pub http_bytes_per_pass: usize,
+    /// The most bytes an HTTP connection may send off the wire in a second.
+    pub http_bytes_per_s: usize,
     /// The most frames one message may be sent in.
     pub frames_per_message: u32,
     /// The largest message a game socket may send.
@@ -123,6 +128,8 @@ impl Default for WebLimits {
             // A datagram's frame is at most the datagram and a 14-byte header.
             bytes_per_s: NET_PACKETS_PER_CONN_PER_S as usize * (NET_MAX_DATAGRAM + 14),
             bytes_per_pass: 64 * (NET_MAX_DATAGRAM + 14),
+            http_bytes_per_pass: 32 << 10,
+            http_bytes_per_s: 128 << 10,
             frames_per_message: 16,
             max_message: NET_MAX_DATAGRAM,
             write_buffer: 256 << 10,
@@ -331,14 +338,14 @@ impl WebTransport {
             }
             let _ = stream.set_nodelay(true);
             let pipe = match &self.setup.tls {
-                Some(tls) => match tls.wrap(stream) {
+                Some(tls) => match tls.wrap(stream, conn::http_wire_caps(limits), now) {
                     Ok(w) => w,
                     Err(_) => {
                         self.counters.refused += 1;
                         continue;
                     }
                 },
-                None => tls::Pipe::Plain(stream),
+                None => tls::Pipe::new(stream, None, conn::http_wire_caps(limits), now),
             };
             self.counters.accepted += 1;
             self.conns.push(Conn::new(peer, pipe, now));

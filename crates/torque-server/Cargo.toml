@@ -51,6 +51,8 @@ rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem
 # The web transport's tests: the client's side of TLS and of the WebSocket.
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12"] }
 tungstenite = { version = "0.30", default-features = false }
+# The web transport's TLS tests: a client's records sealed by hand (key updates and empty records no TLS library sends).
+ring = { version = "0.17", default-features = false }
 # The tests' shapes (a box a Player stands in).
 torque-shapes = { path = "../torque-shapes" }
 # The hitbox tests' figure: bones with a box each.

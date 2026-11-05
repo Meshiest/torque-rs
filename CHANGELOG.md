@@ -182,7 +182,8 @@ The first development version. Nothing is published yet; this is what exists.
   for each response at a slowest read rate, and a cap on unsent bytes; a game socket's bytes metered beneath the WebSocket
   layer: messages no larger than a datagram, no more frames a second (continuations and control frames included) than UDP's
   per-connection packet cap, as many full datagrams' bytes a second, at most 16 frames a message and a byte budget per
-  pass; connections capped in all (the longest-idle HTTP connection makes room when full), per address and per second.
+  pass; every connection's wire bytes (encrypted ones under TLS, so records that carry no plaintext count) metered per pass
+  and per second too, and TLS driven one bounded step per read; connections capped in all (the longest-idle HTTP connection makes room when full), per address and per second.
   `Transport::service` does a transport's work between ticks, and `Transport::take_gone` reports closed sockets, whose
   connections the host drops at once.
   Requests must name an IP address, `localhost` or one of the server's names in `Host` (421 otherwise, against DNS

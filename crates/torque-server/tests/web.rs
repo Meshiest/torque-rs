@@ -1,11 +1,11 @@
 //! The web transport on the loopback address: files over HTTP, game sockets over WebSocket (plain and under TLS), UDP and the
 //! web on one port, and hostile peers: requests past the caps, other methods, paths that climb, heads that never end,
-//! too many connections, oversized and flooding messages, text messages, quiet sockets and slow readers. Each hostile peer
-//! is closed, and a pass's time stays bounded.
+//! too many connections, oversized and flooding messages, text messages, quiet sockets, slow readers, and TLS records that
+//! carry nothing. Each hostile peer is closed, and a pass's time stays bounded.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
@@ -962,4 +962,209 @@ fn frames_sent_with_the_upgrade_request_are_refused() {
     assert_eq!(status, (400, true));
     assert_eq!(t.counters().upgrades, 0);
     assert_eq!(t.sockets_from(LOOPBACK), 0, "no place was reserved");
+}
+
+/// A test certificate and the TLS settings made from it.
+fn test_tls() -> (Tls, rustls::pki_types::CertificateDer<'static>) {
+    let made = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let tls = Tls::from_pem(
+        made.cert.pem().as_bytes(),
+        made.key_pair.serialize_pem().as_bytes(),
+    )
+    .unwrap();
+    (tls, made.cert.der().clone())
+}
+
+/// The client's first application traffic secret, as rustls logs it.
+#[derive(Debug, Default)]
+struct ClientSecret(Mutex<Option<Vec<u8>>>);
+
+impl rustls::KeyLog for ClientSecret {
+    fn log(&self, label: &str, _client_random: &[u8], secret: &[u8]) {
+        if label == "CLIENT_TRAFFIC_SECRET_0" {
+            *self.0.lock().unwrap() = Some(secret.to_vec());
+        }
+    }
+}
+
+struct HkdfLen(usize);
+
+impl ring::hkdf::KeyType for HkdfLen {
+    fn len(&self) -> usize {
+        self.0
+    }
+}
+
+/// TLS 1.3's HKDF-Expand-Label with an empty context (SHA-256).
+fn expand_label(secret: &[u8], label: &str, len: usize) -> Vec<u8> {
+    let full = format!("tls13 {label}");
+    let info = [
+        &(len as u16).to_be_bytes()[..],
+        &[full.len() as u8],
+        full.as_bytes(),
+        &[0],
+    ]
+    .concat();
+    let prk = ring::hkdf::Prk::new_less_safe(ring::hkdf::HKDF_SHA256, secret);
+    let mut out = vec![0; len];
+    prk.expand(&[&info], HkdfLen(len))
+        .unwrap()
+        .fill(&mut out)
+        .unwrap();
+    out
+}
+
+/// A TLS 1.3 client's sending side sealed by hand (TLS_AES_128_GCM_SHA256), for records a TLS library never sends.
+struct RawSender {
+    secret: Vec<u8>,
+    key: ring::aead::LessSafeKey,
+    iv: [u8; 12],
+    seq: u64,
+}
+
+impl RawSender {
+    fn new(secret: Vec<u8>) -> RawSender {
+        let key = expand_label(&secret, "key", 16);
+        let key = ring::aead::UnboundKey::new(&ring::aead::AES_128_GCM, &key).unwrap();
+        RawSender {
+            iv: expand_label(&secret, "iv", 12).try_into().unwrap(),
+            key: ring::aead::LessSafeKey::new(key),
+            secret,
+            seq: 0,
+        }
+    }
+
+    /// One record of `content_type` holding `content`, sealed onto `out`.
+    fn record(&mut self, content_type: u8, content: &[u8], out: &mut Vec<u8>) {
+        let mut inner = content.to_vec();
+        inner.push(content_type);
+        let len = inner.len() + 16;
+        let header = [0x17, 3, 3, (len >> 8) as u8, len as u8];
+        let mut nonce = self.iv;
+        for (n, b) in nonce[4..].iter_mut().zip(self.seq.to_be_bytes()) {
+            *n ^= b;
+        }
+        self.key
+            .seal_in_place_append_tag(
+                ring::aead::Nonce::assume_unique_for_key(nonce),
+                ring::aead::Aad::from(header),
+                &mut inner,
+            )
+            .unwrap();
+        out.extend_from_slice(&header);
+        out.extend_from_slice(&inner);
+        self.seq += 1;
+    }
+
+    /// A key update that asks for none back, then the keys after it.
+    fn key_update(&mut self, out: &mut Vec<u8>) {
+        self.record(22, &[24, 0, 0, 1, 0], out);
+        *self = RawSender::new(expand_label(&self.secret, "traffic upd", 32));
+    }
+}
+
+/// A TLS 1.3 connection made with rustls, its sending side then taken over by hand: the stream and the sender. With
+/// `upgrade`, a game socket is opened over it first (its request sealed by hand, the 101 read through rustls).
+fn raw_tls(
+    addr: SocketAddr,
+    der: rustls::pki_types::CertificateDer<'static>,
+    upgrade: bool,
+) -> (TcpStream, RawSender) {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(der).unwrap();
+    let provider = rustls::crypto::CryptoProvider {
+        cipher_suites: vec![rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256],
+        ..rustls::crypto::ring::default_provider()
+    };
+    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let secret = Arc::new(ClientSecret::default());
+    config.key_log = Arc::clone(&secret) as Arc<dyn rustls::KeyLog>;
+    let name = "localhost".try_into().unwrap();
+    let mut conn = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
+    let mut tcp = connect(addr);
+    while conn.is_handshaking() || conn.wants_write() {
+        conn.complete_io(&mut tcp).unwrap();
+    }
+    let secret = secret.0.lock().unwrap().take().expect("the traffic secret");
+    let mut sender = RawSender::new(secret);
+    if upgrade {
+        let mut out = Vec::new();
+        sender.record(23, upgrade_request(&base64(&[3; 16])).as_bytes(), &mut out);
+        tcp.write_all(&out).unwrap();
+        let mut head = Vec::new();
+        while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+            assert!(
+                conn.read_tls(&mut tcp).unwrap() > 0,
+                "the handshake's answer"
+            );
+            conn.process_new_packets().unwrap();
+            let _ = conn.reader().read_to_end(&mut head);
+        }
+        assert!(head.starts_with(b"HTTP/1.1 101 "));
+    }
+    (tcp, sender)
+}
+
+/// Floods `tcp` from a thread with key updates and empty application data records, one after the other, for at most `ms`
+/// (rustls's own limits on runs of either never trip); returns the bytes it got out.
+fn flood_key_updates(
+    mut tcp: TcpStream,
+    mut sender: RawSender,
+    ms: u64,
+) -> thread::JoinHandle<usize> {
+    thread::spawn(move || {
+        let _ = tcp.set_write_timeout(Some(Duration::from_secs(1)));
+        let mut sent = 0;
+        let mut out = Vec::new();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(ms) {
+            out.clear();
+            for _ in 0..256 {
+                sender.key_update(&mut out);
+                sender.record(23, &[], &mut out);
+            }
+            if tcp.write_all(&out).is_err() {
+                break;
+            }
+            sent += out.len();
+        }
+        sent
+    })
+}
+
+#[test]
+fn tls_records_without_plaintext_are_metered_and_closed() {
+    let (tls, der) = test_tls();
+    // Over https before any request, and over wss on a game socket.
+    for upgrade in [false, true] {
+        let limits = WebLimits::default();
+        let cap = if upgrade {
+            limits.bytes_per_s
+        } else {
+            limits.http_bytes_per_s
+        };
+        let (mut t, addr) = site(limits, Some(tls.clone()), Some(files()));
+        let peer_der = der.clone();
+        let (tcp, sender) = serve_while(&mut t, move || raw_tls(addr, peer_der, upgrade));
+        assert_eq!(t.sockets(), usize::from(upgrade));
+        let h = flood_key_updates(tcp, sender, 5000);
+        let longest = pump_until(&mut t, 5000, |t| t.connections() == 0);
+        let sent = h.join().unwrap();
+        assert_eq!(t.connections(), 0, "upgrade {upgrade}: still open");
+        assert_eq!(
+            t.counters().closed_rate,
+            1,
+            "upgrade {upgrade}: {:?}",
+            t.counters()
+        );
+        assert!(
+            longest < Duration::from_millis(20),
+            "upgrade {upgrade}: a pass took {longest:?}"
+        );
+        assert!(sent > cap, "upgrade {upgrade}: the flood sent {sent} bytes");
+    }
 }

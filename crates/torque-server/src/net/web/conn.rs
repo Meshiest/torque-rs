@@ -15,7 +15,7 @@ use web_time::{Duration, Instant};
 use super::http::{self, Parsed, Status, WEB_SOCKET_PATH, WebFiles};
 use super::meter::{Caps, Metered, Over};
 use super::stand_in::StandIns;
-use super::tls::Pipe;
+use super::tls::{Pipe, WireCaps};
 use super::{Access, WebCounters, WebLimits};
 
 /// The most bytes one connection writes in one pass (a large file goes out over several passes, so one download does not
@@ -27,6 +27,25 @@ const WRITE_CHUNK: usize = 64 << 10;
 const REQUESTS_PER_PASS: usize = 4;
 /// The read buffer of a game socket (its messages are at most a datagram).
 const SOCKET_READ_BUFFER: usize = 4096;
+/// The wire bytes a game socket may send beyond its frames' bytes, per frame (a TLS record's header, tag and content type,
+/// with room to spare).
+const RECORD_ROOM: usize = 64;
+
+/// What an HTTP connection may read off the wire.
+pub(crate) fn http_wire_caps(limits: &WebLimits) -> WireCaps {
+    WireCaps {
+        bytes_per_pass: limits.http_bytes_per_pass,
+        bytes_per_s: limits.http_bytes_per_s,
+    }
+}
+
+/// What a game socket may read off the wire: its frames' caps, and a record's room for each frame.
+fn socket_wire_caps(limits: &WebLimits) -> WireCaps {
+    WireCaps {
+        bytes_per_pass: limits.bytes_per_pass + limits.messages_per_pass * RECORD_ROOM,
+        bytes_per_s: limits.bytes_per_s + limits.messages_per_s as usize * RECORD_ROOM,
+    }
+}
 
 /// Why a connection was closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +275,9 @@ impl Conn {
     }
 
     fn advance_http(&mut self, pass: &mut Pass<'_>) -> Option<Closed> {
+        if let Phase::Http { pipe, .. } = &mut self.phase {
+            pipe.refill(pass.now);
+        }
         for _ in 0..REQUESTS_PER_PASS {
             let Phase::Http { pipe, buf, out } = &mut self.phase else {
                 return None;
@@ -303,9 +325,11 @@ impl Conn {
                 }
                 continue;
             }
-            // Read what has come, up to the head's cap.
+            // Read what has come, up to the head's cap, while the head has time left (each read is one bounded step, held to
+            // the wire's budget: the deadline is checked before any is taken).
+            let late = pass.now.duration_since(self.since) > pass.limits.head_timeout;
             let mut chunk = [0u8; 4096];
-            while buf.len() < http::MAX_HEAD_BYTES {
+            while buf.len() < http::MAX_HEAD_BYTES && !late {
                 let room = (http::MAX_HEAD_BYTES - buf.len()).min(chunk.len());
                 match pipe.read(&mut chunk[..room]) {
                     Ok(0) => return Some(Closed::Peer),
@@ -315,12 +339,12 @@ impl Conn {
                     Err(_) => return Some(Closed::Peer),
                 }
             }
+            if pipe.over() {
+                return Some(Closed::Rate);
+            }
             let parsed = http::parse_head(buf);
             let request = match parsed {
-                Parsed::Partial => {
-                    let waited = pass.now.duration_since(self.since);
-                    return (waited > pass.limits.head_timeout).then_some(Closed::Timeout);
-                }
+                Parsed::Partial => return late.then_some(Closed::Timeout),
                 Parsed::Refuse(status) => {
                     pass.counters.refusals += 1;
                     *out = Some(refuse(status));
@@ -402,9 +426,11 @@ impl Conn {
 
     /// The 101 is written: the connection is a game socket from now on.
     fn upgrade(&mut self, pass: &mut Pass<'_>) -> Option<Closed> {
-        let Phase::Http { pipe, buf, .. } = std::mem::replace(&mut self.phase, Phase::Gone) else {
+        let Phase::Http { mut pipe, buf, .. } = std::mem::replace(&mut self.phase, Phase::Gone)
+        else {
             return Some(Closed::Peer);
         };
+        pipe.set_caps(socket_wire_caps(pass.limits));
         let config = WebSocketConfig::default()
             .read_buffer_size(SOCKET_READ_BUFFER)
             .write_buffer_size(0)
@@ -443,6 +469,10 @@ impl Conn {
             return None;
         };
         ws.get_mut().refill(pass.now);
+        // A socket gone quiet is closed before anything more is read from it.
+        if pass.now.duration_since(self.since) > pass.limits.idle_timeout {
+            return Some(Closed::Timeout);
+        }
         let flushed = match ws.flush() {
             Ok(()) => true,
             Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => false,
