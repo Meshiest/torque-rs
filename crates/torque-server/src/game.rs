@@ -122,6 +122,7 @@ pub fn install<N: NetParts>(vm: &mut Vm, state: &Rc<RefCell<ServerState<N>>>) ->
     );
     torque_game::scene::container::register_natives(vm, &container, &shapes);
     torque_game::scene::shapebase::register(vm, &container);
+    torque_game::scene::interior::register(vm, &container);
     torque_game::scene::lights::register(vm);
     vm.set_class_behaviour(
         "TimeOfDay",

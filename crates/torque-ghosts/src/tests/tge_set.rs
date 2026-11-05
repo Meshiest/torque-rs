@@ -95,6 +95,7 @@ fn default_bits(class: TgeClass) -> Option<usize> {
         TgeClass::TsStatic => 512 + 96 + string_bits(&[b""]),
         TgeClass::VehicleBlocker => 704,
         TgeClass::FxLight => 98 + 2 + 193 + 8 + 32,
+        TgeClass::InteriorInstance => 646 + string_bits(&[b"", b""]),
         TgeClass::SpotLight => 194 + 226 + 2 + 2,
         TgeClass::TimeOfDay => 226 + 65,
         TgeClass::ScatterSky => 675,

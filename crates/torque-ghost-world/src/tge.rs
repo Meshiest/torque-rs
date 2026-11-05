@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 
 use ghosts::audio::AudioEmitter;
 use ghosts::fx::{FxLight, ParticleEmitterNode};
+use ghosts::interior::InteriorInstance;
 use ghosts::light::{ScatterSky, SpotLight, TimeOfDay};
 use ghosts::markers::{MissionMarker, SpawnSphere, WayPoint};
 use ghosts::parts::GameBase;
@@ -345,6 +346,17 @@ impl ClientRecord<TgeClientSet> for TgeRecord {
                 xf: r.config.as_ref()?.transform,
                 scale: None,
             },
+            R::InteriorInstance(r) => {
+                let (m, scale) = match (&r.init, &r.transform) {
+                    (_, Some((m, s))) => (*m, *s),
+                    (Some(i), None) => (i.matrix, i.scale),
+                    (None, None) => return None,
+                };
+                Pose::Matrix {
+                    m: floats(m),
+                    scale: floats(scale),
+                }
+            }
             R::AudioEmitter(r) => Pose::Affine {
                 xf: r.transform?,
                 scale: None,
@@ -679,6 +691,23 @@ impl Merge for FxLight {
     }
 }
 
+/// A later update keeps the first's block; a transform it sends replaces the first's.
+impl Merge for InteriorInstance {
+    fn merge(&mut self, sent: &InteriorInstance) {
+        set(&mut self.init, &sent.init);
+        if let (Some(i), Some((m, s))) = (self.init.as_mut(), sent.transform) {
+            i.matrix = m;
+            i.scale = s;
+        }
+        if sent.init.is_none()
+            && let Some(i) = self.init.as_mut()
+        {
+            i.alarm = sent.alarm;
+        }
+        self.transform = None;
+    }
+}
+
 impl Merge for SpotLight {
     fn merge(&mut self, sent: &SpotLight) {
         set(&mut self.transform, &sent.transform);
@@ -799,6 +828,7 @@ impl Merge for TgeRecord {
             (R::Sun(k), R::Sun(s)) => k.merge(s),
             (R::WayPoint(k), R::WayPoint(s)) => k.merge(s),
             (R::FxLight(k), R::FxLight(s)) => k.merge(s),
+            (R::InteriorInstance(k), R::InteriorInstance(s)) => k.merge(s),
             (R::SpotLight(k), R::SpotLight(s)) => k.merge(s),
             (R::TimeOfDay(k), R::TimeOfDay(s)) => k.merge(s),
             (R::ScatterSky(k), R::ScatterSky(s)) => k.merge(s),

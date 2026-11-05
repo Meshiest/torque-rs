@@ -16,11 +16,14 @@ categories = ["game-development"]
 [dependencies]
 torque-shape-builder = { path = "../../crates/torque-shape-builder" }
 torque-shapes = { path = "../../crates/torque-shapes" }
+torque-interior-builder = { path = "../../crates/torque-interior-builder" }
 png = "0.18"
 
 [dev-dependencies]
 # torque-images decodes the textures back in the tests.
 torque-images = { path = "../../crates/torque-images" }
+# The arena interior checked by brute force.
+torque-interior-builder = { path = "../../crates/torque-interior-builder", features = ["verify"] }
 
 [[bin]]
 name = "make-example-assets"

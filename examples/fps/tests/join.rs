@@ -141,8 +141,12 @@ fn an_address_that_cannot_be_joined_shows_a_plain_error() {
     for (typed, said) in [
         ("", "Type the game's address, like 192.168.1.20:28000."),
         (
-            "example.com",
-            "Names are not looked up. Type the address in numbers, like 192.168.1.20.",
+            "two words",
+            "That is not an address or a name. Use one like 192.168.1.20:28000 or games.example.com.",
+        ),
+        (
+            "-dash.example",
+            "That is not an address or a name. Use one like 192.168.1.20:28000 or games.example.com.",
         ),
         (
             "1.2.3.4:abc",
@@ -188,7 +192,7 @@ fn the_address_forms_the_box_takes() {
         Ok("192.168.1.20:2000".to_string())
     );
     assert_eq!(ok("IP:10.0.0.5:28001"), Ok("10.0.0.5:28001".to_string()));
-    assert_eq!(ok("localhost"), Ok("127.0.0.1:28000".to_string()));
+    assert_eq!(ok("localhost"), Err("That name has to be looked up first."));
     assert_eq!(ok("203.0.113.5:28000"), Ok("203.0.113.5:28000".to_string()));
     for bad in [
         "255.255.255.255",
@@ -199,6 +203,38 @@ fn the_address_forms_the_box_takes() {
     ] {
         assert!(ok(bad).is_err(), "{bad}");
     }
+}
+
+/// A typed name is looked up off the frame (`localhost`, from the system's hosts), then joined.
+#[test]
+fn a_typed_name_is_looked_up_and_joined() {
+    let (mut a, mut b) = (client("Ann"), client("Bob"));
+    host(&mut a, &mut b, "lan");
+    let port = a.hosted_address().unwrap().port();
+    b.call("showJoin", &[]).unwrap();
+    eval(
+        &mut b,
+        &format!("AddressEdit.setValue(\"localhost:{port}\");"),
+    );
+    click_button(&mut b, "ConnectButton");
+    let connecting = format!("Connecting to 127.0.0.1:{port}...");
+    let said = status(&mut b);
+    assert!(
+        said == "Looking up localhost..." || said == connecting,
+        "{said}"
+    );
+    for _ in 0..200 {
+        step_both(&mut a, &mut b, 32);
+        if b.in_game() {
+            break;
+        }
+    }
+    assert!(b.in_game(), "joined by name: {}", status(&mut b));
+    assert_eq!(
+        b.global("$Pref::Client::LastAddress"),
+        format!("localhost:{port}")
+    );
+    assert!(b.host.input_errors.is_empty(), "{:?}", b.host.input_errors);
 }
 
 #[test]

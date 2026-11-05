@@ -1051,3 +1051,21 @@ fn the_buggies_are_capped() {
 fn server_mut(game: &mut VehicleDemo) -> &mut WorldServer {
     game.server.as_mut().expect("the server")
 }
+
+/// A name typed in the menu is looked up off the frame (`localhost`, from the system's hosts), then joined.
+#[test]
+fn a_typed_name_is_looked_up_and_joined() {
+    let mut a = host();
+    let mut b = client("Bob");
+    let port = a.hosted_address().expect("the hosted address").port();
+    let typed = format!("AddressEdit.setValue(\"localhost:{port}\");");
+    b.call("eval", &[typed.as_str()]).unwrap();
+    b.call("joinAddress", &[]).unwrap();
+    let said = b.call("eval", &["return MenuStatus.getValue();"]).unwrap();
+    assert_eq!(said, "Looking up localhost...");
+    assert!(
+        until(&mut [&mut a, &mut b], |g| g[1].in_world()),
+        "{:#?}",
+        a.server_log
+    );
+}

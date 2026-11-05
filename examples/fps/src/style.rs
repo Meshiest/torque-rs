@@ -1,7 +1,8 @@
 //! The arena's own touches on the engine's ghosts ([`ArenaStyle`], a [`GhostStyle`]): the first-person pistol kicked by a shot
 //! ([`Kick`]) and raised to its sights while the player aims ([`Sights`]: the `sightRear` and `sightFront` nodes on the eye's
 //! line), a bolt drawn leaving the shooter's muzzle and curving onto its flight, growing out of it and turning about its flight
-//! ([`BoltPath`]), and the shot's flare at the muzzle ([`ShotFlare`]).
+//! ([`BoltPath`]), the shot's flare at the muzzle ([`ShotFlare`]), and the interiors' look: the kit's tinted tiles drawn as the
+//! cubes are, walls lighter the higher ([`ArenaStyle::interior_draw`]).
 
 use std::collections::HashMap;
 
@@ -174,6 +175,8 @@ pub struct ArenaStyle {
     /// Each image shape's sights ([`sight_offset`]) and its `sightFront` and `sightRear` nodes, by path.
     sight_nodes: HashMap<String, Option<SightNodes>>,
     own_sights: Option<[[f32; 3]; 2]>,
+    /// Interiors' textures magnified with nearest-neighbor filtering (the map's sharp texels).
+    pub nearest: bool,
 }
 
 impl ArenaStyle {
@@ -192,6 +195,7 @@ impl ArenaStyle {
             aim: 0.0,
             sight_nodes: HashMap::new(),
             own_sights: None,
+            nearest: false,
         }
     }
 
@@ -267,6 +271,29 @@ impl ArenaStyle {
 }
 
 impl GhostStyle for ArenaStyle {
+    /// The kit's floor and wall tiles are already tinted (a sand and a slate); each wall triangle's vertices take the cubes'
+    /// tint at its top over the slate, so a wall is drawn as a cube of its height.
+    fn interior_draw(&mut self, material: &str, draw: &mut Draw) {
+        if let Some((_, sampler)) = draw.texture.as_mut()
+            && self.nearest
+        {
+            sampler.mag = Filter::Nearest;
+        }
+        if material.eq_ignore_ascii_case(torque_example_assets::interiors::FLOOR) {
+            return;
+        }
+        let slate = torque_example_assets::textures::SLATE;
+        for t in draw.vertices.chunks_exact_mut(3) {
+            let top = t.iter().map(|v| v.position[2]).fold(f32::MIN, f32::max);
+            let tint = crate::scene::cube_tint(top.max(0.06));
+            let c =
+                [0, 1, 2].map(|k| (u32::from(tint[k]) * 255 / u32::from(slate[k])).min(255) as u8);
+            for v in t {
+                v.color = [c[0], c[1], c[2], 255];
+            }
+        }
+    }
+
     fn clear(&mut self) {
         self.aim = 0.0;
         self.sight_nodes.clear();

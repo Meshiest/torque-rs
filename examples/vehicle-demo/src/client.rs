@@ -106,7 +106,7 @@ impl Start {
             Start::Alone => game.play_alone(),
             Start::Host => game.host_game(),
             Start::Join(address) => {
-                let address = torque::app::hosting::parse_join_address(&address)?;
+                let address = torque::app::hosting::resolve_join_address(&address)?;
                 game.join(&address.to_string())
             }
         }

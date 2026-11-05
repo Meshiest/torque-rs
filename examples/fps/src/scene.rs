@@ -9,6 +9,8 @@
 //!   grid tile a unit) and tinted by height. A cube's object is kept until its record moves it. A map that asks for sharp
 //!   texels ([`TextureFilter::Nearest`], the mission's `textureFilter`) has its cubes magnified with nearest-neighbor
 //!   filtering; minified, they stay linear between and within the mip levels, so the far floor does not shimmer.
+//! - **Interiors** (InteriorInstances) are the engine's ([`GhostScene::objects`]); the arena's style tints their walls lighter
+//!   the higher as the cubes are and magnifies them as the map's filter says ([`ArenaStyle::nearest`]).
 //! - **The eye**: the client's own figure's eye (the engine places it at the drawn figure's `eye` node), its field of view
 //!   narrowing from [`FOV`] to [`AIM_FOV`] as the sights come up ([`ArenaScene::turn_scale`] slows the mouse's turn by as
 //!   much), else a view over the arena.
@@ -215,7 +217,7 @@ pub struct ArenaScene {
     ghosts: GhostScene<ArenaStyle>,
     shapes: HashMap<String, Option<SceneShape>>,
     cubes: BTreeMap<u32, KeptCube>,
-    /// How the cubes are drawn.
+    /// How the cubes and interiors are drawn.
     filter: TextureFilter,
 }
 
@@ -272,11 +274,13 @@ impl ArenaScene {
         self.ghosts.style.own_sights()
     }
 
-    /// Draws the cubes with `filter` from now on (the ones made with another are made again).
+    /// Draws the cubes and the interiors with `filter` from now on (the ones made with another are made again).
     pub fn set_texture_filter(&mut self, filter: TextureFilter) {
         if filter != self.filter {
             self.filter = filter;
             self.cubes.clear();
+            self.ghosts.style.nearest = filter == TextureFilter::Nearest;
+            self.ghosts.restyle_interiors();
         }
     }
 
@@ -298,7 +302,8 @@ impl ArenaScene {
         self.ghosts.update(assets, world, &input);
     }
 
-    /// The frame's objects: the engine's ghosts as [`ArenaScene::update`] left them and `world`'s cubes; their effects into
+    /// The frame's objects: the engine's ghosts and interiors as [`ArenaScene::update`] left them and `world`'s cubes; their
+    /// effects into
     /// `view`.
     pub fn objects(
         &mut self,

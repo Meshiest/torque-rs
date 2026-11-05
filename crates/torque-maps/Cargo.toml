@@ -18,5 +18,9 @@ categories = ["game-development", "parser-implementations"]
 [dependencies]
 torque-mapcore = { path = "../torque-mapcore" }
 
+[dev-dependencies]
+# Decodes the PNGs the encoder writes.
+torque-images = { path = "../torque-images" }
+
 [lints]
 workspace = true

@@ -33,3 +33,39 @@ fn a_bad_crc_or_a_cut_png_is_refused() {
     // The CRC of "IEND" with no data, as every PNG ends.
     assert_eq!(crc32(&[b"IEND"]), 0xae42_6082);
 }
+
+#[test]
+fn an_encoded_png_reads_back_and_decodes_to_its_pixels() {
+    for (w, h, runs) in [
+        (1, 1, false),
+        (2, 2, true),
+        (5, 3, false),
+        (300, 260, false),
+        (256, 256, true),
+        (97, 13, true),
+    ] {
+        let rgb: Vec<u8> = (0..w * h * 3)
+            .map(|i| {
+                if runs {
+                    (i / 700 % 3) as u8 * 40
+                } else {
+                    (i * 7 % 251) as u8
+                }
+            })
+            .collect();
+        let bytes = encode_rgb(w, h, &rgb);
+        let png = read(&mut Reader::new(&bytes), "png").unwrap();
+        assert_eq!(
+            (png.width, png.height, png.bytes.len()),
+            (w, h, bytes.len())
+        );
+        let b = torque_images::png::decode(&bytes).unwrap();
+        assert_eq!(
+            (b.width, b.height, b.format),
+            (w, h, torque_images::Format::Rgb)
+        );
+        assert_eq!(b.bits, rgb, "{w}x{h}");
+    }
+    // A flat page is small.
+    assert!(encode_rgb(256, 256, &[]).len() < 1_500);
+}
