@@ -1,29 +1,56 @@
 use super::*;
 
-const FIREFOX: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:145.0) Gecko/20100101 Firefox/145.0";
-const CHROME: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
-const SAFARI: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
-
 #[test]
-fn firefox_starts_lower_and_the_others_keep_the_games_quality() {
-    assert_eq!(web_quality(FIREFOX, ""), Some(FIREFOX_QUALITY));
-    assert_eq!(web_quality(FIREFOX, "?map=office"), Some(FIREFOX_QUALITY));
-    assert_eq!(web_quality(CHROME, "?map=office"), None);
-    assert_eq!(web_quality(SAFARI, ""), None);
+fn the_page_asks_for_a_quality_by_name_and_the_window_takes_it_once() {
+    assert_eq!(take_quality(), None);
+    request_quality("medium").unwrap();
+    request_quality(" Ultra ").unwrap();
+    // the last asked for wins
+    assert_eq!(take_quality(), Some(Quality::Ultra));
+    assert_eq!(take_quality(), None);
+    assert!(request_quality("max").is_err());
+    assert_eq!(take_quality(), None, "a refused name asks for nothing");
 }
 
 #[test]
-fn the_address_names_the_quality_in_any_browser() {
-    assert_eq!(web_quality(FIREFOX, "?quality=high"), Some(Quality::High));
+fn a_query_value_by_name() {
     assert_eq!(
-        web_quality(CHROME, "?map=office&quality=Medium"),
-        Some(Quality::Medium)
+        query_value("?map=office&nolock=1", "map").as_deref(),
+        Some("office")
     );
-    assert_eq!(web_quality(CHROME, "?quality=low&fps"), Some(Quality::Low));
-    // a name that is no quality: as if none were named
-    assert_eq!(web_quality(CHROME, "?quality=max"), None);
-    assert_eq!(web_quality(FIREFOX, "?quality="), Some(FIREFOX_QUALITY));
+    assert_eq!(
+        query_value("?map=office&nolock=1", "nolock").as_deref(),
+        Some("1")
+    );
+    assert_eq!(query_value("?nolock", "nolock"), None);
+    assert_eq!(query_value("", "map"), None);
+}
+
+#[test]
+fn fetched_files_are_taken_only_as_the_list_names_them() {
+    let pack = b"the pack's bytes".to_vec();
+    let list = Manifest::of([(WEB_PACK, pack.as_slice())]).unwrap();
+    assert!(
+        add_file(WEB_PACK, pack.clone()).is_err(),
+        "no list read yet"
+    );
+    read_manifest(&list.to_json()).unwrap();
+    assert!(
+        add_file("other.pack", pack.clone()).is_err(),
+        "not in the list"
+    );
+    assert!(
+        add_file(WEB_PACK, b"changed".to_vec()).is_err(),
+        "not the list's bytes"
+    );
+    assert_eq!(
+        take_fetched().unwrap_err(),
+        format!("{WEB_PACK} was not fetched")
+    );
+    read_manifest(&list.to_json()).unwrap();
+    add_file(WEB_PACK, pack.clone()).unwrap();
+    assert_eq!(take_fetched().unwrap(), vec![(WEB_PACK.to_string(), pack)]);
+    assert!(take_fetched().is_err(), "the list is forgotten once taken");
 }
 
 #[test]

@@ -241,11 +241,16 @@ The first development version. Nothing is published yet; this is what exists.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
-  compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`, tested in Node with
-  `just examples/web-unit`). `?fps` or F8 shows the frames a second and the frame time (the game writes them on the page
-  as `data-torque-fps` and `data-torque-frame-ms`). `?quality=low|medium|high|ultra` picks the renderer's quality;
-  Firefox starts at Low. The module is built in a `web` profile (thin LTO) and run through `wasm-opt -O2` when it is
-  installed.
+  compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
+  picks the renderer's quality, applied at the next frame (`setQuality`), and shows the frames a second and the frame time
+  (also F8); both are kept in the browser's storage, and Firefox starts at Low until the player picks
+  (`web/settings.js`). `just examples/web-unit` tests both in Node. The module is built in a `web` profile (thin LTO) and
+  run through `wasm-opt -O2` when it is installed.
+- `torque::app::web_page`: the entry web builds share: the page's calls (`web_exports!`), the files the page fetches by
+  its list, its settings, the loading stages and the frame times.
+- The vehicle demo in a browser, played alone (the server on an in-memory link in the page): `just
+  examples/web-vehicle-demo` builds and serves it, `vehicle-demo --web-files <dir>` writes its pack and list,
+  `just examples/web-vehicle-demo-check` walks its figure in headless Chrome.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

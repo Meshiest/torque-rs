@@ -141,17 +141,7 @@ impl<G: App> AppWindow<G> {
             size.1,
             surface.gpu.adapter()
         );
-        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
-        let mut view = self.game.view(&surface.gpu);
-        #[cfg(target_arch = "wasm32")]
-        {
-            let (query, agent) = crate::web_page::page_query_and_agent();
-            if let Some(quality) = crate::web_page::web_quality(&agent, &query) {
-                println!("{}: the {} quality", self.game.log_name(), quality.name());
-                view.set_quality(quality);
-            }
-        }
-        self.view = Some(view);
+        self.view = Some(self.game.view(&surface.gpu));
         self.surface = Some(surface);
     }
 
@@ -237,6 +227,12 @@ impl<G: App> WindowGame for AppWindow<G> {
             return Ok(None);
         };
         self.game.host().surface_size(surface.size());
+        // The page's settings: the quality it asked for, from this frame on.
+        #[cfg(target_arch = "wasm32")]
+        if let Some(quality) = crate::web_page::take_quality() {
+            println!("{}: the {} quality", self.game.log_name(), quality.name());
+            view.set_quality(quality);
+        }
         let (gui, eye) = self.game.frame(view);
         let Some(frame) = surface.frame() else {
             return Ok(None);

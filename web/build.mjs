@@ -1,14 +1,14 @@
 // Builds an example for the web into <target>/web/<name>/: the module for wasm32-unknown-unknown, wasm-bindgen's JavaScript
 // glue, the page and its file loader, and the example's files, packed by the native build.
 //
-// Usage: node build.mjs <example> [--embed]      (level-demo, fps)
+// Usage: node build.mjs <example> [--embed]      (level-demo, fps, vehicle-demo; vehicle-demo fetches its files only)
 // By default the files are fetched by the page: the folder holds `files.json` (each file's path, size and SHA-256) and
 // `game.pack`, which the native build writes (`--web-files`), and the module carries none of them. With `--embed` the module
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
 // <target>/web/<name>-embedded/.
 //
-// The folder, served as it is: index.html, files.js, loading.js, game.js, game_bg.wasm, and files.json with game.pack when
-// fetched.
+// The folder, served as it is: index.html, files.js, loading.js, settings.js, game.js, game_bg.wasm, and files.json with
+// game.pack when fetched.
 // The target folder is CARGO_TARGET_DIR's, else the workspace's `target`. wasm-bindgen's command line, at the version
 // Cargo.lock names, is installed into <target>/web-tools at first.
 import { spawnSync } from 'node:child_process';
@@ -16,9 +16,11 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } f
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Each example's package and program, and whether it can carry its files (`--embed`, its `embed-pack` feature).
 const EXAMPLES = {
-  'level-demo': { package: 'torque-example-level-demo', bin: 'example-level-demo' },
-  fps: { package: 'torque-example-fps', bin: 'fps-client' },
+  'level-demo': { package: 'torque-example-level-demo', bin: 'example-level-demo', embed: true },
+  fps: { package: 'torque-example-fps', bin: 'fps-client', embed: true },
+  'vehicle-demo': { package: 'torque-example-vehicle-demo', bin: 'vehicle-demo', embed: false },
 };
 
 const name = process.argv[2];
@@ -26,6 +28,10 @@ const example = EXAMPLES[name];
 const embed = process.argv.slice(3).includes('--embed');
 if (!example || process.argv.slice(3).some((a) => a !== '--embed')) {
   console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}> [--embed]`);
+  process.exit(2);
+}
+if (embed && !example.embed) {
+  console.error(`${name} has no build that carries its files: leave out --embed`);
   process.exit(2);
 }
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -88,7 +94,7 @@ if (opt !== '0' && spawnSync(opt, ['--version'], { encoding: 'utf8' }).status ==
 } else {
   console.log('wasm-opt not found: the module is not optimized further (install binaryen for a faster one)');
 }
-for (const page of ['index.html', 'files.js', 'loading.js']) copyFileSync(join(root, 'web', page), join(out, page));
+for (const page of ['index.html', 'files.js', 'loading.js', 'settings.js']) copyFileSync(join(root, 'web', page), join(out, page));
 const mib = (file) => (statSync(file).size / 1048576).toFixed(1);
 const module = `game_bg.wasm ${mib(moduleFile)} MiB`;
 console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)`);

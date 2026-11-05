@@ -14,6 +14,20 @@
   #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
   #fps { position: fixed; top: 0.5rem; left: 0.5rem; padding: 0.2rem 0.5rem; background: #000a; color: #e8ecf4;
     font: 13px ui-monospace, monospace; border-radius: 4px; pointer-events: none; }
+  #gear { position: fixed; top: 0.5rem; right: 0.5rem; width: 2.25rem; height: 2.25rem; padding: 0; border: 1px solid #3a4152;
+    border-radius: 6px; background: #1c2029e6; color: #dde2ec; font-size: 1.25rem; line-height: 1; cursor: pointer; }
+  #gear:hover { background: #262c38; }
+  #gear:focus-visible, #settings select:focus-visible, #settings input:focus-visible, #settings button:focus-visible {
+    outline: 2px solid #7aa2f7; outline-offset: 2px; }
+  #settings { position: fixed; top: 3.25rem; right: 0.5rem; width: 15rem; padding: 0.75rem 0.9rem; border: 1px solid #3a4152;
+    border-radius: 8px; background: #1c2029f2; box-shadow: 0 6px 20px #0008; }
+  #settings h2 { margin: 0 0 0.6rem; font-size: 0.95rem; font-weight: 600; }
+  #settings .row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0.45rem 0; font-size: 0.9rem; }
+  #settings select { font: inherit; padding: 0.15rem 0.3rem; background: #12141a; color: #dde2ec; border: 1px solid #3a4152; border-radius: 4px; }
+  #settings input[type=checkbox] { accent-color: #7aa2f7; width: 1rem; height: 1rem; }
+  #settings .note { margin: 0.5rem 0 0; font-size: 0.8rem; color: #9aa3b5; }
+  #settings .close { margin-top: 0.6rem; font: inherit; font-size: 0.85rem; padding: 0.2rem 0.7rem; background: #262c38;
+    color: #dde2ec; border: 1px solid #3a4152; border-radius: 4px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -22,6 +36,25 @@
   <progress id="progress"></progress>
 </div>
 <div id="fps" hidden></div>
+<button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings" title="Settings">&#9881;</button>
+<div id="settings" role="dialog" aria-labelledby="settings-title" hidden>
+  <h2 id="settings-title">Settings</h2>
+  <div class="row">
+    <label for="quality">Graphics quality</label>
+    <select id="quality">
+      <option value="low">Low</option>
+      <option value="medium">Medium</option>
+      <option value="high">High</option>
+      <option value="ultra">Ultra</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="show-fps">Show frame rate (F8)</label>
+    <input id="show-fps" type="checkbox">
+  </div>
+  <p class="note" id="settings-note" hidden></p>
+  <button class="close" type="button">Close</button>
+</div>
 <noscript>This game needs JavaScript.</noscript>
 <script type="module">
   // The module either carries its files or fetches them by `files.json` (files.js). The loading display shows each stage
@@ -29,18 +62,22 @@
   // on the root element's `data-torque-stage`. A refused file or list is shown here, and its message is on the root element's
   // `data-torque-refused` for a test.
   //
-  // `?fps` (or F8) shows the game's frames a second and frame time (its `data-torque-fps` and `data-torque-frame-ms`).
+  // The settings (the gear, top right; settings.js): the renderer's quality, applied at the game's next frame
+  // (`setQuality`), and the frame-rate display (also F8), from the game's `data-torque-fps` and `data-torque-frame-ms`. Both
+  // are kept in the browser's storage.
   //
   // Esc: a browser keeps it for itself while the pointer is locked (it ends the lock) and in full screen (it leaves it). The
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
   // leaves full screen).
   import { fetchFiles, Refused } from './files.js';
   import { fpsText, later, readStreamed, stageText } from './loading.js';
+  import * as settings from './settings.js';
 
   const root = document.documentElement;
   const status = document.getElementById('status');
   const bar = document.getElementById('progress');
   let stage = null;
+  let game = null;
 
   // Shows `next`, with a download's bytes; a stage without bytes shows a moving bar.
   function show(next, done = null, total = null) {
@@ -66,15 +103,78 @@
     }
   }).observe(root, { attributes: true, attributeFilter: ['data-torque-stage'] });
 
-  // The frame-time display.
+  // The settings, kept in the browser's storage (none where it is blocked: they last until the page closes).
+  let storage = null;
+  try {
+    storage = globalThis.localStorage ?? null;
+  } catch {}
+  const chosen = settings.load(storage, navigator.userAgent);
+  const gear = document.getElementById('gear');
+  const panel = document.getElementById('settings');
+  const quality = document.getElementById('quality');
+  const showFps = document.getElementById('show-fps');
+  const note = document.getElementById('settings-note');
   const fps = document.getElementById('fps');
-  fps.hidden = !new URLSearchParams(location.search).has('fps');
+  quality.value = chosen.quality;
+  showFps.checked = chosen.fps;
+  fps.hidden = !chosen.fps;
+
+  // The quality to the game (once its module is here; it applies it at its next frame).
+  function applyQuality() {
+    if (!game) return;
+    if (!game.setQuality) {
+      // a game whose page calls offer no quality
+      quality.disabled = true;
+      return;
+    }
+    try {
+      game.setQuality(chosen.quality);
+      note.hidden = true;
+    } catch (e) {
+      note.textContent = `The quality was not changed: ${e?.message ?? e}`;
+      note.hidden = false;
+    }
+  }
+  function keep() {
+    if (!settings.save(storage, chosen)) {
+      note.textContent = 'The browser keeps no settings for this page: they last until it is closed.';
+      note.hidden = false;
+    }
+  }
+  quality.addEventListener('change', () => {
+    chosen.quality = quality.value;
+    chosen.picked = true;
+    applyQuality();
+    keep();
+  });
+  function setFps(on) {
+    chosen.fps = on;
+    showFps.checked = on;
+    fps.hidden = !on;
+    keep();
+  }
+  showFps.addEventListener('change', () => setFps(showFps.checked));
   addEventListener('keydown', (e) => {
-    if (e.code === 'F8' && !e.repeat) fps.hidden = !fps.hidden;
+    if (e.code === 'F8' && !e.repeat) setFps(fps.hidden);
   }, { capture: true });
   setInterval(() => {
     if (!fps.hidden) fps.textContent = fpsText(root.dataset.torqueFps, root.dataset.torqueFrameMs);
   }, 250);
+
+  function openPanel(open) {
+    panel.hidden = !open;
+    gear.setAttribute('aria-expanded', String(open));
+    if (open) quality.focus();
+    else gear.focus();
+  }
+  gear.addEventListener('click', () => openPanel(panel.hidden));
+  panel.querySelector('.close').addEventListener('click', () => openPanel(false));
+  panel.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      openPanel(false);
+    }
+  });
 
   // Chromium: in full screen Esc goes to the game (the keyboard lock); out of it the lock is let go.
   document.addEventListener('fullscreenchange', () => {
@@ -94,13 +194,15 @@
       return;
     }
     show('module');
-    const game = await import('./game.js');
+    const module = await import('./game.js');
     const wasm = await readStreamed(await fetch(new URL('game_bg.wasm', document.baseURI)), (done, total) =>
       show('module', done, total));
     show('compile');
     await new Promise(requestAnimationFrame);
-    const module = await WebAssembly.compile(wasm);
-    await game.default({ module_or_path: module });
+    await module.default({ module_or_path: await WebAssembly.compile(wasm) });
+    game = module;
+    // The game's first frame is drawn at the quality chosen.
+    applyQuality();
     if (!game.embedded()) {
       await fetchFiles(game, (done, total) => show('files', done, total));
     }

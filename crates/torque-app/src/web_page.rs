@@ -1,37 +1,103 @@
-//! A game in a browser and its page: the renderer's quality the page starts at ([`web_quality`]), the game's loading stages
-//! and its frame times written on the page's root element for the page's displays (`web/index.html`, `web/loading.js`).
+//! A game in a browser and its page (`web/index.html`): the entry every web build shares.
 //!
-//! **The quality.** `?quality=low|medium|high|ultra` in the page's address picks it. Otherwise Firefox starts at
-//! [`FIREFOX_QUALITY`]: its WebGPU spends far more on each pass and draw than Chromium's, so the same frame costs it
-//! several times as much. Other browsers keep the game's own.
+//! **The page's calls.** [`web_exports!`](crate::web_exports) gives a game's program the functions the page calls: whether
+//! the module carries its files, the list's cap, `readManifest` and `addFile` for the files the page fetches by `files.json`
+//! ([`read_manifest`], [`add_file`]: a file is taken only when its size and hash are the list's), the game's start (on the files
+//! fetched, [`take_fetched`], or on those the module carries) and `setQuality` ([`request_quality`]: the page's settings).
 //!
-//! **The stages** (`data-torque-stage`): `gpu` while the canvas's device is asked for, `map` while the game says it is loading
-//! ([`crate::App::loading`]), then `ready` (the page's loading display goes).
+//! **The quality** is the page's to pick (its settings panel; Firefox starts at Low until the player picks): `setQuality`
+//! asks for it, and the window applies it at its next frame ([`take_quality`]), before the first one too.
 //!
-//! **The frame times** ([`FrameTimes`]): every [`FrameTimes::EVERY`] the frames a second (`data-torque-fps`) and the mean and
-//! longest time between two frames in ms (`data-torque-frame-ms`, `mean max`).
+//! **The page's displays.** The window writes on the page's root element the loading stage (`data-torque-stage`: `gpu` while the
+//! canvas's device is asked for, `map` while the game says it is loading ([`crate::App::loading`]), then `ready`) and, every
+//! [`FrameTimes::EVERY`], the frames a second (`data-torque-fps`) and the mean and longest time between two frames in ms
+//! (`data-torque-frame-ms`, `mean max`). A game marks what a check waits on with [`mark_play`].
+
+use std::cell::{Cell, RefCell};
 
 use torque_render_scene::hd::Quality;
 use web_time::{Duration, Instant};
 
-/// The quality Firefox starts at when the address names none.
-pub const FIREFOX_QUALITY: Quality = Quality::Low;
+use crate::manifest::Manifest;
 
-/// The quality a page starts at: the address's `quality` (`query`, the page's `location.search`), else
-/// [`FIREFOX_QUALITY`] in Firefox (`user_agent`, `navigator.userAgent`); None: the game's own.
-pub fn web_quality(user_agent: &str, query: &str) -> Option<Quality> {
-    let asked = query
-        .trim_start_matches('?')
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(k, _)| *k == "quality")
-        .and_then(|(_, v)| Quality::named(v));
-    asked.or_else(|| is_firefox(user_agent).then_some(FIREFOX_QUALITY))
+/// The pack's file name in a web build's folder.
+pub const WEB_PACK: &str = "game.pack";
+
+/// The files fetched so far and the list they were fetched by.
+struct Fetched {
+    manifest: Manifest,
+    files: Vec<(String, Vec<u8>)>,
 }
 
-/// Whether `user_agent` is Firefox's (Gecko's `Firefox/<version>`; Seamonkey and the like count, Chromium's never say it).
-pub fn is_firefox(user_agent: &str) -> bool {
-    user_agent.contains("Firefox/")
+thread_local! {
+    static FETCHED: RefCell<Option<Fetched>> = const { RefCell::new(None) };
+    static QUALITY: Cell<Option<Quality>> = const { Cell::new(None) };
+}
+
+/// Reads the list of the files to fetch (Err: it is not one, or it breaks a cap), forgetting any files added before.
+pub fn read_manifest(text: &str) -> Result<(), String> {
+    let manifest = Manifest::parse(text)?;
+    FETCHED.with_borrow_mut(|f| {
+        *f = Some(Fetched {
+            manifest,
+            files: Vec::new(),
+        })
+    });
+    Ok(())
+}
+
+/// Takes the fetched file `path` (Err, the file left out: the list does not name it, or its size or hash is not the list's).
+pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
+    FETCHED.with_borrow_mut(|f| {
+        let f = f.as_mut().ok_or("no list of files was read")?;
+        let entry = f
+            .manifest
+            .file(path)
+            .ok_or_else(|| format!("{path} is not in the list of files"))?;
+        entry.check(&bytes)?;
+        let path = entry.path.clone();
+        f.files.retain(|(p, _)| *p != path);
+        f.files.push((path, bytes));
+        Ok(())
+    })
+}
+
+/// The fetched files, by their paths (Err: no list was read, or a file it names was not fetched); the list is forgotten.
+pub fn take_fetched() -> Result<Vec<(String, Vec<u8>)>, String> {
+    let Fetched { manifest, files } = FETCHED.take().ok_or("no list of files was read")?;
+    if let Some(missing) = manifest
+        .files
+        .iter()
+        .find(|m| !files.iter().any(|(p, _)| *p == m.path))
+    {
+        return Err(format!("{} was not fetched", missing.path));
+    }
+    Ok(files)
+}
+
+/// The page asks for the quality `name` (`low`, `medium`, `high` or `ultra`, any case); the window applies it at its next frame
+/// (Err: no such quality).
+pub fn request_quality(name: &str) -> Result<(), String> {
+    let quality = Quality::named(name.trim()).ok_or_else(|| format!("no quality {name:?}"))?;
+    QUALITY.set(Some(quality));
+    Ok(())
+}
+
+/// The quality the page asked for since the last call.
+pub fn take_quality() -> Option<Quality> {
+    QUALITY.take()
+}
+
+/// Writes a web build's files into `dir`: `pack` as [`WEB_PACK`] and the list naming it (`files.json`). The pack's path.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_web_files(dir: &std::path::Path, pack: &[u8]) -> Result<std::path::PathBuf, String> {
+    let list = Manifest::of([(WEB_PACK, pack)])?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let file = dir.join(WEB_PACK);
+    std::fs::write(&file, pack).map_err(|e| format!("{}: {e}", file.display()))?;
+    let names = dir.join(crate::manifest::FILE_NAME);
+    std::fs::write(&names, list.to_json()).map_err(|e| format!("{}: {e}", names.display()))?;
+    Ok(file)
 }
 
 /// The time between frames, summed up every [`FrameTimes::EVERY`].
@@ -101,15 +167,27 @@ impl FrameTimes {
     }
 }
 
-/// In a browser: the page's address (`location.search`) and the browser's user agent (empty where the page has none).
+/// The value of `name` in a query string (`?a=1&b=2`).
+pub fn query_value(query: &str, name: &str) -> Option<String> {
+    query
+        .trim_start_matches('?')
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| v.to_string())
+}
+
+/// In a browser: a panic shown in the page's console.
 #[cfg(target_arch = "wasm32")]
-pub fn page_query_and_agent() -> (String, String) {
-    let Some(window) = web_sys::window() else {
-        return (String::new(), String::new());
-    };
-    let query = window.location().search().unwrap_or_default();
-    let agent = window.navigator().user_agent().unwrap_or_default();
-    (query, agent)
+pub fn init() {
+    console_error_panic_hook::set_once();
+}
+
+/// In a browser: the value of `name` in the page's query string.
+#[cfg(target_arch = "wasm32")]
+pub fn query(name: &str) -> Option<String> {
+    let search = web_sys::window()?.location().search().ok()?;
+    query_value(&search, name)
 }
 
 /// In a browser: `value` on the page's root element as `data-torque-<name>`.
@@ -128,6 +206,80 @@ pub fn mark(name: &str, value: &str) {
 pub fn mark_frames(s: &FrameSummary) {
     mark("fps", &format!("{:.1}", s.fps));
     mark("frame-ms", &format!("{:.2} {:.1}", s.mean_ms, s.max_ms));
+}
+
+/// In a browser: what a check waits on, on the page: the frames drawn (`data-torque-frames`), the map being played
+/// (`data-torque-map`, empty off it), whether the client holds its own figure (`data-torque-figure`, `1` or `0`) and where
+/// (`data-torque-position`, `x y z`).
+#[cfg(target_arch = "wasm32")]
+pub fn mark_play(frames: u64, map: &str, figure: Option<[f32; 3]>) {
+    mark("frames", &frames.to_string());
+    mark("map", map);
+    mark("figure", if figure.is_some() { "1" } else { "0" });
+    let position = figure
+        .map(|p| format!("{} {} {}", p[0], p[1], p[2]))
+        .unwrap_or_default();
+    mark("position", &position);
+}
+
+/// The functions a web build's page calls (`web/index.html`, `web/files.js`), in the game's program (the module's exports
+/// must be the program's own): `embedded`, `manifestMaxBytes`, `startEmbedded`, `readManifest`, `addFile`, `startFetched` and
+/// `setQuality`. `embedded` is whether the module carries its files; `start_embedded` and `start_fetched` start the game
+/// (functions returning `Result<(), String>`). The program depends on `wasm-bindgen`.
+///
+/// ```ignore
+/// #[cfg(target_arch = "wasm32")]
+/// torque::app::web_exports! {
+///     embedded: false,
+///     start_embedded: my_game::web::start_embedded,
+///     start_fetched: my_game::web::start_fetched,
+/// }
+/// ```
+#[macro_export]
+macro_rules! web_exports {
+    (embedded: $embedded:expr, start_embedded: $start_embedded:path, start_fetched: $start_fetched:path $(,)?) => {
+        mod page {
+            use wasm_bindgen::prelude::wasm_bindgen;
+
+            /// Whether the module carries its files; if not, the page fetches them by `files.json`.
+            #[wasm_bindgen]
+            pub fn embedded() -> bool {
+                $embedded
+            }
+
+            /// The most bytes `files.json` may have.
+            #[wasm_bindgen(js_name = manifestMaxBytes)]
+            pub fn manifest_max_bytes() -> u32 {
+                u32::try_from($crate::manifest::MAX_BYTES).unwrap_or(u32::MAX)
+            }
+
+            #[wasm_bindgen(js_name = startEmbedded)]
+            pub fn start_embedded() -> Result<(), String> {
+                $start_embedded()
+            }
+
+            #[wasm_bindgen(js_name = readManifest)]
+            pub fn read_manifest(text: &str) -> Result<(), String> {
+                $crate::web_page::read_manifest(text)
+            }
+
+            #[wasm_bindgen(js_name = addFile)]
+            pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
+                $crate::web_page::add_file(path, bytes)
+            }
+
+            #[wasm_bindgen(js_name = startFetched)]
+            pub fn start_fetched() -> Result<(), String> {
+                $start_fetched()
+            }
+
+            /// The page's settings: the renderer's quality, from the next frame on.
+            #[wasm_bindgen(js_name = setQuality)]
+            pub fn set_quality(name: &str) -> Result<(), String> {
+                $crate::web_page::request_quality(name)
+            }
+        }
+    };
 }
 
 #[cfg(test)]

@@ -35,7 +35,7 @@ use std::net::Ipv4Addr;
 use std::rc::Rc;
 
 use torque::app::camera_blend::CameraBlend;
-use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
+use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 use torque::app::hosting::{join_address, lan_bind_address, register_join_natives};
 use torque::app::lights::WorldLights;
 use torque::app::orbit::Zoom;
@@ -68,6 +68,8 @@ pub struct ClientOptions {
     pub port: u16,
     /// The address a hosted game binds (the loopback address: this computer's LAN address).
     pub host_address: Ipv4Addr,
+    /// A client with no socket of its own and no list of games, that can only play alone (a browser's).
+    pub alone_only: bool,
 }
 
 impl Default for ClientOptions {
@@ -77,6 +79,7 @@ impl Default for ClientOptions {
             name: "Player".to_string(),
             port: DEFAULT_PORT,
             host_address: Ipv4Addr::LOCALHOST,
+            alone_only: false,
         }
     }
 }
@@ -214,8 +217,13 @@ impl VehicleDemo {
             ))),
             // The list of games measures its text as it lays out: its fonts are the drawing's.
             layout_fonts: true,
-            net: options.net.client_net(),
-            server_query: true,
+            // A client that only plays alone gets its in-memory socket when the game starts (`start_local`).
+            net: if options.alone_only {
+                ClientNet::External
+            } else {
+                options.net.client_net()
+            },
+            server_query: !options.alone_only,
         })?;
         register_join_natives(&mut b.vm, &b.state);
         b.vm.set_global("$World::Port", &options.port.to_string());
