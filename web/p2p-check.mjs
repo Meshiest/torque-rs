@@ -63,7 +63,8 @@ function start(file, args, name) {
 
 const problems = [];
 const log = [];
-const browser = await puppeteer.launch({
+// Each page in a browser of its own: a page a browser hides (one behind another) stops drawing, and its client with it.
+const launch = () => puppeteer.launch({
   ...(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: 'chrome' }),
   headless: true,
   args: [
@@ -76,8 +77,12 @@ const browser = await puppeteer.launch({
   ],
   defaultViewport: { width: 1400, height: 900 },
 });
+const browsers = [];
+
 
 async function watched(name) {
+  const browser = await launch();
+  browsers.push(browser);
   const page = await browser.newPage();
   page.on('console', (m) => {
     const line = `${name} ${m.type()}: ${m.text()}`;
@@ -192,7 +197,9 @@ try {
 } catch (e) {
   problems.push(e.message);
 } finally {
-  await browser.close();
+  // A failing run leaves the programs a moment to print their status lines (FPS_CHECK_VERBOSE shows them).
+  if (problems.length) await new Promise((r) => setTimeout(r, 2000));
+  for (const b of browsers) await b.close();
   for (const c of children) c.kill();
 }
 if (problems.length) {

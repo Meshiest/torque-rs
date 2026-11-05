@@ -90,6 +90,9 @@ const RECV_BYTES: usize = 2048;
 const WIRE_ROOM: usize = 128;
 /// The most source addresses mapped to one peer (its oldest is given up for a new one).
 pub const MAX_REMOTES: usize = 4;
+/// The most addresses kept as verified for one peer (its checks came from them and held their integrity; a browser checks
+/// from a socket on each of its network interfaces).
+pub const VERIFIED_PER_PEER: usize = 16;
 /// The most candidates a player's host takes from one joiner, in its offer and trickled (its checks go to each).
 pub const MAX_REMOTE_CANDIDATES: u32 = 8;
 /// The most distinct candidate IP addresses a player's host holds across every joiner, per peer it may have.
@@ -437,6 +440,8 @@ struct Peer {
     candidate_ips: Vec<IpAddr>,
     /// Checks sent to its unverified addresses in the present second.
     unverified: (Instant, u32),
+    /// Addresses whose checks the stack answered (their integrity held): verified, the newest last.
+    verified: VecDeque<SocketAddr>,
 }
 
 impl Peer {
@@ -589,6 +594,13 @@ impl RtcSide {
         self.peers
             .get(&stand_in)
             .is_some_and(|p| p.channel.is_some() && p.closing.is_none())
+    }
+
+    /// Whether `stand_in` has a peer, connecting or open.
+    pub(crate) fn has_peer(&self, stand_in: SocketAddr) -> bool {
+        self.peers
+            .get(&stand_in)
+            .is_some_and(|p| p.closing.is_none())
     }
 
     /// When the peer of `stand_in` last carried a game message.
@@ -843,6 +855,7 @@ impl RtcSide {
                 candidates: 0,
                 candidate_ips: Vec::new(),
                 unverified: (now, 0),
+                verified: VecDeque::new(),
             },
         );
         for line in &offered {
@@ -1149,7 +1162,8 @@ impl RtcSide {
     }
 }
 
-/// Whether one more check may go to an unverified address of `peer`: within its rate a second and every peer's.
+/// Whether one more check may go to an unverified address of `peer` (one no authenticated datagram or check came from:
+/// only a candidate named it): within its rate a second and every peer's.
 fn allow_unverified(peer: &mut Peer, sink: &mut Sink<'_>) -> bool {
     take_check(
         &mut peer.unverified,
@@ -1361,10 +1375,18 @@ fn drain(peer: &mut Peer, sink: &mut Sink<'_>) {
                 if t.contents.get(..2) == Some(&[0x01, 0x01][..]) {
                     peer.heard = sink.now;
                     sink.authentic = true;
+                    // The check came from there and held its integrity: the address is the peer's.
+                    if !peer.verified.contains(&t.destination) {
+                        peer.verified.push_back(t.destination);
+                        if peer.verified.len() > VERIFIED_PER_PEER {
+                            peer.verified.pop_front();
+                        }
+                    }
                 }
                 // A check of our own to an address nothing authenticated came from yet: held to its rates.
                 if t.contents.get(..2) == Some(&[0x00, 0x01][..])
                     && !peer.remotes.contains(&t.destination)
+                    && !peer.verified.contains(&t.destination)
                     && !allow_unverified(peer, sink)
                 {
                     sink.counters.checks_held += 1;

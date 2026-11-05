@@ -318,11 +318,18 @@ impl P2pHost {
         side.pump(now, &mut self.inbox, self.setup.queue.max(1));
         let reflexive = side.reflexive().filter(|_| !self.reflexive_shown);
         let notices = side.take_notices();
+        let c = side.counters();
         if let Some(mapped) = reflexive {
             self.reflexive_shown = true;
             self.say(format!("p2p: the STUN server sees this host at {mapped}"));
         }
-        for (stand_in, _why) in notices {
+        for (stand_in, why) in notices {
+            if let Some(peer) = self.by_stand_in.get(&stand_in) {
+                self.say(format!(
+                    "p2p: joiner {peer} closed ({why:?}); {} checks held back, {} candidates refused so far",
+                    c.checks_held, c.candidates_refused
+                ));
+            }
             self.end(stand_in);
         }
     }
@@ -382,14 +389,13 @@ impl P2pHost {
                 }
             }
             FromService::Left(peer) => {
-                // Its signaling is over: a joiner whose channel is not open by now will not open it.
+                // Its signaling is over. A joiner that made a peer is left to the peer's deadlines (a browser may see
+                // its channel open, and close its room socket, before the host has the channel's open message); one
+                // that never offered is done.
                 let Some(j) = self.joiners.get(&peer).copied() else {
                     return;
                 };
-                if !self.is_open(j.stand_in) {
-                    if let Some(side) = self.side.as_mut() {
-                        side.remove(j.stand_in);
-                    }
+                if !self.side.as_ref().is_some_and(|s| s.has_peer(j.stand_in)) {
                     self.end(j.stand_in);
                 }
             }

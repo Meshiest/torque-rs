@@ -22,6 +22,9 @@ use super::{MAX_INBOX, RECV_BYTES};
 
 /// How long the channel has to open after the room is joined.
 pub const OPEN_TIMEOUT_MS: f64 = 20_000.0;
+/// How long ICE may stay `disconnected` before the link ends (it often comes back on its own).
+#[cfg(target_arch = "wasm32")]
+const DISCONNECTED_MS: f64 = 5_000.0;
 /// The most candidates sent to the host.
 pub const MAX_CANDIDATES: usize = 16;
 /// The most room messages kept waiting.
@@ -102,6 +105,8 @@ mod web {
         candidates: VecDeque<String>,
         open: bool,
         dead: bool,
+        /// When ICE went `disconnected`, while it stays so.
+        disconnected: Option<f64>,
     }
 
     struct Peer {
@@ -279,14 +284,15 @@ mod web {
             channel.set_onclose(Some(on_close.as_ref().unchecked_ref()));
             let shared = Rc::clone(&self.shared);
             let ice_pc = pc.clone();
+            // `disconnected` can pass (ICE moving to another pair): only one that lasts ends the link.
             let on_ice = Closure::<dyn FnMut()>::new(move || {
-                if matches!(
-                    ice_pc.ice_connection_state(),
-                    RtcIceConnectionState::Failed
-                        | RtcIceConnectionState::Disconnected
-                        | RtcIceConnectionState::Closed
-                ) {
-                    shared.borrow_mut().dead = true;
+                let mut s = shared.borrow_mut();
+                match ice_pc.ice_connection_state() {
+                    RtcIceConnectionState::Failed | RtcIceConnectionState::Closed => s.dead = true,
+                    RtcIceConnectionState::Disconnected => {
+                        s.disconnected.get_or_insert(now_ms());
+                    }
+                    _ => s.disconnected = None,
                 }
             });
             pc.set_oniceconnectionstatechange(Some(on_ice.as_ref().unchecked_ref()));
@@ -413,11 +419,14 @@ mod web {
             }
             let (offer, candidates, open, dead) = {
                 let mut s = self.shared.borrow_mut();
+                let lost = s
+                    .disconnected
+                    .is_some_and(|t| now_ms() - t > DISCONNECTED_MS);
                 (
                     s.offer.take(),
                     std::mem::take(&mut s.candidates),
                     s.open,
-                    s.dead,
+                    s.dead || lost,
                 )
             };
             if let Some(sdp) = offer {
