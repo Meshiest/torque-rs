@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -170,6 +171,8 @@ pub enum LookupError {
     TimedOut,
     NoIpv4,
     NotAllowed,
+    /// [`MAX_LOOKUPS`] threads still wait on the system.
+    Busy,
 }
 
 impl LookupError {
@@ -184,7 +187,35 @@ impl LookupError {
                 "That name has no address the game can use. Type the address in numbers."
             }
             LookupError::NotAllowed => "That name leads to an address that cannot be a game.",
+            LookupError::Busy => "Still looking up the last name. Try again in a moment.",
         }
+    }
+}
+
+/// The most lookup threads alive at once in the process: a canceled or timed-out lookup's thread waits on the system until it
+/// answers (up to half a minute), so clicking again must not pile more up.
+pub const MAX_LOOKUPS: usize = 2;
+
+/// The lookup threads alive.
+static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+
+/// One of [`MAX_LOOKUPS`], given back when the thread holding it ends (or never starts).
+struct Slot(&'static AtomicUsize);
+
+impl Slot {
+    fn take(count: &'static AtomicUsize) -> Option<Slot> {
+        count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_LOOKUPS).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Slot(count))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -198,21 +229,46 @@ pub struct JoinLookup {
 }
 
 impl JoinLookup {
-    pub fn start(name: &str, port: u16, resolver: Resolver, timeout: Duration) -> Self {
+    /// Starts a lookup, or [`LookupError::Busy`] when [`MAX_LOOKUPS`] threads still run.
+    pub fn start(
+        name: &str,
+        port: u16,
+        resolver: Resolver,
+        timeout: Duration,
+    ) -> Result<Self, LookupError> {
+        Self::start_in(&LOOKUPS, name, port, resolver, timeout)
+    }
+
+    fn start_in(
+        slots: &'static AtomicUsize,
+        name: &str,
+        port: u16,
+        resolver: Resolver,
+        timeout: Duration,
+    ) -> Result<Self, LookupError> {
+        let slot = Slot::take(slots).ok_or(LookupError::Busy)?;
         let (tx, answer) = mpsc::channel();
         let owned = name.to_string();
-        // A thread that cannot start drops `tx`: the lookup ends as not found.
+        // A thread that cannot start drops `tx` and the slot: the lookup ends as not found.
         let _ = std::thread::Builder::new()
             .name("join-lookup".into())
             .spawn(move || {
-                let _ = tx.send(resolver(&owned, port));
+                let answer = resolver(&owned, port);
+                drop(slot);
+                let _ = tx.send(answer);
             });
-        JoinLookup {
+        Ok(JoinLookup {
             name: name.to_string(),
             port,
             answer,
             deadline: Instant::now() + timeout,
-        }
+        })
+    }
+
+    /// Whether this looks up `target` (names compare without case).
+    fn is_for(&self, target: &JoinTarget) -> bool {
+        matches!(target, JoinTarget::Name { name, port }
+            if name.eq_ignore_ascii_case(&self.name) && *port == self.port)
     }
 
     /// The name being looked up.
@@ -266,16 +322,103 @@ pub fn resolve_join_address(text: &str) -> Result<SocketAddrV4, &'static str> {
         JoinTarget::Address(address) => Ok(address),
         JoinTarget::Name { name, port } => {
             JoinLookup::start(&name, port, system_resolver(), LOOKUP_TIMEOUT)
-                .wait()
+                .and_then(JoinLookup::wait)
                 .map_err(LookupError::message)
         }
     }
 }
 
-/// The join screen's lookup in flight, and whether the player's own click or key started it.
+/// The join screen's lookup in flight, and whether the player's own click or key asked for it.
 struct Pending {
     lookup: JoinLookup,
     by_player: bool,
+}
+
+/// Where the join screen's lookup stands ([`JoinLookups::result`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupStatus {
+    Idle,
+    Running,
+    /// The address, and whether the player's click or key typed the name (the connect may then reach a public address).
+    Found {
+        address: SocketAddrV4,
+        by_player: bool,
+    },
+    Failed(LookupError),
+}
+
+/// The join screen's lookup: one at a time, for the text last checked.
+pub struct JoinLookups {
+    resolver: Resolver,
+    timeout: Duration,
+    slots: &'static AtomicUsize,
+    pending: Option<Pending>,
+}
+
+impl JoinLookups {
+    pub fn new(resolver: Resolver, timeout: Duration) -> Self {
+        Self::with_slots(&LOOKUPS, resolver, timeout)
+    }
+
+    fn with_slots(slots: &'static AtomicUsize, resolver: Resolver, timeout: Duration) -> Self {
+        JoinLookups {
+            resolver,
+            timeout,
+            slots,
+            pending: None,
+        }
+    }
+
+    /// `checkJoinAddress`'s answer for `text` (see [`register_join_natives_with`]); `by_player` while the player's click or
+    /// key is handled. The same name as the running lookup keeps it; other text cancels it.
+    pub fn check(&mut self, text: &str, by_player: bool) -> String {
+        let target = read_join_address(text);
+        if let (Some(p), Ok(target)) = (self.pending.as_mut(), &target)
+            && p.lookup.is_for(target)
+        {
+            p.by_player |= by_player;
+            return format!("?{}", p.lookup.name());
+        }
+        self.pending = None;
+        match target {
+            Ok(JoinTarget::Address(address)) => address.to_string(),
+            Ok(JoinTarget::Name { name, port }) => match JoinLookup::start_in(
+                self.slots,
+                &name,
+                port,
+                Arc::clone(&self.resolver),
+                self.timeout,
+            ) {
+                Ok(lookup) => {
+                    self.pending = Some(Pending { lookup, by_player });
+                    format!("?{name}")
+                }
+                Err(why) => format!("!{}", why.message()),
+            },
+            Err(why) => format!("!{why}"),
+        }
+    }
+
+    /// The lookup's state; it is dropped once it ends.
+    pub fn result(&mut self) -> LookupStatus {
+        let Some(p) = self.pending.as_ref() else {
+            return LookupStatus::Idle;
+        };
+        let Some(result) = p.lookup.poll() else {
+            return LookupStatus::Running;
+        };
+        let by_player = p.by_player;
+        self.pending = None;
+        match result {
+            Ok(address) => LookupStatus::Found { address, by_player },
+            Err(why) => LookupStatus::Failed(why),
+        }
+    }
+
+    /// Drops the lookup (its thread runs on until the system answers, holding its slot).
+    pub fn cancel(&mut self) {
+        self.pending = None;
+    }
 }
 
 /// The join screen's natives with the system's resolver (see [`register_join_natives_with`]).
@@ -285,9 +428,9 @@ pub fn register_join_natives(vm: &mut Vm, state: &Rc<RefCell<ClientState<TgeConn
 
 /// The join screen's natives:
 /// - `checkJoinAddress(text)` gives the address as `a.b.c.d:port`, `!` and the reason it cannot be joined, or `?` and a name
-///   whose lookup it started (or the one already running: one at a time);
-/// - `joinLookupResult()` gives `?` while the lookup runs, then the address or `!` and the reason (`""` with none); a lookup the
-///   player's click or key started lets the connect that follows reach the public address it found;
+///   being looked up (one at a time: other text cancels the running lookup, see [`JoinLookups::check`]);
+/// - `joinLookupResult()` gives `?` while the lookup runs, then the address or `!` and the reason (`""` with none); a name the
+///   player's click or key typed lets the connect that follows reach the public address it found;
 /// - `cancelJoinLookup()` drops the lookup (the player left the screen);
 /// - `armPublicJoin(address)` lets the connect that follows reach a public address the player typed (it does nothing unless
 ///   the player's own click or key is being handled, and for an address on the LAN).
@@ -297,8 +440,8 @@ pub fn register_join_natives_with(
     resolver: Resolver,
     timeout: Duration,
 ) {
-    let pending: Rc<RefCell<Option<Pending>>> = Rc::default();
-    let (st, running) = (Rc::clone(state), Rc::clone(&pending));
+    let lookups = Rc::new(RefCell::new(JoinLookups::new(resolver, timeout)));
+    let (st, running) = (Rc::clone(state), Rc::clone(&lookups));
     vm.register(
         "checkJoinAddress",
         2,
@@ -306,56 +449,30 @@ pub fn register_join_natives_with(
         "checkJoinAddress(text);",
         move |_, c| {
             let text = String::from_utf8_lossy(c.argv.get(1).map_or(&[][..], Vec::as_slice));
-            let mut running = running.borrow_mut();
-            let out = if let Some(p) = running.as_ref() {
-                format!("?{}", p.lookup.name())
-            } else {
-                match read_join_address(&text) {
-                    Ok(JoinTarget::Address(address)) => address.to_string(),
-                    Ok(JoinTarget::Name { name, port }) => {
-                        let lookup = JoinLookup::start(&name, port, Arc::clone(&resolver), timeout);
-                        let by_player = st.borrow().user_input;
-                        *running = Some(Pending { lookup, by_player });
-                        format!("?{name}")
-                    }
-                    Err(why) => format!("!{why}"),
-                }
-            };
-            Native::Str(out.into_bytes())
+            let by_player = st.borrow().user_input;
+            Native::Str(running.borrow_mut().check(&text, by_player).into_bytes())
         },
     );
-    let (st, running) = (Rc::clone(state), Rc::clone(&pending));
+    let (st, running) = (Rc::clone(state), Rc::clone(&lookups));
     vm.register(
         "joinLookupResult",
         1,
         1,
         "joinLookupResult();",
         move |vm, _| {
-            let mut running = running.borrow_mut();
-            let Some(p) = running.as_ref() else {
-                return Native::Str(Vec::new());
-            };
-            let Some(result) = p.lookup.poll() else {
-                return Native::Str(b"?".to_vec());
-            };
-            let by_player = p.by_player;
-            *running = None;
-            Native::Str(
-                match result {
-                    Ok(address) => {
-                        if by_player {
-                            st.borrow()
-                                .net
-                                .borrow_mut()
-                                .internet
-                                .arm(address, vm.sim_time());
-                        }
-                        address.to_string()
+            let out = match running.borrow_mut().result() {
+                LookupStatus::Idle => String::new(),
+                LookupStatus::Running => "?".to_string(),
+                LookupStatus::Found { address, by_player } => {
+                    if by_player {
+                        let now = vm.sim_time();
+                        st.borrow().net.borrow_mut().internet.arm(address, now);
                     }
-                    Err(why) => format!("!{}", why.message()),
+                    address.to_string()
                 }
-                .into_bytes(),
-            )
+                LookupStatus::Failed(why) => format!("!{}", why.message()),
+            };
+            Native::Str(out.into_bytes())
         },
     );
     vm.register(
@@ -364,7 +481,7 @@ pub fn register_join_natives_with(
         1,
         "cancelJoinLookup();",
         move |_, _| {
-            pending.borrow_mut().take();
+            lookups.borrow_mut().cancel();
             Native::Void
         },
     );
@@ -399,7 +516,9 @@ mod tests {
     }
 
     fn look_up(resolver: Resolver, timeout: Duration) -> Result<SocketAddrV4, LookupError> {
-        let lookup = JoinLookup::start("games.example.com", 28001, resolver, timeout);
+        static SLOTS: AtomicUsize = AtomicUsize::new(0);
+        let lookup =
+            JoinLookup::start_in(&SLOTS, "games.example.com", 28001, resolver, timeout).unwrap();
         loop {
             if let Some(result) = lookup.poll() {
                 return result;
@@ -474,7 +593,7 @@ mod tests {
             let Ok(JoinTarget::Name { name, port }) = read_join_address(text) else {
                 panic!("{text} is a name");
             };
-            JoinLookup::start(&name, port, system_resolver(), LOOKUP_TIMEOUT).wait()
+            JoinLookup::start(&name, port, system_resolver(), LOOKUP_TIMEOUT)?.wait()
         };
         assert_eq!(at("localhost"), Ok("127.0.0.1:28000".parse().unwrap()));
         assert_eq!(at("localhost:2000"), Ok("127.0.0.1:2000".parse().unwrap()));
@@ -524,26 +643,98 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_slow_lookup_times_out_and_a_dropped_one_is_cancelled() {
+    /// A resolver that answers `slow.example` once `release` is dropped, and other names at once (203.0.113.7).
+    fn slow_resolver() -> (Resolver, mpsc::Sender<()>) {
         let (release, wait) = mpsc::channel::<()>();
         let wait = std::sync::Mutex::new(wait);
-        let slow = resolver(move || {
-            let _ = wait.lock().unwrap().recv();
-            Ok(vec![SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 1)])
+        let resolver: Resolver = Arc::new(move |name, _| {
+            if name == "slow.example" {
+                let _ = wait.lock().unwrap().recv();
+            }
+            Ok(vec![SocketAddr::new(
+                Ipv4Addr::new(203, 0, 113, 7).into(),
+                1,
+            )])
         });
-        let lookup = JoinLookup::start(
-            "slow.example",
-            28000,
-            Arc::clone(&slow),
-            Duration::from_millis(30),
-        );
+        (resolver, release)
+    }
+
+    /// Waits until no lookup thread holds one of `slots`.
+    fn drained(slots: &AtomicUsize) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while slots.load(Ordering::Acquire) > 0 {
+            assert!(Instant::now() < until, "the lookup threads end");
+            std::thread::yield_now();
+        }
+    }
+
+    fn settled(screen: &mut JoinLookups) -> LookupStatus {
+        loop {
+            match screen.result() {
+                LookupStatus::Running => std::thread::yield_now(),
+                status => return status,
+            }
+        }
+    }
+
+    #[test]
+    fn a_slow_lookup_times_out_a_dropped_one_is_canceled_and_their_threads_are_capped() {
+        static SLOTS: AtomicUsize = AtomicUsize::new(0);
+        let (slow, release) = slow_resolver();
+        let start =
+            |name, timeout| JoinLookup::start_in(&SLOTS, name, 28000, Arc::clone(&slow), timeout);
+        let lookup = start("slow.example", LOOKUP_TIMEOUT).unwrap();
         assert_eq!(lookup.poll(), None, "still running");
+        let timed = start("slow.example", Duration::from_millis(30)).unwrap();
+        while timed.poll().is_none() {
+            std::thread::yield_now();
+        }
+        assert_eq!(timed.poll(), Some(Err(LookupError::TimedOut)));
+        drop((lookup, timed));
+        // Both threads still wait on the system: no third starts until they end.
         assert_eq!(
-            look_up(slow, Duration::from_millis(30)),
-            Err(LookupError::TimedOut)
+            start("other.example", LOOKUP_TIMEOUT).err(),
+            Some(LookupError::Busy)
         );
-        drop(lookup);
         drop(release);
+        drained(&SLOTS);
+        assert!(start("other.example", LOOKUP_TIMEOUT).is_ok());
+    }
+
+    #[test]
+    fn other_text_cancels_the_running_lookup_and_only_the_name_typed_at_the_click_gets_the_permit()
+    {
+        static SLOTS: AtomicUsize = AtomicUsize::new(0);
+        let (slow, release) = slow_resolver();
+        let mut screen = JoinLookups::with_slots(&SLOTS, slow, LOOKUP_TIMEOUT);
+        let found = |by_player| LookupStatus::Found {
+            address: "203.0.113.7:28000".parse().unwrap(),
+            by_player,
+        };
+        assert_eq!(screen.check("slow.example", true), "?slow.example");
+        assert_eq!(
+            screen.check("SLOW.example:28000", false),
+            "?slow.example",
+            "the same name keeps its lookup"
+        );
+        assert_eq!(screen.result(), LookupStatus::Running);
+        // Another name replaces it, and the player's click on the first name does not carry over.
+        assert_eq!(screen.check("fast.example", false), "?fast.example");
+        assert_eq!(settled(&mut screen), found(false));
+        assert_eq!(screen.result(), LookupStatus::Idle);
+        // Numbers typed meanwhile cancel it too.
+        assert_eq!(screen.check("slow.example", true), "?slow.example");
+        assert_eq!(screen.check("10.0.0.5", true), "10.0.0.5:28000");
+        assert_eq!(screen.result(), LookupStatus::Idle);
+        // The two canceled slow lookups' threads still run: the next name waits for them.
+        assert_eq!(
+            screen.check("fast.example", true),
+            "!Still looking up the last name. Try again in a moment."
+        );
+        assert_eq!(screen.result(), LookupStatus::Idle);
+        drop(release);
+        drained(&SLOTS);
+        assert_eq!(screen.check("fast.example", true), "?fast.example");
+        assert_eq!(settled(&mut screen), found(true));
     }
 }
