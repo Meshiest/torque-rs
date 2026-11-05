@@ -693,7 +693,232 @@ pub fn figure() -> Model {
         ground: Vec::new(),
     });
     death_sequences(&mut b, root, torso, head, &limbs);
+    // At the buggy's wheel: the arms reaching the rim's grips as the steering turns it (made from the `sit` pose as built).
+    let base = b.clone().build();
+    let rotations = steering_arms(
+        &base.shape,
+        [(torso, arm_l, elbow_l), (torso, arm_r, elbow_r)],
+    );
+    b.sequence(SequenceDef {
+        name: "steering",
+        duration: 1.0,
+        cyclic: false,
+        priority: STEERING_PRIORITY,
+        keyframes: crate::buggy::STEERING_KEYS,
+        rotations,
+        translations: Vec::new(),
+        ground: Vec::new(),
+    });
     b.build()
+}
+
+/// The `steering` sequence's priority: over `sit`'s arms (the other nodes keep `sit`'s pose).
+pub const STEERING_PRIORITY: i32 = 5;
+
+/// A 3 x 3 rotation, rows.
+type Rot = [[f32; 3]; 3];
+
+fn rot_of(m: &torque_shapes::math::Matrix) -> Rot {
+    [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]]
+}
+
+fn rot_mul(a: &Rot, b: &Rot) -> Rot {
+    let mut o = [[0.0; 3]; 3];
+    for (i, row) in o.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    o
+}
+
+fn rot_t(a: &Rot) -> Rot {
+    [0, 1, 2].map(|i| [0, 1, 2].map(|j| a[j][i]))
+}
+
+fn sub3(a: Vec3, b: Vec3) -> Vec3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot3(a: Vec3, b: Vec3) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: Vec3, b: Vec3) -> Vec3 {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn unit(v: Vec3) -> Vec3 {
+    let l = dot3(v, v).sqrt().max(1e-9);
+    v.map(|c| c / l)
+}
+
+/// The rotation by `angle` (radians) about unit `axis` (Rodrigues).
+fn rot_about(axis: Vec3, angle: f32) -> Rot {
+    let (s, c) = angle.sin_cos();
+    let [x, y, z] = axis;
+    let t = 1.0 - c;
+    [
+        [t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+        [t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+        [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+    ]
+}
+
+/// The smallest rotation taking direction `a` to direction `b`.
+fn rot_between(a: Vec3, b: Vec3) -> Rot {
+    let (a, b) = (unit(a), unit(b));
+    let axis = cross3(a, b);
+    let s = dot3(axis, axis).sqrt();
+    let c = dot3(a, b).clamp(-1.0, 1.0);
+    if s < 1e-6 {
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    }
+    rot_about(axis.map(|v| v / s), s.atan2(c))
+}
+
+fn apply(r: &Rot, v: Vec3) -> Vec3 {
+    [0, 1, 2].map(|i| dot3(r[i], v))
+}
+
+/// A node rotation (`Quat16`) whose matrix, as the shape's maths makes it, is `r`.
+fn quat16_of(r: &Rot) -> Quat16 {
+    let tr = r[0][0] + r[1][1] + r[2][2];
+    let q = if tr > 0.0 {
+        let s = (tr + 1.0).sqrt() * 2.0;
+        [
+            (r[2][1] - r[1][2]) / s,
+            (r[0][2] - r[2][0]) / s,
+            (r[1][0] - r[0][1]) / s,
+            0.25 * s,
+        ]
+    } else if r[0][0] > r[1][1] && r[0][0] > r[2][2] {
+        let s = (1.0 + r[0][0] - r[1][1] - r[2][2]).sqrt() * 2.0;
+        [
+            0.25 * s,
+            (r[0][1] + r[1][0]) / s,
+            (r[0][2] + r[2][0]) / s,
+            (r[2][1] - r[1][2]) / s,
+        ]
+    } else if r[1][1] > r[2][2] {
+        let s = (1.0 + r[1][1] - r[0][0] - r[2][2]).sqrt() * 2.0;
+        [
+            (r[0][1] + r[1][0]) / s,
+            0.25 * s,
+            (r[1][2] + r[2][1]) / s,
+            (r[0][2] - r[2][0]) / s,
+        ]
+    } else {
+        let s = (1.0 + r[2][2] - r[0][0] - r[1][1]).sqrt() * 2.0;
+        [
+            (r[0][2] + r[2][0]) / s,
+            (r[1][2] + r[2][1]) / s,
+            0.25 * s,
+            (r[1][0] - r[0][1]) / s,
+        ]
+    };
+    // The shape's maths reads its quaternions one way or the other (its matrix routine): the one that makes `r` back.
+    let pick = [q, [-q[0], -q[1], -q[2], q[3]]]
+        .into_iter()
+        .min_by(|a, b| {
+            let err = |q: &[f32; 4]| {
+                let m = rot_of(&torque_shapes::math::quat_matrix(*q));
+                (0..3)
+                    .flat_map(|i| (0..3).map(move |j| (i, j)))
+                    .map(|(i, j)| (m[i][j] - r[i][j]).abs())
+                    .sum::<f32>()
+            };
+            err(a).total_cmp(&err(b))
+        })
+        .unwrap_or(q);
+    pick.map(|v| (v.clamp(-1.0, 1.0) * 32767.0) as i16)
+}
+
+/// The arms' rotations of the `steering` sequence, each arm (its parent, its shoulder and its elbow node) from the `sit` pose of
+/// `base`: at each key the hand (a [`GRIP`] down the forearm) on the rim's grip turned as the buggy's `steering` sequence turns
+/// the wheel at that place, the elbow bent in the plane it bends in when seated (a two-bone reach: the upper arm's and the
+/// forearm's lengths kept), the shoulder and the elbow each turned the least way there.
+fn steering_arms(
+    base: &torque_shapes::shape::Shape,
+    arms: [(usize, usize, usize); 2],
+) -> Vec<Track<Quat16>> {
+    use torque_shapes::instance::{ShapeInstance, find_sequence};
+    use torque_shapes::math::mul_p;
+    let mut free = |_| true;
+    let Ok(mut inst) = ShapeInstance::new(base, &mut free) else {
+        return Vec::new();
+    };
+    if let (Some(t), Some(seq)) = (
+        inst.create_thread(base),
+        find_sequence(base, b"sit").and_then(|s| i32::try_from(s).ok()),
+    ) {
+        inst.set_sequence(base, t, seq, 0.0);
+    }
+    let _ = inst.animate(base, 0, None, &mut free);
+    let xf = inst.node_transforms().to_vec();
+    let at = |n: usize| [xf[n][3], xf[n][7], xf[n][11]];
+    let hands = arms.map(|(_, _, elbow)| mul_p(&xf[elbow], [0.0, 0.0, -GRIP]));
+    let center = [0, 1, 2].map(|k| 0.5 * (hands[0][k] + hands[1][k]));
+    let (s, c) = crate::buggy::COLUMN_DROP.to_radians().sin_cos();
+    let along = [0.0, c, -s];
+    let n = crate::buggy::STEERING_KEYS;
+    let mut tracks = Vec::new();
+    for (k, &(parent, shoulder, elbow)) in arms.iter().enumerate() {
+        let (sh, el, hand) = (at(shoulder), at(elbow), hands[k]);
+        let (a, b) = (
+            dot3(sub3(el, sh), sub3(el, sh)).sqrt(),
+            dot3(sub3(hand, el), sub3(hand, el)).sqrt(),
+        );
+        let (rp, rs, re) = (
+            rot_of(&xf[parent]),
+            rot_of(&xf[shoulder]),
+            rot_of(&xf[elbow]),
+        );
+        let reach = unit(sub3(hand, sh));
+        let bend = sub3(el, sh);
+        let pole = unit(sub3(bend, reach.map(|v| v * dot3(bend, reach))));
+        let mut arm_keys = Vec::with_capacity(n);
+        let mut elbow_keys = Vec::with_capacity(n);
+        for key in 0..n {
+            let place = key as f32 / (n - 1) as f32;
+            let turn = ((1.0 - 2.0 * place) / crate::buggy::MAX_STEERING
+                * crate::buggy::WHEEL_LOCK)
+                .to_radians();
+            let target = {
+                let r = rot_about(along, turn);
+                let v = apply(&r, sub3(hand, center));
+                [0, 1, 2].map(|i| center[i] + v[i])
+            };
+            let to = sub3(target, sh);
+            let d = dot3(to, to)
+                .sqrt()
+                .clamp((a - b).abs() + 1e-3, a + b - 1e-3);
+            let dir = unit(to);
+            let perp = unit(sub3(pole, dir.map(|v| v * dot3(pole, dir))));
+            let cos_a = ((a * a + d * d - b * b) / (2.0 * a * d)).clamp(-1.0, 1.0);
+            let sin_a = (1.0 - cos_a * cos_a).sqrt();
+            let new_el = [0, 1, 2].map(|i| sh[i] + a * (dir[i] * cos_a + perp[i] * sin_a));
+            let r1 = rot_between(sub3(el, sh), sub3(new_el, sh));
+            let r2 = rot_between(apply(&r1, sub3(hand, el)), sub3(target, new_el));
+            let rs2 = rot_mul(&r1, &rs);
+            let re2 = rot_mul(&r2, &rot_mul(&r1, &re));
+            arm_keys.push(quat16_of(&rot_mul(&rot_t(&rp), &rs2)));
+            elbow_keys.push(quat16_of(&rot_mul(&rot_t(&rs2), &re2)));
+        }
+        tracks.push(Track {
+            node: shoulder,
+            keys: arm_keys,
+        });
+        tracks.push(Track {
+            node: elbow,
+            keys: elbow_keys,
+        });
+    }
+    tracks
 }
 
 /// The `sit` pose (degrees): the torso leaned back, the thighs near level and the shins reaching forward and down, the

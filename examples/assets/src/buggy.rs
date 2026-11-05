@@ -4,7 +4,7 @@
 //!
 //! | file | nodes | material |
 //! |---|---|---|
-//! | `buggy.dts` | `buggy`, `hub0`..`hub3`, `mount0`, `mount1`, `eye`, `cam` | `buggy` |
+//! | `buggy.dts` | `buggy`, `hub0`..`hub3`, `mount0`, `mount1`, `mount2`, `eye`, `cam`, `lamps_lit` | `buggy` |
 //! | `buggy_wheel.dts` | `wheel` | `buggy` |
 //!
 //! **The buggy** faces +y with its origin on the ground line between its wheels: a floor pan between two lower rails, a nose
@@ -12,8 +12,9 @@
 //! and stays back to the engine), side bars at the hips, the engine and its exhaust in the open at the back, lamps on the roof's
 //! front bar. The fenders are arches over the wheels on struts from the frame. The hubs are the wheel centers with the
 //! springs unloaded: `hub0` front left, `hub1` front right, `hub2` rear left, `hub3` rear right. `mount0` is the driver's seat
-//! (left), `mount1` the passenger's (right): a seated figure's origin, its hips [`SEAT_HIP`] above it on the cushion. The
-//! steering wheel is a ring with three spokes on a short column, placed where the seated figure's hands grip ([`grips`]: the
+//! (left), `mount1` the passenger's (right): a seated figure's origin, its hips [`SEAT_HIP`] above it on the cushion; `mount2` a
+//! headlight's place between the roof's lamps ([`HEADLIGHT`]); `lamps_lit` carries the roof lamps' lit faces, which
+//! [`LIGHTS_ON`] brings forward of the dark ones (drawn without lighting, so they glow). The steering wheel is a ring with three spokes on a short column, placed where the seated figure's hands grip ([`grips`]: the
 //! figure's `sit` pose). `eye` is at the driver's eyes and `cam` above the middle of the cage. Its `Collision-1` and `LOS-9`
 //! details are one box round the frame (the wheels are not in it: they hold it up on their springs).
 //!
@@ -30,7 +31,8 @@ use torque_shapes::instance::{ShapeInstance, find_sequence};
 use torque_shapes::math::mul_p;
 use torque_shapes::shape::Model;
 
-use crate::builder::{MeshData, ShapeBuilder, UvRect, Vec3};
+use crate::builder::{MeshData, SequenceDef, ShapeBuilder, Track, UvRect, Vec3};
+use crate::builder::{material_flags, turn};
 use crate::shapes::{GRIP, OPAQUE};
 
 /// The hubs: across (x, each side), along (y, front and rear) and up (z).
@@ -41,6 +43,25 @@ pub const HUB_Z: f32 = 0.62;
 /// The wheel.
 pub const TIRE_RADIUS: f32 = 0.5;
 pub const TIRE_WIDTH: f32 = 0.42;
+/// The lamps on the roof's front bar: across (x), their faces' place along (y) and their height (z), their radius and depth.
+pub const ROOF_LAMP_X: [f32; 4] = [-0.33, -0.11, 0.11, 0.33];
+pub const ROOF_LAMP_Y: f32 = 0.39;
+pub const ROOF_LAMP_Z: f32 = 1.87;
+pub const ROOF_LAMP_RADIUS: f32 = 0.06;
+pub const ROOF_LAMP_DEPTH: f32 = 0.08;
+/// Where a headlight rides the buggy (`mount2`, its +y ahead): just ahead of the roof's lamps, between them; and how far it
+/// dips below level (degrees), so its light falls on the ground ahead of the nose.
+pub const HEADLIGHT: Vec3 = [0.0, ROOF_LAMP_Y + 0.08, ROOF_LAMP_Z];
+pub const HEADLIGHT_DIP: f32 = 15.0;
+/// The sequence that lights the roof's lamps (their lit faces, drawn without lighting, come forward of the dark ones at its
+/// end); a game plays it while the headlight is on (held at its end) and stops it (back to its start) to put them out.
+pub const LIGHTS_ON: &str = "lights_on";
+/// How far behind the lamps' faces the lit faces wait inside the lamps while the lights are off.
+const LIT_HIDDEN: f32 = 0.04;
+/// How far ahead of the lamps' faces the lit faces are while the lights are on.
+const LIT_AHEAD: f32 = 0.006;
+const X_AXIS: Vec3 = [1.0, 0.0, 0.0];
+
 /// The seats: the driver's (left) and the passenger's (right) seated figure's origin, and how high above it the hips sit.
 pub const SEATS: [Vec3; 2] = [[-0.32, -0.3, -0.29], [0.32, -0.3, -0.29]];
 pub const SEAT_HIP: f32 = 0.95;
@@ -54,6 +75,12 @@ pub const TUBE: f32 = 0.04;
 /// The steering column's angle below level (degrees) and its length.
 pub const COLUMN_DROP: f32 = 24.0;
 pub const COLUMN_LENGTH: f32 = 0.46;
+/// The buggy's steering lock (radians: its datablock's `maxSteeringAngle`) and how far the steering wheel turns at full lock
+/// (degrees).
+pub const MAX_STEERING: f32 = 0.55;
+pub const WHEEL_LOCK: f32 = 120.0;
+/// The keys of the `steering` sequence.
+pub const STEERING_KEYS: usize = 17;
 
 /// The swatches of `buggy.png`: a 4 x 4 grid, each cell inset a little so the sampling never reaches the next.
 fn cell(swatch: (u32, u32)) -> UvRect {
@@ -290,7 +317,7 @@ fn wheel_and_column(mesh: &mut MeshData, trim: &mut MeshData) {
         tube(mesh, center, rim(deg), 0.014, METAL);
     }
     oriented_box(
-        trim,
+        mesh,
         center,
         [x, cross(up, x), up],
         [0.045, 0.03, 0.045],
@@ -303,6 +330,38 @@ fn wheel_and_column(mesh: &mut MeshData, trim: &mut MeshData) {
         0.025,
         METAL,
     );
+}
+
+/// The steering wheel's turn about its column (degrees, positive clockwise as the driver sees it) at `steering` (radians,
+/// positive to the right) as the `steering` sequence plays it: TGE's thread sits at `0.5 - t / 2`, `t` the steering times its
+/// own size over the lock, so the wheel turns [`WHEEL_LOCK`] at full lock.
+pub fn wheel_turn(steering: f32) -> f32 {
+    let t = steering * steering.abs() / MAX_STEERING;
+    t / MAX_STEERING * WHEEL_LOCK
+}
+
+/// The `steering` sequence: its place 0 is full right, 0.5 straight ahead, 1 full left (see [`wheel_turn`]); the wheel turns
+/// about the column, by `(1 - 2 * place) / lock` of [`WHEEL_LOCK`] (a full place's turn is past the lock: TGE's thread never
+/// gets there).
+fn steering_sequence(wheel: usize) -> SequenceDef {
+    let (s, c) = COLUMN_DROP.to_radians().sin_cos();
+    let along = [0.0, c, -s];
+    let keys = (0..STEERING_KEYS)
+        .map(|k| {
+            let place = k as f32 / (STEERING_KEYS - 1) as f32;
+            turn(along, (1.0 - 2.0 * place) / MAX_STEERING * WHEEL_LOCK)
+        })
+        .collect();
+    SequenceDef {
+        name: "steering",
+        duration: 1.0,
+        cyclic: false,
+        priority: 0,
+        keyframes: STEERING_KEYS,
+        rotations: vec![Track { node: wheel, keys }],
+        translations: Vec::new(),
+        ground: Vec::new(),
+    }
 }
 
 /// The buggy's body (module docs).
@@ -323,6 +382,16 @@ pub fn buggy() -> Model {
     for (i, seat) in SEATS.iter().enumerate() {
         b.node(&format!("mount{i}"), Some(root), *seat);
     }
+    // The headlight's place: between the roof's lamps, just ahead of them, facing ahead and down.
+    b.node_turned(
+        "mount2",
+        Some(root),
+        HEADLIGHT,
+        turn(X_AXIS, -HEADLIGHT_DIP),
+    );
+    // The steering wheel's own node at its middle, turned about the column by `steering`.
+    let (wheel_center, _) = steering_wheel();
+    let wheel_node = b.node("steering_wheel", Some(root), wheel_center);
     b.node("eye", Some(root), [SEATS[0][0], -0.25, 1.4]);
     b.node("cam", Some(root), [0.0, -0.3, 1.5]);
     let drawn = b.detail("detail1", 1.0);
@@ -496,13 +565,13 @@ pub fn buggy() -> Model {
             LAMP,
         );
     }
-    for x in [-0.33, -0.11, 0.11, 0.33] {
+    for x in ROOF_LAMP_X {
         lamp(
             &mut lamps,
-            [x, 0.39, 1.87],
+            [x, ROOF_LAMP_Y, ROOF_LAMP_Z],
             [0.0, 1.0, 0.0],
-            0.06,
-            0.08,
+            ROOF_LAMP_RADIUS,
+            ROOF_LAMP_DEPTH,
             LAMP,
         );
     }
@@ -513,6 +582,38 @@ pub fn buggy() -> Model {
         TAILLIGHT,
     );
     b.object("lamps", root, drawn, lamps);
+
+    // The roof lamps' lit faces: drawn without lighting, on a node that waits inside the lamps and comes just forward of
+    // their faces while `lights_on` plays.
+    let lit_material = b.material("buggy", OPAQUE | material_flags::SELF_ILLUMINATING);
+    let hidden = [0.0, ROOF_LAMP_Y - LIT_HIDDEN, ROOF_LAMP_Z];
+    let shown = [0.0, ROOF_LAMP_Y + LIT_AHEAD, ROOF_LAMP_Z];
+    let lit_node = b.node("lamps_lit", Some(root), hidden);
+    let mut lit = MeshData::new(Some(lit_material));
+    for x in ROOF_LAMP_X {
+        lamp(
+            &mut lit,
+            [x, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            ROOF_LAMP_RADIUS * 0.85,
+            0.004,
+            LAMP,
+        );
+    }
+    b.object("lamps_lit", lit_node, drawn, lit);
+    b.sequence(SequenceDef {
+        name: LIGHTS_ON,
+        duration: 0.1,
+        cyclic: false,
+        priority: 0,
+        keyframes: 2,
+        rotations: Vec::new(),
+        translations: vec![Track {
+            node: lit_node,
+            keys: vec![hidden, shown],
+        }],
+        ground: Vec::new(),
+    });
 
     // The seats: a cushion and a backrest leaned back with the figure.
     let mut seats = MeshData::new(Some(m));
@@ -541,8 +642,12 @@ pub fn buggy() -> Model {
     let mut wheel = MeshData::new(Some(m));
     let mut column = MeshData::new(Some(m));
     wheel_and_column(&mut wheel, &mut column);
-    b.object("steering_wheel", root, drawn, wheel);
+    for p in &mut wheel.positions {
+        *p = sub(*p, wheel_center);
+    }
+    b.object("steering_wheel", wheel_node, drawn, wheel);
     b.object("column", root, drawn, column);
+    b.sequence(steering_sequence(wheel_node));
 
     b.object(
         "Col-1",
