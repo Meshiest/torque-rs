@@ -9,10 +9,16 @@ const frame = `<!doctype html><canvas id=c></canvas><script>
   document.addEventListener('click', () => c.requestPointerLock());
   parent.postMessage('frame-ready', '*');
 </script>`;
+// a popup reports, from its very first script, whether it still has the native method
+const popup = `<!doctype html><script>
+  opener?.postMessage({ native: /native code/.test(Function.prototype.toString.call(Element.prototype.requestPointerLock)) }, '*');
+</script>`;
 const page = `<!doctype html><meta charset=utf-8><body style="margin:0"><canvas id=canvas width=300 height=200></canvas>
 <iframe id=f src="/frame" width=200 height=100></iframe>
 <script>
   window.events = [];
+  window.popupMessages = [];
+  addEventListener('message', (e) => popupMessages.push(e.data));
   for (const type of ['pointerlockchange', 'pointerlockerror']) document.addEventListener(type, () => events.push(type));
   window.attempts = 0;
   const ask = () => {
@@ -38,15 +44,20 @@ const page = `<!doctype html><meta charset=utf-8><body style="margin:0"><canvas 
 
 const server = createServer((req, res) => {
   res.setHeader('content-type', 'text/html');
-  res.end(req.url.startsWith('/frame') ? frame : page);
+  res.end(req.url.startsWith('/frame') ? frame : req.url.startsWith('/popup') ? popup : page);
 }).listen(0, '127.0.0.1');
 await new Promise((ok) => server.once('listening', ok));
 const url = `http://127.0.0.1:${server.address().port}/`;
 
 const browser = await launchGuarded({ defaultViewport: { width: 800, height: 600 } });
 const problems = [];
+const native = (tab) =>
+  tab.evaluate(() => /native code/.test(Function.prototype.toString.call(Element.prototype.requestPointerLock)));
 try {
+  // the tab the browser opened at launch is guarded before anything loads in it.
+  const first = (await browser.pages())[0];
   for (const make of [
+    async () => first,
     () => browser.newPage(),
     async () => (await browser.createBrowserContext()).newPage(),
     () => browser.defaultBrowserContext().newPage(),
@@ -67,8 +78,29 @@ try {
     if (seen.events.length) problems.push(`the page saw ${seen.events.join(', ')}`);
     if (seen.lockedTo || inFrame?.lockedTo) problems.push(`an element holds the lock: ${seen.lockedTo ?? inFrame.lockedTo}`);
     if (seen.native) problems.push('the page still has the native requestPointerLock');
-    await tab.close();
+    if (tab !== first) await tab.close();
   }
+  // Popups: `window.open` (a blank one, a page of ours, and a `target=_blank` link) must open nothing or open a guarded page.
+  const opener = await browser.newPage();
+  await opener.goto(url, { waitUntil: 'load' });
+  const opened = await opener.evaluate(() => {
+    const blank = window.open('about:blank');
+    const ours = window.open('/popup');
+    const link = document.createElement('a');
+    link.href = '/popup?link';
+    link.target = '_blank';
+    document.body.append(link);
+    link.click();
+    return { blank: blank !== null, ours: ours !== null };
+  });
+  await new Promise((ok) => setTimeout(ok, 500));
+  const firstScripts = await opener.evaluate(() => popupMessages);
+  if (firstScripts.some((m) => m.native)) problems.push('a popup ran its first script before the guard');
+  console.log(`first scripts of popups: ${JSON.stringify(firstScripts)}`);
+  for (const tab of await browser.pages()) {
+    if (await native(tab)) problems.push(`a page at ${tab.url()} has the native requestPointerLock (popups: ${JSON.stringify(opened)})`);
+  }
+  console.log(`popups opened: ${JSON.stringify(opened)}; pages open: ${(await browser.pages()).length}`);
 } finally {
   await browser.close();
   server.close();

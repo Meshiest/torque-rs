@@ -2,7 +2,7 @@
 // invisible window when a page locks the pointer, and a check that clicks the canvas would do exactly that.
 //
 // This file owns the browser. `launchGuarded` is the only way a script in this repository gets one: it launches puppeteer and
-// installs, for every page, popup and frame it opens, a script that runs before the page's own and replaces
+// installs, for every page and frame it opens (popups are blocked), a script that runs before the page's own and replaces
 // `requestPointerLock` with a no-op that cannot be put back. Whatever URL a check loads, or however it navigates, no page
 // can lock the pointer. Pages also load with `?nolock` (`noLock`), which `index.html` honors the same way.
 // `guard-scan.mjs` fails any other file that names a browser driver or a browser program.
@@ -78,13 +78,17 @@ export async function launchGuarded(options = {}) {
   if (options.headless === false) throw new Error('a guarded browser is always headless');
   const tools = resolve(process.env.TORQUE_WEB_TOOLS ?? '.');
   const puppeteer = createRequire(join(tools, 'package.json'))('puppeteer-core');
-  const args = [...(options.args ?? []), ...(process.env.CI ? ['--no-sandbox'] : [])];
+  // No popups: `window.open` and `target=_blank` open nothing (a page made outside `newPage` could run a script before the
+  // guard reaches it).
+  const args = [...(options.args ?? []), '--block-new-web-contents', ...(process.env.CI ? ['--no-sandbox'] : [])];
   const browser = await puppeteer.launch({
     ...(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: 'chrome' }),
     ...options,
     args,
     headless: true,
   });
+  // the tab Chrome opens at launch
+  await Promise.all((await browser.pages()).map(guardPage));
   guardContext(browser.defaultBrowserContext());
   const createContext = (browser.createBrowserContext ?? browser.createIncognitoBrowserContext).bind(browser);
   browser.createBrowserContext = browser.createIncognitoBrowserContext = async (...a) => guardContext(await createContext(...a));
@@ -94,7 +98,22 @@ export async function launchGuarded(options = {}) {
     await guardPage(page);
     return page;
   };
-  // a popup (`window.open`) is a page too.
+  // A page made some other way (a popup, which the flag does not always stop) is held at its start until the guard is in it:
+  // the browser is told to wait for this session before running the new page's first script.
+  const session = await browser.target().createCDPSession();
+  session.on('sessionattached', async (child) => {
+    try {
+      await child.send('Page.addScriptToEvaluateOnNewDocument', { source: script, runImmediately: true });
+    } catch {}
+    await child.send('Runtime.runIfWaitingForDebugger').catch(() => {});
+  });
+  await session.send('Target.setAutoAttach', {
+    autoAttach: true,
+    waitForDebuggerOnStart: true,
+    flatten: true,
+    filter: [{ type: 'page' }, { exclude: true }],
+  });
+  // and as soon as it is known, should that not have caught it.
   browser.on('targetcreated', async (target) => {
     if (target.type() === 'page') {
       const page = await target.page().catch(() => null);
