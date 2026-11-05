@@ -257,6 +257,10 @@ The first development version. Nothing is published yet; this is what exists.
   clients draw; a Player without hitboxes keeps TGE's pick.
 - `just examples/walk-clip`: a clip of the kit's figure walking, running and walking backward, its action chosen by the
   client's Player animation, drawn offscreen from the side and three-quarters (an mp4 through ffmpeg, and a strip).
+- `torque::app::ghosts`: a steady first-person view (`GhostOptions::steady_eye`, the engine's own; TGE stands the view at
+  the drawn `eye` node): the own Player's view at its `eye` node at the rest pose, carried by its real motion, while the
+  body and its hitboxes keep their animation; `eye_sway` keeps the sideways sway, and `OwnView::drawn_eye` gives TGE's eye.
+  On in the level, vehicle and arena demos; `just examples/eye-clip` draws a before-and-after clip.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

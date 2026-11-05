@@ -208,6 +208,8 @@ pub fn options() -> GhostOptions {
         },
         // The server's figures have hitboxes: drawn as posed for hits.
         synced_poses: true,
+        // A steady first-person view over the figure's bobbing gaits.
+        steady_eye: true,
         ..GhostOptions::default()
     }
 }

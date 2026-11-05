@@ -7,7 +7,7 @@
 //! a rolling tire throws a little too, and they leave tracks on the terrain ([`track_rules`], the engine's tire tracks laid on
 //! the terrain's triangles).
 
-use torque::app::ghosts::{FrameInput, GhostOptions, GhostScene, OwnView};
+use torque::app::ghosts::{FrameInput, GhostScene, OwnView};
 use torque::app::terrain::Terrain;
 use torque::app::view::WorldView;
 use torque::client::conn::tge::TgeWorld;
@@ -41,7 +41,7 @@ pub struct WorldScene {
 
 impl Default for WorldScene {
     fn default() -> WorldScene {
-        let mut ghosts = GhostScene::new(GhostOptions::default());
+        let mut ghosts = GhostScene::new(torque_example_common::ghost_options());
         ghosts.dust.rules = DustRules {
             min_slip: DUST_MIN_SLIP,
         };

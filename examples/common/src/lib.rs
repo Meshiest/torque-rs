@@ -55,6 +55,15 @@ impl Assets for KitAssets {
     }
 }
 
+/// The ghost scene's options the examples share: TGE's, with the first-person view held steady over the figure's bobbing
+/// gaits ([`torque::app::ghosts::GhostOptions::steady_eye`], the engine's own).
+pub fn ghost_options() -> torque::app::ghosts::GhostOptions {
+    torque::app::ghosts::GhostOptions {
+        steady_eye: true,
+        ..Default::default()
+    }
+}
+
 /// The path of the kit's file `name` (`figure.dts` is `kit/figure.dts`).
 pub fn kit_path(name: &str) -> String {
     format!("{KIT_DIR}/{}", name.to_ascii_lowercase())

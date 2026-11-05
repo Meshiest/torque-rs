@@ -109,6 +109,11 @@ kit-shots dir="../target/kit-shots":
 walk-clip dir="../target/walk-clip":
     cargo run -p torque-example-common --release --example walk-clip -- {{dir}}
 
+# A first-person clip of the figure walking and running, before (TGE's eye node) and after the steady eye, drawn offscreen
+# into `dir` as an mp4 (needs ffmpeg)
+eye-clip dir="../target/eye-clip":
+    cargo run -p torque-example-common --release --example eye-clip -- {{dir}}
+
 # The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
 # `--name`, `--map`, `--ticks N` (stop after N ticks)
 fps-server *args:
