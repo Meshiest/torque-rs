@@ -1,0 +1,655 @@
+//! The ghosting check: scripted scenes drawn twice, once as a window draws them (every pass keeping its history) and once as a
+//! reference with no history at all: at each instant the scene is frozen, every history started again, and the frame drawn until
+//! its samples settle (the last frames averaged), so the reference is the noise-free image of that instant. The difference is
+//! what the histories add: a trail, a lag, a smear.
+//!
+//! The scenes: a still camera with a buggy-sized box driving past over a dirt ground (its shadow and occlusion sweep the
+//! ground), the sun moving fast (a day sped up), a light switched on and off, the camera moving over still ground, and smoke
+//! rising then gone. Each starts with frames that settle, then the change, then frames held still.
+//!
+//! Per scene: `floor` the share of pixels off the reference once settled before the change (the noise left), `worst` and `mean`
+//! the share off from the change on, `settle` the frames after each change ends (the motion stopped, the light switched) until
+//! the image stays within the tolerance, `trail` the worst share off after a change ended. A pixel is off where a channel is
+//! more than [`TOLERANCE`] of 255 from the reference; a frame is within where at most [`AREA_OK`] of its pixels are off.
+//!
+//! `cargo run -p torque-render-hd --release --example ghosting -- [--audit] [--shot <name>] [--out <dir>] [--max-settle <frames>]
+//! [--max-trail <percent>]`: `--audit` draws each scene again with each pass's history off on its own (`HdWorld::histories`)
+//! and the reflection capture drawn whole every frame; `--out` writes the worst frame of each scene, its reference and their
+//! difference. The command fails when a scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to
+//! settle and a `ghosting::MAX_TRAIL` % trail).
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use torque_render_core::Gpu;
+use torque_render_hd::HdWorld;
+use torque_render_hd::ext::{NoExtension, PlainScene};
+use torque_render_hd::ghosting::{self, AREA_OK, Image, MAX_SETTLE, MAX_TRAIL, Measure, TOLERANCE};
+use torque_render_scene::hd::cells::StaticCells;
+use torque_render_scene::hd::kit::{Lcg, box_object, look_at};
+use torque_render_scene::hd::scatter::{ScatterLook, ScatterTable};
+use torque_render_scene::hd::{
+    DynamicObject, HdCamera, HdDraw, HdLight, HdMode, HdScene, Quality, material,
+};
+use torque_render_scene::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
+
+const SIZE: (u32, u32) = (384, 216);
+const FOV: u8 = 70;
+/// The frames each scene settles before its change, and holds after it.
+const SETTLE: usize = 48;
+const HOLD: usize = 48;
+const BUGGY: u32 = 1;
+
+/// What a scene shows at one frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct State {
+    eye: [f32; 3],
+    target: [f32; 3],
+    /// The sun's azimuth (degrees from +y toward +x) and elevation (degrees; under 0 dusk).
+    sun: [f32; 2],
+    /// The buggy's place (its middle on the ground).
+    buggy: Option<[f32; 3]>,
+    light: bool,
+    /// The smoke's age (frames), none: no smoke.
+    smoke: Option<f32>,
+}
+
+const BASE: State = State {
+    eye: [-1.0, -8.0, 4.0],
+    target: [0.0, 1.5, 0.2],
+    sun: [-40.0, 32.0],
+    buggy: None,
+    light: false,
+    smoke: None,
+};
+
+/// A scripted scene: its name, its frames after [`SETTLE`] (the change and the hold), the frames (from 0) where a change has
+/// just ended, and its state at each frame.
+struct Shot {
+    name: &'static str,
+    frames: usize,
+    ends: Vec<usize>,
+    state: Box<dyn Fn(usize) -> State>,
+}
+
+/// The frames' index after the settling ones (negative: settling).
+fn after(f: usize) -> f32 {
+    f as f32 - SETTLE as f32
+}
+
+fn shots() -> Vec<Shot> {
+    let drive = 70;
+    let sun = 60;
+    let walk = 60;
+    let smoke = 60;
+    vec![
+        Shot {
+            name: "buggy-shadow",
+            frames: SETTLE + drive + HOLD,
+            ends: vec![SETTLE + drive],
+            state: Box::new(move |f| {
+                let t = after(f).clamp(0.0, drive as f32);
+                State {
+                    buggy: Some([-9.0 + 0.25 * t, 1.0, 0.0]),
+                    ..BASE
+                }
+            }),
+        },
+        Shot {
+            name: "sun-fast",
+            frames: SETTLE + sun + HOLD,
+            ends: vec![SETTLE + sun],
+            state: Box::new(move |f| {
+                let t = after(f).clamp(0.0, sun as f32);
+                State {
+                    sun: [-40.0 + 1.0 * t, 32.0 - 0.2 * t],
+                    buggy: Some([0.0, 1.0, 0.0]),
+                    ..BASE
+                }
+            }),
+        },
+        Shot {
+            name: "light-toggle",
+            frames: SETTLE + 30 + HOLD,
+            ends: vec![SETTLE, SETTLE + 30],
+            state: Box::new(|f| State {
+                sun: [-40.0, -3.0],
+                buggy: Some([0.0, 1.0, 0.0]),
+                light: (SETTLE..SETTLE + 30).contains(&f),
+                ..BASE
+            }),
+        },
+        Shot {
+            name: "camera-move",
+            frames: SETTLE + walk + HOLD,
+            ends: vec![SETTLE + walk],
+            state: Box::new(move |f| {
+                let t = after(f).clamp(0.0, walk as f32);
+                State {
+                    eye: [-1.0 + 0.08 * t, -8.0 + 0.03 * t, 4.0],
+                    target: [0.0 + 0.05 * t, 1.5, 0.2],
+                    buggy: Some([0.0, 1.0, 0.0]),
+                    ..BASE
+                }
+            }),
+        },
+        Shot {
+            name: "smoke",
+            frames: SETTLE + smoke + HOLD,
+            ends: vec![SETTLE + smoke],
+            state: Box::new(move |f| {
+                let t = after(f);
+                State {
+                    buggy: Some([0.0, 1.0, 0.0]),
+                    smoke: (0.0..smoke as f32).contains(&t).then_some(t),
+                    ..BASE
+                }
+            }),
+        },
+    ]
+}
+
+/// A dirt ground's texture: brown value noise over three octaves with a fine grain (the clip box of a busy ground is wide).
+fn dirt() -> Texture {
+    const N: usize = 256;
+    let mut rng = Lcg::new(7);
+    let lattice = |cells: usize, rng: &mut Lcg| -> Vec<f32> {
+        (0..cells * cells).map(|_| rng.unit()).collect()
+    };
+    let octaves = [(8usize, 0.5f32), (32, 0.3), (128, 0.2)];
+    let grids: Vec<(usize, f32, Vec<f32>)> = octaves
+        .iter()
+        .map(|&(c, a)| (c, a, lattice(c, &mut rng)))
+        .collect();
+    let mut rgba = Vec::with_capacity(N * N * 4);
+    for y in 0..N {
+        for x in 0..N {
+            let mut v = 0.0;
+            for (c, a, g) in &grids {
+                let (fx, fy) = (
+                    x as f32 * *c as f32 / N as f32,
+                    y as f32 * *c as f32 / N as f32,
+                );
+                let (ix, iy) = (fx.floor() as usize, fy.floor() as usize);
+                let (tx, ty) = (fx - ix as f32, fy - iy as f32);
+                let at = |i: usize, j: usize| g[(j % c) * c + (i % c)];
+                let top = at(ix, iy) * (1.0 - tx) + at(ix + 1, iy) * tx;
+                let bottom = at(ix, iy + 1) * (1.0 - tx) + at(ix + 1, iy + 1) * tx;
+                v += a * (top * (1.0 - ty) + bottom * ty);
+            }
+            let grain = rng.unit() * 0.12;
+            let l = (0.55 + 0.6 * (v - 0.5) + grain - 0.06).clamp(0.0, 1.0);
+            let c = [l * 170.0, l * 132.0, l * 96.0].map(|c| c as u8);
+            rgba.extend_from_slice(&[c[0], c[1], c[2], 255]);
+        }
+    }
+    Texture {
+        path: "ghosting dirt".into(),
+        width: N as u32,
+        height: N as u32,
+        levels: Arc::new(vec![rgba]),
+    }
+}
+
+/// A soft round puff (the smoke's sprite).
+fn puff() -> Texture {
+    const N: usize = 32;
+    let mut rgba = Vec::with_capacity(N * N * 4);
+    for y in 0..N {
+        for x in 0..N {
+            let d = ((x as f32 + 0.5) / N as f32 * 2.0 - 1.0)
+                .hypot((y as f32 + 0.5) / N as f32 * 2.0 - 1.0);
+            let a = (1.0 - d).clamp(0.0, 1.0).powf(1.5);
+            rgba.extend_from_slice(&[255, 255, 255, (a * 255.0) as u8]);
+        }
+    }
+    Texture {
+        path: "ghosting puff".into(),
+        width: N as u32,
+        height: N as u32,
+        levels: Arc::new(vec![rgba]),
+    }
+}
+
+fn sampler() -> Sampler {
+    Sampler {
+        repeat: true,
+        mag: Filter::Linear,
+        min: Filter::Linear,
+        mip: Filter::Linear,
+        mipmaps: true,
+    }
+}
+
+/// The ground: `half` units each way at height 0, the dirt every 4 units.
+fn ground(half: f32) -> Draw {
+    let corner = |x: f32, y: f32| Vertex {
+        position: [x, y, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        color: [255; 4],
+        uv: [x / 4.0, y / 4.0],
+    };
+    let (a, b, c, d) = (
+        corner(-half, -half),
+        corner(half, -half),
+        corner(half, half),
+        corner(-half, half),
+    );
+    Draw {
+        label: "ground".into(),
+        vertices: vec![a, b, c, a, c, d],
+        lighting: true,
+        tex_env: TexEnv::Modulate,
+        texture: Some((0, sampler())),
+        blend: Blend::Opaque,
+        cull: Cull::None,
+        depth_test: true,
+        depth_write: true,
+        fog: true,
+        lights: Vec::new(),
+        vertex_key: None,
+    }
+}
+
+fn tinted(id: u32, center: [f32; 3], half: [f32; 3], color: [u8; 3]) -> DynamicObject {
+    let mut o = box_object(id, center, half);
+    for d in &mut o.draws {
+        for v in &mut d.vertices {
+            v.color = [color[0], color[1], color[2], 255];
+        }
+    }
+    o
+}
+
+/// The buggy at `at` (a body over four wheels, one object), moved from `before`.
+fn buggy(at: [f32; 3], before: [f32; 3]) -> DynamicObject {
+    let [x, y, _] = at;
+    let mut car = tinted(BUGGY, [x, y, 0.75], [1.5, 0.85, 0.3], [170, 40, 35]);
+    let parts = [
+        tinted(BUGGY, [x - 0.3, y, 1.3], [0.7, 0.7, 0.25], [60, 70, 90]),
+        tinted(
+            BUGGY,
+            [x - 1.0, y - 0.95, 0.4],
+            [0.4, 0.2, 0.4],
+            [30, 30, 30],
+        ),
+        tinted(
+            BUGGY,
+            [x + 1.0, y - 0.95, 0.4],
+            [0.4, 0.2, 0.4],
+            [30, 30, 30],
+        ),
+        tinted(
+            BUGGY,
+            [x - 1.0, y + 0.95, 0.4],
+            [0.4, 0.2, 0.4],
+            [30, 30, 30],
+        ),
+        tinted(
+            BUGGY,
+            [x + 1.0, y + 0.95, 0.4],
+            [0.4, 0.2, 0.4],
+            [30, 30, 30],
+        ),
+    ];
+    for p in parts {
+        let base = car.draws[0].vertices.len() as u32;
+        let d = &mut car.draws[0];
+        d.vertices.extend_from_slice(&p.draws[0].vertices);
+        d.indices
+            .extend(p.draws[0].indices.iter().map(|i| i + base));
+    }
+    car.centre = [x, y, 0.8];
+    car.radius = 2.1;
+    car.transform.set_column3(at);
+    car.prev_transform.set_column3(before);
+    car
+}
+
+/// The still blocks about the track.
+fn blocks() -> Vec<DynamicObject> {
+    vec![
+        tinted(2, [-4.0, 5.0, 1.0], [1.0, 1.0, 1.0], [210, 200, 180]),
+        tinted(3, [3.5, 7.0, 1.5], [0.6, 0.6, 1.5], [90, 140, 200]),
+        tinted(4, [5.5, -2.0, 0.4], [1.5, 0.4, 0.4], [120, 180, 90]),
+    ]
+}
+
+/// The smoke at `age` frames: puffs rising and spreading from behind the buggy, each at its eye distance.
+fn smoke(age: f32, eye: [f32; 3], texture: usize) -> Vec<(f32, HdDraw)> {
+    let mut rng = Lcg::new(11);
+    let mut out = Vec::new();
+    for k in 0..24 {
+        let born = k as f32 * 2.5;
+        let (dx, dy) = (rng.unit() - 0.5, rng.unit() - 0.5);
+        let life = age - born;
+        if life < 0.0 {
+            continue;
+        }
+        let s = 0.02 * life;
+        let c = [
+            -1.8 - 0.03 * life + dx,
+            1.0 + dy + 0.01 * life,
+            0.4 + 0.035 * life,
+        ];
+        let half = 0.35 + 0.012 * life;
+        let alpha = (0.7 * (1.0 - life / 60.0)).clamp(0.0, 1.0);
+        // Faced to the eye about the vertical.
+        let (fx, fy) = (c[0] - eye[0], c[1] - eye[1]);
+        let l = fx.hypot(fy).max(1e-3);
+        let side = [-fy / l * half, fx / l * half];
+        let corner = |a: f32, b: f32, u: f32, v: f32| Vertex {
+            position: [
+                c[0] + a * side[0],
+                c[1] + a * side[1],
+                c[2] + b * half + s * 0.0,
+            ],
+            normal: [0.0, 0.0, 1.0],
+            color: [150, 140, 125, (alpha * 255.0) as u8],
+            uv: [u, v],
+        };
+        let (a, b, cc, d) = (
+            corner(-1.0, -1.0, 0.0, 1.0),
+            corner(1.0, -1.0, 1.0, 1.0),
+            corner(1.0, 1.0, 1.0, 0.0),
+            corner(-1.0, 1.0, 0.0, 0.0),
+        );
+        let draw = Draw {
+            label: "smoke".into(),
+            vertices: vec![a, b, cc, a, cc, d],
+            lighting: false,
+            tex_env: TexEnv::Modulate,
+            texture: Some((0, sampler())),
+            blend: Blend::Alpha,
+            cull: Cull::None,
+            depth_test: true,
+            depth_write: false,
+            fog: true,
+            lights: Vec::new(),
+            vertex_key: None,
+        };
+        let hd = HdDraw::from_fixed(&draw, material::KIND_SKY, &[texture])
+            .with_material(material::PARTICLE);
+        let d = [c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]];
+        out.push(((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt(), hd));
+    }
+    out.sort_by(|a, b| b.0.total_cmp(&a.0));
+    out
+}
+
+fn look() -> ScatterLook {
+    ScatterLook {
+        shadow: [0.12, 0.13, 0.16],
+        night_color: [0.11, 0.13, 0.19],
+        night_fog_color: [0.04, 0.05, 0.08],
+        moon_azimuth: 200.0,
+        moon_elevation: 50.0,
+        moon_light_color: [0.05, 0.06, 0.09],
+        ..ScatterLook::default()
+    }
+}
+
+/// The scene as the demo's view sets it up (the physical sky, its sun radius, occlusion and smooth occlusion), at High.
+struct Stage {
+    scene: PlainScene,
+    puff: usize,
+    table: &'static ScatterTable,
+    look: ScatterLook,
+    /// The state last put in.
+    last: Option<State>,
+}
+
+impl Stage {
+    fn new() -> Stage {
+        let mut frame = HdScene::new(StaticCells::default());
+        frame.atmosphere = true;
+        frame.sun_radius = 0.27;
+        frame.ao_radius = 1.0;
+        frame.ao_sun = 0.5;
+        frame.smooth_occlusion = true;
+        frame.visible_distance = 400.0;
+        frame.fog_distance = 150.0;
+        frame.fog.start = 150.0;
+        frame.fog.end = 400.0;
+        let ground_tex = frame.textures.intern(dirt());
+        let puff = frame.textures.intern(puff());
+        frame.planes = vec![HdDraw::from_fixed(
+            &ground(200.0),
+            material::KIND_PLANE,
+            &[ground_tex],
+        )];
+        frame.size = SIZE;
+        frame.fov = FOV;
+        Stage {
+            scene: PlainScene {
+                frame,
+                mode: Some(HdMode::new(Quality::High)),
+                time: 0.0,
+            },
+            puff,
+            table: ScatterTable::earth(),
+            look: look(),
+            last: None,
+        }
+    }
+
+    /// Puts `st` in, moved from the state last put in (`still`: no motion, the reference's frozen instant).
+    fn put(&mut self, st: &State, still: bool) {
+        let before = if still { Some(*st) } else { self.last };
+        let s = &mut self.scene.frame;
+        let eye = look_at(st.eye, st.target);
+        s.eye = Some(eye);
+        if self.last.is_none_or(|l| l.sun != st.sun) {
+            let [az, el] = st.sun.map(f32::to_radians);
+            let sun = [el.cos() * az.sin(), el.cos() * az.cos(), el.sin()];
+            let light = self.table.light(sun, &self.look);
+            s.sun = light.sun();
+            if s.sun.shadow == [0.0; 3] {
+                s.sun.shadow = [0.35, 0.38, 0.45];
+            }
+            s.fog = light.fog(s.fog);
+            s.clear = light.fog;
+            s.atmosphere_sun = Some(sun);
+            s.clouds = Some(light.clouds([1.0, 0.4, 0.0]));
+        }
+        let mut objects = blocks();
+        if let Some(at) = st.buggy {
+            let from = before.and_then(|b| b.buggy).unwrap_or(at);
+            objects.push(buggy(at, from));
+        }
+        s.objects = objects;
+        if self.last.is_none_or(|l| l.light != st.light) {
+            s.lights = if st.light {
+                vec![HdLight {
+                    position: [-2.5, -1.0, 1.2],
+                    color: [3.0, 2.4, 1.6],
+                    radius: 9.0,
+                    carrier: None,
+                }]
+            } else {
+                Vec::new()
+            };
+            s.lights_generation += 1;
+        }
+        if self
+            .last
+            .is_none_or(|l| l.smoke != st.smoke || l.eye != st.eye)
+        {
+            s.particles = st
+                .smoke
+                .map(|age| smoke(age, st.eye, self.puff))
+                .unwrap_or_default();
+            s.particles_generation += 1;
+        }
+        s.generation += 1;
+        self.last = Some(*st);
+    }
+
+    fn camera(&self, st: &State) -> HdCamera {
+        HdCamera::new(
+            look_at(st.eye, st.target),
+            FOV,
+            self.scene.visible_distance,
+            SIZE.0,
+            SIZE.1,
+        )
+    }
+}
+
+/// A world drawing into an offscreen target.
+struct Drawer {
+    world: HdWorld<NoExtension>,
+    target: torque_render_core::Offscreen,
+}
+
+impl Drawer {
+    fn new(gpu: &Gpu) -> Result<Drawer, String> {
+        Ok(Drawer {
+            world: HdWorld::new(gpu),
+            target: gpu.offscreen(SIZE.0, SIZE.1).map_err(|e| e.to_string())?,
+        })
+    }
+
+    fn draw(&mut self, stage: &Stage, camera: &HdCamera) -> Result<(), String> {
+        let format = self.target.color.texture().format();
+        self.world.draw(
+            &stage.scene,
+            camera,
+            Some((&self.target.color, format, [0, 0])),
+        )
+    }
+
+    fn read(&self, gpu: &Gpu) -> Result<Image, String> {
+        Ok(ghosting::image(
+            &gpu.read_back(&self.target).map_err(|e| e.to_string())?,
+        ))
+    }
+}
+
+/// The references of `shot`, one a frame (a frame whose state is the last one's shares its image).
+fn references(gpu: &Gpu, shot: &Shot) -> Result<Vec<Arc<Image>>, String> {
+    let mut stage = Stage::new();
+    let mut d = Drawer::new(gpu)?;
+    let mut out: Vec<Arc<Image>> = Vec::with_capacity(shot.frames);
+    let mut last: Option<State> = None;
+    for f in 0..shot.frames {
+        let st = (shot.state)(f);
+        if last == Some(st) {
+            let same = out.last().cloned().ok_or("no reference")?;
+            out.push(same);
+            continue;
+        }
+        stage.scene.time = f as f32 / 60.0;
+        stage.put(&st, true);
+        d.world.upload(&stage.scene);
+        let camera = stage.camera(&st);
+        let img = ghosting::settled(gpu, &mut d.world, &stage.scene, &camera, &d.target)?;
+        out.push(Arc::new(img));
+        last = Some(st);
+    }
+    Ok(out)
+}
+
+fn write_png(path: &Path, img: &Image) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), SIZE.0, SIZE.1);
+    enc.set_color(png::ColorType::Rgb);
+    enc.write_header()
+        .and_then(|mut w| w.write_image_data(&ghosting::bytes(img)))
+        .map_err(|e| e.to_string())
+}
+
+struct Args {
+    audit: bool,
+    shot: Option<String>,
+    out: Option<PathBuf>,
+    max_settle: Option<usize>,
+    max_trail: Option<f64>,
+}
+
+fn args() -> Result<Args, String> {
+    let mut a = Args {
+        audit: false,
+        shot: None,
+        out: None,
+        max_settle: Some(MAX_SETTLE),
+        max_trail: Some(MAX_TRAIL),
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
+        let mut value = || it.next().ok_or(format!("{arg} wants a value"));
+        match arg.as_str() {
+            "--audit" => a.audit = true,
+            "--shot" => a.shot = Some(value()?),
+            "--out" => a.out = Some(PathBuf::from(value()?)),
+            "--max-settle" => a.max_settle = Some(value()?.parse().map_err(|e| format!("{e}"))?),
+            "--max-trail" => a.max_trail = Some(value()?.parse().map_err(|e| format!("{e}"))?),
+            _ => return Err(format!("unknown argument {arg}")),
+        }
+    }
+    Ok(a)
+}
+
+fn main() -> Result<(), String> {
+    let args = args()?;
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    if let Some(dir) = &args.out {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    println!(
+        "a pixel is off past {TOLERANCE}/255 a channel; a frame is within at {:.1} % off or less; settle in frames",
+        AREA_OK * 100.0
+    );
+    println!("{}", Measure::HEADER);
+    let mut failed = Vec::new();
+    for shot in shots() {
+        if args.shot.as_deref().is_some_and(|s| s != shot.name) {
+            continue;
+        }
+        let refs = references(&gpu, &shot)?;
+        for (name, set) in ghosting::settings::<NoExtension>(args.audit) {
+            let mut stage = Stage::new();
+            let mut d = Drawer::new(&gpu)?;
+            set(&mut d.world);
+            let mut areas = Vec::with_capacity(shot.frames);
+            let mut frames: Vec<Image> = Vec::new();
+            for (f, reference) in refs.iter().enumerate() {
+                let st = (shot.state)(f);
+                stage.scene.time = f as f32 / 60.0;
+                stage.put(&st, false);
+                d.world.upload(&stage.scene);
+                d.draw(&stage, &stage.camera(&st))?;
+                let img = d.read(&gpu)?;
+                areas.push(ghosting::share_off(&img, reference));
+                if args.out.is_some() {
+                    frames.push(img);
+                }
+            }
+            let m = Measure::of(&areas, SETTLE, &shot.ends);
+            println!("{}", m.row(shot.name, name));
+            if let Some(dir) = &args.out {
+                let stem = format!("{}-{}", shot.name, name.replace(' ', "-"));
+                let at = m.worst_at;
+                write_png(&dir.join(format!("{stem}-{at}.png")), &frames[at])?;
+                write_png(&dir.join(format!("{stem}-{at}-ref.png")), &refs[at])?;
+                write_png(
+                    &dir.join(format!("{stem}-{at}-diff.png")),
+                    &ghosting::difference(&frames[at], &refs[at]),
+                )?;
+            }
+            if name == "default" {
+                if args.max_settle.is_some_and(|x| m.settle > x) {
+                    failed.push(format!("{}: settles in {} frames", shot.name, m.settle));
+                }
+                if args.max_trail.is_some_and(|x| m.trail * 100.0 > x) {
+                    failed.push(format!("{}: trail {:.2} %", shot.name, m.trail * 100.0));
+                }
+            }
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(failed.join("; "))
+    }
+}

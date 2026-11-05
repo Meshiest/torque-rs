@@ -261,6 +261,12 @@ The first development version. Nothing is published yet; this is what exists.
   clients draw; a Player without hitboxes keeps TGE's pick.
 - `just examples/walk-clip`: a clip of the kit's figure walking, running and walking backward, its action chosen by the
   client's Player animation, drawn offscreen from the side and three-quarters (an mp4 through ffmpeg, and a strip).
+- `torque-render-hd`: a ghosting check (`cargo run -p torque-render-hd --release --example ghosting`): scripted scenes (a
+  moving shape's shadow under a still camera, a fast sun, a light switched, a moving camera, smoke) drawn with every history
+  and against a reference of each instant drawn with none and settled, printing per scene the share of pixels off and the
+  frames until the image settles after each change (`--max-settle`, `--max-trail` fail past a limit); `--audit` turns each
+  pass's history off on its own (`HdWorld::histories`, all on by default). The vehicle demo's `ghost-shots` example measures
+  the buggy driving past a still camera at golden hour the same way.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
@@ -270,6 +276,12 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
   Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
   speed).
+- `torque-render-hd`: a change of light no longer leaves a smeared copy behind under a still camera (the tree shadows
+  stepping with the running day, a shape's shadow sweeping past, a light switched). The TAA clips its history into the
+  neighborhood's box every frame and starts it again where the neighborhood's mean changes, with no rules for moving shadows,
+  water, the sky or see-through shapes; the ambient occlusion keeps no history (a pattern fixed per pixel, always filtered in
+  space) and the contact shadows' march has a fixed pattern. The ghosting check: the fast sun settles in 7 frames, not
+  never (71 % of the frame off before), the vehicle demo's buggy pass at once, not never.
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).

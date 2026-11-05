@@ -1,9 +1,8 @@
-// The ambient occlusion's spatial filter (the scene's smooth_occlusion), after the AO pass at its resolution: each AO texel becomes
+// The ambient occlusion's spatial filter, after the AO pass at its resolution: each AO texel becomes
 // the average of the 5 x 5 texels about it, weighted by a Gaussian of their distance and by how near each one's point lies to the
 // texel's plane (its point and normal from the prepass) and how alike their normals are: a cross-bilateral filter (Tomasi and
 // Manduchi 1998; Petschnigg et al. 2004) that keeps the occlusion off other surfaces and across creases and removes the per-pixel
-// noise of the estimate that the history alone only averages over frames. The history keeps the unfiltered estimate; the forward
-// pass upsamples this one.
+// noise of the estimate (fixed per pixel: no history averages it). The forward pass upsamples this one.
 //
 // Writes r: the filtered occlusion, g and b as the AO pass wrote them.
 
