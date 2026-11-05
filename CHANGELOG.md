@@ -354,5 +354,8 @@ The first development version. Nothing is published yet; this is what exists.
   (`HdWorld::warm_effects`), and the ghost scene loads the shapes and textures its datablocks name as they arrive; a
   first shot with a cold shader cache took 0.44-0.68 s (12 pipelines made), now within a millisecond of the median frame
   (the fps example `first_use` measures it).
+- `examples/fps`: aiming down the sights eases both ways on a critically damped spring (0.18 s, the same at any frame
+  rate, no overshoot; a press let go mid-way turns back from where it is at the speed it had), the pistol arcs in and
+  up, and a synced Player's arm moves between its arm actions over 0.18 s (`ARM_BLEND`) instead of switching at once.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

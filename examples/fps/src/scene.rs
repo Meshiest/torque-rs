@@ -35,7 +35,7 @@ use torque_render_scene::{Draw, Filter, Vertex};
 
 use crate::style::{ArenaStyle, BoltPath, Kick, ShotFlare, Sights};
 
-pub use crate::style::aim_ease;
+pub use crate::style::{SightsBlend, sights_path};
 pub use torque::app::ghosts::{bolt_trail, fire_emitter, hit_burst};
 
 /// The field of view (degrees, horizontal).
