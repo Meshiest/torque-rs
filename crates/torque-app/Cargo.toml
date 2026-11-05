@@ -46,6 +46,8 @@ wasm-bindgen-futures = "0.4"
 [features]
 # Browsers as players: a server listening on the web (`Listen::Web`) and a client's game socket over WebSocket.
 web = ["torque-server/web", "torque-client/web-socket"]
+# Browsers on WebRTC data channels beside their game sockets (the server's `WebSetup::rtc`, the client's `web_rtc`).
+webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc"]
 
 [lints]
 workspace = true

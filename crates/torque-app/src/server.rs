@@ -116,6 +116,8 @@ pub struct GameServer {
     pub game: GameParts,
     transport: SharedTransport,
     end: Option<MemoryEnd>,
+    /// How often a dedicated server prints its transport's status lines ([`GameServer::set_status_every`]).
+    status_every: Option<Duration>,
 }
 
 impl GameServer {
@@ -202,6 +204,7 @@ impl GameServer {
             game,
             transport,
             end,
+            status_every: None,
         })
     }
 
@@ -253,16 +256,36 @@ impl GameServer {
         self.transport.borrow_mut().close();
     }
 
+    /// Has a dedicated server print its transport's status lines ([`Transport::status`]: a web transport's data channels)
+    /// every `every` (never with none, the default).
+    pub fn set_status_every(&mut self, every: Option<Duration>) {
+        self.status_every = every;
+    }
+
+    /// The transport's status lines since the last call ([`Transport::status`]).
+    pub fn transport_status(&mut self) -> Vec<String> {
+        self.transport.borrow_mut().status()
+    }
+
     /// Runs as a dedicated server: a tick every 32 ms of the wall clock (catching up from now when behind, rather than running
     /// a burst of ticks), each console line handed to `print`, until `ticks` ticks ran (forever with none).
     pub fn run_dedicated(&mut self, ticks: Option<u64>, mut print: impl FnMut(&str)) {
         let tick = Duration::from_millis(u64::from(TICK_MS));
         let mut next = Instant::now();
         let mut done = 0u64;
+        let mut last_status = Instant::now();
         loop {
             self.tick();
             for line in self.drain_log() {
                 print(&line);
+            }
+            if let Some(every) = self.status_every
+                && last_status.elapsed() >= every
+            {
+                last_status = Instant::now();
+                for line in self.transport_status() {
+                    print(&line);
+                }
             }
             done += 1;
             if ticks.is_some_and(|t| done >= t) {

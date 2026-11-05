@@ -83,6 +83,8 @@ app = ["client-window", "system-fonts", "shapes", "dep:torque-app"]
 # Browsers as players: the server's web transport (HTTP and WebSocket on one port, UDP beside it) and the client's game
 # socket over WebSocket.
 web = ["server", "client", "torque-server/web", "torque-client/web-socket", "torque-app?/web"]
+# Browsers on WebRTC data channels beside their game sockets: the web transport's data channels and the client's side.
+webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc", "torque-app?/webrtc"]
 full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder", "app"]
 
 [[example]]

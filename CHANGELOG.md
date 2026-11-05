@@ -216,6 +216,9 @@ The first development version. Nothing is published yet; this is what exists.
   socket, answers the server's hello with an offer, moves to the channel when it opens, and stays on the socket when the
   channel does not open in 10 s, closes, or is refused; `LinkWatch` shows which link carries the datagrams and the
   channel's longest gap. The game socket keeps the server's text messages (`take_text`, `send_text`).
+- `torque::app`'s and `torque`'s `webrtc` features (the server's data channels and the client's side);
+  `Transport::status` lines (a web transport's data channels and each peer's traffic), which a dedicated server prints
+  every so often with `GameServer::set_status_every` and `GameServer::transport_status` returns.
 - `torque::app::manifest`: the list of a web build's files (`files.json`: each file's path, size and SHA-256), read with caps
   on its size, its file count, the files' total bytes, the paths and the hashes' form; a fetched file is taken only when its
   size and hash are the list's. The examples' `GameFiles::from_fetched` reads the fetched files (packs and loose files).
@@ -227,6 +230,14 @@ The first development version. Nothing is published yet; this is what exists.
   no window and headless Chrome in one game. `cargo test -p torque-example-fps --test web`: a UDP and a WebSocket client
   see each other, chat and hit each other; hostile peers are closed with the ticks' time unchanged; a banned browser that
   comes back is still refused. The web switches without `--transport web` or `both` are refused with an error.
+- The arena on WebRTC data channels: `fps-server --webrtc` (with `--transport web` or `both`) gives browsers a data
+  channel on a UDP port of its own (`--rtc-port`, default the game's port plus one), with candidates from the bind address,
+  the LAN addresses on `0.0.0.0`, and `--rtc-public-ip` (a host behind a 1:1 NAT); `--rtc-loss` and `--rtc-stats` are for
+  checks. The browser build moves to the channel when the server offers one and shows its link on the page
+  (`data-torque-link`). `cargo test -p torque-example-fps --test rtc`: a browser on a data channel and a desktop on UDP
+  see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
+  `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
+  dropped, and plays over its game socket with UDP blocked.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

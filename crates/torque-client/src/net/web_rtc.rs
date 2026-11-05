@@ -142,6 +142,7 @@ mod native {
         watch: LinkWatch,
         held: VecDeque<Vec<u8>>,
         clock: Instant,
+        open_timeout_ms: u64,
     }
 
     impl WebRtcDatagrams {
@@ -153,7 +154,13 @@ mod native {
                 watch: LinkWatch::default(),
                 held: VecDeque::new(),
                 clock: Instant::now(),
+                open_timeout_ms: OPEN_TIMEOUT_MS,
             }
+        }
+
+        /// How long the channel has to open (a test shortens it).
+        pub fn set_open_timeout(&mut self, ms: u64) {
+            self.open_timeout_ms = ms;
         }
 
         /// The view of the links.
@@ -310,7 +317,7 @@ mod native {
             }
             let _ = peer.rtc.handle_input(Input::Timeout(now));
             let late = peer.channel.is_none()
-                && now.duration_since(peer.started).as_millis() > u128::from(OPEN_TIMEOUT_MS);
+                && now.duration_since(peer.started).as_millis() > u128::from(self.open_timeout_ms);
             if late {
                 self.fail(true);
                 return;
