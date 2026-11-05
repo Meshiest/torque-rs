@@ -13,9 +13,10 @@
 //! more than [`TOLERANCE`] of 255 from the reference; a frame is within where at most [`AREA_OK`] of its pixels are off.
 //!
 //! `cargo run -p torque-render-hd --release --example ghosting -- [--audit] [--shot <name>] [--out <dir>] [--max-settle <frames>]
-//! [--max-trail <percent>]`: `--audit` draws each scene again with each pass's history off on its own ([`Histories`]) and the
-//! reflection capture drawn whole every frame; `--out` writes the worst frame of each scene, its reference and their difference;
-//! the limits make the command fail when a scene passes them.
+//! [--max-trail <percent>]`: `--audit` draws each scene again with each pass's history off on its own (`HdWorld::histories`)
+//! and the reflection capture drawn whole every frame; `--out` writes the worst frame of each scene, its reference and their
+//! difference. The command fails when a scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to
+//! settle and a `ghosting::MAX_TRAIL` % trail).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use std::sync::Arc;
 use torque_render_core::Gpu;
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
-use torque_render_hd::ghosting::{self, AREA_OK, Image, Measure, TOLERANCE};
+use torque_render_hd::ghosting::{self, AREA_OK, Image, MAX_SETTLE, MAX_TRAIL, Measure, TOLERANCE};
 use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::kit::{Lcg, box_object, look_at};
 use torque_render_scene::hd::scatter::{ScatterLook, ScatterTable};
@@ -571,8 +572,8 @@ fn args() -> Result<Args, String> {
         audit: false,
         shot: None,
         out: None,
-        max_settle: None,
-        max_trail: None,
+        max_settle: Some(MAX_SETTLE),
+        max_trail: Some(MAX_TRAIL),
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {

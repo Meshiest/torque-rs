@@ -6,7 +6,8 @@
 //! `cargo run -p torque-example-vehicle-demo --release --example ghost-shots -- [--audit] [--out <dir>] [--max-settle <frames>]
 //! [--max-trail <percent>]` prints the scene's row (the ghosting check's table), the mean GPU time of the drive's frames and its
 //! passes; `--out` writes `sheet-<run>.png`: frames of the pass (rows: the frame, the reference, their difference four times
-//! as bright, red where the frame is lighter); `--audit` runs again with each pass's history off on its own.
+//! as bright, red where the frame is lighter); `--audit` runs again with each pass's history off on its own. It fails past the
+//! limits as the render crate's ghosting check does.
 
 use std::path::PathBuf;
 
@@ -21,7 +22,7 @@ use torque_example_vehicle_demo::files::GameFiles;
 use torque_render_core::{Frame, Gpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::NoExtension;
-use torque_render_hd::ghosting::{self, AREA_OK, Image, Measure, TOLERANCE};
+use torque_render_hd::ghosting::{self, AREA_OK, Image, MAX_SETTLE, MAX_TRAIL, Measure, TOLERANCE};
 use torque_render_scene::hd::HdCamera;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::Eye;
@@ -293,7 +294,8 @@ fn sheet(images: &[Image]) -> Frame {
 }
 
 fn main() -> Result<(), String> {
-    let (mut audit, mut out, mut max_settle, mut max_trail) = (false, None, None, None);
+    let (mut audit, mut out, mut max_settle, mut max_trail) =
+        (false, None, Some(MAX_SETTLE), Some(MAX_TRAIL));
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = || it.next().ok_or(format!("{arg} wants a value"));

@@ -14,42 +14,23 @@
 //   is a surface pixel whose history's 3 x 3 held none of its object (the motion target's object id).
 // - A shape's motion is its vertices' own (their positions at the last frame: its animation as well as its pose), so a walking
 //   Player's limbs are found where they were.
-// - Stillness: s = exp(-speed / SLOW_PIXELS) (speed in output pixels a frame; 1 still, about 0.8 at a fifth of a pixel, under 0.15
-//   from two pixels on) sets the clip's gamma, the frames the history may hold (MOVING_FRAMES to STILL_FRAMES) and whether the
-//   temporal test below applies (s > 1/2). The sky's speed is how far its reprojection moved it. Its history is resampled by a
-//   cubic that sharpens a little (a gain up to 1.03 a pass at some frequencies), so only a history held for a few frames may be
-//   resampled each frame: one held for the still cap would grow a fine wave frame after frame. A kept sky pixel's history stays
-//   within its neighbourhood's extremes grown by their spread.
-// - Moving pixels: the history is clipped toward the neighbourhood's mean, into the box of its mean +- gamma standard deviations (in
-//   YCoCg, at most the box of its extremes).
-// - Slow and still pixels: a feature thinner than a pixel is in the 3 x 3 in some jitter phases and not in others, and clipping to the
-//   neighbourhood of a phase without it would flicker. So such a pixel also keeps its samples' luma variance over time (averaged as
-//   the colour is; reset on a fast pixel, whose samples are not one point's), and its history is clipped only when the current sample
-//   leaves the history's mean by more than three of its temporal deviations and a small margin: a real change (light, shadow,
-//   something new, a ghost) is caught the frame it happens, the phases' own variation never is.
-// - The blend is 1 / (n + 1) with n the frames the history holds (its alpha): a still image converges to the average of every phase.
-// - A moving shape's shadow on still ground: the penumbra's slow change, a little every frame, lagged the history and grew the
-//   temporal variance with the lag, so the temporal test never caught it and the old shading trailed. A point within the shadow's
-//   reach of a shape that moved this frame (the cylinder away from the sun behind its bound, both poses' in one) is always
-//   clipped, holds MOVING_SHADOW_FRAMES at most and starts its variance again.
-// - What is shown: a pixel whose history was kept shows a short average of its shown colour (1/4 a frame, the last one fetched
-//   through the history's cubic: a bilinear fetch, averaged frame after frame, blurred a walking camera's image), which removes the
-//   running mean's wobble over the jitter's cycle (a slowly waving surface's too); anything else shows its history as it is.
+// - Stillness: s = exp(-speed / SLOW_PIXELS) (speed in output pixels a frame; 1 still, under 0.15 from two pixels on) sets the
+//   clip's gamma and the frames the history may hold (MOVING_FRAMES to STILL_FRAMES). The sky's speed is how far its
+//   reprojection moved it (a turning camera's sky is resampled every frame, so it holds few frames).
+// - The clip, everywhere and every frame: the history is clipped toward the neighbourhood's middle, into the box of its mean +-
+//   gamma standard deviations (in YCoCg, at most the box of its extremes). The history only ever averages the jitter's
+//   phases of what the current frame shows: a change of light (a shadow sweeping past, the sun moving, a light switched) leaves
+//   the box the frame it happens, whatever moved or did not. The lighting has no noise of its own from frame to frame (the
+//   shadows', the occlusion's and the contact shadows' patterns are fixed per pixel and filtered in space), so the box only
+//   spans edges and texture.
+// - The blend is 1 / (n + 1) with n the frames the history holds (its alpha), and a history clipped far holds fewer.
 // - Left pixels: a static surface where a shape's part was around the history's texel last frame and is nowhere in the 3 x 3 now
-//   (a swing's last place: the outline's pixels held a share of it though their texel never was its) is tested on its colour as
-//   well as its luma (a part may differ from the surface in chroma alone); a change drops its variance and its shown average and
-//   clips it into a small box about the neighbourhood's middle. (Not untested: the edge of a still, idle shape comes and goes
-//   from the 3 x 3 with the jitter.)
-// - Seen-through pixels: where the line of sight crosses a see-through shape that moved, a particle, or the bound of a shape (or
-//   a part: an item put away) the last upload had and this one lacks, and the same of last frame, the history is clipped close
-//   around the current sample and holds one frame (their colour is blended over a surface with no motion of theirs, or is gone).
-// - Water: where the line of sight crosses the water drawn as water (its waves, the reflection and the refraction change every
-//   frame with no motion of their own: a history kept by the change test lagged them and smeared), the history is always clipped
-//   into the neighbourhood's box, holds WATER_FRAMES at most and starts its variance again. Only while the effect time moves (the
-//   waves with it): water whose time stands still is a static surface, and its history averages the jitter as any other's.
+//   (a swing's last place: the outline's pixels held a share of it though their texel never was its) is clipped into a small
+//   box about the neighbourhood's middle and holds a few frames.
+// - See-through shapes and particles have no motion of their own in the history: the clip catches them as any other change.
 //
 // Writes the history (rgb, frames held; 32-bit float: the running mean's small steps are not lost to half-float rounding) and the
-// shown colour with the luma's temporal variance.
+// shown colour (the same).
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var current: texture_2d<f32>;
@@ -65,103 +46,25 @@
 // The current sample's rebuilding filter: exp(-k d^2) of a jittered sample's distance d (pixels) from the pixel's centre (Karis's
 // fit of a Blackman-Harris window; narrower ones leave edges of moving shapes behind longer).
 const RECONSTRUCTION: f32 = 2.29;
-const STILL_FRAMES: f32 = 64.0;
+const STILL_FRAMES: f32 = 8.0;
 const MOVING_FRAMES: f32 = 5.0;
 const GAMMA_MOVING: f32 = 1.0;
-const GAMMA_STILL: f32 = 1.5;
-// The temporal change test: deviations and margin (compressed luma).
-const CHANGE_DEVIATIONS: f32 = 3.0;
-const CHANGE_MARGIN: f32 = 0.004;
-// The shown colour's average of a kept history.
-const SHOWN_BLEND: f32 = 0.25;
+const GAMMA_STILL: f32 = 1.0;
 // The frames a history may hold where its texel was another object's or part's (what a limb passed over).
 const OTHER_FRAMES: f32 = 3.0;
-// The speed (output pixels a frame) under which a shape's pixel counts as standing still for the temporal test.
-const SHAPE_STILL_PIXELS: f32 = 0.01;
 // The speed (output pixels a frame) over which the stillness decays.
 const SLOW_PIXELS: f32 = 1.0;
 // The speed (output pixels a frame) over which a history's cap falls from the still frames to the moving ones.
 const HISTORY_STILL_PIXELS: f32 = 0.05;
 // The sky's reprojection shift (output pixels) under which it counts as not moved at all.
 const SKY_STILL_PIXELS: f32 = 0.001;
-// The least spread (compressed YCoCg) a kept sky pixel's history may stray past its neighbourhood's extremes.
-const SKY_KEPT_FLOOR: f32 = 0.01;
-// The moving shapes' shadows: the frames such a point's history holds, and the shadow's reach past a shape's bound (a share of
-// its radius and world units: the penumbra).
-const MOVING_SHADOW_FRAMES: f32 = 1.0;
-// The frames a moving shape's own pixel holds within that reach (its self-shadow; clipped into its neighbourhood as ever).
-const SELF_SHADOW_FRAMES: f32 = 2.0;
-const MOVING_SHADOW_GROWTH: f32 = 1.25;
-const MOVING_SHADOW_MARGIN: f32 = 0.25;
-// The half size of the box such a history is clipped into around the current sample (a share of the neighbourhood's).
-const MOVING_SHADOW_BOX: f32 = 0.25;
-// How far past a moving translucent shape's or a particle's bound its pixels are taken as its (world units), the box (a share of
-// the neighbourhood's) such a pixel's history is clipped into around the current sample, and the frames it holds.
-const TRANSLUCENT_MARGIN: f32 = 0.1;
-const SEEN_THROUGH_BOX: f32 = 0.1;
-const SEEN_THROUGH_FRAMES: f32 = 1.0;
 // The box (a share of the neighbourhood's) around the neighbourhood's middle a static pixel's history is clipped into where a
 // shape's part has just left.
 const LEFT_BOX: f32 = 0.25;
-// The frames a history may hold where the view crosses the water.
-const WATER_FRAMES: f32 = 3.0;
-
-// Whether the world point `p` is within the shadow's reach of a shape that moved this frame.
-fn under_mover(p: vec3<f32>) -> bool {
-    let n = min(u32(max(frame.sky_shift.w, 0.0)), MOVING_CASTERS);
-    let l = normalize(frame.sun_dir.xyz);
-    for (var i = 0u; i < n; i = i + 1u) {
-        let c = frame.movers[i];
-        let r = abs(c.w) * MOVING_SHADOW_GROWTH + MOVING_SHADOW_MARGIN;
-        let v = c.xyz - p;
-        let t = dot(v, l);
-        if t > -r {
-            let q = v - t * l;
-            if dot(q, q) < r * r {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-// Whether the line of sight from the eye to the world point `p` passes through a translucent shape that moved this frame or a
-// particle sprite (the movers whose radius is negative): their colour is blended over the surface behind, which has no motion of
-// theirs, so a history kept there held their old places.
-fn through_translucent(p: vec3<f32>) -> bool {
-    let n = min(u32(max(frame.sky_shift.w, 0.0)), MOVING_CASTERS);
-    let e = frame.eye.xyz;
-    let d = p - e;
-    let dd = max(dot(d, d), 1e-8);
-    for (var i = 0u; i < n; i = i + 1u) {
-        let c = frame.movers[i];
-        if c.w < 0.0 {
-            let t = clamp(dot(c.xyz - e, d) / dd, 0.0, 1.0);
-            let q = e + t * d - c.xyz;
-            let r = -c.w + TRANSLUCENT_MARGIN;
-            if dot(q, q) < r * r {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-// Whether the line of sight from the eye toward `toward` (a point on it past the eye) crosses the water drawn as water before
-// `toward`, or anywhere along it for the sky (`sky`: nothing drawn there, the water reaching the horizon under it), while its
-// waves move (the effect time, `eye.w`, differs from last frame's, `times.x`).
-fn through_water(toward: vec3<f32>, sky: bool) -> bool {
-    if frame.water.y < 0.5 || frame.eye.w == frame.times.x {
-        return false;
-    }
-    let h = frame.water.x;
-    let e = frame.eye.z - h;
-    let p = toward.z - h;
-    if sky {
-        return (e > 0.0 && p < e) || (e < 0.0 && p > e);
-    }
-    return e * p < 0.0;
-}
+// The change of a neighbourhood's mean luma since last frame that starts its history again: a share of the larger, and a margin
+// (compressed luma).
+const CHANGE_SHARE: f32 = 0.4;
+const CHANGE_MARGIN: f32 = 0.02;
 
 struct TaaOut {
     @location(0) history: vec4<f32>,
@@ -253,12 +156,12 @@ fn clip_box(h: vec3<f32>, centre: vec3<f32>, extent: vec3<f32>) -> vec3<f32> {
     return h;
 }
 
-fn fresh(cur: vec3<f32>) -> TaaOut {
+// A history started again at `cur`, with its neighbourhood's mean luma `level` (the next frame's change test).
+fn fresh(cur: vec3<f32>, level: f32) -> TaaOut {
     var out: TaaOut;
     let c = expand(cur);
-    let y = to_ycocg(cur).x;
     out.history = vec4<f32>(c, 1.0);
-    out.shown = vec4<f32>(c, 0.0);
+    out.shown = vec4<f32>(c, level);
     return out;
 }
 
@@ -301,8 +204,10 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
         ids[k] = textureLoad(motion_now, q, 0).w;
     }
     let cur = sum / max(wsum, 1e-6);
+    // The neighbourhood's mean luma: the jitter barely moves it, a change of light does.
+    let level = sum1.x / 9.0;
     if frame.temporal.w < 0.5 {
-        return fresh(cur);
+        return fresh(cur, level);
     }
     // The motion: the nearest surface's, or the sky's (the far plane's point under the two cameras).
     let m = textureLoad(motion_now, near_q, 0);
@@ -323,12 +228,11 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
         }
     }
     if any(prev_uv < vec2<f32>(0.0)) || any(prev_uv > vec2<f32>(1.0)) {
-        return fresh(cur);
+        return fresh(cur, level);
     }
     var trust = 1.0;
-    // Whether the history's texel was another object's or part's than the surface here, and whether that one is gone from the
-    // 3 x 3 (the object test below).
-    var other = false;
+    // Whether the history's texel was another object's or part's than the surface here that is gone from the 3 x 3 (the object
+    // test below), and whether a part around it is.
     var gone = false;
     var left = false;
     if sky {
@@ -368,10 +272,8 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
         //   for the history may be a row off the jitter's, so the test is left to the clip there.)
         // - A history whose texel was another object's or part's that is gone from the 3 x 3 (what a swinging limb passed over
         //   or just left: at a high frame rate neither the depth test nor the velocity test tells them apart) holds a few
-        //   frames at most, is always clipped and starts its temporal variance again (the variance the limb brought is not the
-        //   pixel's own); a static pixel whose history's texel was a shape's part is always clipped too.
-        other = abs(mv_before.w - m.w) > 0.5;
-        gone = other;
+        //   frames at most.
+        gone = abs(mv_before.w - m.w) > 0.5;
         var inside = true;
         for (var k = 0u; k < 9u; k = k + 1u) {
             if abs(ids[k] - mv_before.w) < 0.5 {
@@ -416,13 +318,10 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
     let h = history_at(prev_uv);
     var n = h.a * trust;
     if n < 0.5 {
-        return fresh(cur);
+        return fresh(cur, level);
     }
-    let before = cubic_at(shown_before, prev_uv);
-    // The sky's speed is its reprojection's (it has no motion of its own): a turning camera's sky moves, and a history held as
-    // long as a still one's while it is resampled every frame by the sharpening cubic grew a fine wave over the clouds.
+    // The sky's speed is its reprojection's (it has no motion of its own).
     let speed = select(length(m.xy * frame.output.xy), length((uv - prev_uv) * frame.output.xy), sky);
-    // How still the pixel is (see the header).
     let still = exp(-speed / SLOW_PIXELS);
     let gamma = mix(GAMMA_MOVING, GAMMA_STILL, still);
     let mean = sum1 / 9.0;
@@ -430,92 +329,32 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
     let blo = max(lo, mean - gamma * sd);
     let bhi = min(hi, mean + gamma * sd);
     let hy = to_ycocg(compress(h.rgb));
-    let cy = to_ycocg(cur);
-    // The temporal change test of a still pixel.
-    let t_sd = sqrt(max(before.a, 0.0));
-    // A moving shape's pixel is always clipped (the temporal test keeps a still pixel's history while the jitter's phases vary
-    // it; a limb moving under a pixel a frame at a high frame rate looks still to it, and its edge's history then trailed), as is
-    // a static pixel whose history was a shape's.
-    let shape_moving = m.w > 1.5 && speed > SHAPE_STILL_PIXELS;
-    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    let wp = frame.inv_unjit_view_proj * vec4<f32>(ndc, near_d, 1.0);
-    let mover_near = frame.sky_shift.w > 0.5 && under_mover(wp.xyz / wp.w);
-    // A static receiver there, and a shape's pixel there (its self-shadow).
-    let shaded = mover_near && m.w <= 1.5;
-    let self_shaded = mover_near && m.w > 1.5;
-    // A static pixel a shape's part has left (see the header), and what a moving see-through shape, a particle or a vanished shape
-    // covers: only the current sample's colour is right.
+    // A static pixel a shape's part has left: clipped close about the neighbourhood's middle.
     let left_static = left && m.w <= 1.5;
-    let seen_through = frame.sky_shift.w > 0.5 && through_translucent(wp.xyz / wp.w);
-    // The water: the surface's point, or for the sky a point on the ray past the near plane.
-    var toward = wp.xyz / wp.w;
-    if sky {
-        let a = frame.inv_unjit_view_proj * vec4<f32>(ndc, 1.0, 1.0);
-        let b = frame.inv_unjit_view_proj * vec4<f32>(ndc, 0.5, 1.0);
-        toward = frame.eye.xyz + normalize(b.xyz / b.w - a.xyz / a.w);
-    }
-    let watery = through_water(toward, sky);
-    let testable = !gone && !seen_through && !shape_moving && !mover_near && !(m.w <= 1.5 && other) && !watery;
-    var kept = still > 0.5 && testable && abs(cy.x - hy.x) <= CHANGE_DEVIATIONS * t_sd + CHANGE_MARGIN;
-    // Where a shape's part has just left a static pixel, its colour too must be the current sample's (a part's colour may
-    // differ from the surface's in chroma alone).
-    let dc = abs(cy - hy);
-    let left_static_changed = left_static && max(dc.y, dc.z) > CHANGE_DEVIATIONS * t_sd + CHANGE_MARGIN;
-    kept = kept && !left_static_changed;
-    var clipped = hy;
-    if seen_through {
-        clipped = clip_box(hy, cy, SEEN_THROUGH_BOX * (bhi - blo));
-    } else if shaded {
-        // Around the current sample (the neighbourhood's box spans the penumbra's gradient and kept the old shading).
-        clipped = clip_box(hy, cy, MOVING_SHADOW_BOX * (bhi - blo));
-    } else if left_static && !kept {
+    var clipped = clip_box(hy, 0.5 * (blo + bhi), 0.5 * (bhi - blo));
+    if left_static {
         clipped = clip_box(hy, 0.5 * (blo + bhi), LEFT_BOX * (bhi - blo));
-    } else if !kept {
-        clipped = clip_box(hy, 0.5 * (blo + bhi), 0.5 * (bhi - blo));
-    } else if sky {
-        // A kept sky pixel stays within its neighbourhood's extremes grown by their spread (the sky has nothing thinner than a
-        // pixel for the temporal test to keep: a history past them fed on itself).
-        let spread = max(hi - lo, vec3<f32>(SKY_KEPT_FLOOR));
-        clipped = clip_box(hy, 0.5 * (lo + hi), 0.5 * (hi - lo) + spread);
     }
     // A history clipped far (a change of light, a ghost) holds fewer frames.
     let moved = abs(clipped.x - hy.x) / max(bhi.x - blo.x, 0.02);
-    n = n * clamp(1.0 - moved, 0.25, 1.0);
+    n = n * clamp(1.0 - moved, 0.0, 1.0);
+    // The neighbourhood's mean luma since last frame (kept in the shown colour's alpha): a change the jitter cannot make is a
+    // change of light (a shadow's edge passed, a light switched), and the history starts again.
+    let level_before = cubic_at(shown_before, prev_uv).a;
+    if abs(level - level_before) > CHANGE_SHARE * max(level, level_before) + CHANGE_MARGIN {
+        n = 0.0;
+    }
     // The frames a history may hold: the still cap only for a pixel all but still; one moving at all is resampled every frame and
-    // each resample softens it, so it holds fewer (a walk's far pixels move a fraction of a pixel a frame and blurred).
+    // each resample softens it, so it holds fewer.
     var cap = mix(MOVING_FRAMES, STILL_FRAMES, exp(-speed / HISTORY_STILL_PIXELS));
-    if gone || (left && !kept) {
+    if gone || left {
         cap = OTHER_FRAMES;
-    }
-    if seen_through {
-        cap = min(cap, SEEN_THROUGH_FRAMES);
-    }
-    if watery {
-        cap = min(cap, WATER_FRAMES);
-    }
-    if shaded {
-        cap = min(cap, MOVING_SHADOW_FRAMES);
-    }
-    if self_shaded {
-        cap = min(cap, SELF_SHADOW_FRAMES);
     }
     n = min(n, cap);
     let alpha = 1.0 / (n + 1.0);
-    let out = mix(from_ycocg(clipped), cur, alpha);
-    // The luma's variance over time (an exponential mean's, West 1979).
-    let dy = cy.x - hy.x;
-    // (Kept only for pixels slow enough for the change test: a fast one's samples are not one point's.)
-    var variance = (1.0 - alpha) * (max(before.a, 0.0) + alpha * dy * dy);
-    if still < 0.5 || !testable || left_static_changed {
-        variance = 0.0;
-    }
-    var shown = out;
-    // (Not where a part has just left: the shown colour's short average still held it.)
-    if kept && !left_static {
-        shown = mix(compress(max(before.rgb, vec3<f32>(0.0))), out, SHOWN_BLEND);
-    }
+    let out = expand(max(mix(from_ycocg(clipped), cur, alpha), vec3<f32>(0.0)));
     var o: TaaOut;
-    o.history = vec4<f32>(expand(max(out, vec3<f32>(0.0))), min(n + 1.0, cap));
-    o.shown = vec4<f32>(expand(max(shown, vec3<f32>(0.0))), variance);
+    o.history = vec4<f32>(out, min(n + 1.0, cap));
+    o.shown = vec4<f32>(out, level);
     return o;
 }

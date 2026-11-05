@@ -99,14 +99,13 @@ struct Frame {
     // surf3: x 1 for weighted blended transparency, y 1 for coloured sun shadows, z 1 where no TAA averages a per-pixel pattern
     // (a fade is a cut), w 1 under Low's FXAA-style filter (the shadows' filter turns no pattern).
     surf3: vec4<f32>,
-    // x: last frame's effect time (the prepass's previous places of the shape fx's vertices); y: 1 when the scene smooths its
-    // occlusion (the AO's filter, the contact march's jitter per frame); zw unused.
+    // x: last frame's effect time (the prepass's previous places of the shape fx's vertices); yzw unused.
     times: vec4<f32>,
     // xyz: the camera's eye less the eye the sky's draws were built around (they follow the eye between syncs); w: how many of
     // `movers` are set.
     sky_shift: vec4<f32>,
-    // The water (water::frame_terms): x its height, y 1 when it is drawn as water (its waves move: the TAA keeps little
-    // history where the view crosses it), z 1 when the eye is under water, w the absorption per unit under water.
+    // The water (water::frame_terms): x its height, y 1 when it is drawn as water, z 1 when the eye is under water, w the
+    // absorption per unit under water.
     water: vec4<f32>,
     // The tint from under water: rgb its colour (linear), a its alpha.
     under: vec4<f32>,

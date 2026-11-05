@@ -16,6 +16,10 @@ pub const AREA_OK: f64 = 0.002;
 /// The reference: frames drawn at a frozen instant from a fresh history, of which the last are averaged.
 pub const REF_FRAMES: usize = 32;
 pub const REF_AVERAGED: usize = 8;
+/// The pass condition of a scene drawn by default (the checks fail past it; `--max-settle` and `--max-trail` change it): it
+/// settles within this many frames after each change, and its worst share off after a change is at most this (percent).
+pub const MAX_SETTLE: usize = 8;
+pub const MAX_TRAIL: f64 = 3.0;
 /// The settled frames before a scene's change whose shares are its floor (the noise left once settled).
 pub const FLOOR_FRAMES: usize = 8;
 
@@ -154,9 +158,8 @@ pub type Setting<E> = (&'static str, fn(&mut HdWorld<E>));
 pub fn settings<E: HdExtension>(audit: bool) -> Vec<Setting<E>> {
     let mut s: Vec<Setting<E>> = vec![("default", |_| {})];
     if audit {
-        let each: [Setting<E>; 7] = [
+        let each: [Setting<E>; 6] = [
             ("no taa history", |w| w.histories.taa = false),
-            ("no ao history", |w| w.histories.ao = false),
             ("no ssr history", |w| w.histories.ssr = false),
             ("no cloud history", |w| w.histories.clouds = false),
             ("no exposure history", |w| w.histories.exposure = false),
@@ -164,7 +167,6 @@ pub fn settings<E: HdExtension>(audit: bool) -> Vec<Setting<E>> {
             ("no history at all", |w| {
                 w.histories = crate::Histories {
                     taa: false,
-                    ao: false,
                     ssr: false,
                     clouds: false,
                     exposure: false,

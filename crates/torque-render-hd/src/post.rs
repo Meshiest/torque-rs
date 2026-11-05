@@ -1,12 +1,13 @@
 //! The enhanced renderer's anti-aliasing and ambient occlusion on the GPU: the pipelines of the AO
-//! pass (`ao.wgsl`: GTAO or SSAO with its history), the TAA resolve (`taa.wgsl`) and the FXAA-style filter (`fxaa.wgsl`), the
+//! pass (`ao.wgsl`: GTAO or SSAO, each frame's estimate on its own) and its spatial filter, the TAA resolve (`taa.wgsl`) and the FXAA-style filter (`fxaa.wgsl`), the
 //! shapes' motion matrices the prepass reads, and the frame-to-frame state ([`Temporal`]): the jitter's frame count, which of the two
 //! copies of each history is written this frame, the last frame's camera and what was drawn.
 //!
-//! **Histories** (each kept twice, read last frame's and write this frame's): the depth, the motion and the AO at the internal
-//! frame's size (the AO's at its own), the TAA's colour at the output's. They start again (a cut) when the targets are made anew
+//! **Histories** (each kept twice, read last frame's and write this frame's): the depth and the motion at the internal frame's
+//! size, the TAA's colour at the output's. The lighting keeps none: the AO's estimate and the shadows' patterns are fixed per
+//! pixel and filtered in space, so a change of light is in the frame it happens and the TAA's clip catches it there. They start again (a cut) when the targets are made anew
 //! (the size or the quality changed), the mode changes, the camera moves more than [`CUT_DISTANCE`] units in a frame, or
-//! the renderer resets them; a frame without the TAA (or the AO) leaves its history stale, so the next one with it
+//! the renderer resets them; a frame without the TAA leaves its history stale, so the next one with it
 //! starts again too.
 
 use std::collections::HashMap;
@@ -95,9 +96,7 @@ pub struct PostPipes {
     pub motion_layout: wgpu::BindGroupLayout,
     /// The AO pass by method (true: GTAO, false: SSAO).
     pub ao: HashMap<bool, wgpu::RenderPipeline>,
-    /// The same with a short history near the shapes that moved, and the AO's spatial filter on the AO pass's layout (the scene's
-    /// smooth occlusion).
-    pub ao_moving: HashMap<bool, wgpu::RenderPipeline>,
+    /// The AO's spatial filter on the AO pass's layout.
     pub ao_filter: wgpu::RenderPipeline,
     pub taa: wgpu::RenderPipeline,
     pub fxaa: wgpu::RenderPipeline,
@@ -153,20 +152,16 @@ impl PostPipes {
                 count: None,
             }],
         });
-        let ao_of = |moving_cap: bool| -> HashMap<bool, wgpu::RenderPipeline> {
-            [true, false]
-                .into_iter()
-                .map(|gtao| {
-                    let m = module(device, Permutation::Ao { gtao, moving_cap });
-                    (
-                        gtao,
-                        full_frame(device, "hd ao", &ao_layout, &m, "fs_ao", &[AO_FORMAT]),
-                    )
-                })
-                .collect()
-        };
-        let ao = ao_of(false);
-        let ao_moving = ao_of(true);
+        let ao = [true, false]
+            .into_iter()
+            .map(|gtao| {
+                let m = module(device, Permutation::Ao { gtao });
+                (
+                    gtao,
+                    full_frame(device, "hd ao", &ao_layout, &m, "fs_ao", &[AO_FORMAT]),
+                )
+            })
+            .collect();
         let ao_filter_module = module(device, Permutation::AoFilter);
         let ao_filter = full_frame(
             device,
@@ -211,7 +206,6 @@ impl PostPipes {
             fxaa_layout,
             motion_layout,
             ao,
-            ao_moving,
             ao_filter,
             taa,
             fxaa,
@@ -301,129 +295,6 @@ pub struct Temporal {
     /// fixed-function renderer's).
     pub generation: Option<u64>,
     pub mode: Option<Option<HdMode>>,
-    /// Last frame's bounds of the moving translucent shapes and the particles.
-    pub reactive: Vec<[f32; 4]>,
-}
-
-/// The most bounds the TAA keeps little history in (the moving see-through shapes, the alpha particles, the shapes gone since
-/// the last upload) each kind keeps a frame, and the most of last frame's it carries over: the nearest the eye. (Particles and
-/// shapes are the server's to make: their count is not.)
-pub const REACTIVE_BOUNDS: usize = 64;
-
-/// How far a light may move between two uploads and still be the same light (units), and the share of its brightness it may lose
-/// or gain without counting as switched.
-pub const LIGHT_SAME_REACH: f32 = 1.0;
-pub const LIGHT_CHANGE_SHARE: f32 = 0.25;
-
-/// The lights of `before` (position, linear colour, radius) that `now` lacks, has dimmed or brightened by more than
-/// [`LIGHT_CHANGE_SHARE`], and those of `now` that `before` lacked: their bounds, the radius negative (what they lit changed with
-/// no motion: the TAA keeps little history there). A light that moved under [`LIGHT_SAME_REACH`] with its brightness is the same
-/// light. Linear in the counts (a grid of [`LIGHT_SAME_REACH`] cells); at most `cap` kept, nearest `eye` first.
-pub fn changed_lights(
-    before: &[([f32; 3], [f32; 3], f32)],
-    now: &[([f32; 3], [f32; 3], f32)],
-    eye: [f32; 3],
-    cap: usize,
-) -> Vec<[f32; 4]> {
-    use std::collections::HashMap;
-    // A position off the world (not finite, or past anything drawn) falls in a far cell; the cells stay small enough that a
-    // neighbour's key never overflows.
-    let cell = |p: [f32; 3]| {
-        p.map(|v| {
-            let c = (v / LIGHT_SAME_REACH).floor();
-            if c.is_finite() {
-                c.clamp(-1.0e9, 1.0e9) as i64
-            } else {
-                1_000_000_001
-            }
-        })
-    };
-    let grid = |ls: &[([f32; 3], [f32; 3], f32)]| {
-        let mut g: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
-        for (i, l) in ls.iter().enumerate() {
-            if l.0.iter().all(|v| v.is_finite()) {
-                g.entry(cell(l.0)).or_default().push(i);
-            }
-        }
-        g
-    };
-    let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    // Whether `l` has a like light in `others` (near, about as bright).
-    let matched = |l: &([f32; 3], [f32; 3], f32),
-                   others: &[([f32; 3], [f32; 3], f32)],
-                   g: &HashMap<[i64; 3], Vec<usize>>| {
-        let c = cell(l.0);
-        let b = lum(l.1);
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                for dz in -1..=1 {
-                    let Some(list) = g.get(&[
-                        c[0].saturating_add(dx),
-                        c[1].saturating_add(dy),
-                        c[2].saturating_add(dz),
-                    ]) else {
-                        continue;
-                    };
-                    for &j in list.iter().take(64) {
-                        let o = &others[j];
-                        let d = (0..3)
-                            .map(|k| (o.0[k] - l.0[k]).powi(2))
-                            .sum::<f32>()
-                            .sqrt();
-                        let ob = lum(o.1);
-                        if d <= LIGHT_SAME_REACH && (ob - b).abs() <= LIGHT_CHANGE_SHARE * b.max(ob)
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        false
-    };
-    let (gb, gn) = (grid(before), grid(now));
-    let mut out: Vec<[f32; 4]> = before
-        .iter()
-        .filter(|l| !matched(l, now, &gn))
-        .chain(now.iter().filter(|l| !matched(l, before, &gb)))
-        .filter(|l| l.0.iter().all(|v| v.is_finite()) && l.2.is_finite() && l.2 > 0.0)
-        .map(|l| [l.0[0], l.0[1], l.0[2], -l.2])
-        .collect();
-    out = nearest_bounds(out, eye, cap);
-    out
-}
-
-/// How near a bound's near side is to `eye` (its radius may be negative: a reactive bound).
-fn near_side(b: &[f32; 4], eye: [f32; 3]) -> f32 {
-    ((0..3).map(|k| (b[k] - eye[k]).powi(2)).sum::<f32>()).sqrt() - b[3].abs()
-}
-
-/// The `cap` bounds of `bounds` nearest `eye`, nearest first: a selection, then a sort of what is kept (n + cap log cap).
-pub fn nearest_bounds(mut bounds: Vec<[f32; 4]>, eye: [f32; 3], cap: usize) -> Vec<[f32; 4]> {
-    let by = |a: &[f32; 4], b: &[f32; 4]| near_side(a, eye).total_cmp(&near_side(b, eye));
-    if bounds.len() > cap {
-        if cap == 0 {
-            return Vec::new();
-        }
-        bounds.select_nth_unstable_by(cap - 1, by);
-        bounds.truncate(cap);
-    }
-    bounds.sort_by(by);
-    bounds
-}
-
-/// The frame's movers for the TAA: `now` (this frame's moving shapes and reactive bounds) and those of `before` (last frame's
-/// reactive bounds) not among them, the `cap` nearest `eye`. Linear in their counts but for the kept ones' sort.
-pub fn frame_movers(
-    mut now: Vec<[f32; 4]>,
-    before: &[[f32; 4]],
-    eye: [f32; 3],
-    cap: usize,
-) -> Vec<[f32; 4]> {
-    let bits = |b: &[f32; 4]| b.map(f32::to_bits);
-    let seen: std::collections::HashSet<[u32; 4]> = now.iter().map(bits).collect();
-    now.extend(before.iter().filter(|b| !seen.contains(&bits(b))).copied());
-    nearest_bounds(now, eye, cap)
 }
 
 impl Temporal {
@@ -459,7 +330,3 @@ impl Temporal {
         self.parity ^= 1;
     }
 }
-
-#[cfg(test)]
-#[path = "post_tests.rs"]
-mod tests;

@@ -1,7 +1,7 @@
-//! The scene's smooth occlusion (`HdScene::smooth_occlusion`): a box on a floor close up, its occlusion strong and in the sun's
-//! light too, drawn as a history's first frame without and with it: the floor at the box's foot loses its grain (the high
-//! frequencies over a flat patch) and keeps its darkening. And the box sliding along the floor: the floor it has left keeps no
-//! trail of its occlusion.
+//! The occlusion's stability: a box on a floor close up, its occlusion strong and in the sun's light too, drawn as a history's
+//! first frame with the scene's smooth occlusion off and on (every frame has it now: the occlusion filtered in space, no
+//! history): the floor at the box's foot has no grain (the high frequencies over a flat patch) and keeps its darkening, the same
+//! either way. And the box sliding along the floor: the floor it has left keeps no trail of its occlusion.
 
 use torque_render_core::{Frame, Gpu};
 use torque_render_hd::HdWorld;
@@ -184,7 +184,7 @@ fn grain(frame: &Frame, (x, y): (i32, i32)) -> (f32, f32) {
 }
 
 #[test]
-fn the_occlusion_at_a_box_s_foot_loses_its_grain_and_keeps_its_darkening() {
+fn the_occlusion_at_a_box_s_foot_has_no_grain_and_keeps_its_darkening() {
     let gpu = match Gpu::new() {
         Ok(g) => g,
         Err(e) => {
@@ -203,13 +203,12 @@ fn the_occlusion_at_a_box_s_foot_loses_its_grain_and_keeps_its_darkening() {
     eprintln!(
         "foot: {rough_mean:.1} grain {rough_grain:.2} without, {smooth_mean:.1} grain {smooth_grain:.2} with; open {open_mean:.1}"
     );
-    assert!(rough_grain > 1.0, "the foot's grain without: {rough_grain}");
     assert!(
-        smooth_grain < 0.4 * rough_grain,
+        rough_grain < 0.6 && smooth_grain < 0.6,
         "the foot's grain: {rough_grain} without, {smooth_grain} with"
     );
     assert!(
-        (smooth_mean - rough_mean).abs() < 3.0,
+        (smooth_mean - rough_mean).abs() < 1.0,
         "the foot's mean: {rough_mean} without, {smooth_mean} with"
     );
     assert!(
@@ -260,9 +259,8 @@ fn a_sliding_box_leaves_no_trail_of_its_occlusion() {
         trail[i] = grain(&still, p).0 - grain(&moving, p).0;
     }
     eprintln!("the trail: {} without, {} with", trail[0], trail[1]);
-    assert!(trail[0] > 2.0, "the trail without: {}", trail[0]);
     assert!(
-        trail[1].abs() < 0.3 * trail[0],
+        trail[0].abs() < 0.6 && trail[1].abs() < 0.6,
         "the trail: {} without, {} with",
         trail[0],
         trail[1]
