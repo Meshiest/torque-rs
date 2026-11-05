@@ -427,3 +427,42 @@ fn an_images_recoil_plays_the_recoil_sequence_from_its_start() {
     anim.recoil(&plain, &mut instance, 1);
     assert!(!anim.recoiling(&instance));
 }
+
+#[test]
+fn getting_off_a_mount_lets_the_moves_pick_again_and_the_next_mount_sets_its_action_anew() {
+    let shape = moving_shape();
+    let hold = action_list(&shape)
+        .iter()
+        .position(|a| a.name == b"hold")
+        .unwrap();
+    let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+    let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+    let seated = PlayerMotion {
+        server_action: Some(ServerAction {
+            action: hold as u32,
+            hold: true,
+            at_end: false,
+        }),
+        mounted: true,
+        ..PlayerMotion::default()
+    };
+    anim.update(&shape, &mut instance, &seated, 0.5);
+    assert_eq!(anim.action(), (hold, true));
+    // Off the mount: the record still names the held action, the figure stands and runs.
+    let off = PlayerMotion {
+        mounted: false,
+        ..seated
+    };
+    anim.update(&shape, &mut instance, &off, 0.032);
+    assert_eq!(anim.action(), (action::ROOT, true));
+    assert!(!anim.held());
+    let running = PlayerMotion {
+        velocity: [0.0, 4.0, 0.0],
+        ..off
+    };
+    anim.update(&shape, &mut instance, &running, 0.032);
+    assert_eq!(anim.action(), (action::FIRST_MOVE, true));
+    // On again with the same record: the held action plays again.
+    anim.update(&shape, &mut instance, &seated, 0.032);
+    assert_eq!(anim.action(), (hold, true));
+}

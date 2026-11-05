@@ -53,7 +53,7 @@ use torque_client::predict::ghost_players::GhostPlayers;
 use torque_ghost_world::tge::TgeClientSet;
 use torque_ghost_world::world::{ClientWorld, Pose, ProjectileLook};
 use torque_ghosts::{TgeClass, TgeRecord, Value};
-use torque_shapes::instance::ShapeInstance;
+use torque_shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 
 /// The record world the scene draws.
 type World = ClientWorld<TgeClientSet>;
@@ -297,6 +297,43 @@ pub struct LivePlayer {
     at_ms: u32,
     /// The count of its images' recoils last played ([`ImageRecoil::count`]).
     recoils: Option<u32>,
+    /// Its `steering` thread while it drives a WheeledVehicle ([`GhostHooks::advance_live`]).
+    steering: Option<ThreadId>,
+}
+
+/// A Player at the wheel (mount node 0) of a WheeledVehicle that plays its `steering` thread plays its own `steering` sequence,
+/// when its shape has one, at the same place (engine addition: TGE turns the vehicle's thread only; a game's figure keyframes
+/// its hands on the turning wheel there). Off the wheel the thread goes.
+fn drive_steering(
+    world: &World,
+    index: u32,
+    shape: &torque_shapes::shape::Shape,
+    live: &mut LivePlayer,
+) {
+    let place = world
+        .mount_of(index)
+        .filter(|&(_, node)| node == 0)
+        .and_then(|(on, _)| torque_render_scene::world::steering_place(world, on));
+    let seq = find_sequence(shape, b"steering").and_then(|s| i32::try_from(s).ok());
+    match (place, seq) {
+        (Some(place), Some(seq)) => {
+            if live.steering.is_none() {
+                live.steering = live.instance.create_thread(shape);
+                if let Some(t) = live.steering {
+                    live.instance.set_sequence(shape, t, seq, place);
+                }
+            }
+            if let Some(t) = live.steering {
+                let at = live.instance.thread(t).map_or(place, |th| th.pos);
+                live.instance.advance_pos(shape, t, place - at);
+            }
+        }
+        _ => {
+            if let Some(t) = live.steering.take() {
+                live.instance.destroy_thread(shape, t);
+            }
+        }
+    }
 }
 
 /// What a frame's Player animation reads beyond its record: the velocity it is drawn moving at, its head's pitch (radians) and,
@@ -371,6 +408,7 @@ impl Hooks<World> for GhostHooks {
                         .get(&ask.index)
                         .and_then(|i| i.recoil)
                         .map(|r| r.count),
+                    steering: None,
                 }
             }
         };
@@ -386,6 +424,7 @@ impl Hooks<World> for GhostHooks {
         });
         motion.server_action = ServerAction::of_record(record);
         motion.position = position;
+        motion.mounted = world.mount_of(ask.index).is_some();
         let input = self.inputs.get(&ask.index).copied().unwrap_or_default();
         if let Some((velocity, _, falling)) = input.motion {
             motion.velocity = velocity;
@@ -404,6 +443,7 @@ impl Hooks<World> for GhostHooks {
         let max_look = max_look(world, ask.db);
         motion.look = ((head / max_look + 1.0) * 0.5).clamp(0.0, 1.0);
         live.anim.update(ask.shape, &mut live.instance, &motion, dt);
+        drive_steering(world, ask.index, ask.shape, &mut live);
         let _ = live
             .instance
             .animate(ask.shape, ask.dl, None, &mut |_| true);
@@ -643,6 +683,36 @@ impl<S: GhostStyle> GhostScene<S> {
                 (a.dying(), arm)
             })
             .collect()
+    }
+
+    /// The place of each Player's `steering` thread as the last frame posed it (the Players at a wheel), by ghost.
+    pub fn player_steering(&self) -> Vec<(u32, f32)> {
+        let Ok(live) = self.hooks.live.lock() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u32, f32)> = live
+            .iter()
+            .filter_map(|(&g, l)| Some((g, l.instance.thread(l.steering?)?.pos)))
+            .collect();
+        out.sort_unstable_by_key(|a| a.0);
+        out
+    }
+
+    /// The action each Player's action thread plays as the last frame posed it, by ghost, in ghost order.
+    pub fn player_actions(&self) -> Vec<(u32, String)> {
+        let Ok(live) = self.hooks.live.lock() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(u32, String)> = live
+            .iter()
+            .filter_map(|(&g, l)| {
+                let (i, _) = l.anim.action();
+                let a = l.anim.actions().get(i)?;
+                Some((g, String::from_utf8_lossy(&a.name).into_owned()))
+            })
+            .collect();
+        out.sort_unstable_by_key(|a| a.0);
+        out
     }
 
     /// Where the projectiles are drawn this frame.
