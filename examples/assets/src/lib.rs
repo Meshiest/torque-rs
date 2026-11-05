@@ -69,6 +69,14 @@ pub fn all() -> io::Result<Vec<Asset>> {
             bytes: interiors::arena_dif()?,
         },
         Asset {
+            name: "keep.dif",
+            bytes: interiors::keep_dif()?,
+        },
+        Asset {
+            name: "yard.dif",
+            bytes: interiors::yard_dif()?,
+        },
+        Asset {
             name: "grid.png",
             bytes: textures::grid()?,
         },
