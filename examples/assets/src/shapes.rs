@@ -3,7 +3,7 @@
 //! | file | nodes | sequences | material |
 //! |---|---|---|---|
 //! | `cube.dts` | `cube` | | `grid` |
-//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r`, `ankle_l`, `ankle_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2`, `sit`, `ride` | `figure` |
+//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r`, `ankle_l`, `ankle_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2`, `sit`, `ride`, `steering`, `crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward`, `prone_backward`, `prone_hold`, `prone_aim`, `flinch_front`, `flinch_back`, `flinch_left`, `flinch_right`, `flinch_head_front`, `flinch_head_back`, `flinch_head_left`, `flinch_head_right` | `figure` |
 //! | `pistol.dts` | `pistol`, `mountPoint`, `muzzlePoint`, `ejectPoint`, `slide` | `fire` | `pistol` |
 //! | `projectile.dts` | `projectile` | | `projectile` |
 //!
@@ -22,7 +22,7 @@
 //!
 //! - `idle` (and `root`, the same keys under the name a player's rest action looks for): 2 s, looped, the arms sway 3°, the
 //!   elbows a little bent.
-//! - `walk`: 0.65 s, looped, a relaxed walk at [`WALK_SPEED`] units a second (a held-Shift pace in the demos), worked out
+//! - `walk`: 0.65 s, looped, a relaxed walk at [`WALK_SPEED`] units a second (the demos' walking pace; Shift sprints), worked out
 //!   from where the feet stand ([`crate::gait`]): each foot lands on its heel with the toe up, rolls flat, stays put on the
 //!   ground while the body passes over it, rolls onto its toe and leaves; both feet are down for a moment at each landing, so
 //!   it never leaves the ground. The hips dip a little as each foot lands and rise as it passes under them (`root` moves),
@@ -57,6 +57,8 @@
 //!   down, the hands brought in to a wheel in front of the chest (a vehicle places its wheel at them: [`crate::buggy`]). A
 //!   driver's seat plays it.
 //! - `ride`: as `sit`, the upper arms hanging and the forearms resting on the thighs: a passenger's seat plays it.
+//! - Crouched and prone (`crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward`,
+//!   `prone_backward`, `prone_hold`, `prone_aim`) and the hit reactions (`flinch_front` and the rest): [`crate::poses`].
 //!
 //! **The pistol** is a large semi-automatic, 26 cm long: a long squared top (the slide, the whole length from the hammer to
 //! the muzzle, with the front and rear sights on it, over a fixed barrel whose end shows as it runs back), an exposed hammer, a trigger in its guard and a grip raked back. It points
@@ -90,8 +92,8 @@ pub const LOOK_RANGE: f32 = 80.0;
 pub const LOOK_TORSO: f32 = 0.2;
 pub const LOOK_HEAD: f32 = 0.35;
 
-const X: Vec3 = [1.0, 0.0, 0.0];
-const Y: Vec3 = [0.0, 1.0, 0.0];
+pub(crate) const X: Vec3 = [1.0, 0.0, 0.0];
+pub(crate) const Y: Vec3 = [0.0, 1.0, 0.0];
 pub(crate) const Z: Vec3 = [0.0, 0.0, 1.0];
 pub(crate) const OPAQUE: u32 =
     material_flags::S_WRAP | material_flags::T_WRAP | material_flags::NEVER_ENV_MAP;
@@ -148,12 +150,12 @@ fn keys(degrees: &[f32]) -> Vec<Quat16> {
 }
 
 /// Ground frames moving `speed` units a second forward over `duration`, one a key.
-fn travel(n: usize, speed: f32, duration: f32) -> Vec<Vec3> {
+pub(crate) fn travel(n: usize, speed: f32, duration: f32) -> Vec<Vec3> {
     travel_along(n, [0.0, 1.0, 0.0], speed, duration)
 }
 
 /// Ground frames moving `speed` units a second along `dir` over `duration`, one a key.
-fn travel_along(n: usize, dir: Vec3, speed: f32, duration: f32) -> Vec<Vec3> {
+pub(crate) fn travel_along(n: usize, dir: Vec3, speed: f32, duration: f32) -> Vec<Vec3> {
     (1..=n)
         .map(|k| dir.map(|d| d * speed * duration * k as f32 / n as f32))
         .collect()
@@ -193,12 +195,12 @@ pub const FOREARM: f32 = 0.46;
 pub const GRIP: f32 = 0.4;
 
 /// The figure's limbs: each side's hip, knee, ankle, shoulder and elbow node (left first).
-struct Limbs {
-    legs: [usize; 2],
-    knees: [usize; 2],
-    ankles: [usize; 2],
-    arms: [usize; 2],
-    elbows: [usize; 2],
+pub(crate) struct Limbs {
+    pub(crate) legs: [usize; 2],
+    pub(crate) knees: [usize; 2],
+    pub(crate) ankles: [usize; 2],
+    pub(crate) arms: [usize; 2],
+    pub(crate) elbows: [usize; 2],
 }
 
 /// A gait's numbers (degrees): the hips' swing, the knees' bend through the swing and always, the arms' swing, the elbows'
@@ -268,7 +270,12 @@ const WALK_ELBOWS: f32 = 10.0;
 const WALK_ELBOW_SWING: f32 = 12.0;
 
 /// One side's hip, knee and ankle tracks of gait `g` ([`gait`]) over `n` keys: the joints as the foot stands and swings.
-fn leg_tracks(g: &gait::Gait, limbs: &Limbs, side: usize, n: usize) -> [Track<Quat16>; 3] {
+pub(crate) fn leg_tracks(
+    g: &gait::Gait,
+    limbs: &Limbs,
+    side: usize,
+    n: usize,
+) -> [Track<Quat16>; 3] {
     let legs: Vec<gait::Leg> = (0..n).map(|k| g.leg(side, k as f32 / n as f32)).collect();
     [
         (
@@ -285,7 +292,7 @@ fn leg_tracks(g: &gait::Gait, limbs: &Limbs, side: usize, n: usize) -> [Track<Qu
 }
 
 /// The `root` track of gait `g` over `n` keys: the hips' rise and fall.
-fn hip_track(g: &gait::Gait, root: usize, n: usize) -> Track<Vec3> {
+pub(crate) fn hip_track(g: &gait::Gait, root: usize, n: usize) -> Track<Vec3> {
     Track {
         node: root,
         keys: (0..n)
@@ -788,6 +795,16 @@ pub fn figure() -> Model {
         translations: Vec::new(),
         ground: Vec::new(),
     });
+    // Crouched and prone, and the hit reactions ([`crate::poses`]).
+    let body = crate::poses::Body {
+        root,
+        torso,
+        head,
+        limbs: &limbs,
+    };
+    crate::poses::crouch(&mut b, &body);
+    crate::poses::prone(&mut b, &body);
+    crate::poses::flinches(&mut b, &body);
     b.build()
 }
 
@@ -795,13 +812,13 @@ pub fn figure() -> Model {
 pub const STEERING_PRIORITY: i32 = 5;
 
 /// A 3 x 3 rotation, rows.
-type Rot = [[f32; 3]; 3];
+pub(crate) type Rot = [[f32; 3]; 3];
 
 fn rot_of(m: &torque_shapes::math::Matrix) -> Rot {
     [[m[0], m[1], m[2]], [m[4], m[5], m[6]], [m[8], m[9], m[10]]]
 }
 
-fn rot_mul(a: &Rot, b: &Rot) -> Rot {
+pub(crate) fn rot_mul(a: &Rot, b: &Rot) -> Rot {
     let mut o = [[0.0; 3]; 3];
     for (i, row) in o.iter_mut().enumerate() {
         for (j, v) in row.iter_mut().enumerate() {
@@ -811,19 +828,19 @@ fn rot_mul(a: &Rot, b: &Rot) -> Rot {
     o
 }
 
-fn rot_t(a: &Rot) -> Rot {
+pub(crate) fn rot_t(a: &Rot) -> Rot {
     [0, 1, 2].map(|i| [0, 1, 2].map(|j| a[j][i]))
 }
 
-fn sub3(a: Vec3, b: Vec3) -> Vec3 {
+pub(crate) fn sub3(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
-fn dot3(a: Vec3, b: Vec3) -> f32 {
+pub(crate) fn dot3(a: Vec3, b: Vec3) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-fn cross3(a: Vec3, b: Vec3) -> Vec3 {
+pub(crate) fn cross3(a: Vec3, b: Vec3) -> Vec3 {
     [
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -831,13 +848,13 @@ fn cross3(a: Vec3, b: Vec3) -> Vec3 {
     ]
 }
 
-fn unit(v: Vec3) -> Vec3 {
+pub(crate) fn unit(v: Vec3) -> Vec3 {
     let l = dot3(v, v).sqrt().max(1e-9);
     v.map(|c| c / l)
 }
 
 /// The rotation by `angle` (radians) about unit `axis` (Rodrigues).
-fn rot_about(axis: Vec3, angle: f32) -> Rot {
+pub(crate) fn rot_about(axis: Vec3, angle: f32) -> Rot {
     let (s, c) = angle.sin_cos();
     let [x, y, z] = axis;
     let t = 1.0 - c;
@@ -860,12 +877,12 @@ fn rot_between(a: Vec3, b: Vec3) -> Rot {
     rot_about(axis.map(|v| v / s), s.atan2(c))
 }
 
-fn apply(r: &Rot, v: Vec3) -> Vec3 {
+pub(crate) fn apply(r: &Rot, v: Vec3) -> Vec3 {
     [0, 1, 2].map(|i| dot3(r[i], v))
 }
 
 /// A node rotation (`Quat16`) whose matrix, as the shape's math makes it, is `r`.
-fn quat16_of(r: &Rot) -> Quat16 {
+pub(crate) fn quat16_of(r: &Rot) -> Quat16 {
     let tr = r[0][0] + r[1][1] + r[2][2];
     let q = if tr > 0.0 {
         let s = (tr + 1.0).sqrt() * 2.0;
@@ -1019,7 +1036,7 @@ const RECOIL_SHOULDER: [f32; 8] = [0.0, 7.0, 14.0, 10.0, 6.0, 3.5, 1.5, 0.0];
 const RECOIL_ELBOW: [f32; 8] = [0.0, 9.0, 18.0, 13.0, 8.0, 4.0, 1.5, 0.0];
 
 /// The keys of the `head` and `hold` sequences.
-const LOOK_KEYS: usize = 9;
+pub(crate) const LOOK_KEYS: usize = 9;
 
 /// The pitch (degrees, up positive) at position `pos` of the look sequences.
 pub fn look_pitch(pos: f32) -> f32 {

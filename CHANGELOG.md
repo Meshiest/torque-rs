@@ -274,6 +274,15 @@ The first development version. Nothing is published yet; this is what exists.
   the drawn `eye` node): the own Player's view at its `eye` node at the rest pose, carried by its real motion, while the
   body and its hitboxes keep their animation; `eye_sway` keeps the sideways sway, and `OwnView::drawn_eye` gives TGE's eye.
   On in the level, vehicle and arena demos; `just examples/eye-clip` draws a before-and-after clip.
+- The example kit's figure crouches and lies down (`torque_example_assets::poses`): `crouch_root`, `crouch_forward`,
+  `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward` and `prone_backward`, posed from where its feet and hands
+  stand (each leg and arm turned to reach there), the crouched walk from the walk's model with the hips low, a crouched
+  side step and a crawl whose standing feet and hands stay put (the slide test holds them under 6% of the ground's speed);
+  `prone_hold` and `prone_aim` hold the pistol ahead lying down. Each pose fits its box (1 x 1 x 1.6 crouched, 2 x 2 x 0.8
+  prone), and a crouch lowers the body over feet that stay where they stand.
+- The example kit's figure reacts to hits: blend sequences played once over any pose or gait, `flinch_front`, `flinch_back`,
+  `flinch_left` and `flinch_right` (the body punched away from the side hit, the hips pushed back and a small step) and
+  `flinch_head_front` and the rest (a sharp snap of the head, the torso barely moving), each at rest at its start and end.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
