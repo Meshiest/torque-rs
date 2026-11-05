@@ -9,6 +9,7 @@
 //! threads were advanced and animated) into an object whose vertices are in the world. [`WorldView::set_objects`] hands the
 //! frame its objects and keeps the last frame's, which give each object its motion (the anti-aliasing's history follows it).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use torque_gui::GuiDraws;
@@ -420,8 +421,10 @@ impl WorldView {
     /// The frame's moving objects. Each takes its motion from the last frame's object of the same id: its transform then and
     /// where its vertices were.
     pub fn set_objects(&mut self, mut objects: Vec<DynamicObject>) {
+        let before: HashMap<u32, &DynamicObject> =
+            self.scene.objects.iter().map(|b| (b.ghost, b)).collect();
         for o in &mut objects {
-            if let Some(before) = self.scene.objects.iter().find(|b| b.ghost == o.ghost) {
+            if let Some(before) = before.get(&o.ghost) {
                 o.prev_transform = before.transform;
                 o.previous = o.previous_from(before);
             }

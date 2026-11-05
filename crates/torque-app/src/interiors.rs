@@ -57,12 +57,14 @@ pub fn object_id(index: u32) -> u32 {
     0x5000_0000 | (index & 0x0fff_ffff)
 }
 
-/// The most panes of one interior drawn as objects of their own (the rest join the last).
+/// The most panes drawn as objects of their own over every interior kept: an interior is built with what the others left
+/// ([`Interiors::objects`]), its panes past that joining its last one, and one with none left still has one.
 pub const MAX_PANES: usize = 0x0fff;
 
-/// The id of pane `pane` (from 0) of interior ghost `index` (a ghost index fits 16 bits).
-pub fn pane_id(index: u32, pane: usize) -> u32 {
-    0x5000_0000 | (((pane.min(MAX_PANES - 1) as u32 + 1) & 0x0fff) << 16) | (index & 0xffff)
+/// The id of the pane object numbered `serial` (the interiors hand them out in turn): a space of its own, apart from
+/// [`object_id`]'s.
+pub fn pane_id(serial: u32) -> u32 {
+    0x6000_0000 | (serial & 0x0fff_ffff)
 }
 
 /// The sampler of an interior's texture: linear (TGE's), or with `nearest` sharp texels near and far, the mipmap levels
@@ -82,15 +84,16 @@ pub fn interior_sampler(nearest: bool) -> Sampler {
     }
 }
 
-/// The translucent draws of interior ghost `index` as objects, one a pane ([`panes`]), so the translucent pass sorts the panes
-/// back to front: at most [`MAX_PANES`] in all (over every material; the rest join the last). Each draw's vertices are moved
-/// into its panes, never copied whole for each.
-pub fn pane_objects(see_through: Vec<Draw>, index: u32) -> Vec<(Vec<Draw>, u32)> {
+/// An interior's translucent draws as objects' draws, one object a pane ([`panes`]), so the translucent pass sorts the panes
+/// back to front: at most `budget` objects (over every material; at least one; the rest join the last). Each draw's vertices
+/// are moved into its panes, never copied whole for each.
+pub fn pane_objects(see_through: Vec<Draw>, budget: usize) -> Vec<Vec<Draw>> {
+    let budget = budget.clamp(1, MAX_PANES);
     let mut objects: Vec<Vec<Draw>> = Vec::new();
     for mut draw in see_through {
         let vertices = std::mem::take(&mut draw.vertices);
         for pane in panes(&vertices) {
-            if objects.len() < MAX_PANES {
+            if objects.len() < budget {
                 objects.push(Vec::new());
             }
             let last = objects.len() - 1;
@@ -105,10 +108,6 @@ pub fn pane_objects(see_through: Vec<Draw>, index: u32) -> Vec<(Vec<Draw>, u32)>
         }
     }
     objects
-        .into_iter()
-        .enumerate()
-        .map(|(k, d)| (d, pane_id(index, k)))
-        .collect()
 }
 
 /// `vertices` (three a triangle) split into panes: triangles that share a corner are one pane. At most [`MAX_PANES`].
@@ -162,6 +161,10 @@ pub struct Interiors {
     /// The files read, by path (`None` for one that did not read).
     files: HashMap<String, Option<Arc<Surfaces>>>,
     kept: BTreeMap<u32, Kept>,
+    /// Each interior's pane objects (by ghost index), their sum, and the next pane object's serial ([`pane_id`]).
+    pane_counts: BTreeMap<u32, usize>,
+    panes_used: usize,
+    serial: u32,
 }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -184,6 +187,8 @@ impl Interiors {
     /// Forgets every interior's objects (made again at the next frame: a new connection, or a new look); the files stay read.
     pub fn clear(&mut self) {
         self.kept.clear();
+        self.pane_counts.clear();
+        self.panes_used = 0;
     }
 
     /// The frame's interior objects: one an interior's material, `look` handed each draw (in the world) before it joins its
@@ -226,15 +231,50 @@ impl Interiors {
                 }
             };
             let Some(surfaces) = surfaces else { continue };
-            if let Some(k) = build(view, assets, &surfaces, &path, pose, index, look) {
+            if let Some(k) = build(view, assets, &surfaces, &path, pose, index, look, self) {
                 self.kept.insert(index, k);
             }
         }
         self.kept.retain(|i, _| seen.contains(i));
+        let gone: Vec<u32> = self
+            .pane_counts
+            .keys()
+            .filter(|i| !self.kept.contains_key(i))
+            .copied()
+            .collect();
+        for i in gone {
+            self.forget_panes(i);
+        }
         self.kept
             .values()
             .flat_map(|k| k.objects.iter().cloned())
             .collect()
+    }
+
+    /// Interior ghost `index`'s translucent draws as pane objects with their ids, within what the other interiors kept left of
+    /// [`MAX_PANES`] (its own earlier panes given back first).
+    pub fn pane_groups(&mut self, index: u32, see_through: Vec<Draw>) -> Vec<(Vec<Draw>, u32)> {
+        self.forget_panes(index);
+        if see_through.is_empty() {
+            return Vec::new();
+        }
+        let objects = pane_objects(see_through, MAX_PANES.saturating_sub(self.panes_used));
+        self.panes_used += objects.len();
+        self.pane_counts.insert(index, objects.len());
+        objects
+            .into_iter()
+            .map(|d| {
+                let id = pane_id(self.serial);
+                self.serial = self.serial.wrapping_add(1) & 0x0fff_ffff;
+                (d, id)
+            })
+            .collect()
+    }
+
+    fn forget_panes(&mut self, index: u32) {
+        if let Some(n) = self.pane_counts.remove(&index) {
+            self.panes_used -= n;
+        }
     }
 
     /// Every interior's faces, each list shared (for a host's own surface lookups).
@@ -265,6 +305,7 @@ pub fn faces_near(lists: &[Arc<Vec<Triangle>>], at: [f32; 3], reach: f32) -> Vec
 }
 
 /// An interior's objects and faces at `pose`.
+#[allow(clippy::too_many_arguments)]
 fn build(
     view: &mut WorldView,
     assets: &dyn Assets,
@@ -273,6 +314,7 @@ fn build(
     pose: Pose,
     index: u32,
     look: &mut dyn FnMut(&str, &mut Draw),
+    interiors: &mut Interiors,
 ) -> Option<Kept> {
     let (m, scale) = placed(&pose)?;
     let mut set = TextureSet::new(assets);
@@ -338,7 +380,7 @@ fn build(
         }
     }
     let mut groups = vec![(draws, object_id(index))];
-    groups.extend(pane_objects(see_through, index));
+    groups.extend(interiors.pane_groups(index, see_through));
     Some(Kept {
         pose,
         objects: view.mesh_objects(set, &groups),
@@ -370,50 +412,74 @@ mod tests {
         assert_eq!(p.iter().map(Vec::len).collect::<Vec<_>>(), [6, 3]);
     }
 
+    /// `n` triangles apart, one a pane.
+    fn draw(label: &str, n: usize) -> Draw {
+        let mut vertices = Vec::with_capacity(3 * n);
+        for k in 0..n {
+            let x = k as f32 * 3.0;
+            vertices.extend(tri([x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]));
+        }
+        Draw {
+            label: label.to_string(),
+            vertices,
+            lighting: true,
+            tex_env: TexEnv::Modulate,
+            texture: None,
+            blend: Blend::Alpha,
+            cull: Cull::BackCw,
+            depth_test: true,
+            depth_write: false,
+            fog: true,
+            lights: Vec::new(),
+            vertex_key: None,
+        }
+    }
+
     #[test]
     fn many_panes_over_several_materials_make_at_most_the_cap_of_objects_and_keep_every_triangle() {
-        let draw = |label: &str, n: usize| {
-            let mut vertices = Vec::with_capacity(3 * n);
-            for k in 0..n {
-                let x = k as f32 * 3.0;
-                vertices.extend(tri([x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 1.0, 0.0]));
-            }
-            Draw {
-                label: label.to_string(),
-                vertices,
-                lighting: true,
-                tex_env: TexEnv::Modulate,
-                texture: None,
-                blend: Blend::Alpha,
-                cull: Cull::BackCw,
-                depth_test: true,
-                depth_write: false,
-                fog: true,
-                lights: Vec::new(),
-                vertex_key: None,
-            }
-        };
         let n = MAX_PANES + 500;
-        let objects = pane_objects(vec![draw("a", n), draw("b", n)], 3);
+        let objects = pane_objects(vec![draw("a", n), draw("b", n)], MAX_PANES);
         assert_eq!(objects.len(), MAX_PANES);
-        let vertices: usize = objects
-            .iter()
-            .flat_map(|(d, _)| d.iter())
-            .map(|d| d.vertices.len())
-            .sum();
+        let vertices: usize = objects.iter().flatten().map(|d| d.vertices.len()).sum();
         assert_eq!(vertices, 2 * 3 * n);
         // The last object holds the rest, one draw a material.
-        assert_eq!(objects.last().unwrap().0.len(), 2);
-        let ids: std::collections::HashSet<u32> = objects.iter().map(|(_, id)| *id).collect();
-        assert_eq!(ids.len(), MAX_PANES);
-        assert!(!ids.contains(&object_id(3)));
+        assert_eq!(objects.last().unwrap().len(), 2);
+        // No budget left: still one object.
+        assert_eq!(pane_objects(vec![draw("a", 10)], 0).len(), 1);
+    }
+
+    #[test]
+    fn many_instances_share_one_pane_budget_and_give_theirs_back() {
+        let mut interiors = Interiors::default();
+        let instances = 200u32;
+        let mut ids = std::collections::HashSet::new();
+        let mut objects = 0;
+        for index in 0..instances {
+            for (_, id) in interiors.pane_groups(index, vec![draw("glass", 1000)]) {
+                assert!(ids.insert(id), "id {id:#x} twice");
+                assert!((0..instances).all(|i| id != object_id(i)));
+                objects += 1;
+            }
+        }
+        // The budget, then one each for the instances it ran out on.
+        assert!(
+            objects <= MAX_PANES + instances as usize,
+            "{objects} objects"
+        );
+        assert_eq!(interiors.panes_used, objects);
+        // An instance built again gives its panes back first; one that leaves gives them back too.
+        let again = interiors.pane_groups(0, vec![draw("glass", 1000)]).len();
+        assert_eq!(again, MAX_PANES - (objects - 1000));
+        assert_eq!(interiors.panes_used, MAX_PANES);
+        interiors.forget_panes(0);
+        assert_eq!(interiors.panes_used, MAX_PANES - again);
     }
 
     #[test]
     fn panes_have_their_own_ids_and_nearest_keeps_its_mipmaps() {
-        assert_ne!(pane_id(7, 0), object_id(7));
-        assert_ne!(pane_id(7, 0), pane_id(7, 1));
-        assert_ne!(pane_id(7, 0), pane_id(8, 0));
+        assert_ne!(pane_id(7), object_id(7));
+        assert_ne!(pane_id(7), pane_id(8));
+        assert_ne!(pane_id(0x1_0007), object_id(7));
         let s = interior_sampler(true);
         assert_eq!(
             (s.mag, s.min, s.mip),
