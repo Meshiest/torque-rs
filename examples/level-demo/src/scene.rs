@@ -11,7 +11,9 @@
 //! - **Nearest texels** ([`crate::levels::nearest`]): the cubes' tiles and every texture of the figures and what they hold.
 //! - **The camera's line of sight** ([`WorldScene::sight_hit`]) meets the cubes' boxes and the interiors' hulls (each
 //!   InteriorInstance's `.dif` read as the server reads it, placed where its record puts it), so the camera behind the figure
-//!   stays in front of a wall or a ceiling.
+//!   stays in front of a wall or a ceiling. It passes glass: a pane's own hull is left out, so the camera looks at the
+//!   figure through a glass wall instead of jumping in front of it, while the walls and frames around the pane still stop
+//!   it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -20,7 +22,7 @@ use torque::app::ghosts::{FrameInput, GhostScene, OwnView};
 use torque::app::view::{SceneShape, WorldView};
 use torque::client::conn::tge::TgeWorld;
 use torque::client::predict::ghost_players::GhostPlayers;
-use torque::collide::map::interior::InteriorShape;
+use torque::collide::map::interior::{InteriorGeom, InteriorShape, hull_of};
 use torque::game::scene::interior::{KeptInterior, read_interior};
 use torque::ghost_world::world::Pose;
 use torque::ghosts::{TgeClass, TgeRecord};
@@ -76,6 +78,85 @@ impl Default for WorldScene {
     }
 }
 
+/// `kept`'s hulls without the see-through ones (glass), for the camera's line of sight; as it is when the file has none. A
+/// hull is see-through when a see-through face of the file lies on one of its own planes, facing the same way, with the
+/// face's middle in the hull: the pane's own hull. A wall, sill or frame the pane's edge touches meets that face with a plane
+/// facing the other way, and stays.
+fn without_glass(bytes: &[u8], kept: KeptInterior) -> KeptInterior {
+    use torque::mapcore::Importer as _;
+    use torque::maps::dif::{PLANE_FLIPPED, surface_flags};
+    let (Ok(dif), Ok(set)) = (
+        torque::maps::dif::parse(bytes),
+        torque::maps::legacy::IMPORTER.convexes(bytes),
+    ) else {
+        return kept;
+    };
+    let Some(i) = dif.details.first() else {
+        return kept;
+    };
+    // Each see-through face: its middle and its outward normal.
+    let faces: Vec<([f64; 3], [f64; 3])> = i
+        .surfaces
+        .iter()
+        .filter(|f| f.flags & surface_flags::TRANSLUCENT != 0)
+        .filter_map(|f| {
+            let plane = i.planes.get(usize::from(f.plane & !PLANE_FLIPPED))?;
+            let sign = if f.plane & PLANE_FLIPPED != 0 {
+                -1.0
+            } else {
+                1.0
+            };
+            let normal = plane.normal.map(|c| sign * f64::from(c));
+            let start = f.winding_start as usize;
+            let corners = i.windings.get(start..start + f.winding_count as usize)?;
+            let mut sum = [0.0f64; 3];
+            for &c in corners {
+                let p = i.points.get(c as usize)?;
+                for k in 0..3 {
+                    sum[k] += f64::from(p[k]);
+                }
+            }
+            let n = corners.len().max(1) as f64;
+            Some((sum.map(|x| x / n), normal))
+        })
+        .collect();
+    if faces.is_empty() {
+        return kept;
+    }
+    const ON: f64 = 1e-3;
+    let pane = |h: &torque::collide::map::interior::Hull| {
+        faces.iter().any(|(m, n)| {
+            let side = |p: &[f64; 4]| p[0] * m[0] + p[1] * m[1] + p[2] * m[2] + p[3];
+            let inside = h.planes.iter().all(|p| {
+                let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+                side(p) / len <= ON
+            });
+            inside
+                && h.planes.iter().any(|p| {
+                    let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+                    let facing = (p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) / len;
+                    (side(p) / len).abs() <= ON && facing > 0.99
+                })
+        })
+    };
+    let mut glass = 0;
+    let hulls = (0..set.hulls.len())
+        .filter_map(|k| hull_of(&set, k))
+        .filter(|h| {
+            let see_through = pane(h);
+            glass += usize::from(see_through);
+            !see_through
+        })
+        .collect();
+    if glass == 0 {
+        return kept;
+    }
+    KeptInterior {
+        geom: Arc::new(InteriorGeom::from_hulls(hulls)),
+        ..kept
+    }
+}
+
 /// The id of a cube's object among the frame's objects (the engine's objects are their ghosts' indexes).
 fn cube_id(index: u32) -> u32 {
     0x4000_0000 | index
@@ -117,6 +198,17 @@ impl WorldScene {
         best
     }
 
+    /// The share of the way from `from` to `to` at which the line of sight first meets something ([`WorldScene::sight_hit`]).
+    pub fn sight_share(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+        let d = [0, 1, 2].map(|i| to[i] - from[i]);
+        let reach = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if reach < 1e-5 {
+            return None;
+        }
+        self.sight_hit(from, d.map(|x| x / reach), reach)
+            .map(|t| t / reach)
+    }
+
     /// The interior ghosts of `world` placed for the camera's line of sight (each file read once).
     fn place_interiors(&mut self, assets: &KitAssets, world: &TgeWorld) {
         let mut seen = Vec::new();
@@ -143,6 +235,7 @@ impl WorldScene {
                         work = work.saturating_add(u);
                         work <= INTERIOR_BUDGET
                     })
+                    .map(|kept| without_glass(&bytes, kept))
                 });
                 self.interior_files.insert(path.clone(), read);
             }

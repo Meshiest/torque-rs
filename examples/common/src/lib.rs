@@ -6,7 +6,9 @@
 //! - [`prediction`]: what the client's prediction of its own figure asks a game of kit cubes (the cubes it collides with, smooth
 //!   aim).
 //! - [`ray_box`]: a ray against a box, for a camera behind a figure kept in front of the cubes.
+//! - [`camera_log`]: the camera's motion frame by frame, for the examples' camera clips.
 
+pub mod camera_log;
 pub mod prediction;
 
 use std::collections::HashMap;

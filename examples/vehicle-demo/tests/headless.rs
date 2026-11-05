@@ -678,10 +678,11 @@ fn tab_eases_the_camera_between_the_seat_and_behind_and_on_foot_hides_the_figure
     }
     let seat = game.seated_eye_point().unwrap();
     let whole = apart(behind.position, seat);
-    // Some 0.3 s at 60 frames a second, no frame's step more than its eased share of the way.
-    assert!((16..=21).contains(&frames), "{frames} frames");
+    // 95% of the way in a quarter second, the last millimeter some 0.5 s in at 60 frames a second; no frame's step more than
+    // the spring's fastest share of the way.
+    assert!((25..=40).contains(&frames), "{frames} frames");
     assert!(
-        biggest < whole * 2.0 / 18.0 + 0.05,
+        biggest < whole * 0.13 + 0.05,
         "a step of {biggest} over {whole}"
     );
     assert!(
@@ -696,12 +697,12 @@ fn tab_eases_the_camera_between_the_seat_and_behind_and_on_foot_hides_the_figure
     }
     press(&mut game, Key::Tab);
     let next = drawn(&mut game);
-    assert!(apart(last.position, next.position) < whole * 2.0 / 18.0 + 0.05);
-    for _ in 0..30 {
+    assert!(apart(last.position, next.position) < whole * 0.13 + 0.05);
+    for _ in 0..40 {
         drawn(&mut game);
     }
     assert!(!game.camera_blending());
-    // On foot: the figure shows until the camera reaches its eyes, and again as soon as it leaves them.
+    // On foot: the figure shows until the camera is close to its eyes, and again once it is out of the head.
     press(&mut game, Key::E);
     for _ in 0..60 {
         drawn(&mut game);
@@ -709,16 +710,35 @@ fn tab_eases_the_camera_between_the_seat_and_behind_and_on_foot_hides_the_figure
     assert!(!game.seated() && game.first_person());
     let hidden = |g: &VehicleDemo| g.with_world(|w| w.hide_control).unwrap();
     assert!(hidden(&game));
+    // Out: shown once the camera is out of the head, early in the move.
+    let shown_within = |game: &mut VehicleDemo| {
+        for _ in 0..12 {
+            drawn(game);
+            if !hidden(game) {
+                return game.camera_blending();
+            }
+        }
+        false
+    };
     press(&mut game, Key::Tab);
-    drawn(&mut game);
-    assert!(!hidden(&game) && game.camera_blending());
+    assert!(shown_within(&mut game));
     for _ in 0..30 {
         drawn(&mut game);
+    }
+    // In, and out again before it got there: shown all the while.
+    press(&mut game, Key::Tab);
+    for _ in 0..4 {
+        drawn(&mut game);
+        assert!(!hidden(&game) && game.camera_blending());
     }
     press(&mut game, Key::Tab);
     drawn(&mut game);
     assert!(!hidden(&game) && game.camera_blending());
-    for _ in 0..30 {
+    for _ in 0..40 {
+        drawn(&mut game);
+    }
+    press(&mut game, Key::Tab);
+    for _ in 0..40 {
         drawn(&mut game);
     }
     assert!(hidden(&game));

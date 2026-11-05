@@ -16,6 +16,7 @@
 //! - [`lights::WorldLights`]: the engine's spot lights and the day (TimeOfDay, ScatterSky) of a client's world, into the view.
 //! - [`orbit::Orbit`]: a third-person camera that circles a point; [`orbit::Zoom`]: a camera distance the wheel moves.
 //! - [`camera_blend::CameraBlend`]: a camera that eases from one mode's eye to another's on a switch.
+//! - [`camera_boom::CameraBoom`]: a third-person camera's boom, pulled in fast and let out slowly by what is in the way.
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
@@ -27,6 +28,7 @@
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
 
 pub mod camera_blend;
+pub mod camera_boom;
 pub mod cli;
 pub mod client;
 pub mod files;

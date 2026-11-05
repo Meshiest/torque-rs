@@ -15,7 +15,7 @@ categories = ["game-development"]
 # in `game/`; the maps are the `.mis` files in `game/missions/`, read when the example starts.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["app"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-import = { path = "../../crates/torque-import" }
