@@ -15,7 +15,7 @@ pub const HELLO: &str = "rtc";
 pub const OFFER: &str = "offer";
 /// The SDP answer (server to browser).
 pub const ANSWER: &str = "answer";
-/// A trickled ICE candidate (browser to server; dropped).
+/// A trickled ICE candidate (browser to server; dropped by an ICE-lite server, taken by a player's host).
 pub const CANDIDATE: &str = "candidate";
 /// The server takes no more data channels now (server to browser, no body).
 pub const BUSY: &str = "busy";
@@ -28,7 +28,8 @@ pub const CHANNEL_LABEL: &str = "game";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal<'a> {
     Offer(&'a str),
-    Candidate,
+    /// A trickled candidate line (empty: the browser has no more).
+    Candidate(&'a str),
     Closed,
 }
 
@@ -37,7 +38,7 @@ pub fn parse(text: &str) -> Option<Signal<'_>> {
     let (kind, body) = text.split_once('\n').unwrap_or((text, ""));
     match kind {
         OFFER if !body.is_empty() => Some(Signal::Offer(body)),
-        CANDIDATE => Some(Signal::Candidate),
+        CANDIDATE => Some(Signal::Candidate(body)),
         CLOSED if body.is_empty() => Some(Signal::Closed),
         _ => None,
     }
@@ -87,7 +88,7 @@ mod tests {
         assert_eq!(parse("offer\n"), None);
         assert_eq!(
             parse("candidate\ncandidate:1 1 udp ..."),
-            Some(Signal::Candidate)
+            Some(Signal::Candidate("candidate:1 1 udp ..."))
         );
         assert_eq!(parse("closed"), Some(Signal::Closed));
         assert_eq!(parse("closed\nx"), None);

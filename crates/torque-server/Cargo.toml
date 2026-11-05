@@ -54,6 +54,8 @@ webrtc = ["web", "dep:str0m", "dep:ring"]
 # The room protocol (`net::room`): how a player who hosts a game and the players who join it find each other through a room
 # service. Text only, no dependencies (a browser's joiner uses it too).
 rooms = []
+# A player's host (`net::web::p2p`): players join over data channels found through a room service, with no port forwarded.
+p2p = ["webrtc", "rooms"]
 
 [dev-dependencies]
 # The web transport's TLS tests: a certificate made for the test.

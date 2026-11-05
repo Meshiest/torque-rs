@@ -3281,6 +3281,7 @@ name = "torque-rooms"
 version = "0.1.0"
 dependencies = [
  "ring",
+ "str0m",
  "torque-net",
  "torque-server",
  "tungstenite",

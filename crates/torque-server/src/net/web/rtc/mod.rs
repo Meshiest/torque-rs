@@ -90,6 +90,8 @@ const RECV_BYTES: usize = 2048;
 const WIRE_ROOM: usize = 128;
 /// The most source addresses mapped to one peer (its oldest is given up for a new one).
 pub const MAX_REMOTES: usize = 4;
+/// The most trickled candidates a player's host takes from one joiner (its checks go to each).
+pub const MAX_REMOTE_CANDIDATES: u32 = 16;
 /// The most outputs taken from a peer that is closing (its DTLS close notify).
 const CLOSE_OUTPUTS: usize = 16;
 /// The characters of an ICE user fragment and password (RFC 8445's ice-char, without `+` and `/`).
@@ -184,6 +186,12 @@ pub struct RtcSetup {
     pub limits: RtcLimits,
     /// The percentage of datagrams dropped as they are received and as they are sent (a test; 0 drops none).
     pub loss_percent: u8,
+    /// A player's host (`net::p2p`) rather than a server browsers reach directly: full ICE (the host sends checks too, so
+    /// a NAT in front of it opens), checks taken from any address (a joiner has no game socket whose address they must
+    /// share; they are still held to the rate per source address), the joiner's trickled candidates taken (at most
+    /// [`MAX_REMOTE_CANDIDATES`], IPv4 UDP, no `.local` names), and a server-reflexive candidate once a STUN server
+    /// answered.
+    pub host: bool,
 }
 
 /// What the data channels have done, for tests and the console.
@@ -407,6 +415,8 @@ struct Peer {
     closing: Option<Why>,
     meter: Meter,
     stats: PeerStats,
+    /// Trickled candidates taken.
+    candidates: u32,
 }
 
 impl Peer {
@@ -474,6 +484,9 @@ pub(crate) struct RtcSide {
     notices: Vec<(SocketAddr, Why)>,
     loss: Loss,
     buf: Vec<u8>,
+    /// A binding request out to a STUN server (its address and transaction), and the address it saw this socket at.
+    reflexive_query: Option<(SocketAddr, [u8; 12])>,
+    reflexive: Option<SocketAddr>,
 }
 
 impl RtcSide {
@@ -499,6 +512,8 @@ impl RtcSide {
             notices: Vec::new(),
             loss,
             buf: vec![0; RECV_BYTES],
+            reflexive_query: None,
+            reflexive: None,
         }
     }
 
@@ -590,6 +605,29 @@ impl RtcSide {
         Ok(())
     }
 
+    /// Asks the STUN server at `server` which address this socket is seen at (a player's host behind a NAT gives its
+    /// joiners that address too): the answer is read by the next passes, and peers made after it get the candidate.
+    pub(crate) fn query_reflexive(&mut self, server: SocketAddr) -> bool {
+        use ring::rand::{SecureRandom, SystemRandom};
+        let Some(socket) = self.socket.as_ref() else {
+            return false;
+        };
+        let mut id = [0u8; 12];
+        if SystemRandom::new().fill(&mut id).is_err() {
+            return false;
+        }
+        let sent = socket.send_to(&stun::binding_request(&id), server).is_ok();
+        if sent {
+            self.reflexive_query = Some((server, id));
+        }
+        sent
+    }
+
+    /// The address a STUN server saw this socket at, once it answered.
+    pub(crate) fn reflexive(&self) -> Option<SocketAddr> {
+        self.reflexive
+    }
+
     /// Closes the socket and every peer.
     pub(crate) fn close(&mut self) {
         let all: Vec<SocketAddr> = self.peers.keys().copied().collect();
@@ -623,7 +661,17 @@ impl RtcSide {
     ) -> Result<Reply, ()> {
         let signal = signal::parse(text).ok_or(())?;
         let sdp = match signal {
-            Signal::Candidate => return Ok(Reply::None),
+            Signal::Candidate(line) => {
+                if self.setup.host
+                    && let Some(peer) = self.peers.get_mut(&stand_in)
+                    && peer.candidates < MAX_REMOTE_CANDIDATES
+                    && let Some(candidate) = remote_candidate(line)
+                {
+                    peer.candidates += 1;
+                    peer.rtc.add_remote_candidate(candidate);
+                }
+                return Ok(Reply::None);
+            }
             Signal::Closed => {
                 self.finish(stand_in, Why::Peer, false);
                 return Ok(Reply::None);
@@ -676,7 +724,7 @@ impl RtcSide {
             return busy();
         };
         let mut rtc = RtcConfig::new()
-            .set_ice_lite(true)
+            .set_ice_lite(!self.setup.host)
             .set_crypto_provider(Arc::clone(&self.crypto))
             .set_dtls_cert(cert)
             .set_local_ice_credentials(creds)
@@ -688,6 +736,11 @@ impl RtcSide {
             if let Ok(candidate) = Candidate::host(addr, "udp") {
                 rtc.add_local_candidate(candidate);
             }
+        }
+        if let (Some(mapped), Some(&base)) = (self.reflexive, self.advertised.first())
+            && let Ok(candidate) = Candidate::server_reflexive(mapped, base, "udp")
+        {
+            rtc.add_local_candidate(candidate);
         }
         let Ok(answer) = rtc.sdp_api().accept_offer(offer) else {
             return Err(());
@@ -711,6 +764,7 @@ impl RtcSide {
                 closing: None,
                 meter: Meter::new(now),
                 stats: PeerStats::default(),
+                candidates: 0,
             },
         );
         Ok(Reply::Text(signal::message(
@@ -784,6 +838,15 @@ impl RtcSide {
             let Some(&to) = self.advertised.first() else {
                 continue;
             };
+            if let Some((server, id)) = self.reflexive_query
+                && from == server
+            {
+                if let Some(mapped) = stun::mapped_address(data, &id) {
+                    self.reflexive = Some(mapped);
+                    self.reflexive_query = None;
+                }
+                continue;
+            }
             let stun_to = match route_check(
                 &self.by_ufrag,
                 &mut self.stun_sources,
@@ -791,6 +854,7 @@ impl RtcSide {
                 from,
                 data,
                 now,
+                self.setup.host,
             ) {
                 Routed::Peer(stand_in) => Some(stand_in),
                 Routed::Stray => {
@@ -810,13 +874,15 @@ impl RtcSide {
             let input = Input::Receive(now, receive);
             let (stand_in, new_route) = match stun_to {
                 Some(stand_in) => (stand_in, false),
-                None => match accepting(&self.peers, &self.by_remote, from, &input) {
-                    Some(found) => found,
-                    None => {
-                        self.counters.stray += 1;
-                        continue;
+                None => {
+                    match accepting(&self.peers, &self.by_remote, from, &input, self.setup.host) {
+                        Some(found) => found,
+                        None => {
+                            self.counters.stray += 1;
+                            continue;
+                        }
                     }
-                },
+                }
             };
             let Some(peer) = self.peers.get_mut(&stand_in) else {
                 continue;
@@ -991,6 +1057,21 @@ impl RtcSide {
     }
 }
 
+/// A joiner's trickled candidate a player's host takes: a well-formed candidate line on IPv4 UDP (a `.local` name, which
+/// only the joiner's own network resolves, an IPv6 address or a TCP candidate is left out).
+fn remote_candidate(line: &str) -> Option<Candidate> {
+    let line = line.trim();
+    let line = line.strip_prefix("a=").unwrap_or(line);
+    if line.is_empty() || line.len() > 512 || line.contains(".local") {
+        return None;
+    }
+    let candidate = Candidate::from_sdp_string(line).ok()?;
+    (candidate.addr().is_ipv4()
+        && candidate.proto() == Protocol::Udp
+        && candidate.addr().port() != 0)
+        .then_some(candidate)
+}
+
 /// Where a binding request goes.
 enum Routed {
     /// To the peer of this stand-in (its USERNAME names the peer, from its game socket's IP address).
@@ -1004,7 +1085,8 @@ enum Routed {
 }
 
 /// The peer a STUN binding request is for: the one its USERNAME names, when it comes from that peer's game socket's IP
-/// address and within its source address's rate. Whatever address it comes from, it never maps that address.
+/// address (from any address for a player's host, whose joiners have no game socket) and within its source address's
+/// rate. Whatever address it comes from, it never maps that address.
 fn route_check(
     by_ufrag: &HashMap<Vec<u8>, (SocketAddr, IpAddr)>,
     stun_sources: &mut HashMap<IpAddr, (Instant, u32)>,
@@ -1012,6 +1094,7 @@ fn route_check(
     from: SocketAddr,
     data: &[u8],
     now: Instant,
+    any_address: bool,
 ) -> Routed {
     let Some(ufrag) = stun::binding_ufrag(data) else {
         return Routed::NotACheck;
@@ -1019,9 +1102,10 @@ fn route_check(
     let Some(&(stand_in, ip)) = by_ufrag.get(ufrag) else {
         return Routed::Stray;
     };
-    if from.ip() != ip {
+    if from.ip() != ip && !any_address {
         return Routed::Stray;
     }
+    let ip = from.ip();
     if stun_sources.len() >= NET_LIMITER_ENTRIES && !stun_sources.contains_key(&ip) {
         stun_sources.retain(|_, (start, _)| now.duration_since(*start) < Duration::from_secs(1));
         if stun_sources.len() >= NET_LIMITER_ENTRIES {
@@ -1042,12 +1126,14 @@ fn route_check(
 
 /// The peer a datagram that is not a binding request goes to, and whether its source address is new to it: the peer the
 /// address is mapped to while that peer's stack still accepts the address (validated by an authenticated check), else the
-/// first peer of the same IP address whose stack accepts it. None: no peer accepts it.
+/// first peer of the same IP address whose stack accepts it (of any address for a player's host: a relayed joiner comes
+/// from its TURN server's). None: no peer accepts it.
 fn accepting(
     peers: &HashMap<SocketAddr, Peer>,
     by_remote: &HashMap<SocketAddr, SocketAddr>,
     from: SocketAddr,
     input: &Input<'_>,
+    any_address: bool,
 ) -> Option<(SocketAddr, bool)> {
     if let Some(stand_in) = by_remote.get(&from)
         && let Some(peer) = peers.get(stand_in)
@@ -1058,7 +1144,7 @@ fn accepting(
     }
     let mut same_ip: Vec<(&SocketAddr, &Peer)> = peers
         .iter()
-        .filter(|(_, p)| p.ip == from.ip() && p.closing.is_none())
+        .filter(|(_, p)| (any_address || p.ip == from.ip()) && p.closing.is_none())
         .collect();
     same_ip.sort_by_key(|(a, _)| **a);
     let (&stand_in, _) = same_ip.into_iter().find(|(_, p)| p.rtc.accepts(input))?;

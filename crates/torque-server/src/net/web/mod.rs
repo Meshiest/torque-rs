@@ -43,6 +43,8 @@
 //! on it both ways, under the same stand-in address.
 
 pub mod http;
+#[cfg(feature = "p2p")]
+pub mod p2p;
 #[cfg(feature = "webrtc")]
 pub mod rtc;
 pub mod stand_in;

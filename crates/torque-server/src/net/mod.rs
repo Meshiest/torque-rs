@@ -22,6 +22,8 @@ pub mod local;
 pub mod payload;
 pub mod pump;
 pub mod query;
+#[cfg(feature = "p2p")]
+pub mod relay;
 #[cfg(feature = "rooms")]
 pub mod room;
 pub mod torque;

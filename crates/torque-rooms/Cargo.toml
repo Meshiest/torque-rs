@@ -23,6 +23,9 @@ ring = { version = "0.17", default-features = false }
 [dev-dependencies]
 # The tests' clients.
 tungstenite = { version = "0.30", default-features = false }
+# A player's host and its joiners through a live service.
+torque-server = { path = "../torque-server", features = ["p2p"] }
+str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"] }
 
 [[bin]]
 name = "torque-rooms"
