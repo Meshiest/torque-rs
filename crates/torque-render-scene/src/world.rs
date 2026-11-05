@@ -9,7 +9,8 @@
 //!
 //! Credit: the defaults follow TGE 1.4's `ShapeBase::getRenderMountTransform`, `ShapeBase::getRenderImageTransform`,
 //! `ShapeBase::updateImageAnimation` and `ShapeBaseImageData::preload` (`game/shapeImage.cc`), `Player::renderMountedImage`
-//! (`game/player.cc`) and `WheeledVehicle::renderImage` (`game/vehicles/wheeledVehicle.cc`), and a Player's rest pose
+//! (`game/player.cc`), `WheeledVehicle::renderImage` and the steering thread of `WheeledVehicle::advanceTime`
+//! (`game/vehicles/wheeledVehicle.cc`), and a Player's rest pose
 //! `Player::onNewDataBlock`, `updateLookAnimation`, `setActionThread` and `unpackUpdate`'s head (`game/player.cc`), each
 //! Copyright (C) GarageGames.com, Inc.; as Torque3D carries them under the MIT licence: `T3D/shapeImage.cpp` and
 //! `T3D/vehicles/wheeledVehicle.cpp`, Copyright (c) 2012 GarageGames, LLC; `T3D/player.cpp`, Copyright (c) 2012 GarageGames,
@@ -358,8 +359,58 @@ impl ShapeWorld for ClientWorld<TgeClientSet> {
             (Some(Pose::Euler { pitch, .. }), None) => Some((pitch, 0.0)),
             _ => None,
         };
+        let steered = steering_thread(self, index, shape, instance);
         rest_pose(self, index, look, shape, instance, dl);
+        if steered {
+            let mut charge = |_: u64| true;
+            let _ = instance.animate(shape, dl, None, &mut charge);
+        }
     }
+}
+
+/// Where a WheeledVehicle's `steering` thread sits (`WheeledVehicleData::preload` finds the sequence; `advanceTime` sets
+/// its place): `0.5 - t / 2`, `t` the steering times its own size over `maxSteeringAngle`, so 0 is full right and 0.5
+/// straight ahead. The steering is the client's own for a vehicle it runs, else the record's. None for a ghost that is not a
+/// WheeledVehicle or has no steering lock.
+pub fn steering_place(w: &ClientWorld<TgeClientSet>, index: u32) -> Option<f32> {
+    let g = w.ghosts.get(&index)?;
+    let wheels = w.wheels(g)?;
+    let max = g
+        .record
+        .as_ref()
+        .and_then(ClientRecord::datablock)
+        .and_then(|d| w.float(d, "maxSteeringAngle", 0))
+        .filter(|m| m.is_finite() && *m > 0.0)?;
+    let steering = w
+        .vehicle_look
+        .get(&index)
+        .map(|l| l.steering)
+        .filter(|s| s.is_finite())
+        .unwrap_or(wheels.steering);
+    let t = steering * steering.abs() / max;
+    Some((0.5 - t * 0.5).clamp(0.0, 1.0))
+}
+
+/// The `steering` thread on `instance` at [`steering_place`] when the shape has the sequence (not yet animated).
+fn steering_thread(
+    w: &ClientWorld<TgeClientSet>,
+    index: u32,
+    shape: &Shape,
+    instance: &mut ShapeInstance,
+) -> bool {
+    let Some(seq) =
+        shapes::instance::find_sequence(shape, b"steering").and_then(|s| i32::try_from(s).ok())
+    else {
+        return false;
+    };
+    let Some(place) = steering_place(w, index) else {
+        return false;
+    };
+    let Some(thread) = instance.create_thread(shape) else {
+        return false;
+    };
+    instance.set_sequence(shape, thread, seq, place);
+    true
 }
 
 #[cfg(test)]
