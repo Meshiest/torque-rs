@@ -2239,9 +2239,11 @@ name = "torque-render-hd"
 version = "0.1.0"
 dependencies = [
  "naga",
+ "png",
  "pollster",
  "torque-render-core",
  "torque-render-scene",
+ "torque-scene",
 ]
 
 [[package]]
@@ -2255,6 +2257,7 @@ dependencies = [
  "torque-images",
  "torque-mapcore",
  "torque-maps",
+ "torque-scene",
  "torque-shapes",
 ]
 

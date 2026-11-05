@@ -98,3 +98,33 @@ fn a_frames_particles_are_unlit_sprites_and_the_additive_ones_glow() {
     assert!(scene.particles.is_empty());
     assert_eq!(scene.particles_generation, 2);
 }
+
+#[test]
+fn a_spot_lights_its_cone_with_a_soft_edge() {
+    let spot = HdSpot {
+        light: HdLight {
+            position: [0.0, 0.0, 5.0],
+            color: [1.0; 3],
+            radius: 20.0,
+            carrier: None,
+        },
+        direction: [0.0, 0.0, -2.0],
+        inner: 20f32.to_radians(),
+        outer: 30f32.to_radians(),
+        shadows: true,
+    };
+    let at = |deg: f32| {
+        let r = 5.0 * deg.to_radians().tan();
+        spot.share([r, 0.0, 0.0])
+    };
+    assert_eq!(at(0.0), 1.0);
+    assert_eq!(at(19.0), 1.0);
+    assert_eq!(at(31.0), 0.0);
+    let edge = at(25.0);
+    assert!(edge > 0.2 && edge < 0.8, "{edge}");
+    assert!(at(22.0) > at(25.0) && at(25.0) > at(28.0));
+    // A point light's packed cone (all zeros) lights everything.
+    assert_eq!(cone_share([0.0; 4], [0.0; 3], [1.0, 2.0, 3.0]), 1.0);
+    // Behind the light: none.
+    assert_eq!(spot.share([0.0, 0.0, 9.0]), 0.0);
+}

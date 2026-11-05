@@ -8,8 +8,8 @@
 // - Specular: GGX (Walter et al. 2007) with Smith's height-correlated visibility (Heitz 2014) and Schlick's Fresnel, F0 0.04 and
 //   the material table's roughness, from the sun and every point light.
 // - Point lights: Lambert plus the specular, an inverse-square falloff with a 2-unit core, windowed to the fxLight's radius
-//   ((1 - (d/r)^4)^2, as Karis 2013), found through the cluster masks (forward+, Olsson et al. 2012) or, in the brute-force
-//   permutation, all of them in order (the gate compares the two).
+//   ((1 - (d/r)^4)^2, as Karis 2013), a spot's cut to its cone with a smooth edge, found through the cluster masks (forward+,
+//   Olsson et al. 2012) or, in the brute-force permutation, all of them in order (the gate compares the two).
 // - Fog: from the Sky's fog distance to the visible distance (1 - ((end - d) / (end - start))^2), the horizon ban's colour.
 // - Unlit and glow surfaces are their colour.
 // - Textures: GL_DECAL mixes in gamma space, as the fixed-function pipeline does; MODULATE and REPLACE in linear.
@@ -573,9 +573,10 @@ fn point_light(i: u32, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, albedo: vec3<f3
     let d = length(to);
     let l = select(n, to / d, d > 1e-6);
     let nl = max(dot(n, l), 0.0);
-    var e = light.color.rgb * (nl * falloff(d, light.pos_radius.w));
+    let cone = cone_share(light, l);
+    var e = light.color.rgb * (nl * cone * falloff(d, light.pos_radius.w));
     let slot = i32(light.color.w);
-    if slot >= 0 && shadows.point.z > 0.0 && nl > 0.0 && d < light.pos_radius.w {
+    if slot >= 0 && shadows.point.z > 0.0 && nl > 0.0 && cone > 0.0 && d < light.pos_radius.w {
         let vis = point_shadow(slot, light, p, n, frag);
         e = e * vis;
         if i == 0u && shadows.config.w == 2u {

@@ -22,6 +22,58 @@ pub struct HdLight {
     pub carrier: Option<u32>,
 }
 
+/// A spot light (Torque3D's `SpotLight`): a point light whose light is cut to a cone about `direction`, whole inside the `inner`
+/// half angle, none past the `outer` one, a smooth step between (radians). One that casts shadows takes a point light's shadow
+/// slot, of which only the cube faces its cone meets are drawn ([`crate::hd::shadow::cone_meets_face`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdSpot {
+    pub light: HdLight,
+    /// Where the cone points (unit).
+    pub direction: [f32; 3],
+    pub inner: f32,
+    pub outer: f32,
+    pub shadows: bool,
+}
+
+impl HdSpot {
+    /// The cone as the GPU's light takes it: the direction times the reciprocal of the soft edge's width in cosines, and the
+    /// outer half angle's cosine (a point light's is all zeros).
+    pub fn cone(&self) -> [f32; 4] {
+        let outer = self.outer.clamp(1e-3, std::f32::consts::PI - 1e-3);
+        let inner = self.inner.clamp(0.0, outer);
+        let width = (inner.cos() - outer.cos()).max(1e-3);
+        let len = self.direction.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let d = if len > 1e-6 {
+            self.direction.map(|v| v / len)
+        } else {
+            [0.0, 0.0, -1.0]
+        };
+        [d[0] / width, d[1] / width, d[2] / width, outer.cos()]
+    }
+
+    /// The cone's share of the light at `p` (1 inside the inner half angle, 0 past the outer, smooth between): what the forward
+    /// pass takes.
+    pub fn share(&self, p: [f32; 3]) -> f32 {
+        cone_share(self.cone(), self.light.position, p)
+    }
+}
+
+/// [`HdSpot::share`] of a cone as [`HdSpot::cone`] packs it, for a light at `at`.
+pub fn cone_share(cone: [f32; 4], at: [f32; 3], p: [f32; 3]) -> f32 {
+    let k = (cone[0] * cone[0] + cone[1] * cone[1] + cone[2] * cone[2]).sqrt();
+    if k == 0.0 {
+        return 1.0;
+    }
+    let to = [p[0] - at[0], p[1] - at[1], p[2] - at[2]];
+    let d = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+    if d < 1e-6 {
+        return 1.0;
+    }
+    let c = (to[0] * cone[0] + to[1] * cone[1] + to[2] * cone[2]) / (d * k);
+    let x = ((c - cone[3]) * k).clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
 /// The sun as the fixed-function frame lights with it (the sun light's colours, gamma-space 0..1), and the Sun's shadow colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HdSun {
@@ -72,6 +124,9 @@ pub struct HdScene<G> {
     /// The sun the server's box paints near the Sun's direction ([`sky::painted_sun`]; None with our own sky or a box without one):
     /// the disk, the flares and the sky's glow about the sun sit on it ([`HdScene::sky_sun`]); the light keeps the Sun's direction.
     pub painted_sun: Option<sky::PaintedSun>,
+    /// The sun the physical sky is made for when the light comes from elsewhere (the moon at night, [`crate::hd::scatter`]);
+    /// None: the Sun's direction.
+    pub atmosphere_sun: Option<[f32; 3]>,
     /// The last search's key: the box's textures and the Sun's direction (bits) it was made for.
     pub(crate) painted_key: Option<(Vec<usize>, [u32; 3])>,
     /// Whether a sync looks for a painted sun at all (off: the disk, the flares and the glow stay on the Sun's direction; the
@@ -98,6 +153,8 @@ pub struct HdScene<G> {
     /// decoder thread).
     pub textures_pending: bool,
     pub lights: Vec<HdLight>,
+    /// The spot lights (their changes counted by `lights_generation` too).
+    pub spots: Vec<HdSpot>,
     /// How many of `lights`, at its end, cast no shadows (glowing surfaces' and shaded lamps' lights).
     pub glow_lights: usize,
     /// Counts the changes of `lights` (a control sync moves a light attached to the control object; the GPU uploads them again
@@ -147,6 +204,7 @@ impl<G> HdScene<G> {
             sky_choice: sky::SkyChoice::Auto,
             atmosphere: false,
             painted_sun: None,
+            atmosphere_sun: None,
             painted_key: None,
             follow_painted_sun: true,
             planes: Vec::new(),
@@ -161,6 +219,7 @@ impl<G> HdScene<G> {
             particles_generation: 0,
             textures_pending: false,
             lights: Vec::new(),
+            spots: Vec::new(),
             glow_lights: 0,
             lights_generation: 0,
             textures: TextureTable::default(),
@@ -213,11 +272,17 @@ impl<G> HdScene<G> {
         self.particles_generation = self.particles_generation.wrapping_add(1);
     }
 
-    /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the Sun's direction.
+    /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the physical sky's
+    /// ([`HdScene::atmosphere_towards`]).
     pub fn sky_sun(&self) -> [f32; 3] {
         self.painted_sun
             .and_then(|p| p.drawn())
-            .unwrap_or(self.sun.towards)
+            .unwrap_or(self.atmosphere_towards())
+    }
+
+    /// Towards the sun the physical sky is made for: [`HdScene::atmosphere_sun`], else the Sun's direction.
+    pub fn atmosphere_towards(&self) -> [f32; 3] {
+        self.atmosphere_sun.unwrap_or(self.sun.towards)
     }
 }
 

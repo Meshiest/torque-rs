@@ -73,7 +73,9 @@ pub use crate::arena::ARENA_BUDGET;
 use std::collections::{BTreeMap, HashMap};
 
 use torque_render_core::wgpu;
-use torque_render_scene::hd::{HD_VERTEX_BYTES, HdCamera, HdDraw, HdVertex, srgb_to_linear};
+use torque_render_scene::hd::{
+    HD_VERTEX_BYTES, HdCamera, HdDraw, HdLight, HdSpot, HdVertex, srgb_to_linear,
+};
 use torque_render_scene::{Blend, Cull, Filter, Sampler};
 use wgpu::util::DeviceExt;
 
@@ -114,6 +116,41 @@ pub const LDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The cluster grid (tiles across, down, depth slices) and the lights a frame holds.
 pub const CLUSTER_GRID: [u32; 3] = [16, 9, 24];
 pub const MAX_LIGHTS: usize = 1024;
+/// One light's bytes in the lights buffer (`common.wgsl`'s `Light`).
+pub const LIGHT_BYTES: usize = 48;
+
+/// The lights a frame uploads, in the buffer's order: the shadowed ones first (the point lights but the glowing surfaces', then
+/// the spots that cast shadows), then the spots that do not and the glowing surfaces' lights (`glow`: else left out); each one's
+/// packed cone ([`HdSpot::cone`], zeros for a point light) and how many of the first cast shadows. At most [`MAX_LIGHTS`].
+pub fn frame_lights(
+    lights: &[HdLight],
+    glow_lights: usize,
+    spots: &[HdSpot],
+    glow: bool,
+) -> (Vec<HdLight>, Vec<[f32; 4]>, usize) {
+    let plain = lights.len() - glow_lights.min(lights.len());
+    let mut out: Vec<(HdLight, [f32; 4])> =
+        lights[..plain].iter().map(|l| (*l, [0.0; 4])).collect();
+    out.extend(
+        spots
+            .iter()
+            .filter(|s| s.shadows)
+            .map(|s| (s.light, s.cone())),
+    );
+    let shadowed = out.len().min(MAX_LIGHTS);
+    out.extend(
+        spots
+            .iter()
+            .filter(|s| !s.shadows)
+            .map(|s| (s.light, s.cone())),
+    );
+    if glow {
+        out.extend(lights[plain..].iter().map(|l| (*l, [0.0; 4])));
+    }
+    out.truncate(MAX_LIGHTS);
+    let (l, c) = out.into_iter().unzip();
+    (l, c, shadowed)
+}
 const CLUSTER_WORDS: u64 = 32;
 /// A mesh's place in the frame's table (`torque_render_scene::hd::NodePlace`): the rows of its placement now, of its normals' turn and of
 /// its placement at the last frame, three vec4 each.
@@ -951,6 +988,10 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     /// Per light, the static geometry's owners it is mounted in ([`HdExtension::light_hosts`]: left out of its shadow cube).
     light_hosts: Vec<[u32; 4]>,
     written_slots: Option<Vec<i32>>,
+    /// The lights as uploaded (the scene's point lights and spots in the buffer's order) and each one's packed cone
+    /// ([`HdSpot::cone`]; zeros: a point light).
+    frame_lights: Vec<HdLight>,
+    light_cones: Vec<[f32; 4]>,
     /// The boxes of the cells changed since the last frame (old and new), or every cached shadow to be drawn again.
     shadow_dirty: Vec<[[f32; 3]; 2]>,
     shadow_reset: bool,
@@ -2193,6 +2234,8 @@ impl<E: HdExtension> HdWorld<E> {
             light_bytes: Vec::new(),
             light_hosts: Vec::new(),
             written_slots: None,
+            frame_lights: Vec::new(),
+            light_cones: Vec::new(),
             shadow_dirty: Vec::new(),
             shadow_reset: true,
             shadow_resets: 0,
@@ -2417,7 +2460,7 @@ impl<E: HdExtension> HdWorld<E> {
     fn lights_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hd lights"),
-            size: (capacity.max(1) * 32) as u64,
+            size: (capacity.max(1) * LIGHT_BYTES) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -3604,15 +3647,14 @@ impl<E: HdExtension> HdWorld<E> {
         let first = self.lights_generation.is_none();
         self.lights_generation = Some(scene.lights_generation);
         self.uploaded_glow = self.features.glow_lights;
-        let all = if self.features.glow_lights {
-            scene.lights.len()
-        } else {
-            scene.lights.len() - scene.glow_lights.min(scene.lights.len())
-        };
-        let n = all.min(MAX_LIGHTS);
-        // The glowing surfaces' lights cast no shadows (their own surface holds them).
-        self.shadowed_lights =
-            (scene.lights.len() - scene.glow_lights.min(scene.lights.len())).min(n);
+        let (lights, cones, shadowed) = frame_lights(
+            &scene.lights,
+            scene.glow_lights,
+            &scene.spots,
+            self.features.glow_lights,
+        );
+        let n = lights.len();
+        self.shadowed_lights = shadowed;
         if n > self.lights_capacity {
             self.lights_capacity = n.next_power_of_two();
             self.lights = Self::lights_buffer(&self.device, self.lights_capacity);
@@ -3625,7 +3667,7 @@ impl<E: HdExtension> HdWorld<E> {
             );
         }
         // What changed since the last upload: the TAA keeps little history where those lights reached.
-        let now: Vec<([f32; 3], [f32; 3], f32)> = scene.lights[..n]
+        let now: Vec<([f32; 3], [f32; 3], f32)> = lights
             .iter()
             .map(|l| (l.position, l.color, l.radius))
             .collect();
@@ -3636,8 +3678,8 @@ impl<E: HdExtension> HdWorld<E> {
             self.changed_lights = (Some(self.temporal.frame), changed);
         }
         self.uploaded_lights = now;
-        let mut lb = Vec::with_capacity(n * 32);
-        for l in &scene.lights[..n] {
+        let mut lb = Vec::with_capacity(n * LIGHT_BYTES);
+        for (l, cone) in lights.iter().zip(&cones) {
             push_f32(
                 &mut lb,
                 &[
@@ -3652,17 +3694,20 @@ impl<E: HdExtension> HdWorld<E> {
                     -1.0,
                 ],
             );
+            push_f32(&mut lb, cone);
         }
         if !lb.is_empty() {
             self.queue.write_buffer(&self.lights, 0, &lb);
         }
         self.light_bytes = lb;
-        self.light_hosts = scene.lights[..n]
+        self.light_hosts = lights
             .iter()
             .map(|l| E::light_hosts(scene, l.position))
             .collect();
         self.written_slots = None;
         self.light_count = n;
+        self.light_cones = cones;
+        self.frame_lights = lights;
     }
 
     /// The scene's particles (and any texture they added) into their own buffers, when the set changed.
@@ -5402,7 +5447,8 @@ impl<E: HdExtension> HdWorld<E> {
             camera: &icam,
             sun: &scene.sun,
             // The glowing surfaces' lights at the end cast no shadows.
-            lights: &scene.lights[..self.shadowed_lights.min(scene.lights.len())],
+            lights: &self.frame_lights[..self.shadowed_lights.min(self.frame_lights.len())],
+            cones: &self.light_cones,
             hosts: &self.light_hosts,
             cells: &self.cells,
             grid: &self.grid,
@@ -5501,7 +5547,7 @@ impl<E: HdExtension> HdWorld<E> {
         if self.written_slots.as_ref() != Some(&self.shadows.light_slots) {
             let mut lb = self.light_bytes.clone();
             for (i, s) in self.shadows.light_slots.iter().enumerate() {
-                let at = i * 32 + 28;
+                let at = i * LIGHT_BYTES + 28;
                 if at + 4 <= lb.len() {
                     lb[at..at + 4].copy_from_slice(&(*s as f32).to_le_bytes());
                 }
@@ -6858,7 +6904,10 @@ impl<E: HdExtension> HdWorld<E> {
         parts.extend(self.ext.cpu_memory());
         parts.push((
             "lights",
-            (self.light_bytes.capacity() + self.light_hosts.capacity() * 16) as u64,
+            (self.light_bytes.capacity()
+                + self.light_hosts.capacity() * 16
+                + self.frame_lights.capacity() * std::mem::size_of::<HdLight>()
+                + self.light_cones.capacity() * 16) as u64,
         ));
         parts
     }

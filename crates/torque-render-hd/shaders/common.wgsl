@@ -151,9 +151,22 @@ fn oct_encode(n: vec3<f32>) -> vec2<f32> {
 struct Light {
     // xyz: world position; w: radius.
     pos_radius: vec4<f32>,
-    // rgb: linear colour times brightness.
+    // rgb: linear color times brightness; w: the shadow slot (negative: none).
     color: vec4<f32>,
+    // A spot's cone: xyz its direction over the soft edge's width in cosines, w the outer half angle's cosine (all zeros: a point
+    // light).
+    spot: vec4<f32>,
 };
+
+// A light's share at the direction `l` toward it: 1 for a point light, a spot's cone with a smooth edge.
+fn cone_share(light: Light, l: vec3<f32>) -> f32 {
+    let k = length(light.spot.xyz);
+    if k == 0.0 {
+        return 1.0;
+    }
+    let x = clamp((dot(-l, light.spot.xyz) / k - light.spot.w) * k, 0.0, 1.0);
+    return x * x * (3.0 - 2.0 * x);
+}
 
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let x = max(c, vec3<f32>(0.0));
