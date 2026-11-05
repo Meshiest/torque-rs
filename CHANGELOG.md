@@ -249,6 +249,23 @@ The first development version. Nothing is published yet; this is what exists.
   each room's players STUN URLs and TURN credentials in the TURN REST API form (HMAC-SHA1 of `<expiry>:<id>` under a
   secret shared with the TURN server). torque-server's `rooms` feature: the room protocol (`net::room`); the web
   transport's `close_socket`, and its sends capped by its message limit (unchanged by default).
+- `torque-server`'s `p2p` feature: a player's host (`net::web::p2p::P2pHost`), a `Transport` that opens a room on a
+  room service and takes joiners over WebRTC data channels with no port forwarded: W4's data channels in a host mode
+  (full ICE, so the host's own checks open its NAT; checks from any address under the per-source rate; at most 16
+  trickled IPv4 UDP candidates a joiner, no `.local` names; a server-reflexive candidate from the room's STUN server).
+  Each joiner goes by a stand-in of the IP the service saw, so per-address limits and bans hold; every signaling message
+  goes through the data channels' caps, and a joiner whose channel closes is reported gone. `net::relay::RelayTransport`:
+  the same caps (links in all, per address and a second; messages and wire bytes a second; oversize) for a server whose
+  links someone else holds (a browser host's worker). `cargo test -p torque-rooms --test p2p`: a joiner reaches a host
+  through a live service, datagrams both ways, the channel outlives the room socket and closes when the host leaves;
+  media offers, broken offers and candidate floods are turned away with the open channel untouched and passes short.
+- The arena hosted by a player: `fps-server --room ws://<service>` opens a room and prints its code (no UDP game
+  socket); the browser build joins with `?room=<code>` (torque-client's `p2p` feature, `net::room_join`: signaling
+  through the room, every datagram on the channel, none through the service) and ends the game with "The host left the
+  game." when the channel closes. torque-app's `Listen::Bound` (a transport made and bound by the caller); the
+  `torque` and `torque-app` `p2p` features. `just examples/web-fps-rooms` runs a service serving the page;
+  `just examples/web-fps-p2p-check`: headless Chrome joins `fps-server --room` by code on a data channel, walks, and
+  sees the host leave.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

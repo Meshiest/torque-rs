@@ -142,6 +142,63 @@ impl ArenaServer {
         ArenaServer::start_on(files, options, listen, true)
     }
 
+    /// A dedicated server hosted through a room service (`room`: its `ws://` URL): players find it by the room's code and
+    /// join over WebRTC data channels, with no port forwarded. The channels' UDP socket binds the options' address and port
+    /// (a LAN address lets players outside the computer reach it, with the room's STUN server's help outside the network).
+    /// Returns the server and the room's code.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn start_hosted(
+        files: &GameFiles,
+        options: &ServerOptions,
+        room: &str,
+    ) -> Result<(GameServer, String), String> {
+        use std::cell::RefCell;
+        use std::net::IpAddr;
+        use std::rc::Rc;
+        use torque::app::server::BoundTransport;
+        use torque::server::net::transport::{BindPolicy, LanRules, SharedTransport, Transport};
+        use torque::server::net::web::p2p::{P2pHost, P2pSetup};
+        let ip = IpAddr::V4(options.address);
+        let policy = BindPolicy::new(ip, options.public, &LanRules::PLAIN)
+            .map_err(|e| format!("the address {}: {e}", options.address))?;
+        let mut host = P2pHost::new(
+            policy,
+            P2pSetup {
+                service: room.to_string(),
+                queue: 4096,
+                ..P2pSetup::default()
+            },
+        );
+        if let Err(e) = host.bind(ip, options.port) {
+            let why = host.status().join("; ");
+            return Err(format!("hosting through {room}: {e} {why}"));
+        }
+        let code = host.code().ok_or("the room service gave no code")?;
+        let transport: SharedTransport = Rc::new(RefCell::new(host));
+        let server = ArenaServer::start_on(
+            files,
+            options,
+            Listen::Bound(BoundTransport(transport)),
+            true,
+        )?;
+        Ok((server, code))
+    }
+
+    /// A dedicated server on a transport the caller made and bound (a browser host's worker relays its links).
+    pub fn start_bound(
+        files: &GameFiles,
+        options: &ServerOptions,
+        transport: torque::server::net::transport::SharedTransport,
+    ) -> Result<GameServer, String> {
+        use torque::app::server::BoundTransport;
+        ArenaServer::start_on(
+            files,
+            options,
+            Listen::Bound(BoundTransport(transport)),
+            true,
+        )
+    }
+
     fn start_with(
         files: &GameFiles,
         options: &ServerOptions,

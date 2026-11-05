@@ -75,6 +75,9 @@ pub struct LinkState {
     pub max_gap_ms: f64,
     /// When the channel's last message came (milliseconds on the link's clock).
     pub last_ms: Option<f64>,
+    /// Why the link ended for good, in a player's words (a player's host's joiner, `room_join`: the host left, the room
+    /// refused, the host could not be reached).
+    pub ended: Option<String>,
 }
 
 /// A shared view of a client's links.

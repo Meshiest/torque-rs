@@ -26,6 +26,12 @@
 //! Browsers whose channel does not open stay on their game socket. For checks only, each printing a warning at startup:
 //! `--rtc-loss <percent>` drops that share of the channels' datagrams both ways, and `--rtc-stats` prints the channels'
 //! traffic every 2 s (each peer's longest gap between game messages).
+//!
+//! Hosted through a room service: `--room <ws://address:port>` (a `torque-rooms` service) opens a room and prints its code;
+//! players join with the code over WebRTC data channels straight to this computer, with no port forwarded and no UDP game
+//! socket. The channels' socket binds `--bind` and `--port`: the default `127.0.0.1` reaches only this computer, so pass the
+//! computer's LAN address for players elsewhere (the room's STUN server, if it gives one, finds the address the internet
+//! sees). Not with `--transport web` or `both`.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::Ipv4Addr;
@@ -70,6 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rtc_lan_only = false;
     let mut rtc_loss = 0u8;
     let mut rtc_stats = false;
+    let mut room = None;
     let mut args = Args::from_env();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -93,6 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--rtc-lan" => rtc_lan = true,
             "--rtc-loss" => rtc_loss = args.number::<u8>(&arg)?.min(100),
             "--rtc-stats" => rtc_stats = true,
+            "--room" => room = Some(args.value(&arg, "a room service's ws:// URL")?),
             _ => return Err(unknown(&arg).into()),
         }
     }
@@ -129,6 +137,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "fps-server: warning: --rtc-stats prints each data channel peer's traffic every 2 s; it is for checks, not for a server players use"
         );
+    }
+    if let Some(room) = room {
+        if transports != Transports::Udp || webrtc {
+            return Err(
+                "--room hosts over data channels alone: leave out --transport and --webrtc".into(),
+            );
+        }
+        let (mut server, code) = ArenaServer::start_hosted(&files, &options, &room)?;
+        println!(
+            "fps-server: {} hosted through {room}, map {}",
+            options.name, options.mission
+        );
+        println!("fps-server: room code {code}");
+        if let Some(addr) = server.address() {
+            println!("fps-server: data channels on udp {addr}");
+            if addr.ip().is_loopback() {
+                println!(
+                    "fps-server: only this computer can reach it: pass --bind <this computer's LAN address> for other players"
+                );
+            }
+        }
+        server.set_status_every(Some(std::time::Duration::from_secs(1)));
+        server.run_dedicated(ticks, |line| println!("{line}"));
+        return Ok(());
     }
     let mut server = if transports == Transports::Udp {
         ArenaServer::start_dedicated(&files, &options)?

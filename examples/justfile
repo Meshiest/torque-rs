@@ -95,6 +95,22 @@ web-fps-rtc-check:
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-loss.png" 120 rtc-loss
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-blocked.png" 120 rtc-blocked
 
+# A room service for player-hosted games on 127.0.0.1:{{port}}, serving the arena's browser build: a desktop host opens
+# a room with `fps-server --room ws://127.0.0.1:{{port}}` and prints its code, and browsers join at
+# http://127.0.0.1:{{port}}/?room=<code> (or host at http://127.0.0.1:{{port}}/?host=1). More switches after the port number
+# (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
+web-fps-rooms port="28100" *args:
+    node ../web/build.mjs fps
+    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/fps" {{args}}
+
+# The arena hosted by a player (build it first as for `web-fps-check`): a room service serving the page, then
+# `fps-server --room` with headless Chrome joining by the room's code on a data channel (it walks, then sees the host
+# leave), then a host page whose server runs in a Web Worker with a second page joining it the same way
+web-fps-p2p-check:
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-desktop.png" 120 desktop
+    node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-browser.png" 120 browser
+
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`
 level-demo-shots dir="../target/level-demo-shots":

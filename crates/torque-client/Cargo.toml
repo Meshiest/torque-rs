@@ -79,6 +79,16 @@ webrtc = [
     "web-sys/RtcSessionDescription",
     "web-sys/RtcSessionDescriptionInit",
 ]
+# The datagrams to a player's host found through a room service (`net::room_join`): the joiner's side of torque-server's
+# `net::web::p2p`, signaling through the room and every datagram on the data channel.
+p2p = [
+    "webrtc",
+    "torque-server/p2p",
+    "web-sys/RtcConfiguration",
+    "web-sys/RtcIceCandidate",
+    "web-sys/RtcIceCandidateInit",
+    "web-sys/RtcPeerConnectionIceEvent",
+]
 
 [lints]
 workspace = true
