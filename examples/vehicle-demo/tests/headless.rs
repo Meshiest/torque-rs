@@ -1365,3 +1365,265 @@ fn buggies_driven_into_each_other_head_on_and_side_on_both_stay_where_the_server
         assert_eq!(server(&a).buggy_count(), 2, "{name}");
     }
 }
+
+fn words(s: &str) -> Vec<f32> {
+    s.split_whitespace()
+        .filter_map(|w| w.parse().ok())
+        .collect()
+}
+
+/// Buggy `id` is back at its place on `game`'s server: within half a unit of its home across, upright, still, its headlight off,
+/// nobody in it.
+fn back_home(game: &mut VehicleDemo, id: u32) {
+    let home = words(&eval(game, &format!("return {id}.home;")));
+    let s = server(game);
+    let at = s.buggy_position_of(id).unwrap();
+    assert!(
+        (at[0] - home[0]).hypot(at[1] - home[1]) < 0.5,
+        "{at:?}, home {home:?}"
+    );
+    let st = torque::game::sim::vehicle::state(s.vm(), id).unwrap();
+    assert!(st.obj_to_world[10] > 0.95, "upright: {:?}", st.obj_to_world);
+    assert!(
+        apart(st.rigid.lin_vel, [0.0; 3]) < 0.5,
+        "{:?}",
+        st.rigid.lin_vel
+    );
+    for f in s.figures() {
+        assert_ne!(
+            s.seat_of(f).map(|x| x.0),
+            Some(id),
+            "figure {f} still in it"
+        );
+    }
+    assert_eq!(
+        eval(game, &format!("return {id}.headlight.isEnabled;")),
+        "0"
+    );
+}
+
+/// Each figure on `game`'s server stands on the ground within `reach` of buggy `id`, and each client is on foot.
+fn beside(games: &mut [&mut VehicleDemo], id: u32, reach: f32) {
+    let s = server(games[0]);
+    let at = s.buggy_position_of(id).unwrap();
+    for f in s.figures() {
+        let p = s.figure_position_of(f).unwrap();
+        assert!(
+            (p[0] - at[0]).hypot(p[1] - at[1]) < reach,
+            "figure {f} at {p:?}, the buggy at {at:?}"
+        );
+        assert!(s.seat_of(f).is_none());
+    }
+    for g in games.iter() {
+        assert!(!g.seated());
+    }
+}
+
+#[test]
+fn r_puts_the_players_buggy_back_and_the_player_beside_it_with_anyone_in_it_out() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    // A drives the map's buggy (its own) with B beside, the headlight on.
+    get_in(&mut [&mut a, &mut b], 0);
+    get_in(&mut [&mut a, &mut b], 1);
+    assert!(a.driving() && b.seated() && !b.driving());
+    let id = server(&a).buggy().unwrap();
+    press(&mut a, Key::F);
+    a.key(Key::W, true);
+    a.key(Key::A, true);
+    steps(&mut [&mut a, &mut b], 2500);
+    a.key(Key::W, false);
+    a.key(Key::A, false);
+    // R at the wheel.
+    press(&mut a, Key::R);
+    steps(&mut [&mut a, &mut b], 1500);
+    back_home(&mut a, id);
+    beside(&mut [&mut a, &mut b], id, 3.5);
+    // A drives off again (turned right, to the buggy) and gets out away from its place; R on foot brings the buggy back.
+    a.host.mouse_motion(524.0, 0.0);
+    get_in(&mut [&mut a, &mut b], 0);
+    assert!(a.driving(), "in again");
+    a.key(Key::W, true);
+    steps(&mut [&mut a, &mut b], 2000);
+    a.key(Key::W, false);
+    press(&mut a, Key::E);
+    steps(&mut [&mut a, &mut b], 800);
+    assert!(horizontal(server(&a).buggy_position().unwrap()) > 8.0);
+    press(&mut a, Key::R);
+    steps(&mut [&mut a, &mut b], 1500);
+    back_home(&mut a, id);
+    let figure = server(&a).figure_position().unwrap();
+    let at = server(&a).buggy_position().unwrap();
+    assert!(
+        (figure[0] - at[0]).hypot(figure[1] - at[1]) < 3.5,
+        "{figure:?}"
+    );
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}
+
+#[test]
+fn a_buggy_that_falls_off_the_map_comes_back_with_its_riders_beside_it() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    get_in(&mut [&mut a, &mut b], 1);
+    assert!(a.driving() && b.seated());
+    let id = server(&a).buggy().unwrap();
+    // Dropped below the ground, falling.
+    eval(
+        &mut a,
+        &format!("{id}.setTransform(\"40 40 -60 0 0 1 0\");"),
+    );
+    for _ in 0..2000 / 16 {
+        for g in [&mut a, &mut b] {
+            g.step(16);
+            g.update_scene(0.016);
+        }
+    }
+    back_home(&mut a, id);
+    beside(&mut [&mut a, &mut b], id, 3.5);
+    // Each camera follows its own figure on foot again (not the buggy), where the server has it.
+    let s = server(&a);
+    let figures: Vec<[f32; 3]> = s
+        .figures()
+        .iter()
+        .map(|&f| s.figure_position_of(f).unwrap())
+        .collect();
+    for (who, g, k) in [("A", &mut a, 0), ("B", &mut b, 1)] {
+        let own = g.figure().expect("the own figure").position;
+        assert!(
+            apart(own, figures[k]) < 0.5,
+            "{who}: drawn at {own:?}, at {:?}",
+            figures[k]
+        );
+        let eye = g.eye(0.016).position;
+        assert!(
+            apart(eye, own) < 9.0,
+            "{who}: the eye at {eye:?}, the figure at {own:?}"
+        );
+    }
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}
+
+/// The angle (radians) between two of `game`'s sun directions.
+fn turned_by(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let d = (0..3).map(|k| a[k] * b[k]).sum::<f32>() / (apart(a, [0.0; 3]) * apart(b, [0.0; 3]));
+    d.clamp(-1.0, 1.0).acos()
+}
+
+/// How far the sun turns on each client's sky over `ms`.
+fn sun_turn(a: &mut VehicleDemo, b: &mut VehicleDemo, ms: u32) -> [f32; 2] {
+    frames_both(a, b, 64);
+    let from = [a.sun().unwrap(), b.sun().unwrap()];
+    frames_both(a, b, ms);
+    [
+        turned_by(from[0], a.sun().unwrap()),
+        turned_by(from[1], b.sun().unwrap()),
+    ]
+}
+
+#[test]
+fn the_hosts_brackets_run_the_day_faster_slower_or_stop_it_and_others_may_not() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    let normal = sun_turn(&mut a, &mut b, 1000);
+    let pace = |g: &mut VehicleDemo| eval(g, "return $World::DaySpeed;");
+    // ] three times: 64 times as fast, on both clients' skies; the host's hint says so.
+    for _ in 0..3 {
+        press(&mut a, Key::BracketRight);
+        steps(&mut [&mut a, &mut b], 100);
+    }
+    assert_eq!(pace(&mut a), "64");
+    assert!(
+        a.hint_text().starts_with("Time ") && a.hint_text().ends_with(", 64x"),
+        "{}",
+        a.hint_text()
+    );
+    let fast = sun_turn(&mut a, &mut b, 1000);
+    for k in 0..2 {
+        assert!(
+            fast[k] > 20.0 * normal[k].max(1e-4),
+            "client {k}: {fast:?} against {normal:?}"
+        );
+    }
+    // Another player's key changes nothing, and it is told why.
+    press(&mut b, Key::BracketLeft);
+    steps(&mut [&mut a, &mut b], 200);
+    assert_eq!(pace(&mut a), "64");
+    assert_eq!(b.hint_text(), "Only the host can change the time");
+    // \ back to its own pace, [ from there stops it.
+    press(&mut a, Key::Backslash);
+    steps(&mut [&mut a, &mut b], 200);
+    assert_eq!(pace(&mut a), "1");
+    press(&mut a, Key::BracketLeft);
+    steps(&mut [&mut a, &mut b], 200);
+    assert_eq!(pace(&mut a), "0");
+    assert!(a.hint_text().ends_with(", stopped"), "{}", a.hint_text());
+    let stopped = sun_turn(&mut a, &mut b, 1000);
+    assert!(stopped[0] < 1e-4 && stopped[1] < 1e-4, "{stopped:?}");
+    // The note goes after a moment; it works in a seat too.
+    steps(&mut [&mut a, &mut b], 3000);
+    assert!(!a.hint_text().starts_with("Time "), "{}", a.hint_text());
+    get_in(&mut [&mut a, &mut b], 0);
+    press(&mut a, Key::BracketRight);
+    steps(&mut [&mut a, &mut b], 200);
+    assert_eq!(pace(&mut a), "1");
+}
+
+/// The wheel turned `notches` (positive away from the user) on `game`'s window.
+fn wheel(game: &mut VehicleDemo, notches: i32) {
+    let one = if notches > 0 { 120i32 } else { -120 };
+    for _ in 0..notches.abs() {
+        game.host.post(
+            torque::client::input::WM_MOUSEWHEEL,
+            ((one as u32) & 0xffff) << 16,
+            0,
+        );
+    }
+}
+
+#[test]
+fn the_wheel_zooms_the_camera_on_foot_and_behind_the_buggy_each_its_own_within_limits() {
+    use torque_example_vehicle_demo::client::{
+        CAMERA_DISTANCE, DRIVE_DISTANCE, DRIVE_ZOOM, FOOT_ZOOM,
+    };
+    let mut game = host();
+    let near = |a: f32, b: f32| (a - b).abs() < 0.02;
+    // On foot: three notches in, eased there; the eye that far from the point it circles.
+    wheel(&mut game, 3);
+    frames(&mut game, 100);
+    let mid = game.camera_distance();
+    assert!(
+        mid < CAMERA_DISTANCE && mid > CAMERA_DISTANCE * 0.85f32.powi(3),
+        "{mid}"
+    );
+    frames(&mut game, 1000);
+    let d = game.camera_distance();
+    assert!(near(d, CAMERA_DISTANCE * 0.85f32.powi(3)), "{d}");
+    let f = game.figure().unwrap();
+    let target = [f.position[0], f.position[1], f.position[2] + 1.7];
+    let eye = game.eye(0.016).position;
+    assert!(
+        (apart(eye, target) - d).abs() < 0.3,
+        "{eye:?} from {target:?}"
+    );
+    // Far out: held at the limit.
+    wheel(&mut game, -40);
+    frames(&mut game, 1500);
+    assert!(near(game.camera_distance(), FOOT_ZOOM.1));
+    // In a seat: the camera behind the buggy has its own, the one on foot kept.
+    get_in(&mut [&mut game], 0);
+    assert!(near(game.camera_distance(), DRIVE_DISTANCE));
+    wheel(&mut game, 40);
+    frames(&mut game, 1500);
+    assert!(near(game.camera_distance(), DRIVE_ZOOM.0));
+    // In the first person the wheel does nothing.
+    tab(&mut game);
+    wheel(&mut game, -5);
+    frames(&mut game, 1000);
+    tab(&mut game);
+    assert!(near(game.camera_distance(), DRIVE_ZOOM.0));
+    press(&mut game, Key::E);
+    frames(&mut game, 800);
+    assert!(near(game.camera_distance(), FOOT_ZOOM.1));
+}
