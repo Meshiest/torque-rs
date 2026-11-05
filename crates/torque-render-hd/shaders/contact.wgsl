@@ -2,7 +2,7 @@
 // on. From each pixel of the depth prepass a short ray (0.6 units, `shadows.point.w` steps, its start jittered by interleaved gradient
 // noise, turned per frame with the scene's smooth_occlusion) is marched toward the sun in view space; it is blocked where the depth
 // buffer holds a surface in front of the ray by less than a thickness that is not the pixel's own plane (the plane is rebuilt from
-// the neighbouring depths, so a flat face never shadows itself however grazing the sun is). Written as a visibility in [0, 1], faded
+// the neighboring depths, so a flat face never shadows itself however grazing the sun is). Written as a visibility in [0, 1], faded
 // toward the ray's end.
 
 @group(0) @binding(0) var<uniform> frame: Frame;
