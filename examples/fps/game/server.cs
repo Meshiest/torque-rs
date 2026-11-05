@@ -7,17 +7,21 @@
 // ---- datablocks
 
 $Arena::ReloadSeconds = 1.2;
+// The figure, the pistol and the cube are drawn from the kit's .dts files, or from its .glb exports when the host sets
+// $Arena::Shapes to "glb" (the same shapes either way).
+if ($Arena::Shapes !$= "glb")
+   $Arena::Shapes = "dts";
 
 datablock StaticShapeData(ArenaCube)
 {
    category = "Arena";
-   shapeFile = "kit/cube.dts";
+   shapeFile = "kit/cube." @ $Arena::Shapes;
 };
 
 datablock PlayerData(ArenaFigure)
 {
    category = "Arena";
-   shapeFile = "kit/figure.dts";
+   shapeFile = "kit/figure." @ $Arena::Shapes;
 
    mass = 90;
    drag = 0.3;
@@ -207,7 +211,7 @@ datablock ParticleEmitterData(ArenaMuzzleSmoke)
 
 datablock ShapeBaseImageData(ArenaPistolImage)
 {
-   shapeFile = "kit/pistol.dts";
+   shapeFile = "kit/pistol." @ $Arena::Shapes;
    mountPoint = 0;
    eyeOffset = "0.26 0.5 -0.24";
    correctMuzzleVector = true;

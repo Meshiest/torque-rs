@@ -17,6 +17,8 @@ categories = ["game-development"]
 torque-shape-builder = { path = "../../crates/torque-shape-builder" }
 torque-shapes = { path = "../../crates/torque-shapes" }
 torque-interior-builder = { path = "../../crates/torque-interior-builder" }
+# The cube, figure and pistol also as `.glb`, through the model layer.
+torque-import = { path = "../../crates/torque-import" }
 png = "0.18"
 
 [dev-dependencies]

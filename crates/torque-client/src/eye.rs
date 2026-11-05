@@ -35,9 +35,12 @@ pub const MAX_SHAPE_CACHE_BYTES: usize = 128 << 20;
 /// The largest shape file read for an eye.
 pub const MAX_SHAPE_BYTES: usize = 8 << 20;
 
-/// A shape file (or a sequence file a constructor names) as the eye reads it: from the install only, at most [`MAX_SHAPE_BYTES`].
+/// A shape file (or a sequence file a constructor names) as the eye reads it: from the install only, at most [`MAX_SHAPE_BYTES`]
+/// (a glTF as the `.dts` it makes).
 pub fn read_shape(path: &str) -> Option<Vec<u8>> {
-    crate::net::conn::read_install(path.as_bytes()).filter(|b| b.len() <= MAX_SHAPE_BYTES)
+    let bytes =
+        crate::net::conn::read_install(path.as_bytes()).filter(|b| b.len() <= MAX_SHAPE_BYTES)?;
+    torque_import::native::shape_file(path.as_bytes(), bytes, &mut |_| true).ok()
 }
 
 /// A shape's key: its path as the install's reader matches it (lower case, `\` as `/`).

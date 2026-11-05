@@ -20,6 +20,8 @@ ghosts = { path = "../torque-ghosts", package = "torque-ghosts" }
 collide = { package = "torque-collide", path = "../torque-collide" }
 sim = { package = "torque-sim", path = "../torque-sim" }
 shapes = { package = "torque-shapes", path = "../torque-shapes" }
+# A datablock's `.glb` / `.gltf` shape file, read as the `.dts` it makes.
+torque-import = { path = "../torque-import" }
 vehicle = { package = "torque-vehicle", path = "../torque-vehicle" }
 images = { package = "torque-images", path = "../torque-images" }
 gui = { package = "torque-gui", path = "../torque-gui" }

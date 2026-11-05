@@ -168,6 +168,11 @@ impl ShapeLoad {
             if bytes.len() > MAX_SHAPE_BYTES || !charge(cost) {
                 return Step::Bad;
             }
+            let bytes = match torque_import::native::shape_file(path, bytes, &mut charge) {
+                Ok(bytes) => bytes,
+                Err(torque_import::ImportError::OutOfBudget) => return Step::Refused,
+                Err(_) => return Step::Bad,
+            };
             let parsed = shapes::dts::parse(&bytes, &mut charge);
             return match parsed {
                 Ok(model) => {
@@ -258,6 +263,11 @@ impl ShapeCache {
             if *work > budget {
                 return None;
             }
+            let mut charge = |units: u64| {
+                *work = work.saturating_add(units);
+                *work <= budget
+            };
+            let bytes = torque_import::native::shape_file(path, bytes, &mut charge).ok()?;
             load(&bytes, slots, work, budget).map(Rc::new)
         });
         // A read the budget cut short is tried again on a later tick; any other answer is kept.

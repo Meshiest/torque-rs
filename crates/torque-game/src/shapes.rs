@@ -444,7 +444,7 @@ impl Shapes {
     /// Loads the shape at `path` as a datablock's preload does (a host that loads a shape for another reason, a
     /// mission object's, calls it too): see [`load_shape`](Self::load_shape). True when the shape is there (loaded now, kept,
     /// or a file the engine does not read: over the read bound, shorter than a version word) or there is nothing to load (an
-    /// empty path); false when the load failed: a path that is not a `.dts`, one too long, a folder the resource manager
+    /// empty path); false when the load failed: a path that is not a `.dts` (or a `.glb` / `.gltf`), one too long, a folder the resource manager
     /// refuses (it prints its error and a BackTrace, as every look-up of such a path does), a file that is not there, a version
     /// above 24 (after its error line), a version-24 file the parser refuses (after [`BAD_SHAPE_LINE`]). What a datablock says
     /// of a failed load is the caller's (`ShapeLoad`). Errors are the run's own (`StepLimit`).
@@ -466,7 +466,7 @@ impl Shapes {
             return Ok(Loaded::Failed);
         }
         let key = fold(path);
-        if !key.ends_with(b".dts") {
+        if !key.ends_with(b".dts") && !torque_import::native::is_gltf_path(&key) {
             return Ok(Loaded::Failed);
         }
         let known = self.kept.borrow().get(&key).cloned();
@@ -499,6 +499,17 @@ impl Shapes {
     #[inline(never)]
     fn finish_load(&self, vm: &mut Vm, key: Vec<u8>, bytes: Vec<u8>) -> Result<Loaded, VmError> {
         let size = bytes.len();
+        // A glTF is read as the `.dts` it makes (`torque_import::native`), paid for through the same budget.
+        let bytes = match torque_import::native::shape_file(&key, bytes, &mut |units| {
+            vm.charge_work(units)
+        }) {
+            Ok(bytes) => bytes,
+            Err(torque_import::ImportError::OutOfBudget) => return Err(VmError::StepLimit),
+            Err(_) => {
+                vm.error(BAD_SHAPE_LINE.to_string());
+                return Ok(Loaded::Failed);
+            }
+        };
         let Some(version) = read_version(&bytes) else {
             return Ok(Loaded::Unread);
         };

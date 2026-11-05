@@ -371,6 +371,7 @@ fn load_uncached(
     notes: &mut Vec<String>,
 ) -> Option<Loaded> {
     let mut charge = |_: u64| true;
+    let bytes = torque_import::native::shape_file(path.as_bytes(), bytes, &mut charge).ok()?;
     let mut model = dts::parse(&bytes, &mut charge).ok()?;
     let dir = path.rsplit_once('/').map_or("", |(d, _)| d).to_string();
     if let Some(seqs) = seqs {
