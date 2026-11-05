@@ -42,20 +42,35 @@ character-shots dir="../target/character-shots":
 level-demo:
     cargo run -p torque-example-level-demo --release
 
-# The level demo in a browser (WebGPU): built for the web with its files inside it, then served on http://127.0.0.1:{{port}}/
-# (`?map=office` starts a map at once). Needs rustup's wasm32-unknown-unknown target and Node; wasm-bindgen's command line is
-# installed into the target folder's web-tools the first time
+# The level demo in a browser (WebGPU): built for the web, then served on http://127.0.0.1:{{port}}/ (`?map=office` starts a map
+# at once). The page fetches the files by their list (`files.json`) with a progress bar and keeps them in the browser's cache.
+# Needs rustup's wasm32-unknown-unknown target and Node; wasm-bindgen's command line is installed into the target folder's
+# web-tools the first time
 web-level-demo port="8080":
     node ../web/build.mjs level-demo
     node ../web/serve.mjs "{{web_target}}/web/level-demo" {{port}}
 
+# The level demo in a browser with its files inside the module (no list, nothing fetched but the page and the module)
+web-level-demo-embedded port="8080":
+    node ../web/build.mjs level-demo --embed
+    node ../web/serve.mjs "{{web_target}}/web/level-demo-embedded" {{port}}
+
 # The web level demo's check (build it first with `web-level-demo`): headless Chrome with WebGPU loads the office, waits for the
-# figure, walks it and takes pictures, then loads the menu; fails on any console error. Installs puppeteer-core into the target
-# folder's web-tools the first time and uses the installed Chrome (`CHROME` names another)
+# figure, walks it and takes pictures, loads it again and counts the requests for the listed files (none: they come from the
+# cache), loads it with a changed file (refused, with the message on the page), then loads the menu; fails on any console
+# error. Installs puppeteer-core into the target folder's web-tools the first time and uses the installed Chrome (`CHROME`
+# names another)
 web-level-demo-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 world "?map=office"
+    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 cached "?map=office"
+    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-refused.png" 60 refused "?map=office"
     node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-menu.png" 60 menu
+
+# The check of the build with its files inside it (`web-level-demo-embedded`): the office walked, then the menu
+web-level-demo-embedded-check:
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-office.png" 90 world "?map=office"
+    node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-menu.png" 60 menu
 
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`

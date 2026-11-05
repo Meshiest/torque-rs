@@ -165,9 +165,12 @@ The first development version. Nothing is published yet; this is what exists.
   dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
   and young spruces, oaks and birches under them, built from brushes into interiors, one a square of the map);
   `just examples/vehicle-demo-track-shots` draws them.
-- The level demo in a browser: `just examples/web-level-demo` builds it for the web (WebGPU) with its files inside it and serves
-  it on `http://127.0.0.1:8080/` (`?map=office` starts a map at once); `just examples/web-level-demo-check` loads it in headless
-  Chrome, walks the figure and fails on any console error. The engine's parts it needs run on the page's one thread, the
+- The level demo in a browser: `just examples/web-level-demo` builds it for the web (WebGPU) and serves it on
+  `http://127.0.0.1:8080/` (`?map=office` starts a map at once). The page fetches the game's files by their list
+  (`files.json`) with a progress bar, keeps them in the browser's Cache Storage under their hashes (a second load requests
+  none) and refuses a file whose hash is not the list's, with a message on the page; `web-level-demo-embedded` builds the
+  module with its files inside it instead (the `embed-pack` feature). `just examples/web-level-demo-check` loads it in
+  headless Chrome, walks the figure, counts the second load's requests, checks the refusal and fails on any console error. The engine's parts it needs run on the page's one thread, the
   browser's clock and the browser's fonts; `torque::app::GameFiles::pack` and `unpack` carry a game folder as one block of
   bytes.
 - `torque::app::manifest`: the list of a web build's files (`files.json`: each file's path, size and SHA-256), read with caps

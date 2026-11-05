@@ -1,7 +1,13 @@
-// Builds an example for the web: its files packed by the native build (`--web-pack`), the module built for
-// wasm32-unknown-unknown with the pack embedded, wasm-bindgen's JavaScript glue, and the page, into <target>/web/<name>/.
+// Builds an example for the web into <target>/web/<name>/: the module for wasm32-unknown-unknown, wasm-bindgen's JavaScript
+// glue, the page and its file loader, and the example's files, packed by the native build.
 //
-// Usage: node build.mjs <example>      (level-demo)
+// Usage: node build.mjs <example> [--embed]      (level-demo)
+// By default the files are fetched by the page: the folder holds `files.json` (each file's path, size and SHA-256) and
+// `game.pack`, which the native build writes (`--web-files`), and the module carries none of them. With `--embed` the module
+// carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
+// <target>/web/<name>-embedded/.
+//
+// The folder, served as it is: index.html, files.js, game.js, game_bg.wasm, and files.json with game.pack when fetched.
 // The target folder is CARGO_TARGET_DIR's, else the workspace's `target`. wasm-bindgen's command line, at the version
 // Cargo.lock names, is installed into <target>/web-tools at first.
 import { spawnSync } from 'node:child_process';
@@ -15,14 +21,15 @@ const EXAMPLES = {
 
 const name = process.argv[2];
 const example = EXAMPLES[name];
-if (!example) {
-  console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}>`);
+const embed = process.argv.slice(3).includes('--embed');
+if (!example || process.argv.slice(3).some((a) => a !== '--embed')) {
+  console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}> [--embed]`);
   process.exit(2);
 }
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const target = resolve(process.env.CARGO_TARGET_DIR ?? join(root, 'target'));
-const out = join(target, 'web', name);
-const pack = join(target, 'web', `${name}.pack`);
+const out = join(target, 'web', embed ? `${name}-embedded` : name);
+const pack = embed ? join(target, 'web', `${name}.pack`) : join(out, 'game.pack');
 const tools = join(target, 'web-tools');
 // A program's file name ends as Node's own does (nothing outside Windows).
 const suffix = extname(process.execPath);
@@ -33,16 +40,20 @@ function run(cmd, args, env = {}) {
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 
-// The files, packed by the native build.
-run('cargo', ['run', '-p', example.package, '--release', '--bin', example.bin, '--', '--web-pack', pack]);
+rmSync(out, { recursive: true, force: true });
+mkdirSync(out, { recursive: true });
 
-// The module, the pack embedded. A rustc wrapper (sccache) is turned off, set in the config or in RUSTC_WRAPPER: its command
-// lines for web-sys are too long for Windows.
+// The files, packed by the native build: into the folder with their list, or beside it to be embedded.
+const native = ['run', '-p', example.package, '--release', '--bin', example.bin, '--'];
+run('cargo', [...native, ...(embed ? ['--web-pack', pack] : ['--web-files', out])]);
+
+// The module. A rustc wrapper (sccache) is turned off, set in the config or in RUSTC_WRAPPER: its command lines for web-sys
+// are too long for Windows.
 run(
   'cargo',
   ['build', '--config', "build.rustc-wrapper=''", '--release', '--target', 'wasm32-unknown-unknown',
-    '-p', example.package, '--bin', example.bin],
-  { TORQUE_WEB_PACK: pack, RUSTC_WRAPPER: '' },
+    '-p', example.package, '--bin', example.bin, ...(embed ? ['--features', 'embed-pack'] : [])],
+  { RUSTC_WRAPPER: '', ...(embed ? { TORQUE_WEB_PACK: pack } : {}) },
 );
 
 // wasm-bindgen's command line at the version the module was built with.
@@ -58,10 +69,9 @@ if (!have.includes(version)) {
   run('cargo', ['install', 'wasm-bindgen-cli', '--version', version, '--locked', '--root', tools]);
 }
 
-rmSync(out, { recursive: true, force: true });
-mkdirSync(out, { recursive: true });
 const wasm = join(target, 'wasm32-unknown-unknown', 'release', `${example.bin}.wasm`);
 run(bindgen, ['--target', 'web', '--no-typescript', '--out-dir', out, '--out-name', 'game', wasm]);
-copyFileSync(join(root, 'web', 'index.html'), join(out, 'index.html'));
-const size = statSync(join(out, 'game_bg.wasm')).size;
-console.log(`${out}: game_bg.wasm ${(size / 1048576).toFixed(1)} MiB (the pack ${(statSync(pack).size / 1048576).toFixed(1)} MiB)`);
+for (const page of ['index.html', 'files.js']) copyFileSync(join(root, 'web', page), join(out, page));
+const mib = (file) => (statSync(file).size / 1048576).toFixed(1);
+const module = `game_bg.wasm ${mib(join(out, 'game_bg.wasm'))} MiB`;
+console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)`);

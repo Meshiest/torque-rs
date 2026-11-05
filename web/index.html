@@ -9,22 +9,62 @@
   html, body { margin: 0; height: 100%; background: #12141a; color: #dde2ec; font: 16px system-ui, sans-serif; }
   body { display: flex; align-items: center; justify-content: center; }
   canvas { display: block; outline: none; }
-  #status { position: fixed; inset: auto 0 1.5rem 0; text-align: center; }
+  #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
+  #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
+  #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
 </style>
 </head>
 <body>
-<p id="status">Loading...</p>
+<div id="loading">
+  <p id="status">Loading...</p>
+  <progress id="progress" hidden></progress>
+</div>
 <noscript>This game needs JavaScript.</noscript>
 <script type="module">
+  // The module either carries its files or fetches them by `files.json` (files.js). A refused file or list is shown here, and
+  // its message is on the root element's `data-torque-refused` for a test.
+  import { fetchFiles, Refused } from './files.js';
+
   const status = document.getElementById('status');
-  if (!navigator.gpu) {
-    status.textContent = 'This game needs a browser with WebGPU (a recent Chrome, Edge or Safari, or Firefox 141 and later).';
-  } else {
-    import('./game.js')
-      .then((game) => game.default())
-      .then(() => status.remove())
-      .catch((e) => { status.textContent = 'The game did not start: ' + e; throw e; });
+  const bar = document.getElementById('progress');
+  const mib = (n) => (n / 1048576).toFixed(1);
+
+  async function start() {
+    if (!navigator.gpu) {
+      status.textContent = 'This game needs a browser with WebGPU (a recent Chrome, Edge or Safari, or Firefox 141 and later).';
+      return;
+    }
+    const game = await import('./game.js');
+    await game.default();
+    if (game.embedded()) {
+      game.startEmbedded();
+    } else {
+      bar.hidden = false;
+      await fetchFiles(game, (done, total) => {
+        bar.max = total;
+        bar.value = done;
+        status.textContent = `Loading the game's files: ${mib(done)} of ${mib(total)} MiB`;
+      });
+      status.textContent = 'Starting...';
+      bar.hidden = true;
+      await new Promise(requestAnimationFrame);
+      game.startFetched();
+    }
+    document.getElementById('loading').remove();
   }
+
+  start().catch((e) => {
+    const message = String(e?.message ?? e);
+    bar.hidden = true;
+    if (e instanceof Refused) {
+      status.textContent = `The game's files were refused: ${message}`;
+      document.documentElement.dataset.torqueRefused = message;
+      console.warn(status.textContent);
+    } else {
+      status.textContent = `The game did not start: ${message}`;
+      console.error(status.textContent);
+    }
+  });
 </script>
 </body>
 </html>
