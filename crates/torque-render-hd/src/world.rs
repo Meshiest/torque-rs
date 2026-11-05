@@ -1118,6 +1118,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     cpu_frames: u64,
     /// The render pipelines made so far (a frame that makes one waits for its shader's compile).
     pub pipelines_made: u64,
+    /// The effects' pipelines being made on a worker thread ([`HdWorld::warm_effects`]).
+    warming: Option<Warming>,
     /// The scene's generation and control generation at the last upload.
     uploaded: Option<(u64, u64)>,
     /// The scene's lights generation last uploaded, whether with the glow lights, and how many of them may cast shadows.
@@ -1324,6 +1326,57 @@ pub fn f32_to_f16(v: f32) -> u16 {
         h += 1;
     }
     h
+}
+
+/// The forward pass's pipeline for `key`: of `module` (the forward module of its `clustered` and `front_layer`), the stage's
+/// fragment entry.
+fn make_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    key: PipelineKey,
+) -> wgpu::RenderPipeline {
+    match key.stage {
+        Stage::Main if key.blend == Blend::Modulate2x => {
+            forward_pipeline(device, layout, module, key, "fs_modulate2x")
+        }
+        Stage::Main | Stage::Over => forward_pipeline(device, layout, module, key, "fs_main"),
+        Stage::Particle => forward_pipeline(device, layout, module, key, "fs_particle"),
+        s => trans_pipeline(device, layout, module, key.cull, s),
+    }
+}
+
+/// The forward pass's states the effects are drawn with: particles, ribbons, bolt trails, decals and tire tracks are two-sided,
+/// depth-tested and not written, added (their late pass's own entry too), alpha-blended (the translucent pass's front layer and
+/// its weighted-blend stages) or multiplied over the surface.
+pub(crate) fn effect_keys(clustered: bool) -> Vec<PipelineKey> {
+    let key = |blend, front_layer, stage| PipelineKey {
+        blend,
+        cull: Cull::None,
+        depth_test: true,
+        depth_write: false,
+        clustered,
+        front_layer,
+        stage,
+    };
+    let mut keys = Vec::new();
+    for blend in [Blend::Additive, Blend::One] {
+        keys.push(key(blend, false, Stage::Main));
+        keys.push(key(blend, false, Stage::Particle));
+    }
+    keys.push(key(Blend::Alpha, false, Stage::Main));
+    for stage in [Stage::Main, Stage::FrontDepth, Stage::Tail, Stage::Front] {
+        keys.push(key(Blend::Alpha, true, stage));
+    }
+    keys.push(key(Blend::Modulate2x, false, Stage::Main));
+    keys
+}
+
+/// The warm-up's thread and the pipelines it makes ([`HdWorld::warm_effects`]).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Warming {
+    keys: Vec<PipelineKey>,
+    thread: std::thread::JoinHandle<Vec<(PipelineKey, wgpu::RenderPipeline)>>,
 }
 
 /// A forward-pass pipeline of `module`'s `entry` for `key` (HDR target, the forward layout).
@@ -2194,6 +2247,7 @@ impl<E: HdExtension> HdWorld<E> {
             cpu_passes: Vec::new(),
             cpu_frames: 0,
             pipelines_made: 0,
+            warming: None,
             uploaded: None,
             lights_generation: None,
             uploaded_glow: true,
@@ -2738,32 +2792,87 @@ impl<E: HdExtension> HdWorld<E> {
         if self.pipelines.contains_key(&key) {
             return;
         }
+        // One the warm-up is making: waited for rather than made twice.
+        if self.warming.as_ref().is_some_and(|w| w.keys.contains(&key)) {
+            self.take_warmed(true);
+            if self.pipelines.contains_key(&key) {
+                return;
+            }
+        }
         let module = &self.forward[&(key.clustered, key.front_layer)];
-        let pipeline = match key.stage {
-            Stage::Main if key.blend == Blend::Modulate2x => forward_pipeline(
-                &self.device,
-                &self.forward_layout,
-                module,
-                key,
-                "fs_modulate2x",
-            ),
-            Stage::Main => {
-                forward_pipeline(&self.device, &self.forward_layout, module, key, "fs_main")
-            }
-            Stage::Particle => forward_pipeline(
-                &self.device,
-                &self.forward_layout,
-                module,
-                key,
-                "fs_particle",
-            ),
-            Stage::Over => {
-                forward_pipeline(&self.device, &self.forward_layout, module, key, "fs_main")
-            }
-            s => trans_pipeline(&self.device, &self.forward_layout, module, key.cull, s),
-        };
+        let pipeline = make_pipeline(&self.device, &self.forward_layout, module, key);
         self.pipelines.insert(key, pipeline);
         self.pipelines_made += 1;
+    }
+
+    /// Starts making the pipelines the effects draw with ([`effect_keys`]: particles, ribbons, bolt trails, decals and tire
+    /// tracks, which a scene often first shows mid-game, at a shot or an impact), on a worker thread where there is one, so their
+    /// shaders' compiles cost no frame (a cold first shot made seven in two frames of 0.6 s each). Each frame takes the ones
+    /// made; a frame that needs one still being made waits for the rest. Where no thread can be started (a browser) they are
+    /// made now (a browser compiles them on its own threads).
+    pub fn warm_effects(&mut self) {
+        if self.warming.is_some() {
+            return;
+        }
+        let keys: Vec<PipelineKey> = effect_keys(!self.brute_force_lights)
+            .into_iter()
+            .filter(|k| !self.pipelines.contains_key(k))
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        let make = {
+            let device = self.device.clone();
+            let layout = self.forward_layout.clone();
+            let modules = self.forward.clone();
+            let keys = keys.clone();
+            move || {
+                keys.into_iter()
+                    .map(|k| {
+                        let module = &modules[&(k.clustered, k.front_layer)];
+                        (k, make_pipeline(&device, &layout, module, k))
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(thread) = std::thread::Builder::new()
+            .name("pipeline warm-up".into())
+            .spawn(make.clone())
+        {
+            self.warming = Some(Warming { keys, thread });
+            return;
+        }
+        for (k, p) in make() {
+            self.pipelines.insert(k, p);
+            self.pipelines_made += 1;
+        }
+    }
+
+    /// Whether the warm-up's thread ([`HdWorld::warm_effects`]) is still making pipelines (a frame takes them once it is done).
+    pub fn warming(&self) -> bool {
+        self.warming.is_some()
+    }
+
+    /// The warm-up's pipelines, once its thread is done (or waiting for it: `wait`).
+    fn take_warmed(&mut self, wait: bool) {
+        if !self
+            .warming
+            .as_ref()
+            .is_some_and(|w| wait || w.thread.is_finished())
+        {
+            return;
+        }
+        let Some(w) = self.warming.take() else {
+            return;
+        };
+        // A thread that panicked made none: each is made when first drawn, as before.
+        for (k, p) in w.thread.join().unwrap_or_default() {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.pipelines.entry(k) {
+                e.insert(p);
+                self.pipelines_made += 1;
+            }
+        }
     }
 
     /// The grade the table holds: the image settings', or the identity for the check.
@@ -4832,6 +4941,7 @@ impl<E: HdExtension> HdWorld<E> {
         let cpu_start = web_time::Instant::now();
         let mut cpu_at = cpu_start;
         let mut cpu_marks: Vec<(&'static str, f64)> = Vec::new();
+        self.take_warmed(false);
         let passes_before = PASSES.load(std::sync::atomic::Ordering::Relaxed);
         let kinds_before = passes_by_kind();
         let _ = set_pass_kind(PassKind::Post);

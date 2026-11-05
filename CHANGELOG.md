@@ -349,5 +349,10 @@ The first development version. Nothing is published yet; this is what exists.
   browser driver or program or loads a module by a computed name, and `web/guard.test.mjs` shows a page that locks on click
   never gets it; both run in `just examples/web-guard-test` (first in each check recipe) and in CI. Headless Chrome on
   Windows confined the real cursor when a check clicked the canvas.
+- `torque-render-hd`, `torque::app`: the arena's first shot no longer stops the game for a moment. The effects'
+  pipelines (particles, trails, decals) are made on a worker thread when the world view is made
+  (`HdWorld::warm_effects`), and the ghost scene loads the shapes and textures its datablocks name as they arrive; a
+  first shot with a cold shader cache took 0.44-0.68 s (12 pipelines made), now within a millisecond of the median frame
+  (the fps example `first_use` measures it).
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

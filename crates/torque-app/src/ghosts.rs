@@ -590,6 +590,8 @@ pub struct GhostScene<S = Plain> {
     pub dust: VehicleDust,
     /// The tire tracks they leave, when the game asks for them ([`GhostScene::set_tire_tracks`]).
     pub tracks: Option<TireTracks>,
+    /// The datablocks whose shapes and textures were loaded ([`GhostScene::preload`]).
+    preloaded: BTreeSet<u32>,
 }
 
 impl GhostScene {
@@ -633,6 +635,7 @@ impl<S: GhostStyle> GhostScene<S> {
             interiors: Interiors::default(),
             dust: VehicleDust::default(),
             tracks: None,
+            preloaded: BTreeSet::new(),
         }
     }
 
@@ -677,6 +680,7 @@ impl<S: GhostStyle> GhostScene<S> {
             interiors: _,
             dust: _,
             tracks: _,
+            preloaded: self.preloaded,
         } = GhostScene::new(self.options.clone());
         self.tracks = tracks;
         self.dust = dust;
@@ -774,6 +778,7 @@ impl<S: GhostStyle> GhostScene<S> {
     /// their trails, bursts and holes.
     pub fn update(&mut self, assets: &dyn Assets, world: &mut TgeWorld, input: &FrameInput<'_>) {
         let dt = input.dt.max(0.0);
+        self.preload(assets, &world.records);
         self.forget_reborn(&world.records.birth_order);
         self.player_inputs(world, input.ghosts);
         self.place_players(assets, world, input.fov);
@@ -818,6 +823,41 @@ impl<S: GhostStyle> GhostScene<S> {
                 })
                 .collect();
             tracks.update(&wheels, &surfaces, dt);
+        }
+    }
+
+    /// Loads the shapes and the particles' and decals' textures each new datablock names (`shapeFile`, `projectileShapeName`,
+    /// `textureName`), as TGE's datablocks preload theirs: kept by the loaders' caches, they are not read and decoded mid-game
+    /// in the frame of a first shot, hit or hole.
+    fn preload(&mut self, assets: &dyn Assets, world: &World) {
+        if world.datablocks.len() == self.preloaded.len() {
+            return;
+        }
+        let mut set = TextureSet::new(assets);
+        let mut notes = Vec::new();
+        for (&id, db) in &world.datablocks {
+            if !self.preloaded.insert(id) {
+                continue;
+            }
+            for (name, _, value) in &db.fields {
+                let Value::Str(text) = value else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(text);
+                match name.as_str() {
+                    "shapeFile" | "projectileShapeName" => {
+                        let seqs = |p: &str| world.constructor_sequences(p);
+                        let _ = torque_render_scene::shapes::load(&seqs, assets, &text, &mut notes);
+                    }
+                    "textureName" | "textureNames" => {
+                        let _ = set.get_modulated(&text);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
