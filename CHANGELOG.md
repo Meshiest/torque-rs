@@ -75,6 +75,23 @@ The first development version. Nothing is published yet; this is what exists.
   to the left Shift and the side buttons now reach the platform layer).
 - `torque-gui`: the US layout's scan codes (`map_virtual_key`) cover F13 to F24, so F13 to F15 give their key codes
   (`f13`..`f15`); F16 to F24 have none in the scan-code table.
+- `torque-example-vehicle-demo` (`examples/vehicle-demo`): the kit's figure beside a dune buggy on green checkerboard hills (a
+  `TerrainBlock`), for one player or a few on a LAN (host, or join from the list or an address); a click on the buggy takes the
+  nearest free seat (the driver's or the passenger's), W A S D drive it, Space brakes, E gets out, Tab switches between the eyes
+  and the chase camera; its tires throw dust and leave tracks. The kit adds the buggy and its
+  wheel, the `sit` and `ride` sequences, the hills' `.ter` and their checkerboard.
+- `torque::app::hosting`: hosting a game and joining one (the client's network mode, the address a hosted game binds and is
+  joined by, a typed address, the join screen's natives), moved out of the arena shooter; `GameServer::start_with` runs a
+  game's setup (its simulated classes) before the game classes are installed.
+- `torque-render-scene`: the dust a vehicle kicks up (`vehicle_dust`: TGE's tire emitter by speed and slip, and its lift-off
+  dust) and tire tracks a game may ask for (`tracks`: strips clipped to the ground's triangles, multiplied over it, fading);
+  `torque::app`'s ghost scene runs both (`GhostScene::set_tire_tracks`). A vehicle look's wheels carry their slip.
+- `torque::app::terrain`: a `TerrainBlock` over a legacy `.ter` with its collision on the server (`TerrainBlock::onAdd`), the
+  same block as a static object of the client's prediction, and `WorldView::set_terrain` to draw it.
+- `torque-server`: Torque's net game ghosts the simulated vehicles (their records from the vehicle's state, its step's dirty
+  bits as TGE's), and a Player that drives a WheeledVehicle sends the vehicle's packet data after its own.
+- `torque-client`: TGE's feed reads a WheeledVehicleData's wheel count from its shape (the game's files,
+  `ClientGame::file_reader`, which the prediction reads the driven vehicle's shape from too).
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

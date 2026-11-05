@@ -65,6 +65,9 @@ use crate::predict::game::{ControlState, PredictWorld};
 use crate::render::{PoseInputs, PoseView};
 use crate::state::{ClientState, GameSlot};
 
+/// The work a WheeledVehicleData's shape may cost to read for its wheel count.
+pub const WHEEL_SHAPE_BUDGET: u64 = 50_000_000;
+
 /// How long an unanswered challenge waits before it is sent again (TGE's `ChallengeRetryTime`).
 pub const TGE_HANDSHAKE_WAIT_MS: u32 = 2500;
 /// How many times the challenge is sent again before the connect gives up (TGE's `ChallengeRetryCount`: the time-out check
@@ -382,6 +385,12 @@ impl EventUnpacker for Unpacker<'_> {
 /// TGE's feed: torque-net's client half of the handshake and the packet layer, the ghost table read with TGE's record codecs.
 pub struct TgeFeed {
     link: Box<dyn Link>,
+    /// The game's files ([`crate::game::ClientGame::file_reader`]): a WheeledVehicleData's shape, for its wheel count.
+    reader: Option<crate::predict::FileReader>,
+    /// The wheel count of each WheeledVehicleData received (`WheeledVehicleData::preload`'s `wheelCount`: the hubs its shape
+    /// has), which a WheeledVehicle's record is read by.
+    wheel_counts: std::collections::BTreeMap<u32, usize>,
+    shapes: crate::predict::drive::ShapeCache,
     client: Client,
     tables: TgeTables,
     ghosts: Option<GhostClient<TgeCodec>>,
@@ -430,6 +439,9 @@ impl TgeFeed {
         };
         let mut feed = TgeFeed {
             link,
+            reader: None,
+            wheel_counts: std::collections::BTreeMap::new(),
+            shapes: crate::predict::drive::ShapeCache::default(),
             client,
             tables,
             ghosts: None,
@@ -452,8 +464,45 @@ impl TgeFeed {
         Ok(feed)
     }
 
+    /// The game's files the feed reads a WheeledVehicleData's shape from.
+    pub fn set_reader(&mut self, reader: Option<crate::predict::FileReader>) {
+        self.reader = reader;
+    }
+
     fn connected(&self) -> bool {
         *self.client.state() == net::client::ClientState::Connected
+    }
+
+    /// `WheeledVehicleData::preload` on the client for datablock `id` (just received): its wheel count from the hubs of the
+    /// shape it names, read from the game's files, told to the ghost codec. A datablock of another class, or whose shape does
+    /// not read, has none (a WheeledVehicle of it does not decode).
+    fn count_wheels(&mut self, world: &TgeWorld, id: u32) {
+        if world
+            .datablocks
+            .get(&id)
+            .map(crate::records::EngineDatablock::class_name)
+            != Some("WheeledVehicleData")
+        {
+            return;
+        }
+        let Some(path) = crate::predict::drive::shape_path(world, id) else {
+            return;
+        };
+        let mut work = 0;
+        let Some(shape) =
+            self.shapes
+                .get(path, self.reader.as_ref(), &mut work, WHEEL_SHAPE_BUDGET)
+        else {
+            return;
+        };
+        let Some(data) = crate::predict::drive::wheeled_data(world, id, &shape) else {
+            return;
+        };
+        let count = vehicle::wheeled::wheel_count(&data);
+        self.wheel_counts.insert(id, count);
+        if let Some(ghosts) = self.ghosts.as_mut() {
+            ghosts.codec_mut().facts.wheels.insert(id, count);
+        }
     }
 
     fn challenge(&mut self) {
@@ -475,6 +524,7 @@ impl TgeFeed {
         let codec = TgeCodec::new(names, self.widths, self.tables.table.clone());
         let class_bits = self.tables.classes.id_bits(Kind::Object);
         let mut ghosts = GhostClient::new(codec, class_bits, ghost_bits);
+        ghosts.codec_mut().facts.wheels = self.wheel_counts.clone();
         ghosts.enable_log();
         self.ghosts = Some(ghosts);
     }
@@ -591,6 +641,7 @@ impl TgeFeed {
                 }
                 Incoming::DataBlock(Some((event, index, total))) => {
                     world.apply_datablock(event.id, event.datablock.clone());
+                    self.count_wheels(world, event.id);
                     self.events.push_back(FeedEvent::DataBlock {
                         index,
                         total,
@@ -804,7 +855,8 @@ impl ConnGame for TgeConn {
     ) -> Result<Started<TgeConn>, String> {
         let _ = client;
         let local = connect.local.map(|a| (a.protocol, a.ghost_bits));
-        let feed = TgeFeed::with_rates(
+        let reader = crate::game::installed_game(vm).and_then(|g| g.file_reader());
+        let mut feed = TgeFeed::with_rates(
             connect.link,
             &connect.password,
             connect.args,
@@ -812,11 +864,12 @@ impl ConnGame for TgeConn {
             local,
             client_rates(vm),
         )?;
+        feed.set_reader(reader.clone());
         Ok(Started {
             feed,
             world: TgeWorld::default(),
             part: Box::new(super::NoPart),
-            reader: None,
+            reader,
         })
     }
 

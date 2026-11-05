@@ -30,6 +30,8 @@ pub mod sky;
 pub mod source;
 pub mod textures;
 pub mod tge;
+pub mod tracks;
+pub mod vehicle_dust;
 pub mod wheels;
 pub mod world;
 

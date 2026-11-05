@@ -133,7 +133,7 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// The part of the polygon `poly` where `dot(p - at, axis) <= limit` (Sutherland-Hodgman against one plane).
-fn clip(poly: &[[f32; 3]], at: [f32; 3], axis: [f32; 3], limit: f32) -> Vec<[f32; 3]> {
+pub(crate) fn clip(poly: &[[f32; 3]], at: [f32; 3], axis: [f32; 3], limit: f32) -> Vec<[f32; 3]> {
     let side = |p: &[f32; 3]| limit - dot([0, 1, 2].map(|k| p[k] - at[k]), axis);
     let mut out = Vec::with_capacity(poly.len() + 2);
     for i in 0..poly.len() {

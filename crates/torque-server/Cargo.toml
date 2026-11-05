@@ -28,6 +28,8 @@ torque-collide = { path = "../torque-collide" }
 torque-scene = { path = "../torque-scene" }
 # The simulated Player's state a control object's packet data is written from.
 torque-sim = { path = "../torque-sim" }
+# The simulated vehicles' state their records and packet data are written from.
+torque-vehicle = { path = "../torque-vehicle" }
 
 [dev-dependencies]
 # The tests' shapes (a box a Player stands in).

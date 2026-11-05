@@ -78,6 +78,12 @@ pub trait ClientGame: Debug {
     fn screen_rules(&self) -> Rc<dyn ScreenRules> {
         Rc::new(TgeScreen)
     }
+
+    /// The game's files as a connection reads them (the shapes a datablock names: a WheeledVehicleData's wheel count, the
+    /// vehicle the prediction drives); none reads no file.
+    fn file_reader(&self) -> Option<crate::predict::FileReader> {
+        None
+    }
 }
 
 /// Torque's answers.

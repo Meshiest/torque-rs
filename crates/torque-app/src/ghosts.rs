@@ -42,6 +42,8 @@ use torque_render_scene::ribbons::{Ribbon, projectile_ribbon};
 use torque_render_scene::shapes::DetailPolicy;
 use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
+use torque_render_scene::tracks::{TireTracks, TrackRules, TrackWheel};
+use torque_render_scene::vehicle_dust::{VehicleDust, ground_under, running_vehicles};
 use torque_render_scene::{Assets, Draw};
 
 use super::view::WorldView;
@@ -470,7 +472,7 @@ pub struct OwnView {
 }
 
 /// The faces of `world` near a point, within a reach: the surface a projectile's decal there may lie on.
-pub type Surfaces = dyn Fn(&World, [f32; 3], f32) -> Vec<Triangle>;
+pub type Surfaces<'a> = dyn Fn(&World, [f32; 3], f32) -> Vec<Triangle> + 'a;
 
 /// What a frame of [`GhostScene::update`] reads besides the world: the client's other Players as it runs them, the field of
 /// view the eye is drawn with, the frame's time (seconds), and the faces near a point (within a reach) a projectile's decal may
@@ -479,7 +481,7 @@ pub struct FrameInput<'a> {
     pub ghosts: Option<&'a GhostPlayers>,
     pub fov: Option<u8>,
     pub dt: f32,
-    pub surfaces: &'a Surfaces,
+    pub surfaces: &'a Surfaces<'a>,
 }
 
 /// A client's ghosts frame after frame (see the module docs), with a game's style `S`.
@@ -516,6 +518,10 @@ pub struct GhostScene<S = Plain> {
     pub ribbons_drawn: usize,
     /// The shots seen so far.
     pub flashes: usize,
+    /// The dust the vehicles the client runs kick up ([`VehicleDust`]: TGE's tire and lift-off dust).
+    pub dust: VehicleDust,
+    /// The tire tracks they leave, when the game asks for them ([`GhostScene::set_tire_tracks`]).
+    pub tracks: Option<TireTracks>,
 }
 
 impl GhostScene {
@@ -555,12 +561,24 @@ impl<S: GhostStyle> GhostScene<S> {
             trail_particles: 0,
             ribbons_drawn: 0,
             flashes: 0,
+            dust: VehicleDust::default(),
+            tracks: None,
         }
+    }
+
+    /// Lays tire tracks behind the vehicles' wheels as `rules` say (none: no tracks, TGE's).
+    pub fn set_tire_tracks(&mut self, rules: Option<TrackRules>) {
+        self.tracks = rules.map(TireTracks::new);
     }
 
     /// Forgets every ghost (a new connection's ghosts are new), and the style what it keeps of them; the shots seen so far stay.
     pub fn clear(&mut self) {
         self.style.clear();
+        let tracks = self
+            .tracks
+            .as_ref()
+            .map(|t| TireTracks::new(t.rules.clone()));
+        let dust = VehicleDust::new(self.dust.rules);
         GhostScene {
             options: _,
             style: _,
@@ -584,7 +602,11 @@ impl<S: GhostStyle> GhostScene<S> {
             trail_particles: self.trail_particles,
             ribbons_drawn: self.ribbons_drawn,
             flashes: _,
+            dust: _,
+            tracks: _,
         } = GhostScene::new(self.options.clone());
+        self.tracks = tracks;
+        self.dust = dust;
     }
 
     /// The client's own Player as the last frame placed it.
@@ -655,6 +677,30 @@ impl<S: GhostStyle> GhostScene<S> {
                     fade: 1.0,
                 },
             );
+        }
+        // The vehicles' dust and tracks, on the ground the host's surfaces give.
+        let records = &world.records;
+        let vehicles = running_vehicles(records);
+        let surfaces = |at: [f32; 3], reach: f32| (input.surfaces)(records, at, reach);
+        let ground = |at: [f32; 3], depth: f32| ground_under(&surfaces(at, 1.0), at, depth);
+        self.dust.update(records, &vehicles, &ground, dt);
+        if let Some(tracks) = self.tracks.as_mut() {
+            let wheels: Vec<TrackWheel> = vehicles
+                .iter()
+                .flat_map(|v| {
+                    v.look
+                        .wheels
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, w)| w.fitted)
+                        .map(|(k, w)| TrackWheel {
+                            key: (v.index, k),
+                            contact: w.contact,
+                            point: w.point,
+                        })
+                })
+                .collect();
+            tracks.update(&wheels, &surfaces, dt);
         }
     }
 
@@ -1137,7 +1183,11 @@ impl<S: GhostStyle> GhostScene<S> {
             muzzles: &muzzles,
         };
         draws.extend(self.style.effects(&frame, &mut set));
-        let decals = self.decals.draws(eye.position, &mut set);
+        draws.extend(self.dust.draws(eye.position, right, up, &mut set));
+        let mut decals = self.decals.draws(eye.position, &mut set);
+        if let Some(tracks) = &self.tracks {
+            decals.extend(tracks.draws(eye.position, &mut set));
+        }
         view.set_particles_and_decals(&draws, &decals, set);
     }
 }

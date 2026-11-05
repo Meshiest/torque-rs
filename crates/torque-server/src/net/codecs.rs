@@ -25,7 +25,7 @@ use torque_ghosts::datablocks::{
     DatablockCodecSet, ScriptField, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks,
 };
 use torque_ghosts::set::GhostCodecSet;
-use torque_ghosts::tails::{PlayerTail, PlayerTailMotion, ShapeTail, TailData};
+use torque_ghosts::tails::{PlayerTail, PlayerTailMotion, ShapeTail, TailData, WheeledTail};
 use torque_ghosts::tge::{TGE_DATABLOCK_CLASSES, TgeClass, TgeGhosts, tge_reps};
 use torque_ghosts::{ObjectView, Value};
 use torque_net::bits::BitWriter;
@@ -444,8 +444,11 @@ impl NetCodecs for TorqueCodecs {
     /// Camera's own bits from 24). TGE 1.4's records put each one bit higher, past GameBase's `ControlMask` (bit 4):
     /// `NameMask` 5, `DamageMask` 6, `MountedMask` 8, `CloakMask` 9, the sounds from 13, the threads from 17, the images
     /// from 21, a Player's `ActionMask` 25 and `MoveMask` 26, an Item's `HiddenMask` 25 to `RotationMask` 28, a Camera's
-    /// `MoveMask` 25. The scale bit (0) is the same, and so is every bit of a class without a ShapeBase part. The vehicles,
-    /// whose step numbers its own bits, are left as they are.
+    /// `MoveMask` 25. The scale bit (0) is the same, and so is every bit of a class without a ShapeBase part.
+    ///
+    /// A vehicle's step numbers its own bits over the low ShapeBase ones (`torque_vehicle::state::net_mask`): its pose (0x10)
+    /// and a `setTransform` (0x40) are TGE's `PositionMask` (bit 25), its energy (0x20) `EnergyMask` (26) with the damage, its
+    /// wheels' datablocks (0x80) `WheelMask` (27); the ShapeBase bits from 0x100 move one higher as a Player's.
     fn sim_mask(&self, code: u16, bits: u32) -> u32 {
         match TgeClass::of_code(code) {
             Some(
@@ -456,6 +459,26 @@ impl NetCodecs for TorqueCodecs {
                 | TgeClass::ScopeAlwaysShape
                 | TgeClass::Camera,
             ) => (bits & 0x0000_000f) | ((bits & 0x7fff_fff0) << 1),
+            Some(
+                TgeClass::WheeledVehicle
+                | TgeClass::AiWheeledVehicle
+                | TgeClass::FlyingVehicle
+                | TgeClass::HoverVehicle,
+            ) => {
+                use torque_ghosts::vehicle::mask::{ENERGY, POSITION, WHEEL};
+                use torque_vehicle::state::net_mask;
+                let mut out = (bits & 0x0000_000f) | ((bits & 0x00ff_ff00) << 1);
+                if bits & (net_mask::POSE | net_mask::WARP) != 0 {
+                    out |= POSITION;
+                }
+                if bits & net_mask::ENERGY != 0 {
+                    out |= ENERGY | torque_ghosts::shapebase::mask::DAMAGE;
+                }
+                if bits & net_mask::WHEELS != 0 {
+                    out |= WHEEL;
+                }
+                out
+            }
             _ => bits,
         }
     }
@@ -495,10 +518,33 @@ impl ControlObject for PlayerControl<'_> {
         })
     }
 
+    /// `Player::writePacketData`; a Player that controls a simulated WheeledVehicle (its driver) names the vehicle's ghost
+    /// and the vehicle's own packet data follows (`WheeledVehicle::writePacketData`, [`WheeledTail::pack`]).
     fn packet_data(&self) -> Box<dyn ControlData> {
-        let tail = torque_game::sim::player::state(self.vm, self.obj)
-            .map_or_else(PlayerTail::default, player_packet_data);
-        Box::new(TgePacketData::new(TailData::Player(tail)))
+        let s = torque_game::sim::player::state(self.vm, self.obj);
+        let mut tail = s.map_or_else(PlayerTail::default, player_packet_data);
+        let driven = s
+            .and_then(|s| s.control_object)
+            .map(|o| o.0)
+            .filter(|&o| torque_game::sim::vehicle_methods::wheeled_mount(self.vm, o).is_some())
+            .and_then(|o| Some((o, (self.ghost_index)(o)?)));
+        let nested = driven.map(|(o, index)| {
+            tail.control = Some(index);
+            let view = super::torque::GameView {
+                fields: super::torque::FieldView {
+                    vm: self.vm,
+                    obj: o,
+                },
+                controlled: true,
+                ghost_of: None,
+            };
+            Box::new(TgePacketData::new(TailData::Wheeled(WheeledTail::pack(
+                &view,
+            )))) as Box<dyn ControlData>
+        });
+        let mut data = TgePacketData::new(TailData::Player(tail));
+        data.nested = nested;
+        Box::new(data)
     }
 }
 
@@ -506,7 +552,7 @@ impl ControlObject for PlayerControl<'_> {
 /// position, velocity and last contact when it is not mounted, the head's x and z and the yaw. The record's other fields (the
 /// recharge rate, the state, the recover ticks, the jump delay) are none of those words: they are written as the engine's
 /// client writes the packet data it takes its checksum of (0, none), so a client that predicted the Player right matches.
-/// A Player that controls another object writes no index for it (none is simulated).
+/// The index of an object the Player controls is the host's to add ([`TorqueCodecs::control_object`]: a driven WheeledVehicle).
 pub fn player_packet_data(s: &PlayerState) -> PlayerTail {
     PlayerTail {
         shape: ShapeTail {
