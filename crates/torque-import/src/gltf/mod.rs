@@ -187,11 +187,7 @@ pub fn read(
     }
     // The parse builds every object, array and string at once, at many times its text's size: their count is held first.
     let values = container::json_values(json_bytes, caps::MAX_JSON_VALUES);
-    cap(
-        "objects, arrays and strings in the JSON",
-        values,
-        caps::MAX_JSON_VALUES,
-    )?;
+    cap("values in the JSON", values, caps::MAX_JSON_VALUES)?;
     pay(charge, values as u64)?;
     let to_error = |e: &dyn std::fmt::Display| {
         let mut s = e.to_string();
@@ -209,7 +205,22 @@ pub fn read(
     if bad_position {
         return malformed("a primitive's positions name no accessor");
     }
-    let document = gltf::Document::from_json(parsed).map_err(|e| to_error(&e))?;
+    let document = gltf::Document::from_json(parsed).map_err(|e| match e {
+        // Only the first few of a file's validation errors are told.
+        gltf::Error::Validation(list) => {
+            let first: Vec<String> = list
+                .iter()
+                .take(3)
+                .map(|(path, e)| format!("{path}: {e}"))
+                .collect();
+            ImportError::Malformed(format!(
+                "{} validation errors: {}",
+                list.len(),
+                first.join("; ")
+            ))
+        }
+        other => to_error(&other),
+    })?;
     let root = document.as_json();
     cap("nodes", root.nodes.len(), caps::MAX_NODES)?;
     cap("meshes", root.meshes.len(), caps::MAX_MESHES)?;

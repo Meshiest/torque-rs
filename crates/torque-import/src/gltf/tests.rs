@@ -608,14 +608,34 @@ fn a_json_of_many_small_values_is_refused_before_it_is_parsed() {
         matches!(
             r,
             Err(ImportError::Cap {
-                what: "objects, arrays and strings in the JSON",
+                what: "values in the JSON",
                 ..
             })
         ),
         "{r:?}"
     );
     // Strings are skipped with their escapes: braces inside them are not counted.
-    assert_eq!(super::container::json_values(br#"{"a":"x\"{[{"}"#, 100), 3);
+    assert_eq!(
+        super::container::json_values(br#"{"a":"x\"{[,{","b":[1,2]}"#, 100),
+        7
+    );
+    // 2 MiB of number elements (each an out-of-range node index the validation would name): refused before the parse.
+    let mut nodes = br#"{"asset":{"version":"2.0"},"scenes":[{"nodes":["#.to_vec();
+    while nodes.len() < (2 << 20) - 64 {
+        nodes.extend_from_slice(b"9,");
+    }
+    nodes.extend_from_slice(b"9]}]}");
+    let r = crate::native::dts_bytes(&nodes, &mut free);
+    assert!(
+        matches!(
+            r,
+            Err(ImportError::Cap {
+                what: "values in the JSON",
+                ..
+            })
+        ),
+        "{r:?}"
+    );
     // A file a server sends has a smaller JSON cap.
     let mut big = br#"{"asset":{"version":"2.0"},"extras":""#.to_vec();
     big.resize(caps::MAX_NATIVE_JSON_BYTES + 10, b'a');

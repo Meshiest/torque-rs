@@ -73,8 +73,9 @@ pub fn split(bytes: &[u8]) -> Result<(&[u8], Option<&[u8]>), ImportError> {
     Ok((check_json(json)?, bin))
 }
 
-/// The objects, arrays and strings of the JSON `json`, counted in one pass (strings and their escapes skipped), stopping at
-/// `max + 1`.
+/// The values of the JSON `json`, counted in one pass (strings and their escapes skipped), stopping at `max + 1`: every
+/// object, array and string, and every comma (each element and member after the first, numbers, `true`, `false` and
+/// `null` among them).
 pub fn json_values(json: &[u8], max: usize) -> usize {
     let mut count = 0usize;
     let mut in_string = false;
@@ -95,7 +96,7 @@ pub fn json_values(json: &[u8], max: usize) -> usize {
                 in_string = true;
                 count += 1;
             }
-            b'{' | b'[' => count += 1,
+            b'{' | b'[' | b',' => count += 1,
             _ => continue,
         }
         if count > max {
