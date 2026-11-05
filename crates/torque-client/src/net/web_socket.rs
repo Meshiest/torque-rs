@@ -32,6 +32,8 @@ mod native {
     const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
     /// The most bytes of the handshake's answer.
     const MAX_ANSWER: usize = 4096;
+    /// The most bytes waiting to be sent: past it, a send fails and the socket is closed (the server reads too slowly).
+    const MAX_UNSENT: usize = 256 << 10;
 
     /// A `ws` game socket to a server's web transport.
     pub struct WebSocketDatagrams {
@@ -98,6 +100,7 @@ mod native {
             let config = WebSocketConfig::default()
                 .read_buffer_size(4096)
                 .write_buffer_size(0)
+                .max_write_buffer_size(MAX_UNSENT)
                 .max_message_size(Some(RECV_BYTES * 32))
                 .max_frame_size(Some(RECV_BYTES * 32));
             let rest = answer[end..].to_vec();
