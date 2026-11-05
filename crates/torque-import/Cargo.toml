@@ -1,0 +1,32 @@
+[package]
+name = "torque-import"
+description = "Model readers and writers for torque-rs: glTF 2.0 into the model layer, the model layer into DTS shapes, and back"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "gltf", "dts", "import", "gamedev"]
+categories = ["game-development", "parser-implementations", "rendering::data-formats"]
+
+# Readers turn files into `torque-modelcore`; the `dts` module writes the model layer as a shape (through
+# `torque-shape-builder`) and reads a shape into it. glTF is behind the `gltf` feature (the `gltf` crate reads the JSON;
+# buffers, accessors, URIs and images are this crate's own code, bounded before the work). Files are hostile input.
+
+[dependencies]
+torque-modelcore = { path = "../torque-modelcore" }
+torque-shapes = { path = "../torque-shapes" }
+torque-shape-builder = { path = "../torque-shape-builder" }
+gltf = { version = "1.4.1", default-features = false, features = ["names", "extras", "utils"], optional = true }
+serde_json = { version = "1.0.140", optional = true }
+
+[features]
+default = ["gltf"]
+gltf = ["dep:gltf", "dep:serde_json"]
+
+[dev-dependencies]
+serde_json = "1.0.140"
+
+[lints]
+workspace = true

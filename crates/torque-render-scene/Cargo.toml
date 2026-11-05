@@ -22,6 +22,8 @@ maps = { package = "torque-maps", path = "../torque-maps" }
 rayon = "1.11"
 # The shape files the shapes draw (`shapes`).
 shapes = { package = "torque-shapes", path = "../torque-shapes" }
+# A datablock's `.glb` / `.gltf` shape file, read as the `.dts` it makes.
+torque-import = { path = "../torque-import" }
 # The day's sun the TimeOfDay ghost runs on the client (`hd::environment`).
 torque-scene = { path = "../torque-scene" }
 

@@ -168,6 +168,13 @@ impl ShapeLoad {
             if bytes.len() > MAX_SHAPE_BYTES || !charge(cost) {
                 return Step::Bad;
             }
+            // A glTF's import and the parse of the `.dts` it makes can cost more than the room the read was begun with (the
+            // largest file's): refused like any step, with its room, so the caller decides whether it can ever fit.
+            let bytes = match torque_import::native::shape_file(path, bytes, &mut charge) {
+                Ok(bytes) => bytes,
+                Err(torque_import::ImportError::OutOfBudget) => return Step::Refused,
+                Err(_) => return Step::Bad,
+            };
             let parsed = shapes::dts::parse(&bytes, &mut charge);
             return match parsed {
                 Ok(model) => {
@@ -258,6 +265,11 @@ impl ShapeCache {
             if *work > budget {
                 return None;
             }
+            let mut charge = |units: u64| {
+                *work = work.saturating_add(units);
+                *work <= budget
+            };
+            let bytes = torque_import::native::shape_file(path, bytes, &mut charge).ok()?;
             load(&bytes, slots, work, budget).map(Rc::new)
         });
         // A read the budget cut short is tried again on a later tick; any other answer is kept.

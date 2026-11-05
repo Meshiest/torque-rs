@@ -43,7 +43,24 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-interior-builder`: interiors (`.dif`, version 0 in TGE's form) built from convex brushes made in code or read from a
   Quake or Valve 220 `.map`: hidden faces removed, a solid BSP, the brushes as collision hulls with emit strings and polygon
   lists, texture planes and lightmap rectangles; a `.map`'s water, triggers, physical zones and spawn points as a `.mis`
-  fragment; the `torque-convert` command.
+  fragment.
+- `torque-modelcore`: the format-neutral model layer (nodes with rest transforms, meshes with two UV sets, colors and up to
+  four weights a vertex, skins, materials with their PBR textures, detail levels, animations sampled at even keys), in
+  Torque's frame, with the naming conventions of Torque's shape loader (`detailN`, `Col-N`, `LOSCol-N`, `col_*` and `hull_*`
+  hulls, mission volumes).
+- `torque-import`: a glTF 2.0 reader (`.glb`, or `.gltf` with side files or `data:` URIs; meshes, skins, materials, images,
+  step, linear and cubic-spline animations; every count, offset, stride, URI and image header bounded) and writer, and the
+  model layer as a `.dts` (through `torque-shape-builder`) and a `.dts` as the model layer. A shape written as a `.glb` and
+  read back makes the same `.dts`, byte for byte.
+- Native glTF shapes: a datablock's `shapeFile` may name a `.glb` (or a `.gltf` with `data:` URIs); the server's preload, the
+  client's prediction and eye and the shape drawing read it as the `.dts` it makes.
+- `torque-convert`: the converter command, its own crate: models (`.glb`, `.gltf`, `.dts`) into `.dts` (with the images the
+  model carries) or `.glb`, and `.map` brushes into interiors.
+- `torque-shape-builder`: skin meshes, objects with a mesh in several details, primitives of several materials, aligned
+  scale keys and blend flags in owned sequence specs; the name table is made at build time (nodes, details, objects,
+  sequences).
+- The example kit also writes `cube.glb`, `figure.glb` and `pistol.glb`; the arena loads them instead of the `.dts` files when
+  `ARENA_SHAPES=glb`.
 - `torque-net`: connections, the packet layer, events, ghosting, bit streams and string compression.
 - `torque-ghosts`: the networked objects' record codecs: the layout framework, the class registries, the parent parts, and
   TGE 1.4's ghost and datablock layouts (`TgeGhosts`, `TgeDatablocks`).

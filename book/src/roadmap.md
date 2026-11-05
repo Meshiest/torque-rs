@@ -26,7 +26,11 @@ What is planned, roughly in order. Items marked *tool* are build-time features.
 - A scene graph with zones, portals and a visibility-set cull path.
 - The missing GUI controls (TreeView, FrameSet, MenuBar, TabBook, Stack, ColorPicker, DirectoryTree, ListBox, ...).
 - Static meshes with triangle-mesh and convex-hull collision, shared by imported props and mesh-built levels.
-- glTF 2.0 import; maybe COLLADA later.
+- glTF 2.0 import; maybe COLLADA later. First step done: `torque-modelcore`, the glTF reader and writer, the shape writer,
+  `torque-convert` and native `.glb` shapes (`just gltf-verify`: 20 generated glTF files read back as `.dts` with equal
+  counts, vertices within 1e-4 and poses within 1e-3 at 10 times a sequence; the kit's shapes through `.glb` give the same
+  `.dts` bytes; 300,000 fuzz cases with 0 panics). Next: OBJ and Blockbench, a pure Rust `.blend` reader, Source models;
+  `.dsq` export of single sequences; textures a `.glb` carries drawn natively.
 - Source BSP maps through the format-neutral map layer: brushes, displacements, static props, visleafs, lightmaps,
   cubemaps, the 3D skybox, water, overlays and worldlights, read from the player's own installs.
 - Full terrain (editable, `.ter` writer), full interiors, lighting (lightmaps and dynamic lights).

@@ -20,6 +20,8 @@ ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm" }
 collide = { package = "torque-collide", path = "../torque-collide" }
 # The shapes the datablocks load and the instances the objects pose.
 shapes = { package = "torque-shapes", path = "../torque-shapes" }
+# A datablock's `.glb` / `.gltf` shape file, read as the `.dts` it makes.
+torque-import = { path = "../torque-import" }
 # The simulated classes (Player, Item, images, the process list) and the vehicles.
 sim = { package = "torque-sim", path = "../torque-sim" }
 vehicle = { package = "torque-vehicle", path = "../torque-vehicle" }

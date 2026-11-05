@@ -1,4 +1,4 @@
-//! `torque-convert`: a Quake or Valve 220 `.map` into a `.dif` and a `.mis` fragment.
+//! A Quake or Valve 220 `.map` into a `.dif` and a `.mis` fragment.
 //!
 //! ```text
 //! torque-convert <in.map> <out.dif> [--scale <map units a unit, 32>] [--lightmap-texel <units, 0.5>]
@@ -90,8 +90,8 @@ fn floats<const N: usize>(s: &str) -> Option<[f64; N]> {
         .filter(|a: &[f64; N]| a.iter().all(|x| x.is_finite()))
 }
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+/// The command for a `.map` input (module docs).
+pub fn run(args: &[String]) -> ExitCode {
     let mut plain = Vec::new();
     let mut scale = 32.0;
     let mut options = Options::default();

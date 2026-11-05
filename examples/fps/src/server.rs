@@ -33,6 +33,15 @@ pub struct ServerOptions {
     pub public: bool,
 }
 
+/// The kit's files the figure, the pistol and the cube are loaded from: `glb` when the environment variable `ARENA_SHAPES` is
+/// `glb` (the kit's `.glb` exports, which load as the same shapes), else `dts`.
+pub fn shape_files() -> &'static str {
+    match std::env::var("ARENA_SHAPES").as_deref() {
+        Ok("glb") => "glb",
+        _ => "dts",
+    }
+}
+
 /// The arena's server: a [`GameServer`] that has run `server.cs` and started the map.
 pub struct ArenaServer;
 
@@ -70,6 +79,7 @@ impl ArenaServer {
                 globals: &[
                     ("$Pref::Server::Name", &options.name),
                     ("$Server::Dedicated", dedicated),
+                    ("$Arena::Shapes", shape_files()),
                 ],
                 start: "startArena",
                 args: &[&options.mission],

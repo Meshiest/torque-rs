@@ -1,0 +1,19 @@
+[package]
+name = "torque-modelcore"
+description = "The format-neutral model layer of torque-rs: nodes, meshes, skins, materials, detail levels and sampled animations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "model", "mesh", "animation", "gamedev"]
+categories = ["game-development", "data-structures"]
+
+# The format-neutral model layer: what a model is once a reader has turned its file into Torque's frame (Z up, meters). The
+# readers (`torque-import`) write it; the shape writer and the interior builder read it. Std only, no dependency at all.
+
+[dependencies]
+
+[lints]
+workspace = true

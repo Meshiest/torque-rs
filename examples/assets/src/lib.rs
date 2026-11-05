@@ -31,19 +31,35 @@ pub struct Asset {
     pub bytes: Vec<u8>,
 }
 
-/// Every asset of the kit, shapes first.
+/// The shape `model` as a `.glb` (through the model layer): read back, it makes the same `.dts`.
+pub fn glb_of(model: &torque_shapes::Model) -> io::Result<Vec<u8>> {
+    let layer = torque_import::dts::from_dts(model).map_err(io::Error::other)?;
+    torque_import::gltf::write_glb(&layer).map_err(io::Error::other)
+}
+
+/// Every asset of the kit, shapes first (the cube, the figure and the pistol also as `.glb`).
 pub fn all() -> io::Result<Vec<Asset>> {
-    let shape = |name, model| Asset {
+    let shape = |name, model: &torque_shapes::Model| Asset {
         name,
-        bytes: torque_shapes::write::write_dts(&model),
+        bytes: torque_shapes::write::write_dts(model),
     };
+    let glb = |name, model: &torque_shapes::Model| -> io::Result<Asset> {
+        Ok(Asset {
+            name,
+            bytes: glb_of(model)?,
+        })
+    };
+    let (cube, figure, pistol) = (shapes::cube(), shapes::figure(), shapes::pistol());
     Ok(vec![
-        shape("cube.dts", shapes::cube()),
-        shape("figure.dts", shapes::figure()),
-        shape("pistol.dts", shapes::pistol()),
-        shape("projectile.dts", shapes::projectile()),
-        shape("buggy.dts", buggy::buggy()),
-        shape("buggy_wheel.dts", buggy::wheel()),
+        shape("cube.dts", &cube),
+        shape("figure.dts", &figure),
+        shape("pistol.dts", &pistol),
+        glb("cube.glb", &cube)?,
+        glb("figure.glb", &figure)?,
+        glb("pistol.glb", &pistol)?,
+        shape("projectile.dts", &shapes::projectile()),
+        shape("buggy.dts", &buggy::buggy()),
+        shape("buggy_wheel.dts", &buggy::wheel()),
         Asset {
             name: "hills.ter",
             bytes: terrain::hills(),

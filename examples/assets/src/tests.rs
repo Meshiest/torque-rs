@@ -431,7 +431,7 @@ fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
     let mut names: Vec<_> = a.iter().map(|x| x.name).collect();
     names.sort_unstable();
     names.dedup();
-    assert_eq!(names.len(), 23);
+    assert_eq!(names.len(), 26);
     // Every material names a texture of the kit.
     for (_, model) in models() {
         for m in &model.shape.materials {
@@ -851,5 +851,23 @@ fn the_seated_hands_stay_on_the_rim_as_the_steering_turns_the_wheel() {
                 .sqrt();
             assert!(apart < 0.03, "{elbow} at {place}: {hand:?} for {want:?}");
         }
+    }
+}
+
+#[test]
+fn every_shape_through_a_glb_makes_the_same_dts() {
+    for (name, model) in models() {
+        let glb = crate::glb_of(&model).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let read =
+            torque_import::gltf::read(&glb, &mut |_, _| None, &Default::default(), &mut free)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let back = torque_import::dts::to_dts(&read).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(
+            write_dts(&back) == write_dts(&model),
+            "{name}: the .dts made through the .glb differs"
+        );
+        // The engine's own path: a datablock's `.glb` gives the same bytes.
+        let native = torque_import::native::shape_file(b"kit/x.glb", glb, &mut free).unwrap();
+        assert!(native == write_dts(&model), "{name}");
     }
 }

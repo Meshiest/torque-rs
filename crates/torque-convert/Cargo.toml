@@ -1,0 +1,25 @@
+[package]
+name = "torque-convert"
+description = "The torque-rs converter: models (glTF, DTS) into DTS shapes or glTF, and Quake or Valve 220 maps into interiors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "convert", "gltf", "dts", "dif"]
+categories = ["game-development", "command-line-utilities"]
+
+# A command-line tool: any reader of `torque-import` into any of its writers, and `torque-interior-builder`'s `.map` input.
+
+[dependencies]
+torque-import = { path = "../torque-import" }
+torque-interior-builder = { path = "../torque-interior-builder" }
+torque-shapes = { path = "../torque-shapes" }
+
+[[bin]]
+name = "torque-convert"
+path = "src/main.rs"
+
+[lints]
+workspace = true
