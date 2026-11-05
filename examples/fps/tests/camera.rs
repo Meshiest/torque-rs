@@ -1,6 +1,6 @@
-//! Tab's camera: from the own figure's eye it eases behind the figure (shown, its pistol in its hand), stops in front of a block
-//! behind it, and eases back to the eye (the figure hidden again). The game plays `game/fixtures/aim.mis`: a floor and one block
-//! (x 2 to 4, y 7 to 9, 3 high).
+//! Tab's camera: from the own figure's eye it moves behind the figure (shown once out of its head, its pistol in its hand),
+//! stops in front of a block behind it, and moves back to the eye (the figure hidden again). The game plays
+//! `game/fixtures/aim.mis`: a floor and one block (x 2 to 4, y 7 to 9, 3 high).
 
 use torque::client::input::Key;
 use torque_example_fps::client::{
@@ -73,8 +73,15 @@ fn tab_eases_the_camera_behind_the_figure_keeps_it_off_a_block_and_back() {
     tab(&mut a);
     let first = frame(&mut a);
     assert!(a.camera_blending(), "eased, not cut");
-    assert!(!hidden(&a), "shown as soon as the camera leaves the eye");
     assert!(apart(first.position, a.eye().position) < CAMERA_DISTANCE * 0.5);
+    // Shown once the camera is out of the head, early in the move.
+    let mut out = 1;
+    while hidden(&a) {
+        frame(&mut a);
+        out += 1;
+        assert!(out < 12, "still hidden {out} frames into the move");
+    }
+    assert!(a.camera_blending());
     let behind = frames(&mut a, 40);
     assert!(a.third_person() && !a.camera_blending());
     let whole = (CAMERA_DISTANCE.powi(2) + CAMERA_SIDE.powi(2) + CAMERA_LIFT.powi(2)).sqrt();

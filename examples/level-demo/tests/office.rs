@@ -261,3 +261,45 @@ fn every_piece_of_furniture_stands_on_the_floor_or_on_something() {
         &hovering[..hovering.len().min(4)]
     );
 }
+
+/// Standing in the corridor with its back to the meeting room's glass wall (1.4 units behind the figure), the camera behind it
+/// looks through the glass from inside the meeting room instead of stopping in front of the glass.
+#[test]
+fn the_camera_behind_the_figure_looks_through_the_meeting_rooms_glass() {
+    let mut files = GameFiles::bundled().expect("the game folder");
+    torque_example_level_demo::levels::add_levels(&mut files).unwrap();
+    let office =
+        String::from_utf8_lossy(files.file("missions/office.mis").expect("the office map"))
+            .into_owned();
+    let spawn = format!(
+        "spawn = \"{} {} 0.2\"; spawnYaw = {};",
+        12.0 + CORNER[0],
+        13.6 + CORNER[1],
+        std::f32::consts::PI
+    );
+    let text = office.replace("spawn = \"-12.5 -15 0.2\"; spawnYaw = 0;", &spawn);
+    files.insert("missions/zz-office-glass.mis", text.as_bytes());
+    let mut game = LevelDemo::new(files).expect("the client");
+    let index = game
+        .maps
+        .iter()
+        .position(|m| m.path.ends_with("zz-office-glass.mis"))
+        .unwrap();
+    assert!(enter(&mut game, index), "the office did not start");
+    let mut eye = None;
+    for _ in 0..90 {
+        game.step(16);
+        game.update_scene(0.016);
+        eye = Some(game.drawn_eye());
+    }
+    let eye = eye.unwrap();
+    let figure = game.figure().expect("the figure").position;
+    // The glass's middle is at y 15 in the office's numbers.
+    let glass = 15.0 + CORNER[1];
+    assert!(figure[1] < glass - 1.0, "the figure at {figure:?}");
+    assert!(
+        eye.position[1] > glass + 1.0,
+        "the camera at {:?}, the glass at y {glass}",
+        eye.position
+    );
+}

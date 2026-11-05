@@ -144,8 +144,19 @@ The first development version. Nothing is published yet; this is what exists.
   their light, coverage and ground shadow, sunlight reddened by the air at each layer's height, and finer steps inside the
   clouds. `CloudLook::SUNLIT_CUMULUS` gives sunlit cumulus; without a look the clouds are as before. The vehicle demo uses
   it.
-- `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
-  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's Tab uses it.
+- `torque::app::camera_blend`: `CameraBlend`, a camera that moves from one mode's eye to another's on a switch (first person
+  to third and back): a critically damped spring on the offset from the new eye (95% of the way in `SETTLE_SECONDS`, 0.24 s,
+  never past it), worked out exactly for any frame time, carrying the camera's velocity through a switch and a switch
+  mid-way, kept out of walls and ground by the game's own rule; the level demo's, the arena's and the vehicle demo's Tab use
+  it.
+- `torque::app::camera_boom`: `CameraBoom`, a third-person camera's boom: five lines look for what is in the way (so a wall the
+  boom grazes keeps off the near plane), the camera comes in fast (`PULL_IN_SECONDS`) and goes out slowly
+  (`EASE_OUT_SECONDS`), and never moves through anything. The level demo's and the arena's camera behind the figure ride
+  it.
+- The examples' camera logs (`just examples/camera-log`): Tab in and out standing, walking, running, mid-turn and pressed
+  again, the camera behind the figure past walls and glass, and Tab while driving, frame by frame at 60 and 144 frames a
+  second as CSV (the camera's position, velocity and turn rate, the mode's eye and the figure), with `--render` the frames
+  too.
 - The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
   meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
   the engine's own classes to every client).
@@ -275,6 +286,16 @@ The first development version. Nothing is published yet; this is what exists.
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
+
+- The third-person Tab camera: a switch while walking, running or driving no longer stops the camera dead and lunges after
+  the figure (the camera's speed fell from the figure's to near 0 at the switch: 17 to 2 m/s in the buggy, 7 to 1 m/s in the
+  arena), and Tab pressed again mid-way no longer stops it at full speed (54 m/s to 0 in one frame); the move eases from
+  smoothstep's slow start and late peak to a quick start and a soft arrival, relative to the figure, so it never lags it.
+  The figure is hidden while the camera is within `CLOSE` of its eyes on the way in and out, so its head no longer fills
+  the view.
+- The level demo's camera behind the figure looks through glass instead of stopping in front of it, and comes in fast and
+  goes out slowly past walls, posts and furniture instead of jumping in and out (walking along the office's desks: 10 jumps
+  of up to a meter a frame before, 2 of 0.7 m after, where a hanging light crosses the line right by the camera).
 
 - `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
   Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any

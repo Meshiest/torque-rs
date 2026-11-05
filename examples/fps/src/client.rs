@@ -22,11 +22,13 @@
 //!
 //! **The camera** ([`ArenaGame::drawn_eye`]): at the own figure's eye, or with `Tab` ([`ArenaGame::third_person`]) behind it,
 //! [`CAMERA_DISTANCE`] back along its look, [`CAMERA_SIDE`] to its right and [`CAMERA_LIFT`] up, looking the same way (the
-//! crosshair stays on the shots' line far off), kept [`CAMERA_CLEARANCE`] in front of the first cube or interior wall between
-//! (their boxes; an interior's walls in the client's container). Backed against a wall, with less than [`CAMERA_NEAREST`] left behind the eye, the view is drawn as
-//! the first person's (the figure hidden, the pistol in view) until there is room again.
-//! `Tab` eases the camera from one to the other ([`CameraBlend`], each eye of the ease kept in front of walls the same way);
-//! the figure is hidden only once the camera has arrived at its eyes, and its pistol is drawn in its hand while it is seen.
+//! crosshair stays on the shots' line far off), on a boom from the eye ([`CameraBoom`]) kept [`CAMERA_CLEARANCE`] in front of
+//! the first cube or interior wall between (their boxes; an interior's walls in the client's container): pulled in fast when
+//! one comes between, let out slowly when it goes. Backed against a wall, with less than [`CAMERA_NEAREST`] left behind the
+//! eye, the view is drawn as the first person's (the figure hidden, the pistol in view) until there is room again.
+//! `Tab` moves the camera from one to the other ([`CameraBlend`], each eye of the move kept in front of walls the same way);
+//! the figure is hidden while the camera is close to its eyes ([`CLOSE`]), on the way in and on the way out, and its pistol is
+//! drawn in its hand while it is seen.
 //!
 //! Credit: the frame between the last two ticks follows `Player::interpolateTick` and the client's `ProcessList` in Torque3D's
 //! MIT-licensed `T3D/player.cpp` and `T3D/gameBase/processList.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
@@ -36,7 +38,8 @@ use std::net::Ipv4Addr;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use torque::app::camera_blend::CameraBlend;
+use torque::app::camera_blend::{CLOSE, CameraBlend};
+use torque::app::camera_boom::CameraBoom;
 use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
@@ -109,6 +112,11 @@ pub struct ArenaGame {
     camera_mode: Option<bool>,
     /// The camera behind the figure had less than [`CAMERA_NEAREST`] of room last frame.
     cramped: bool,
+    /// The camera behind the figure: its boom, and where the boom put it this frame.
+    boom: CameraBoom,
+    behind: Option<[f32; 3]>,
+    /// Where the camera was drawn last frame.
+    drawn_at: Option<[f32; 3]>,
 }
 
 impl Deref for ArenaGame {
@@ -178,6 +186,9 @@ impl ArenaGame {
             blend: CameraBlend::default(),
             camera_mode: None,
             cramped: false,
+            boom: CameraBoom::new(0.0, CAMERA_CLEARANCE),
+            behind: None,
+            drawn_at: None,
         })
     }
 
@@ -299,6 +310,8 @@ impl ArenaGame {
         self.scene.clear();
         self.blend.reset();
         self.camera_mode = None;
+        self.boom.reset();
+        self.behind = None;
     }
 
     /// `ms` of the clock (see the module docs).
@@ -428,8 +441,12 @@ impl ArenaGame {
             self.blend.switch();
         }
         self.blend.advance(dt);
-        // The figure is seen (and holds its pistol in its hand) unless the camera is at its eyes.
-        let seen = (behind && !self.cramped) || !self.blend.arrived();
+        // The figure is seen (and holds its pistol in its hand) unless the camera is close to its eyes.
+        let eyes = self.eye().position;
+        let seen = match self.drawn_at {
+            Some(p) => (0..3).map(|k| (p[k] - eyes[k]).powi(2)).sum::<f32>() >= CLOSE * CLOSE,
+            None => behind,
+        };
         let mut st = self.client.host.client.borrow_mut();
         match st.conn.conn.as_mut() {
             Some(conn) => {
@@ -443,7 +460,41 @@ impl ArenaGame {
             }
             None => self.scene.clear(),
         }
+        drop(st);
+        self.place_behind(dt);
         dt
+    }
+
+    /// The boom behind the figure moved on `dt` seconds (module docs); none while the camera is not behind it.
+    fn place_behind(&mut self, dt: f32) {
+        if !(self.in_game() && self.third_person() && self.scene.own().is_some()) {
+            self.boom.reset();
+            self.behind = None;
+            return;
+        }
+        let (at, back) = self.behind_line();
+        let d = [0, 1, 2].map(|k| back[k] - at[k]);
+        let full = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let mut boom = self.boom;
+        let point = boom.follow(at, d.map(|x| x / full), full, dt, |a, b| {
+            self.sight_share(a, b)
+        });
+        self.boom = boom;
+        self.behind = Some(point);
+    }
+
+    /// The figure's eye and where the camera behind it would be with nothing in the way (module docs).
+    fn behind_line(&self) -> ([f32; 3], [f32; 3]) {
+        let eye = self.eye();
+        let (sp, cp) = eye.pitch.sin_cos();
+        let (sy, cy) = eye.yaw.sin_cos();
+        let at = eye.position;
+        let back = [
+            at[0] - sy * cp * CAMERA_DISTANCE + cy * CAMERA_SIDE,
+            at[1] - cy * cp * CAMERA_DISTANCE - sy * CAMERA_SIDE,
+            at[2] + sp * CAMERA_DISTANCE + CAMERA_LIFT,
+        ];
+        (at, back)
     }
 
     /// Whether the camera is behind the figure (`Tab`: `$Arena::ThirdPerson`).
@@ -462,18 +513,14 @@ impl ArenaGame {
         if !(self.in_game() && self.third_person() && self.scene.own().is_some()) {
             return eye;
         }
-        let (sp, cp) = eye.pitch.sin_cos();
-        let (sy, cy) = eye.yaw.sin_cos();
-        let at = eye.position;
-        let back = [
-            at[0] - sy * cp * CAMERA_DISTANCE + cy * CAMERA_SIDE,
-            at[1] - cy * cp * CAMERA_DISTANCE - sy * CAMERA_SIDE,
-            at[2] + sp * CAMERA_DISTANCE + CAMERA_LIFT,
-        ];
-        Eye {
-            position: self.kept_clear(at, back),
-            ..eye
-        }
+        let position = match self.behind {
+            Some(p) => p,
+            None => {
+                let (at, back) = self.behind_line();
+                self.kept_clear(at, back)
+            }
+        };
+        Eye { position, ..eye }
     }
 
     /// The point `to`, brought [`CAMERA_CLEARANCE`] in front of the first cube or interior wall between `from` (the figure's
@@ -481,27 +528,32 @@ impl ArenaGame {
     fn kept_clear(&self, from: [f32; 3], to: [f32; 3]) -> [f32; 3] {
         let d = [0, 1, 2].map(|k| to[k] - from[k]);
         let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        if length < 1e-4 {
+        let Some(share) = self.sight_share(from, to) else {
             return to;
+        };
+        let reach = (share * length - CAMERA_CLEARANCE).max(0.0);
+        [0, 1, 2].map(|k| from[k] + d[k] / length * reach)
+    }
+
+    /// The share of the way from `from` to `to` at which the line first meets a cube's box or an interior wall, if it does.
+    fn sight_share(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+        let d = [0, 1, 2].map(|k| to[k] - from[k]);
+        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if length < 1e-4 {
+            return None;
         }
         let dir = d.map(|v| v / length);
         let mut st = self.client.host.client.borrow_mut();
-        let Some(conn) = st.conn.conn.as_mut() else {
-            return to;
-        };
-        let conn = &mut **conn;
+        let conn = &mut **st.conn.conn.as_mut()?;
         let mut first = crate::scene::cube_boxes(&conn.world.records)
             .into_iter()
             .filter_map(|(lo, hi)| torque_example_common::ray_box(from, dir, lo, hi))
-            .fold(length, f32::min);
+            .fold(length, f32::min)
+            / length;
         if let Some(hit) = conn.predict.cast_ray(&conn.world, from, to, CAMERA_MASK) {
-            first = first.min(hit.t * length);
+            first = first.min(hit.t);
         }
-        if first >= length {
-            return to;
-        }
-        let reach = (first - CAMERA_CLEARANCE).max(0.0);
-        [0, 1, 2].map(|k| from[k] + dir[k] * reach)
+        (first < 1.0).then_some(first)
     }
 
     /// The eye drawn this frame: [`ArenaGame::mode_eye`], eased from the last mode's after a switch.
@@ -522,9 +574,8 @@ impl ArenaGame {
             CAMERA_NEAREST
         };
         self.cramped = self.third_person() && blend.arrived() && room < least;
-        if self.cramped {
-            return self.eye();
-        }
+        let eye = if self.cramped { self.eye() } else { eye };
+        self.drawn_at = Some(eye.position);
         eye
     }
 

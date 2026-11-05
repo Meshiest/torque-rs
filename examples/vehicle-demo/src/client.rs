@@ -24,9 +24,9 @@
 //! canvas drawn, the hint line, and the eye: on foot behind the figure (or at its eyes, `Tab`); in a seat behind and above the
 //! buggy, turned round it by the mouse, kept above the ground, or (`Tab`) at the seated figure's eyes, looking along the buggy
 //! turned by the mouse as far as a head turns ([`VehicleDemo::seated_eye_point`]: just ahead of the face, so the head does not
-//! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` eases the camera from one to the other
-//! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden only once the camera has
-//! arrived at its eyes. Getting in or out cuts. The wheel moves each camera behind (on foot, behind the buggy) in or out within its
+//! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` moves the camera from one to the other
+//! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden while the camera is
+//! close to its eyes ([`CLOSE`]), on the way in and on the way out. Getting in or out cuts. The wheel moves each camera behind (on foot, behind the buggy) in or out within its
 //! own limits ([`FOOT_ZOOM`], [`DRIVE_ZOOM`]), eased ([`Zoom`]); in the first person it does nothing.
 
 use std::ops::{Deref, DerefMut};
@@ -34,7 +34,7 @@ use std::ops::{Deref, DerefMut};
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 
-use torque::app::camera_blend::CameraBlend;
+use torque::app::camera_blend::{CLOSE, CameraBlend};
 use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
 use torque::app::hosting::{join_address, lan_bind_address, register_join_natives};
 use torque::app::lights::WorldLights;
@@ -183,6 +183,8 @@ pub struct VehicleDemo {
     lights: WorldLights,
     /// The camera's ease between first and third person, and the mode it last eased to: (first person, seated).
     blend: CameraBlend,
+    /// Where the camera was drawn last frame.
+    drawn_at: Option<[f32; 3]>,
     camera_mode: Option<(bool, bool)>,
     /// The wheel's distances of the camera on foot and the one behind the buggy, each its own.
     foot_zoom: Zoom,
@@ -236,6 +238,7 @@ impl VehicleDemo {
             seat_eyes: [0, 1].map(torque_example_assets::buggy::seated_eye),
             lights: WorldLights::default(),
             blend: CameraBlend::default(),
+            drawn_at: None,
             camera_mode: None,
             foot_zoom: Zoom::new(CAMERA_DISTANCE, FOOT_ZOOM.0, FOOT_ZOOM.1),
             drive_zoom: Zoom::new(DRIVE_DISTANCE, DRIVE_ZOOM.0, DRIVE_ZOOM.1),
@@ -615,12 +618,14 @@ impl VehicleDemo {
     pub fn drawn_eye(&mut self, dt: f32) -> Eye {
         let target = self.eye(dt);
         let terrain = &self.terrain;
-        self.blend.eye(target, |mut p| {
+        let eye = self.blend.eye(target, |mut p| {
             if let Some(ground) = terrain.height(p[0], p[1]) {
                 p[2] = p[2].max(ground + DRIVE_CLEARANCE);
             }
             p
-        })
+        });
+        self.drawn_at = Some(eye.position);
+        eye
     }
 
     /// The distance of the third-person camera the mode has (on foot or behind the buggy), as the wheel left it.
@@ -838,7 +843,12 @@ impl VehicleDemo {
         self.keep_look_in_range();
         self.blend.advance(dt);
         self.zoom(dt);
-        let hide = mode.0 && !mode.1 && self.blend.arrived();
+        // On foot the figure is hidden while the camera is close to its eyes (module docs).
+        let hide = !mode.1
+            && match (self.figure(), self.drawn_at) {
+                (Some(f), Some(p)) => near_eyes(p, f.eye),
+                _ => mode.0,
+            };
         let mut st = self.client.host.client.borrow_mut();
         match st.conn.conn.as_mut() {
             Some(conn) => {
@@ -963,4 +973,9 @@ impl App for VehicleDemo {
 fn with_fov(mut eye: Eye) -> Eye {
     eye.fov = None;
     eye
+}
+
+/// Whether the camera drawn at `camera` is within [`CLOSE`] of a figure's `eyes`: the figure is hidden.
+fn near_eyes(camera: [f32; 3], eyes: [f32; 3]) -> bool {
+    (0..3).map(|k| (camera[k] - eyes[k]).powi(2)).sum::<f32>() < CLOSE * CLOSE
 }
