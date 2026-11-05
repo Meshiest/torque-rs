@@ -310,6 +310,10 @@ The first development version. Nothing is published yet; this is what exists.
 - The demos walk by default and sprint with Shift held (was: run, and walk with Shift); Ctrl held crouches and Z lies down or
   gets up, in the level, vehicle and arena demos and the character example, their hints and the justfile saying so. A hit in
   the arena plays a reaction away from the shot (`playerFlinch`, common/server.cs), the head's for a head shot.
+- Getting down and up between the crouch and prone (the engine's own): the step holds the Player still for 24 ticks lying down
+  and 27 pushing up (`pose::settling`), and crouched two ticks more before it stands; a shape's `prone_down` and `prone_up`
+  play to their end on the server and the clients alike (`PoseSets::way`), so the hitboxes and the eased first-person eye
+  follow the same timing. C crouches too in every demo (a browser closes its tab on Ctrl+W), and the hints say so.
 - `just examples/poses-clip`: a clip of the figure crouching, lying down, walking crouched, crawling, sprinting and reacting
   to hits from four sides and to the head, as another player's client draws it.
 - The guide (mdBook) and the API reference with no rustdoc warnings.

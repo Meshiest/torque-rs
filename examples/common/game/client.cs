@@ -34,8 +34,8 @@ function clearNote()
 
 // ---- the figure's poses
 //
-// Ctrl held crouches and Z lies down or gets up again: each is a move trigger the server reads as Torque3D names them
-// ($player::crouchTrigger 3 and $player::proneTrigger 1, set in common/server.cs), held while its count is odd. The server
+// Ctrl (or C: a browser closes its tab on Ctrl+W) held crouches and Z lies down or gets up again: each is a move trigger the
+// server reads as Torque3D names them ($player::crouchTrigger 3 and $player::proneTrigger 1, set in common/server.cs), held while its count is odd. The server
 // refuses a pose with no room for it (no standing up under a low ceiling) and shows the others the pose it chose. (The
 // figure walks by default and Shift sprints: each game's own moves.)
 $Pose::CrouchTrigger = 3;
@@ -47,6 +47,8 @@ function setTriggerHeld(%trigger, %held)
       $mvTriggerCount[%trigger] = %count + 1;
 }
 function crouchKey(%v) { setTriggerHeld($Pose::CrouchTrigger, %v); }
+// C's own function: an action map keeps one key for each function.
+function crouchKeyC(%v) { crouchKey(%v); }
 function proneKey(%v)
 {
    if (%v)
@@ -62,5 +64,6 @@ function releasePoseKeys()
 function bindPoseKeys(%map)
 {
    %map.bind(keyboard, lcontrol, crouchKey);
+   %map.bind(keyboard, c, crouchKeyC);
    %map.bind(keyboard, z, proneKey);
 }

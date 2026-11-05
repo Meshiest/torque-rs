@@ -29,7 +29,7 @@ min-client *args:
 assets dir="../target/example-assets":
     cargo run -p torque-example-assets -- {{dir}}
 
-# The animated character example in a window (W A S D walk, Shift sprint, Ctrl crouch, Z prone, Space jump, F pistol, mouse
+# The animated character example in a window (W A S D walk, Shift sprint, Ctrl or C crouch, Z prone, Space jump, F pistol, mouse
 # or Q/E orbit, Esc quit)
 character:
     cargo run -p torque-example-character --release
@@ -38,7 +38,7 @@ character:
 character-shots dir="../target/character-shots":
     cargo run -p torque-example-character --release -- --shots {{dir}}
 
-# The level demo in a window: a menu of maps, then the box figure on them (W A S D walk, Shift sprint, Ctrl crouch, Z prone,
+# The level demo in a window: a menu of maps, then the box figure on them (W A S D walk, Shift sprint, Ctrl or C crouch, Z prone,
 # Space jump, mouse look, Tab camera, R restart, Esc menu)
 level-demo:
     cargo run -p torque-example-level-demo --release

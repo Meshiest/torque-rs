@@ -13,8 +13,12 @@
 //!   whose shape has no `<pose>_root` plays the standing actions (sprinting, unless the shape has `sprint_root`).
 //! - **The pick** ([`pick_in`]): falling plays the table's `fall` in any pose; otherwise the pose's moving action whose ground
 //!   direction best fits the velocity past 0.1 (`side` also backwards), else its root, as TGE picks the standing ones.
-//! - **The blend** ([`pose_blend`]): an action of another pose blends in over a longer, eased transition, so the body lowers
-//!   and rises rather than snapping: [`CROUCH_BLEND`] seconds between standing and crouching, [`PRONE_BLEND`] to or from prone.
+//! - **The way down and up** ([`PoseSets::way`]): a shape with `prone_down` plays it, to its end, when the Player goes prone
+//!   from the crouch (or from standing), and `prone_up` when it gets up from prone: the body lowers to a knee, puts its
+//!   hands down and lies flat, or pushes up to the crouch, in the ticks the step keeps the Player still for it.
+//! - **The blend** ([`blend_for`]): an action of another pose blends in over a longer, eased transition, so the body lowers
+//!   and rises rather than snapping: [`CROUCH_BLEND`] seconds between standing and crouching, [`PRONE_BLEND`] to or from prone
+//!   (without a way down or up), [`WAY_BLEND`] into a way down or up from the pose it starts in.
 //!
 //! Credit: the names and the choice follow `PlayerData::ActionAnimationList` and `Player::pickActionAnimation` in Torque3D's
 //! MIT-licensed `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is
@@ -30,8 +34,16 @@ use super::ground::ActionMotion;
 
 /// The seconds a change between standing and crouching blends over.
 pub const CROUCH_BLEND: f32 = 0.3;
-/// The seconds a change to or from prone blends over.
+/// The seconds a change to or from prone blends over when the shape has no way down or up of its own (`prone_down`,
+/// `prone_up`).
 pub const PRONE_BLEND: f32 = 0.55;
+/// The seconds getting down from the crouch to prone and pushing up again take (the step's ticks, `::sim`'s
+/// `PRONE_DOWN_TICKS` and `PRONE_UP_TICKS`): the eye's ease between the two.
+pub const PRONE_DOWN_SECONDS: f32 =
+    ::sim::player::pose::PRONE_DOWN_TICKS as f32 * ::sim::player::DT;
+pub const PRONE_UP_SECONDS: f32 = ::sim::player::pose::PRONE_UP_TICKS as f32 * ::sim::player::DT;
+/// The seconds a way down or up (`prone_down`, `prone_up`) blends in over from the crouch or prone it starts in.
+pub const WAY_BLEND: f32 = 0.12;
 /// The smallest match a moving action must beat to be chosen over the root (TGE's 0.1).
 pub const MIN_MATCH: f32 = 0.1;
 
@@ -134,6 +146,9 @@ pub struct PoseActions {
     pub backward: Option<usize>,
     /// A step to the left (played backward, to the right).
     pub side: Option<usize>,
+    /// The way into the pose from the crouch (`<pose>_down`), and out of it up to the crouch (`<pose>_up`).
+    pub down: Option<usize>,
+    pub up: Option<usize>,
 }
 
 impl PoseActions {
@@ -143,7 +158,9 @@ impl PoseActions {
     }
 
     fn contains(&self, action: usize) -> bool {
-        self.root == Some(action) || self.moves().contains(&Some(action))
+        self.root == Some(action)
+            || self.down == Some(action)
+            || self.moves().contains(&Some(action))
     }
 }
 
@@ -191,6 +208,8 @@ impl PoseSets {
                     b"forward" if moves => set.forward = set.forward.or(Some(i)),
                     b"backward" if moves => set.backward = set.backward.or(Some(i)),
                     b"side" if moves => set.side = set.side.or(Some(i)),
+                    b"down" => set.down = set.down.or(Some(i)),
+                    b"up" => set.up = set.up.or(Some(i)),
                     _ => {}
                 }
             }
@@ -204,8 +223,12 @@ impl PoseSets {
         set.root.is_some().then_some(set)
     }
 
-    /// The pose an action belongs to (standing for the table's and every other).
+    /// The pose an action belongs to (standing for the table's and every other; a way down to the pose it lies down in, a way
+    /// up to the crouch it rises to).
     pub fn pose_of(&self, action: usize) -> Pose {
+        if self.sets.iter().any(|s| s.up == Some(action)) {
+            return Pose::Crouch;
+        }
         [Pose::Sprint, Pose::Crouch, Pose::Prone]
             .into_iter()
             .find(|p| self.sets[index(*p)].contains(action))
@@ -215,6 +238,26 @@ impl PoseSets {
     /// Whether the action is a pose's moving one (its rate follows the ground covered, as `run`'s does).
     pub fn is_moving(&self, action: usize) -> bool {
         self.sets.iter().any(|s| s.moves().contains(&Some(action)))
+    }
+
+    /// Whether the action is a way down or up.
+    pub fn is_way(&self, action: usize) -> bool {
+        self.sets
+            .iter()
+            .any(|s| s.down == Some(action) || s.up == Some(action))
+    }
+
+    /// The way down or up to play before the actions of `pose` (see the module docs), the action playing being `now`: prone's
+    /// way down when it is not lying down yet, its way up when it lies down and the pose is not prone; none otherwise, or when
+    /// the shape has no such way.
+    pub fn way(&self, now: usize, pose: Pose) -> Option<usize> {
+        let prone = self.of_pose(Pose::Prone)?;
+        let lying = self.pose_of(now) == Pose::Prone;
+        match (pose == Pose::Prone, lying) {
+            (true, false) => prone.down,
+            (false, true) if Some(now) != prone.down || pose != Pose::Prone => prone.up,
+            _ => None,
+        }
     }
 
     /// The pose's action that plays when the Player stands still in it (its root), if the shape has the pose.
@@ -244,17 +287,32 @@ pub fn pick_in(set: &PoseActions, v: F3, dir_of: impl Fn(usize) -> F3) -> Option
     Some(chosen)
 }
 
-/// The seconds a change from an action of pose `from` to one of pose `to` blends over, eased; none when the two are the same
-/// pose (the usual blend).
+/// The seconds a change from pose `from` to pose `to` eases over; none when the two are the same pose (the usual blend). Between
+/// the crouch and prone it is the time the body takes to get down or up (the eye's ease follows it).
 pub fn pose_blend(from: Pose, to: Pose) -> Option<f32> {
-    let lowness = |p: Pose| match p {
-        Pose::Stand | Pose::Sprint => 0,
-        Pose::Crouch => 1,
-        Pose::Prone => 2,
-    };
-    match (lowness(from), lowness(to)) {
+    match (from.lowness(), to.lowness()) {
         (a, b) if a == b => None,
+        (1, 2) => Some(PRONE_DOWN_SECONDS),
+        (2, 1) => Some(PRONE_UP_SECONDS),
         (a, b) if a == 2 || b == 2 => Some(PRONE_BLEND),
+        _ => Some(CROUCH_BLEND),
+    }
+}
+
+/// The seconds the action `to` blends in over from the action `from`, eased (none: the usual blend): a way down or up blends
+/// in quickly from the pose it starts in, and the pose after it as usual; another change of pose over its own blend, prone's
+/// without a way down or up over [`PRONE_BLEND`].
+pub fn blend_for(sets: &PoseSets, from: usize, to: usize) -> Option<f32> {
+    if sets.is_way(to) {
+        return Some(WAY_BLEND);
+    }
+    if sets.is_way(from) {
+        return None;
+    }
+    let (a, b) = (sets.pose_of(from), sets.pose_of(to));
+    match (a.lowness(), b.lowness()) {
+        (x, y) if x == y => None,
+        (x, y) if x == 2 || y == 2 => Some(PRONE_BLEND),
         _ => Some(CROUCH_BLEND),
     }
 }

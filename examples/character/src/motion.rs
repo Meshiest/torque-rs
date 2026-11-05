@@ -5,7 +5,8 @@
 //! ([`Input::prone`]) [`State::Prone`] or [`State::Crawl`], each slower ([`Sequences::crouch_speed`],
 //! [`Sequences::crawl_speed`]) and unable to jump. A change between standing and lying down kneels on the way (it goes through
 //! the crouch until that blend is done), and a change of pose blends slower and eased ([`POSE_BLEND`], [`PRONE_BLEND`]), so the
-//! body lowers and rises rather than snapping. The input sets a wished direction (relative to the camera) and whether to run; the ground speed
+//! body lowers and rises rather than snapping. Between the crouch and prone it plays the way down or up ([`State::ProneDown`],
+//! [`State::ProneUp`]: `prone_down`, `prone_up`) to its end, standing still meanwhile. The input sets a wished direction (relative to the camera) and whether to run; the ground speed
 //! eases toward the wished speed, so a figure starting to move walks before it runs, and one stopping walks before it stands.
 //!
 //! **Threads.** One thread plays the state's sequence. A change of state is a transition (TGE's `transitionToSequence`, as a
@@ -35,6 +36,8 @@ pub const TRANSITION: f32 = 0.25;
 /// Seconds a change between standing and crouching blends over, and one to or from prone (eased: the engine's own poses).
 pub const POSE_BLEND: f32 = torque::game::sim::player::poses::CROUCH_BLEND;
 pub const PRONE_BLEND: f32 = torque::game::sim::player::poses::PRONE_BLEND;
+/// Seconds a way down or up blends in over (the engine's own).
+pub const WAY_BLEND: f32 = torque::game::sim::player::poses::WAY_BLEND;
 /// Seconds the `hold` pose takes to come in or go out.
 pub const HOLD_BLEND: f32 = 0.2;
 /// Where in the `hold` sequence the arm aims level (the sequence runs from aiming up to aiming down).
@@ -61,6 +64,9 @@ pub enum State {
     CrouchWalk,
     Prone,
     Crawl,
+    /// Getting down from the crouch to prone, and pushing up from prone to the crouch.
+    ProneDown,
+    ProneUp,
 }
 
 impl State {
@@ -74,14 +80,16 @@ impl State {
             State::CrouchWalk => "crouch walk",
             State::Prone => "prone",
             State::Crawl => "crawl",
+            State::ProneDown => "getting down",
+            State::ProneUp => "getting up",
         }
     }
 
     /// How low the state is: standing 0, crouched 1, lying down 2.
     fn lowness(self) -> i32 {
         match self {
-            State::Crouch | State::CrouchWalk => 1,
-            State::Prone | State::Crawl => 2,
+            State::Crouch | State::CrouchWalk | State::ProneUp => 1,
+            State::Prone | State::Crawl | State::ProneDown => 2,
             _ => 0,
         }
     }
@@ -136,6 +144,9 @@ pub struct Sequences {
     pub crawl: usize,
     pub crouch_speed: f32,
     pub crawl_speed: f32,
+    /// The ways down to prone and up from it, when the shape has them.
+    pub prone_down: Option<usize>,
+    pub prone_up: Option<usize>,
 }
 
 impl Sequences {
@@ -160,6 +171,8 @@ impl Sequences {
             crawl,
             crouch_speed: ground_speed(shape, crouch_walk),
             crawl_speed: ground_speed(shape, crawl),
+            prone_down: seq("prone_down"),
+            prone_up: seq("prone_up"),
         };
         (s.walk_speed > 0.0
             && s.run_speed > s.walk_speed
@@ -178,6 +191,8 @@ impl Sequences {
             State::CrouchWalk => self.crouch_walk,
             State::Prone => self.prone,
             State::Crawl => self.crawl,
+            State::ProneDown => self.prone_down.unwrap_or(self.prone),
+            State::ProneUp => self.prone_up.unwrap_or(self.crouch),
         }
     }
 }
@@ -335,7 +350,10 @@ impl Figure {
         if length > 1.0 {
             wish = wish.map(|v| v / length);
         }
-        let top = if input.prone {
+        let way = matches!(self.state, State::ProneDown | State::ProneUp);
+        let top = if way {
+            0.0
+        } else if input.prone {
             self.sequences.crawl_speed
         } else if input.crouch {
             self.sequences.crouch_speed
@@ -398,7 +416,14 @@ impl Figure {
             low
         };
         let moving = speed >= IDLE_BELOW;
-        let next = if self.position[2] > 0.0 || self.velocity[2] > 0.0 {
+        let next = if way && self.thread().pos < 1.0 {
+            // A way down or up plays to its end.
+            self.state
+        } else if low == 2 && self.state.lowness() == 1 && self.sequences.prone_down.is_some() {
+            State::ProneDown
+        } else if low < 2 && self.state.lowness() == 2 && self.sequences.prone_up.is_some() {
+            State::ProneUp
+        } else if self.position[2] > 0.0 || self.velocity[2] > 0.0 {
             State::Jump
         } else if low == 2 {
             if moving { State::Crawl } else { State::Prone }
@@ -424,7 +449,12 @@ impl Figure {
             State::Run => speed / self.sequences.run_speed,
             State::CrouchWalk => speed / self.sequences.crouch_speed,
             State::Crawl => speed / self.sequences.crawl_speed,
-            State::Idle | State::Jump | State::Crouch | State::Prone => 1.0,
+            State::Idle
+            | State::Jump
+            | State::Crouch
+            | State::Prone
+            | State::ProneDown
+            | State::ProneUp => 1.0,
         };
         if let Some(t) = self.instance.thread_mut(self.thread) {
             t.time_scale = scale;
@@ -446,7 +476,12 @@ impl Figure {
         let seq = self.sequences.of_state(state);
         // A change of pose blends slower and eased: the body lowers and rises.
         let (from, to) = (self.state.lowness(), state.lowness());
-        if from == to {
+        if matches!(state, State::ProneDown | State::ProneUp) {
+            // A way down or up starts at its start, blending in quickly from the pose it starts in.
+            self.instance
+                .transition_to_sequence_eased(shape, self.thread, seq, 0.0, WAY_BLEND);
+            self.from_low = from;
+        } else if from == to {
             self.instance
                 .transition_to_sequence(shape, self.thread, seq, pos, TRANSITION);
         } else {

@@ -278,6 +278,37 @@ fn figure() -> ShapeBuilder {
         Vec::new(),
         along(CRAWL_SPEED, 1.2),
     ));
+    // The way down from the crouch to prone and back up over 0.768 and 0.864 seconds, over every other thread: the base turning
+    // over, the legs straightening and the torso rising back onto its hips, so each ends in the pose the next action starts in.
+    let between = |a: f32, b: f32| (0..4).map(move |k| a + (b - a) * k as f32 / 3.0);
+    for (name, seconds, down) in [("prone_down", 0.768, true), ("prone_up", 0.864, false)] {
+        let (from, to) = if down { (0.0, 1.0) } else { (1.0, 0.0) };
+        let lie = || between(from, to);
+        let legs = |node| Track {
+            node,
+            keys: lie().map(|w| turn(X, 40.0 * (1.0 - w))).collect(),
+        };
+        let mut def = sequence(
+            name,
+            seconds,
+            false,
+            vec![
+                Track {
+                    node: base,
+                    keys: lie().map(|w| turn(X, -90.0 * w)).collect(),
+                },
+                legs(lleg),
+                legs(rleg),
+            ],
+            vec![Track {
+                node: torso,
+                keys: lie().map(|w| [0.0, 0.0, 0.6 + 0.4 * w]).collect(),
+            }],
+            Vec::new(),
+        );
+        def.priority = 2;
+        b.sequence(def);
+    }
     b.blend_sequence(SequenceDef {
         name: "flinch_front",
         duration: 0.3,
@@ -650,7 +681,7 @@ fn next_pose(s: &Server, id: ObjId, t: &[bool; 6]) -> Pose {
     let asked = PoseTriggers::default().asked(t);
     let kneeling = st.pose == Pose::Crouch
         && st.pose_from.far_from(asked)
-        && st.pose_ticks + 1 < ::sim::player::pose::KNEEL_TICKS;
+        && st.pose_ticks + 1 < ::sim::player::pose::kneel_ticks(st.pose_from);
     if st.pose.far_from(asked) || kneeling {
         Pose::Crouch
     } else {
@@ -675,11 +706,13 @@ fn a_crouching_crawling_figure_is_posed_alike_by_the_server_and_the_client_in_ea
     let (id, mut drawn) = runner(&mut s, "Croucher", "Posed", 0.0, true);
     let actions = torque_client::player_anim::action_list(&drawn.shape);
     let action = |name: &[u8]| actions.iter().position(|a| a.name == name).unwrap() as u32;
-    let (crouch, crouch_walk, prone, crawl) = (
+    let (crouch, crouch_walk, prone, crawl, down, up) = (
         action(b"crouch_root"),
         action(b"crouch_forward"),
         action(b"prone_root"),
         action(b"prone_forward"),
+        action(b"prone_down"),
+        action(b"prone_up"),
     );
     let mut seen = Vec::new();
     let (mut worst, mut boxes) = (0.0f32, Vec::new());
@@ -711,11 +744,18 @@ fn a_crouching_crawling_figure_is_posed_alike_by_the_server_and_the_client_in_ea
             let st = torque_game::sim::player::state(&s.vm, id).unwrap();
             if tick >= 10 {
                 worst = worst.max(apart(&server, &client));
-                assert_eq!(
-                    (st.action_anim, true),
-                    (drawn.anim.action().0 as u32, drawn.anim.action().1),
-                    "tick {tick}: the server plays what the client draws"
-                );
+                // A way down or up ends within a tick on the client and at the tick's end on the server (they meet the next
+                // tick, in the same place: the way ends where the next action starts).
+                let drawn_action = drawn.anim.action().0 as u32;
+                let way_ending =
+                    [down, up].contains(&st.action_anim) && drawn_action != st.action_anim;
+                if !way_ending {
+                    assert_eq!(
+                        (st.action_anim, true),
+                        (drawn_action, drawn.anim.action().1),
+                        "tick {tick}: the server plays what the client draws"
+                    );
+                }
             }
             if seen.last() != Some(&st.action_anim) {
                 seen.push(st.action_anim);
@@ -728,15 +768,14 @@ fn a_crouching_crawling_figure_is_posed_alike_by_the_server_and_the_client_in_ea
         worst < 0.01,
         "the server's hitbox nodes are within {worst} of the client's"
     );
-    for a in [crouch, crouch_walk, prone, crawl] {
+    for a in [crouch, crouch_walk, prone, crawl, down, up] {
         assert!(seen.contains(&a), "action {a} played: {seen:?}");
     }
-    // Up from prone it kneels on the way: the crouch comes between the crawl and standing.
-    let up = seen
-        .iter()
-        .rposition(|a| *a == crawl || *a == prone)
-        .unwrap();
-    assert_eq!(seen[up + 1], crouch, "{seen:?}");
+    // Down from the crouch by way of `prone_down`, and up from prone by way of `prone_up` into the crouch, then standing.
+    let lie = seen.iter().position(|a| *a == down).unwrap();
+    assert!([crouch, crouch_walk].contains(&seen[lie - 1]), "{seen:?}");
+    let rise = seen.iter().rposition(|a| *a == up).unwrap();
+    assert_eq!(&seen[rise + 1..rise + 3], &[crouch, 0], "{seen:?}");
     // Each pose's box is its own.
     for (pose, top) in boxes {
         let want = match pose {

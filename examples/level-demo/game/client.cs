@@ -105,7 +105,7 @@ new GameTSCtrl(PlayGui)
       new GuiTextCtrl(PlayHelp)
       {
          profile = WorldDimProfile; position = "170 5"; extent = "620 18"; horizSizing = "width"; visible = true; enabled = true;
-         text = "W A S D walk   Shift sprint   Ctrl crouch   Z prone   Space jump   Mouse look   Tab camera   R restart   Esc menu";
+         text = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump   Mouse look   Tab camera   R restart   Esc menu";
       };
    };
    new GuiTextCtrl(PlayNote)

@@ -250,7 +250,11 @@ pub(super) fn move_speed(s: &PlayerState, db: &PlayerData, mv: &Move) -> f32 {
             db.max_underwater_side_speed,
         ]
     } else {
-        // The pose's own speeds (the datablock's standing ones unless it allows poses, [`super::pose`]).
+        // The pose's own speeds (the datablock's standing ones unless it allows poses, [`super::pose`]); none while getting
+        // down or up.
+        if super::pose::settling(s) {
+            return 0.0;
+        }
         let p = db.poses.speeds(db, s.pose);
         [p.forward, p.backward, p.side]
     };

@@ -504,7 +504,7 @@ new GameTSCtrl(PlayGui)
       new GuiTextCtrl(PoseHelp)
       {
          profile = ArenaDimProfile; position = "10 24"; extent = "442 18"; visible = true; enabled = true;
-         text = "W A S D walk   Shift sprint   Ctrl crouch   Z prone   Space jump";
+         text = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump";
       };
    };
 };

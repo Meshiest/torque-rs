@@ -1,7 +1,8 @@
 //! A clip of the kit's figure crouching, lying down, moving in each pose and reacting to hits, drawn offscreen for review as
 //! another player's client draws it: its threads run by the client's animation ([`torque::client::player_anim`]) from the
 //! pose, the velocity and the script threads a record gives, as a ghost's are. The pose is the one a server shows: between
-//! standing and prone it kneels in the crouch on the way ([`torque::sim::player::pose::KNEEL_TICKS`]). In order:
+//! standing and prone it kneels in the crouch on the way ([`torque::sim::player::pose::kneel_ticks`]), and between the crouch
+//! and prone it gets down or pushes up (`prone_down`, `prone_up`). In order:
 //!
 //! 1. standing, crouching, standing up, lying down and getting up (the blends between poses);
 //! 2. the crouched walk forward, the crouched side step to the left and the crouched walk backward;
@@ -16,7 +17,11 @@
 //!
 //! The frames go to `ffmpeg` (on the path) as `poses-clip.mp4`; a strip of a few frames goes beside it as `poses-clip.png`.
 //!
-//! `cargo run -p torque-example-common --release --example poses-clip -- <dir>` (default `poses-clip`)
+//! With `transitions` after the folder, the clip is only the changes between poses (crouch to prone and back, standing to prone
+//! and back, then the same holding a pistol), as `poses-transitions.mp4`; with a number after that, it plays that many times
+//! slower (`poses-transitions-x4.mp4` for 4).
+//!
+//! `cargo run -p torque-example-common --release --example poses-clip -- <dir> [transitions [slower]]` (default `poses-clip`)
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -68,6 +73,31 @@ const fn hit(pose: Pose, name: &'static str) -> Stretch {
 }
 
 const STILL: [f32; 2] = [0.0, 0.0];
+
+/// The changes between poses only.
+fn transitions() -> Vec<Stretch> {
+    use Pose::*;
+    let held = |seconds: f32, pose: Pose| Stretch {
+        seconds,
+        pose,
+        velocity: STILL,
+        hold: true,
+        hit: None,
+    };
+    vec![
+        s(0.8, Stand, STILL),
+        s(1.2, Crouch, STILL),
+        s(2.0, Prone, STILL),
+        s(2.0, Crouch, STILL),
+        s(1.4, Stand, STILL),
+        s(2.4, Prone, STILL),
+        s(2.4, Stand, STILL),
+        held(1.2, Crouch),
+        held(2.0, Prone),
+        held(2.0, Crouch),
+        held(1.2, Stand),
+    ]
+}
 
 fn stretches() -> Vec<Stretch> {
     use Pose::*;
@@ -123,6 +153,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| "poses-clip".to_string()),
     );
     std::fs::create_dir_all(&dir)?;
+    let only_transitions = std::env::args().nth(2).as_deref() == Some("transitions");
+    let slower: f32 = std::env::args()
+        .nth(3)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(1.0f32)
+        .max(1.0);
+    let name = if !only_transitions {
+        "poses-clip".to_string()
+    } else if slower > 1.0 {
+        format!("poses-transitions-x{slower}")
+    } else {
+        "poses-transitions".to_string()
+    };
     let gpu = offscreen_gpu()?;
     let assets = KitAssets::new()?;
     let figure = SceneShape::load(&assets, &kit_path("figure.dts")).ok_or("figure.dts")?;
@@ -142,7 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let (w, h) = (2 * VIEW.0, VIEW.1 + BAR);
-    let mp4 = dir.join("poses-clip.mp4");
+    let mp4 = dir.join(format!("{name}.mp4"));
     let mut ffmpeg = Command::new("ffmpeg")
         .args([
             "-y",
@@ -171,13 +214,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .stdin(Stdio::piped())
         .spawn()?;
     let mut pipe = ffmpeg.stdin.take().ok_or("no ffmpeg input")?;
-    let dt = 1.0 / FPS as f32;
-    let plan = stretches();
+    // Each frame is a slice of the clip's own time: a slower clip takes smaller ones.
+    let dt = 1.0 / FPS as f32 / slower;
+    let plan = if only_transitions {
+        transitions()
+    } else {
+        stretches()
+    };
     let total: f32 = plan.iter().map(|s| s.seconds).sum();
-    let frames = (total * FPS as f32) as usize;
+    let frames = (total * FPS as f32 * slower) as usize;
     let (mut at, mut velocity, mut strip) = ([0.0f32; 2], [0.0f32; 2], Vec::new());
     // The pose the server shows, the one before it and the seconds since it changed.
-    let kneel = torque::sim::player::pose::KNEEL_TICKS as f32 * 0.032;
+    let kneel = |from: Pose| torque::sim::player::pose::kneel_ticks(from) as f32 * 0.032;
     let (mut shown, mut from, mut since) = (Pose::Stand, Pose::Stand, 0.0f32);
     let strip_every = frames / 8;
     for k in 0..frames {
@@ -191,7 +239,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             start += stretch.seconds;
         }
         since += dt;
-        let kneeling = shown == Pose::Crouch && from.far_from(now.pose) && since < kneel;
+        let kneeling = shown == Pose::Crouch && from.far_from(now.pose) && since < kneel(from);
         let next = if shown.far_from(now.pose) || kneeling {
             Pose::Crouch
         } else {
@@ -316,7 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("ffmpeg failed".into());
     }
     println!("{}", mp4.display());
-    let png = dir.join("poses-clip.png");
+    let png = dir.join(format!("{name}.png"));
     let rows = strip.len() as u32;
     let bytes = torque_example_assets::textures::png(w, h * rows, |x, y| {
         let f = &strip[(y / h) as usize];

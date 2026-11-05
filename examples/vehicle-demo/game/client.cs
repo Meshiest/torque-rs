@@ -259,7 +259,7 @@ function pollJoinLookup()
 
 // ---- the world's view
 
-$World::FootHelp = "W A S D walk   Shift sprint   Ctrl crouch   Z prone   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
+$World::FootHelp = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
 $World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   F light   Mouse turns the camera   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
 $World::RideHelp = "Mouse looks around   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
 

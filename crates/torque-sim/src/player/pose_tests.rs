@@ -89,15 +89,15 @@ fn the_triggers_crouch_lie_down_and_stand_with_each_poses_box() {
     );
     assert_eq!(p.s.pose, Pose::Prone);
     assert_eq!(p.s.obj_box.max, [1.0, 1.0, 0.7]);
-    // Letting go stands it up again by way of the crouch: crouched for its ticks, then standing.
+    // Letting go stands it up again by way of the crouch: crouched while it pushes up and two ticks more, then standing.
     let mut poses = Vec::new();
-    for _ in 0..KNEEL_TICKS + 2 {
+    for _ in 0..PRONE_UP_TICKS + 3 {
         run(&mut p, &db, &mut h, &Move::default(), 1);
         poses.push(p.s.pose);
     }
     assert_eq!(poses[0], Pose::Crouch);
     let kneel = poses.iter().filter(|q| **q == Pose::Crouch).count();
-    assert_eq!(kneel, KNEEL_TICKS as usize, "{poses:?}");
+    assert_eq!(kneel, PRONE_UP_TICKS as usize + 2, "{poses:?}");
     assert_eq!(p.s.pose, Pose::Stand);
     assert_eq!(p.s.obj_box.max[2], db.bounding_box[2]);
     run(&mut p, &db, &mut h, &held(&[5], 0.0), 1);
@@ -286,4 +286,48 @@ fn a_record_shows_the_pose_chosen_in_its_triggers() {
     assert_eq!(d.shown(&triggers), Pose::Crouch);
     d.show(Pose::Stand, &mut triggers);
     assert_eq!(d.shown(&triggers), Pose::Stand);
+}
+
+#[test]
+fn getting_down_and_up_between_the_crouch_and_prone_holds_the_player_still() {
+    let db = posed();
+    let mut h = TestHost::new(vec![floor(100)]);
+    let mut p = player(&db, [0.0, 0.0, 0.0]);
+    run(
+        &mut p,
+        &db,
+        &mut h,
+        &held(&[3], 0.0),
+        KNEEL_TICKS as usize + 2,
+    );
+    assert_eq!(p.s.pose, Pose::Crouch);
+    // Lying down while pushing ahead: still for the ticks the body takes to get down, then crawling.
+    let mut still = 0;
+    for _ in 0..PRONE_DOWN_TICKS + 20 {
+        run(&mut p, &db, &mut h, &held(&[3, 4], 1.0), 1);
+        assert_eq!(p.s.pose, Pose::Prone);
+        if p.s.velocity[1].abs() < 1e-3 {
+            still += 1;
+        }
+    }
+    assert_eq!(still, PRONE_DOWN_TICKS as usize, "still while getting down");
+    assert!(p.s.velocity[1] > 0.5, "then it crawls: {:?}", p.s.velocity);
+    // Up to the crouch: still while it pushes up, then moving crouched.
+    let mut still = 0;
+    for _ in 0..PRONE_UP_TICKS + 20 {
+        run(&mut p, &db, &mut h, &held(&[3], 1.0), 1);
+        assert_eq!(p.s.pose, Pose::Crouch);
+        if p.s.velocity[1].abs() < 1e-2 {
+            still += 1;
+        }
+    }
+    assert!(
+        still >= PRONE_UP_TICKS as usize - 2,
+        "still while pushing up: {still}"
+    );
+    assert!(
+        p.s.velocity[1] > 1.0,
+        "then crouch walking: {:?}",
+        p.s.velocity
+    );
 }

@@ -130,9 +130,7 @@ impl HostSkeleton {
         let force = self.synced && now == Some((action as usize, !forward));
         // An action of another pose blends in slower and eased, as the clients blend it.
         let sets = &self.info.pose_sets;
-        let pose_blend = now.and_then(|(a, _)| {
-            super::poses::pose_blend(sets.pose_of(a), sets.pose_of(action as usize))
-        });
+        let pose_blend = now.and_then(|(a, _)| super::poses::blend_for(sets, a, action as usize));
         let Some(st) = self.st.as_mut() else {
             return;
         };
@@ -214,6 +212,15 @@ impl HostSkeleton {
                 now,
             );
             (action, forward) = (u32::try_from(a).unwrap_or(action), f);
+        }
+        // A synced Player plays the way down or up between the crouch and prone to its end first, as the clients do.
+        let now = self.threads().map_or(usize::MAX, |p| p.action as usize);
+        if self.synced
+            && !s.falling
+            && let Some(way) = self.info.pose_sets.way(now, s.pose)
+        {
+            self.set_action(s, way as u32, true, false, true, false);
+            return;
         }
         // A pose with actions of its own picks among them (the engine's poses, [`poses`](super::poses)); falling keeps the fall.
         if !s.falling

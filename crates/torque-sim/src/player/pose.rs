@@ -6,9 +6,13 @@
 //!   Torque3D's order: prone when its trigger is held and the Player may lie down, else crouched, else sprinting, else standing
 //!   when there is room to; a Player that has no room to stand stays as it is (from prone it crouches when there is room
 //!   for that, the engine's own step). A pose a datablock does not allow ([`PoseData`]) is never picked.
-//! - **By way of the crouch** (the engine's own): between standing and prone the Player crouches first, for [`KNEEL_TICKS`]
-//!   ticks, when it may, so its body kneels on the way down and up instead of tipping over like a plank; the clients draw the
-//!   crouch the server shows them, at the same ticks.
+//! - **By way of the crouch** (the engine's own): between standing and prone the Player crouches first, when it may: for
+//!   [`KNEEL_TICKS`] on the way down, and on the way up for [`PRONE_UP_TICKS`] and two more (the time its shape takes to push
+//!   up from the ground to the crouch, and a moment in the crouch, so a client a tick ahead of the server's end of it still
+//!   rises from the crouch as the server does); the clients draw the crouch the server shows them, at the same ticks.
+//! - **Getting down and up** (the engine's own): a Player that has just gone prone from the crouch, or crouched from prone,
+//!   does not move for [`PRONE_DOWN_TICKS`] or [`PRONE_UP_TICKS`] ([`settling`]): its shape is lying down or pushing up then
+//!   (`prone_down`, `prone_up`), and its feet and hands stay where they touch the ground.
 //! - **The room**: a change to a taller pose (or to prone, whose box is longer) needs the new box clear of the static world (the
 //!   terrain, interiors and static shapes, not other Players): its sides pulled in by [`ROOM_INSET`] and its bottom raised by
 //!   [`ROOM_FLOOR`] so the floor and walls the Player stands against do not count. Under a low ceiling a crouched Player stays
@@ -42,6 +46,28 @@ pub const ROOM_INSET: f32 = 0.02;
 pub const ROOM_FLOOR: f32 = 0.05;
 /// The ticks a Player stays crouched on its way between standing and prone (about the crouch's own blend).
 pub const KNEEL_TICKS: u32 = 10;
+/// The ticks a Player takes to lie down from the crouch and to push up to it again (0.768 s and 0.864 s: the kit figure's
+/// `prone_down` and `prone_up`).
+pub const PRONE_DOWN_TICKS: u32 = 24;
+pub const PRONE_UP_TICKS: u32 = 27;
+
+/// Whether the Player is getting down or up between the crouch and prone (see the module docs): it does not move meanwhile.
+pub fn settling(s: &PlayerState) -> bool {
+    match (s.pose_from, s.pose) {
+        (Pose::Stand | Pose::Sprint | Pose::Crouch, Pose::Prone) => s.pose_ticks < PRONE_DOWN_TICKS,
+        (Pose::Prone, Pose::Crouch) => s.pose_ticks < PRONE_UP_TICKS,
+        _ => false,
+    }
+}
+
+/// The ticks a Player stays crouched on its way from `from` to a pose far from it (standing and prone).
+pub fn kneel_ticks(from: Pose) -> u32 {
+    if from == Pose::Prone {
+        PRONE_UP_TICKS + 2
+    } else {
+        KNEEL_TICKS
+    }
+}
 
 /// A Player's pose (Torque3D's `Player::Pose`, without swimming).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
@@ -418,8 +444,9 @@ pub fn update_pose(
         }
         // Between standing and prone by way of the crouch, kneeling there for its ticks (when it may crouch).
         let s = &p.s;
-        let kneeling =
-            s.pose == Pose::Crouch && s.pose_from.far_from(pose) && s.pose_ticks < KNEEL_TICKS;
+        let kneeling = s.pose == Pose::Crouch
+            && s.pose_from.far_from(pose)
+            && s.pose_ticks < kneel_ticks(s.pose_from);
         if (s.pose.far_from(pose) || kneeling) && can_take(p, db, Pose::Crouch, host)? {
             set_pose(&mut p.s, db, Pose::Crouch);
             return Ok(());
