@@ -229,6 +229,19 @@ pub mod material {
     /// A draw of the sky built around the eye of a whole sync (the scene's sky eye): the vertex shader moves it by the
     /// frame's eye less that one, so the sky stays around the eye between syncs.
     pub const SKY_EYE: u32 = 1 << 26;
+    /// Bit 30 of a plane's vertex: a terrain material layer drawn over the layers under it (alpha-blended, depth tested and not
+    /// written). Its vertex alpha is the material's share of the weights so far at the ground's samples; the shader sharpens it
+    /// around one half (an edge a [`LAYER_SHARPNESS`]th of the share's ramp wide) and lowers it where the texture's alpha is
+    /// under one (the texture's dips, where the layer under it shows first). Not drawn into a light capture.
+    pub const LAYER: u32 = 1 << 30;
+    /// How much the shader steepens a [`LAYER`]'s share about one half, and how far a texture alpha of 0 lowers it.
+    pub const LAYER_SHARPNESS: f32 = 8.0;
+    pub const LAYER_DIP: f32 = 1.0;
+
+    /// Whether a vertex's word is a plane's terrain layer.
+    pub fn layer(word: u32) -> bool {
+        (word >> KIND_SHIFT) & 0x3 == KIND_PLANE && word & LAYER != 0
+    }
     /// A shape's vertex in its mesh's own space ([`super::NodePlace`]): its `extra` word is its mesh's place in its object's
     /// [`super::DynamicObject::nodes`] (the renderer adds the object's first place in the frame's table); the vertex shaders
     /// place it, and its normal, there.

@@ -23,6 +23,11 @@ const MAT_PARTICLE: u32 = 0x1000000u;
 const MAT_DECAL: u32 = 0x20000000u;
 const MAT_ANCHORED: u32 = 0x2000000u;
 const MAT_SKY_EYE: u32 = 0x4000000u;
+// A plane's terrain material layer over the layers under it (material::LAYER, LAYER_SHARPNESS and LAYER_DIP: a test compares
+// them).
+const MAT_LAYER: u32 = 0x40000000u;
+const LAYER_SHARPNESS: f32 = 8.0;
+const LAYER_DIP: f32 = 1.0;
 // A shape's vertex in its mesh's own space (NodePlace): its extra word names its mesh's place in the frame's table.
 const MAT_NODE: u32 = 0x80000000u;
 // The moving shapes the frame names (MOVING_CASTERS: a test compares them).

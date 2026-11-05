@@ -280,6 +280,41 @@ impl WorldView {
         self.statics_changed = true;
     }
 
+    /// A terrain as the ground in place of the floor with each of its materials drawn ([`super::terrain::Terrain::layer_draws`]):
+    /// `layers[k]` is material `k`'s texture (a path the reader finds) and texture coordinates. The first is opaque, the others
+    /// are the renderer's terrain layers over it ([`material::LAYER`]: their edges sharpened, broken up by their textures'
+    /// alpha).
+    pub fn set_terrain_layers(
+        &mut self,
+        assets: &dyn Assets,
+        terrain: &super::terrain::Terrain,
+        layers: &[(&str, super::terrain::LayerUv<'_>)],
+    ) {
+        let mut set = TextureSet::new(assets);
+        let looks: Vec<super::terrain::LayerLook<'_>> = layers
+            .iter()
+            .map(|&(texture, uv)| super::terrain::LayerLook {
+                texture: set.get(texture),
+                uv,
+            })
+            .collect();
+        let local = self.intern(set.into_textures());
+        self.scene.planes = terrain
+            .layer_draws(&looks)
+            .iter()
+            .map(|d| {
+                let hd = HdDraw::from_fixed(d, material::KIND_PLANE, &local);
+                if d.blend == Blend::Opaque {
+                    hd
+                } else {
+                    hd.with_material(material::LAYER)
+                }
+            })
+            .collect();
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+        self.statics_changed = true;
+    }
+
     fn put_floor(&mut self, floor: Draw, local: &[usize]) {
         self.scene.planes = vec![HdDraw::from_fixed(&floor, material::KIND_PLANE, local)];
         self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);

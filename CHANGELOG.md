@@ -113,6 +113,11 @@ The first development version. Nothing is published yet; this is what exists.
   `torque::app`'s ghost scene runs both (`GhostScene::set_tire_tracks`). A vehicle look's wheels carry their slip.
 - `torque::app::terrain`: a `TerrainBlock` over a legacy `.ter` with its collision on the server (`TerrainBlock::onAdd`), the
   same block as a static object of the client's prediction, and `WorldView::set_terrain` to draw it.
+- `torque::app::terrain`: a terrain's material layers drawn (`Terrain::layer_draws`, `WorldView::set_terrain_layers`): the
+  first material opaque, each other one blended over it where its weight is, each with its own texture and texture
+  coordinates (repeated over the ground, or the host's for each triangle, such as a road's along it); the enhanced renderer's
+  terrain layer (`material::LAYER`) sharpens a layer's coarse weight about one half into a narrow edge, broken up by its
+  texture's alpha. The world view's interiors keep their meshes on the GPU between frames.
 - `torque-server`: Torque's net game ghosts the simulated vehicles (their records from the vehicle's state, its step's dirty
   bits as TGE's), and a Player that drives a WheeledVehicle sends the vehicle's packet data after its own.
 - `torque-client`: TGE's feed reads a WheeledVehicleData's wheel count from its shape (the game's files,

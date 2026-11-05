@@ -233,9 +233,12 @@ fn build(
         look(material, &mut draw);
         draws.push(draw);
     }
+    let mut object = view.mesh_object(set, &draws, object_id(index));
+    // Stamped: the renderer keeps its vertices where it wrote them while it stays the same.
+    object.stamp = Some(torque_render_scene::shapecache::next_stamp());
     Some(Kept {
         pose,
-        object: view.mesh_object(set, &draws, object_id(index)),
+        object,
         faces: Arc::new(faces),
     })
 }
