@@ -2054,6 +2054,8 @@ dependencies = [
  "torque-ghost-world",
  "torque-ghosts",
  "torque-gui",
+ "torque-mapcore",
+ "torque-maps",
  "torque-render-core",
  "torque-render-hd",
  "torque-render-scene",

@@ -21,6 +21,8 @@ torque-game = { path = "../torque-game" }
 torque-ghost-world = { path = "../torque-ghost-world" }
 torque-ghosts = { path = "../torque-ghosts" }
 torque-gui = { path = "../torque-gui" }
+torque-mapcore = { path = "../torque-mapcore" }
+torque-maps = { path = "../torque-maps" }
 torque-render-core = { path = "../torque-render-core" }
 torque-render-hd = { path = "../torque-render-hd" }
 torque-render-scene = { path = "../torque-render-scene" }

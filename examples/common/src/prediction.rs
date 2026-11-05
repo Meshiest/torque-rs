@@ -32,11 +32,9 @@ use torque::collide::map::{InteriorShape, MapShape};
 use torque::game::scene::interior::{INTERIOR_TYPE_MASK, KeptInterior, read_interior};
 use torque::ghost_world::Ghost;
 use torque::ghost_world::tge::TgeClientSet;
-use torque::ghost_world::world::Pose;
 use torque::ghosts::{TgeClass, TgeRecord};
 use torque::script::vm::host::MemFiles;
 use torque::script::vm::vm::Vm;
-use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::pose_matrix;
 
 /// A StaticShape's type bits (`StaticShapeObjectType`, `ShapeBaseObjectType`, `GameBaseObjectType`, `StaticObjectType`), as the
@@ -100,13 +98,7 @@ impl PredictGame<TgeWorld> for CubePrediction {
     }
 }
 
-/// Where a ghost's pose places it: its matrix and scale (a matrix pose, as an InteriorInstance's record sends, as it is).
-pub fn placed(pose: &Pose) -> Option<(Mat, [f32; 3])> {
-    match *pose {
-        Pose::Matrix { m, scale } => Some((Mat { m }, scale)),
-        ref other => pose_matrix(other, None),
-    }
-}
+pub use torque::app::interiors::placed;
 
 /// The cubes and interiors as the client's container holds them.
 #[derive(Clone)]

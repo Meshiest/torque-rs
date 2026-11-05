@@ -297,6 +297,30 @@ impl WorldView {
         }
     }
 
+    /// Draws already in the world (their textures indices into `set`) as the object `id`, which no animation moves: a static mesh
+    /// (an interior's surfaces, [`crate::interiors`], or a host's own geometry).
+    pub fn mesh_object(&mut self, set: TextureSet, draws: &[Draw], id: u32) -> DynamicObject {
+        let local = self.intern(set.into_textures());
+        let translucent = draws.iter().any(|d| d.blend != Blend::Opaque);
+        let draws: Vec<HdDraw> = draws
+            .iter()
+            .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, &local))
+            .collect();
+        let (centre, radius) = bounding_sphere(&draws);
+        DynamicObject {
+            ghost: id,
+            transform: Mat::IDENTITY,
+            prev_transform: Mat::IDENTITY,
+            translucent,
+            centre,
+            radius,
+            draws,
+            previous: None,
+            stamp: None,
+            nodes: Vec::new(),
+        }
+    }
+
     /// The objects of a frame's moving shapes ([`torque_render_scene::moving::draws_culled`] over `world`, their textures in
     /// `textures`): one a ghost, each moving from where the last frame's object of its ghost was.
     pub fn ghost_objects<W: ShapeWorld + ?Sized>(

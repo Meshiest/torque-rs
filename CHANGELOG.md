@@ -37,7 +37,9 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-mapcore` and `torque-maps`: the format-neutral map layer and readers for Torque interior, terrain and
   material-list files, and a `.dif` writer for every interior version the reader takes.
 - `InteriorInstance` hosted and ghosted: the server reads its `.dif` and collides with its hulls (rays, movers, projectiles,
-  lag-compensated shots), its record is TGE 1.4's, and the examples' client predicts against it and draws it.
+  lag-compensated shots), its record is TGE 1.4's, the examples' client predicts against it, and `torque-app`'s ghost scene
+  draws it (its surfaces as static mesh objects of the world view, `WorldView::mesh_object`, each material's draw through the
+  style's `interior_draw`) and puts projectile holes on it.
 - `torque-interior-builder`: interiors (`.dif`, version 0 in TGE's form) built from convex brushes made in code or read from a
   Quake or Valve 220 `.map`: hidden faces removed, a solid BSP, the brushes as collision hulls with emit strings and polygon
   lists, texture planes and lightmap rectangles; a `.map`'s water, triggers, physical zones and spawn points as a `.mis`

@@ -305,7 +305,7 @@ impl TgeClass {
             | TgeClass::VehicleBlocker
             | TgeClass::WayPoint
             | TgeClass::FxLight
-            | TgeClass::InteriorInstance => GHOSTABLE | SCOPE_ALWAYS,
+            | TgeClass::InteriorInstance
             | TgeClass::SpotLight
             | TgeClass::TimeOfDay
             | TgeClass::ScatterSky => GHOSTABLE | SCOPE_ALWAYS,

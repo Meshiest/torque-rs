@@ -9,16 +9,13 @@
 //!   grid tile a unit) and tinted by height. A cube's object is kept until its record moves it. A map that asks for sharp
 //!   texels ([`TextureFilter::Nearest`], the mission's `textureFilter`) has its cubes magnified with nearest-neighbor
 //!   filtering; minified, they stay linear between and within the mip levels, so the far floor does not shimmer.
-//! - **Interiors** (InteriorInstances) are their `.dif`'s drawn surfaces (the legacy importer's triangles) placed by their
-//!   records, drawn as the cubes are: the grid's tiles from the surfaces' texture planes, tinted a warm sand for the
-//!   `arena_floor` material and a cool slate lighter the higher for the rest, magnified as the map's filter says. Their faces
-//!   are surfaces a bolt's hole may lie on too. An interior's objects are kept until its record moves it.
+//! - **Interiors** (InteriorInstances) are the engine's ([`GhostScene::objects`]); the arena's style tints their walls lighter
+//!   the higher as the cubes are and magnifies them as the map's filter says ([`ArenaStyle::nearest`]).
 //! - **The eye**: the client's own figure's eye (the engine places it at the drawn figure's `eye` node), its field of view
 //!   narrowing from [`FOV`] to [`AIM_FOV`] as the sights come up ([`ArenaScene::turn_scale`] slows the mouse's turn by as
 //!   much), else a view over the arena.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 
 use torque::app::ghosts::{DecalLimits, FrameInput, GhostOptions, GhostScene};
 use torque::app::view::{SceneShape, WorldView};
@@ -26,17 +23,14 @@ use torque::client::conn::tge::TgeWorld;
 use torque::client::predict::ghost_players::GhostPlayers;
 use torque::ghost_world::tge::TgeClientSet;
 use torque::ghost_world::world::{ClientWorld, Pose};
-use torque::ghosts::{TgeClass, TgeRecord};
-use torque::mapcore::Importer as _;
-use torque::mapcore::geometry::Surfaces;
-use torque_example_common::{KitAssets, kit_path};
+use torque::ghosts::TgeClass;
+use torque_example_common::KitAssets;
 use torque_render_scene::decals::Triangle;
 use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::hd::kit::look_at;
-use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::Eye;
-use torque_render_scene::{Assets as _, Draw, Filter, Vertex};
+use torque_render_scene::{Draw, Filter, Vertex};
 
 use crate::style::{ArenaStyle, BoltPath, Kick, ShotFlare, Sights};
 
@@ -158,19 +152,6 @@ struct KeptCube {
     object: DynamicObject,
 }
 
-/// An interior's objects (one a material), kept with the pose they were made at, and its faces in the world (counter-clockwise
-/// seen from the front, as the decals take them).
-struct KeptInterior {
-    pose: Pose,
-    objects: Vec<DynamicObject>,
-    faces: Arc<Vec<Triangle>>,
-}
-
-/// The id of an interior's object of material `k` among the frame's objects.
-fn interior_id(index: u32, k: usize) -> u32 {
-    0x5000_0000 | (index << 6) | (k as u32 & 0x3f)
-}
-
 /// Which ghost is the client's own figure, where the client predicts it and where its view is turned.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OwnLook {
@@ -236,9 +217,6 @@ pub struct ArenaScene {
     ghosts: GhostScene<ArenaStyle>,
     shapes: HashMap<String, Option<SceneShape>>,
     cubes: BTreeMap<u32, KeptCube>,
-    interiors: BTreeMap<u32, KeptInterior>,
-    /// The interiors' files read (by path; `None` for one that did not read).
-    interior_files: HashMap<String, Option<Arc<Surfaces>>>,
     /// How the cubes and interiors are drawn.
     filter: TextureFilter,
 }
@@ -271,8 +249,6 @@ impl ArenaScene {
             ghosts: GhostScene::with_style(options(), style()),
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
-            interiors: BTreeMap::new(),
-            interior_files: HashMap::new(),
             filter: TextureFilter::Smooth,
         }
     }
@@ -281,7 +257,6 @@ impl ArenaScene {
     pub fn clear(&mut self) {
         self.ghosts.clear();
         self.cubes.clear();
-        self.interiors.clear();
     }
 
     /// `dt` seconds of the sights' blend toward the sights (`aiming`) or the hip; returns how far up they are (eased).
@@ -299,12 +274,13 @@ impl ArenaScene {
         self.ghosts.style.own_sights()
     }
 
-    /// Draws the cubes with `filter` from now on (the ones made with another are made again).
+    /// Draws the cubes and the interiors with `filter` from now on (the ones made with another are made again).
     pub fn set_texture_filter(&mut self, filter: TextureFilter) {
         if filter != self.filter {
             self.filter = filter;
             self.cubes.clear();
-            self.interiors.clear();
+            self.ghosts.style.nearest = filter == TextureFilter::Nearest;
+            self.ghosts.restyle_interiors();
         }
     }
 
@@ -317,34 +293,17 @@ impl ArenaScene {
         ghosts: &GhostPlayers,
         dt: f32,
     ) {
-        let interiors: Vec<Arc<Vec<Triangle>>> = self
-            .interiors
-            .values()
-            .map(|k| Arc::clone(&k.faces))
-            .collect();
-        let near = move |w: &ClientWorld<TgeClientSet>, at: [f32; 3], reach: f32| {
-            let mut out = cube_triangles_near(w, at, reach);
-            for faces in &interiors {
-                out.extend(faces.iter().filter(|t| {
-                    (0..3).all(|c| {
-                        let lo = t[0][c].min(t[1][c]).min(t[2][c]);
-                        let hi = t[0][c].max(t[1][c]).max(t[2][c]);
-                        at[c] >= lo - reach && at[c] <= hi + reach
-                    })
-                }));
-            }
-            out
-        };
         let input = FrameInput {
             ghosts: Some(ghosts),
             fov: Some(self.fov().round() as u8),
             dt,
-            surfaces: &near,
+            surfaces: &cube_triangles_near,
         };
         self.ghosts.update(assets, world, &input);
     }
 
-    /// The frame's objects: the engine's ghosts as [`ArenaScene::update`] left them and `world`'s cubes; their effects into
+    /// The frame's objects: the engine's ghosts and interiors as [`ArenaScene::update`] left them and `world`'s cubes; their
+    /// effects into
     /// `view`.
     pub fn objects(
         &mut self,
@@ -377,46 +336,6 @@ impl ArenaScene {
         }
         self.cubes.retain(|i, _| seen.contains(i));
         out.extend(self.cubes.values().map(|c| c.object.clone()));
-        let mut seen = Vec::new();
-        for (&index, ghost) in &world.records.ghosts {
-            let (Some(TgeRecord::InteriorInstance(r)), Some(pose)) = (&ghost.record, ghost.pose())
-            else {
-                continue;
-            };
-            let Some(init) = &r.init else { continue };
-            seen.push(index);
-            if self.interiors.get(&index).is_some_and(|k| k.pose == pose) {
-                continue;
-            }
-            let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
-            let Some(surfaces) = self
-                .interior_files
-                .entry(path.clone())
-                .or_insert_with(|| {
-                    let bytes = assets.read(&path)?;
-                    torque::maps::legacy::IMPORTER
-                        .surfaces(&bytes)
-                        .ok()
-                        .map(Arc::new)
-                })
-                .clone()
-            else {
-                continue;
-            };
-            let Some(cube) = self.shape(assets, kit_path("cube.dts").as_bytes()) else {
-                continue;
-            };
-            if let Some(k) = make_interior(view, assets, &cube, &surfaces, pose, index, self.filter)
-            {
-                self.interiors.insert(index, k);
-            }
-        }
-        self.interiors.retain(|i, _| seen.contains(i));
-        out.extend(
-            self.interiors
-                .values()
-                .flat_map(|k| k.objects.iter().cloned()),
-        );
         let eye = self.eye();
         self.ghosts.effects(view, assets, &eye);
         out
@@ -505,92 +424,6 @@ fn cube_triangles_near(
         }
     }
     out
-}
-
-/// The material of an interior's floor (the kit's arena's): drawn in the floor's sand.
-pub const FLOOR_MATERIAL: &str = "arena_floor";
-
-/// The tint of an interior's triangle of `material` whose highest point is at `top`: the floor's sand, else as a cube's.
-fn interior_tint(material: &str, top: f32) -> [u8; 3] {
-    if material.eq_ignore_ascii_case(FLOOR_MATERIAL) {
-        cube_tint(0.0)
-    } else {
-        cube_tint(top.max(0.06))
-    }
-}
-
-/// An interior's drawn surfaces placed by `pose`: one object a material, each made from the kit's cube (its draw, its grid
-/// texture) with the cube's vertices replaced by the interior's triangles in the world, clockwise seen from the front.
-fn make_interior(
-    view: &mut WorldView,
-    assets: &KitAssets,
-    cube: &SceneShape,
-    surfaces: &Surfaces,
-    pose: Pose,
-    index: u32,
-    filter: TextureFilter,
-) -> Option<KeptInterior> {
-    let (m, scale) = torque_example_common::prediction::placed(&pose)?;
-    let instance = cube.instance()?;
-    let mut objects = Vec::new();
-    let mut faces = Vec::new();
-    for (k, (material, corners)) in surfaces.by_material.iter().enumerate() {
-        let mut vertices = Vec::with_capacity(corners.len());
-        for t in corners.chunks_exact(3) {
-            let mut v = [0, 1, 2].map(|c| {
-                let (p, n, uv) = t[c];
-                let normal = m.mul_v([n[0] / scale[0], n[1] / scale[1], n[2] / scale[2]]);
-                let len =
-                    (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-                Vertex {
-                    position: m.mul_p([p[0] * scale[0], p[1] * scale[1], p[2] * scale[2]]),
-                    normal: normal.map(|x| x / len.max(1e-12)),
-                    color: [255; 4],
-                    uv,
-                }
-            });
-            let e1 = [0, 1, 2].map(|c| v[1].position[c] - v[0].position[c]);
-            let e2 = [0, 1, 2].map(|c| v[2].position[c] - v[0].position[c]);
-            let face = [
-                e1[1] * e2[2] - e1[2] * e2[1],
-                e1[2] * e2[0] - e1[0] * e2[2],
-                e1[0] * e2[1] - e1[1] * e2[0],
-            ];
-            if (0..3).map(|c| face[c] * v[0].normal[c]).sum::<f32>() > 0.0 {
-                v.swap(1, 2);
-            }
-            let top = v.iter().map(|x| x.position[2]).fold(f32::MIN, f32::max);
-            let tint = interior_tint(material, top);
-            for x in &mut v {
-                x.color = [tint[0], tint[1], tint[2], 255];
-            }
-            faces.push([v[0].position, v[2].position, v[1].position]);
-            vertices.extend(v);
-        }
-        let mut first = Some(vertices);
-        objects.push(view.shape_object_with(
-            assets,
-            cube,
-            &instance,
-            &Mat::IDENTITY,
-            [1.0; 3],
-            interior_id(index, k),
-            &mut |d| {
-                d.vertices = first.take().unwrap_or_default();
-                if let Some((_, sampler)) = d.texture.as_mut() {
-                    sampler.repeat = true;
-                    if filter == TextureFilter::Nearest {
-                        sampler.mag = Filter::Nearest;
-                    }
-                }
-            },
-        ));
-    }
-    Some(KeptInterior {
-        pose,
-        objects,
-        faces: Arc::new(faces),
-    })
 }
 
 fn make_cube(
