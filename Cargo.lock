@@ -2169,6 +2169,8 @@ name = "torque-game"
 version = "0.1.0"
 dependencies = [
  "torque-collide",
+ "torque-mapcore",
+ "torque-maps",
  "torque-net",
  "torque-resource",
  "torque-scene",
@@ -2287,6 +2289,7 @@ dependencies = [
  "torque-collide",
  "torque-game",
  "torque-ghosts",
+ "torque-interior-builder",
  "torque-net",
  "torque-scene",
  "torque-shape-builder",

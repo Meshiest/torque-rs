@@ -229,7 +229,8 @@ impl ObjectView for FieldView<'_> {
 /// rest ([`FieldView`]).
 ///
 /// - every object: `datablock` (the `dataBlock` field), `transform` (the object's matrix as a position and a unit quaternion,
-///   `QuatF::set(MatrixF)`), `position` (its translation), `scale`; a ShapeBase is fully visible (`fade_value` 1) and runs no
+///   `QuatF::set(MatrixF)`), `matrix` (its 16 floats), `position` (its translation), `scale`; an interior's `crc` (its file's,
+///   [`torque_game::scene::interior::crc_of`]); a ShapeBase is fully visible (`fade_value` 1) and runs no
 ///   script thread (`thread_sequence` -1), its damage over the datablock's `maxDamage`;
 /// - a simulated Player ([`torque_game::sim::player::state`]): `velocity`, `rotation` (its yaw at 2), `head`, `falling`,
 ///   `state` (the action state), `action` (the action animation), `arm_action` (`setArmThread`'s), `energy`, and from its
@@ -455,6 +456,13 @@ impl ObjectView for GameView<'_> {
                 }
                 None => Value::Xform(None),
             },
+            // The transform as 16 floats (`mathWrite(MatrixF)`), an interior's file CRC.
+            "matrix" => self
+                .matrix()
+                .and_then(|m| m.get(index).copied())
+                .map_or(Value::Null, Value::F32),
+            "crc" => torque_game::scene::interior::crc_of(self.fields.vm, self.fields.obj)
+                .map_or(Value::Null, |c| Value::Int(i64::from(c))),
             "position" => self
                 .matrix()
                 .and_then(|m| [m[3], m[7], m[11]].get(index).copied())

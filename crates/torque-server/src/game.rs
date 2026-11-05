@@ -98,6 +98,7 @@ pub fn install<N: NetParts>(vm: &mut Vm, state: &Rc<RefCell<ServerState<N>>>) ->
     );
     torque_game::scene::container::register_natives(vm, &container, &shapes);
     torque_game::scene::shapebase::register(vm, &container);
+    torque_game::scene::interior::register(vm, &container);
     torque_game::sim::player::register(vm, &container);
     torque_game::sim::item::register(vm, &container);
     torque_game::sim::projectile::register(vm, &container);
