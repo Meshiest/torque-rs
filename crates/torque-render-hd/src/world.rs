@@ -441,11 +441,11 @@ struct Targets {
     contact_group: wgpu::BindGroup,
     ao_views: [wgpu::TextureView; 2],
     ao_groups: [wgpu::BindGroup; 2],
-    /// The AO filtered (the scene's smooth occlusion: the forward pass reads it in place of the AO pass's output).
+    /// The AO filtered in space: what the forward pass reads, always.
     ao_smooth_view: wgpu::TextureView,
     history: [wgpu::Texture; 2],
     history_views: [wgpu::TextureView; 2],
-    /// The TAA's shown colour (and its luma's second moment), the tonemap's source.
+    /// The TAA's shown color (and its neighborhood's mean luma), the tonemap's source.
     shown: [wgpu::Texture; 2],
     shown_views: [wgpu::TextureView; 2],
     taa_groups: [wgpu::BindGroup; 2],

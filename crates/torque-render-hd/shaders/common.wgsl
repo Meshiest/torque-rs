@@ -83,7 +83,7 @@ struct Frame {
     temporal: vec4<f32>,
     // x: the AO's reach (world units), y: its strength, z: the method (0 off, 1 SSAO, 2 GTAO), w: internal pixels per AO texel.
     ao: vec4<f32>,
-    // x: 1 when the AO's history is valid; y: 1 in a secondary view (the water's mirrored camera, a capture face: no contact
+    // x: unused (the AO keeps no history); y: 1 in a secondary view (the water's mirrored camera, a capture face: no contact
     // shadows, AO or screen-space reflections); z: 1 when the view is clipped at the water plane, w: the plane's height.
     flags: vec4<f32>,
     // The output's width, height, 1 / width, 1 / height (the TAA's history; `screen` is the internal frame's).

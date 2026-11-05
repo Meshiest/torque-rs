@@ -17,7 +17,7 @@
 // - Stillness: s = exp(-speed / SLOW_PIXELS) (speed in output pixels a frame; 1 still, under 0.15 from two pixels on) sets the
 //   clip's gamma and the frames the history may hold (MOVING_FRAMES to STILL_FRAMES). The sky's speed is how far its
 //   reprojection moved it (a turning camera's sky is resampled every frame, so it holds few frames).
-// - The clip, everywhere and every frame: the history is clipped toward the neighbourhood's middle, into the box of its mean +-
+// - The clip, everywhere and every frame: the history is clipped toward the neighborhood's middle, into the box of its mean +-
 //   gamma standard deviations (in YCoCg, at most the box of its extremes). The history only ever averages the jitter's
 //   phases of what the current frame shows: a change of light (a shadow sweeping past, the sun moving, a light switched) leaves
 //   the box the frame it happens, whatever moved or did not. The lighting has no noise of its own from frame to frame (the
@@ -26,7 +26,7 @@
 // - The blend is 1 / (n + 1) with n the frames the history holds (its alpha), and a history clipped far holds fewer.
 // - Left pixels: a static surface where a shape's part was around the history's texel last frame and is nowhere in the 3 x 3 now
 //   (a swing's last place: the outline's pixels held a share of it though their texel never was its) is clipped into a small
-//   box about the neighbourhood's middle and holds a few frames.
+//   box about the neighborhood's middle and holds a few frames.
 // - See-through shapes and particles have no motion of their own in the history: the clip catches them as any other change.
 //
 // Writes the history (rgb, frames held; 32-bit float: the running mean's small steps are not lost to half-float rounding) and the
@@ -61,7 +61,7 @@ const SKY_STILL_PIXELS: f32 = 0.001;
 // The box (a share of the neighbourhood's) around the neighbourhood's middle a static pixel's history is clipped into where a
 // shape's part has just left.
 const LEFT_BOX: f32 = 0.25;
-// The change of a neighbourhood's mean luma since last frame that starts its history again: a share of the larger, and a margin
+// The change of a neighborhood's mean luma since last frame that starts its history again: a share of the larger, and a margin
 // (compressed luma).
 const CHANGE_SHARE: f32 = 0.4;
 const CHANGE_MARGIN: f32 = 0.02;
@@ -156,7 +156,7 @@ fn clip_box(h: vec3<f32>, centre: vec3<f32>, extent: vec3<f32>) -> vec3<f32> {
     return h;
 }
 
-// A history started again at `cur`, with its neighbourhood's mean luma `level` (the next frame's change test).
+// A history started again at `cur`, with its neighborhood's mean luma `level` (the next frame's change test).
 fn fresh(cur: vec3<f32>, level: f32) -> TaaOut {
     var out: TaaOut;
     let c = expand(cur);
@@ -204,7 +204,7 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
         ids[k] = textureLoad(motion_now, q, 0).w;
     }
     let cur = sum / max(wsum, 1e-6);
-    // The neighbourhood's mean luma: the jitter barely moves it, a change of light does.
+    // The neighborhood's mean luma: the jitter barely moves it, a change of light does.
     let level = sum1.x / 9.0;
     if frame.temporal.w < 0.5 {
         return fresh(cur, level);
@@ -329,7 +329,7 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
     let blo = max(lo, mean - gamma * sd);
     let bhi = min(hi, mean + gamma * sd);
     let hy = to_ycocg(compress(h.rgb));
-    // A static pixel a shape's part has left: clipped close about the neighbourhood's middle.
+    // A static pixel a shape's part has left: clipped close about the neighborhood's middle.
     let left_static = left && m.w <= 1.5;
     var clipped = clip_box(hy, 0.5 * (blo + bhi), 0.5 * (bhi - blo));
     if left_static {
@@ -338,7 +338,7 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
     // A history clipped far (a change of light, a ghost) holds fewer frames.
     let moved = abs(clipped.x - hy.x) / max(bhi.x - blo.x, 0.02);
     n = n * clamp(1.0 - moved, 0.0, 1.0);
-    // The neighbourhood's mean luma since last frame (kept in the shown colour's alpha): a change the jitter cannot make is a
+    // The neighborhood's mean luma since last frame (kept in the shown color's alpha): a change the jitter cannot make is a
     // change of light (a shadow's edge passed, a light switched), and the history starts again.
     let level_before = cubic_at(shown_before, prev_uv).a;
     if abs(level - level_before) > CHANGE_SHARE * max(level, level_before) + CHANGE_MARGIN {

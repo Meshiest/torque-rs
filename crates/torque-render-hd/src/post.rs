@@ -25,7 +25,8 @@ pub const MOTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const HISTORY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
-/// The TAA's shown colour (the tonemap's source) with its luma's temporal variance.
+/// The TAA's shown color (the tonemap's source) with, in alpha, its 3 x 3 neighborhood's mean luma (the next frame's change
+/// test).
 pub const SHOWN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// One motion slot's stride in its storage buffer (forward.wgsl's `Motion`, padded to the dynamic offset's alignment: the
 /// reference way binds each slot at its offset).

@@ -121,9 +121,9 @@ pub struct HdScene<G> {
     /// The share of the ambient occlusion the sun's light takes too (0: the ambient's alone): a darkening in the sun where
     /// surfaces meet.
     pub ao_sun: f32,
-    /// Kept for the callers that set it: every frame now has what it asked for. The ambient occlusion is always filtered over its
-    /// neighbors on each texel's plane and keeps no history, and the contact shadows' march has a fixed pattern: no grain and no
-    /// trail behind a moving shape.
+    /// Deprecated: does nothing. Kept for the callers that set it: every frame now has what it asked for. The ambient occlusion
+    /// is always filtered over its neighbors on each texel's plane and keeps no history, and the contact shadows' march has a
+    /// fixed pattern: no grain and no trail behind a moving shape.
     pub smooth_occlusion: bool,
     /// The fixed-function frame's clear (the fog colour quad), gamma 0..1.
     pub clear: [f32; 3],

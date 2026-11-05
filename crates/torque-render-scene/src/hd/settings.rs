@@ -43,8 +43,8 @@ pub struct ImageSettings {
     /// Translucent surfaces blend in linear light (glass: its reflections not scaled by its alpha); else in display (gamma) space, as
     /// the fixed-function blend does (a translucent colour over a light background stays far more saturated).
     pub linear_blend: bool,
-    /// The scene's smooth occlusion whatever the scene says ([`crate::hd::HdScene::smooth_occlusion`]; every frame has it now:
-    /// kept for the callers that set it).
+    /// Deprecated: does nothing. The scene's smooth occlusion whatever the scene says
+    /// ([`crate::hd::HdScene::smooth_occlusion`]; every frame has it now: kept for the callers that set it).
     pub smooth_occlusion: bool,
 }
 
