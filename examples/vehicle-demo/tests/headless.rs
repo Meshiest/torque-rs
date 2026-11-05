@@ -1627,3 +1627,56 @@ fn the_wheel_zooms_the_camera_on_foot_and_behind_the_buggy_each_its_own_within_l
     frames(&mut game, 800);
     assert!(near(game.camera_distance(), FOOT_ZOOM.1));
 }
+
+#[test]
+fn a_server_that_sends_a_buggy_at_no_number_puts_nothing_anywhere_on_a_client() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    a.key(Key::W, true);
+    steps(&mut [&mut a, &mut b], 1000);
+    // The server's buggy at a position and a turn that are no numbers, sent to both (B runs it as a ghost; A drives it).
+    let id = server(&a).buggy().unwrap();
+    {
+        let vm = server_mut(&mut a).0.vm_mut();
+        let s = torque::game::sim::vehicle::state_mut(vm, id).unwrap();
+        s.rigid.lin_pos = [f32::NAN; 3];
+        s.rigid.ang_pos = [f32::NAN; 4];
+        s.rigid.lin_mom = [f32::INFINITY; 3];
+        s.set_mask(torque::vehicle::state::net_mask::POSE);
+    }
+    for _ in 0..1500 / 16 {
+        for g in [&mut a, &mut b] {
+            g.step(16);
+            g.update_scene(0.016);
+        }
+        for (who, g) in [("A", &a), ("B", &b)] {
+            let st = g.client.host.client.borrow();
+            let Some(conn) = st.conn.conn.as_ref() else {
+                continue;
+            };
+            let finite = |v: &[f32]| v.iter().all(|x| x.is_finite());
+            for (i, p) in &conn.world.vehicle_render {
+                let (m, _) = torque_render_scene::mounts::pose_matrix(p, None).unwrap();
+                assert!(finite(&m.column(3)), "{who}: vehicle {i} drawn at {p:?}");
+            }
+            for (i, look) in &conn.world.vehicle_look {
+                for w in &look.wheels {
+                    assert!(
+                        finite(&w.point),
+                        "{who}: vehicle {i}'s wheel at {:?}",
+                        w.point
+                    );
+                }
+            }
+            for (i, v) in &conn.predict.ghost_vehicles {
+                let s = &v.body.v.s;
+                assert!(
+                    finite(&s.obj_to_world) && finite(&s.delta_pos) && finite(&s.rigid.lin_mom),
+                    "{who}: ghost vehicle {i} at {:?}",
+                    s.obj_to_world
+                );
+            }
+        }
+    }
+}

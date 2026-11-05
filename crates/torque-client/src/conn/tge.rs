@@ -295,6 +295,17 @@ pub struct TgeTables {
     pub classes: NetClasses,
 }
 
+/// The stream's compression point as a packet's head left it: raw floats the server sent, so a packet whose point is not finite
+/// (it would put every position read against it there) is refused.
+pub fn stream_point(r: &net::bits::BitReader) -> Result<[f32; 3], NetError> {
+    let cp = r.compression_point();
+    if cp.iter().all(|c| c.is_finite()) {
+        Ok(cp)
+    } else {
+        Err(NetError::Invalid("compression point not finite"))
+    }
+}
+
 impl TgeTables {
     /// TGE's tables (Torque's derive: neither fails).
     pub fn tge() -> Result<TgeTables, String> {
@@ -611,7 +622,7 @@ impl TgeFeed {
         )?;
         // The point the head left the stream at, which the ghosts are read against: a resent Player at a vehicle's wheel sends no
         // position of its own, and the vehicle's packet data nested in it sets the point.
-        let cp = r.compression_point();
+        let cp = stream_point(&r)?;
         let mut incoming = Vec::new();
         self.receiver.read_section(
             &mut r,

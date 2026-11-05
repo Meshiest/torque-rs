@@ -663,8 +663,17 @@ impl DrivenVehicle {
         }
     }
 
-    /// `Vehicle::readPacketData` then `WheeledVehicle::readPacketData`.
+    /// `Vehicle::readPacketData` then `WheeledVehicle::readPacketData`; packet data whose state is not finite is ignored.
     pub fn read_packet_data(&mut self, p: &VehicleWords, world: &mut ClientCollision) {
+        if !finite_state(&[
+            &p.position,
+            &p.rotation,
+            &p.lin_mom,
+            &p.ang_mom,
+            &p.steering,
+        ]) {
+            return;
+        }
         let mut host = ClientVehicleHost {
             world,
             sim_time: 0,
@@ -691,9 +700,11 @@ impl DrivenVehicle {
         if let vehicle::words::KindWords::Wheeled { brake, wheels } = &p.kind {
             self.v.k.brake = *brake;
             for (dst, src) in self.v.k.wheels.iter_mut().zip(wheels) {
-                dst.avel = src.avel;
-                dst.dy = src.dy;
-                dst.dx = src.dx;
+                if finite_state(&[&[src.avel, src.dy, src.dx]]) {
+                    dst.avel = src.avel;
+                    dst.dy = src.dy;
+                    dst.dx = src.dx;
+                }
                 dst.slipping = src.slipping;
             }
         }
@@ -870,6 +881,11 @@ fn quat_extrapolate(r1: [f32; 4], cr: [f32; 4], dt: f32) -> [f32; 4] {
     std::array::from_fn(|i| (d(cr[i]) * a - d(r1[i]) * b) as f32)
 }
 
+/// Whether every value the server sent is finite.
+pub fn finite_state(values: &[&[f32]]) -> bool {
+    values.iter().all(|v| v.iter().all(|x| x.is_finite()))
+}
+
 /// `vec *= f32(1 / f)` per component.
 fn scale_inv(v: F3, f: f32) -> F3 {
     let inv = (1.0 / d(f)) as f32;
@@ -949,7 +965,13 @@ impl GhostVehicle {
             free_look: m.free_look,
             triggers: m.triggers,
         };
-        if let (Some(pose), Some(pos)) = (&rec.pose, position) {
+        // A pose the server sent with a value that is not finite is left out (the vehicle goes on as it was).
+        let pose = rec
+            .pose
+            .as_ref()
+            .zip(position)
+            .filter(|(p, pos)| finite_state(&[pos, &p.rotation, &p.linear, &p.angular]));
+        if let Some((pose, pos)) = pose {
             self.warp.prediction = MAX_PREDICTION_TICKS;
             let old_vel = s.rigid.lin_vel;
             self.warp.rot[0] = s.rigid.ang_pos;
@@ -1027,9 +1049,11 @@ impl GhostVehicle {
         self.body.v.k.brake = rec.brake;
         if let Some(wheels) = &rec.wheels {
             for (dst, src) in self.body.v.k.wheels.iter_mut().zip(wheels) {
-                dst.avel = src.avel;
-                dst.dy = src.dy;
-                dst.dx = src.dx;
+                if finite_state(&[&[src.avel, src.dy, src.dx]]) {
+                    dst.avel = src.avel;
+                    dst.dy = src.dy;
+                    dst.dx = src.dx;
+                }
                 dst.slipping = src.slipping;
             }
         }
