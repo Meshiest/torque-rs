@@ -6,7 +6,8 @@
 //!
 //! **The socket** ([`ClientNet`]): none (a client with no connection), a UDP socket, or an in-memory one linked to a server in
 //! the same process ([`ClientNet::Memory`]): every step carries the datagrams each sent to the other, so the connection is the
-//! engine's own handshake, packets and ghosts, with no socket opened.
+//! engine's own handshake, packets and ghosts, with no socket opened. A client with a UDP socket can still run a game alone
+//! that way ([`GameClient::start_local`]): its socket is set aside while the game runs, so nothing of it reaches the network.
 //!
 //! **A step** ([`GameClient::step`]): as many server ticks as the time covers when hosting, then the client's ticks (its input,
 //! its scripts, its connection, its query), the link carried around each, and the console's lines kept.
@@ -20,7 +21,7 @@ use torque_client::game::ClientGame;
 use torque_client::host::{ClientHost, EnginePass};
 use torque_client::hud::HudWorld as _;
 use torque_client::input::{Key, key_message};
-use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy, UdpDatagrams};
+use torque_client::net::{DatagramQueue, Datagrams, MemoryDatagrams, NetPolicy, UdpDatagrams};
 use torque_client::state::ClientState;
 use torque_gui::Gui;
 use torque_server::server::{GameServer as _, Server, TICK_MS};
@@ -161,12 +162,29 @@ impl ClientBuilder {
             host,
             server: None,
             link: self.link,
+            parked: None,
             server_lag: 0,
             frame_dt: 0.0,
             server_log: Vec::new(),
             client_log: Vec::new(),
         }
     }
+}
+
+/// An in-memory socket at `client` and its link to a server at `server`.
+fn memory_socket(client: SocketAddrV4, server: SocketAddr) -> (MemoryLink, MemoryDatagrams) {
+    let link = MemoryLink {
+        sent: DatagramQueue::default(),
+        incoming: DatagramQueue::default(),
+        client,
+        server,
+    };
+    let socket = MemoryDatagrams {
+        sent: Rc::clone(&link.sent),
+        incoming: Rc::clone(&link.incoming),
+        local_port: client.port(),
+    };
+    (link, socket)
 }
 
 /// Opens the client's socket as `net` says; an in-memory one comes with its link.
@@ -190,18 +208,9 @@ fn open_socket(
             Ok(None)
         }
         ClientNet::Memory { client, server } => {
-            let link = MemoryLink {
-                sent: DatagramQueue::default(),
-                incoming: DatagramQueue::default(),
-                client,
-                server,
-            };
+            let (link, socket) = memory_socket(client, server);
             n.policy = NetPolicy::Loopback;
-            n.socket = Some(Box::new(MemoryDatagrams {
-                sent: Rc::clone(&link.sent),
-                incoming: Rc::clone(&link.incoming),
-                local_port: client.port(),
-            }));
+            n.socket = Some(Box::new(socket));
             Ok(Some(link))
         }
     }
@@ -243,6 +252,13 @@ impl MemoryLink {
     }
 }
 
+/// What [`GameClient::start_local`] set aside.
+struct Parked {
+    socket: Option<Box<dyn Datagrams>>,
+    policy: NetPolicy,
+    link: Option<MemoryLink>,
+}
+
 /// A game's client, and the server `S` it hosts: a [`GameServer`], or a game's own type over one (borrowed as one, and made
 /// one when it stops).
 pub struct GameClient<S = GameServer> {
@@ -250,6 +266,8 @@ pub struct GameClient<S = GameServer> {
     /// The server this client runs in its own process, if any.
     pub server: Option<S>,
     link: Option<MemoryLink>,
+    /// The socket, its policy and the link a game played alone set aside ([`GameClient::start_local`]), given back when it stops.
+    parked: Option<Parked>,
     /// Milliseconds of the client's clock the hosted server has not ticked yet.
     server_lag: u32,
     /// The seconds the next frame covers.
@@ -446,7 +464,33 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
         self.server_lag = 0;
     }
 
-    /// Stops the hosted server, if there is one: its socket closed, its scripts' end run, the link's datagrams dropped.
+    /// Runs `server`, started on [`super::server::Listen::Memory`] at `at`, here over an in-memory link from `client` (a game
+    /// played alone): the client's socket is set aside until hosting stops, so nothing goes out on the network. The client then
+    /// joins it at `at`.
+    pub fn start_local(&mut self, server: S, client: SocketAddrV4, at: SocketAddr) {
+        self.stop_hosting();
+        let (link, socket) = memory_socket(client, at);
+        {
+            let st = self.host.client.borrow();
+            let mut n = st.net.borrow_mut();
+            let socket = n.socket.replace(Box::new(socket));
+            let policy = std::mem::replace(&mut n.policy, NetPolicy::Loopback);
+            self.parked = Some(Parked {
+                socket,
+                policy,
+                link: self.link.replace(link),
+            });
+        }
+        self.start_hosting(server);
+    }
+
+    /// Whether the client plays a game alone ([`GameClient::start_local`]).
+    pub fn local(&self) -> bool {
+        self.parked.is_some()
+    }
+
+    /// Stops the hosted server, if there is one: its socket closed, its scripts' end run, the link's datagrams dropped, and the
+    /// socket a game played alone set aside given back.
     pub fn stop_hosting(&mut self) {
         if let Some(server) = self.server.take() {
             let mut server: GameServer = server.into();
@@ -455,6 +499,13 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
         }
         if let Some(link) = &self.link {
             link.clear();
+        }
+        if let Some(p) = self.parked.take() {
+            let st = self.host.client.borrow();
+            let mut n = st.net.borrow_mut();
+            n.socket = p.socket;
+            n.policy = p.policy;
+            self.link = p.link;
         }
     }
 

@@ -16,9 +16,11 @@ use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
 use torque_render_scene::hd::cells::StaticCells;
+use torque_render_scene::hd::environment::ClientDay;
 use torque_render_scene::hd::objects::objects_of;
+use torque_render_scene::hd::scatter::ScatterLook;
 use torque_render_scene::hd::{
-    DynamicObject, HdCamera, HdDraw, HdMode, HdScene, Quality, bounding_sphere, material,
+    DynamicObject, HdCamera, HdDraw, HdMode, HdScene, HdSpot, Quality, bounding_sphere, material,
 };
 use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
@@ -30,6 +32,11 @@ use torque_render_scene::world::ShapeWorld;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
 use torque_shapes::instance::ShapeInstance;
 use torque_shapes::shape::Shape;
+
+/// The least turn of the day's sun the view is lit again for: the cosine of a quarter of a degree.
+pub const DAY_STEP_COS: f32 = 0.999_990_5;
+/// The wind the day's cloud light is laid with.
+pub const CLOUD_WIND: [f32; 3] = [1.0, 0.4, 0.0];
 
 /// The field of view a frame is drawn with when its eye names none (degrees, horizontal).
 pub const DEFAULT_FOV: u8 = 75;
@@ -122,6 +129,10 @@ pub struct WorldView {
     scene: PlainScene,
     /// Whether the floor or the daylight changed since the last frame (else only the objects did).
     statics_changed: bool,
+    /// Where the day's sun was when the view was last lit by it ([`WorldView::set_day`]).
+    day_sun: Option<[f32; 3]>,
+    /// The shadows' color of the last [`Daylight`]: a day whose look names none keeps it.
+    daylight_shadow: [f32; 3],
 }
 
 impl WorldView {
@@ -143,6 +154,8 @@ impl WorldView {
             gui: GuiPass::new(gpu, None),
             scene,
             statics_changed: true,
+            day_sun: None,
+            daylight_shadow: Daylight::default().shadow,
         };
         view.set_daylight(&Daylight::default());
         view
@@ -151,6 +164,11 @@ impl WorldView {
     /// The scene as the next frame draws it.
     pub fn scene(&self) -> &PlainScene {
         &self.scene
+    }
+
+    /// The enhanced renderer the view draws with (its timers and reports).
+    pub fn renderer(&mut self) -> &mut HdWorld<NoExtension> {
+        &mut self.world
     }
 
     /// Starts the renderer's histories again (a cut: the next frame keeps nothing of the last).
@@ -183,6 +201,48 @@ impl WorldView {
         s.fog_distance = d.fog_start;
         s.visible_distance = d.visible;
         self.statics_changed = true;
+        // A day lights the view again over this daylight.
+        self.day_sun = None;
+        self.daylight_shadow = d.shadow;
+    }
+
+    /// Lights the view by `day` under `look` (a server's TimeOfDay and ScatterSky): the sun or the moon, the ambient light, the
+    /// fog's color and the clear, the clouds' light and the physical sky made for the sun, over the [`Daylight`]'s distances.
+    /// A ScatterSky carries no shadow color: a look without one keeps the [`Daylight`]'s (else the shadows are black, by day and
+    /// under the moon).
+    /// The view's statics are made again only when the sun has moved [`DAY_STEP_COS`] or more since it was last lit (the sky
+    /// and the terrain's light go up again then, not every frame). False when nothing changed (no day, or too small a move).
+    pub fn set_day(&mut self, day: &ClientDay, look: &ScatterLook) -> bool {
+        let (Some(d), Some(light)) = (day.day.as_ref(), day.light(look)) else {
+            return false;
+        };
+        let towards = d.towards();
+        if let Some(last) = self.day_sun {
+            let dot: f32 = (0..3).map(|k| last[k] * towards[k]).sum();
+            if dot > DAY_STEP_COS {
+                return false;
+            }
+        }
+        let s = &mut self.scene;
+        s.sun = light.sun();
+        if s.sun.shadow == [0.0; 3] {
+            s.sun.shadow = self.daylight_shadow;
+        }
+        s.fog = light.fog(s.fog);
+        s.clear = light.fog;
+        s.atmosphere_sun = Some(towards);
+        s.clouds = Some(light.clouds(CLOUD_WIND));
+        self.day_sun = Some(towards);
+        self.statics_changed = true;
+        true
+    }
+
+    /// The frame's spot lights (the scene's lights go up again when they changed).
+    pub fn set_spots(&mut self, spots: Vec<HdSpot>) {
+        if self.scene.spots != spots {
+            self.scene.spots = spots;
+            self.scene.lights_generation = self.scene.lights_generation.wrapping_add(1);
+        }
     }
 
     /// A square floor at height 0, `half` units from the origin each way, textured with `texture` (a path the reader finds)
@@ -216,11 +276,13 @@ impl WorldView {
             .iter()
             .map(|d| HdDraw::from_fixed(d, material::KIND_PLANE, &local))
             .collect();
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
         self.statics_changed = true;
     }
 
     fn put_floor(&mut self, floor: Draw, local: &[usize]) {
         self.scene.planes = vec![HdDraw::from_fixed(&floor, material::KIND_PLANE, local)];
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
         self.statics_changed = true;
     }
 
