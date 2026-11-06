@@ -209,3 +209,56 @@ fn a_stall_bridges_no_more_than_a_capped_frame_covers() {
     t.update(&[wheel(0.0, 1040.0, true)], &slope, 10.0);
     assert_eq!(t.len(), 30);
 }
+
+#[test]
+fn a_wheel_in_the_strip_of_another_of_its_vehicle_lays_none_there() {
+    let mut t = TireTracks::new(TrackRules {
+        max_segments: 200,
+        ..rules()
+    });
+    let on = |key, x: f32, y: f32| TrackWheel {
+        key,
+        contact: true,
+        point: [x, y, 0.1 * x],
+    };
+    // A vehicle's front and rear wheels on one line, another beside them, and another vehicle's wheel behind on the line.
+    for k in 0..40 {
+        let y = k as f32 * 0.25;
+        t.update(
+            &[
+                on((1, 0), 0.0, y),
+                on((1, 1), 1.0, y),
+                on((1, 2), 0.0, y - 2.0),
+                on((2, 0), 0.0, y - 4.0),
+            ],
+            &slope,
+            0.032,
+        );
+    }
+    let laid = |key| t.segments().filter(|s| s.wheel == key).count();
+    assert!(laid((1, 0)) >= 15, "{}", laid((1, 0)));
+    assert_eq!(
+        laid((1, 1)),
+        laid((1, 0)),
+        "the wheel beside lays its own strip"
+    );
+    // The rear wheel lays only behind where the front's strip starts (y 0), and none in it.
+    let rear: Vec<f32> = t
+        .segments()
+        .filter(|s| s.wheel == (1, 2))
+        .map(|s| s.center[1])
+        .collect();
+    assert!(
+        !rear.is_empty() && rear.iter().all(|y| *y < 0.0),
+        "the rear wheel rolls in the front's strip: {rear:?}"
+    );
+    // Its strip ends where the front's starts: no gap between them.
+    let reach = t
+        .segments()
+        .filter(|s| s.wheel == (1, 2))
+        .map(|s| s.line[1][1])
+        .fold(f32::MIN, f32::max);
+    assert!(reach.abs() < 0.01, "the rear's strip ends at {reach}");
+    assert!(laid((2, 0)) >= 10, "another vehicle lays its own");
+    assert!(t.heads().all(|(k, _)| *k != (1, 2)));
+}

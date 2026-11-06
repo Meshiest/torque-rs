@@ -1243,12 +1243,27 @@ fn getting_out_at_speed_or_at_rest_the_buggy_goes_on_smoothly_for_both_players()
     }
 }
 
-/// The breaks in `lines` (a strip's segments, oldest first, from `from` on): where one does not start at the last one's end.
-fn breaks(lines: &[[[f32; 3]; 2]], from: usize) -> usize {
+/// The breaks in `lines` (a strip's segments, oldest first, from `from` on) that are not handed over to `others` (the other
+/// wheels' strips): where one does not start at the last one's end, and that end or the next start lies outside the other
+/// strips (a wheel lays none in the strip of a wheel of its vehicle ahead of it, a rear tire in the front's).
+fn breaks(lines: &[[[f32; 3]; 2]], from: usize, others: &[[[f32; 3]; 2]]) -> usize {
+    let half = 0.5 * torque_example_vehicle_demo::scene::track_rules().width;
+    let covered = |p: [f32; 3]| {
+        others.iter().any(|[a, b]| {
+            let way = [b[0] - a[0], b[1] - a[1]];
+            let t = ((p[0] - a[0]) * way[0] + (p[1] - a[1]) * way[1])
+                / (way[0] * way[0] + way[1] * way[1]).max(1e-8);
+            let on = [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t.clamp(0.0, 1.0));
+            (p[0] - on[0]).hypot(p[1] - on[1]) < half + 0.01
+        })
+    };
     lines
         .windows(2)
         .skip(from.saturating_sub(1))
-        .filter(|w| apart(w[0][1], w[1][0]) > 1e-3)
+        .filter(|w| {
+            let (e, s) = (w[0][1], w[1][0]);
+            apart(e, s) > 1e-3 && !(covered(e) && covered(s))
+        })
         .count()
 }
 
@@ -1297,12 +1312,24 @@ fn another_players_buggy_and_one_rolling_on_without_a_driver_lay_unbroken_tracks
         assert_eq!(lines.len(), 4, "{who}: four strips");
         for (w, l) in &lines {
             let start = from[k].get(*w).copied().unwrap_or(0);
-            assert!(
-                l.len() > start + 100,
-                "{who} wheel {w}: {} laid",
-                l.len() - start
+            // A rear wheel lays none where it rolls in a front wheel's strip.
+            if *w < 2 {
+                assert!(
+                    l.len() > start + 100,
+                    "{who} wheel {w}: {} laid",
+                    l.len() - start
+                );
+            }
+            let others: Vec<_> = lines
+                .iter()
+                .filter(|(o, _)| *o != w)
+                .flat_map(|(_, l)| l.iter().copied())
+                .collect();
+            assert_eq!(
+                breaks(l, start, &others),
+                0,
+                "{who} wheel {w}: breaks in its strip"
             );
-            assert_eq!(breaks(l, start), 0, "{who} wheel {w}: breaks in its strip");
             let longest = l[start..]
                 .iter()
                 .map(|s| apart(s[0], s[1]))
@@ -1911,12 +1938,20 @@ fn escape_opens_the_pause_menu_at_the_wheel_and_resume_or_escape_gives_the_keys_
     assert!(errors(&a).is_empty(), "{:?}", errors(&a));
 }
 
-/// The front of the strip wheel `wheel` of `buggy` lays on `game`: its head's end, or its newest segment's when it has no head.
+/// The front of the strip under wheel `wheel` of `buggy` on `game`: its head's end; where it rolls in the strip of the wheel
+/// ahead of it (and lays none), its contact point, which that strip reaches; else its newest segment's end.
 fn track_front(game: &VehicleDemo, buggy: u32, wheel: usize) -> Option<[f32; 3]> {
     let t = game.scene().tracks()?;
     t.heads()
         .find(|(k, _)| **k == (buggy, wheel))
         .map(|(_, s)| s.line[1])
+        .or_else(|| {
+            game.with_world(|w| {
+                let rolled = w.vehicle_look.get(&buggy)?.wheels.get(wheel)?;
+                rolled.contact.then_some(rolled.point)
+            })
+            .flatten()
+        })
         .or_else(|| {
             t.segments()
                 .filter(|s| s.wheel == (buggy, wheel))
