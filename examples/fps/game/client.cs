@@ -810,7 +810,7 @@ function showMainMenu()
 
 // A browser's client ($Arena::JoinOnly) joins the one game its page came from: the main menu offers that and nothing else.
 // $Arena::JoinAsked asks the host to open a new connection to that game and join it. Played alone ($Arena::Solo: the page's
-// own game, nobody else in it), the menu offers to play again.
+// own game), the menu offers to play again, and to host or join with a link: $Arena::PageAsk asks the page for its panel.
 function showJoinOnly()
 {
    HostButton.setVisible(0);
@@ -822,10 +822,18 @@ function showJoinOnly()
       MainLine.setText("A small shooter, played alone on this page.");
       JoinButton.setText("Play alone");
       JoinNote.setText("Back into the arena.");
+      HostButton.setVisible(1);
+      HostButton.setText("Host with a link");
+      HostButton.command = "$Arena::PageAsk = \"host\";";
+      HostNote.setVisible(1);
+      HostNote.setText("Send friends a link to join your game.");
+      QuitButton.setVisible(1);
+      QuitButton.setText("Join with a link");
+      QuitButton.command = "$Arena::PageAsk = \"join\";";
       return;
    }
    JoinButton.setText("Join the game");
-   JoinNote.setText("Join the game this page came from.");
+   JoinNote.setText($Arena::Invited ? "Join the game you were invited to." : "Join the game this page came from.");
 }
 
 function joinPage()

@@ -28,6 +28,28 @@
   #settings .note { margin: 0.5rem 0 0; font-size: 0.8rem; color: #9aa3b5; }
   #settings .close { margin-top: 0.6rem; font: inherit; font-size: 0.85rem; padding: 0.2rem 0.7rem; background: #262c38;
     color: #dde2ec; border: 1px solid #3a4152; border-radius: 4px; cursor: pointer; }
+  #invites { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(34rem, calc(100% - 2rem));
+    max-height: calc(100% - 2rem); overflow-y: auto; box-sizing: border-box; padding: 1rem 1.2rem; border: 1px solid #3a4152;
+    border-radius: 8px; background: #1c2029f7; box-shadow: 0 6px 20px #0008; font-size: 0.92rem; line-height: 1.4; }
+  #invites h2 { margin: 0 0 0.6rem; font-size: 1.1rem; }
+  #invites h3 { margin: 1rem 0 0.3rem; font-size: 0.95rem; }
+  #invites p { margin: 0.45rem 0; }
+  #invites fieldset { margin: 0.6rem 0; padding: 0.4rem 0.7rem; border: 1px solid #3a4152; border-radius: 6px; }
+  #invites .choice { display: flex; align-items: center; gap: 0.45rem; margin: 0.2rem 0; }
+  #invites .privacy { color: #c3cad8; }
+  #invites .warn { color: #f0c674; font-size: 0.85rem; }
+  #invites .said { color: #9aa3b5; min-height: 1.2em; }
+  #invites a { color: #7aa2f7; }
+  #invites .row { display: flex; gap: 0.5rem; }
+  #invites input[type=text] { flex: 1; min-width: 0; font: inherit; padding: 0.3rem 0.4rem; background: #12141a; color: #dde2ec;
+    border: 1px solid #3a4152; border-radius: 4px; }
+  #invites button { font: inherit; padding: 0.3rem 0.8rem; background: #262c38; color: #dde2ec; border: 1px solid #3a4152;
+    border-radius: 4px; cursor: pointer; }
+  #invites button.primary { background: #2f4a80; border-color: #7aa2f7; }
+  #invites button.close { margin-top: 0.8rem; }
+  #invites button:focus-visible, #invites input:focus-visible, #invites a:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
+  #invites ol { margin: 0.6rem 0; padding-left: 0; list-style: none; }
+  #invites li { margin: 0.5rem 0; padding: 0.4rem 0.6rem; border: 1px solid #2c3240; border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -73,7 +95,10 @@
   //
   // `data-torque-solo="1"` on the root element (`build.mjs --solo`, a site with no game server): the game is played alone. A
   // game whose module has `startSoloClient` (the arena) plays on its own server in a Web Worker (host.js, with no room), and
-  // its menus offer neither hosting nor joining; `?host=1` is then ignored.
+  // its menus offer neither hosting nor joining through a room service; `?host=1` is then ignored. Its menu's Host with a link
+  // and Join with a link trade connection codes by hand instead (invites.js): an invite link (`#join=<code>`) opens the page
+  // joining that host (`startLinkClient`), and a reply link (`#reply=<code>`) hands its reply to this browser's game tab and
+  // starts no game.
   //
   // Esc: a browser keeps it for itself while the pointer is locked (it ends the lock) and in full screen (it leaves it). The
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
@@ -82,6 +107,7 @@
   import { fpsText, later, readStreamed, stageText } from './loading.js';
   import * as settings from './settings.js';
   import { createTorque } from './bridge.js';
+  import { hostInvites, joinInvite, replyTab, takeFragment } from './invites.js';
 
   // `?nolock` (the browser checks load every page with it): the page never takes the pointer lock. In headless Chrome on Windows
   // a lock confines the real cursor to the invisible window.
@@ -96,6 +122,9 @@
   }
 
   const root = document.documentElement;
+  // An invite or reply link: read, and cleared from the address bar, before anything else (a page played alone only).
+  const invite = root.dataset.torqueSolo === '1' ? takeFragment() : null;
+  const joining = invite?.kind === 'join' ? joinInvite(invite.code) : null;
   const status = document.getElementById('status');
   const bar = document.getElementById('progress');
   let stage = null;
@@ -229,7 +258,11 @@
     // played alone runs a game that has its own server the same way, with no room.
     const alone = root.dataset.torqueSolo === '1';
     const solo = alone && typeof game.startSoloClient === 'function';
-    const hosting = solo || (!alone && new URLSearchParams(location.search).has('host'));
+    const hosting = !joining && (solo || (!alone && new URLSearchParams(location.search).has('host')));
+    if (joining) {
+      if (typeof game.startLinkClient !== 'function') throw new Error('this game cannot be joined by an invite link');
+      joining.attach(game);
+    }
     if (hosting && game.embedded()) throw new Error('a build that carries its files cannot host: its worker fetches them');
     torque.attach(game);
     // The game's first frame is drawn at the quality chosen.
@@ -243,15 +276,17 @@
     await new Promise(requestAnimationFrame);
     if (game.embedded()) {
       game.startEmbedded();
+    } else if (joining) {
+      game.startLinkClient();
     } else if (hosting) {
       const { hostGame } = await import('./host.js');
-      await hostGame(game, (text) => (status.textContent = text), { solo });
+      await hostGame(game, (text) => (status.textContent = text), { solo, onHost: solo ? hostInvites() : null });
     } else {
       game.startFetched();
     }
   }
 
-  start().catch((e) => {
+  (invite?.kind === 'reply' ? replyTab(invite.code) : start()).catch((e) => {
     const message = String(e?.message ?? e);
     bar.hidden = true;
     if (e instanceof Refused) {

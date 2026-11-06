@@ -66,6 +66,28 @@ GitHub Pages on each push to main.
 
 A static host has no game server, so the site's examples are built with `--solo` (`node web/build.mjs <example> --solo`, into
 `<target>/web/<example>-solo`): the page's root element carries `data-torque-solo="1"`, and the game is played alone. The
-arena runs its server in the page's Web Worker, as a player's host does, with no room service, and its menu offers only "Play
-alone"; the vehicle demo's browser build never offers to host or join. The native builds and the local web builds keep
-their multiplayer.
+arena runs its server in the page's Web Worker, as a player's host does, with no room service, and its menu offers "Play
+alone", "Host with a link" and "Join with a link"; the vehicle demo's browser build never offers to host or join. The
+native builds and the local web builds keep their multiplayer.
+
+### Invite links
+
+With no server of ours, two players trade connection codes by hand (`web/invites.js`, `web/codes.js`). "Host with a
+link" opens a panel: the player picks the STUN server (Cloudflare, Google, or same network only, which uses none), reads
+what that server sees, and makes one invite link per friend (`<page>#join=<code>`). An invite belongs to one peer
+connection, so each works once. The friend's page shows which server the invite uses before it contacts it, then makes a
+reply link (`<page>#reply=<code>`). The host opens the reply link in the same browser: that tab hands the reply to the
+game's tab over a `BroadcastChannel` and closes, and the data channel opens straight between the two browsers. The
+reply can also be pasted into the host's panel. The codes ride in the fragment, which a browser never sends to the
+server, and the page clears it from the address bar once read. Each link carries its sender's IP address, which the
+panels say beside every copy button.
+
+A code is the SDP cut to what a data channel needs (ICE user fragment and password, the DTLS fingerprint and setup, the
+candidates as type, address and port), deflated, in base64url, with a version byte, a kind byte and a CRC-32; about 230
+characters with three candidates. The page refuses a code longer than 1024 characters, one that inflates past 2 KiB, a
+line out of its form or order, and a STUN server key not in its own fixed list; a code never names a server by address.
+The host takes a joiner's candidates by the same rules as a room's joiners (canonical IPv4, no `.local` names, private
+addresses only on the same-network server or with `?lan=1`, never its own), counts the joiner by the address its traffic
+comes from (or by a stand-in of its invite's own when the browser hides that address, as it does for a peer-reflexive
+pair), and hands the open channel to the worker's relay with every cap. With no TURN server, some networks can't connect;
+the page says so when the channel does not open in time.

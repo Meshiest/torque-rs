@@ -9,12 +9,15 @@
 // `offer`, `answer`, `candidate`). The page's root element carries `data-torque-room` (the code, `ABCD-EFGH`) and
 // `data-torque-server` (`worker` once the server runs there).
 //
-// Played alone (`solo`, a page `build.mjs --solo` marked): the server in the worker and the host player's own link only,
-// with no room service and no peer connection.
+// Played alone (`solo`, a page `build.mjs --solo` marked): the server in the worker and the host player's own link, with no
+// room service. Players invited by link (`invites.js`) join it through `onHost`'s `adopt`: their peer connections are
+// made there, and each comes here with its channel open and the address its traffic comes from.
 //
 // Caps here, for what the page itself holds: at most MAX_PEERS peer connections (MAX_PEERS_PER_IP from one address),
 // one offer each (an offer asking for anything but data channels is refused), MAX_CANDIDATES candidate lines each way,
-// one channel each (label `game`, unordered, no retransmits), and a send skipped while a channel holds more than MAX_BUFFERED bytes. A joiner's
+// one channel each (label `game`, unordered, no retransmits), and a send skipped while a channel holds more than MAX_BUFFERED
+// bytes. A joiner whose channel brings a message that is not binary, over MAX_DATAGRAM bytes, or more than
+// MAX_MESSAGES_PER_S in a second is ended before the message is posted to the worker. A joiner's
 // candidates, in its offer or trickled, go through `candidateAllowed` (the desktop host's rules): IPv4 UDP only, no `.local`
 // names, never loopback, link-local, multicast, broadcast, reserved ranges or this page's own addresses, and private ones
 // only with `?lan=1` (players on the host's network). A joiner reaches the host without them: its own checks to the
@@ -26,6 +29,10 @@ const MAX_PEERS_PER_IP = 4;
 export const MAX_CANDIDATES = 16;
 const MAX_BUFFERED = 256 * 1024;
 const MAX_MESSAGE = 8 * 1024;
+// A game datagram's most bytes, and the most a link sends a second (torque-net's NET_MAX_DATAGRAM and
+// NET_PACKETS_PER_CONN_PER_S; the worker's relay counts them finer).
+const MAX_DATAGRAM = 1500;
+const MAX_MESSAGES_PER_S = 512;
 const MAX_ICE_SERVERS = 8;
 const PING_MS = 10_000;
 // How long a joiner has from its offer to its channel's opening.
@@ -134,8 +141,10 @@ export function iceServersFrom(body) {
 }
 
 // Hosts the game: `game` is the module (its files fetched), `say(text)` shows the page's status line; `solo`: played alone,
-// no room.
-export async function hostGame(game, say, { solo = false } = {}) {
+// no room. `onHost({ adopt })`, called on a solo page once the server runs: `adopt(pc, channel, ip, onEnd)` takes an invited
+// joiner's peer connection and its channel (open, or opening) from `ip` and returns null, or why it was refused; `onEnd()`
+// is called when that joiner is ended.
+export async function hostGame(game, say, { solo = false, onHost = null } = {}) {
   const root = document.documentElement;
   const params = new URLSearchParams(location.search);
   const lan = params.has('lan');
@@ -162,6 +171,42 @@ export async function hostGame(game, say, { solo = false } = {}) {
     peer.pc?.close();
     if (tellWorker && peer.linked) worker.postMessage({ close: id });
     tell(`drop ${id}`);
+    peer.onEnd?.();
+  }
+
+  // Peer `id`'s data channel: open, it is a link to the worker; each message goes to the worker within the page's caps.
+  function wire(id, peer, ch) {
+    peer.channel = ch;
+    ch.binaryType = 'arraybuffer';
+    let second = -1;
+    let count = 0;
+    const open = () => {
+      if (peer.linked || peers.get(id) !== peer) return;
+      peer.linked = true;
+      worker.postMessage({ open: id, ip: peer.ip });
+    };
+    ch.onopen = open;
+    ch.onmessage = (m) => {
+      const now = Math.floor(performance.now() / 1000);
+      if (now !== second) {
+        second = now;
+        count = 0;
+      }
+      if (!(m.data instanceof ArrayBuffer) || m.data.byteLength > MAX_DATAGRAM || ++count > MAX_MESSAGES_PER_S) return end(id);
+      worker.postMessage({ from: id, data: m.data }, [m.data]);
+    };
+    ch.onclose = () => end(id);
+    if (ch.readyState === 'open') open();
+  }
+
+  // Whether one more joiner from `ip` may come in: null, or why not.
+  function refusal(ip) {
+    if (peers.size >= MAX_PEERS) return 'The game is full.';
+    if (!ipv4(ip)) return 'The player did not connect from an address this page takes.';
+    if ([...peers.values()].filter((p) => p.ip === ip).length >= MAX_PEERS_PER_IP) {
+      return `${MAX_PEERS_PER_IP} players from one address are in already.`;
+    }
+    return null;
   }
 
   // A joiner's candidate line: taken within its count and the rules, else dropped.
@@ -198,17 +243,7 @@ export async function hostGame(game, say, { solo = false } = {}) {
     pc.ondatachannel = (e) => {
       const ch = e.channel;
       if (peer.channel || ch.label !== 'game' || ch.ordered || ch.maxRetransmits !== 0) return end(id);
-      peer.channel = ch;
-      ch.binaryType = 'arraybuffer';
-      ch.onopen = () => {
-        peer.linked = true;
-        worker.postMessage({ open: id, ip: peer.ip });
-      };
-      ch.onmessage = (m) => {
-        if (!(m.data instanceof ArrayBuffer)) return end(id);
-        worker.postMessage({ from: id, data: m.data }, [m.data]);
-      };
-      ch.onclose = () => end(id);
+      wire(id, peer, ch);
     };
     try {
       await pc.setRemoteDescription({ type: 'offer', sdp: kept });
@@ -236,8 +271,7 @@ export async function hostGame(game, say, { solo = false } = {}) {
     const id = peerNumber(a);
     if (id === null) return;
     if (verb === 'peer') {
-      const fromIp = [...peers.values()].filter((p) => p.ip === b).length;
-      if (peers.size >= MAX_PEERS || fromIp >= MAX_PEERS_PER_IP || peers.has(id) || !ipv4(b)) return tell(`drop ${id}`);
+      if (refusal(b) !== null || peers.has(id)) return tell(`drop ${id}`);
       peers.set(id, { ip: b, pc: null, channel: null, linked: false, sent: 0, got: 0 });
     } else if (verb === 'from') {
       const peer = peers.get(id);
@@ -288,7 +322,27 @@ export async function hostGame(game, say, { solo = false } = {}) {
     for (const id of [...peers.keys()]) end(id);
     worker.terminate();
   });
-  if (solo) return game.startSoloClient();
+  if (solo) {
+    let next = 1;
+    onHost?.({
+      adopt(pc, ch, ip, onEnd) {
+        const refused = refusal(ip);
+        if (refused) return refused;
+        while (peers.has(next)) next = next >= 0xffffffff ? 1 : next + 1;
+        const id = next;
+        const peer = { ip, pc, channel: null, linked: false, sent: 0, got: 0, onEnd };
+        peers.set(id, peer);
+        pc.oniceconnectionstatechange = () => {
+          if (['failed', 'closed'].includes(pc.iceConnectionState)) end(id);
+        };
+        // An invited joiner makes no channel of its own.
+        pc.ondatachannel = () => end(id);
+        wire(id, peer, ch);
+        return null;
+      },
+    });
+    return game.startSoloClient();
+  }
   room = new WebSocket(roomsUrl);
   room.binaryType = 'arraybuffer';
   room.onopen = () => tell('host');

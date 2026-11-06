@@ -11,7 +11,8 @@
 // <target>/web/<name>-solo/ (`-embedded-solo` with `--embed`).
 //
 // The folder, served as it is: index.html, files.js, loading.js, settings.js, bridge.js, host.js and host-worker.js (a
-// browser host), game.js, game_bg.wasm, and files.json with game.pack when fetched.
+// browser host), codes.js and invites.js (games joined by invite links), game.js, game_bg.wasm, and files.json with
+// game.pack when fetched.
 // The target folder is CARGO_TARGET_DIR's, else the workspace's `target`. wasm-bindgen's command line, at the version
 // Cargo.lock names, is installed into <target>/web-tools at first.
 import { spawnSync } from 'node:child_process';
@@ -103,7 +104,8 @@ if (opt !== '0' && spawnSync(opt, ['--version'], { encoding: 'utf8' }).status ==
 } else {
   console.log('wasm-opt not found: the module is not optimized further (install binaryen for a faster one)');
 }
-for (const page of ['files.js', 'loading.js', 'settings.js', 'bridge.js', 'host.js', 'host-worker.js']) copyFileSync(join(root, 'web', page), join(out, page));
+const pages = ['files.js', 'loading.js', 'settings.js', 'bridge.js', 'host.js', 'host-worker.js', 'codes.js', 'invites.js'];
+for (const page of pages) copyFileSync(join(root, 'web', page), join(out, page));
 // The page, marked to be played alone with `--solo`.
 const html = readFileSync(join(root, 'web', 'index.html'), 'utf8');
 const marked = solo ? html.replace('<html lang="en">', '<html lang="en" data-torque-solo="1">') : html;

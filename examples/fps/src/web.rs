@@ -24,17 +24,25 @@
 //! (`data-torque-ended` carries it).
 //!
 //! **Played alone** (a page `web/build.mjs --solo` marked, for a site with no game server): the page runs the server in its
-//! worker as a host player's does, with no room, and calls [`start_solo_client`]; the main menu offers only to play again.
+//! worker as a host player's does, with no room, and calls [`start_solo_client`]; the main menu offers to play again, to
+//! host with a link and to join with one. The last two ask the page (its `torqueAsk("host")` or `torqueAsk("join")`,
+//! `web/invites.js`), which trades connection codes by hand.
+//!
+//! **Joined by an invite link** (`web/invites.js`): the page holds the data channel to the host and calls
+//! [`start_link_client`]; the client's datagrams go to the page's sender ([`set_local_sender`]) and the channel's to
+//! [`local_datagram`], as the host player's own link does. The page calls [`link_opened`] when the channel opens and
+//! [`link_ended`] when it closes: the game ends with that message on the menu.
 
 use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::rc::Rc;
 
 use torque::app::manifest::Manifest;
 use torque::app::view::WorldView;
 use torque::app::{App, Host};
 use torque::client::net::Datagrams;
 use torque::client::net::room_join::RoomDatagrams;
-use torque::client::net::web_rtc::{LinkWatch, WebRtcDatagrams};
+use torque::client::net::web_rtc::{Link, LinkWatch, WebRtcDatagrams};
 use torque::client::net::web_socket::WebSocketDatagrams;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
@@ -141,6 +149,32 @@ pub fn start_solo_client() -> Result<(), String> {
     start(fetched_files()?, Some(Target::Local), true)
 }
 
+/// Starts a client joined by an invite link on the fetched files: the page holds the data channel to the host (module
+/// docs).
+pub fn start_link_client() -> Result<(), String> {
+    start(fetched_files()?, Some(Target::Page), false)
+}
+
+thread_local! {
+    /// The page-held link's state ([`link_opened`], [`link_ended`]).
+    static PAGE_LINK: LinkWatch = LinkWatch::default();
+}
+
+/// The page's data channel to the host opened.
+pub fn link_opened() {
+    PAGE_LINK.with(|w| w.borrow_mut().link = Link::Channel);
+}
+
+/// The page's data channel to the host ended, for good: `why`, in a player's words, goes on the menu.
+pub fn link_ended(why: &str) {
+    PAGE_LINK.with(|w| {
+        let mut w = w.borrow_mut();
+        if w.ended.is_none() {
+            w.ended = Some(why.chars().take(200).collect());
+        }
+    });
+}
+
 /// What the local link holds: datagrams from the worker's server, and the page's function that posts one to it.
 #[derive(Default)]
 struct Local {
@@ -196,13 +230,14 @@ impl Datagrams for LocalLink {
     }
 }
 
-/// Where the page's game is: a server that served the page, a player's host found by a room's code, or the server in
-/// this page's worker (the host player's own game).
+/// Where the page's game is: a server that served the page, a player's host found by a room's code, the server in this
+/// page's worker (the host player's own game), or a host the page reached by an invite link.
 #[derive(Clone)]
 enum Target {
     Server(String),
     Room { url: String, code: String },
     Local,
+    Page,
 }
 
 impl Target {
@@ -220,6 +255,13 @@ impl Target {
                 Ok((Box::new(socket), watch))
             }
             Target::Local => Ok((Box::new(LocalLink), LinkWatch::default())),
+            Target::Page => {
+                let watch = PAGE_LINK.with(Rc::clone);
+                if watch.borrow().ended.is_some() {
+                    return Err("open a new invite link to join again".into());
+                }
+                Ok((Box::new(LocalLink), watch))
+            }
         }
     }
 }
@@ -245,6 +287,9 @@ fn start(files: GameFiles, target: Option<Target>, solo: bool) -> Result<(), Str
     if solo {
         game.set_global("$Arena::Solo", "1");
     }
+    if matches!(target, Target::Page) {
+        game.set_global("$Arena::Invited", "1");
+    }
     game.call("showMainMenu", &[])?;
     let mut web = WebArena {
         game,
@@ -255,6 +300,21 @@ fn start(files: GameFiles, target: Option<Target>, solo: bool) -> Result<(), Str
     };
     web.join()?;
     torque::app::window::run(web)
+}
+
+/// Calls the page's `torqueAsk(what)` (`web/invites.js`), if it has one: `host` or `join`.
+fn ask_page(what: &str) {
+    if what != "host" && what != "join" {
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if let Ok(f) = js_sys::Reflect::get(&window, &"torqueAsk".into())
+        && let Some(f) = wasm_bindgen::JsCast::dyn_ref::<js_sys::Function>(&f)
+    {
+        let _ = f.call1(&wasm_bindgen::JsValue::NULL, &what.into());
+    }
 }
 
 /// The value of `name` in the page's query string, decoded.
@@ -428,6 +488,12 @@ impl App for WebArena {
         App::advance(&mut self.game, ms);
         if !self.ended {
             self.show_end();
+        }
+        // The menu's Host with a link and Join with a link (played alone): the page's invites panel.
+        let ask = self.game.global("$Arena::PageAsk");
+        if !ask.is_empty() {
+            self.game.set_global("$Arena::PageAsk", "");
+            ask_page(&ask);
         }
         if self.game.take_flag("$Arena::JoinAsked")
             && let Err(e) = self.rejoin()

@@ -94,6 +94,22 @@ mod page {
         web::start_solo_client()
     }
 
+    /// A client joined by an invite link: the page holds its data channel to the host.
+    #[wasm_bindgen(js_name = startLinkClient)]
+    pub fn start_link_client() -> Result<(), String> {
+        web::start_link_client()
+    }
+
+    #[wasm_bindgen(js_name = linkOpened)]
+    pub fn link_opened() {
+        web::link_opened()
+    }
+
+    #[wasm_bindgen(js_name = linkEnded)]
+    pub fn link_ended(why: &str) {
+        web::link_ended(why)
+    }
+
     /// A datagram from the worker's server for the host player's client.
     #[wasm_bindgen(js_name = localDatagram)]
     pub fn local_datagram(bytes: Vec<u8>) {

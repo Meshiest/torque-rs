@@ -57,9 +57,9 @@ web-level-demo-embedded port="8080":
     node ../web/build.mjs level-demo --embed
     node ../web/serve.mjs "{{web_target}}/web/level-demo-embedded" {{port}}
 
-# The web pages' loading display, settings and script bridge, tested in Node (no browser)
+# The web pages' loading display, settings, script bridge, browser host and connection codes, tested in Node (no browser)
 web-unit:
-    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs ../web/host.test.mjs
+    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs ../web/host.test.mjs ../web/codes.test.mjs
 
 # Fails when any script in the repository could open a browser other than through `launchGuarded` (web/guard.mjs), whose pages
 # cannot take the pointer lock: a lock confines the real cursor in headless Chrome on Windows
@@ -140,6 +140,14 @@ web-fps-p2p-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-desktop.png" 120 desktop
     node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-browser.png" 120 browser
+
+# The arena joined by an invite link on its page played alone (build it first with `node web/build.mjs fps --solo`): a host
+# page makes the link, a second browser opens it and makes a reply link, the host's browser opens the reply, the data channel
+# opens on this computer's own addresses (no STUN server is contacted), the joiner walks, and bad codes are refused. Pictures
+# of the panels into the target folder's `web/invites`
+web-fps-invite-check: web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites" 120
 
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`

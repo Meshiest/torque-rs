@@ -91,7 +91,7 @@ shoot, right button aim down the sights, R reload, Tab first or third person, T 
 | Dedicated server (LAN) | `just examples/fps-server` | `cargo run -p torque-example-fps --release --bin fps-server` |
 | Dedicated server (internet) | `just examples/fps-server-public` | `... --bin fps-server -- --bind 0.0.0.0 --port 28000` |
 | Web (browsers and desktops in one game) | `just examples/web-fps` (a browser joins at http://127.0.0.1:28000/) | `node web/build.mjs fps`, then `fps-server --transport both` |
-| Web, online (played alone) | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
+| Web, online (played alone, or with friends by invite link) | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
 | Pictures | `just examples/fps-shots` and the other `fps-*-shots` recipes | `... --bin fps-client -- --shots <dir>` |
 
 **Shows:** a full network game (the LAN server query, ghosting, client prediction); posed hitboxes and lag compensation;
