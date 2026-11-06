@@ -89,15 +89,15 @@ pub fn start_fetched() -> Result<(), String> {
     let mut web = WebVehicle::new(game, None);
     #[cfg(target_arch = "wasm32")]
     if !torque::app::web_join::solo_page() {
-        web.warm = web
-            .game
-            .files
-            .kit
-            .paths()
-            .filter(|p| p.ends_with(".dif"))
-            .map(String::from)
-            .collect();
-        web.play_when_warm = true;
+        web.warm = WarmStart::new(
+            web.game
+                .files
+                .kit
+                .paths()
+                .filter(|p| p.ends_with(".dif"))
+                .map(String::from)
+                .collect(),
+        );
     }
     torque::app::window::run(web)
 }
@@ -270,17 +270,60 @@ struct WebVehicle {
     /// address saying what it plays.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     rooms: bool,
-    /// The kit's interiors still to be made before the game played at once starts ([`WebVehicle::warm_interiors`]).
+    /// A game played at once: the kit's interiors made before Play alone is asked ([`WebVehicle::warm_interiors`]).
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    warm: Vec<String>,
-    /// Whether Play alone is asked once they are made.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    play_when_warm: bool,
+    warm: WarmStart,
 }
 
 /// The kit's interiors made in one step while a game played at once waits for them (each a few milliseconds).
-#[cfg(target_arch = "wasm32")]
-const WARM_PER_STEP: usize = 8;
+pub const WARM_PER_STEP: usize = 8;
+
+/// A game played at once, started a few steps after the page's start: the files its map's interiors are read from, made
+/// [`WARM_PER_STEP`] a step (their hulls kept for the process, so the server's map finds them made), then Play alone asked.
+/// Once the player asks for anything first (the menu shows meanwhile: Play alone, hosting, a room's code), it is given up:
+/// what the player asked for goes on, and Play alone is not asked over it.
+#[derive(Debug, Default)]
+pub struct WarmStart {
+    left: Vec<String>,
+    waiting: bool,
+}
+
+impl WarmStart {
+    /// Play alone to be asked once the files `left` are made.
+    pub fn new(left: Vec<String>) -> WarmStart {
+        WarmStart {
+            left,
+            waiting: true,
+        }
+    }
+
+    /// Whether Play alone is still to be asked.
+    pub fn waiting(&self) -> bool {
+        self.waiting
+    }
+
+    /// One step: nothing once the player `asked` for anything (and never Play alone after); else up to [`WARM_PER_STEP`] files
+    /// made by `make`. True, once, when all are made (at the first step with none): Play alone is to be asked now.
+    pub fn step(&mut self, asked: bool, mut make: impl FnMut(&str)) -> bool {
+        if !self.waiting {
+            return false;
+        }
+        if asked {
+            self.waiting = false;
+            self.left.clear();
+            return false;
+        }
+        let at = self.left.len().saturating_sub(WARM_PER_STEP);
+        for path in self.left.split_off(at) {
+            make(&path);
+        }
+        if !self.left.is_empty() {
+            return false;
+        }
+        self.waiting = false;
+        true
+    }
+}
 
 impl WebVehicle {
     fn new(game: VehicleDemo, link: Option<Link>) -> WebVehicle {
@@ -295,28 +338,39 @@ impl WebVehicle {
             room: None,
             in_link_world: false,
             rooms,
-            warm: Vec::new(),
-            play_when_warm: false,
+            warm: WarmStart::default(),
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WebVehicle {
-    /// Makes [`WARM_PER_STEP`] of the kit's interiors (their hulls kept for the process: the server's map then finds them made,
-    /// [`torque::game::scene::interior::made`]), and once all are made asks to play alone. The server charges each one's cost as
-    /// before; only when its hulls are made changes.
+    /// A step of the game played at once ([`WarmStart`]): [`WARM_PER_STEP`] of the kit's interiors made (their hulls kept for
+    /// the process, [`torque::game::scene::interior::made`]: the server charges each one's cost as before, only when its hulls
+    /// are made changes), and once all are made Play alone asked; given up once the player asked for anything first or the
+    /// page joined a game.
     fn warm_interiors(&mut self) {
-        if self.warm.is_empty() {
+        if !self.warm.waiting() {
             return;
         }
-        let at = self.warm.len().saturating_sub(WARM_PER_STEP);
-        for path in self.warm.split_off(at) {
-            if let Some(bytes) = torque_render_scene::Assets::read(&self.game.files.kit, &path) {
+        let asked = self.link.is_some()
+            || [
+                "$World::AloneAsked",
+                "$World::HostAsked",
+                "$World::LeaveAsked",
+                "$World::WebHostAsked",
+                "$World::PageAsk",
+                "$World::WebJoinCode",
+            ]
+            .iter()
+            .any(|g| !matches!(self.game.global(g).as_str(), "" | "0"));
+        let kit = &self.game.files.kit;
+        let play = self.warm.step(asked, |path| {
+            if let Some(bytes) = torque_render_scene::Assets::read(kit, path) {
                 let _ = torque::game::scene::interior::read_interior(&bytes, &mut |_| true);
             }
-        }
-        if self.warm.is_empty() && std::mem::take(&mut self.play_when_warm) {
+        });
+        if play {
             self.game.set_global("$World::AloneAsked", "1");
         }
     }
@@ -678,7 +732,11 @@ impl App for WebVehicle {
     /// The map is loading until the client is in the world and holds its figure (played alone; a joined game's menu shows
     /// how its join goes).
     fn loading(&self) -> bool {
-        self.play_when_warm
+        self.warm.waiting()
             || self.game.server.is_some() && (!self.game.in_world() || self.game.figure().is_none())
     }
 }
+
+#[cfg(test)]
+#[path = "web_tests.rs"]
+mod tests;
