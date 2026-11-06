@@ -38,6 +38,25 @@ pub(crate) fn binding_ufrag(datagram: &[u8]) -> Option<&[u8]> {
     None
 }
 
+/// The transaction ID of a STUN message of `kind` (a binding request [`BINDING`], a success response
+/// [`BINDING_SUCCESS`]) whose header is well formed and whose length is the datagram's.
+pub(crate) fn transaction(datagram: &[u8], kind: [u8; 2]) -> Option<[u8; 12]> {
+    let header = datagram.get(..20)?;
+    if header.get(..2)? != kind || header.get(4..8)? != MAGIC_COOKIE {
+        return None;
+    }
+    let len = usize::from(u16::from_be_bytes([*header.get(2)?, *header.get(3)?]));
+    if 20 + len != datagram.len() {
+        return None;
+    }
+    header.get(8..20)?.try_into().ok()
+}
+
+/// A binding success response's message type.
+pub(crate) const BINDING_SUCCESS: [u8; 2] = [0x01, 0x01];
+/// A binding request's message type, for [`transaction`].
+pub(crate) const BINDING: [u8; 2] = BINDING_REQUEST;
+
 /// A binding request with transaction `id` and no attributes (asking a STUN server which address it sees us at).
 pub(crate) fn binding_request(id: &[u8; 12]) -> [u8; 20] {
     let mut d = [0u8; 20];
