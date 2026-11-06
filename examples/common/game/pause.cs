@@ -219,38 +219,55 @@ function clientCmdMapChoice(%name)
    layoutPause();
 }
 
-// The menu with or without its Change map, Invite players and Controls entries: the buttons below them move down, and the panel grows to
-// hold them.
+// The menu with or without its Change map, Invite players and Controls entries: the panel is laid out from the entries it has.
+// In a view tall enough the buttons are 56 high, 76 apart; in a shorter one (a small window, a browser's canvas) the buttons
+// and their spacing shrink together so the whole panel stays in the view, down to 60 percent of their size.
 function layoutPause()
 {
-   %y = 168;
    %host = $Client::MapCount > 0;
+   %invite = $Pause::CanInvite;
+   %controls = $Pause::GroupCount > 0;
    ChangeMapButton.setVisible(%host);
+   InviteButton.setVisible(%invite);
+   ControlsButton.setVisible(%controls);
+   %n = 3 + (%host ? 1 : 0) + (%invite ? 1 : 0) + (%controls ? 1 : 0);
+   %size = PauseGui.getExtent();
+   %viewH = getWord(%size, 1);
+   // What the view leaves for the buttons: the panel's top part (92), the note under them (16 + 20 + 20) and a margin.
+   %room = %viewH - 16 - 148;
+   %total = (%n - 1) * 76 + 56;
+   %bh = 56;
+   %pitch = 76;
+   if (%total > %room)
+   {
+      %scale = getMax(%room / %total, 0.6);
+      %bh = mFloor(56 * %scale);
+      %pitch = mFloor(76 * %scale);
+   }
+   %y = 92;
+   ResumeButton.resize(40, %y, 240, %bh);
+   %y += %pitch;
    if (%host)
    {
-      ChangeMapButton.resize(40, %y, 240, 56);
-      %y += 76;
+      ChangeMapButton.resize(40, %y, 240, %bh);
+      %y += %pitch;
    }
-   %invite = $Pause::CanInvite;
-   InviteButton.setVisible(%invite);
    if (%invite)
    {
-      InviteButton.resize(40, %y, 240, 56);
-      %y += 76;
+      InviteButton.resize(40, %y, 240, %bh);
+      %y += %pitch;
    }
-   %controls = $Pause::GroupCount > 0;
-   ControlsButton.setVisible(%controls);
    if (%controls)
    {
-      ControlsButton.resize(40, %y, 240, 56);
-      %y += 76;
+      ControlsButton.resize(40, %y, 240, %bh);
+      %y += %pitch;
    }
-   LeaveButton.resize(40, %y, 240, 56);
-   PauseQuitButton.resize(40, %y + 76, 240, 56);
-   PauseNote.resize(0, %y + 148, 320, 20);
-   %h = %y + 188;
-   %size = PauseGui.getExtent();
-   PausePanel.resize(mFloor((getWord(%size, 0) - 320) / 2), mFloor((getWord(%size, 1) - %h) / 2), 320, %h);
+   LeaveButton.resize(40, %y, 240, %bh);
+   PauseQuitButton.resize(40, %y + %pitch, 240, %bh);
+   %noteY = %y + %pitch + %bh + 16;
+   PauseNote.resize(0, %noteY, 320, 20);
+   %h = %noteY + 40;
+   PausePanel.resize(mFloor((getWord(%size, 0) - 320) / 2), mFloor((%viewH - %h) / 2), 320, %h);
 }
 
 // ---- the game's keys
