@@ -9,6 +9,9 @@
 // `offer`, `answer`, `candidate`). The page's root element carries `data-torque-room` (the code, `ABCD-EFGH`) and
 // `data-torque-server` (`worker` once the server runs there).
 //
+// Played alone (`solo`, a page `build.mjs --solo` marked): the server in the worker and the host player's own link only,
+// with no room service and no peer connection.
+//
 // Caps here, for what the page itself holds: at most MAX_PEERS peer connections (MAX_PEERS_PER_IP from one address),
 // one offer each (an offer asking for anything but data channels is refused), MAX_CANDIDATES candidate lines each way,
 // one channel each (label `game`, unordered, no retransmits), and a send skipped while a channel holds more than MAX_BUFFERED bytes. A joiner's
@@ -130,13 +133,14 @@ export function iceServersFrom(body) {
   return servers;
 }
 
-// Hosts the game: `game` is the module (its files fetched), `say(text)` shows the page's status line.
-export async function hostGame(game, say) {
+// Hosts the game: `game` is the module (its files fetched), `say(text)` shows the page's status line; `solo`: played alone,
+// no room.
+export async function hostGame(game, say, { solo = false } = {}) {
   const root = document.documentElement;
   const params = new URLSearchParams(location.search);
   const lan = params.has('lan');
   const roomsUrl = params.get('rooms') ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
-  if (!/^wss?:\/\//.test(roomsUrl)) throw new Error(`?rooms= takes a ws:// or wss:// address, not ${roomsUrl}`);
+  if (!solo && !/^wss?:\/\//.test(roomsUrl)) throw new Error(`?rooms= takes a ws:// or wss:// address, not ${roomsUrl}`);
   const workerUrl = new URL('./host-worker.js', import.meta.url);
   if (params.get('map')) workerUrl.searchParams.set('map', params.get('map'));
   const worker = new Worker(workerUrl, { type: 'module' });
@@ -279,6 +283,12 @@ export async function hostGame(game, say) {
     worker.postMessage({ from: 0, data: copy.buffer }, [copy.buffer]);
   });
 
+  // The game ends for every joiner when this page goes.
+  addEventListener('pagehide', () => {
+    for (const id of [...peers.keys()]) end(id);
+    worker.terminate();
+  });
+  if (solo) return game.startSoloClient();
   room = new WebSocket(roomsUrl);
   room.binaryType = 'arraybuffer';
   room.onopen = () => tell('host');
@@ -289,10 +299,5 @@ export async function hostGame(game, say) {
   };
   room.onclose = () => console.warn('The room service closed the link: no one else can join this game.');
   setInterval(() => tell('ping'), PING_MS);
-  // The game ends for every joiner when this page goes.
-  addEventListener('pagehide', () => {
-    for (const id of [...peers.keys()]) end(id);
-    worker.terminate();
-  });
   game.startHostClient();
 }

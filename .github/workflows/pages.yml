@@ -1,0 +1,80 @@
+# The website on GitHub Pages: the gallery of the web examples (each played alone, its files fetched by URL), the guide
+# (mdBook) and the API reference (rustdoc), built by `node web/site.mjs` (`just site`) and deployed on each push to main.
+#
+# Pages must be enabled in the repository's settings (Settings, Pages) with the source "GitHub Actions".
+# The site is served at https://reheatedcake.io/torque-rs/: the account's custom domain covers its project sites, under the
+# repository's name, so every link in the site stays relative.
+#
+# Every third-party action is pinned to a full commit SHA (the tag it was taken from is in the comment); update them
+# together, and with ci.yml's.
+#
+# web/build.mjs installs wasm-bindgen's command line at the version Cargo.lock names, into the target folder. Binaryen's
+# wasm-opt is not installed, so the modules are not optimized further.
+#
+# Linux needs the ALSA headers for the API reference's `--all-features` (cpal), as in ci.yml.
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time for the whole site (whatever ref started it); a newer run waits for the one in progress instead of
+# canceling it halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build the site
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: mdbook@0.5.2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: The site
+        run: node web/site.mjs target/site
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: target/site
+
+  deploy:
+    name: deploy
+    # Only main deploys, also when the workflow is started by hand from another branch.
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

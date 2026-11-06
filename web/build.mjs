@@ -1,18 +1,21 @@
 // Builds an example for the web into <target>/web/<name>/: the module for wasm32-unknown-unknown, wasm-bindgen's JavaScript
 // glue, the page and its file loader, and the example's files, packed by the native build.
 //
-// Usage: node build.mjs <example> [--embed]      (level-demo, fps, vehicle-demo; vehicle-demo fetches its files only)
+// Usage: node build.mjs <example> [--embed] [--solo]      (level-demo, fps, vehicle-demo; vehicle-demo fetches its files only)
 // By default the files are fetched by the page: the folder holds `files.json` (each file's path, size and SHA-256) and
 // `game.pack`, which the native build writes (`--web-files`), and the module carries none of them. With `--embed` the module
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
 // <target>/web/<name>-embedded/.
+// With `--solo` the page is marked to be played alone (its root element's `data-torque-solo`, for a site with no game server:
+// the arena then plays on its own server in the page's worker, and no menu offers to host or join) and the folder is
+// <target>/web/<name>-solo/ (`-embedded-solo` with `--embed`).
 //
 // The folder, served as it is: index.html, files.js, loading.js, settings.js, bridge.js, host.js and host-worker.js (a
 // browser host), game.js, game_bg.wasm, and files.json with game.pack when fetched.
 // The target folder is CARGO_TARGET_DIR's, else the workspace's `target`. wasm-bindgen's command line, at the version
 // Cargo.lock names, is installed into <target>/web-tools at first.
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,18 +28,24 @@ const EXAMPLES = {
 
 const name = process.argv[2];
 const example = EXAMPLES[name];
-const embed = process.argv.slice(3).includes('--embed');
-if (!example || process.argv.slice(3).some((a) => a !== '--embed')) {
-  console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}> [--embed]`);
+const flags = process.argv.slice(3);
+const embed = flags.includes('--embed');
+const solo = flags.includes('--solo');
+if (!example || flags.some((a) => a !== '--embed' && a !== '--solo')) {
+  console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}> [--embed] [--solo]`);
   process.exit(2);
 }
 if (embed && !example.embed) {
   console.error(`${name} has no build that carries its files: leave out --embed`);
   process.exit(2);
 }
+if (embed && solo && name === 'fps') {
+  console.error('the arena played alone runs its server in a worker, which fetches the files: leave out --embed');
+  process.exit(2);
+}
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const target = resolve(process.env.CARGO_TARGET_DIR ?? join(root, 'target'));
-const out = join(target, 'web', embed ? `${name}-embedded` : name);
+const out = join(target, 'web', `${name}${embed ? '-embedded' : ''}${solo ? '-solo' : ''}`);
 const pack = embed ? join(target, 'web', `${name}.pack`) : join(out, 'game.pack');
 const tools = join(target, 'web-tools');
 // A program's file name ends as Node's own does (nothing outside Windows).
@@ -94,7 +103,15 @@ if (opt !== '0' && spawnSync(opt, ['--version'], { encoding: 'utf8' }).status ==
 } else {
   console.log('wasm-opt not found: the module is not optimized further (install binaryen for a faster one)');
 }
-for (const page of ['index.html', 'files.js', 'loading.js', 'settings.js', 'bridge.js', 'host.js', 'host-worker.js']) copyFileSync(join(root, 'web', page), join(out, page));
+for (const page of ['files.js', 'loading.js', 'settings.js', 'bridge.js', 'host.js', 'host-worker.js']) copyFileSync(join(root, 'web', page), join(out, page));
+// The page, marked to be played alone with `--solo`.
+const html = readFileSync(join(root, 'web', 'index.html'), 'utf8');
+const marked = solo ? html.replace('<html lang="en">', '<html lang="en" data-torque-solo="1">') : html;
+if (solo && marked === html) {
+  console.error('web/index.html has no <html lang="en"> to mark');
+  process.exit(1);
+}
+writeFileSync(join(out, 'index.html'), marked);
 const mib = (file) => (statSync(file).size / 1048576).toFixed(1);
 const module = `game_bg.wasm ${mib(moduleFile)} MiB`;
-console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)`);
+console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)${solo ? ', played alone' : ''}`);

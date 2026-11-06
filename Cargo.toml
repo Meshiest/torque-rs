@@ -10,7 +10,7 @@ edition = "2024"
 # Verified with `cargo +1.88 check --workspace --all-targets --all-features` (let chains need 1.88); CI checks it.
 rust-version = "1.88"
 license = "MIT"
-repository = "https://github.com/TODO/torque-rs"
+repository = "https://github.com/Meshiest/torque-rs"
 publish = false
 
 [workspace.dependencies]
