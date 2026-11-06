@@ -75,6 +75,8 @@ pub struct ClientState<G: ConnGame> {
     pub zoom: crate::zoom::Zoom,
     /// The frame rate ([`crate::fps`]).
     pub fps: crate::fps::Fps,
+    /// The frames of each quarter second, for a game's readout ([`crate::fps::FrameWindow`]).
+    pub frame_window: crate::fps::FrameWindow,
     /// The client's work by part for the window's frame breakdown ([`crate::live_perf`]).
     pub live_perf: crate::live_perf::LivePerf,
     /// What `setVerticalSync` asked for since the windowed client last looked.

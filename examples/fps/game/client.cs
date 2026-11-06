@@ -493,18 +493,13 @@ new GameTSCtrl(PlayGui)
       profile = ArenaNoteProfile; position = "100 200"; extent = "600 30"; horizSizing = "center"; visible = true; enabled = true;
       text = "";
    };
-   new GuiControl(HelpBand)
+   // The corner readout (common/client.cs).
+   new GuiControl(StatsBand)
    {
-      profile = ArenaBandProfile; position = "328 12"; extent = "460 46"; horizSizing = "left";
-      new GuiTextCtrl(PlayHelp)
+      profile = ArenaBandProfile; position = "648 12"; extent = "140 24"; horizSizing = "left";
+      new GuiTextCtrl(PlayStats)
       {
-         profile = ArenaDimProfile; position = "10 4"; extent = "442 18"; visible = true; enabled = true;
-         text = "Click shoot   R reload   Tab camera   T chat   Esc menu";
-      };
-      new GuiTextCtrl(PoseHelp)
-      {
-         profile = ArenaDimProfile; position = "10 24"; extent = "442 18"; visible = true; enabled = true;
-         text = "W A S D walk   Shift sprint   Ctrl crouch   C toggle crouch   Z prone   Space jump";
+         profile = StatsProfile; position = "8 4"; extent = "124 18"; visible = true; enabled = true; text = "";
       };
    };
 };
@@ -521,6 +516,23 @@ function onPause()
    releaseKeys();
 }
 function onResume() { PlayMap.push(); }
+
+addControls(0, "Moving");
+addControl("W A S D", "Walk");
+addControl("Shift", "Sprint");
+addControl("Ctrl", "Crouch while held");
+addControl("C", "Crouch or stand up");
+addControl("Z", "Lie down or get up");
+addControl("Space", "Jump");
+addControl("Mouse", "Look around");
+addControls(1, "Shooting");
+addControl("Click", "Shoot");
+addControl("Right-click", "Aim down the sights");
+addControl("R", "Reload");
+addControls(1, "Game");
+addControl("Tab", "Switch camera");
+addControl("T", "Chat");
+addControl("Esc", "This menu");
 
 // ---- the round's end: its scores over the view until the next map is in (the game goes on underneath, without shots)
 

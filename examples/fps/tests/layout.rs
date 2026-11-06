@@ -231,14 +231,74 @@ fn the_pause_menu_stays_in_the_middle_of_the_view() {
                 "PauseTitle",
                 "ResumeButton",
                 "ChangeMapButton",
+                "ControlsButton",
                 "LeaveButton",
                 "PauseQuitButton",
                 "PauseNote",
             ],
             size,
         );
-        assert_eq!((p[2], p[3]), (320, 432), "the pause panel keeps its size");
+        assert_eq!((p[2], p[3]), (320, 508), "the pause panel keeps its size");
     }
+}
+
+#[test]
+fn the_controls_panel_stays_in_the_middle_of_the_view_with_its_keys_in_two_columns() {
+    let mut g = client();
+    g.call("hostGame", &["lan"]).unwrap();
+    for _ in 0..200 {
+        g.step(32);
+        if g.in_game() {
+            break;
+        }
+    }
+    assert!(g.in_game());
+    g.call("pauseGame", &[]).unwrap();
+    g.call("showControls", &[]).unwrap();
+    assert_eq!(
+        g.call(
+            "eval",
+            &["return ControlsPanel.isVisible() SPC PausePanel.isVisible();"]
+        )
+        .unwrap(),
+        "1 0"
+    );
+    let rows: usize = g
+        .call("eval", &["return ControlsList.getCount();"])
+        .unwrap()
+        .parse()
+        .unwrap();
+    // Three headings, and a key and its action for each of the 13 rows.
+    assert_eq!(rows, 3 + 2 * 13);
+    for size in SIZES {
+        resize(&mut g, size);
+        let p = check(
+            &mut g,
+            "ControlsPanel",
+            &[
+                "ControlsTitle",
+                "ControlsList",
+                "ControlsBackButton",
+                "ControlsNote",
+            ],
+            size,
+        );
+        assert_eq!(
+            (p[2], p[3]),
+            (772, 412),
+            "the controls panel keeps its size"
+        );
+    }
+    // Back shows the menu again.
+    g.call("hideControls", &[]).unwrap();
+    assert_eq!(
+        g.call(
+            "eval",
+            &["return ControlsPanel.isVisible() SPC PausePanel.isVisible();"]
+        )
+        .unwrap(),
+        "0 1"
+    );
 }
 
 #[test]

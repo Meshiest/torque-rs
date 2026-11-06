@@ -271,6 +271,17 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         }
     }
 
+    /// A frame drawn at real time `real_ms` ([`crate::fps::FrameWindow`]): every quarter second, the frames a second it drew
+    /// over that time in `$Client::FrameRate` (a whole number) for the game's readout. The window and the offscreen pictures
+    /// call it after each frame they draw.
+    pub fn frame_drawn(&mut self, real_ms: f64) {
+        let rate = self.client.borrow_mut().frame_window.frame(real_ms);
+        if let Some(rate) = rate {
+            let text = format!("{rate:.0}");
+            self.server.vm_mut().set_global("$Client::FrameRate", &text);
+        }
+    }
+
     /// `setVerticalSync`'s request since the last call.
     pub fn take_vsync_request(&mut self) -> Option<bool> {
         self.client.borrow_mut().vsync_request.take()

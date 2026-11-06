@@ -186,3 +186,18 @@ fn the_pistol_key_puts_the_pistol_in_the_raised_hand() {
     run(&mut game, 300);
     assert!(!game.figure().holding() && game.held_pistol().is_none());
 }
+
+/// The corner readout once frames were drawn 60 a second (the host counts them as the window does): the frame rate.
+#[test]
+fn the_corner_readout_holds_the_frame_rate() {
+    let mut game = CharacterGame::new().unwrap();
+    for i in 0..60 {
+        game.host.frame_drawn(f64::from(i) * 1000.0 / 60.0);
+        game.step(16);
+    }
+    game.step(300);
+    let text = game
+        .call("eval", &["return CharacterStats.getValue();"])
+        .unwrap();
+    assert_eq!(text, "60 fps");
+}

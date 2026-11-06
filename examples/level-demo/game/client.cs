@@ -1,4 +1,5 @@
-// The level demo's client: the menu of maps, the view of the world with its help line, the keys, and the way in.
+// The level demo's client: the menu of maps, the view of the world with its title and readout, the keys, the pause menu
+// (common/pause.cs) with the list of keys, and the way in.
 //
 // The host fills $World::MapCount, $World::MapTitle[i] and $World::MapAbout[i], then calls buildMenu(). A map picked sets
 // $World::Pick; the host starts that map's server and calls connectTo(%address). Leaving sets $World::Leave.
@@ -36,6 +37,7 @@ new GuiControlProfile(WorldButtonProfile)
 };
 
 createCanvas("torque-rs level demo");
+exec("common/pause.cs");
 
 // ---- the menu
 
@@ -107,10 +109,10 @@ new GameTSCtrl(PlayGui)
       {
          profile = WorldTextProfile; position = "10 5"; extent = "160 18"; visible = true; enabled = true; text = "";
       };
-      new GuiTextCtrl(PlayHelp)
+      new GuiTextCtrl(PlayStats)
       {
-         profile = WorldDimProfile; position = "170 5"; extent = "620 18"; horizSizing = "width"; visible = true; enabled = true;
-         text = "W A S D walk   Shift sprint   Ctrl crouch   C toggle crouch   Z prone   Space jump   Mouse look   Tab camera   R restart   Esc menu";
+         profile = StatsProfile; position = "640 6"; extent = "150 18"; horizSizing = "left"; visible = true; enabled = true;
+         text = "";
       };
    };
    new GuiTextCtrl(PlayNote)
@@ -171,7 +173,6 @@ function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it.
 function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
-function leaveKey(%v) { if (%v) leaveWorld(); }
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
@@ -181,14 +182,48 @@ bindPoseKeys(PlayMap);
 PlayMap.bind(keyboard, space, jump);
 PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
-PlayMap.bind(keyboard, escape, leaveKey);
+PlayMap.bind(keyboard, escape, pauseKey);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
+
+// ---- the pause menu's hooks (common/pause.cs) and its list of keys
+
+function pauseAllowed() { return $World::InWorld; }
+function onPause()
+{
+   PlayMap.pop();
+   releasePoseKeys();
+   $World::Forward = $World::Back = $World::Left = $World::Right = 0;
+   $World::Pace = $World::WalkPace;
+   updateMove();
+}
+function onResume() { PlayMap.push(); }
+function leaveGame()
+{
+   closePause();
+   leaveWorld();
+}
+function quitGame() { quit(); }
+
+addControls(0, "Moving");
+addControl("W A S D", "Walk");
+addControl("Shift", "Sprint");
+addControl("Ctrl", "Crouch while held");
+addControl("C", "Crouch or stand up");
+addControl("Z", "Lie down or get up");
+addControl("Space", "Jump");
+addControls(1, "Looking");
+addControl("Mouse", "Look around");
+addControl("Tab", "Switch camera");
+addControls(1, "Game");
+addControl("R", "Back to the start");
+addControl("Esc", "This menu");
 
 // ---- in and out
 
 function showMenu()
 {
+   closePause();
    $World::InWorld = 0;
    PlayMap.pop();
    releasePoseKeys();

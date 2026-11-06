@@ -172,7 +172,7 @@ impl ClientBuilder {
             draw_cache(),
         );
         host.set_windowed();
-        GameClient {
+        let mut client = GameClient {
             host,
             server: None,
             link: self.link,
@@ -181,7 +181,9 @@ impl ClientBuilder {
             frame_dt: 0.0,
             server_log: Vec::new(),
             client_log: Vec::new(),
-        }
+        };
+        client.mark_memory_link();
+        client
     }
 }
 
@@ -327,6 +329,13 @@ impl<S> GameClient<S> {
             .filter_map(|w| w.parse().ok())
             .collect();
         <[i32; 4]>::try_from(n).map_err(|_| format!("{name}: no place on the screen ({text:?})"))
+    }
+
+    /// `$Client::MemoryLink`: 1 while the client's socket is an in-memory one to a server in this process (a game played
+    /// alone: its round trip is no network's, and a readout shows none), else 0.
+    fn mark_memory_link(&mut self) {
+        let memory = if self.link.is_some() { "1" } else { "0" };
+        self.set_global("$Client::MemoryLink", memory);
     }
 
     /// Sets a global of the client's scripts.
@@ -495,6 +504,7 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
                 link: self.link.replace(link),
             });
         }
+        self.mark_memory_link();
         self.start_hosting(server);
     }
 
@@ -521,6 +531,7 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
             n.policy = p.policy;
             self.link = p.link;
         }
+        self.mark_memory_link();
     }
 
     /// The hosted server's address, if this client hosts one.

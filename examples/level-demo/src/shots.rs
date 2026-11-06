@@ -82,8 +82,11 @@ pub fn write_all(files: GameFiles, dir: &Path, size: (u32, u32)) -> Result<Vec<P
         seat.game.set_first_person(true);
         save(&picture(&mut seat, None)?, &format!("{name}-eye"))?;
         seat.game.set_first_person(false);
+        // Esc, then the pause menu's Leave game: back to the menu of maps.
         seat.game.key(Key::Escape, true);
         seat.game.key(Key::Escape, false);
+        seat.run(&gpu, 64)?;
+        seat.game.call("leaveGame", &[])?;
         seat.run(&gpu, 200)?;
     }
     Ok(shots.paths)

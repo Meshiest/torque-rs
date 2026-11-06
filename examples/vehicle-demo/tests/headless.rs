@@ -652,6 +652,48 @@ fn a_game_played_alone_binds_no_socket_and_the_player_drives() {
     assert!(errors(&game).is_empty(), "{:?}", errors(&game));
 }
 
+/// Frames drawn 60 a second for `ms` of the clock, from `start_ms` on, by each client: their hosts count them as a window does.
+fn drawn_frames(games: &mut [&mut VehicleDemo], start_ms: f64, ms: u32) {
+    for i in 0..ms / 16 {
+        for g in games.iter_mut() {
+            g.host.frame_drawn(start_ms + f64::from(i) * 1000.0 / 60.0);
+            g.step(16);
+        }
+    }
+}
+
+fn readout(game: &mut VehicleDemo) -> String {
+    game.call("eval", &["return PlayStats.getValue();"])
+        .unwrap()
+}
+
+/// The corner readout over the network: the frame rate and the round trip to the server, on the host's client and on the one
+/// that joined it; played alone, the frame rate alone.
+#[test]
+fn the_corner_readout_holds_the_frame_rate_and_the_round_trip() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    drawn_frames(&mut [&mut a, &mut b], 0.0, 1000);
+    for (who, g) in [("host", &mut a), ("joined", &mut b)] {
+        let text = readout(g);
+        let words: Vec<&str> = text.split(' ').collect();
+        assert!(
+            matches!(words[..], ["60", "fps", "", ping, "ms"] if ping.parse::<u32>().is_ok()),
+            "{who}: {text:?}"
+        );
+    }
+    let ping: u32 = readout(&mut b).split(' ').nth(3).unwrap().parse().unwrap();
+    assert!(ping > 0 && ping < 500, "{ping}");
+    drop(b);
+    drop(a);
+
+    let mut alone = client("Ann");
+    alone.set_global("$World::AloneAsked", "1");
+    assert!(until(&mut [&mut alone], |g| g[0].in_world()));
+    drawn_frames(&mut [&mut alone], 0.0, 1000);
+    assert_eq!(readout(&mut alone), "60 fps");
+}
+
 #[test]
 fn solo_with_host_or_join_is_refused() {
     use torque_example_vehicle_demo::client::Start;
