@@ -76,6 +76,7 @@ pub struct GuiPass {
 
 fn pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     blend: GuiBlend,
@@ -130,7 +131,7 @@ fn pipeline(
             })],
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }
 
@@ -216,6 +217,7 @@ impl GuiPass {
     /// The pass on `gpu`'s device, its backdrops drawn by `backdrops`.
     pub fn new(gpu: &Gpu, backdrops: Option<Box<dyn Backdrops>>) -> GuiPass {
         let device = gpu.device();
+        let cache = gpu.pipeline_cache();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gui"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -283,8 +285,8 @@ impl GuiPass {
             true,
         );
         GuiPass {
-            alpha: pipeline(device, &layout, &shader, GuiBlend::Alpha),
-            multiply: pipeline(device, &layout, &shader, GuiBlend::Multiply),
+            alpha: pipeline(device, cache, &layout, &shader, GuiBlend::Alpha),
+            multiply: pipeline(device, cache, &layout, &shader, GuiBlend::Multiply),
             screen,
             screen_group,
             texture_layout,

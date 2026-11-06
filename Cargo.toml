@@ -20,7 +20,9 @@ glam = { version = "0.34.2", default-features = false, features = ["std", "f64"]
 # The microbenchmarks (`benches/`).
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
-# Lints the whole workspace passes today. Each crate opts in with `[lints] workspace = true`.
+# Lints the whole workspace passes today. Each crate opts in with `[lints] workspace = true`, except torque-render-core, which
+# copies them with `unsafe_code` at `deny` for its one `unsafe` block (its test `the_lints_are_the_workspaces` keeps the copy
+# in step).
 [workspace.lints.rust]
 unsafe_code = "forbid"
 non_ascii_idents = "forbid"

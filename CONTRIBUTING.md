@@ -39,7 +39,9 @@ section of [CHANGELOG.md](CHANGELOG.md) when the change is visible to users of t
 
 ## Code rules
 
-- **No `unsafe`.** The workspace forbids it.
+- **No `unsafe`.** The workspace forbids it. The one exception is torque-render-core's pipeline cache, whose single
+  `unsafe` block (wgpu's `Device::create_pipeline_cache`) has a `SAFETY` comment saying why it is sound; that crate denies
+  `unsafe_code` instead of forbidding it, and allows it on that one function only.
 - **Hostile input never panics.** Files (scripts, compiled scripts, shapes, maps, images, fonts, sounds) and network
   packets come from places the program does not control. A decoder returns a value or an error; every count read from
   input is checked against the bytes that remain and a named cap before anything is allocated for it; work that grows

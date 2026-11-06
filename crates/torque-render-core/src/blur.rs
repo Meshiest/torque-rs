@@ -139,6 +139,7 @@ pub struct Blur {
 
 fn pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     layout: &wgpu::PipelineLayout,
     shader: &wgpu::ShaderModule,
     entry: &str,
@@ -168,7 +169,7 @@ fn pipeline(
             })],
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }
 
@@ -212,6 +213,7 @@ struct Planned {
 impl Blur {
     pub fn new(gpu: &Gpu) -> Blur {
         let device = gpu.device();
+        let cache = gpu.pipeline_cache();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gui blur"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -298,17 +300,18 @@ impl Blur {
         let blank_view = blank_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let blank = bind(device, &layout, &params, &blank_view, &sampler);
         Blur {
-            down: pipeline(device, &pl, &shader, "fs_down", LEVEL_FORMAT, None),
-            up: pipeline(device, &pl, &shader, "fs_up", LEVEL_FORMAT, None),
+            down: pipeline(device, cache, &pl, &shader, "fs_down", LEVEL_FORMAT, None),
+            up: pipeline(device, cache, &pl, &shader, "fs_up", LEVEL_FORMAT, None),
             composite: pipeline(
                 device,
+                cache,
                 &pl,
                 &shader,
                 "fs_composite",
                 COLOR_FORMAT,
                 Some(blend),
             ),
-            blit: pipeline(device, &pl, &shader, "fs_blit", COLOR_FORMAT, None),
+            blit: pipeline(device, cache, &pl, &shader, "fs_blit", COLOR_FORMAT, None),
             layout,
             sampler,
             params,
