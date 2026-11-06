@@ -11,6 +11,9 @@
 // for the one chosen (changeMap: commandToServer). The server decides who the host is and which maps are allowed; a game
 // that sends no maps has no such entry.
 //
+// A game may add an Invite players entry: while $Pause::CanInvite is 1 the menu has it, and it calls the game's
+// invitePlayers().
+//
 // The game lists its keys for the Controls panel once its client.cs has run this: addControls(%column, %title) starts a group
 // of rows under a heading in column %column (0 or 1; the groups of a column stack), and addControl(%key, %action) adds a row
 // to the last group. A game that lists none has no Controls entry. In a view too narrow for two columns the groups stack in
@@ -73,6 +76,11 @@ new GuiControl(PauseGui)
       {
          profile = PauseButtonProfile; position = "40 168"; extent = "240 56"; visible = false; enabled = true;
          text = "Change map"; command = "showMapPick();";
+      };
+      new GuiButtonCtrl(InviteButton)
+      {
+         profile = PauseButtonProfile; position = "40 168"; extent = "240 56"; visible = false; enabled = true;
+         text = "Invite players"; command = "invitePlayers();";
       };
       new GuiButtonCtrl(ControlsButton)
       {
@@ -211,7 +219,7 @@ function clientCmdMapChoice(%name)
    layoutPause();
 }
 
-// The menu with or without its Change map and Controls entries: the buttons below them move down, and the panel grows to
+// The menu with or without its Change map, Invite players and Controls entries: the buttons below them move down, and the panel grows to
 // hold them.
 function layoutPause()
 {
@@ -221,6 +229,13 @@ function layoutPause()
    if (%host)
    {
       ChangeMapButton.resize(40, %y, 240, 56);
+      %y += 76;
+   }
+   %invite = $Pause::CanInvite;
+   InviteButton.setVisible(%invite);
+   if (%invite)
+   {
+      InviteButton.resize(40, %y, 240, 56);
       %y += 76;
    }
    %controls = $Pause::GroupCount > 0;

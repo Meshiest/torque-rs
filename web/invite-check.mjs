@@ -199,6 +199,15 @@ try {
     console.log(`W held 2 s: the joiner walked ${moved.toFixed(2)}`);
     if (!(moved > 1)) problems.push(`the joiner did not walk (moved ${moved})`);
     await writeFile(shot('host-sees-joiner.png'), await (await host.$('canvas')).screenshot({ type: 'png' }));
+    // the host's Esc menu, with its Invite players entry (the panel closed first)
+    await press(host, 'Close');
+    const hostCanvas = await host.$('canvas');
+    await hostCanvas.focus();
+    await host.keyboard.press('Escape');
+    await new Promise((r) => setTimeout(r, 1500));
+    await writeFile(shot('host-pause.png'), await hostCanvas.screenshot({ type: 'png' }));
+    await host.keyboard.press('Escape');
+    await host.evaluate(() => globalThis.torqueAsk('host'));
   }
 
   // A Cloudflare invite (made here, never connected): the joiner's panel names the server before anything is sent.

@@ -32,6 +32,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::rc::Rc;
 
 pub use crate::{conn, ghost_objects, query};
+pub mod held;
 pub mod moves;
 #[cfg(feature = "p2p")]
 pub mod room_join;

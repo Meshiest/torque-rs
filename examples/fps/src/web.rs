@@ -41,6 +41,7 @@ use torque::app::manifest::Manifest;
 use torque::app::view::WorldView;
 use torque::app::{App, Host};
 use torque::client::net::Datagrams;
+use torque::client::net::held::HeldDatagrams;
 use torque::client::net::room_join::RoomDatagrams;
 use torque::client::net::web_rtc::{Link, LinkWatch, WebRtcDatagrams};
 use torque::client::net::web_socket::WebSocketDatagrams;
@@ -175,10 +176,11 @@ pub fn link_ended(why: &str) {
     });
 }
 
-/// What the local link holds: datagrams from the worker's server, and the page's function that posts one to it.
+/// What the local link holds: datagrams from the worker's server (or the host's, on a joiner's data channel), and the
+/// page's function that sends one.
 #[derive(Default)]
 struct Local {
-    held: std::collections::VecDeque<Vec<u8>>,
+    held: HeldDatagrams,
     sender: Option<js_sys::Function>,
 }
 
@@ -186,13 +188,10 @@ thread_local! {
     static LOCAL: RefCell<Local> = RefCell::default();
 }
 
-/// A datagram from the worker's server for the host player's client (at most 4,096 wait; the rest are dropped).
-pub fn local_datagram(bytes: Vec<u8>) {
-    LOCAL.with_borrow_mut(|l| {
-        if l.held.len() < 4096 {
-            l.held.push_back(bytes);
-        }
-    });
+/// A datagram for the client on the page's link (the worker's server, or the host's on a joiner's data channel). False:
+/// dropped, being over the engine's most bytes for a datagram or with the queue full ([`HeldDatagrams`]).
+pub fn local_datagram(bytes: &[u8]) -> bool {
+    LOCAL.with_borrow_mut(|l| l.held.push(bytes))
 }
 
 /// The page's function that posts the host player's datagrams to the worker's server (called with a `Uint8Array`).
@@ -221,7 +220,7 @@ impl Datagrams for LocalLink {
 
     fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
         LOCAL
-            .with_borrow_mut(|l| l.held.pop_front())
+            .with_borrow_mut(|l| l.held.pop())
             .map(|d| (SERVER, d))
     }
 

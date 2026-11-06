@@ -110,9 +110,9 @@ mod page {
         web::link_ended(why)
     }
 
-    /// A datagram from the worker's server for the host player's client.
+    /// A datagram for the client on the page's link (false: dropped).
     #[wasm_bindgen(js_name = localDatagram)]
-    pub fn local_datagram(bytes: Vec<u8>) {
+    pub fn local_datagram(bytes: &[u8]) -> bool {
         web::local_datagram(bytes)
     }
 

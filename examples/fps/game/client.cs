@@ -837,16 +837,23 @@ function showJoinOnly()
       JoinNote.setText("Back into the arena.");
       HostButton.setVisible(1);
       HostButton.setText("Host with a link");
-      HostButton.command = "$Arena::PageAsk = \"host\";";
+      HostButton.command = "invitePlayers();";
       HostNote.setVisible(1);
       HostNote.setText("Send friends a link to join your game.");
       QuitButton.setVisible(1);
       QuitButton.setText("Join with a link");
       QuitButton.command = "$Arena::PageAsk = \"join\";";
+      $Pause::CanInvite = 1;
       return;
    }
    JoinButton.setText("Join the game");
    JoinNote.setText($Arena::Invited ? "Join the game you were invited to." : "Join the game this page came from.");
+}
+
+// The pause menu's Invite players (played alone): the page's Host with a link panel.
+function invitePlayers()
+{
+   $Arena::PageAsk = "host";
 }
 
 function joinPage()

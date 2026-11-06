@@ -1,7 +1,7 @@
 // The browser host's rules for what joiners and the room service send, without a page: `node --test web/host.test.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_CANDIDATES, candidateAllowed, dataOnly, iceServersFrom, peerNumber, splitCandidates } from './host.js';
+import { MAX_CANDIDATES, candidateAllowed, dataOnly, iceServersFrom, meteredReceiver, peerNumber, splitCandidates } from './host.js';
 
 const line = (address, transport = 'udp', port = 40000) =>
   `candidate:1 1 ${transport} 2122260223 ${address} ${port} typ host generation 0`;
@@ -83,4 +83,24 @@ test("the room's peer numbers and ICE servers are read strictly", () => {
   assert.deepEqual(iceServersFrom('not json'), []);
   assert.deepEqual(iceServersFrom('{"urls":"stun:x"}'), []);
   assert.equal(iceServersFrom(JSON.stringify(Array(50).fill({ urls: 'stun:x' }))).length, 8);
+});
+
+test("a link's receiver ends the link on a flood, an oversize message or text, and delivers nothing after", () => {
+  let t = 5000;
+  const run = (messages) => {
+    const got = [];
+    let ends = 0;
+    const take = meteredReceiver((d) => got.push(d), () => ends++, () => t);
+    for (const data of messages) take({ data });
+    return { got: got.length, ends };
+  };
+  // 512 a second pass; the 513th ends the link, and the rest are dropped
+  assert.deepEqual(run(Array.from({ length: 600 }, () => new ArrayBuffer(100))), { got: 512, ends: 1 });
+  assert.deepEqual(run([new ArrayBuffer(1500), new ArrayBuffer(1501), new ArrayBuffer(10)]), { got: 1, ends: 1 });
+  assert.deepEqual(run([new ArrayBuffer(10), 'text', new ArrayBuffer(10)]), { got: 1, ends: 1 });
+  // a new second starts a new count
+  const got = [];
+  const take = meteredReceiver((d) => got.push(d), () => assert.fail('ended'), () => t);
+  for (let s = 0; s < 3; s++, t += 1000) for (let i = 0; i < 512; i++) take({ data: new ArrayBuffer(1) });
+  assert.equal(got.length, 1536);
 });

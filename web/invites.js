@@ -31,7 +31,7 @@ import {
   serverFor,
   toSdp,
 } from './codes.js';
-import { addressAllowed, candidateAllowed, ipv4 } from './host.js';
+import { addressAllowed, candidateAllowed, ipv4, meteredReceiver } from './host.js';
 
 const MAX_INVITES = 8;
 const INVITE_MS = 15 * 60_000;
@@ -536,9 +536,14 @@ export function joinInvite(code) {
         game?.linkOpened();
         closePanel();
       };
-      ch.onmessage = (m) => {
-        if (m.data instanceof ArrayBuffer) game?.localDatagram(new Uint8Array(m.data));
-      };
+      // the host's messages within the same caps as a joiner's on the host: past them, the link ends
+      ch.onmessage = meteredReceiver(
+        (data) => game?.localDatagram(new Uint8Array(data)),
+        () => {
+          pc.close();
+          end('The host sent more than the game takes, so the connection was closed.');
+        },
+      );
       ch.onclose = () => end(opened ? 'The host left the game.' : 'Could not reach the host.');
     };
     // Before the channel opens, ICE may fail while the reply is on its way: the host's checks, once it has the reply,

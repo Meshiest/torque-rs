@@ -55,6 +55,28 @@ export function ipv4(text) {
   return octets.every((o) => o <= 255) && octets.join('.') === text ? octets : null;
 }
 
+// A link's receiver: `onmessage` for a data channel whose messages go to `deliver(data)`, until one is not binary, is over
+// MAX_DATAGRAM bytes, or is past MAX_MESSAGES_PER_S in its second (by `now()`, in milliseconds): then `end()` is called,
+// once, and nothing more is delivered. The host's joiners and an invited joiner's channel to its host both take it.
+export function meteredReceiver(deliver, end, now = () => performance.now()) {
+  let second = -1;
+  let count = 0;
+  let ended = false;
+  return (m) => {
+    if (ended) return;
+    const s = Math.floor(now() / 1000);
+    if (s !== second) {
+      second = s;
+      count = 0;
+    }
+    if (!(m.data instanceof ArrayBuffer) || m.data.byteLength > MAX_DATAGRAM || ++count > MAX_MESSAGES_PER_S) {
+      ended = true;
+      return end();
+    }
+    deliver(m.data);
+  };
+}
+
 // Whether the host may check `octets` (a public unicast address, or a private one with `lan`): torque-server's
 // `candidate_allowed`.
 export function addressAllowed([a, b, c, d], lan) {
@@ -178,23 +200,16 @@ export async function hostGame(game, say, { solo = false, onHost = null } = {}) 
   function wire(id, peer, ch) {
     peer.channel = ch;
     ch.binaryType = 'arraybuffer';
-    let second = -1;
-    let count = 0;
     const open = () => {
       if (peer.linked || peers.get(id) !== peer) return;
       peer.linked = true;
       worker.postMessage({ open: id, ip: peer.ip });
     };
     ch.onopen = open;
-    ch.onmessage = (m) => {
-      const now = Math.floor(performance.now() / 1000);
-      if (now !== second) {
-        second = now;
-        count = 0;
-      }
-      if (!(m.data instanceof ArrayBuffer) || m.data.byteLength > MAX_DATAGRAM || ++count > MAX_MESSAGES_PER_S) return end(id);
-      worker.postMessage({ from: id, data: m.data }, [m.data]);
-    };
+    ch.onmessage = meteredReceiver(
+      (data) => worker.postMessage({ from: id, data }, [data]),
+      () => end(id),
+    );
     ch.onclose = () => end(id);
     if (ch.readyState === 'open') open();
   }
