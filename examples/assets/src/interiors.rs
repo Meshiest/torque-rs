@@ -18,7 +18,7 @@ pub const WALL: &str = "arena_wall";
 fn cube(center: [f64; 3], size: [f64; 3], material: &str) -> Brush {
     let min = [0, 1, 2].map(|k| center[k] - size[k] * 0.5);
     let max = [0, 1, 2].map(|k| center[k] + size[k] * 0.5);
-    Brush::cuboid(min, max, material, |n| TexGen::world(n, 4.0))
+    Brush::cuboid(min.into(), max.into(), material, |n| TexGen::world(n, 4.0))
 }
 
 /// The arena's brushes.

@@ -16,6 +16,7 @@ categories = ["game-development"]
 [dependencies]
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
+glam = { workspace = true }
 torque-images = { path = "../torque-images" }
 torque-maps = { path = "../torque-maps" }
 torque-modelcore = { path = "../torque-modelcore" }

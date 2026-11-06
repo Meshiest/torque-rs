@@ -14,6 +14,7 @@ categories = ["game-development"]
 # call `write_all` at start-up, or `just examples/assets` writes the set to a folder.
 
 [dependencies]
+glam = { workspace = true }
 torque-shape-builder = { path = "../../crates/torque-shape-builder" }
 torque-shapes = { path = "../../crates/torque-shapes" }
 torque-interior-builder = { path = "../../crates/torque-interior-builder" }

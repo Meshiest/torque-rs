@@ -175,8 +175,8 @@ pub fn quake_axes(n: V3, degrees: f64) -> (V3, V3) {
         270.0 => (-1.0, 0.0),
         d => d.to_radians().sin_cos(),
     };
-    let mut u = [0.0; 3];
-    let mut v = [0.0; 3];
+    let mut u = V3::ZERO;
+    let mut v = V3::ZERO;
     u[a] = cos;
     u[b] = sin;
     v[a] = sin;
@@ -213,7 +213,7 @@ fn face(line: usize, s: &str) -> Result<RawFace, MapError> {
     if texture.len() > MAX_NAME {
         return Err(err(line, "the texture name is too long"));
     }
-    let plane = Plane::from_points(pts[0], pts[1], pts[2])
+    let plane = Plane::from_points(V3::from(pts[0]), V3::from(pts[1]), V3::from(pts[2]))
         .ok_or_else(|| err(line, "the three points are on one line"))?;
     let valve = tail.contains('[');
     let nums: Vec<f64> = tail
@@ -374,7 +374,7 @@ pub fn parse(text: &str, options: &MapOptions) -> Result<MapFile, MapError> {
             out.objects.push(MissionObject {
                 class: class.to_string(),
                 name,
-                shape: Shape::Volume(lo, hi),
+                shape: Shape::Volume(V3::from(lo), V3::from(hi)),
                 yaw: 0.0,
                 fields,
             });
@@ -420,7 +420,7 @@ pub fn parse(text: &str, options: &MapOptions) -> Result<MapFile, MapError> {
             out.objects.push(MissionObject {
                 class: point_class,
                 name,
-                shape: Shape::Point(origin),
+                shape: Shape::Point(V3::from(origin)),
                 yaw,
                 fields,
             });
@@ -550,18 +550,21 @@ mod tests {
         assert_eq!(m.brushes.len(), 1);
         let b = &m.brushes[0];
         let (lo, hi) = b.bounds().unwrap();
-        assert_eq!((lo, hi), ([-2.0, -2.0, -0.5], [2.0, 2.0, 0.5]));
+        assert_eq!(
+            (lo.to_array(), hi.to_array()),
+            ([-2.0, -2.0, -0.5], [2.0, 2.0, 0.5])
+        );
         // The floor's texture: u = x (map units) / 64 texels, v = -y / 32.
         let top = b
             .faces
             .iter()
-            .find(|f| f.plane.n == [0.0, 0.0, 1.0])
+            .find(|f| f.plane.n == V3::new(0.0, 0.0, 1.0))
             .unwrap();
-        let uv = top.texgen.at([1.0, 2.0, 0.5]);
+        let uv = top.texgen.at(V3::new(1.0, 2.0, 0.5));
         assert!((uv[0] - 32.0 / 64.0).abs() < 1e-12 && (uv[1] + 64.0 / 32.0).abs() < 1e-12);
         assert_eq!(m.objects.len(), 1);
         assert_eq!(m.objects[0].class, "SpawnSphere");
-        assert_eq!(m.objects[0].shape, Shape::Point([1.0, 0.0, 0.75]));
+        assert_eq!(m.objects[0].shape, Shape::Point(V3::new(1.0, 0.0, 0.75)));
         assert_eq!(m.objects[0].yaw, 0.0);
         assert!(m.warnings.is_empty(), "{:?}", m.warnings);
     }
@@ -600,7 +603,10 @@ mod tests {
         );
         let m = parse(&text, &MapOptions::default()).unwrap();
         assert_eq!(
-            m.brushes[0].bounds().unwrap(),
+            m.brushes[0]
+                .bounds()
+                .map(|(lo, hi)| (lo.to_array(), hi.to_array()))
+                .unwrap(),
             ([-1.0, -2.0, 0.0], [1.0, 2.0, 0.5])
         );
     }
@@ -608,21 +614,27 @@ mod tests {
     #[test]
     fn the_quake_projection_turns_its_axes_within_the_face_plane() {
         assert_eq!(
-            quake_axes([0.0, 0.0, 1.0], 0.0),
-            ([1.0, 0.0, 0.0], [0.0, -1.0, 0.0])
+            quake_axes(V3::new(0.0, 0.0, 1.0), 0.0),
+            (V3::new(1.0, 0.0, 0.0), V3::new(0.0, -1.0, 0.0))
         );
         assert_eq!(
-            quake_axes([1.0, 0.0, 0.0], 90.0),
-            ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+            quake_axes(V3::new(1.0, 0.0, 0.0), 90.0),
+            (V3::new(0.0, 0.0, 1.0), V3::new(0.0, 1.0, 0.0))
         );
         assert_eq!(
-            quake_axes([0.0, -1.0, 0.0], 0.0),
-            ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0])
+            quake_axes(V3::new(0.0, -1.0, 0.0), 0.0),
+            (V3::new(1.0, 0.0, 0.0), V3::new(0.0, 0.0, -1.0))
         );
         // Two axes as near: z before x before y.
-        assert_eq!(quake_axes([0.6, 0.0, 0.6], 0.0).0, [1.0, 0.0, 0.0]);
-        assert_eq!(quake_axes([0.6, 0.6, 0.0], 0.0).0, [0.0, 1.0, 0.0]);
-        let (u, v) = quake_axes([0.0, 0.0, 1.0], 30.0);
+        assert_eq!(
+            quake_axes(V3::new(0.6, 0.0, 0.6), 0.0).0,
+            V3::new(1.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            quake_axes(V3::new(0.6, 0.6, 0.0), 0.0).0,
+            V3::new(0.0, 1.0, 0.0)
+        );
+        let (u, v) = quake_axes(V3::new(0.0, 0.0, 1.0), 30.0);
         assert!(
             (u[0] - 30f64.to_radians().cos()).abs() < 1e-12
                 && (v[1] + 30f64.to_radians().cos()).abs() < 1e-12

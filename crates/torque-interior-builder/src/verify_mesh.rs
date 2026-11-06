@@ -50,8 +50,8 @@ impl Bvh {
     pub fn new(boxes: &[(V3, V3)]) -> Bvh {
         let mut order: Vec<usize> = (0..boxes.len()).collect();
         let mut nodes = vec![Node {
-            lo: [0.0; 3],
-            hi: [0.0; 3],
+            lo: V3::splat(0.0),
+            hi: V3::splat(0.0),
             left: None,
             start: 0,
             end: boxes.len(),
@@ -59,12 +59,10 @@ impl Bvh {
         let mut stack = vec![0usize];
         while let Some(k) = stack.pop() {
             let (start, end) = (nodes[k].start, nodes[k].end);
-            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            let (mut lo, mut hi) = (V3::INFINITY, V3::NEG_INFINITY);
             for &i in &order[start..end] {
-                for a in 0..3 {
-                    lo[a] = lo[a].min(boxes[i].0[a]);
-                    hi[a] = hi[a].max(boxes[i].1[a]);
-                }
+                lo = lo.min(boxes[i].0);
+                hi = hi.max(boxes[i].1);
             }
             nodes[k].lo = lo;
             nodes[k].hi = hi;
@@ -81,8 +79,8 @@ impl Bvh {
             nodes[k].left = Some(left);
             for (s, e) in [(start, mid), (mid, end)] {
                 nodes.push(Node {
-                    lo: [0.0; 3],
-                    hi: [0.0; 3],
+                    lo: V3::splat(0.0),
+                    hi: V3::splat(0.0),
                     left: None,
                     start: s,
                     end: e,
@@ -162,7 +160,7 @@ fn edge_dist(t: &Tri, s: V3) -> f64 {
     (0..3)
         .map(|i| {
             let (a, b) = (t.p[(i + 1) % 3], t.p[(i + 2) % 3]);
-            w[i] * twice / geom::length(geom::sub(b, a)).max(1e-300)
+            w[i] * twice / (b - a).length().max(1e-300)
         })
         .fold(f64::INFINITY, f64::min)
 }
@@ -175,7 +173,7 @@ fn tri_box(t: &Tri) -> (V3, V3) {
 fn plane_of(t: &Tri) -> Plane {
     Plane {
         n: t.n,
-        d: -geom::dot(t.n, t.p[0]),
+        d: -t.n.dot(t.p[0]),
     }
 }
 
@@ -203,8 +201,8 @@ struct Solids {
 impl Solids {
     /// Whether `p` is inside a solid: an odd number of crossings of a ray from it.
     fn inside(&self, p: V3, reach: f64) -> bool {
-        let dir = geom::normalize([0.5773, 0.4123, 0.7049]).unwrap_or([0.0, 0.0, 1.0]);
-        let e = geom::add(p, geom::scale(dir, reach));
+        let dir = geom::unit(V3::new(0.5773, 0.4123, 0.7049)).unwrap_or(V3::new(0.0, 0.0, 1.0));
+        let e = p + dir * reach;
         let mut odd = vec![false; self.count];
         for k in self.bvh.along(p, e, 0.0) {
             let t = &self.tris[k];
@@ -213,7 +211,7 @@ impl Solids {
             if (a > 0.0) == (b > 0.0) {
                 continue;
             }
-            let q = geom::add(p, geom::scale(geom::sub(e, p), a / (a - b)));
+            let q = p + (e - p) * (a / (a - b));
             if edge_dist(t, q) >= 0.0 {
                 odd[self.owner[k]] ^= true;
             }
@@ -225,7 +223,7 @@ impl Solids {
     /// starts or ends within it of one's plane where the crossing would be.
     fn first_entry(&self, s: V3, e: V3) -> Result<Option<(f64, V3)>, ()> {
         let mut best: Option<(f64, V3)> = None;
-        let len = geom::length(geom::sub(e, s));
+        let len = (e - s).length();
         for k in self.bvh.along(s, e, GRAZE) {
             let t = &self.tris[k];
             let pl = plane_of(t);
@@ -248,7 +246,7 @@ impl Solids {
                 return Err(());
             }
             let f = a / (a - b);
-            let q = geom::add(s, geom::scale(geom::sub(e, s), f));
+            let q = s + (e - s) * f;
             let d = edge_dist(t, q);
             if d.abs() < GRAZE {
                 return Err(());
@@ -378,7 +376,7 @@ pub fn check_mesh(
         }
         report.surface_checked += 1;
         let candidates = drawn_bvh.at(s, 2.0 * TOLERANCE);
-        let facing = |j: &&usize| geom::dot(drawn[**j].n, t.n) > 1.0 - 1e-3;
+        let facing = |j: &&usize| drawn[**j].n.dot(t.n) > 1.0 - 1e-3;
         let on: Vec<(usize, [f64; 3])> = candidates
             .iter()
             .filter(facing)
@@ -427,7 +425,7 @@ pub fn check_mesh(
         let mut near_edge = false;
         for j in source_bvh.at(s, 2.0 * TOLERANCE) {
             let f = &source[j];
-            if geom::dot(f.n, t.n) < 1.0 - 1e-3 || plane_of(f).dist(s).abs() > TOLERANCE {
+            if f.n.dot(t.n) < 1.0 - 1e-3 || plane_of(f).dist(s).abs() > TOLERANCE {
                 continue;
             }
             let d = edge_dist(f, s);
@@ -494,7 +492,7 @@ pub fn check_mesh(
     let hull_boxes: Vec<(V3, V3)> = plan
         .hulls
         .iter()
-        .map(|h| h.brush.bounds().unwrap_or(([0.0; 3], [0.0; 3])))
+        .map(|h| h.brush.bounds().unwrap_or((V3::splat(0.0), V3::splat(0.0))))
         .collect();
     let hull_bvh = Bvh::new(&hull_boxes);
     let is_slab = |k: usize| plan.hulls[k].kind == HullKind::Slab;
@@ -502,15 +500,18 @@ pub fn check_mesh(
     // Collision.
     let pad = [0, 1, 2].map(|k| (hi[k] - lo[k]) * 0.1 + 0.5);
     let reach = (0..3).map(|k| hi[k] - lo[k] + 2.0 * pad[k]).sum::<f64>() * 2.0;
-    let point = |r: &mut Rng| [0, 1, 2].map(|k| r.range(lo[k] - pad[k], hi[k] + pad[k]));
+    let point =
+        |r: &mut Rng| V3::from_array([0, 1, 2].map(|k| r.range(lo[k] - pad[k], hi[k] + pad[k])));
     for _ in 0..counts.segments {
         let (s, e) = (point(&mut r), point(&mut r));
-        let dir = geom::sub(e, s);
+        let dir = e - s;
         report.segments += 1;
         let mut got: Option<(f64, V3)> = None;
         for shape in &shapes {
             let hit = shape
-                .cast_ray(s.map(|v| v as f32), e.map(|v| v as f32), &mut |_| true)
+                .cast_ray(s.as_vec3().to_array(), e.as_vec3().to_array(), &mut |_| {
+                    true
+                })
                 .map_err(|_| "a ray ran out of work")?;
             if let Some((t, n)) = hit
                 && got.is_none_or(|(bt, _)| f64::from(t) < bt)
@@ -527,7 +528,7 @@ pub fn check_mesh(
                 hits.push((h.0, h.1, k));
                 // At an edge or a corner every face entered at that moment is the hit's.
                 for f in &b.faces {
-                    let (a, e) = (f.plane.dist(s), f.plane.dist(geom::add(s, dir)));
+                    let (a, e) = (f.plane.dist(s), f.plane.dist(s + dir));
                     if a > 0.0 && e < a && (a / (a - e) - h.0).abs() <= TOLERANCE {
                         hits.push((h.0, f.plane.n, k));
                     }
@@ -542,9 +543,9 @@ pub fn check_mesh(
             (None, None) => true,
             (Some((t, _)), Some((gt, gn))) => {
                 (gt - t).abs() <= TOLERANCE
-                    && all.iter().any(|&(ht, hn)| {
-                        (ht - gt).abs() <= TOLERANCE && geom::length(geom::sub(hn, gn)) < 1e-3
-                    })
+                    && all
+                        .iter()
+                        .any(|&(ht, hn)| (ht - gt).abs() <= TOLERANCE && (hn - gn).length() < 1e-3)
             }
             _ => false,
         };

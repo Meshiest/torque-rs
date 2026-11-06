@@ -269,7 +269,10 @@ impl Frame {
     }
 
     fn turn(&self, v: V3) -> V3 {
-        [0, 1, 2].map(|i| self.rot[i][0] * v[0] + self.rot[i][1] * v[1] + self.rot[i][2] * v[2])
+        V3::from_array(
+            [0, 1, 2]
+                .map(|i| self.rot[i][0] * v[0] + self.rot[i][1] * v[1] + self.rot[i][2] * v[2]),
+        )
     }
 
     fn brush(&self, solid: &Solid, material: &str) -> Brush {
@@ -277,14 +280,7 @@ impl Frame {
             .iter()
             .filter_map(|&(n, p)| {
                 let q = self.turn(p);
-                Plane::new(
-                    self.turn(n),
-                    [
-                        self.foot[0] + q[0],
-                        self.foot[1] + q[1],
-                        self.foot[2] + q[2],
-                    ],
-                )
+                Plane::new(self.turn(n), self.foot + q)
             })
             .collect();
         Brush::from_planes(&planes, material, texgen)
@@ -298,12 +294,12 @@ fn frustum(z0: f64, z1: f64, r0: f64, r1: f64, sides: usize, turn: f64) -> Solid
         let a = turn + TAU * k as f64 / sides as f64;
         let (c, s) = (a.cos(), a.sin());
         out.push((
-            [c * (z1 - z0), s * (z1 - z0), r0 - r1],
-            [c * r0, s * r0, z0],
+            V3::new(c * (z1 - z0), s * (z1 - z0), r0 - r1),
+            V3::new(c * r0, s * r0, z0),
         ));
     }
-    out.push(([0.0, 0.0, -1.0], [0.0, 0.0, z0]));
-    out.push(([0.0, 0.0, 1.0], [0.0, 0.0, z1]));
+    out.push((V3::NEG_Z, V3::new(0.0, 0.0, z0)));
+    out.push((V3::Z, V3::new(0.0, 0.0, z1)));
     out
 }
 
@@ -325,7 +321,7 @@ fn icosahedron() -> [V3; 12] {
         [-p, 0.0, -1.0],
         [-p, 0.0, 1.0],
     ];
-    raw.map(|v| v.map(|c| c / l))
+    raw.map(|v| V3::from_array(v) / l)
 }
 
 /// The reach of a [`blob`] below its middle at most (its planes jitter out to 1.04 of the ellipsoid).
@@ -347,7 +343,8 @@ fn blob(at: V3, radii: V3, rng: &mut Rng) -> Solid {
                 ((radii[0] * n[0]).powi(2) + (radii[1] * n[1]).powi(2) + (radii[2] * n[2]).powi(2))
                     .sqrt()
                     * rng.range(0.92, BLOB_REACH);
-            (n, [0, 1, 2].map(|k| at[k] + n[k] * reach))
+            let n = V3::from_array(n);
+            (n, at + n * reach)
         })
         .collect()
 }
@@ -399,7 +396,7 @@ fn canopy(blobs: &[(V3, V3)], middle: f64, rng: &mut Rng) -> (Vec<Solid>, f64) {
     let z = middle.max(CLEARANCE - lowest);
     let solids = blobs
         .iter()
-        .map(|&(c, r)| blob([c[0], c[1], c[2] + z], r, rng))
+        .map(|&(c, r)| blob(V3::new(c[0], c[1], c[2] + z), r, rng))
         .collect();
     (solids, z + lowest)
 }
@@ -536,10 +533,10 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
             let a = rng.range(0.0, TAU);
             let (reach, r) = (rng.range(1.7, 2.2) * j, rng.range(1.5, 1.9) * j);
             let blobs = [
-                ([0.0, 0.0, 0.0], [2.7 * j, 2.4 * j, 2.0 * j]),
+                (V3::ZERO, V3::new(2.7 * j, 2.4 * j, 2.0 * j)),
                 (
-                    [a.cos() * reach, a.sin() * reach, rng.range(0.6, 1.3) * j],
-                    [r, r * 0.95, r * 0.85],
+                    V3::new(a.cos() * reach, a.sin() * reach, rng.range(0.6, 1.3) * j),
+                    V3::new(r, r * 0.95, r * 0.85),
                 ),
             ];
             let (solids, low) = canopy(&blobs, 5.4 * s, &mut rng);
@@ -558,7 +555,7 @@ pub fn tree(kind: Kind, foot: V3, size: f64, seed: u64) -> Vec<Brush> {
         }
         Kind::Birch => {
             let h = s * rng.range(0.9, 1.1) * kind.height();
-            let blobs = [([0.0, 0.0, 0.0], [1.5 * s, 1.35 * s, 3.0 * s])];
+            let blobs = [(V3::ZERO, V3::new(1.5 * s, 1.35 * s, 3.0 * s))];
             let (solids, low) = canopy(&blobs, 0.52 * h, &mut rng);
             let leaves = rng.pick(&[(LEAVES_LIGHT, 0.65), (LEAVES, 0.35)]);
             let trunk = frustum(
@@ -830,7 +827,12 @@ pub fn chunk_brushes(index: usize) -> Vec<Brush> {
         .iter()
         .flat_map(|&k| {
             let t = all[k];
-            tree(t.kind, t.foot.map(f64::from), f64::from(t.size), t.seed)
+            tree(
+                t.kind,
+                glam::Vec3::from(t.foot).as_dvec3(),
+                f64::from(t.size),
+                t.seed,
+            )
         })
         .collect()
 }
@@ -887,8 +889,13 @@ pub fn lineup() -> Vec<Brush> {
     let mut out = Vec::new();
     for (k, &kind) in Kind::ALL.iter().enumerate() {
         let x = -30.0 + 12.0 * k as f64;
-        out.extend(tree(kind, [x, 0.0, 0.0], 1.0, 0x11e_0000 + k as u64));
-        out.extend(tree(kind, [x + 4.0, 12.0, 0.0], 0.7, 0x11e_1000 + k as u64));
+        out.extend(tree(kind, V3::new(x, 0.0, 0.0), 1.0, 0x11e_0000 + k as u64));
+        out.extend(tree(
+            kind,
+            V3::new(x + 4.0, 12.0, 0.0),
+            0.7,
+            0x11e_1000 + k as u64,
+        ));
     }
     out
 }

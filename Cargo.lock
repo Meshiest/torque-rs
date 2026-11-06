@@ -3200,6 +3200,7 @@ dependencies = [
 name = "torque-example-assets"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "png",
  "torque-images",
  "torque-import",
@@ -3353,6 +3354,7 @@ name = "torque-interior-builder"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "glam",
  "png",
  "torque-collide",
  "torque-images",

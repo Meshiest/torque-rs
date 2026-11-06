@@ -270,9 +270,9 @@ mod tests {
     #[test]
     fn points_fall_in_solid_leaves_inside_brushes_only() {
         let brushes = vec![
-            cube([0.0; 3], [2.0, 2.0, 1.0]),
-            cube([1.0, 1.0, 0.5], [3.0, 3.0, 2.0]),
-            cube([-4.0, 0.0, 0.0], [-3.0, 1.0, 1.0]),
+            cube(V3::splat(0.0), V3::new(2.0, 2.0, 1.0)),
+            cube(V3::new(1.0, 1.0, 0.5), V3::new(3.0, 3.0, 2.0)),
+            cube(V3::new(-4.0, 0.0, 0.0), V3::new(-3.0, 1.0, 1.0)),
         ];
         let bsp = build(&brushes, 1000).unwrap();
         let mut seed = 7u64;
@@ -285,12 +285,16 @@ mod tests {
             let near = brushes
                 .iter()
                 .flat_map(|b| &b.faces)
-                .any(|f| f.plane.dist(p).abs() < 1e-3);
+                .any(|f| f.plane.dist(V3::from(p)).abs() < 1e-3);
             if near {
                 continue;
             }
-            let inside = brushes.iter().any(|b| b.contains(p, 0.0));
-            assert_eq!(matches!(bsp.leaf(p), Child::Solid(_)), inside, "{p:?}");
+            let inside = brushes.iter().any(|b| b.contains(V3::from(p), 0.0));
+            assert_eq!(
+                matches!(bsp.leaf(V3::from(p)), Child::Solid(_)),
+                inside,
+                "{p:?}"
+            );
         }
     }
 
@@ -298,6 +302,6 @@ mod tests {
     fn no_brush_is_one_empty_leaf() {
         let bsp = build(&[], 10).unwrap();
         assert_eq!(bsp.root, Some(Child::Empty));
-        assert_eq!(bsp.leaf([0.0; 3]), Child::Empty);
+        assert_eq!(bsp.leaf(V3::splat(0.0)), Child::Empty);
     }
 }

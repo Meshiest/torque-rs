@@ -188,13 +188,13 @@ impl Rng {
 
     pub fn unit(&mut self) -> V3 {
         loop {
-            let v = [
+            let v = V3::new(
                 self.range(-1.0, 1.0),
                 self.range(-1.0, 1.0),
                 self.range(-1.0, 1.0),
-            ];
-            if let Some(n) = geom::normalize(v)
-                && geom::length(v) <= 1.0
+            );
+            if let Some(n) = geom::unit(v)
+                && v.length() <= 1.0
             {
                 return n;
             }
@@ -238,9 +238,12 @@ pub fn generated(seed: u64) -> Vec<Brush> {
         }
     };
     let half = if seed % 4 == 3 { 75.0 } else { 20.0 };
-    let mut ground = Brush::cuboid([-half, -half, -1.0], [half, half, 0.0], "", |n| {
-        TexGen::world(n, 1.0)
-    });
+    let mut ground = Brush::cuboid(
+        V3::new(-half, -half, -1.0),
+        V3::new(half, half, 0.0),
+        "",
+        |n| TexGen::world(n, 1.0),
+    );
     paint(&mut r, &mut ground);
     out.push(ground);
     let boxes = 4 + r.below(10);
@@ -261,7 +264,7 @@ pub fn generated(seed: u64) -> Vec<Brush> {
             q(&mut r, 0.5, 6.0),
         ];
         let max = [0, 1, 2].map(|i| min[i] + size[i].max(0.5));
-        let mut b = Brush::cuboid(min, max, "", |n| TexGen::world(n, 1.0));
+        let mut b = Brush::cuboid(V3::from(min), V3::from(max), "", |n| TexGen::world(n, 1.0));
         paint(&mut r, &mut b);
         if k == 1 {
             out.push(b.clone());
@@ -275,10 +278,10 @@ pub fn generated(seed: u64) -> Vec<Brush> {
             r.range(0.0, 4.0),
         ];
         let max = [0, 1, 2].map(|i| min[i] + r.range(1.0, 5.0));
-        let mut b = Brush::cuboid(min, max, "", |n| TexGen::world(n, 1.0));
+        let mut b = Brush::cuboid(V3::from(min), V3::from(max), "", |n| TexGen::world(n, 1.0));
         for _ in 0..1 + r.below(2) {
             let c = [0, 1, 2].map(|i| r.range(min[i], max[i]));
-            if let Some(plane) = Plane::new(r.unit(), c) {
+            if let Some(plane) = Plane::new(r.unit(), V3::from(c)) {
                 b.faces.push(crate::brush::Face {
                     plane,
                     material: String::new(),
@@ -292,16 +295,16 @@ pub fn generated(seed: u64) -> Vec<Brush> {
         }
     }
     for _ in 0..1 + r.below(2) {
-        let c = [
+        let c = V3::new(
             r.range(-12.0, 12.0),
             r.range(-12.0, 12.0),
             r.range(0.0, 4.0),
-        ];
+        );
         let radius = r.range(0.7, 2.5);
         let planes: Vec<Plane> = (0..8 + r.below(8))
             .filter_map(|_| {
                 let n = r.unit();
-                Plane::new(n, geom::add(c, geom::scale(n, radius)))
+                Plane::new(n, c + n * radius)
             })
             .collect();
         let mut b = Brush::from_planes(&planes, "", |n| TexGen::world(n, 1.0));
@@ -325,14 +328,14 @@ struct Tri {
 impl Tri {
     /// The barycentric weights of `s` projected on the triangle, and its distance from the triangle's plane.
     fn weights(&self, s: V3) -> ([f64; 3], f64) {
-        let e1 = geom::sub(self.p[1], self.p[0]);
-        let e2 = geom::sub(self.p[2], self.p[0]);
-        let n = geom::cross(e1, e2);
-        let nn = geom::dot(n, n);
-        let d = geom::sub(s, self.p[0]);
-        let off = geom::dot(d, n) / nn.sqrt();
-        let b1 = geom::dot(geom::cross(d, e2), n) / nn;
-        let b2 = geom::dot(geom::cross(e1, d), n) / nn;
+        let e1 = self.p[1] - self.p[0];
+        let e2 = self.p[2] - self.p[0];
+        let n = e1.cross(e2);
+        let nn = n.dot(n);
+        let d = s - self.p[0];
+        let off = d.dot(n) / nn.sqrt();
+        let b1 = d.cross(e2).dot(n) / nn;
+        let b2 = e1.cross(d).dot(n) / nn;
         ([1.0 - b1 - b2, b1, b2], off)
     }
 
@@ -435,20 +438,14 @@ fn sample(r: &mut Rng, polys: &[(usize, Vec<V3>)], n: usize) -> Vec<(usize, V3)>
                 a = 1.0 - a;
                 b = 1.0 - b;
             }
-            let p = geom::add(
-                t[0],
-                geom::add(
-                    geom::scale(geom::sub(t[1], t[0]), a),
-                    geom::scale(geom::sub(t[2], t[0]), b),
-                ),
-            );
+            let p = t[0] + ((t[1] - t[0]) * a + (t[2] - t[0]) * b);
             (*id, p)
         })
         .collect()
 }
 
 fn wide(p: [f32; 3]) -> V3 {
-    p.map(f64::from)
+    glam::Vec3::from(p).as_dvec3()
 }
 
 /// The plane of a file's plane index, its flip applied.
@@ -520,7 +517,7 @@ pub fn check(
     // Triangles by the cells of a grid their boxes reach, for the point lookups.
     let (glo, ghi) = (wide(i.bounds.min), wide(i.bounds.max));
     let cell = (0..3).map(|k| ghi[k] - glo[k]).fold(1.0f64, f64::max) / 32.0;
-    let cell_of = |p: V3| p.map(|v| (v / cell).floor() as i64);
+    let cell_of = |p: V3| p.to_array().map(|v| (v / cell).floor() as i64);
     let mut grid: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
     for (k, t) in tris.iter().enumerate() {
         let (a, b) = geom::bounds(t.p.iter().copied());
@@ -563,12 +560,12 @@ pub fn check(
         let candidates = grid.get(&cell_of(s)).map_or(&[][..], Vec::as_slice);
         let on: Vec<(usize, [f64; 3])> = candidates
             .iter()
-            .filter(|&&k| geom::dot(tris[k].n, n) > 1.0 - 1e-3)
+            .filter(|&&k| tris[k].n.dot(n) > 1.0 - 1e-3)
             .filter_map(|&k| tris[k].holds(s, 1e-7).map(|w| (k, w)))
             .collect();
         let strictly = candidates
             .iter()
-            .filter(|&&k| geom::dot(tris[k].n, n) > 1.0 - 1e-3)
+            .filter(|&&k| tris[k].n.dot(n) > 1.0 - 1e-3)
             .filter(|&&k| tris[k].holds(s, -1e-6).is_some())
             .count();
         match verdict {
@@ -610,14 +607,14 @@ pub fn check(
         let mut near_edge = false;
         for &(bi, fi) in &ids {
             let f = &brushes[bi].faces[fi];
-            if geom::dot(f.plane.n, t.n) < 1.0 - 1e-3 || f.plane.dist(s).abs() > TOLERANCE {
+            if f.plane.n.dot(t.n) < 1.0 - 1e-3 || f.plane.dist(s).abs() > TOLERANCE {
                 continue;
             }
             let poly = &faces.polys[bi][fi];
             let inside = (0..poly.len()).all(|e| {
                 let (a, b) = (poly[e], poly[(e + 1) % poly.len()]);
-                let edge_n = geom::cross(f.plane.n, geom::sub(b, a));
-                let d = geom::dot(geom::sub(s, a), edge_n) / geom::length(edge_n);
+                let edge_n = f.plane.n.cross(b - a);
+                let d = (s - a).dot(edge_n) / edge_n.length();
                 if d.abs() < BAND {
                     near_edge = true;
                 }
@@ -684,10 +681,11 @@ pub fn check(
         .ok_or("the interior does not place")?;
     let (lo, hi) = (wide(i.bounds.min), wide(i.bounds.max));
     let pad = [0, 1, 2].map(|k| (hi[k] - lo[k]) * 0.1 + 0.5);
-    let point = |r: &mut Rng| [0, 1, 2].map(|k| r.range(lo[k] - pad[k], hi[k] + pad[k]));
+    let point =
+        |r: &mut Rng| V3::from_array([0, 1, 2].map(|k| r.range(lo[k] - pad[k], hi[k] + pad[k])));
     for _ in 0..counts.segments {
         let (s, e) = (point(&mut r), point(&mut r));
-        let dir = geom::sub(e, s);
+        let dir = e - s;
         let mut best: Option<f64> = None;
         let mut hits: Vec<(f64, V3)> = Vec::new();
         for b in brushes {
@@ -698,7 +696,9 @@ pub fn check(
         }
         report.segments += 1;
         let got = shape
-            .cast_ray(s.map(|v| v as f32), e.map(|v| v as f32), &mut |_| true)
+            .cast_ray(s.as_vec3().to_array(), e.as_vec3().to_array(), &mut |_| {
+                true
+            })
             .map_err(|_| "a ray ran out of work")?;
         // A segment that grazes a brush (it meets the brush grown by a hair and misses it shrunk by one, or the other way
         // round) or starts on one: either answer holds.
@@ -722,7 +722,7 @@ pub fn check(
                 let gt = f64::from(gt);
                 report.worst_fraction = report.worst_fraction.max((gt - t).abs());
                 let normal_ok = hits.iter().any(|&(ht, hn)| {
-                    (ht - gt).abs() <= TOLERANCE && geom::length(geom::sub(hn, wide(gn))) < 1e-3
+                    (ht - gt).abs() <= TOLERANCE && (hn - wide(gn)).length() < 1e-3
                 });
                 if (gt - t).abs() > TOLERANCE || !normal_ok {
                     report.ray_mismatches += 1;
@@ -788,7 +788,7 @@ fn hull_strings(i: &Interior, polys: &[Vec<Vec<V3>>], report: &mut Report) {
             };
             let Some(pl) = planes
                 .iter()
-                .filter(|&&pi| geom::dot(file_plane(i, pi).n, n) < 0.0 && off(pi) < 1e-3)
+                .filter(|&&pi| file_plane(i, pi).n.dot(n) < 0.0 && off(pi) < 1e-3)
                 .min_by(|&&a, &&b| off(a).total_cmp(&off(b)))
             else {
                 report.emit_differences += 1;
@@ -797,7 +797,7 @@ fn hull_strings(i: &Interior, polys: &[Vec<Vec<V3>>], report: &mut Report) {
             let mut pts: Vec<u8> = poly
                 .iter()
                 .filter_map(|&v| {
-                    let d = |q: &V3| geom::length(geom::sub(*q, v));
+                    let d = |q: &V3| (*q - v).length();
                     (0..points.len())
                         .min_by(|&a, &b| d(&points[a]).total_cmp(&d(&points[b])))
                         .filter(|&x| d(&points[x]) < 1e-3)
@@ -918,7 +918,7 @@ pub fn enter_moved(b: &Brush, s: V3, dir: V3, by: f64) -> Option<(f64, V3)> {
     let mut normal = None;
     for f in &b.faces {
         let a = f.plane.dist(s) + by;
-        let e = a + geom::dot(f.plane.n, dir);
+        let e = a + f.plane.n.dot(dir);
         if a > 0.0 && e > 0.0 {
             return None;
         }

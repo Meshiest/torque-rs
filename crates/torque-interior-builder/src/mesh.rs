@@ -174,11 +174,11 @@ impl Tri {
     /// The plane facing the front; None for a triangle of no area.
     pub fn plane(&self) -> Option<Plane> {
         let [a, b, c] = self.p;
-        let n = geom::cross(geom::sub(b, a), geom::sub(c, a));
-        if geom::length(n) < 1e-12 {
+        let n = (b - a).cross(c - a);
+        if n.length() < 1e-12 {
             return None;
         }
-        Plane::new(geom::scale(n, -1.0), a)
+        Plane::new(-n, a)
     }
 }
 
@@ -233,12 +233,11 @@ impl MeshInput {
             let positions: Vec<V3> = model
                 .placed_positions(mi, &world)
                 .iter()
-                .map(|p| p.map(f64::from))
+                .map(|p| glam::Vec3::from(*p).as_dvec3())
                 .collect();
             if positions
                 .iter()
-                .flatten()
-                .any(|v| !v.is_finite() || v.abs() > MAX_COORD)
+                .any(|v| !v.is_finite() || v.abs().max_element() > MAX_COORD)
             {
                 return Err(MeshError::Coordinates(name.to_string()));
             }
@@ -325,9 +324,9 @@ impl MeshInput {
 /// The texture planes that give a triangle's texture coordinates at its corners (each gradient in the triangle's plane); None
 /// for a triangle of no area.
 pub fn texgen_of(p: [V3; 3], uv: [[f64; 2]; 3]) -> Option<TexGen> {
-    let e1 = geom::sub(p[1], p[0]);
-    let e2 = geom::sub(p[2], p[0]);
-    let (a11, a12, a22) = (geom::dot(e1, e1), geom::dot(e1, e2), geom::dot(e2, e2));
+    let e1 = p[1] - p[0];
+    let e2 = p[2] - p[0];
+    let (a11, a12, a22) = (e1.dot(e1), e1.dot(e2), e2.dot(e2));
     let det = a11 * a22 - a12 * a12;
     if det <= 1e-20 * a11 * a22 || det <= 1e-24 {
         return None;
@@ -336,8 +335,8 @@ pub fn texgen_of(p: [V3; 3], uv: [[f64; 2]; 3]) -> Option<TexGen> {
         let (d1, d2) = (uv[1][c] - uv[0][c], uv[2][c] - uv[0][c]);
         let s = (d1 * a22 - d2 * a12) / det;
         let t = (d2 * a11 - d1 * a12) / det;
-        let g = geom::add(geom::scale(e1, s), geom::scale(e2, t));
-        [g[0], g[1], g[2], uv[0][c] - geom::dot(g, p[0])]
+        let g = e1 * s + e2 * t;
+        [g[0], g[1], g[2], uv[0][c] - g.dot(p[0])]
     };
     let tg = TexGen {
         u: row(0),
@@ -355,7 +354,7 @@ struct Welded {
 
 impl Welded {
     fn id(&mut self, p: V3) -> u32 {
-        let key = p.map(|v| (v + 0.0).to_bits());
+        let key = p.to_array().map(|v| (v + 0.0).to_bits());
         *self.ids.entry(key).or_insert_with(|| {
             self.points.push(p);
             self.points.len() as u32 - 1
@@ -365,9 +364,9 @@ impl Welded {
 
 /// Whether the corner `b` (between `a` and `c`) of a polygon clockwise seen from the front of `n` is convex (or straight).
 fn convex_corner(a: V3, b: V3, c: V3, n: V3) -> bool {
-    let (u, w) = (geom::sub(b, a), geom::sub(c, b));
-    let s = geom::length(u) * geom::length(w);
-    s > 0.0 && geom::dot(geom::cross(u, w), n) <= 1e-9 * s
+    let (u, w) = (b - a, c - b);
+    let s = u.length() * w.length();
+    s > 0.0 && u.cross(w).dot(n) <= 1e-9 * s
 }
 
 /// The most triangles on one directed edge that a polygon grows across: a manifold edge has one, a two-sided sheet two.
@@ -453,7 +452,7 @@ fn group(
 
 /// Whether triangle `t` (of plane `own`) lies on `plane` facing its way.
 fn on_plane(t: &Tri, own: Option<Plane>, plane: &Plane) -> bool {
-    own.is_some_and(|q| geom::dot(q.n, plane.n) > 1.0 - 1e-9)
+    own.is_some_and(|q| q.n.dot(plane.n) > 1.0 - 1e-9)
         && t.p.iter().all(|&p| plane.dist(p).abs() < PLANE_TOL)
 }
 
@@ -616,7 +615,7 @@ fn closed(tris: &[&Tri]) -> bool {
             *edges.entry((v[e], v[(e + 1) % 3])).or_default() += 1;
         }
         // Clockwise from outside: the usual signed volume comes out negative.
-        volume -= geom::dot(t.p[0], geom::cross(t.p[1], t.p[2])) / 6.0;
+        volume -= t.p[0].dot(t.p[1].cross(t.p[2])) / 6.0;
     }
     let (lo, hi) = geom::bounds(tris.iter().flat_map(|t| t.p));
     let size = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f64::max);
@@ -645,11 +644,11 @@ fn solid_leaves(tris: &[&Tri], work: &mut Budget, out: &mut Vec<Brush>) -> Resul
     let (lo, hi) = geom::bounds(tris.iter().flat_map(|t| t.p));
     let mut boxed = Vec::new();
     for k in 0..3 {
-        let mut n = [0.0; 3];
+        let mut n = V3::ZERO;
         n[k] = 1.0;
-        boxed.extend(Plane::new(n, geom::add(hi, [1.0; 3])));
+        boxed.extend(Plane::new(n, hi + 1.0));
         n[k] = -1.0;
-        boxed.extend(Plane::new(n, geom::sub(lo, [1.0; 3])));
+        boxed.extend(Plane::new(n, lo - 1.0));
     }
     // The splitters on the way down, each with the one above it.
     let mut steps: Vec<(Plane, Option<usize>)> = Vec::new();
@@ -748,22 +747,22 @@ fn solid_leaves(tris: &[&Tri], work: &mut Budget, out: &mut Vec<Brush>) -> Resul
 /// degrees.
 fn slab(points: &[V3], plane: Plane, sides: &[Option<V3>], thickness: f64) -> Option<Brush> {
     let mut planes = vec![plane];
-    let back = geom::sub(points[0], geom::scale(plane.n, thickness));
-    planes.push(Plane::new(geom::scale(plane.n, -1.0), back)?);
+    let back = points[0] - plane.n * thickness;
+    planes.push(Plane::new(-plane.n, back)?);
     let n = points.len();
     for i in 0..n {
         let (a, b) = (points[i], points[(i + 1) % n]);
-        if geom::length(geom::sub(b, a)) < EPS {
+        if (b - a).length() < EPS {
             continue;
         }
         let across = sides
             .get(i)
             .copied()
             .flatten()
-            .filter(|m| geom::dot(*m, plane.n) > -0.5)
-            .and_then(|m| geom::normalize(geom::add(plane.n, m)))
+            .filter(|m| m.dot(plane.n) > -0.5)
+            .and_then(|m| geom::unit(plane.n + m))
             .unwrap_or(plane.n);
-        planes.push(Plane::new(geom::cross(across, geom::sub(b, a)), a)?);
+        planes.push(Plane::new(across.cross(b - a), a)?);
     }
     pruned(planes)
 }
@@ -921,7 +920,7 @@ pub struct MeshBuilt {
 
 fn middle(points: impl Iterator<Item = V3>) -> V3 {
     let (lo, hi) = geom::bounds(points);
-    [0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5)
+    (lo + hi) * 0.5
 }
 
 /// Builds `input` (module docs): the plan, then its pieces.
@@ -936,7 +935,7 @@ pub fn build_mesh(input: &MeshInput, options: &MeshOptions) -> Result<MeshBuilt,
         .hulls
         .iter()
         .map(|h| {
-            let b = h.brush.bounds().unwrap_or(([0.0; 3], [0.0; 3]));
+            let b = h.brush.bounds().unwrap_or((V3::splat(0.0), V3::splat(0.0)));
             middle([b.0, b.1].into_iter())
         })
         .collect();
@@ -1054,13 +1053,21 @@ mod tests {
         ];
         faces
             .iter()
-            .flat_map(|f| quad(c(f[0]), c(f[1]), c(f[2]), c(f[3]), 0))
+            .flat_map(|f| {
+                quad(
+                    V3::from(c(f[0])),
+                    V3::from(c(f[1])),
+                    V3::from(c(f[2])),
+                    V3::from(c(f[3])),
+                    0,
+                )
+            })
             .collect()
     }
 
     #[test]
     fn a_closed_part_too_small_for_any_plane_makes_no_leaf_and_no_panic() {
-        let tris = box_tris([0.0; 3], [1e-7; 3]);
+        let tris = box_tris(V3::splat(0.0), V3::splat(1e-7));
         let refs: Vec<&Tri> = tris.iter().collect();
         assert!(refs.iter().all(|t| t.plane().is_none()));
         let mut leaves = Vec::new();
@@ -1070,14 +1077,14 @@ mod tests {
 
     #[test]
     fn a_box_is_closed_and_one_solid_leaf() {
-        let tris = box_tris([0.0; 3], [2.0, 1.0, 3.0]);
+        let tris = box_tris(V3::splat(0.0), V3::new(2.0, 1.0, 3.0));
         let refs: Vec<&Tri> = tris.iter().collect();
         assert!(closed(&refs));
         let mut leaves = Vec::new();
         solid_leaves(&refs, &mut Budget::new(u64::MAX), &mut leaves).unwrap();
         assert_eq!(leaves.len(), 1);
         assert_eq!(leaves[0].faces.len(), 6);
-        assert!(leaves[0].contains([1.0, 0.5, 1.5], 0.4));
+        assert!(leaves[0].contains(V3::new(1.0, 0.5, 1.5), 0.4));
         // Each face's two triangles are one polygon.
         let input = MeshInput {
             drawn: vec![NamedMesh {
@@ -1104,32 +1111,32 @@ mod tests {
             let (c, d) = (hole[k], hole[(k + 1) % 4]);
             // Top (clockwise seen from above) and bottom.
             tris.extend(quad(
-                [a[0], a[1], h],
-                [c[0], c[1], h],
-                [d[0], d[1], h],
-                [b[0], b[1], h],
+                V3::new(a[0], a[1], h),
+                V3::new(c[0], c[1], h),
+                V3::new(d[0], d[1], h),
+                V3::new(b[0], b[1], h),
                 0,
             ));
             tris.extend(quad(
-                [a[0], a[1], 0.0],
-                [b[0], b[1], 0.0],
-                [d[0], d[1], 0.0],
-                [c[0], c[1], 0.0],
+                V3::new(a[0], a[1], 0.0),
+                V3::new(b[0], b[1], 0.0),
+                V3::new(d[0], d[1], 0.0),
+                V3::new(c[0], c[1], 0.0),
                 0,
             ));
             // Outer wall and inner wall.
             tris.extend(quad(
-                [a[0], a[1], 0.0],
-                [a[0], a[1], h],
-                [b[0], b[1], h],
-                [b[0], b[1], 0.0],
+                V3::new(a[0], a[1], 0.0),
+                V3::new(a[0], a[1], h),
+                V3::new(b[0], b[1], h),
+                V3::new(b[0], b[1], 0.0),
                 0,
             ));
             tris.extend(quad(
-                [c[0], c[1], 0.0],
-                [d[0], d[1], 0.0],
-                [d[0], d[1], h],
-                [c[0], c[1], h],
+                V3::new(c[0], c[1], 0.0),
+                V3::new(d[0], d[1], 0.0),
+                V3::new(d[0], d[1], h),
+                V3::new(c[0], c[1], h),
                 0,
             ));
         }
@@ -1140,7 +1147,7 @@ mod tests {
         assert!(leaves.len() >= 4);
         for x in [-2.5, -1.5, 0.0, 1.5, 2.5] {
             for y in [-2.5, -1.5, 0.0, 1.5, 2.5] {
-                let p: V3 = [x + 0.013, y + 0.017, 0.5];
+                let p: V3 = V3::new(x + 0.013, y + 0.017, 0.5);
                 let want = !(p[0].abs() < i && p[1].abs() < i);
                 let got = leaves.iter().any(|b| b.contains(p, 0.0));
                 assert_eq!(got, want, "{p:?}");
@@ -1151,10 +1158,10 @@ mod tests {
     #[test]
     fn an_open_floor_is_slabs() {
         let floor = quad(
-            [0.0, 0.0, 0.0],
-            [0.0, 4.0, 0.0],
-            [4.0, 4.0, 0.0],
-            [4.0, 0.0, 0.0],
+            V3::new(0.0, 0.0, 0.0),
+            V3::new(0.0, 4.0, 0.0),
+            V3::new(4.0, 4.0, 0.0),
+            V3::new(4.0, 0.0, 0.0),
             0,
         );
         let input = MeshInput {
@@ -1169,20 +1176,26 @@ mod tests {
         assert_eq!(built.plan.hulls.len(), 1);
         assert_eq!(built.plan.hulls[0].kind, HullKind::Slab);
         let b = &built.plan.hulls[0].brush;
-        assert!(b.contains([2.0, 2.0, -0.05], 0.0) && !b.contains([2.0, 2.0, 0.05], 0.0));
+        assert!(
+            b.contains(V3::new(2.0, 2.0, -0.05), 0.0) && !b.contains(V3::new(2.0, 2.0, 0.05), 0.0)
+        );
         assert_eq!(built.pieces.len(), 1);
     }
 
     #[test]
     fn texture_planes_give_each_corner_its_coordinates() {
-        let p = [[0.0, 0.0, 0.0], [1.0, 2.0, 0.5], [3.0, -1.0, 2.0]];
+        let p = [
+            V3::new(0.0, 0.0, 0.0),
+            V3::new(1.0, 2.0, 0.5),
+            V3::new(3.0, -1.0, 2.0),
+        ];
         let uv = [[0.1, 0.2], [0.7, -0.3], [1.5, 2.0]];
         let tg = texgen_of(p, uv).unwrap();
         for k in 0..3 {
             let got = tg.at(p[k]);
             assert!((got[0] - uv[k][0]).abs() < 1e-12 && (got[1] - uv[k][1]).abs() < 1e-12);
         }
-        assert!(texgen_of([[0.0; 3], [1.0; 3], [2.0; 3]], uv).is_none());
+        assert!(texgen_of([V3::splat(0.0), V3::splat(1.0), V3::splat(2.0)], uv).is_none());
     }
 
     #[test]
@@ -1198,7 +1211,7 @@ mod tests {
             // Corners on a coarse grid: coplanar, repeated, flat and tiny triangles come often.
             let mut corner = || [0, 1, 2].map(|_| (next() % 5) as f64 * 0.5 - 1.0);
             let mut tri = |m: usize| Tri {
-                p: [corner(), corner(), corner()],
+                p: [V3::from(corner()), V3::from(corner()), V3::from(corner())],
                 uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
                 material: m,
             };
@@ -1211,7 +1224,7 @@ mod tests {
                 name: "soup".into(),
                 tris: (0..n).map(|k| tri(k % 2)).collect(),
             });
-            let mut closed_box = box_tris([0.0; 3], [1.0, 1.0, 1.0]);
+            let mut closed_box = box_tris(V3::splat(0.0), V3::new(1.0, 1.0, 1.0));
             closed_box.truncate(12 - case % 3);
             input.drawn.push(NamedMesh {
                 name: "box".into(),
@@ -1268,7 +1281,11 @@ mod tests {
                 let t = k as f64 / n as f64 * std::f64::consts::PI;
                 let c = [0.5, t.cos(), t.sin()];
                 Tri {
-                    p: if k % 2 == 0 { [a, b, c] } else { [b, a, c] },
+                    p: if k % 2 == 0 {
+                        [V3::from(a), V3::from(b), V3::from(c)]
+                    } else {
+                        [V3::from(b), V3::from(a), V3::from(c)]
+                    },
                     uv: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
                     material: 0,
                 }
@@ -1293,7 +1310,7 @@ mod tests {
         let pts: Vec<V3> = (0..4_095)
             .map(|i| {
                 let t = i as f64 / 2_047.0 - 1.0;
-                [100.0 * t, 100.0 * t * t, 100.0 * t * t * t]
+                V3::new(100.0 * t, 100.0 * t * t, 100.0 * t * t * t)
             })
             .collect();
         let tris: Vec<Tri> = pts
@@ -1329,7 +1346,11 @@ mod tests {
     #[test]
     fn too_many_authored_hulls_are_refused_first() {
         let tetra = vec![Tri {
-            p: [[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            p: [
+                V3::splat(0.0),
+                V3::new(1.0, 0.0, 0.0),
+                V3::new(0.0, 1.0, 0.0),
+            ],
             uv: [[0.0; 2]; 3],
             material: 0,
         }];

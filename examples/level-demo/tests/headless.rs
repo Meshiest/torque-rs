@@ -317,12 +317,22 @@ fn tab_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
 #[test]
 fn the_camera_behind_the_figure_stays_under_an_interior_ceiling_and_in_front_of_its_wall() {
     use torque_interior_builder::mission::{Placement, fragment};
-    use torque_interior_builder::{Brush, Options, TexGen, build};
+    use torque_interior_builder::{Brush, Options, TexGen, V3, build};
     let texgen = |n| TexGen::world(n, 1.0);
     let room = build(
         &[
-            Brush::cuboid([-6.0, -8.0, 2.6], [6.0, 8.0, 2.9], "roof", texgen),
-            Brush::cuboid([-6.0, -5.4, 0.0], [6.0, -5.0, 2.6], "wall", texgen),
+            Brush::cuboid(
+                V3::new(-6.0, -8.0, 2.6),
+                V3::new(6.0, 8.0, 2.9),
+                "roof",
+                texgen,
+            ),
+            Brush::cuboid(
+                V3::new(-6.0, -5.4, 0.0),
+                V3::new(6.0, -5.0, 2.6),
+                "wall",
+                texgen,
+            ),
         ],
         &Options::default(),
     )

@@ -52,10 +52,10 @@ pub struct Placement {
 impl Default for Placement {
     fn default() -> Placement {
         Placement {
-            position: [0.0; 3],
-            axis: [0.0, 0.0, 1.0],
+            position: V3::splat(0.0),
+            axis: V3::new(0.0, 0.0, 1.0),
             angle: 0.0,
-            scale: [1.0; 3],
+            scale: V3::splat(1.0),
         }
     }
 }
@@ -63,20 +63,19 @@ impl Default for Placement {
 impl Placement {
     /// `p` of the interior's space in the mission's.
     pub fn place(&self, p: V3) -> V3 {
-        let s = [0, 1, 2].map(|k| p[k] * self.scale[k]);
-        geom::add(self.position, rotate(s, self.axis, self.angle.to_radians()))
+        self.position + rotate(p * self.scale, self.axis, self.angle.to_radians())
     }
 }
 
 /// `v` turned by `angle` radians about `axis` (Rodrigues).
 fn rotate(v: V3, axis: V3, angle: f64) -> V3 {
-    let Some(k) = geom::normalize(axis) else {
+    let Some(k) = geom::unit(axis) else {
         return v;
     };
     let (s, c) = angle.sin_cos();
-    let kv = geom::cross(k, v);
-    let kd = geom::dot(k, v);
-    [0, 1, 2].map(|i| v[i] * c + kv[i] * s + k[i] * kd * (1.0 - c))
+    let kv = k.cross(v);
+    let kd = k.dot(v);
+    v * c + kv * s + k * kd * (1.0 - c)
 }
 
 /// A number as a mission writes it: six places at most, no trailing zeros.
@@ -132,7 +131,7 @@ impl MissionObject {
                 format!("0 0 1 {}", num(extra))
             } else {
                 // The interior's turn after the object's own about z, as one axis and angle.
-                let (qa, qb) = (quat([0.0, 0.0, 1.0], extra), quat(at.axis, at.angle));
+                let (qa, qb) = (quat(V3::new(0.0, 0.0, 1.0), extra), quat(at.axis, at.angle));
                 let q = quat_mul(qb, qa);
                 let (axis, angle) = axis_angle(q);
                 format!("{} {}", vec3(axis), num(angle))
@@ -144,11 +143,11 @@ impl MissionObject {
                 lines.push(format!("   rotation = \"{}\";", rotation(self.yaw)));
             }
             Shape::Volume(lo, hi) => {
-                let size = [0, 1, 2].map(|k| (hi[k] - lo[k]) * at.scale[k]);
+                let size = (hi - lo) * at.scale;
                 let corner = if self.class.eq_ignore_ascii_case("WaterBlock") {
                     lo
                 } else {
-                    [lo[0], hi[1], lo[2]]
+                    V3::new(lo[0], hi[1], lo[2])
                 };
                 lines.push(format!("   position = \"{}\";", vec3(at.place(corner))));
                 lines.push(format!("   rotation = \"{}\";", rotation(0.0)));
@@ -174,7 +173,7 @@ impl MissionObject {
 }
 
 fn quat(axis: V3, degrees: f64) -> [f64; 4] {
-    let k = geom::normalize(axis).unwrap_or([0.0, 0.0, 1.0]);
+    let k = geom::unit(axis).unwrap_or(V3::new(0.0, 0.0, 1.0));
     let (s, c) = (degrees.to_radians() * 0.5).sin_cos();
     [k[0] * s, k[1] * s, k[2] * s, c]
 }
@@ -191,9 +190,9 @@ fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 fn axis_angle(q: [f64; 4]) -> (V3, f64) {
     let w = q[3].clamp(-1.0, 1.0);
     let angle = 2.0 * w.acos();
-    match geom::normalize([q[0], q[1], q[2]]) {
+    match geom::unit(V3::new(q[0], q[1], q[2])) {
         Some(axis) => (axis, angle.to_degrees()),
-        None => ([0.0, 0.0, 1.0], 0.0),
+        None => (V3::new(0.0, 0.0, 1.0), 0.0),
     }
 }
 
@@ -224,13 +223,13 @@ mod tests {
     #[test]
     fn volumes_take_their_class_box_and_move_with_the_interior() {
         let at = Placement {
-            position: [10.0, 20.0, 1.0],
+            position: V3::new(10.0, 20.0, 1.0),
             ..Placement::default()
         };
         let water = MissionObject {
             class: "WaterBlock".into(),
             name: Some("Pool".into()),
-            shape: Shape::Volume([0.0, 0.0, -2.0], [4.0, 3.0, 0.0]),
+            shape: Shape::Volume(V3::new(0.0, 0.0, -2.0), V3::new(4.0, 3.0, 0.0)),
             yaw: 0.0,
             fields: vec![("liquidType".into(), "OceanWater".into())],
         };
@@ -242,7 +241,7 @@ mod tests {
         let trigger = MissionObject {
             class: "Trigger".into(),
             name: None,
-            shape: Shape::Volume([0.0, 0.0, 0.0], [1.0, 2.0, 3.0]),
+            shape: Shape::Volume(V3::new(0.0, 0.0, 0.0), V3::new(1.0, 2.0, 3.0)),
             yaw: 0.0,
             fields: vec![("dataBlock".into(), "Door\"Trigger".into())],
         };
@@ -255,17 +254,17 @@ mod tests {
     #[test]
     fn a_turned_interior_turns_its_objects() {
         let at = Placement {
-            position: [0.0; 3],
-            axis: [0.0, 0.0, 1.0],
+            position: V3::splat(0.0),
+            axis: V3::new(0.0, 0.0, 1.0),
             angle: 90.0,
-            scale: [2.0; 3],
+            scale: V3::splat(2.0),
         };
-        let p = at.place([1.0, 0.0, 0.0]);
+        let p = at.place(V3::new(1.0, 0.0, 0.0));
         assert!((p[0]).abs() < 1e-12 && (p[1] - 2.0).abs() < 1e-12);
         let spawn = MissionObject {
             class: "SpawnSphere".into(),
             name: None,
-            shape: Shape::Point([1.0, 0.0, 0.0]),
+            shape: Shape::Point(V3::new(1.0, 0.0, 0.0)),
             yaw: 90.0,
             fields: Vec::new(),
         };

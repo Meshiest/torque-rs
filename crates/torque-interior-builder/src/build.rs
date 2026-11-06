@@ -181,7 +181,7 @@ const WELD_CELL: f64 = EPS * 4.0;
 
 impl Weld {
     fn cell(p: V3) -> [i64; 3] {
-        p.map(|v| (v / WELD_CELL).floor() as i64)
+        p.to_array().map(|v| (v / WELD_CELL).floor() as i64)
     }
 
     fn add(&mut self, p: V3) -> V3 {
@@ -191,7 +191,7 @@ impl Weld {
                 for dz in -1..=1 {
                     let k = [c[0] + dx, c[1] + dy, c[2] + dz];
                     for &i in self.cells.get(&k).map_or(&[][..], Vec::as_slice) {
-                        if geom::length(geom::sub(self.points[i], p)) < EPS {
+                        if (self.points[i] - p).length() < EPS {
                             return self.points[i];
                         }
                     }
@@ -214,8 +214,8 @@ impl Weld {
         let lo = a[0].min(b[0]) - EPS;
         let hi = a[0].max(b[0]) + EPS;
         let start = self.by_x.partition_point(|e| e.0 < lo);
-        let d = geom::sub(b, a);
-        let len2 = geom::dot(d, d);
+        let d = b - a;
+        let len2 = d.dot(d);
         let mut out: Vec<(f64, V3)> = Vec::new();
         for &(x, i) in &self.by_x[start..] {
             if x > hi {
@@ -223,13 +223,13 @@ impl Weld {
             }
             *work += 1;
             let p = self.points[i];
-            let t = geom::dot(geom::sub(p, a), d) / len2;
+            let t = (p - a).dot(d) / len2;
             if t <= 0.0 || t >= 1.0 {
                 continue;
             }
-            let foot = geom::add(a, geom::scale(d, t));
-            let off = geom::length(geom::sub(p, foot));
-            let ends = geom::length(geom::sub(p, a)).min(geom::length(geom::sub(p, b)));
+            let foot = a + d * t;
+            let off = (p - foot).length();
+            let ends = (p - a).length().min((p - b).length());
             if off < EPS && ends > EPS {
                 out.push((t, p));
             }
@@ -289,9 +289,9 @@ fn fit_lightmap(
     let lo = poly.iter().map(|p| p[k]).fold(f64::INFINITY, f64::min);
     let hi = poly.iter().map(|p| p[k]).fold(f64::NEG_INFINITY, f64::max);
     let mid = ((lo + hi) * 0.5 / texel).round() * texel;
-    let mut normal = [0.0; 3];
+    let mut normal = V3::ZERO;
     normal[k] = 1.0;
-    let Some(cut) = Plane::new(normal, [mid, mid, mid]) else {
+    let Some(cut) = Plane::new(normal, V3::splat(mid)) else {
         *left -= 1;
         out.push(poly);
         return Ok(());
@@ -308,12 +308,12 @@ fn fit_lightmap(
 
 /// Whether `b` is a corner between `a` and `c` (not on the line through them).
 fn is_corner(a: V3, b: V3, c: V3) -> bool {
-    let d = geom::sub(c, a);
-    let l = geom::length(d);
+    let d = c - a;
+    let l = d.length();
     if l < EPS {
         return true;
     }
-    geom::length(geom::cross(geom::sub(b, a), d)) / l > EPS
+    (b - a).cross(d).length() / l > EPS
 }
 
 /// The strip order of a convex polygon (`collisionFanFromSurface` turns it back): `q0 q1 q(n-1) q2 q(n-2) ...`.
@@ -365,7 +365,7 @@ impl Tables {
     fn plane(&mut self, p: &Plane) -> Result<u16, BuildError> {
         let key = |p: &Plane| {
             (
-                p.n.map(|v| (v * 1e6).round() as i64),
+                p.n.to_array().map(|v| (v * 1e6).round() as i64),
                 (p.d * 1e4).round() as i64,
             )
         };
@@ -378,7 +378,7 @@ impl Tables {
         cap("planes", self.planes.len() + 1, MAX_PLANES)?;
         let k = self.planes.len() as u16;
         self.planes.push(dif::Plane {
-            normal: p.n.map(|v| v as f32),
+            normal: p.n.as_vec3().to_array(),
             d: p.d as f32,
         });
         self.plane_keys.insert(key(p), k);
@@ -386,7 +386,7 @@ impl Tables {
     }
 
     fn point(&mut self, p: V3) -> u32 {
-        let f = p.map(|v| v as f32);
+        let f = p.as_vec3().to_array();
         let key = f.map(f32::to_bits);
         *self.point_keys.entry(key).or_insert_with(|| {
             self.points.push(f);
@@ -532,7 +532,7 @@ pub fn build_polygons(
         if is_null_material(&p.material) || p.points.len() < 3 {
             continue;
         }
-        if p.points.iter().flatten().any(|v| !v.is_finite()) {
+        if p.points.iter().any(|v| !v.is_finite()) {
             return Err(BuildError::Brush {
                 index: k,
                 error: BrushError::NotFinite,
@@ -755,10 +755,7 @@ fn assemble(
             let mut pts = Vec::with_capacity(poly.len());
             for &v in poly {
                 let v = weld.add(v);
-                let at = match corners
-                    .iter()
-                    .position(|&c| geom::length(geom::sub(c, v)) < EPS)
-                {
+                let at = match corners.iter().position(|&c| (c - v).length() < EPS) {
                     Some(i) => i,
                     None => {
                         corners.push(v);
@@ -846,7 +843,7 @@ fn assemble(
     // A tree of one leaf (no hull at all) as one node with that leaf on both sides: a walk always starts at node 0.
     if bsp_nodes.is_empty() {
         let leaf = tree.root.map_or(BspChild::Empty(0), child);
-        let up = Plane::new([0.0, 0.0, 1.0], [0.0; 3]).ok_or(BuildError::NoBrushes)?;
+        let up = Plane::new(V3::new(0.0, 0.0, 1.0), V3::splat(0.0)).ok_or(BuildError::NoBrushes)?;
         bsp_nodes.push(BspNode {
             plane: t.plane(&up)?,
             front: leaf,
@@ -992,7 +989,7 @@ mod tests {
     #[test]
     fn an_enormous_brush_fails_before_its_lightmap_cuts() {
         // 200,000 units a side at half a unit a texel: about 2.5 million rectangles a face, refused before one is cut.
-        let b = Brush::cuboid([-1.0e5; 3], [1.0e5; 3], "m", grid);
+        let b = Brush::cuboid(V3::splat(-1.0e5), V3::splat(1.0e5), "m", grid);
         let started = web_time::Instant::now();
         let e = build(&[b], &Options::default()).unwrap_err();
         assert!(
@@ -1007,7 +1004,7 @@ mod tests {
         );
         assert!(started.elapsed().as_secs() < 5);
         // One just inside the cap builds.
-        let b = Brush::cuboid([0.0; 3], [100.0, 100.0, 1.0], "m", grid);
+        let b = Brush::cuboid(V3::splat(0.0), V3::new(100.0, 100.0, 1.0), "m", grid);
         assert!(build(&[b], &Options::default()).is_ok());
     }
 
@@ -1016,7 +1013,7 @@ mod tests {
         let brushes: Vec<Brush> = (0..=MAX_BRUSHES)
             .map(|i| {
                 let x = i as f64 * 2.0;
-                Brush::cuboid([x, 0.0, 0.0], [x + 1.0, 1.0, 1.0], "m", grid)
+                Brush::cuboid(V3::new(x, 0.0, 0.0), V3::new(x + 1.0, 1.0, 1.0), "m", grid)
             })
             .collect();
         let e = build(&brushes, &Options::default()).unwrap_err();

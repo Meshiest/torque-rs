@@ -1250,7 +1250,7 @@ fn only_trunks_reach_down_to_a_buggy_and_the_tall_conifers_tower() {
         let mut tallest = 0.0f64;
         for seed in 0..24u64 {
             for size in [0.6, 0.85, 1.0, 1.15] {
-                let brushes = tree(kind, [0.0, 0.0, 0.0], size, seed);
+                let brushes = tree(kind, torque_interior_builder::V3::ZERO, size, seed);
                 let mut trunks = 0;
                 for b in &brushes {
                     let (lo, hi) = b.bounds().unwrap();

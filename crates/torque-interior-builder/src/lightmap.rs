@@ -123,7 +123,11 @@ mod tests {
 
     #[test]
     fn a_rectangle_covers_its_polygon_with_a_border() {
-        let poly = [[0.2, 0.0, 0.0], [3.9, 0.0, 0.0], [3.9, 2.1, 0.0]];
+        let poly = [
+            V3::new(0.2, 0.0, 0.0),
+            V3::new(3.9, 0.0, 0.0),
+            V3::new(3.9, 2.1, 0.0),
+        ];
         let r = rect(&poly, (0, 1), 0.5);
         assert_eq!(r.origin, [-1, -1]);
         assert_eq!(r.size, [10, 7]);

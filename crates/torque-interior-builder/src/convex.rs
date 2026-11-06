@@ -49,13 +49,13 @@ fn tri(points: &[V3], v: [usize; 3]) -> Option<Tri> {
     let [a, b, c] = v.map(|i| points[i]);
     Some(Tri {
         v,
-        plane: Plane::new(geom::cross(geom::sub(b, a), geom::sub(c, a)), a)?,
+        plane: Plane::new((b - a).cross(c - a), a)?,
     })
 }
 
 /// The points with ones within [`EPS`] of an earlier one left out.
 fn distinct(points: &[V3]) -> Vec<V3> {
-    let cell = |p: V3| p.map(|v| (v / (EPS * 4.0)).floor() as i64);
+    let cell = |p: V3| p.to_array().map(|v| (v / (EPS * 4.0)).floor() as i64);
     let mut cells: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
     let mut out: Vec<V3> = Vec::new();
     'next: for &p in points {
@@ -67,7 +67,7 @@ fn distinct(points: &[V3]) -> Vec<V3> {
                         .get(&[c[0] + dx, c[1] + dy, c[2] + dz])
                         .map_or(&[][..], Vec::as_slice)
                     {
-                        if geom::length(geom::sub(out[i], p)) < EPS {
+                        if (out[i] - p).length() < EPS {
                             continue 'next;
                         }
                     }
@@ -83,7 +83,7 @@ fn distinct(points: &[V3]) -> Vec<V3> {
 /// The planes of the faces of the convex hull of `points` (coplanar faces once), each facing out. Each point charges `work`
 /// the live triangles it is tested against and the visible ones it removes; merging the faces charges the faces tested.
 pub fn hull_planes(points: &[V3], work: &mut Budget) -> Result<Vec<Plane>, HullFail> {
-    if points.iter().flatten().any(|v| !v.is_finite()) {
+    if points.iter().any(|v| !v.is_finite()) {
         return Err(HullFail::NotFinite);
     }
     if !work.charge(points.len() as u64) {
@@ -103,22 +103,21 @@ pub fn hull_planes(points: &[V3], work: &mut Budget) -> Result<Vec<Plane>, HullF
             .unwrap_or(0)
     };
     let i0 = far(&|p| -p[0]);
-    let i1 = far(&|p| geom::length(geom::sub(p, pts[i0])));
-    let d01 = geom::sub(pts[i1], pts[i0]);
+    let i1 = far(&|p| (p - pts[i0]).length());
+    let d01 = pts[i1] - pts[i0];
     let line = |p: V3| {
-        let l = geom::length(d01);
+        let l = d01.length();
         if l < EPS {
             0.0
         } else {
-            geom::length(geom::cross(geom::sub(p, pts[i0]), d01)) / l
+            (p - pts[i0]).cross(d01).length() / l
         }
     };
     let i2 = far(&line);
     if line(pts[i2]) < EPS {
         return Err(HullFail::Flat);
     }
-    let base =
-        Plane::new(geom::cross(d01, geom::sub(pts[i2], pts[i0])), pts[i0]).ok_or(HullFail::Flat)?;
+    let base = Plane::new(d01.cross(pts[i2] - pts[i0]), pts[i0]).ok_or(HullFail::Flat)?;
     let i3 = far(&|p| base.dist(p).abs());
     if base.dist(pts[i3]).abs() < EPS {
         return Err(HullFail::Flat);
@@ -222,13 +221,12 @@ pub fn hull_planes(points: &[V3], work: &mut Budget) -> Result<Vec<Plane>, HullF
             return Err(HullFail::Work);
         }
         let [a, b, c] = t.v.map(|i| pts[i]);
-        let area = geom::cross(geom::sub(b, a), geom::sub(c, a));
+        let area = (b - a).cross(c - a);
         let on = |q: &(Plane, V3)| {
-            geom::dot(q.0.n, t.plane.n) > 0.9
-                && t.v.iter().all(|&i| q.0.dist(pts[i]).abs() < ON_FACE)
+            q.0.n.dot(t.plane.n) > 0.9 && t.v.iter().all(|&i| q.0.dist(pts[i]).abs() < ON_FACE)
         };
         match faces.iter_mut().find(|q| on(q)) {
-            Some(f) => f.1 = geom::add(f.1, area),
+            Some(f) => f.1 += area,
             None => {
                 if faces.len() == MAX_FACES {
                     return Err(HullFail::Faces(MAX_FACES + 1));
@@ -242,16 +240,14 @@ pub fn hull_planes(points: &[V3], work: &mut Budget) -> Result<Vec<Plane>, HullF
     }
     let mut planes: Vec<Plane> = Vec::new();
     for (q, sum) in faces {
-        let n = geom::normalize(sum).unwrap_or(q.n);
+        let n = geom::unit(sum).unwrap_or(q.n);
         let far = pts
             .iter()
-            .map(|&p| geom::dot(n, p))
+            .map(|&p| n.dot(p))
             .fold(f64::NEG_INFINITY, f64::max);
         let fitted = Plane { n, d: -far };
         // A face the rounding of nearly coplanar points made, whose fit lies off its own triangles, is not one of the hull's.
-        if !planes.iter().any(|p| p.same(&fitted))
-            && q.n.iter().zip(&n).all(|(x, y)| (x - y).abs() < 1e-3)
-        {
+        if !planes.iter().any(|p| p.same(&fitted)) && (q.n - n).abs().cmplt(V3::splat(1e-3)).all() {
             planes.push(fitted);
         }
     }
@@ -267,13 +263,17 @@ mod tests {
     fn a_cube_of_points_gives_six_planes() {
         let mut pts = Vec::new();
         for i in 0..27 {
-            pts.push([(i % 3) as f64, ((i / 3) % 3) as f64, (i / 9) as f64]);
+            pts.push(V3::new(
+                (i % 3) as f64,
+                ((i / 3) % 3) as f64,
+                (i / 9) as f64,
+            ));
         }
         let planes = hull_planes(&pts, &mut Budget::new(u64::MAX)).unwrap();
         assert_eq!(planes.len(), 6);
         let b = Brush::from_planes(&planes, "m", |n| TexGen::world(n, 1.0));
         assert_eq!(b.corners().unwrap().len(), 8);
-        assert!(b.contains([1.0, 1.0, 1.0], 0.5));
+        assert!(b.contains(V3::new(1.0, 1.0, 1.0), 0.5));
     }
 
     #[test]
@@ -285,7 +285,9 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
         };
-        let pts: Vec<V3> = (0..400).map(|_| [next(), next(), next() * 0.5]).collect();
+        let pts: Vec<V3> = (0..400)
+            .map(|_| V3::new(next(), next(), next() * 0.5))
+            .collect();
         let planes = hull_planes(&pts, &mut Budget::new(u64::MAX)).unwrap();
         assert!(planes.len() > 10);
         for p in &pts {
@@ -299,24 +301,31 @@ mod tests {
 
     #[test]
     fn flat_and_hostile_sets_are_refused() {
-        let flat: Vec<V3> = (0..10).map(|i| [i as f64, (i * i) as f64, 0.0]).collect();
+        let flat: Vec<V3> = (0..10)
+            .map(|i| V3::new(i as f64, (i * i) as f64, 0.0))
+            .collect();
         assert_eq!(
             hull_planes(&flat, &mut Budget::new(u64::MAX)),
             Err(HullFail::Flat)
         );
         assert_eq!(
-            hull_planes(&[[0.0; 3]; 3], &mut Budget::new(u64::MAX)),
+            hull_planes(&[V3::ZERO; 3], &mut Budget::new(u64::MAX)),
             Err(HullFail::Flat)
         );
         assert_eq!(
             hull_planes(
-                &[[f64::NAN, 0.0, 0.0], [1.0; 3], [2.0; 3], [3.0, 1.0, 0.0]],
+                &[
+                    V3::new(f64::NAN, 0.0, 0.0),
+                    V3::splat(1.0),
+                    V3::splat(2.0),
+                    V3::new(3.0, 1.0, 0.0)
+                ],
                 &mut Budget::new(u64::MAX)
             ),
             Err(HullFail::NotFinite)
         );
         let many: Vec<V3> = (0..MAX_POINTS + 1)
-            .map(|i| [i as f64, (i % 7) as f64, (i % 13) as f64])
+            .map(|i| V3::new(i as f64, (i % 7) as f64, (i % 13) as f64))
             .collect();
         assert!(matches!(
             hull_planes(&many, &mut Budget::new(u64::MAX)),
@@ -326,7 +335,7 @@ mod tests {
         let curve: Vec<V3> = (0..4_095)
             .map(|i| {
                 let t = i as f64 / 2_047.0 - 1.0;
-                [100.0 * t, 100.0 * t * t, 100.0 * t * t * t]
+                V3::new(100.0 * t, 100.0 * t * t, 100.0 * t * t * t)
             })
             .collect();
         let start = web_time::Instant::now();
@@ -345,7 +354,7 @@ mod tests {
             .map(|i| {
                 let r = 10.0 + 90.0 * i as f64 / n as f64;
                 let a = i as f64 * 2.399_963_229_728_653;
-                [r * a.cos(), r * a.sin(), r * r / 100.0]
+                V3::new(r * a.cos(), r * a.sin(), r * r / 100.0)
             })
             .collect();
         let mut work = Budget::new(100_000);

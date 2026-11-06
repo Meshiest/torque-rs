@@ -81,7 +81,7 @@ impl Brush {
         let mut faces = Vec::with_capacity(6);
         for k in 0..3 {
             for (sign, at) in [(-1.0, min), (1.0, max)] {
-                let mut n = [0.0; 3];
+                let mut n = V3::ZERO;
                 n[k] = sign;
                 if let Some(plane) = Plane::new(n, at) {
                     faces.push(Face {
@@ -119,7 +119,7 @@ impl Brush {
     pub fn corners(&self) -> Result<Vec<V3>, BrushError> {
         let mut out: Vec<V3> = Vec::new();
         for p in self.polygons()?.into_iter().flatten() {
-            if !out.iter().any(|&q| geom::length(geom::sub(p, q)) < EPS) {
+            if !out.iter().any(|&q| (p - q).length() < EPS) {
                 out.push(p);
             }
         }
@@ -140,17 +140,14 @@ impl Brush {
 /// The polygon of each plane of a convex solid bounded by `planes` (see [`Brush::polygons`]).
 pub fn polygons_of(planes: impl Iterator<Item = Plane>) -> Result<Vec<Vec<V3>>, BrushError> {
     let all: Vec<Plane> = planes.collect();
-    if all
-        .iter()
-        .any(|p| !(p.n.iter().all(|v| v.is_finite()) && p.d.is_finite()))
-    {
+    if all.iter().any(|p| !(p.n.is_finite() && p.d.is_finite())) {
         return Err(BrushError::NotFinite);
     }
     let first = clip_all(&all, MAX_EXTENT)?;
     if first
         .iter()
         .flatten()
-        .any(|v| v.iter().any(|c| c.abs() > MAX_EXTENT * 0.5))
+        .any(|v| v.abs().cmpgt(V3::splat(MAX_EXTENT * 0.5)).any())
     {
         return Err(BrushError::Open);
     }
@@ -158,7 +155,7 @@ pub fn polygons_of(planes: impl Iterator<Item = Plane>) -> Result<Vec<Vec<V3>>, 
     let reach = first
         .iter()
         .flatten()
-        .flat_map(|v| v.iter().map(|c| c.abs()))
+        .flat_map(|v| v.abs().to_array())
         .fold(0.0f64, f64::max);
     clip_all(&all, reach * 4.0 + 1.0)
 }
@@ -206,7 +203,7 @@ mod tests {
 
     #[test]
     fn a_cuboid_has_six_square_faces_and_eight_corners() {
-        let b = Brush::cuboid([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], "m", grid);
+        let b = Brush::cuboid(V3::new(0.0, 0.0, 0.0), V3::new(1.0, 2.0, 3.0), "m", grid);
         let polys = b.polygons().unwrap();
         assert_eq!(polys.len(), 6);
         assert!(polys.iter().all(|p| p.len() == 4));
@@ -215,22 +212,22 @@ mod tests {
         assert!((total - 2.0 * (2.0 + 3.0 + 6.0)).abs() < 1e-9);
         // Every face clockwise seen from outside.
         for (f, p) in b.faces.iter().zip(&polys) {
-            assert!(geom::dot(geom::area_vector(p), f.plane.n) < 0.0);
+            assert!(geom::area_vector(p).dot(f.plane.n) < 0.0);
         }
-        assert!(b.contains([0.5, 1.0, 1.5], 0.0));
-        assert!(!b.contains([1.5, 1.0, 1.5], 0.0));
+        assert!(b.contains(V3::new(0.5, 1.0, 1.5), 0.0));
+        assert!(!b.contains(V3::new(1.5, 1.0, 1.5), 0.0));
     }
 
     #[test]
     fn open_or_flat_brushes_are_refused() {
-        let up = Plane::new([0.0, 0.0, 1.0], [0.0; 3]).unwrap();
-        let down = Plane::new([0.0, 0.0, -1.0], [0.0, 0.0, -1.0]).unwrap();
+        let up = Plane::new(V3::new(0.0, 0.0, 1.0), V3::splat(0.0)).unwrap();
+        let down = Plane::new(V3::new(0.0, 0.0, -1.0), V3::new(0.0, 0.0, -1.0)).unwrap();
         assert_eq!(
             Brush::from_planes(&[up, down], "m", grid).polygons(),
             Err(BrushError::NoVolume)
         );
-        let side = Plane::new([1.0, 0.0, 0.0], [0.0; 3]).unwrap();
-        let other = Plane::new([0.0, 1.0, 0.0], [0.0; 3]).unwrap();
+        let side = Plane::new(V3::new(1.0, 0.0, 0.0), V3::splat(0.0)).unwrap();
+        let other = Plane::new(V3::new(0.0, 1.0, 0.0), V3::splat(0.0)).unwrap();
         assert_eq!(
             Brush::from_planes(&[up, down, side, other], "m", grid).polygons(),
             Err(BrushError::Open)
@@ -239,11 +236,11 @@ mod tests {
 
     #[test]
     fn a_redundant_plane_holds_no_polygon() {
-        let mut b = Brush::cuboid([0.0; 3], [1.0; 3], "m", grid);
+        let mut b = Brush::cuboid(V3::splat(0.0), V3::splat(1.0), "m", grid);
         b.faces.push(Face {
-            plane: Plane::new([1.0, 0.0, 0.0], [5.0, 0.0, 0.0]).unwrap(),
+            plane: Plane::new(V3::new(1.0, 0.0, 0.0), V3::new(5.0, 0.0, 0.0)).unwrap(),
             material: "m".into(),
-            texgen: grid([1.0, 0.0, 0.0]),
+            texgen: grid(V3::new(1.0, 0.0, 0.0)),
         });
         b.faces.push(b.faces[0].clone());
         let polys = b.polygons().unwrap();

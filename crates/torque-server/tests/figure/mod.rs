@@ -109,11 +109,21 @@ pub fn plain() -> Vec<u8> {
 
 /// An interior: a wall 4 wide (x -2 to 2), 0.5 thick (y -0.25 to 0.25) and 3 high, standing on a floor slab.
 pub fn wall() -> Vec<u8> {
-    use torque_interior_builder::{Brush, Options, TexGen, build};
+    use torque_interior_builder::{Brush, Options, TexGen, V3, build};
     let grid = |n| TexGen::world(n, 1.0);
     let brushes = [
-        Brush::cuboid([-2.0, -0.25, 0.0], [2.0, 0.25, 3.0], "wall", grid),
-        Brush::cuboid([-4.0, -4.0, -1.0], [4.0, 4.0, 0.0], "floor", grid),
+        Brush::cuboid(
+            V3::new(-2.0, -0.25, 0.0),
+            V3::new(2.0, 0.25, 3.0),
+            "wall",
+            grid,
+        ),
+        Brush::cuboid(
+            V3::new(-4.0, -4.0, -1.0),
+            V3::new(4.0, 4.0, 0.0),
+            "floor",
+            grid,
+        ),
     ];
     build(&brushes, &Options::default())
         .unwrap()

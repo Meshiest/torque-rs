@@ -72,11 +72,11 @@ impl Gen {
             let g = &self.meshes[m];
             let (s, c) = g.yaw.to_radians().sin_cos();
             let f = |p: V3| {
-                [
+                V3::new(
                     p[0] * c - p[1] * s + g.at[0],
                     p[0] * s + p[1] * c + g.at[1],
                     p[2] + g.at[2],
-                ]
+                )
             };
             for t in &mut tris {
                 t.0 = t.0.map(f);
@@ -89,17 +89,17 @@ impl Gen {
 
 /// A texture map for a face: random axes in its plane, scale and offset.
 fn face_map(r: &mut Rng, n: V3) -> impl Fn(V3) -> [f64; 2] + use<> {
-    let a = geom::normalize(geom::cross(n, r.unit())).unwrap_or([1.0, 0.0, 0.0]);
-    let b = geom::cross(n, a);
+    let a = geom::unit(n.cross(r.unit())).unwrap_or(V3::new(1.0, 0.0, 0.0));
+    let b = n.cross(a);
     let (sa, sb) = (r.range(0.2, 1.5), r.range(0.2, 1.5));
     let (oa, ob) = (r.range(-1.0, 1.0), r.range(-1.0, 1.0));
-    move |p: V3| [geom::dot(p, a) * sa + oa, geom::dot(p, b) * sb + ob]
+    move |p: V3| [p.dot(a) * sa + oa, p.dot(b) * sb + ob]
 }
 
 /// A convex polygon (clockwise from the front) as a fan of triangles: one map for it, or random coordinates a corner when
 /// `scatter`.
 fn fan(r: &mut Rng, poly: &[V3], material: usize, scatter: bool) -> Vec<T> {
-    let n = geom::normalize(geom::scale(geom::area_vector(poly), -1.0)).unwrap_or([0.0, 0.0, 1.0]);
+    let n = geom::unit(-geom::area_vector(poly)).unwrap_or(V3::Z);
     let map = face_map(r, n);
     let mut out = Vec::new();
     for k in 1..poly.len() - 1 {
@@ -135,7 +135,7 @@ fn rock(r: &mut Rng, c: V3, radius: f64) -> Brush {
         let planes: Vec<Plane> = (0..10 + r.below(10))
             .filter_map(|_| {
                 let n = r.unit();
-                Plane::new(n, geom::add(c, geom::scale(n, radius)))
+                Plane::new(n, c + n * radius)
             })
             .collect();
         let b = Brush::from_planes(&planes, "", |n| TexGen::world(n, 1.0));
@@ -155,24 +155,24 @@ fn prism(
 ) -> Vec<T> {
     let mut out = Vec::new();
     let n = outline.len();
-    let top = face_map(r, [0.0, 0.0, 1.0]);
-    let bottom = face_map(r, [0.0, 0.0, -1.0]);
+    let top = face_map(r, V3::new(0.0, 0.0, 1.0));
+    let bottom = face_map(r, V3::new(0.0, 0.0, -1.0));
     // The outline runs counter-clockwise seen from above.
     for i in 0..n {
         let (a, b) = (outline[i], outline[(i + 1) % n]);
-        let c = [center[0], center[1], z.1];
-        let pa = [a[0], a[1], z.1];
-        let pb = [b[0], b[1], z.1];
+        let c = V3::new(center[0], center[1], z.1);
+        let pa = V3::new(a[0], a[1], z.1);
+        let pb = V3::new(b[0], b[1], z.1);
         out.push(([c, pb, pa], [c, pb, pa].map(&top), material));
-        let c = [center[0], center[1], z.0];
-        let pa = [a[0], a[1], z.0];
-        let pb = [b[0], b[1], z.0];
+        let c = V3::new(center[0], center[1], z.0);
+        let pa = V3::new(a[0], a[1], z.0);
+        let pb = V3::new(b[0], b[1], z.0);
         out.push(([c, pa, pb], [c, pa, pb].map(&bottom), material));
         let side = [
-            [a[0], a[1], z.0],
-            [a[0], a[1], z.1],
-            [b[0], b[1], z.1],
-            [b[0], b[1], z.0],
+            V3::new(a[0], a[1], z.0),
+            V3::new(a[0], a[1], z.1),
+            V3::new(b[0], b[1], z.1),
+            V3::new(b[0], b[1], z.0),
         ];
         out.extend(fan(r, &side, material, false));
     }
@@ -193,7 +193,7 @@ fn star(points: usize, inner: f64, outer: f64, c: [f64; 2]) -> Vec<[f64; 2]> {
 fn ring(r: &mut Rng, c: V3, o: f64, i: f64, h: f64, material: usize) -> Vec<T> {
     let outer = [[-o, -o], [o, -o], [o, o], [-o, o]];
     let hole = [[-i, -i], [i, -i], [i, i], [-i, i]];
-    let p = |q: [f64; 2], z: f64| [c[0] + q[0], c[1] + q[1], c[2] + z];
+    let p = |q: [f64; 2], z: f64| V3::new(c[0] + q[0], c[1] + q[1], c[2] + z);
     let mut out = Vec::new();
     for k in 0..4 {
         let (a, b) = (outer[k], outer[(k + 1) % 4]);
@@ -225,11 +225,11 @@ fn terrain(
         *v = r.range(0.0, rise);
     }
     let p = |i: usize, j: usize| {
-        [
+        V3::new(
             origin[0] + i as f64 * step,
             origin[1] + j as f64 * step,
             origin[2] + h[j * (n + 1) + i],
-        ]
+        )
     };
     let uv = |q: V3| [q[0] * 0.25, -q[1] * 0.25];
     let mut out = Vec::with_capacity(n * m * 2);
@@ -262,8 +262,8 @@ fn generate(seed: u64) -> (Gen, usize) {
     }
     let mut volumes = 0;
     if seed == BIG {
-        let tris = terrain(&mut r, [-95.0, -95.0, 0.0], 317, 316, 0.6, 3.0, 0);
-        g.mesh("ground", tris, [0.0; 3], 0.0);
+        let tris = terrain(&mut r, V3::new(-95.0, -95.0, 0.0), 317, 316, 0.6, 3.0, 0);
+        g.mesh("ground", tris, V3::splat(0.0), 0.0);
         return (g, 0);
     }
     match seed % 5 {
@@ -271,18 +271,18 @@ fn generate(seed: u64) -> (Gen, usize) {
             for k in 0..3 + r.below(3) {
                 let lo = [r.range(-12.0, 8.0), r.range(-12.0, 8.0), r.range(0.0, 3.0)];
                 let hi = [0, 1, 2].map(|i| lo[i] + r.range(1.0, 5.0));
-                let b = cuboid(lo, hi);
+                let b = cuboid(V3::from(lo), V3::from(hi));
                 let m = r.below(3);
                 let scatter = k == 1;
                 let tris = brush_tris(&mut r, &b, |_| m, scatter);
                 let yaw = if k % 2 == 0 { r.range(0.0, 90.0) } else { 0.0 };
-                g.mesh(&format!("box{k}"), tris, [0.0; 3], yaw);
+                g.mesh(&format!("box{k}"), tris, V3::splat(0.0), yaw);
             }
-            let tris = ring(&mut r, [0.0, 0.0, 0.0], 3.0, 1.2, 1.5, 1);
+            let tris = ring(&mut r, V3::new(0.0, 0.0, 0.0), 3.0, 1.2, 1.5, 1);
             g.mesh(
                 "ring",
                 tris,
-                [r.range(-5.0, 5.0), 14.0, 0.0],
+                V3::new(r.range(-5.0, 5.0), 14.0, 0.0),
                 r.range(0.0, 45.0),
             );
             let tris = prism(
@@ -292,42 +292,42 @@ fn generate(seed: u64) -> (Gen, usize) {
                 (0.0, 2.0),
                 2,
             );
-            let parent = g.mesh("star_base", Vec::new(), [-14.0, 0.0, 0.0], 30.0);
-            let child = g.mesh("star", tris, [0.0, 2.0, 0.5], 15.0);
+            let parent = g.mesh("star_base", Vec::new(), V3::new(-14.0, 0.0, 0.0), 30.0);
+            let child = g.mesh("star", tris, V3::new(0.0, 2.0, 0.5), 15.0);
             g.meshes[child].parent = Some(parent);
-            let b = cuboid([10.0, -14.0, 0.0], [13.0, -11.0, 2.0]);
+            let b = cuboid(V3::new(10.0, -14.0, 0.0), V3::new(13.0, -11.0, 2.0));
             let tris = brush_tris(&mut r, &b, |f| if f == 5 { 3 } else { 0 }, false);
-            g.mesh("crate", tris, [0.0; 3], 0.0);
+            g.mesh("crate", tris, V3::splat(0.0), 0.0);
         }
         1 => {
-            let tris = terrain(&mut r, [-15.0, -15.0, 0.0], 24, 20, 1.25, 1.5, 0);
-            g.mesh("ground", tris, [0.0; 3], 0.0);
+            let tris = terrain(&mut r, V3::new(-15.0, -15.0, 0.0), 24, 20, 1.25, 1.5, 0);
+            g.mesh("ground", tris, V3::splat(0.0), 0.0);
             for k in 0..3 {
                 let x = -10.0 + k as f64 * 8.0;
                 let y = r.range(-8.0, 8.0);
                 let tris = quad(
                     &mut r,
                     [
-                        [x, y, 2.0],
-                        [x, y, 5.0],
-                        [x + 4.0, y + 1.0, 5.0],
-                        [x + 4.0, y + 1.0, 2.0],
+                        V3::new(x, y, 2.0),
+                        V3::new(x, y, 5.0),
+                        V3::new(x + 4.0, y + 1.0, 5.0),
+                        V3::new(x + 4.0, y + 1.0, 2.0),
                     ],
                     1,
                 );
-                g.mesh(&format!("wall{k}"), tris, [0.0; 3], 0.0);
+                g.mesh(&format!("wall{k}"), tris, V3::splat(0.0), 0.0);
             }
-            let b = cuboid([5.0, 5.0, 2.0], [9.0, 8.0, 4.0]);
+            let b = cuboid(V3::new(5.0, 5.0, 2.0), V3::new(9.0, 8.0, 4.0));
             // No top: an open box.
             let tris = brush_tris(&mut r, &b, |_| 2, false);
             let up = tris
                 .into_iter()
                 .filter(|t| t.0.iter().any(|p| p[2] < 3.9))
                 .collect();
-            g.mesh("tub", up, [0.0; 3], 20.0);
+            g.mesh("tub", up, V3::splat(0.0), 20.0);
         }
         2 => {
-            let b = cuboid([-6.0, -6.0, 0.0], [6.0, 6.0, 1.0]);
+            let b = cuboid(V3::new(-6.0, -6.0, 0.0), V3::new(6.0, 6.0, 1.0));
             let mut tris = brush_tris(&mut r, &b, |_| 0, true);
             // A finer top: the slab's top cut into a grid of quads with scattered coordinates.
             tris.retain(|t| t.0.iter().any(|p| p[2] < 0.99));
@@ -337,29 +337,29 @@ fn generate(seed: u64) -> (Gen, usize) {
                     tris.extend(fan(
                         &mut r,
                         &[
-                            [x, y, 1.0],
-                            [x, y + 2.0, 1.0],
-                            [x + 2.0, y + 2.0, 1.0],
-                            [x + 2.0, y, 1.0],
+                            V3::new(x, y, 1.0),
+                            V3::new(x, y + 2.0, 1.0),
+                            V3::new(x + 2.0, y + 2.0, 1.0),
+                            V3::new(x + 2.0, y, 1.0),
                         ],
                         1,
                         (i + j) % 3 == 0,
                     ));
                 }
             }
-            g.mesh("platform", tris, [0.0; 3], 10.0);
-            let b = cuboid([-6.0, -6.0, 0.0], [6.0, 6.0, 1.0]);
+            g.mesh("platform", tris, V3::splat(0.0), 10.0);
+            let b = cuboid(V3::new(-6.0, -6.0, 0.0), V3::new(6.0, 6.0, 1.0));
             let hull = brush_tris(&mut r, &b, |_| 0, false);
-            g.mesh("col_platform", hull, [0.0; 3], 10.0);
-            let rk = rock(&mut r, [9.0, 3.0, 2.0], 1.8);
+            g.mesh("col_platform", hull, V3::splat(0.0), 10.0);
+            let rk = rock(&mut r, V3::new(9.0, 3.0, 2.0), 1.8);
             let drawn = brush_tris(&mut r, &rk, |_| 2, true);
-            g.mesh("boulder", drawn, [0.0; 3], 0.0);
+            g.mesh("boulder", drawn, V3::splat(0.0), 0.0);
             let hull = brush_tris(&mut r, &rk, |_| 0, false);
-            g.mesh("hull_boulder", hull, [0.0; 3], 0.0);
-            let b = cuboid([-2.0, 9.0, 0.0], [2.0, 10.0, 3.0]);
+            g.mesh("hull_boulder", hull, V3::splat(0.0), 0.0);
+            let b = cuboid(V3::new(-2.0, 9.0, 0.0), V3::new(2.0, 10.0, 3.0));
             let wall = brush_tris(&mut r, &b, |_| 1, false);
-            g.mesh("wall", wall.clone(), [0.0; 3], 0.0);
-            g.mesh("Col-1", wall, [0.0; 3], 0.0);
+            g.mesh("wall", wall.clone(), V3::splat(0.0), 0.0);
+            g.mesh("Col-1", wall, V3::splat(0.0), 0.0);
         }
         3 => {
             for k in 0..3 {
@@ -369,42 +369,42 @@ fn generate(seed: u64) -> (Gen, usize) {
                     r.range(1.0, 4.0),
                 ];
                 let radius = r.range(0.8, 2.5);
-                let rk = rock(&mut r, c, radius);
+                let rk = rock(&mut r, V3::from(c), radius);
                 let tris = brush_tris(&mut r, &rk, |f| f % 2, k == 0);
-                g.mesh(&format!("rock{k}"), tris, [0.0; 3], 0.0);
+                g.mesh(&format!("rock{k}"), tris, V3::splat(0.0), 0.0);
             }
             let tris = quad(
                 &mut r,
                 [
-                    [-3.0, 12.0, 0.0],
-                    [-3.0, 12.0, 3.0],
-                    [3.0, 12.5, 3.0],
-                    [3.0, 12.5, 0.0],
+                    V3::new(-3.0, 12.0, 0.0),
+                    V3::new(-3.0, 12.0, 3.0),
+                    V3::new(3.0, 12.5, 3.0),
+                    V3::new(3.0, 12.5, 0.0),
                 ],
                 4,
             );
-            g.mesh("hedge", tris, [0.0; 3], 0.0);
+            g.mesh("hedge", tris, V3::splat(0.0), 0.0);
             for (name, lo, hi) in [
                 ("water_pool", [-5.0, -15.0, -1.0], [5.0, -10.0, 0.5]),
                 ("trigger_door", [10.0, 10.0, 0.0], [12.0, 11.0, 3.0]),
                 ("physical_zone_lift", [-12.0, 8.0, 0.0], [-10.0, 10.0, 6.0]),
             ] {
-                let b = cuboid(lo, hi);
+                let b = cuboid(V3::from(lo), V3::from(hi));
                 let tris = brush_tris(&mut r, &b, |_| 0, false);
-                g.mesh(name, tris, [0.0; 3], 0.0);
+                g.mesh(name, tris, V3::splat(0.0), 0.0);
                 volumes += 1;
             }
         }
         _ => {
-            let base = cuboid([-8.0, -8.0, 0.0], [0.0, 0.0, 2.0]);
+            let base = cuboid(V3::new(-8.0, -8.0, 0.0), V3::new(0.0, 0.0, 2.0));
             let tris = brush_tris(&mut r, &base, |_| 0, false);
-            g.mesh("base", tris, [0.0; 3], 0.0);
+            g.mesh("base", tris, V3::splat(0.0), 0.0);
             // Face to face on the base's top.
-            let top = cuboid([-6.0, -6.0, 2.0], [-2.0, -2.0, 4.0]);
+            let top = cuboid(V3::new(-6.0, -6.0, 2.0), V3::new(-2.0, -2.0, 4.0));
             let tris = brush_tris(&mut r, &top, |_| 1, false);
-            g.mesh("top", tris, [0.0; 3], 0.0);
-            let tris = terrain(&mut r, [2.0, 2.0, 0.0], 10, 12, 1.0, 0.8, 2);
-            g.mesh("field", tris, [0.0; 3], 0.0);
+            g.mesh("top", tris, V3::splat(0.0), 0.0);
+            let tris = terrain(&mut r, V3::new(2.0, 2.0, 0.0), 10, 12, 1.0, 0.8, 2);
+            g.mesh("field", tris, V3::splat(0.0), 0.0);
             let tris = prism(
                 &mut r,
                 &star(6, 1.2, 2.0, [0.0, 0.0]),
@@ -412,7 +412,7 @@ fn generate(seed: u64) -> (Gen, usize) {
                 (0.0, 1.5),
                 1,
             );
-            g.mesh("star", tris, [8.0, -8.0, 0.0], 12.0);
+            g.mesh("star", tris, V3::new(8.0, -8.0, 0.0), 12.0);
         }
     }
     (g, volumes)

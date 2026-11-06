@@ -86,18 +86,18 @@ pub fn run(args: &[String]) -> ExitCode {
             "--file" => value().map(|v| file = Some(v)).is_some(),
             "--position" => value()
                 .and_then(|v| floats::<3>(&v))
-                .map(|v| at.position = v)
+                .map(|v| at.position = v.into())
                 .is_some(),
             "--rotation" => value()
                 .and_then(|v| floats::<4>(&v))
                 .map(|v| {
-                    at.axis = [v[0], v[1], v[2]];
+                    at.axis = [v[0], v[1], v[2]].into();
                     at.angle = v[3];
                 })
                 .is_some(),
             "--instance-scale" => value()
                 .and_then(|v| floats::<3>(&v))
-                .map(|v| at.scale = v)
+                .map(|v| at.scale = v.into())
                 .is_some(),
             s if s.starts_with("--") => false,
             _ => {
