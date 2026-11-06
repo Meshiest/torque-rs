@@ -318,6 +318,8 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-resource` reads zips with zip 9.4.1: the four zip extraction advisories (RUSTSEC-2026-0367, 0368, 0369, 0429)
+  are no longer ignored, and an archive holding a real AES entry still loads with only that entry left out.
 - `torque-client`: in a browser, the mouse's movement and wheel do not turn or zoom the view while one of the page's panels
   is open over the game (`platform::web_input::page_panel_open`, the root element's `data-torque-panel`).
 - `torque-vehicle`: a vehicle held at full throttle against a tree (or any interior) crept into it and drove through, and its
