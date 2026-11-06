@@ -3340,6 +3340,7 @@ dependencies = [
 name = "torque-import"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "gltf",
  "serde_json",
  "torque-modelcore",

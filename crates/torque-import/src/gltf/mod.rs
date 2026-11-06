@@ -1250,32 +1250,22 @@ fn triangles(list: &[u32], mode: json::mesh::Mode) -> Vec<u32> {
 
 /// Each vertex's normal: the sum of its triangles' area-weighted normals (counter-clockwise fronts), at unit length.
 fn smooth_normals(positions: &[Vec3], tris: &[u32]) -> Vec<Vec3> {
-    let mut sums = vec![[0.0f32; 3]; positions.len()];
+    let mut sums = vec![glam::Vec3::ZERO; positions.len()];
     for t in tris.chunks_exact(3) {
-        let [a, b, c] =
-            [t[0], t[1], t[2]].map(|i| positions.get(i as usize).copied().unwrap_or_default());
-        let (u, v) = (
-            std::array::from_fn::<f32, 3, _>(|k| b[k] - a[k]),
-            std::array::from_fn::<f32, 3, _>(|k| c[k] - a[k]),
-        );
-        let n = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
+        let [a, b, c] = [t[0], t[1], t[2]]
+            .map(|i| glam::Vec3::from(positions.get(i as usize).copied().unwrap_or_default()));
+        let n = (b - a).cross(c - a);
         for &i in t {
             if let Some(s) = sums.get_mut(i as usize) {
-                for k in 0..3 {
-                    s[k] += n[k];
-                }
+                *s += n;
             }
         }
     }
     sums.into_iter()
         .map(|s| {
-            let l = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt();
+            let l = s.length();
             if l > 1e-20 {
-                s.map(|c| c / l)
+                (s / l).to_array()
             } else {
                 [0.0, 0.0, 1.0]
             }

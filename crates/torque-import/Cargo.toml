@@ -15,6 +15,7 @@ categories = ["game-development", "parser-implementations", "rendering::data-for
 # buffers, accessors, URIs and images are this crate's own code, bounded before the work). Files are hostile input.
 
 [dependencies]
+glam = { workspace = true }
 torque-modelcore = { path = "../torque-modelcore" }
 torque-shapes = { path = "../torque-shapes" }
 torque-shape-builder = { path = "../torque-shape-builder" }

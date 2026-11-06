@@ -62,22 +62,6 @@ fn file(elements: Vec<Value>, outliner: Vec<Value>) -> Value {
         "elements": elements, "outliner": outliner, "textures": [texture("brick.png", 16, 16)] })
 }
 
-fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: Vec3, b: Vec3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 fn close(a: Vec3, b: Vec3) -> bool {
     (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5)
 }
@@ -107,12 +91,12 @@ fn a_cube_is_twelve_triangles_clockwise_from_outside_a_block_a_meter() {
         close(lo, [0.0, -1.0, 0.0]) && close(hi, [1.0, 0.0, 2.0]),
         "{lo:?} {hi:?}"
     );
-    let center = [0.5, -0.5, 1.0];
+    let center = glam::Vec3::new(0.5, -0.5, 1.0);
     for t in mesh.primitives[0].indices.chunks(3) {
-        let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
-        let n = cross(sub(b, a), sub(c, a));
-        let mid = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0);
-        assert!(dot(n, sub(mid, center)) < 0.0, "a triangle facing in");
+        let [a, b, c] = [t[0], t[1], t[2]].map(|i| glam::Vec3::from(mesh.positions[i as usize]));
+        let n = (b - a).cross(c - a);
+        let mid = (a + b + c) / 3.0;
+        assert!(n.dot(mid - center) < 0.0, "a triangle facing in");
     }
     // The up face's rectangle is the texture's top-left quarter: its corners' coordinates within 0..0.5.
     // Faces in order north, east, south, west, up, down, four corners each.
@@ -171,7 +155,7 @@ fn groups_are_nodes_turned_about_their_origins() {
         .iter()
         .copied()
         .min_by(|p, q| {
-            let d = |x: Vec3| sub(x, want).iter().map(|v| v * v).sum::<f32>();
+            let d = |x: Vec3| glam::Vec3::from(x).distance_squared(want.into());
             d(*p).total_cmp(&d(*q))
         })
         .unwrap();

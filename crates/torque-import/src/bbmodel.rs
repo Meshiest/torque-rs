@@ -22,6 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use glam::{DMat3, DVec3};
 use serde_json::{Map, Value};
 use torque_modelcore::math::{self, Quat, Vec3};
 use torque_modelcore::{Detail, Image, Material, Mesh, Model, Node, Primitive, Source};
@@ -94,30 +95,10 @@ fn nums<const N: usize>(
 
 type V3 = [f64; 3];
 
-/// A turn by Euler angles in degrees (x first, then y, then z) as a 3 x 3 matrix, rows.
-fn euler(deg: V3) -> [[f64; 3]; 3] {
+/// A turn by Euler angles in degrees (x first, then y, then z).
+fn euler(deg: V3) -> DMat3 {
     let [x, y, z] = deg.map(f64::to_radians);
-    let (sx, cx) = x.sin_cos();
-    let (sy, cy) = y.sin_cos();
-    let (sz, cz) = z.sin_cos();
-    let rx = [[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]];
-    let ry = [[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]];
-    let rz = [[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]];
-    mul3(&rz, &mul3(&ry, &rx))
-}
-
-fn mul3(a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]) -> [[f64; 3]; 3] {
-    let mut out = [[0.0; 3]; 3];
-    for (r, row) in out.iter_mut().enumerate() {
-        for (c, v) in row.iter_mut().enumerate() {
-            *v = (0..3).map(|k| a[r][k] * b[k][c]).sum();
-        }
-    }
-    out
-}
-
-fn apply(m: &[[f64; 3]; 3], v: V3) -> V3 {
-    [0, 1, 2].map(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])
+    DMat3::from_rotation_z(z) * (DMat3::from_rotation_y(y) * DMat3::from_rotation_x(x))
 }
 
 /// `p` turned by `deg` about `origin`.
@@ -125,8 +106,8 @@ fn turn(p: V3, origin: V3, deg: V3) -> V3 {
     if deg == [0.0; 3] {
         return p;
     }
-    let r = apply(&euler(deg), [0, 1, 2].map(|k| p[k] - origin[k]));
-    [0, 1, 2].map(|k| r[k] + origin[k])
+    let origin = DVec3::from(origin);
+    (euler(deg) * (DVec3::from(p) - origin) + origin).to_array()
 }
 
 /// The turn of Euler angles as a quaternion `[x, y, z, w]`.
@@ -136,7 +117,7 @@ fn quat(deg: V3) -> Quat {
         let mut out = math::IDENTITY;
         for r in 0..3 {
             for c in 0..3 {
-                out[r * 4 + c] = m[r][c] as f32;
+                out[r * 4 + c] = m.col(c)[r] as f32;
             }
         }
         out
@@ -177,13 +158,13 @@ struct Reader<'a> {
 impl Reader<'_> {
     fn point(&self, p: V3, origin: V3) -> Vec3 {
         let s = f64::from(self.options.scale) / f64::from(UNITS_PER_METER);
-        let q = [0, 1, 2].map(|k| (p[k] - origin[k]) * s);
+        let q = (DVec3::from(p) - DVec3::from(origin)) * s;
         let t = if self.options.up == 'z' {
             q
         } else {
-            [q[0], -q[2], q[1]]
+            DVec3::new(q.x, -q.z, q.y)
         };
-        t.map(|v| v as f32)
+        t.as_vec3().to_array()
     }
 
     fn dir_quat(&self, q: Quat) -> Quat {
@@ -425,26 +406,20 @@ fn sort_round(c: &mut [(V3, [f64; 2])]) {
     if c.len() < 4 {
         return;
     }
-    let mid = [0, 1, 2].map(|k| c.iter().map(|x| x.0[k]).sum::<f64>() / c.len() as f64);
-    let sub = |a: V3, b: V3| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let cross = |a: V3, b: V3| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
-    let dot = |a: V3, b: V3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let n = cross(sub(c[1].0, c[0].0), sub(c[2].0, c[0].0));
-    let u = sub(c[0].0, mid);
-    let w = cross(n, u);
-    if dot(u, u) == 0.0 || dot(w, w) == 0.0 {
+    let mid = DVec3::from_array(
+        [0, 1, 2].map(|k| c.iter().map(|x| x.0[k]).sum::<f64>() / c.len() as f64),
+    );
+    let corner = |i: usize| DVec3::from(c[i].0);
+    let n = (corner(1) - corner(0)).cross(corner(2) - corner(0));
+    let u = corner(0) - mid;
+    let w = n.cross(u);
+    if u.dot(u) == 0.0 || w.dot(w) == 0.0 {
         return;
     }
     c.sort_by(|a, b| {
         let angle = |p: V3| {
-            let d = sub(p, mid);
-            dot(d, w).atan2(dot(d, u))
+            let d = DVec3::from(p) - mid;
+            d.dot(w).atan2(d.dot(u))
         };
         angle(a.0).total_cmp(&angle(b.0))
     });

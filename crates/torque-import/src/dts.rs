@@ -324,9 +324,9 @@ pub fn to_dts(model: &Model) -> Result<torque_shapes::Model, ImportError> {
                     let Some(nm) = &normal_map else {
                         return n;
                     };
-                    let k = math::vector(nm, n);
-                    let len = (k[0] * k[0] + k[1] * k[1] + k[2] * k[2]).sqrt();
-                    if len > 1e-20 { k.map(|x| x / len) } else { n }
+                    let k = glam::Vec3::from(math::vector(nm, n));
+                    let len = k.length();
+                    if len > 1e-20 { (k / len).to_array() } else { n }
                 })
                 .collect();
             data.tverts = c

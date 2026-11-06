@@ -1,6 +1,7 @@
 //! An animation channel's curve, evaluated at any time as glTF defines it: step, linear (spherical for rotations) and cubic
 //! Hermite splines.
 
+use glam::Vec4;
 use torque_modelcore::math;
 
 /// How a curve moves between its keys.
@@ -55,21 +56,21 @@ impl Curve {
         let out = match self.interp {
             Interp::Step => a,
             Interp::Linear if self.rotation => math::slerp(a, b, s),
-            Interp::Linear => std::array::from_fn(|i| a[i] + (b[i] - a[i]) * s),
+            Interp::Linear => Vec4::from(a).lerp_monotonic(b.into(), s).to_array(),
             Interp::Cubic => {
-                let out_tangent = self.values.get(3 * k + 2).copied().unwrap_or_default();
-                let in_tangent = self.values.get(3 * (k + 1)).copied().unwrap_or_default();
+                let tangent =
+                    |i: usize| Vec4::from(self.values.get(i).copied().unwrap_or_default());
+                let (out_tangent, in_tangent) = (tangent(3 * k + 2), tangent(3 * (k + 1)));
                 let (s2, s3) = (s * s, s * s * s);
                 let h00 = 2.0 * s3 - 3.0 * s2 + 1.0;
                 let h10 = s3 - 2.0 * s2 + s;
                 let h01 = -2.0 * s3 + 3.0 * s2;
                 let h11 = s3 - s2;
-                std::array::from_fn(|i| {
-                    h00 * a[i]
-                        + h10 * span * out_tangent[i]
-                        + h01 * b[i]
-                        + h11 * span * in_tangent[i]
-                })
+                (Vec4::from(a) * h00
+                    + out_tangent * (h10 * span)
+                    + Vec4::from(b) * h01
+                    + in_tangent * (h11 * span))
+                    .to_array()
             }
         };
         if self.rotation {

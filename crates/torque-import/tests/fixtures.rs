@@ -6,6 +6,7 @@
 //! - at rest and at 10 times of each sequence, every node's origin and every vertex as the shape poses it (rigid or skinned)
 //!   within 1e-3 of where the glTF puts it.
 
+use glam::{DMat4, DQuat, DVec3, DVec4};
 use serde_json::{Value, json};
 use torque_import::{Options, dts, gltf};
 use torque_shapes::instance::ShapeInstance;
@@ -14,94 +15,36 @@ use torque_shapes::shape::{MeshExtra, Shape};
 
 type V3 = [f64; 3];
 type Q = [f64; 4];
-type M = [f64; 16];
-
-const I: M = [
-    1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-];
-
-fn mul(a: &M, b: &M) -> M {
-    std::array::from_fn(|k| (0..4).map(|j| a[k / 4 * 4 + j] * b[j * 4 + k % 4]).sum())
-}
+/// A transform in glTF's column-major order.
+type M = DMat4;
 
 fn apply(m: &M, p: V3) -> V3 {
-    std::array::from_fn(|r| {
-        m[r * 4] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3]
-    })
+    m.transform_point3(p.into()).to_array()
 }
 
 fn trs(t: V3, q: Q, s: V3) -> M {
-    let [x, y, z, w] = q;
-    let r = [
-        1. - 2. * (y * y + z * z),
-        2. * (x * y - z * w),
-        2. * (x * z + y * w),
-        2. * (x * y + z * w),
-        1. - 2. * (x * x + z * z),
-        2. * (y * z - x * w),
-        2. * (x * z - y * w),
-        2. * (y * z + x * w),
-        1. - 2. * (x * x + y * y),
-    ];
-    [
-        r[0] * s[0],
-        r[1] * s[1],
-        r[2] * s[2],
-        t[0],
-        r[3] * s[0],
-        r[4] * s[1],
-        r[5] * s[2],
-        t[1],
-        r[6] * s[0],
-        r[7] * s[1],
-        r[8] * s[2],
-        t[2],
-        0.,
-        0.,
-        0.,
-        1.,
-    ]
-}
-
-/// The inverse of an affine matrix by its 3x3 cofactors.
-fn inverse(m: &M) -> M {
-    let a = |r: usize, c: usize| m[r * 4 + c];
-    let c = |r: usize, k: usize| {
-        let (r1, r2, k1, k2) = ((r + 1) % 3, (r + 2) % 3, (k + 1) % 3, (k + 2) % 3);
-        a(r1, k1) * a(r2, k2) - a(r1, k2) * a(r2, k1)
-    };
-    let det: f64 = (0..3).map(|k| a(0, k) * c(0, k)).sum();
-    let mut o = I;
-    for r in 0..3 {
-        for k in 0..3 {
-            o[r * 4 + k] = c(k, r) / det;
-        }
-    }
-    for r in 0..3 {
-        o[r * 4 + 3] = -(0..3).map(|k| o[r * 4 + k] * m[k * 4 + 3]).sum::<f64>();
-    }
-    o
+    DMat4::from_scale_rotation_translation(s.into(), DQuat::from_array(q), t.into())
 }
 
 fn norm(q: Q) -> Q {
-    let l = q.iter().map(|c| c * c).sum::<f64>().sqrt();
-    q.map(|c| c / l)
+    DVec4::from(q).normalize().to_array()
 }
 
 fn slerp(a: Q, b: Q, t: f64) -> Q {
-    let mut d: f64 = (0..4).map(|i| a[i] * b[i]).sum();
+    let (a, b) = (DVec4::from(a), DVec4::from(b));
+    let mut d = a.dot(b);
     let b = if d < 0. {
         d = -d;
-        b.map(|c| -c)
+        -b
     } else {
         b
     };
     if d > 0.9999 {
-        return norm(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t));
+        return norm(a.lerp(b, t).to_array());
     }
     let th = d.acos();
     let (wa, wb) = (((1. - t) * th).sin() / th.sin(), (t * th).sin() / th.sin());
-    std::array::from_fn(|i| a[i] * wa + b[i] * wb)
+    (a * wa + b * wb).to_array()
 }
 
 /// glTF's frame into Torque's.
@@ -228,7 +171,7 @@ impl FChan {
         let v = match self.interp {
             "STEP" => a,
             "LINEAR" if rot => slerp(a, b, s),
-            "LINEAR" => std::array::from_fn(|i| a[i] + (b[i] - a[i]) * s),
+            "LINEAR" => DVec4::from(a).lerp(b.into(), s).to_array(),
             _ => {
                 let (bo, ai) = (self.values[3 * k + 2], self.values[3 * (k + 1)]);
                 let (s2, s3) = (s * s, s * s * s);
@@ -275,7 +218,7 @@ impl Fix {
         for (i, n) in self.nodes.iter().enumerate() {
             let local = trs(parts[i].0, parts[i].1, parts[i].2);
             w.push(match n.parent {
-                Some(p) => mul(&w[p], &local),
+                Some(p) => w[p] * local,
                 None => local,
             });
         }
@@ -299,17 +242,14 @@ impl Fix {
                 let q = match &mesh.skin {
                     None => apply(&world[mesh.node], pos),
                     Some((joints, ibm)) => {
-                        let mut acc = [0.0; 3];
+                        let mut acc = DVec3::ZERO;
                         let sum: f64 = p.weights[v].iter().sum();
                         for k in 0..4 {
                             let j = usize::from(p.joints[v][k]);
                             let w = p.weights[v][k] / sum;
-                            let x = apply(&mul(&world[joints[j]], &ibm[j]), pos);
-                            for c in 0..3 {
-                                acc[c] += w * x[c];
-                            }
+                            acc += (world[joints[j]] * ibm[j]).transform_point3(pos.into()) * w;
                         }
-                        acc
+                        acc.to_array()
                     }
                 };
                 out.push(torque(q));
@@ -327,9 +267,7 @@ impl Fix {
             .map(|n| {
                 let mut v = json!({ "name": n.name });
                 if n.matrix {
-                    let m = trs(n.t, n.r, n.s);
-                    let cols: Vec<f64> = (0..16).map(|i| m[(i % 4) * 4 + i / 4]).collect();
-                    v["matrix"] = json!(cols);
+                    v["matrix"] = json!(trs(n.t, n.r, n.s).to_cols_array());
                 } else {
                     v["translation"] = json!(n.t.to_vec());
                     v["rotation"] = json!(n.r.to_vec());
@@ -425,10 +363,7 @@ impl Fix {
             meshes.push(json!({ "primitives": prims }));
             nodes[m.node]["mesh"] = json!(mi);
             if let Some((joints, ibm)) = &m.skin {
-                let cols: Vec<Vec<f64>> = ibm
-                    .iter()
-                    .map(|m| (0..16).map(|i| m[(i % 4) * 4 + i / 4]).collect())
-                    .collect();
+                let cols: Vec<Vec<f64>> = ibm.iter().map(|m| m.to_cols_array().to_vec()).collect();
                 skins.push(json!({ "joints": joints, "inverseBindMatrices": g.floats(&cols, "MAT4", false) }));
                 nodes[m.node]["skin"] = json!(skins.len() - 1);
             }
@@ -643,7 +578,7 @@ fn skin_mesh(
     u8_joints: bool,
 ) -> FMesh {
     let world = f.world(None);
-    let ibm: Vec<M> = joints.iter().map(|&j| inverse(&world[j])).collect();
+    let ibm: Vec<M> = joints.iter().map(|&j| world[j].inverse()).collect();
     let mut prim = boxed([0.0, 0.0, 0.0], 0.0, None, Ix::U16);
     // A column of points along the joints' chain.
     prim.positions = (0..24)
@@ -1043,7 +978,7 @@ fn twenty_fixtures_read_back_with_equal_counts_positions_and_poses() {
         let mut worst_pose = 0.0f64;
         let mut check = |world: &[M], nodes: &[[f32; 16]], what: &str| {
             for (n, w) in world.iter().enumerate() {
-                let o = torque([w[3], w[7], w[11]]);
+                let o = torque(w.w_axis.truncate().to_array());
                 let d = far(o, [nodes[n][3], nodes[n][7], nodes[n][11]]);
                 assert!(d <= 1e-3, "fixture {i} {what}: node {n} origin {d} off");
                 worst_pose = worst_pose.max(d);
