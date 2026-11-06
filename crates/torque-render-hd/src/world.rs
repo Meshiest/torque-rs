@@ -1124,6 +1124,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     pub pipelines_made: u64,
     /// The effects' pipelines being made on a worker thread ([`HdWorld::warm_effects`]).
     warming: Option<Warming>,
+    /// In a browser: the warm-up's pipelines still to be made, [`WEB_WARM_PER_FRAME`] a frame ([`HdWorld::warm_effects`]).
+    warm_queue: Vec<PipelineKey>,
     /// The scene's generation and control generation at the last upload.
     uploaded: Option<(u64, u64)>,
     /// The scene's lights generation last uploaded, whether with the glow lights, and how many of them may cast shadows.
@@ -1379,6 +1381,9 @@ pub(crate) fn effect_keys(clustered: bool) -> Vec<PipelineKey> {
     keys.push(key(Blend::Modulate2x, false, Stage::Main));
     keys
 }
+
+/// The effects' pipelines a frame makes of those a browser's warm-up queued ([`HdWorld::warm_effects`]).
+pub const WEB_WARM_PER_FRAME: usize = 2;
 
 /// The warm-up's thread and the pipelines it makes ([`HdWorld::warm_effects`]). Dropped unfinished (the world dropped, the
 /// window closed), it tells the thread to stop and waits for the pipeline it is making: a process that ends while a driver
@@ -2304,6 +2309,7 @@ impl<E: HdExtension> HdWorld<E> {
             cpu_frames: 0,
             pipelines_made: 0,
             warming: None,
+            warm_queue: Vec::new(),
             uploaded: None,
             lights_generation: None,
             uploaded_glow: true,
@@ -2861,6 +2867,8 @@ impl<E: HdExtension> HdWorld<E> {
                 return;
             }
         }
+        // One a browser's warm-up has queued: made now, and not again.
+        self.warm_queue.retain(|k| *k != key);
         let module = &self.forward[&(key.clustered, key.front_layer)];
         let pipeline = make_pipeline(
             &self.device,
@@ -2876,8 +2884,9 @@ impl<E: HdExtension> HdWorld<E> {
     /// Starts making the pipelines the effects draw with (`effect_keys`: particles, ribbons, bolt trails, decals and tire
     /// tracks, which a scene often first shows mid-game, at a shot or an impact), on a worker thread where there is one, so their
     /// shaders' compiles cost no frame (a cold first shot made seven in two frames of 0.6 s each). Each frame takes the ones
-    /// made; a frame that needs one still being made waits for the rest. Where no thread can be started (a browser) they are
-    /// made now (a browser compiles them on its own threads).
+    /// made; a frame that needs one still being made waits for the rest. In a browser (no threads) they are made a few a frame
+    /// ([`WEB_WARM_PER_FRAME`]), so the frame that starts the page's world does not make them all; where no thread can be started
+    /// otherwise they are made now.
     pub fn warm_effects(&mut self) {
         if self.warming.is_some() {
             return;
@@ -2889,6 +2898,17 @@ impl<E: HdExtension> HdWorld<E> {
         if keys.is_empty() {
             return;
         }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.warm_queue = keys;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.warm_on_thread(keys);
+    }
+
+    /// The warm-up of `keys` on a worker thread ([`HdWorld::warm_effects`]); made now when no thread can be started.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn warm_on_thread(&mut self, keys: Vec<PipelineKey>) {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let make = {
             let device = self.device.clone();
@@ -2910,7 +2930,6 @@ impl<E: HdExtension> HdWorld<E> {
                     .collect::<Vec<_>>()
             }
         };
-        #[cfg(not(target_arch = "wasm32"))]
         if let Ok(thread) = std::thread::Builder::new()
             .name("pipeline warm-up".into())
             .spawn(make.clone())
@@ -2928,9 +2947,21 @@ impl<E: HdExtension> HdWorld<E> {
         }
     }
 
-    /// Whether the warm-up's thread ([`HdWorld::warm_effects`]) is still making pipelines (a frame takes them once it is done).
+    /// Whether the warm-up ([`HdWorld::warm_effects`]) is still making pipelines: its thread (a frame takes them once it is done),
+    /// or in a browser the ones still queued.
     pub fn warming(&self) -> bool {
-        self.warming.is_some()
+        self.warming.is_some() || !self.warm_queue.is_empty()
+    }
+
+    /// Makes up to `n` of the warm-up's pipelines still queued (in a browser: [`HdWorld::warm_effects`]).
+    fn warm_queued(&mut self, n: usize) {
+        let keys: Vec<PipelineKey> = self
+            .warm_queue
+            .drain(..n.min(self.warm_queue.len()))
+            .collect();
+        for key in keys {
+            self.ensure_pipeline(key);
+        }
     }
 
     /// The warm-up's pipelines, once its thread is done (or waiting for it: `wait`).
@@ -5017,6 +5048,7 @@ impl<E: HdExtension> HdWorld<E> {
         let mut cpu_at = cpu_start;
         let mut cpu_marks: Vec<(&'static str, f64)> = Vec::new();
         self.take_warmed(false);
+        self.warm_queued(WEB_WARM_PER_FRAME);
         let passes_before = PASSES.load(std::sync::atomic::Ordering::Relaxed);
         let kinds_before = passes_by_kind();
         let _ = set_pass_kind(PassKind::Post);
