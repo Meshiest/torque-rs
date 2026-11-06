@@ -462,7 +462,7 @@ The first development version. Nothing is published yet; this is what exists.
   close, so a start after a driver update no longer compiles every pipeline again. The file is keyed by adapter and
   driver, at most 64 MiB, written whole and renamed into place, and a missing, damaged or foreign one starts an empty
   cache. This is the workspace's one `unsafe` block (`Device::create_pipeline_cache`, with a `SAFETY` comment):
-  torque-render-core denies `unsafe_code` instead of forbidding it and allows it on that function only.
+  torque-render-core denies `unsafe_code` instead of forbidding it and expects it on that function only.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

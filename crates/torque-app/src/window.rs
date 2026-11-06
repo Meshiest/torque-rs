@@ -376,9 +376,9 @@ fn save_pipeline_cache(gpu: &Gpu, log_name: &str) {
 
 impl<G: App> AppWindow<G> {
     /// Lets go of the window's state in order: the view first (its renderer stops and waits for its worker threads, which hold
-    /// the device), then the device's pipeline cache is saved, then the surface and the device go, then the game. The device is let go here rather than at the process's
-    /// end; the arena's ahead thread may still hold a clone for the buffers it is making (the device is counted, so nothing is
-    /// freed under it).
+    /// the device), then the device's pipeline cache is saved, then the surface and the device go, then the game. The device
+    /// is let go here rather than at the process's end; the arena's ahead thread may still hold a clone for the buffers it is
+    /// making (the device is counted, so nothing is freed under it).
     #[cfg(not(target_arch = "wasm32"))]
     fn end(self) {
         let AppWindow {

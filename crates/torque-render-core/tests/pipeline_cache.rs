@@ -25,7 +25,21 @@ fn a_save_replaces_the_file_and_other_drivers_files() {
     std::fs::write(&old, b"old").unwrap();
     std::fs::write(&keep, b"other key").unwrap();
     let path = dir.join("pipelines-k-0000000000000002.bin");
+    // A crashed save's temporary file, an hour old, and one a save is writing now.
+    let stale = dir.join("pipelines-k-0000000000000002.bin.1.tmp");
+    let fresh = dir.join("pipelines-k-0000000000000002.bin.2.tmp");
+    std::fs::write(&stale, b"cut short").unwrap();
+    std::fs::write(&fresh, b"being written").unwrap();
+    let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
     write_file(&path, b"one").unwrap();
+    assert!(!stale.exists() && fresh.exists());
+    std::fs::remove_file(&fresh).unwrap();
     write_file(&path, b"two").unwrap();
     assert_eq!(read_file(&path).as_deref(), Some(&b"two"[..]));
     assert!(!old.exists() && keep.exists());

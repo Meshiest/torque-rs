@@ -19,10 +19,10 @@ pollster = "0.4"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu", "wgsl", "fragile-send-sync-non-atomic-wasm"] }
 
 # The workspace's lints (`[workspace.lints]`), copied: a crate that inherits them cannot change one, and `forbid` cannot be
-# lowered by an `allow`. The one change is `unsafe_code`, so that the pipeline cache's one `unsafe` block can be allowed
+# lowered by an `allow`. The one change is `unsafe_code`, so that the pipeline cache's one `unsafe` block can be expected
 # where it is. The test `the_lints_are_the_workspaces` (src/lib.rs) fails when the copy and the workspace's differ.
 [lints.rust]
-# `deny`, not the workspace's `forbid`: one function (`pipeline_cache::create`) allows its one `unsafe` block.
+# `deny`, not the workspace's `forbid`: one function (`pipeline_cache::create`) expects it, for its one `unsafe` block.
 unsafe_code = "deny"
 non_ascii_idents = "forbid"
 explicit_outlives_requirements = "warn"

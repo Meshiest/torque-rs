@@ -473,6 +473,25 @@ mod tests {
         lines
     }
 
+    /// The crate has one `unsafe` block, under the one `expect(unsafe_code)` attribute (and no `allow` of it).
+    #[test]
+    fn one_unsafe_block_is_expected() {
+        let expect = concat!("#[expect(", "unsafe_code)]");
+        let allow = concat!("allow(", "unsafe_code");
+        let block = concat!("unsafe", " {");
+        let (mut expects, mut allows, mut blocks) = (0, 0, 0);
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                expects += text.matches(expect).count();
+                allows += text.matches(allow).count();
+                blocks += text.matches(block).count();
+            }
+        }
+        assert_eq!((expects, allows, blocks), (1, 0, 1));
+    }
+
     /// The crate's lints are the workspace's, `unsafe_code` lowered from `forbid` to `deny` (Cargo.toml says why).
     #[test]
     fn the_lints_are_the_workspaces() {

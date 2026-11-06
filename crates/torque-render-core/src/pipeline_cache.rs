@@ -29,7 +29,9 @@ const HEADER: usize = 24;
 /// The directory cache files are read from and written to ([`set_dir`]); None keeps caches in memory.
 static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Sets the directory devices made from now on load their pipeline cache from and save it to (None: no file).
+/// Sets the directory devices made from now on load their pipeline cache from and save it to (None: no file). The directory
+/// must be writable only by the current user ([`user_dir`]'s is): its files' data is handed to the GPU driver, which trusts
+/// it once wgpu's and its own header checks pass.
 pub fn set_dir(dir: Option<PathBuf>) {
     *DIR.lock().unwrap_or_else(|e| e.into_inner()) = dir;
 }
@@ -190,7 +192,8 @@ pub fn read_file(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Writes `data` as the cache file at `path`: whole to a temporary file beside it, then renamed over it, so a reader never
-/// sees half a file. Other drivers' files for the same adapter are removed (a driver update leaves its old cache useless).
+/// sees half a file. Other drivers' files for the same adapter are removed (a driver update leaves its old cache useless),
+/// and so are this file's temporary files a minute old or more (a save a crash cut short).
 pub fn write_file(path: &Path, data: &[u8]) -> io::Result<()> {
     if data.len() as u64 > MAX_FILE - HEADER as u64 {
         return Err(io::Error::other(format!(
@@ -227,10 +230,19 @@ pub fn write_file(path: &Path, data: &[u8]) -> io::Result<()> {
             let Some(other) = other.to_str() else {
                 continue;
             };
-            if other != name
+            let other_driver = other != name
                 && other.ends_with(".bin")
-                && other.strip_prefix(stem).is_some_and(|r| r.starts_with('-'))
-            {
+                && other.strip_prefix(stem).is_some_and(|r| r.starts_with('-'));
+            // `<name>.<pid>.tmp` of a save that did not finish (a crash), a minute old or more: not one being written now.
+            let stale_tmp = other.ends_with(".tmp")
+                && other.strip_prefix(name).is_some_and(|r| r.starts_with('.'))
+                && entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age >= std::time::Duration::from_secs(60));
+            if other_driver || stale_tmp {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -313,20 +325,22 @@ async fn checked(
 }
 
 /// A pipeline cache on `device` started from `data` (a file's, [`decode`]d), or empty.
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 fn create(device: &wgpu::Device, data: Option<&[u8]>) -> wgpu::PipelineCache {
     // SAFETY: wgpu requires `data` to be bytes an earlier `PipelineCache::get_data` returned, for an adapter with the
-    // same `util::pipeline_cache_key`, because the driver trusts them. `data` is only ever what
-    // `Gpu::save_pipeline_cache` wrote from `get_data`, read back from the file named by `file_name` in the user's own
-    // cache directory (`set_dir`): the key (backend, vendor, device) and a hash of the driver's name and version, so
-    // another GPU's or driver's data is never loaded. The file is written whole to a temporary file and renamed over
-    // the old one, so it is never read half-written; it is at most `MAX_FILE` bytes, and its own header records the
-    // data's length and FNV-1a hash, so a truncated, extended or damaged file is refused (`decode`) before wgpu sees
-    // it. wgpu then checks its own header in the data (format version, pointer size, backend, adapter key and the
-    // driver's pipeline cache UUID), and the Vulkan driver checks its header again (vendor, device and the UUID). With
-    // `fallback: true` data wgpu finds outdated or cut short is dropped for an empty cache; data it finds to be another
-    // device's is refused, the error caught by `checked`'s scope and an empty cache made instead. `None` data is always
-    // sound.
+    // same `util::pipeline_cache_key`, because the driver trusts them. That cannot be proven of a file, so this rests
+    // on what is checked. The file is read from the directory a host set (`set_dir`: one only the current user may
+    // write, such as `user_dir`'s; that adds no privilege boundary, since the driver's own caches are just as writable
+    // by that user), under a name made of the pipeline cache key (backend, vendor, device) and a hash of the driver's
+    // name and version, so another GPU's or driver's file is not picked. It is written whole to a temporary file and
+    // renamed over the old one, so it is never read half-written, and at most `MAX_FILE` bytes are read. Its own
+    // header's length and FNV-1a hash only catch accidental damage (truncation, extension, flipped bits; `decode`), not
+    // a deliberate edit. Stale or foreign data is handled by the checks after that: wgpu checks its header in the data
+    // (magic, header version, pointer size, backend, adapter key from the vendor and device, and a validation key that
+    // on Vulkan is the 4-byte driver version), and the Vulkan driver checks its own header (vendor, device and its
+    // pipeline cache UUID) and ignores data that does not match. With `fallback: true` data wgpu finds outdated or cut
+    // short is dropped for an empty cache; data it finds to be another device's is refused, the error caught by
+    // `checked`'s scope and an empty cache made instead. `None` data is always sound.
     unsafe {
         device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
             label: Some("pipelines"),
