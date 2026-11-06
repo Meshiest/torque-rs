@@ -264,18 +264,19 @@ impl WebArena {
 
     /// Switches the running game in place (module docs): out of any game, onto the link `mode` goes by, at the main menu.
     /// The status line keeps what it says (why an invite link's game ended).
+    /// Err (the link would not open: the invite link ended before the switch was taken): nothing changed.
     fn switch(&mut self, mode: Mode) -> Result<(), String> {
-        if self.game.global("$Arena::InGame") == "1" {
-            self.game.call("leaveGame", &[])?;
-        } else {
-            self.game.call("disconnect", &[])?;
-        }
         let target = if mode == Mode::Link {
             Target::Page
         } else {
             Target::Local
         };
         let (socket, watch) = target.open()?;
+        if self.game.global("$Arena::InGame") == "1" {
+            self.game.call("leaveGame", &[])?;
+        } else {
+            self.game.call("disconnect", &[])?;
+        }
         self.game.set_socket(socket);
         self.watch = watch;
         self.target = target;
@@ -307,6 +308,16 @@ impl WebArena {
             let _ = self.game.call("leaveGame", &[]);
         }
         self.status(&text);
+        // an invite link's: the page's own game again, with why on its menu
+        self.back_to_page();
+    }
+
+    /// Asks the page to take the game back to playing alone (an invite link's game over), once.
+    fn back_to_page(&mut self) {
+        if self.target == Target::Page && !self.asked_back {
+            self.asked_back = true;
+            torque::app::web_join::ask_page("back");
+        }
     }
 
     fn mark(&mut self) {
@@ -386,16 +397,19 @@ impl App for WebArena {
         if let Some(mode) = torque::app::web_join::take_switch()
             && let Err(e) = self.switch(mode)
         {
-            self.status(&format!("Could not switch: {e}"));
+            self.status(&format!("Could not join: {e}"));
+            // the invite link ended before its switch: the page's own game goes on
+            if mode == Mode::Link {
+                torque::app::web_join::ask_page("back");
+            }
         }
         if !self.ended {
             self.show_end();
         }
         // An invite link's game left (the Esc menu's Leave, the host left, the connection lost): the page's own game again.
         let in_game = self.game.global("$Arena::InGame") == "1";
-        if self.target == Target::Page && self.in_link_game && !in_game && !self.asked_back {
-            self.asked_back = true;
-            torque::app::web_join::ask_page("back");
+        if self.in_link_game && !in_game {
+            self.back_to_page();
         }
         self.in_link_game = self.target == Target::Page && in_game;
         // The menus' Host with a link, Join with Link and Invite players (played alone), and an invited game's Play alone

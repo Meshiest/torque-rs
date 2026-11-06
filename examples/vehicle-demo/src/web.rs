@@ -261,6 +261,13 @@ impl WebVehicle {
         {
             return Ok(());
         }
+        let target = match mode {
+            Mode::Solo => None,
+            Mode::Link => Some(Target::Page),
+            Mode::Host => Some(Target::Local),
+        };
+        // Err (the invite link ended before the switch was taken): nothing changed
+        let opened = target.map(|t| t.open()).transpose()?;
         if self.game.in_world() {
             self.game.call("leaveWorld", &[])?;
         } else {
@@ -275,17 +282,12 @@ impl WebVehicle {
             if mode == Mode::Link { "0" } else { "1" },
         );
         self.in_link_world = false;
-        let target = match mode {
-            Mode::Solo => {
-                self.game.clear_socket();
-                self.link = None;
-                unmark_link();
-                return Ok(());
-            }
-            Mode::Link => Target::Page,
-            Mode::Host => Target::Local,
+        let Some((socket, watch)) = opened else {
+            self.game.clear_socket();
+            self.link = None;
+            unmark_link();
+            return Ok(());
         };
-        let (socket, watch) = target.open()?;
         self.game.set_socket(socket);
         let page = mode == Mode::Link;
         self.link = Some(Link {
@@ -327,10 +329,16 @@ impl WebVehicle {
             return;
         };
         link.ended = true;
+        // an invite link's: the page's own game again, with why on its menu (once)
+        let back = link.page && !link.asked_back;
+        link.asked_back |= link.page;
         if self.game.global("$World::InWorld") == "1" {
             let _ = self.game.call("leaveWorld", &[]);
         }
         self.menu_status(&text);
+        if back {
+            torque::app::web_join::ask_page("back");
+        }
     }
 
     /// Shows `text` on the menu's status line, handed to `setText` as an argument (never built into script source).
@@ -446,7 +454,11 @@ impl App for WebVehicle {
             if let Some(mode) = torque::app::web_join::take_switch()
                 && let Err(e) = self.switch(mode)
             {
-                self.menu_status(&format!("Could not switch: {e}"));
+                self.menu_status(&format!("Could not join: {e}"));
+                // the invite link ended before its switch: the page's own game goes on
+                if mode == torque::app::web_join::Mode::Link {
+                    torque::app::web_join::ask_page("back");
+                }
             }
             self.join_when_open();
             self.show_end();
