@@ -171,7 +171,7 @@ struct Drawn {
 
 /// The steering the frames draw for each vehicle the client runs (see the module docs), advanced each frame by the frame's
 /// virtual time: the client's own vehicle's follows its ticks' steering; another's follows its newest value run on at the
-/// rate its updates bring ([`Lead`]), so its wheel turns evenly between them and where it is now. `seconds` is the follow's time constant; `None` draws
+/// rate its updates bring (`Lead`), so its wheel turns evenly between them and where it is now. `seconds` is the follow's time constant; `None` draws
 /// the last tick's steering, as TGE does.
 #[derive(Debug, Clone)]
 pub struct SteeringEase {
