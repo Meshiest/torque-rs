@@ -368,6 +368,9 @@ function showJoinPaste(go) {
 
 // ---- the host
 
+// An invite's states once it is over: its line then has a Dismiss button that takes it off the list.
+const OVER = ['failed', 'expired', 'left', 'closed'];
+
 // The host's invites (one for the page: it listens for reply tabs on a BroadcastChannel): `hosting(h)` is host.js's
 // `onHost` (`h` null once that server stopped), `show()` opens the Host with a link panel, `closeAll()` closes every
 // invite still open (the page is joining another game). `open`: the panel opens once the server runs.
@@ -390,12 +393,27 @@ export function hostInvites({ open = false } = {}) {
   const made = [];
   const marked = () => (root.dataset.torqueInvites = made.map((i) => i.state).join(' '));
   // An invite's link is shown only while it waits for its reply: once the reply is in, or the invite expired or failed,
-  // its link box goes (its status line stays).
+  // its link box goes (its status line stays, and a failed connection's details, until it is dismissed).
   function setState(inv, state, text) {
     inv.state = state;
     inv.status.textContent = `Invite ${inv.n}: ${text}`;
     if (state !== 'waiting') inv.box?.remove();
+    if (OVER.includes(state) && !inv.dismiss) {
+      inv.dismiss = el('button', { type: 'button', class: 'dismiss', text: 'Dismiss', on: { click: () => dismiss(inv) } });
+      inv.item.append(inv.dismiss);
+    }
     marked();
+  }
+
+  // An invite that is over, off the list for good: it counts for nothing more, and a reply for it is still told it is
+  // no longer open (its token stays closed).
+  function dismiss(inv) {
+    forget(inv);
+    inv.item.remove();
+    const at = made.indexOf(inv);
+    if (at >= 0) made.splice(at, 1);
+    marked();
+    panel?.querySelector('.primary')?.focus();
   }
 
   function forget(inv) {
@@ -414,6 +432,7 @@ export function hostInvites({ open = false } = {}) {
     invites.set(inv.token, inv);
     if (made.length < 64) made.push(inv);
     const item = el('li', {}, inv.status);
+    inv.item = item;
     list.prepend(item);
     setState(inv, 'making', 'making the link...');
     try {

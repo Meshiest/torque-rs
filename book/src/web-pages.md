@@ -90,8 +90,8 @@ takes. The page never loads again for any of this: a page opened on an invite st
 the friend's panel over its menu, and switches that game to the host's once the channel opens (and joining with a pasted
 link works the same way). Every state of the friend's panel has "Back to the menu", which closes the panel over the
 game's own menu; a join that failed or was refused also takes a new invite offer link pasted in. Leaving the host's
-game, or the host leaving, brings the page back to its own menu, played alone. The reply can also be pasted into the
-host's panel. The codes ride in
+game, or the host leaving, brings the page back to its own menu, played alone. On the host's list, an invite that failed,
+expired or whose player left has "Dismiss". The reply can also be pasted into the host's panel. The codes ride in
 the fragment, which a browser never sends to the server, and the page clears it from the address bar once read. Each
 link carries its sender's IP address, which the panels say beside every copy button.
 

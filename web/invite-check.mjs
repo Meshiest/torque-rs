@@ -5,9 +5,9 @@
 // hands the reply to the game's tab and closes), the data channel opens, the joiner walks, each page holds the other's
 // figure, the host's panel no longer shows the invite's link, and no console error shows. The joiner's page is first
 // opened on a cut-short link (refused), and the real one is pasted into that panel's field for a new link. Then bad, cut
-// short, oversized and used codes must each be refused with a message, and a refused join's Back to the menu shows the
-// page's game at its menu. Last the joiner leaves the host's game: its page is back at its own menu (and plays alone), and
-// the host's invite shows it left.
+// short, oversized and used codes must each be refused with a message, a refused join's Back to the menu shows the page's
+// game at its menu, and an invite whose reply fails is dismissed off the host's list for good. Last the joiner leaves the
+// host's game: its page is back at its own menu (and plays alone), and the host dismisses the invite it left.
 // Nothing reloads a page: each page's document is marked once loaded, and the mark must stay (Host with a link, Back to
 // the menu, the new link's join, leaving).
 //
@@ -26,7 +26,7 @@ import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { launchGuarded, noLock } from './guard.mjs';
 import { serve } from './serve.mjs';
-import { KIND_JOIN, encodeCode } from './codes.js';
+import { KIND_JOIN, KIND_REPLY, decodeCode, encodeCode } from './codes.js';
 
 const [folder, shots, seconds = '120', names = '', delayText] = process.argv.slice(2);
 const same = names === 'same';
@@ -118,6 +118,7 @@ const state = (page) =>
       })(),
       back: [...document.querySelectorAll('#invites button')].some((b) => b.textContent === 'Back to the menu'),
       panel: Boolean(document.getElementById('invites')),
+      details: document.querySelectorAll('#invites li .details').length,
       server: r.dataset.torqueServer ?? '',
       kept: globalThis.checkMarker === 'kept',
       asked: globalThis.iceServersAsked ?? [],
@@ -162,6 +163,16 @@ const paste = (page, placeholder, text) =>
     placeholder,
     text,
   );
+
+// Presses Dismiss on the host's invite whose line matches `pattern` (by script); whether there was one.
+const dismissWhere = (page, pattern) =>
+  page.evaluate((source) => {
+    const re = new RegExp(source);
+    const item = [...document.querySelectorAll('#invites li')].find((li) => re.test(li.querySelector('p')?.textContent ?? ''));
+    const button = item && [...item.querySelectorAll('button')].find((b) => b.textContent === 'Dismiss');
+    button?.click();
+    return Boolean(button);
+  }, pattern.source);
 
 // Play alone on the page's menu (by its script: the arena's `joinPage`, the vehicle demo's `playAlone`).
 const playAlone = (page) =>
@@ -415,10 +426,48 @@ try {
     h = await wait(host, 5000, (s) => s.others >= 1);
     if (h.others < 1) problems.push('the joiner left the host after the refusals');
 
+    // An invite whose reply fails (one made here for it: right token, nothing behind it) is dismissed: its line and any
+    // connection details go, it counts no more, and its reply is still refused.
+    await press(host, 'Create Invite Offer');
+    h = await wait(host, 20_000, (s) => s.links.length > 0);
+    const second = h.links[0];
+    if (!second) problems.push(`no second invite link (${h.invites})`);
+    else {
+      const { token } = await decodeCode(second.split('#join=')[1], KIND_JOIN);
+      const fake = await encodeCode({
+        kind: KIND_REPLY,
+        token,
+        ufrag: 'abcd',
+        pwd: 'abcdefghijklmnopqrstuvwx',
+        fingerprint: new Uint8Array(32),
+        setup: 'active',
+        sctpPort: 5000,
+        candidates: [],
+      });
+      const fakeLink = `${page}#reply=${fake}`;
+      await paste(host, 'Paste a reply link', fakeLink);
+      await press(host, 'Add');
+      h = await wait(host, 60_000, (s) => /failed/.test(s.invites));
+      const count = h.invites.split(' ').length;
+      console.log(`failed invite: "${h.invites}", details ${h.details}`);
+      if (!/failed/.test(h.invites)) problems.push(`the made-up reply's invite did not fail ("${h.invites}")`);
+      await panelShot(host, 'host-invite-failed.png');
+      if (!(await dismissWhere(host, /^Invite \d+: (Could not connect|the reply does not fit)/))) problems.push('a failed invite has no Dismiss');
+      h = await state(host);
+      console.log(`dismissed: "${h.invites}", details ${h.details}, lines ${h.lines.length}`);
+      if (/failed/.test(h.invites) || h.invites.split(' ').length !== count - 1 || h.details !== 0) {
+        problems.push(`the dismissed invite is still counted or shown ("${h.invites}", details ${h.details})`);
+      }
+      await paste(host, 'Paste a reply link', fakeLink);
+      await press(host, 'Add');
+      h = await wait(host, 10_000, (s) => /already used|no longer open/.test(s.said));
+      if (!/already used|no longer open/.test(h.said)) problems.push(`the dismissed invite's reply again: "${h.said}"`);
+      if (/failed/.test(h.invites)) problems.push('the dismissed invite came back');
+    }
   }
 
   // The joiner leaves the host's game (its Esc menu's Leave game): back at its own page's menu, on the same page, where it
-  // plays alone; the host's invite shows it left.
+  // plays alone; the host's invite shows it left, and is dismissed.
   if (!problems.length) {
     await joiner.bringToFront();
     await joiner.evaluate(() => globalThis.torque.call('leaveGame'));
@@ -435,6 +484,9 @@ try {
     h = await wait(host, 20_000, (s) => s.others === 0 && /left/.test(s.invites));
     console.log(`host after the joiner left: others ${h.others}, invites "${h.invites}"`);
     if (h.others !== 0 || !/left/.test(h.invites)) problems.push(`the host did not see the joiner leave (${h.others}, "${h.invites}")`);
+    if (!(await dismissWhere(host, /^Invite \d+: left the game/))) problems.push('a left invite has no Dismiss');
+    h = await state(host);
+    if (/left/.test(h.invites) || h.lines.some((l) => /left the game/.test(l))) problems.push(`the left invite stayed ("${h.invites}")`);
   }
 } catch (e) {
   problems.push(e.stack ?? e.message);
