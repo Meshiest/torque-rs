@@ -254,6 +254,13 @@ vehicle-demo *args:
 vehicle-demo-shots dir="../target/vehicle-demo-shots":
     cargo run -p torque-example-vehicle-demo --release -- --shots {{dir}}
 
+# The HUD of the level demo, the arena and the vehicle demo for review (the view in play with the corner readout, the pause
+# menu and its Controls panel) at 1280x720, 800x600 and 640x480, drawn offscreen into `dir`
+hud-shots dir="../target/hud-shots":
+    cargo run -p torque-example-level-demo --release --example level-hud-shots -- {{dir}}
+    cargo run -p torque-example-fps --release --example arena-hud-shots -- {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --example vehicle-hud-shots -- {{dir}}
+
 # The vehicle demo's clouds at noon, golden hour and sunset, looking up and their shadows on the hills, with the engine's clouds
 # (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
 vehicle-demo-cloud-shots dir="../target/vehicle-demo-cloud-shots":

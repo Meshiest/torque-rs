@@ -1,6 +1,7 @@
 new GuiControlProfile(CharacterBandProfile) { opaque = true; fillColor = "12 16 24 150"; };
 new GuiControlProfile(CharacterTextProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "235 238 245 255"; };
 new GuiControlProfile(CharacterStateProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "255 214 110 255"; justify = "right"; };
+new GuiControlProfile(CharacterStatsProfile) { fontType = "Arial"; fontSize = 14; fontColors[0] = "176 186 204 255"; justify = "right"; };
 createCanvas("torque-rs character");
 // How far the view reaches: a light haze from 1,500 units out, nothing drawn past 3,000 (a mission's Sky gives these as its
 // fogDistance and visibleDistance).
@@ -11,16 +12,28 @@ new GameTSCtrl(CharacterView) {
     new GuiControl(CharacterBand) {
         profile = CharacterBandProfile; position = "0 0"; extent = "800 28"; horizSizing = "width";
         new GuiTextCtrl(CharacterHelp) {
-            profile = CharacterTextProfile; position = "10 5"; extent = "700 18"; visible = true; enabled = true;
+            profile = CharacterTextProfile; position = "10 5"; extent = "580 18"; horizSizing = "width"; visible = true; enabled = true;
             text = "W A S D walk    Shift sprint    Ctrl crouch    C toggle crouch    Z prone    Space jump    F pistol    Mouse or Q / E orbit    Wheel zoom    Esc quit";
         };
         new GuiTextCtrl(CharacterState) {
-            profile = CharacterStateProfile; position = "700 5"; extent = "90 18"; horizSizing = "left"; visible = true; enabled = true; text = "idle";
+            profile = CharacterStateProfile; position = "600 5"; extent = "90 18"; horizSizing = "left"; visible = true; enabled = true; text = "idle";
+        };
+        new GuiTextCtrl(CharacterStats) {
+            profile = CharacterStatsProfile; position = "700 6"; extent = "90 18"; horizSizing = "left"; visible = true; enabled = true; text = "";
         };
     };
 };
 Canvas.setContent(CharacterView);
 Canvas.cursorOff();
+
+// The corner readout: the frames a second the host counted ($Client::FrameRate), four times a second.
+function updateStats()
+{
+    if ($Client::FrameRate !$= "")
+        CharacterStats.setText($Client::FrameRate @ " fps");
+    schedule(250, 0, "updateStats");
+}
+updateStats();
 
 function charForward(%v) { $charForward = %v; }
 function charBack(%v) { $charBack = %v; }

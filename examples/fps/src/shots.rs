@@ -247,6 +247,31 @@ fn meet(
     Ok((a, b))
 }
 
+/// The HUD for review at `size`, into `dir` with `tag` in each name: Bob's view in play (the corner readout with his round trip
+/// to Ann's server), then the pause menu over it and its Controls panel. Returns the paths.
+pub fn write_hud(
+    dir: &Path,
+    size: (u32, u32),
+    tag: &str,
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    let mut shots = Shots::new(dir)?;
+    place(&mut a.game, "Ann", [4.6, -11.5, 0.1], 3.6)?;
+    place(&mut a.game, "Bob", [4.0, -16.0, 0.1], 0.0)?;
+    b.game.call("say", &["Ready when you are"])?;
+    run(&gpu, &mut [&mut a, &mut b], 1500)?;
+    shots.save(&b.picture(&gpu)?, &format!("fps-play-{tag}"))?;
+    b.game.call("pauseKey", &["1"])?;
+    run(&gpu, &mut [&mut a, &mut b], 200)?;
+    shots.save(&b.picture(&gpu)?, &format!("fps-pause-{tag}"))?;
+    b.game.call("showControls", &[])?;
+    run(&gpu, &mut [&mut a, &mut b], 100)?;
+    shots.save(&b.picture(&gpu)?, &format!("fps-controls-{tag}"))?;
+    Ok(shots.paths)
+}
+
 /// Ann's camera on Bob: from `offset` (in the world) off his feet, looking at his middle (or at `aim` above his feet).
 fn watch_bob(a: &mut Seat, offset: [f32; 3], aim: f32) {
     let scene = a.game.scene();

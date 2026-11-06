@@ -21,3 +21,22 @@ fn the_rate_is_averaged_and_published_as_tge_does() {
     assert_eq!(last.0, "100.0");
     assert_eq!(f.text().as_deref(), Some("100 fps  10.0 ms"));
 }
+
+#[test]
+fn the_window_gives_the_frames_of_each_quarter_second() {
+    let mut w = FrameWindow::default();
+    let mut rates = Vec::new();
+    // 60 frames a second for a second, then 20.
+    for i in 0..60 {
+        rates.extend(w.frame(f64::from(i) * 1000.0 / 60.0));
+    }
+    for i in 1..=20 {
+        rates.extend(w.frame(1000.0 + f64::from(i) * 50.0));
+    }
+    assert_eq!(rates.len(), 7, "{rates:?}");
+    assert!(
+        rates[..3].iter().all(|r| (r - 60.0).abs() < 0.5),
+        "{rates:?}"
+    );
+    assert!((rates.last().unwrap() - 20.0).abs() < 0.5, "{rates:?}");
+}

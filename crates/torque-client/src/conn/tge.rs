@@ -828,6 +828,10 @@ impl Feed for TgeFeed {
         self.client.accept().map_or(0, |a| a.protocol)
     }
 
+    fn round_trip(&self) -> f32 {
+        self.client.protocol().map_or(0.0, |p| p.round_trip())
+    }
+
     fn room_ordered(&self) -> usize {
         self.out.room_ordered()
     }

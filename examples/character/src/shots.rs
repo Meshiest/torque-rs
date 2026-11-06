@@ -73,6 +73,8 @@ pub fn play(
     let target = gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?;
     let mut shots = Vec::new();
     let mut last_eye = None;
+    // The real clock the frames are counted by (the corner readout's frame rate), as a window counts its own.
+    let clock = std::time::Instant::now();
     for step in script {
         match *step {
             Step::Key(key, down) => game.key(key, down),
@@ -81,6 +83,8 @@ pub fn play(
                     game.step(FRAME_MS);
                     let (gui, eye) = game.frame(view);
                     view.draw(gpu, &target.color, &gui, eye)?;
+                    game.host
+                        .frame_drawn(clock.elapsed().as_secs_f64() * 1000.0);
                     last_eye = Some(eye);
                 }
             }

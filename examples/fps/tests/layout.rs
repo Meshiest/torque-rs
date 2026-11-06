@@ -231,13 +231,126 @@ fn the_pause_menu_stays_in_the_middle_of_the_view() {
                 "PauseTitle",
                 "ResumeButton",
                 "ChangeMapButton",
+                "ControlsButton",
                 "LeaveButton",
                 "PauseQuitButton",
                 "PauseNote",
             ],
             size,
         );
-        assert_eq!((p[2], p[3]), (320, 432), "the pause panel keeps its size");
+        assert_eq!((p[2], p[3]), (320, 508), "the pause panel keeps its size");
+    }
+}
+
+#[test]
+fn the_controls_panel_stays_in_the_middle_of_the_view_with_its_keys_in_two_columns() {
+    let mut g = client();
+    g.call("hostGame", &["lan"]).unwrap();
+    for _ in 0..200 {
+        g.step(32);
+        if g.in_game() {
+            break;
+        }
+    }
+    assert!(g.in_game());
+    g.call("pauseGame", &[]).unwrap();
+    g.call("showControls", &[]).unwrap();
+    assert_eq!(
+        g.call(
+            "eval",
+            &["return ControlsPanel.isVisible() SPC PausePanel.isVisible();"]
+        )
+        .unwrap(),
+        "1 0"
+    );
+    let rows: usize = g
+        .call("eval", &["return ControlsList.getCount();"])
+        .unwrap()
+        .parse()
+        .unwrap();
+    // Three headings, and a key and its action for each of the 13 rows.
+    assert_eq!(rows, 3 + 2 * 13);
+    for size in SIZES {
+        resize(&mut g, size);
+        let p = check(
+            &mut g,
+            "ControlsPanel",
+            &[
+                "ControlsTitle",
+                "ControlsList",
+                "ControlsBackButton",
+                "ControlsNote",
+            ],
+            size,
+        );
+        assert_eq!(
+            (p[2], p[3]),
+            (772, 412),
+            "the controls panel keeps its size"
+        );
+    }
+    // Back shows the menu again.
+    g.call("hideControls", &[]).unwrap();
+    assert_eq!(
+        g.call(
+            "eval",
+            &["return ControlsPanel.isVisible() SPC PausePanel.isVisible();"]
+        )
+        .unwrap(),
+        "0 1"
+    );
+}
+
+/// In a view narrower than the two columns (a small window or a browser's canvas) the groups stack in one column, and where
+/// the list is taller than the view it scrolls: the panel stays in the view, centered, its parts clear of each other.
+#[test]
+fn the_controls_panel_stacks_and_scrolls_in_a_small_view() {
+    let mut g = client();
+    g.call("hostGame", &["lan"]).unwrap();
+    for _ in 0..200 {
+        g.step(32);
+        if g.in_game() {
+            break;
+        }
+    }
+    assert!(g.in_game());
+    g.call("pauseGame", &[]).unwrap();
+    g.call("showControls", &[]).unwrap();
+    for size in [(640, 480), (480, 360), (780, 600), (800, 600), (1280, 720)] {
+        resize(&mut g, size);
+        let p = check(
+            &mut g,
+            "ControlsPanel",
+            &[
+                "ControlsTitle",
+                "ControlsScroll",
+                "ControlsBackButton",
+                "ControlsNote",
+            ],
+            size,
+        );
+        let stacked = size.0 < 788;
+        assert_eq!(
+            g.global("$Pause::ControlsStacked") == "1",
+            stacked,
+            "{size:?}: {p:?}"
+        );
+        let scroll = rect(&mut g, "ControlsScroll");
+        let list = rect(&mut g, "ControlsList");
+        // The list's whole height, or the part that fits beside the title and the Back button when the view is short.
+        let short = list[3] > size.1 - 216;
+        assert_eq!(list[3] > scroll[3], short, "{size:?}: {scroll:?} {list:?}");
+        if size.1 <= 480 {
+            assert!(short, "{size:?}: the list scrolls in a short view");
+        }
+        let note = g
+            .call("eval", &["return ControlsNote.getValue();"])
+            .unwrap();
+        assert_eq!(
+            note.starts_with("Mouse wheel: more keys"),
+            short,
+            "{note:?}"
+        );
     }
 }
 

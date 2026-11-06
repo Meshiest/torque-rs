@@ -69,6 +69,37 @@ impl Fps {
     }
 }
 
+/// How long [`FrameWindow`] counts frames before it gives their rate (ms).
+pub const WINDOW_MS: f64 = 250.0;
+
+/// The frames drawn in each [`WINDOW_MS`] of real time, as a rate: what a game's corner readout shows (`$Client::FrameRate`,
+/// [`crate::host::ClientHost::frame_drawn`]), a few times a second.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FrameWindow {
+    /// When the window began (real ms); None before the first frame.
+    start: Option<f64>,
+    frames: u32,
+}
+
+impl FrameWindow {
+    /// A frame drawn at real time `real_ms`: the frames a second over the window when it ends with this frame.
+    pub fn frame(&mut self, real_ms: f64) -> Option<f32> {
+        let Some(start) = self.start else {
+            self.start = Some(real_ms);
+            return None;
+        };
+        self.frames += 1;
+        let elapsed = real_ms - start;
+        if elapsed < WINDOW_MS {
+            return None;
+        }
+        let rate = f64::from(self.frames) * 1000.0 / elapsed;
+        self.start = Some(real_ms);
+        self.frames = 0;
+        Some(rate as f32)
+    }
+}
+
 #[cfg(test)]
 #[path = "fps_tests.rs"]
 mod tests;

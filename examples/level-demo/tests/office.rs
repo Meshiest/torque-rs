@@ -167,7 +167,10 @@ fn the_figure_walks_in_through_the_doors_and_is_stopped_by_furniture() {
                 w.what, p[2], w.want[0], w.want[1]
             ));
         }
+        // Esc, then the pause menu's Leave game: back to the menu of maps.
         hold(&mut game, Key::Escape, 64);
+        game.call("leaveGame", &[]).expect("leaveGame");
+        game.step(32);
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }

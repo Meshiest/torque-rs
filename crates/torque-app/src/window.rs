@@ -128,6 +128,8 @@ struct AppWindow<G> {
     /// Whether the pipeline cache was saved once the view's warm-up was done (it is saved again at the close).
     #[cfg(not(target_arch = "wasm32"))]
     cache_saved: bool,
+    /// The real clock the frames are counted by ([`Host::frame_drawn`]).
+    clock: web_time::Instant,
 }
 
 /// A canvas's device on its way: the browser answers WebGPU's requests on its own event loop, so the window keeps running (and
@@ -301,6 +303,8 @@ impl<G: App> WindowGame for AppWindow<G> {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let drew = view.draw(&surface.gpu, &target, &gui, eye)?;
         surface.present(frame);
+        let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
+        self.game.host().frame_drawn(real_ms);
         // The warm-up's pipelines kept now, should the process not reach its close.
         #[cfg(not(target_arch = "wasm32"))]
         if !self.cache_saved && !view.warming() {
@@ -344,6 +348,7 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
         frame_times: crate::web_page::FrameTimes::new(),
         #[cfg(not(target_arch = "wasm32"))]
         cache_saved: false,
+        clock: web_time::Instant::now(),
     };
     #[cfg(target_arch = "wasm32")]
     {
@@ -386,6 +391,7 @@ impl<G: App> AppWindow<G> {
             surface,
             view,
             cache_saved: _,
+            clock: _,
         } = self;
         drop(view);
         if let Some(s) = &surface {

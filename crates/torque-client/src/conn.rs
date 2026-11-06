@@ -22,9 +22,10 @@
 //!
 //! **Scripts call** `commandToServer(tag, ...)` (only once the connection to the server is established; the tag test and
 //! `Remote Command Error - command must be a tag.`; `net::remote::send_command` over the connection's own string table), and the
-//! connection's methods: `isConnected` (accepted), `isLocalConnection` (0), `getAddress`, `getPort`, `getPing`, `delete` (a disconnect
-//! with the reason, empty by default, when connected), `getGhostsActive`, `getControlObject` and `resolveGhostID` (the ghosts'
-//! script objects, [`crate::ghost_objects`]). Every other `GameConnection` (one a server host made) keeps the server's natives.
+//! connection's methods: `isConnected` (accepted), `isLocalConnection` (0), `getAddress`, `getPort`, `getPing` (the running
+//! round trip, ms), `delete` (a disconnect with the reason, empty by default, when connected), `getGhostsActive`,
+//! `getControlObject` and `resolveGhostID` (the ghosts' script objects, [`crate::ghost_objects`]). Every other `GameConnection`
+//! (one a server host made) keeps the server's natives.
 //! A game registers its own natives of the connection after these ([`ConnGame::register_natives`]).
 //!
 //! **The ticks.** Every tick of the client host once accepted: the move of [`crate::net::moves::next_move`] (TGE's `getNextMove`)
@@ -420,6 +421,11 @@ pub trait Feed: 'static {
 
     /// The protocol version of the server's accept; 0 before it.
     fn protocol_version(&self) -> u32;
+
+    /// The connection's running round trip in milliseconds (`getPing`); 0 before the first packet comes back.
+    fn round_trip(&self) -> f32 {
+        0.0
+    }
 
     /// The room the ordered event queue has.
     fn room_ordered(&self) -> usize;
@@ -1324,7 +1330,13 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
     let st = Rc::clone(client);
     method(vm, "getPing", move |vm, c, prev| {
         if is_conn(&st, c) {
-            return Native::Int(0);
+            let ping = st
+                .borrow()
+                .conn
+                .conn
+                .as_ref()
+                .map_or(0.0, |x| x.feed.round_trip());
+            return Native::Int(ping as i32);
         }
         fallback(vm, c, prev, Native::Int(0))
     });

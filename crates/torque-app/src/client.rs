@@ -172,7 +172,7 @@ impl ClientBuilder {
             draw_cache(),
         );
         host.set_windowed();
-        GameClient {
+        let mut client = GameClient {
             host,
             server: None,
             link: self.link,
@@ -181,7 +181,9 @@ impl ClientBuilder {
             frame_dt: 0.0,
             server_log: Vec::new(),
             client_log: Vec::new(),
-        }
+        };
+        client.set_global("$Client::HostsServer", "0");
+        client
     }
 }
 
@@ -470,12 +472,14 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
         }
     }
 
-    /// Runs `server` here from now on (its lines so far kept): the client then joins it at its address.
+    /// Runs `server` here from now on (its lines so far kept): the client then joins it at its address. The scripts see
+    /// `$Client::HostsServer` 1 until hosting stops.
     pub fn start_hosting(&mut self, mut server: S) {
         self.server_log
             .extend(std::borrow::BorrowMut::<GameServer>::borrow_mut(&mut server).drain_log());
         self.server = Some(server);
         self.server_lag = 0;
+        self.set_global("$Client::HostsServer", "1");
     }
 
     /// Runs `server`, started on [`super::server::Listen::Memory`] at `at`, here over an in-memory link from `client` (a game
@@ -521,6 +525,7 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
             n.policy = p.policy;
             self.link = p.link;
         }
+        self.set_global("$Client::HostsServer", "0");
     }
 
     /// The hosted server's address, if this client hosts one.

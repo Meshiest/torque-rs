@@ -1,5 +1,5 @@
 // The vehicle demo's client: the menu (play alone, host a game, or join one on the network or at an address), the world's view
-// with its help line and hint, the keys on foot and in a seat, and the way in.
+// with its title, readout and hint, the keys on foot and in a seat, and the way in.
 //
 // The host watches the globals the menu sets: $World::AloneAsked (start a game here that nobody else can join and join it),
 // $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on; $World::AloneOnly (set by the host) keeps the menu to playing alone. On foot the keys move the figure (as the level demo's); a click asks
@@ -8,7 +8,7 @@
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
 // $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
 // camera at the figure's eyes or behind it, on foot and in a seat. Esc opens the examples' pause menu (common/pause.cs: Resume,
-// Leave game, Quit). The host writes the hint line (setHint).
+// Controls, Leave game, Quit). The host writes the hint line (setHint).
 
 exec("common/client.cs");
 
@@ -259,10 +259,6 @@ function pollJoinLookup()
 
 // ---- the world's view
 
-$World::FootHelp = "W A S D walk   Shift sprint   Ctrl crouch   C toggle crouch   Z prone   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
-$World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   F light   Mouse turns the camera   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
-$World::RideHelp = "Mouse looks around   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
-
 new GameTSCtrl(PlayGui)
 {
    position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
@@ -273,10 +269,10 @@ new GameTSCtrl(PlayGui)
       {
          profile = WorldTextProfile; position = "10 5"; extent = "120 18"; visible = true; enabled = true; text = "";
       };
-      new GuiTextCtrl(PlayHelp)
+      new GuiTextCtrl(PlayStats)
       {
-         profile = WorldDimProfile; position = "130 5"; extent = "660 18"; horizSizing = "width"; visible = true; enabled = true;
-         text = $World::FootHelp;
+         profile = StatsProfile; position = "640 6"; extent = "150 18"; horizSizing = "left"; visible = true; enabled = true;
+         text = "";
       };
    };
    new GuiTextCtrl(PlayNote)
@@ -305,7 +301,7 @@ function setHint(%text)
 
 // ---- the keys on foot
 
-function resetCanvas() {}
+function resetCanvas() { pauseResized(); }
 
 new ActionMap(PlayMap);
 // The figure walks (a share of its full speed) and sprints at its full speed while Shift is held.
@@ -503,7 +499,6 @@ function clientCmdSeated(%seat)
    $Drive::Seat = %seat;
    $Drive::OrbitYaw = 0;
    $Drive::OrbitPitch = 0;
-   PlayHelp.setText(%seat < 0 ? $World::FootHelp : (%seat == 0 ? $World::DriveHelp : $World::RideHelp));
    // While the pause menu is up the keys stay off: closing it brings back the map of the seat or of the feet.
    if (!$Client::Paused)
       pushPlayKeys();
@@ -540,6 +535,34 @@ function leaveGame()
    leaveWorld();
 }
 function quitGame() { quit(); }
+
+addControls(0, "On foot");
+addControl("W A S D", "Walk");
+addControl("Shift", "Sprint");
+addControl("Ctrl", "Crouch while held");
+addControl("C", "Crouch or stand up");
+addControl("Z", "Lie down or get up");
+addControl("Space", "Jump");
+addControl("Mouse", "Look around");
+addControl("Click the buggy", "Get in");
+addControls(0, "In the passenger seat");
+addControl("Mouse", "Look around");
+addControl("E", "Get out");
+addControls(1, "At the wheel");
+addControl("W", "Throttle");
+addControl("S", "Reverse");
+addControl("A D", "Steer");
+addControl("Space", "Brake");
+addControl("F", "Headlight on or off");
+addControl("Mouse", "Turn the camera");
+addControl("E", "Get out");
+addControls(1, "Any time");
+addControl("Tab", "Switch camera");
+addControl("Mouse wheel", "Zoom the camera");
+addControl("[ and ]", "Day slower or faster");
+addControl("\\", "Day at normal speed");
+addControl("R", "Back to the start");
+addControl("Esc", "This menu");
 
 function clientCmdFell()
 {

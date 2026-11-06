@@ -25,6 +25,8 @@ pub struct Seat<G> {
     pub target: Offscreen,
     /// An eye in place of the game's (none: the game's).
     pub eye: Option<Eye>,
+    /// The real clock the frames are counted by, as a window counts its own (the readout of a game's frame rate).
+    clock: web_time::Instant,
 }
 
 impl<G: App> Seat<G> {
@@ -35,6 +37,7 @@ impl<G: App> Seat<G> {
             view: game.view(gpu),
             target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
             eye: None,
+            clock: web_time::Instant::now(),
             game,
         })
     }
@@ -44,6 +47,8 @@ impl<G: App> Seat<G> {
         let (gui, eye) = self.game.frame(&mut self.view);
         let eye = self.eye.unwrap_or(eye);
         self.view.draw(gpu, &self.target.color, &gui, eye)?;
+        let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
+        self.game.host().frame_drawn(real_ms);
         Ok(())
     }
 
