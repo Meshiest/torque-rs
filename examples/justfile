@@ -170,9 +170,10 @@ web-fps-p2p-check: web-guard-test
 # The arena joined by an invite link on its page played alone (build it first with `node web/build.mjs fps --solo`): the
 # page waits at its menu and its canvas follows the page's size; a host page makes the link, a second browser opens it and
 # makes a reply link, the host's browser opens the reply, the data channel opens on this computer's own addresses (no STUN
-# server is contacted), the joiner walks, bad codes are refused and a refused join's Back to the menu works. Then the same
-# with both pages in one browser, an invite on the default server (Cloudflare, not contacted: the pages get no STUN server)
-# and the reply opened 20 s later. Pictures of the panels into the target folder's `web/invites` and `web/invites-same`
+# server is contacted), the joiner walks, bad codes are refused, a refused join takes a new link pasted in, its Back to the
+# menu shows the game's menu, and the joiner leaves back to its own menu, with no page ever loaded again. Then the same with both pages in one browser, an invite on the default server (Cloudflare, not contacted:
+# the pages get no STUN server) and the reply opened 20 s later. Pictures of the panels into the target folder's
+# `web/invites` and `web/invites-same`
 web-fps-invite-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites" 120
@@ -193,7 +194,7 @@ web-invite-link-check: web-guard-test
     node ../web/invite-link-check.mjs firefox,chrome two 30
 
 # The vehicle demo joined by an invite link, as `web-fps-invite-check` (build it first with `node web/build.mjs vehicle-demo
-# --solo`): its Host with a link opens the page again with its server in the worker. Pictures into the target folder's
+# --solo`): its Host with a link starts its server in the worker on the same page. Pictures into the target folder's
 # `web/vehicle-invites`
 web-vehicle-demo-invite-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1

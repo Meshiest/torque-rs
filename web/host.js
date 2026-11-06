@@ -188,11 +188,13 @@ export function iceServersFrom(body) {
 }
 
 // Hosts the game: `game` is the module (its files fetched), `say(text)` shows the page's status line; `solo`: played alone,
-// no room, and the host player's client is `client`'s: `solo` (`startSoloClient`) or `host` (`startHostClient`).
+// no room, and the host player's client is `client`'s: `solo` (`startSoloClient`), `host` (`startHostClient`), or null
+// for a game already running that joins the server itself (a page played alone switching to hosting in place).
 // `onHost({ adopt })`, called on a solo page once the server runs: `adopt(pc, channel, ip, onEnd)` takes an invited
 // joiner's peer connection and its channel (open, or opening) from `ip` and returns null, or why it was refused; `onEnd()`
-// is called when that joiner is ended.
-export async function hostGame(game, say, { solo = false, client = 'solo', onHost = null } = {}) {
+// is called when that joiner is ended. `wasm`: the module compiled already (the worker then does not compile it again).
+// Returns `{ endPeers(), stop() }`: every joiner ended; and that, with the worker ended too (its game is over).
+export async function hostGame(game, say, { solo = false, client = 'solo', onHost = null, wasm = null } = {}) {
   const root = document.documentElement;
   const params = new URLSearchParams(location.search);
   const lan = params.has('lan');
@@ -201,6 +203,12 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
   const workerUrl = new URL('./host-worker.js', import.meta.url);
   if (params.get('map')) workerUrl.searchParams.set('map', params.get('map'));
   const worker = new Worker(workerUrl, { type: 'module' });
+  try {
+    worker.postMessage({ start: { wasm } });
+  } catch {
+    // a browser that cannot hand the compiled module over: the worker compiles its own
+    worker.postMessage({ start: { wasm: null } });
+  }
   const peers = new Map();
   // This page's own candidate addresses: a joiner may not name them.
   const own = new Set();
@@ -338,7 +346,12 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
     worker.onerror = (e) => fail(new Error(`the server's worker: ${e.message}`));
   });
   say('Starting the server...');
-  await started;
+  try {
+    await started;
+  } catch (e) {
+    worker.terminate();
+    throw e;
+  }
   root.dataset.torqueServer = 'worker';
   worker.onmessage = (e) => {
     const m = e.data;
@@ -358,11 +371,25 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
     worker.postMessage({ from: 0, data: copy.buffer }, [copy.buffer]);
   });
 
-  // The game ends for every joiner when this page goes.
-  addEventListener('pagehide', () => {
+  let ping = null;
+  const endPeers = () => {
     for (const id of [...peers.keys()]) end(id);
+  };
+  const stop = () => {
+    endPeers();
+    worker.onmessage = null;
     worker.terminate();
-  });
+    removeEventListener('pagehide', stop);
+    clearInterval(ping);
+    if (room) {
+      room.onclose = null;
+      room.close();
+    }
+    delete root.dataset.torqueServer;
+  };
+  const handle = { endPeers, stop };
+  // The game ends for every joiner when this page goes.
+  addEventListener('pagehide', stop);
   if (solo) {
     let next = 1;
     onHost?.({
@@ -383,7 +410,9 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
         return null;
       },
     });
-    return client === 'host' ? game.startHostClient() : game.startSoloClient();
+    if (client === 'host') game.startHostClient();
+    else if (client === 'solo') game.startSoloClient();
+    return handle;
   }
   room = new WebSocket(roomsUrl);
   room.binaryType = 'arraybuffer';
@@ -394,6 +423,7 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
     }
   };
   room.onclose = () => console.warn('The room service closed the link: no one else can join this game.');
-  setInterval(() => tell('ping'), PING_MS);
+  ping = setInterval(() => tell('ping'), PING_MS);
   game.startHostClient();
+  return handle;
 }

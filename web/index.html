@@ -130,11 +130,12 @@
   // `data-torque-solo="1"` on the root element (`build.mjs --solo`, a site with no game server): the game is played alone. A
   // game whose module has `startSoloClient` (the arena) plays on its own server in a Web Worker (host.js, with no room), and
   // its menus offer neither hosting nor joining through a room service; `?host=1` is then ignored. Its menu's Host with a link
-  // and Join with Link trade connection codes by hand instead (invites.js): an invite link (`#join=<code>`) opens the page
-  // joining that host (`startLinkClient`), and a reply link (`#reply=<code>`) hands its reply to this browser's game tab and
-  // starts no game. A game played alone in the page itself (the vehicle demo) hosts with a link by opening the page again
-  // with `?invites=1`: its server then runs in the worker (`startHostClient`, as `?host=1` with no room) and the invites
-  // panel opens.
+  // and Join with Link trade connection codes by hand instead (invites.js `soloPage`), and the page never loads again: an
+  // invite link (`#join=<code>`, or one pasted into Join with Link) starts the game as played alone with the join's panel
+  // over its menu, and switches it to the host's game once the channel opens (the game's `switchTo`); Back to the menu,
+  // and leaving that game, switch it back. A reply link (`#reply=<code>`) hands its reply to this browser's game tab and
+  // starts no game unless its Back to the menu is pressed. A game played alone in the page itself (the vehicle demo) hosts
+  // with a link by starting its server in the worker then (as `?host=1` with no room) and switching its game to it.
   //
   // Esc: a browser keeps it for itself while the pointer is locked (it ends the lock) and in full screen (it leaves it). The
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
@@ -143,7 +144,7 @@
   import { fpsText, later, readStreamed, stageText } from './loading.js';
   import * as settings from './settings.js';
   import { createTorque } from './bridge.js';
-  import { hostInvites, joinInvite, replyTab, soloAsks, takeFragment } from './invites.js';
+  import { replyTab, soloPage, takeFragment } from './invites.js';
 
   // `?nolock` (the browser checks load every page with it): the page never takes the pointer lock. In headless Chrome on Windows
   // a lock confines the real cursor to the invisible window.
@@ -158,9 +159,13 @@
   }
 
   const root = document.documentElement;
+  const alone = root.dataset.torqueSolo === '1';
   // An invite or reply link: read, and cleared from the address bar, before anything else (a page played alone only).
-  const invite = root.dataset.torqueSolo === '1' ? takeFragment() : null;
-  const joining = invite?.kind === 'join' ? joinInvite(invite.code) : null;
+  const invite = alone ? takeFragment() : null;
+  // A page played alone: its invite panels and its game's switches in place; an invite link's panel shows at once.
+  let page = null;
+  const pageOf = () => (page ??= soloPage());
+  if (invite?.kind === 'join') pageOf().join(invite.code);
   const status = document.getElementById('status');
   const bar = document.getElementById('progress');
   let stage = null;
@@ -307,25 +312,27 @@
       show('module', done, total));
     show('compile');
     await new Promise(requestAnimationFrame);
-    await module.default({ module_or_path: await WebAssembly.compile(wasm) });
+    const compiled = await WebAssembly.compile(wasm);
+    await module.default({ module_or_path: compiled });
     const game = module;
     // `?host=1`: this page hosts a game for others to join by its room code (host.js), its server in a worker. A page
     // played alone runs a game that has its own server the same way, with no room.
-    const alone = root.dataset.torqueSolo === '1';
     const solo = alone && typeof game.startSoloClient === 'function';
-    const invitesHost =
-      alone && !solo && typeof game.startHostClient === 'function' && new URLSearchParams(location.search).has('invites');
-    const hosting = !joining && (solo || invitesHost || (!alone && new URLSearchParams(location.search).has('host')));
-    if (joining) {
-      if (typeof game.startLinkClient !== 'function') throw new Error('this game cannot be joined by an invite link');
-      // an invite refused before the game loaded: its panel says why and offers Back to the menu; no game starts
-      if (joining.refused()) {
-        document.getElementById('loading')?.remove();
-        return;
-      }
-      joining.attach(game);
-    }
+    const hosting = solo || (!alone && new URLSearchParams(location.search).has('host'));
     if (hosting && game.embedded()) throw new Error('a build that carries its files cannot host: its worker fetches them');
+    if (alone && typeof game.switchTo === 'function') {
+      // A game played alone in the page itself hosts with a link by starting its server in the worker then.
+      const startHost =
+        !solo && !game.embedded()
+          ? async (onHost) => {
+              const { hostGame } = await import('./host.js');
+              return hostGame(game, () => {}, { solo: true, client: null, onHost, wasm: compiled });
+            }
+          : null;
+      pageOf().attach(game, { startHost });
+    } else if (page) {
+      throw new Error('this game cannot be joined by an invite link');
+    }
     torque.attach(game);
     // The game's first frame is drawn at the quality chosen.
     applyQuality();
@@ -338,25 +345,21 @@
     await new Promise(requestAnimationFrame);
     if (game.embedded()) {
       game.startEmbedded();
-    } else if (joining) {
-      // refused while the files came: no game starts
-      if (joining.refused()) {
-        document.getElementById('loading')?.remove();
-        return;
-      }
-      game.startLinkClient();
     } else if (hosting) {
       const { hostGame } = await import('./host.js');
-      const onHost = solo || invitesHost ? hostInvites({ open: invitesHost }) : null;
-      await hostGame(game, (text) => (status.textContent = text), { solo: solo || invitesHost, client: invitesHost ? 'host' : 'solo', onHost });
+      const handle = await hostGame(game, (text) => (status.textContent = text), {
+        solo,
+        client: solo ? 'solo' : 'host',
+        onHost: solo ? pageOf().onHost : null,
+        wasm: compiled,
+      });
+      if (solo) pageOf().hosted(handle);
     } else {
-      // a game played alone in the page: its menu's invite entries open the page again to host, or join by a link
-      if (alone && typeof game.startLinkClient === 'function') soloAsks();
       game.startFetched();
     }
   }
 
-  (invite?.kind === 'reply' ? replyTab(invite.code) : start()).catch((e) => {
+  function failed(e) {
     const message = String(e?.message ?? e);
     bar.hidden = true;
     if (e instanceof Refused) {
@@ -367,7 +370,10 @@
       status.textContent = `The game did not start: ${message}`;
       console.error(status.textContent);
     }
-  });
+  }
+
+  // A reply link's tab starts the game only when its Back to the menu is pressed.
+  (invite?.kind === 'reply' ? replyTab(invite.code, { back: () => start().catch(failed) }) : start()).catch(failed);
 </script>
 </body>
 </html>

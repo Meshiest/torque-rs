@@ -20,6 +20,10 @@
 //
 // Caps: at most MAX_INVITES invites wait at once, each for INVITE_MS; a reply has CONNECT_MS for its channel to open; one
 // reply is read at a time; a code is refused whole when it breaks any of codes.js's caps; an invite's reply is taken once.
+//
+// Nothing here opens the page again: the page's game runs from its first load on (`soloPage`). An invite link opens the
+// page playing alone with the join's panel over its menu; the game switches to the host's once the channel opens
+// (`switchTo('link')`), and back to playing alone when the player goes back or leaves that game (`switchTo('solo')`).
 import {
   CodeError,
   DEFAULT_SERVER,
@@ -315,20 +319,14 @@ const waitOpen = (ch, ms) =>
 
 const message = (e) => (e instanceof CodeError ? e.message : `Something went wrong: ${String(e?.message ?? e)}`);
 
-// The page again with no invite or reply: its game played alone, at its menu.
-function backToMenu() {
-  location.replace(location.pathname + location.search);
-}
-const backButton = () => el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: backToMenu } });
+// ---- the joiner's paste field
 
-// ---- the host
-
-// A paste field for an invite link that opens the page again, joining.
-function showJoinPaste() {
-  const p = openPanel('Join with Link');
+// A field to paste an invite offer link into and its Join button: `go(code)` with the link's code once it reads as an
+// invite offer (codes.js's caps whole); else the line under it says why not.
+function joinPasteRow(go) {
   const paste = el('input', { type: 'text', 'aria-label': 'An invite offer link', placeholder: 'Paste an invite offer link' });
   const said = el('p', { class: 'said', 'data-said': '' });
-  const go = el('button', {
+  const join = el('button', {
     type: 'button',
     class: 'primary',
     text: 'Join',
@@ -345,36 +343,34 @@ function showJoinPaste() {
           said.textContent = message(e);
           return;
         }
-        // the page again, joining: this game ends
-        location.hash = `join=${code}`;
-        location.reload();
+        go(code);
       },
     },
   });
+  paste.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') join.click();
+  });
+  return { row: el('div', { class: 'row' }, paste, join), said, paste };
+}
+
+// The menu's Join with Link: the paste field; `go(code)` starts the join here.
+function showJoinPaste(go) {
+  const p = openPanel('Join with Link');
+  const { row, said, paste } = joinPasteRow(go);
   p.append(
     el('p', { text: 'Paste the invite offer link a friend sent you. Your own game here ends when you join theirs.' }),
-    el('div', { class: 'row' }, paste, go),
+    row,
     said,
     el('button', { type: 'button', class: 'close', text: 'Close', on: { click: closePanel } }),
   );
   paste.focus();
 }
 
-// A game played alone in the page (no server in a worker): its menu's Host with a link opens the page again hosting
-// (`?invites=1`), and Join with Link the paste field.
-export function soloAsks() {
-  globalThis.torqueAsk = (what) => {
-    if (what === 'join') return showJoinPaste();
-    if (what !== 'host') return;
-    const url = new URL(location.href);
-    url.hash = '';
-    url.searchParams.set('invites', '1');
-    location.assign(url.href);
-  };
-}
+// ---- the host
 
-// The host's invites, for host.js's `onHost`: the menu's Host with a link opens its panel (`torqueAsk('host')`), and
-// Join with Link a paste field that reloads the page into joining. `open`: the panel opens once the server runs.
+// The host's invites (one for the page: it listens for reply tabs on a BroadcastChannel): `hosting(h)` is host.js's
+// `onHost` (`h` null once that server stopped), `show()` opens the Host with a link panel, `closeAll()` closes every
+// invite still open (the page is joining another game). `open`: the panel opens once the server runs.
 export function hostInvites({ open = false } = {}) {
   let host = null;
   const invites = new Map();
@@ -390,15 +386,16 @@ export function hostInvites({ open = false } = {}) {
 
   const pending = () => [...invites.values()].filter((i) => i.state === 'waiting' || i.state === 'making').length;
 
-  // every invite made, for the page's `data-torque-invites` (each one's state, oldest first)
+  // every invite on the list, for the page's `data-torque-invites` (each one's state, oldest first)
   const made = [];
+  const marked = () => (root.dataset.torqueInvites = made.map((i) => i.state).join(' '));
   // An invite's link is shown only while it waits for its reply: once the reply is in, or the invite expired or failed,
   // its link box goes (its status line stays).
   function setState(inv, state, text) {
     inv.state = state;
     inv.status.textContent = `Invite ${inv.n}: ${text}`;
     if (state !== 'waiting') inv.box?.remove();
-    root.dataset.torqueInvites = made.map((i) => i.state).join(' ');
+    marked();
   }
 
   function forget(inv) {
@@ -499,7 +496,10 @@ export function hostInvites({ open = false } = {}) {
   // The invite's channel opens in time and its player comes in, or it is closed.
   async function settle(inv) {
     const { pc, ch } = inv;
-    if (!(await waitOpen(ch, CONNECT_MS))) {
+    const opened = await waitOpen(ch, CONNECT_MS);
+    // closed meanwhile (`closeAll`)
+    if (!invites.has(inv.token)) return pc.close();
+    if (!opened) {
       const details = await detailsOf(pc, inv.seen);
       pc.close();
       forget(inv);
@@ -512,7 +512,11 @@ export function hostInvites({ open = false } = {}) {
     // in the reserved 240.0.0.0/8, so the other caps still hold.
     const seen = await remoteAddress(pc).catch(() => null);
     const ip = ipv4(seen) ? seen : `240.0.${(inv.n >> 8) & 255}.${inv.n & 255}`;
-    const refused = host ? host.adopt(pc, ch, ip, () => setState(inv, 'left', 'left the game.')) : 'The game is not running.';
+    const left = () => {
+      forget(inv);
+      setState(inv, 'left', 'left the game.');
+    };
+    const refused = host ? host.adopt(pc, ch, ip, left) : 'The game is not running.';
     if (refused) {
       pc.close();
       forget(inv);
@@ -588,11 +592,6 @@ export function hostInvites({ open = false } = {}) {
     p.querySelector('.primary').focus();
   }
 
-  globalThis.torqueAsk = (what) => {
-    if (what === 'host') showHost();
-    else if (what === 'join') showJoinPaste();
-  };
-
   // Replies handed over by a reply tab in this browser; answered only when the reply is for one of this page's invites
   // (or is no code at all).
   if (typeof BroadcastChannel === 'function') {
@@ -605,26 +604,53 @@ export function hostInvites({ open = false } = {}) {
     };
   }
 
-  return (h) => {
-    host = h;
-    if (open) showHost();
+  // Every invite still open closed: the page is joining another game. (The players in this page's game are ended by its
+  // host, host.js.)
+  function closeAll() {
+    for (const inv of [...invites.values()]) {
+      if (!['making', 'waiting', 'connecting'].includes(inv.state)) continue;
+      inv.pc?.close();
+      forget(inv);
+      setState(inv, 'closed', 'closed: you joined another game.');
+    }
+  }
+
+  return {
+    hosting(h) {
+      host = h;
+      if (h && open) {
+        open = false;
+        showHost();
+      }
+    },
+    show: showHost,
+    closeAll,
   };
 }
 
 // ---- a reply tab
 
 // When the page was opened on a reply link (`fragment` from takeFragment): hands the reply to this browser's game tab and
-// closes, or shows why not. Returns at once; the game does not start in this tab.
-export async function replyTab(code) {
+// closes, or shows why not. The game does not start in this tab unless the player goes on to its menu: `back()` starts
+// it here.
+export async function replyTab(code, { back = null } = {}) {
   const loading = document.getElementById('loading');
-  loading?.remove();
-  const p = openPanel('A reply link', backToMenu);
+  if (loading) loading.style.display = 'none';
+  let gone = false;
+  const toMenu = () => {
+    if (gone) return;
+    gone = true;
+    closePanel();
+    if (loading) loading.style.display = '';
+    back?.();
+  };
+  const p = openPanel('A reply link', toMenu);
   const said = el('p', { 'data-said': '' });
   p.append(said);
   const root = document.documentElement;
   // A reply that was not taken: this tab can still go to the game's menu.
   const failed = (state) => {
-    p.append(backButton());
+    p.append(el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: toMenu } }));
     root.dataset.torqueReply = state;
   };
   try {
@@ -665,36 +691,69 @@ export async function replyTab(code) {
 
 // ---- the joiner
 
-// The joiner's side of an invite (`code`, from the fragment): its panel shows at once; `attach(game)` once the module is
-// loaded gives the game its link (the game joins once the channel opens, `startLinkClient`). Every state of the panel has
-// Back to the menu, which opens the page again with no invite: its game played alone, at its menu. Esc does the same
-// before Connect and once the join failed, never while the reply is being made or waits for the host.
-export function joinInvite(code) {
+// The joiner's side of an invite (`code`, from the fragment or pasted): its panel shows at once; `attach(game)` once the
+// module is loaded gives the game the link (`setLinkSender`, `linkDatagram`). When the channel opens, `opening()` switches
+// the page's game to it (`switchTo('link')`) and the game joins (`linkOpened`). Every state of the panel has Back to the
+// menu (`back()`: the page's own game, which ran under the panel all along); Esc does the same before Connect and once the
+// join failed, never while the reply is being made or waits for the host. A join that failed or was refused also offers
+// a field for a new invite offer link (`again(code)`). `dispose()` ends the join for good: its connection closed, its
+// timers cleared, its panel gone, and nothing it does after reaches the page or the game.
+export function joinInvite(code, { back = closePanel, again = null, opening = null } = {}) {
   const root = document.documentElement;
   let state = 'reading';
+  let disposed = false;
+  const timers = new Set();
+  // `fn` after `ms`, unless the join was disposed by then
+  const later = (fn, ms) => {
+    const t = setTimeout(() => {
+      timers.delete(t);
+      if (!disposed) fn();
+    }, ms);
+    timers.add(t);
+  };
   const p = openPanel('Join with Link', () => {
-    if (state !== 'making' && state !== 'replied') backToMenu();
+    if (state !== 'making' && state !== 'replied') back();
   });
   const said = el('p', { class: 'said', 'data-said': '' });
-  const back = backButton();
-  p.append(said, back);
-  const show = (...nodes) => back.before(...nodes);
+  const backButton = el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: () => back() } });
+  p.append(said, backButton);
+  const show = (...nodes) => backButton.before(...nodes);
   let game = null;
+  let pc = null;
   let channel = null;
   let opened = false;
   let ended = null;
+  // Back to the menu, or the page closed: this join's connection ends with it.
+  const hide = () => pc?.close();
+  addEventListener('pagehide', hide);
   const mark = (next) => {
+    if (disposed) return;
     state = next;
     root.dataset.torqueJoin = next;
   };
   const end = (why) => {
-    if (ended) return;
+    if (ended || disposed) return;
     ended = why;
     if (state !== 'refused') mark('ended');
-    game?.linkEnded(why);
+    if (opened) game?.linkEnded(why);
   };
-  // A join that cannot go on: why, and the way back. A reply link shown is taken away (its connection is closed).
+  // The game takes the open channel: the page's game switches to it, and joins.
+  const linked = () => {
+    opening?.();
+    game.linkOpened();
+  };
+  // A field for a new invite offer link, once.
+  let offered = false;
+  const offerNew = () => {
+    if (offered || !again) return;
+    offered = true;
+    const { row, said: pasteSaid } = joinPasteRow(again);
+    show(el('p', { text: 'Got a new invite offer link? Paste it here to join with it:' }), row, pasteSaid);
+  };
+  // A join that cannot go on: why, the way back and a field for a new link. A reply link shown is taken away (its
+  // connection is closed).
   const fail = (text, next = 'ended') => {
+    if (disposed) return;
     said.textContent = text;
     p.querySelector('.link')?.remove();
     if (!p.isConnected) {
@@ -704,14 +763,10 @@ export function joinInvite(code) {
     }
     if (next === 'refused') mark('refused');
     end(text);
-    back.focus();
+    offerNew();
+    backButton.focus();
   };
   const refuse = (text) => fail(text, 'refused');
-
-  // the menu's Play alone instead (an invited page's game, `torqueAsk('back')`)
-  globalThis.torqueAsk = (what) => {
-    if (what === 'back') backToMenu();
-  };
 
   async function connect(data) {
     mark('making');
@@ -719,30 +774,28 @@ export function joinInvite(code) {
     const lan = privateAllowed(data.server, location.search, true);
     // One certificate for every connection this join makes: each has the fingerprint the reply link names.
     const certificates = [await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' })];
+    if (disposed) return;
     // This page's own mDNS names (every connection's): an invite that names them is not taken at them (a host could point
     // this browser at its own network address and a port of its choice). Addresses stay: two pages on one computer share
     // them.
     const own = new Set();
     const ownName = (address) => MDNS_NAME.test(address ?? '') && own.add(address);
-    let pc = null;
     // The reply's ICE credentials, fingerprint and DTLS setup (`fromSdp`), once the first connection has made them.
     let details = null;
     let started = 0;
     // The states of this join's connections (`watchStates`), one history through every connection that took over.
     let seen = undefined;
-    // Back to the menu ends this connection with the page.
-    addEventListener('pagehide', () => pc?.close());
     // The channel did not open: the current connection's details are gathered, then it is closed.
     let failing = false;
     const noRelay = async () => {
-      if (failing || opened || ended) return;
+      if (failing || opened || ended || disposed) return;
       failing = true;
       const last = pc;
       const found = await detailsOf(last, seen);
       // the channel opened while the details were gathered: it stays
       if (opened) return;
       last.close();
-      if (ended) return;
+      if (ended || disposed) return;
       fail(NO_RELAY);
       said.after(detailsBox(found));
     };
@@ -756,7 +809,7 @@ export function joinInvite(code) {
       started = performance.now();
       next.ondatachannel = (e) => {
         const ch = e.channel;
-        if (next !== pc) return;
+        if (next !== pc || disposed) return;
         if (channel || ch.label !== 'game' || ch.ordered || ch.maxRetransmits !== 0) {
           next.close();
           return refuse('The host sent a connection this page does not take. Ask the host for a new invite offer link.');
@@ -764,14 +817,16 @@ export function joinInvite(code) {
         channel = ch;
         ch.binaryType = 'arraybuffer';
         ch.onopen = () => {
+          if (disposed) return;
           opened = true;
           mark('open');
-          game?.linkOpened();
-          closePanel();
+          if (game) linked();
+          if (panel === p) closePanel();
+          else p.remove();
         };
         // the host's messages within the same caps as a joiner's on the host: past them, the link ends
         ch.onmessage = meteredReceiver(
-          (data) => game?.localDatagram(new Uint8Array(data)),
+          (data) => disposed || game?.linkDatagram(new Uint8Array(data)),
           () => {
             next.close();
             end('The host sent more than the game takes, so the connection was closed.');
@@ -780,7 +835,7 @@ export function joinInvite(code) {
         ch.onclose = () => (opened ? end('The host left the game.') : noRelay());
       };
       next.oniceconnectionstatechange = () => {
-        if (next !== pc || next.iceConnectionState !== 'failed') return;
+        if (next !== pc || disposed || next.iceConnectionState !== 'failed') return;
         if (opened) end('The host left the game.');
         else if (details) again();
       };
@@ -789,7 +844,7 @@ export function joinInvite(code) {
       const made = await next.createAnswer();
       await next.setLocalDescription(details ? { type: 'answer', sdp: withDetails(made.sdp, details) } : made);
       await gathered(next, GATHER_MS);
-      if (ended || next !== pc) {
+      if (disposed || ended || next !== pc) {
         next.close();
         return null;
       }
@@ -812,14 +867,14 @@ export function joinInvite(code) {
     // connection with the reply's credentials, certificate and setup takes over: once the host has the reply, the host
     // answers its checks (and takes its address as the reply's). At most one every RETRY_MS, until JOIN_MS ends the wait.
     function again() {
-      if (failing) return;
+      if (failing || disposed) return;
       const old = pc;
       if (channel) {
         channel.onopen = channel.onclose = channel.onmessage = null;
         channel = null;
       }
       old.close();
-      setTimeout(
+      later(
         () => {
           if (opened || ended || failing || pc !== old) return;
           answer().catch(noRelay);
@@ -829,10 +884,11 @@ export function joinInvite(code) {
     }
 
     const sdp = await answer();
-    if (!sdp) return;
+    if (!sdp || disposed) return;
     details = fromSdp(sdp);
     const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lan), { mdns: true });
     const reply = await encodeCode({ kind: KIND_REPLY, token: data.token, ...details, candidates });
+    if (disposed) return;
     markUsed(data.token);
     said.textContent =
       'Send this reply link back to the host. When they open it in the browser that made the invite offer, you join ' +
@@ -840,7 +896,7 @@ export function joinInvite(code) {
     show(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
     mark('replied');
     if (!opened && pc.iceConnectionState === 'failed') again();
-    setTimeout(noRelay, JOIN_MS);
+    later(noRelay, JOIN_MS);
   }
 
   (async () => {
@@ -851,6 +907,7 @@ export function joinInvite(code) {
     } catch (e) {
       return refuse(message(e));
     }
+    if (disposed) return;
     const server = serverFor(data.server);
     const go = el('button', {
       type: 'button',
@@ -880,16 +937,122 @@ export function joinInvite(code) {
   })();
 
   return {
-    // Whether the invite was refused (a bad or used code): the page then starts no game.
+    // Whether the invite was refused (a bad or used code).
     refused: () => state === 'refused',
     attach(module) {
       game = module;
-      game.setLocalSender((bytes) => {
-        if (channel?.readyState !== 'open' || channel.bufferedAmount >= MAX_BUFFERED) return;
+      if (disposed) return;
+      game.setLinkSender((bytes) => {
+        if (disposed || channel?.readyState !== 'open' || channel.bufferedAmount >= MAX_BUFFERED) return;
         channel.send(bytes);
       });
-      if (opened) game.linkOpened();
-      if (ended) game.linkEnded(ended);
+      if (opened) linked();
+      if (opened && ended) game.linkEnded(ended);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const t of timers) clearTimeout(t);
+      timers.clear();
+      removeEventListener('pagehide', hide);
+      if (channel) channel.onopen = channel.onclose = channel.onmessage = null;
+      pc?.close();
+      if (panel === p) closePanel();
+      else p.remove();
+      delete root.dataset.torqueJoin;
+    },
+  };
+}
+
+// ---- a page played alone
+
+// The invite panels of a page played alone (`build.mjs --solo`) and its game's switches in place (the game's `switchTo`):
+// played alone (`solo`), an invite link's game (`link`) and hosting with links (`host`). The page's `torqueAsk` takes the
+// game's menus' asks: `host` (the Host with a link panel), `join` (the paste field), `back` (the page's own game again).
+// `join(code)` starts a join here (an invite link the page was opened on, or one pasted); `attach(game, { startHost })`
+// once the module is loaded; `onHost` is host.js's `onHost` and `hosted(handle)` takes `hostGame`'s handle, for a game
+// whose own server runs in the page's worker from the start (the arena: joining another game ends its players, and the
+// server runs on). `startHost(onHost)`, for a game played alone in the page itself (the vehicle demo), starts that server
+// when the page first hosts and returns its handle (joining another game stops it).
+export function soloPage() {
+  let game = null;
+  let startHost = null;
+  let join = null;
+  let invites = null;
+  let hosted = null;
+  let starting = null;
+  let mode = 'solo';
+  const book = () => (invites ??= hostInvites());
+
+  function joinWith(code) {
+    if (mode === 'link') back();
+    join?.dispose();
+    join = joinInvite(code, { back, again: joinWith, opening });
+    if (game) join.attach(game);
+  }
+
+  // The join's channel opened: the page leaves its own game (and any it hosts) for the host's.
+  function opening() {
+    mode = 'link';
+    invites?.closeAll();
+    if (startHost) {
+      hosted?.stop();
+      hosted = null;
+      invites?.hosting(null);
+    } else {
+      hosted?.endPeers();
+    }
+    game.switchTo('link');
+  }
+
+  // Back to the menu (the join's panel) and Play alone instead (the game's menu, or its invite link's game left): the
+  // join ends, and the page's own game is played alone again.
+  function back() {
+    join?.dispose();
+    join = null;
+    if (mode !== 'link') return;
+    mode = 'solo';
+    game?.switchTo('solo');
+  }
+
+  async function host() {
+    if (mode === 'link' || !game) return;
+    const page = book();
+    if (startHost) {
+      try {
+        hosted ??= await (starting ??= startHost(page.hosting));
+      } catch (e) {
+        const p = openPanel('Host with a link');
+        p.append(
+          el('p', { class: 'said', 'data-said': '', text: `The game could not be hosted: ${String(e?.message ?? e)}` }),
+          el('button', { type: 'button', class: 'close', text: 'Close', on: { click: closePanel } }),
+        );
+        return;
+      } finally {
+        starting = null;
+      }
+      mode = 'host';
+      game.switchTo('host');
+    }
+    page.show();
+  }
+
+  globalThis.torqueAsk = (what) => {
+    if (what === 'host') host();
+    else if (what === 'join') showJoinPaste(joinWith);
+    else if (what === 'back') back();
+  };
+
+  return {
+    join: joinWith,
+    attach(module, { startHost: start = null } = {}) {
+      game = module;
+      startHost = start;
+      join?.attach(module);
+    },
+    onHost: (h) => book().hosting(h),
+    hosted(handle) {
+      hosted = handle;
     },
   };
 }
