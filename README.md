@@ -1,5 +1,9 @@
 # torque-rs
 
+> [!WARNING]
+> torque-rs is experimental and not ready for real use. Its APIs, file formats and behavior change often and without
+> notice, and nothing is published to crates.io yet.
+
 ![The example games: a buggy in a turn, a shot in the arena, a sea at sunset and an office](examples/screenshots/hero.webp)
 
 - **Top left:** the vehicle demo. The buggy in a turn, with dust and tire tracks.
@@ -7,9 +11,7 @@
 - **Bottom left:** the level demo's valley. The sea at sunset, with clouds reflected in the water and mountains in the distance.
 - **Bottom right:** the level demo's office. Desks, ceiling lights, windows and glass.
 
-All four are drawn offscreen with the HD renderer by `just examples/showcase` (see [Examples](#examples)).
-
-Play the examples in your browser: https://meshiest.github.io/torque-rs/
+Play the examples in your browser: https://reheatedcake.io/torque-rs/
 
 A game engine library in Rust, based on the Torque Game Engine (TGE) and Torque3D, with features of its own. It has
 TorqueScript and the console, SimObjects and datablocks, client/server networking with ghosting, DTS shapes, convex

@@ -555,7 +555,7 @@ const STORAGE_BINDINGS: u32 = 10;
 
 impl Cull {
     /// The cull, on a device that can bind its buffers (None: the CPU's lists).
-    pub fn new(device: &wgpu::Device) -> Option<Cull> {
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Option<Cull> {
         if device.limits().max_storage_buffers_per_shader_stage < STORAGE_BINDINGS {
             return None;
         }
@@ -625,7 +625,7 @@ impl Cull {
                 module: &module,
                 entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
+                cache,
             })
         };
         let none = wgpu::BufferUsages::empty();
@@ -641,7 +641,7 @@ impl Cull {
                 module: &hiz_module,
                 entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
+                cache,
             })
         };
         let stand_in_hiz = device

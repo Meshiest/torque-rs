@@ -192,7 +192,11 @@ fn turned(c: Cull) -> Cull {
 }
 
 impl Reflections {
-    pub fn new(device: &wgpu::Device, frame_bytes: u64) -> Reflections {
+    pub fn new(
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        frame_bytes: u64,
+    ) -> Reflections {
         use wgpu::TextureSampleType as S;
         use wgpu::TextureViewDimension as D;
         let float = S::Float { filterable: true };
@@ -234,7 +238,7 @@ impl Reflections {
                 })
             })
             .collect();
-        let down = DownPipe::new(device);
+        let down = DownPipe::new(device, cache);
         let module = |p: Permutation| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(&p.name()),
@@ -257,7 +261,7 @@ impl Reflections {
             ext: crate::ext::ExtSlots::empty(device),
             capture: LightCapture::new(device, &down, frame_bytes),
             down,
-            ssr_pipes: SsrPipes::new(device),
+            ssr_pipes: SsrPipes::new(device, cache),
             ssr: None,
             planar: None,
             refract_depth: None,
@@ -1165,6 +1169,7 @@ impl<E: HdExtension> HdWorld<E> {
         }
         let p = crate::forward_pipeline(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.forward_layout,
             &self.refl.view_module,
             key,
@@ -1190,6 +1195,7 @@ impl<E: HdExtension> HdWorld<E> {
         };
         let p = crate::forward_pipeline(
             &self.device,
+            self.pipeline_cache.as_ref(),
             &self.forward_layout,
             &self.refl.water_module,
             key,

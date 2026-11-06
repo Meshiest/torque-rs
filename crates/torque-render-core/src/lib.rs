@@ -1,12 +1,15 @@
 //! The renderers' device layer: a [`Gpu`] (the wgpu adapter, device and queue), the backends it may start on and their order,
 //! the sample counts its formats support, [`Offscreen`] colour and depth targets, a target's frame read back ([`Frame`]), a
 //! window's surface ([`window`]) and the GUI pass ([`GuiPass`], with its backdrop blur [`blur::Blur`]). Every renderer draws on
-//! a [`Gpu`]; nothing here draws a scene.
+//! a [`Gpu`]; nothing here draws a scene. A [`Gpu`] on Vulkan keeps its pipelines in a cache saved between runs
+//! ([`pipeline_cache`]; the crate's one `unsafe` block, the only one in the workspace, is there).
 
 use std::fmt;
+use std::path::Path;
 
 pub mod blur;
 pub mod gui_pass;
+pub mod pipeline_cache;
 pub mod window;
 pub use gui_pass::GuiPass;
 /// The GPU crate, for a window's surface.
@@ -146,7 +149,7 @@ pub fn instance_flags() -> wgpu::InstanceFlags {
     flags.with_env()
 }
 
-/// An adapter, its device and queue, the sample counts its formats support and its downlevel flags.
+/// An adapter, its device and queue, the sample counts its formats support, its downlevel flags and its pipeline cache.
 #[derive(Clone)]
 pub struct Gpu {
     device: wgpu::Device,
@@ -154,6 +157,7 @@ pub struct Gpu {
     info: wgpu::AdapterInfo,
     sample_counts: Vec<u32>,
     downlevel: wgpu::DownlevelFlags,
+    cache: Option<pipeline_cache::DeviceCache>,
 }
 
 impl Gpu {
@@ -165,8 +169,16 @@ impl Gpu {
         ])
     }
 
-    /// An offscreen device on the first of `order` that has an adapter.
+    /// An offscreen device on the first of `order` that has an adapter, its pipeline cache in [`pipeline_cache::dir`].
     pub fn with_backends(order: &[wgpu::Backends]) -> Result<Gpu, RenderError> {
+        Gpu::with_backends_cached(order, pipeline_cache::dir().as_deref())
+    }
+
+    /// [`Gpu::with_backends`] with its pipeline cache file in `cache_dir` (None: in memory only).
+    pub fn with_backends_cached(
+        order: &[wgpu::Backends],
+        cache_dir: Option<&Path>,
+    ) -> Result<Gpu, RenderError> {
         // DX12 first on Windows, then Vulkan and Metal.
         let mut adapter = None;
         let mut why = String::new();
@@ -190,7 +202,7 @@ impl Gpu {
             }
         }
         let adapter = adapter.ok_or(RenderError::NoAdapter(why))?;
-        Gpu::on_adapter(&adapter)
+        pollster::block_on(Gpu::on_adapter_cached(&adapter, cache_dir))
     }
 
     /// The device on an adapter the caller chose (a window's: [`window::window_gpu`]). The device asks for the adapter's limits
@@ -202,10 +214,22 @@ impl Gpu {
     }
 
     /// [`Gpu::on_adapter`] without blocking (a browser answers the device's request on its own event loop). The features and
-    /// limits asked for are only ever the ones the adapter offers.
+    /// limits asked for are only ever the ones the adapter offers. The pipeline cache is [`pipeline_cache::dir`]'s.
     pub async fn on_adapter_async(adapter: &wgpu::Adapter) -> Result<Gpu, RenderError> {
+        Gpu::on_adapter_cached(adapter, pipeline_cache::dir().as_deref()).await
+    }
+
+    /// [`Gpu::on_adapter_async`] with its pipeline cache file in `cache_dir` (None: in memory only). The device asks for
+    /// `PIPELINE_CACHE` when the adapter has it (Vulkan) and starts its cache from the adapter's file there.
+    pub async fn on_adapter_cached(
+        adapter: &wgpu::Adapter,
+        cache_dir: Option<&Path>,
+    ) -> Result<Gpu, RenderError> {
         let info = adapter.get_info();
-        let wanted = hd_wanted() | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let mut wanted = hd_wanted() | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        if !cfg!(target_arch = "wasm32") {
+            wanted |= wgpu::Features::PIPELINE_CACHE;
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("render"),
@@ -218,13 +242,33 @@ impl Gpu {
             .map_err(|e| RenderError::NoDevice(e.to_string()))?;
         let sample_counts = supported_sample_counts(adapter, device.features());
         let downlevel = adapter.get_downlevel_capabilities().flags;
+        let cache = pipeline_cache::open(&device, &info, cache_dir).await;
         Ok(Gpu {
             device,
             queue,
             info,
             sample_counts,
             downlevel,
+            cache,
         })
+    }
+
+    /// The device's pipeline cache, for every pipeline made on it (`cache: gpu.pipeline_cache()`); None on a backend without
+    /// caches (all but Vulkan) and in a browser.
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.cache.as_ref().map(|c| &c.cache)
+    }
+
+    /// How many bytes of a saved cache file the device's cache started from; None when it started empty (no file, one refused
+    /// or outdated, or one with no pipelines in it).
+    pub fn pipeline_cache_loaded(&self) -> Option<usize> {
+        self.cache.as_ref().and_then(|c| c.loaded)
+    }
+
+    /// Saves the pipeline cache to its file ([`pipeline_cache::write_file`]): the bytes written, Ok(None) when there is no
+    /// cache or no file to write.
+    pub fn save_pipeline_cache(&self) -> std::io::Result<Option<usize>> {
+        self.cache.as_ref().map_or(Ok(None), |c| c.save())
     }
 
     /// The device (a window's surface is configured on it).
@@ -242,7 +286,7 @@ impl Gpu {
         &self.info
     }
 
-    /// The optional features the device has (of [`hd_wanted`]).
+    /// The optional features the device has (of [`hd_wanted`], and `PIPELINE_CACHE` when it has a pipeline cache).
     pub fn features(&self) -> wgpu::Features {
         self.device.features()
     }
@@ -403,5 +447,63 @@ impl Gpu {
             height: h,
             rgba,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The `key = value` lines of a manifest's lint tables (`[lints.*]`, or the workspace's `[workspace.lints.*]`), each with
+    /// its table's tool, in order.
+    fn lint_lines(manifest: &str, prefix: &str) -> Vec<(String, String)> {
+        let mut tool = None;
+        let mut lines = Vec::new();
+        for line in manifest.lines().map(str::trim) {
+            if line.starts_with('[') {
+                tool = line
+                    .strip_prefix(prefix)
+                    .and_then(|t| t.strip_suffix(']'))
+                    .map(str::to_owned);
+            } else if let Some(tool) = &tool
+                && !line.is_empty()
+                && !line.starts_with('#')
+            {
+                lines.push((tool.clone(), line.to_owned()));
+            }
+        }
+        lines
+    }
+
+    /// The crate has one `unsafe` block, under the one `expect(unsafe_code)` attribute (and no `allow` of it).
+    #[test]
+    fn one_unsafe_block_is_expected() {
+        let expect = concat!("#[expect(", "unsafe_code)]");
+        let allow = concat!("allow(", "unsafe_code");
+        let block = concat!("unsafe", " {");
+        let (mut expects, mut allows, mut blocks) = (0, 0, 0);
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                expects += text.matches(expect).count();
+                allows += text.matches(allow).count();
+                blocks += text.matches(block).count();
+            }
+        }
+        assert_eq!((expects, allows, blocks), (1, 0, 1));
+    }
+
+    /// The crate's lints are the workspace's, `unsafe_code` lowered from `forbid` to `deny` (Cargo.toml says why).
+    #[test]
+    fn the_lints_are_the_workspaces() {
+        let workspace = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.toml"));
+        let ours = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let mut expected = lint_lines(workspace, "[workspace.lints.");
+        assert!(expected.len() > 10, "the workspace's lints were not found");
+        for (_, line) in &mut expected {
+            if line == "unsafe_code = \"forbid\"" {
+                *line = "unsafe_code = \"deny\"".into();
+            }
+        }
+        assert_eq!(lint_lines(ours, "[lints."), expected);
     }
 }

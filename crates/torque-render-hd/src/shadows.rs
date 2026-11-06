@@ -8,7 +8,7 @@
 //!   cascade at all ([`ShadowStats::static_redraws`]).
 //! - **The dynamic overlay**: each frame a cascade (or a face) with shapes in it is copied from the static map and the shapes are
 //!   drawn over the copy; one that had shapes last frame but none now is copied back clean.
-//! - **Point lights** ([`assign_slots`]): every light whose lit sphere meets the view gets a cube, at a resolution by its importance:
+//! - **Point lights** (`assign_slots`): every light whose lit sphere meets the view gets a cube, at a resolution by its importance:
 //!   the shadow maps are three cube arrays ([`point_tiers`]), the quality's face size for the few most important lights, half of
 //!   it for the next, a quarter for the rest (the first tier's size, its count half the quality's point lights; then as many as the
 //!   quality's; then 16), so a room of twenty lamps keeps every lamp's shadow within less memory than equal slots took. A
@@ -802,6 +802,7 @@ struct DepthPipe<'a> {
 
 fn depth_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     p: DepthPipe<'_>,
@@ -875,7 +876,7 @@ fn depth_pipeline(
             targets: &[],
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }
 
@@ -900,6 +901,7 @@ impl Shadows {
     /// The shadows at `quality`; `extra`: the extension's extra casters' vertex entry and buffers.
     pub fn new(
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         quality: ShadowQuality,
         extra: Option<(&str, Vec<wgpu::VertexBufferLayout<'_>>)>,
     ) -> Shadows {
@@ -968,6 +970,7 @@ impl Shadows {
         // (The sun's casters read the meshes' places from group 3 as well.)
         let sun_pipeline = depth_pipeline(
             device,
+            cache,
             &point_layout,
             &module,
             DepthPipe {
@@ -982,6 +985,7 @@ impl Shadows {
         );
         let point_pipeline = depth_pipeline(
             device,
+            cache,
             &point_layout,
             &module,
             DepthPipe {
@@ -996,6 +1000,7 @@ impl Shadows {
         );
         let clear_pipeline = depth_pipeline(
             device,
+            cache,
             &layout,
             &module,
             DepthPipe {
@@ -1042,6 +1047,7 @@ impl Shadows {
             });
         let scroll_pipeline = depth_pipeline(
             device,
+            cache,
             &scroll_pipeline_layout,
             &module,
             DepthPipe {
@@ -1158,7 +1164,7 @@ impl Shadows {
                 })],
             }),
             multiview_mask: None,
-            cache: None,
+            cache,
         });
         let trans_group = trans_group(device, &trans_layout, &maps);
         // The extension's extra casters into the sun's cascades.
@@ -1197,7 +1203,7 @@ impl Shadows {
                 multisample: wgpu::MultisampleState::default(),
                 fragment: None,
                 multiview_mask: None,
-                cache: None,
+                cache,
             })
         });
         let trans_dummy = {

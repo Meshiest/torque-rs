@@ -914,6 +914,8 @@ pub type HdError = String;
 /// with the extension `E` beside them.
 pub struct HdWorld<E: HdExtension = NoExtension> {
     device: wgpu::Device,
+    /// The device's pipeline cache (Vulkan's; [`torque_render_core::Gpu::pipeline_cache`]), for every pipeline made here.
+    pipeline_cache: Option<wgpu::PipelineCache>,
     queue: wgpu::Queue,
     timestamps: bool,
     frame_layout: wgpu::BindGroupLayout,
@@ -1196,6 +1198,7 @@ fn set_groups(pass: &mut wgpu::RenderPass<'_>, groups: [&wgpu::BindGroup; 3]) {
 /// the front layer (`fs_main` alpha-blended where the depth equals the front's).
 pub(crate) fn trans_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     cull: Cull,
@@ -1294,7 +1297,7 @@ pub(crate) fn trans_pipeline(
             targets: &targets,
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }
 
@@ -1334,17 +1337,20 @@ pub fn f32_to_f16(v: f32) -> u16 {
 /// fragment entry.
 fn make_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     key: PipelineKey,
 ) -> wgpu::RenderPipeline {
     match key.stage {
         Stage::Main if key.blend == Blend::Modulate2x => {
-            forward_pipeline(device, layout, module, key, "fs_modulate2x")
+            forward_pipeline(device, cache, layout, module, key, "fs_modulate2x")
         }
-        Stage::Main | Stage::Over => forward_pipeline(device, layout, module, key, "fs_main"),
-        Stage::Particle => forward_pipeline(device, layout, module, key, "fs_particle"),
-        s => trans_pipeline(device, layout, module, key.cull, s),
+        Stage::Main | Stage::Over => {
+            forward_pipeline(device, cache, layout, module, key, "fs_main")
+        }
+        Stage::Particle => forward_pipeline(device, cache, layout, module, key, "fs_particle"),
+        s => trans_pipeline(device, cache, layout, module, key.cull, s),
     }
 }
 
@@ -1411,6 +1417,7 @@ impl Drop for Warming {
 /// A forward-pass pipeline of `module`'s `entry` for `key` (HDR target, the forward layout).
 pub(crate) fn forward_pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     key: PipelineKey,
@@ -1484,7 +1491,7 @@ pub(crate) fn forward_pipeline(
             })],
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }
 
@@ -1764,11 +1771,21 @@ impl<E: HdExtension> HdWorld<E> {
                     let _ = torque_render_scene::hd::clouds::noise();
                 });
         }
-        HdWorld::<E>::from_device(gpu.device().clone(), gpu.queue().clone())
+        HdWorld::<E>::from_device(
+            gpu.device().clone(),
+            gpu.queue().clone(),
+            gpu.pipeline_cache().cloned(),
+        )
     }
 
-    /// [`HdWorld::new`] on a device and queue (a window may build one on a worker thread).
-    pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> HdWorld<E> {
+    /// [`HdWorld::new`] on a device and queue (a window may build one on a worker thread), its pipelines made with
+    /// `pipeline_cache` (the device's: [`torque_render_core::Gpu::pipeline_cache`]).
+    pub fn from_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        pipeline_cache: Option<wgpu::PipelineCache>,
+    ) -> HdWorld<E> {
+        let cache = pipeline_cache.as_ref();
         // The modules are composed with the extension's chunks.
         let chunks = E::shaders();
         assert!(
@@ -1932,10 +1949,16 @@ impl<E: HdExtension> HdWorld<E> {
                 ),
             ],
         });
-        let refl = reflect::Reflections::new(&device, frame_size::<E>() as u64);
-        let mut clouds = clouds::Clouds::new(&device, &frame_layout);
-        let sky = sky::SkyGpu::new(&device, &frame_layout, &texture_layout, clouds.views());
-        clouds.set_sky_layout(&device, &sky.layout);
+        let refl = reflect::Reflections::new(&device, cache, frame_size::<E>() as u64);
+        let mut clouds = clouds::Clouds::new(&device, cache, &frame_layout);
+        let sky = sky::SkyGpu::new(
+            &device,
+            cache,
+            &frame_layout,
+            &texture_layout,
+            clouds.views(),
+        );
+        clouds.set_sky_layout(&device, cache, &sky.layout);
         let forward_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hd forward"),
             bind_group_layouts: &[
@@ -1966,7 +1989,7 @@ impl<E: HdExtension> HdWorld<E> {
             module: &clusters_module,
             entry_point: Some("cs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
+            cache,
         });
         let frame = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hd frame"),
@@ -2040,7 +2063,7 @@ impl<E: HdExtension> HdWorld<E> {
             clouds: false,
             splits: 0,
         });
-        let post = PostPipes::new(&device);
+        let post = PostPipes::new(&device, cache);
         let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hd prepass"),
             bind_group_layouts: &[Some(&frame_layout), None, Some(&post.motion_layout)],
@@ -2076,18 +2099,19 @@ impl<E: HdExtension> HdWorld<E> {
                 })],
             }),
             multiview_mask: None,
-            cache: None,
+            cache,
         });
         let shadows = Shadows::new(
             &device,
+            cache,
             torque_render_scene::hd::Quality::High.shadows(),
             E::extra_casters(),
         );
         let white = one_texel(&device, &queue, "hd white", [255; 4]);
         let empty = one_texel(&device, &queue, "hd empty", [0; 4]);
-        let volumetric = volumetric::Volumetric::new(&device, &frame_layout, &sky.layout);
-        let bloom = bloom::Bloom::new(&device);
-        let exposure = exposure::Exposure::new(&device);
+        let volumetric = volumetric::Volumetric::new(&device, cache, &frame_layout, &sky.layout);
+        let bloom = bloom::Bloom::new(&device, cache);
+        let exposure = exposure::Exposure::new(&device, cache);
         // The weighted blend's composite.
         let comp_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd wboit composite"),
@@ -2139,7 +2163,7 @@ impl<E: HdExtension> HdWorld<E> {
                 })],
             }),
             multiview_mask: None,
-            cache: None,
+            cache,
         });
         let comp_uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hd wboit composite"),
@@ -2208,7 +2232,7 @@ impl<E: HdExtension> HdWorld<E> {
                 })],
             }),
             multiview_mask: None,
-            cache: None,
+            cache,
         });
         let n = LUT_SIZE as u32;
         let lut_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -2244,7 +2268,7 @@ impl<E: HdExtension> HdWorld<E> {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let arena = arena::Arena::new(&device);
         let cell_table = cull::CellTable::new(&device);
-        let cull = cull::Cull::new(&device);
+        let cull = cull::Cull::new(&device, cache);
         let table = arena::Table::new(&device);
         let main_lists = arena::Lists::new(&device);
         let scratch_lists = arena::Lists::new(&device);
@@ -2310,6 +2334,7 @@ impl<E: HdExtension> HdWorld<E> {
                 })
                 .collect(),
             tonemap_module: module(&device, Permutation::Tonemap),
+            pipeline_cache: pipeline_cache.clone(),
             device,
             queue,
             timestamps,
@@ -2519,7 +2544,7 @@ impl<E: HdExtension> HdWorld<E> {
                     ],
                 }),
                 multiview_mask: None,
-                cache: None,
+                cache: self.pipeline_cache.as_ref(),
             });
         self.prepass.insert((cull, still), pipeline);
         self.pipelines_made += 1;
@@ -2594,6 +2619,11 @@ impl<E: HdExtension> HdWorld<E> {
     /// The device and queue the world draws with.
     pub fn device(&self) -> &wgpu::Device {
         &self.device
+    }
+
+    /// The device's pipeline cache, for an extension's own pipelines (`cache: world.pipeline_cache()`).
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.pipeline_cache.as_ref()
     }
 
     pub fn queue(&self) -> &wgpu::Queue {
@@ -2829,12 +2859,18 @@ impl<E: HdExtension> HdWorld<E> {
             }
         }
         let module = &self.forward[&(key.clustered, key.front_layer)];
-        let pipeline = make_pipeline(&self.device, &self.forward_layout, module, key);
+        let pipeline = make_pipeline(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            &self.forward_layout,
+            module,
+            key,
+        );
         self.pipelines.insert(key, pipeline);
         self.pipelines_made += 1;
     }
 
-    /// Starts making the pipelines the effects draw with ([`effect_keys`]: particles, ribbons, bolt trails, decals and tire
+    /// Starts making the pipelines the effects draw with (`effect_keys`: particles, ribbons, bolt trails, decals and tire
     /// tracks, which a scene often first shows mid-game, at a shot or an impact), on a worker thread where there is one, so their
     /// shaders' compiles cost no frame (a cold first shot made seven in two frames of 0.6 s each). Each frame takes the ones
     /// made; a frame that needs one still being made waits for the rest. Where no thread can be started (a browser) they are
@@ -2853,6 +2889,7 @@ impl<E: HdExtension> HdWorld<E> {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let make = {
             let device = self.device.clone();
+            let cache = self.pipeline_cache.clone();
             let layout = self.forward_layout.clone();
             let modules = self.forward.clone();
             let keys = keys.clone();
@@ -2862,7 +2899,10 @@ impl<E: HdExtension> HdWorld<E> {
                     .take_while(|_| !stop.load(std::sync::atomic::Ordering::Relaxed))
                     .map(|k| {
                         let module = &modules[&(k.clustered, k.front_layer)];
-                        (k, make_pipeline(&device, &layout, module, k))
+                        (
+                            k,
+                            make_pipeline(&device, cache.as_ref(), &layout, module, k),
+                        )
                     })
                     .collect::<Vec<_>>()
             }
@@ -2992,7 +3032,7 @@ impl<E: HdExtension> HdWorld<E> {
                     })],
                 }),
                 multiview_mask: None,
-                cache: None,
+                cache: self.pipeline_cache.as_ref(),
             });
         self.tonemap_pipelines.insert(format, p);
         self.pipelines_made += 1;

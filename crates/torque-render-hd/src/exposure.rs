@@ -37,7 +37,7 @@ fn storage(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 impl Exposure {
-    pub fn new(device: &wgpu::Device) -> Exposure {
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Exposure {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd exposure"),
             entries: &[
@@ -78,7 +78,7 @@ impl Exposure {
                 module: &module,
                 entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
+                cache,
             })
         };
         let buffer = |label: &str, size: u64, usage: wgpu::BufferUsages| {
