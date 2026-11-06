@@ -38,6 +38,12 @@ test('a joiner names only addresses the host may check', () => {
   assert.equal(candidateAllowed(line('93.184.216.40', 'udp', 0), false), null, 'no port');
   assert.equal(candidateAllowed(line('93.184.216.40', 'udp', 70000), false), null, 'a port past 65535');
   assert.equal(candidateAllowed(line('93.184.216.40'), false, new Set(['93.184.216.40'])), null, "the host's own");
+  // Only canonical forms: a leading zero could be read as another address (octal) past the checks.
+  for (const odd of ['010.0.0.1', '127.000.000.001', '0127.0.0.1', '93.184.216.040', '00.1.2.3', '93.184.216.40.', ' 93.184.216.40']) {
+    assert.equal(candidateAllowed(line(odd), true), null, odd);
+  }
+  assert.equal(candidateAllowed(line('93.184.216.40', 'udp', '040000'), false), null, 'a port with a leading zero');
+  assert.equal(candidateAllowed(line('8.8.8.8'), false).ip, '8.8.8.8');
   assert.equal(candidateAllowed('candidate:garbage', false), null);
   assert.equal(candidateAllowed(`${line('93.184.216.40')} ${'x'.repeat(600)}`, false), null, 'too long');
   assert.equal(candidateAllowed(42, false), null);

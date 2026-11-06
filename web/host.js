@@ -34,12 +34,13 @@ export function peerNumber(text) {
   return typeof text === 'string' && /^[1-9]\d{0,9}$/.test(text) && Number(text) <= 0xffffffff ? Number(text) : null;
 }
 
-// An IPv4 address in dotted form as its four numbers, or null.
+// An IPv4 address in canonical dotted form (no leading zeros, each number 255 or less) as its four numbers, or null. A
+// form another parser could read otherwise (`010.0.0.1`, `127.000.000.001`) is refused.
 export function ipv4(text) {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text ?? '');
+  const m = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/.exec(text ?? '');
   if (!m) return null;
   const octets = m.slice(1).map(Number);
-  return octets.every((o) => o <= 255) ? octets : null;
+  return octets.every((o) => o <= 255) && octets.join('.') === text ? octets : null;
 }
 
 // Whether the host may check `octets` (a public unicast address, or a private one with `lan`): torque-server's
@@ -61,8 +62,9 @@ export function addressAllowed([a, b, c, d], lan) {
   return lan || !priv;
 }
 
-// A joiner's candidate line (with or without `a=`) the host may take, as `{ line, ip }`, or null: well formed, UDP, an
-// IPv4 address the rules allow and not one of `own`, a port.
+// A joiner's candidate line (with or without `a=`) the host may take, as `{ line, ip }`, or null: well formed, UDP, a
+// canonical IPv4 address the rules allow and not one of `own`, a port written plainly. The line handed on is rebuilt
+// from the address and port as read here, so the browser reads the address this checked.
 export function candidateAllowed(text, lan, own = new Set()) {
   if (typeof text !== 'string') return null;
   const line = text.trim().replace(/^a=/, '');
@@ -71,10 +73,13 @@ export function candidateAllowed(text, lan, own = new Set()) {
   if (words.length < 8 || words[6] !== 'typ') return null;
   const [, , transport, , address, port] = words;
   const octets = ipv4(address);
-  const p = /^\d{1,5}$/.test(port) ? Number(port) : 0;
+  const p = /^[1-9]\d{0,4}$/.test(port) ? Number(port) : 0;
   if (transport.toLowerCase() !== 'udp' || !octets || p < 1 || p > 65535) return null;
-  if (!addressAllowed(octets, lan) || own.has(address)) return null;
-  return { line, ip: address };
+  const ip = octets.join('.');
+  if (!addressAllowed(octets, lan) || own.has(ip)) return null;
+  words[4] = ip;
+  words[5] = String(p);
+  return { line: words.join(' '), ip };
 }
 
 // An offer without its candidate lines, and those lines (at most MAX_CANDIDATES * 4: each then goes through the rules).

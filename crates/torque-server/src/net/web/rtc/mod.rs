@@ -1555,6 +1555,16 @@ a=mid:0
         );
         assert!(remote_candidate("candidate:1 1 udp 1 1.2.3.4 0 typ host").is_none());
         assert!(remote_candidate("garbage").is_none());
+        // Only canonical addresses: a leading zero (read as octal elsewhere) is refused, not read some other way.
+        for odd in [
+            "010.0.0.1",
+            "127.000.000.001",
+            "0127.0.0.1",
+            "93.184.216.040",
+        ] {
+            let line = format!("candidate:1 1 udp 1 {odd} 9 typ host");
+            assert!(remote_candidate(&line).is_none(), "{odd}");
+        }
         assert!(remote_candidate("a=candidate:1 1 udp 1 1.2.3.4 9 typ host").is_some());
     }
 
