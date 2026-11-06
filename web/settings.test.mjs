@@ -24,10 +24,10 @@ function storage(broken = false) {
   };
 }
 
-test('a Gecko browser starts at Low and the others at High until the player picks', () => {
+test('a Gecko browser starts at Medium and the others at High until the player picks', () => {
   assert.ok(isGecko(GECKO));
   assert.ok(!isGecko(BLINK));
-  assert.deepEqual(defaults(GECKO), { quality: 'low', picked: false, fps: false, scale: 'auto' });
+  assert.deepEqual(defaults(GECKO), { quality: 'medium', picked: false, fps: false, scale: 'auto' });
   assert.deepEqual(defaults(BLINK), { quality: 'high', picked: false, fps: false, scale: 'auto' });
   assert.deepEqual(QUALITIES, ['low', 'medium', 'high', 'ultra']);
   assert.deepEqual(SCALES, ['auto', '1', '0.75', '0.5']);
@@ -42,7 +42,7 @@ test('the settings come back on the next visit', () => {
 test('a quality the player never picked is not kept, so a Gecko browser stays at its own', () => {
   const s = storage();
   save(s, { ...defaults(BLINK), fps: true });
-  assert.deepEqual(load(s, GECKO), { quality: 'low', picked: false, fps: true, scale: 'auto' });
+  assert.deepEqual(load(s, GECKO), { quality: 'medium', picked: false, fps: true, scale: 'auto' });
 });
 
 test('storage that throws or holds something else gives the defaults', () => {

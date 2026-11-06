@@ -5,7 +5,7 @@
 //! ([`read_manifest`], [`add_file`]: a file is taken only when its size and hash are the list's), the game's start (on the files
 //! fetched, [`take_fetched`], or on those the module carries) and the page bridge's ([`crate::page_bridge`]).
 //!
-//! **The quality** is the page's to pick (its settings panel; Firefox starts at Low until the player picks): the panel calls
+//! **The quality** is the page's to pick (its settings panel; Firefox starts at Medium until the player picks): the panel calls
 //! the script engine's `setRenderQuality` through the bridge ([`request_quality`]), and the window applies it at its next
 //! frame ([`take_quality`]).
 //!

@@ -509,6 +509,10 @@ The first development version. Nothing is published yet; this is what exists.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
+### Changed
+
+- The web pages start Firefox at Medium quality (was Low) until the player picks one.
+
 ### Fixed
 
 - The level demo's water moves: its waves, ripples and foam ran on an effect clock no game advanced, so every map's water
