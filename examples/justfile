@@ -178,6 +178,20 @@ web-fps-invite-check: web-guard-test
     node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites" 120
     node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites-same" 120 same
 
+# The invite links' connection alone, with no game and no build, in headless Chrome and headless Firefox (Firefox's
+# defaults, mDNS names included; installed where `web/guard.mjs` looks, or `FIREFOX` names it): a small page runs
+# `web/invites.js`, the joiner presses Connect, the reply link is opened 30 s later (a joiner's browser gives up on a host
+# it cannot reach yet after a few seconds; a Firefox host's addresses answer only once it has the reply), and a message
+# must go each way. One browser with two tabs, two browsers, and each browser hosting the other. No STUN server is
+# contacted. Runs the guard's test in Firefox first
+web-invite-link-check: web-guard-test
+    node ../web/guard.test.mjs firefox
+    node ../web/invite-link-check.mjs chrome same 30
+    node ../web/invite-link-check.mjs firefox same 30
+    node ../web/invite-link-check.mjs firefox two 30
+    node ../web/invite-link-check.mjs chrome,firefox two 30
+    node ../web/invite-link-check.mjs firefox,chrome two 30
+
 # The vehicle demo joined by an invite link, as `web-fps-invite-check` (build it first with `node web/build.mjs vehicle-demo
 # --solo`): its Host with a link opens the page again with its server in the worker. Pictures into the target folder's
 # `web/vehicle-invites`
