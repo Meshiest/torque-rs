@@ -11,13 +11,18 @@
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
 //! ([`crate::scene`]) and the map's spot lights, the canvas drawn, and the eye: behind the client's own figure (or at its eyes,
-//! `Tab`). The camera behind rides a boom ([`CameraBoom`]) from above the figure's feet, pulled in fast in front of the cubes
-//! and the interiors' walls that come between and let out slowly when they go; it looks through glass. `Tab` moves the camera
-//! from one to the other ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden while the
+//! `Tab`). The camera behind rides a boom ([`CameraBoom`]) from above the figure's feet (no higher than its eye), pulled in
+//! fast in front of the cubes, the interiors' walls, the terrain and the water that come between and let out slowly when they
+//! go; it looks through glass. `Tab` moves the camera from one to the other ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden while the
 //! camera is close to its eyes ([`CLOSE`]), on the way in and on the way out.
+//!
+//! **The ground.** A map with a terrain or water ([`MapGround`]: the valley) has them drawn as the map starts, the terrain also
+//! the own figure's ground in the prediction ([`CubeClient::set_terrain`]) and the camera kept above it; its day (a
+//! `TimeOfDay` under a `ScatterSky`) lights the view and the sky's clouds are sunlit cumulus ([`WorldLights`]).
 
 use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
 use torque::app::camera_blend::{CLOSE, CameraBlend};
 use torque::app::camera_boom::CameraBoom;
@@ -27,10 +32,12 @@ use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
+use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::{GameFiles, MapEntry};
+use crate::ground::MapGround;
 use crate::scene::WorldScene;
 use crate::server::{SERVER_ADDR, WorldServer};
 use torque::app::ghosts::OwnView;
@@ -43,6 +50,8 @@ pub const CLIENT_ADDR: SocketAddrV4 = SocketAddrV4::new(std::net::Ipv4Addr::LOCA
 pub const CAMERA_DISTANCE: f32 = 6.5;
 pub const CAMERA_TARGET_HEIGHT: f32 = 1.7;
 pub const CAMERA_PITCH: f32 = 0.3;
+/// Where a map's own cloud clock starts over (seconds): long past any session, short enough to keep its precision.
+pub const CLOUD_CLOCK_WRAP: f32 = 100_000.0;
 /// The nearest the camera comes to a cube between it and the figure, and to the point it looks at.
 pub const CAMERA_CLEARANCE: f32 = 0.3;
 pub const CAMERA_NEAREST: f32 = 0.4;
@@ -66,8 +75,15 @@ pub struct LevelDemo {
     behind: Option<Eye>,
     /// Where the camera was drawn last frame.
     drawn_at: Option<[f32; 3]>,
-    /// The map's spot lights (SpotLight objects), drawn where their ghosts are.
+    /// The map's spot lights (SpotLight objects), drawn where their ghosts are, and its day.
     lights: WorldLights,
+    /// The prediction's answers (the terrain the own figure meets).
+    cube: Rc<CubeClient>,
+    /// The map's terrain and water, and whether the view has yet to be given them.
+    pub ground: MapGround,
+    ground_changed: bool,
+    /// The clouds' own clock of a map that runs them faster ([`MapGround::cloud_time_scale`]).
+    cloud_clock: f32,
 }
 
 impl Deref for LevelDemo {
@@ -88,11 +104,13 @@ impl LevelDemo {
     /// The client over `files`: `client.cs` run, the menu built from the maps found.
     pub fn new(mut files: GameFiles) -> Result<LevelDemo, String> {
         crate::levels::add_levels(&mut files)?;
+        crate::files::add_valley(&mut files)?;
         let maps = crate::files::maps(&files);
+        let cube = Rc::new(CubeClient::new(files.mem_files()));
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
             game_classes: true,
-            client_game: Some(std::rc::Rc::new(CubeClient::new(files.mem_files()))),
+            client_game: Some(Rc::clone(&cube) as _),
             net: ClientNet::Memory {
                 client: CLIENT_ADDR,
                 server: SERVER_ADDR,
@@ -120,18 +138,30 @@ impl LevelDemo {
             boom: CameraBoom::new(CAMERA_NEAREST, CAMERA_CLEARANCE),
             behind: None,
             drawn_at: None,
+            cube,
+            ground: MapGround::default(),
+            ground_changed: false,
+            cloud_clock: 0.0,
         })
     }
 
-    /// A world view on `gpu`.
+    /// A world view on `gpu`, the sky's clouds sunlit cumulus (a map with a day has them), the ground of the map being played.
     pub fn view(&self, gpu: &Gpu) -> WorldView {
-        WorldView::new(gpu)
+        let mut view = WorldView::new(gpu);
+        view.set_cloud_look(Some(CloudLook::SUNLIT_CUMULUS));
+        self.ground.apply(&mut view, &self.files.kit);
+        view
     }
 
     /// Starts map `index`: its server, and the client joins it.
     pub fn start_map(&mut self, index: usize) -> Result<(), String> {
         let map = self.maps.get(index).ok_or("no such map")?.clone();
         self.leave();
+        let text =
+            String::from_utf8_lossy(self.files.file(&map.path).unwrap_or_default()).into_owned();
+        self.ground = MapGround::read(&self.files, &text)?;
+        self.cube.set_terrain(self.ground.terrain.as_ref());
+        self.ground_changed = true;
         let server = WorldServer::start(&self.files, &map.path)?;
         self.client.start_hosting(server);
         self.playing = Some(index);
@@ -148,6 +178,12 @@ impl LevelDemo {
         self.camera_mode = None;
         self.boom.reset();
         self.behind = None;
+        self.lights.clear();
+        if !self.ground.is_empty() {
+            self.ground = MapGround::default();
+            self.cube.set_terrain(None);
+            self.ground_changed = true;
+        }
     }
 
     /// `ms` of the clock (see the module docs).
@@ -221,8 +257,16 @@ impl LevelDemo {
             return e;
         }
         let target = camera_target(f);
-        let at = self.kept_clear(target, boom_direction(f), CAMERA_DISTANCE, CAMERA_NEAREST);
+        let mut at = self.kept_clear(target, boom_direction(f), CAMERA_DISTANCE, CAMERA_NEAREST);
+        self.above_ground(&mut at);
         look_at(at, target)
+    }
+
+    /// Point `at` raised to stay [`CAMERA_CLEARANCE`] twice over above the terrain or water under it.
+    fn above_ground(&self, at: &mut [f32; 3]) {
+        if let Some(ground) = self.ground.surface(at[0], at[1]) {
+            at[2] = at[2].max(ground + CAMERA_CLEARANCE * 2.0);
+        }
     }
 
     /// The boom behind the figure moved on `dt` seconds (module docs).
@@ -233,16 +277,22 @@ impl LevelDemo {
             return;
         };
         let target = camera_target(&f);
-        let scene = &self.scene;
-        let at = self
-            .boom
-            .follow(target, boom_direction(&f), CAMERA_DISTANCE, dt, |a, b| {
-                scene.sight_share(a, b)
-            });
+        let (scene, ground) = (&self.scene, &self.ground);
+        let mut at = self.boom.follow(
+            target,
+            boom_direction(&f),
+            CAMERA_DISTANCE,
+            dt,
+            |a, b| match (scene.sight_share(a, b), ground.line_share(a, b)) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            },
+        );
+        self.above_ground(&mut at);
         self.behind = Some(look_at(at, target));
     }
 
-    /// The point `distance` from `target` along unit `back`, brought in front of the first cube or interior wall between (no
+    /// The point `distance` from `target` along unit `back`, brought in front of the first cube, interior wall, terrain or water between (no
     /// nearer than `nearest`, or the distance when that is nearer).
     fn kept_clear(
         &self,
@@ -251,7 +301,13 @@ impl LevelDemo {
         distance: f32,
         nearest: f32,
     ) -> [f32; 3] {
-        let reach = match self.scene.sight_hit(target, back, distance) {
+        let end = [0, 1, 2].map(|i| target[i] + back[i] * distance);
+        let ground = self.ground.line_share(target, end).map(|s| s * distance);
+        let hit = match (self.scene.sight_hit(target, back, distance), ground) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (x, y) => x.or(y),
+        };
+        let reach = match hit {
             Some(t) => (t - CAMERA_CLEARANCE).max(nearest.min(distance)),
             None => distance,
         };
@@ -359,6 +415,7 @@ impl LevelDemo {
                         &conn.predict.ghost_players,
                         dt,
                     );
+                    self.lights.update(&conn.world.records, dt);
                 }
                 None => self.scene.clear(),
             }
@@ -368,6 +425,12 @@ impl LevelDemo {
 
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
     pub fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
+        if std::mem::take(&mut self.ground_changed) {
+            self.ground.apply(view, &self.files.kit);
+            // The last map's day is forgotten: the next is lit by its own (or by its Sky's daylight alone).
+            view.clear_day();
+            view.set_daylight(&self.daylight);
+        }
         if let Some(d) = self.sky_daylight()
             && d != self.daylight
         {
@@ -375,6 +438,13 @@ impl LevelDemo {
             self.daylight = d;
         }
         let dt = self.client.take_frame_time();
+        let scale = self.ground.cloud_time_scale;
+        if scale > 0.0 {
+            self.cloud_clock = advance_cloud_clock(self.cloud_clock, dt, scale);
+            view.set_cloud_time(Some(self.cloud_clock));
+        } else {
+            view.set_cloud_time(None);
+        }
         self.update_scene(dt);
         let eye = self.drawn_eye();
         let objects = {
@@ -385,14 +455,15 @@ impl LevelDemo {
             }
         };
         view.set_objects(objects);
-        let spots = {
+        {
             let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
-                Some(conn) => self.lights.spots(&self.files.kit, &conn.world.records),
-                None => Vec::new(),
+                Some(conn) => self
+                    .lights
+                    .apply(view, &self.files.kit, &conn.world.records),
+                None => view.set_spots(Vec::new()),
             }
-        };
-        view.set_spots(spots);
+        }
         // The client's camera is the example's own: the GameTSCtrl draws the world whatever the connection's camera is.
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
@@ -461,4 +532,25 @@ pub use torque_example_common::ray_box;
 /// Whether the camera drawn at `camera` is within [`CLOSE`] of a figure's `eyes`: the figure is hidden.
 fn near_eyes(camera: [f32; 3], eyes: [f32; 3]) -> bool {
     (0..3).map(|k| (camera[k] - eyes[k]).powi(2)).sum::<f32>() < CLOSE * CLOSE
+}
+
+/// The clouds' clock `clock` (seconds) run on `dt` seconds at `scale` times the clock's pace, starting over at
+/// [`CLOUD_CLOCK_WRAP`], and from 0 when it is no longer a finite number.
+pub fn advance_cloud_clock(clock: f32, dt: f32, scale: f32) -> f32 {
+    let next = (clock + dt * scale) % CLOUD_CLOCK_WRAP;
+    if next.is_finite() { next } else { 0.0 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cloud_clock_runs_wraps_and_starts_over_when_not_finite() {
+        assert_eq!(advance_cloud_clock(10.0, 0.5, 150.0), 85.0);
+        assert!(advance_cloud_clock(CLOUD_CLOCK_WRAP - 1.0, 1.0, 2.0) < 2.0);
+        assert_eq!(advance_cloud_clock(f32::NAN, 0.5, 150.0), 0.0);
+        assert_eq!(advance_cloud_clock(0.0, f32::INFINITY, 150.0), 0.0);
+        assert_eq!(advance_cloud_clock(0.0, 0.5, f32::NAN), 0.0);
+    }
 }

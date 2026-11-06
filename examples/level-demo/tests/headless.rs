@@ -254,14 +254,14 @@ fn tab_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
         game.update_scene(0.016);
         game.drawn_eye()
     };
-    // The own figure placed (the camera behind it), then a moment more.
+    // The figure first (the map can start before its ghost is drawn), then the camera settled behind it.
     for _ in 0..600 {
-        frame(&mut game);
         if game.figure().is_some() {
             break;
         }
+        frame(&mut game);
     }
-    assert!(game.figure().is_some(), "no own figure");
+    assert!(game.figure().is_some(), "no figure");
     for _ in 0..30 {
         frame(&mut game);
     }

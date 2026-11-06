@@ -1,0 +1,30 @@
+[package]
+name = "torque-example-showcase"
+description = "Pictures of the example games for the project's front page: the buggy in a turn, a shot in the arena, the valley at golden hour and the office, drawn offscreen and set in a grid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "example", "gamedev"]
+categories = ["game-development"]
+
+# Native only: each picture is drawn offscreen by its example's own library (no window).
+
+[dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["app"] }
+torque-example-character = { path = "../character" }
+torque-example-fps = { path = "../fps" }
+torque-example-level-demo = { path = "../level-demo" }
+torque-example-vehicle-demo = { path = "../vehicle-demo" }
+torque-render-core = { path = "../../crates/torque-render-core" }
+torque-render-scene = { path = "../../crates/torque-render-scene" }
+png = "0.18"
+
+[[bin]]
+name = "showcase"
+path = "src/main.rs"
+
+[lints]
+workspace = true

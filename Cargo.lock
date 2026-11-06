@@ -3115,6 +3115,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example-showcase"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "torque",
+ "torque-example-character",
+ "torque-example-fps",
+ "torque-example-level-demo",
+ "torque-example-vehicle-demo",
+ "torque-render-core",
+ "torque-render-scene",
+]
+
+[[package]]
 name = "torque-example-vehicle-demo"
 version = "0.1.0"
 dependencies = [
