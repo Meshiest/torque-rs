@@ -273,9 +273,12 @@ export function hostInvites({ open = false } = {}) {
 
   // every invite made, for the page's `data-torque-invites` (each one's state, oldest first)
   const made = [];
+  // An invite's link is shown only while it waits for its reply: once the reply is in, or the invite expired or failed,
+  // its link box goes (its status line stays).
   function setState(inv, state, text) {
     inv.state = state;
     inv.status.textContent = `Invite ${inv.n}: ${text}`;
+    if (state !== 'waiting') inv.box?.remove();
     root.dataset.torqueInvites = made.map((i) => i.state).join(' ');
   }
 
@@ -327,7 +330,8 @@ export function hostInvites({ open = false } = {}) {
         forget(inv);
         setState(inv, 'expired', 'expired. Create a new one.');
       }, INVITE_MS);
-      item.append(linkBox(`${pageLink()}#join=${code}`, `Invite offer link ${inv.n}`));
+      inv.box = linkBox(`${pageLink()}#join=${code}`, `Invite offer link ${inv.n}`);
+      item.append(inv.box);
       setState(
         inv,
         'waiting',

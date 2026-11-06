@@ -3,7 +3,7 @@
 // (the drawing buffer and the game's GUI, at two sizes), the host page makes an invite link, a second browser opens it and
 // makes a reply link, the reply link is opened in the host's browser after `delay` seconds (a person's copy and paste: it
 // hands the reply to the game's tab and closes), the data channel opens, the joiner walks, each page holds the other's
-// figure, and no console error shows. Then bad, cut short, oversized and used codes must each be refused with a message,
+// figure, the host's panel no longer shows the invite's link, and no console error shows. Then bad, cut short, oversized and used codes must each be refused with a message,
 // and a refused join's Back to the menu takes the page to its game's menu.
 //
 // Usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns|same] [delay]
@@ -293,6 +293,7 @@ try {
     console.log(`host: other figures ${h.others}, invites "${h.invites}"`);
     if (h.others < 1) problems.push("the host page does not hold the joiner's figure");
     if (!/joined/.test(h.invites)) problems.push(`the host's invite is not marked joined ("${h.invites}": ${h.lines.join(' | ')})`);
+    if (h.links.length) problems.push(`the host's panel still shows ${h.links.length} invite link(s) once the reply is in`);
   }
   if (!problems.length) {
     if (same) await joiner.bringToFront();
