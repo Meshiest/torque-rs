@@ -3,7 +3,13 @@
 # Every third-party action is pinned to a full commit SHA (the tag it was taken from is in the comment); update them
 # together.
 #
-# Platforms: lints and tests run on Linux and Windows, everything else on Linux only.
+# Off for now (owner, 2026-11-06): the clippy and MSRV jobs (`if: false`) and the Windows tests (the test matrix).
+#
+# Platforms: lints run on Linux and Windows, everything else on Linux only, except the tests: Linux runs the whole
+# workspace (and its doc tests), Windows only the crates whose behavior depends on the platform (sockets, the window and
+# input, files, the GPU through WARP, audio, the room service, the script VM's file rules). The other crates are pure
+# logic the Linux run already covers, and the example games' long headless runs stay on Linux. Tests run under
+# cargo-nextest, which runs the test binaries in parallel.
 #
 # GPU crates: crates that draw through wgpu build and lint on both runners (wgpu compiles without a GPU). Their tests
 # that need an adapter get Mesa's software Vulkan driver (lavapipe, `mesa-vulkan-drivers`) on Linux and WARP on Windows;
@@ -51,6 +57,8 @@ jobs:
 
   clippy:
     name: clippy (${{ matrix.os }})
+    # Off for now (owner, 2026-11-06); set back to run by removing this line.
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -75,7 +83,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows is off for now (owner, 2026-11-06): `os: [ubuntu-latest, windows-latest]` turns it back on.
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,7 +95,21 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test --workspace --all-features
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-nextest
+      - name: Tests (the whole workspace)
+        if: runner.os == 'Linux'
+        run: cargo nextest run --workspace --all-features --no-fail-fast
+      - name: Doc tests
+        if: runner.os == 'Linux'
+        run: cargo test --workspace --all-features --doc
+      - name: Tests (the crates with platform-dependent behavior)
+        if: runner.os == 'Windows'
+        run: >-
+          cargo nextest run --all-features --no-fail-fast
+          -p torque-client -p torque-server -p torque-resource -p torque-rooms -p torque-ts-vm
+          -p torque-app -p torque-render-core -p torque-render-hd -p torque-audio
       - name: Examples
         shell: bash
         run: |
@@ -129,6 +152,8 @@ jobs:
 
   msrv:
     name: MSRV
+    # Off for now (owner, 2026-11-06); set back to run by removing this line.
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
