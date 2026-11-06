@@ -42,17 +42,17 @@ else if (found?.kind === 'join') {
   const join = joinInvite(found.code);
   let send = null;
   join.attach({
-    setLocalSender: (f) => (send = f),
+    setLinkSender: (f) => (send = f),
     // sent until the echo comes back: the host's side takes the channel a moment after it opens
     linkOpened: () => {
       root.dataset.torqueLink = 'datachannel';
       const again = setInterval(() => (root.dataset.echo ? clearInterval(again) : send(new Uint8Array([1, 2, 3]))), 250);
     },
     linkEnded: (why) => (root.dataset.torqueEnded = why),
-    localDatagram: (bytes) => (root.dataset.echo = [...bytes].join(' ')),
+    linkDatagram: (bytes) => (root.dataset.echo = [...bytes].join(' ')),
   });
 } else {
-  hostInvites({ open: true })({
+  hostInvites({ open: true }).hosting({
     adopt(pc, ch) {
       ch.binaryType = 'arraybuffer';
       ch.onmessage = (e) => {

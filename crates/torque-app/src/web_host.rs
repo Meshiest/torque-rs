@@ -113,8 +113,10 @@ pub fn closed() -> Vec<u32> {
 /// [`web_exports!`](crate::web_exports): the host player's client (`startHostClient`, from `start_host_client`, a
 /// function returning `Result<(), String>` that starts the client on [`crate::web_join::Target::Local`]) and its local
 /// link (`localDatagram`, `setLocalSender`: [`crate::web_join`]), a client joined by an invite link (`startLinkClient`,
-/// from `start_link_client`, which starts the client on [`crate::web_join::Target::Page`]; `linkOpened`, `linkEnded`),
-/// and the worker's server (`hostStart`, from
+/// from `start_link_client`, which starts the client on [`crate::web_join::Target::Page`]; `linkOpened`, `linkEnded`,
+/// and its data channel's `linkDatagram` and `setLinkSender`), a running game's switch in place (`switchTo`:
+/// [`crate::web_join::switch_to`], which the game takes with [`crate::web_join::take_switch`]), and the worker's server
+/// (`hostStart`, from
 /// `host_start`, a function of the map asked for (empty: the game's first) returning `Result<String, String>`, the map
 /// started, which calls [`start`]; `hostOpen`, `hostDatagram`, `hostClose`, `hostTick` and `hostClosed`: this module's).
 /// The program depends on `wasm-bindgen`.
@@ -143,7 +145,7 @@ macro_rules! web_host_exports {
                 $start_host_client()
             }
 
-            /// A datagram for the client on the page's link (false: dropped).
+            /// A datagram for the client on the link to the worker's server (false: dropped).
             #[wasm_bindgen(js_name = localDatagram)]
             pub fn local_datagram(bytes: &[u8]) -> bool {
                 $crate::web_join::local_datagram(bytes)
@@ -163,6 +165,24 @@ macro_rules! web_host_exports {
             #[wasm_bindgen(js_name = linkEnded)]
             pub fn link_ended(why: &str) {
                 $crate::web_join::link_ended(why)
+            }
+
+            /// A datagram for the client on the page's data channel to a player's host (false: dropped).
+            #[wasm_bindgen(js_name = linkDatagram)]
+            pub fn link_datagram(bytes: &[u8]) -> bool {
+                $crate::web_join::link_datagram(bytes)
+            }
+
+            /// The page's function that sends the client's datagrams on its data channel to a player's host.
+            #[wasm_bindgen(js_name = setLinkSender)]
+            pub fn set_link_sender(sender: $crate::web_host::js_sys::Function) {
+                $crate::web_join::set_link_sender(sender)
+            }
+
+            /// The running game switches in place: `solo`, `link` or `host`.
+            #[wasm_bindgen(js_name = switchTo)]
+            pub fn switch_to(mode: &str) -> Result<(), String> {
+                $crate::web_join::switch_to(mode)
             }
 
             /// The page's function that posts the host player's datagrams to the worker.

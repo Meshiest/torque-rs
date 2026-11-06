@@ -72,8 +72,8 @@ A static host has no game server, so the site's examples are built with `--solo`
 `<target>/web/<example>-solo`): the page's root element carries `data-torque-solo="1"`, and the game is played alone. The
 arena runs its server in the page's Web Worker, as a player's host does, with no room service. Both games wait at their
 main menu, which offers "Play alone", "Host with a link" and "Join with Link". The arena's "Host with a link" takes the
-host into its game with the panel open. The vehicle demo plays alone in the page itself; its "Host with a link" opens the
-page again with `?invites=1`, where its server runs in the worker. Neither offers the room service's hosting
+host into its game with the panel open. The vehicle demo plays alone in the page itself; its "Host with a link" starts
+its server in the page's worker then and takes the host into it, on the same page. Neither offers the room service's hosting
 or joining there, and both Esc menus offer "Invite players". The native builds and the local web builds keep their
 multiplayer.
 
@@ -86,8 +86,12 @@ what that server sees, and presses "Create Invite Offer" once per friend for an 
 server the invite uses before it contacts it, then makes a reply link (`<page>#reply=<code>`). The host opens the reply
 link in the same browser: that tab hands the reply to the game's tab over a `BroadcastChannel` and closes, and the data
 channel opens straight between the two browsers. The friend's game joins once the channel opens, however long the trade
-takes. Every state of the friend's panel has "Back to the menu", which opens the page again with no invite, its game at
-its menu; a page joined by a link also offers "Play alone instead" on its menu. The reply can also be pasted into the host's panel. The codes ride in
+takes. The page never loads again for any of this: a page opened on an invite starts its game as one played alone, with
+the friend's panel over its menu, and switches that game to the host's once the channel opens (and joining with a pasted
+link works the same way). Every state of the friend's panel has "Back to the menu", which closes the panel over the
+game's own menu; a join that failed or was refused also takes a new invite offer link pasted in. Leaving the host's
+game, or the host leaving, brings the page back to its own menu, played alone. On the host's list, an invite that failed,
+expired or whose player left has "Dismiss". The reply can also be pasted into the host's panel. The codes ride in
 the fragment, which a browser never sends to the server, and the page clears it from the address bar once read. Each
 link carries its sender's IP address, which the panels say beside every copy button.
 

@@ -28,6 +28,7 @@
 //! - [`types`]: the object type bits and the masks the classes query with ([`TypeMasks`]).
 //! - [`gjk`] and [`feature`]: `GjkCollisionState` (distance, closest points, 16-iteration limit), `ConvexFeature`, the state
 //!   list and `getCollisionInfo` (vehicles).
+//! - [`sat`]: how deep two convex polytopes overlap (the separating axis test), exact while they overlap; this crate's own.
 //!
 //! **Hostile input.** Positions, scales and boxes come from scripts; meshes from files. Nothing here panics on NaN, infinities,
 //! huge or degenerate values: every index is checked, every loop is bounded by a count the crate caps (the `MAX_*` constants), and
@@ -48,6 +49,7 @@ pub mod map;
 pub mod math;
 pub mod mesh;
 pub mod poly;
+pub mod sat;
 pub mod types;
 
 pub use collision::{Collision, CollisionList, MAX_COLLISIONS};

@@ -3,8 +3,13 @@
 // (the drawing buffer and the game's GUI, at two sizes), the host page makes an invite link, a second browser opens it and
 // makes a reply link, the reply link is opened in the host's browser after `delay` seconds (a person's copy and paste: it
 // hands the reply to the game's tab and closes), the data channel opens, the joiner walks, each page holds the other's
-// figure, the host's panel no longer shows the invite's link, and no console error shows. Then bad, cut short, oversized and used codes must each be refused with a message,
-// and a refused join's Back to the menu takes the page to its game's menu.
+// figure, the host's panel no longer shows the invite's link, and no console error shows. The joiner's page is first
+// opened on a cut-short link (refused), and the real one is pasted into that panel's field for a new link. Then bad, cut
+// short, oversized and used codes must each be refused with a message, a refused join's Back to the menu shows the page's
+// game at its menu, and an invite whose reply fails is dismissed off the host's list for good. Last the joiner leaves the
+// host's game: its page is back at its own menu (and plays alone), and the host dismisses the invite it left.
+// Nothing reloads a page: each page's document is marked once loaded, and the mark must stay (Host with a link, Back to
+// the menu, the new link's join, leaving).
 //
 // Usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns|same] [delay]
 // The invites use the same-network server and two browsers, their host candidates as addresses rather than `.local` names.
@@ -21,7 +26,7 @@ import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { launchGuarded, noLock } from './guard.mjs';
 import { serve } from './serve.mjs';
-import { KIND_JOIN, encodeCode } from './codes.js';
+import { KIND_JOIN, KIND_REPLY, decodeCode, encodeCode } from './codes.js';
 
 const [folder, shots, seconds = '120', names = '', delayText] = process.argv.slice(2);
 const same = names === 'same';
@@ -112,6 +117,10 @@ const state = (page) =>
         return c ? [c.width, c.height, Math.round(c.getBoundingClientRect().width), Math.round(c.getBoundingClientRect().height)] : [];
       })(),
       back: [...document.querySelectorAll('#invites button')].some((b) => b.textContent === 'Back to the menu'),
+      panel: Boolean(document.getElementById('invites')),
+      details: document.querySelectorAll('#invites li .details').length,
+      server: r.dataset.torqueServer ?? '',
+      kept: globalThis.checkMarker === 'kept',
       asked: globalThis.iceServersAsked ?? [],
     };
   });
@@ -139,6 +148,31 @@ async function sized(page, name, w, h) {
   if (s.canvas[2] !== w || s.canvas[3] !== h) noted.push(`${name} at ${w}x${h}: the canvas does not fill the page (${s.canvas})`);
   if (gui && gui !== `${dw} ${dh}`) noted.push(`${name} at ${w}x${h}: the GUI is ${gui}, not ${dw} ${dh}`);
 }
+
+// Marks the page's document: the mark stays until the page loads again (state's `kept`).
+const markDocument = (page) => page.evaluate(() => (globalThis.checkMarker = 'kept'));
+
+// Pastes `text` into the panel's field with the placeholder `placeholder` (by script).
+const paste = (page, placeholder, text) =>
+  page.evaluate(
+    (placeholder, text) => {
+      const input = [...document.querySelectorAll('#invites input')].find((i) => i.placeholder === placeholder);
+      if (input) input.value = text;
+      return Boolean(input);
+    },
+    placeholder,
+    text,
+  );
+
+// Presses Dismiss on the host's invite whose line matches `pattern` (by script); whether there was one.
+const dismissWhere = (page, pattern) =>
+  page.evaluate((source) => {
+    const re = new RegExp(source);
+    const item = [...document.querySelectorAll('#invites li')].find((li) => re.test(li.querySelector('p')?.textContent ?? ''));
+    const button = item && [...item.querySelectorAll('button')].find((b) => b.textContent === 'Dismiss');
+    button?.click();
+    return Boolean(button);
+  }, pattern.source);
 
 // Play alone on the page's menu (by its script: the arena's `joinPage`, the vehicle demo's `playAlone`).
 const playAlone = (page) =>
@@ -198,6 +232,7 @@ try {
   let h = await wait(host, Number(seconds) * 1000, (s) => s.stage === 'ready' && s.frames > 30);
   h = await wait(host, 4000, (s) => s.figure);
   if (h.stage !== 'ready') problems.push(`the host page did not reach its menu (stage "${h.stage}", status "${h.status}")`);
+  await markDocument(host);
   if (h.figure) noted.push('the page played alone dropped the player into the game instead of waiting at its menu');
   await writeFile(shot('solo-menu.png'), await host.screenshot({ type: 'png' }));
   console.log(`picture: ${shot('solo-menu.png')}`);
@@ -223,15 +258,13 @@ try {
   }
 
   // The menu's Host with a link: the panel, its privacy text shown before any link is made. A game played alone in the
-  // page itself (the vehicle demo) opens the page again to host (`?invites=1`), and the panel opens once its server runs.
-  const reopened = host.waitForNavigation({ waitUntil: 'load', timeout: 5000 }).then(() => true, () => false);
+  // page itself (the vehicle demo) starts its server in the worker then and joins it, on the same page.
   await host.evaluate(() => globalThis.torqueAsk('host')).catch(() => {});
-  if (await reopened) {
-    console.log(`host page opened again to host: ${host.url()}`);
-    h = await wait(host, Number(seconds) * 1000, (s) => s.figure);
-    if (!h.figure) problems.push(`the hosting page has no figure (status "${h.status}")`);
-  }
-  await host.waitForSelector('#invites .privacy', { timeout: 20_000 }).catch(() => problems.push('no host panel'));
+  await host.waitForSelector('#invites .privacy', { timeout: 60_000 }).catch(() => problems.push('no host panel'));
+  h = await wait(host, Number(seconds) * 1000, (s) => s.figure && s.server === 'worker');
+  console.log(`hosting: server "${h.server}", figure ${h.figure}, same page ${h.kept}`);
+  if (!h.figure || h.server !== 'worker') problems.push(`the hosting page is not in its worker's game (status "${h.status}")`);
+  if (!h.kept) problems.push('Host with a link loaded the page again');
   await panelShot(host, 'host-panel.png');
   const privacy = await host.evaluate(() => document.querySelector('#invites .privacy')?.textContent ?? '');
   if (!/Cloudflare's free public STUN server/.test(privacy)) problems.push(`the host panel's privacy text: "${privacy}"`);
@@ -243,12 +276,20 @@ try {
   else console.log(`invite link: ${invite.length} characters, code ${invite.split('#join=')[1].length}`);
   await panelShot(host, 'host-invite.png');
 
-  // The joiner opens it.
+  // The joiner opens a cut-short copy first: refused, its panel offers a field for a new link, where the real one goes.
   const joiner = await watched(joinBrowser, 'joiner');
-  await joiner.goto(noLock(`${invite}`.replace('#', '?name=Joiner#')), { waitUntil: 'load' });
-  let j = await wait(joiner, 30_000, (s) => s.join === 'ready' || s.join === 'refused');
+  const [invitePage, inviteCode] = invite.split('#join=');
+  await joiner.goto(noLock(`${invitePage}?name=Joiner#join=${inviteCode.slice(0, -12)}`), { waitUntil: 'load' });
+  await markDocument(joiner);
+  let j = await wait(joiner, 30_000, (s) => s.join === 'refused');
   if (j.hash) problems.push('the invite stayed in the joiner\'s address bar');
-  if (j.join !== 'ready') problems.push(`the joiner's page did not take the invite ("${j.said}")`);
+  if (j.join !== 'refused') problems.push(`the joiner's page took a cut-short invite ("${j.said}")`);
+  await panelShot(joiner, 'join-refused-paste.png');
+  if (!(await paste(joiner, 'Paste an invite offer link', invite))) problems.push('a refused join offers no field for a new link');
+  await press(joiner, 'Join');
+  j = await wait(joiner, 30_000, (s) => s.join === 'ready' || s.join === 'refused');
+  if (j.join !== 'ready') problems.push(`the joiner's page did not take the pasted invite ("${j.said}")`);
+  if (!j.kept) problems.push('the pasted invite loaded the page again');
   await panelShot(joiner, 'join-panel.png');
   await press(joiner, 'Connect');
   j = await wait(joiner, 30_000, (s) => s.links.length > 0 || s.join === 'refused');
@@ -256,6 +297,12 @@ try {
   if (!replyLink) problems.push(`no reply link ("${j.said}")`);
   else console.log(`reply link: ${replyLink.length} characters, code ${replyLink.split('#reply=')[1].length}`);
   await panelShot(joiner, 'join-reply.png');
+  // While it waits, the joiner opens its own Host with a link panel over the join's: it closes once the joiner is in the
+  // host's game, and does not open again there.
+  if (!problems.length) {
+    await joiner.evaluate(() => globalThis.torqueAsk('host'));
+    await joiner.waitForSelector('#invites .privacy', { timeout: 60_000 }).catch(() => problems.push("the joiner's own host panel did not open"));
+  }
 
   // The host opens the reply link in its own browser: that tab hands it over and closes. A person takes a while.
   if (!problems.length && delay > 0) {
@@ -294,6 +341,12 @@ try {
     if (h.others < 1) problems.push("the host page does not hold the joiner's figure");
     if (!/joined/.test(h.invites)) problems.push(`the host's invite is not marked joined ("${h.invites}": ${h.lines.join(' | ')})`);
     if (h.links.length) problems.push(`the host's panel still shows ${h.links.length} invite link(s) once the reply is in`);
+    if (same) await joiner.bringToFront();
+    if ((await state(joiner)).panel) problems.push("the joiner's own host panel stayed open in the host's game");
+    await joiner.evaluate(() => globalThis.torqueAsk('host'));
+    await new Promise((r) => setTimeout(r, 1000));
+    if ((await state(joiner)).panel) problems.push("the joiner's own host panel opened in the host's game");
+    if (same) await host.bringToFront();
   }
   if (!problems.length) {
     if (same) await joiner.bringToFront();
@@ -354,21 +407,20 @@ try {
     await refusedOn(joinBrowser, 'invite offer used again', invite, 'join', /already used/);
     await refusedOn(joinBrowser, 'reply as invite', `${page}#join=${replyLink.split('#reply=')[1]}`, 'join', /reply link, not an invite offer link/);
     await refusedOn(hostBrowser, 'reply used again', replyLink, 'reply', /already used/);
-    // A refused join's Back to the menu: the page again with no invite, its game at its menu.
+    // A refused join's Back to the menu: the panel goes, and the page's game (running under it) is at its menu.
     const failed = await watched(joinBrowser, 'back');
     await failed.goto(noLock(`${page}#join=${code.slice(0, -12)}`), { waitUntil: 'load' });
-    let f = await wait(failed, 20_000, (s) => s.join === 'refused');
+    await markDocument(failed);
+    let f = await wait(failed, Number(seconds) * 1000, (s) => s.join === 'refused' && s.stage === 'ready' && s.frames > 30);
     if (!f.back) problems.push(`a refused join has no Back to the menu ("${f.said}")`);
     await panelShot(failed, 'join-failed-back.png');
     await writeFile(shot('join-failed-back-page.png'), await failed.screenshot({ type: 'png' }));
-    const reloaded = failed.waitForNavigation({ waitUntil: 'load', timeout: 10_000 }).then(() => true, () => false);
     await press(failed, 'Back to the menu');
-    if (!(await reloaded)) problems.push('Back to the menu did not open the page again');
-    f = await wait(failed, Number(seconds) * 1000, (s) => s.stage === 'ready' && s.frames > 30);
-    const left = await failed.evaluate(() => ({ panel: Boolean(document.getElementById('invites')), url: location.href }));
-    console.log(`back to the menu: ${left.url}, stage ${f.stage}, join "${f.join}", panel ${left.panel}, figure ${f.figure}`);
-    if (f.stage !== 'ready' || f.join || left.panel || f.figure || /#/.test(left.url)) {
-      problems.push(`Back to the menu: not the game's menu (${JSON.stringify({ ...left, stage: f.stage, join: f.join, figure: f.figure })})`);
+    f = await wait(failed, 10_000, (s) => !s.panel);
+    const url = await failed.evaluate(() => location.href);
+    console.log(`back to the menu: ${url}, stage ${f.stage}, join "${f.join}", panel ${f.panel}, figure ${f.figure}, same page ${f.kept}`);
+    if (f.stage !== 'ready' || f.join || f.panel || f.figure || /#/.test(url) || !f.kept) {
+      problems.push(`Back to the menu: not the game's menu on the same page (${JSON.stringify({ url, ...f })})`);
     }
     await writeFile(shot('back-to-menu.png'), await failed.screenshot({ type: 'png' }));
     await failed.close();
@@ -385,6 +437,68 @@ try {
     // the game goes on
     h = await wait(host, 5000, (s) => s.others >= 1);
     if (h.others < 1) problems.push('the joiner left the host after the refusals');
+
+    // An invite whose reply fails (one made here for it: right token, nothing behind it) is dismissed: its line and any
+    // connection details go, it counts no more, and its reply is still refused.
+    await press(host, 'Create Invite Offer');
+    h = await wait(host, 20_000, (s) => s.links.length > 0);
+    const second = h.links[0];
+    if (!second) problems.push(`no second invite link (${h.invites})`);
+    else {
+      const { token } = await decodeCode(second.split('#join=')[1], KIND_JOIN);
+      const fake = await encodeCode({
+        kind: KIND_REPLY,
+        token,
+        ufrag: 'abcd',
+        pwd: 'abcdefghijklmnopqrstuvwx',
+        fingerprint: new Uint8Array(32),
+        setup: 'active',
+        sctpPort: 5000,
+        candidates: [],
+      });
+      const fakeLink = `${page}#reply=${fake}`;
+      await paste(host, 'Paste a reply link', fakeLink);
+      await press(host, 'Add');
+      h = await wait(host, 60_000, (s) => /failed/.test(s.invites));
+      const count = h.invites.split(' ').length;
+      console.log(`failed invite: "${h.invites}", details ${h.details}`);
+      if (!/failed/.test(h.invites)) problems.push(`the made-up reply's invite did not fail ("${h.invites}")`);
+      await panelShot(host, 'host-invite-failed.png');
+      if (!(await dismissWhere(host, /^Invite \d+: (Could not connect|the reply does not fit)/))) problems.push('a failed invite has no Dismiss');
+      h = await state(host);
+      console.log(`dismissed: "${h.invites}", details ${h.details}, lines ${h.lines.length}`);
+      if (/failed/.test(h.invites) || h.invites.split(' ').length !== count - 1 || h.details !== 0) {
+        problems.push(`the dismissed invite is still counted or shown ("${h.invites}", details ${h.details})`);
+      }
+      await paste(host, 'Paste a reply link', fakeLink);
+      await press(host, 'Add');
+      h = await wait(host, 10_000, (s) => /already used|no longer open/.test(s.said));
+      if (!/already used|no longer open/.test(h.said)) problems.push(`the dismissed invite's reply again: "${h.said}"`);
+      if (/failed/.test(h.invites)) problems.push('the dismissed invite came back');
+    }
+  }
+
+  // The joiner leaves the host's game (its Esc menu's Leave game): back at its own page's menu, on the same page, where it
+  // plays alone; the host's invite shows it left, and is dismissed.
+  if (!problems.length) {
+    await joiner.bringToFront();
+    await joiner.evaluate(() => globalThis.torque.call('leaveGame'));
+    j = await wait(joiner, 20_000, (s) => !s.figure && s.link !== 'datachannel' && s.join === '');
+    console.log(`joiner left: link "${j.link}", join "${j.join}", figure ${j.figure}, status "${j.status}", same page ${j.kept}`);
+    if (j.figure || j.link === 'datachannel' || j.join !== '' || !j.kept) {
+      problems.push(`leaving the host's game: not the page's own menu (${JSON.stringify(j)})`);
+    }
+    await writeFile(shot('joiner-left.png'), await joiner.screenshot({ type: 'png' }));
+    await playAlone(joiner).catch((e) => problems.push(`Play alone after leaving: ${e.message}`));
+    j = await wait(joiner, Number(seconds) * 1000, (s) => s.figure);
+    if (!j.figure || !j.kept) problems.push(`the joiner does not play alone after leaving (status "${j.status}")`);
+    await host.bringToFront();
+    h = await wait(host, 20_000, (s) => s.others === 0 && /left/.test(s.invites));
+    console.log(`host after the joiner left: others ${h.others}, invites "${h.invites}"`);
+    if (h.others !== 0 || !/left/.test(h.invites)) problems.push(`the host did not see the joiner leave (${h.others}, "${h.invites}")`);
+    if (!(await dismissWhere(host, /^Invite \d+: left the game/))) problems.push('a left invite has no Dismiss');
+    h = await state(host);
+    if (/left/.test(h.invites) || h.lines.some((l) => /left the game/.test(l))) problems.push(`the left invite stayed ("${h.invites}")`);
   }
 } catch (e) {
   problems.push(e.stack ?? e.message);

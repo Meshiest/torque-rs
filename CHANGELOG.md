@@ -505,12 +505,17 @@ The first development version. Nothing is published yet; this is what exists.
   driver, at most 64 MiB, written whole and renamed into place, and a missing, damaged or foreign one starts an empty
   cache. This is the workspace's one `unsafe` block (`Device::create_pipeline_cache`, with a `SAFETY` comment):
   torque-render-core denies `unsafe_code` instead of forbidding it and expects it on that function only.
+- torque-app's `web_join::switch_to` (`switchTo` in `web_host_exports!`, with `linkDatagram` and `setLinkSender`): a
+  page switches its running game in place between playing alone, an invite link's game and hosting.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- `torque-vehicle`: a vehicle held at full throttle against a tree (or any interior) crept into it and drove through, and its
+  body could sink into the terrain under a steady push. The body now stays out of map pieces, kept by the separating axis
+  test (`torque_collide::sat`) after TGE's contact responses (`Body::hold_out`).
 - `torque::app`, `torque-render-hd`: the effect clock could not be advanced, so water, the volumetric clouds of a map
   without a clock of their own and the stars' twinkle stood still. `WorldView::advance_time` runs it (`WorldView::time`,
   wrapping at `EFFECT_TIME_WRAP`). The film grain no longer follows the effect time: its pattern is fixed (`GRAIN_SEED`),

@@ -833,7 +833,7 @@ function showMainMenu()
 // $Arena::JoinAsked asks the host to open a new connection to that game and join it. Played alone ($Arena::Solo: the page's
 // own game), the menu offers to play alone, to host with a link (which also joins the page's own game) or to join with
 // one: $Arena::PageAsk asks the page for its panel. A game joined by an invite link ($Arena::Invited) also offers to play
-// alone instead (the page again, with no invite).
+// alone instead (the page's own game again, at this menu: the page switches the game back in place).
 function showJoinOnly()
 {
    HostButton.setVisible(0);
@@ -863,6 +863,10 @@ function showJoinOnly()
       $Pause::CanInvite = 1;
       return;
    }
+   // a page that played alone before keeps none of it here
+   $Pause::CanInvite = 0;
+   MainLine.setText($Arena::Invited ? "A small shooter, in the game you were invited to." :
+      "A small shooter for one player or a few on the same network.");
    JoinButton.setText("Join the game");
    JoinNote.setText($Arena::Invited ? "Join the game you were invited to." : "Join the game this page came from.");
    if ($Arena::Invited)

@@ -301,6 +301,12 @@ impl VehicleDemo {
         n.policy = torque::client::net::NetPolicy::Loopback;
     }
 
+    /// Takes the client's socket away (a browser's page back to playing alone: no link of its own).
+    pub fn clear_socket(&mut self) {
+        let st = self.client.host.client.borrow();
+        st.net.borrow_mut().socket = None;
+    }
+
     /// Joins the game at `address` (`a.b.c.d:port`).
     pub fn join(&mut self, address: &str) -> Result<(), String> {
         self.stop_hosting();

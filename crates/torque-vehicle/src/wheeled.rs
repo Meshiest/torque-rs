@@ -438,7 +438,7 @@ pub fn substep(
 }
 
 /// The contact prep: the body collision, `resolveCollision`, the host's hook when the body touched
-/// ([`VehicleHost::wheeled_body_contact`]), `resolveContacts`. True when the body touched.
+/// ([`VehicleHost::wheeled_body_contact`]), `resolveContacts`, then [`Body::hold_out`](state::Body::hold_out). True when the body touched.
 pub fn contact_prep(
     v: &mut Vehicle<Wheeled>,
     db: &WheeledVehicleData,
@@ -452,6 +452,7 @@ pub fn contact_prep(
         host.wheeled_body_contact(&mut v.s, &v.k);
     }
     state::resolve_contacts(&mut v.s, &v.body.list, base, dt);
+    v.body.hold_out(&mut v.s, base, host);
     touched
 }
 
