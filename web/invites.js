@@ -435,6 +435,11 @@ export function hostInvites({ open = false } = {}) {
   let hostPanel = null;
   // the page is in another player's game: no invite is made or taken, and no one comes in
   let gone = false;
+  // the invites' list is hidden (Hide invites: no link on screen while streaming), for the page's session; then the
+  // count line says what is on it
+  let hidden = false;
+  let toggle = null;
+  let countLine = null;
   const AWAY = "You are in another player's game. Go back to your own to let friends in.";
   const root = document.documentElement;
 
@@ -442,7 +447,33 @@ export function hostInvites({ open = false } = {}) {
 
   // every invite on the list, for the page's `data-torque-invites` (each one's state, oldest first)
   const made = [];
-  const marked = () => (root.dataset.torqueInvites = made.map((i) => i.state).join(' '));
+  const marked = () => {
+    root.dataset.torqueInvites = made.map((i) => i.state).join(' ');
+    counted();
+  };
+  // The list shown or hidden as `hidden` says, with its toggle's text and the count line.
+  function shown() {
+    if (!list || !toggle) return;
+    list.hidden = hidden;
+    toggle.textContent = hidden ? 'Show invites' : 'Hide invites';
+    toggle.setAttribute('aria-expanded', String(!hidden));
+    counted();
+  }
+  // "3 invites, 1 waiting, 1 joined", while the list is hidden.
+  function counted() {
+    if (!countLine) return;
+    countLine.hidden = !hidden;
+    if (!hidden) return (countLine.textContent = '');
+    const n = made.length;
+    const of = (states) => made.filter((i) => states.includes(i.state)).length;
+    const parts = [
+      [of(['making', 'waiting']), 'waiting'],
+      [of(['connecting']), 'connecting'],
+      [of(['joined']), 'joined'],
+    ].filter(([k]) => k > 0);
+    const words = [`${n} invite${n === 1 ? '' : 's'}`, ...parts.map(([k, w]) => `${k} ${w}`)];
+    countLine.textContent = `${words.join(', ')}.`;
+  }
   // An invite's link is shown only while it waits for its reply: once the reply is in, or the invite expired or failed,
   // its link box goes (its status line stays, and a failed connection's details, until it is dismissed).
   function setState(inv, state, text) {
@@ -640,7 +671,15 @@ export function hostInvites({ open = false } = {}) {
     }
     show();
     said = el('p', { class: 'said', 'data-said': '' });
-    list = list ?? el('ol', { class: 'list', reversed: true });
+    list = list ?? el('ol', { class: 'list', id: 'invites-list', reversed: true });
+    toggle = el('button', {
+      type: 'button',
+      class: 'toggle',
+      'aria-controls': 'invites-list',
+      on: { click: () => ((hidden = !hidden), shown()) },
+    });
+    countLine = el('p', { class: 'count', 'data-count': '' });
+    shown();
     const paste = el('input', { type: 'text', 'aria-label': "A player's reply link", placeholder: 'Paste a reply link' });
     const add = el('button', {
       type: 'button',
@@ -658,6 +697,8 @@ export function hostInvites({ open = false } = {}) {
       choice,
       privacy,
       el('button', { type: 'button', class: 'primary', text: 'Create Invite Offer', on: { click: makeInvite } }),
+      toggle,
+      countLine,
       list,
       el('h3', { text: 'A reply came back?' }),
       el('p', {

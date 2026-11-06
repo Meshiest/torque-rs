@@ -12,7 +12,8 @@
 // or the two named) and the invite is on Same network only. With `fail` the two pages are tabs of one browser, the invite
 // is on Same network only and every page's browser refuses every candidate it is given, so the host's connection must
 // fail: its connection details are printed and checked (the host's side, the server, the refused adds, no address). The
-// delay is 30 s by default: longer than a joiner's browser waits before it gives up on a host it cannot reach yet.
+// delay is 30 s by default: longer than a joiner's browser waits before it gives up on a host it cannot reach yet. The
+// host's Hide invites is pressed once its link is made: the list goes and the count line says what is on it.
 // No STUN server is ever contacted: every page's `RTCPeerConnection` is given no ICE servers, whatever the page asks for
 // (what it asked for is checked). The page is served from 127.0.0.1; buttons are pressed by script, never by the mouse.
 import { createServer } from 'node:http';
@@ -133,6 +134,9 @@ const state = (page) =>
       links: [...document.querySelectorAll('#invites input[data-link]')].map((e) => e.value),
       lines: [...document.querySelectorAll('#invites li > p')].map((e) => e.textContent),
       details: [...document.querySelectorAll('#invites input[data-details]')].map((e) => e.value),
+      listHidden: document.getElementById('invites-list')?.hidden ?? null,
+      count: document.querySelector('#invites [data-count]')?.textContent ?? '',
+      expanded: document.querySelector('#invites button.toggle')?.getAttribute('aria-expanded') ?? '',
       asked: globalThis.iceServersAsked ?? [],
     };
   });
@@ -194,6 +198,19 @@ try {
   const invite = h.links[0];
   if (!invite) throw new Error(`no invite link (${h.invites}: ${h.lines.join(' | ')} ${h.said})`);
   console.log(`invite link: code ${invite.split('#join=')[1].length} characters`);
+
+  // Hide invites: the list (its links) goes, the count line says what is on it; Show invites brings it back.
+  await press(host, 'Hide invites');
+  h = await state(host);
+  console.log(`hidden: list hidden ${h.listHidden}, expanded "${h.expanded}", count "${h.count}"`);
+  if (h.listHidden !== true || h.expanded !== 'false' || h.count !== '1 invite, 1 waiting.') {
+    problems.push(`Hide invites: list hidden ${h.listHidden}, expanded "${h.expanded}", count "${h.count}"`);
+  }
+  await press(host, 'Show invites');
+  h = await state(host);
+  if (h.listHidden !== false || h.expanded !== 'true' || h.count !== '') {
+    problems.push(`Show invites: list hidden ${h.listHidden}, expanded "${h.expanded}", count "${h.count}"`);
+  }
 
   const joiner = await watched(joinBrowser, 'joiner');
   await joiner.goto(noLock(invite), { waitUntil: 'load' });
