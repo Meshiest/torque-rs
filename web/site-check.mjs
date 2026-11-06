@@ -2,7 +2,9 @@
 // WebGPU on: the gallery loads with no console error and no request off the server, its page is no wider than a phone's
 // screen, every link on it answers HTTP 200 (the GitHub link is not fetched), the guide's and the API docs' front pages load
 // with no console error, and each card's game reaches its world (the page's `data-torque-figure`) with no console error,
-// page error or failed request. Pictures of the gallery at a desktop's and a phone's width go into the pictures folder.
+// page error or failed request. A card that opens a map (`?map=`) goes straight to it; any other waits at its game's menu
+// (no figure while the menu is up) until the check presses Play alone (by script: the vehicle demo's `playAlone`, the
+// arena's `joinPage`). Pictures of the gallery at a desktop's and a phone's width go into the pictures folder.
 //
 // Usage: node site-check.mjs [site] [pictures] [seconds per game]
 // (default: <target>/site, <target>/site-check, 120). Needs puppeteer-core in the folder `TORQUE_WEB_TOOLS` names (default:
@@ -91,6 +93,9 @@ try {
     const started = Date.now();
     await page.goto(noLock(card.href), { waitUntil: 'load' });
     const deadline = started + Number(seconds) * 1000;
+    const menuFirst = !new URL(card.href).searchParams.has('map');
+    let menuSince = null;
+    let pressed = false;
     let s = {};
     const before = problems.length;
     while (Date.now() < deadline && problems.length === before) {
@@ -98,8 +103,25 @@ try {
         figure: document.documentElement.dataset.torqueFigure === '1',
         frames: Number(document.documentElement.dataset.torqueFrames ?? 0),
         map: document.documentElement.dataset.torqueMap ?? '',
+        stage: document.documentElement.dataset.torqueStage ?? '',
         status: document.getElementById('status')?.textContent ?? '',
       }));
+      if (menuFirst && !pressed) {
+        if (s.figure) {
+          problems.push(`${card.text}: the game started before Play alone was pressed`);
+          break;
+        }
+        // The menu, drawn and held for three seconds: Play alone.
+        if (s.stage === 'ready' && s.frames > 30) menuSince ??= Date.now();
+        if (menuSince !== null && Date.now() - menuSince > 3000) {
+          const url = new URL(card.href);
+          const file = join(pictures, `${url.pathname.split('/').filter(Boolean).pop()}-menu.png`);
+          writeFileSync(file, await page.screenshot({ type: 'png' }));
+          console.log(`${card.text}: at its menu: ${file}`);
+          await page.evaluate(() => globalThis.torque.call('playAlone').catch(() => globalThis.torque.call('joinPage')));
+          pressed = true;
+        }
+      }
       if (s.figure) break;
       await new Promise((r) => setTimeout(r, 250));
     }

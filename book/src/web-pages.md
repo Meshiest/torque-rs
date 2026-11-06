@@ -3,7 +3,11 @@
 A game made on `torque::app` runs in a browser on WebGPU: `node web/build.mjs <example>` builds it for the web (the module,
 its page and the game's files), and `just examples/web-level-demo` or `just examples/web-vehicle-demo` builds and serves one
 on `http://127.0.0.1:8080/`. Every web build shares one page (`web/index.html`) and one entry (`torque::app::web_page`): the
-page shows each loading stage, and its gear opens the settings (the renderer's quality, the frame-rate display).
+page shows each loading stage, and its gear opens the settings (the renderer's quality, the render scale, the frame-rate
+display). The game's canvas fills the browser window and follows it. The game draws at the canvas's device pixels under
+the render scale (Auto, the default, draws all of them up to a 1920x1080 screen's worth and fewer past it; or 100%, 75%,
+50%), and lays its GUI out at that size; the browser stretches the drawing over the canvas. The page tells the game the
+scale on its root element's `data-torque-render-scale`, and the game writes the size it draws at on `data-torque-size`.
 
 ## The page and the scripts
 
@@ -66,9 +70,10 @@ GitHub Pages on each push to main.
 
 A static host has no game server, so the site's examples are built with `--solo` (`node web/build.mjs <example> --solo`, into
 `<target>/web/<example>-solo`): the page's root element carries `data-torque-solo="1"`, and the game is played alone. The
-arena runs its server in the page's Web Worker, as a player's host does, with no room service, and its menu offers "Play
-alone", "Host with a link" and "Join with Link". The vehicle demo plays alone in the page itself; its "Host with a link"
-opens the page again with `?invites=1`, where its server runs in the worker. Neither offers the room service's hosting
+arena runs its server in the page's Web Worker, as a player's host does, with no room service. Both games wait at their
+main menu, which offers "Play alone", "Host with a link" and "Join with Link". The arena's "Host with a link" takes the
+host into its game with the panel open. The vehicle demo plays alone in the page itself; its "Host with a link" opens the
+page again with `?invites=1`, where its server runs in the worker. Neither offers the room service's hosting
 or joining there, and both Esc menus offer "Invite players". The native builds and the local web builds keep their
 multiplayer.
 
@@ -80,7 +85,9 @@ what that server sees, and presses "Create Invite Offer" once per friend for an 
 (`<page>#join=<code>`). An invite belongs to one peer connection, so each works once. The friend's page shows which
 server the invite uses before it contacts it, then makes a reply link (`<page>#reply=<code>`). The host opens the reply
 link in the same browser: that tab hands the reply to the game's tab over a `BroadcastChannel` and closes, and the data
-channel opens straight between the two browsers. The reply can also be pasted into the host's panel. The codes ride in
+channel opens straight between the two browsers. The friend's game joins once the channel opens, however long the trade
+takes. Every state of the friend's panel has "Back to the menu", which opens the page again with no invite, its game at
+its menu; a page joined by a link also offers "Play alone instead" on its menu. The reply can also be pasted into the host's panel. The codes ride in
 the fragment, which a browser never sends to the server, and the page clears it from the address bar once read. Each
 link carries its sender's IP address, which the panels say beside every copy button.
 
@@ -89,9 +96,13 @@ candidates as type, address and port), deflated, in base64url, with a version by
 characters with three candidates. The page refuses a code longer than 1024 characters, one that inflates past 2 KiB, a
 line out of its form or order, and a STUN server key not in its own fixed list; a code never names a server by address.
 The host takes a joiner's candidates by the same rules as a room's joiners (canonical IPv4, no `.local` names, private
-addresses only on the same-network server or with `?lan=1`, never its own). On the same-network server only, a host
-candidate may also be a browser's mDNS name, strictly a lowercase version 4 UUID and `.local`, handed to the browser's
-own ICE unresolved. The host counts the joiner by the address its traffic
+addresses only on the same-network server or with `?lan=1`, never its own). On any server, a host candidate may also be a
+browser's mDNS name, strictly a lowercase version 4 UUID and `.local`, handed to the browser's own ICE unresolved: only
+the browser resolves it, and only on its own network. So pressing Connect (or adding a reply) also makes the browser
+ask its local network, by multicast, for the other player's `.local` name; only a device that registered that random
+name answers. That is how two tabs of one browser, or two computers on one
+network, reach each other through Cloudflare's or Google's server, whose public address alone needs a router that loops
+it back, which most home routers do not. The host counts the joiner by the address its traffic
 comes from (or by a stand-in of its invite's own when the browser hides that address, as it does for a peer-reflexive
 pair), and hands the open channel to the worker's relay with every cap. With no TURN server, some networks can't connect;
 the page says so when the channel does not open in time.

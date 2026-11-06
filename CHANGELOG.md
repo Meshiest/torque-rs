@@ -326,13 +326,19 @@ The first development version. Nothing is published yet; this is what exists.
   bytes for a datagram, the count and the bytes capped). Codes (`web/codes.js`): the SDP cut to what a data channel
   needs, deflated, base64url, a version byte, a kind byte and a CRC-32 (about 230 characters with three candidates); a
   cap on the code's length and on its inflated size, strict lines, and the STUN server named by a key into the page's
-  own list (Cloudflare, Google, or same network only), never by a URL. On the same-network server only, a host candidate
-  may be a browser's mDNS name (a lowercase version 4 UUID and `.local`, nothing else), handed to the browser's ICE
-  unresolved. The panels say which server is asked for the player's public address, and that the links carry it. `node
-  --test web/codes.test.mjs`; `just examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded
+  own list (Cloudflare, Google, or same network only), never by a URL. On any server, a host candidate may be a
+  browser's mDNS name (a lowercase version 4 UUID and `.local`, nothing else), handed to the browser's ICE
+  unresolved; neither side takes the other's code at its own names. The panels say which server is asked for the
+  player's public address, and that the links carry it. `node --test web/codes.test.mjs`;
+  `just examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded
   browsers trade the links on this computer's own addresses, the joiner walks, each holds the other's figure, and bad,
   cut short, oversized and used codes are refused with a message. The examples' pause menu takes an optional Invite
   players entry (`$Pause::CanInvite`, the game's `invitePlayers()`).
+- The web pages' canvas fills the browser window and follows it. The game draws at the canvas's device pixels under
+  the settings' Render scale (Auto, the default: all of them up to a 1920x1080 screen's worth, fewer past it; or 100%,
+  75%, 50%), kept with the other settings, and lays its GUI out at that size (torque-client's
+  `platform::web_input::RenderScale`; the page's `data-torque-render-scale`, and `data-torque-size` for the size drawn).
+  The arena's page has the page bridge (`torque.call`), so its quality setting works too.
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
   compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
   picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time
@@ -622,5 +628,15 @@ The first development version. Nothing is published yet; this is what exists.
   body's blend as the client's view is, so shots leave from the lowered view in every pose (`tests/aim.rs`).
 - The camera behind the figure rides lower with a crouched or prone figure: the arena's boom from the lowered eye, the level
   demo's looking no higher than the eye; lying down and looking up, the boom stops above the floor.
+- Invite links: two tabs of one browser, or two computers on one network, connect on any server (Cloudflare and Google
+  too): a code carries the browsers' mDNS names (`<uuid v4>.local`, which only the browser resolves, on its own network)
+  beside the public address, which most home routers do not loop back. The joiner's game joins once its data channel
+  opens; it asked at once and gave up ("The game did not answer.") about 12 s later, before the host had the reply.
+  Every state of the Join with Link panel, and a reply tab whose reply was not taken, has Back to the menu (the page
+  again with no invite, its game at its menu), and the failures say what the player can try. `invite-check.mjs same`:
+  two tabs of one guarded browser, a Cloudflare invite with no STUN server contacted, the reply opened 20 s later.
+- The arena and the vehicle demo on a page played alone wait at their main menu (Play alone, Host with a link, Join with
+  Link) instead of starting at once; the arena's Host with a link takes the host into its game with the panel open, and
+  a page joined by an invite link offers Play alone instead.
 
 [Unreleased]: https://github.com/Meshiest/torque-rs/commits/main

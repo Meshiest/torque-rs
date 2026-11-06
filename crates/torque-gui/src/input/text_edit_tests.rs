@@ -10,7 +10,10 @@ use crate::ext::{FontSource, GuiExtension};
 struct EvenFonts;
 
 impl Fallback for EvenFonts {
-    fn make(&self, _face: &str, _size: i32) -> Option<Font> {
+    fn make(&self, face: &str, _size: i32) -> Option<Font> {
+        if face == "Missing" {
+            return None;
+        }
         let glyph = Glyph {
             x_increment: 6,
             ..Glyph::default()
@@ -127,6 +130,22 @@ impl Rig {
         })
         .unwrap()
     }
+}
+
+#[test]
+fn a_profile_with_no_font_still_takes_printable_characters() {
+    let mut r = rig(false, "");
+    r.vm.eval(b"EditProfile.fontType = \"Missing\";").unwrap();
+    r.type_text("Ann b\u{7f}");
+    assert_eq!(r.text(), "Ann b", "printable bytes typed, DEL not");
+    let control = GuiEvent {
+        ascii: 8,
+        key_code: KEY_SPACE as u8,
+        action: SI_MAKE,
+        ..GuiEvent::default()
+    };
+    key_down(&mut r.vm, &r.gui, r.id, control, 0).unwrap();
+    assert_eq!(r.text(), "Ann b", "a control character is not typed");
 }
 
 #[test]

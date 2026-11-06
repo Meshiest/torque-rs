@@ -6,8 +6,11 @@
 // opens straight between the two browsers, and the joiner's channel goes to the worker's relay like any other link.
 //
 // Neither page loads anything from a code but what codes.js reads strictly: the STUN server is a key into the page's own
-// list (codes.js STUN_SERVERS), and each candidate goes through host.js's `candidateAllowed` (canonical IPv4, no `.local`
-// names, private addresses only on the same-network server or with `?lan=1`; on the host also never its own addresses).
+// list (codes.js STUN_SERVERS), and each candidate goes through host.js's `candidateAllowed` (canonical IPv4, or a browser's
+// mDNS name in its strict form, `<uuid v4>.local`, which only the browser resolves and only on its own network; private
+// addresses only on the same-network server or with `?lan=1`; on the host also never its own addresses or names). The mDNS
+// names are what let two tabs of one browser, or two computers on one network, reach each other on any server: their
+// public address alone needs a router that loops it back, which most home routers do not.
 // Nothing from a code or a message is written as HTML: every text goes in by `textContent` or an input's `value`. The
 // fragment is cleared from the address bar as soon as it is read.
 //
@@ -31,7 +34,7 @@ import {
   serverFor,
   toSdp,
 } from './codes.js';
-import { addressAllowed, candidateAllowed, ipv4, meteredReceiver } from './host.js';
+import { MDNS_NAME, addressAllowed, candidateAllowed, ipv4, meteredReceiver } from './host.js';
 
 const MAX_INVITES = 8;
 const INVITE_MS = 15 * 60_000;
@@ -46,8 +49,9 @@ const MAX_USED = 32;
 const TAKEN = 'The reply is in: connecting to the player.';
 const TRUST = 'Only send this link to people you trust. It contains your IP address.';
 const NO_RELAY =
-  "Could not connect. Some networks can't connect without a relay server, and this page does not use one. Try the " +
-  'other server, or play on the same network.';
+  'Could not connect. Check that the reply link was opened in the browser that made the invite offer, then try a new ' +
+  "invite offer on the other connection server. Some networks can't connect without a relay server, which this page " +
+  'does not use; players on one network can pick Same network only.';
 
 // Whether private addresses may be used: the same-network server, or on the host's own page `?lan=1`. A joining page
 // ignores `?lan`: its address came from the host, so only the invite's server decides.
@@ -80,14 +84,15 @@ function el(tag, props = {}, ...children) {
 }
 
 let panel = null;
-function openPanel(title) {
+// `escape`: what Esc does on the panel (by default it closes it).
+function openPanel(title, escape = closePanel) {
   panel?.remove();
   panel = el('div', { id: 'invites', role: 'dialog', 'aria-labelledby': 'invites-title' });
   panel.append(el('h2', { id: 'invites-title', text: title }));
   panel.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.stopPropagation();
-      closePanel();
+      escape();
     }
   });
   document.body.append(panel);
@@ -159,12 +164,11 @@ function gathered(pc, ms) {
 
 const sdpLines = (sdp) => sdp.split(/\r?\n/).filter((l) => l.startsWith('a=candidate:'));
 
-// The code's candidates as lines the browser may take (each through `candidateAllowed`; mDNS names on the same-network
-// server only).
-function allowedLines(data, lan, own, server) {
+// The code's candidates as lines the browser may take (each through `candidateAllowed`, mDNS names included).
+function allowedLines(data, lan, own) {
   const lines = [];
   data.candidates.forEach((c, i) => {
-    const taken = candidateAllowed(candidateLine(c, i), lan, own, { mdns: server === 'lan' });
+    const taken = candidateAllowed(candidateLine(c, i), lan, own, { mdns: true });
     if (taken) lines.push(taken.line);
   });
   return lines;
@@ -191,6 +195,12 @@ const waitOpen = (ch, ms) =>
   });
 
 const message = (e) => (e instanceof CodeError ? e.message : `Something went wrong: ${String(e?.message ?? e)}`);
+
+// The page again with no invite or reply: its game played alone, at its menu.
+function backToMenu() {
+  location.replace(location.pathname + location.search);
+}
+const backButton = () => el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: backToMenu } });
 
 // ---- the host
 
@@ -298,14 +308,17 @@ export function hostInvites({ open = false } = {}) {
       await gathered(inv.pc, GATHER_MS);
       const sdp = inv.pc.localDescription.sdp;
       for (const line of sdpLines(sdp)) inv.own.add(line.split(' ')[4]);
-      const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lanFor(key)), { mdns: key === 'lan' });
+      const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lanFor(key)), { mdns: true });
       if (!candidates.length) {
         throw new CodeError(
           key === 'lan'
             ? 'This computer has no network address to put in the link.'
-            : `Could not get this computer's public address from ${STUN_SERVERS[key].name}'s server.`,
+            : `Could not get this computer's public address from ${STUN_SERVERS[key].name}'s server. Try the other ` +
+              'connection server, or Same network only.',
         );
       }
+      // only this computer's network names: the server did not answer, so only players on this network can join
+      const nearOnly = key !== 'lan' && !candidates.some((c) => c.type !== 'host');
       const code = await encodeCode({ kind: KIND_JOIN, server: key, token: inv.token, ...fromSdp(sdp), candidates });
       if (!invites.has(inv.token)) return;
       inv.timer = setTimeout(() => {
@@ -315,7 +328,14 @@ export function hostInvites({ open = false } = {}) {
         setState(inv, 'expired', 'expired. Create a new one.');
       }, INVITE_MS);
       item.append(linkBox(`${pageLink()}#join=${code}`, `Invite offer link ${inv.n}`));
-      setState(inv, 'waiting', `waiting for the player's reply (through ${STUN_SERVERS[key].name}).`);
+      setState(
+        inv,
+        'waiting',
+        nearOnly
+          ? `waiting for the player's reply. ${STUN_SERVERS[key].name}'s server did not answer, so only players on your ` +
+              'network can use this one.'
+          : `waiting for the player's reply (through ${STUN_SERVERS[key].name}).`,
+      );
     } catch (e) {
       inv.pc?.close();
       forget(inv);
@@ -339,7 +359,7 @@ export function hostInvites({ open = false } = {}) {
     const { pc } = inv;
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp: toSdp(data) });
-      for (const line of allowedLines(data, lanFor(inv.server), inv.own, inv.server)) {
+      for (const line of allowedLines(data, lanFor(inv.server), inv.own)) {
         await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
       }
     } catch {
@@ -471,16 +491,20 @@ export function hostInvites({ open = false } = {}) {
 export async function replyTab(code) {
   const loading = document.getElementById('loading');
   loading?.remove();
-  const p = openPanel('A reply link');
+  const p = openPanel('A reply link', backToMenu);
   const said = el('p', { 'data-said': '' });
   p.append(said);
   const root = document.documentElement;
+  // A reply that was not taken: this tab can still go to the game's menu.
+  const failed = (state) => {
+    p.append(backButton());
+    root.dataset.torqueReply = state;
+  };
   try {
     await decodeCode(code, KIND_REPLY);
   } catch (e) {
     said.textContent = message(e);
-    root.dataset.torqueReply = 'refused';
-    return;
+    return failed('refused');
   }
   said.textContent = 'Handing the reply to your game...';
   const fallback = () => {
@@ -488,7 +512,7 @@ export async function replyTab(code) {
       'No game in this browser made this invite offer. Open the tab that made it, or paste this reply link into its ' +
       'Host with a link panel:';
     p.append(linkBox(`${pageLink()}#reply=${code}`, 'The reply link'));
-    root.dataset.torqueReply = 'unclaimed';
+    failed('unclaimed');
   };
   if (typeof BroadcastChannel !== 'function') return fallback();
   const bc = new BroadcastChannel(channelName());
@@ -506,7 +530,8 @@ export async function replyTab(code) {
   bc.close();
   if (!answer) return fallback();
   said.textContent = answer.ok ? 'Your game took the reply. You can close this tab.' : answer.text;
-  root.dataset.torqueReply = answer.ok ? 'taken' : 'refused';
+  if (answer.ok) root.dataset.torqueReply = 'taken';
+  else failed('refused');
   // A browser lets a page close its own tab only when the tab has no history before it (a link opened from a chat app).
   if (answer.ok && history.length <= 1) setTimeout(() => window.close(), 500);
 }
@@ -514,44 +539,71 @@ export async function replyTab(code) {
 // ---- the joiner
 
 // The joiner's side of an invite (`code`, from the fragment): its panel shows at once; `attach(game)` once the module is
-// loaded gives the game its link (the game then starts with `startLinkClient`).
+// loaded gives the game its link (the game joins once the channel opens, `startLinkClient`). Every state of the panel has
+// Back to the menu, which opens the page again with no invite: its game played alone, at its menu. Esc does the same
+// before Connect and once the join failed, never while the reply is being made or waits for the host.
 export function joinInvite(code) {
   const root = document.documentElement;
-  const p = openPanel('Join with Link');
+  let state = 'reading';
+  const p = openPanel('Join with Link', () => {
+    if (state !== 'making' && state !== 'replied') backToMenu();
+  });
   const said = el('p', { class: 'said', 'data-said': '' });
-  p.append(said);
+  const back = backButton();
+  p.append(said, back);
+  const show = (...nodes) => back.before(...nodes);
   let game = null;
   let channel = null;
   let opened = false;
   let ended = null;
+  const mark = (next) => {
+    state = next;
+    root.dataset.torqueJoin = next;
+  };
   const end = (why) => {
     if (ended) return;
     ended = why;
-    if (root.dataset.torqueJoin !== 'refused') root.dataset.torqueJoin = 'ended';
+    if (state !== 'refused') mark('ended');
     game?.linkEnded(why);
   };
-  const refuse = (text) => {
+  // A join that cannot go on: why, and the way back. A reply link shown is taken away (its connection is closed).
+  const fail = (text, next = 'ended') => {
     said.textContent = text;
-    root.dataset.torqueJoin = 'refused';
-    p.append(el('button', { type: 'button', class: 'close', text: 'Close', on: { click: closePanel } }));
+    p.querySelector('.link')?.remove();
+    if (!p.isConnected) {
+      panel?.remove();
+      document.body.append(p);
+      panel = p;
+    }
+    if (next === 'refused') mark('refused');
     end(text);
+    back.focus();
+  };
+  const refuse = (text) => fail(text, 'refused');
+
+  // the menu's Play alone instead (an invited page's game, `torqueAsk('back')`)
+  globalThis.torqueAsk = (what) => {
+    if (what === 'back') backToMenu();
   };
 
   async function connect(data) {
+    mark('making');
     said.textContent = 'Making your reply...';
     const lan = privateAllowed(data.server, location.search, true);
     const pc = new RTCPeerConnection({ iceServers: iceServersFor(data.server) });
+    // Back to the menu ends this connection with the page.
+    addEventListener('pagehide', () => pc.close());
     pc.ondatachannel = (e) => {
       const ch = e.channel;
       if (channel || ch.label !== 'game' || ch.ordered || ch.maxRetransmits !== 0) {
         pc.close();
-        return refuse('The host sent a connection this page does not take.');
+        return refuse('The host sent a connection this page does not take. Ask the host for a new invite offer link.');
       }
       channel = ch;
       ch.binaryType = 'arraybuffer';
       ch.onopen = () => {
         opened = true;
-        root.dataset.torqueJoin = 'open';
+        mark('open');
         game?.linkOpened();
         closePanel();
       };
@@ -563,31 +615,42 @@ export function joinInvite(code) {
           end('The host sent more than the game takes, so the connection was closed.');
         },
       );
-      ch.onclose = () => end(opened ? 'The host left the game.' : 'Could not reach the host.');
+      ch.onclose = () => (opened ? end('The host left the game.') : fail(NO_RELAY));
     };
     // Before the channel opens, ICE may fail while the reply is on its way: the host's checks, once it has the reply,
     // can still come in, so only JOIN_MS ends the wait.
     pc.oniceconnectionstatechange = () => {
       if (opened && pc.iceConnectionState === 'failed') end('The host left the game.');
     };
+    // This page's own mDNS names: an invite that names them is not taken at them (a host could point this browser at its
+    // own network address and a port of its choice). Addresses stay: two pages on one computer share them.
+    const own = new Set();
+    const ownName = (address) => MDNS_NAME.test(address ?? '') && own.add(address);
+    pc.onicecandidate = (e) => ownName(e.candidate?.candidate?.split(' ')[4]);
     await pc.setRemoteDescription({ type: 'offer', sdp: toSdp(data) });
-    const lines = allowedLines(data, lan, new Set(), data.server);
-    if (!lines.length) return refuse('This invite offer has no address this page can reach.');
-    for (const line of lines) await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
     await pc.setLocalDescription(await pc.createAnswer());
     await gathered(pc, GATHER_MS);
+    if (ended) return pc.close();
     const sdp = pc.localDescription.sdp;
-    const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lan), { mdns: data.server === 'lan' });
+    for (const line of sdpLines(sdp)) ownName(line.split(' ')[4]);
+    const lines = allowedLines(data, lan, own);
+    if (!lines.length) {
+      pc.close();
+      return refuse('This invite offer has no address this page can reach. Ask the host for a new one.');
+    }
+    for (const line of lines) await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
+    const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lan), { mdns: true });
     const reply = await encodeCode({ kind: KIND_REPLY, token: data.token, ...fromSdp(sdp), candidates });
     markUsed(data.token);
-    said.textContent = 'Send this reply link back to the host. When they open it, you join their game.';
-    p.append(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
-    root.dataset.torqueJoin = 'replied';
+    said.textContent =
+      'Send this reply link back to the host. When they open it in the browser that made the invite offer, you join ' +
+      'their game. This page waits for it.';
+    show(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
+    mark('replied');
     setTimeout(() => {
       if (opened || ended) return;
       pc.close();
-      said.textContent = NO_RELAY;
-      end(NO_RELAY);
+      fail(NO_RELAY);
     }, JOIN_MS);
   }
 
@@ -600,14 +663,6 @@ export function joinInvite(code) {
       return refuse(message(e));
     }
     const server = serverFor(data.server);
-    p.append(
-      el('p', {
-        text: server.urls.length
-          ? `This invite offer connects through ${server.name}'s public STUN server. Nothing is sent until you press Connect.`
-          : 'This invite offer is for players on the same network as the host.',
-      }),
-      privacyText(data.server, 'The host'),
-    );
     const go = el('button', {
       type: 'button',
       class: 'primary',
@@ -619,13 +674,23 @@ export function joinInvite(code) {
         },
       },
     });
-    p.append(go);
+    show(
+      el('p', {
+        text: server.urls.length
+          ? `This invite offer connects through ${server.name}'s public STUN server. Nothing is sent until you press Connect.`
+          : 'This invite offer is for players on the same network as the host.',
+      }),
+      privacyText(data.server, 'The host'),
+      go,
+    );
     said.textContent = '';
-    root.dataset.torqueJoin = 'ready';
+    mark('ready');
     go.focus();
   })();
 
   return {
+    // Whether the invite was refused (a bad or used code): the page then starts no game.
+    refused: () => state === 'refused',
     attach(module) {
       game = module;
       game.setLocalSender((bytes) => {

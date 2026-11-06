@@ -72,9 +72,10 @@ pub fn link_ended(why: &str) {
     });
 }
 
-/// Calls the page's `torqueAsk(what)` (`web/invites.js`: its invite panels), if it has one: `host` or `join` only.
+/// Calls the page's `torqueAsk(what)` (`web/invites.js`: its invite panels, or `back`, the page again with no invite), if it
+/// has one: `host`, `join` or `back` only.
 pub fn ask_page(what: &str) {
-    if what != "host" && what != "join" {
+    if !matches!(what, "host" | "join" | "back") {
         return;
     }
     let Some(window) = web_sys::window() else {

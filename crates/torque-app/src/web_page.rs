@@ -12,8 +12,9 @@
 //! **The page's displays.** The window writes on the page's root element the loading stage (`data-torque-stage`: `gpu` while the
 //! canvas's device is asked for, `map` while the game says it is loading ([`crate::App::loading`]), then `ready`) and, every
 //! [`FrameTimes::EVERY`], the frames a second (`data-torque-fps`) and the mean and longest time between two frames in ms
-//! (`data-torque-frame-ms`, `mean max`), and the quality last applied (`data-torque-quality`). A game marks what a check
-//! waits on with `mark_play`.
+//! (`data-torque-frame-ms`, `mean max`), the quality last applied (`data-torque-quality`), and the size the game draws and
+//! lays its GUI out at (`data-torque-size`, `WxH`: the canvas's device pixels under the page's render scale, the client's
+//! `platform::web_input::RenderScale`). A game marks what a check waits on with `mark_play`.
 
 use std::cell::{Cell, RefCell};
 

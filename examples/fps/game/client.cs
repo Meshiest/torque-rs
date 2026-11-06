@@ -809,6 +809,14 @@ PlayMap.bind(mouse, yaxis, look);
 
 // ---- in and out
 
+// Gives `%panel` the size `%w` by `%h`, centered in `%parent` (its horizSizing and vertSizing "center" keep it there as the
+// window changes): a menu with fewer controls shows as a narrower column in the middle.
+function fitPanel(%panel, %parent, %w, %h)
+{
+   %size = %parent.getExtent();
+   %panel.resize(mFloor((getWord(%size, 0) - %w) / 2), mFloor((getWord(%size, 1) - %h) / 2), %w, %h);
+}
+
 function showMainMenu()
 {
    $Arena::InGame = 0;
@@ -823,13 +831,22 @@ function showMainMenu()
 
 // A browser's client ($Arena::JoinOnly) joins the one game its page came from: the main menu offers that and nothing else.
 // $Arena::JoinAsked asks the host to open a new connection to that game and join it. Played alone ($Arena::Solo: the page's
-// own game), the menu offers to play again, and to host or join with a link: $Arena::PageAsk asks the page for its panel.
+// own game), the menu offers to play alone, to host with a link (which also joins the page's own game) or to join with
+// one: $Arena::PageAsk asks the page for its panel. A game joined by an invite link ($Arena::Invited) also offers to play
+// alone instead (the page again, with no invite).
 function showJoinOnly()
 {
    HostButton.setVisible(0);
    HostNote.setVisible(0);
    QuitButton.setVisible(0);
    JoinButton.command = "joinPage();";
+   // the column of buttons and their notes: the panel fits it, centered
+   fitPanel(MainPanel, MainMenuGui, 620, 470);
+   MainTitle.resize(20, 20, 580, 56);
+   MainLine.resize(22, 80, 578, 20);
+   MainStatus.resize(20, 436, 580, 28);
+   HostNote.resize(322, 218, 278, 20);
+   JoinNote.resize(322, 290, 278, 20);
    if ($Arena::Solo)
    {
       MainLine.setText("A small shooter, played alone on this page.");
@@ -837,7 +854,7 @@ function showJoinOnly()
       JoinNote.setText("Back into the arena.");
       HostButton.setVisible(1);
       HostButton.setText("Host with a link");
-      HostButton.command = "invitePlayers();";
+      HostButton.command = "hostWithLink();";
       HostNote.setVisible(1);
       HostNote.setText("Send friends a link to join your game.");
       QuitButton.setVisible(1);
@@ -848,6 +865,19 @@ function showJoinOnly()
    }
    JoinButton.setText("Join the game");
    JoinNote.setText($Arena::Invited ? "Join the game you were invited to." : "Join the game this page came from.");
+   if ($Arena::Invited)
+   {
+      QuitButton.setVisible(1);
+      QuitButton.setText("Play alone instead");
+      QuitButton.command = "$Arena::PageAsk = \"back\";";
+   }
+}
+
+// The main menu's Host with a link: into the page's own game, with the page's Host with a link panel.
+function hostWithLink()
+{
+   joinPage();
+   invitePlayers();
 }
 
 // The pause menu's Invite players (played alone): the page's Host with a link panel.

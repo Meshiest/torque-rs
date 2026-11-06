@@ -318,6 +318,12 @@ fn the_turn_secret_file_is_read_with_care() {
     assert_eq!(read_secret_file(&good).unwrap(), b"s3cret");
     let huge = dir.join("huge");
     std::fs::write(&huge, vec![b'a'; MAX_SECRET + SECRET_SPACE + 1]).unwrap();
+    // Closed to other users, so on Unix the length is what refuses it (the permission check comes first).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     assert!(read_secret_file(&huge).unwrap_err().contains("longer than"));
     assert!(read_secret_file(&dir).is_err(), "a folder");
     assert!(read_secret_file(&dir.join("missing")).is_err());

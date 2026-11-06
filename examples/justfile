@@ -167,13 +167,16 @@ web-fps-p2p-check: web-guard-test
     node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-desktop.png" 120 desktop
     node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-browser.png" 120 browser
 
-# The arena joined by an invite link on its page played alone (build it first with `node web/build.mjs fps --solo`): a host
-# page makes the link, a second browser opens it and makes a reply link, the host's browser opens the reply, the data channel
-# opens on this computer's own addresses (no STUN server is contacted), the joiner walks, and bad codes are refused. Pictures
-# of the panels into the target folder's `web/invites`
+# The arena joined by an invite link on its page played alone (build it first with `node web/build.mjs fps --solo`): the
+# page waits at its menu and its canvas follows the page's size; a host page makes the link, a second browser opens it and
+# makes a reply link, the host's browser opens the reply, the data channel opens on this computer's own addresses (no STUN
+# server is contacted), the joiner walks, bad codes are refused and a refused join's Back to the menu works. Then the same
+# with both pages in one browser, an invite on the default server (Cloudflare, not contacted: the pages get no STUN server)
+# and the reply opened 20 s later. Pictures of the panels into the target folder's `web/invites` and `web/invites-same`
 web-fps-invite-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites" 120
+    node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites-same" 120 same
 
 # The vehicle demo joined by an invite link, as `web-fps-invite-check` (build it first with `node web/build.mjs vehicle-demo
 # --solo`): its Host with a link opens the page again with its server in the worker. Pictures into the target folder's
@@ -181,6 +184,7 @@ web-fps-invite-check: web-guard-test
 web-vehicle-demo-invite-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/invite-check.mjs "{{web_target}}/web/vehicle-demo-solo" "{{web_target}}/web/vehicle-invites" 120
+    node ../web/invite-check.mjs "{{web_target}}/web/vehicle-demo-solo" "{{web_target}}/web/vehicle-invites-same" 120 same
 
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`

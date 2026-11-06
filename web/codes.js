@@ -14,7 +14,7 @@
 //   x <sctp-port>             only when not 5000
 //   c <type> <ip> <port>      0 to MAX_CODE_CANDIDATES: host, srflx or prflx, a canonical IPv4 address, a plain port;
 //                             a host candidate may name a browser's mDNS name (`<uuid v4>.local`, host.js MDNS_NAME)
-//                             instead, in an invite on the same-network server (`lan`) only, or in a reply
+//                             instead, on any server: only the browser resolves it, on its own network
 // A code is untrusted input: its length is capped before it is decoded, its inflated size while it inflates, and every
 // line must match its pattern exactly (no line twice, none missing, none extra). A code never names a server: the server
 // is a key into this page's own fixed list, and an unknown key is refused.
@@ -248,7 +248,6 @@ export function parsePayload(text, kind) {
     const port = Number(portText);
     const octets = ipv4(ip);
     const named = type === 'host' && MDNS_NAME.test(ip);
-    if (named && kind === KIND_JOIN && data.server !== 'lan') throw bad('a network name is only for the same-network server');
     if ((!named && (!octets || octets.join('.') !== ip)) || port > 65535) throw bad('an address is not in its form');
     if (seen.has(`${ip}:${port}`)) throw bad('an address is there twice');
     seen.add(`${ip}:${port}`);
@@ -346,7 +345,7 @@ export function fromSdp(sdp) {
 
 // The candidates a code carries from candidate lines (with or without `a=`): component 1, UDP, a canonical IPv4 address
 // `allowed(octets)` takes, host, srflx or prflx; with `mdns` also a host candidate's browser mDNS name (any other `.local`
-// is left out); each address once, srflx first, at most PICKED_CANDIDATES.
+// is left out); each address once, srflx first, then prflx, then host, at most PICKED_CANDIDATES.
 export function pickCandidates(lines, allowed, { mdns = false } = {}) {
   const picked = [];
   const seen = new Set();

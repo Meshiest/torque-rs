@@ -115,11 +115,13 @@ test("a link's receiver ends the link on a flood, an oversize message or text, a
   assert.equal(got.length, 1536);
 });
 
-test("a browser's mDNS name is taken only in same-network mode, and only a lowercase version 4 UUID", () => {
+test("a browser's mDNS name is taken only for invite links, and only a lowercase version 4 UUID", () => {
   const name = '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local';
   const mdns = { mdns: true };
   assert.deepEqual(candidateAllowed(line(name), true, new Set(), mdns), { line: line(name), ip: name });
-  assert.equal(candidateAllowed(line(name), true, new Set()), null, 'not without mdns (the other servers, and rooms)');
+  // an invite on a STUN server (no private addresses) takes it too: two tabs of one browser, or two computers on one network
+  assert.deepEqual(candidateAllowed(line(name), false, new Set(), mdns), { line: line(name), ip: name });
+  assert.equal(candidateAllowed(line(name), true, new Set()), null, 'not without mdns (rooms)');
   assert.equal(candidateAllowed(line(name), false, new Set()), null);
   assert.equal(candidateAllowed(line(name), true, new Set([name]), mdns), null, "the host's own name");
   assert.equal(candidateAllowed(line(name, 'tcp'), true, new Set(), mdns), null);
