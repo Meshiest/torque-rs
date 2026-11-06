@@ -298,3 +298,62 @@ test('a room service address no socket can be made for leaves no worker, listene
     }
   }
 });
+
+test('at most 4 joiners from one address, and a place frees when one ends', async () => {
+  const saved = {};
+  for (const k of ['document', 'location', 'Worker', 'WebSocket', 'addEventListener', 'removeEventListener']) {
+    saved[k] = Object.getOwnPropertyDescriptor(globalThis, k);
+  }
+  class FakeWorker {
+    postMessage(m) {
+      if (m && 'start' in m) setTimeout(() => this.onmessage?.({ data: { started: '' } }), 0);
+    }
+    terminate() {}
+  }
+  let room = null;
+  const said = [];
+  class FakeSocket {
+    static OPEN = 1;
+    constructor() {
+      this.readyState = FakeSocket.OPEN;
+      room = this;
+    }
+    send(bytes) {
+      said.push(new TextDecoder().decode(bytes));
+    }
+    close() {
+      this.readyState = 3;
+    }
+  }
+  const set = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
+  set('document', { documentElement: { dataset: {} } });
+  set('location', { search: '?rooms=ws://127.0.0.1:1/ws', protocol: 'http:', host: '127.0.0.1' });
+  set('Worker', FakeWorker);
+  set('WebSocket', FakeSocket);
+  set('addEventListener', () => {});
+  set('removeEventListener', () => {});
+  let handle = null;
+  try {
+    const game = { setLocalSender() {}, startHostClient() {} };
+    handle = await hostGame(game, () => {}, { client: null });
+    const fromRoom = (text) => room.onmessage({ data: new TextEncoder().encode(text).buffer });
+    const drops = () => said.filter((t) => t.startsWith('drop '));
+    for (let n = 1; n <= 5; n++) fromRoom(`peer ${n} 93.184.216.40`);
+    assert.deepEqual(drops(), ['drop 5'], 'the fifth from one address is turned away');
+    fromRoom('peer 6 93.184.216.41');
+    assert.deepEqual(drops(), ['drop 5'], 'another address still comes in');
+    // One of the four ends (its signaling over before it offered): its place is free again.
+    fromRoom('left 2');
+    assert.deepEqual(drops(), ['drop 5', 'drop 2']);
+    fromRoom('peer 7 93.184.216.40');
+    assert.deepEqual(drops(), ['drop 5', 'drop 2']);
+    fromRoom('peer 8 93.184.216.40');
+    assert.deepEqual(drops(), ['drop 5', 'drop 2', 'drop 8']);
+  } finally {
+    handle?.stop();
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(globalThis, k, d);
+      else delete globalThis[k];
+    }
+  }
+});

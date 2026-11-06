@@ -22,6 +22,13 @@
 // names, never loopback, link-local, multicast, broadcast, reserved ranges or this page's own addresses, and private ones
 // only with `?lan=1` (players on the host's network). A joiner reaches the host without them: its own checks to the
 // host's candidates are answered.
+//
+// ICE runs in the browser, so this page never sees a check: unlike the desktop host, it cannot rate a joiner's checks per
+// source address, nor take a check from a candidate's address only once that address answered one of the host's own
+// checks. What the page holds is which candidates the browser gets (the rules above, MAX_CANDIDATES), so the host's own
+// checks go only where those allow. A joiner able to forge source addresses could still nominate an address it listed;
+// the browser then sends that joiner's traffic there only until its consent checks to it go unanswered (RFC 7675, about
+// 30 seconds), and only that one session's traffic.
 
 const MAX_PEERS = 64;
 // Peer connections from one address (the room service's word for it), as the desktop host's.
