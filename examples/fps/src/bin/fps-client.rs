@@ -16,7 +16,8 @@
 //! `embed-pack` feature).
 //!
 //! Built for the web, it is the page's client (the library's `web` module): join-only, over a game socket to the server that
-//! served the page; the page calls the functions of `page`.
+//! served the page, or the host player's or a lone player's, on a server in the page's worker; the page calls the functions
+//! of `page`.
 
 #[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
@@ -85,6 +86,12 @@ mod page {
     #[wasm_bindgen(js_name = startHostClient)]
     pub fn start_host_client() -> Result<(), String> {
         web::start_host_client()
+    }
+
+    /// The game played alone: as the host player's, on a page with no room.
+    #[wasm_bindgen(js_name = startSoloClient)]
+    pub fn start_solo_client() -> Result<(), String> {
+        web::start_solo_client()
     }
 
     /// A datagram from the worker's server for the host player's client.

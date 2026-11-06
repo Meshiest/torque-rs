@@ -809,14 +809,22 @@ function showMainMenu()
 }
 
 // A browser's client ($Arena::JoinOnly) joins the one game its page came from: the main menu offers that and nothing else.
-// $Arena::JoinAsked asks the host to open a new connection to that game and join it.
+// $Arena::JoinAsked asks the host to open a new connection to that game and join it. Played alone ($Arena::Solo: the page's
+// own game, nobody else in it), the menu offers to play again.
 function showJoinOnly()
 {
    HostButton.setVisible(0);
    HostNote.setVisible(0);
    QuitButton.setVisible(0);
-   JoinButton.setText("Join the game");
    JoinButton.command = "joinPage();";
+   if ($Arena::Solo)
+   {
+      MainLine.setText("A small shooter, played alone on this page.");
+      JoinButton.setText("Play alone");
+      JoinNote.setText("Back into the arena.");
+      return;
+   }
+   JoinButton.setText("Join the game");
    JoinNote.setText("Join the game this page came from.");
 }
 

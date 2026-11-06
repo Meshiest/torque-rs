@@ -71,6 +71,10 @@
   //
   // `?host=1` (host.js): the page hosts a game others join by its room code, its server in a Web Worker.
   //
+  // `data-torque-solo="1"` on the root element (`build.mjs --solo`, a site with no game server): the game is played alone. A
+  // game whose module has `startSoloClient` (the arena) plays on its own server in a Web Worker (host.js, with no room), and
+  // its menus offer neither hosting nor joining; `?host=1` is then ignored.
+  //
   // Esc: a browser keeps it for itself while the pointer is locked (it ends the lock) and in full screen (it leaves it). The
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
   // leaves full screen).
@@ -221,8 +225,11 @@
     await new Promise(requestAnimationFrame);
     await module.default({ module_or_path: await WebAssembly.compile(wasm) });
     const game = module;
-    // `?host=1`: this page hosts a game for others to join by its room code (host.js), its server in a worker.
-    const hosting = new URLSearchParams(location.search).has('host');
+    // `?host=1`: this page hosts a game for others to join by its room code (host.js), its server in a worker. A page
+    // played alone runs a game that has its own server the same way, with no room.
+    const alone = root.dataset.torqueSolo === '1';
+    const solo = alone && typeof game.startSoloClient === 'function';
+    const hosting = solo || (!alone && new URLSearchParams(location.search).has('host'));
     if (hosting && game.embedded()) throw new Error('a build that carries its files cannot host: its worker fetches them');
     torque.attach(game);
     // The game's first frame is drawn at the quality chosen.
@@ -238,7 +245,7 @@
       game.startEmbedded();
     } else if (hosting) {
       const { hostGame } = await import('./host.js');
-      await hostGame(game, (text) => (status.textContent = text));
+      await hostGame(game, (text) => (status.textContent = text), { solo });
     } else {
       game.startFetched();
     }
