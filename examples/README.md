@@ -36,7 +36,7 @@ TorqueScript mission files (`level-demo/game/missions/`): the plaza, the maze, t
 the office is a Blockbench model (`game/levels/office.bbmodel`) built into interiors when the game starts, with its glass
 and ceiling lights; the valley is a terrain with a lake (below).
 
-**Controls:** 1 to 9 pick a map on the menu; W A S D walk, Shift sprint, Ctrl or C crouch, Z lie down or get up, Space
+**Controls:** 1 to 9 pick a map on the menu; W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space
 jump, mouse look, Tab first or third person (the camera eases between them), R restart, Esc back to the menu.
 
 **Run it:**
@@ -80,7 +80,7 @@ An arena shooter for a few players: a main menu, host or join (the list of games
 figure with a pistol in first person, bolts that hurt, rounds and chat. A dedicated server takes desktop players on UDP and
 browsers over WebSocket and WebRTC data channels in the same game.
 
-**Controls:** W A S D walk, Shift sprint, Ctrl or C crouch, Z lie down or get up, Space jump, mouse look, left button
+**Controls:** W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space jump, mouse look, left button
 shoot, right button aim down the sights, R reload, Tab first or third person, T chat, Esc pause menu.
 
 **Run it:**
@@ -105,7 +105,7 @@ A drive for one player or a few: the box figure walks up to a dune buggy, clicks
 passenger's) and drives it round a dirt race track over checkerboard hills, through forests of low-poly trees, under a day
 that turns.
 
-**Controls:** on foot W A S D walk, Shift sprint, Ctrl or C crouch, Z lie down or get up, Space jump, mouse look, Tab first
+**Controls:** on foot W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space jump, mouse look, Tab first
 or third person, click the buggy to get in; at the wheel W throttle, S reverse, A D steer, Space brake, mouse turns the
 camera, wheel zooms, F headlight, Tab the driver's eyes, E get out;
 `[` and `]` slow down or speed up the day, `\` its normal speed; R restart, Esc menu.
@@ -129,7 +129,7 @@ cycle with volumetric clouds and their shadows.
 An animated box figure in a window, client only: idle, walk, run and jump as a small state machine over blended sequence
 threads, with an orbit camera.
 
-**Controls:** W A S D walk, Shift sprint, Ctrl or C crouch, Z lie down or get up, Space jump, F pistol, mouse or Q / E
+**Controls:** W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space jump, F pistol, mouse or Q / E
 orbit, wheel zoom, Esc quit.
 
 **Run it:** `just examples/character` (`cargo run -p torque-example-character --release`); its pictures:

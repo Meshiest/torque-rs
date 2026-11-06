@@ -12,7 +12,7 @@ new GameTSCtrl(CharacterView) {
         profile = CharacterBandProfile; position = "0 0"; extent = "800 28"; horizSizing = "width";
         new GuiTextCtrl(CharacterHelp) {
             profile = CharacterTextProfile; position = "10 5"; extent = "700 18"; visible = true; enabled = true;
-            text = "W A S D walk    Shift sprint    Ctrl/C crouch    Z prone    Space jump    F pistol    Mouse or Q / E orbit    Wheel zoom    Esc quit";
+            text = "W A S D walk    Shift sprint    Ctrl crouch    C toggle crouch    Z prone    Space jump    F pistol    Mouse or Q / E orbit    Wheel zoom    Esc quit";
         };
         new GuiTextCtrl(CharacterState) {
             profile = CharacterStateProfile; position = "700 5"; extent = "90 18"; horizSizing = "left"; visible = true; enabled = true; text = "idle";
@@ -27,11 +27,49 @@ function charBack(%v) { $charBack = %v; }
 function charLeft(%v) { $charLeft = %v; }
 function charRight(%v) { $charRight = %v; }
 function charRun(%v) { $charRun = %v; }
-function charJump(%v) { $charJump = %v; }
-function charCrouch(%v) { $charCrouch = %v; }
-// C's own function: an action map keeps one key for each function.
-function charCrouchC(%v) { $charCrouch = %v; }
-function charProne(%v) { if (%v) $charProne = !$charProne; }
+// Space lying down or crouched by C stands up rather than jumping.
+function charJump(%v)
+{
+   if (%v && ($charProne || $charCrouchToggled))
+   {
+      $charProne = false;
+      $charCrouchToggled = false;
+      charHoldCrouch();
+   }
+   else
+      $charJump = %v;
+}
+// Ctrl held crouches; C crouches or stands; Z lies down or gets up. Ctrl or C lying down gets up to a crouch.
+function charHoldCrouch() { $charCrouch = $charCrouchHeld || $charCrouchToggled; }
+function charCrouch(%v)
+{
+   if (%v)
+      $charProne = false;
+   $charCrouchHeld = %v;
+   charHoldCrouch();
+}
+function charCrouchC(%v)
+{
+   if (!%v)
+      return;
+   if ($charProne)
+   {
+      $charProne = false;
+      $charCrouchToggled = true;
+   }
+   else
+      $charCrouchToggled = !$charCrouchToggled;
+   charHoldCrouch();
+}
+function charProne(%v)
+{
+   if (!%v)
+      return;
+   $charProne = !$charProne;
+   if ($charProne)
+      $charCrouchToggled = false;
+   charHoldCrouch();
+}
 function charTurnLeft(%v) { $charTurnLeft = %v; }
 function charTurnRight(%v) { $charTurnRight = %v; }
 function charYaw(%v) { $charYaw += %v; }

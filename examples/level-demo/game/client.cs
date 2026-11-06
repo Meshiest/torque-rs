@@ -110,7 +110,7 @@ new GameTSCtrl(PlayGui)
       new GuiTextCtrl(PlayHelp)
       {
          profile = WorldDimProfile; position = "170 5"; extent = "620 18"; horizSizing = "width"; visible = true; enabled = true;
-         text = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump   Mouse look   Tab camera   R restart   Esc menu";
+         text = "W A S D walk   Shift sprint   Ctrl crouch   C toggle crouch   Z prone   Space jump   Mouse look   Tab camera   R restart   Esc menu";
       };
    };
    new GuiTextCtrl(PlayNote)
@@ -165,7 +165,7 @@ function updateMove()
    $mvRightAction = $World::Right * $World::Pace;
 }
 // The count goes up on the press and on the release: odd while held, so a quick tap (both in one frame) jumps once.
-function jump(%v) { $mvTriggerCount2++; }
+function jump(%v) { if (!poseJumpKey(%v)) $mvTriggerCount2++; }
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it.
@@ -260,11 +260,13 @@ function clientCmdFell()
 {
    pageEvent("playerFell");
    showNote("You fell off. Back to the start.");
+   releasePoseKeys();
 }
 
 function clientCmdRespawned()
 {
    showNote("Back to the start.");
+   releasePoseKeys();
 }
 
 showMenu();

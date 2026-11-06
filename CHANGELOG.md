@@ -415,6 +415,9 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- Examples' pose keys: Ctrl holds the crouch and C toggles it; C or Ctrl lying down gets up to a crouch, Space lying down
+  or crouched by C stands rather than jumping, and a respawn or a restart starts the figure standing (it kept the prone
+  toggle).
 - `torque-client`: in a browser the window's loop no longer spins between frames: the clock steps and the frame is drawn
   once per animation frame (a hidden page still runs its clock five times a second).
 - `torque-client`: in a browser, the keys and buttons held are let go when the page loses the focus, is hidden or loses
