@@ -2227,3 +2227,71 @@ fn r_far_from_the_start_cuts_the_camera_to_the_new_figure() {
         }
     }
 }
+
+/// The pose of the first client's figure on the server.
+fn server_pose(game: &mut VehicleDemo) -> torque::game::sim::player::poses::Pose {
+    let id: u32 = eval(game, "return ClientGroup.getObject(0).player.getId();")
+        .parse()
+        .expect("the figure");
+    let vm = server_mut(game).0.vm_mut();
+    torque::game::sim::player::state(vm, id)
+        .expect("the figure's state")
+        .pose
+}
+
+/// The grade of the terrain at `(x, y)`: the most it rises over a unit step.
+fn grade(game: &VehicleDemo, x: f32, y: f32) -> Option<f32> {
+    let h = game.terrain.height(x, y)?;
+    let mut most = 0.0f32;
+    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        most = most.max((game.terrain.height(x + dx, y + dy)? - h).abs());
+    }
+    Some(most)
+}
+
+#[test]
+fn standing_on_a_slope_of_the_terrain_z_lies_the_figure_down_and_z_again_stands_it_up() {
+    use torque::game::sim::player::poses::Pose;
+    let mut game = host();
+    // A slope near the start, steep enough that a wide box at the feet would meet the ground uphill (a rise of 0.1 to 0.35
+    // over a unit step: well within the figure's run surface).
+    let spot = (0..80)
+        .flat_map(|i| (0..80).map(move |j| (i as f32 * 2.0 - 80.0, j as f32 * 2.0 - 80.0)))
+        .filter(|&(x, y)| grade(&game, x, y).is_some_and(|g| (0.1..0.35).contains(&g)))
+        .min_by(|a, b| (a.0.hypot(a.1)).total_cmp(&b.0.hypot(b.1)))
+        .expect("a slope near the start");
+    eval(
+        &mut game,
+        &format!(
+            "%p = ClientGroup.getObject(0).player;              %p.setTransform(\"{} {}\" SPC groundAt({}, {}) + 0.1 SPC \"0 0 1 0\"); %p.setVelocity(\"0 0 0\");",
+            spot.0, spot.1, spot.0, spot.1
+        ),
+    );
+    steps(&mut [&mut game], 1500);
+    let feet = server(&game).figure_position().expect("the figure");
+    let ground = game
+        .terrain
+        .height(feet[0], feet[1])
+        .expect("on the terrain");
+    assert!(
+        (feet[2] - ground).abs() < 0.3,
+        "standing at {feet:?} over {ground}"
+    );
+    assert_eq!(server_pose(&mut game), Pose::Stand);
+    press(&mut game, Key::Z);
+    steps(&mut [&mut game], 2000);
+    assert_eq!(
+        server_pose(&mut game),
+        Pose::Prone,
+        "on the slope at {spot:?}"
+    );
+    let lying = server(&game).figure_position().expect("the figure");
+    let ground = game.terrain.height(lying[0], lying[1]).unwrap();
+    assert!(
+        (lying[2] - ground).abs() < 0.5,
+        "lying at {lying:?} over {ground}"
+    );
+    press(&mut game, Key::Z);
+    steps(&mut [&mut game], 2000);
+    assert_eq!(server_pose(&mut game), Pose::Stand);
+}

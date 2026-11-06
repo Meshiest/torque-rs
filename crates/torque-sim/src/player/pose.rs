@@ -15,8 +15,11 @@
 //!   (`prone_down`, `prone_up`), and its feet and hands stay where they touch the ground.
 //! - **The room**: a change to a taller pose (or to prone, whose box is longer) needs the new box clear of the static world (the
 //!   terrain, interiors and static shapes, not other Players): its sides pulled in by [`ROOM_INSET`] and its bottom raised by
-//!   [`ROOM_FLOOR`] so the floor and walls the Player stands against do not count. Under a low ceiling a crouched Player stays
-//!   crouched. Torque3D asks the same of its `crouchBoundingBox` and `boundingBox` (`canCrouch`, `canStand`).
+//!   [`ROOM_FLOOR`] so the floor and walls the Player stands against do not count, and the ground in it that the Player could
+//!   run on (a surface facing up within `runSurfaceAngle`) not counted either, so the box is tested from just above the ground
+//!   it lies on: a slope rising into the long prone box leaves room, a wall, a ledge's side or a ceiling does not. Under a low
+//!   ceiling a crouched Player stays crouched. Torque3D asks the same of its `crouchBoundingBox` and `boundingBox`
+//!   (`canCrouch`, `canStand`), from the top of the box the Player has.
 //! - **The box**: the object box becomes the pose's (`boundingBox`, `crouchBoundingBox` or `proneBoundingBox`): half its
 //!   width and depth each side of the origin, from the feet up its height, as `Player::setPose` makes it.
 //! - **The speeds** ([`super::update_move::move_speed`]): the pose's forward, backward and side speeds
@@ -404,11 +407,17 @@ pub fn can_take(
     if same_box {
         return Ok(true);
     }
-    has_room(p, db.poses.box_size(db, pose), host)
+    has_room(p, db, db.poses.box_size(db, pose), host)
 }
 
-/// Whether a box of `size` at the Player's feet is clear of the static world (see the module docs).
-pub fn has_room(p: &mut Player, size: F3, host: &mut dyn PlayerHost) -> Result<bool, Exhausted> {
+/// Whether a box of `size` at the Player's feet is clear of the static world, the ground it could run on aside (see the
+/// module docs).
+pub fn has_room(
+    p: &mut Player,
+    db: &PlayerData,
+    size: F3,
+    host: &mut dyn PlayerHost,
+) -> Result<bool, Exhausted> {
     let s = &p.s;
     let pos = s.position();
     let k = s.scale;
@@ -448,7 +457,7 @@ pub fn has_room(p: &mut Player, size: F3, host: &mut dyn PlayerHost) -> Result<b
             continue;
         }
         c.poly_list(world, &mut list)?;
-        if !list.polys.is_empty() {
+        if list.polys.iter().any(|q| q.plane.z <= db.run_surface_cos) {
             return Ok(false);
         }
     }
