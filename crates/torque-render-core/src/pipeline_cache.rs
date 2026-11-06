@@ -280,7 +280,9 @@ pub(crate) async fn open(
                 let now = size(&cache);
                 let empty = checked(device, None).await.map_or(0, |c| size(&c));
                 let loaded = (now >= data.len() && now > empty).then_some(data.len());
-                if loaded.is_none() {
+                // A file no larger than an empty cache holds no pipelines (a driver that keeps none, such as Mesa's
+                // lavapipe, saves only its header): nothing to load, and nothing outdated.
+                if loaded.is_none() && data.len() > empty {
                     eprintln!("pipeline cache: the saved pipelines are outdated, starting empty");
                 }
                 return Some(DeviceCache {
