@@ -1,21 +1,21 @@
 # torque-rs
 
-![The example games: a buggy in a turn, a shot in the arena, a sea at golden hour and an office](examples/screenshots/hero.webp)
+![The example games: a buggy in a turn, a shot in the arena, a sea at sunset and an office](examples/screenshots/hero.webp)
 
-- **Top left:** the vehicle demo's buggy taken hard through a turn of the race track, kicking up dust and leaving tire tracks.
-- **Top right:** the arena shooter: one player's bolt in flight, the muzzle's flare, the other player hit.
-- **Bottom left:** the level demo's valley: low over the sea at golden hour, racing clouds reflected in the water, far ranges fading to the horizon.
-- **Bottom right:** the level demo's office: desks under their ceiling lights, windows and glass.
+- **Top left:** the vehicle demo. The buggy in a turn, with dust and tire tracks.
+- **Top right:** the arena shooter. A bolt in flight, the muzzle flash, and the other player hit.
+- **Bottom left:** the level demo's valley. The sea at sunset, with clouds reflected in the water and mountains in the distance.
+- **Bottom right:** the level demo's office. Desks, ceiling lights, windows and glass.
 
-Each picture is the engine's own enhanced renderer, drawn offscreen by `just examples/showcase` (see [Examples](#examples)).
+All four are drawn offscreen with the HD renderer by `just examples/showcase` (see [Examples](#examples)).
 
-A game engine library in Rust inspired by the Torque Game Engine and Torque3D, growing beyond their original design:
+A game engine library in Rust, based on the Torque Game Engine (TGE) and Torque3D, with features of its own. It has
 TorqueScript and the console, SimObjects and datablocks, client/server networking with ghosting, DTS shapes, convex
 collision and the game object model (players, items, projectiles, vehicles).
 
-Games register their own systems (console classes and functions, networked object types, render passes, file formats,
-resource loaders) through the engine's registries and change engine behavior only through those hooks. Tools (editors,
-debugger, telnet console, journaling) are build-time features, so a finished game can be built without them.
+Games add their own console classes and functions, networked object types, render passes, file formats and resource
+loaders through the engine's registries, and change engine behavior only through those hooks. Tools (editors, debugger,
+telnet console, journaling) are build-time features, so a finished game can leave them out.
 
 ## Crates
 
@@ -49,8 +49,8 @@ debugger, telnet console, journaling) are build-time features, so a finished gam
 | `torque-fonts` | font caches and text rasterizing |
 | `torque-audio` | audio decoding and mixing |
 | `torque-render-core` | the renderers' device layer: the GPU, offscreen targets, a frame read back, a window's surface, the GUI pass |
-| `torque-render-scene` | a frame as plain data: the camera, the sun, textures and draws with their fixed-function state; maps, shapes, particles, decals, tire tracks and the enhanced renderer's scene |
-| `torque-render-hd` | the enhanced renderer on the GPU: shadows, sky and clouds, water, reflections, AO, TAA, bloom and exposure |
+| `torque-render-scene` | a frame as plain data: the camera, the sun, textures and draws with their fixed-function state; maps, shapes, particles, decals, tire tracks and the HD renderer's scene |
+| `torque-render-hd` | the HD renderer on the GPU: shadows, sky and clouds, water, reflections, AO, TAA, bloom and exposure |
 | `torque-app` | what a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures (needs a GPU) |
 | `torque` | the umbrella crate: the crates above behind features, and headless examples |
 | `torque-example` | an example dedicated server and client over the loopback address (`just examples/min-server`, `just examples/min-client`) |
@@ -64,38 +64,39 @@ debugger, telnet console, journaling) are build-time features, so a finished gam
 
 The roadmap is in the guide (`book/src/roadmap.md`).
 
-## What torque-rs adds beyond TGE and Torque3D
+## What torque-rs adds to TGE and Torque3D
 
-Where torque-rs follows TGE 1.4 or Torque3D (TorqueScript, the console, datablocks, ghosting and its records, DTS, DIF and
-legacy terrain files, the game classes' physics), it aims to be faithful to them, and those parts are credited where they
-are used. The parts below are the engine's own: they are new, or they sit beside the faithful path as an option a game
-picks.
+The parts that follow TGE 1.4 or Torque3D (TorqueScript, the console, datablocks, ghosting, DTS, DIF and legacy terrain
+files, the game classes' physics) match their behavior and are credited where they are used. The features below are new.
+Some are options beside the original behavior.
 
-- **The enhanced renderer** (`torque-render-hd`, engine-own; the fixed-function path stays for a faithful look): cascaded
-  sun shadows with contact shadows, a physical sky with volumetric clouds (`CloudLook`, sunlit cumulus included), particles
-  lit by the sun, the sky and the lights, TAA, ambient occlusion (GTAO or SSAO), spot lights with shadows, water with
-  waves, refraction, planar or screen-space reflections and the sun's glint, bloom and automatic exposure, at four quality
-  steps (Low to Ultra). Opt-in per scene: the ground's textures varied against visible tiling (stochastic tiling and a
-  large-scale tint) and the clouds on a clock of their own (a timelapse). The day cycle runs from a server's `TimeOfDay` under a `ScatterSky` (classes after Torque3D's),
-  lighting the view as the sun moves.
-- **Interiors from more than brushes** (`torque-interior-builder`): `.dif` interiors built from brushes made in code or
-  read from a Quake or Valve 220 `.map`, and from meshes read as glTF, OBJ or Blockbench models; a Blockbench model's
-  textures can be drawn nearest-sampled and with see-through texels (glass), as Blockbench draws them. Interiors are TGE's
-  format; building them from these sources is the engine's own.
-- **Model import and conversion** (`torque-import`, `torque-convert`): glTF 2.0, OBJ and Blockbench models into the model
-  layer and out as `.dts` (or back to `.glb`), with skins and sequences; `torque-convert` does it on the command line.
-- **The web build:** the level demo and the arena run in the browser on WebGPU; a build fetches its files by URL from a
-  list (`files.json`: sizes and SHA-256 hashes, kept in the browser's cache) or carries them inside the module. The arena's
-  server takes browsers over WebSocket and WebRTC data channels beside desktop players on UDP, all in one game (cross play).
-- **Hitboxes with lag compensation** (`torque-game`, engine-own and opt-in): a Player can answer shots with its shape's
-  posed LOS meshes instead of its box, and a server can cast a shot against the Players as the shooter saw them.
-- **Vehicles on the client:** tire tracks laid behind the wheels (engine-own; TGE has none), the wheels' dust
-  (TGE's emitters, through the particle engine), and other players' vehicles drawn smoothly between their updates, with
-  corrections eased out over the next ticks.
-- **Camera blend** (`torque::app::camera_blend`): the camera eases between first and third person instead of cutting,
-  kept out of walls and ground.
-- **The app layer** (`torque-app`): what a game shares on the engine (its files in memory, a server, a client, a window,
-  the world view and offscreen pictures for tests and screenshots), so an example game is a few hundred lines.
+- **HD renderer** (`torque-render-hd`). The fixed-function renderer is still there for the original look. The HD one has:
+  - cascaded sun shadows and contact shadows;
+  - a physical sky with volumetric clouds (`CloudLook`);
+  - particles lit by the sun, the sky and lights;
+  - TAA, ambient occlusion (GTAO or SSAO) and spot lights with shadows;
+  - water with waves, refraction, reflections and sun glint;
+  - bloom and automatic exposure;
+  - four quality levels, Low to Ultra.
+
+  A scene can also turn on ground textures that hide visible tiling, and clouds that move faster than the clock (a
+  timelapse). The sun follows a server's `TimeOfDay` under a `ScatterSky` (classes from Torque3D).
+- **Interiors from more sources** (`torque-interior-builder`). It builds `.dif` interiors from brushes made in code, from
+  Quake or Valve 220 `.map` files, and from glTF, OBJ or Blockbench meshes. Blockbench textures can be drawn the way
+  Blockbench draws them: nearest-sampled, with see-through pixels for glass.
+- **Model import and conversion** (`torque-import`, `torque-convert`). glTF 2.0, OBJ and Blockbench models convert to
+  `.dts` (and `.dts` to `.glb`), with skins and sequences. `torque-convert` is the command-line tool.
+- **Web build.** The level demo and the arena run in the browser on WebGPU. A build loads its files by URL from a list
+  (`files.json`, with sizes and SHA-256 hashes, cached by the browser) or embeds them in the module. The arena's server
+  takes browsers over WebSocket and WebRTC alongside desktop players on UDP, in the same game.
+- **Hitboxes with lag compensation** (`torque-game`, opt-in). A Player can be hit on its posed shape instead of its box,
+  and the server can check a shot against where the shooter saw the other players.
+- **Vehicles on the client.** Tire tracks (TGE has none), wheel dust (TGE's emitters), and other players' vehicles drawn
+  smoothly between updates, with corrections spread over the next ticks.
+- **Camera blend** (`torque::app::camera_blend`). The camera moves smoothly between first and third person instead of
+  cutting, and stays out of walls and the ground.
+- **App layer** (`torque-app`). The pieces every game needs: its files in memory, a server, a client, a window, the world
+  view and offscreen pictures for tests. The example games build on it.
 
 ## Examples
 
