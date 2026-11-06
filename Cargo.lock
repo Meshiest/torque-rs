@@ -3468,6 +3468,7 @@ dependencies = [
 name = "torque-shape-builder"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "torque-shapes",
 ]
 

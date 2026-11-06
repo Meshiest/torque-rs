@@ -14,6 +14,7 @@ categories = ["game-development"]
 # membership) filled in as an exporter writes it; `torque_shapes::write::write_dts` writes it as a `.dts`.
 
 [dependencies]
+glam = { workspace = true }
 torque-shapes = { path = "../torque-shapes" }
 
 [lints]

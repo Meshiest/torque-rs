@@ -88,22 +88,14 @@ fn every_triangle_is_clockwise_seen_from_its_front() {
         };
         let p = &mesh.positions;
         for t in mesh.indices.chunks_exact(3) {
-            let [a, b, c] = [0, 1, 2].map(|i| p[usize::from(t[i])]);
-            let (e1, e2) = (
-                [0, 1, 2].map(|k| b[k] - a[k]),
-                [0, 1, 2].map(|k| c[k] - a[k]),
-            );
-            let cross = [
-                e1[1] * e2[2] - e1[2] * e2[1],
-                e1[2] * e2[0] - e1[0] * e2[2],
-                e1[0] * e2[1] - e1[1] * e2[0],
-            ];
+            let [a, b, c] = [0, 1, 2].map(|i| glam::Vec3::from(p[usize::from(t[i])]));
+            let cross = (b - a).cross(c - a);
             // Outward: from the box's center to the triangle; the normals the renderer lights with agree.
-            let out = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0 - mesh.center[k]);
-            let dot = |v: [f32; 3]| v[0] * cross[0] + v[1] * cross[1] + v[2] * cross[2];
-            assert!(dot(out) < 0.0, "{t:?}");
+            let out = (a + b + c) / 3.0 - glam::Vec3::from(mesh.center);
+            assert!(out.dot(cross) < 0.0, "{t:?}");
             if render.normals.len() == p.len() && mesh.num_verts == 24 {
-                assert!(dot(render.normals[usize::from(t[0])]) < 0.0, "{t:?}");
+                let n = glam::Vec3::from(render.normals[usize::from(t[0])]);
+                assert!(n.dot(cross) < 0.0, "{t:?}");
             }
         }
     }

@@ -86,15 +86,16 @@ const NO_MAP: u32 = u32::MAX;
 /// Torque's quaternion-to-matrix routine (`QuatF::setMatrix`) writes the transpose of the usual matrix, so the stored
 /// quaternion is the conjugate of the usual one: its vector part is negated.
 pub fn turn(axis: Vec3, degrees: f32) -> Quat16 {
-    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    let axis = glam::Vec3::from(axis);
+    let len = axis.length();
     if len == 0.0 || degrees == 0.0 {
         return NO_TURN;
     }
     let half = degrees.to_radians() * 0.5;
     let (s, c) = (half.sin() / len, half.cos());
-    let q = [-axis[0] * s, -axis[1] * s, -axis[2] * s, c];
+    let q = (-axis * s).extend(c);
     // `Quat16::set`: each component times 32767, truncated.
-    q.map(|v| (v * 32767.0) as i16)
+    q.to_array().map(|v| (v * 32767.0) as i16)
 }
 
 /// One face of a box, by its outward normal.
@@ -120,21 +121,28 @@ impl Face {
 
     /// The outward normal, and the face's u and v directions (each a unit axis): `u x v` is the normal, so the corners
     /// (-u -v), (+u -v), (+u +v), (-u +v) go counter-clockwise seen from outside. On the side faces v is up.
-    fn frame(self) -> (Vec3, Vec3, Vec3) {
+    fn frame(self) -> (glam::Vec3, glam::Vec3, glam::Vec3) {
+        use glam::Vec3 as V;
         match self {
-            Face::XPos => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
-            Face::XNeg => ([-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]),
-            Face::YPos => ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-            Face::YNeg => ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-            Face::ZPos => ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-            Face::ZNeg => ([0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+            Face::XPos => (V::X, V::Y, V::Z),
+            Face::XNeg => (V::NEG_X, V::NEG_Y, V::Z),
+            Face::YPos => (V::Y, V::NEG_X, V::Z),
+            Face::YNeg => (V::NEG_Y, V::X, V::Z),
+            Face::ZPos => (V::Z, V::X, V::Y),
+            Face::ZNeg => (V::NEG_Z, V::X, V::NEG_Y),
         }
+    }
+
+    /// The direction of the face's corner (`su`, `sv`), each -1 or 1: the normal plus the u and v steps.
+    fn corner_dir(self, su: f32, sv: f32) -> glam::Vec3 {
+        let (n, u, v) = self.frame();
+        n + u * su + v * sv
     }
 }
 
 /// The corner of the box `min`..`max` in the direction `d` (each component's sign picks the side; 0 never occurs here).
-fn corner(min: Vec3, max: Vec3, d: Vec3) -> Vec3 {
-    [0, 1, 2].map(|k| if d[k] > 0.0 { max[k] } else { min[k] })
+fn corner(min: Vec3, max: Vec3, d: glam::Vec3) -> Vec3 {
+    glam::Vec3::select(d.cmpgt(glam::Vec3::ZERO), max.into(), min.into()).to_array()
 }
 
 /// A mesh of one material: triangles (three indices each) over vertices with a normal and a texture coordinate each.
@@ -173,12 +181,12 @@ impl MeshData {
     /// `uv(face)` (the top of a side face at the top of the rectangle).
     pub fn add_box(&mut self, min: Vec3, max: Vec3, uv: impl Fn(Face) -> UvRect) {
         for face in Face::ALL {
-            let (n, u, v) = face.frame();
+            let n = face.frame().0.to_array();
             let r = uv(face);
             let base = self.positions.len() as u16;
             for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                let d = [0, 1, 2].map(|k| n[k] + su * u[k] + sv * v[k]);
-                self.positions.push(corner(min, max, d));
+                self.positions
+                    .push(corner(min, max, face.corner_dir(su, sv)));
                 self.normals.push(n);
                 let tu = if su < 0.0 { r[0] } else { r[2] };
                 let tv = if sv > 0.0 { r[1] } else { r[3] };
@@ -245,11 +253,12 @@ impl MeshData {
             if normal[1] * mid[0] + normal[2] * mid[1] < 0.0 {
                 normal = [0.0, -normal[1], -normal[2]];
             }
-            let l = (normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+            let normal = glam::Vec3::from(normal);
+            let l = normal.length();
             if l == 0.0 {
                 continue;
             }
-            let normal = normal.map(|v| v / l);
+            let normal = (normal / l).to_array();
             let face = [
                 ([x0, a[0], a[1]], [sides[0], sides[3]]),
                 ([x0, b[0], b[1]], [sides[2], sides[3]]),
@@ -269,17 +278,8 @@ impl MeshData {
             self.normals.push(normal);
             self.tverts.push(uv);
         }
-        let (a, b, c) = (corners[0].0, corners[1].0, corners[2].0);
-        let (e1, e2) = (
-            [0, 1, 2].map(|k| b[k] - a[k]),
-            [0, 1, 2].map(|k| c[k] - a[k]),
-        );
-        let cross = [
-            e1[1] * e2[2] - e1[2] * e2[1],
-            e1[2] * e2[0] - e1[0] * e2[2],
-            e1[0] * e2[1] - e1[1] * e2[0],
-        ];
-        let ccw = cross[0] * normal[0] + cross[1] * normal[1] + cross[2] * normal[2] > 0.0;
+        let [a, b, c] = [0, 1, 2].map(|i| glam::Vec3::from(corners[i].0));
+        let ccw = (b - a).cross(c - a).dot(normal.into()) > 0.0;
         for i in 1..corners.len() as u16 - 1 {
             if ccw {
                 self.indices.extend([base, base + i + 1, base + i]);
@@ -294,18 +294,17 @@ impl MeshData {
         let mut m = MeshData::new(None);
         // Corner `i` has x from bit 0, y from bit 1, z from bit 2.
         for i in 0..8u16 {
-            let d = [0, 1, 2].map(|k| if i & (1 << k) != 0 { 1.0 } else { -1.0 });
+            let d = glam::Vec3::from_array(
+                [0, 1, 2].map(|k| if i & (1 << k) != 0 { 1.0 } else { -1.0 }),
+            );
             m.positions.push(corner(min, max, d));
-            let l = 3.0f32.sqrt();
-            m.normals.push(d.map(|c| c / l));
+            m.normals.push((d / 3.0f32.sqrt()).to_array());
             m.tverts.push([0.0, 0.0]);
         }
         for face in Face::ALL {
-            let (n, u, v) = face.frame();
-            let at = |su: f32, sv: f32| -> u16 {
-                let d = [0, 1, 2].map(|k| n[k] + su * u[k] + sv * v[k]);
-                (0..3).map(|k| u16::from(d[k] > 0.0) << k).sum()
-            };
+            // Corner `i`'s bit `k` is set on the positive side of axis `k`.
+            let at =
+                |su: f32, sv: f32| face.corner_dir(su, sv).cmpgt(glam::Vec3::ZERO).bitmask() as u16;
             let q = [at(-1.0, -1.0), at(1.0, -1.0), at(1.0, 1.0), at(-1.0, 1.0)];
             m.indices.extend([q[0], q[2], q[1], q[0], q[3], q[2]]);
         }
