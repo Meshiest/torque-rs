@@ -455,7 +455,7 @@ struct Peer {
     unverified: (Instant, u32),
     /// Addresses a binding response to a check of ours came from: verified, the newest last.
     verified: VecDeque<SocketAddr>,
-    /// The source addresses its checks came from (at most [`CHECK_SOURCES_PER_PEER`]).
+    /// The source addresses of its checks the stack answered (at most [`CHECK_SOURCES_PER_PEER`]).
     sources: Vec<SocketAddr>,
     /// The transaction IDs of its latest checks of ours (at most [`CHECKS_KEPT`]), the newest last.
     checks: VecDeque<[u8; 12]>,
@@ -1029,7 +1029,9 @@ impl RtcSide {
             }
             let open = peer.channel.is_some();
             let check = stun_to.is_some();
-            // Each new source of checks becomes a candidate in the stack for the peer's life: a few, then no more.
+            // Each new source of an authenticated check becomes a candidate in the stack for the peer's life: a few, then
+            // no more. A source counts once the stack answered a check from it (its integrity held; `drain`), so forged
+            // checks, held only to the per-source rate, take no place.
             let new_source = check && !peer.sources.contains(&from);
             if new_source && peer.sources.len() >= CHECK_SOURCES_PER_PEER {
                 self.counters.sources_capped += 1;
@@ -1058,9 +1060,6 @@ impl RtcSide {
                     self.counters.rate_dropped += 1;
                     continue;
                 }
-            }
-            if new_source {
-                peer.sources.push(from);
             }
             self.counters.handled += 1;
             if peer.rtc.handle_input(input).is_err() {
@@ -1460,6 +1459,12 @@ fn drain(peer: &mut Peer, sink: &mut Sink<'_>) {
                 if t.contents.get(..2) == Some(&stun::BINDING_SUCCESS[..]) {
                     peer.heard = sink.now;
                     sink.authentic = true;
+                    // The check's source now takes one of the peer's places (the stack keeps it as a candidate).
+                    if !peer.sources.contains(&t.destination)
+                        && peer.sources.len() < CHECK_SOURCES_PER_PEER
+                    {
+                        peer.sources.push(t.destination);
+                    }
                 }
                 // A check of our own to an address nothing authenticated came from yet: held to its rates.
                 if t.contents.get(..2) == Some(&[0x00, 0x01][..])
@@ -1967,6 +1972,40 @@ a=mid:0
         h.pump();
         assert!(!got(&sockets[0]).is_empty());
         assert_eq!(h.side.counters().sources_capped, 4);
+    }
+
+    #[test]
+    fn forged_checks_take_no_place_from_the_joiner() {
+        let mut h = Hosted::new();
+        // Checks from the joiner's IP address on many ports with the wrong password: none is answered, none takes one of
+        // the joiner's places.
+        let forged: Vec<UdpSocket> = (0..CHECK_SOURCES_PER_PEER + 8)
+            .map(|_| udp([127, 0, 0, 1]))
+            .collect();
+        let mut wrong = Hosted::new();
+        wrong.local_ufrag = h.local_ufrag.clone();
+        wrong.remote_ufrag = h.remote_ufrag.clone();
+        for (n, s) in forged.iter().enumerate() {
+            s.send_to(&wrong.check([n as u8 + 1; 12], true), h.at)
+                .unwrap();
+            if n % 4 == 3 {
+                h.pump();
+            }
+        }
+        h.pump();
+        assert!(forged.iter().all(|s| got(s).is_empty()));
+        assert!(h.peer().sources.is_empty());
+        assert_eq!(h.side.counters().sources_capped, 0);
+        // The joiner's own check from a new port is still answered.
+        let real = udp([127, 0, 0, 1]);
+        real.send_to(&h.check([77; 12], true), h.at).unwrap();
+        h.pump();
+        assert!(
+            got(&real)
+                .iter()
+                .any(|d| stun::transaction(d, stun::BINDING_SUCCESS) == Some([77; 12]))
+        );
+        assert_eq!(h.peer().sources, [real.local_addr().unwrap()]);
     }
 
     #[test]
