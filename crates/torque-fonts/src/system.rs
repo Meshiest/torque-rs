@@ -81,7 +81,7 @@ pub struct SystemFonts {
 
 impl SystemFonts {
     /// The fonts of this system, when it has any: Windows' fonts folder, or the font folders of Linux or macOS (scanned once per
-    /// process, [`native_roots`]). None in a browser, and where no folder holds a font file.
+    /// process, `native_roots`). None in a browser, and where no folder holds a font file.
     pub fn new() -> Option<SystemFonts> {
         #[cfg(windows)]
         {

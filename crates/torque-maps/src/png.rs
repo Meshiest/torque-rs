@@ -20,8 +20,8 @@ pub struct Png {
     pub bytes: Vec<u8>,
 }
 
-/// The CRC-32 of PNG (ISO 3309, reflected polynomial 0xEDB88320), eight bytes a step ([`CRC_TABLES`]: the same value as one
-/// byte a step, [`CRC_TABLE`]).
+/// The CRC-32 of PNG (ISO 3309, reflected polynomial 0xEDB88320), eight bytes a step (`CRC_TABLES`: the same value as one
+/// byte a step, `CRC_TABLE`).
 pub fn crc32(parts: &[&[u8]]) -> u32 {
     let mut c = 0xffff_ffffu32;
     for part in parts {

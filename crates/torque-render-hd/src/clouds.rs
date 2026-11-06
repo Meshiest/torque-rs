@@ -99,7 +99,7 @@ pub struct Clouds {
     bound: bool,
     /// Whether this frame marched.
     pub drawn: bool,
-    /// In a browser: whether the last frame wanted clouds while their noise was still being made ([`Clouds::noise_made`]).
+    /// In a browser: whether the last frame wanted clouds while their noise was still being made (`noise_made`).
     pub waiting: bool,
     /// The image's mip chain.
     down: crate::capture::DownPipe,
