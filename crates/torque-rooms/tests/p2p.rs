@@ -178,6 +178,9 @@ impl Joiner {
     }
 
     fn step(&mut self) {
+        if let Some(room) = self.room.as_mut() {
+            room.begin_pass();
+        }
         while let Some(text) = self.room.as_mut().and_then(RoomLink::take) {
             match FromService::parse(&text) {
                 Some(FromService::Joined { peer, .. }) => self.peer = Some(peer),

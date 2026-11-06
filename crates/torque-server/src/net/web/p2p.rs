@@ -36,6 +36,10 @@ use crate::net::transport::{BindError, BindPolicy, Recv, Transport};
 
 /// The most room messages one pass reads.
 pub const ROOM_MESSAGES_PER_PASS: usize = 16;
+/// The most WebSocket frames (room messages, pings, pongs and anything else) the room link reads in one pass.
+pub const ROOM_FRAMES_PER_PASS: u32 = 64;
+/// The most payload bytes the room link reads in one pass.
+pub const ROOM_BYTES_PER_PASS: usize = 64 << 10;
 /// How often the host pings the room service (it closes a socket quiet for 30 s).
 pub const PING_EVERY: Duration = Duration::from_secs(10);
 /// How long connecting to the room service and getting a room may take.
@@ -47,6 +51,9 @@ pub struct RoomLink {
     ws: WebSocket<TcpStream>,
     closed: bool,
     last_sent: Instant,
+    /// What the present pass may still read ([`RoomLink::begin_pass`]).
+    frames_left: u32,
+    bytes_left: usize,
 }
 
 /// The parts of a `ws://host[:port][/path]` URL (the path defaults to the web transport's socket path).
@@ -131,6 +138,8 @@ impl RoomLink {
             ws: WebSocket::from_raw_socket(tcp, Role::Client, Some(config)),
             closed: false,
             last_sent: Instant::now(),
+            frames_left: ROOM_FRAMES_PER_PASS,
+            bytes_left: ROOM_BYTES_PER_PASS,
         })
     }
 
@@ -154,18 +163,34 @@ impl RoomLink {
         }
     }
 
-    /// The next room message (text), if one has come; anything that is not one closes the link.
+    /// Starts a pass: the link may read [`ROOM_FRAMES_PER_PASS`] frames and [`ROOM_BYTES_PER_PASS`] bytes again.
+    pub fn begin_pass(&mut self) {
+        self.frames_left = ROOM_FRAMES_PER_PASS;
+        self.bytes_left = ROOM_BYTES_PER_PASS;
+    }
+
+    /// The next room message (text), if one has come and the pass may still read; anything that is not one closes the
+    /// link. Every frame read counts against the pass ([`RoomLink::begin_pass`]), pings and pongs included, so a service
+    /// that floods the link holds a pass for a few frames at most: the rest wait for the next.
     pub fn take(&mut self) -> Option<String> {
-        while !self.closed {
-            match self.ws.read() {
-                Ok(Message::Binary(data)) => match String::from_utf8(data.to_vec()) {
+        while !self.closed && self.frames_left > 0 && self.bytes_left > 0 {
+            let message = match self.ws.read() {
+                Ok(message) => message,
+                Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => return None,
+                Err(_) => {
+                    self.closed = true;
+                    break;
+                }
+            };
+            self.frames_left -= 1;
+            self.bytes_left = self.bytes_left.saturating_sub(message.len());
+            match message {
+                Message::Binary(data) => match String::from_utf8(data.to_vec()) {
                     Ok(text) => return Some(text),
                     Err(_) => self.closed = true,
                 },
-                Ok(Message::Close(_)) => self.closed = true,
-                Ok(_) => {}
-                Err(WsError::Io(e)) if e.kind() == ErrorKind::WouldBlock => return None,
-                Err(_) => self.closed = true,
+                Message::Close(_) => self.closed = true,
+                _ => {}
             }
         }
         None
@@ -299,6 +324,9 @@ impl P2pHost {
     pub fn pump(&mut self) {
         let now = Instant::now();
         self.last_pump = Some(now);
+        if let Some(link) = self.link.as_mut() {
+            link.begin_pass();
+        }
         for _ in 0..ROOM_MESSAGES_PER_PASS {
             let Some(text) = self.link.as_mut().and_then(RoomLink::take) else {
                 break;
@@ -419,6 +447,7 @@ impl P2pHost {
         }
         let deadline = Instant::now() + OPEN_TIMEOUT;
         while Instant::now() < deadline && link.is_open() {
+            link.begin_pass();
             let Some(text) = link.take() else {
                 std::thread::sleep(std::time::Duration::from_millis(5));
                 continue;
@@ -544,6 +573,80 @@ impl Drop for P2pHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A service that floods the link with pings (and a room message at the end) holds no pass for long: each reads
+    /// at most its frames, and the message comes through passes later.
+    #[test]
+    fn a_flooding_service_holds_no_pass() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        const PINGS: usize = 20_000;
+        let service = std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                tcp.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).unwrap();
+            let key = head
+                .lines()
+                .find_map(|l| l.strip_prefix("Sec-WebSocket-Key: "))
+                .unwrap();
+            write!(
+                tcp,
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\r\n",
+                super::super::accept_key(key)
+            )
+            .unwrap();
+            // The pongs the link sends back are read and dropped, so its writes never stall.
+            let mut drain = tcp.try_clone().unwrap();
+            std::thread::spawn(move || {
+                let mut sink = [0u8; 4096];
+                while matches!(drain.read(&mut sink), Ok(n) if n > 0) {}
+            });
+            let mut flood = [0x89u8, 0x00].repeat(PINGS);
+            flood.extend_from_slice(&[0x82, 0x04]);
+            flood.extend_from_slice(b"pong");
+            tcp.write_all(&flood).unwrap();
+            tcp
+        });
+        let mut link = RoomLink::connect(&format!("ws://{at}")).unwrap();
+        let tcp = service.join().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let mut passes = 0;
+        let got = loop {
+            passes += 1;
+            assert!(passes < PINGS, "the message never came");
+            link.begin_pass();
+            let start = Instant::now();
+            let mut taken = None;
+            for _ in 0..ROOM_MESSAGES_PER_PASS {
+                if let Some(text) = link.take() {
+                    taken = Some(text);
+                    break;
+                }
+            }
+            assert!(
+                start.elapsed() < Duration::from_millis(50),
+                "a pass took {:?}",
+                start.elapsed()
+            );
+            assert!(link.is_open());
+            if let Some(text) = taken {
+                break text;
+            }
+        };
+        assert_eq!(got, "pong");
+        assert!(
+            passes >= PINGS / ROOM_FRAMES_PER_PASS as usize,
+            "{passes} passes read {PINGS} frames"
+        );
+        drop(tcp);
+    }
 
     #[test]
     fn room_urls_and_stun_servers_read() {
