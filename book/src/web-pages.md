@@ -66,6 +66,6 @@ GitHub Pages on each push to main.
 
 A static host has no game server, so the site's examples are built with `--solo` (`node web/build.mjs <example> --solo`, into
 `<target>/web/<example>-solo`): the page's root element carries `data-torque-solo="1"`, and the game is played alone. The
-arena runs its server in the page's Web Worker, as a player's host does, with no room service, and its menu offers only to
-play again; the vehicle demo's browser build never offers to host or join. The native builds and the local web builds keep
+arena runs its server in the page's Web Worker, as a player's host does, with no room service, and its menu offers only "Play
+alone"; the vehicle demo's browser build never offers to host or join. The native builds and the local web builds keep
 their multiplayer.

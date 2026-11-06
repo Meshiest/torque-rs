@@ -37,7 +37,7 @@ export function serve(folder, port, prefix = '/') {
       return;
     }
     if (`${path}/` === base) {
-      res.writeHead(301, { Location: base }).end();
+      res.writeHead(301, { Location: base + new URL(req.url, 'http://localhost').search }).end();
       return;
     }
     if (!path.startsWith(base)) {
@@ -53,7 +53,8 @@ export function serve(folder, port, prefix = '/') {
     try {
       if (!path.endsWith('/') && (await stat(file)).isDirectory()) {
         const query = new URL(req.url, 'http://localhost').search;
-        res.writeHead(301, { Location: `${base}${path.slice(1)}/${query}` }).end();
+        // Leading slashes collapsed: `//name` must not become a link to another host.
+        res.writeHead(301, { Location: `${base}${path.replace(/^\/+/, '')}/${query}` }).end();
         return;
       }
       const body = await readFile(file);
