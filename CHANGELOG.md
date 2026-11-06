@@ -642,5 +642,6 @@ The first development version. Nothing is published yet; this is what exists.
 - The arena and the vehicle demo on a page played alone wait at their main menu (Play alone, Host with a link, Join with
   Link) instead of starting at once; the arena's Host with a link takes the host into its game with the panel open, and
   a page joined by an invite link offers Play alone instead.
+- Web pages: the loading bar moves while the GPU starts, and the start's longest block is shorter (fonts, view, warm-up).
 
 [Unreleased]: https://github.com/Meshiest/torque-rs/commits/main

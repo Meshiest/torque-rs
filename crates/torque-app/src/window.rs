@@ -169,7 +169,14 @@ impl WebDevice {
 
 impl<G: App> AppWindow<G> {
     /// The window's surface and the game's view on its device.
+    #[cfg(not(target_arch = "wasm32"))]
     fn made(&mut self, surface: WindowSurface) {
+        self.surface_made(surface);
+        self.make_view();
+    }
+
+    /// The window's surface, its device noted.
+    fn surface_made(&mut self, surface: WindowSurface) {
         let size = surface.size();
         println!(
             "{}: {}x{} on {}",
@@ -188,8 +195,15 @@ impl<G: App> AppWindow<G> {
                 }
             );
         }
-        self.view = Some(self.game.view(&surface.gpu));
         self.surface = Some(surface);
+    }
+
+    /// The game's view on the surface's device.
+    fn make_view(&mut self) {
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        self.view = Some(self.game.view(&surface.gpu));
     }
 
     /// In a browser: the loading stage `stage` on the page, when it is a new one.
@@ -201,21 +215,22 @@ impl<G: App> AppWindow<G> {
         }
     }
 
-    /// In a browser: the canvas's device once it is here (Err: the browser has none to give).
+    /// In a browser: the canvas's device and surface once they are here; true when they came now (Err: the browser has none to
+    /// give).
     #[cfg(target_arch = "wasm32")]
-    fn web_device(&mut self) -> Result<(), String> {
+    fn web_device(&mut self) -> Result<bool, String> {
         let Some(web) = self.web.as_ref() else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(answer) = web.answer.borrow_mut().take() else {
-            return Ok(());
+            return Ok(false);
         };
         let web = self.web.take().ok_or("no device asked for")?;
         let (gpu, surface) = answer.map_err(|e| format!("WebGPU: {e}"))?;
         crate::web_page::mark("size", &format!("{}x{}", web.size.0, web.size.1));
         let surface = WindowSurface::of(&web.window, gpu, surface, web.size);
-        self.made(surface);
-        Ok(())
+        self.surface_made(surface);
+        Ok(true)
     }
 }
 
@@ -287,8 +302,18 @@ impl<G: App> WindowGame for AppWindow<G> {
     }
 
     fn draw(&mut self) -> Result<Option<bool>, String> {
+        // In a browser the device's arrival, the game's view and the first frame each take an animation frame of their own: the
+        // page is drawn between them, so no one task of the page's thread holds all three.
         #[cfg(target_arch = "wasm32")]
-        self.web_device()?;
+        {
+            if self.web_device()? {
+                return Ok(None);
+            }
+            if self.view.is_none() && self.surface.is_some() {
+                self.make_view();
+                return Ok(None);
+            }
+        }
         let (Some(surface), Some(view)) = (self.surface.as_mut(), self.view.as_mut()) else {
             return Ok(None);
         };
