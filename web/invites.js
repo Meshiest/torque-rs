@@ -372,8 +372,9 @@ function showJoinPaste(go) {
 const OVER = ['failed', 'expired', 'left', 'closed'];
 
 // The host's invites (one for the page: it listens for reply tabs on a BroadcastChannel): `hosting(h)` is host.js's
-// `onHost` (`h` null once that server stopped), `show()` opens the Host with a link panel, `closeAll()` closes every
-// invite still open (the page is joining another game). `open`: the panel opens once the server runs.
+// `onHost` (`h` null once that server stopped), `show()` opens the Host with a link panel, `away(true)` closes every
+// invite still open and the panel and lets no one in (the page is in another player's game) until `away(false)`.
+// `open`: the panel opens once the server runs.
 export function hostInvites({ open = false } = {}) {
   let host = null;
   const invites = new Map();
@@ -385,6 +386,11 @@ export function hostInvites({ open = false } = {}) {
   let server = DEFAULT_SERVER;
   let list = null;
   let said = null;
+  // the Host with a link panel, while it is open
+  let hostPanel = null;
+  // the page is in another player's game: no invite is made or taken, and no one comes in
+  let gone = false;
+  const AWAY = "You are in another player's game. Go back to your own to let friends in.";
   const root = document.documentElement;
 
   const pending = () => [...invites.values()].filter((i) => i.state === 'waiting' || i.state === 'making').length;
@@ -423,6 +429,10 @@ export function hostInvites({ open = false } = {}) {
   }
 
   async function makeInvite() {
+    if (gone) {
+      said.textContent = AWAY;
+      return;
+    }
     if (pending() >= MAX_INVITES) {
       said.textContent = `${MAX_INVITES} invite offers are waiting already. Wait for a reply or for one to expire.`;
       return;
@@ -493,6 +503,7 @@ export function hostInvites({ open = false } = {}) {
     if (closed.has(data.token)) return 'That invite offer is no longer open. Create a new one.';
     const inv = invites.get(data.token);
     if (!inv || inv.state !== 'waiting') return null;
+    if (gone) return AWAY;
     used.add(data.token);
     clearTimeout(inv.timer);
     setState(inv, 'connecting', 'connecting...');
@@ -535,7 +546,7 @@ export function hostInvites({ open = false } = {}) {
       forget(inv);
       setState(inv, 'left', 'left the game.');
     };
-    const refused = host ? host.adopt(pc, ch, ip, left) : 'The game is not running.';
+    const refused = gone ? AWAY : host ? host.adopt(pc, ch, ip, left) : 'The game is not running.';
     if (refused) {
       pc.close();
       forget(inv);
@@ -559,6 +570,7 @@ export function hostInvites({ open = false } = {}) {
 
   function showHost() {
     const p = openPanel('Host with a link');
+    hostPanel = p;
     p.append(
       el('p', {
         text: `Friends join your game with an invite offer link. Create one for each friend: each works once, for ${minutes(INVITE_MS)}.`,
@@ -643,7 +655,12 @@ export function hostInvites({ open = false } = {}) {
       }
     },
     show: showHost,
-    closeAll,
+    away(on) {
+      gone = on;
+      if (!on) return;
+      closeAll();
+      if (panel && panel === hostPanel) closePanel();
+    },
   };
 }
 
@@ -1013,7 +1030,7 @@ export function soloPage() {
   // The join's channel opened: the page leaves its own game (and any it hosts) for the host's.
   function opening() {
     mode = 'link';
-    invites?.closeAll();
+    invites?.away(true);
     if (startHost) {
       hosted?.stop();
       hosted = null;
@@ -1031,6 +1048,7 @@ export function soloPage() {
     join = null;
     if (mode !== 'link') return;
     mode = 'solo';
+    invites?.away(false);
     game?.switchTo('solo');
   }
 
@@ -1039,7 +1057,14 @@ export function soloPage() {
     const page = book();
     if (startHost) {
       try {
-        hosted ??= await (starting ??= startHost(page.hosting));
+        const handle = hosted ?? (await (starting ??= startHost(page.hosting)));
+        // the join's channel opened while the server started: this page is in the other game now
+        if (mode === 'link') {
+          if (handle !== hosted) handle.stop();
+          page.hosting(null);
+          return;
+        }
+        hosted = handle;
       } catch (e) {
         const p = openPanel('Host with a link');
         p.append(

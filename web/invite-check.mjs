@@ -297,6 +297,12 @@ try {
   if (!replyLink) problems.push(`no reply link ("${j.said}")`);
   else console.log(`reply link: ${replyLink.length} characters, code ${replyLink.split('#reply=')[1].length}`);
   await panelShot(joiner, 'join-reply.png');
+  // While it waits, the joiner opens its own Host with a link panel over the join's: it closes once the joiner is in the
+  // host's game, and does not open again there.
+  if (!problems.length) {
+    await joiner.evaluate(() => globalThis.torqueAsk('host'));
+    await joiner.waitForSelector('#invites .privacy', { timeout: 60_000 }).catch(() => problems.push("the joiner's own host panel did not open"));
+  }
 
   // The host opens the reply link in its own browser: that tab hands it over and closes. A person takes a while.
   if (!problems.length && delay > 0) {
@@ -335,6 +341,12 @@ try {
     if (h.others < 1) problems.push("the host page does not hold the joiner's figure");
     if (!/joined/.test(h.invites)) problems.push(`the host's invite is not marked joined ("${h.invites}": ${h.lines.join(' | ')})`);
     if (h.links.length) problems.push(`the host's panel still shows ${h.links.length} invite link(s) once the reply is in`);
+    if (same) await joiner.bringToFront();
+    if ((await state(joiner)).panel) problems.push("the joiner's own host panel stayed open in the host's game");
+    await joiner.evaluate(() => globalThis.torqueAsk('host'));
+    await new Promise((r) => setTimeout(r, 1000));
+    if ((await state(joiner)).panel) problems.push("the joiner's own host panel opened in the host's game");
+    if (same) await host.bringToFront();
   }
   if (!problems.length) {
     if (same) await joiner.bringToFront();
