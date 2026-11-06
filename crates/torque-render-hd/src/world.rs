@@ -1374,11 +1374,38 @@ pub(crate) fn effect_keys(clustered: bool) -> Vec<PipelineKey> {
     keys
 }
 
-/// The warm-up's thread and the pipelines it makes ([`HdWorld::warm_effects`]).
+/// The warm-up's thread and the pipelines it makes ([`HdWorld::warm_effects`]). Dropped unfinished (the world dropped, the
+/// window closed), it tells the thread to stop and waits for the pipeline it is making: a process that ends while a driver
+/// compiles on another thread can wait seconds in the driver's shutdown, where Ctrl-C cannot end it either.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 struct Warming {
     keys: Vec<PipelineKey>,
-    thread: std::thread::JoinHandle<Vec<(PipelineKey, wgpu::RenderPipeline)>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Vec<(PipelineKey, wgpu::RenderPipeline)>>>,
+}
+
+impl Warming {
+    /// Whether the thread is done (or there is none).
+    fn finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
+    }
+
+    /// The pipelines made, waiting for the thread (none when it panicked).
+    fn join(mut self) -> Vec<(PipelineKey, wgpu::RenderPipeline)> {
+        self.thread
+            .take()
+            .and_then(|t| t.join().ok())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for Warming {
+    fn drop(&mut self) {
+        if let Some(t) = self.thread.take() {
+            self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = t.join();
+        }
+    }
 }
 
 /// A forward-pass pipeline of `module`'s `entry` for `key` (HDR target, the forward layout).
@@ -2823,13 +2850,16 @@ impl<E: HdExtension> HdWorld<E> {
         if keys.is_empty() {
             return;
         }
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let make = {
             let device = self.device.clone();
             let layout = self.forward_layout.clone();
             let modules = self.forward.clone();
             let keys = keys.clone();
+            let stop = stop.clone();
             move || {
                 keys.into_iter()
+                    .take_while(|_| !stop.load(std::sync::atomic::Ordering::Relaxed))
                     .map(|k| {
                         let module = &modules[&(k.clustered, k.front_layer)];
                         (k, make_pipeline(&device, &layout, module, k))
@@ -2842,7 +2872,11 @@ impl<E: HdExtension> HdWorld<E> {
             .name("pipeline warm-up".into())
             .spawn(make.clone())
         {
-            self.warming = Some(Warming { keys, thread });
+            self.warming = Some(Warming {
+                keys,
+                stop,
+                thread: Some(thread),
+            });
             return;
         }
         for (k, p) in make() {
@@ -2858,18 +2892,14 @@ impl<E: HdExtension> HdWorld<E> {
 
     /// The warm-up's pipelines, once its thread is done (or waiting for it: `wait`).
     fn take_warmed(&mut self, wait: bool) {
-        if !self
-            .warming
-            .as_ref()
-            .is_some_and(|w| wait || w.thread.is_finished())
-        {
+        if !self.warming.as_ref().is_some_and(|w| wait || w.finished()) {
             return;
         }
         let Some(w) = self.warming.take() else {
             return;
         };
         // A thread that panicked made none: each is made when first drawn, as before.
-        for (k, p) in w.thread.join().unwrap_or_default() {
+        for (k, p) in w.join() {
             if let std::collections::hash_map::Entry::Vacant(e) = self.pipelines.entry(k) {
                 e.insert(p);
                 self.pipelines_made += 1;

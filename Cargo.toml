@@ -75,3 +75,25 @@ mem_forget = "warn"
 [profile.web]
 inherits = "release"
 lto = "thin"
+
+# Debug builds (`cargo run`, `cargo test`) with the crates that make the examples' assets and their GPU state optimized: the
+# examples build their forests' interiors, their textures and the renderer's pipelines at every start, which unoptimized took
+# 25 s to the vehicle demo's menu. The engine's own crates stay unoptimized for debugging; the third-party ones (wgpu, naga,
+# png and the rest) are optimized too.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.torque-example-assets]
+opt-level = 2
+
+[profile.dev.package.torque-interior-builder]
+opt-level = 2
+
+[profile.dev.package.torque-maps]
+opt-level = 2
+
+[profile.dev.package.torque-modelcore]
+opt-level = 2
+
+[profile.dev.package.torque-images]
+opt-level = 2

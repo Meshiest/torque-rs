@@ -860,10 +860,17 @@ pub fn chunk_difs() -> io::Result<Vec<(&'static str, Vec<u8>)>> {
         .collect())
 }
 
-/// The `.dif` of each of `chunks` (of the trees `all`), built on a few threads, in order.
+/// The most threads [`build_chunks`] builds on.
+pub const BUILD_THREADS: usize = 16;
+
+/// The `.dif` of each of `chunks` (of the trees `all`), built on up to [`BUILD_THREADS`] threads, in order. The squares with
+/// the most trees are started first, so the slowest is not the last one taken: the examples build the forest at every start
+/// (on 16 threads about as long as its slowest square, half a second; on 4 in the order of the squares, three times that).
 pub fn build_chunks(all: &[Tree], chunks: &[Chunk]) -> Result<Vec<Vec<u8>>, String> {
     let n = chunks.len();
-    let workers = std::thread::available_parallelism().map_or(1, |w| w.get().min(4));
+    let workers = std::thread::available_parallelism().map_or(1, |w| w.get().min(BUILD_THREADS));
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&k| std::cmp::Reverse(chunks[k].trees.len()));
     let next = AtomicUsize::new(0);
     let mut built: Vec<(usize, io::Result<Vec<u8>>)> = std::thread::scope(|scope| {
         let jobs: Vec<_> = (0..workers)
@@ -871,10 +878,9 @@ pub fn build_chunks(all: &[Tree], chunks: &[Chunk]) -> Result<Vec<Vec<u8>>, Stri
                 scope.spawn(|| {
                     let mut done = Vec::new();
                     loop {
-                        let k = next.fetch_add(1, Ordering::Relaxed);
-                        if k >= n {
+                        let Some(&k) = order.get(next.fetch_add(1, Ordering::Relaxed)) else {
                             return done;
-                        }
+                        };
                         done.push((k, interior(&brushes_of(all, &chunks[k]))));
                     }
                 })

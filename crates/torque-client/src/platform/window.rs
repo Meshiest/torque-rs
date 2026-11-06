@@ -276,7 +276,8 @@ struct WindowApp<G: WindowGame> {
 /// server).
 pub const WEB_IDLE_PASS: Duration = Duration::from_millis(200);
 
-/// Runs `game`'s window on `event_loop` until it is closed or a script quits; gives the game back for its end.
+/// Runs `game`'s window on `event_loop` until it is closed or a script quits; gives the game back for its end. The window is
+/// hidden as soon as the loop ends, so a game that takes a moment to let go of its state does not leave it on the screen.
 pub fn run<G: WindowGame>(game: G, event_loop: EventLoop<()>) -> Result<G, (G, String)> {
     let mut app = window_app(game, &event_loop);
     let ran = event_loop.run_app(&mut app);
@@ -645,6 +646,16 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
             self.schedule(event_loop, fps);
         }
         self.game.pass_work(began.elapsed());
+    }
+
+    /// The window hidden (and the cursor let go) at once: what the game lets go of after the loop takes a moment.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+            window.set_visible(false);
+        }
     }
 
     /// In a browser nobody is given the error back ([`spawn`]): it is raised as a panic, which the page's console shows.
