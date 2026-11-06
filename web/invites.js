@@ -50,6 +50,8 @@ const JOIN_MS = 5 * 60_000;
 const GATHER_MS = 5_000;
 // The shortest time between two of a joiner's connections (see `again` in joinInvite).
 const RETRY_MS = 4_000;
+// A time in whole minutes for the player ("15 minutes", "1 minute").
+export const minutes = (ms) => `${Math.round(ms / 60_000)} minute${Math.round(ms / 60_000) === 1 ? '' : 's'}`;
 const HANDOFF_MS = 2_000;
 const MAX_BUFFERED = 256 * 1024;
 const USED_KEY = 'torque-invites-used';
@@ -455,8 +457,8 @@ export function hostInvites({ open = false } = {}) {
         'waiting',
         nearOnly
           ? `waiting for the player's reply. ${STUN_SERVERS[key].name}'s server did not answer, so only players on your ` +
-              'network can use this one.'
-          : `waiting for the player's reply (through ${STUN_SERVERS[key].name}).`,
+              `network can use this one. Open for ${minutes(INVITE_MS)}.`
+          : `waiting for the player's reply (through ${STUN_SERVERS[key].name}). Open for ${minutes(INVITE_MS)}.`,
       );
     } catch (e) {
       inv.pc?.close();
@@ -536,7 +538,7 @@ export function hostInvites({ open = false } = {}) {
     const p = openPanel('Host with a link');
     p.append(
       el('p', {
-        text: 'Friends join your game with an invite offer link. Create one for each friend: each works once.',
+        text: `Friends join your game with an invite offer link. Create one for each friend: each works once, for ${minutes(INVITE_MS)}.`,
       }),
     );
     const choice = el('fieldset', {}, el('legend', { text: 'Connection server' }));
@@ -834,7 +836,7 @@ export function joinInvite(code) {
     markUsed(data.token);
     said.textContent =
       'Send this reply link back to the host. When they open it in the browser that made the invite offer, you join ' +
-      'their game. This page waits for it.';
+      `their game. This page waits up to ${minutes(JOIN_MS)} for it.`;
     show(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
     mark('replied');
     if (!opened && pc.iceConnectionState === 'failed') again();
@@ -863,9 +865,11 @@ export function joinInvite(code) {
     });
     show(
       el('p', {
-        text: server.urls.length
-          ? `This invite offer connects through ${server.name}'s public STUN server. Nothing is sent until you press Connect.`
-          : 'This invite offer is for players on the same network as the host.',
+        text:
+          (server.urls.length
+            ? `This invite offer connects through ${server.name}'s public STUN server. Nothing is sent until you press Connect.`
+            : 'This invite offer is for players on the same network as the host.') +
+          ` It expires ${minutes(INVITE_MS)} after the host made it.`,
       }),
       privacyText(data.server, 'The host'),
       go,

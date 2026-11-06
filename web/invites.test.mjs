@@ -1,7 +1,7 @@
 // The invite panels' rules that need no page: `node --test web/invites.test.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { browserFamily, connectionDetails, privateAllowed } from './invites.js';
+import { browserFamily, connectionDetails, minutes, privateAllowed } from './invites.js';
 
 test("a joining page ignores ?lan: only the invite's server allows private addresses", () => {
   assert.equal(privateAllowed('lan', '', true), true);
@@ -87,4 +87,10 @@ test('a connection with no stats says so', () => {
     connectionDetails('', null, null),
     'other; ice none; connection none; local none; remote none; pairs none',
   );
+});
+
+test('a time for the player reads in whole minutes', () => {
+  assert.equal(minutes(15 * 60_000), '15 minutes');
+  assert.equal(minutes(5 * 60_000), '5 minutes');
+  assert.equal(minutes(60_000), '1 minute');
 });
