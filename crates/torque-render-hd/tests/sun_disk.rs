@@ -180,7 +180,9 @@ fn look(gpu: &Gpu, world: &mut HdWorld<NoExtension>, scene: &mut PlainScene, tim
     let frame = frame.expect("a frame");
     let px: Vec<[f32; 3]> = frame
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]].map(srgb_to_linear))
         .collect();
     let (d, ring) = disk_and_ring(frame.width, frame.height, &px, inner, r1, r2);

@@ -305,6 +305,14 @@ impl Datagrams for UdpDatagrams {
         {
             let _ = t.send_to(bytes, to);
         }
+        // A server on this machine bound to `127.0.0.1` hears no broadcast on Linux (Windows delivers one sent from a loopback
+        // socket), so a broadcast also goes to the loopback address on the same port. The query merges a second answer by
+        // address.
+        if *to.ip() == BROADCAST {
+            let local = SocketAddrV4::new(Ipv4Addr::LOCALHOST, to.port());
+            let socket = self.twin.as_ref().unwrap_or(&self.main);
+            return socket.send_to(bytes, local).is_ok() || main_ok;
+        }
         main_ok
     }
 

@@ -86,7 +86,7 @@ impl Bitmap {
                 }
             }
             Format::Rgb => {
-                for p in self.bits.chunks_exact(3) {
+                for p in self.bits.as_chunks::<3>().0 {
                     out.extend_from_slice(&[p[0], p[1], p[2], 255]);
                 }
             }

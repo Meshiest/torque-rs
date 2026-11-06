@@ -292,7 +292,7 @@ pub(crate) fn meshes_capped(
             let Some(mat) = mats.get(k) else {
                 continue;
             };
-            for (t, lm) in tris.chunks_exact(3).zip(lms) {
+            for (t, lm) in tris.as_chunks::<3>().0.iter().zip(lms) {
                 if merged >= cap {
                     notes.push(format!(
                         "map interiors: past {cap} vertices, {} of {} instances not all drawn",

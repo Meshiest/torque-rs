@@ -36,7 +36,9 @@ pub fn parse_gft(bytes: &[u8]) -> Result<Font, FontError> {
     let sheets = r.sheets()?;
     let table = r.take(512, "remap")?;
     let remap = table
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| i32::from(i16::from_le_bytes([b[0], b[1]])))
         .collect();
     Ok(Font {

@@ -56,7 +56,7 @@ fn every_triangle_is_clockwise_seen_from_its_front() {
             };
             let p = &mesh.positions;
             let centre = mesh.center;
-            for t in mesh.indices.chunks_exact(3) {
+            for t in mesh.indices.as_chunks::<3>().0 {
                 let [a, b, c] = [0, 1, 2].map(|i| Vec3::from(p[usize::from(t[i])]));
                 let cross = (b - a).cross(c - a);
                 // Outward: from the box's centre to the triangle; the normals the renderer lights with agree.

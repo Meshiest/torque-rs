@@ -88,7 +88,7 @@ fn an_interiors_strips_are_placed_and_wound_clockwise_from_their_fronts() {
     let m = &meshes[0];
     assert!(matches!(&m.texture, TexRef::Missing(n) if n.ends_with("/wall")));
     assert_eq!(m.vertices.len(), 3 * 2 * 6, "six quads");
-    for t in m.vertices.chunks_exact(3) {
+    for t in m.vertices.as_chunks::<3>().0 {
         assert!(facing(t, t[0].normal) <= 0.0);
         assert!(t.iter().all(|v| v.position[0] >= 50.0));
     }
@@ -159,7 +159,7 @@ fn terrain_layers_cover_their_weights_and_the_height_agrees_with_the_mesh() {
         &files.read("packs/valley/t.ter").unwrap(),
     )
     .unwrap();
-    for t in layers[0].vertices.chunks_exact(3) {
+    for t in layers[0].vertices.as_chunks::<3>().0 {
         assert!(facing(t, [0.0, 0.0, 1.0]) < 0.0, "clockwise from above");
         // The triangle's middle lies on the surface the height query answers.
         let mid: [f32; 3] =

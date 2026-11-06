@@ -927,7 +927,7 @@ pub(crate) fn casters(inputs: &Inputs) -> Vec<[[f32; 3]; 3]> {
             if !inst.opaque.get(k).copied().unwrap_or(false) {
                 continue;
             }
-            for t in tris.chunks_exact(3) {
+            for t in tris.as_chunks::<3>().0 {
                 if out.len() >= MAX_CASTERS {
                     break 'all;
                 }
@@ -1391,7 +1391,7 @@ pub(crate) fn encode(lit: &Lit) -> Vec<u8> {
         out.extend_from_slice(&t.width.to_le_bytes());
         out.extend_from_slice(&t.height.to_le_bytes());
         if let Some(l) = t.levels.first() {
-            for px in l.chunks_exact(4) {
+            for px in l.as_chunks::<4>().0 {
                 out.extend_from_slice(&px[..3]);
             }
         }
@@ -1438,7 +1438,7 @@ pub(crate) fn decode(bytes: &[u8], key: u64, plan: &Plan) -> Option<Lit> {
         }
         let rgb = take((s[0] * s[1] * 3) as usize)?;
         let mut texels = Vec::with_capacity((s[0] * s[1] * 4) as usize);
-        for px in rgb.chunks_exact(3) {
+        for px in rgb.as_chunks::<3>().0 {
             texels.extend_from_slice(&[px[0], px[1], px[2], 255]);
         }
         let name = if n < plan.pages.len() {

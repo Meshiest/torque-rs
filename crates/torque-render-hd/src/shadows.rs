@@ -1455,13 +1455,19 @@ impl Shadows {
             );
             let mut drawn = false;
             let mut whole = false;
-            match self.cascade_keys[i] {
-                Some(old) if old == c.view_proj => {}
-                // Moved by whole texels: the cache scrolled, the strips it uncovers drawn.
+            let scroll = match self.cascade_keys[i] {
                 Some(old)
-                    if SCROLL_CACHE.load(std::sync::atomic::Ordering::Relaxed)
-                        && let Some(shift) = scroll_of(&old, &c.view_proj, size) =>
+                    if old != c.view_proj
+                        && SCROLL_CACHE.load(std::sync::atomic::Ordering::Relaxed) =>
                 {
+                    scroll_of(&old, &c.view_proj, size)
+                }
+                _ => None,
+            };
+            match (self.cascade_keys[i], scroll) {
+                (Some(old), _) if old == c.view_proj => {}
+                // Moved by whole texels: the cache scrolled, the strips it uncovers drawn.
+                (_, Some(shift)) => {
                     jobs.push(Job::Scroll { layer: i, shift });
                     for strip in uncovered(shift, size) {
                         jobs.push(Job::Cascade {

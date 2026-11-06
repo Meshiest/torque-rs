@@ -48,7 +48,7 @@ pub fn png(width: u32, height: u32, pixel: impl Fn(u32, u32) -> Rgb) -> io::Resu
     Ok(out)
 }
 
-/// As [`png`], with an alpha channel.
+/// As [`png()`], with an alpha channel.
 pub fn png_rgba(width: u32, height: u32, pixel: impl Fn(u32, u32) -> Rgba) -> io::Result<Vec<u8>> {
     let mut data = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {

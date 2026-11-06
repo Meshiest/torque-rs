@@ -498,7 +498,7 @@ pub fn check(
     let materials: Vec<String> = imported.by_material.keys().cloned().collect();
     let mut tris: Vec<Tri> = Vec::new();
     for (mi, corners) in imported.by_material.values().enumerate() {
-        for c in corners.chunks_exact(3) {
+        for c in corners.as_chunks::<3>().0 {
             let p = [wide(c[0].0), wide(c[1].0), wide(c[2].0)];
             let area = geom::area(&p);
             if area < 1e-10 {

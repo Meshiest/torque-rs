@@ -235,7 +235,9 @@ impl CodeBlock {
         }
         let lines = dso
             .line_breaks
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let (line, ip) = (pair[0], pair[1]);
                 let inst = match name {

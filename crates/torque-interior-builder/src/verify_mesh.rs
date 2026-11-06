@@ -315,7 +315,7 @@ pub fn check_mesh(
             .map_err(|e| e.0)?;
         for (name, corners) in &imported.by_material {
             let mi = name_of(name, &mut names);
-            for c in corners.chunks_exact(3) {
+            for c in corners.as_chunks::<3>().0 {
                 let p = [wide(c[0].0), wide(c[1].0), wide(c[2].0)];
                 let area = geom::area(&p);
                 if area < 1e-10 {

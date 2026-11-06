@@ -274,7 +274,9 @@ fn rgba8(format: Format, bits: &[u8]) -> Vec<u8> {
             .iter()
             .for_each(|&a| out.extend_from_slice(&[0, 0, 0, a])),
         Format::Rgb => bits
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .for_each(|p| out.extend_from_slice(&[p[0], p[1], p[2], 255])),
         Format::Rgba => out.extend_from_slice(bits),
     }
@@ -576,7 +578,12 @@ impl<'a> TextureSet<'a> {
         let step = match self.alpha_scan {
             AlphaScan::EveryTexel => {
                 let texels = (t.width as usize) * (t.height as usize);
-                return level.chunks_exact(4).take(texels).any(|p| p[3] < 255);
+                return level
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .take(texels)
+                    .any(|p| p[3] < 255);
             }
             AlphaScan::Sampled { step } => step.max(1) as usize,
         };
@@ -636,7 +643,11 @@ fn decode_texture(
         };
         let mut texels = rgba8(chain.format, &bits);
         if alpha_white && chain.format == Format::Alpha {
-            texels.chunks_exact_mut(4).for_each(|t| t[..3].fill(255));
+            texels
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .for_each(|t| t[..3].fill(255));
         }
         levels.push(texels);
         if l.width == 1 && l.height == 1 {

@@ -293,7 +293,7 @@ impl MeshInput {
                 let two_sided = material.is_some_and(|m| m.two_sided) && r == Role::Visible;
                 kept += prim.indices.len() / 3 * if two_sided { 2 } else { 1 };
                 too_many("triangles", kept, MAX_TRIANGLES)?;
-                for t in prim.indices.chunks_exact(3) {
+                for t in prim.indices.as_chunks::<3>().0 {
                     let v = [t[0], t[1], t[2]].map(|i| i as usize);
                     let uv = v.map(|i| mesh.uv0.get(i).map_or([0.0; 2], |u| u.map(f64::from)));
                     let tri = Tri {
@@ -1314,7 +1314,9 @@ mod tests {
             })
             .collect();
         let tris: Vec<Tri> = pts
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|c| Tri {
                 p: [c[0], c[1], c[2]],
                 uv: [[0.0; 2]; 3],

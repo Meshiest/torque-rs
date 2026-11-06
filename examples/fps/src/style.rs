@@ -316,7 +316,7 @@ impl GhostStyle for ArenaStyle {
             return;
         }
         let slate = torque_example_assets::textures::SLATE;
-        for t in draw.vertices.chunks_exact_mut(3) {
+        for t in draw.vertices.as_chunks_mut::<3>().0 {
             let top = t.iter().map(|v| v.position[2]).fold(f32::MIN, f32::max);
             let tint = crate::scene::cube_tint(top.max(0.06));
             let c =

@@ -1,11 +1,11 @@
 //! The vehicle demo in a browser: its files fetched by the page (`files.json`, which `vehicle-demo --web-files` writes beside
 //! the pack) and the engine's window as a canvas on the page. The page's calls and its settings are the engine's web entry
-//! ([`torque::app::web_page`]). Natively only [`alone`] is of use (the tests).
+//! (`torque::app::web_page`). Natively only `alone` is of use (the tests).
 //!
 //! **Played alone** (the page as it is): the server on an in-memory link in the page (no socket:
-//! [`ClientOptions::alone_only`]); the game starts at once, the box figure beside its buggy on the hills.
+//! `ClientOptions::alone_only`); the game starts at once, the box figure beside its buggy on the hills.
 //!
-//! **Joined** (the engine's [`torque::app::web_join`]): `?join` joins the server that served the page
+//! **Joined** (the engine's `torque::app::web_join`): `?join` joins the server that served the page
 //! (`vehicle-demo-server --transport both`, its game socket over WebSocket with a WebRTC data channel beside it when the
 //! server offers one, `--webrtc`), `?server=<ws or wss URL>` one elsewhere, and `?room=<code>` a game a player hosts,
 //! found through the room service (`?rooms=<ws or wss URL>`, else the page's own host). `?name=<name>` sets the player's
@@ -13,25 +13,25 @@
 //! menu.
 //!
 //! **Hosted by the page** (`?host=1`, `web/host.js`): the server runs in the page's Web Worker on the engine's relay
-//! transport ([`host_start`], [`torque::app::web_host`]), others join by the room's code, and the host player's client
-//! reaches it over the local link ([`start_host_client`]).
+//! transport (`host_start`, `torque::app::web_host`), others join by the room's code, and the host player's client
+//! reaches it over the local link (`start_host_client`).
 //!
 //! **The menu** (after leaving the world): a page built to be played alone (`web/build.mjs --solo`, a site with no game
 //! server) offers to play alone and to host or join with an invite link (`$World::WebInvites`): those ask the page (its
-//! `torqueAsk`, `web/invites.js`, through [`torque::app::web_join::ask_page`]), which trades connection codes by hand and
+//! `torqueAsk`, `web/invites.js`, through `torque::app::web_join::ask_page`), which trades connection codes by hand and
 //! opens the page again to host (`?invites=1`: the server in the page's worker, as `?host=1` with no room). Any other page
 //! offers to host a game here (the page opens again with `?host=1`) and to join a room by its code (`?room=<code>`), and a
 //! host page shows its room's code on the menu and the world's title.
 //!
 //! **Joined by an invite link** (`web/invites.js`): the page holds the data channel to the host and calls
-//! [`start_link_client`]; the client is on [`torque::app::web_join::Target::Page`].
+//! `start_link_client`; the client is on `torque::app::web_join::Target::Page`.
 //!
 //! The page's root element carries the game's state for a test to wait on (`web_page::mark_play`): the frames drawn, the map
 //! (empty off it), whether the client holds its figure and where it sees it; and `data-torque-others` (the other players'
 //! figures the client holds), `data-torque-seat` (`-1` on foot, `0` at the wheel, `1` the passenger's seat),
 //! `data-torque-buggy` (where it draws the buggy it is in or the one nearest it, `x y z`), `data-torque-buggies` (each
 //! buggy it holds, `x y z` separated by `;`), `data-torque-status` (the menu's status line), and for a joined game the link's
-//! state ([`torque::app::web_join::mark_link`]).
+//! state (`torque::app::web_join::mark_link`).
 
 use torque::app::view::WorldView;
 use torque::app::web_page;

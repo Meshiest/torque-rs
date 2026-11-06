@@ -83,7 +83,9 @@ fn translucent(model: &Model, m: &Material) -> bool {
     };
     bitmap
         .to_rgba8()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|p| p[3] > CLEAR_ALPHA && p[3] < SOLID_ALPHA)
 }
 

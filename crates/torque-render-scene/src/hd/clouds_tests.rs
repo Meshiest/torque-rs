@@ -203,7 +203,8 @@ fn the_weather_map_leaves_the_altocumulus_clear_rowed_and_loose_patches() {
     // b (the shader's ELEMENT_PATCHES and element_present): clear under 0.1, rows from 0.32 to 0.7, loose cells over 0.86.
     let w = &noise().weather;
     let n = (WEATHER_SIZE * WEATHER_SIZE) as f32;
-    let share = |f: &dyn Fn(u8) -> bool| w.chunks_exact(4).filter(|t| f(t[2])).count() as f32 / n;
+    let share =
+        |f: &dyn Fn(u8) -> bool| w.as_chunks::<4>().0.iter().filter(|t| f(t[2])).count() as f32 / n;
     let clear = share(&|b| b < 26);
     let rows = share(&|b| (82..=178).contains(&b));
     let loose = share(&|b| b > 219);
@@ -212,7 +213,9 @@ fn the_weather_map_leaves_the_altocumulus_clear_rowed_and_loose_patches() {
     assert!((0.11..0.17).contains(&loose), "loose {loose}");
     // a (the rows' bend) spans a fair range, so the rows turn.
     let (lo, hi) = w
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .fold((255, 0), |(lo, hi), t| (lo.min(t[3]), hi.max(t[3])));
     assert!(hi - lo >= 100, "bend {lo}..{hi}");
 }

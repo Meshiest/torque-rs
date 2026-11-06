@@ -57,8 +57,8 @@ fn content_hash(bytes: &[u8]) -> u64 {
         0xa409_3822_299f_31d0,
         0x082e_fa98_ec4e_6c89,
     ];
-    let mut chunks = bytes.chunks_exact(32);
-    for c in &mut chunks {
+    let (chunks, rest) = bytes.as_chunks::<32>();
+    for c in chunks {
         for (k, lane) in lanes.iter_mut().enumerate() {
             let mut w = [0u8; 8];
             w.copy_from_slice(&c[k * 8..k * 8 + 8]);
@@ -71,7 +71,7 @@ fn content_hash(bytes: &[u8]) -> u64 {
     for l in lanes {
         h = (h ^ l).wrapping_mul(K).rotate_left(31);
     }
-    for &b in chunks.remainder() {
+    for &b in rest {
         h = (h ^ u64::from(b)).wrapping_mul(K);
     }
     h ^ (h >> 32)
@@ -316,7 +316,7 @@ impl HdVertex {
         }
         for (v, chunk) in vertices
             .iter()
-            .zip(out[at..].chunks_exact_mut(HD_VERTEX_BYTES))
+            .zip(out[at..].as_chunks_mut::<HD_VERTEX_BYTES>().0)
         {
             if v.material & material::NODE != 0 {
                 chunk[32..36].copy_from_slice(&v.extra.wrapping_add(base).to_le_bytes());
@@ -330,11 +330,9 @@ impl HdVertex {
         out.resize(at + vertices.len() * HD_VERTEX_BYTES, 0);
         for (v, chunk) in vertices
             .iter()
-            .zip(out[at..].chunks_exact_mut(HD_VERTEX_BYTES))
+            .zip(out[at..].as_chunks_mut::<HD_VERTEX_BYTES>().0)
         {
-            if let Ok(b) = <&mut [u8; HD_VERTEX_BYTES]>::try_from(chunk) {
-                v.put(b);
-            }
+            v.put(chunk);
         }
     }
 }

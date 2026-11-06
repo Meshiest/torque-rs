@@ -28,7 +28,9 @@ pub type Image = Vec<[f32; 3]>;
 
 pub fn image(f: &Frame) -> Image {
     f.rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| [f32::from(p[0]), f32::from(p[1]), f32::from(p[2])])
         .collect()
 }

@@ -654,7 +654,7 @@ pub fn write_polish(
 
 /// The muzzle's smoke after a shot, in the sun and in the cover's shadow, from Ann's eyes: `smoke-sun-unlit.png`,
 /// `smoke-sun-lit.png`, `smoke-shade-unlit.png` and `smoke-shade-lit.png` (unlit as TGE draws particles, and lit by
-/// [`ParticleLight::BLENDED`]) at `size` in `dir`, each with a close crop of the muzzle (`-crop`). Returns the paths.
+/// [`ParticleLight::BLENDED`](torque_render_scene::hd::particle_light::ParticleLight::BLENDED)) at `size` in `dir`, each with a close crop of the muzzle (`-crop`). Returns the paths.
 pub fn write_lit_smoke(
     dir: &Path,
     size: (u32, u32),

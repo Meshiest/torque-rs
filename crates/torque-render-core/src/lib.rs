@@ -123,7 +123,9 @@ impl Frame {
     /// The RGB bytes (alpha dropped).
     pub fn rgb(&self) -> Vec<u8> {
         self.rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2]])
             .collect()
     }

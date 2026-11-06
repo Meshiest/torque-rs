@@ -813,7 +813,7 @@ pub fn texture_cover(t: &crate::Texture) -> (f32, [f32; 3]) {
         return (0.0, [1.0; 3]);
     }
     let (mut a, mut c) = (0.0f64, [0.0f64; 3]);
-    for p in px.chunks_exact(4) {
+    for p in px.as_chunks::<4>().0 {
         let al = f64::from(p[3]) / 255.0;
         a += al;
         for k in 0..3 {
@@ -1346,7 +1346,7 @@ impl ShapeTables {
 /// Channel `c` of an RGBA8 buffer spread evenly over the bytes by its own histogram (each byte its value's rank).
 fn equalize(data: &mut [u8], c: usize) {
     let mut count = [0usize; 256];
-    for t in data.chunks_exact(4) {
+    for t in data.as_chunks::<4>().0 {
         count[usize::from(t[c])] += 1;
     }
     let total = (data.len() / 4).max(1);
@@ -1357,7 +1357,7 @@ fn equalize(data: &mut [u8], c: usize) {
         rank[v] = (((below as f32 + *n as f32 * 0.5) / total as f32) * 255.0).round() as u8;
         below += n;
     }
-    for t in data.chunks_exact_mut(4) {
+    for t in data.as_chunks_mut::<4>().0 {
         t[c] = rank[usize::from(t[c])];
     }
 }

@@ -138,7 +138,7 @@ pub fn radiance_at(
         ) {
             continue;
         }
-        for t in draw.vertices.chunks_exact(3) {
+        for t in draw.vertices.as_chunks::<3>().0 {
             let p = [0, 1, 2].map(|k| Vec3::from(t[k].position) - Vec3::from(eye));
             let Some((u, v)) = hit(d.into(), p) else {
                 continue;

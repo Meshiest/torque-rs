@@ -107,7 +107,9 @@ impl UftFile {
                 )));
             }
             let entries = raw
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|b| i32::from_be_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
             Remap::new(min, entries)

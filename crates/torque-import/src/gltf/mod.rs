@@ -925,7 +925,9 @@ impl Reader<'_> {
             mesh.primitives.push(Primitive {
                 material,
                 indices: tris
-                    .chunks_exact(3)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
                     .flat_map(|t| [t[0], t[2], t[1]].map(|v| v + base as u32))
                     .collect(),
             });
@@ -1251,7 +1253,7 @@ fn triangles(list: &[u32], mode: json::mesh::Mode) -> Vec<u32> {
 /// Each vertex's normal: the sum of its triangles' area-weighted normals (counter-clockwise fronts), at unit length.
 fn smooth_normals(positions: &[Vec3], tris: &[u32]) -> Vec<Vec3> {
     let mut sums = vec![glam::Vec3::ZERO; positions.len()];
-    for t in tris.chunks_exact(3) {
+    for t in tris.as_chunks::<3>().0 {
         let [a, b, c] = [t[0], t[1], t[2]]
             .map(|i| glam::Vec3::from(positions.get(i as usize).copied().unwrap_or_default()));
         let n = (b - a).cross(c - a);

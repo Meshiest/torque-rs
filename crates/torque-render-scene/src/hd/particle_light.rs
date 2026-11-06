@@ -51,7 +51,7 @@ pub fn shape_sprites(hd: &mut HdDraw) -> bool {
         return false;
     }
     let mut shaped = Vec::with_capacity(hd.vertices.len());
-    for quad in hd.vertices.chunks_exact(6) {
+    for quad in hd.vertices.as_chunks::<6>().0 {
         let mut corners: Vec<[f32; 3]> = Vec::with_capacity(4);
         for v in quad {
             if !corners.contains(&v.position) {

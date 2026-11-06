@@ -7,11 +7,10 @@ fn old_hash(seed: u64, bytes: &[u8]) -> u64 {
     const K: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut h = seed;
     let mut mix = |v: u64| h = (h.rotate_left(23) ^ v).wrapping_mul(K);
-    let mut chunks = bytes.chunks_exact(8);
-    for c in &mut chunks {
-        mix(u64::from_le_bytes(c.try_into().unwrap()));
+    let (chunks, rest) = bytes.as_chunks::<8>();
+    for c in chunks {
+        mix(u64::from_le_bytes(*c));
     }
-    let rest = chunks.remainder();
     let mut w = [0u8; 8];
     w[..rest.len()].copy_from_slice(rest);
     mix(u64::from_le_bytes(w) ^ ((rest.len() as u64) << 56));

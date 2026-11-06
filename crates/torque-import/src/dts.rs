@@ -173,7 +173,7 @@ fn chunks(m: &Mesh) -> Vec<Chunk> {
     let mut local: HashMap<u32, u16> = HashMap::new();
     let mut indices = 0usize;
     for p in &m.primitives {
-        for t in p.indices.chunks_exact(3) {
+        for t in p.indices.as_chunks::<3>().0 {
             let new = t.iter().filter(|v| !local.contains_key(v)).count();
             if cur.verts.len() + new > MESH_LIMIT || indices + 3 > MESH_LIMIT {
                 out.push(std::mem::replace(
@@ -335,7 +335,7 @@ pub fn to_dts(model: &Model) -> Result<torque_shapes::Model, ImportError> {
                 .map(|&v| m.uv0.get(v as usize).copied().unwrap_or([0.0; 2]))
                 .collect();
             for (_, run) in &c.runs {
-                for t in run.chunks_exact(3) {
+                for t in run.as_chunks::<3>().0 {
                     if mirrored {
                         data.indices.extend([t[0], t[2], t[1]]);
                     } else {

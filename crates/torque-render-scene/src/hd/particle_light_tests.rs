@@ -77,7 +77,7 @@ fn a_lit_sprites_normals_point_from_its_center_and_its_extra_is_the_half_diagona
     let d = sprites(Blend::Alpha, &centers, 0.5);
     let mut hd = HdDraw::from_fixed(&d, material::KIND_SKY, &[]);
     assert!(shape_sprites(&mut hd));
-    for (quad, c) in hd.vertices.chunks_exact(6).zip(centers) {
+    for (quad, c) in hd.vertices.as_chunks::<6>().0.iter().zip(centers) {
         for v in quad {
             let half = f32::from_bits(v.extra);
             assert!((half - 0.5 * 2f32.sqrt()).abs() < 1e-5, "{half}");

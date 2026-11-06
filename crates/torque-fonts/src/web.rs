@@ -93,7 +93,14 @@ impl Fallback for BrowserFonts {
             ) else {
                 return GlyphImage { advance, ..empty };
             };
-            let coverage = image.data().0.chunks_exact(4).map(|p| p[3]).collect();
+            let coverage = image
+                .data()
+                .0
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|p| p[3])
+                .collect();
             GlyphImage {
                 width: w as usize,
                 height: h as usize,

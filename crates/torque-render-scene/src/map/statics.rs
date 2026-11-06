@@ -70,7 +70,7 @@ pub(crate) fn meshes(
                 };
                 (d.clone(), texture, Vec::new(), [0.0; 3])
             });
-            for t in d.vertices.chunks_exact(3) {
+            for t in d.vertices.as_chunks::<3>().0 {
                 if merged >= cap {
                     notes.push(format!(
                         "map shapes: past {cap} vertices, the rest not drawn"

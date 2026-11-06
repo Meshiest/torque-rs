@@ -114,15 +114,15 @@ pub fn siphash24(key: &[u8; 16], data: &[u8]) -> u64 {
         k0 ^ 0x6c79_6765_6e65_7261,
         k1 ^ 0x7465_6462_7974_6573,
     ];
-    let mut chunks = data.chunks_exact(8);
-    for chunk in &mut chunks {
+    let (chunks, rest) = data.as_chunks::<8>();
+    for chunk in chunks {
         let m = le64(chunk);
         v[3] ^= m;
         sip_round(&mut v);
         sip_round(&mut v);
         v[0] ^= m;
     }
-    let last = le64(chunks.remainder()) | ((data.len() as u64 & 0xff) << 56);
+    let last = le64(rest) | ((data.len() as u64 & 0xff) << 56);
     v[3] ^= last;
     sip_round(&mut v);
     sip_round(&mut v);

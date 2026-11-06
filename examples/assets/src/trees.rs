@@ -219,7 +219,7 @@ fn noise(x: f32, y: f32, seed: u32) -> f32 {
     top + (bottom - top) * sy
 }
 
-/// Three octaves of [`noise`] (each twice as fine and half as strong), in [0, 1).
+/// Three octaves of `noise` (each twice as fine and half as strong), in [0, 1).
 pub fn fbm(x: f32, y: f32, seed: u32) -> f32 {
     let (mut sum, mut weight, mut amp, mut f) = (0.0, 0.0, 1.0, 1.0);
     for o in 0..3 {

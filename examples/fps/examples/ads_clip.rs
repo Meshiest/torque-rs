@@ -72,7 +72,12 @@ fn frame(
     for y in 0..H {
         for f in [&own, &other] {
             let row = &f.rgba[(4 * y * W) as usize..(4 * (y + 1) * W) as usize];
-            rgb.extend(row.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]));
+            rgb.extend(
+                row.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .flat_map(|p| [p[0], p[1], p[2]]),
+            );
         }
     }
     Ok(rgb)

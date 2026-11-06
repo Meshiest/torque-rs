@@ -1117,7 +1117,7 @@ fn each_triangle(kind: u32, idx: &[u16], mut f: impl FnMut([u16; 3])) {
             }
         }
         _ => {
-            for t in idx.chunks_exact(3) {
+            for t in idx.as_chunks::<3>().0 {
                 f([t[0], t[1], t[2]]);
             }
         }

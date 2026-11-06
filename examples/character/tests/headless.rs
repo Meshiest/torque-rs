@@ -122,8 +122,10 @@ fn frames_drawn_offscreen_show_the_figure_move() {
         shots[a]
             .1
             .rgba
-            .chunks_exact(4)
-            .zip(shots[b].1.rgba.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(shots[b].1.rgba.as_chunks::<4>().0)
             .filter(|(p, q)| (0..3).any(|k| p[k].abs_diff(q[k]) > 24))
             .count()
     };

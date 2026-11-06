@@ -4536,7 +4536,7 @@ impl<E: HdExtension> HdWorld<E> {
                 let rows = [&p.now, &p.normal, &p.before]
                     .into_iter()
                     .flat_map(|m| m.m[..12].iter().copied());
-                for (c, v) in out.chunks_exact_mut(4).zip(rows) {
+                for (c, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(rows) {
                     c.copy_from_slice(&v.to_le_bytes());
                 }
             }
@@ -7410,7 +7410,9 @@ impl<E: HdExtension> HdWorld<E> {
         };
         let (w, h, bytes) = self.read_texture(&t.history[p], 16)?;
         let px = bytes
-            .chunks_exact(16)
+            .as_chunks::<16>()
+            .0
+            .iter()
             .map(|c| {
                 [0, 1, 2, 3].map(|k| {
                     f32::from_le_bytes([c[4 * k], c[4 * k + 1], c[4 * k + 2], c[4 * k + 3]])
@@ -7462,7 +7464,9 @@ impl<E: HdExtension> HdWorld<E> {
         self.draw(scene, camera, Some((&view, format, [0, 0])))?;
         let (w, h, bytes) = self.read_texture(&t, 16)?;
         let px = bytes
-            .chunks_exact(16)
+            .as_chunks::<16>()
+            .0
+            .iter()
             .map(|c| {
                 let f = |i: usize| f32::from_le_bytes([c[i], c[i + 1], c[i + 2], c[i + 3]]);
                 [f(0), f(4), f(8), f(12)]
@@ -7562,7 +7566,9 @@ impl<E: HdExtension> HdWorld<E> {
         let n = torque_render_scene::hd::grade::HISTOGRAM_BINS;
         let bytes = self.read_buffer(&self.exposure.bins, (n * 4) as u64)?;
         Ok(bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect())
     }
@@ -7701,7 +7707,9 @@ impl<E: HdExtension> HdWorld<E> {
 /// RGBA halves as floats.
 pub fn halves(bytes: &[u8]) -> Vec<[f32; 4]> {
     bytes
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|p| [0, 1, 2, 3].map(|k| f16_to_f32(u16::from_le_bytes([p[2 * k], p[2 * k + 1]]))))
         .collect()
 }

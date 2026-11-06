@@ -24,7 +24,11 @@ fn padding_repeats_the_last_column_and_row() {
     assert_eq!((w, h), (1, 4));
     // One-byte rows read four bytes apart (GL_UNPACK_ALIGNMENT): row 1 starts at byte 4, past the 4-byte buffer.
     assert_eq!(
-        t.chunks_exact(4).map(|p| p[3]).collect::<Vec<_>>(),
+        t.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[3])
+            .collect::<Vec<_>>(),
         vec![10, 0, 0, 0]
     );
     assert_eq!(&t[..3], &[255, 255, 255]);

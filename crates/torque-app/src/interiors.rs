@@ -333,7 +333,7 @@ fn build(
             .copied()
             .unwrap_or_default();
         let mut vertices = Vec::with_capacity(corners.len());
-        for t in corners.chunks_exact(3) {
+        for t in corners.as_chunks::<3>().0 {
             let mut v = [0, 1, 2].map(|c| {
                 let (p, n, uv) = t[c];
                 let scale = Vec3::from(scale);
