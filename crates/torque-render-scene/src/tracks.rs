@@ -13,10 +13,10 @@
 //!   jumps further than [`MAX_GAP`] past what [`MAX_SPEED`] covers in the frame (a respawn), ends its strip.
 //! - **In a leading wheel's strip**: a wheel rolling in the strip of a wheel of its vehicle ahead of it on its way (a rear
 //!   tire in the front tire's track; the front in the rear's backing up) lays none there (where its line lies within half the
-//!   width of that strip's segments), so the strip is multiplied over the ground once, not darkened again by each tire that
-//!   follows it. A segment or head that enters or leaves the leader's strip is cut square across where its line crosses that
-//!   strip's edge (found in [`EDGE_STEPS`] halvings), so the two meet with no gap. A leading wheel lays its own strip
-//!   whatever lies under it.
+//!   width of that strip's segments laid in the last [`FOLLOW_AGE`] seconds), so the strip is multiplied over the ground once,
+//!   not darkened again by each tire that follows it; over an older strip of its vehicle it lays its own. A segment or head
+//!   that enters or leaves the leader's strip is cut square across where its line crosses that strip's edge (found in
+//!   [`EDGE_STEPS`] halvings), so the two meet with no gap. A leading wheel lays its own strip whatever lies under it.
 //! - **The head** ([`TireTracks::heads`]): each strip runs on from its last segment to the wheel's contact point this frame,
 //!   in a head laid again every frame (replaced by the next segment), so the strip ends under the tire.
 //! - **Textured**: [`TrackRules::texture`] across the strip (u from side to side) and repeating along it every strip's width
@@ -55,6 +55,11 @@ pub const MAX_BRIDGE_DT: f32 = 0.25;
 /// The sharpest turn between a strip's last segment and its next that still joins them (the cosine of the angle between their
 /// ways): past it the next starts square across its own way.
 pub const MAX_TURN_COS: f32 = 0.5;
+
+/// The age (seconds) under which a leading wheel's segment keeps a following wheel from laying its own over it: longer than a
+/// rear tire takes to reach the front's track at a crawl, short enough that a vehicle crossing its own older strip (a turn, a
+/// lap, a figure eight) lays a new one there instead of leaving a hole in it when the old one fades.
+pub const FOLLOW_AGE: f32 = 3.0;
 
 /// The halvings that find where a strip crosses the edge of another's (to 1/4096 of a piece).
 pub const EDGE_STEPS: u32 = 12;
@@ -271,15 +276,15 @@ impl TireTracks {
         self.ends = kept;
     }
 
-    /// Whether `p` lies in the strip of one of the `leaders` (module docs): beside one of their segments (between its ends; not
-    /// a head, which a wheel that leaves the ground never lays), within half the width of its line along the ground and within
-    /// a width up or down.
+    /// Whether `p` lies in the strip of one of the `leaders` (module docs): beside one of their segments younger than
+    /// [`FOLLOW_AGE`] (between its ends; not a head, which a wheel that leaves the ground never lays), within half the width of
+    /// its line along the ground and within a width up or down.
     fn in_strip(&self, leaders: &[(u32, usize)], p: [f32; 3]) -> bool {
         let half = 0.5 * self.rules.width;
         let p = Vec3::from(p);
         self.segments
             .iter()
-            .filter(|s| leaders.contains(&s.wheel))
+            .filter(|s| s.age < FOLLOW_AGE && leaders.contains(&s.wheel))
             .any(|s| {
                 let [a, b] = s.line.map(Vec3::from);
                 let way = (b - a).truncate();

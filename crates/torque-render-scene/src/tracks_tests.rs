@@ -262,3 +262,41 @@ fn a_wheel_in_the_strip_of_another_of_its_vehicle_lays_none_there() {
     assert!(laid((2, 0)) >= 10, "another vehicle lays its own");
     assert!(t.heads().all(|(k, _)| *k != (1, 2)));
 }
+
+#[test]
+fn a_rear_wheel_crossing_an_old_strip_of_its_vehicle_lays_its_own_there() {
+    let mut t = TireTracks::new(TrackRules {
+        lifetime: 30.0,
+        max_segments: 400,
+        ..rules()
+    });
+    let on = |key, x: f32, y: f32| TrackWheel {
+        key,
+        contact: true,
+        point: [x, y, 0.1 * x],
+    };
+    // The front wheel lays a strip across the way at y 5, then 20 seconds pass.
+    for k in 0..24 {
+        t.update(&[on((1, 0), -3.0 + k as f32 * 0.25, 5.0)], &slope, 0.032);
+    }
+    t.update(&[], &slope, 20.0);
+    assert!(t.segments().all(|s| s.age > 19.0));
+    // Driving north over it, the front ahead and beside, the rear crossing the old strip.
+    for k in 0..40 {
+        let y = k as f32 * 0.25;
+        t.update(
+            &[on((1, 0), 1.0, y + 2.0), on((1, 2), 0.0, y)],
+            &slope,
+            0.032,
+        );
+    }
+    let crossing = t
+        .segments()
+        .filter(|s| s.wheel == (1, 2))
+        .filter(|s| (s.line[0][1]..=s.line[1][1]).contains(&5.1))
+        .count();
+    assert_eq!(
+        crossing, 1,
+        "the rear wheel lays its own over the old strip"
+    );
+}
