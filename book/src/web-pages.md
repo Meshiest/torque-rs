@@ -54,3 +54,18 @@ server runs script on a client only through the game's `clientCmd` functions, so
 a `clientCmd` that calls `callPage` with a fixed, registered name, as above. Such a function passes what the server sent only
 as arguments: it never hands the server's text to `callPage` as a name, and the page never registers a handler that runs what
 it is given.
+
+## The website
+
+`just site` (`node web/site.mjs [folder]`) builds the project's website into `<target>/site`: the gallery
+(`web/gallery.html`) as its front page, each web example in its own folder (`level-demo/`, `fps/`, `vehicle-demo/`, files
+fetched by URL), the guide in `book/` and the API reference in `api/`. Every link is relative, so the folder works under a
+project site's path; `just site-serve` serves it on `http://127.0.0.1:8080/torque-rs/`, and `just site-check` loads the
+gallery, its links and each card's game in headless Chrome. `.github/workflows/pages.yml` builds it and deploys it to
+GitHub Pages on each push to main.
+
+A static host has no game server, so the site's examples are built with `--solo` (`node web/build.mjs <example> --solo`, into
+`<target>/web/<example>-solo`): the page's root element carries `data-torque-solo="1"`, and the game is played alone. The
+arena runs its server in the page's Web Worker, as a player's host does, with no room service, and its menu offers only "Play
+alone"; the vehicle demo's browser build never offers to host or join. The native builds and the local web builds keep
+their multiplayer.

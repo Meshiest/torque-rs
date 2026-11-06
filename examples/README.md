@@ -12,8 +12,8 @@ installs wasm-bindgen's command line into the target folder.
 <table>
 <tr>
 <td align="center"><a href="#the-level-demo"><img src="screenshots/level-demo-plaza.webp" width="200" alt="The level demo"><br>The level demo</a></td>
-<td align="center"><a href="#the-level-demo"><img src="screenshots/level-demo-office.webp" width="200" alt="Its office"><br>Its office</a></td>
-<td align="center"><a href="#the-valley"><img src="screenshots/level-demo-valley.webp" width="200" alt="Its valley"><br>Its valley</a></td>
+<td align="center"><a href="#the-level-demo"><img src="screenshots/level-demo-office.webp" width="200" alt="The office"><br>The office</a></td>
+<td align="center"><a href="#the-valley"><img src="screenshots/level-demo-valley.webp" width="200" alt="The valley"><br>The valley</a></td>
 <td align="center"><a href="#the-arena-shooter"><img src="screenshots/fps-shot.webp" width="200" alt="The arena shooter"><br>The arena shooter</a></td>
 </tr>
 <tr>
@@ -46,6 +46,7 @@ jump, mouse look, Tab first or third person (the camera eases between them), R r
 | Native | `just examples/level-demo` | `cargo run -p torque-example-level-demo --release` |
 | Web | `just examples/web-level-demo` (serves it on http://127.0.0.1:8080/; `?map=office` starts a map at once) | `node web/build.mjs level-demo` |
 | Web, files inside the module | `just examples/web-level-demo-embedded` | `node web/build.mjs level-demo --embed` |
+| Web, online | [the gallery](https://reheatedcake.io/torque-rs/): the plaza, the office and the valley | `just site` |
 | Pictures | `just examples/level-demo-shots`, `just examples/level-demo-valley-shots` | `cargo run -p torque-example-level-demo --release -- --shots <dir>` |
 
 **Shows:** a server and a client in one process; missions loaded from TorqueScript; the client's prediction against cubes,
@@ -90,6 +91,7 @@ shoot, right button aim down the sights, R reload, Tab first or third person, T 
 | Dedicated server (LAN) | `just examples/fps-server` | `cargo run -p torque-example-fps --release --bin fps-server` |
 | Dedicated server (internet) | `just examples/fps-server-public` | `... --bin fps-server -- --bind 0.0.0.0 --port 28000` |
 | Web (browsers and desktops in one game) | `just examples/web-fps` (a browser joins at http://127.0.0.1:28000/) | `node web/build.mjs fps`, then `fps-server --transport both` |
+| Web, online (played alone) | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
 | Pictures | `just examples/fps-shots` and the other `fps-*-shots` recipes | `... --bin fps-client -- --shots <dir>` |
 
 **Shows:** a full network game (the LAN server query, ghosting, client prediction); posed hitboxes and lag compensation;
@@ -113,6 +115,8 @@ camera, wheel zooms, F headlight, Tab the driver's eyes, E get out;
 |---|---|---|
 | Native (play alone, host or join from its menu) | `just examples/vehicle-demo` | `cargo run -p torque-example-vehicle-demo --release` |
 | At once | `just examples/vehicle-demo --solo` (or `--host`, `--join <address>`) | `... --release -- --solo` |
+| Web (played alone) | `just examples/web-vehicle-demo` (serves it on http://127.0.0.1:8080/) | `node web/build.mjs vehicle-demo` |
+| Web, online | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
 | Pictures | `just examples/vehicle-demo-shots`, `vehicle-demo-track-shots`, `vehicle-demo-cloud-shots` | `... --release -- --shots <dir>` |
 
 **Shows:** wheeled vehicles (springs, tires, steering) with client prediction; mounting; tire tracks and wheel dust; other

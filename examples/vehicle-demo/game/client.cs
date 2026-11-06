@@ -2,7 +2,7 @@
 // with its help line and hint, the keys on foot and in a seat, and the way in.
 //
 // The host watches the globals the menu sets: $World::AloneAsked (start a game here that nobody else can join and join it),
-// $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on. On foot the keys move the figure (as the level demo's); a click asks
+// $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on; $World::AloneOnly (set by the host) keeps the menu to playing alone. On foot the keys move the figure (as the level demo's); a click asks
 // the server for a seat (serverCmdGetIn). In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
@@ -417,6 +417,22 @@ function showMenu()
    NameEdit.setValue($Pref::Player::Name);
    Canvas.setContent(MenuGui);
    Canvas.cursorOn();
+   if ($World::AloneOnly)
+      showAloneOnly();
+}
+
+// A client with no socket of its own ($World::AloneOnly, a browser's) only plays alone: the menu offers that and nothing else.
+function showAloneOnly()
+{
+   MenuLine.setText("Drive a buggy over the hills.");
+   HostButton.setVisible(0);
+   GamesLabel.setVisible(0);
+   GamesScroll.setVisible(0);
+   RefreshButton.setVisible(0);
+   JoinSelectedButton.setVisible(0);
+   AddressLabel.setVisible(0);
+   AddressEdit.setVisible(0);
+   JoinAddressButton.setVisible(0);
 }
 
 function leaveWorld()

@@ -329,3 +329,23 @@ fn leave_game_from_the_pause_menu_returns_to_the_main_menu() {
     assert!(g.host.system_cursor(), "the menu's cursor");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
+
+#[test]
+fn a_page_played_alone_offers_only_to_play_again() {
+    let mut g = client();
+    g.set_global("$Arena::JoinOnly", "1");
+    g.set_global("$Arena::Solo", "1");
+    g.call("showMainMenu", &[]).unwrap();
+    let mut eval = |code: &str| g.call("eval", &[code]).unwrap();
+    for hidden in ["HostButton", "HostNote", "QuitButton"] {
+        assert_eq!(
+            eval(&format!("return {hidden}.isVisible();")),
+            "0",
+            "{hidden}"
+        );
+    }
+    assert_eq!(eval("return JoinButton.isVisible();"), "1");
+    assert_eq!(eval("return JoinButton.getText();"), "Play alone");
+    assert_eq!(eval("return JoinButton.command;"), "joinPage();");
+    assert!(!eval("return MainLine.getValue();").contains("network"));
+}

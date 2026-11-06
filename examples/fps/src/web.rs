@@ -22,6 +22,9 @@
 //! through the room service at `?rooms=<ws or wss URL>` (else the page's own host at `/ws`: the service serves the
 //! page). Every datagram goes on the data channel to the host; when it closes, the game ends with a message on the menu
 //! (`data-torque-ended` carries it).
+//!
+//! **Played alone** (a page `web/build.mjs --solo` marked, for a site with no game server): the page runs the server in its
+//! worker as a host player's does, with no room, and calls [`start_solo_client`]; the main menu offers only to play again.
 
 use std::cell::RefCell;
 
@@ -65,7 +68,7 @@ pub fn embedded() -> bool {
 /// Starts the game on the files the module carries.
 #[cfg(feature = "embed-pack")]
 pub fn start_embedded() -> Result<(), String> {
-    start(GameFiles::unpack(PACK)?, None)
+    start(GameFiles::unpack(PACK)?, None, false)
 }
 
 /// Starts the game on the files the module carries: this build carries none.
@@ -117,18 +120,24 @@ pub(crate) fn fetched_files() -> Result<GameFiles, String> {
 
 /// Starts the game on the fetched files (Err: one the list names is missing, or a pack is broken).
 pub fn start_fetched() -> Result<(), String> {
-    start(fetched_files()?, None)
+    start(fetched_files()?, None, false)
 }
 
 /// Starts the host player's game on the fetched files: its server runs in the page's worker (`web_host`), and the client
 /// reaches it over the local link ([`local_datagram`], [`set_local_sender`]).
 pub fn start_host_client() -> Result<(), String> {
-    start(fetched_files()?, Some(Target::Local))
+    start(fetched_files()?, Some(Target::Local), false)
+}
+
+/// Starts the game played alone on the fetched files: as [`start_host_client`], with nobody else let in and a menu that
+/// offers neither hosting nor joining.
+pub fn start_solo_client() -> Result<(), String> {
+    start(fetched_files()?, Some(Target::Local), true)
 }
 
 pub use torque::app::web_join::{local_datagram, set_local_sender};
 
-fn start(files: GameFiles, target: Option<Target>) -> Result<(), String> {
+fn start(files: GameFiles, target: Option<Target>, solo: bool) -> Result<(), String> {
     let target = match (target, query("room")) {
         (Some(target), _) => target,
         (None, Some(code)) => Target::Room {
@@ -146,6 +155,9 @@ fn start(files: GameFiles, target: Option<Target>) -> Result<(), String> {
     let (socket, watch) = target.open()?;
     let mut game = ArenaGame::with_socket(files, options, socket)?;
     game.set_global("$Arena::JoinOnly", "1");
+    if solo {
+        game.set_global("$Arena::Solo", "1");
+    }
     game.call("showMainMenu", &[])?;
     let mut web = WebArena {
         game,

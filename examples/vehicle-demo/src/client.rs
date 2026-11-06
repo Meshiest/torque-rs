@@ -237,6 +237,9 @@ impl VehicleDemo {
         })?;
         register_join_natives(&mut b.vm, &b.state);
         b.vm.set_global("$World::Port", &options.port.to_string());
+        if options.alone_only {
+            b.vm.set_global("$World::AloneOnly", "1");
+        }
         b.vm.set_global("$Pref::Player::Name", &options.name);
         b.exec("client.cs")?;
         Ok(VehicleDemo {

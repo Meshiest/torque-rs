@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Examples of torque-rs, a game engine library in Rust, playable in the browser.">
+<title>torque-rs examples</title>
+<link rel="icon" href="data:,">
+<!-- The site's front page (web/site.mjs copies it to the site's root, beside the examples' folders, book/ and api/). Every
+     link is relative, so the site works under any path. No scripts, fonts or other requests beyond its own pictures. -->
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1d2129;
+    --muted: #5b6372;
+    --line: #d8dce3;
+    --card: #f6f7f9;
+    --link: #2357c6;
+    --focus: #2357c6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12141a;
+      --fg: #dde2ec;
+      --muted: #9aa3b5;
+      --line: #2e3443;
+      --card: #1a1e26;
+      --link: #8fb0f8;
+      --focus: #8fb0f8;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); color: var(--fg); }
+  body {
+    margin: 0 auto;
+    max-width: 62rem;
+    padding: 2rem 1rem 3rem;
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  a { color: var(--link); }
+  a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  header { margin-bottom: 1.5rem; }
+  h1 { margin: 0; font-size: 1.75rem; font-weight: 650; letter-spacing: -0.01em; }
+  header p { margin: 0.25rem 0 0.75rem; color: var(--muted); }
+  nav ul { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; margin: 0; padding: 0; list-style: none; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+    gap: 1rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .card {
+    display: block;
+    height: 100%;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: inherit;
+    text-decoration: none;
+  }
+  .card:hover { border-color: var(--link); }
+  .card img { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; object-fit: cover; background: var(--line); }
+  .card span { display: block; padding: 0 0.75rem; }
+  .card .title { padding-top: 0.6rem; font-weight: 600; }
+  .card .line { padding-bottom: 0.75rem; color: var(--muted); font-size: 0.9rem; }
+  .note { margin: 1.5rem 0 0; color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>torque-rs</h1>
+  <p>A game engine library in Rust, based on the Torque Game Engine and Torque3D. These examples run in the browser.</p>
+  <nav aria-label="Project">
+    <ul>
+      <li><a href="book/">Guide</a></li>
+      <li><a href="api/">API docs</a></li>
+      <li><a href="https://github.com/Meshiest/torque-rs">GitHub</a></li>
+    </ul>
+  </nav>
+</header>
+<main>
+  <ul class="grid">
+    <li>
+      <a class="card" href="level-demo/?map=plaza">
+        <img src="screenshots/level-demo-plaza.webp" width="1280" height="720" alt="">
+        <span class="title">The level demo</span>
+        <span class="line">Walk and jump around a plaza built of cubes.</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="level-demo/?map=office">
+        <img src="screenshots/level-demo-office.webp" width="1280" height="720" alt="">
+        <span class="title">The office</span>
+        <span class="line">A level demo map: desks under ceiling lights, with windows and glass.</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="level-demo/?map=valley">
+        <img src="screenshots/level-demo-valley.webp" width="1280" height="720" alt="">
+        <span class="title">The valley</span>
+        <span class="line">A level demo map: a lake between mountains, open to the sea at sunset.</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="fps/">
+        <img src="screenshots/fps-shot.webp" width="1280" height="720" alt="" loading="lazy">
+        <span class="title">The arena shooter</span>
+        <span class="line">The box figure with a pistol, in rounds.</span>
+      </a>
+    </li>
+    <li>
+      <a class="card" href="vehicle-demo/">
+        <img src="screenshots/vehicle-demo-turn.webp" width="1280" height="720" alt="" loading="lazy">
+        <span class="title">The vehicle demo</span>
+        <span class="line">Drive a dune buggy around a dirt track over the hills.</span>
+      </a>
+    </li>
+  </ul>
+  <p class="note">The examples need a browser with WebGPU: Chrome or Edge, or Firefox and Safari where WebGPU is turned on.
+    In a browser without it, the page says so and the game does not start.</p>
+</main>
+</body>
+</html>
