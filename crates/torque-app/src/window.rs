@@ -125,11 +125,59 @@ struct AppWindow<G> {
     stage: &'static str,
     #[cfg(target_arch = "wasm32")]
     frame_times: crate::web_page::FrameTimes,
+    /// In a browser: whether the last frame drawn while the map was loading is still on the GPU (its work not done), and whether
+    /// that frame's sky was still being made ([`WebLoad`]).
+    #[cfg(target_arch = "wasm32")]
+    load: WebLoad,
     /// Whether the pipeline cache was saved once the view's warm-up was done (it is saved again at the close).
     #[cfg(not(target_arch = "wasm32"))]
     cache_saved: bool,
     /// The real clock the frames are counted by ([`Host::frame_drawn`]).
     clock: web_time::Instant,
+}
+
+/// In a browser, while the map loads (the game's [`App::loading`], or its sky still being made), a frame is drawn only once the
+/// last one's work is done on the GPU. The browser's GPU process makes the new pipelines a loading map asks for one after
+/// another (some take it a second or more), and the page's thread waits for it when it has more data to send than the GPU
+/// process has taken: a frame that does not start until the last is done never sends the map's buffers behind them. A frame
+/// waits [`WebLoad::MAX_WAIT`] at most (a GPU that never says its work is done does not hold the page's frames for good).
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+struct WebLoad {
+    /// Set when a frame is submitted while loading, cleared by the GPU once its work is done.
+    on_gpu: Arc<std::sync::atomic::AtomicBool>,
+    /// When that frame was submitted.
+    since: Option<web_time::Instant>,
+    /// Whether the last frame wanted its sky's clouds while their noise was still being made.
+    sky_waiting: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl WebLoad {
+    /// The longest a frame waits for the last one's work.
+    const MAX_WAIT: web_time::Duration = web_time::Duration::from_secs(5);
+
+    /// Whether the next frame waits: the map is loading and the last frame's work is not done.
+    fn waits(&self, loading: bool) -> bool {
+        (loading || self.sky_waiting)
+            && self.on_gpu.load(std::sync::atomic::Ordering::Acquire)
+            && self.since.is_some_and(|t| t.elapsed() < WebLoad::MAX_WAIT)
+    }
+
+    /// A frame submitted to `queue`: while the map loads, the next waits for its work.
+    fn submitted(&mut self, queue: &wgpu::Queue, loading: bool, sky_waiting: bool) {
+        self.sky_waiting = sky_waiting;
+        if !(loading || sky_waiting) {
+            return;
+        }
+        self.since = Some(web_time::Instant::now());
+        self.on_gpu
+            .store(true, std::sync::atomic::Ordering::Release);
+        let on_gpu = Arc::clone(&self.on_gpu);
+        queue.on_submitted_work_done(move || {
+            on_gpu.store(false, std::sync::atomic::Ordering::Release);
+        });
+    }
 }
 
 /// A canvas's device on its way: the browser answers WebGPU's requests on its own event loop, so the window keeps running (and
@@ -313,6 +361,9 @@ impl<G: App> WindowGame for AppWindow<G> {
                 self.make_view();
                 return Ok(None);
             }
+            if self.load.waits(self.game.loading()) {
+                return Ok(None);
+            }
         }
         let (Some(surface), Some(view)) = (self.surface.as_mut(), self.view.as_mut()) else {
             return Ok(None);
@@ -335,6 +386,9 @@ impl<G: App> WindowGame for AppWindow<G> {
         // In a browser the map is loading until its sky is all made, too (the clouds' noise, a share each frame).
         #[cfg(target_arch = "wasm32")]
         let sky_waiting = view.clouds_waiting();
+        #[cfg(target_arch = "wasm32")]
+        self.load
+            .submitted(surface.gpu.queue(), self.game.loading(), sky_waiting);
         surface.present(frame);
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
         self.game.host().frame_drawn(real_ms);
@@ -383,6 +437,8 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
         stage: "",
         #[cfg(target_arch = "wasm32")]
         frame_times: crate::web_page::FrameTimes::new(),
+        #[cfg(target_arch = "wasm32")]
+        load: WebLoad::default(),
         #[cfg(not(target_arch = "wasm32"))]
         cache_saved: false,
         clock: web_time::Instant::now(),
