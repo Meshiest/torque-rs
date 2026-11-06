@@ -217,7 +217,7 @@ test("a page's own description gives a code's parts, and a code's parts a descri
   assert.throws(() => c.fromSdp(SDP.replace(/a=fingerprint:.*\r\n/, '')), /without ICE or DTLS/);
 });
 
-test('an mDNS name rides only in a same-network invite (or a reply), and only in its strict form', async () => {
+test('an mDNS name rides in any invite or reply, and only in its strict form', async () => {
   const name = '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local';
   const named = [{ type: 'host', ip: name, port: 50123 }];
   const lan = invite({ server: 'lan', candidates: named });
@@ -226,9 +226,10 @@ test('an mDNS name rides only in a same-network invite (or a reply), and only in
   console.log(`code size, same-network invite with one mDNS name: ${code.length}`);
   const back = reply({ candidates: named });
   assert.deepEqual(await c.decodeCode(await c.encodeCode(back), c.KIND_REPLY), back);
+  // on a STUN server too, beside the public address: the browser resolves it on its own network only
   for (const server of ['cloudflare', 'google']) {
-    const text = c.payloadText(invite({ server, candidates: named }));
-    await refused(c.decodeCode(rawCode(text), c.KIND_JOIN), /only for the same-network server/);
+    const data = invite({ server, candidates: [{ type: 'srflx', ip: '203.0.113.57', port: 54321 }, ...named] });
+    assert.deepEqual(await c.decodeCode(await c.encodeCode(data), c.KIND_JOIN), data);
   }
   const lanText = (address, type = 'host') => c.payloadText(invite({ server: 'lan', candidates: [] })) + `\nc ${type} ${address} 50123`;
   for (const nearMiss of ['evil.local', name.toUpperCase().replace('.LOCAL', '.local'), `x.${name}`, name.replace('-4c8e', '-1c8e')]) {

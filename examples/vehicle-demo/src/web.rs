@@ -3,7 +3,8 @@
 //! (`torque::app::web_page`). Natively only `alone` is of use (the tests).
 //!
 //! **Played alone** (the page as it is): the server on an in-memory link in the page (no socket:
-//! `ClientOptions::alone_only`); the game starts at once, the box figure beside its buggy on the hills.
+//! `ClientOptions::alone_only`); the game starts at once, the box figure beside its buggy on the hills. A page built to be
+//! played alone (`web/build.mjs --solo`) waits at the menu instead ([`menu`]): Play alone starts it there.
 //!
 //! **Joined** (the engine's `torque::app::web_join`): `?join` joins the server that served the page
 //! (`vehicle-demo-server --transport both`, its game socket over WebSocket with a WebRTC data channel beside it when the
@@ -24,7 +25,8 @@
 //! host page shows its room's code on the menu and the world's title.
 //!
 //! **Joined by an invite link** (`web/invites.js`): the page holds the data channel to the host and calls
-//! `start_link_client`; the client is on `torque::app::web_join::Target::Page`.
+//! `start_link_client`; the client is on `torque::app::web_join::Target::Page`, and joins once the channel opens (the trade
+//! of links by hand takes longer than a join waits for its answer).
 //!
 //! The page's root element carries the game's state for a test to wait on (`web_page::mark_play`): the frames drawn, the map
 //! (empty off it), whether the client holds its figure and where it sees it; and `data-torque-others` (the other players'
@@ -59,16 +61,36 @@ pub fn start_fetched() -> Result<(), String> {
     if let Some(target) = torque::app::web_join::Target::from_page()? {
         return joined(files, target);
     }
-    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
-    let mut game = alone(files)?;
     #[cfg(target_arch = "wasm32")]
-    offer_rooms(&mut game);
+    let mut game = if torque::app::web_join::solo_page() {
+        menu(files)?
+    } else {
+        alone(files)?
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let game = alone(files)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        offer_rooms(&mut game);
+        game.call("showMenu", &[])?;
+    }
     torque::app::window::run(WebVehicle {
         game,
         frames: 0,
         link: None,
         room: None,
     })
+}
+
+/// The client over `files` with no socket of its own, at its menu (a page played alone: Play alone starts the game).
+pub fn menu(files: GameFiles) -> Result<VehicleDemo, String> {
+    VehicleDemo::new(
+        files,
+        ClientOptions {
+            alone_only: true,
+            ..ClientOptions::default()
+        },
+    )
 }
 
 /// The client over `files` with no socket of its own, playing alone.
@@ -129,15 +151,27 @@ fn joined(files: GameFiles, target: torque::app::web_join::Target) -> Result<(),
         },
     )?;
     offer_rooms(&mut game);
+    game.call("showMenu", &[])?;
     let (socket, watch) = target.open()?;
     game.set_socket(socket);
-    game.join(&SERVER.to_string())?;
+    // A link's join waits for its channel (module docs).
+    let waiting = target == torque::app::web_join::Target::Page;
+    if waiting {
+        let vm = game.vm_mut();
+        if let Some(status) = vm.objects().find(b"MenuStatus") {
+            let text = b"Waiting for the connection to the host...".to_vec();
+            let _ = vm.call_method(status, b"setText", &[text]);
+        }
+    } else {
+        game.join(&SERVER.to_string())?;
+    }
     torque::app::window::run(WebVehicle {
         game,
         frames: 0,
         link: Some(Link {
             watch,
             ended: false,
+            waiting,
         }),
         room: None,
     })
@@ -162,6 +196,8 @@ fn offer_rooms(game: &mut VehicleDemo) {
 struct Link {
     watch: torque::client::net::web_rtc::LinkWatch,
     ended: bool,
+    /// Whether the client waits for the link's channel to open before it joins (an invite link's).
+    waiting: bool,
 }
 
 /// Natively nothing joins.
@@ -182,6 +218,21 @@ struct WebVehicle {
 
 #[cfg(target_arch = "wasm32")]
 impl WebVehicle {
+    /// An invite link's channel open: its join.
+    fn join_when_open(&mut self) {
+        use torque::client::net::web_rtc::Link as Way;
+        let Some(link) = self.link.as_mut().filter(|l| l.waiting) else {
+            return;
+        };
+        if link.watch.borrow().link != Way::Channel {
+            return;
+        }
+        link.waiting = false;
+        if let Err(e) = self.game.join(&torque::app::web_join::SERVER.to_string()) {
+            self.menu_status(&format!("Could not join: {e}"));
+        }
+    }
+
     /// A link that ended for good: out of the world, with why on the menu.
     fn show_end(&mut self) {
         let Some(link) = self.link.as_mut().filter(|l| !l.ended) else {
@@ -307,6 +358,7 @@ impl App for WebVehicle {
         App::advance(&mut self.game, ms);
         #[cfg(target_arch = "wasm32")]
         {
+            self.join_when_open();
             self.show_end();
             self.menu_asks();
         }

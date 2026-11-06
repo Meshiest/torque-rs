@@ -113,9 +113,10 @@ export const MDNS_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3
 
 // A joiner's candidate line (with or without `a=`) the host may take, as `{ line, ip }`, or null: well formed, UDP, a
 // canonical IPv4 address the rules allow and not one of `own`, a port written plainly. The line handed on is rebuilt
-// from the address and port as read here, so the browser reads the address this checked. With `mdns` (an invite on the
-// same-network server only) a host candidate may instead name an MDNS_NAME not in `own`, which goes to the browser's own
-// ICE as it is (the page never resolves it); any other `.local` is refused.
+// from the address and port as read here, so the browser reads the address this checked. With `mdns` (an invite link's
+// candidates, on any server; never a room's) a host candidate may instead name an MDNS_NAME not in `own`, which goes to
+// the browser's own ICE as it is (the page never resolves it; the browser does, on its own network only); any other
+// `.local` is refused.
 export function candidateAllowed(text, lan, own = new Set(), { mdns = false } = {}) {
   if (typeof text !== 'string') return null;
   const line = text.trim().replace(/^a=/, '');

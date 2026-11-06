@@ -823,7 +823,9 @@ function showMainMenu()
 
 // A browser's client ($Arena::JoinOnly) joins the one game its page came from: the main menu offers that and nothing else.
 // $Arena::JoinAsked asks the host to open a new connection to that game and join it. Played alone ($Arena::Solo: the page's
-// own game), the menu offers to play again, and to host or join with a link: $Arena::PageAsk asks the page for its panel.
+// own game), the menu offers to play alone, to host with a link (which also joins the page's own game) or to join with
+// one: $Arena::PageAsk asks the page for its panel. A game joined by an invite link ($Arena::Invited) also offers to play
+// alone instead (the page again, with no invite).
 function showJoinOnly()
 {
    HostButton.setVisible(0);
@@ -837,7 +839,7 @@ function showJoinOnly()
       JoinNote.setText("Back into the arena.");
       HostButton.setVisible(1);
       HostButton.setText("Host with a link");
-      HostButton.command = "invitePlayers();";
+      HostButton.command = "hostWithLink();";
       HostNote.setVisible(1);
       HostNote.setText("Send friends a link to join your game.");
       QuitButton.setVisible(1);
@@ -848,6 +850,19 @@ function showJoinOnly()
    }
    JoinButton.setText("Join the game");
    JoinNote.setText($Arena::Invited ? "Join the game you were invited to." : "Join the game this page came from.");
+   if ($Arena::Invited)
+   {
+      QuitButton.setVisible(1);
+      QuitButton.setText("Play alone instead");
+      QuitButton.command = "$Arena::PageAsk = \"back\";";
+   }
+}
+
+// The main menu's Host with a link: into the page's own game, with the page's Host with a link panel.
+function hostWithLink()
+{
+   joinPage();
+   invitePlayers();
 }
 
 // The pause menu's Invite players (played alone): the page's Host with a link panel.

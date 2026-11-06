@@ -288,6 +288,11 @@
     const hosting = !joining && (solo || invitesHost || (!alone && new URLSearchParams(location.search).has('host')));
     if (joining) {
       if (typeof game.startLinkClient !== 'function') throw new Error('this game cannot be joined by an invite link');
+      // an invite refused before the game loaded: its panel says why and offers Back to the menu; no game starts
+      if (joining.refused()) {
+        document.getElementById('loading')?.remove();
+        return;
+      }
       joining.attach(game);
     }
     if (hosting && game.embedded()) throw new Error('a build that carries its files cannot host: its worker fetches them');

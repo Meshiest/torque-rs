@@ -1,15 +1,21 @@
 // The arena joined by an invite link, on its page played alone (`node build.mjs fps --solo`), served from 127.0.0.1 with
-// no game server: the host page makes an invite link, a second browser opens it and makes a reply link, the reply link
-// is opened in the host's browser (it hands the reply to the game's tab and closes), the data channel opens, the joiner
-// walks, each page holds the other's figure, and no console error shows. Then bad, cut short, oversized and used codes
-// must each be refused with a message.
+// no game server: the host page waits at its main menu (no figure until Play alone), its canvas follows the page's size
+// (the drawing buffer and the game's GUI, at two sizes), the host page makes an invite link, a second browser opens it and
+// makes a reply link, the reply link is opened in the host's browser after `delay` seconds (a person's copy and paste: it
+// hands the reply to the game's tab and closes), the data channel opens, the joiner walks, each page holds the other's
+// figure, and no console error shows. Then bad, cut short, oversized and used codes must each be refused with a message,
+// and a refused join's Back to the menu takes the page to its game's menu.
 //
-// Usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns]
-// With `mdns` the browsers keep their host candidates' mDNS names (`<uuid>.local`), as browsers do by default.
-// The invites use the same-network server: host candidates only, no STUN server is contacted (the two browsers reach each
-// other on this computer's own addresses, shown as addresses rather than `.local` names). The browser comes from
-// `guard.mjs` (TORQUE_WEB_TOOLS and CHROME as it reads them) and every page loads with `?nolock`: no page can take the
-// pointer lock. The check presses keys only; it never moves or clicks the mouse (buttons are pressed by script).
+// Usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns|same] [delay]
+// The invites use the same-network server and two browsers, their host candidates as addresses rather than `.local` names.
+// With `mdns` the browsers keep their mDNS names (`<uuid>.local`), as browsers do by default. With `same` the two pages
+// are tabs of ONE browser (one context, its mDNS names as a browser has them) and the invite is on the default server
+// (Cloudflare), as a player trying it alone would: the case of two tabs, or two computers on one network. The delay
+// before the reply is opened is 20 s with `same` and 0 otherwise.
+// No STUN server is ever contacted: every page's `RTCPeerConnection` is given no ICE servers, whatever the page asks for
+// (what it asked for is checked). The browser comes from `guard.mjs` (TORQUE_WEB_TOOLS and CHROME as it reads them) and
+// every page loads with `?nolock`: no page can take the pointer lock. The check presses keys only; it never moves or clicks
+// the mouse (buttons are pressed by script).
 import { mkdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -17,17 +23,35 @@ import { launchGuarded, noLock } from './guard.mjs';
 import { serve } from './serve.mjs';
 import { KIND_JOIN, encodeCode } from './codes.js';
 
-const [folder, shots, seconds = '120', names = ''] = process.argv.slice(2);
-if (!folder || !shots || !['', 'mdns'].includes(names)) {
-  console.error('usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns]');
+const [folder, shots, seconds = '120', names = '', delayText] = process.argv.slice(2);
+const same = names === 'same';
+const delay = Number(delayText ?? (same ? 20 : 0));
+if (!folder || !shots || !['', 'mdns', 'same'].includes(names) || !(delay >= 0)) {
+  console.error('usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns|same] [delay]');
   process.exit(2);
 }
 mkdirSync(shots, { recursive: true });
 const shot = (name) => join(resolve(shots), name);
 
 const problems = [];
+// problems found on the way that need not stop the check (shown with the others at the end)
+const noted = [];
 const log = [];
 const browsers = [];
+// Every page's peer connections get no ICE servers, so no STUN server is contacted; what the page asked for is kept.
+function noStun() {
+  const Real = globalThis.RTCPeerConnection;
+  if (!Real) return;
+  const asked = [];
+  function Stunless(config = {}, ...rest) {
+    asked.push((config?.iceServers ?? []).flatMap((s) => [].concat(s.urls ?? [])).join(' '));
+    return new Real({ ...config, iceServers: [] }, ...rest);
+  }
+  Stunless.prototype = Real.prototype;
+  Object.setPrototypeOf(Stunless, Real);
+  globalThis.RTCPeerConnection = Stunless;
+  globalThis.iceServersAsked = asked;
+}
 const launch = async () => {
   const browser = await launchGuarded({
     args: [
@@ -35,8 +59,8 @@ const launch = async () => {
       '--enable-gpu',
       '--ignore-gpu-blocklist',
       '--window-size=1400,900',
-      // Two pages on one computer: their host candidates as addresses, not `.local` names (unless `mdns`).
-      ...(names === 'mdns' ? [] : ['--disable-features=WebRtcHideLocalIpsWithMdns']),
+      // Two pages on one computer: their host candidates as addresses, not `.local` names (unless `mdns` or `same`).
+      ...(names === '' ? ['--disable-features=WebRtcHideLocalIpsWithMdns'] : []),
     ],
     defaultViewport: { width: 1400, height: 900 },
   });
@@ -46,6 +70,7 @@ const launch = async () => {
 
 async function watched(browser, name) {
   const page = await browser.newPage();
+  await page.evaluateOnNewDocument(noStun);
   page.on('console', (m) => {
     const line = `${name} ${m.type()}: ${m.text()}`;
     log.push(line);
@@ -80,8 +105,44 @@ const state = (page) =>
       links: [...document.querySelectorAll('#invites input[data-link]')].map((e) => e.value),
       lines: [...document.querySelectorAll('#invites li > p')].map((e) => e.textContent),
       hash: location.hash,
+      stage: r.dataset.torqueStage ?? '',
+      size: r.dataset.torqueSize ?? '',
+      canvas: (() => {
+        const c = document.querySelector('body > canvas');
+        return c ? [c.width, c.height, Math.round(c.getBoundingClientRect().width), Math.round(c.getBoundingClientRect().height)] : [];
+      })(),
+      back: [...document.querySelectorAll('#invites button')].some((b) => b.textContent === 'Back to the menu'),
+      asked: globalThis.iceServersAsked ?? [],
     };
   });
+
+// The game's GUI size (its Canvas control's extent, `W H`), or '' when the page's bridge cannot say.
+const guiSize = (page) => page.evaluate(() => globalThis.torque.eval('return Canvas.getExtent();').catch(() => ''));
+
+// The size the game draws at for a canvas of `w` by `h` device pixels under the page's Auto render scale (the window
+// driver's `drawn_size`).
+function autoSize(w, h) {
+  const most = 1920 * 1080;
+  if (w * h <= most) return [w, h];
+  const f = Math.sqrt(most / (w * h));
+  return [Math.max(1, Math.floor(w * f)), Math.max(1, Math.floor(h * f))];
+}
+
+// The page at `w` by `h`: the canvas fills it, its drawing buffer and the game's GUI follow (Auto).
+async function sized(page, name, w, h) {
+  await page.setViewport({ width: w, height: h });
+  const [dw, dh] = autoSize(w, h);
+  const s = await wait(page, 10_000, (s) => s.size === `${dw}x${dh}` && s.canvas[0] === dw && s.canvas[1] === dh);
+  const gui = await guiSize(page);
+  console.log(`${name} at ${w}x${h}: drawn ${s.size}, canvas buffer ${s.canvas.slice(0, 2).join('x')}, shown ${s.canvas.slice(2).join('x')}, GUI "${gui}"`);
+  if (s.size !== `${dw}x${dh}` || s.canvas[0] !== dw || s.canvas[1] !== dh) noted.push(`${name} at ${w}x${h}: drawn ${s.size}, canvas ${s.canvas}`);
+  if (s.canvas[2] !== w || s.canvas[3] !== h) noted.push(`${name} at ${w}x${h}: the canvas does not fill the page (${s.canvas})`);
+  if (gui && gui !== `${dw} ${dh}`) noted.push(`${name} at ${w}x${h}: the GUI is ${gui}, not ${dw} ${dh}`);
+}
+
+// Play alone on the page's menu (by its script: the arena's `joinPage`, the vehicle demo's `playAlone`).
+const playAlone = (page) =>
+  page.evaluate(() => globalThis.torque.call('playAlone').catch(() => globalThis.torque.call('joinPage')));
 
 async function wait(page, ms, done) {
   const deadline = Date.now() + ms;
@@ -130,11 +191,27 @@ try {
   base = `http://127.0.0.1:${server.address().port}/`;
   console.log(`page at ${base}`);
   const hostBrowser = await launch();
-  const joinBrowser = await launch();
+  const joinBrowser = same ? hostBrowser : await launch();
   const host = await watched(hostBrowser, 'host');
   await host.goto(noLock(`${base}?name=Host`), { waitUntil: 'load' });
-  let h = await wait(host, Number(seconds) * 1000, (s) => s.figure);
-  if (!h.figure) problems.push(`the host page has no figure (status "${h.status}")`);
+  // The page waits at its game's menu: drawn, ready, and no figure a few seconds on.
+  let h = await wait(host, Number(seconds) * 1000, (s) => s.stage === 'ready' && s.frames > 30);
+  h = await wait(host, 4000, (s) => s.figure);
+  if (h.stage !== 'ready') problems.push(`the host page did not reach its menu (stage "${h.stage}", status "${h.status}")`);
+  if (h.figure) noted.push('the page played alone dropped the player into the game instead of waiting at its menu');
+  await writeFile(shot('solo-menu.png'), await host.screenshot({ type: 'png' }));
+  console.log(`picture: ${shot('solo-menu.png')}`);
+  // The canvas follows the page: two sizes, the second wider than Auto draws in full (a miss is shown at the end).
+  if (!problems.length) {
+    await sized(host, 'host', 1000, 700);
+    await sized(host, 'host', 2560, 1080);
+    await writeFile(shot('solo-menu-wide.png'), await host.screenshot({ type: 'png' }));
+    console.log(`picture: ${shot('solo-menu-wide.png')}`);
+    await sized(host, 'host', 1400, 900);
+  }
+  if (!h.figure) await playAlone(host).catch((e) => problems.push(`Play alone: ${e.message}`));
+  h = await wait(host, Number(seconds) * 1000, (s) => s.figure);
+  if (!h.figure) problems.push(`the host page has no figure after Play alone (status "${h.status}")`);
 
   // The menu's Host with a link: the panel, its privacy text shown before any link is made. A game played alone in the
   // page itself (the vehicle demo) opens the page again to host (`?invites=1`), and the panel opens once its server runs.
@@ -149,11 +226,11 @@ try {
   await panelShot(host, 'host-panel.png');
   const privacy = await host.evaluate(() => document.querySelector('#invites .privacy')?.textContent ?? '');
   if (!/Cloudflare's free public STUN server/.test(privacy)) problems.push(`the host panel's privacy text: "${privacy}"`);
-  await press(host, 'Same network only');
+  if (!same) await press(host, 'Same network only');
   await press(host, 'Create Invite Offer');
   h = await wait(host, 20_000, (s) => s.links.length > 0 || /failed/.test(s.invites));
   const invite = h.links[0];
-  if (!invite) problems.push(`no invite link (${h.invites}: ${h.said})`);
+  if (!invite) throw new Error(`no invite link (${h.invites}: ${h.lines.join(' | ')} ${h.said})`);
   else console.log(`invite link: ${invite.length} characters, code ${invite.split('#join=')[1].length}`);
   await panelShot(host, 'host-invite.png');
 
@@ -171,7 +248,11 @@ try {
   else console.log(`reply link: ${replyLink.length} characters, code ${replyLink.split('#reply=')[1].length}`);
   await panelShot(joiner, 'join-reply.png');
 
-  // The host opens the reply link in its own browser: that tab hands it over and closes.
+  // The host opens the reply link in its own browser: that tab hands it over and closes. A person takes a while.
+  if (!problems.length && delay > 0) {
+    console.log(`waiting ${delay} s before the reply link is opened`);
+    await new Promise((r) => setTimeout(r, delay * 1000));
+  }
   if (!problems.length) {
     const tab = await watched(hostBrowser, 'reply tab');
     const closed = new Promise((ok) => tab.once('close', ok));
@@ -185,17 +266,27 @@ try {
     await host.bringToFront();
   }
 
-  // The channel opens: each holds the other, and the joiner walks.
+  // The channel opens: each holds the other, and the joiner walks. (A tab in the background draws no frames and so marks
+  // nothing new: with `same` each page is brought to the front before it is read.)
   if (!problems.length) {
+    await joiner.bringToFront();
     j = await wait(joiner, Number(seconds) * 1000, (s) => (s.figure && s.link === 'datachannel' && s.others >= 1) || s.ended);
     console.log(`joiner: link ${j.link}, figure ${j.figure}, other figures ${j.others}, ended "${j.ended}"`);
     if (!j.figure || j.others < 1 || j.link !== 'datachannel') problems.push(`the joiner is not in the host's game (${JSON.stringify(j)})`);
+    // what each page asked for: the invite's server (given none here)
+    const want = same ? 'stun:stun.cloudflare.com:3478' : '';
+    for (const [name, page] of [['host', host], ['joiner', joiner]]) {
+      const asked = (await state(page)).asked;
+      if (!asked.length || asked.some((a) => a !== want)) problems.push(`${name} asked for ICE servers "${asked.join(' | ')}", not "${want}"`);
+    }
+    if (same) await host.bringToFront();
     h = await wait(host, 20_000, (s) => s.others >= 1);
     console.log(`host: other figures ${h.others}, invites "${h.invites}"`);
     if (h.others < 1) problems.push("the host page does not hold the joiner's figure");
     if (!/joined/.test(h.invites)) problems.push(`the host's invite is not marked joined ("${h.invites}": ${h.lines.join(' | ')})`);
   }
   if (!problems.length) {
+    if (same) await joiner.bringToFront();
     const canvas = await joiner.$('canvas');
     await writeFile(shot('joined.png'), await canvas.screenshot({ type: 'png' }));
     const from = j.position;
@@ -207,6 +298,7 @@ try {
     const moved = Math.hypot(after.position[0] - from[0], after.position[1] - from[1]);
     console.log(`W held 2 s: the joiner walked ${moved.toFixed(2)}`);
     if (!(moved > 1)) problems.push(`the joiner did not walk (moved ${moved})`);
+    if (same) await host.bringToFront();
     await writeFile(shot('host-sees-joiner.png'), await (await host.$('canvas')).screenshot({ type: 'png' }));
     // the host's Esc menu, with its Invite players entry (the panel closed first)
     await press(host, 'Close');
@@ -241,8 +333,8 @@ try {
     await page.close();
   }
 
-  // Refusals, each with a message.
-  if (!problems.length) {
+  // Refusals, each with a message (two browsers only: the joiner's browser is not the host's).
+  if (!problems.length && !same) {
     const code = invite.split('#join=')[1];
     const page = invite.split('#')[0];
     await refusedOn(joinBrowser, 'bad code', `${page}#join=${code.slice(0, 30)}${code[30] === 'Q' ? 'R' : 'Q'}${code.slice(31)}`, 'join', /damaged|cut short/);
@@ -252,6 +344,24 @@ try {
     await refusedOn(joinBrowser, 'invite offer used again', invite, 'join', /already used/);
     await refusedOn(joinBrowser, 'reply as invite', `${page}#join=${replyLink.split('#reply=')[1]}`, 'join', /reply link, not an invite offer link/);
     await refusedOn(hostBrowser, 'reply used again', replyLink, 'reply', /already used/);
+    // A refused join's Back to the menu: the page again with no invite, its game at its menu.
+    const failed = await watched(joinBrowser, 'back');
+    await failed.goto(noLock(`${page}#join=${code.slice(0, -12)}`), { waitUntil: 'load' });
+    let f = await wait(failed, 20_000, (s) => s.join === 'refused');
+    if (!f.back) problems.push(`a refused join has no Back to the menu ("${f.said}")`);
+    await panelShot(failed, 'join-failed-back.png');
+    await writeFile(shot('join-failed-back-page.png'), await failed.screenshot({ type: 'png' }));
+    const reloaded = failed.waitForNavigation({ waitUntil: 'load', timeout: 10_000 }).then(() => true, () => false);
+    await press(failed, 'Back to the menu');
+    if (!(await reloaded)) problems.push('Back to the menu did not open the page again');
+    f = await wait(failed, Number(seconds) * 1000, (s) => s.stage === 'ready' && s.frames > 30);
+    const left = await failed.evaluate(() => ({ panel: Boolean(document.getElementById('invites')), url: location.href }));
+    console.log(`back to the menu: ${left.url}, stage ${f.stage}, join "${f.join}", panel ${left.panel}, figure ${f.figure}`);
+    if (f.stage !== 'ready' || f.join || left.panel || f.figure || /#/.test(left.url)) {
+      problems.push(`Back to the menu: not the game's menu (${JSON.stringify({ ...left, stage: f.stage, join: f.join, figure: f.figure })})`);
+    }
+    await writeFile(shot('back-to-menu.png'), await failed.screenshot({ type: 'png' }));
+    await failed.close();
     await host.bringToFront();
     // and pasted into the host's panel
     await host.evaluate((text) => {
@@ -269,6 +379,7 @@ try {
 } catch (e) {
   problems.push(e.stack ?? e.message);
 } finally {
+  problems.push(...noted);
   for (const b of browsers) await b.close().catch(() => {});
   server?.close();
 }
