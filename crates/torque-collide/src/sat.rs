@@ -21,15 +21,34 @@ pub const MAX_POINTS: usize = 32;
 pub const MAX_FEATURES: usize = 256;
 
 /// A convex polytope: its points, its face normals (unit, no two parallel, either sense) and its edges (pairs of point
-/// indices).
+/// indices). Built through its methods, which keep every edge on points it holds.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Polytope {
-    pub points: Vec<F3>,
-    pub normals: Vec<F3>,
-    pub edges: Vec<[u32; 2]>,
+    points: Vec<F3>,
+    normals: Vec<F3>,
+    edges: Vec<[u32; 2]>,
 }
 
 impl Polytope {
+    pub fn points(&self) -> &[F3] {
+        &self.points
+    }
+
+    pub fn normals(&self) -> &[F3] {
+        &self.normals
+    }
+
+    pub fn edges(&self) -> &[[u32; 2]] {
+        &self.edges
+    }
+
+    /// Adds the point `p`, unless the cap is reached.
+    pub fn add_point(&mut self, p: F3) {
+        if self.points.len() < MAX_FEATURES {
+            self.points.push(p);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.points.clear();
         self.normals.clear();
@@ -147,8 +166,11 @@ impl Polytope {
         }
     }
 
-    fn edge(&self, e: [u32; 2]) -> (F3, F3) {
-        (self.points[e[0] as usize], self.points[e[1] as usize])
+    fn edge(&self, e: [u32; 2]) -> Option<(F3, F3)> {
+        Some((
+            *self.points.get(e[0] as usize)?,
+            *self.points.get(e[1] as usize)?,
+        ))
     }
 }
 
@@ -199,7 +221,7 @@ pub fn penetration(a: &Polytope, b: &Polytope, out: &mut Penetration) -> bool {
     let dirs = |p: &Polytope| -> Vec<F3> {
         let mut out: Vec<F3> = Vec::new();
         for &e in &p.edges {
-            let (s, t) = p.edge(e);
+            let Some((s, t)) = p.edge(e) else { continue };
             if let Some(d) = unit(sub(t, s))
                 && !out.iter().any(|m| dot(*m, d).abs() > 1.0 - 1e-5)
             {
@@ -247,7 +269,7 @@ fn clip_edges(p: &Polytope, q: &Polytope, out: &mut Vec<F3>) {
         })
         .collect();
     for &e in &p.edges {
-        let (s, t) = p.edge(e);
+        let Some((s, t)) = p.edge(e) else { continue };
         let d = sub(t, s);
         let (mut t0, mut t1) = (0.0f32, 1.0f32);
         for &(n, lo, hi) in &slabs {

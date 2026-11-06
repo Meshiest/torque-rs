@@ -4,7 +4,7 @@ use super::*;
 fn cuboid(lo: F3, hi: F3) -> Polytope {
     let mut p = Polytope::default();
     for k in 0..8u32 {
-        p.points.push(std::array::from_fn(|a| {
+        p.add_point(std::array::from_fn(|a| {
             if k >> a & 1 == 1 { hi[a] } else { lo[a] }
         }));
     }
@@ -31,7 +31,7 @@ fn prism(x: f32, y: f32, r: f32, sides: u32, z0: f32, z1: f32) -> Polytope {
     for z in [z0, z1] {
         for k in 0..sides {
             let (cx, cy) = corner(k);
-            p.points.push([cx, cy, z]);
+            p.add_point([cx, cy, z]);
         }
     }
     p.add_normal([0.0, 0.0, 1.0]);
@@ -131,7 +131,7 @@ fn turned_cube(c: F3, axis: usize) -> Polytope {
         w[keep] = l[keep];
         w[other] = (l[other] - l[2]) * s;
         w[2] = (l[other] + l[2]) * s;
-        p.points.push([c[0] + w[0], c[1] + w[1], c[2] + w[2]]);
+        p.add_point([c[0] + w[0], c[1] + w[1], c[2] + w[2]]);
     }
     let mut n = [0.0; 3];
     n[axis] = 1.0;
@@ -193,7 +193,12 @@ fn an_empty_or_unbounded_polytope_never_overlaps() {
     p.add_normal([0.0; 3]);
     p.add_normal([f32::INFINITY, 0.0, 0.0]);
     p.add_edge(0, 1);
-    assert!(p.normals.is_empty() && p.edges.is_empty());
+    assert!(p.normals().is_empty() && p.edges().is_empty());
+    // An edge to a point that is not there (only this module can make one) is skipped, not indexed.
+    let mut broken = cuboid([0.5; 3], [1.5; 3]);
+    broken.edges.push([0, 99]);
+    assert!(penetration(&a, &broken, &mut out));
+    assert!(penetration(&broken, &a, &mut out));
 }
 
 /// A slanted hull scaled twice as wide: its slanted face's normal follows the scale (the inverse transpose), so a box just
@@ -228,11 +233,11 @@ fn a_scaled_hull_turns_its_normals_by_the_inverse_transpose() {
     let k = 1.0 / 5.0f32.sqrt();
     let want = [k, 2.0 * k, 0.0];
     assert!(
-        hull.normals.iter().any(|n| near(*n, want)),
+        hull.normals().iter().any(|n| near(*n, want)),
         "{:?}",
-        hull.normals
+        hull.normals()
     );
-    assert!(!hull.normals.iter().any(|n| near(*n, [s, s, 0.0])));
+    assert!(!hull.normals().iter().any(|n| near(*n, [s, s, 0.0])));
     // A small box 0.13 off the scaled face (x + 2y = 2.3 at its middle).
     let off = cuboid([1.05, 0.55, 0.4], [1.15, 0.65, 0.6]);
     let mut out = Penetration::default();

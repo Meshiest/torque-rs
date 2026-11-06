@@ -717,9 +717,9 @@ impl Body {
                 built = true;
             }
             self.other.set_map_piece(&shape, &st.b.kind);
-            let axes = (self.me.normals.len() + self.other.normals.len()) as u64
-                + (self.me.edges.len() * self.other.edges.len()) as u64;
-            let points = (self.me.points.len() + self.other.points.len()) as u64;
+            let axes = (self.me.normals().len() + self.other.normals().len()) as u64
+                + (self.me.edges().len() * self.other.edges().len()) as u64;
+            let points = (self.me.points().len() + self.other.points().len()) as u64;
             if !world.charge(torque_collide::work::FEATURE * (axes + 1) * (points + 1)) {
                 return;
             }
@@ -789,12 +789,11 @@ impl Body {
 /// across into the next triangle), and the depth is how far the deepest corner of the common volume is under its top. False
 /// when nothing is under it.
 fn below_terrain(piece: &Polytope, overlap: &mut Penetration) -> bool {
-    let p = &piece.points;
-    let Some(&up) = piece.normals.first() else {
+    let (Some(&up), Some(&corner)) = (piece.normals().first(), piece.points().first()) else {
         return false;
     };
     let up = if up[2] < 0.0 { up.map(|x| -x) } else { up };
-    let top = dot3(up, p[0]);
+    let top = dot3(up, corner);
     let depth = overlap
         .points
         .iter()
