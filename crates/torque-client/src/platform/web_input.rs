@@ -92,7 +92,10 @@ pub fn drawn_size(device: (u32, u32), scale: RenderScale) -> (u32, u32) {
 /// A point at `at` on a canvas of `device` pixels, in the game's `drawn` pixels.
 pub fn drawn_point(at: (f64, f64), device: (u32, u32), drawn: (u32, u32)) -> (i32, i32) {
     let along = |p: f64, d: u32, g: u32| (p * f64::from(g) / f64::from(d.max(1))) as i32;
-    (along(at.0, device.0, drawn.0), along(at.1, device.1, drawn.1))
+    (
+        along(at.0, device.0, drawn.0),
+        along(at.1, device.1, drawn.1),
+    )
 }
 
 /// The render scale the page asks for (its root element's `data-torque-render-scale`), if it names one.

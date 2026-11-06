@@ -59,18 +59,27 @@ fn auto_draws_every_pixel_up_to_a_1080p_screens_worth_then_keeps_the_shape() {
     assert_eq!(drawn_size((1920, 1080), RenderScale::Auto), (1920, 1080));
     let (w, h) = drawn_size((2560, 1080), RenderScale::Auto);
     assert!(u64::from(w) * u64::from(h) <= AUTO_PIXELS, "{w}x{h}");
-    assert!(u64::from(w) * u64::from(h) > AUTO_PIXELS * 99 / 100, "{w}x{h}");
+    assert!(
+        u64::from(w) * u64::from(h) > AUTO_PIXELS * 99 / 100,
+        "{w}x{h}"
+    );
     assert!((f64::from(w) / f64::from(h) - 2560.0 / 1080.0).abs() < 0.01);
     // a phone at three device pixels a CSS pixel
     let (w, h) = drawn_size((1170, 2532), RenderScale::Auto);
     assert!(u64::from(w) * u64::from(h) <= AUTO_PIXELS, "{w}x{h}");
-    assert_eq!(drawn_size((1000, 600), RenderScale::Factor(0.5)), (500, 300));
+    assert_eq!(
+        drawn_size((1000, 600), RenderScale::Factor(0.5)),
+        (500, 300)
+    );
     assert_eq!(drawn_size((1, 1), RenderScale::Factor(0.25)), (1, 1));
     assert_eq!(drawn_size((0, 0), RenderScale::Auto), (1, 1));
 }
 
 #[test]
 fn a_mouse_position_is_in_the_drawn_pixels() {
-    assert_eq!(drawn_point((500.0, 300.0), (1000, 600), (500, 300)), (250, 150));
+    assert_eq!(
+        drawn_point((500.0, 300.0), (1000, 600), (500, 300)),
+        (250, 150)
+    );
     assert_eq!(drawn_point((10.0, 20.0), (800, 600), (800, 600)), (10, 20));
 }
