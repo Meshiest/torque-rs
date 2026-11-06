@@ -513,6 +513,9 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-vehicle`: a vehicle held at full throttle against a tree (or any interior) crept into it and drove through, and its
+  body could sink into the terrain under a steady push. The body now stays out of map pieces, kept by the separating axis
+  test (`torque_collide::sat`) after TGE's contact responses (`Body::hold_out`).
 - `torque::app`, `torque-render-hd`: the effect clock could not be advanced, so water, the volumetric clouds of a map
   without a clock of their own and the stars' twinkle stood still. `WorldView::advance_time` runs it (`WorldView::time`,
   wrapping at `EFFECT_TIME_WRAP`). The film grain no longer follows the effect time: its pattern is fixed (`GRAIN_SEED`),

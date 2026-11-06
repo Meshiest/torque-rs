@@ -98,6 +98,7 @@ pub fn update_pos(
         body.collide(&v.s, base, host);
         collided = state::resolve_collision(&mut v.s, &body.list, base, host);
         state::resolve_contacts(&mut v.s, &body.list, base, dt);
+        body.hold_out(&mut v.s, base, host);
         state::rest_test(&mut v.s, body.list.count == 0, dt);
     }
     if !v.s.rigid.at_rest {

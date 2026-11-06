@@ -13,6 +13,7 @@ use torque_collide::feature::StateList;
 use torque_collide::math::{
     Box3, F3, IDENTITY, Matrix, affine_inverse, matrix_product, mul_box, quat_matrix,
 };
+use torque_collide::sat::{Penetration, Polytope};
 use torque_collide::{
     CollisionList, Convex, ConvexKind, Exhausted, HullClass, ObjectId, WorkingSet, types,
 };
@@ -595,6 +596,10 @@ pub struct Body {
     pub states: StateList,
     pub list: CollisionList,
     working_vec: Vec<Convex>,
+    /// Scratch for [`Body::hold_out`]: the body, the piece it is tested against, and their overlap.
+    me: Polytope,
+    other: Polytope,
+    overlap: Penetration,
 }
 
 impl Clone for Body {
@@ -603,7 +608,7 @@ impl Clone for Body {
             working: self.working.clone(),
             states: self.states.clone(),
             list: self.list.clone(),
-            working_vec: Vec::new(),
+            ..Body::default()
         }
     }
 }
@@ -627,15 +632,8 @@ impl Body {
     /// translation) times the hull's node transform, the list emptied, `findClosestState` with the collision tolerance, and when
     /// that state is within it (`dist <= tol`), `getCollisionInfo`.
     pub fn collide(&mut self, s: &VehicleState, db: &VehicleData, host: &mut dyn VehicleHost) {
-        let mut m = quat_matrix(s.rigid.ang_pos);
-        m[3] = s.rigid.lin_pos[0];
-        m[7] = s.rigid.lin_pos[1];
-        m[11] = s.rigid.lin_pos[2];
         let world = host.world();
-        let c = match world.hull(s.id, 0).and_then(|h| h.node) {
-            Some(node) => matrix_product(&m, &node),
-            None => m,
-        };
+        let c = hull_matrix(s, world);
         self.list.count = 0;
         let me = s.body_convex();
         let tol = db.collision_tol;
@@ -651,6 +649,159 @@ impl Body {
                 .collision_info(world, &me, &c, s.scale, &mut self.list, tol);
         }
     }
+}
+
+/// The body hull's matrix at the rigid's pose (`setMatrix`, raw translation) times the hull's node transform.
+fn hull_matrix(s: &VehicleState, world: &dyn torque_collide::World) -> Matrix {
+    let mut m = quat_matrix(s.rigid.ang_pos);
+    m[3] = s.rigid.lin_pos[0];
+    m[7] = s.rigid.lin_pos[1];
+    m[11] = s.rigid.lin_pos[2];
+    match world.hull(s.id, 0).and_then(|h| h.node) {
+        Some(node) => matrix_product(&m, &node),
+        None => m,
+    }
+}
+
+/// How deep the body may sit in a map piece before [`Body::hold_out`] moves it back out (m).
+pub const HOLD_SLOP: f32 = 0.01;
+/// The share of the depth past [`HOLD_SLOP`] that one sub-step moves the body back out.
+pub const HOLD_PUSH: f32 = 0.5;
+/// The passes of [`Body::hold_out`]'s impulses over one overlap's corners.
+pub const HOLD_PASSES: u32 = 32;
+
+impl Body {
+    /// Holds the body out of the map pieces (interiors, terrain) it overlaps, after `resolveContacts`.
+    ///
+    /// TGE's responses leave a slow push into a surface (closing slower than `contactTol`) to `resolveContacts`' penalty
+    /// spring, which a steady drive force or gravity overpowers; and its contacts come from `getCollisionInfo`'s features
+    /// round GJK's closest points, which stop meaning anything once the two overlap (a box's feature is one corner or
+    /// edge unless the direction is nearly square to it, and two crossing edges report the line between them as the normal).
+    /// So a vehicle held against a tree creeps into the trunk until its contacts fall outside `collisionTol`, then drives
+    /// through it.
+    ///
+    /// Here, for each static map piece (an interior hull, a terrain triangle) the body's GJK state finds within the collision
+    /// tolerance, the separating axis test ([`torque_collide::sat`]) gives how deep the body hull is in it and the way out, exact
+    /// however deep (for a terrain triangle, straight up its slope from the deepest corner under it). The corners of
+    /// their common volume may not close along that way any further, nor slide along it past the body's `friction` times that
+    /// push (sequential impulses over [`HOLD_PASSES`] passes, the sum at each corner never pulling), and the body moves out by
+    /// [`HOLD_PUSH`] of the depth past [`HOLD_SLOP`] (its position only, so no speed is added). Moving objects are left to TGE's responses. The work is charged to the world's
+    /// budget; a spent budget stops it where it was.
+    pub fn hold_out(&mut self, s: &mut VehicleState, db: &VehicleData, host: &mut dyn VehicleHost) {
+        let world = host.world();
+        let Some(hull) = world.hull(s.id, 0) else {
+            return;
+        };
+        let Some(accel) = hull.accel.as_ref() else {
+            return;
+        };
+        let c = hull_matrix(s, world);
+        let mut built = false;
+        for st in &self.states.states {
+            let terrain = match st.b.kind {
+                ConvexKind::InteriorHull { .. } => false,
+                ConvexKind::TerrainTri { .. } => true,
+                _ => continue,
+            };
+            if !(st.dist <= db.collision_tol) {
+                continue;
+            }
+            let Some(shape) = world.map_shape(st.b.object) else {
+                continue;
+            };
+            if !built {
+                if !world.charge(torque_collide::work::FEATURE * accel.verts.len() as u64) {
+                    return;
+                }
+                self.me.set_hull(accel, &c, s.scale);
+                built = true;
+            }
+            self.other.set_map_piece(&shape, &st.b.kind);
+            let axes = (self.me.normals().len() + self.other.normals().len()) as u64
+                + (self.me.edges().len() * self.other.edges().len()) as u64;
+            let points = (self.me.points().len() + self.other.points().len()) as u64;
+            if !world.charge(torque_collide::work::FEATURE * (axes + 1) * (points + 1)) {
+                return;
+            }
+            if !torque_collide::sat::penetration(&self.me, &self.other, &mut self.overlap) {
+                continue;
+            }
+            if terrain && !below_terrain(&self.other, &mut self.overlap) {
+                continue;
+            }
+            let n = self.overlap.normal;
+            let rb = &mut s.rigid;
+            let mut sum = [0.0f32; torque_collide::sat::MAX_POINTS];
+            let mut slide = [[0.0f32; 3]; torque_collide::sat::MAX_POINTS];
+            for _ in 0..HOLD_PASSES {
+                let mut changed = false;
+                for (k, &p) in self.overlap.points.iter().enumerate() {
+                    let r = sub3(p, rb.world_com);
+                    let vn = dot3(rb.velocity_at(r), n);
+                    let j = (sum[k] - vn * rb.zero_impulse(r, n)).max(0.0);
+                    let dj = j - sum[k];
+                    if dj.abs() > 1e-6 {
+                        sum[k] = j;
+                        rb.apply_impulse(r, n.map(|x| x * dj));
+                        changed = true;
+                    }
+                    // Friction: the sliding along the surface stopped, the sum at the corner held to `friction` times
+                    // its push.
+                    let v = rb.velocity_at(r);
+                    let vn = dot3(v, n);
+                    let vt: F3 = std::array::from_fn(|i| v[i] - n[i] * vn);
+                    let ul = len_sq(vt).sqrt();
+                    if !(ul > 1e-6) {
+                        continue;
+                    }
+                    let t = vt.map(|x| -x / ul);
+                    let jt = ul * rb.zero_impulse(r, t);
+                    let mut want: F3 = std::array::from_fn(|i| slide[k][i] + t[i] * jt);
+                    // `bodyFriction` is script data: below 0 (or NaN) would push the corner along, so it counts as 0.
+                    let cap = rb.friction.max(0.0) * sum[k];
+                    let wl = len_sq(want).sqrt();
+                    if wl > cap {
+                        want = want.map(|x| x * (cap / wl));
+                    }
+                    let djt: F3 = std::array::from_fn(|i| want[i] - slide[k][i]);
+                    if len_sq(djt) > 1e-12 {
+                        slide[k] = want;
+                        rb.apply_impulse(r, djt);
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            let push = (self.overlap.depth - HOLD_SLOP) * HOLD_PUSH;
+            if push > 0.0 {
+                let by = n.map(|x| x * push);
+                rb.lin_pos = std::array::from_fn(|i| rb.lin_pos[i] + by[i]);
+                rb.update_center_of_mass();
+                self.me.translate(by);
+            }
+        }
+    }
+}
+
+/// For a terrain triangle: the way out is straight up its slope, not the least way out of its prism (which may be a side,
+/// across into the next triangle), and the depth is how far the deepest corner of the common volume is under its top. False
+/// when nothing is under it.
+fn below_terrain(piece: &Polytope, overlap: &mut Penetration) -> bool {
+    let (Some(&up), Some(&corner)) = (piece.normals().first(), piece.points().first()) else {
+        return false;
+    };
+    let up = if up[2] < 0.0 { up.map(|x| -x) } else { up };
+    let top = dot3(up, corner);
+    let depth = overlap
+        .points
+        .iter()
+        .map(|&q| top - dot3(up, q))
+        .fold(0.0f32, f32::max);
+    overlap.normal = up;
+    overlap.depth = depth;
+    depth > 0.0
 }
 
 fn sub3(a: F3, b: F3) -> F3 {

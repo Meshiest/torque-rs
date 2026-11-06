@@ -2352,3 +2352,204 @@ fn standing_on_a_slope_of_the_terrain_z_lies_the_figure_down_and_z_again_stands_
     steps(&mut [&mut game], 2000);
     assert_eq!(server_pose(&mut game), Pose::Stand);
 }
+
+/// A tree's trunk: its planes (each an outward normal and offset, `n . p + d` above 0 outside) and its corners, in the world.
+struct Trunk {
+    planes: Vec<([f64; 3], f64)>,
+    corners: Vec<[f64; 3]>,
+}
+
+impl Trunk {
+    fn of(t: &torque_example_assets::trees::Tree) -> Trunk {
+        use torque_example_assets::trees;
+        let foot = t.foot.map(f64::from).into();
+        let bark = [trees::BARK, trees::BARK_RED, trees::BARK_BIRCH];
+        let brush = trees::tree(t.kind, foot, f64::from(t.size), t.seed)
+            .into_iter()
+            .find(|b| bark.contains(&b.faces[0].material.as_str()))
+            .expect("a trunk");
+        Trunk {
+            planes: brush
+                .faces
+                .iter()
+                .map(|f| ([f.plane.n.x, f.plane.n.y, f.plane.n.z], f.plane.d))
+                .collect(),
+            corners: brush
+                .corners()
+                .expect("a solid trunk")
+                .iter()
+                .map(|c| [c.x, c.y, c.z])
+                .collect(),
+        }
+    }
+
+    /// How deep `p` is inside the trunk (0 outside).
+    fn depth(&self, p: [f64; 3]) -> f64 {
+        let out = self
+            .planes
+            .iter()
+            .map(|(n, d)| n[0] * p[0] + n[1] * p[1] + n[2] * p[2] + d)
+            .fold(f64::MIN, f64::max);
+        (-out).max(0.0)
+    }
+}
+
+/// How deep the buggy's body box at `m` (its object-to-world matrix) and `trunk` reach into each other: the deepest point of
+/// either (the trunk's edges and inside, the box's edges) inside the other. A lower bound on how far apart they must move.
+fn body_in_trunk(m: &[f32; 16], trunk: &Trunk) -> f64 {
+    use torque_example_assets::buggy::{BODY_MAX, BODY_MIN};
+    let m: Vec<f64> = m.iter().map(|&v| f64::from(v)).collect();
+    let (lo, hi) = (BODY_MIN.map(f64::from), BODY_MAX.map(f64::from));
+    let to_world = |l: [f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|r| {
+            m[r * 4] * l[0] + m[r * 4 + 1] * l[1] + m[r * 4 + 2] * l[2] + m[r * 4 + 3]
+        })
+    };
+    let in_box = |w: [f64; 3]| -> f64 {
+        let d = [w[0] - m[3], w[1] - m[7], w[2] - m[11]];
+        let l: [f64; 3] = std::array::from_fn(|c| m[c] * d[0] + m[4 + c] * d[1] + m[8 + c] * d[2]);
+        (0..3)
+            .map(|k| (l[k] - lo[k]).min(hi[k] - l[k]))
+            .fold(f64::MAX, f64::min)
+            .max(0.0)
+    };
+    let lerp = |a: [f64; 3], b: [f64; 3], t: f64| -> [f64; 3] {
+        std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
+    };
+    const SAMPLES: usize = 40;
+    let mut deepest = 0.0f64;
+    let c = &trunk.corners;
+    for i in 0..c.len() {
+        for j in i + 1..c.len() {
+            for s in 0..=SAMPLES {
+                deepest = deepest.max(in_box(lerp(c[i], c[j], s as f64 / SAMPLES as f64)));
+            }
+        }
+    }
+    let corner = |k: usize| -> [f64; 3] {
+        to_world(std::array::from_fn(|a| {
+            if k >> a & 1 == 1 { hi[a] } else { lo[a] }
+        }))
+    };
+    for i in 0..8 {
+        for a in 0..3 {
+            let j = i | 1 << a;
+            if j == i {
+                continue;
+            }
+            for s in 0..=SAMPLES {
+                deepest =
+                    deepest.max(trunk.depth(lerp(corner(i), corner(j), s as f64 / SAMPLES as f64)));
+            }
+        }
+    }
+    deepest
+}
+
+/// A straight tree near the start with a clear, gentle run of `run` m up to it, and the way in (a unit heading).
+fn tree_to_drive_into(
+    game: &VehicleDemo,
+    run: f32,
+) -> (torque_example_assets::trees::Tree, [f32; 2]) {
+    use torque_example_assets::trees;
+    let all = trees::forest();
+    let mut picks: Vec<(f32, trees::Tree, [f32; 2])> = Vec::new();
+    for t in all.iter().filter(|t| t.kind.conifer() && t.size >= 0.7) {
+        for k in 0..16 {
+            let a = k as f32 * std::f32::consts::TAU / 16.0;
+            let dir = [a.cos(), a.sin()];
+            // Nothing else within 5 m of the run, and the ground along it within a meter of a straight line.
+            let clear = all.iter().filter(|o| *o != t).all(|o| {
+                let rel = [o.foot[0] - t.foot[0], o.foot[1] - t.foot[1]];
+                let along = rel[0] * dir[0] + rel[1] * dir[1];
+                let across = (rel[0] * dir[1] - rel[1] * dir[0]).abs();
+                !(along > -run - 5.0 && along < 6.0 && across < 5.0)
+            });
+            if !clear {
+                continue;
+            }
+            let ground = |s: f32| {
+                game.terrain
+                    .height(t.foot[0] + dir[0] * s, t.foot[1] + dir[1] * s)
+            };
+            let Some(near) = ground(-3.0) else { continue };
+            let Some(far) = ground(-run) else { continue };
+            let gentle = (0..=20).all(|i| {
+                let s = 3.0 + (run - 3.0) * i as f32 / 20.0;
+                let line = near + (far - near) * (s - 3.0) / (run - 3.0);
+                ground(-s).is_some_and(|h| (h - line).abs() < 1.0)
+            }) && (far - near).abs() < run * 0.1;
+            if gentle {
+                picks.push((t.foot[0].hypot(t.foot[1]), *t, dir));
+            }
+        }
+    }
+    picks.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (_, t, dir) = picks.first().copied().expect("a tree to drive into");
+    (t, dir)
+}
+
+/// Full throttle held into a tree trunk, from a standstill a little short of it and from a 28 m run-up: the buggy's body never
+/// sinks into the trunk past a small margin on the server or where the driver's client draws it, and after several seconds
+/// pushing it is still on its own side. (TGE's contact responses let a steady push creep into the trunk until the contacts
+/// were lost, and the buggy drove through.)
+#[test]
+fn full_throttle_into_a_tree_from_rest_or_at_speed_never_drives_the_buggy_into_its_trunk() {
+    let lookout = host();
+    let (tree, dir) = tree_to_drive_into(&lookout, 30.0);
+    drop(lookout);
+    let trunk = Trunk::of(&tree);
+    // The trunk's radius at the foot (its farthest corner from the foot's axis, over the ground).
+    let radius = trunk
+        .corners
+        .iter()
+        .filter(|c| c[2] > f64::from(tree.foot[2]) - 2.0)
+        .map(|c| (c[0] - f64::from(tree.foot[0])).hypot(c[1] - f64::from(tree.foot[1])))
+        .fold(0.0, f64::max) as f32;
+    // How far ahead of the foot a pose is along the way in.
+    let along = |m: &[f32; 16]| (m[3] - tree.foot[0]) * dir[0] + (m[7] - tree.foot[1]) * dir[1];
+    for (name, back) in [("from rest", radius + 2.4), ("at speed", 28.0)] {
+        let mut a = host();
+        let id = server(&a).buggy().unwrap();
+        let start = [tree.foot[0] - dir[0] * back, tree.foot[1] - dir[1] * back];
+        place_and_seat(&mut [&mut a], &[(start[0], start[1], dir[0].atan2(dir[1]))]);
+        assert!(a.driving(), "{name}");
+        let fwd = server(&a).buggy_axis(1).unwrap();
+        assert!(
+            fwd[0] * dir[0] + fwd[1] * dir[1] > 0.95,
+            "{name}: facing {fwd:?}, not {dir:?}"
+        );
+        a.key(Key::W, true);
+        let (mut deepest, mut drawn_deepest, mut late, mut fastest) =
+            (0.0f64, 0.0f64, 0.0f64, 0.0f32);
+        let mut farthest = f32::MIN;
+        let frames = 8000 / 16;
+        for f in 0..frames {
+            a.step(16);
+            a.update_scene(0.016);
+            let s = torque::game::sim::vehicle::state(server(&a).vm(), id).unwrap();
+            let d = body_in_trunk(&s.obj_to_world, &trunk);
+            deepest = deepest.max(d);
+            if f >= frames - 2000 / 16 {
+                late = late.max(d);
+            }
+            farthest = farthest.max(along(&s.obj_to_world));
+            fastest = fastest.max(horizontal(s.rigid.lin_vel));
+            let drawn = a.buggy_pose().expect("the drawn buggy");
+            drawn_deepest = drawn_deepest.max(body_in_trunk(&drawn.m, &trunk));
+        }
+        assert!(deepest < 0.03, "{name}: {deepest} m into the trunk");
+        assert!(
+            drawn_deepest < 0.03,
+            "{name}: drawn {drawn_deepest} m into the trunk"
+        );
+        assert!(late < 0.02, "{name}: {late} m in over the last 2 s");
+        assert!(
+            farthest < -radius - 1.0,
+            "{name}: reached {farthest} m along, the trunk {radius} m round"
+        );
+        if name == "at speed" {
+            assert!(fastest > 12.0, "only {fastest} m/s");
+        }
+    }
+}
