@@ -318,6 +318,11 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-server`: a player's desktop host takes a joiner's checks from a candidate's IP address only from an address
+  that answered one of the host's own checks, so a joiner that forges source addresses cannot aim the host's traffic at
+  an address it listed.
+- `torque-rooms`: the room service passes one offer and one answer per joiner; a second one closes the joiner, and one
+  from the wrong side closes its sender.
 - `torque-app`: `web_join::set_address` (`Address::{Own, Host, Room}`) and `room_code`: a page with a room service hosts
   and joins rooms in place and writes what it plays in its address with no new page. They replace `open_page`, and
   `ask_page` now says whether the page took the ask.
