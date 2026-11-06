@@ -233,12 +233,14 @@ pub fn hull_of(i: &ConvexSet, k: usize) -> Option<Hull> {
 
 /// The polytope `planes` bound (inside where every `n . p + d <= 0`): its corners (each plane triple's point inside all the
 /// others; corners nearer than a hair are one) and its faces (each plane's corners, those of the triples it is in, when three or
-/// more not in one line are left), clockwise seen from outside.
+/// more not in one line are left), clockwise seen from outside. At most 128 planes are read (the caller holds them to
+/// [`MAX_HULL_PLANES`]).
 fn polytope(planes: &[[f64; 4]], extent: f64) -> (Vec<[f64; 3]>, Vec<Face>) {
     let eps = 1e-7 * extent.max(1.0);
     let mut verts: Vec<[f64; 3]> = Vec::new();
-    let mut members: Vec<Vec<usize>> = Vec::new();
-    let n = planes.len();
+    // Each corner's planes, a bit a plane ([`MAX_HULL_PLANES`] fit).
+    let mut members: Vec<u128> = Vec::new();
+    let n = planes.len().min(128);
     for a in 0..n {
         for b in a + 1..n {
             for c in b + 1..n {
@@ -259,23 +261,19 @@ fn polytope(planes: &[[f64; 4]], extent: f64) -> (Vec<[f64; 3]>, Vec<Face>) {
                     Some(i) => &mut members[i],
                     None => {
                         verts.push(p);
-                        members.push(Vec::new());
+                        members.push(0);
                         members.last_mut().unwrap()
                     }
                 };
-                for k in [a, b, c] {
-                    if !m.contains(&k) {
-                        m.push(k);
-                    }
-                }
+                *m |= (1 << a) | (1 << b) | (1 << c);
             }
         }
     }
     let mut faces = Vec::new();
-    for (k, &plane) in planes.iter().enumerate() {
+    for (k, &plane) in planes.iter().enumerate().take(n) {
         let nrm = [plane[0], plane[1], plane[2]];
         let on: Vec<u32> = (0..verts.len() as u32)
-            .filter(|&j| members[j as usize].contains(&k))
+            .filter(|&j| members[j as usize] & (1 << k) != 0)
             .collect();
         if let Some(v) = ring(&verts, nrm, on, extent) {
             faces.push(Face { plane, verts: v });
