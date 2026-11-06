@@ -66,7 +66,10 @@
   #leave a:focus-visible, #leave button:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
   #invites { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(34rem, calc(100% - 2rem));
     max-height: calc(100% - 2rem); overflow-y: auto; box-sizing: border-box; padding: 1rem 1.2rem; border: 1px solid #3a4152;
-    border-radius: 8px; background: #1c2029f7; box-shadow: 0 6px 20px #0008; font-size: 0.92rem; line-height: 1.4; }
+    border-radius: 8px; background: #1c2029f7; box-shadow: 0 6px 20px #0008, 0 0 0 100vmax #000a; font-size: 0.92rem;
+    line-height: 1.4; }
+  /* The panel's second shadow dims the page around it (a shadow takes no clicks): the game's own menu and status line
+     stay visible under it but do not compete with the panel, which says how its connection goes itself. */
   #invites h2 { margin: 0 0 0.6rem; font-size: 1.1rem; }
   #invites h3 { margin: 1rem 0 0.3rem; font-size: 0.95rem; }
   #invites p { margin: 0.45rem 0; }
@@ -75,6 +78,8 @@
   #invites .privacy { color: #c3cad8; }
   #invites .warn { color: #f0c674; font-size: 0.85rem; }
   #invites .said { color: #9aa3b5; min-height: 1.2em; }
+  #invites .status { color: #dde2ec; font-weight: 600; }
+  #invites .status:empty { display: none; }
   #invites a { color: #7aa2f7; }
   #invites .row { display: flex; gap: 0.5rem; }
   #invites input[type=text] { flex: 1; min-width: 0; font: inherit; padding: 0.3rem 0.4rem; background: #12141a; color: #dde2ec;

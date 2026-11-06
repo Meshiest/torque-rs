@@ -798,8 +798,11 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     if (state !== 'making' && state !== 'replied') back();
   });
   const said = el('p', { class: 'said', 'data-said': '' });
+  // how the connection goes, once the reply link is made: in the panel, over the game's own status line under it
+  const status = el('p', { class: 'status', role: 'status', 'data-status': '' });
+  const setStatus = (text) => !disposed && (status.textContent = text);
   const backButton = el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: () => back() } });
-  p.append(said, backButton);
+  p.append(said, status, backButton);
   const show = (...nodes) => backButton.before(...nodes);
   let game = null;
   let pc = null;
@@ -838,6 +841,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
   const fail = (text, next = 'ended') => {
     if (disposed) return;
     said.textContent = text;
+    status.textContent = '';
     p.querySelector('.link')?.remove();
     if (!p.isConnected) {
       panel?.remove();
@@ -907,6 +911,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
         ch.onopen = () => {
           if (disposed) return;
           opened = true;
+          setStatus('Connected');
           mark('open');
           if (game) linked();
           if (panel === p) closePanel();
@@ -923,7 +928,11 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
         ch.onclose = () => (opened ? end('The host left the game.') : noRelay());
       };
       next.oniceconnectionstatechange = () => {
-        if (next !== pc || disposed || next.iceConnectionState !== 'failed') return;
+        if (next !== pc || disposed) return;
+        const ice = next.iceConnectionState;
+        // the host answered this page's checks: it has the reply
+        if ((ice === 'connected' || ice === 'completed') && !opened && !ended) setStatus('Connecting...');
+        if (ice !== 'failed') return;
         if (opened) end('The host left the game.');
         else if (details) again();
       };
@@ -957,6 +966,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     // answers its checks (and takes its address as the reply's). At most one every RETRY_MS, until JOIN_MS ends the wait.
     function again() {
       if (failing || disposed) return;
+      setStatus('Waiting for the host...');
       const old = pc;
       if (channel) {
         channel.onopen = channel.onclose = channel.onmessage = null;
@@ -983,6 +993,8 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
       'Send this reply link back to the host. When they open it in the browser that made the invite offer, you join ' +
       `their game. This page waits up to ${minutes(JOIN_MS)} for it.`;
     show(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
+    const reached = ['connected', 'completed'].includes(pc.iceConnectionState);
+    if (!opened) setStatus(reached ? 'Connecting...' : 'Waiting for the host...');
     mark('replied');
     if (!opened && pc.iceConnectionState === 'failed') again();
     later(noRelay, JOIN_MS);

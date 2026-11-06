@@ -129,6 +129,7 @@ const state = (page) =>
       echo: r.dataset.echo ?? '',
       hostGot: r.dataset.hostGot ?? '',
       said: [...document.querySelectorAll('#invites [data-said]')].map((e) => e.textContent).join(' | '),
+      status: document.querySelector('#invites [data-status]')?.textContent ?? '',
       links: [...document.querySelectorAll('#invites input[data-link]')].map((e) => e.value),
       lines: [...document.querySelectorAll('#invites li > p')].map((e) => e.textContent),
       details: [...document.querySelectorAll('#invites input[data-details]')].map((e) => e.value),
@@ -213,6 +214,11 @@ try {
   await tab.goto(noLock(replyLink), { waitUntil: 'load' });
   const t = await wait(tab, 10_000, (s) => s.reply !== '').catch(() => ({ reply: 'taken', said: '(closed)' }));
   if (t.reply !== 'taken') throw new Error(`the reply tab: ${t.reply} ("${t.said}")`);
+  j = await state(joiner);
+  console.log(`the joiner's status: "${j.status}"`);
+  if (!j.link && !['Waiting for the host...', 'Connecting...', 'Connected'].includes(j.status)) {
+    problems.push(`the joiner's panel shows no connection status ("${j.status}")`);
+  }
 
   if (mode === 'fail') {
     // the host's connection gives up after its 30 s, with its details
