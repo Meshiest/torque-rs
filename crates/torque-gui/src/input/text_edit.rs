@@ -665,7 +665,7 @@ fn history_key(vm: &mut Vm, gui: &Gui, id: ObjId, up: bool) {
     }
 }
 
-/// A character key (`switchD_..._caseD_3`).
+/// A character key.
 fn character(
     vm: &mut Vm,
     gui: &Gui,
@@ -684,7 +684,12 @@ fn character(
         _ => {}
     }
     let c = ev.ascii as u8;
-    let valid = font(vm, gui, id).is_some_and(|f| f.is_valid_char(c));
+    // The font says which characters it has; with no font for the profile (no font file and no system font of its face,
+    // such as Arial on most Linux systems) a printable byte is typed all the same, so the box still takes what the player types.
+    let valid = match font(vm, gui, id) {
+        Some(f) => f.is_valid_char(c),
+        None => c >= b' ' && c != 0x7f,
+    };
     if !valid {
         if flag(vm, id, b"sinkAllKeyEvents") {
             return Ok(true);

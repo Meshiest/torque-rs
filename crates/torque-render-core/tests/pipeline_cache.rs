@@ -140,6 +140,11 @@ fn a_saved_cache_is_loaded_again_and_warms_the_pipelines() {
         return;
     };
     assert_eq!(gpu.pipeline_cache_loaded(), None, "no file yet");
+    let empty = gpu
+        .pipeline_cache()
+        .unwrap()
+        .get_data()
+        .map_or(0, |d| d.len());
     let nonce = nonce();
     let cold = make_pipelines(&gpu, nonce);
     let written = gpu.save_pipeline_cache().unwrap().expect("a cache file");
@@ -147,6 +152,16 @@ fn a_saved_cache_is_loaded_again_and_warms_the_pipelines() {
     drop(gpu);
 
     let again = vulkan(&dir).unwrap();
+    // A driver that keeps no pipelines in its cache (Mesa's lavapipe saves only its header) writes a file no larger than an
+    // empty cache: there is nothing to load, and the device says so.
+    if written <= empty {
+        assert_eq!(again.pipeline_cache_loaded(), None);
+        eprintln!(
+            "{}: keeps no pipelines in its cache ({written} bytes)",
+            again.adapter()
+        );
+        return;
+    }
     let loaded = again
         .pipeline_cache_loaded()
         .expect("the saved cache is accepted");
