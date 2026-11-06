@@ -325,7 +325,11 @@ impl WebVehicle {
         let page = target == Target::Page;
         self.link = Some(Link::new(target, watch));
         if self.rooms {
-            self.address(Address::Host);
+            self.address(if mode == Mode::Host {
+                Address::Host
+            } else {
+                Address::Own
+            });
         }
         if page {
             self.menu_status("Waiting for the connection to the host...");
@@ -408,6 +412,18 @@ impl WebVehicle {
         if !torque::app::web_join::ask_page("host") {
             self.menu_status("This page cannot host a game.");
         }
+    }
+
+    /// The menu's Play alone while a game the page left its own for is still joining (hosted, or a room's): that game is
+    /// left first (its server and room stop), so the game played alone has no link that could end it. Taken before the
+    /// game's step plays alone.
+    fn alone_asked(&mut self) {
+        let asked = !matches!(self.game.global("$World::AloneAsked").as_str(), "" | "0");
+        if !asked || !self.rooms || !self.link.as_ref().is_some_and(Link::away) {
+            return;
+        }
+        let _ = self.game.call("disconnect", &[]);
+        self.back_to_own();
     }
 
     /// A game the page left its own for (hosted, or a room's) is over: any it hosts stops (its players ended), and the
@@ -573,6 +589,8 @@ impl App for WebVehicle {
     }
 
     fn advance(&mut self, ms: u32) {
+        #[cfg(target_arch = "wasm32")]
+        self.alone_asked();
         App::advance(&mut self.game, ms);
         #[cfg(target_arch = "wasm32")]
         {
@@ -583,6 +601,14 @@ impl App for WebVehicle {
                 // the invite link ended before its switch: the page's own game goes on
                 if mode == torque::app::web_join::Mode::Link {
                     torque::app::web_join::ask_page("back");
+                }
+                // the page's server started for nothing: it stops (its room with it), and a later Host a game starts
+                // another
+                if mode == torque::app::web_join::Mode::Host && self.rooms {
+                    torque::app::web_join::ask_page("back");
+                    if self.link.as_ref().is_some_and(Link::hosted) {
+                        self.own_game();
+                    }
                 }
             }
             self.join_when_open();
