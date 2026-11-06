@@ -103,6 +103,22 @@ fn horizontal(v: [f32; 3]) -> f32 {
     v[0].hypot(v[1])
 }
 
+/// A hosted game ends at once when the window closes: the server stopped (its `onExit` run, its socket closed) and the client
+/// let go within a moment, with nothing left waiting on a tick, a socket or a thread.
+#[test]
+fn a_hosted_game_stops_and_lets_go_within_half_a_second() {
+    let mut game = host();
+    let address = game.hosted_address().expect("the hosted address");
+    let began = std::time::Instant::now();
+    game.stop_hosting();
+    assert!(game.hosted_address().is_none());
+    drop(game);
+    let took = began.elapsed();
+    assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+    // Nothing holds the server's socket: its address can be bound again.
+    std::net::UdpSocket::bind(address).expect("the server's address is free");
+}
+
 #[test]
 fn the_figure_and_the_buggy_stand_on_the_terrain() {
     let game = host();
