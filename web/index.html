@@ -96,7 +96,7 @@
   // `data-torque-solo="1"` on the root element (`build.mjs --solo`, a site with no game server): the game is played alone. A
   // game whose module has `startSoloClient` (the arena) plays on its own server in a Web Worker (host.js, with no room), and
   // its menus offer neither hosting nor joining through a room service; `?host=1` is then ignored. Its menu's Host with a link
-  // and Join with a link trade connection codes by hand instead (invites.js): an invite link (`#join=<code>`) opens the page
+  // and Join with Link trade connection codes by hand instead (invites.js): an invite link (`#join=<code>`) opens the page
   // joining that host (`startLinkClient`), and a reply link (`#reply=<code>`) hands its reply to this browser's game tab and
   // starts no game. A game played alone in the page itself (the vehicle demo) hosts with a link by opening the page again
   // with `?invites=1`: its server then runs in the worker (`startHostClient`, as `?host=1` with no room) and the invites

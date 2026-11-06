@@ -60,10 +60,10 @@ export class CodeError extends Error {
 // The STUN server under `key`, or a CodeError: lowercase a to z only, at most 16 characters, and a key of STUN_SERVERS.
 export function serverFor(key) {
   if (typeof key !== 'string' || !/^[a-z]{1,16}$/.test(key)) {
-    throw new CodeError('This invite names its connection server in a form this page does not accept.');
+    throw new CodeError('This invite offer names its connection server in a form this page does not accept.');
   }
   if (!Object.hasOwn(STUN_SERVERS, key)) {
-    throw new CodeError(`This invite asks for a connection server this page does not know ("${key}").`);
+    throw new CodeError(`This invite offer asks for a connection server this page does not know ("${key}").`);
   }
   return STUN_SERVERS[key];
 }
@@ -286,9 +286,9 @@ export async function decodeCode(text, kind) {
   }
   if (bytes[0] !== CODE_VERSION) throw new CodeError('This code was made by a different version of this page.');
   if (bytes[1] !== kind) {
-    if (bytes[1] === KIND_JOIN) throw new CodeError('This is an invite link, not a reply.');
-    if (bytes[1] === KIND_REPLY) throw new CodeError('This is a reply link, not an invite.');
-    throw new CodeError('This code is not an invite or a reply.');
+    if (bytes[1] === KIND_JOIN) throw new CodeError('This is an invite offer link, not a reply link.');
+    if (bytes[1] === KIND_REPLY) throw new CodeError('This is a reply link, not an invite offer link.');
+    throw new CodeError('This code is not an invite offer or a reply.');
   }
   const inflated = await inflate(bytes.subarray(2, end));
   let payload;

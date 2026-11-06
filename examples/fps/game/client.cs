@@ -841,7 +841,7 @@ function showJoinOnly()
       HostNote.setVisible(1);
       HostNote.setText("Send friends a link to join your game.");
       QuitButton.setVisible(1);
-      QuitButton.setText("Join with a link");
+      QuitButton.setText("Join with Link");
       QuitButton.command = "$Arena::PageAsk = \"join\";";
       $Pause::CanInvite = 1;
       return;

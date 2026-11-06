@@ -315,7 +315,7 @@ The first development version. Nothing is published yet; this is what exists.
   joins by code, each page holds the other's figure, the joiner walks, and it says the host left when the host page
   closes. The p2p check launches its browsers through `web/guard.mjs` with `?nolock`.
 - Invite links for the arena and the vehicle demo on their pages played alone (a static site, no server of ours): the
-  menu's "Host with a link" (and the Esc menu's "Invite players") makes one invite link per player (`<page>#join=<code>`, each works once), the player's page makes a reply link
+  menu's "Host with a link" (and the Esc menu's "Invite players") creates one invite offer link per player ("Create Invite Offer") (`<page>#join=<code>`, each works once), the player's page makes a reply link
   (`#reply=<code>`), and the host opens it in the same browser, where it hands the reply to the game's tab over a
   BroadcastChannel and closes (or it is pasted into the host's panel). The host's server runs in the page's worker as
   for `?host=1` (the vehicle demo, played alone in the page, opens it again with `?invites=1`); the joiner's data channel

@@ -304,7 +304,7 @@ impl App for WebArena {
         if !self.ended {
             self.show_end();
         }
-        // The menus' Host with a link, Join with a link and Invite players (played alone): the page's invite panels.
+        // The menus' Host with a link, Join with Link and Invite players (played alone): the page's invite panels.
         let ask = self.game.global("$Arena::PageAsk");
         if !ask.is_empty() {
             self.game.set_global("$Arena::PageAsk", "");

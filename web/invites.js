@@ -193,8 +193,8 @@ const message = (e) => (e instanceof CodeError ? e.message : `Something went wro
 
 // A paste field for an invite link that opens the page again, joining.
 function showJoinPaste() {
-  const p = openPanel('Join with a link');
-  const paste = el('input', { type: 'text', 'aria-label': 'An invite link', placeholder: 'Paste an invite link' });
+  const p = openPanel('Join with Link');
+  const paste = el('input', { type: 'text', 'aria-label': 'An invite offer link', placeholder: 'Paste an invite offer link' });
   const said = el('p', { class: 'said', 'data-said': '' });
   const go = el('button', {
     type: 'button',
@@ -204,7 +204,7 @@ function showJoinPaste() {
       click: async () => {
         const code = codeFromPaste(paste.value, KIND_JOIN);
         if (code === null) {
-          said.textContent = 'This is not an invite link.';
+          said.textContent = 'This is not an invite offer link.';
           return;
         }
         try {
@@ -220,7 +220,7 @@ function showJoinPaste() {
     },
   });
   p.append(
-    el('p', { text: 'Paste the invite link a friend sent you. Your own game here ends when you join theirs.' }),
+    el('p', { text: 'Paste the invite offer link a friend sent you. Your own game here ends when you join theirs.' }),
     el('div', { class: 'row' }, paste, go),
     said,
     el('button', { type: 'button', class: 'close', text: 'Close', on: { click: closePanel } }),
@@ -229,7 +229,7 @@ function showJoinPaste() {
 }
 
 // A game played alone in the page (no server in a worker): its menu's Host with a link opens the page again hosting
-// (`?invites=1`), and Join with a link the paste field.
+// (`?invites=1`), and Join with Link the paste field.
 export function soloAsks() {
   globalThis.torqueAsk = (what) => {
     if (what === 'join') return showJoinPaste();
@@ -242,7 +242,7 @@ export function soloAsks() {
 }
 
 // The host's invites, for host.js's `onHost`: the menu's Host with a link opens its panel (`torqueAsk('host')`), and
-// Join with a link a paste field that reloads the page into joining. `open`: the panel opens once the server runs.
+// Join with Link a paste field that reloads the page into joining. `open`: the panel opens once the server runs.
 export function hostInvites({ open = false } = {}) {
   let host = null;
   const invites = new Map();
@@ -274,7 +274,7 @@ export function hostInvites({ open = false } = {}) {
 
   async function makeInvite() {
     if (pending() >= MAX_INVITES) {
-      said.textContent = `${MAX_INVITES} invites are waiting already. Wait for a reply or for one to expire.`;
+      said.textContent = `${MAX_INVITES} invite offers are waiting already. Wait for a reply or for one to expire.`;
       return;
     }
     const key = server;
@@ -309,9 +309,9 @@ export function hostInvites({ open = false } = {}) {
         if (inv.state !== 'waiting') return;
         inv.pc.close();
         forget(inv);
-        setState(inv, 'expired', 'expired. Make a new one.');
+        setState(inv, 'expired', 'expired. Create a new one.');
       }, INVITE_MS);
-      item.append(linkBox(`${pageLink()}#join=${code}`, `Invite link ${inv.n}`));
+      item.append(linkBox(`${pageLink()}#join=${code}`, `Invite offer link ${inv.n}`));
       setState(inv, 'waiting', `waiting for the player's reply (through ${STUN_SERVERS[key].name}).`);
     } catch (e) {
       inv.pc?.close();
@@ -326,8 +326,8 @@ export function hostInvites({ open = false } = {}) {
     const code = codeFromPaste(text, KIND_REPLY);
     if (code === null) return 'This is not a reply link.';
     const data = await decodeCode(code, KIND_REPLY);
-    if (used.has(data.token)) return 'This reply was already used. To let this player in again, make a new invite.';
-    if (closed.has(data.token)) return 'That invite is no longer open. Make a new one.';
+    if (used.has(data.token)) return 'This reply link was already used. To let this player in again, create a new invite offer.';
+    if (closed.has(data.token)) return 'That invite offer is no longer open. Create a new one.';
     const inv = invites.get(data.token);
     if (!inv || inv.state !== 'waiting') return null;
     used.add(data.token);
@@ -342,8 +342,8 @@ export function hostInvites({ open = false } = {}) {
     } catch {
       pc.close();
       forget(inv);
-      setState(inv, 'failed', 'the reply does not fit this invite.');
-      return 'The reply does not fit its invite.';
+      setState(inv, 'failed', 'the reply does not fit this invite offer.');
+      return 'The reply does not fit its invite offer.';
     }
     settle(inv);
     return TAKEN;
@@ -388,7 +388,7 @@ export function hostInvites({ open = false } = {}) {
     const p = openPanel('Host with a link');
     p.append(
       el('p', {
-        text: 'Friends join your game with an invite link. Make one link for each friend: each link works once.',
+        text: 'Friends join your game with an invite offer link. Create one for each friend: each works once.',
       }),
     );
     const choice = el('fieldset', {}, el('legend', { text: 'Connection server' }));
@@ -425,7 +425,7 @@ export function hostInvites({ open = false } = {}) {
     p.append(
       choice,
       privacy,
-      el('button', { type: 'button', class: 'primary', text: 'Make an invite link', on: { click: makeInvite } }),
+      el('button', { type: 'button', class: 'primary', text: 'Create Invite Offer', on: { click: makeInvite } }),
       list,
       el('h3', { text: 'A reply came back?' }),
       el('p', {
@@ -482,8 +482,8 @@ export async function replyTab(code) {
   said.textContent = 'Handing the reply to your game...';
   const fallback = () => {
     said.textContent =
-      'No game in this browser made this invite. Open the tab that made it, or paste this link into its Host with a ' +
-      'link panel:';
+      'No game in this browser made this invite offer. Open the tab that made it, or paste this reply link into its ' +
+      'Host with a link panel:';
     p.append(linkBox(`${pageLink()}#reply=${code}`, 'The reply link'));
     root.dataset.torqueReply = 'unclaimed';
   };
@@ -514,7 +514,7 @@ export async function replyTab(code) {
 // loaded gives the game its link (the game then starts with `startLinkClient`).
 export function joinInvite(code) {
   const root = document.documentElement;
-  const p = openPanel('Join with a link');
+  const p = openPanel('Join with Link');
   const said = el('p', { class: 'said', 'data-said': '' });
   p.append(said);
   let game = null;
@@ -569,7 +569,7 @@ export function joinInvite(code) {
     };
     await pc.setRemoteDescription({ type: 'offer', sdp: toSdp(data) });
     const lines = allowedLines(data, lan, new Set(), data.server);
-    if (!lines.length) return refuse('This invite has no address this page can reach.');
+    if (!lines.length) return refuse('This invite offer has no address this page can reach.');
     for (const line of lines) await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
     await pc.setLocalDescription(await pc.createAnswer());
     await gathered(pc, GATHER_MS);
@@ -592,7 +592,7 @@ export function joinInvite(code) {
     let data;
     try {
       data = await decodeCode(code, KIND_JOIN);
-      if (wasUsed(data.token)) throw new CodeError('This invite link was already used in this browser. Ask the host for a new one.');
+      if (wasUsed(data.token)) throw new CodeError('This invite offer link was already used in this browser. Ask the host for a new one.');
     } catch (e) {
       return refuse(message(e));
     }
@@ -600,8 +600,8 @@ export function joinInvite(code) {
     p.append(
       el('p', {
         text: server.urls.length
-          ? `This invite connects through ${server.name}'s public STUN server. Nothing is sent until you press Connect.`
-          : 'This invite is for players on the same network as the host.',
+          ? `This invite offer connects through ${server.name}'s public STUN server. Nothing is sent until you press Connect.`
+          : 'This invite offer is for players on the same network as the host.',
       }),
       privacyText(data.server, 'The host'),
     );

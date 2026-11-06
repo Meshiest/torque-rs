@@ -445,7 +445,7 @@ function showWebInvites()
    HostButton.setText("Host with a link");
    HostButton.command = "invitePlayers();";
    JoinAddressButton.resize(0, 270, 260, 50);
-   JoinAddressButton.setText("Join with a link");
+   JoinAddressButton.setText("Join with Link");
    JoinAddressButton.command = "$World::PageAsk = \"join\";";
    JoinAddressButton.setVisible(1);
 }

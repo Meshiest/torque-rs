@@ -150,7 +150,7 @@ try {
   const privacy = await host.evaluate(() => document.querySelector('#invites .privacy')?.textContent ?? '');
   if (!/Cloudflare's free public STUN server/.test(privacy)) problems.push(`the host panel's privacy text: "${privacy}"`);
   await press(host, 'Same network only');
-  await press(host, 'Make an invite link');
+  await press(host, 'Create Invite Offer');
   h = await wait(host, 20_000, (s) => s.links.length > 0 || /failed/.test(s.invites));
   const invite = h.links[0];
   if (!invite) problems.push(`no invite link (${h.invites}: ${h.said})`);
@@ -249,8 +249,8 @@ try {
     await refusedOn(joinBrowser, 'cut short', `${page}#join=${code.slice(0, -12)}`, 'join', /damaged|cut short/);
     await refusedOn(joinBrowser, 'oversized', `${page}#join=${'A'.repeat(1500)}`, 'join', /too long/);
     await refusedOn(joinBrowser, 'not a code', `${page}#join=%3Cb%3Ehi%3C/b%3E`, 'join', /characters a code never has/);
-    await refusedOn(joinBrowser, 'invite used again', invite, 'join', /already used/);
-    await refusedOn(joinBrowser, 'reply as invite', `${page}#join=${replyLink.split('#reply=')[1]}`, 'join', /reply link, not an invite/);
+    await refusedOn(joinBrowser, 'invite offer used again', invite, 'join', /already used/);
+    await refusedOn(joinBrowser, 'reply as invite', `${page}#join=${replyLink.split('#reply=')[1]}`, 'join', /reply link, not an invite offer link/);
     await refusedOn(hostBrowser, 'reply used again', replyLink, 'reply', /already used/);
     await host.bringToFront();
     // and pasted into the host's panel

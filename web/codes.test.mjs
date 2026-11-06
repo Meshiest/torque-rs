@@ -109,11 +109,11 @@ test('a payload that inflates past the cap is refused, and so is one that is not
 });
 
 test('a code of the other kind or another version is refused', async () => {
-  await refused(c.decodeCode(await c.encodeCode(invite()), c.KIND_REPLY), /invite link, not a reply/);
-  await refused(c.decodeCode(await c.encodeCode(reply()), c.KIND_JOIN), /reply link, not an invite/);
+  await refused(c.decodeCode(await c.encodeCode(invite()), c.KIND_REPLY), /invite offer link, not a reply link/);
+  await refused(c.decodeCode(await c.encodeCode(reply()), c.KIND_JOIN), /reply link, not an invite offer link/);
   const text = c.payloadText(invite());
   await refused(c.decodeCode(rawCode(text, { version: 2 }), c.KIND_JOIN), /different version/);
-  await refused(c.decodeCode(rawCode(text, { kind: 7 }), c.KIND_JOIN), /not an invite or a reply/);
+  await refused(c.decodeCode(rawCode(text, { kind: 7 }), c.KIND_JOIN), /not an invite offer or a reply/);
 });
 
 test("a code's lines are read strictly", async () => {

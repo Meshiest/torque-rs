@@ -67,7 +67,7 @@ GitHub Pages on each push to main.
 A static host has no game server, so the site's examples are built with `--solo` (`node web/build.mjs <example> --solo`, into
 `<target>/web/<example>-solo`): the page's root element carries `data-torque-solo="1"`, and the game is played alone. The
 arena runs its server in the page's Web Worker, as a player's host does, with no room service, and its menu offers "Play
-alone", "Host with a link" and "Join with a link". The vehicle demo plays alone in the page itself; its "Host with a link"
+alone", "Host with a link" and "Join with Link". The vehicle demo plays alone in the page itself; its "Host with a link"
 opens the page again with `?invites=1`, where its server runs in the worker. Neither offers the room service's hosting
 or joining there, and both Esc menus offer "Invite players". The native builds and the local web builds keep their
 multiplayer.
@@ -76,7 +76,7 @@ multiplayer.
 
 With no server of ours, two players trade connection codes by hand (`web/invites.js`, `web/codes.js`). "Host with a
 link" opens a panel: the player picks the STUN server (Cloudflare, Google, or same network only, which uses none), reads
-what that server sees, and makes one invite link per friend (`<page>#join=<code>`). An invite belongs to one peer
+what that server sees, and presses "Create Invite Offer" once per friend for an invite offer link (`<page>#join=<code>`). An invite belongs to one peer
 connection, so each works once. The friend's page shows which server the invite uses before it contacts it, then makes a
 reply link (`<page>#reply=<code>`). The host opens the reply link in the same browser: that tab hands the reply to the
 game's tab over a `BroadcastChannel` and closes, and the data channel opens straight between the two browsers. The
