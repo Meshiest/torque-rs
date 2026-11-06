@@ -318,6 +318,10 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- Web startup without multi-second freezes: `torque-render-scene`'s cloud noise is about 4x faster (the same bytes) and
+  made a piece per frame in a browser; `torque::app` loading frames wait for the GPU instead of stalling the page on
+  shader compiles; `torque-game` makes an interior file's hulls once per process (the 256 most recently used, their
+  cost still charged); `torque-ts-compiler`'s parser tables build about 5x faster (the same tables).
 - `torque-server`: a player's desktop host takes a joiner's checks from a candidate's IP address only from an address
   that answered one of the host's own checks, so a joiner that forges source addresses cannot aim the host's traffic at
   an address it listed.
