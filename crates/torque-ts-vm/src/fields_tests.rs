@@ -531,7 +531,7 @@ fn naive_ints(text: &[u8]) -> Vec<i32> {
 
 #[test]
 fn the_linear_list_walk_gives_the_naive_walks_pieces() {
-    let alphabet = [b' ', b'1', b'x', b'\t', b'-', b'7'];
+    let alphabet = *b" 1x\t-7";
     let mut words: Vec<Vec<u8>> = vec![Vec::new()];
     for _ in 0..7 {
         let longer: Vec<Vec<u8>> = words

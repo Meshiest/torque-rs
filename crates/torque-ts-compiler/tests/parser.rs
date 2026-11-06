@@ -1177,7 +1177,7 @@ fn shown(b: &[u8]) -> Vec<u8> {
 fn the_error_context_window_stops_at_a_line_break_only_beyond_256_bytes() {
     // The halt byte is the `2` of `= = 2`. A line break 256 bytes or less from it does not stop the window; one
     // 257 or more bytes away does, and the break itself is not shown.
-    for brk in [b'\n', b'\r'] {
+    for brk in *b"\n\r" {
         for d in [255usize, 256, 257, 258] {
             // A break `d` bytes before the halt byte.
             let mut src = vec![b'$', b'a', b' ', b'=', b' ', b'1', b';', brk];

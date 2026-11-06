@@ -66,7 +66,7 @@ fn cases() -> Vec<(&'static str, Vec<u8>)> {
     let mut rgb = one(12, 10, &[(1, 1), (1, 1), (1, 1)], 22);
     rgb.jfif = false;
     for (i, c) in rgb.comps.iter_mut().enumerate() {
-        c.id = [b'R', b'G', b'B'][i];
+        c.id = (*b"RGB")[i];
     }
     v.push(("rgb_ids", rgb.baseline(&[vec![0, 1, 2]])));
     let base = ycc420.baseline(&[vec![0, 1, 2]]);

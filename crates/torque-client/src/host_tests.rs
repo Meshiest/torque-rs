@@ -204,7 +204,7 @@ fn a_bind_on_the_iso_key_saves_and_loads_back_onto_it() {
     let lines: Vec<u8> = h
         .drain_log()
         .into_iter()
-        .flat_map(|l| l.text.into_iter().chain([b'\n']))
+        .flat_map(|l| l.text.into_iter().chain(*b"\n"))
         .collect();
     assert!(
         String::from_utf8_lossy(&lines).contains("\"lessthan\""),

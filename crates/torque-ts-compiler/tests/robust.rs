@@ -502,7 +502,7 @@ fn hostile_lines(opener: u8, total: usize) -> Vec<u8> {
 #[test]
 fn the_scanners_worst_shape_costs_compile_one_scan() {
     let mut worst = 0.0f64;
-    for opener in [b'"', b'\''] {
+    for opener in *b"\"'" {
         // After code that compiles (so the error comes late), after a half statement, and from the start.
         for prefix in [&b""[..], b"$x = ", &b"$x = 1;\n".repeat(100_000)[..]] {
             for total in [1 << 20, 16 << 20] {

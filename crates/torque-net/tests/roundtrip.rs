@@ -323,10 +323,7 @@ fn compressed_points_round_trip_near_and_far() {
 fn strings_round_trip_with_and_without_the_packet_buffer() {
     let table = Table::from_frequencies(&frequencies()).unwrap();
     let mut rng = Rng(0x1357_9bdf_2468_ace0);
-    let alphabet: Vec<u8> = (b'a'..=b'z')
-        .chain(b'0'..=b'9')
-        .chain([b'/', b'.', b'_', b' ', b'A'])
-        .collect();
+    let alphabet: Vec<u8> = (b'a'..=b'z').chain(b'0'..=b'9').chain(*b"/._ A").collect();
     for round in 0..ROUNDS {
         let buffered = round % 2 == 0;
         let mut w = BitWriter::new();
