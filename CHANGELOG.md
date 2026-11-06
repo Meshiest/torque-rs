@@ -318,6 +318,8 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-client`: in a browser, the mouse's movement and wheel do not turn or zoom the view while one of the page's panels
+  is open over the game (`platform::web_input::page_panel_open`, the root element's `data-torque-panel`).
 - `torque-vehicle`: a vehicle held at full throttle against a tree (or any interior) crept into it and drove through, and its
   body could sink into the terrain under a steady push. The body now stays out of map pieces, kept by the separating axis
   test (`torque_collide::sat`) after TGE's contact responses (`Body::hold_out`).

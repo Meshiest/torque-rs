@@ -108,6 +108,22 @@ pub fn page_render_scale() -> Option<RenderScale> {
     RenderScale::parse(&text)
 }
 
+/// Whether one of the page's own panels is open over the game (its root element's `data-torque-panel`): the mouse is then
+/// the panel's, and its movement and wheel do not turn or zoom the game's view.
+#[cfg(target_arch = "wasm32")]
+pub fn page_panel_open() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .is_some_and(|e| e.has_attribute("data-torque-panel"))
+}
+
+/// Outside a browser there is no page and no panel over the game.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn page_panel_open() -> bool {
+    false
+}
+
 /// What the page said since the window last looked.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PageNews {
