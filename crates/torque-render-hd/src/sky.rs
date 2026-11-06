@@ -105,6 +105,7 @@ fn sampler_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
 /// A full-frame pipeline drawn inside the opaque pass (its depth attachment: no test, no write) into the HDR target.
 fn sky_pass(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     label: &str,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
@@ -140,7 +141,7 @@ fn sky_pass(
             })],
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }
 
@@ -249,6 +250,7 @@ impl SkyGpu {
     /// shading pass follows the box, and with group 1 left out its reads of the sky group came back zero on D3D12).
     pub fn new(
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         frame_layout: &wgpu::BindGroupLayout,
         texture_layout: &wgpu::BindGroupLayout,
         clouds: (&wgpu::TextureView, &wgpu::TextureView, &wgpu::TextureView),
@@ -379,7 +381,7 @@ impl SkyGpu {
                 module: &atm,
                 entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                cache: None,
+                cache,
             })
         };
         let lut_pipelines = [
@@ -412,6 +414,7 @@ impl SkyGpu {
         };
         let shade_pipeline = sky_pass(
             device,
+            cache,
             "hd physical sky",
             &pass_layout,
             &sky_module,
@@ -423,6 +426,7 @@ impl SkyGpu {
         );
         let disk_pipeline = sky_pass(
             device,
+            cache,
             "hd sun disk",
             &pass_layout,
             &sky_module,
@@ -434,6 +438,7 @@ impl SkyGpu {
         );
         let cloud_pipeline = sky_pass(
             device,
+            cache,
             "hd volumetric clouds",
             &pass_layout,
             &sky_module,

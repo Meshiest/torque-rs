@@ -262,17 +262,19 @@ pub fn storage_target(binding: u32, format: wgpu::TextureFormat) -> wgpu::BindGr
 /// A compute filter's pipeline (`entry` of `module` over the one group `layout`).
 pub fn compute_filter(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     label: &str,
     layout: &wgpu::BindGroupLayout,
     module: &wgpu::ShaderModule,
     entry: &str,
 ) -> wgpu::ComputePipeline {
-    compute_filter_with(device, label, &[layout], module, entry)
+    compute_filter_with(device, cache, label, &[layout], module, entry)
 }
 
 /// [`compute_filter`] over several groups (A filter's sampler in a group of its own, shared by its levels).
 pub fn compute_filter_with(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     label: &str,
     layouts: &[&wgpu::BindGroupLayout],
     module: &wgpu::ShaderModule,
@@ -290,7 +292,7 @@ pub fn compute_filter_with(
         module,
         entry_point: Some(entry),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
+        cache,
     })
 }
 
@@ -383,6 +385,7 @@ pub fn colour(view: &wgpu::TextureView) -> wgpu::RenderPassColorAttachment<'_> {
 /// A full-frame triangle's pipeline of `layout`, `entry` of `module` into `format`.
 pub fn full_frame(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     label: &str,
     layout: &wgpu::BindGroupLayout,
     module: &wgpu::ShaderModule,
@@ -423,6 +426,6 @@ pub fn full_frame(
             targets: &targets,
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }

@@ -234,6 +234,11 @@ impl WorldView {
         &self.scene
     }
 
+    /// Whether the effects' pipelines are still being made on their worker thread ([`HdWorld::warming`]).
+    pub fn warming(&self) -> bool {
+        self.world.warming()
+    }
+
     /// The enhanced renderer the view draws with (its timers and reports).
     pub fn renderer(&mut self) -> &mut HdWorld<NoExtension> {
         &mut self.world

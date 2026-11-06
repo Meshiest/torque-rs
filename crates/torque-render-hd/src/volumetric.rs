@@ -28,6 +28,7 @@ pub struct Volumetric {
 impl Volumetric {
     pub fn new(
         device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
         frame_layout: &wgpu::BindGroupLayout,
         sky_layout: &wgpu::BindGroupLayout,
     ) -> Volumetric {
@@ -87,7 +88,7 @@ impl Volumetric {
                         })],
                     }),
                     multiview_mask: None,
-                    cache: None,
+                    cache,
                 })
             };
         let add = wgpu::BlendState {

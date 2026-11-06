@@ -455,6 +455,14 @@ The first development version. Nothing is published yet; this is what exists.
   box every tick.
 - `just examples/poses-clip`: a clip of the figure crouching, lying down, walking crouched, crawling, sprinting and reacting
   to hits from four sides and to the head, as another player's client draws it.
+- `torque-render-core::pipeline_cache`: on Vulkan a `Gpu` keeps its compiled pipelines in a wgpu pipeline cache
+  (`Gpu::pipeline_cache`), loaded from a per-user file (`pipeline_cache::set_dir`, `user_dir`) and saved by
+  `Gpu::save_pipeline_cache`; every pipeline the GUI pass, the blur and the enhanced renderer make uses it
+  (`HdWorld::pipeline_cache` for an extension's own). A windowed app saves it once the view's warm-up is done and at the
+  close, so a start after a driver update no longer compiles every pipeline again. The file is keyed by adapter and
+  driver, at most 64 MiB, written whole and renamed into place, and a missing, damaged or foreign one starts an empty
+  cache. This is the workspace's one `unsafe` block (`Device::create_pipeline_cache`, with a `SAFETY` comment):
+  torque-render-core denies `unsafe_code` instead of forbidding it and allows it on that function only.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.

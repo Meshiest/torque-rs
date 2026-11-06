@@ -226,6 +226,7 @@ fn noise_texture(
 /// A full-frame pipeline of `module`'s `entry` over `layouts` into `targets`.
 fn pipeline(
     device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
     module: &wgpu::ShaderModule,
     entry: &str,
     layouts: &[Option<&wgpu::BindGroupLayout>],
@@ -255,7 +256,7 @@ fn pipeline(
             targets,
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     })
 }
 
@@ -268,7 +269,11 @@ fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
 }
 
 impl Clouds {
-    pub fn new(device: &wgpu::Device, frame_layout: &wgpu::BindGroupLayout) -> Clouds {
+    pub fn new(
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        frame_layout: &wgpu::BindGroupLayout,
+    ) -> Clouds {
         let march_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd clouds"),
             entries: &[
@@ -294,6 +299,7 @@ impl Clouds {
         let module = crate::module(device, Permutation::Clouds);
         let shadow = pipeline(
             device,
+            cache,
             &module,
             "fs_shadow",
             &[Some(frame_layout), Some(&march_layout)],
@@ -301,6 +307,7 @@ impl Clouds {
         );
         let resolve = pipeline(
             device,
+            cache,
             &module,
             "fs_resolve",
             &[Some(frame_layout), Some(&resolve_layout)],
@@ -315,6 +322,7 @@ impl Clouds {
         });
         let sun_rays = pipeline(
             device,
+            cache,
             &module,
             "fs_sun_rays",
             &[Some(frame_layout), Some(&march_layout)],
@@ -322,6 +330,7 @@ impl Clouds {
         );
         let sun_mean = pipeline(
             device,
+            cache,
             &module,
             "fs_sun_mean",
             &[Some(frame_layout), Some(&sun_layout)],
@@ -391,7 +400,7 @@ impl Clouds {
         )
         .create_view(&wgpu::TextureViewDescriptor::default());
         Clouds {
-            down: crate::capture::DownPipe::new(device),
+            down: crate::capture::DownPipe::new(device, cache),
             from_eye: true,
             frame_layout: frame_layout.clone(),
             march_layout,
@@ -423,9 +432,15 @@ impl Clouds {
     }
 
     /// Makes the march's pipeline over the sky's group layout (its third group: the atmosphere's tables).
-    pub fn set_sky_layout(&mut self, device: &wgpu::Device, sky_layout: &wgpu::BindGroupLayout) {
+    pub fn set_sky_layout(
+        &mut self,
+        device: &wgpu::Device,
+        cache: Option<&wgpu::PipelineCache>,
+        sky_layout: &wgpu::BindGroupLayout,
+    ) {
         self.march = Some(pipeline(
             device,
+            cache,
             &self.module,
             "fs_march",
             &[

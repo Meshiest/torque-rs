@@ -58,7 +58,7 @@ fn tex_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 impl Bloom {
-    pub fn new(device: &wgpu::Device) -> Bloom {
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> Bloom {
         let format = BLOOM_FORMAT;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd bloom"),
@@ -85,7 +85,8 @@ impl Bloom {
             ],
         });
         let module = crate::module(device, Permutation::Bloom);
-        let pipe = |entry: &str| crate::compute_filter(device, "hd bloom", &layout, &module, entry);
+        let pipe =
+            |entry: &str| crate::compute_filter(device, cache, "hd bloom", &layout, &module, entry);
         let mirror = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("hd bloom mirror"),
             address_mode_u: wgpu::AddressMode::MirrorRepeat,

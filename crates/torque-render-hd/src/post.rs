@@ -112,7 +112,7 @@ pub struct PostPipes {
 }
 
 impl PostPipes {
-    pub fn new(device: &wgpu::Device) -> PostPipes {
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> PostPipes {
         let ao_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd ao"),
             entries: &[
@@ -160,13 +160,22 @@ impl PostPipes {
                 let m = module(device, Permutation::Ao { gtao });
                 (
                     gtao,
-                    full_frame(device, "hd ao", &ao_layout, &m, "fs_ao", &[AO_FORMAT]),
+                    full_frame(
+                        device,
+                        cache,
+                        "hd ao",
+                        &ao_layout,
+                        &m,
+                        "fs_ao",
+                        &[AO_FORMAT],
+                    ),
                 )
             })
             .collect();
         let ao_filter_module = module(device, Permutation::AoFilter);
         let ao_filter = full_frame(
             device,
+            cache,
             "hd ao filter",
             &ao_layout,
             &ao_filter_module,
@@ -176,6 +185,7 @@ impl PostPipes {
         let taa_module = module(device, Permutation::Taa);
         let taa = full_frame(
             device,
+            cache,
             "hd taa",
             &taa_layout,
             &taa_module,
@@ -185,6 +195,7 @@ impl PostPipes {
         let fxaa_module = module(device, Permutation::Fxaa);
         let fxaa = full_frame(
             device,
+            cache,
             "hd fxaa",
             &fxaa_layout,
             &fxaa_module,

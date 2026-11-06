@@ -45,7 +45,7 @@ pub struct SsrPipes {
 }
 
 impl SsrPipes {
-    pub fn new(device: &wgpu::Device) -> SsrPipes {
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> SsrPipes {
         let hiz_first_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd hiz first"),
             entries: &[
@@ -115,6 +115,7 @@ impl SsrPipes {
         SsrPipes {
             hiz_first: crate::compute_filter(
                 device,
+                cache,
                 "hd hiz first",
                 &hiz_first_layout,
                 &hiz,
@@ -122,6 +123,7 @@ impl SsrPipes {
             ),
             hiz_down: crate::compute_filter(
                 device,
+                cache,
                 "hd hiz down",
                 &hiz_down_layout,
                 &hiz,
@@ -129,6 +131,7 @@ impl SsrPipes {
             ),
             trace: full(
                 device,
+                cache,
                 "hd ssr trace",
                 &trace_layout,
                 &ssr,
@@ -137,6 +140,7 @@ impl SsrPipes {
             ),
             resolve: full(
                 device,
+                cache,
                 "hd ssr resolve",
                 &resolve_layout,
                 &ssr,

@@ -125,6 +125,9 @@ struct AppWindow<G> {
     stage: &'static str,
     #[cfg(target_arch = "wasm32")]
     frame_times: crate::web_page::FrameTimes,
+    /// Whether the pipeline cache was saved once the view's warm-up was done (it is saved again at the close).
+    #[cfg(not(target_arch = "wasm32"))]
+    cache_saved: bool,
 }
 
 /// A canvas's device on its way: the browser answers WebGPU's requests on its own event loop, so the window keeps running (and
@@ -173,6 +176,16 @@ impl<G: App> AppWindow<G> {
             size.1,
             surface.gpu.adapter()
         );
+        if surface.gpu.pipeline_cache().is_some() {
+            println!(
+                "{}: pipeline cache {}",
+                self.game.log_name(),
+                match surface.gpu.pipeline_cache_loaded() {
+                    Some(n) => format!("loaded ({} KiB)", n.div_ceil(1024)),
+                    None => "empty".into(),
+                }
+            );
+        }
         self.view = Some(self.game.view(&surface.gpu));
         self.surface = Some(surface);
     }
@@ -288,6 +301,12 @@ impl<G: App> WindowGame for AppWindow<G> {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let drew = view.draw(&surface.gpu, &target, &gui, eye)?;
         surface.present(frame);
+        // The warm-up's pipelines kept now, should the process not reach its close.
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.cache_saved && !view.warming() {
+            self.cache_saved = true;
+            save_pipeline_cache(&surface.gpu, self.game.log_name());
+        }
         #[cfg(target_arch = "wasm32")]
         {
             if let Some(s) = self.frame_times.frame(web_time::Instant::now()) {
@@ -323,6 +342,8 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
         stage: "",
         #[cfg(target_arch = "wasm32")]
         frame_times: crate::web_page::FrameTimes::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        cache_saved: false,
     };
     #[cfg(target_arch = "wasm32")]
     {
@@ -331,6 +352,11 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // The device's pipeline cache in the user's cache directory, unless the host chose one.
+        use torque_render_core::pipeline_cache;
+        if pipeline_cache::dir().is_none() {
+            pipeline_cache::set_dir(pipeline_cache::user_dir(w.game.log_name()));
+        }
         let (w, ran) = match driver::run(w, event_loop) {
             Ok(w) => (w, Ok(())),
             Err((w, e)) => (w, Err(e)),
@@ -340,9 +366,17 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
     }
 }
 
-impl<G> AppWindow<G> {
+/// Saves `gpu`'s pipeline cache to its file; a failure is noted and otherwise ignored.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_pipeline_cache(gpu: &Gpu, log_name: &str) {
+    if let Err(e) = gpu.save_pipeline_cache() {
+        println!("{log_name}: the pipeline cache was not saved: {e}");
+    }
+}
+
+impl<G: App> AppWindow<G> {
     /// Lets go of the window's state in order: the view first (its renderer stops and waits for its worker threads, which hold
-    /// the device), then the surface and the device, then the game. The device is let go here rather than at the process's
+    /// the device), then the device's pipeline cache is saved, then the surface and the device go, then the game. The device is let go here rather than at the process's
     /// end; the arena's ahead thread may still hold a clone for the buffers it is making (the device is counted, so nothing is
     /// freed under it).
     #[cfg(not(target_arch = "wasm32"))]
@@ -351,8 +385,12 @@ impl<G> AppWindow<G> {
             game,
             surface,
             view,
+            cache_saved: _,
         } = self;
         drop(view);
+        if let Some(s) = &surface {
+            save_pipeline_cache(&s.gpu, game.log_name());
+        }
         drop(surface);
         drop(game);
     }

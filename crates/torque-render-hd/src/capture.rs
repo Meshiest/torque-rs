@@ -24,7 +24,7 @@ pub struct DownPipe {
 }
 
 impl DownPipe {
-    pub fn new(device: &wgpu::Device) -> DownPipe {
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> DownPipe {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd down"),
             entries: &[
@@ -56,6 +56,7 @@ impl DownPipe {
         });
         let pipeline = crate::compute_filter_with(
             device,
+            cache,
             "hd down",
             &[&layout, &sampler_layout],
             &module,
