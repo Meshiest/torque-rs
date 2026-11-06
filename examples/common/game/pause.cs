@@ -65,7 +65,7 @@ new GuiControl(PauseGui)
       new GuiTextCtrl(PauseTitle)
       {
          profile = PauseHeadProfile; position = "0 26"; extent = "320 40"; visible = true; enabled = true;
-         text = "Paused";
+         text = "Menu";
       };
       new GuiButtonCtrl(ResumeButton)
       {
