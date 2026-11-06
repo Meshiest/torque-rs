@@ -316,8 +316,8 @@ pub fn checker() -> io::Result<Vec<u8>> {
 
 /// A tire track's tread, multiplied over the ground (0.5 gray leaves it as it is): two rows of block prints across the strip,
 /// darker in the middle of each print, the edges of the strip fading out; one repeat a strip's width along it. At its
-/// deepest a print is 0.325 and the gap between blocks 0.388, so one strip multiplies the ground by 0.65 and 0.78, and
-/// two strips laid over each other by about 0.42 and 0.6 (the rear tires roll in the front tires' strips).
+/// deepest a print is 0.3 and the gap between blocks 0.372, so one strip multiplies the ground by 0.6 and 0.74, and
+/// two strips laid over each other by about 0.36 and 0.55 (the rear tires roll in the front tires' strips).
 pub fn track() -> io::Result<Vec<u8>> {
     png(32, 32, |x, y| {
         let across = (x as f32 + 0.5) / 32.0;
@@ -329,7 +329,7 @@ pub fn track() -> io::Result<Vec<u8>> {
         } else {
             0.68
         };
-        let v = 0.5 + (print - 1.0) * 0.35 * edge;
+        let v = 0.5 + (print - 1.0) * 0.4 * edge;
         let g = (v.clamp(0.0, 1.0) * 255.0) as u8;
         [g, g, g]
     })
