@@ -216,3 +216,26 @@ test("a page's own description gives a code's parts, and a code's parts a descri
   );
   assert.throws(() => c.fromSdp(SDP.replace(/a=fingerprint:.*\r\n/, '')), /without ICE or DTLS/);
 });
+
+test('an mDNS name rides only in a same-network invite (or a reply), and only in its strict form', async () => {
+  const name = '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local';
+  const named = [{ type: 'host', ip: name, port: 50123 }];
+  const lan = invite({ server: 'lan', candidates: named });
+  const code = await c.encodeCode(lan);
+  assert.deepEqual(await c.decodeCode(code, c.KIND_JOIN), lan);
+  console.log(`code size, same-network invite with one mDNS name: ${code.length}`);
+  const back = reply({ candidates: named });
+  assert.deepEqual(await c.decodeCode(await c.encodeCode(back), c.KIND_REPLY), back);
+  for (const server of ['cloudflare', 'google']) {
+    const text = c.payloadText(invite({ server, candidates: named }));
+    await refused(c.decodeCode(rawCode(text), c.KIND_JOIN), /only for the same-network server/);
+  }
+  const lanText = (address, type = 'host') => c.payloadText(invite({ server: 'lan', candidates: [] })) + `\nc ${type} ${address} 50123`;
+  for (const nearMiss of ['evil.local', name.toUpperCase().replace('.LOCAL', '.local'), `x.${name}`, name.replace('-4c8e', '-1c8e')]) {
+    await refused(c.decodeCode(rawCode(lanText(nearMiss)), c.KIND_JOIN), /not in its form/);
+  }
+  await refused(c.decodeCode(rawCode(lanText(name, 'srflx')), c.KIND_JOIN), /not in its form/);
+  const lines = [`a=candidate:1 1 udp 2122260223 ${name} 50123 typ host`, 'a=candidate:2 1 udp 2122260223 evil.local 50124 typ host'];
+  assert.deepEqual(c.pickCandidates(lines, () => true, { mdns: true }), named);
+  assert.deepEqual(c.pickCandidates(lines, () => true), []);
+});

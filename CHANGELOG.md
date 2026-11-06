@@ -325,7 +325,9 @@ The first development version. Nothing is published yet; this is what exists.
   holds what a page hands the client (none over the most bytes for a datagram, the count and the bytes capped). Codes (`web/codes.js`): the SDP cut to what
   a data channel needs, deflated, base64url, a version byte, a kind byte and a CRC-32 (about 230 characters with three
   candidates); a cap on the code's length and on its inflated size, strict lines, and the STUN server named by a key into
-  the page's own list (Cloudflare, Google, or same network only), never by a URL. The panels say which server is asked for
+  the page's own list (Cloudflare, Google, or same network only), never by a URL. On the same-network server only, a
+  host candidate may be a browser's mDNS name (a lowercase version 4 UUID and `.local`, nothing else), handed to the
+  browser's ICE unresolved. The panels say which server is asked for
   the player's public address, and that the links carry it. `node --test web/codes.test.mjs`; `just
   examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded browsers trade the links on this
   computer's own addresses, the joiner walks, each holds the other's figure, and bad, cut short, oversized and used codes

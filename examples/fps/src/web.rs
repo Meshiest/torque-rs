@@ -217,12 +217,14 @@ impl WebArena {
             return;
         };
         self.ended = true;
-        let _ = self.game.call(
-            "eval",
-            &[&format!(
-                "if ($Arena::InGame) leaveGame(); MainStatus.setText(\"{text}\");"
-            )],
-        );
+        if self.game.global("$Arena::InGame") == "1" {
+            let _ = self.game.call("leaveGame", &[]);
+        }
+        // Handed to `setText` as an argument, never built into script source.
+        let vm = self.game.vm_mut();
+        if let Some(status) = vm.objects().find(b"MainStatus") {
+            let _ = vm.call_method(status, b"setText", &[text.into_bytes()]);
+        }
     }
 
     fn mark(&mut self) {

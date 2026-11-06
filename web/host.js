@@ -96,19 +96,31 @@ export function addressAllowed([a, b, c, d], lan) {
   return lan || !priv;
 }
 
+// A browser's mDNS name for a host candidate: a version 4 UUID in lowercase hex, then `.local`, and nothing else.
+export const MDNS_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.local$/;
+
 // A joiner's candidate line (with or without `a=`) the host may take, as `{ line, ip }`, or null: well formed, UDP, a
 // canonical IPv4 address the rules allow and not one of `own`, a port written plainly. The line handed on is rebuilt
-// from the address and port as read here, so the browser reads the address this checked.
-export function candidateAllowed(text, lan, own = new Set()) {
+// from the address and port as read here, so the browser reads the address this checked. With `mdns` (an invite on the
+// same-network server only) a host candidate may instead name an MDNS_NAME not in `own`, which goes to the browser's own
+// ICE as it is (the page never resolves it); any other `.local` is refused.
+export function candidateAllowed(text, lan, own = new Set(), { mdns = false } = {}) {
   if (typeof text !== 'string') return null;
   const line = text.trim().replace(/^a=/, '');
-  if (!line.startsWith('candidate:') || line.length > 512 || line.includes('.local')) return null;
+  if (!line.startsWith('candidate:') || line.length > 512) return null;
   const words = line.split(' ');
   if (words.length < 8 || words[6] !== 'typ') return null;
   const [, , transport, , address, port] = words;
-  const octets = ipv4(address);
   const p = /^[1-9]\d{0,4}$/.test(port) ? Number(port) : 0;
-  if (transport.toLowerCase() !== 'udp' || !octets || p < 1 || p > 65535) return null;
+  if (transport.toLowerCase() !== 'udp' || p < 1 || p > 65535) return null;
+  const oneName = words.filter((w) => w.includes('.local')).length === 1;
+  if (mdns && words[7] === 'host' && MDNS_NAME.test(address) && oneName && !own.has(address)) {
+    words[5] = String(p);
+    return { line: words.join(' '), ip: address };
+  }
+  if (line.includes('.local')) return null;
+  const octets = ipv4(address);
+  if (!octets) return null;
   const ip = octets.join('.');
   if (!addressAllowed(octets, lan) || own.has(ip)) return null;
   words[4] = ip;

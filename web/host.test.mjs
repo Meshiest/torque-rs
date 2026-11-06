@@ -104,3 +104,29 @@ test("a link's receiver ends the link on a flood, an oversize message or text, a
   for (let s = 0; s < 3; s++, t += 1000) for (let i = 0; i < 512; i++) take({ data: new ArrayBuffer(1) });
   assert.equal(got.length, 1536);
 });
+
+test("a browser's mDNS name is taken only in same-network mode, and only a lowercase version 4 UUID", () => {
+  const name = '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local';
+  const mdns = { mdns: true };
+  assert.deepEqual(candidateAllowed(line(name), true, new Set(), mdns), { line: line(name), ip: name });
+  assert.equal(candidateAllowed(line(name), true, new Set()), null, 'not without mdns (the other servers, and rooms)');
+  assert.equal(candidateAllowed(line(name), false, new Set()), null);
+  assert.equal(candidateAllowed(line(name), true, new Set([name]), mdns), null, "the host's own name");
+  assert.equal(candidateAllowed(line(name, 'tcp'), true, new Set(), mdns), null);
+  assert.equal(candidateAllowed(line(name).replace('typ host', 'typ srflx'), true, new Set(), mdns), null);
+  assert.equal(candidateAllowed(`${line(name)} raddr ${name} rport 0`, true, new Set(), mdns), null, 'a second name');
+  for (const nearMiss of [
+    'evil.local',
+    '4F9C2A1E-7B3D-4C8E-9A10-2B6E8D4F1C3A.local',
+    'x.4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local',
+    '4f9c2a1e-7b3d-1c8e-9a10-2b6e8d4f1c3a.local',
+    '4f9c2a1e-7b3d-4c8e-7a10-2b6e8d4f1c3a.local',
+    '4f9c2a1e7b3d4c8e9a102b6e8d4f1c3a.local',
+    '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local.example.com',
+    '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.LOCAL',
+    '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local.',
+    '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a',
+  ]) {
+    assert.equal(candidateAllowed(line(nearMiss), true, new Set(), mdns), null, nearMiss);
+  }
+});

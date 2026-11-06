@@ -89,7 +89,9 @@ candidates as type, address and port), deflated, in base64url, with a version by
 characters with three candidates. The page refuses a code longer than 1024 characters, one that inflates past 2 KiB, a
 line out of its form or order, and a STUN server key not in its own fixed list; a code never names a server by address.
 The host takes a joiner's candidates by the same rules as a room's joiners (canonical IPv4, no `.local` names, private
-addresses only on the same-network server or with `?lan=1`, never its own), counts the joiner by the address its traffic
+addresses only on the same-network server or with `?lan=1`, never its own). On the same-network server only, a host
+candidate may also be a browser's mDNS name, strictly a lowercase version 4 UUID and `.local`, handed to the browser's
+own ICE unresolved. The host counts the joiner by the address its traffic
 comes from (or by a stand-in of its invite's own when the browser hides that address, as it does for a peer-reflexive
 pair), and hands the open channel to the worker's relay with every cap. With no TURN server, some networks can't connect;
 the page says so when the channel does not open in time.

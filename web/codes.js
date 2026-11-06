@@ -12,7 +12,9 @@
 //   f <fingerprint>           the DTLS certificate's SHA-256, 43 base64url characters
 //   d <setup>                 actpass (invites), active or passive (replies)
 //   x <sctp-port>             only when not 5000
-//   c <type> <ip> <port>      0 to MAX_CODE_CANDIDATES: host, srflx or prflx, a canonical IPv4 address, a plain port
+//   c <type> <ip> <port>      0 to MAX_CODE_CANDIDATES: host, srflx or prflx, a canonical IPv4 address, a plain port;
+//                             a host candidate may name a browser's mDNS name (`<uuid v4>.local`, host.js MDNS_NAME)
+//                             instead, in an invite on the same-network server (`lan`) only, or in a reply
 // A code is untrusted input: its length is capped before it is decoded, its inflated size while it inflates, and every
 // line must match its pattern exactly (no line twice, none missing, none extra). A code never names a server: the server
 // is a key into this page's own fixed list, and an unknown key is refused.
@@ -184,6 +186,9 @@ const LINES = {
   c: /^(host|srflx|prflx) (\S+) ([1-9]\d{0,4})$/,
 };
 
+// A browser's mDNS name for a host candidate (as host.js's MDNS_NAME).
+const MDNS_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.local$/;
+
 // An IPv4 address in canonical dotted form as its four numbers, or null (as host.js's `ipv4`).
 function ipv4(text) {
   const m = /^(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})$/.exec(text ?? '');
@@ -242,7 +247,9 @@ export function parsePayload(text, kind) {
     const [, type, ip, portText] = field('c');
     const port = Number(portText);
     const octets = ipv4(ip);
-    if (!octets || octets.join('.') !== ip || port > 65535) throw bad('an address is not in its form');
+    const named = type === 'host' && MDNS_NAME.test(ip);
+    if (named && kind === KIND_JOIN && data.server !== 'lan') throw bad('a network name is only for the same-network server');
+    if ((!named && (!octets || octets.join('.') !== ip)) || port > 65535) throw bad('an address is not in its form');
     if (seen.has(`${ip}:${port}`)) throw bad('an address is there twice');
     seen.add(`${ip}:${port}`);
     data.candidates.push({ type, ip, port });
@@ -338,9 +345,9 @@ export function fromSdp(sdp) {
 }
 
 // The candidates a code carries from candidate lines (with or without `a=`): component 1, UDP, a canonical IPv4 address
-// `allowed(octets)` takes (no `.local` names), host, srflx or prflx; each address once, srflx first, at most
-// PICKED_CANDIDATES.
-export function pickCandidates(lines, allowed) {
+// `allowed(octets)` takes, host, srflx or prflx; with `mdns` also a host candidate's browser mDNS name (any other `.local`
+// is left out); each address once, srflx first, at most PICKED_CANDIDATES.
+export function pickCandidates(lines, allowed, { mdns = false } = {}) {
   const picked = [];
   const seen = new Set();
   for (const raw of lines) {
@@ -349,8 +356,10 @@ export function pickCandidates(lines, allowed) {
     const [, , transport, , ip, portText, , type] = words;
     const octets = ipv4(ip);
     const port = /^[1-9]\d{0,4}$/.test(portText) ? Number(portText) : 0;
-    if (transport.toLowerCase() !== 'udp' || !octets || octets.join('.') !== ip || port < 1 || port > 65535) continue;
-    if (!['host', 'srflx', 'prflx'].includes(type) || !allowed(octets) || seen.has(`${ip}:${port}`)) continue;
+    if (transport.toLowerCase() !== 'udp' || port < 1 || port > 65535 || seen.has(`${ip}:${port}`)) continue;
+    const named = mdns && type === 'host' && MDNS_NAME.test(ip);
+    if (!named && (!octets || octets.join('.') !== ip || !allowed(octets))) continue;
+    if (!['host', 'srflx', 'prflx'].includes(type)) continue;
     seen.add(`${ip}:${port}`);
     picked.push({ type, ip, port });
   }

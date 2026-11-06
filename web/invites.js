@@ -156,11 +156,12 @@ function gathered(pc, ms) {
 
 const sdpLines = (sdp) => sdp.split(/\r?\n/).filter((l) => l.startsWith('a=candidate:'));
 
-// The code's candidates as lines the browser may take (each through `candidateAllowed`).
-function allowedLines(data, lan, own) {
+// The code's candidates as lines the browser may take (each through `candidateAllowed`; mDNS names on the same-network
+// server only).
+function allowedLines(data, lan, own, server) {
   const lines = [];
   data.candidates.forEach((c, i) => {
-    const taken = candidateAllowed(candidateLine(c, i), lan, own);
+    const taken = candidateAllowed(candidateLine(c, i), lan, own, { mdns: server === 'lan' });
     if (taken) lines.push(taken.line);
   });
   return lines;
@@ -294,7 +295,7 @@ export function hostInvites({ open = false } = {}) {
       await gathered(inv.pc, GATHER_MS);
       const sdp = inv.pc.localDescription.sdp;
       for (const line of sdpLines(sdp)) inv.own.add(line.split(' ')[4]);
-      const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lanFor(key)));
+      const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lanFor(key)), { mdns: key === 'lan' });
       if (!candidates.length) {
         throw new CodeError(
           key === 'lan'
@@ -335,7 +336,7 @@ export function hostInvites({ open = false } = {}) {
     const { pc } = inv;
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp: toSdp(data) });
-      for (const line of allowedLines(data, lanFor(inv.server), inv.own)) {
+      for (const line of allowedLines(data, lanFor(inv.server), inv.own, inv.server)) {
         await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
       }
     } catch {
@@ -567,13 +568,13 @@ export function joinInvite(code) {
       if (opened && pc.iceConnectionState === 'failed') end('The host left the game.');
     };
     await pc.setRemoteDescription({ type: 'offer', sdp: toSdp(data) });
-    const lines = allowedLines(data, lan, new Set());
+    const lines = allowedLines(data, lan, new Set(), data.server);
     if (!lines.length) return refuse('This invite has no address this page can reach.');
     for (const line of lines) await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
     await pc.setLocalDescription(await pc.createAnswer());
     await gathered(pc, GATHER_MS);
     const sdp = pc.localDescription.sdp;
-    const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lan));
+    const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lan), { mdns: data.server === 'lan' });
     const reply = await encodeCode({ kind: KIND_REPLY, token: data.token, ...fromSdp(sdp), candidates });
     markUsed(data.token);
     said.textContent = 'Send this reply link back to the host. When they open it, you join their game.';

@@ -4,7 +4,8 @@
 // walks, each page holds the other's figure, and no console error shows. Then bad, cut short, oversized and used codes
 // must each be refused with a message.
 //
-// Usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds]
+// Usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns]
+// With `mdns` the browsers keep their host candidates' mDNS names (`<uuid>.local`), as browsers do by default.
 // The invites use the same-network server: host candidates only, no STUN server is contacted (the two browsers reach each
 // other on this computer's own addresses, shown as addresses rather than `.local` names). The browser comes from
 // `guard.mjs` (TORQUE_WEB_TOOLS and CHROME as it reads them) and every page loads with `?nolock`: no page can take the
@@ -16,9 +17,9 @@ import { launchGuarded, noLock } from './guard.mjs';
 import { serve } from './serve.mjs';
 import { KIND_JOIN, encodeCode } from './codes.js';
 
-const [folder, shots, seconds = '120'] = process.argv.slice(2);
-if (!folder || !shots) {
-  console.error('usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds]');
+const [folder, shots, seconds = '120', names = ''] = process.argv.slice(2);
+if (!folder || !shots || !['', 'mdns'].includes(names)) {
+  console.error('usage: node invite-check.mjs <solo web build folder> <pictures folder> [seconds] [mdns]');
   process.exit(2);
 }
 mkdirSync(shots, { recursive: true });
@@ -34,8 +35,8 @@ const launch = async () => {
       '--enable-gpu',
       '--ignore-gpu-blocklist',
       '--window-size=1400,900',
-      // Two pages on one computer: their host candidates as addresses, not `.local` names.
-      '--disable-features=WebRtcHideLocalIpsWithMdns',
+      // Two pages on one computer: their host candidates as addresses, not `.local` names (unless `mdns`).
+      ...(names === 'mdns' ? [] : ['--disable-features=WebRtcHideLocalIpsWithMdns']),
     ],
     defaultViewport: { width: 1400, height: 900 },
   });
