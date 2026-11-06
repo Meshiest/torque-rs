@@ -79,6 +79,32 @@ fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
 
+#[test]
+fn the_menu_draws_its_text_with_the_system_fonts() {
+    if torque::fonts::system::SystemFonts::new().is_none() {
+        eprintln!("this system has no font files: skipped");
+        return;
+    }
+    let mut g = client();
+    let draws = g.host.draw_frame();
+    assert_eq!(
+        draws.report.no_font, 0,
+        "text drawn with no font: {:?}",
+        draws.report.missing_fonts
+    );
+    let glyphs: usize = draws
+        .batches
+        .iter()
+        .filter(|b| {
+            b.texture
+                .as_ref()
+                .is_some_and(|t| t.name.starts_with("font:"))
+        })
+        .map(|b| b.quads.len())
+        .sum();
+    assert!(glyphs > 20, "the menu's glyphs drawn: {glyphs}");
+}
+
 /// `key` pressed with Ctrl held.
 fn ctrl(game: &mut ArenaGame, key: Key) {
     game.key(Key::ControlLeft, true);

@@ -505,6 +505,10 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-fonts`: the system fonts on Linux and macOS (the menus drew no text outside Windows). The font folders (XDG's, or
+  macOS's three) are scanned once, with depth, entry, file and size limits, and every file is checked (`ttf::check`) before
+  it is read. A face missing there falls back on a metric-compatible free face (Arial on Liberation Sans, then DejaVu Sans;
+  Times New Roman on Liberation Serif; Courier New on Liberation Mono), then on any sans face found.
 - Examples' pose keys: Ctrl holds the crouch and C toggles it; C or Ctrl lying down gets up to a crouch, Space lying down
   or crouched by C stands rather than jumping, and a respawn or a restart starts the figure standing (it kept the prone
   toggle).

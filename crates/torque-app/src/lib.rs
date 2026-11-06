@@ -114,7 +114,8 @@ fn system_fallback() -> Box<dyn Fallback> {
 }
 
 /// The GUI's draw cache: fonts from `.uft` files in `fonts/` when there are any, else rasterized from the system's TrueType
-/// face of the profile's name (Windows' fonts folder, or a browser's fonts); with neither, text is not drawn.
+/// face of the profile's name (Windows' fonts folder, the font folders of Linux or macOS with free stand-ins for TGE's common
+/// faces, or a browser's fonts); with neither, text is not drawn.
 pub fn draw_cache() -> DrawCache {
     DrawCache::new(Box::new(layout_fonts()))
 }
