@@ -264,8 +264,9 @@ The first development version. Nothing is published yet; this is what exists.
   dropped, and plays over its game socket with UDP blocked.
 - `torque-rooms`: a room service for player-hosted games (library and `torque-rooms` binary). A host opens a room and
   gets a code (8 characters, 40 bits); joiners name the code, and the service carries only the signaling of one WebRTC
-  data channel between each joiner and the host (a body must be an offer, answer, candidate, busy or closed message, so
-  no game traffic can pass). It runs on torque-server's web transport with its TLS, Host and Origin checks, per-address
+  data channel between each joiner and the host (a body must be an offer or answer that is an SDP of at most 4 KiB in
+  printable ASCII, one candidate line of at most 512 bytes, or a busy or closed message with no body, so no game traffic
+  or other data can pass). It runs on torque-server's web transport with its TLS, Host and Origin checks, per-address
   caps and wire meters, and adds caps on rooms in all and per address, joins per address a minute and failed joins a
   second (code guessing), joiners per room, signaling messages per joiner, and room, joiner and idle lifetimes. It hands
   each room's players STUN URLs and TURN credentials in the TURN REST API form (HMAC-SHA1 of `<expiry>:<id>` under a
@@ -277,8 +278,10 @@ The first development version. Nothing is published yet; this is what exists.
   ICE JSON, and credentials given only to a room's host (on `room`) and joiners (on `joined`), never on a refusal.
 - `torque-server`'s `p2p` feature: a player's host (`net::web::p2p::P2pHost`), a `Transport` that opens a room on a
   room service and takes joiners over WebRTC data channels with no port forwarded: the web transport's data channels in a host mode
-  (full ICE, so the host's own checks open its NAT; checks from any address under the per-source rate; a server-reflexive
-  candidate from the room's STUN server). A joiner cannot aim the host's checks: its candidates, offered or trickled, are
+  (full ICE, so the host's own checks open its NAT; a server-reflexive candidate from the room's STUN server). A
+  joiner's checks are taken only from the address the service saw it at or from a candidate's the host took (a check
+  with USE-CANDIDATE from anywhere else would aim the joiner's traffic there), from at most 16 source addresses a joiner,
+  under the per-source rate; an address counts as verified only when a response to the host's own check comes from it. A joiner cannot aim the host's checks: its candidates, offered or trickled, are
   taken only as IPv4 UDP (no `.local` names), at most 16 lines a joiner (refused ones counted), with distinct
   addresses capped across joiners, and never
   loopback, unspecified, broadcast, multicast, link-local, documentation, benchmarking, shared, reserved or the host's
@@ -301,7 +304,8 @@ The first development version. Nothing is published yet; this is what exists.
   server in a Web Worker (`web/host-worker.js`, on `net::relay`, which holds every cap on what joiners send), plays in it
   over a local link, and holds each joiner's peer connection and data channel (`web/host.js`). A joiner's candidates go
   through the desktop host's rules (IPv4 UDP, no `.local`, no reserved or private addresses unless `?lan=1`, at most 16
-  lines); the room's peer numbers and ICE servers are read strictly. `web-fps-p2p-check`'s browser part: a second page
+  lines); at most 4 peer connections come from one address, and the room's peer numbers and ICE servers are read
+  strictly. `web-fps-p2p-check`'s browser part: a second page
   joins by code, each page holds the other's figure, the joiner walks, and it says the host left when the host page
   closes. The p2p check launches its browsers through `web/guard.mjs` with `?nolock`.
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its

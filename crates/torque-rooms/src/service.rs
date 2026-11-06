@@ -26,9 +26,10 @@ pub const TICK: Duration = Duration::from_millis(250);
 pub fn service_limits() -> WebLimits {
     WebLimits {
         max_connections: 2048,
-        connections_per_ip: 8,
+        // A page served by the service fetches about ten files at once (HTTP connections); its sockets stay few.
+        connections_per_ip: 16,
         sockets_per_ip: 8,
-        connects_per_ip_per_s: 8,
+        connects_per_ip_per_s: 16,
         idle_timeout: Duration::from_secs(30),
         messages_per_s: 128,
         bytes_per_s: 256 << 10,

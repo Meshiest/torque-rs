@@ -107,10 +107,48 @@ fn peer_number(text: &str) -> Option<u32> {
     text.parse().ok()
 }
 
-/// Whether `body` is a signaling message ([`SIGNALS`]): its kind (the text before the first newline) is one of them.
+/// The longest SDP an offer or answer carries.
+pub const MAX_SDP: usize = 4 << 10;
+/// The longest candidate line.
+pub const MAX_CANDIDATE: usize = 512;
+
+/// Whether `body` is a signaling message ([`SIGNALS`]) of its kind's shape, so that nothing else rides through the
+/// service: an offer or answer is an SDP (`v=0` first, at most [`MAX_SDP`] bytes, every line `<letter>=` and printable
+/// ASCII), a candidate is one `candidate:` line of at most [`MAX_CANDIDATE`] bytes (or none: no more), and `busy` and
+/// `closed` have no body.
 pub fn is_signal(body: &str) -> bool {
-    let kind = body.split_once('\n').map_or(body, |(k, _)| k);
-    SIGNALS.contains(&kind)
+    let (kind, rest) = match body.split_once('\n') {
+        Some((kind, rest)) => (kind, Some(rest)),
+        None => (body, None),
+    };
+    match kind {
+        "offer" | "answer" => rest.is_some_and(is_sdp),
+        "candidate" => rest.is_none_or(|line| line.is_empty() || is_candidate_line(line)),
+        "busy" | "closed" => rest.is_none(),
+        _ => false,
+    }
+}
+
+/// Printable ASCII (and tabs).
+fn printable(text: &str) -> bool {
+    text.bytes()
+        .all(|b| b == b'\t' || (0x20..0x7f).contains(&b))
+}
+
+fn is_sdp(sdp: &str) -> bool {
+    sdp.len() <= MAX_SDP
+        && sdp.starts_with("v=0")
+        && sdp.split('\n').all(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let b = line.as_bytes();
+            line.is_empty()
+                || (b.len() >= 2 && b[0].is_ascii_lowercase() && b[1] == b'=' && printable(line))
+        })
+}
+
+fn is_candidate_line(line: &str) -> bool {
+    let line = line.strip_prefix("a=").unwrap_or(line);
+    line.len() <= MAX_CANDIDATE && line.starts_with("candidate:") && printable(line)
 }
 
 impl<'a> ToService<'a> {
@@ -296,6 +334,42 @@ mod tests {
         }
         assert_eq!(FromService::parse("from 1\nbinary"), None);
         assert_eq!(FromService::parse("peer 1 ::1"), None);
+    }
+
+    #[test]
+    fn only_signaling_of_its_shape_rides_through() {
+        let sdp = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n";
+        for good in [
+            format!("offer\n{sdp}"),
+            format!("answer\n{sdp}"),
+            "candidate\ncandidate:1 1 udp 2122260223 192.0.2.1 5000 typ host generation 0".into(),
+            "candidate\na=candidate:1 1 udp 1 192.0.2.1 5000 typ host".into(),
+            "candidate".into(),
+            "candidate\n".into(),
+            "busy".into(),
+            "closed".into(),
+        ] {
+            assert!(is_signal(&good), "{good:?}");
+        }
+        let long_sdp = format!("v=0\r\na={}\r\n", "x".repeat(MAX_SDP));
+        let long_line = format!("candidate:{}", "1".repeat(MAX_CANDIDATE));
+        for bad in [
+            "offer".to_string(),
+            "offer\n".into(),
+            "offer\nhello, this is any data at all".into(),
+            format!("offer\n{sdp}free text on a line of its own\r\n"),
+            format!("offer\n{long_sdp}"),
+            format!("answer\n{sdp}a=\u{7f}\r\n"),
+            format!("answer\n{sdp}a=caf\u{e9}\r\n"),
+            "candidate\nanything at all".into(),
+            "candidate\ncandidate:1 1 udp 1 192.0.2.1 5000 typ host\nsecond line".into(),
+            format!("candidate\n{long_line}"),
+            "busy\npayload".into(),
+            "closed\n".into(),
+            "game\nbytes".into(),
+        ] {
+            assert!(!is_signal(&bad), "{bad:?}");
+        }
     }
 
     #[test]

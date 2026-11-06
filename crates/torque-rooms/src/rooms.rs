@@ -809,20 +809,20 @@ mod tests {
         say(&mut r, 3, 3, "join 00000001", 0);
         for _ in 0..3 {
             assert_eq!(
-                sent(&say(&mut r, 2, 2, "signal\ncandidate\nx", 1), 1).len(),
+                sent(&say(&mut r, 2, 2, "signal\ncandidate\ncandidate:x", 1), 1).len(),
                 1
             );
         }
-        let out = say(&mut r, 2, 2, "signal\ncandidate\nx", 1);
+        let out = say(&mut r, 2, 2, "signal\ncandidate\ncandidate:x", 1);
         assert!(closed(&out, 2));
         assert_eq!(sent(&out, 1), ["left 1"]);
         for _ in 0..3 {
             assert_eq!(
-                sent(&say(&mut r, 1, 1, "to 2\ncandidate\nx", 1), 3).len(),
+                sent(&say(&mut r, 1, 1, "to 2\ncandidate\ncandidate:x", 1), 3).len(),
                 1
             );
         }
-        let out = say(&mut r, 1, 1, "to 2\ncandidate\nx", 1);
+        let out = say(&mut r, 1, 1, "to 2\ncandidate\ncandidate:x", 1);
         assert!(
             closed(&out, 3) && !closed(&out, 1),
             "the joiner goes, not the host"

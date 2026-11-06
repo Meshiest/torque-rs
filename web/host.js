@@ -9,15 +9,17 @@
 // `offer`, `answer`, `candidate`). The page's root element carries `data-torque-room` (the code, `ABCD-EFGH`) and
 // `data-torque-server` (`worker` once the server runs there).
 //
-// Caps here, for what the page itself holds: at most MAX_PEERS peer connections, one offer each (an offer asking for
-// anything but data channels is refused), MAX_CANDIDATES candidate lines each way, one channel each (label `game`,
-// unordered, no retransmits), and a send skipped while a channel holds more than MAX_BUFFERED bytes. A joiner's
+// Caps here, for what the page itself holds: at most MAX_PEERS peer connections (MAX_PEERS_PER_IP from one address),
+// one offer each (an offer asking for anything but data channels is refused), MAX_CANDIDATES candidate lines each way,
+// one channel each (label `game`, unordered, no retransmits), and a send skipped while a channel holds more than MAX_BUFFERED bytes. A joiner's
 // candidates, in its offer or trickled, go through `candidateAllowed` (the desktop host's rules): IPv4 UDP only, no `.local`
 // names, never loopback, link-local, multicast, broadcast, reserved ranges or this page's own addresses, and private ones
 // only with `?lan=1` (players on the host's network). A joiner reaches the host without them: its own checks to the
 // host's candidates are answered.
 
 const MAX_PEERS = 64;
+// Peer connections from one address (the room service's word for it), as the desktop host's.
+const MAX_PEERS_PER_IP = 4;
 export const MAX_CANDIDATES = 16;
 const MAX_BUFFERED = 256 * 1024;
 const MAX_MESSAGE = 8 * 1024;
@@ -230,7 +232,8 @@ export async function hostGame(game, say) {
     const id = peerNumber(a);
     if (id === null) return;
     if (verb === 'peer') {
-      if (peers.size >= MAX_PEERS || peers.has(id) || !ipv4(b)) return tell(`drop ${id}`);
+      const fromIp = [...peers.values()].filter((p) => p.ip === b).length;
+      if (peers.size >= MAX_PEERS || fromIp >= MAX_PEERS_PER_IP || peers.has(id) || !ipv4(b)) return tell(`drop ${id}`);
       peers.set(id, { ip: b, pc: null, channel: null, linked: false, sent: 0, got: 0 });
     } else if (verb === 'from') {
       const peer = peers.get(id);

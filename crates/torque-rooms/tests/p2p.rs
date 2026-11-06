@@ -331,12 +331,14 @@ fn hostile_joiners_are_turned_away_and_the_host_stays_quick() {
     let mut h = host(&rooms.url());
     let code = h.code().unwrap();
     let (mut good, at) = connected(&mut h, &rooms.url(), &code);
-    // A media offer, an offer that is not SDP, and a joiner past its offers: each is dropped from the room.
-    let edits: [fn(String) -> String; 2] = [
-        |s| s + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
-        |_| "not sdp at all".to_string(),
+    // A media offer is dropped from the room by the host; an offer that is not SDP never leaves the service, which
+    // closes the socket that sent it.
+    type Edit = fn(String) -> String;
+    let edits: [(Edit, bool); 2] = [
+        (|s| s + "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n", true),
+        (|_| "not sdp at all".to_string(), false),
     ];
-    for edit in edits {
+    for (edit, by_host) in edits {
         let mut bad = Joiner::new(&rooms.url());
         bad.say(&ToService::Join(&code));
         run(&mut h, &mut [&mut bad, &mut good], 3000, |_, j| {
@@ -344,9 +346,13 @@ fn hostile_joiners_are_turned_away_and_the_host_stays_quick() {
         });
         bad.offer_with(edit);
         let longest = run(&mut h, &mut [&mut bad, &mut good], 3000, |_, j| {
-            j[0].closed_by_room.is_some()
+            j[0].closed_by_room.is_some() || j[0].room.as_ref().is_some_and(|r| !r.is_open())
         });
-        assert_eq!(bad.closed_by_room.as_deref(), Some("dropped"));
+        if by_host {
+            assert_eq!(bad.closed_by_room.as_deref(), Some("dropped"));
+        } else {
+            assert!(bad.room.as_ref().is_some_and(|r| !r.is_open()));
+        }
         assert!(
             longest < Duration::from_millis(20),
             "a pass took {longest:?}"
