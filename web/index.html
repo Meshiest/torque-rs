@@ -13,20 +13,23 @@
   body > canvas { display: block; outline: none; position: fixed; inset: 0; z-index: 0;
     width: 100% !important; height: 100% !important; min-width: 0 !important; max-width: none !important;
     min-height: 0 !important; max-height: none !important; }
-  #loading, #fps, #gear, #settings, #invites { z-index: 1; }
+  #loading, #fps, #gear, #gallery, #settings, #invites { z-index: 1; }
   #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
   #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
   #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
   #fps { position: fixed; top: 0.5rem; left: 0.5rem; padding: 0.2rem 0.5rem; background: #000a; color: #e8ecf4;
     font: 13px ui-monospace, monospace; border-radius: 4px; pointer-events: none; }
-  /* The gear sits under the game's frame-rate line at the top right (`--gear-top`, set by the script from the size the game
-     draws at), and the settings panel opens under it. */
-  #gear { position: fixed; top: var(--gear-top, 3rem); right: 0.5rem; box-sizing: border-box; width: 2.25rem;
+  /* The gear and the gallery button sit under the game's frame-rate line at the top right (`--gear-top`, set by the script
+     from the size the game draws at), and the settings panel opens under them. */
+  #gear, #gallery { position: fixed; top: var(--gear-top, 3rem); right: 0.5rem; box-sizing: border-box; width: 2.25rem;
     height: 2.25rem; padding: 0; border: 1px solid #3a4152; border-radius: 6px; background: #1c2029e6; color: #dde2ec;
     font-size: 1.25rem; line-height: 1; cursor: pointer; }
-  #gear:hover { background: #262c38; }
-  #gear:focus-visible, #settings select:focus-visible, #settings input:focus-visible, #settings button:focus-visible {
-    outline: 2px solid #7aa2f7; outline-offset: 2px; }
+  #gallery { right: 3.15rem; display: flex; align-items: center; justify-content: center; }
+  #gallery[hidden] { display: none; }
+  #gallery svg { width: 1.1rem; height: 1.1rem; fill: currentColor; }
+  #gear:hover, #gallery:hover { background: #262c38; }
+  #gear:focus-visible, #gallery:focus-visible, #settings select:focus-visible, #settings input:focus-visible,
+  #settings button:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
   #settings { position: fixed; top: calc(var(--gear-top, 3rem) + 2.75rem); right: 0.5rem; width: 15rem; padding: 0.75rem 0.9rem;
     border: 1px solid #3a4152; border-radius: 8px; background: #1c2029f2; box-shadow: 0 6px 20px #0008; }
   #settings h2 { margin: 0 0 0.6rem; font-size: 0.95rem; font-weight: 600; }
@@ -66,6 +69,12 @@
   <progress id="progress"></progress>
 </div>
 <div id="fps" hidden></div>
+<a id="gallery" href="../" aria-label="Back to the gallery" title="Back to the gallery" hidden>
+  <svg viewBox="0 0 16 16" aria-hidden="true">
+    <rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/>
+    <rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/>
+  </svg>
+</a>
 <button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings" title="Settings">&#9881;</button>
 <div id="settings" role="dialog" aria-labelledby="settings-title" hidden>
   <h2 id="settings-title">Settings</h2>
@@ -100,6 +109,9 @@
   // (loading.js): the page's (the module's download and compile, the files, the start) and then the game's, which it writes
   // on the root element's `data-torque-stage`. A refused file or list is shown here, and its message is on the root element's
   // `data-torque-refused` for a test.
+  //
+  // The gallery button, beside the gear: shown on a page that is part of the website (`site.mjs` marks it with the root
+  // element's `data-torque-gallery="1"`), whose gallery is the folder above it.
   //
   // The settings (the gear, top right, under the game's frame-rate line; settings.js): the renderer's quality, through the
   // scripts' `setRenderQuality` and applied at the game's next frame; the render scale, the root element's
@@ -189,6 +201,7 @@
   const showFps = document.getElementById('show-fps');
   const note = document.getElementById('settings-note');
   const fps = document.getElementById('fps');
+  document.getElementById('gallery').hidden = root.dataset.torqueGallery !== '1';
   quality.value = chosen.quality;
   scale.value = chosen.scale;
   root.dataset.torqueRenderScale = chosen.scale;
@@ -239,7 +252,7 @@
   addEventListener('keydown', (e) => {
     if (e.code === 'F8' && !e.repeat) setFps(fps.hidden);
   }, { capture: true });
-  // The gear under the game's frame-rate line, at the size the game draws at.
+  // The gear (and the gallery button) under the game's frame-rate line, at the size the game draws at.
   let gearAt = null;
   function placeGear() {
     const top = settings.gearTop(innerHeight, root.dataset.torqueSize);

@@ -1,13 +1,13 @@
 // Builds the project's website into one folder, ready for a static host (GitHub Pages): the gallery (web/gallery.html) as
 // its index.html with the examples' pictures beside it, each web example played alone in its own folder (`build.mjs <name>
-// --solo`: files fetched by URL), the guide (mdBook) in book/ and the API reference (rustdoc) in api/. Every link is
-// relative, so the folder works under a project site's path (`/torque-rs/`) and from a local server
-// (`node web/serve.mjs <folder> 8080 /torque-rs/`).
+// --solo`: files fetched by URL; its page marked `data-torque-gallery="1"`, so it offers a way back to the gallery), the
+// guide (mdBook) in book/ and the API reference (rustdoc) in api/. Every link is relative, so the folder works under a
+// project site's path (`/torque-rs/`) and from a local server (`node web/serve.mjs <folder> 8080 /torque-rs/`).
 //
 // Usage: node site.mjs [folder]      (default: <target>/site; the target folder is CARGO_TARGET_DIR's, else `target`)
 // Needs what build.mjs needs (rustup's wasm32-unknown-unknown target, Node), and mdbook on the PATH.
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -44,6 +44,15 @@ mkdirSync(site, { recursive: true });
 for (const name of EXAMPLES) {
   run(process.execPath, [join(root, 'web', 'build.mjs'), name, '--solo']);
   cpSync(join(target, 'web', `${name}-solo`), join(site, name), { recursive: true });
+  // The page is part of the site: it shows a button back to the gallery (the folder above it).
+  const page = join(site, name, 'index.html');
+  const html = readFileSync(page, 'utf8');
+  const marked = html.replace('<html lang="en"', '<html lang="en" data-torque-gallery="1"');
+  if (marked === html) {
+    console.error(`${page} has no <html lang="en"> to mark`);
+    process.exit(1);
+  }
+  writeFileSync(page, marked);
 }
 
 run('mdbook', ['build', join(root, 'book'), '--dest-dir', join(site, 'book')]);
