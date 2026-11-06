@@ -111,3 +111,106 @@ fn the_first_person_eye_lowers_with_each_pose_eased_and_rises_again() {
         "it only rises: {up:?}"
     );
 }
+
+#[test]
+fn space_while_lying_down_gets_up_and_does_not_jump() {
+    let files = GameFiles::bundled().expect("the game folder");
+    let mut game = LevelDemo::new(files).expect("the client");
+    assert!(enter(&mut game, 0), "the first map did not start");
+    eyes(&mut game, 60);
+    game.key(Key::Z, true);
+    game.key(Key::Z, false);
+    eyes(&mut game, 60);
+    assert_eq!(server_pose(&mut game), Pose::Prone);
+    let lying = game.ghost_figure_position().expect("the figure")[2];
+    game.key(Key::Space, true);
+    game.key(Key::Space, false);
+    let mut highest = lying;
+    for _ in 0..90 {
+        eyes(&mut game, 1);
+        highest = highest.max(game.ghost_figure_position().expect("the figure")[2]);
+    }
+    assert_eq!(server_pose(&mut game), Pose::Stand);
+    assert!(
+        highest - lying < 0.05,
+        "the figure jumped: {lying} to {highest}"
+    );
+    // A second tap, standing, jumps again.
+    game.key(Key::Space, true);
+    game.key(Key::Space, false);
+    let mut highest = lying;
+    for _ in 0..40 {
+        eyes(&mut game, 1);
+        highest = highest.max(game.ghost_figure_position().expect("the figure")[2]);
+    }
+    assert!(
+        highest - lying > 0.3,
+        "standing, Space jumps: {lying} to {highest}"
+    );
+}
+
+/// Presses and lets go of `key`, then steps `frames` frames.
+fn tap(game: &mut LevelDemo, key: Key, frames: usize) {
+    game.key(key, true);
+    game.key(key, false);
+    eyes(game, frames);
+}
+
+#[test]
+fn c_toggles_the_crouch_and_crouch_keys_lying_down_get_up_to_a_crouch() {
+    let files = GameFiles::bundled().expect("the game folder");
+    let mut game = LevelDemo::new(files).expect("the client");
+    assert!(enter(&mut game, 0), "the first map did not start");
+    eyes(&mut game, 60);
+    tap(&mut game, Key::C, 60);
+    assert_eq!(server_pose(&mut game), Pose::Crouch, "C crouches");
+    tap(&mut game, Key::C, 60);
+    assert_eq!(server_pose(&mut game), Pose::Stand, "C again stands");
+    tap(&mut game, Key::C, 60);
+    tap(&mut game, Key::Space, 60);
+    assert_eq!(
+        server_pose(&mut game),
+        Pose::Stand,
+        "Space stands from C's crouch"
+    );
+    tap(&mut game, Key::Z, 90);
+    assert_eq!(server_pose(&mut game), Pose::Prone);
+    tap(&mut game, Key::C, 90);
+    assert_eq!(
+        server_pose(&mut game),
+        Pose::Crouch,
+        "C lying down gets up to a crouch"
+    );
+    tap(&mut game, Key::Z, 90);
+    assert_eq!(
+        server_pose(&mut game),
+        Pose::Prone,
+        "Z from C's crouch lies down"
+    );
+    game.key(Key::ControlLeft, true);
+    eyes(&mut game, 90);
+    assert_eq!(
+        server_pose(&mut game),
+        Pose::Crouch,
+        "Ctrl lying down gets up to a crouch"
+    );
+    game.key(Key::ControlLeft, false);
+    eyes(&mut game, 90);
+    assert_eq!(server_pose(&mut game), Pose::Stand, "Ctrl let go stands");
+}
+
+#[test]
+fn a_restart_lying_down_starts_standing() {
+    let files = GameFiles::bundled().expect("the game folder");
+    let mut game = LevelDemo::new(files).expect("the client");
+    assert!(enter(&mut game, 0), "the first map did not start");
+    eyes(&mut game, 60);
+    tap(&mut game, Key::Z, 90);
+    assert_eq!(server_pose(&mut game), Pose::Prone);
+    tap(&mut game, Key::R, 120);
+    assert_eq!(
+        server_pose(&mut game),
+        Pose::Stand,
+        "the restarted figure stands"
+    );
+}

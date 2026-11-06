@@ -125,6 +125,13 @@ pub struct HdScene<G> {
     /// is always filtered over its neighbors on each texel's plane and keeps no history, and the contact shadows' march has a
     /// fixed pattern: no grain and no trail behind a moving shape.
     pub smooth_occlusion: bool,
+    /// Opt-in: the ground's textures varied against visible tiling: every terrain layer's texture tiled stochastically (each
+    /// cell of the noise offset at random, the cells' edges blended) and tinted by a large-scale noise over the world. Off: the
+    /// planes drawn as before (the base plane's tiling as the extension says).
+    pub ground_variation: bool,
+    /// Opt-in: the volumetric clouds' own clock (seconds: their drift with the wind, their change of shape and their shadows),
+    /// for a scene whose clouds run faster or slower than its effects (a timelapse). None: the effect time, as before.
+    pub cloud_time: Option<f32>,
     /// The fixed-function frame's clear (the fog colour quad), gamma 0..1.
     pub clear: [f32; 3],
     /// The sky in TGE's order (box, the remote flare, clouds, bans): drawn first, unlit, no depth.
@@ -225,6 +232,8 @@ impl<G> HdScene<G> {
             ao_radius: post::AO_RADIUS,
             ao_sun: 0.0,
             smooth_occlusion: false,
+            ground_variation: false,
+            cloud_time: None,
             sky: Vec::new(),
             sky_eye: [0.0; 3],
             sky_choice: sky::SkyChoice::Auto,

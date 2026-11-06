@@ -149,3 +149,59 @@ fn behind_a_crouched_or_prone_figure_the_camera_rides_lower_and_stays_above_the_
         assert!(at[2] > 0.05, "never under the floor: {at:?}");
     }
 }
+
+/// The drawn eyes from now until the camera settles at the new place, after `teleport` (none farther than `near` from either
+/// the eye before it or the one it settles at: a cut, not a move through what lies between).
+fn cut_on(a: &mut ArenaGame, teleport: impl FnOnce(&mut ArenaGame), label: &str) {
+    let before = frames(a, 60).position;
+    teleport(a);
+    let mut drawn = Vec::new();
+    for _ in 0..90 {
+        drawn.push(frame(a).position);
+    }
+    let after = *drawn.last().unwrap();
+    assert!(
+        apart(before, after) > 10.0,
+        "{label}: the figure went far ({before:?} to {after:?})"
+    );
+    let near = 1.0;
+    for (i, p) in drawn.iter().enumerate() {
+        let gap = apart(*p, before).min(apart(*p, after));
+        assert!(
+            gap < near,
+            "{label}: frame {i} drew the eye at {p:?}, {gap} m from both {before:?} and {after:?}: {drawn:?}"
+        );
+    }
+}
+
+fn place_far(a: &mut ArenaGame) {
+    let server = a.server.as_mut().unwrap();
+    server
+        .call("placeFigure", &["Ann", "20", "20", "0.1", "0"])
+        .unwrap();
+}
+
+fn respawn(a: &mut ArenaGame) {
+    let vm = a.server.as_mut().unwrap().vm_mut();
+    vm.eval(b"ClientGroup.getObject(0).spawnFigure();").unwrap();
+}
+
+#[test]
+fn a_teleport_or_a_respawn_cuts_the_camera_in_either_person() {
+    for behind in [false, true] {
+        let person = if behind {
+            "third person"
+        } else {
+            "first person"
+        };
+        let mut a = host();
+        if behind {
+            tab(&mut a);
+        }
+        frames(&mut a, 60);
+        assert_eq!(a.third_person(), behind);
+        cut_on(&mut a, place_far, &format!("{person}, placed far"));
+        cut_on(&mut a, respawn, &format!("{person}, respawned"));
+        cut_on(&mut a, place_far, &format!("{person}, placed far again"));
+    }
+}

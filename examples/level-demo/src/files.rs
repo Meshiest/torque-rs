@@ -48,5 +48,55 @@ pub fn maps(files: &GameFiles) -> Vec<MapEntry> {
 /// The kit's forests (the vehicle demo's, which no map here places) are left out too.
 pub fn web_pack(mut files: GameFiles) -> Result<Vec<u8>, String> {
     crate::levels::add_levels(&mut files)?;
+    add_valley(&mut files)?;
     Ok(files.pack(|path| !path.starts_with("levels/") && !path.starts_with("kit/forest")))
+}
+
+/// The map that has the valley's terrain, woods and textures ([`torque_example_assets::valley`]).
+pub const VALLEY_MAP: &str = "missions/valley.mis";
+
+/// The line of the valley's map its woods' interiors take the place of.
+pub const WOODS: &str = "%woods%";
+
+/// The valley's files added to the kit when the game folder has its map and the kit has them not yet (a web build's pack
+/// carries them made), and its map's [`WOODS`] line replaced by an `InteriorInstance` of each tree of the woods (one of the
+/// few trees' interiors, placed, turned and scaled).
+pub fn add_valley(files: &mut GameFiles) -> Result<(), String> {
+    use std::fmt::Write as _;
+    use torque_example_assets::valley;
+    let terrain = torque_example_common::kit_path(valley::TERRAIN_FILE);
+    let Some(map) = files.file(VALLEY_MAP) else {
+        return Ok(());
+    };
+    if torque_render_scene::Assets::read(&files.kit, &terrain).is_some() {
+        return Ok(());
+    }
+    let mut map = String::from_utf8_lossy(map).into_owned();
+    for (name, bytes) in valley::files().map_err(|e| e.to_string())? {
+        files.kit.insert(&name, bytes);
+    }
+    let mut woods = String::new();
+    for t in valley::instances() {
+        let [x, y, z] = t.foot;
+        let _ = writeln!(
+            woods,
+            "   new InteriorInstance() {{ position = \"{x} {y} {z}\"; rotation = \"0 0 1 {}\"; scale = \"{s} {s} {s}\"; \
+             interiorFile = \"kit/{}\"; }};",
+            t.turn,
+            t.file,
+            s = t.scale
+        );
+    }
+    // The far ranges, each mountain an interior in the world's coordinates.
+    for (file, _) in valley::far_ranges() {
+        let _ = writeln!(
+            woods,
+            "   new InteriorInstance() {{ position = \"0 0 0\"; rotation = \"1 0 0 0\"; scale = \"1 1 1\"; interiorFile = \"kit/{file}\"; }};"
+        );
+    }
+    map = map
+        .replace(&format!("{WOODS}\n"), &woods)
+        .replace(WOODS, &woods);
+    files.insert(VALLEY_MAP, map.as_bytes());
+    Ok(())
 }

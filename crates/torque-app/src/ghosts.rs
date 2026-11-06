@@ -47,6 +47,7 @@ use torque_render_scene::vehicle_dust::{VehicleDust, ground_under, running_vehic
 use torque_render_scene::{Assets, Draw};
 
 use super::view::WorldView;
+use crate::camera_blend::teleported;
 use crate::interiors::Interiors;
 use torque_client::conn::tge::TgeWorld;
 use torque_client::player_anim::{
@@ -71,6 +72,7 @@ const MAX_FRAME_STEP: f32 = 0.25;
 
 /// The own Player's steady eye between poses: after a change of pose the view eases from where it stood to the new pose's eye
 /// over the body's blend ([`pose_blend`]), what is left of the way kept in the Player's own frame so a turn meanwhile carries it.
+/// A new own Player or a teleport ([`EyePose::cut`]) ends the ease: the view is at the new place at once.
 #[derive(Debug, Clone, Copy, Default)]
 struct EyePose {
     pose: BodyPose,
@@ -80,9 +82,26 @@ struct EyePose {
     seconds: f32,
     /// The eye of the last frame (the world).
     last: Option<[f32; 3]>,
+    /// The own Player's ghost and feet the last frame.
+    at: Option<(u32, [f32; 3])>,
 }
 
 impl EyePose {
+    /// Whether the own Player is another than the last frame's, or teleported from where it stood then (`dt` seconds ago,
+    /// [`teleported`]); either forgets the ease and the eye last drawn.
+    fn cut(&mut self, ghost: u32, position: [f32; 3], dt: f32) -> bool {
+        let cut = self
+            .at
+            .replace((ghost, position))
+            .is_some_and(|(g, from)| g != ghost || teleported(from, position, dt));
+        if cut {
+            self.left = [0.0; 3];
+            self.seconds = 0.0;
+            self.last = None;
+        }
+        cut
+    }
+
     /// The eye this frame for pose `pose`, whose own eye is at `target` (the world), the Player at yaw `yaw`, `dt` seconds on.
     fn step(&mut self, pose: BodyPose, target: [f32; 3], yaw: f32, dt: f32) -> [f32; 3] {
         let (s, c) = yaw.sin_cos();
@@ -681,7 +700,8 @@ pub const MAX_HIT_BURSTS: usize = 16;
 
 /// The client's own Player as the last frame placed it: its ghost, its feet, its yaw and head's pitch (positive looks down), the
 /// eye its first-person view stands at (steady with [`GhostOptions::steady_eye`]), and its `eye` node as the body is drawn
-/// (TGE's eye, moving with the animation).
+/// (TGE's eye, moving with the animation); and whether the frame cut to it: another Player than the last frame's, or this one
+/// teleported ([`teleported`]), when the game's camera cuts too (a [`crate::camera_blend::CameraBlend`] and boom reset).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OwnView {
     pub ghost: u32,
@@ -690,6 +710,7 @@ pub struct OwnView {
     pub pitch: f32,
     pub eye: [f32; 3],
     pub drawn_eye: [f32; 3],
+    pub cut: bool,
 }
 
 /// The faces of `world` near a point, within a reach: the surface a projectile's decal there may lie on.
@@ -1167,6 +1188,7 @@ impl<S: GhostStyle> GhostScene<S> {
                 self.others.push((index, position, yaw));
                 continue;
             }
+            let cut = self.eye_pose.cut(index, position, dt);
             // A steady view: the eye at the rest pose, where the Player really is (the engine's own, [`GhostOptions::steady_eye`]),
             // lowered with its pose and eased between poses as its body is.
             let pose = self
@@ -1206,6 +1228,7 @@ impl<S: GhostStyle> GhostScene<S> {
                 pitch,
                 eye,
                 drawn_eye,
+                cut,
             });
             if world.hide_control {
                 world.records.view = Some(Eye {

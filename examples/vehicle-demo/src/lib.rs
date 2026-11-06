@@ -10,6 +10,7 @@
 //!   passenger's view, the hill and the start.
 //! - [`cloud_shots`]: the sky's clouds through the day, drawn offscreen with the engine's clouds and with the demo's.
 //! - [`web`]: the example in a browser, played alone, its files fetched by the page.
+//! - [`showcase`]: the buggy in a turn of the race track, the world alone at the highest quality.
 //!
 //! The window is the engine's ([`torque::app::window::run`]).
 
@@ -20,4 +21,5 @@ pub mod scene;
 pub mod seats;
 pub mod server;
 pub mod shots;
+pub mod showcase;
 pub mod web;

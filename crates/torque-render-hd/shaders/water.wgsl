@@ -249,8 +249,9 @@ fn background_at(q: vec2<f32>) -> vec3<f32> {
 }
 
 // The planar reflection at `uv` through a cubic B-spline (four bilinear taps): the target is half the frame's size at High, and a
-// bilinear fetch of it, its slope changing at every texel, drew the reflection in 2 x 2 steps close up.
-fn planar_at(uv: vec2<f32>) -> vec3<f32> {
+// bilinear fetch of it, its slope changing at every texel, drew the reflection in 2 x 2 steps close up. Its alpha is -1 where only
+// the sky was drawn (reflect.rs clears the planar target's alpha to -1 and the sky keeps it), 0 or more where the scene was.
+fn planar_at(uv: vec2<f32>) -> vec4<f32> {
     let size = vec2<f32>(textureDimensions(planar_tex));
     let t = uv * size - 0.5;
     let i = floor(t);
@@ -265,11 +266,39 @@ fn planar_at(uv: vec2<f32>) -> vec3<f32> {
     let g1 = w2 + w3;
     let p0 = (i - 1.0 + w1 / max(g0, vec2<f32>(1e-6)) + 0.5) / size;
     let p1 = (i + 1.0 + w3 / max(g1, vec2<f32>(1e-6)) + 0.5) / size;
-    let a = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p0.x, p0.y), 0.0).rgb;
-    let b = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p1.x, p0.y), 0.0).rgb;
-    let c = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p0.x, p1.y), 0.0).rgb;
-    let d = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p1.x, p1.y), 0.0).rgb;
+    let a = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p0.x, p0.y), 0.0);
+    let b = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p1.x, p0.y), 0.0);
+    let c = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p0.x, p1.y), 0.0);
+    let d = textureSampleLevel(planar_tex, refl_samp, vec2<f32>(p1.x, p1.y), 0.0);
     return g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d);
+}
+
+// The volumetric clouds in the sky the water reflects: `base` (the reflected sky toward `r`, which points up) with the clouds'
+// image laid over it (skyfog.wgsl's: their light and transmittance, this frame's, so they move with the clouds and leave no trail)
+// where the main view sees `r`. Where it does not (a reflection steeper than the view's top edge, or off its sides) the image's
+// edge at the same heading stands in for it, read blurrier the farther out, so the clouds go on over the water instead of stopping
+// at a line. Nothing without clouds.
+const REFLECTED_CLOUD_LOD: f32 = 1.0;
+const REFLECTED_CLOUD_WAVES: f32 = 0.3;
+const REFLECTED_CLOUD_EDGE: f32 = 0.004;
+fn reflected_clouds(base: vec3<f32>, r: vec3<f32>) -> vec3<f32> {
+    if sky.cloud_sun.x <= 0.0 || r.z <= 0.0 {
+        return base;
+    }
+    let clip = frame.unjit_view_proj * vec4<f32>(frame.eye.xyz + r * 1000.0, 1.0);
+    if clip.w <= 1e-4 {
+        return base;
+    }
+    let ndc = clip.xy / clip.w;
+    let uv = vec2<f32>(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
+    let out = max(max(-uv.x, uv.x - 1.0), -uv.y);
+    let lod = REFLECTED_CLOUD_LOD + clamp(out * 6.0, 0.0, 3.0);
+    let at = clamp(uv, vec2<f32>(REFLECTED_CLOUD_EDGE), vec2<f32>(1.0 - REFLECTED_CLOUD_EDGE));
+    let c = smooth_level(cloud_image, at * sky.cloud_use.zw, lod);
+    // Off the sides the heading no longer matches: eased out there.
+    let side = 1.0 - smoothstep(0.0, 0.25, max(-uv.x, uv.x - 1.0));
+    let clouded = base * clamp(c.a, 0.0, 1.0) + max(c.rgb, vec3<f32>(0.0));
+    return mix(base, clouded, side);
 }
 
 // Whether the water's depth copy at pixel position `q` holds something behind the water's depth `lin_w` (else the offset point
@@ -422,6 +451,10 @@ fn fs_water(in: VertexOut) -> @location(0) vec4<f32> {
     if refl.water.y > 0.5 && refl.mode.y > 0.5 {
         let r = reflect(-v, n);
         let rr = vec3<f32>(r.xy, abs(r.z));
+        // The clouds' reflection off a calmer surface (the waves' slope a share of theirs): the low, soft image of them broken
+        // by every ripple read as speckles, not as clouds.
+        let rc = reflect(-v, normalize(mix(up, n, REFLECTED_CLOUD_WAVES)));
+        let rrc = vec3<f32>(rc.xy, abs(rc.z));
         let mode = u32(refl.mode.y + 0.5);
         var off = vec2<f32>(nview.x, -nview.y) * REFLECTION_REACH * frame.screen.y;
         let ol = length(off);
@@ -430,12 +463,14 @@ fn fs_water(in: VertexOut) -> @location(0) vec4<f32> {
         }
         if mode == 3u {
             let uv = (frag + off) * frame.screen.zw;
-            mirror = planar_at(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)));
+            let pl = planar_at(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)));
+            mirror = mix(pl.rgb, reflected_clouds(pl.rgb, rrc), clamp(-pl.a, 0.0, 1.0));
         } else if mode == 2u {
+            // A miss falls back to the clouded sky.
             let s = ssr_at(frag + off);
-            mirror = mix(sky_radiance(rr, 0.0), s.rgb, s.a);
+            mirror = mix(reflected_clouds(sky_radiance(rr, 0.0), rrc), s.rgb, s.a);
         } else {
-            mirror = sky_radiance(rr, 0.0);
+            mirror = reflected_clouds(sky_radiance(rr, 0.0), rrc);
         }
         var f = schlick(WATER_F0, nv);
         if !clear {
