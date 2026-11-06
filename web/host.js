@@ -420,7 +420,13 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
     else if (client === 'solo') game.startSoloClient();
     return handle;
   }
-  room = new WebSocket(roomsUrl);
+  try {
+    room = new WebSocket(roomsUrl);
+  } catch (e) {
+    // no room service at that address: nothing of this game stays
+    stop();
+    throw e;
+  }
   room.binaryType = 'arraybuffer';
   room.onopen = () => tell('host');
   room.onmessage = (e) => {

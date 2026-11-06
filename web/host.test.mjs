@@ -6,6 +6,7 @@ import {
   candidateAllowed,
   channelLive,
   dataOnly,
+  hostGame,
   iceServersFrom,
   meteredReceiver,
   nextLinkId,
@@ -248,4 +249,52 @@ test('a game hosted from the start ends on back; other asks do nothing', () => {
   globalThis.torqueAsk('back');
   assert.deepEqual(ended, [1]);
   assert.deepEqual(stopped, []);
+});
+
+test('a room service address no socket can be made for leaves no worker, listener or mark behind', async () => {
+  const saved = {};
+  for (const k of ['document', 'location', 'Worker', 'WebSocket', 'addEventListener', 'removeEventListener']) {
+    saved[k] = Object.getOwnPropertyDescriptor(globalThis, k);
+  }
+  const dataset = {};
+  const listeners = new Set();
+  const workers = [];
+  class FakeWorker {
+    constructor() {
+      this.terminated = false;
+      workers.push(this);
+    }
+    postMessage(m) {
+      if (m && 'start' in m) setTimeout(() => this.onmessage?.({ data: { started: '' } }), 0);
+    }
+    terminate() {
+      this.terminated = true;
+    }
+  }
+  const set = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
+  set('document', { documentElement: { dataset } });
+  set('location', { search: '?rooms=ws://', protocol: 'http:', host: '127.0.0.1' });
+  set('Worker', FakeWorker);
+  set('WebSocket', class {
+    constructor() {
+      throw new SyntaxError('no host in the address');
+    }
+  });
+  set('addEventListener', (type, fn) => listeners.add(`${type}`) && fn);
+  set('removeEventListener', (type) => listeners.delete(`${type}`));
+  try {
+    const game = { setLocalSender() {}, startHostClient() {} };
+    await assert.rejects(hostGame(game, () => {}, { client: null }), /no host/);
+    assert.equal(workers.length, 1);
+    assert.ok(workers[0].terminated, 'the worker ended');
+    assert.equal(workers[0].onmessage, null);
+    assert.equal(listeners.size, 0, 'no pagehide listener left');
+    assert.equal(dataset.torqueServer, undefined);
+    assert.equal(dataset.torqueRoom, undefined);
+  } finally {
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(globalThis, k, d);
+      else delete globalThis[k];
+    }
+  }
 });
