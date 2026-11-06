@@ -653,6 +653,55 @@ mod tests {
     }
 
     #[test]
+    fn credentials_go_only_to_sockets_in_a_room() {
+        let ice = Ice {
+            stun: vec!["stun:192.0.2.9:3478".into()],
+            turn: vec!["turn:192.0.2.9:3478".into()],
+            secret: Some(b"s".to_vec()),
+            ttl: std::time::Duration::from_secs(600),
+        };
+        let limits = RoomLimits {
+            joiners_per_room: 1,
+            ..RoomLimits::default()
+        };
+        let mut n = 0u8;
+        let mut r = Rooms::with_random(
+            limits,
+            ice,
+            Box::new(move |b| {
+                n += 1;
+                *b = [0, 0, 0, 0, 0, 0, 0, n];
+                true
+            }),
+        );
+        let given = |out: &[Out]| {
+            out.iter()
+                .filter(|o| matches!(o, Out::Send(_, t) if t.contains("credential")))
+                .count()
+        };
+        // Before any room: a ping, and a join with no room.
+        assert_eq!(given(&say(&mut r, 5, 5, "ping", 0)), 0);
+        assert_eq!(given(&say(&mut r, 6, 6, "join 0000-000Z", 0)), 0);
+        // The host on `room` and the joiner on `joined`, each its own credential, expiring the TTL after the clock (the
+        // tests' clock is 1,000,000).
+        let out = say(&mut r, 1, 1, "host", 0);
+        let room = &sent(&out, 1)[0];
+        assert!(room.contains("\"username\":\"1000600:1\""), "{room}");
+        let out = say(&mut r, 2, 2, "join 00000001", 0);
+        assert_eq!(
+            sent(&out, 1),
+            ["peer 1 192.0.2.2"],
+            "the host is given none"
+        );
+        let joined = &sent(&out, 2)[0];
+        assert!(joined.contains("\"username\":\"1000600:2\""), "{joined}");
+        // A join past the room's joiners is refused with none.
+        let out = say(&mut r, 3, 3, "join 00000001", 0);
+        assert_eq!(sent(&out, 3), ["refused full"]);
+        assert_eq!(given(&out), 0);
+    }
+
+    #[test]
     fn messages_out_of_place_close_the_socket() {
         let mut r = rooms(RoomLimits::default());
         say(&mut r, 1, 1, "host", 0);

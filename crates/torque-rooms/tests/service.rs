@@ -300,3 +300,31 @@ fn guessing_codes_is_refused_after_a_few_tries() {
     );
     assert!(!got.closed, "a refusal keeps the socket");
 }
+
+/// The TURN secret file's rules: a regular file, not much longer than a secret, and on Unix closed to other users.
+#[test]
+fn the_turn_secret_file_is_read_with_care() {
+    use torque_rooms::ice::{MAX_SECRET, SECRET_SPACE, read_secret_file};
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("torque-rooms-secret");
+    std::fs::create_dir_all(&dir).unwrap();
+    let good = dir.join("good");
+    std::fs::write(&good, b"s3cret\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o640)).unwrap();
+    }
+    assert_eq!(read_secret_file(&good).unwrap(), b"s3cret");
+    let huge = dir.join("huge");
+    std::fs::write(&huge, vec![b'a'; MAX_SECRET + SECRET_SPACE + 1]).unwrap();
+    assert!(read_secret_file(&huge).unwrap_err().contains("longer than"));
+    assert!(read_secret_file(&dir).is_err(), "a folder");
+    assert!(read_secret_file(&dir.join("missing")).is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_secret_file(&good).unwrap_err().contains("other users"));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

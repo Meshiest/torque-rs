@@ -12,14 +12,15 @@
 //!
 //! ICE: each `--stun` URL (`stun:host:port`) is given to every room's players, and each `--turn` URL (`turn:` or `turns:`)
 //! with a credential made from the secret in `--turn-secret-file` (shared with the TURN server: coturn's
-//! `use-auth-secret` and `static-auth-secret`) lasting `--turn-ttl` seconds (default 4 hours). Rooms last
+//! `use-auth-secret` and `static-auth-secret`) lasting `--turn-ttl` seconds (default 4 hours, at most 48). The secret
+//! file must be a regular file of at most a little over a kilobyte, and on Unix closed to other users. Rooms last
 //! `--room-hours` (default 6).
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use torque_rooms::ice::{DEFAULT_TTL, read_secret};
+use torque_rooms::ice::{DEFAULT_TTL, read_secret_file};
 use torque_rooms::{Ice, RoomLimits, Rooms, Service, service_limits};
 use torque_server::net::transport::{BindPolicy, LanRules};
 use torque_server::net::web::{Access, Origins, Tls, TlsFiles, WebFiles, WebSetup};
@@ -89,9 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if let Some(path) = &secret_file {
-        let text = std::fs::read(path)
-            .map_err(|e| format!("the TURN secret file {}: {e}", path.display()))?;
-        ice.secret = Some(read_secret(&text)?);
+        ice.secret = Some(read_secret_file(path)?);
     }
     if secret_file.is_some() && ice.turn.is_empty() {
         return Err("--turn-secret-file is for --turn URLs: add one".into());

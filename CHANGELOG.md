@@ -271,6 +271,10 @@ The first development version. Nothing is published yet; this is what exists.
   each room's players STUN URLs and TURN credentials in the TURN REST API form (HMAC-SHA1 of `<expiry>:<id>` under a
   secret shared with the TURN server). torque-server's `rooms` feature: the room protocol (`net::room`); the web
   transport's `close_socket`, and its sends capped by its message limit (unchanged by default).
+- `torque-rooms`' TURN credentials: a lifetime of 1 minute to 48 hours (`--turn-ttl`), an expiry that cannot wrap, and
+  the secret file (`--turn-secret-file`) read only when it is a regular file of at most a little over a kilobyte and, on
+  Unix, closed to other users. Tests: the credential against HMAC-SHA1 vectors computed outside Rust, the expiry, the
+  ICE JSON, and credentials given only to a room's host (on `room`) and joiners (on `joined`), never on a refusal.
 - `torque-server`'s `p2p` feature: a player's host (`net::web::p2p::P2pHost`), a `Transport` that opens a room on a
   room service and takes joiners over WebRTC data channels with no port forwarded: the web transport's data channels in a host mode
   (full ICE, so the host's own checks open its NAT; checks from any address under the per-source rate; a server-reflexive

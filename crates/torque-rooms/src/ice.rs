@@ -48,6 +48,8 @@ impl std::fmt::Debug for Ice {
 
 /// The default lifetime of a TURN credential: long enough for a game session.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(4 * 3600);
+/// The longest lifetime of a TURN credential (a room's longest life).
+pub const MAX_TTL: Duration = Duration::from_secs(48 * 3600);
 
 /// Checks a STUN or TURN URL: its scheme is one of `schemes`, and it is printable ASCII with no quote, backslash, space or
 /// control character (it goes into JSON as it is), at most [`MAX_URL`] bytes.
@@ -88,6 +90,44 @@ pub fn read_secret(text: &[u8]) -> Result<Vec<u8>, String> {
     Ok(secret.to_vec())
 }
 
+/// Reads the TURN secret from the file at `path` ([`read_secret`]'s rules): a regular file, read only up to a little past
+/// [`MAX_SECRET`] bytes (a longer file is refused, not read whole), and on Unix not readable by other users.
+pub fn read_secret_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let shown = path.display();
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("the TURN secret file {shown}: {e}"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("the TURN secret file {shown}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("the TURN secret file {shown} is not a file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if meta.permissions().mode() & 0o007 != 0 {
+            return Err(format!(
+                "the TURN secret file {shown} is open to other users (chmod o-rwx it)"
+            ));
+        }
+    }
+    let cap = MAX_SECRET + SECRET_SPACE;
+    let mut text = Vec::new();
+    file.take(cap as u64 + 1)
+        .read_to_end(&mut text)
+        .map_err(|e| format!("the TURN secret file {shown}: {e}"))?;
+    if text.len() > cap {
+        return Err(format!(
+            "the TURN secret file {shown} is longer than {cap} bytes"
+        ));
+    }
+    read_secret(&text)
+}
+
+/// The white space a secret file may have around its secret.
+pub const SECRET_SPACE: usize = 256;
+
 /// The TURN REST API credential for `id` expiring at `expiry` (Unix seconds): the user name and the password.
 pub fn credential(secret: &[u8], expiry: u64, id: &str) -> (String, String) {
     let username = format!("{expiry}:{id}");
@@ -114,6 +154,12 @@ impl Ice {
         if !self.turn.is_empty() && self.ttl < Duration::from_secs(60) {
             return Err("a TURN credential must last at least a minute".into());
         }
+        if self.ttl > MAX_TTL {
+            return Err(format!(
+                "a TURN credential lasts at most {} hours",
+                MAX_TTL.as_secs() / 3600
+            ));
+        }
         Ok(())
     }
 
@@ -131,7 +177,8 @@ impl Ice {
             let _ = write!(out, "{{\"urls\":[{}]}}", urls(&self.stun));
         }
         if let Some(secret) = self.secret.as_deref().filter(|_| !self.turn.is_empty()) {
-            let (username, password) = credential(secret, now + self.ttl.as_secs(), id);
+            let (username, password) =
+                credential(secret, now.saturating_add(self.ttl.as_secs()), id);
             if out.len() > 1 {
                 out.push(',');
             }
@@ -228,6 +275,22 @@ mod tests {
             ..Ice::default()
         };
         assert!(short.check().is_err());
+        let long = Ice {
+            ttl: MAX_TTL + Duration::from_secs(1),
+            ..short.clone()
+        };
+        assert!(long.check().is_err());
+        let longest = Ice {
+            ttl: MAX_TTL,
+            ..short
+        };
+        longest.check().unwrap();
+        // An expiry past the clock's end does not wrap to the past.
+        assert!(
+            longest
+                .servers(u64::MAX - 5, "1")
+                .contains(&format!("\"{}:1\"", u64::MAX))
+        );
         assert_eq!(read_secret(b"  s3cret\r\n").unwrap(), b"s3cret");
         assert!(read_secret(b" \n\t").is_err());
         assert!(read_secret(&[b'a'; MAX_SECRET + 1]).is_err());
