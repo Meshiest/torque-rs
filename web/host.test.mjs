@@ -10,6 +10,7 @@ import {
   meteredReceiver,
   nextLinkId,
   peerNumber,
+  roomPage,
   splitCandidates,
 } from './host.js';
 
@@ -163,4 +164,88 @@ test('a channel that closed while it waited is not handed to the game', () => {
   assert.equal(channelLive({ readyState: 'closing' }), false);
   assert.equal(channelLive({ readyState: 'closed' }), false);
   assert.equal(channelLive(null), false);
+});
+
+// A room page's hosting in place, on a game and starts that only record what they are asked.
+function roomFixture({ fail = null } = {}) {
+  const asked = [];
+  const stopped = [];
+  const said = [];
+  const starts = [];
+  const game = { switchTo: (mode) => asked.push(mode) };
+  const startHost = () =>
+    new Promise((ok, no) => {
+      const n = starts.length;
+      starts.push(() => (fail ? no(new Error(fail)) : ok({ stop: () => stopped.push(n) })));
+    });
+  const page = roomPage(game, startHost, { said: (t) => said.push(t) });
+  return { page, asked, stopped, said, starts };
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test('a room page hosts once, switches its game to it, and back ends it', async () => {
+  const { asked, stopped, starts } = roomFixture();
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 1, 'one start for two asks');
+  starts[0]();
+  await settle();
+  assert.deepEqual(asked, ['host']);
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 1, 'hosting already: no new start');
+  globalThis.torqueAsk('back');
+  assert.deepEqual(stopped, [0]);
+  globalThis.torqueAsk('back');
+  assert.deepEqual(stopped, [0], 'stopped once');
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 2, 'a new game after back');
+});
+
+test('back while the server starts ends that game once it is up, and never switches to it', async () => {
+  const { asked, stopped, starts } = roomFixture();
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('back');
+  starts[0]();
+  await settle();
+  assert.deepEqual(asked, []);
+  assert.deepEqual(stopped, [0]);
+});
+
+test('host again before a start ends is the game that start brings', async () => {
+  const { asked, stopped, starts } = roomFixture();
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('back');
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 1);
+  starts[0]();
+  await settle();
+  assert.deepEqual(asked, ['host']);
+  assert.deepEqual(stopped, []);
+});
+
+test('a start that fails says why, unless the page went back meanwhile', async () => {
+  let f = roomFixture({ fail: 'no worker' });
+  globalThis.torqueAsk('host');
+  f.starts[0]();
+  await settle();
+  assert.deepEqual(f.said, ['The game could not be hosted: no worker']);
+  assert.deepEqual(f.asked, []);
+  f = roomFixture({ fail: 'no worker' });
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('back');
+  f.starts[0]();
+  await settle();
+  assert.deepEqual(f.said, []);
+});
+
+test('a game hosted from the start ends on back; other asks do nothing', () => {
+  const { page, stopped } = roomFixture();
+  const ended = [];
+  page.hosted({ stop: () => ended.push(1) });
+  globalThis.torqueAsk('join');
+  globalThis.torqueAsk('elsewhere');
+  assert.deepEqual(ended, []);
+  globalThis.torqueAsk('back');
+  assert.deepEqual(ended, [1]);
+  assert.deepEqual(stopped, []);
 });

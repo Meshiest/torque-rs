@@ -50,7 +50,7 @@ console_error_panic_hook = "0.1"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Window"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "History", "Location", "Window"] }
 
 [features]
 # Browsers as players: a server listening on the web (`Listen::Web`) and a client's game socket over WebSocket.
