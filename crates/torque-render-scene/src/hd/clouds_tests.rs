@@ -513,3 +513,34 @@ fn a_build_in_pieces_makes_the_same_bytes_as_one_on_the_threads() {
     assert!(a.shape == b.shape && a.detail == b.detail && a.weather == b.weather);
     assert!(a.blue == b.blue && a.cirrus == b.cirrus);
 }
+
+/// The noise's pieces at small sizes, pinned to the bytes the code made before its lattices read from padded tables and before
+/// it could be made in pieces (each hash taken then; the full sizes are the same code at larger sizes).
+#[test]
+fn the_noise_keeps_its_bytes() {
+    let fnv = |b: &[u8]| {
+        b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| {
+            (h ^ u64::from(x)).wrapping_mul(0x0100_0000_01b3)
+        })
+    };
+    let t = NoiseTables::new();
+    let mut weather = volume(32, 1, &|p| t.weather_texel(p));
+    equalize(&mut weather, 2);
+    let shape = volume(16, 16, &|p| t.shape.texel(p));
+    let detail = volume(16, 16, &|p| detail_texel(&t.detail, p));
+    let cirrus = cirrus_plane(64);
+    let blue: Vec<u8> = blue_noise(16)
+        .iter()
+        .flat_map(|&r| (r as u32).to_le_bytes())
+        .collect();
+    assert_eq!(
+        [&shape, &detail, &weather, &cirrus, &blue].map(|b| fnv(b)),
+        [
+            0x8c26_592d_0535_9296,
+            0xb5cb_446e_f1ac_9b4e,
+            0x4dfd_6cde_06d1_676f,
+            0x149d_2250_e55a_b02e,
+            0x8106_88e1_ab29_0eb5,
+        ]
+    );
+}
