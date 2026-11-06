@@ -452,7 +452,7 @@ pub enum CursorShape {
     Text,
 }
 
-/// The cursor shape for the control under the mouse (the canvas's mouse control, the one [`find_mouse_control`] keeps): a
+/// The cursor shape for the control under the mouse (the canvas's mouse control, the one `find_mouse_control` keeps): a
 /// button of any kind, a popup menu, a slider or a row of a text list that is active (and a button enabled) is a pointer, an
 /// active text edit the text cursor, anything else the arrow.
 pub fn hover_cursor(vm: &Vm, gui: &Gui) -> CursorShape {

@@ -1,13 +1,13 @@
 //! A client's datagrams to a player's host (the `p2p` feature): the joiner's side of torque-server's `net::web::p2p`.
 //!
-//! [`RoomDatagrams`] opens a socket to the room service, joins the room of a code, makes a peer connection with one data
+//! `RoomDatagrams` opens a socket to the room service, joins the room of a code, makes a peer connection with one data
 //! channel (`game`, `ordered: false, maxRetransmits: 0`) using the ICE servers the room gives (STUN, and TURN with
 //! short-lived credentials), and signals through the room: its offer and its candidates go to the host, the host's answer
 //! and candidates come back. Once the channel is open the room socket is closed and every datagram goes on the channel;
 //! none ever goes through the service, and before the channel opens a datagram sent is dropped (the game's connect
 //! request is sent again). When the channel closes, ICE fails, or the room refuses, the link ends for good and says why
-//! ([`LinkState::ended`]): the game ends with a message. Received datagrams are hostile as on UDP: each is cut to
-//! [`RECV_BYTES`] and at most [`MAX_INBOX`] wait.
+//! (`LinkState::ended`): the game ends with a message. Received datagrams are hostile as on UDP: each is cut to
+//! `RECV_BYTES` and at most `MAX_INBOX` wait.
 //!
 //! In a browser the peer connection is the page's `RTCPeerConnection`; natively it is made here over UDP with str0m (not
 //! yet).

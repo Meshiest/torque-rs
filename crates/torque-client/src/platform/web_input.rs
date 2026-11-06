@@ -6,7 +6,7 @@
 //! mouse is free over it. Unless an Esc reached the game just before ([`ESCAPE_WINDOW_MS`]): a browser that passes the key on
 //! (Chromium's keyboard lock in full screen) must not have it run twice.
 //!
-//! [`PageEvents`] (web builds) listens on the page for the losses the window's own events do not carry: the window's `blur`
+//! `PageEvents` (web builds) listens on the page for the losses the window's own events do not carry: the window's `blur`
 //! and the document's `pointerlockchange`.
 //!
 //! **The render scale.** A page's canvas fills its window; the game draws at the canvas's device pixels times the page's
