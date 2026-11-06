@@ -16,7 +16,7 @@ pub(crate) fn camera() -> Camera {
         yaw: 0.0,
         fov: Some(90),
     };
-    Camera::from_eye(eye, 90.0, 500.0, 800, 600)
+    Camera::from_eye(eye, 90.0_f32, 500.0, 800, 600)
 }
 
 /// A light at `p` with a flare of `FlareBitmap` `corona.png`, near size 1 within 10 units, far size 3 past 30.
