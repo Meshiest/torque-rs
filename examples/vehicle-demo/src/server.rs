@@ -6,6 +6,12 @@
 //! socket. A game played alone ([`WorldServer::start_alone`]) binds none: the server listens on an in-memory transport at
 //! [`ALONE_ADDR`] that only the client in this process reaches, so nobody on the network sees or joins it.
 //!
+//! **Browsers.** A dedicated server (`vehicle-demo-server`) may also listen on the web, as its command line says
+//! (`torque::app::serve`): HTTP and WebSocket on TCP at the same address and port, serving the browser build's page and
+//! taking browsers' game sockets (with WebRTC data channels beside them), with the UDP socket beside it or not; or it is
+//! hosted through a room service, players joining by the room's code ([`WorldServer::start_dedicated_on`]). A browser that
+//! hosts runs the server in its page's worker on a relay transport ([`WorldServer::start_bound`]).
+//!
 //! **Files.** The server reads its files from memory: the asset kit under `kit/` (the shapes the datablocks load, the terrain
 //! the `TerrainBlock` reads) and the game folder's scripts and map ([`GameFiles`]).
 //!
@@ -51,21 +57,51 @@ impl WorldServer {
             port: options.port,
             public: false,
         };
-        WorldServer::start_on(files, listen, &options.name)
+        WorldServer::start_on(files, listen, &options.name, false)
     }
 
     /// A server for a game played alone, on the in-memory transport at [`ALONE_ADDR`] (module docs), that has run `server.cs`
     /// and started the map.
     pub fn start_alone(files: &GameFiles, name: &str) -> Result<WorldServer, String> {
-        WorldServer::start_on(files, Listen::Memory(ALONE_ADDR), name)
+        WorldServer::start_on(files, Listen::Memory(ALONE_ADDR), name, false)
     }
 
-    fn start_on(files: &GameFiles, listen: Listen, name: &str) -> Result<WorldServer, String> {
+    /// A dedicated server (`$Server::Dedicated`: the LAN list shows it as one) named `name` on `listen` (UDP, the web
+    /// beside it or instead, or a room's host transport: module docs).
+    pub fn start_dedicated_on(
+        files: &GameFiles,
+        listen: Listen,
+        name: &str,
+    ) -> Result<WorldServer, String> {
+        WorldServer::start_on(files, listen, name, true)
+    }
+
+    /// A server named `name` on a transport the caller made and bound (a browser host's worker relays its links).
+    pub fn start_bound(
+        files: &GameFiles,
+        transport: torque::server::net::transport::SharedTransport,
+        name: &str,
+    ) -> Result<WorldServer, String> {
+        use torque::app::server::BoundTransport;
+        let listen = Listen::Bound(BoundTransport(transport));
+        WorldServer::start_on(files, listen, name, true)
+    }
+
+    fn start_on(
+        files: &GameFiles,
+        listen: Listen,
+        name: &str,
+        dedicated: bool,
+    ) -> Result<WorldServer, String> {
+        let dedicated = if dedicated { "1" } else { "0" };
         GameServer::start_with(
             files.mem_files(),
             &ServerStart {
                 listen,
-                globals: &[("$Pref::Server::Name", name)],
+                globals: &[
+                    ("$Pref::Server::Name", name),
+                    ("$Server::Dedicated", dedicated),
+                ],
                 start: "startWorld",
                 args: &[MISSION],
             },

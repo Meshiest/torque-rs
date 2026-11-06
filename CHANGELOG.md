@@ -325,6 +325,15 @@ The first development version. Nothing is published yet; this is what exists.
 - The vehicle demo in a browser, played alone (the server on an in-memory link in the page): `just
   examples/web-vehicle-demo` builds and serves it, `vehicle-demo --web-files <dir>` writes its pack and list,
   `just examples/web-vehicle-demo-check` walks its figure in headless Chrome.
+- The vehicle demo for browsers: `vehicle-demo-server`, its dedicated server, takes the arena server's switches
+  (`--transport both`, `--webrtc`, `--room`, TLS, the `--rtc-*` ones), now shared as `torque::app::serve`. The page
+  still plays alone; `?join` joins the server that served it (`just examples/web-vehicle-demo-server`), `?room=<code>` a
+  player's host, and `?host=1` hosts with the server in the page's Web Worker (`just examples/web-vehicle-demo-rooms`).
+  The browser's join targets, its local link and its link's marks (`torque::app::web_join`) and the worker's server with
+  its page calls (`torque::app::web_host`, `web_host_exports!`) moved out of the arena and are shared. A browser whose
+  game socket closes now ends the game with "The server closed the connection." `just
+  examples/web-vehicle-demo-mp-check`: two headless pages (served by the server, joined through a room, and a host page
+  with a joiner) take turns driving, riding as the passenger and walking, and the second says so when the host goes.
 - Pictures of the world alone: `Seat::world_picture` draws a game's world without its GUI (no HUD, hints or menus) over the
   whole picture, and the character example's `Step::WorldShot` does the same. `WorldView::set_water` draws a sheet of
   water (`Water`: its height, rectangle, texture and tint) as the enhanced renderer's water; `WorldView::clear_ground` and

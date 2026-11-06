@@ -9,7 +9,9 @@
 //! writes the files a build for the web fetches into `dir`: the pack (`files::web_pack`) as `game.pack` and the list naming it
 //! (`files.json`).
 //!
-//! Built for the web, it is the page's game, played alone (the library's `web` module): the page calls the functions of `page`.
+//! Built for the web, it is the page's game (the library's `web` module): played alone, joined to a server or a player's host,
+//! or hosted by the page with its server in the page's worker; the page calls the functions of `page` and `host_page`. The
+//! dedicated server is `vehicle-demo-server`.
 
 #[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
@@ -35,6 +37,13 @@ torque::app::web_exports! {
     embedded: torque_example_vehicle_demo::web::EMBEDDED,
     start_embedded: torque_example_vehicle_demo::web::start_embedded,
     start_fetched: torque_example_vehicle_demo::web::start_fetched,
+}
+
+// What a browser host's page and worker call (`web/host.js`, `web/host-worker.js`).
+#[cfg(target_arch = "wasm32")]
+torque::app::web_host_exports! {
+    start_host_client: torque_example_vehicle_demo::web::start_host_client,
+    host_start: torque_example_vehicle_demo::web::host_start,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

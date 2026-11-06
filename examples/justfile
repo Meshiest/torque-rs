@@ -102,6 +102,32 @@ web-vehicle-demo-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-demo-hills.png" 120 world
 
+# The vehicle demo for browsers and desktops in one game: its browser build, then its dedicated server on UDP and the web on
+# 127.0.0.1:{{port}} with WebRTC data channels, serving that build; a browser joins at http://127.0.0.1:{{port}}/?join (the
+# page alone plays alone) and a desktop `vehicle-demo` joins 127.0.0.1:{{port}}. More of vehicle-demo-server's switches go
+# after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--rtc-public-ip`)
+web-vehicle-demo-server port="28000" *args:
+    node ../web/build.mjs vehicle-demo
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo-server -- --transport both --webrtc --port {{port}} {{args}}
+
+# A room service for player-hosted drives on 127.0.0.1:{{port}}, serving the vehicle demo's browser build: a browser hosts at
+# http://127.0.0.1:{{port}}/?host=1 (its server in a Web Worker, the room's code on the page), others join at
+# http://127.0.0.1:{{port}}/?room=<code>, and `vehicle-demo-server --room ws://127.0.0.1:{{port}}` hosts from a desktop. More
+# switches after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
+web-vehicle-demo-rooms port="28100" *args:
+    node ../web/build.mjs vehicle-demo
+    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/vehicle-demo" {{args}}
+
+# The vehicle demo's two-player checks (build it first with `web-vehicle-demo`): two headless pages join vehicle-demo-server at
+# the page it serves, on data channels; then by a room's code, the server hosting the room; then the second page joins a host
+# page whose server runs in a Web Worker. Each time one drives while the other watches, the other rides as the passenger and
+# then walks, with no console error, and the second page says so when the host goes. Pictures into the target folder's `web`
+web-vehicle-demo-mp-check: web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-served.png" 120 served vehicle-demo
+    node ../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-desktop.png" 120 desktop vehicle-demo
+    node ../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-browser.png" 120 browser vehicle-demo
+
 # The arena for browsers and desktops in one game: its browser build (join-only), then its dedicated server on UDP and the web
 # on 127.0.0.1:{{port}}, serving that build; a browser joins at http://127.0.0.1:{{port}}/ and a desktop `fps-client` joins
 # 127.0.0.1:{{port}}. More of fps-server's switches go after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--map`)

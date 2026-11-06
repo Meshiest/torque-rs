@@ -11,11 +11,13 @@ keywords = ["torque", "example", "gamedev", "vehicle"]
 categories = ["game-development"]
 
 # The server (torque-server's main loop and network host over torque-game's classes) and the client (torque-client's
-# connection over TGE's records) run in one process and talk through an in-memory datagram link. The game's own scripts are
-# in `game/`, the map in `game/missions/hills.mis`; the terrain, the buggy and the figure are the asset kit's.
+# connection over TGE's records) run in one process and talk through an in-memory datagram link, or over UDP to a hosted
+# game; a browser's client over WebSocket and WebRTC (`vehicle-demo-server --transport both --webrtc`, a room's host). The
+# game's own scripts are in `game/`, the map in `game/missions/hills.mis`; the terrain, the buggy and the figure are the
+# asset kit's.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["app"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "web", "webrtc", "p2p"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
@@ -32,6 +34,10 @@ wasm-bindgen = "0.2"
 [[bin]]
 name = "vehicle-demo"
 path = "src/main.rs"
+
+[[bin]]
+name = "vehicle-demo-server"
+path = "src/bin/vehicle-demo-server.rs"
 
 [lints]
 workspace = true
