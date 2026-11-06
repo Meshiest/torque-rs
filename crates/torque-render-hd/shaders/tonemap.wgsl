@@ -25,8 +25,8 @@
 // curve's hue-keeping shoulder, or the AgX-style pull toward the luminance), then our 32³ table of the rest of the curve, the grade
 // and any user .cube, read trilinearly on its display-encoded axes (neutral: the sRGB transfer; AgX-style: the log exposure through
 // its sigmoid), clamped after the lookup. Without the table (the identity gate's reference) the analytic curves. Then film grain
-// (where asked for): a triangular noise of the pixel and the time's
-// 24 Hz step in display units (static while the time is pinned).
+// (where asked for): a triangular noise of the pixel in display units, its pattern fixed (it does not move with the effect
+// time).
 
 const SHOULDER: f32 = 0.8;
 // The AgX-style constants (hd::grade's; a test compares them).
@@ -53,7 +53,7 @@ struct Post {
     lut: vec4<f32>,
     // rgb: the grade's white balance, a: its saturation.
     grade: vec4<f32>,
-    // x: the grain's amplitude (display units), y: its seed (the time's 24 Hz step).
+    // x: the grain's amplitude (display units), y: its seed (fixed: the pattern holds still).
     grain: vec4<f32>,
     // The tint from under water (its colour in display units and its alpha; 0 when the eye is not in
     // the zone's sides), and the near plane's height over the zone's top (z) and bottom (w) as `x ndc.x + y ndc.y + z|w`: a pixel

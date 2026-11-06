@@ -507,7 +507,9 @@ The first development version. Nothing is published yet; this is what exists.
 
 - The level demo's water moves: its waves, ripples and foam ran on an effect clock no game advanced, so every map's water
   stood still, natively and in the browser. `WorldView::advance_time` runs the effect clock (`WorldView::time`, wrapping
-  at `EFFECT_TIME_WRAP`), and the level demo runs it by each frame's time.
+  at `EFFECT_TIME_WRAP`), and the level demo runs it by each frame's time. On it now: the water, the volumetric clouds
+  of a map without a clock of their own and the stars' twinkle. The film grain no longer follows the effect time: its
+  pattern is fixed (`GRAIN_SEED`), so it never shimmers.
 - Examples' pose keys: Ctrl holds the crouch and C toggles it; C or Ctrl lying down gets up to a crouch, Space lying down
   or crouched by C stands rather than jumping, and a respawn or a restart starts the figure standing (it kept the prone
   toggle).

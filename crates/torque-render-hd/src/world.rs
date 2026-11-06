@@ -1557,6 +1557,9 @@ impl<X: HdExtension> LodJob<X> {
     }
 }
 
+/// The film grain's seed ([`HdWorld::grain`]): one pattern held still, whatever the effect time.
+pub const GRAIN_SEED: f32 = 0.0;
+
 /// The levels of detail's worker: a thread building the blocks it is sent (it ends when the world drops its side), and the
 /// latest ticket of each block waiting.
 struct LodWork<X: HdExtension> {
@@ -6794,8 +6797,8 @@ impl<E: HdExtension> HdWorld<E> {
         } else {
             0.0
         };
-        let seed = (E::time(scene).max(0.0) * 24.0).floor().min(16_777_216.0);
-        push_f32(&mut post, &[grain, seed, 0.0, 0.0]);
+        // The grain's pattern is fixed: it does not move with the effect time (no shimmer frame to frame).
+        push_f32(&mut post, &[grain, GRAIN_SEED, 0.0, 0.0]);
         // The tint from under water and the waterline (none in the debug views).
         let (tint, waterline) = if plain {
             water::post_terms(E::water_zone(scene), camera)
