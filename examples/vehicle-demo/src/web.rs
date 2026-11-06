@@ -3,8 +3,10 @@
 //! (`torque::app::web_page`). Natively only `alone` is of use (the tests).
 //!
 //! **Played alone** (the page as it is): the server on an in-memory link in the page (no socket:
-//! `ClientOptions::alone_only`); the game starts at once, the box figure beside its buggy on the hills. A page built to be
-//! played alone (`web/build.mjs --solo`) waits at the menu instead ([`menu`]): Play alone starts it there.
+//! `ClientOptions::alone_only`); the game starts at once, the box figure beside its buggy on the hills (its first steps make
+//! the map's interiors a few at a time, then ask to play alone: no one task of the page's thread holds the start and the map
+//! together). A page built to be played alone (`web/build.mjs --solo`) waits at the menu instead ([`menu`]): Play alone
+//! starts it there.
 //!
 //! **Joined** (the engine's `torque::app::web_join`): `?join` joins the server that served the page
 //! (`vehicle-demo-server --transport both`, its game socket over WebSocket with a WebRTC data channel beside it when the
@@ -71,12 +73,11 @@ pub fn start_fetched() -> Result<(), String> {
     if let Some(target) = torque::app::web_join::Target::from_page()? {
         return joined(files, target);
     }
+    // A page played alone at once starts at the menu too: its first steps make the map's interiors a few at a time
+    // ([`WebVehicle::warm_interiors`]), then ask to play alone, so neither this call nor any one step holds the page's thread
+    // for the server's start and its map's interiors together.
     #[cfg(target_arch = "wasm32")]
-    let mut game = if torque::app::web_join::solo_page() {
-        menu(files)?
-    } else {
-        alone(files)?
-    };
+    let mut game = menu(files)?;
     #[cfg(not(target_arch = "wasm32"))]
     let game = alone(files)?;
     #[cfg(target_arch = "wasm32")]
@@ -84,7 +85,21 @@ pub fn start_fetched() -> Result<(), String> {
         offer_rooms(&mut game);
         game.call("showMenu", &[])?;
     }
-    torque::app::window::run(WebVehicle::new(game, None))
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+    let mut web = WebVehicle::new(game, None);
+    #[cfg(target_arch = "wasm32")]
+    if !torque::app::web_join::solo_page() {
+        web.warm = web
+            .game
+            .files
+            .kit
+            .paths()
+            .filter(|p| p.ends_with(".dif"))
+            .map(String::from)
+            .collect();
+        web.play_when_warm = true;
+    }
+    torque::app::window::run(web)
 }
 
 /// The client over `files` with no socket of its own, at its menu (a page played alone: Play alone starts the game).
@@ -255,7 +270,17 @@ struct WebVehicle {
     /// address saying what it plays.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     rooms: bool,
+    /// The kit's interiors still to be made before the game played at once starts ([`WebVehicle::warm_interiors`]).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    warm: Vec<String>,
+    /// Whether Play alone is asked once they are made.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    play_when_warm: bool,
 }
+
+/// The kit's interiors made in one step while a game played at once waits for them (each a few milliseconds).
+#[cfg(target_arch = "wasm32")]
+const WARM_PER_STEP: usize = 8;
 
 impl WebVehicle {
     fn new(game: VehicleDemo, link: Option<Link>) -> WebVehicle {
@@ -270,12 +295,32 @@ impl WebVehicle {
             room: None,
             in_link_world: false,
             rooms,
+            warm: Vec::new(),
+            play_when_warm: false,
         }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WebVehicle {
+    /// Makes [`WARM_PER_STEP`] of the kit's interiors (their hulls kept for the process: the server's map then finds them made,
+    /// [`torque::game::scene::interior::made`]), and once all are made asks to play alone. The server charges each one's cost as
+    /// before; only when its hulls are made changes.
+    fn warm_interiors(&mut self) {
+        if self.warm.is_empty() {
+            return;
+        }
+        let at = self.warm.len().saturating_sub(WARM_PER_STEP);
+        for path in self.warm.split_off(at) {
+            if let Some(bytes) = torque_render_scene::Assets::read(&self.game.files.kit, &path) {
+                let _ = torque::game::scene::interior::read_interior(&bytes, &mut |_| true);
+            }
+        }
+        if self.warm.is_empty() && std::mem::take(&mut self.play_when_warm) {
+            self.game.set_global("$World::AloneAsked", "1");
+        }
+    }
+
     /// An invite link's channel open: its join.
     fn join_when_open(&mut self) {
         use torque::client::net::web_rtc::Link as Way;
@@ -590,6 +635,8 @@ impl App for WebVehicle {
 
     fn advance(&mut self, ms: u32) {
         #[cfg(target_arch = "wasm32")]
+        self.warm_interiors();
+        #[cfg(target_arch = "wasm32")]
         self.alone_asked();
         App::advance(&mut self.game, ms);
         #[cfg(target_arch = "wasm32")]
@@ -631,6 +678,7 @@ impl App for WebVehicle {
     /// The map is loading until the client is in the world and holds its figure (played alone; a joined game's menu shows
     /// how its join goes).
     fn loading(&self) -> bool {
-        self.game.server.is_some() && (!self.game.in_world() || self.game.figure().is_none())
+        self.play_when_warm
+            || self.game.server.is_some() && (!self.game.in_world() || self.game.figure().is_none())
     }
 }
