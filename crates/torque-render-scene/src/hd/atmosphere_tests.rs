@@ -36,10 +36,7 @@ fn the_transmittance_is_bluer_lost_at_the_horizon() {
     let r = a.bottom + CAMERA_HEIGHT;
     let zenith = a.transmittance_direct(r, 1.0, 512);
     let horizon = a.transmittance_direct(r, 0.01, 2048);
-    assert!(
-        zenith.cmpgt(DVec3::splat(0.6)).all() && zenith.cmplt(DVec3::ONE).all(),
-        "{zenith:?}"
-    );
+    assert!(zenith.iter().all(|t| *t > 0.6 && *t < 1.0), "{zenith:?}");
     assert!(
         horizon[2] < horizon[0] && horizon[0] < zenith[0],
         "{horizon:?}"

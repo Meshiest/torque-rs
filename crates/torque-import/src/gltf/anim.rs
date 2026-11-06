@@ -56,7 +56,10 @@ impl Curve {
         let out = match self.interp {
             Interp::Step => a,
             Interp::Linear if self.rotation => math::slerp(a, b, s),
-            Interp::Linear => Vec4::from(a).lerp_monotonic(b.into(), s).to_array(),
+            Interp::Linear => {
+                let (a, b) = (Vec4::from(a), Vec4::from(b));
+                (a + (b - a) * s).to_array()
+            }
             Interp::Cubic => {
                 let tangent =
                     |i: usize| Vec4::from(self.values.get(i).copied().unwrap_or_default());

@@ -25,9 +25,7 @@ use std::sync::OnceLock;
 
 use glam::DVec3;
 
-use crate::hd::atmosphere::{
-    Atmosphere, CAMERA_HEIGHT, EARTH, Medium, Rgb, mie_phase, rayleigh_phase,
-};
+use crate::hd::atmosphere::{Atmosphere, CAMERA_HEIGHT, EARTH, Medium, mie_phase, rayleigh_phase};
 use crate::hd::clouds::CloudSky;
 use crate::hd::{HdFog, HdSun, linear_to_srgb, srgb_to_linear};
 
@@ -167,15 +165,15 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 }
 
 /// The transmittance from radius `r` along `mu` (cosine from the zenith) out of the atmosphere; none through the ground.
-fn transmittance(a: &Atmosphere, r: f64, mu: f64, steps: usize) -> Rgb {
+fn transmittance(a: &Atmosphere, r: f64, mu: f64, steps: usize) -> DVec3 {
     if a.hits_ground(r, mu) {
         return DVec3::ZERO;
     }
-    a.transmittance_direct(r, mu, steps)
+    a.transmittance_direct(r, mu, steps).into()
 }
 
 /// The sky's single scattering toward the eye at radius `r` from `view` with the sun toward `sun` (unit, z up), for a sun of 1.
-fn single_scattering(a: &Atmosphere, r: f64, view: DVec3, sun: DVec3) -> Rgb {
+fn single_scattering(a: &Atmosphere, r: f64, view: DVec3, sun: DVec3) -> DVec3 {
     let mu = view.z;
     let d = if a.hits_ground(r, mu) {
         a.distance_to_bottom(r, mu)
@@ -194,9 +192,10 @@ fn single_scattering(a: &Atmosphere, r: f64, view: DVec3, sun: DVec3) -> Rgb {
         let mu_s = p.dot(sun) / rx;
         let m: Medium = a.medium(rx - a.bottom);
         let tsun = transmittance(a, rx, mu_s, SUN_STEPS);
-        let step = m.extinction.map(|e| (-e * dt).exp());
-        let s = (m.rayleigh * pr + m.mie * pm) * tsun;
-        l += path * (s - s * step) / m.extinction.max(DVec3::splat(1e-12));
+        let extinction = DVec3::from(m.extinction);
+        let step = extinction.map(|e| (-e * dt).exp());
+        let s = (DVec3::from(m.rayleigh) * pr + m.mie * pm) * tsun;
+        l += path * (s - s * step) / extinction.max(DVec3::splat(1e-12));
         path *= step;
     }
     l

@@ -144,7 +144,8 @@ pub(crate) fn clip(poly: &[[f32; 3]], at: [f32; 3], axis: [f32; 3], limit: f32) 
         }
         if (da >= 0.0) != (db >= 0.0) {
             let t = da / (da - db);
-            out.push(Vec3::from(a).lerp_monotonic(b.into(), t).to_array());
+            let (a, b) = (Vec3::from(a), Vec3::from(b));
+            out.push((a + (b - a) * t).to_array());
         }
     }
     out

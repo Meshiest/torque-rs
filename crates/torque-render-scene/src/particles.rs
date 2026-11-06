@@ -503,11 +503,13 @@ impl Emitter {
             Vec3::Z
         }));
         let (start, start_axis, start_vel) = self.last.unwrap_or((end, axis, vel));
+        let lerp =
+            |a: [f32; 3], b: [f32; 3], t: f32| Vec3::from(a) + (Vec3::from(b) - Vec3::from(a)) * t;
         let along = |t: f32| {
             (
-                Vec3::from(start).lerp_monotonic(end.into(), t),
-                unit_dir(Vec3::from(start_axis).lerp_monotonic(axis.into(), t)),
-                Vec3::from(start_vel).lerp_monotonic(vel.into(), t),
+                lerp(start, end, t),
+                unit_dir(lerp(start_axis, axis, t)),
+                lerp(start_vel, vel, t),
             )
         };
         let ms = ms as i32;

@@ -666,7 +666,7 @@ fn clip_cloud(pts: &[CloudPoint], n: [f32; 3]) -> Vec<CloudPoint> {
         let t = -(dist(a) / Vec3::from(n).dot(v));
         CloudPoint {
             p: (Vec3::from(a.p) + v * t).to_array(),
-            uv: Vec2::from(a.uv).lerp_monotonic(b.uv.into(), t).to_array(),
+            uv: (Vec2::from(a.uv) + (Vec2::from(b.uv) - Vec2::from(a.uv)) * t).to_array(),
             a: a.a + (b.a - a.a) * t,
         }
     };

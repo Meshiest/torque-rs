@@ -41,16 +41,16 @@ pub struct Atmosphere {
 pub const EARTH: Atmosphere = Atmosphere {
     bottom: 6360.0,
     top: 6460.0,
-    rayleigh: DVec3::new(5.802e-3, 13.558e-3, 33.1e-3),
+    rayleigh: [5.802e-3, 13.558e-3, 33.1e-3],
     rayleigh_height: 8.0,
     mie_scattering: 3.996e-3,
     mie_absorption: 0.444e-3,
     mie_height: 1.2,
     mie_g: 0.8,
-    ozone: DVec3::new(0.650e-3, 1.881e-3, 0.085e-3),
+    ozone: [0.650e-3, 1.881e-3, 0.085e-3],
     ozone_centre: 25.0,
     ozone_half_width: 15.0,
-    ground_albedo: DVec3::splat(0.3),
+    ground_albedo: [0.3, 0.3, 0.3],
 };
 
 /// The camera's height above the ground (km): a world is small against the atmosphere, so the sky is that of one height.
@@ -80,8 +80,7 @@ const REF_MS_DIRECTIONS: usize = 256;
 const REF_MS_STEPS: usize = 192;
 const REF_T_TABLE: (usize, usize) = (512, 256);
 
-/// A color (or a direction, z up).
-pub type Rgb = DVec3;
+pub type Rgb = [f64; 3];
 
 /// A texel coordinate's [0, 1] value with the texel centres at the ends (Bruneton 2017's `GetTextureCoordFromUnitRange`).
 pub fn to_unit(x: f64, n: u32) -> f64 {
@@ -107,14 +106,14 @@ impl Atmosphere {
         let dr = (-h / self.rayleigh_height).exp();
         let dm = (-h / self.mie_height).exp();
         let dozone = (1.0 - (h - self.ozone_centre).abs() / self.ozone_half_width).max(0.0);
-        let rayleigh = self.rayleigh * dr;
+        let rayleigh = DVec3::from(self.rayleigh) * dr;
         let mie = self.mie_scattering * dm;
         let mie_ext = (self.mie_scattering + self.mie_absorption) * dm;
-        let extinction = rayleigh + mie_ext + self.ozone * dozone;
+        let extinction = rayleigh + mie_ext + DVec3::from(self.ozone) * dozone;
         Medium {
-            rayleigh,
+            rayleigh: rayleigh.to_array(),
             mie,
-            extinction,
+            extinction: extinction.to_array(),
         }
     }
 
@@ -178,9 +177,9 @@ impl Atmosphere {
         for i in 0..steps {
             let t = (i as f64 + 0.5) * dt;
             let h = (r * r + t * t + 2.0 * r * mu * t).sqrt() - self.bottom;
-            depth += self.medium(h).extinction * dt;
+            depth += DVec3::from(self.medium(h).extinction) * dt;
         }
-        depth.map(|v| (-v).exp())
+        depth.map(|v| (-v).exp()).to_array()
     }
 }
 
@@ -254,8 +253,8 @@ pub fn direction(sun: [f64; 3], az: f64, el: f64) -> [f64; 3] {
 /// scattering table, both finer than the GPU's.
 pub struct Reference {
     pub atmosphere: Atmosphere,
-    t_table: Vec<Rgb>,
-    ms_table: Vec<Rgb>,
+    t_table: Vec<DVec3>,
+    ms_table: Vec<DVec3>,
 }
 
 impl Reference {
@@ -270,7 +269,7 @@ impl Reference {
                     (i as f64 + 0.5) / tw as f64,
                     (j as f64 + 0.5) / th as f64,
                 );
-                t_table.push(a.transmittance_direct(r, mu, 256));
+                t_table.push(DVec3::from(a.transmittance_direct(r, mu, 256)));
             }
         }
         let mut reference = Reference {
@@ -284,7 +283,7 @@ impl Reference {
             .map_or(1, |n| n.get())
             .clamp(1, 16);
         let per = nh.div_ceil(workers);
-        let rows: Vec<Vec<Rgb>> = {
+        let rows: Vec<Vec<DVec3>> = {
             let reference = &reference;
             crate::par::each_worker(workers, |w| {
                 let mut out = Vec::new();
@@ -304,10 +303,10 @@ impl Reference {
     }
 
     /// The transmittance toward the sun from (r, mu): 0 where the planet hides it, else the fine table's (bilinear).
-    fn sun_transmittance_table(&self, r: f64, mu: f64) -> Rgb {
+    fn sun_transmittance_table(&self, r: f64, mu: f64) -> DVec3 {
         let a = &self.atmosphere;
         if a.hits_ground(r, mu) {
-            return DVec3::splat(0.0);
+            return DVec3::ZERO;
         }
         let (u, v) = ref_t_uv(a, r, mu);
         bilinear(&self.t_table, REF_T_TABLE.0, REF_T_TABLE.1, u, v)
@@ -317,13 +316,13 @@ impl Reference {
     pub fn sun_transmittance(&self, r: f64, mu: f64) -> Rgb {
         let a = &self.atmosphere;
         if a.hits_ground(r, mu) {
-            return DVec3::ZERO;
+            return [0.0; 3];
         }
         a.transmittance_direct(r, mu, REF_TRANSMITTANCE_STEPS)
     }
 
     /// Hillaire's Ψms at (r, μsun) by direct integration over the sphere (spherical Fibonacci directions).
-    fn multiscatter_at(&self, r: f64, mu_s: f64) -> Rgb {
+    fn multiscatter_at(&self, r: f64, mu_s: f64) -> DVec3 {
         let sun = DVec3::new((1.0 - mu_s * mu_s).max(0.0).sqrt(), 0.0, mu_s);
         let n = REF_MS_DIRECTIONS;
         let mut l2 = DVec3::ZERO;
@@ -344,7 +343,7 @@ impl Reference {
     }
 
     /// One direction of the multiple scattering's integral: the second order's light (isotropic phase, the ground's albedo) and fms.
-    fn ms_ray(&self, r: f64, w: DVec3, sun: DVec3) -> (Rgb, Rgb) {
+    fn ms_ray(&self, r: f64, w: DVec3, sun: DVec3) -> (DVec3, DVec3) {
         let a = &self.atmosphere;
         let mu = w[2];
         let ground = a.hits_ground(r, mu);
@@ -365,11 +364,12 @@ impl Reference {
             let rx = p.length();
             let mu_s = p.dot(sun) / rx;
             let m = a.medium(rx - a.bottom);
-            let sigma_s = m.rayleigh + m.mie;
+            let extinction = DVec3::from(m.extinction);
+            let sigma_s = DVec3::from(m.rayleigh) + m.mie;
             let tsun = self.sun_transmittance_table(rx, mu_s);
             let s = sigma_s * tsun * iso;
-            let step_t = m.extinction.map(|e| (-e * dt).exp());
-            let integ = |src: Rgb| (src - src * step_t) / m.extinction.max(DVec3::splat(1e-12));
+            let step_t = extinction.map(|e| (-e * dt).exp());
+            let integ = |src: DVec3| (src - src * step_t) / extinction.max(DVec3::splat(1e-12));
             l += t_path * integ(s);
             f += t_path * integ(sigma_s);
             t_path *= step_t;
@@ -381,7 +381,7 @@ impl Reference {
             let mu_s = n.dot(sun);
             let tsun = self.sun_transmittance_table(rx, mu_s);
             let lit = mu_s.clamp(0.0, 1.0) / std::f64::consts::PI;
-            l += t_path * tsun * a.ground_albedo * lit;
+            l += t_path * tsun * DVec3::from(a.ground_albedo) * lit;
         }
         (l, f)
     }
@@ -392,7 +392,7 @@ impl Reference {
         let (nu, nh) = REF_MS_SIZE;
         let u = (mu_s * 0.5 + 0.5).clamp(0.0, 1.0);
         let v = ((r - a.bottom) / (a.top - a.bottom)).clamp(0.0, 1.0).sqrt();
-        bilinear(&self.ms_table, nu, nh, u, v)
+        bilinear(&self.ms_table, nu, nh, u, v).to_array()
     }
 
     /// The sky's light toward the camera at radius `r` from the direction `view` with the sun toward `sun` (both unit, z up),
@@ -419,15 +419,16 @@ impl Reference {
             let rx = p.length();
             let mu_s = p.dot(sun) / rx;
             let m = a.medium(rx - a.bottom);
-            let tsun = self.sun_transmittance(rx, mu_s);
-            let psi = self.multiscatter(rx, mu_s);
-            let s = (m.rayleigh * pr + m.mie * pm) * tsun + (m.rayleigh + m.mie) * psi;
-            let step_t = m.extinction.map(|e| (-e * dt).exp());
-            let integ = (s - s * step_t) / m.extinction.max(DVec3::splat(1e-12));
+            let (rayleigh, extinction) = (DVec3::from(m.rayleigh), DVec3::from(m.extinction));
+            let tsun = DVec3::from(self.sun_transmittance(rx, mu_s));
+            let psi = DVec3::from(self.multiscatter(rx, mu_s));
+            let s = (rayleigh * pr + m.mie * pm) * tsun + (rayleigh + m.mie) * psi;
+            let step_t = extinction.map(|e| (-e * dt).exp());
+            let integ = (s - s * step_t) / extinction.max(DVec3::splat(1e-12));
             l += t_path * integ;
             t_path *= step_t;
         }
-        l
+        l.to_array()
     }
 }
 
@@ -462,7 +463,7 @@ fn ref_t_r_mu(a: &Atmosphere, x_mu: f64, x_r: f64) -> (f64, f64) {
 }
 
 /// A table of `w` x `h` cell-centred values sampled at (u, v) in [0, 1] (bilinear, clamped).
-fn bilinear(t: &[Rgb], w: usize, h: usize, u: f64, v: f64) -> Rgb {
+fn bilinear(t: &[DVec3], w: usize, h: usize, u: f64, v: f64) -> DVec3 {
     let x = (u * w as f64 - 0.5).clamp(0.0, (w - 1) as f64);
     let y = (v * h as f64 - 0.5).clamp(0.0, (h - 1) as f64);
     let (x0, y0) = (x.floor() as usize, y.floor() as usize);

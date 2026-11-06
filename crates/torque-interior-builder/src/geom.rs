@@ -153,9 +153,10 @@ pub fn dedup(poly: &mut Vec<V3>) {
 pub fn bounds(points: impl IntoIterator<Item = V3>) -> (V3, V3) {
     let mut lo = V3::INFINITY;
     let mut hi = V3::NEG_INFINITY;
+    // Per component with f64's min and max: a NaN coordinate is skipped, as it always was.
     for p in points {
-        lo = lo.min(p);
-        hi = hi.max(p);
+        lo = V3::from_array(std::array::from_fn(|k| lo[k].min(p[k])));
+        hi = V3::from_array(std::array::from_fn(|k| hi[k].max(p[k])));
     }
     (lo, hi)
 }

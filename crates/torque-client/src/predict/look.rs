@@ -378,9 +378,8 @@ impl FlyingWarp {
         let t = now_ms.wrapping_sub(self.at_ms) as f32;
         if t < self.warp_ms && self.warp_ms > 0.0 {
             let f = (t / self.warp_ms).clamp(0.0, 1.0);
-            let p = Vec3::from(self.from.0)
-                .lerp_monotonic(self.to.0.into(), f)
-                .to_array();
+            let (from, to) = (Vec3::from(self.from.0), Vec3::from(self.to.0));
+            let p = (from + (to - from) * f).to_array();
             return (p, drive::quat_slerp(self.from.1, self.to.1, f));
         }
         let run = ((t - self.warp_ms) / 1000.0)

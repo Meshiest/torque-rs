@@ -2006,6 +2006,23 @@ pub fn solid_hit(
     None
 }
 
+pub fn sub3(a: F3, b: F3) -> F3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+pub fn add3(a: F3, b: F3) -> F3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+pub fn len3(a: F3) -> f32 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+}
+
+pub fn normalize3(a: F3) -> F3 {
+    let l = len3(a);
+    if l > 0.0 { a.map(|x| x / l) } else { a }
+}
+
 /// `a` over its length, or as it is when that is 0.
 fn unit_or_same(a: Vec3) -> Vec3 {
     let l = a.length();

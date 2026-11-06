@@ -61,8 +61,8 @@ impl Bvh {
             let (start, end) = (nodes[k].start, nodes[k].end);
             let (mut lo, mut hi) = (V3::INFINITY, V3::NEG_INFINITY);
             for &i in &order[start..end] {
-                lo = lo.min(boxes[i].0);
-                hi = hi.max(boxes[i].1);
+                lo = V3::from_array(std::array::from_fn(|a| lo[a].min(boxes[i].0[a])));
+                hi = V3::from_array(std::array::from_fn(|a| hi[a].max(boxes[i].1[a])));
             }
             nodes[k].lo = lo;
             nodes[k].hi = hi;
