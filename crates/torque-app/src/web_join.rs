@@ -5,8 +5,14 @@
 //! `wss://` on an `https` page, or `?server=<ws or wss URL>` when the page is served elsewhere; [`socket_url`]), a game a
 //! player hosts, found by its code (`?room=<code>`) through the room service at `?rooms=<ws or wss URL>` (else the page's
 //! own host at `/ws`: the service serves the page; [`rooms_url`]), the server in this page's Web Worker (the host
-//! player's own game: [`LocalLink`]), or a player's host reached by an invite link, whose data channel the page holds
-//! (`web/invites.js`: the same [`LocalLink`], fed by the page; [`link_opened`] and [`link_ended`] tell its state).
+//! player's own game: [`LocalLink`], fed by [`local_datagram`]), or a player's host reached by an invite link, whose data
+//! channel the page holds (`web/invites.js`: a [`PageLink`], fed by [`link_datagram`]; [`link_opened`] and [`link_ended`]
+//! tell its state). The two links keep apart: the worker's datagrams never reach a client on the invite link.
+//!
+//! **Switching in place** ([`switch_to`]): a page played alone switches its running game between playing alone, an invite
+//! link's game and hosting with links, with no new page (a page runs one game: its window's event loop is the page's
+//! own). The page asks, the link the switch goes to starts afresh at once, and the game takes the request at its next
+//! step ([`take_switch`]).
 //!
 //! What the page hands the client on its link is hostile as on UDP: it is held in a [`HeldDatagrams`] (none over the
 //! engine's most bytes for a datagram, the count and the bytes held capped).
@@ -22,7 +28,7 @@
 //! two of them, in milliseconds, since the window was last reset) and `data-torque-ended` (why the link ended, empty
 //! while it holds).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::rc::Rc;
 
@@ -37,34 +43,47 @@ use crate::web_page::mark;
 /// The address the client names its server by: each link goes to its own server whatever it is sent to.
 pub const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_000);
 
-/// What the local link holds: datagrams from the worker's server (or from a player's host, on the page's data channel),
-/// and the page's function that sends one.
+/// What a link the page feeds holds: datagrams from the worker's server, or from a player's host on the page's data
+/// channel, and the page's function that sends one.
 #[derive(Default)]
 struct Local {
     held: HeldDatagrams,
     sender: Option<js_sys::Function>,
 }
 
+type Queue = &'static std::thread::LocalKey<RefCell<Local>>;
+
 thread_local! {
+    /// The link to the server in the page's worker ([`Target::Local`]).
     static LOCAL: RefCell<Local> = RefCell::default();
-    /// The state of the link to a player's host the page holds ([`Target::Page`]).
-    static PAGE_LINK: LinkWatch = LinkWatch::default();
+    /// The link to a player's host the page holds ([`Target::Page`]).
+    static LINK: RefCell<Local> = RefCell::default();
+    /// The state of the link to a player's host the page holds: a new one for each switch to it.
+    static PAGE_LINK: RefCell<LinkWatch> = RefCell::default();
+    /// A switch the page asked for, not yet taken by the game.
+    static SWITCH: Cell<Option<Mode>> = const { Cell::new(None) };
 }
 
-/// A datagram for the client on the page's link. False: dropped ([`HeldDatagrams`]: too long, or the queue full).
+/// A datagram for the client on the link to the worker's server. False: dropped ([`HeldDatagrams`]: too long, or the
+/// queue full).
 pub fn local_datagram(bytes: &[u8]) -> bool {
     LOCAL.with_borrow_mut(|l| l.held.push(bytes))
 }
 
+/// A datagram for the client on the page's data channel to a player's host. False: dropped (as [`local_datagram`]).
+pub fn link_datagram(bytes: &[u8]) -> bool {
+    LINK.with_borrow_mut(|l| l.held.push(bytes))
+}
+
 /// The page's data channel to a player's host opened ([`Target::Page`]).
 pub fn link_opened() {
-    PAGE_LINK.with(|w| w.borrow_mut().link = Link::Channel);
+    PAGE_LINK.with_borrow(|w| w.borrow_mut().link = Link::Channel);
 }
 
 /// The page's data channel to a player's host ended, for good: `why`, in a player's words (its first 200 characters),
 /// is shown on the menu.
 pub fn link_ended(why: &str) {
-    PAGE_LINK.with(|w| {
+    PAGE_LINK.with_borrow(|w| {
         let mut w = w.borrow_mut();
         if w.ended.is_none() {
             w.ended = Some(why.chars().take(200).collect());
@@ -72,8 +91,71 @@ pub fn link_ended(why: &str) {
     });
 }
 
-/// Calls the page's `torqueAsk(what)` (`web/invites.js`: its invite panels, or `back`, the page again with no invite), if it
-/// has one: `host`, `join` or `back` only.
+/// What a page played alone switches its running game to ([`switch_to`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Played alone (the arena: on the server in the page's worker; the vehicle demo: at its menu, its game in the page).
+    Solo,
+    /// The game of a player's host reached by an invite link, once the page's data channel to it has opened.
+    Link,
+    /// The game this page hosts with links, its server in the page's worker.
+    Host,
+}
+
+impl Mode {
+    /// The mode by its name: `solo`, `link` or `host`.
+    pub fn named(name: &str) -> Option<Mode> {
+        match name {
+            "solo" => Some(Mode::Solo),
+            "link" => Some(Mode::Link),
+            "host" => Some(Mode::Host),
+            _ => None,
+        }
+    }
+}
+
+/// The page asks its running game to switch to `mode` (`solo`, `link` or `host`; Err: none of those). The link the switch
+/// goes to starts afresh at once (to `link`: a new invite link's state, nothing held from an earlier one; else nothing
+/// held from the worker), and the game switches at its next step ([`take_switch`]). A later ask replaces one not yet
+/// taken.
+pub fn switch_to(mode: &str) -> Result<(), String> {
+    let mode = Mode::named(mode).ok_or_else(|| format!("no mode {mode:?}: solo, link or host"))?;
+    if mode == Mode::Link {
+        PAGE_LINK.set(LinkWatch::default());
+        LINK.with_borrow_mut(|l| l.held = HeldDatagrams::default());
+    } else {
+        LOCAL.with_borrow_mut(|l| l.held = HeldDatagrams::default());
+    }
+    SWITCH.set(Some(mode));
+    Ok(())
+}
+
+/// The switch the page asked for since the last call ([`switch_to`]).
+pub fn take_switch() -> Option<Mode> {
+    SWITCH.take()
+}
+
+/// Takes the link's state off the page (a game switched to one with no link of its own).
+pub fn unmark_link() {
+    if let Some(root) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+    {
+        for name in [
+            "link",
+            "rtc-tried",
+            "rtc-failed",
+            "rtc-in",
+            "rtc-gap",
+            "ended",
+        ] {
+            let _ = root.remove_attribute(&format!("data-torque-{name}"));
+        }
+    }
+}
+
+/// Calls the page's `torqueAsk(what)` (`web/invites.js`: its invite panels, or `back`, its own game again, played alone),
+/// if it has one: `host`, `join` or `back` only.
 pub fn ask_page(what: &str) {
     if !matches!(what, "host" | "join" | "back") {
         return;
@@ -88,20 +170,20 @@ pub fn ask_page(what: &str) {
     }
 }
 
-/// The page's function that sends the client's datagrams on its link (called with a `Uint8Array`).
+/// The page's function that posts the client's datagrams to the worker's server (called with a `Uint8Array`).
 pub fn set_local_sender(sender: js_sys::Function) {
     LOCAL.with_borrow_mut(|l| l.sender = Some(sender));
 }
 
-/// The host player's link to the server in the page's worker.
-pub struct LocalLink;
+/// The page's function that sends the client's datagrams on its data channel to a player's host (called with a
+/// `Uint8Array`).
+pub fn set_link_sender(sender: js_sys::Function) {
+    LINK.with_borrow_mut(|l| l.sender = Some(sender));
+}
 
-impl Datagrams for LocalLink {
-    fn send_to(&mut self, to: SocketAddrV4, bytes: &[u8]) -> bool {
-        if to != SERVER {
-            return false;
-        }
-        LOCAL.with_borrow(|l| {
+fn send_on(queue: Queue, to: SocketAddrV4, bytes: &[u8]) -> bool {
+    to == SERVER
+        && queue.with_borrow(|l| {
             l.sender.as_ref().is_some_and(|f| {
                 f.call1(
                     &wasm_bindgen::JsValue::NULL,
@@ -110,10 +192,39 @@ impl Datagrams for LocalLink {
                 .is_ok()
             })
         })
+}
+
+fn recv_on(queue: Queue) -> Option<(SocketAddrV4, Vec<u8>)> {
+    queue.with_borrow_mut(|l| l.held.pop()).map(|d| (SERVER, d))
+}
+
+/// The host player's link to the server in the page's worker.
+pub struct LocalLink;
+
+impl Datagrams for LocalLink {
+    fn send_to(&mut self, to: SocketAddrV4, bytes: &[u8]) -> bool {
+        send_on(&LOCAL, to, bytes)
     }
 
     fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
-        LOCAL.with_borrow_mut(|l| l.held.pop()).map(|d| (SERVER, d))
+        recv_on(&LOCAL)
+    }
+
+    fn port(&self) -> u16 {
+        0
+    }
+}
+
+/// A client's link to a player's host reached by an invite link: the page's data channel to it.
+pub struct PageLink;
+
+impl Datagrams for PageLink {
+    fn send_to(&mut self, to: SocketAddrV4, bytes: &[u8]) -> bool {
+        send_on(&LINK, to, bytes)
+    }
+
+    fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
+        recv_on(&LINK)
     }
 
     fn port(&self) -> u16 {
@@ -150,11 +261,11 @@ impl Target {
             }
             Target::Local => Ok((Box::new(LocalLink), LinkWatch::default())),
             Target::Page => {
-                let watch = PAGE_LINK.with(Rc::clone);
+                let watch = PAGE_LINK.with_borrow(Rc::clone);
                 if watch.borrow().ended.is_some() {
                     return Err("open a new invite link to join again".into());
                 }
-                Ok((Box::new(LocalLink), watch))
+                Ok((Box::new(PageLink), watch))
             }
         }
     }
