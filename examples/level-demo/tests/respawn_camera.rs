@@ -11,12 +11,12 @@ const FLAT_PATH: &str = "missions/zz-flat-test.mis";
 /// The game with a test map whose floor (its top at 0) is an interior as well as a cube.
 fn files() -> GameFiles {
     use torque_interior_builder::mission::{Placement, fragment};
-    use torque_interior_builder::{Brush, Options, TexGen, build};
+    use torque_interior_builder::{Brush, Options, TexGen, V3, build};
     let texgen = |n| TexGen::world(n, 1.0);
     let floor = build(
         &[Brush::cuboid(
-            [-20.0, -20.0, -1.0],
-            [20.0, 20.0, 0.0],
+            V3::new(-20.0, -20.0, -1.0),
+            V3::new(20.0, 20.0, 0.0),
             "floor",
             texgen,
         )],

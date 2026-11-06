@@ -327,7 +327,7 @@ pub fn tree_difs() -> std::io::Result<Vec<(String, Vec<u8>)>> {
     for (k, &kind) in KINDS.iter().enumerate() {
         for n in 0..VARIANTS {
             let seed = 0x5eed_0000 + (k * 16 + n) as u64;
-            let brushes = crate::trees::tree(kind, [0.0, 0.0, 0.0], 1.0, seed);
+            let brushes = crate::trees::tree(kind, torque_interior_builder::V3::ZERO, 1.0, seed);
             out.push((tree_file(kind, n), interior(&brushes)?));
         }
     }
@@ -336,7 +336,7 @@ pub fn tree_difs() -> std::io::Result<Vec<(String, Vec<u8>)>> {
             let brushes: Vec<_> = grove(conifers, n)
                 .into_iter()
                 .flat_map(|(kind, foot, size, seed)| {
-                    crate::trees::tree_sunk(kind, foot, size, seed, GROVE_SINK)
+                    crate::trees::tree_sunk(kind, foot.into(), size, seed, GROVE_SINK)
                 })
                 .collect();
             out.push((grove_file(conifers, n), interior(&brushes)?));
@@ -389,7 +389,7 @@ fn peak(
     lean: [f64; 2],
     rng: &mut Rng,
 ) -> torque_interior_builder::Brush {
-    use torque_interior_builder::{Brush, Plane, TexGen};
+    use torque_interior_builder::{Brush, Plane, TexGen, V3};
     let sides = 5 + (rng.next() % 3) as usize;
     let turn = rng.range(0.0, std::f64::consts::TAU);
     let z0 = f64::from(WATER_LEVEL) - 60.0;
@@ -424,10 +424,10 @@ fn peak(
         if n[0] * mid[0] + n[1] * mid[1] < 0.0 {
             n = n.map(|v| -v);
         }
-        planes.extend(Plane::new(n, b0));
+        planes.extend(Plane::new(n.into(), b0.into()));
     }
-    planes.extend(Plane::new([0.0, 0.0, -1.0], [at[0], at[1], z0]));
-    planes.extend(Plane::new([0.0, 0.0, 1.0], apex));
+    planes.extend(Plane::new(V3::NEG_Z, V3::new(at[0], at[1], z0)));
+    planes.extend(Plane::new(V3::Z, apex.into()));
     Brush::from_planes(&planes, "valley_rock", |n| TexGen::world(n, 64.0))
 }
 
