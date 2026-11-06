@@ -49,8 +49,33 @@ fn a_file_read_again_makes_the_same_interior_and_costs_the_same() {
     let mut other = dif_hulls(SPEC, 2, 6);
     assert!(read_interior(&other, &mut |_| false).is_none());
     assert!(read_interior(&other, &mut |_| true).is_some());
-    // A file that does not read is refused again without being read.
+    // A file that does not read is refused each time, and not kept.
     other.truncate(other.len() / 2);
     assert!(read_interior(&other, &mut |_| true).is_none());
+    assert!(made::find(&other, torque_crc(&other)).is_none());
     assert!(read_interior(&other, &mut |_| true).is_none());
+}
+
+#[test]
+fn the_kept_files_stay_bounded_and_a_new_one_is_kept_when_full() {
+    let bytes = dif_hulls(SPEC, 3, 6);
+    let kept = read_interior(&bytes, &mut |_| true).unwrap();
+    // Stand-in files (the keeping reads no bytes): more than fit.
+    let file = |i: usize| format!("kept file {i}").into_bytes();
+    for i in 0..made::MAX_FILES + 40 {
+        let f = file(i);
+        made::keep(&f, torque_crc(&f), i as u64, kept.clone());
+        assert!(made::len() <= made::MAX_FILES);
+    }
+    let last = file(made::MAX_FILES + 39);
+    assert_eq!(
+        made::find(&last, torque_crc(&last)).map(|m| m.0),
+        Some(made::MAX_FILES as u64 + 39)
+    );
+    let first = file(0);
+    assert!(
+        made::find(&first, torque_crc(&first)).is_none(),
+        "the one longest unused is let go"
+    );
+    assert_eq!(made::len(), made::MAX_FILES);
 }

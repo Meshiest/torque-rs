@@ -56,23 +56,16 @@ pub fn torque_crc(bytes: &[u8]) -> u32 {
 }
 
 /// The hulls and box of a `.dif`'s bytes; `None` for a file the importer refuses or one with no hull. `pay` is asked for the
-/// hulls' cost first. A file whose hulls were made already in this process ([`made`]: a server and its client in one process
+/// hulls' cost first. A file whose hulls were made lately in this process ([`made`]: a server and its client in one process
 /// read the same files) is not made again; its cost is asked for all the same.
 pub fn read_interior(bytes: &[u8], pay: &mut dyn FnMut(u64) -> bool) -> Option<KeptInterior> {
     let crc = torque_crc(bytes);
-    if let Some(made) = made::find(bytes, crc) {
-        let (cost, kept) = made?;
+    if let Some((cost, kept)) = made::find(bytes, crc) {
         return pay(cost).then_some(kept);
     }
     // One reading of the file: the importer's hulls are its first detail level's (`IMPORTER.convexes`), as is the box.
-    let Some(dif) = torque_maps::dif::parse(bytes).ok() else {
-        made::keep(bytes, crc, None);
-        return None;
-    };
-    let Some(first) = dif.details.first() else {
-        made::keep(bytes, crc, None);
-        return None;
-    };
+    let dif = torque_maps::dif::parse(bytes).ok()?;
+    let first = dif.details.first()?;
     let set = torque_maps::legacy::convexes(first);
     let cost = collide::map::interior::build_cost(&set);
     if !pay(cost) {
@@ -85,13 +78,15 @@ pub fn read_interior(bytes: &[u8], pay: &mut dyn FnMut(u64) -> bool) -> Option<K
         geom: Arc::new(geom),
         crc,
     };
-    made::keep(bytes, crc, Some((cost, kept.clone())));
+    made::keep(bytes, crc, cost, kept.clone());
     Some(kept)
 }
 
 /// The interiors made in this process, by their files' bytes (the same bytes, the same hulls), each known by its length, its
-/// CRC and a 64-bit hash of its own ([`made::fingerprint`]): at most [`made::MAX_FILES`] files, the first ones read kept.
+/// CRC and a 64-bit hash of its own ([`made::fingerprint`]): the [`made::MAX_FILES`] last read or found, the one longest
+/// unused let go for a new one. A file that does not read is not kept (it is refused again, as cheaply as it was).
 pub mod made {
+    use std::collections::VecDeque;
     use std::sync::{Mutex, PoisonError};
 
     use super::KeptInterior;
@@ -102,10 +97,11 @@ pub mod made {
     /// A file's length, CRC and hash.
     type Key = (usize, u32, u64);
 
-    /// What a file made: its hulls' cost and the interior, or `None` for a file that does not read.
-    type Made = Option<(u64, KeptInterior)>;
+    /// What a file made: its hulls' cost and the interior.
+    type Made = (u64, KeptInterior);
 
-    static MADE: Mutex<Vec<(Key, Made)>> = Mutex::new(Vec::new());
+    /// The files kept, the one longest unused first.
+    static MADE: Mutex<VecDeque<(Key, Made)>> = Mutex::new(VecDeque::new());
 
     /// A hash of `bytes`, eight at a time (a multiply and a rotate a word, the length and the last bytes mixed in): with the
     /// length and the CRC, a key no two files of a game share by chance.
@@ -126,20 +122,34 @@ pub mod made {
         (bytes.len(), crc, fingerprint(bytes))
     }
 
-    /// What `bytes` (whose CRC is `crc`) made, if they were read before: `Some(None)` for a file that does not read.
+    /// What `bytes` (whose CRC is `crc`) made, if they are kept (now the last used).
     pub(super) fn find(bytes: &[u8], crc: u32) -> Option<Made> {
         let key = key(bytes, crc);
-        let made = MADE.lock().unwrap_or_else(PoisonError::into_inner);
-        made.iter().find(|(k, _)| *k == key).map(|(_, m)| m.clone())
+        let mut made = MADE.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = made.iter().position(|(k, _)| *k == key)?;
+        let entry = made.remove(at)?;
+        let found = entry.1.clone();
+        made.push_back(entry);
+        Some(found)
     }
 
-    /// Keeps what `bytes` made, while there is room.
-    pub(super) fn keep(bytes: &[u8], crc: u32, made_of: Made) {
+    /// Keeps what `bytes` made (cost `cost`), the one longest unused let go when [`MAX_FILES`] are kept.
+    pub(super) fn keep(bytes: &[u8], crc: u32, cost: u64, kept: KeptInterior) {
         let key = key(bytes, crc);
         let mut made = MADE.lock().unwrap_or_else(PoisonError::into_inner);
-        if made.len() < MAX_FILES && !made.iter().any(|(k, _)| *k == key) {
-            made.push((key, made_of));
+        if made.iter().any(|(k, _)| *k == key) {
+            return;
         }
+        while made.len() >= MAX_FILES {
+            made.pop_front();
+        }
+        made.push_back((key, (cost, kept)));
+    }
+
+    /// How many files are kept.
+    #[cfg(test)]
+    pub(super) fn len() -> usize {
+        MADE.lock().unwrap_or_else(PoisonError::into_inner).len()
     }
 }
 
