@@ -14,6 +14,10 @@
 // Nothing from a code or a message is written as HTML: every text goes in by `textContent` or an input's `value`. The
 // fragment is cleared from the address bar as soon as it is read.
 //
+// A connection that does not open shows its details under the message, to copy into a report: the browser's family, how the
+// connection's states went and counts of its candidates and candidate pairs by type and state (`connectionDetails`, from
+// the connection's stats just before it is closed). They never hold an address, a port, an mDNS name, a ufrag or a code.
+//
 // Caps: at most MAX_INVITES invites wait at once, each for INVITE_MS; a reply has CONNECT_MS for its channel to open; one
 // reply is read at a time; a code is refused whole when it breaks any of codes.js's caps; an invite's reply is taken once.
 import {
@@ -130,9 +134,10 @@ function privacyText(key, who) {
   );
 }
 
-// A link with its copy button and the trust warning.
-function linkBox(link, label) {
-  const input = el('input', { type: 'text', readOnly: true, value: link, 'aria-label': label, 'data-link': '' });
+// A line of text to copy, in a read-only field (marked with the attribute `mark`) with its Copy button, and the line that
+// says how the copy went.
+function copyRow(text, label, mark, what) {
+  const input = el('input', { type: 'text', readOnly: true, value: text, 'aria-label': label, [mark]: '' });
   const said = el('span', { class: 'said' });
   const copy = el('button', {
     type: 'button',
@@ -140,16 +145,124 @@ function linkBox(link, label) {
     on: {
       click: async () => {
         try {
-          await navigator.clipboard.writeText(link);
+          await navigator.clipboard.writeText(text);
           said.textContent = 'Copied.';
         } catch {
           input.select();
-          said.textContent = 'Select the link and copy it.';
+          said.textContent = `Select the ${what} and copy it.`;
         }
       },
     },
   });
-  return el('div', { class: 'link' }, el('div', { class: 'row' }, input, copy), el('p', { class: 'warn', text: TRUST }), said);
+  return { row: el('div', { class: 'row' }, input, copy), said };
+}
+
+// A link with its copy button and the trust warning.
+function linkBox(link, label) {
+  const { row, said } = copyRow(link, label, 'data-link', 'link');
+  return el('div', { class: 'link' }, row, el('p', { class: 'warn', text: TRUST }), said);
+}
+
+// A failed connection's details (`connectionDetails`) with their copy button.
+function detailsBox(details) {
+  const { row, said } = copyRow(details, 'Connection details', 'data-details', 'details');
+  return el(
+    'div',
+    { class: 'details' },
+    el('p', { text: 'If you report this, send these connection details too. They hold no addresses.' }),
+    row,
+    said,
+  );
+}
+
+// ---- a failed connection's details
+
+const CANDIDATE_TYPES = ['host', 'srflx', 'prflx', 'relay'];
+const PAIR_STATES = ['succeeded', 'failed', 'in-progress', 'waiting', 'frozen'];
+const CONNECTION_STATES = ['new', 'checking', 'connecting', 'connected', 'completed', 'disconnected', 'failed', 'closed'];
+const MAX_STATES = 16;
+
+// The browser's family by its user agent, as the engine its WebRTC comes from: WebKit (Safari, and every browser on an
+// iPhone or iPad), Gecko (Firefox), Edge, Blink (Chrome and the other Chromium browsers), or other. A user agent is read by
+// its engine tokens: the scripts here name no browser product (web/guard-scan.mjs).
+export function browserFamily(userAgent) {
+  const ua = String(userAgent ?? '');
+  if (/\b(iPhone|iPad|iPod|CriOS|FxiOS|EdgiOS)\b/.test(ua)) return 'WebKit';
+  if (/\bGecko\/\d/.test(ua)) return 'Gecko';
+  if (/\bEdgA?\//.test(ua)) return 'Edge';
+  if (/\bAppleWebKit\/537\.36\b/.test(ua)) return 'Blink';
+  if (/\bAppleWebKit\//.test(ua)) return 'WebKit';
+  return 'other';
+}
+
+// The connection's states as they change, ICE's (`ice`) and the whole connection's (`peer`), for its details; with `seen`,
+// added to an earlier connection's (one that this one took over from).
+function watchStates(pc, seen = { ice: [], peer: [] }) {
+  const add = (list, state) => list.length < MAX_STATES && list.at(-1) !== state && list.push(state);
+  add(seen.ice, pc.iceConnectionState);
+  add(seen.peer, pc.connectionState);
+  pc.addEventListener('iceconnectionstatechange', () => add(seen.ice, pc.iceConnectionState));
+  pc.addEventListener('connectionstatechange', () => add(seen.peer, pc.connectionState));
+  return seen;
+}
+
+// One line of a failed connection's details, from the browser's user agent, the states `seen` (`watchStates`) and the
+// connection's stats (a list of `getStats` entries): the browser's family, each state history, the local and remote
+// candidates by type (host ones as mDNS names or addresses; a remote one with no address is unresolved: Chrome reports an
+// mDNS name it could not resolve so) and the candidate pairs by state. Counts and the browser's own state words only:
+// nothing of an address, port, name, ufrag or code, whatever the stats hold.
+export function connectionDetails(userAgent, seen, stats) {
+  const word = (v, known) => (known.includes(v) ? v : 'other');
+  const count = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
+  const sides = { local: { types: new Map(), host: new Map() }, remote: { types: new Map(), host: new Map() } };
+  const pairs = new Map();
+  let unresolved = 0;
+  for (const s of stats ?? []) {
+    if (s?.type === 'candidate-pair') {
+      count(pairs, word(s.state, PAIR_STATES));
+      continue;
+    }
+    const side = s?.type === 'local-candidate' ? sides.local : s?.type === 'remote-candidate' ? sides.remote : null;
+    if (!side) continue;
+    const type = word(s.candidateType, CANDIDATE_TYPES);
+    count(side.types, type);
+    const address = String(s.address ?? s.ip ?? '');
+    if (!address) {
+      if (side === sides.remote) unresolved++;
+    } else if (type === 'host') {
+      count(side.host, address.toLowerCase().endsWith('.local') ? 'mDNS' : 'address');
+    }
+  }
+  const list = (map, order, each) => {
+    const keys = [...order, 'other'].filter((k) => map.has(k));
+    return keys.length ? keys.map(each).join(', ') : 'none';
+  };
+  const candidates = (side) =>
+    list(side.types, CANDIDATE_TYPES, (t) => {
+      if (t !== 'host' || !side.host.size) return `${side.types.get(t)} ${t}`;
+      return `${side.types.get(t)} host (${list(side.host, ['mDNS', 'address'], (k) => `${side.host.get(k)} ${k}`)})`;
+    });
+  const history = (states) =>
+    Array.isArray(states) && states.length
+      ? states.slice(0, MAX_STATES).map((v) => word(v, CONNECTION_STATES)).join('>')
+      : 'none';
+  return [
+    browserFamily(userAgent),
+    `ice ${history(seen?.ice)}`,
+    `connection ${history(seen?.peer)}`,
+    `local ${candidates(sides.local)}`,
+    `remote ${candidates(sides.remote)}${unresolved ? `, ${unresolved} unresolved` : ''}`,
+    `pairs ${list(pairs, PAIR_STATES, (k) => `${pairs.get(k)} ${k}`)}`,
+  ].join('; ');
+}
+
+// The details of `pc`, gathered before it is closed (a closed connection has no stats).
+async function detailsOf(pc, seen) {
+  let stats = [];
+  try {
+    stats = [...(await pc.getStats()).values()];
+  } catch {}
+  return connectionDetails(navigator.userAgent, seen, stats);
 }
 
 // Resolves once ICE gathering is complete, or after `ms`.
@@ -277,9 +390,12 @@ export function hostInvites({ open = false } = {}) {
 
   // every invite made, for the page's `data-torque-invites` (each one's state, oldest first)
   const made = [];
+  // An invite's link is shown only while it waits for its reply: once the reply is in, or the invite expired or failed,
+  // its link box goes (its status line stays).
   function setState(inv, state, text) {
     inv.state = state;
     inv.status.textContent = `Invite ${inv.n}: ${text}`;
+    if (state !== 'waiting') inv.box?.remove();
     root.dataset.torqueInvites = made.map((i) => i.state).join(' ');
   }
 
@@ -303,6 +419,7 @@ export function hostInvites({ open = false } = {}) {
     setState(inv, 'making', 'making the link...');
     try {
       inv.pc = new RTCPeerConnection({ iceServers: iceServersFor(key) });
+      inv.seen = watchStates(inv.pc);
       inv.ch = inv.pc.createDataChannel('game', { ordered: false, maxRetransmits: 0 });
       inv.pc.onicecandidate = (e) => {
         const address = e.candidate?.candidate?.split(' ')[4];
@@ -331,7 +448,8 @@ export function hostInvites({ open = false } = {}) {
         forget(inv);
         setState(inv, 'expired', 'expired. Create a new one.');
       }, INVITE_MS);
-      item.append(linkBox(`${pageLink()}#join=${code}`, `Invite offer link ${inv.n}`));
+      inv.box = linkBox(`${pageLink()}#join=${code}`, `Invite offer link ${inv.n}`);
+      item.append(inv.box);
       setState(
         inv,
         'waiting',
@@ -380,9 +498,12 @@ export function hostInvites({ open = false } = {}) {
   async function settle(inv) {
     const { pc, ch } = inv;
     if (!(await waitOpen(ch, CONNECT_MS))) {
+      const details = await detailsOf(pc, inv.seen);
       pc.close();
       forget(inv);
-      return setState(inv, 'failed', NO_RELAY);
+      setState(inv, 'failed', NO_RELAY);
+      inv.status.after(detailsBox(details));
+      return;
     }
     // The address the joiner is counted by: where its traffic comes from, or, when the browser hides that (a peer-reflexive
     // pair: a joiner reached by its own checks, as one behind the host's own address is), a stand-in of this invite's own
@@ -605,14 +726,31 @@ export function joinInvite(code) {
     // The reply's ICE credentials, fingerprint and DTLS setup (`fromSdp`), once the first connection has made them.
     let details = null;
     let started = 0;
+    // The states of this join's connections (`watchStates`), one history through every connection that took over.
+    let seen = undefined;
     // Back to the menu ends this connection with the page.
     addEventListener('pagehide', () => pc?.close());
+    // The channel did not open: the current connection's details are gathered, then it is closed.
+    let failing = false;
+    const noRelay = async () => {
+      if (failing || opened || ended) return;
+      failing = true;
+      const last = pc;
+      const found = await detailsOf(last, seen);
+      // the channel opened while the details were gathered: it stays
+      if (opened) return;
+      last.close();
+      if (ended) return;
+      fail(NO_RELAY);
+      said.after(detailsBox(found));
+    };
 
     // A connection that answers the invite (as `details` say, once there are any) and is given the invite's addresses:
     // its own description, or null when the join ended or the connection was replaced meanwhile.
     async function answer() {
       const next = new RTCPeerConnection({ iceServers: iceServersFor(data.server), certificates });
       pc = next;
+      seen = watchStates(next, seen);
       started = performance.now();
       next.ondatachannel = (e) => {
         const ch = e.channel;
@@ -637,7 +775,7 @@ export function joinInvite(code) {
             end('The host sent more than the game takes, so the connection was closed.');
           },
         );
-        ch.onclose = () => (opened ? end('The host left the game.') : fail(NO_RELAY));
+        ch.onclose = () => (opened ? end('The host left the game.') : noRelay());
       };
       next.oniceconnectionstatechange = () => {
         if (next !== pc || next.iceConnectionState !== 'failed') return;
@@ -672,6 +810,7 @@ export function joinInvite(code) {
     // connection with the reply's credentials, certificate and setup takes over: once the host has the reply, the host
     // answers its checks (and takes its address as the reply's). At most one every RETRY_MS, until JOIN_MS ends the wait.
     function again() {
+      if (failing) return;
       const old = pc;
       if (channel) {
         channel.onopen = channel.onclose = channel.onmessage = null;
@@ -680,11 +819,8 @@ export function joinInvite(code) {
       old.close();
       setTimeout(
         () => {
-          if (opened || ended || pc !== old) return;
-          answer().catch(() => {
-            pc.close();
-            fail(NO_RELAY);
-          });
+          if (opened || ended || failing || pc !== old) return;
+          answer().catch(noRelay);
         },
         Math.max(0, started + RETRY_MS - performance.now()),
       );
@@ -702,11 +838,7 @@ export function joinInvite(code) {
     show(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
     mark('replied');
     if (!opened && pc.iceConnectionState === 'failed') again();
-    setTimeout(() => {
-      if (opened || ended) return;
-      pc.close();
-      fail(NO_RELAY);
-    }, JOIN_MS);
+    setTimeout(noRelay, JOIN_MS);
   }
 
   (async () => {
