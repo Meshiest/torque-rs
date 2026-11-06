@@ -99,12 +99,18 @@ pub struct Clouds {
     bound: bool,
     /// Whether this frame marched.
     pub drawn: bool,
+    /// In a browser: whether the last frame wanted clouds while their noise was still being made ([`Clouds::noise_made`]).
+    pub waiting: bool,
     /// The image's mip chain.
     down: crate::capture::DownPipe,
     /// The march from the eye wherever it is (the renderer's choice); off: from no higher than [`CLAMPED_UNDER`] under the
     /// lowest base, as before.
     pub from_eye: bool,
 }
+
+/// In a browser: how long a frame that wants clouds spends making their noise while it is not all made ([`cl::make_noise_for`]:
+/// at least one piece, a few milliseconds to a few tens).
+pub const WEB_NOISE_BUDGET: web_time::Duration = web_time::Duration::from_millis(40);
 
 /// How far under the lowest base the march started at most before it started at the eye.
 pub const CLAMPED_UNDER: f32 = 60.0;
@@ -428,6 +434,7 @@ impl Clouds {
             prev_drift: None,
             bound: false,
             drawn: false,
+            waiting: false,
         }
     }
 
@@ -471,6 +478,17 @@ impl Clouds {
         self.written = false;
         self.frame = 0;
         self.prev_drift = None;
+    }
+
+    /// Whether the noise is made. Natively it is (its thread began with the renderer, and the first frame that draws clouds waits
+    /// for the rest of it). In a browser, which has no thread to make it on, each frame that wants clouds makes a share of it
+    /// ([`WEB_NOISE_BUDGET`]) and draws none until it is all made ([`Clouds::waiting`] meanwhile).
+    fn noise_made(&mut self) -> bool {
+        if !cfg!(target_arch = "wasm32") || self.noise.is_some() {
+            return true;
+        }
+        self.waiting = !cl::make_noise_for(WEB_NOISE_BUDGET);
+        !self.waiting
     }
 
     fn ensure_noise(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -642,6 +660,7 @@ impl Clouds {
         quality: Option<CloudQuality>,
         sun_through: bool,
     ) -> SkyClouds {
+        self.waiting = false;
         let (Some(q), Some(sky)) = (quality, scene.clouds.as_ref()) else {
             self.drawn = false;
             return SkyClouds::default();
@@ -663,7 +682,7 @@ impl Clouds {
             l.base += lift;
             l.top += lift;
         }
-        if self.march.is_none() || layers.is_empty() {
+        if self.march.is_none() || layers.is_empty() || !self.noise_made() {
             self.drawn = false;
             return SkyClouds::default();
         }

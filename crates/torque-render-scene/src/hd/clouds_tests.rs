@@ -404,3 +404,112 @@ fn a_sanitized_look_holds_only_values_the_renderer_can_take() {
         Some(MAX_COVERAGE)
     );
 }
+
+/// The cell noise as it was first written: every neighbor wrapped into the tile.
+fn cell_reference(t: &CellTable, p: [f32; 3]) -> f32 {
+    let n = t.n;
+    let q = p.map(|v| v * n as f32);
+    let i = q.map(|v| v.floor() as i32);
+    let mut best = f32::MAX;
+    for dz in -1..=1 {
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let c = [i[0] + dx, i[1] + dy, i[2] + dz];
+                let w = c.map(|v| v.rem_euclid(n));
+                let h = t.pts[((w[2] * n + w[1]) * n + w[0]) as usize];
+                let d = [0, 1, 2].map(|k| c[k] as f32 + h[k] - q[k]);
+                best = best.min(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            }
+        }
+    }
+    (1.0 - best.sqrt()).clamp(0.0, 1.0)
+}
+
+/// The gradient noise as it was first written: every corner wrapped into the tile.
+fn gradient_reference(t: &GradientTable, p: [f32; 3]) -> f32 {
+    let n = t.n;
+    let q = p.map(|v| v * n as f32);
+    let i = q.map(|v| v.floor());
+    let f = [q[0] - i[0], q[1] - i[1], q[2] - i[2]];
+    let i = i.map(|v| v as i32);
+    let corner = |o: [i32; 3]| -> f32 {
+        let c = [0, 1, 2].map(|k| (i[k] + o[k]).rem_euclid(n));
+        let g = t.g[((c[2] * n + c[1]) * n + c[0]) as usize];
+        let d = [0, 1, 2].map(|k| f[k] - o[k] as f32);
+        g[0] * d[0] + g[1] * d[1] + g[2] * d[2]
+    };
+    let u = f.map(fade);
+    let x00 = lerp(corner([0, 0, 0]), corner([1, 0, 0]), u[0]);
+    let x10 = lerp(corner([0, 1, 0]), corner([1, 1, 0]), u[0]);
+    let x01 = lerp(corner([0, 0, 1]), corner([1, 0, 1]), u[0]);
+    let x11 = lerp(corner([0, 1, 1]), corner([1, 1, 1]), u[0]);
+    lerp(lerp(x00, x10, u[1]), lerp(x01, x11, u[1]), u[2]) * 1.15
+}
+
+#[test]
+fn the_tables_give_the_wrapped_lattices_values_to_the_bit() {
+    // Points on the volumes' texel centers, others inside the tile, its edges and outside it (the wrapping path).
+    let mut points = Vec::new();
+    for k in 0..400u32 {
+        let h = |s: u32| (hash(k as i32, 3, 5, s) >> 8) as f32 / 16_777_216.0;
+        points.push([h(1), h(2), h(3)]);
+        points.push([h(4) * 3.0 - 1.0, h(5) * 2.0 - 0.5, 1.0 + h(6)]);
+    }
+    for size in [16usize, 64] {
+        for z in [0, size / 3, size - 1] {
+            for y in [0, size / 2, size - 1] {
+                for x in [0, 1, size - 1] {
+                    points.push([x, y, z].map(|v| (v as f32 + 0.5) / size as f32));
+                }
+            }
+        }
+    }
+    points.extend([
+        [0.0; 3],
+        [1.0, 1.0, 1.0],
+        [0.999_999_9, 0.0, 0.5],
+        [-0.0, 0.5, 0.25],
+    ]);
+    for n in [1, 2, 3, 5, 8, 24] {
+        let c = CellTable::new(n, SEED ^ n as u32);
+        let g = GradientTable::new(n, SEED ^ 0x10 ^ n as u32);
+        for &p in &points {
+            assert_eq!(
+                c.at(p).to_bits(),
+                cell_reference(&c, p).to_bits(),
+                "cell {n} at {p:?}"
+            );
+            assert_eq!(
+                g.at(p).to_bits(),
+                gradient_reference(&g, p).to_bits(),
+                "gradient {n} at {p:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_build_in_pieces_counts_its_steps_and_stops_after_the_last() {
+    assert_eq!(
+        NoiseBuild::STEPS,
+        1 + SHAPE_SIZE + DETAIL_SIZE + 1 + CIRRUS_SIZE / CIRRUS_ROWS_A_STEP + 1
+    );
+    let b = NoiseBuild::new();
+    assert!(!b.done());
+}
+
+// Slow unoptimized (a minute): `cargo test --release -p torque-render-scene -- --ignored`.
+#[test]
+#[ignore]
+fn a_build_in_pieces_makes_the_same_bytes_as_one_on_the_threads() {
+    let mut b = NoiseBuild::new();
+    let mut steps = 0;
+    while !b.done() {
+        b.step();
+        steps += 1;
+    }
+    assert_eq!(steps, NoiseBuild::STEPS);
+    let (a, b) = (b.finish(), generate());
+    assert!(a.shape == b.shape && a.detail == b.detail && a.weather == b.weather);
+    assert!(a.blue == b.blue && a.cirrus == b.cirrus);
+}

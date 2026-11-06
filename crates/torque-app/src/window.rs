@@ -332,6 +332,9 @@ impl<G: App> WindowGame for AppWindow<G> {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let drew = view.draw(&surface.gpu, &target, &gui, eye)?;
+        // In a browser the map is loading until its sky is all made, too (the clouds' noise, a share each frame).
+        #[cfg(target_arch = "wasm32")]
+        let sky_waiting = view.clouds_waiting();
         surface.present(frame);
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
         self.game.host().frame_drawn(real_ms);
@@ -347,7 +350,11 @@ impl<G: App> WindowGame for AppWindow<G> {
                 crate::web_page::mark_frames(&s);
             }
             if self.stage != "ready" {
-                self.stage(if self.game.loading() { "map" } else { "ready" });
+                self.stage(if self.game.loading() || sky_waiting {
+                    "map"
+                } else {
+                    "ready"
+                });
             }
         }
         Ok(Some(drew))

@@ -1771,7 +1771,8 @@ impl<E: HdExtension> HdWorld<E> {
     pub fn new(gpu: &torque_render_core::Gpu) -> HdWorld<E> {
         // The clouds' noise is made once a process (half a second): begun now beside the caller, so the first frame that draws
         // clouds finds it made (or waits only for the rest of it) instead of making it then.
-        // Where no thread can be started (a browser) it is made when first drawn.
+        // Where no thread can be started (a browser) the frames that want clouds make it a share at a time
+        // ([`HdWorld::clouds_waiting`]).
         if !torque_render_scene::hd::clouds::noise_ready() {
             let _ = std::thread::Builder::new()
                 .name("cloud noise".into())
@@ -2951,6 +2952,12 @@ impl<E: HdExtension> HdWorld<E> {
     /// or in a browser the ones still queued.
     pub fn warming(&self) -> bool {
         self.warming.is_some() || !self.warm_queue.is_empty()
+    }
+
+    /// In a browser: whether the last frame wanted clouds while their noise was still being made (a share of it each such frame:
+    /// [`crate::clouds::WEB_NOISE_BUDGET`]); they are drawn once it is all made. Never natively.
+    pub fn clouds_waiting(&self) -> bool {
+        self.clouds.waiting
     }
 
     /// Makes up to `n` of the warm-up's pipelines still queued (in a browser: [`HdWorld::warm_effects`]).

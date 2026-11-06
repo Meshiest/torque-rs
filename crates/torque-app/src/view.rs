@@ -239,6 +239,12 @@ impl WorldView {
         self.world.warming()
     }
 
+    /// In a browser: whether the last frame wanted clouds while their noise was still being made ([`HdWorld::clouds_waiting`]):
+    /// the sky is not all drawn yet. Never natively.
+    pub fn clouds_waiting(&self) -> bool {
+        self.world.clouds_waiting()
+    }
+
     /// The enhanced renderer the view draws with (its timers and reports).
     pub fn renderer(&mut self) -> &mut HdWorld<NoExtension> {
         &mut self.world

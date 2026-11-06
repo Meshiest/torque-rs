@@ -34,7 +34,8 @@
 //!   loose cells) and the rows' slow bend (a); the cirrus plane (512², 2D) its fibres, patches and a second set of fibres; the blue
 //!   noise (64², void and cluster after Ulichney 1993) offsets each texel's march, rotated each frame by the golden ratio. Every
 //!   volume tiles; the periods are not multiples of one another and each layer's domain is turned off the world's axes, so no
-//!   repetition lines up within the haze's reach.
+//!   repetition lines up within the haze's reach. It is made once a process, on the worker threads ([`noise`]), or where there
+//!   are none (a browser) a piece at a time beside the frames ([`make_noise_for`]); the same bytes either way.
 //!
 //! **In the sky**: drawn after the sun disk and the server's flat cloud layers (kept: the sky's high layer; a storm's
 //! overcast is its layers) and before the fog bans; the frame's fog toward the sky behind a pixel sees them without their detail;
@@ -50,7 +51,9 @@
 //! scattering in thin ice. The history is held within the march's own neighbourhood and read with a Catmull-Rom filter (no
 //! smearing, no blur that grows frame by frame).
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+use web_time::{Duration, Instant};
 
 use crate::source::SceneSource;
 
@@ -892,6 +895,9 @@ pub struct CloudNoise {
 
 static NOISE: OnceLock<CloudNoise> = OnceLock::new();
 
+/// The noise being made a piece at a time ([`make_noise_for`]).
+static BUILD: Mutex<Option<NoiseBuild>> = Mutex::new(None);
+
 /// The noise, generated once per process (a fraction of a second on the worker threads) and shared.
 pub fn noise() -> &'static CloudNoise {
     NOISE.get_or_init(generate)
@@ -902,30 +908,187 @@ pub fn noise_ready() -> bool {
     NOISE.get().is_some()
 }
 
-/// The noise volumes, generated afresh (deterministic: the same bytes every run).
+/// Goes on making the process's noise a piece at a time on the calling thread for about `budget` (at least one of the
+/// [`NoiseBuild::STEPS`] pieces); true once it is made ([`noise`] has it then). For a caller with no thread to make it on beside
+/// its frames (a browser): each frame takes a share, and no one frame takes it all. The same bytes as [`generate`].
+pub fn make_noise_for(budget: Duration) -> bool {
+    if noise_ready() {
+        return true;
+    }
+    let start = Instant::now();
+    let mut build = BUILD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let b = build.get_or_insert_with(NoiseBuild::new);
+    loop {
+        b.step();
+        if b.done() {
+            if let Some(b) = build.take() {
+                let _ = NOISE.set(b.finish());
+            }
+            return true;
+        }
+        if start.elapsed() >= budget {
+            return false;
+        }
+    }
+}
+
+/// The noise volumes, generated afresh (deterministic: the same bytes every run), the volumes' slices and the cirrus plane's
+/// rows shared out over the worker threads.
 pub fn generate() -> CloudNoise {
-    let shape = ShapeTables::new();
-    let detail = [
-        CellTable::new(2, SEED ^ 0x55),
-        CellTable::new(3, SEED ^ 0x66),
-        CellTable::new(4, SEED ^ 0x77),
-        CellTable::new(8, SEED ^ 0x78),
-        CellTable::new(16, SEED ^ 0x79),
-    ];
-    let weather = [
-        GradientTable::new(5, SEED ^ 0x88),
-        GradientTable::new(10, SEED ^ 0x89),
-        GradientTable::new(20, SEED ^ 0x8a),
-        GradientTable::new(40, SEED ^ 0x8b),
-        GradientTable::new(3, SEED ^ 0x99),
-        GradientTable::new(6, SEED ^ 0x9a),
-        GradientTable::new(4, SEED ^ 0xa1),
-        GradientTable::new(8, SEED ^ 0xa2),
-        GradientTable::new(16, SEED ^ 0xa3),
-        GradientTable::new(3, SEED ^ 0xb1),
-        GradientTable::new(6, SEED ^ 0xb2),
-    ];
-    let mut weather_map = volume(WEATHER_SIZE, 1, &|p| {
+    let t = NoiseTables::new();
+    let mut weather = volume(WEATHER_SIZE, 1, &|p| t.weather_texel(p));
+    // The altocumulus' patches by their rank (an even spread: the shader's thresholds are shares of the sky).
+    equalize(&mut weather, 2);
+    CloudNoise {
+        shape: volume(SHAPE_SIZE, SHAPE_SIZE, &|p| t.shape.texel(p)),
+        detail: volume(DETAIL_SIZE, DETAIL_SIZE, &|p| detail_texel(&t.detail, p)),
+        weather,
+        blue: blue_bytes(),
+        cirrus: cirrus_plane(CIRRUS_SIZE),
+    }
+}
+
+/// The cirrus plane's rows one piece of a [`NoiseBuild`] makes.
+const CIRRUS_ROWS_A_STEP: usize = 32;
+
+/// The noise made one piece at a time on the calling thread ([`make_noise_for`]): the weather map, each slice of the shape and
+/// detail volumes, the blue noise, the cirrus plane's rows a few at a time, then its stretch. The same bytes as [`generate`].
+pub struct NoiseBuild {
+    tables: NoiseTables,
+    cirrus_tables: CirrusTables,
+    next: usize,
+    shape: Vec<u8>,
+    detail: Vec<u8>,
+    weather: Vec<u8>,
+    blue: Vec<u8>,
+    cirrus_rows: Vec<[f32; 3]>,
+    cirrus: Vec<u8>,
+}
+
+impl Default for NoiseBuild {
+    fn default() -> NoiseBuild {
+        NoiseBuild::new()
+    }
+}
+
+impl NoiseBuild {
+    /// The pieces: the weather map, the shape's and the detail's slices, the blue noise, the cirrus plane's rows and its
+    /// stretch.
+    pub const STEPS: usize =
+        1 + SHAPE_SIZE + DETAIL_SIZE + 1 + CIRRUS_SIZE.div_ceil(CIRRUS_ROWS_A_STEP) + 1;
+
+    /// The lattices made (a few milliseconds), no piece yet.
+    pub fn new() -> NoiseBuild {
+        NoiseBuild {
+            tables: NoiseTables::new(),
+            cirrus_tables: CirrusTables::new(),
+            next: 0,
+            shape: Vec::with_capacity(SHAPE_SIZE * SHAPE_SIZE * SHAPE_SIZE * 4),
+            detail: Vec::with_capacity(DETAIL_SIZE * DETAIL_SIZE * DETAIL_SIZE * 4),
+            weather: Vec::new(),
+            blue: Vec::new(),
+            cirrus_rows: Vec::with_capacity(CIRRUS_SIZE * CIRRUS_SIZE),
+            cirrus: Vec::new(),
+        }
+    }
+
+    /// Whether every piece is made.
+    pub fn done(&self) -> bool {
+        self.next >= NoiseBuild::STEPS
+    }
+
+    /// Makes the next piece (nothing once [`NoiseBuild::done`]).
+    pub fn step(&mut self) {
+        let t = &self.tables;
+        let shape_end = 1 + SHAPE_SIZE;
+        let detail_end = shape_end + DETAIL_SIZE;
+        let cirrus_end = detail_end + 1 + CIRRUS_SIZE.div_ceil(CIRRUS_ROWS_A_STEP);
+        match self.next {
+            0 => {
+                self.weather = volume_slice(WEATHER_SIZE, 1, 0, &|p| t.weather_texel(p));
+                equalize(&mut self.weather, 2);
+            }
+            k if k < shape_end => {
+                let slice = volume_slice(SHAPE_SIZE, SHAPE_SIZE, k - 1, &|p| t.shape.texel(p));
+                self.shape.extend_from_slice(&slice);
+            }
+            k if k < detail_end => {
+                let slice = volume_slice(DETAIL_SIZE, DETAIL_SIZE, k - shape_end, &|p| {
+                    detail_texel(&t.detail, p)
+                });
+                self.detail.extend_from_slice(&slice);
+            }
+            k if k == detail_end => self.blue = blue_bytes(),
+            k if k < cirrus_end => {
+                let first = (k - detail_end - 1) * CIRRUS_ROWS_A_STEP;
+                for y in first..(first + CIRRUS_ROWS_A_STEP).min(CIRRUS_SIZE) {
+                    let row = self.cirrus_tables.row(y, CIRRUS_SIZE);
+                    self.cirrus_rows.extend_from_slice(&row);
+                }
+            }
+            k if k == cirrus_end => {
+                let rows = std::mem::take(&mut self.cirrus_rows);
+                self.cirrus = cirrus_bytes(&rows, CIRRUS_SIZE);
+            }
+            _ => return,
+        }
+        self.next += 1;
+    }
+
+    /// The noise, any piece not made yet made now.
+    pub fn finish(mut self) -> CloudNoise {
+        while !self.done() {
+            self.step();
+        }
+        CloudNoise {
+            shape: self.shape,
+            detail: self.detail,
+            weather: self.weather,
+            blue: self.blue,
+            cirrus: self.cirrus,
+        }
+    }
+}
+
+/// The lattices the shape, detail and weather texels are made from.
+struct NoiseTables {
+    shape: ShapeTables,
+    detail: [CellTable; 5],
+    weather: [GradientTable; 11],
+}
+
+impl NoiseTables {
+    fn new() -> NoiseTables {
+        NoiseTables {
+            shape: ShapeTables::new(),
+            detail: [
+                CellTable::new(2, SEED ^ 0x55),
+                CellTable::new(3, SEED ^ 0x66),
+                CellTable::new(4, SEED ^ 0x77),
+                CellTable::new(8, SEED ^ 0x78),
+                CellTable::new(16, SEED ^ 0x79),
+            ],
+            weather: [
+                GradientTable::new(5, SEED ^ 0x88),
+                GradientTable::new(10, SEED ^ 0x89),
+                GradientTable::new(20, SEED ^ 0x8a),
+                GradientTable::new(40, SEED ^ 0x8b),
+                GradientTable::new(3, SEED ^ 0x99),
+                GradientTable::new(6, SEED ^ 0x9a),
+                GradientTable::new(4, SEED ^ 0xa1),
+                GradientTable::new(8, SEED ^ 0xa2),
+                GradientTable::new(16, SEED ^ 0xa3),
+                GradientTable::new(3, SEED ^ 0xb1),
+                GradientTable::new(6, SEED ^ 0xb2),
+            ],
+        }
+    }
+
+    /// The weather map's texel at `p` (its altocumulus channel not yet spread by [`equalize`]).
+    fn weather_texel(&self, p: [f32; 3]) -> [f32; 4] {
+        let weather = &self.weather;
         let q = [p[0], p[1], 0.37];
         let r = gradient_fbm(q, &weather[..4]);
         let r = (0.5 + (r - 0.5) * 1.6).clamp(0.0, 1.0);
@@ -935,26 +1098,26 @@ pub fn generate() -> CloudNoise {
             gradient_fbm(q, &weather[6..9]),
             gradient_fbm(q, &weather[9..]),
         ]
-    });
-    // The altocumulus' patches by their rank (an even spread: the shader's thresholds are shares of the sky).
-    equalize(&mut weather_map, 2);
-    CloudNoise {
-        shape: volume(SHAPE_SIZE, SHAPE_SIZE, &|p| shape.texel(p)),
-        detail: volume(DETAIL_SIZE, DETAIL_SIZE, &|p| {
-            [
-                fbm3(p, &detail[0], &detail[1], &detail[2]),
-                fbm3(p, &detail[1], &detail[2], &detail[3]),
-                fbm3(p, &detail[2], &detail[3], &detail[4]),
-                1.0,
-            ]
-        }),
-        weather: weather_map,
-        blue: blue_noise(BLUE_SIZE)
-            .into_iter()
-            .map(|r| (r * 256 / (BLUE_SIZE * BLUE_SIZE)) as u8)
-            .collect(),
-        cirrus: cirrus_plane(CIRRUS_SIZE),
     }
+}
+
+/// The detail volume's texel at `p`: Worley fBm at three frequencies, each octave read once.
+fn detail_texel(detail: &[CellTable; 5], p: [f32; 3]) -> [f32; 4] {
+    let d = detail.each_ref().map(|t| t.at(p));
+    [
+        weigh3(d[0], d[1], d[2]),
+        weigh3(d[1], d[2], d[3]),
+        weigh3(d[2], d[3], d[4]),
+        1.0,
+    ]
+}
+
+/// The blue noise as bytes (each texel's rank over 256).
+fn blue_bytes() -> Vec<u8> {
+    blue_noise(BLUE_SIZE)
+        .into_iter()
+        .map(|r| (r * 256 / (BLUE_SIZE * BLUE_SIZE)) as u8)
+        .collect()
 }
 
 /// A tiling 2D lattice of `nx` x `ny` cells with a hashed unit gradient at each point (cells longer along x than y draw streaks
@@ -1015,35 +1178,73 @@ fn stretch(v: &mut [f32]) {
 /// along x than across, over a soft streaked base, the domain bent by a slow warp: hooked, combed strands), g its patches (round
 /// gradient octaves), b a second, coarser set of fibres. Every octave at least four texels a cell across.
 pub fn cirrus_plane(size: usize) -> Vec<u8> {
-    let s = SEED ^ 0xc1c1;
-    let warp = [
-        Gradient2::new(3, 3, s ^ 1),
-        Gradient2::new(3, 3, s ^ 2),
-        Gradient2::new(7, 7, s ^ 3),
-        Gradient2::new(7, 7, s ^ 4),
-    ];
-    let fibres = [
-        Gradient2::new(2, 12, s ^ 10),
-        Gradient2::new(4, 24, s ^ 11),
-        Gradient2::new(8, 48, s ^ 12),
-        Gradient2::new(16, 96, s ^ 13),
-    ];
-    let soft = [
-        Gradient2::new(2, 6, s ^ 20),
-        Gradient2::new(4, 12, s ^ 21),
-        Gradient2::new(8, 24, s ^ 22),
-    ];
-    let patches = [
-        Gradient2::new(2, 2, s ^ 30),
-        Gradient2::new(4, 4, s ^ 31),
-        Gradient2::new(8, 8, s ^ 32),
-    ];
-    let second = [
-        Gradient2::new(3, 12, s ^ 40),
-        Gradient2::new(6, 24, s ^ 41),
-        Gradient2::new(12, 48, s ^ 42),
-    ];
-    let texel = |p: [f32; 2]| -> [f32; 3] {
+    let tables = CirrusTables::new();
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, 32);
+    let rows: Vec<Vec<[f32; 3]>> = {
+        let tables = &tables;
+        let mut all: Vec<(usize, Vec<[f32; 3]>)> = crate::par::each_worker(workers, |w| {
+            (w..size)
+                .step_by(workers)
+                .map(|y| (y, tables.row(y, size)))
+                .collect::<Vec<_>>()
+        })
+        .into_iter()
+        .flatten()
+        .collect();
+        all.sort_by_key(|(y, _)| *y);
+        all.into_iter().map(|(_, r)| r).collect()
+    };
+    cirrus_bytes(&rows.concat(), size)
+}
+
+/// The cirrus plane's lattices ([`cirrus_plane`]).
+struct CirrusTables {
+    warp: [Gradient2; 4],
+    fibres: [Gradient2; 4],
+    soft: [Gradient2; 3],
+    patches: [Gradient2; 3],
+    second: [Gradient2; 3],
+}
+
+impl CirrusTables {
+    fn new() -> CirrusTables {
+        let s = SEED ^ 0xc1c1;
+        CirrusTables {
+            warp: [
+                Gradient2::new(3, 3, s ^ 1),
+                Gradient2::new(3, 3, s ^ 2),
+                Gradient2::new(7, 7, s ^ 3),
+                Gradient2::new(7, 7, s ^ 4),
+            ],
+            fibres: [
+                Gradient2::new(2, 12, s ^ 10),
+                Gradient2::new(4, 24, s ^ 11),
+                Gradient2::new(8, 48, s ^ 12),
+                Gradient2::new(16, 96, s ^ 13),
+            ],
+            soft: [
+                Gradient2::new(2, 6, s ^ 20),
+                Gradient2::new(4, 12, s ^ 21),
+                Gradient2::new(8, 24, s ^ 22),
+            ],
+            patches: [
+                Gradient2::new(2, 2, s ^ 30),
+                Gradient2::new(4, 4, s ^ 31),
+                Gradient2::new(8, 8, s ^ 32),
+            ],
+            second: [
+                Gradient2::new(3, 12, s ^ 40),
+                Gradient2::new(6, 24, s ^ 41),
+                Gradient2::new(12, 48, s ^ 42),
+            ],
+        }
+    }
+
+    /// The texel at `p` (unit coordinates of the tile), before the stretch.
+    fn texel(&self, p: [f32; 2]) -> [f32; 3] {
+        let warp = &self.warp;
         let q = [
             p[0] + 0.07 * warp[0].at(p) + 0.02 * warp[2].at(p),
             p[1] + 0.07 * warp[1].at(p) + 0.02 * warp[3].at(p),
@@ -1066,41 +1267,29 @@ pub fn cirrus_plane(size: usize) -> Vec<u8> {
             }
             0.5 + 0.5 * sum / norm
         };
-        let fib = ridged(&fibres, &[1.0, 0.6, 0.4, 0.25]);
+        let fib = ridged(&self.fibres, &[1.0, 0.6, 0.4, 0.25]);
         [
-            0.55 * fib + 0.45 * smooth(&soft, q),
-            smooth(&patches, p),
-            ridged(&second, &[1.0, 0.55, 0.3]),
+            0.55 * fib + 0.45 * smooth(&self.soft, q),
+            smooth(&self.patches, p),
+            ridged(&self.second, &[1.0, 0.55, 0.3]),
         ]
-    };
-    let workers = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .clamp(1, 32);
-    let rows: Vec<Vec<[f32; 3]>> = {
-        let texel = &texel;
-        let mut all: Vec<(usize, Vec<[f32; 3]>)> = crate::par::each_worker(workers, |w| {
-            (w..size)
-                .step_by(workers)
-                .map(|y| {
-                    let row: Vec<[f32; 3]> = (0..size)
-                        .map(|x| {
-                            texel([
-                                (x as f32 + 0.5) / size as f32,
-                                (y as f32 + 0.5) / size as f32,
-                            ])
-                        })
-                        .collect();
-                    (y, row)
-                })
-                .collect::<Vec<_>>()
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        all.sort_by_key(|(y, _)| *y);
-        all.into_iter().map(|(_, r)| r).collect()
-    };
-    let flat: Vec<[f32; 3]> = rows.concat();
+    }
+
+    /// Row `y` of a plane `size` texels a side.
+    fn row(&self, y: usize, size: usize) -> Vec<[f32; 3]> {
+        (0..size)
+            .map(|x| {
+                self.texel([
+                    (x as f32 + 0.5) / size as f32,
+                    (y as f32 + 0.5) / size as f32,
+                ])
+            })
+            .collect()
+    }
+}
+
+/// The cirrus plane's texels (`size` x `size`, row by row) stretched channel by channel and packed as RGBA8.
+fn cirrus_bytes(flat: &[[f32; 3]], size: usize) -> Vec<u8> {
     let mut channels: Vec<Vec<f32>> = (0..3)
         .map(|k| flat.iter().map(|t| t[k]).collect())
         .collect();
@@ -1120,40 +1309,43 @@ pub fn cirrus_plane(size: usize) -> Vec<u8> {
 /// An RGBA8 volume `size` x `size` x `depth`, each texel from `f` at the unit coordinates of its centre, z slices shared out over
 /// the worker threads.
 fn volume(size: usize, depth: usize, f: &(dyn Fn([f32; 3]) -> [f32; 4] + Sync)) -> Vec<u8> {
-    let slice = |z: usize| -> Vec<u8> {
-        let mut out = Vec::with_capacity(size * size * 4);
-        for y in 0..size {
-            for x in 0..size {
-                let p = [
-                    (x as f32 + 0.5) / size as f32,
-                    (y as f32 + 0.5) / size as f32,
-                    (z as f32 + 0.5) / depth.max(1) as f32,
-                ];
-                for v in f(p) {
-                    out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
-                }
-            }
-        }
-        out
-    };
     let workers = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
         .clamp(1, 32);
-    let slices: Vec<Vec<u8>> = {
-        let slice = &slice;
-        let mut all: Vec<(usize, Vec<u8>)> = crate::par::each_worker(workers, |w| {
-            (w..depth)
-                .step_by(workers)
-                .map(|z| (z, slice(z)))
-                .collect::<Vec<_>>()
-        })
-        .into_iter()
-        .flatten()
-        .collect();
-        all.sort_by_key(|(z, _)| *z);
-        all.into_iter().map(|(_, v)| v).collect()
-    };
-    slices.concat()
+    let mut all: Vec<(usize, Vec<u8>)> = crate::par::each_worker(workers, |w| {
+        (w..depth)
+            .step_by(workers)
+            .map(|z| (z, volume_slice(size, depth, z, f)))
+            .collect::<Vec<_>>()
+    })
+    .into_iter()
+    .flatten()
+    .collect();
+    all.sort_by_key(|(z, _)| *z);
+    all.into_iter().flat_map(|(_, v)| v).collect()
+}
+
+/// Slice `z` of a [`volume`]: its texels' RGBA8 bytes, row by row.
+fn volume_slice(
+    size: usize,
+    depth: usize,
+    z: usize,
+    f: &(dyn Fn([f32; 3]) -> [f32; 4] + Sync),
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(size * size * 4);
+    for y in 0..size {
+        for x in 0..size {
+            let p = [
+                (x as f32 + 0.5) / size as f32,
+                (y as f32 + 0.5) / size as f32,
+                (z as f32 + 0.5) / depth.max(1) as f32,
+            ];
+            for v in f(p) {
+                out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+        }
+    }
+    out
 }
 
 /// Our lattice hash: the point and the seed mixed, then a 32-bit avalanche (the multipliers are odd constants with good bit spread).
@@ -1187,6 +1379,9 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 pub struct GradientTable {
     n: i32,
     g: Vec<[f32; 3]>,
+    /// The gradients again with one more point a side, the last the first again: a point of the tile reads its cell's corners
+    /// without wrapping them.
+    wrapped: Vec<[f32; 3]>,
 }
 
 impl GradientTable {
@@ -1203,7 +1398,17 @@ impl GradientTable {
                 }
             }
         }
-        GradientTable { n, g }
+        let m = n + 1;
+        let mut wrapped = Vec::with_capacity((m * m * m) as usize);
+        for z in 0..m {
+            for y in 0..m {
+                for x in 0..m {
+                    let c = [x % n, y % n, z % n];
+                    wrapped.push(g[((c[2] * n + c[1]) * n + c[0]) as usize]);
+                }
+            }
+        }
+        GradientTable { n, g, wrapped }
     }
 
     /// Gradient noise at `p` (unit coordinates of the tile), about [-1, 1], with the quintic fade.
@@ -1213,9 +1418,17 @@ impl GradientTable {
         let i = q.map(|v| v.floor());
         let f = [q[0] - i[0], q[1] - i[1], q[2] - i[2]];
         let i = i.map(|v| v as i32);
+        let m = n + 1;
+        // Within the tile the corners are read from the wrapped table as they are; elsewhere each is wrapped first. The same
+        // gradients either way.
+        let inside = i.iter().all(|&v| (0..n).contains(&v));
         let corner = |o: [i32; 3]| -> f32 {
-            let c = [0, 1, 2].map(|k| (i[k] + o[k]).rem_euclid(n));
-            let g = self.g[((c[2] * n + c[1]) * n + c[0]) as usize];
+            let g = if inside {
+                self.wrapped[(((i[2] + o[2]) * m + i[1] + o[1]) * m + i[0] + o[0]) as usize]
+            } else {
+                let c = [0, 1, 2].map(|k| (i[k] + o[k]).rem_euclid(n));
+                self.g[((c[2] * n + c[1]) * n + c[0]) as usize]
+            };
             let d = [0, 1, 2].map(|k| f[k] - o[k] as f32);
             g[0] * d[0] + g[1] * d[1] + g[2] * d[2]
         };
@@ -1233,6 +1446,9 @@ impl GradientTable {
 pub struct CellTable {
     n: i32,
     pts: Vec<[f32; 3]>,
+    /// The feature points with one more cell around the tile (the cells across its edges, wrapped), each in lattice
+    /// coordinates (its cell's corner added): a point of the tile reads its 27 neighbors without wrapping them.
+    around: Vec<[f32; 3]>,
 }
 
 impl CellTable {
@@ -1250,7 +1466,19 @@ impl CellTable {
                 }
             }
         }
-        CellTable { n, pts }
+        let m = n + 2;
+        let mut around = Vec::with_capacity((m * m * m) as usize);
+        for z in -1..=n {
+            for y in -1..=n {
+                for x in -1..=n {
+                    let c = [x, y, z];
+                    let w = c.map(|v| v.rem_euclid(n));
+                    let h = pts[((w[2] * n + w[1]) * n + w[0]) as usize];
+                    around.push([0, 1, 2].map(|k| c[k] as f32 + h[k]));
+                }
+            }
+        }
+        CellTable { n, pts, around }
     }
 
     /// Cell noise at `p` (unit coordinates of the tile): 1 at a feature point, falling with the distance to the nearest (in cells)
@@ -1260,14 +1488,29 @@ impl CellTable {
         let q = p.map(|v| v * n as f32);
         let i = q.map(|v| v.floor() as i32);
         let mut best = f32::MAX;
-        for dz in -1..=1 {
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let c = [i[0] + dx, i[1] + dy, i[2] + dz];
-                    let w = c.map(|v| v.rem_euclid(n));
-                    let h = self.pts[((w[2] * n + w[1]) * n + w[0]) as usize];
-                    let d = [0, 1, 2].map(|k| c[k] as f32 + h[k] - q[k]);
-                    best = best.min(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        if i.iter().all(|&v| (0..n).contains(&v)) {
+            // Within the tile: the neighbors from the table around it, the same points in the same coordinates.
+            let m = (n + 2) as usize;
+            let [x, y, z] = i.map(|v| v as usize);
+            for dz in 0..3 {
+                for dy in 0..3 {
+                    let row = ((z + dz) * m + y + dy) * m + x;
+                    for h in &self.around[row..row + 3] {
+                        let d = [h[0] - q[0], h[1] - q[1], h[2] - q[2]];
+                        best = best.min(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                    }
+                }
+            }
+        } else {
+            for dz in -1..=1 {
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let c = [i[0] + dx, i[1] + dy, i[2] + dz];
+                        let w = c.map(|v| v.rem_euclid(n));
+                        let h = self.pts[((w[2] * n + w[1]) * n + w[0]) as usize];
+                        let d = [0, 1, 2].map(|k| c[k] as f32 + h[k] - q[k]);
+                        best = best.min(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                    }
                 }
             }
         }
@@ -1277,7 +1520,12 @@ impl CellTable {
 
 /// Three cell octaves (weights 0.625, 0.25, 0.125).
 fn fbm3(p: [f32; 3], a: &CellTable, b: &CellTable, c: &CellTable) -> f32 {
-    0.625 * a.at(p) + 0.25 * b.at(p) + 0.125 * c.at(p)
+    weigh3(a.at(p), b.at(p), c.at(p))
+}
+
+/// Three cell octaves' values weighed as [`fbm3`] weighs them.
+fn weigh3(a: f32, b: f32, c: f32) -> f32 {
+    0.625 * a + 0.25 * b + 0.125 * c
 }
 
 /// Gradient octaves (each half the weight of the last) in [0, 1].
@@ -1333,12 +1581,13 @@ impl ShapeTables {
         let perlin = gradient_fbm(p, &self.perlin);
         let worley = fbm3(p, &self.worley[0], &self.worley[1], &self.worley[2]);
         let pw = remap(perlin, worley - 1.0, 1.0).clamp(0.0, 1.0);
-        let e = &self.erosion;
+        // Each erosion octave once, shared by the three channels that weigh it.
+        let e = self.erosion.each_ref().map(|t| t.at(p));
         [
             pw,
-            fbm3(p, &e[0], &e[1], &e[2]),
-            fbm3(p, &e[1], &e[2], &e[3]),
-            fbm3(p, &e[2], &e[3], &e[4]),
+            weigh3(e[0], e[1], e[2]),
+            weigh3(e[1], e[2], e[3]),
+            weigh3(e[2], e[3], e[4]),
         ]
     }
 }
