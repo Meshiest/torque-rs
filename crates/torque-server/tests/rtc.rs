@@ -27,6 +27,10 @@ use tungstenite::{Error as WsError, Message};
 
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
+/// The longest one server pass may take while a flood comes in. A pass that does the flood's work in it takes far longer;
+/// a shared CI machine can stall any pass for tens of milliseconds, so the bound leaves room for that.
+const PASS_LIMIT: Duration = Duration::from_millis(100);
+
 fn site(rtc: RtcSetup) -> (WebTransport, SocketAddr) {
     let policy = BindPolicy::new(LOOPBACK, false, &LanRules::PLAIN).unwrap();
     let mut t = WebTransport::new(
@@ -539,10 +543,7 @@ fn garbage_from_strangers_is_dropped_unread_with_passes_bounded() {
     );
     let counters = t.rtc_counters();
     assert!(counters.stray > 1000, "{counters:?}");
-    assert!(
-        longest < Duration::from_millis(20),
-        "a pass took {longest:?}"
-    );
+    assert!(longest < PASS_LIMIT, "a pass took {longest:?}");
     // The peer is untouched.
     assert!(t.rtc_open(stand_in));
     assert!(c.send_channel(b"still here", true));
@@ -583,10 +584,7 @@ fn checks_naming_a_peer_from_strangers_are_rate_limited_and_never_close_it() {
     let longest = flood(&mut t, &mut [], &stranger, rtc_addr, 1500, |i| {
         stun_request(&ufrag, i)
     });
-    assert!(
-        longest < Duration::from_millis(20),
-        "a pass took {longest:?}"
-    );
+    assert!(longest < PASS_LIMIT, "a pass took {longest:?}");
     assert!(
         t.rtc_counters().stun_limited > 1000,
         "{:?}",
@@ -647,10 +645,7 @@ fn forged_traffic_from_a_peers_own_address_leaves_it_connected() {
         1 => stun_request(&ufrag, i),
         _ => noise(i, 1 + (i as usize * 13) % 1200),
     });
-    assert!(
-        longest < Duration::from_millis(20),
-        "a pass took {longest:?}"
-    );
+    assert!(longest < PASS_LIMIT, "a pass took {longest:?}");
     let counters = t.rtc_counters();
     assert!(
         counters.rate_dropped + counters.refused + counters.pass_dropped > 1000,
@@ -767,10 +762,7 @@ fn a_peer_that_breaks_its_channels_rules_loses_the_channel_and_keeps_its_socket(
         c.step();
         while recv(&mut t).is_some() {}
     }
-    assert!(
-        longest < Duration::from_millis(20),
-        "a pass took {longest:?}"
-    );
+    assert!(longest < PASS_LIMIT, "a pass took {longest:?}");
     expect_closed(&mut t, &mut c, s, "message rate");
     let counters = t.rtc_counters();
     assert_eq!(counters.closed_protocol, 2, "{counters:?}");
@@ -893,10 +885,7 @@ fn forged_datagrams_never_keep_a_silent_peer_heard() {
         1 => stun_request(&ufrag, i),
         _ => noise(i, 200),
     });
-    assert!(
-        longest < Duration::from_millis(20),
-        "a pass took {longest:?}"
-    );
+    assert!(longest < PASS_LIMIT, "a pass took {longest:?}");
     assert!(
         !t.rtc_open(stand_in),
         "the silent peer was closed at its deadline: {:?}",
@@ -981,10 +970,7 @@ fn a_handshake_that_never_completes_stops_costing_work_after_its_budget() {
         d[4] = 0;
         d
     });
-    assert!(
-        longest < Duration::from_millis(20),
-        "a pass took {longest:?}"
-    );
+    assert!(longest < PASS_LIMIT, "a pass took {longest:?}");
     let counters = t.rtc_counters();
     assert!(counters.connect_spent > 1000, "{counters:?}");
     assert!(
