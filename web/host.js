@@ -22,6 +22,13 @@
 // names, never loopback, link-local, multicast, broadcast, reserved ranges or this page's own addresses, and private ones
 // only with `?lan=1` (players on the host's network). A joiner reaches the host without them: its own checks to the
 // host's candidates are answered.
+//
+// ICE runs in the browser, so this page never sees a check: unlike the desktop host, it cannot rate a joiner's checks per
+// source address, nor take a check from a candidate's address only once that address answered one of the host's own
+// checks. What the page holds is which candidates the browser gets (the rules above, MAX_CANDIDATES), so the host's own
+// checks go only where those allow. A joiner able to forge source addresses could still nominate an address it listed;
+// the browser then sends that joiner's traffic there only until its consent checks to it go unanswered (RFC 7675, about
+// 30 seconds), and only that one session's traffic.
 
 const MAX_PEERS = 64;
 // Peer connections from one address (the room service's word for it), as the desktop host's.
@@ -188,12 +195,14 @@ export function iceServersFrom(body) {
 }
 
 // Hosts the game: `game` is the module (its files fetched), `say(text)` shows the page's status line; `solo`: played alone,
-// no room, and the host player's client is `client`'s: `solo` (`startSoloClient`), `host` (`startHostClient`), or null
-// for a game already running that joins the server itself (a page played alone switching to hosting in place).
+// no room. The host player's client is `client`'s: `solo` (`startSoloClient`, played alone only), `host`
+// (`startHostClient`), or null for a game already running that joins the server itself (a page switching to hosting in
+// place: `switchTo('host')`).
 // `onHost({ adopt })`, called on a solo page once the server runs: `adopt(pc, channel, ip, onEnd)` takes an invited
 // joiner's peer connection and its channel (open, or opening) from `ip` and returns null, or why it was refused; `onEnd()`
 // is called when that joiner is ended. `wasm`: the module compiled already (the worker then does not compile it again).
-// Returns `{ endPeers(), stop() }`: every joiner ended; and that, with the worker ended too (its game is over).
+// Returns `{ endPeers(), stop() }`: every joiner ended; and that, with the worker, the room and its code on the page ended
+// too (its game is over).
 export async function hostGame(game, say, { solo = false, client = 'solo', onHost = null, wasm = null } = {}) {
   const root = document.documentElement;
   const params = new URLSearchParams(location.search);
@@ -378,14 +387,18 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
   const stop = () => {
     endPeers();
     worker.onmessage = null;
+    worker.onerror = null;
     worker.terminate();
     removeEventListener('pagehide', stop);
     clearInterval(ping);
     if (room) {
+      room.onopen = null;
+      room.onmessage = null;
       room.onclose = null;
       room.close();
     }
     delete root.dataset.torqueServer;
+    delete root.dataset.torqueRoom;
   };
   const handle = { endPeers, stop };
   // The game ends for every joiner when this page goes.
@@ -414,7 +427,13 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
     else if (client === 'solo') game.startSoloClient();
     return handle;
   }
-  room = new WebSocket(roomsUrl);
+  try {
+    room = new WebSocket(roomsUrl);
+  } catch (e) {
+    // no room service at that address: nothing of this game stays
+    stop();
+    throw e;
+  }
   room.binaryType = 'arraybuffer';
   room.onopen = () => tell('host');
   room.onmessage = (e) => {
@@ -424,6 +443,55 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
   };
   room.onclose = () => console.warn('The room service closed the link: no one else can join this game.');
   ping = setInterval(() => tell('ping'), PING_MS);
-  game.startHostClient();
+  if (client === 'host') game.startHostClient();
   return handle;
+}
+
+// A page with a room service whose game switches in place (the vehicle demo): its game's menu asks the page (`torqueAsk`)
+// to `host` (`startHost()` starts the server in the worker with a room and returns `hostGame`'s handle; the game then
+// switches to it, `switchTo('host')`) and `back` (the game it hosts is over, or the page joins another: the server, the
+// room and every joiner end, and a start under way ends once it is done). `said(text)` shows why a game could not be
+// hosted. `hosted(handle)` takes the handle of a game the page hosted from its start (`?host=1`).
+export function roomPage(game, startHost, { said = () => {} } = {}) {
+  let hosted = null;
+  let starting = null;
+  // Whether the page still wants the game a start under way brings.
+  let wanted = false;
+
+  async function host() {
+    wanted = true;
+    if (hosted || starting) return;
+    let handle;
+    try {
+      handle = await (starting = startHost());
+    } catch (e) {
+      if (wanted) said(`The game could not be hosted: ${String(e?.message ?? e)}`);
+      wanted = false;
+      return;
+    } finally {
+      starting = null;
+    }
+    if (!wanted) return handle.stop();
+    hosted = handle;
+    game.switchTo('host');
+  }
+
+  function back() {
+    wanted = false;
+    hosted?.stop();
+    hosted = null;
+  }
+
+  globalThis.torqueAsk = (what) => {
+    if (what === 'host') host();
+    else if (what === 'back') back();
+  };
+
+  return {
+    host,
+    back,
+    hosted(handle) {
+      hosted = handle;
+    },
+  };
 }

@@ -472,7 +472,8 @@ function invitePlayers()
 
 // A browser's page that is not one played alone ($World::WebRooms, set by the host): the menu also offers to host a game
 // others join by its room's code ($World::WebHostAsked) and to join one by a code typed in ($World::WebJoinCode); the host
-// opens the page again for either. A hosted game's code ($World::RoomCode) shows on the menu and the world's title.
+// switches the page's game in place for either. A hosted game's code ($World::RoomCode) shows on the menu and the world's
+// title.
 function showWebRooms()
 {
    MenuLine.setText("Drive a buggy over the hills, alone or with friends who have your room's code.");
@@ -507,6 +508,12 @@ function joinRoomCode()
    }
    MenuStatus.setText("Joining room " @ %code @ "...");
    $World::WebJoinCode = %code;
+}
+
+// What the page says on the menu's status line (a game it could not host): `%text` is shown as it is.
+function showMenuStatus(%text)
+{
+   MenuStatus.setText(%text);
 }
 
 // The hosted game's room code came ($World::RoomCode): on the world's title.

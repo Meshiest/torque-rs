@@ -22,9 +22,14 @@
 //! `torqueAsk`, `web/invites.js`, through `torque::app::web_join::ask_page`), which trades connection codes by hand and
 //! switches the running game in place (`torque::app::web_join::switch_to`, taken at the next step): to host (`host`: the
 //! page starts the server in its worker, as `?host=1` with no room, and the client joins it on the local link), to an
-//! invite link's game (`link`) and back to playing alone (`solo`). Any other page offers to host a game here (the page
-//! opens again with `?host=1`) and to join a room by its code (`?room=<code>`), and a host page shows its room's code on
-//! the menu and the world's title.
+//! invite link's game (`link`) and back to playing alone (`solo`). Any other page offers to host a game here and to join a
+//! room by its code, both in place with no new page: Host a game asks the page (`torqueAsk('host')`, `web/host.js`
+//! `roomPage`), which starts the server in its worker with a room and switches the game to it (`host`); Join room opens
+//! the room's link here and joins. A host page shows its room's code on the menu and the world's title. Leaving that
+//! world, or its link ending (the host left), takes the page back to its own game at its menu: a game it hosted ends
+//! (`torqueAsk('back')`: the worker, the room and every joiner), and joining a room ends one first. The address bar says
+//! what the page plays (`?host=1`, `?room=<code>` or neither: `torque::app::web_join::set_address`), so the page opened
+//! on it again plays the same.
 //!
 //! **Joined by an invite link** (`web/invites.js`): the page holds the data channel to the host. A page opened on an
 //! invite starts at its menu as one played alone, with the invite's panel over it; once the channel opens the page
@@ -79,13 +84,7 @@ pub fn start_fetched() -> Result<(), String> {
         offer_rooms(&mut game);
         game.call("showMenu", &[])?;
     }
-    torque::app::window::run(WebVehicle {
-        game,
-        frames: 0,
-        link: None,
-        room: None,
-        in_link_world: false,
-    })
+    torque::app::window::run(WebVehicle::new(game, None))
 }
 
 /// The client over `files` with no socket of its own, at its menu (a page played alone: Play alone starts the game).
@@ -171,19 +170,7 @@ fn joined(files: GameFiles, target: torque::app::web_join::Target) -> Result<(),
     } else {
         game.join(&SERVER.to_string())?;
     }
-    torque::app::window::run(WebVehicle {
-        game,
-        frames: 0,
-        link: Some(Link {
-            watch,
-            ended: false,
-            waiting,
-            page: waiting,
-            asked_back: false,
-        }),
-        room: None,
-        in_link_world: false,
-    })
+    torque::app::window::run(WebVehicle::new(game, Some(Link::new(target, watch))))
 }
 
 /// A page that is not one played alone (`data-torque-solo`) offers the page's own hosting and joining by room code on the
@@ -200,17 +187,51 @@ fn offer_rooms(game: &mut VehicleDemo) {
     }
 }
 
-/// A joined game's link: what it shows of itself, and whether its end was shown.
+/// A joined game's link: where it goes, what it shows of itself, and whether its end was shown.
 #[cfg(target_arch = "wasm32")]
 struct Link {
+    target: torque::app::web_join::Target,
     watch: torque::client::net::web_rtc::LinkWatch,
     ended: bool,
     /// Whether the client waits for the link's channel to open before it joins (an invite link's).
     waiting: bool,
-    /// Whether the link is an invite link's (`Target::Page`).
-    page: bool,
     /// Whether the page was asked to take the game back to playing alone, the invite link's world left.
     asked_back: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Link {
+    /// A new link to `target`: an invite link's waits for its channel before the join.
+    fn new(
+        target: torque::app::web_join::Target,
+        watch: torque::client::net::web_rtc::LinkWatch,
+    ) -> Link {
+        let waiting = target == torque::app::web_join::Target::Page;
+        Link {
+            target,
+            watch,
+            ended: false,
+            waiting,
+            asked_back: false,
+        }
+    }
+
+    /// Whether the link is an invite link's (`Target::Page`).
+    fn page(&self) -> bool {
+        self.target == torque::app::web_join::Target::Page
+    }
+
+    /// Whether the link goes to a game the page left its own for when it hosted or joined a room in place (the server
+    /// in its worker, or a room's host): leaving that world takes the page back to its own game.
+    fn away(&self) -> bool {
+        use torque::app::web_join::Target;
+        matches!(self.target, Target::Local | Target::Room { .. })
+    }
+
+    /// Whether the link goes to the server in the page's worker.
+    fn hosted(&self) -> bool {
+        self.target == torque::app::web_join::Target::Local
+    }
 }
 
 /// Natively nothing joins.
@@ -227,9 +248,30 @@ struct WebVehicle {
     /// The room code a host page shows, once it came.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     room: Option<String>,
-    /// Whether the client was in an invite link's world at the last step.
+    /// Whether the client was in a joined game's world at the last step.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     in_link_world: bool,
+    /// Whether the page hosts and joins through a room service (a page not played alone): it switches in place, its
+    /// address saying what it plays.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    rooms: bool,
+}
+
+impl WebVehicle {
+    fn new(game: VehicleDemo, link: Option<Link>) -> WebVehicle {
+        #[cfg(target_arch = "wasm32")]
+        let rooms = !torque::app::web_join::solo_page();
+        #[cfg(not(target_arch = "wasm32"))]
+        let rooms = false;
+        WebVehicle {
+            game,
+            frames: 0,
+            link,
+            room: None,
+            in_link_world: false,
+            rooms,
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -251,9 +293,9 @@ impl WebVehicle {
 
     /// Switches the running game in place (module docs): out of the world, onto the link `mode` goes by.
     fn switch(&mut self, mode: torque::app::web_join::Mode) -> Result<(), String> {
-        use torque::app::web_join::{Mode, SERVER, Target, unmark_link};
+        use torque::app::web_join::{Address, Mode, SERVER, Target};
         // Hosting already, the client on the worker's game: nothing to do (the Esc menu's Invite players).
-        let on_host = self.link.as_ref().is_some_and(|l| !l.page);
+        let on_host = self.link.as_ref().is_some_and(Link::hosted);
         if mode == Mode::Host
             && on_host
             && !self.game.local()
@@ -267,36 +309,28 @@ impl WebVehicle {
             Mode::Host => Some(Target::Local),
         };
         // Err (the invite link ended before the switch was taken): nothing changed
-        let opened = target.map(|t| t.open()).transpose()?;
-        if self.game.in_world() {
-            self.game.call("leaveWorld", &[])?;
-        } else {
-            self.game.call("disconnect", &[])?;
+        let opened = target.map(|t| t.open().map(|o| (t, o))).transpose()?;
+        self.leave_game()?;
+        if !self.rooms {
+            self.game.set_global(
+                "$Pause::CanInvite",
+                if mode == Mode::Link { "0" } else { "1" },
+            );
         }
-        self.game.stop_hosting();
-        self.game.set_global("$World::PageAsk", "");
-        self.game.set_global("$World::AloneAsked", "0");
-        self.game.set_global("$World::LeaveAsked", "0");
-        self.game.set_global(
-            "$Pause::CanInvite",
-            if mode == Mode::Link { "0" } else { "1" },
-        );
-        self.in_link_world = false;
-        let Some((socket, watch)) = opened else {
-            self.game.clear_socket();
-            self.link = None;
-            unmark_link();
+        let Some((target, (socket, watch))) = opened else {
+            self.own_game();
             return Ok(());
         };
         self.game.set_socket(socket);
-        let page = mode == Mode::Link;
-        self.link = Some(Link {
-            watch,
-            ended: false,
-            waiting: page,
-            page,
-            asked_back: false,
-        });
+        let page = target == Target::Page;
+        self.link = Some(Link::new(target, watch));
+        if self.rooms {
+            self.address(if mode == Mode::Host {
+                Address::Host
+            } else {
+                Address::Own
+            });
+        }
         if page {
             self.menu_status("Waiting for the connection to the host...");
         } else {
@@ -306,18 +340,122 @@ impl WebVehicle {
         Ok(())
     }
 
-    /// An invite link's world left (the Esc menu's Leave, the host left, the connection lost): the page's own game again.
+    /// Out of the world (or the join under way), the page's own server stopped and the menu's asks cleared: a switch's
+    /// first step, before the client's socket changes.
+    fn leave_game(&mut self) -> Result<(), String> {
+        if self.game.in_world() {
+            self.game.call("leaveWorld", &[])?;
+        } else {
+            self.game.call("disconnect", &[])?;
+        }
+        self.game.stop_hosting();
+        self.game.set_global("$World::PageAsk", "");
+        self.game.set_global("$World::AloneAsked", "0");
+        self.game.set_global("$World::LeaveAsked", "0");
+        self.in_link_world = false;
+        // a room code a hosted game showed is not the next game's
+        self.room = None;
+        self.game.set_global("$World::RoomCode", "");
+        Ok(())
+    }
+
+    /// The page's own game again, with no link of its own: at its menu, played alone when asked.
+    fn own_game(&mut self) {
+        self.game.clear_socket();
+        self.link = None;
+        self.room = None;
+        self.game.set_global("$World::RoomCode", "");
+        torque::app::web_join::unmark_link();
+        if self.rooms {
+            self.address(torque::app::web_join::Address::Own);
+        }
+    }
+
+    /// The page's address says what it plays (a page with a room service; module docs). One not written leaves the
+    /// address as it was: the game goes on.
+    fn address(&self, address: torque::app::web_join::Address) {
+        let _ = torque::app::web_join::set_address(address);
+    }
+
+    /// The menu's Join room: the game of room `code`, joined in place. Any game this page hosts ends first (its players
+    /// with it). Err (not a room code, no room service): nothing changed.
+    fn join_room(&mut self, code: &str) -> Result<(), String> {
+        use torque::app::web_join::{Address, SERVER, Target, rooms_url};
+        let code = torque::app::web_join::room_code(code)?;
+        let target = Target::Room {
+            url: rooms_url()?,
+            code: code.clone(),
+        };
+        let (socket, watch) = target.open()?;
+        self.leave_game()?;
+        // the game this page hosts, or one it is starting, ends (the client left it first): its server, its room and its
+        // players
+        torque::app::web_join::ask_page("back");
+        self.game.set_socket(socket);
+        self.link = Some(Link::new(target, watch));
+        self.address(Address::Room(&code));
+        self.menu_status(&format!("Joining room {code}..."));
+        self.game.join(&SERVER.to_string())
+    }
+
+    /// The menu's Host a game: the page starts its server with a room, then switches the game to it (`host`). Hosting
+    /// already, at the menu: the client joins that game again.
+    fn host_asked(&mut self) {
+        if self.link.as_ref().is_some_and(Link::hosted) {
+            if !self.game.in_world()
+                && let Err(e) = self.game.join(&torque::app::web_join::SERVER.to_string())
+            {
+                self.menu_status(&format!("Could not join: {e}"));
+            }
+            return;
+        }
+        if !torque::app::web_join::ask_page("host") {
+            self.menu_status("This page cannot host a game.");
+        }
+    }
+
+    /// The menu's Play alone while a game the page left its own for is still joining (hosted, or a room's): that game is
+    /// left first (its server and room stop), so the game played alone has no link that could end it. Taken before the
+    /// game's step plays alone.
+    fn alone_asked(&mut self) {
+        let asked = !matches!(self.game.global("$World::AloneAsked").as_str(), "" | "0");
+        if !asked || !self.rooms || !self.link.as_ref().is_some_and(Link::away) {
+            return;
+        }
+        let _ = self.game.call("disconnect", &[]);
+        self.back_to_own();
+    }
+
+    /// A game the page left its own for (hosted, or a room's) is over: any it hosts stops (its players ended), and the
+    /// page's own game is back, at its menu.
+    fn back_to_own(&mut self) {
+        if self.link.as_ref().is_some_and(Link::hosted) {
+            torque::app::web_join::ask_page("back");
+        }
+        self.own_game();
+    }
+
+    /// An invite link's world left (the Esc menu's Leave, the host left, the connection lost), or on a page with a room
+    /// service a hosted game's or a room's: the page's own game again.
     fn left_link_world(&mut self) {
         let in_world = self.game.in_world();
-        let Some(link) = self.link.as_mut().filter(|l| l.page && !l.waiting) else {
+        let Some(link) = self.link.as_mut().filter(|l| !l.waiting) else {
             self.in_link_world = false;
             return;
         };
-        if self.in_link_world && !in_world && !link.asked_back {
-            link.asked_back = true;
-            torque::app::web_join::ask_page("back");
-        }
+        let left = self.in_link_world && !in_world;
         self.in_link_world = in_world;
+        if !left {
+            return;
+        }
+        if link.page() {
+            if !link.asked_back {
+                link.asked_back = true;
+                torque::app::web_join::ask_page("back");
+            }
+        } else if self.rooms && link.away() {
+            self.back_to_own();
+        }
     }
 
     /// A link that ended for good: out of the world, with why on the menu.
@@ -330,14 +468,20 @@ impl WebVehicle {
         };
         link.ended = true;
         // an invite link's: the page's own game again, with why on its menu (once)
-        let back = link.page && !link.asked_back;
-        link.asked_back |= link.page;
+        let page = link.page();
+        let back = page && !link.asked_back;
+        link.asked_back |= page;
+        let away = self.rooms && link.away();
         if self.game.global("$World::InWorld") == "1" {
             let _ = self.game.call("leaveWorld", &[]);
         }
         self.menu_status(&text);
         if back {
             torque::app::web_join::ask_page("back");
+        }
+        // a room's game over: the page's own game again, with why on its menu
+        if away {
+            self.back_to_own();
         }
     }
 
@@ -349,26 +493,23 @@ impl WebVehicle {
         }
     }
 
-    /// What the menu asked of the page: to host a game, or to join a room by its code (the page opens again for it), or
-    /// its invite panels (a solo page).
+    /// What the menu asked of the page: to host a game or to join a room by its code (both in place), or its invite
+    /// panels (a solo page).
     fn menu_asks(&mut self) {
-        use torque::app::web_join::open_page;
         let ask = self.game.global("$World::PageAsk");
         if !ask.is_empty() {
             self.game.set_global("$World::PageAsk", "");
             torque::app::web_join::ask_page(&ask);
         }
-        let asked = if self.game.take_flag("$World::WebHostAsked") {
-            Some(open_page(true, ""))
-        } else {
-            let code = self.game.global("$World::WebJoinCode");
-            (!code.is_empty()).then(|| {
-                self.game.set_global("$World::WebJoinCode", "");
-                open_page(false, &code)
-            })
-        };
-        if let Some(Err(e)) = asked {
-            self.menu_status(&e);
+        if self.game.take_flag("$World::WebHostAsked") {
+            self.host_asked();
+        }
+        let code = self.game.global("$World::WebJoinCode");
+        if !code.is_empty() {
+            self.game.set_global("$World::WebJoinCode", "");
+            if let Err(e) = self.join_room(&code) {
+                self.menu_status(&e);
+            }
         }
     }
 
@@ -448,6 +589,8 @@ impl App for WebVehicle {
     }
 
     fn advance(&mut self, ms: u32) {
+        #[cfg(target_arch = "wasm32")]
+        self.alone_asked();
         App::advance(&mut self.game, ms);
         #[cfg(target_arch = "wasm32")]
         {
@@ -458,6 +601,14 @@ impl App for WebVehicle {
                 // the invite link ended before its switch: the page's own game goes on
                 if mode == torque::app::web_join::Mode::Link {
                     torque::app::web_join::ask_page("back");
+                }
+                // the page's server started for nothing: it stops (its room with it), and a later Host a game starts
+                // another
+                if mode == torque::app::web_join::Mode::Host && self.rooms {
+                    torque::app::web_join::ask_page("back");
+                    if self.link.as_ref().is_some_and(Link::hosted) {
+                        self.own_game();
+                    }
                 }
             }
             self.join_when_open();

@@ -43,8 +43,10 @@
 //!
 //! **Routing.** A STUN binding request goes to the peer its USERNAME names (our ICE user fragment), and only when it comes
 //! from the IP address of that peer's game socket (for a player's host: the address the room service saw the joiner at, or
-//! that of a candidate the host took from it), from at most [`CHECK_SOURCES_PER_PEER`] source addresses a peer; requests
-//! are also held to a rate per source address. Any other datagram
+//! from an address of a candidate the host took from it that answered one of the host's own checks), from at most
+//! [`CHECK_SOURCES_PER_PEER`] source addresses a peer; requests are also held to a rate per source address. (A check
+//! with USE-CANDIDATE nominates its source at once, so a joiner able to forge source addresses could otherwise aim the
+//! host's traffic at a public address it listed as a candidate.) Any other datagram
 //! goes to the peer whose stack has validated its source address by an authenticated check (str0m's `accepts`): the
 //! address is mapped to that peer then (at most [`MAX_REMOTES`] addresses a peer, its oldest given up first, and a cap in
 //! all), and a mapping moves only when its peer's stack no longer accepts the address, so a second peer that passes
@@ -208,8 +210,9 @@ pub struct RtcSetup {
     /// The percentage of datagrams dropped as they are received and as they are sent (a test; 0 drops none).
     pub loss_percent: u8,
     /// A player's host (`net::p2p`) rather than a server browsers reach directly: full ICE (the host sends checks too, so
-    /// a NAT in front of it opens), checks taken from the joiner's address as the room service saw it or from the
-    /// address of a candidate taken from it (a relayed joiner's come from its TURN server), from at most
+    /// a NAT in front of it opens), checks taken from the joiner's IP address as the room service saw it or from an
+    /// address of a candidate taken from it once that address answered one of the host's checks (a relayed joiner's come
+    /// from its TURN server, which relays the answers too), from at most
     /// [`CHECK_SOURCES_PER_PEER`] source addresses and held to the rate per source address, the joiner's trickled
     /// candidates taken (at most
     /// [`MAX_REMOTE_CANDIDATES`], IPv4 UDP, no `.local` names, only addresses [`candidate_allowed`] takes: the host
@@ -700,6 +703,15 @@ impl RtcSide {
             self.counters.candidates_refused += 1;
             return;
         };
+        self.hold_candidate(stand_in, candidate);
+    }
+
+    /// Hands a joiner's candidate that passed the rules to its peer's stack, its IP address counted for the peer and in
+    /// all.
+    fn hold_candidate(&mut self, stand_in: SocketAddr, candidate: Candidate) {
+        let Some(peer) = self.peers.get_mut(&stand_in) else {
+            return;
+        };
         let ip = candidate.addr().ip();
         if !peer.candidate_ips.contains(&ip) {
             peer.candidate_ips.push(ip);
@@ -977,9 +989,12 @@ impl RtcSide {
             }
             let peers = &self.peers;
             let host = self.setup.host;
-            // A player's host also takes checks from the IP addresses of the candidates it took from that joiner.
-            let candidate_ip = |s: SocketAddr, ip: IpAddr| {
-                host && peers.get(&s).is_some_and(|p| p.candidate_ips.contains(&ip))
+            // A player's host also takes checks from an address of a candidate it took from that joiner, once that address
+            // answered one of its own checks (anyone may list an address; only the joiner's answer from there vouches).
+            let candidate_ip = |s: SocketAddr, from: SocketAddr| {
+                host && peers.get(&s).is_some_and(|p| {
+                    p.candidate_ips.contains(&from.ip()) && p.verified.contains(&from)
+                })
             };
             let stun_to = match route_check(
                 &self.by_ufrag,
@@ -1320,8 +1335,8 @@ enum Routed {
 }
 
 /// The peer a STUN binding request is for: the one its USERNAME names, when it comes from that peer's IP address (its
-/// game socket's, or for a player's host the one the room service saw) or one `also` takes for the peer (a player's
-/// host: its taken candidates' addresses), and within its source address's rate. Whatever address it comes from, it never
+/// game socket's, or for a player's host the one the room service saw) or a source address `also` takes for the peer (a
+/// player's host: a taken candidate's address that answered one of its checks), and within its source address's rate. Whatever address it comes from, it never
 /// maps that address. (A request with USE-CANDIDATE nominates its source at once in a controlled agent, so a source no one
 /// vouched for must never reach the stack: it could aim the peer's traffic anywhere.)
 fn route_check(
@@ -1331,7 +1346,7 @@ fn route_check(
     from: SocketAddr,
     data: &[u8],
     now: Instant,
-    also: impl Fn(SocketAddr, IpAddr) -> bool,
+    also: impl Fn(SocketAddr, SocketAddr) -> bool,
 ) -> Routed {
     let Some(ufrag) = stun::binding_ufrag(data) else {
         return Routed::NotACheck;
@@ -1339,7 +1354,7 @@ fn route_check(
     let Some(&(stand_in, ip)) = by_ufrag.get(ufrag) else {
         return Routed::Stray;
     };
-    if from.ip() != ip && !also(stand_in, from.ip()) {
+    if from.ip() != ip && !also(stand_in, from) {
         return Routed::Stray;
     }
     let ip = from.ip();
@@ -2043,6 +2058,114 @@ a=mid:0
         p.send_to(&response, h.at).unwrap();
         h.pump();
         assert_eq!(h.peer().verified, [from]);
+    }
+
+    impl Hosted {
+        /// Hands the peer a host candidate at `at` as if taken from the joiner (the rules refuse loopback addresses, so
+        /// the tests' candidates go past them).
+        fn hold(&mut self, at: SocketAddr) {
+            let line = format!(
+                "candidate:1 1 udp 2122260223 {} {} typ host",
+                at.ip(),
+                at.port()
+            );
+            let candidate = Candidate::from_sdp_string(&line).unwrap();
+            self.side.hold_candidate(self.stand_in, candidate);
+        }
+    }
+
+    #[test]
+    fn a_taken_candidates_address_is_taken_once_it_answered_a_check_of_ours() {
+        let mut h = Hosted::new();
+        // The joiner's candidate on an IP address other than the one the room service saw (127.0.0.1).
+        let candidate = udp([127, 0, 0, 2]);
+        let at = candidate.local_addr().unwrap();
+        h.hold(at);
+        // Before it answered a check of ours, a nominating check from it never reaches the stack.
+        let stray = h.side.counters().stray;
+        candidate.send_to(&h.check([4; 12], true), h.at).unwrap();
+        let mut ours = None;
+        for _ in 0..40 {
+            h.pump();
+            for d in got(&candidate) {
+                assert_ne!(stun::transaction(&d, stun::BINDING_SUCCESS), Some([4; 12]));
+                if let Some(id) = stun::transaction(&d, stun::BINDING) {
+                    ours.get_or_insert(id);
+                }
+            }
+            if ours.is_some() {
+                break;
+            }
+        }
+        assert!(h.side.counters().stray > stray);
+        assert!(h.peer().sources.is_empty());
+        let id = ours.expect("the host checks the candidate");
+        // The joiner answers that check from there: the address is verified.
+        let response = stun_message(stun::BINDING_SUCCESS, id, &[], h.remote_pwd.as_bytes());
+        candidate.send_to(&response, h.at).unwrap();
+        h.pump();
+        assert!(h.peer().verified.contains(&at));
+        // Now its checks are answered, and it takes one of the peer's places.
+        candidate.send_to(&h.check([5; 12], true), h.at).unwrap();
+        h.pump();
+        assert!(
+            got(&candidate)
+                .iter()
+                .any(|d| stun::transaction(d, stun::BINDING_SUCCESS) == Some([5; 12]))
+        );
+        assert_eq!(h.peer().sources, [at]);
+        // Another port on the candidate's IP address answered nothing: still stray.
+        let other = udp([127, 0, 0, 2]);
+        let stray = h.side.counters().stray;
+        other.send_to(&h.check([6; 12], true), h.at).unwrap();
+        h.pump();
+        assert!(
+            got(&other)
+                .iter()
+                .all(|d| stun::transaction(d, stun::BINDING_SUCCESS).is_none())
+        );
+        assert!(h.side.counters().stray > stray);
+        assert_eq!(h.peer().sources, [at]);
+    }
+
+    #[test]
+    fn checks_of_ours_kept_for_their_responses_are_bounded_and_freed() {
+        let mut h = Hosted::new();
+        // Candidates that never answer: the host checks them over and over.
+        let silent: Vec<UdpSocket> = (2..10).map(|n| udp([127, 0, 0, n])).collect();
+        for s in &silent {
+            h.hold(s.local_addr().unwrap());
+        }
+        let mut inbox = VecDeque::new();
+        let mut now = Instant::now();
+        let mut most = 0;
+        // Within the peer's connect deadline.
+        for _ in 0..300 {
+            now += Duration::from_millis(25);
+            h.side.pump(now, &mut inbox, 64);
+            let kept = h.peer().checks.len();
+            assert!(kept <= CHECKS_KEPT, "{kept}");
+            assert!(h.side.checks.len() <= kept);
+            most = most.max(kept);
+        }
+        assert_eq!(most, CHECKS_KEPT, "the bound was reached");
+        // A response to one frees its entry.
+        let id = *h.peer().checks.back().unwrap();
+        let (_, to) = h.side.checks[&id];
+        let from = silent
+            .iter()
+            .find(|s| s.local_addr().unwrap() == to)
+            .unwrap();
+        let response = stun_message(stun::BINDING_SUCCESS, id, &[], h.remote_pwd.as_bytes());
+        from.send_to(&response, h.at).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        h.side.pump(now, &mut inbox, 64);
+        assert!(!h.side.checks.contains_key(&id));
+        assert!(h.peer().verified.contains(&to));
+        // Giving the peer up frees the rest.
+        assert!(!h.side.checks.is_empty());
+        h.side.remove(h.stand_in);
+        assert!(h.side.checks.is_empty());
     }
 
     #[test]

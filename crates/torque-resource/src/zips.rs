@@ -31,11 +31,9 @@
 //!   and the searches list it among the files): it is mounted as a 0-byte entry whose name keeps the slash
 //!   ([`served_folder_name`]; [`ZipEntry::folder`]), and a read of it never touches the archive. Compression methods other
 //!   than stored and deflate are left out. That includes every AES entry (method 99), which is dropped like any other method
-//!   the reader cannot read (only that entry goes, the zip loads). The `zip` crate would refuse the whole archive for a
-//!   method-99 entry without its AE-x
-//!   extra field, so such a header's method is rewritten in this reader's own copy of the bytes to one the
-//!   crate indexes but cannot read (see `scan`), and an entry the crate reports as AES-encrypted is skipped
-//!   like it. The encryption flag is ignored: a flagged entry whose data is
+//!   the reader cannot read (only that entry goes, the zip loads), with or without its AE-x extra field; an entry the
+//!   crate reports as AES-encrypted (when its `aes-crypto` feature is on, the method it reports is the one inside the AE-x
+//!   field) is skipped like it. The encryption flag is ignored: a flagged entry whose data is
 //!   plain reads as that data; one whose data really is encrypted fails its CRC and reads as missing;
 //! - an entry declaring more than [`MAX_ENTRY_BYTES`] uncompressed is left out; reading inflates at most
 //!   the declared size plus one byte, and a different length or a CRC mismatch makes the entry unreadable
@@ -97,9 +95,6 @@ pub const MAX_DIRECTORY_BYTES: usize = 16 << 20;
 /// (each declaring 64 MiB, each with a wrong CRC) could otherwise make a script burn hours of inflation at
 /// a few steps a call. An honest archive never fails a read.
 pub const MAX_WASTED_INFLATE: u64 = 256 << 20;
-/// The method number a method-99 central header is rewritten to before the `zip` crate parses it: one the
-/// crate keeps as "unsupported" and does not interpret.
-const UNREADABLE_METHOD: u16 = 0xfffe;
 
 /// Why an archive is not mounted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,54 +204,13 @@ struct EndRecords {
     claim: u64,
 }
 
-/// The u16 at `offset` of the record at `at`.
-fn half(bytes: &[u8], at: usize, offset: usize) -> Option<usize> {
-    let start = at.checked_add(offset)?;
-    let pair = bytes.get(start..start.checked_add(2)?)?;
-    Some(usize::from(u16::from_le_bytes(pair.try_into().ok()?)))
-}
-
-/// A central-directory header at `at` that declares method 99 (AES) and is followed, where its name, extra
-/// field and comment end, by another header or by an end record: the way a header in a directory is, and
-/// the way bytes of stored data that merely look like one are not. Its method becomes
-/// [`UNREADABLE_METHOD`]: the `zip` crate fails the whole directory for a method-99 header without the AE-x
-/// extra field, where only that entry is to be dropped (as for every method the reader cannot read).
-fn unreadable_method_99(bytes: &mut [u8], at: usize) {
-    if half(bytes, at, 10) != Some(99) {
-        return;
-    }
-    let lengths = (
-        half(bytes, at, 28),
-        half(bytes, at, 30),
-        half(bytes, at, 32),
-    );
-    let (Some(name), Some(extra), Some(comment)) = lengths else {
-        return;
-    };
-    let next = at
-        .saturating_add(46)
-        .saturating_add(name)
-        .saturating_add(extra)
-        .saturating_add(comment);
-    let chained = matches!(
-        bytes.get(next..next.saturating_add(4)),
-        Some(b"PK\x01\x02" | b"PK\x05\x06" | b"PK\x06\x06" | b"PK\x05\x05")
-    );
-    if chained && let Some(method) = bytes.get_mut(at.saturating_add(10)..at.saturating_add(12)) {
-        method.copy_from_slice(&UNREADABLE_METHOD.to_le_bytes());
-    }
-}
-
 /// One pass over `bytes` before the `zip` crate sees them.
 ///
 /// It counts the end-of-directory signatures, wherever they are, because the crate looks through the whole
 /// file for them. A `PK\6\6` counts only if its record size is one the crate accepts (at least 40 and,
 /// with its 12 bytes of header, within the rest of the file): data that merely holds those four bytes must
 /// not refuse an honest archive.
-///
-/// And it repairs central-directory headers that declare method 99 ([`unreadable_method_99`]); that is
-/// the only thing it changes.
-fn scan(bytes: &mut [u8]) -> EndRecords {
+fn scan(bytes: &[u8]) -> EndRecords {
     let mut found = EndRecords::default();
     let mut from = 0;
     while let Some(skip) = bytes
@@ -265,9 +219,7 @@ fn scan(bytes: &mut [u8]) -> EndRecords {
     {
         let at = from.saturating_add(skip);
         from = at.saturating_add(1);
-        let mut central_header = false;
         match bytes.get(at..at.saturating_add(4)) {
-            Some(b"PK\x01\x02") => central_header = true,
             Some(b"PK\x05\x06") => found.zip32 = found.zip32.saturating_add(1),
             Some(b"PK\x06\x06") => {
                 // The u64 at `offset` of the record.
@@ -288,20 +240,17 @@ fn scan(bytes: &mut [u8]) -> EndRecords {
             }
             _ => {}
         }
-        if central_header {
-            unreadable_method_99(bytes, at);
-        }
     }
     found
 }
 
 impl ZipMount {
     /// Reads the archive's directory (no entry is inflated).
-    pub fn open(mut bytes: Vec<u8>) -> Result<ZipMount, MountError> {
+    pub fn open(bytes: Vec<u8>) -> Result<ZipMount, MountError> {
         if bytes.len() > MAX_ZIP_BYTES {
             return Err(MountError::TooLarge(bytes.len()));
         }
-        let ends = scan(&mut bytes);
+        let ends = scan(&bytes);
         if ends.zip32.max(ends.zip64) > MAX_END_RECORDS {
             return Err(MountError::TooManyEndRecords(ends.zip32.max(ends.zip64)));
         }
@@ -326,8 +275,8 @@ impl ZipMount {
         for index in 0..archive.len() {
             let Ok(file) = archive.by_index_raw(index) else {
                 let name = archive
-                    .name_for_index(index)
-                    .map_or_else(Vec::new, |n| n.as_bytes().to_vec());
+                    .by_index_data(index)
+                    .map_or_else(|_| Vec::new(), |e| e.name_raw().to_vec());
                 skipped.push((name, Skip::Unreadable));
                 continue;
             };
@@ -352,7 +301,7 @@ impl ZipMount {
             } else {
                 // An entry the crate reports as AES (its method is then the one inside the AE-x field, not 99)
                 // is as unreadable as any other method.
-                if file.get_metadata().aes_mode.is_some()
+                if file.get_metadata().aes_settings().is_some()
                     || !matches!(
                         file.compression(),
                         CompressionMethod::Stored | CompressionMethod::Deflated
@@ -469,7 +418,7 @@ impl ZipMount {
         // ignore the flag. An AES entry never gets this far: it is not mounted.
         let options = ZipReadOptions::new().ignore_encryption_flag(true);
         let ok = match archive.by_index_with_options(entry.index, options) {
-            Ok(file) => {
+            Ok(mut file) => {
                 // Room for the declared size and the one byte that shows a lying header, so an honest
                 // read grows nothing (a doubling vector would hold twice a 64 MiB entry), but no more
                 // than the stream can ever produce (deflate expands at most 1032 to 1): a header that
@@ -481,12 +430,13 @@ impl ZipMount {
                 );
                 out.try_reserve_exact(usize::try_from(room).unwrap_or(0))
                     .is_ok()
-                    // One byte more than declared shows a lying header; the CRC is checked when the
-                    // reader ends.
-                    && file
-                        .take(entry.size.saturating_add(1))
-                        .read_to_end(&mut out)
-                        .is_ok()
+                    // The `zip` crate bounds the read itself: its `read_to_end` inflates at most one
+                    // byte more than declared, which shows a lying header, and then checks the CRC.
+                    // When it refuses, the bytes it inflated stay in `out`, so they are counted below.
+                    // It is called directly: a `Take` around the file would read through the crate's
+                    // `read`, which drops the bytes of the call that crossed the bound, and a failed
+                    // read would then count as having inflated nothing.
+                    && file.read_to_end(&mut out).is_ok()
                     && out.len() as u64 == entry.size
             }
             Err(_) => false,

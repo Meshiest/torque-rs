@@ -6,10 +6,12 @@ import {
   candidateAllowed,
   channelLive,
   dataOnly,
+  hostGame,
   iceServersFrom,
   meteredReceiver,
   nextLinkId,
   peerNumber,
+  roomPage,
   splitCandidates,
 } from './host.js';
 
@@ -163,4 +165,195 @@ test('a channel that closed while it waited is not handed to the game', () => {
   assert.equal(channelLive({ readyState: 'closing' }), false);
   assert.equal(channelLive({ readyState: 'closed' }), false);
   assert.equal(channelLive(null), false);
+});
+
+// A room page's hosting in place, on a game and starts that only record what they are asked.
+function roomFixture({ fail = null } = {}) {
+  const asked = [];
+  const stopped = [];
+  const said = [];
+  const starts = [];
+  const game = { switchTo: (mode) => asked.push(mode) };
+  const startHost = () =>
+    new Promise((ok, no) => {
+      const n = starts.length;
+      starts.push(() => (fail ? no(new Error(fail)) : ok({ stop: () => stopped.push(n) })));
+    });
+  const page = roomPage(game, startHost, { said: (t) => said.push(t) });
+  return { page, asked, stopped, said, starts };
+}
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test('a room page hosts once, switches its game to it, and back ends it', async () => {
+  const { asked, stopped, starts } = roomFixture();
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 1, 'one start for two asks');
+  starts[0]();
+  await settle();
+  assert.deepEqual(asked, ['host']);
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 1, 'hosting already: no new start');
+  globalThis.torqueAsk('back');
+  assert.deepEqual(stopped, [0]);
+  globalThis.torqueAsk('back');
+  assert.deepEqual(stopped, [0], 'stopped once');
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 2, 'a new game after back');
+});
+
+test('back while the server starts ends that game once it is up, and never switches to it', async () => {
+  const { asked, stopped, starts } = roomFixture();
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('back');
+  starts[0]();
+  await settle();
+  assert.deepEqual(asked, []);
+  assert.deepEqual(stopped, [0]);
+});
+
+test('host again before a start ends is the game that start brings', async () => {
+  const { asked, stopped, starts } = roomFixture();
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('back');
+  globalThis.torqueAsk('host');
+  assert.equal(starts.length, 1);
+  starts[0]();
+  await settle();
+  assert.deepEqual(asked, ['host']);
+  assert.deepEqual(stopped, []);
+});
+
+test('a start that fails says why, unless the page went back meanwhile', async () => {
+  let f = roomFixture({ fail: 'no worker' });
+  globalThis.torqueAsk('host');
+  f.starts[0]();
+  await settle();
+  assert.deepEqual(f.said, ['The game could not be hosted: no worker']);
+  assert.deepEqual(f.asked, []);
+  f = roomFixture({ fail: 'no worker' });
+  globalThis.torqueAsk('host');
+  globalThis.torqueAsk('back');
+  f.starts[0]();
+  await settle();
+  assert.deepEqual(f.said, []);
+});
+
+test('a game hosted from the start ends on back; other asks do nothing', () => {
+  const { page, stopped } = roomFixture();
+  const ended = [];
+  page.hosted({ stop: () => ended.push(1) });
+  globalThis.torqueAsk('join');
+  globalThis.torqueAsk('elsewhere');
+  assert.deepEqual(ended, []);
+  globalThis.torqueAsk('back');
+  assert.deepEqual(ended, [1]);
+  assert.deepEqual(stopped, []);
+});
+
+test('a room service address no socket can be made for leaves no worker, listener or mark behind', async () => {
+  const saved = {};
+  for (const k of ['document', 'location', 'Worker', 'WebSocket', 'addEventListener', 'removeEventListener']) {
+    saved[k] = Object.getOwnPropertyDescriptor(globalThis, k);
+  }
+  const dataset = {};
+  const listeners = new Set();
+  const workers = [];
+  class FakeWorker {
+    constructor() {
+      this.terminated = false;
+      workers.push(this);
+    }
+    postMessage(m) {
+      if (m && 'start' in m) setTimeout(() => this.onmessage?.({ data: { started: '' } }), 0);
+    }
+    terminate() {
+      this.terminated = true;
+    }
+  }
+  const set = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
+  set('document', { documentElement: { dataset } });
+  set('location', { search: '?rooms=ws://', protocol: 'http:', host: '127.0.0.1' });
+  set('Worker', FakeWorker);
+  set('WebSocket', class {
+    constructor() {
+      throw new SyntaxError('no host in the address');
+    }
+  });
+  set('addEventListener', (type, fn) => listeners.add(`${type}`) && fn);
+  set('removeEventListener', (type) => listeners.delete(`${type}`));
+  try {
+    const game = { setLocalSender() {}, startHostClient() {} };
+    await assert.rejects(hostGame(game, () => {}, { client: null }), /no host/);
+    assert.equal(workers.length, 1);
+    assert.ok(workers[0].terminated, 'the worker ended');
+    assert.equal(workers[0].onmessage, null);
+    assert.equal(listeners.size, 0, 'no pagehide listener left');
+    assert.equal(dataset.torqueServer, undefined);
+    assert.equal(dataset.torqueRoom, undefined);
+  } finally {
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(globalThis, k, d);
+      else delete globalThis[k];
+    }
+  }
+});
+
+test('at most 4 joiners from one address, and a place frees when one ends', async () => {
+  const saved = {};
+  for (const k of ['document', 'location', 'Worker', 'WebSocket', 'addEventListener', 'removeEventListener']) {
+    saved[k] = Object.getOwnPropertyDescriptor(globalThis, k);
+  }
+  class FakeWorker {
+    postMessage(m) {
+      if (m && 'start' in m) setTimeout(() => this.onmessage?.({ data: { started: '' } }), 0);
+    }
+    terminate() {}
+  }
+  let room = null;
+  const said = [];
+  class FakeSocket {
+    static OPEN = 1;
+    constructor() {
+      this.readyState = FakeSocket.OPEN;
+      room = this;
+    }
+    send(bytes) {
+      said.push(new TextDecoder().decode(bytes));
+    }
+    close() {
+      this.readyState = 3;
+    }
+  }
+  const set = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
+  set('document', { documentElement: { dataset: {} } });
+  set('location', { search: '?rooms=ws://127.0.0.1:1/ws', protocol: 'http:', host: '127.0.0.1' });
+  set('Worker', FakeWorker);
+  set('WebSocket', FakeSocket);
+  set('addEventListener', () => {});
+  set('removeEventListener', () => {});
+  let handle = null;
+  try {
+    const game = { setLocalSender() {}, startHostClient() {} };
+    handle = await hostGame(game, () => {}, { client: null });
+    const fromRoom = (text) => room.onmessage({ data: new TextEncoder().encode(text).buffer });
+    const drops = () => said.filter((t) => t.startsWith('drop '));
+    for (let n = 1; n <= 5; n++) fromRoom(`peer ${n} 93.184.216.40`);
+    assert.deepEqual(drops(), ['drop 5'], 'the fifth from one address is turned away');
+    fromRoom('peer 6 93.184.216.41');
+    assert.deepEqual(drops(), ['drop 5'], 'another address still comes in');
+    // One of the four ends (its signaling over before it offered): its place is free again.
+    fromRoom('left 2');
+    assert.deepEqual(drops(), ['drop 5', 'drop 2']);
+    fromRoom('peer 7 93.184.216.40');
+    assert.deepEqual(drops(), ['drop 5', 'drop 2']);
+    fromRoom('peer 8 93.184.216.40');
+    assert.deepEqual(drops(), ['drop 5', 'drop 2', 'drop 8']);
+  } finally {
+    handle?.stop();
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(globalThis, k, d);
+      else delete globalThis[k];
+    }
+  }
 });

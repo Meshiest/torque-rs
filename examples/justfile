@@ -110,9 +110,10 @@ web-vehicle-demo-server port="28000" *args:
     node ../web/build.mjs vehicle-demo
     cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo-server -- --transport both --webrtc --port {{port}} {{args}}
 
-# A room service for player-hosted drives on 127.0.0.1:{{port}}, serving the vehicle demo's browser build: a browser hosts at
-# http://127.0.0.1:{{port}}/?host=1 (its server in a Web Worker, the room's code on the page), others join at
-# http://127.0.0.1:{{port}}/?room=<code>, and `vehicle-demo-server --room ws://127.0.0.1:{{port}}` hosts from a desktop. More
+# A room service for player-hosted drives on 127.0.0.1:{{port}}, serving the vehicle demo's browser build: a browser hosts from
+# the page's menu or at http://127.0.0.1:{{port}}/?host=1 (its server in a Web Worker, the room's code on the page), others
+# join by the code from the menu or at http://127.0.0.1:{{port}}/?room=<code> (the page never loads again), and
+# `vehicle-demo-server --room ws://127.0.0.1:{{port}}` hosts from a desktop. More
 # switches after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
 web-vehicle-demo-rooms port="28100" *args:
     node ../web/build.mjs vehicle-demo
@@ -121,7 +122,9 @@ web-vehicle-demo-rooms port="28100" *args:
 # The vehicle demo's two-player checks (build it first with `web-vehicle-demo`): two headless pages join vehicle-demo-server at
 # the page it serves, on data channels; then by a room's code, the server hosting the room; then the second page joins a host
 # page whose server runs in a Web Worker. Each time one drives while the other watches, the other rides as the passenger and
-# then walks, with no console error, and the second page says so when the host goes. Pictures into the target folder's `web`
+# then walks, with no console error, and the second page says so when the host goes. With a room service the pages host and
+# join from their menus in place: no page loads again, each address says what it plays, and once the host leaves (from its
+# Esc menu, in the last) each page is back at its own menu and plays alone again. Pictures into the target folder's `web`
 web-vehicle-demo-mp-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-served.png" 120 served vehicle-demo

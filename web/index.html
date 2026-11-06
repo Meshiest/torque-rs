@@ -14,6 +14,8 @@
     width: 100% !important; height: 100% !important; min-width: 0 !important; max-width: none !important;
     min-height: 0 !important; max-height: none !important; }
   #loading, #fps, #gear, #gallery, #settings, #leave, #invites { z-index: 1; }
+  /* Behind an open invite panel: takes the clicks beside it, so none reaches the game (invites.js `panelUp`). */
+  #invites-backdrop { position: fixed; inset: 0; z-index: 1; }
   #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
   #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
   /* The loading bar (loading.js `showBar`): a download's share fills it; a stage of unknown length slides a piece of it across.
@@ -160,7 +162,10 @@
   // `torque` (bridge.js, also `window.torque`): the page calls the game's scripts (`torque.call`, `eval`, `getVar`,
   // `setVar`) and registers handlers the scripts call (`torque.on`, `callPage` in script).
   //
-  // `?host=1` (host.js): the page hosts a game others join by its room code, its server in a Web Worker.
+  // `?host=1` (host.js): the page hosts a game others join by its room code, its server in a Web Worker. A game that
+  // switches in place (`switchTo`) hosts and joins with a room from its menu with no new page: the page starts the server
+  // for it (host.js `roomPage`, the game's `torqueAsk('host')`), and the game joins a room by its code itself; the address
+  // bar says what it plays (`?host=1`, `?room=<code>`, or neither), and the page never loads again.
   //
   // `data-torque-solo="1"` on the root element (`build.mjs --solo`, a site with no game server): the game is played alone. A
   // game whose module has `startSoloClient` (the arena) plays on its own server in a Web Worker (host.js, with no room), and
@@ -391,6 +396,14 @@
     } else if (page) {
       throw new Error('this game cannot be joined by an invite link');
     }
+    // A page with a room service whose game switches in place: its menu's Host a game starts the server here.
+    let rooms = null;
+    if (!alone && typeof game.switchTo === 'function' && !game.embedded()) {
+      const { hostGame, roomPage } = await import('./host.js');
+      rooms = roomPage(game, () => hostGame(game, () => {}, { client: null, wasm: compiled }), {
+        said: (text) => torque.call('showMenuStatus', text).catch(() => {}),
+      });
+    }
     torque.attach(game);
     // The game's first frame is drawn at the quality chosen.
     applyQuality();
@@ -412,6 +425,7 @@
         wasm: compiled,
       });
       if (solo) pageOf().hosted(handle);
+      else rooms?.hosted(handle);
     } else {
       game.startFetched();
     }

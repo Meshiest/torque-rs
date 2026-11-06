@@ -12,7 +12,9 @@
 //! **Switching in place** ([`switch_to`]): a page played alone switches its running game between playing alone, an invite
 //! link's game and hosting with links, with no new page (a page runs one game: its window's event loop is the page's
 //! own). The page asks, the link the switch goes to starts afresh at once, and the game takes the request at its next
-//! step ([`take_switch`]).
+//! step ([`take_switch`]). A page with a room service switches the same way: to hosting with a room (`host`, the page's
+//! server started first), and a game joins a room by its code itself (a [`Target::Room`] opened in place); its address
+//! says what it plays ([`set_address`], with no new page).
 //!
 //! What the page hands the client on its link is hostile as on UDP: it is held in a [`HeldDatagrams`] (none over the
 //! engine's most bytes for a datagram, the count and the bytes held capped).
@@ -91,14 +93,14 @@ pub fn link_ended(why: &str) {
     });
 }
 
-/// What a page played alone switches its running game to ([`switch_to`]).
+/// What a page switches its running game to ([`switch_to`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Played alone (the arena: on the server in the page's worker; the vehicle demo: at its menu, its game in the page).
     Solo,
     /// The game of a player's host reached by an invite link, once the page's data channel to it has opened.
     Link,
-    /// The game this page hosts with links, its server in the page's worker.
+    /// The game this page hosts (with links, or with a room), its server in the page's worker.
     Host,
 }
 
@@ -154,20 +156,23 @@ pub fn unmark_link() {
     }
 }
 
-/// Calls the page's `torqueAsk(what)` (`web/invites.js`: its invite panels, or `back`, its own game again, played alone),
-/// if it has one: `host`, `join` or `back` only.
-pub fn ask_page(what: &str) {
+/// Calls the page's `torqueAsk(what)`, if it has one: `host`, `join` or `back` only. A page played alone
+/// (`web/invites.js`): its invite panels, or `back`, its own game again, played alone; any other page that switches its
+/// game in place (`web/host.js` `roomPage`): `host`, it hosts a game with a room, and `back`, it hosts no more. False:
+/// the page has none, or `what` is none of those.
+pub fn ask_page(what: &str) -> bool {
     if !matches!(what, "host" | "join" | "back") {
-        return;
+        return false;
     }
     let Some(window) = web_sys::window() else {
-        return;
+        return false;
     };
     if let Ok(f) = js_sys::Reflect::get(&window, &"torqueAsk".into())
         && let Some(f) = wasm_bindgen::JsCast::dyn_ref::<js_sys::Function>(&f)
     {
-        let _ = f.call1(&wasm_bindgen::JsValue::NULL, &what.into());
+        return f.call1(&wasm_bindgen::JsValue::NULL, &what.into()).is_ok();
     }
+    false
 }
 
 /// The page's function that posts the client's datagrams to the worker's server (called with a `Uint8Array`).
@@ -313,26 +318,42 @@ pub fn page_room() -> Option<String> {
     .then_some(code)
 }
 
-/// The page's own address's settings a new game keeps: the room service, the player's name, the pointer-lock guard,
-/// the host's LAN rule and the map.
+/// The page's own address's settings every mode keeps ([`set_address`]): the room service, the player's name, the
+/// pointer-lock guard, the host's LAN rule and the map.
 const KEPT: [&str; 5] = ["rooms", "name", "nolock", "lan", "map"];
 
-/// The longest room code [`open_page`] takes (`ABCD-EFGH` with room to spare); a code is letters, digits and `-` only.
+/// The longest room code [`room_code`] takes (`ABCD-EFGH` with room to spare); a code is letters, digits and `-` only.
 pub const MAX_CODE: usize = 16;
 
-/// Opens the page again in another mode: `host` the page hosts a game (`?host=1`), else it joins the game of room `code`
-/// (`?room=<code>`, letters, digits and `-` only, at most [`MAX_CODE`]); the address's [`KEPT`] settings stay, the rest
-/// go. Err: a code that is not one, or the page could not be opened.
-pub fn open_page(host: bool, code: &str) -> Result<(), String> {
+/// `code` as a room code, trimmed (Err: empty, over [`MAX_CODE`], or not letters, digits and `-` only).
+pub fn room_code(code: &str) -> Result<String, String> {
     let code = code.trim();
-    if !host
-        && (code.is_empty()
-            || code.len() > MAX_CODE
-            || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    if code.is_empty()
+        || code.len() > MAX_CODE
+        || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         return Err(format!("{code:?} is not a room code (like ABCD-EFGH)"));
     }
-    let location = web_sys::window().ok_or("no window")?.location();
+    Ok(code.to_string())
+}
+
+/// What the page's address says the page plays ([`set_address`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Address<'a> {
+    /// Its own game: none of the others.
+    Own,
+    /// A game it hosts (`?host=1`).
+    Host,
+    /// The game of a room, by its code (`?room=<code>`, a code [`room_code`] took).
+    Room(&'a str),
+}
+
+/// Writes the mode the page plays in its address, with no new page (`history.replaceState`): the page opened on it
+/// again plays the same, and a room's address can be handed to others. The address's [`KEPT`] settings stay, the rest
+/// go. Err: a room code that is not one, or the address could not be written.
+pub fn set_address(address: Address) -> Result<(), String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let location = window.location();
     let search = location.search().map_err(|e| format!("{e:?}"))?;
     let mut pairs: Vec<String> = search
         .trim_start_matches('?')
@@ -340,13 +361,20 @@ pub fn open_page(host: bool, code: &str) -> Result<(), String> {
         .filter(|pair| KEPT.contains(&pair.split_once('=').map_or(*pair, |(k, _)| k)))
         .map(str::to_string)
         .collect();
-    pairs.push(if host {
-        "host=1".to_string()
+    match address {
+        Address::Own => {}
+        Address::Host => pairs.push("host=1".to_string()),
+        Address::Room(code) => pairs.push(format!("room={}", room_code(code)?)),
+    }
+    let path = location.pathname().map_err(|e| format!("{e:?}"))?;
+    let url = if pairs.is_empty() {
+        path
     } else {
-        format!("room={code}")
-    });
-    location
-        .set_search(&pairs.join("&"))
+        format!("{path}?{}", pairs.join("&"))
+    };
+    window
+        .history()
+        .and_then(|h| h.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url)))
         .map_err(|e| format!("{e:?}"))
 }
 
