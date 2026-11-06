@@ -156,7 +156,8 @@ fn a_detail_pays_for_every_vertex_it_walks() {
         primitives: Vec::new(),
         indices: Vec::new(),
     })];
-    let start = std::time::Instant::now();
+    let walked = || WALKED.with(std::cell::Cell::get);
+    let before = walked();
     let mut left = 10_000_000u64;
     let result = detail_bounds(&shape, 0, &mut |u| {
         if u > left {
@@ -166,9 +167,12 @@ fn a_detail_pays_for_every_vertex_it_walks() {
         true
     });
     assert_eq!(result, Err(ShapeError::OutOfBudget));
-    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    // The refused run walked no more vertices than the budget paid for (not the 2.4 billion it names).
+    let refused_walk = walked() - before;
+    assert!(refused_walk <= 10_000_000, "{refused_walk}");
     // One object's worth, paid in full, is charged at least its vertices.
     shape.sub_shapes[0].num_objects = 1;
+    let before = walked();
     let mut units = 0;
     let bounds = detail_bounds(&shape, 0, &mut |u| {
         units += u;
@@ -176,4 +180,5 @@ fn a_detail_pays_for_every_vertex_it_walks() {
     });
     assert_eq!(bounds, Ok(Some([1.0; 6])));
     assert!(units >= 600_000, "{units}");
+    assert_eq!(walked() - before, 600_000);
 }

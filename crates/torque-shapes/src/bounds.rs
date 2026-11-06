@@ -221,6 +221,12 @@ pub fn detail_bounds(
     }
 }
 
+// The vertices [`detail_walk`] has walked on this thread: the tests measure the work a budget allows by it, not by the clock.
+#[cfg(test)]
+thread_local! {
+    static WALKED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 fn detail_walk(shape: &Shape, dl: usize, pay: &mut dyn FnMut(u64) -> bool) -> Option<[f32; 6]> {
     let detail = shape.details.get(dl)?;
     let ss = shape
@@ -270,6 +276,8 @@ fn detail_walk(shape: &Shape, dl: usize, pay: &mut dyn FnMut(u64) -> bool) -> Op
         if !pay(4 + mesh.verts().len() as u64) {
             return None;
         }
+        #[cfg(test)]
+        WALKED.with(|w| w.set(w.get() + mesh.verts().len() as u64));
         for v in mesh.verts() {
             let p = mul_point(&mat, *v);
             for k in 0..3 {
