@@ -215,7 +215,14 @@ async function vehicleGame(firstUrl, secondUrl, firstJoined, leave, said) {
   if (problems.length) return;
   await writeFile(out, await (await second.$('canvas')).screenshot({ type: 'png' }));
   console.log(`screenshot: ${out}`);
-  if (await vehicleRun({ first, second, state, wait, problems, out })) await hostLeaves(second, () => leave(first), said);
+  if (!(await vehicleRun({ first, second, state, wait, problems, out }))) return;
+  await hostLeaves(second, () => leave(first), said);
+  // Back on the menu of a page not played alone: hosting and joining by room code are offered.
+  const offered = await second.evaluate(() =>
+    globalThis.torque.eval('return HostButton.isVisible() @ JoinAddressButton.isVisible();'),
+  );
+  console.log(`the second page's menu offers to host and join by code: ${offered === '11'}`);
+  if (offered !== '11') problems.push(`the menu does not offer to host and join by room code ("${offered}")`);
 }
 
 let status = 1;

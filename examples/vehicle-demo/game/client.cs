@@ -2,7 +2,7 @@
 // with its help line and hint, the keys on foot and in a seat, and the way in.
 //
 // The host watches the globals the menu sets: $World::AloneAsked (start a game here that nobody else can join and join it),
-// $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on; $World::AloneOnly (set by the host) keeps the menu to playing alone. On foot the keys move the figure (as the level demo's); a click asks
+// $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on; $World::AloneOnly (set by the host) keeps the menu to playing alone, and with $World::WebRooms (a browser's page not played alone) to the page's own hosting and joining by room code. On foot the keys move the figure (as the level demo's); a click asks
 // the server for a seat (serverCmdGetIn). In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
@@ -433,6 +433,54 @@ function showAloneOnly()
    AddressLabel.setVisible(0);
    AddressEdit.setVisible(0);
    JoinAddressButton.setVisible(0);
+   if ($World::WebRooms)
+      showWebRooms();
+}
+
+// A browser's page that is not one played alone ($World::WebRooms, set by the host): the menu also offers to host a game
+// others join by its room's code ($World::WebHostAsked) and to join one by a code typed in ($World::WebJoinCode); the host
+// opens the page again for either. A hosted game's code ($World::RoomCode) shows on the menu and the world's title.
+function showWebRooms()
+{
+   MenuLine.setText("Drive a buggy over the hills, alone or with friends who have your room's code.");
+   HostButton.setVisible(1);
+   HostButton.command = "hostOnPage();";
+   AddressLabel.setText("Room");
+   AddressLabel.setVisible(1);
+   AddressEdit.altCommand = "joinRoomCode();";
+   AddressEdit.setVisible(1);
+   JoinAddressButton.setText("Join room");
+   JoinAddressButton.command = "joinRoomCode();";
+   JoinAddressButton.setVisible(1);
+   if ($World::RoomCode !$= "")
+      MenuStatus.setText("Others join this game with the room code " @ $World::RoomCode @ ".");
+}
+
+function hostOnPage()
+{
+   saveName();
+   MenuStatus.setText("Hosting a game...");
+   $World::WebHostAsked = 1;
+}
+
+function joinRoomCode()
+{
+   saveName();
+   %code = trim(AddressEdit.getValue());
+   if (%code $= "")
+   {
+      MenuStatus.setText("Type the room's code first (like ABCD-EFGH).");
+      return;
+   }
+   MenuStatus.setText("Joining room " @ %code @ "...");
+   $World::WebJoinCode = %code;
+}
+
+// The hosted game's room code came ($World::RoomCode): on the world's title.
+function showRoomCode()
+{
+   if ($World::InWorld)
+      PlayTitle.setText($World::TitleText @ "   Room " @ $World::RoomCode);
 }
 
 function leaveWorld()
@@ -483,7 +531,8 @@ function GameConnection::onConnectionTimedOut(%this)
 function clientCmdWorldStarted(%title)
 {
    closePause();
-   PlayTitle.setText(%title);
+   $World::TitleText = %title;
+   PlayTitle.setText(%title @ ($World::RoomCode $= "" ? "" : "   Room " @ $World::RoomCode));
    DriveMap.pop();
    PlayMap.push();
    Canvas.setContent(PlayGui);

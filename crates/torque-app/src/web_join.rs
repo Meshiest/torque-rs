@@ -149,6 +149,19 @@ pub fn solo_page() -> bool {
         .is_some_and(|v| v == "1")
 }
 
+/// The room code a host page shows (`data-torque-room`, `web/host.js`: `ABCD-EFGH`), if it has one yet and it is
+/// letters, digits and `-` only.
+pub fn page_room() -> Option<String> {
+    let code = web_sys::window()?
+        .document()?
+        .document_element()?
+        .get_attribute("data-torque-room")?;
+    (!code.is_empty()
+        && code.len() <= MAX_CODE
+        && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    .then_some(code)
+}
+
 /// The page's own address's settings a new game keeps: the room service, the player's name, the pointer-lock guard,
 /// the host's LAN rule and the map.
 const KEPT: [&str; 5] = ["rooms", "name", "nolock", "lan", "map"];

@@ -16,6 +16,10 @@
 //! transport ([`host_start`], [`torque::app::web_host`]), others join by the room's code, and the host player's client
 //! reaches it over the local link ([`start_host_client`]).
 //!
+//! **The menu** (after leaving the world): a page built to be played alone (`web/build.mjs --solo`, a site with no game
+//! server) offers only to play alone; any other offers to host a game here (the page opens again with `?host=1`) and to
+//! join a room by its code (`?room=<code>`), and a host page shows its room's code on the menu and the world's title.
+//!
 //! The page's root element carries the game's state for a test to wait on (`web_page::mark_play`): the frames drawn, the map
 //! (empty off it), whether the client holds its figure and where it sees it; and `data-torque-others` (the other players'
 //! figures the client holds), `data-torque-seat` (`-1` on foot, `0` at the wheel, `1` the passenger's seat),
@@ -49,10 +53,15 @@ pub fn start_fetched() -> Result<(), String> {
     if let Some(target) = torque::app::web_join::Target::from_page()? {
         return joined(files, target);
     }
+    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+    let mut game = alone(files)?;
+    #[cfg(target_arch = "wasm32")]
+    offer_rooms(&mut game);
     torque::app::window::run(WebVehicle {
-        game: alone(files)?,
+        game,
         frames: 0,
         link: None,
+        room: None,
     })
 }
 
@@ -106,6 +115,7 @@ fn joined(files: GameFiles, target: torque::app::web_join::Target) -> Result<(),
             ..ClientOptions::default()
         },
     )?;
+    offer_rooms(&mut game);
     let (socket, watch) = target.open()?;
     game.set_socket(socket);
     game.join(&SERVER.to_string())?;
@@ -116,7 +126,17 @@ fn joined(files: GameFiles, target: torque::app::web_join::Target) -> Result<(),
             watch,
             ended: false,
         }),
+        room: None,
     })
+}
+
+/// A page that is not one played alone (`data-torque-solo`) offers the page's own hosting and joining by room code on the
+/// menu (`$World::WebRooms`); a solo page offers only to play alone.
+#[cfg(target_arch = "wasm32")]
+fn offer_rooms(game: &mut VehicleDemo) {
+    if !torque::app::web_join::solo_page() {
+        game.set_global("$World::WebRooms", "1");
+    }
 }
 
 /// A joined game's link: what it shows of itself, and whether its end was shown.
@@ -137,6 +157,9 @@ struct WebVehicle {
     /// The link of a joined game (none played alone).
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     link: Option<Link>,
+    /// The room code a host page shows, once it came.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    room: Option<String>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -158,8 +181,42 @@ impl WebVehicle {
         );
     }
 
+    /// What the menu asked of the page: to host a game, or to join a room by its code (the page opens again for it).
+    fn menu_asks(&mut self) {
+        use torque::app::web_join::open_page;
+        let asked = if self.game.take_flag("$World::WebHostAsked") {
+            Some(open_page(true, ""))
+        } else {
+            let code = self.game.global("$World::WebJoinCode");
+            (!code.is_empty()).then(|| {
+                self.game.set_global("$World::WebJoinCode", "");
+                open_page(false, &code)
+            })
+        };
+        if let Some(Err(e)) = asked {
+            let text = e.replace(['"', '\\'], "'");
+            let _ = self
+                .game
+                .call("eval", &[&format!("MenuStatus.setText(\"{text}\");")]);
+        }
+    }
+
+    /// A host page's room code, once it shows: on the menu and the world's title.
+    fn room_code(&mut self) {
+        if self.room.is_some() {
+            return;
+        }
+        let Some(code) = torque::app::web_join::page_room() else {
+            return;
+        };
+        self.game.set_global("$World::RoomCode", &code);
+        let _ = self.game.call("showRoomCode", &[]);
+        self.room = Some(code);
+    }
+
     fn mark(&mut self) {
         use torque::app::web_page::mark;
+        self.room_code();
         let in_world = self.game.in_world();
         let map = if in_world { crate::files::MISSION } else { "" };
         web_page::mark_play(self.frames, map, self.game.figure().map(|f| f.position));
@@ -222,7 +279,10 @@ impl App for WebVehicle {
     fn advance(&mut self, ms: u32) {
         App::advance(&mut self.game, ms);
         #[cfg(target_arch = "wasm32")]
-        self.show_end();
+        {
+            self.show_end();
+            self.menu_asks();
+        }
     }
 
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {

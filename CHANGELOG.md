@@ -335,6 +335,8 @@ The first development version. Nothing is published yet; this is what exists.
   (`--transport both`, `--webrtc`, `--room`, TLS, the `--rtc-*` ones), now shared as `torque::app::serve`. The page
   still plays alone; `?join` joins the server that served it (`just examples/web-vehicle-demo-server`), `?room=<code>` a
   player's host, and `?host=1` hosts with the server in the page's Web Worker (`just examples/web-vehicle-demo-rooms`).
+  Its menu offers to host and to join a room by its code, and shows a hosted game's code; a page built `--solo` offers
+  only to play alone.
   The browser's join targets, its local link and its link's marks (`torque::app::web_join`) and the worker's server with
   its page calls (`torque::app::web_host`, `web_host_exports!`) moved out of the arena and are shared. A browser whose
   game socket closes now ends the game with "The server closed the connection." `just
