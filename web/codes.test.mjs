@@ -217,6 +217,21 @@ test("a page's own description gives a code's parts, and a code's parts a descri
   assert.throws(() => c.fromSdp(SDP.replace(/a=fingerprint:.*\r\n/, '')), /without ICE or DTLS/);
 });
 
+test("a new answer takes an earlier answer's ICE credentials and DTLS setup, and nothing else", () => {
+  const earlier = { ...c.fromSdp(SDP), setup: 'active' };
+  const fresh = SDP.replace('a=ice-ufrag:x9Qa', 'a=ice-ufrag:Zz99')
+    .replace(/a=ice-pwd:.*/, 'a=ice-pwd:qqqqqqqqqqqqqqqqqqqqqqqq')
+    .replace('a=setup:actpass', 'a=setup:passive');
+  assert.ok(!c.sameDetails(c.fromSdp(fresh), earlier));
+  const kept = c.withDetails(fresh, earlier);
+  assert.ok(c.sameDetails(c.fromSdp(kept), earlier));
+  assert.deepEqual(c.fromSdp(kept), earlier);
+  // every other line as it was
+  const others = (sdp) => sdp.split('\r\n').filter((l) => !/^a=(ice-ufrag|ice-pwd|setup):/.test(l));
+  assert.deepEqual(others(kept), others(fresh));
+  assert.ok(!c.sameDetails(earlier, { ...earlier, fingerprint: new Uint8Array(32) }));
+});
+
 test('an mDNS name rides in any invite or reply, and only in its strict form', async () => {
   const name = '4f9c2a1e-7b3d-4c8e-9a10-2b6e8d4f1c3a.local';
   const named = [{ type: 'host', ip: name, port: 50123 }];

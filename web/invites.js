@@ -31,8 +31,10 @@ import {
   iceServersFor,
   newToken,
   pickCandidates,
+  sameDetails,
   serverFor,
   toSdp,
+  withDetails,
 } from './codes.js';
 import { MDNS_NAME, addressAllowed, candidateAllowed, ipv4, meteredReceiver } from './host.js';
 
@@ -42,6 +44,8 @@ const CONNECT_MS = 30_000;
 // How long the joiner's page waits for the host to take its reply and the channel to open.
 const JOIN_MS = 5 * 60_000;
 const GATHER_MS = 5_000;
+// The shortest time between two of a joiner's connections (see `again` in joinInvite).
+const RETRY_MS = 4_000;
 const HANDOFF_MS = 2_000;
 const MAX_BUFFERED = 256 * 1024;
 const USED_KEY = 'torque-invites-used';
@@ -590,63 +594,114 @@ export function joinInvite(code) {
     mark('making');
     said.textContent = 'Making your reply...';
     const lan = privateAllowed(data.server, location.search, true);
-    const pc = new RTCPeerConnection({ iceServers: iceServersFor(data.server) });
-    // Back to the menu ends this connection with the page.
-    addEventListener('pagehide', () => pc.close());
-    pc.ondatachannel = (e) => {
-      const ch = e.channel;
-      if (channel || ch.label !== 'game' || ch.ordered || ch.maxRetransmits !== 0) {
-        pc.close();
-        return refuse('The host sent a connection this page does not take. Ask the host for a new invite offer link.');
-      }
-      channel = ch;
-      ch.binaryType = 'arraybuffer';
-      ch.onopen = () => {
-        opened = true;
-        mark('open');
-        game?.linkOpened();
-        closePanel();
-      };
-      // the host's messages within the same caps as a joiner's on the host: past them, the link ends
-      ch.onmessage = meteredReceiver(
-        (data) => game?.localDatagram(new Uint8Array(data)),
-        () => {
-          pc.close();
-          end('The host sent more than the game takes, so the connection was closed.');
-        },
-      );
-      ch.onclose = () => (opened ? end('The host left the game.') : fail(NO_RELAY));
-    };
-    // Before the channel opens, ICE may fail while the reply is on its way: the host's checks, once it has the reply,
-    // can still come in, so only JOIN_MS ends the wait.
-    pc.oniceconnectionstatechange = () => {
-      if (opened && pc.iceConnectionState === 'failed') end('The host left the game.');
-    };
-    // This page's own mDNS names: an invite that names them is not taken at them (a host could point this browser at its
-    // own network address and a port of its choice). Addresses stay: two pages on one computer share them.
+    // One certificate for every connection this join makes: each has the fingerprint the reply link names.
+    const certificates = [await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' })];
+    // This page's own mDNS names (every connection's): an invite that names them is not taken at them (a host could point
+    // this browser at its own network address and a port of its choice). Addresses stay: two pages on one computer share
+    // them.
     const own = new Set();
     const ownName = (address) => MDNS_NAME.test(address ?? '') && own.add(address);
-    pc.onicecandidate = (e) => ownName(e.candidate?.candidate?.split(' ')[4]);
-    await pc.setRemoteDescription({ type: 'offer', sdp: toSdp(data) });
-    await pc.setLocalDescription(await pc.createAnswer());
-    await gathered(pc, GATHER_MS);
-    if (ended) return pc.close();
-    const sdp = pc.localDescription.sdp;
-    for (const line of sdpLines(sdp)) ownName(line.split(' ')[4]);
-    const lines = allowedLines(data, lan, own);
-    if (!lines.length) {
-      pc.close();
-      return refuse('This invite offer has no address this page can reach. Ask the host for a new one.');
+    let pc = null;
+    // The reply's ICE credentials, fingerprint and DTLS setup (`fromSdp`), once the first connection has made them.
+    let details = null;
+    let started = 0;
+    // Back to the menu ends this connection with the page.
+    addEventListener('pagehide', () => pc?.close());
+
+    // A connection that answers the invite (as `details` say, once there are any) and is given the invite's addresses:
+    // its own description, or null when the join ended or the connection was replaced meanwhile.
+    async function answer() {
+      const next = new RTCPeerConnection({ iceServers: iceServersFor(data.server), certificates });
+      pc = next;
+      started = performance.now();
+      next.ondatachannel = (e) => {
+        const ch = e.channel;
+        if (next !== pc) return;
+        if (channel || ch.label !== 'game' || ch.ordered || ch.maxRetransmits !== 0) {
+          next.close();
+          return refuse('The host sent a connection this page does not take. Ask the host for a new invite offer link.');
+        }
+        channel = ch;
+        ch.binaryType = 'arraybuffer';
+        ch.onopen = () => {
+          opened = true;
+          mark('open');
+          game?.linkOpened();
+          closePanel();
+        };
+        // the host's messages within the same caps as a joiner's on the host: past them, the link ends
+        ch.onmessage = meteredReceiver(
+          (data) => game?.localDatagram(new Uint8Array(data)),
+          () => {
+            next.close();
+            end('The host sent more than the game takes, so the connection was closed.');
+          },
+        );
+        ch.onclose = () => (opened ? end('The host left the game.') : fail(NO_RELAY));
+      };
+      next.oniceconnectionstatechange = () => {
+        if (next !== pc || next.iceConnectionState !== 'failed') return;
+        if (opened) end('The host left the game.');
+        else if (details) again();
+      };
+      next.onicecandidate = (e) => ownName(e.candidate?.candidate?.split(' ')[4]);
+      await next.setRemoteDescription({ type: 'offer', sdp: toSdp(data) });
+      const made = await next.createAnswer();
+      await next.setLocalDescription(details ? { type: 'answer', sdp: withDetails(made.sdp, details) } : made);
+      await gathered(next, GATHER_MS);
+      if (ended || next !== pc) {
+        next.close();
+        return null;
+      }
+      const sdp = next.localDescription.sdp;
+      if (details && !sameDetails(fromSdp(sdp), details)) throw new Error("the browser did not keep the reply link's details");
+      for (const line of sdpLines(sdp)) ownName(line.split(' ')[4]);
+      const lines = allowedLines(data, lan, own);
+      if (!lines.length) {
+        next.close();
+        refuse('This invite offer has no address this page can reach. Ask the host for a new one.');
+        return null;
+      }
+      for (const line of lines) await next.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
+      return sdp;
     }
-    for (const line of lines) await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
+
+    // Before the channel opens, the browser may give up on the host's addresses while the reply link is on its way, and
+    // then no longer answer the host's checks once the host takes it. Firefox does a few seconds after it answers when no
+    // address of the host answers yet, as a Firefox host's mDNS names do not until it has taken the reply. A new
+    // connection with the reply's credentials, certificate and setup takes over: once the host has the reply, the host
+    // answers its checks (and takes its address as the reply's). At most one every RETRY_MS, until JOIN_MS ends the wait.
+    function again() {
+      const old = pc;
+      if (channel) {
+        channel.onopen = channel.onclose = channel.onmessage = null;
+        channel = null;
+      }
+      old.close();
+      setTimeout(
+        () => {
+          if (opened || ended || pc !== old) return;
+          answer().catch(() => {
+            pc.close();
+            fail(NO_RELAY);
+          });
+        },
+        Math.max(0, started + RETRY_MS - performance.now()),
+      );
+    }
+
+    const sdp = await answer();
+    if (!sdp) return;
+    details = fromSdp(sdp);
     const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lan), { mdns: true });
-    const reply = await encodeCode({ kind: KIND_REPLY, token: data.token, ...fromSdp(sdp), candidates });
+    const reply = await encodeCode({ kind: KIND_REPLY, token: data.token, ...details, candidates });
     markUsed(data.token);
     said.textContent =
       'Send this reply link back to the host. When they open it in the browser that made the invite offer, you join ' +
       'their game. This page waits for it.';
     show(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
     mark('replied');
+    if (!opened && pc.iceConnectionState === 'failed') again();
     setTimeout(() => {
       if (opened || ended) return;
       pc.close();
