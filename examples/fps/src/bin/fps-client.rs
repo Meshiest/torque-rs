@@ -77,6 +77,11 @@ mod page {
         web::add_file(path, bytes)
     }
 
+    #[wasm_bindgen(js_name = addFileDigest)]
+    pub fn add_file_digest(path: &str, bytes: Vec<u8>, digest: &[u8]) -> Result<(), String> {
+        web::add_file_digest(path, bytes, digest)
+    }
+
     #[wasm_bindgen(js_name = startFetched)]
     pub fn start_fetched() -> Result<(), String> {
         web::start_fetched()
