@@ -457,7 +457,7 @@ impl LevelDemo {
             self.daylight = d;
         }
         let dt = self.client.take_frame_time();
-        // The water's waves, the sky's layers and the image's grain run with the game's clock.
+        // The water's waves and the sky's layers run with the game's clock (the image's grain stays still).
         view.advance_time(dt);
         let scale = self.ground.cloud_time_scale;
         if scale > 0.0 {

@@ -428,8 +428,8 @@ impl WorldView {
     }
 
     /// The effects' clock in seconds: the water's waves and ripples, the sky's cloud layers (and the volumetric clouds without
-    /// a clock of their own) and the image's grain run on it. It starts at 0 and stands still until a game runs it
-    /// ([`WorldView::advance_time`]).
+    /// a clock of their own) and the stars' twinkle run on it; the image's grain does not (its pattern stays still). It starts
+    /// at 0 and stands still until a game runs it ([`WorldView::advance_time`]).
     pub fn time(&self) -> f32 {
         self.scene.time
     }
