@@ -77,6 +77,18 @@ export function meteredReceiver(deliver, end, now = () => performance.now()) {
   };
 }
 
+// The link number for a new invited joiner, from `next` on: the first not in `taken` (1 up to 2^32 - 1; 0 is the host's
+// own link), and the `next` to start from after it, so a number just freed is not taken again at once.
+export function nextLinkId(taken, next) {
+  let id = next >= 1 && next <= 0xffffffff ? next : 1;
+  while (taken.has(id)) id = id >= 0xffffffff ? 1 : id + 1;
+  return [id, id >= 0xffffffff ? 1 : id + 1];
+}
+
+// Whether a data channel may still carry a joiner: connecting or open (one that closed before it was handed over never
+// fires its close again).
+export const channelLive = (ch) => ch?.readyState === 'connecting' || ch?.readyState === 'open';
+
 // Whether the host may check `octets` (a public unicast address, or a private one with `lan`): torque-server's
 // `candidate_allowed`.
 export function addressAllowed([a, b, c, d], lan) {
@@ -356,8 +368,9 @@ export async function hostGame(game, say, { solo = false, client = 'solo', onHos
       adopt(pc, ch, ip, onEnd) {
         const refused = refusal(ip);
         if (refused) return refused;
-        while (peers.has(next)) next = next >= 0xffffffff ? 1 : next + 1;
-        const id = next;
+        if (!channelLive(ch)) return 'The player left before joining.';
+        const [id, after] = nextLinkId(peers, next);
+        next = after;
         const peer = { ip, pc, channel: null, linked: false, sent: 0, got: 0, onEnd };
         peers.set(id, peer);
         pc.oniceconnectionstatechange = () => {

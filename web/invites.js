@@ -49,9 +49,12 @@ const NO_RELAY =
   "Could not connect. Some networks can't connect without a relay server, and this page does not use one. Try the " +
   'other server, or play on the same network.';
 
-const lanQuery = () => new URLSearchParams(location.search).has('lan');
-// Whether private addresses may be used: the same-network server, or `?lan=1`.
-const lanFor = (server) => server === 'lan' || lanQuery();
+// Whether private addresses may be used: the same-network server, or on the host's own page `?lan=1`. A joining page
+// ignores `?lan`: its address came from the host, so only the invite's server decides.
+export function privateAllowed(server, search, joining) {
+  return server === 'lan' || (!joining && new URLSearchParams(search).has('lan'));
+}
+const lanFor = (server) => privateAllowed(server, location.search, false);
 const channelName = () => `torque-invites ${location.pathname}`;
 const pageLink = () => `${location.origin}${location.pathname}`;
 
@@ -536,7 +539,7 @@ export function joinInvite(code) {
 
   async function connect(data) {
     said.textContent = 'Making your reply...';
-    const lan = lanFor(data.server);
+    const lan = privateAllowed(data.server, location.search, true);
     const pc = new RTCPeerConnection({ iceServers: iceServersFor(data.server) });
     pc.ondatachannel = (e) => {
       const ch = e.channel;

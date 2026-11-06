@@ -1,7 +1,17 @@
 // The browser host's rules for what joiners and the room service send, without a page: `node --test web/host.test.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_CANDIDATES, candidateAllowed, dataOnly, iceServersFrom, meteredReceiver, peerNumber, splitCandidates } from './host.js';
+import {
+  MAX_CANDIDATES,
+  candidateAllowed,
+  channelLive,
+  dataOnly,
+  iceServersFrom,
+  meteredReceiver,
+  nextLinkId,
+  peerNumber,
+  splitCandidates,
+} from './host.js';
 
 const line = (address, transport = 'udp', port = 40000) =>
   `candidate:1 1 ${transport} 2122260223 ${address} ${port} typ host generation 0`;
@@ -129,4 +139,26 @@ test("a browser's mDNS name is taken only in same-network mode, and only a lower
   ]) {
     assert.equal(candidateAllowed(line(nearMiss), true, new Set(), mdns), null, nearMiss);
   }
+});
+
+test('an invited joiner takes a link number not just freed, never 0', () => {
+  const taken = new Set([1, 2]);
+  let [id, next] = nextLinkId(taken, 1);
+  assert.deepEqual([id, next], [3, 4]);
+  taken.add(id);
+  // link 3 ends: the next joiner gets 4, not 3 again
+  taken.delete(3);
+  [id, next] = nextLinkId(taken, next);
+  assert.equal(id, 4);
+  // past the last number it starts again at 1, skipping those taken
+  assert.deepEqual(nextLinkId(new Set([0xffffffff, 1]), 0xffffffff), [2, 3]);
+  assert.deepEqual(nextLinkId(new Set(), 0), [1, 2]);
+});
+
+test('a channel that closed while it waited is not handed to the game', () => {
+  assert.equal(channelLive({ readyState: 'open' }), true);
+  assert.equal(channelLive({ readyState: 'connecting' }), true);
+  assert.equal(channelLive({ readyState: 'closing' }), false);
+  assert.equal(channelLive({ readyState: 'closed' }), false);
+  assert.equal(channelLive(null), false);
 });

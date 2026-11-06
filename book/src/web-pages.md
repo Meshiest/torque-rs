@@ -76,13 +76,13 @@ multiplayer.
 
 With no server of ours, two players trade connection codes by hand (`web/invites.js`, `web/codes.js`). "Host with a
 link" opens a panel: the player picks the STUN server (Cloudflare, Google, or same network only, which uses none), reads
-what that server sees, and presses "Create Invite Offer" once per friend for an invite offer link (`<page>#join=<code>`). An invite belongs to one peer
-connection, so each works once. The friend's page shows which server the invite uses before it contacts it, then makes a
-reply link (`<page>#reply=<code>`). The host opens the reply link in the same browser: that tab hands the reply to the
-game's tab over a `BroadcastChannel` and closes, and the data channel opens straight between the two browsers. The
-reply can also be pasted into the host's panel. The codes ride in the fragment, which a browser never sends to the
-server, and the page clears it from the address bar once read. Each link carries its sender's IP address, which the
-panels say beside every copy button.
+what that server sees, and presses "Create Invite Offer" once per friend for an invite offer link
+(`<page>#join=<code>`). An invite belongs to one peer connection, so each works once. The friend's page shows which
+server the invite uses before it contacts it, then makes a reply link (`<page>#reply=<code>`). The host opens the reply
+link in the same browser: that tab hands the reply to the game's tab over a `BroadcastChannel` and closes, and the data
+channel opens straight between the two browsers. The reply can also be pasted into the host's panel. The codes ride in
+the fragment, which a browser never sends to the server, and the page clears it from the address bar once read. Each
+link carries its sender's IP address, which the panels say beside every copy button.
 
 A code is the SDP cut to what a data channel needs (ICE user fragment and password, the DTLS fingerprint and setup, the
 candidates as type, address and port), deflated, in base64url, with a version byte, a kind byte and a CRC-32; about 230

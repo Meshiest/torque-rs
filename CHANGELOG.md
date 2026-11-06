@@ -315,24 +315,24 @@ The first development version. Nothing is published yet; this is what exists.
   joins by code, each page holds the other's figure, the joiner walks, and it says the host left when the host page
   closes. The p2p check launches its browsers through `web/guard.mjs` with `?nolock`.
 - Invite links for the arena and the vehicle demo on their pages played alone (a static site, no server of ours): the
-  menu's "Host with a link" (and the Esc menu's "Invite players") creates one invite offer link per player ("Create Invite Offer") (`<page>#join=<code>`, each works once), the player's page makes a reply link
-  (`#reply=<code>`), and the host opens it in the same browser, where it hands the reply to the game's tab over a
-  BroadcastChannel and closes (or it is pasted into the host's panel). The host's server runs in the page's worker as
-  for `?host=1` (the vehicle demo, played alone in the page, opens it again with `?invites=1`); the joiner's data channel
-  goes to its relay with every cap, and the joiner takes its host's messages within the same caps
-  (`host.js` `meteredReceiver`). torque-app's `web_join`: `Target::Page` (a link the page holds), `link_opened`,
-  `link_ended`, `ask_page`; `web_host_exports!` takes `start_link_client`. torque-client's `net::held::HeldDatagrams`
-  holds what a page hands the client (none over the most bytes for a datagram, the count and the bytes capped). Codes (`web/codes.js`): the SDP cut to what
-  a data channel needs, deflated, base64url, a version byte, a kind byte and a CRC-32 (about 230 characters with three
-  candidates); a cap on the code's length and on its inflated size, strict lines, and the STUN server named by a key into
-  the page's own list (Cloudflare, Google, or same network only), never by a URL. On the same-network server only, a
-  host candidate may be a browser's mDNS name (a lowercase version 4 UUID and `.local`, nothing else), handed to the
-  browser's ICE unresolved. The panels say which server is asked for
-  the player's public address, and that the links carry it. `node --test web/codes.test.mjs`; `just
-  examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded browsers trade the links on this
-  computer's own addresses, the joiner walks, each holds the other's figure, and bad, cut short, oversized and used codes
-  are refused with a message. The examples' pause menu takes an optional Invite players entry (`$Pause::CanInvite`,
-  the game's `invitePlayers()`).
+  menu's "Host with a link" (and the Esc menu's "Invite players") creates one invite offer link per player ("Create
+  Invite Offer") (`<page>#join=<code>`, each works once), the player's page makes a reply link (`#reply=<code>`), and
+  the host opens it in the same browser, where it hands the reply to the game's tab over a BroadcastChannel and closes
+  (or it is pasted into the host's panel). The host's server runs in the page's worker as for `?host=1` (the vehicle
+  demo, played alone in the page, opens it again with `?invites=1`); the joiner's data channel goes to its relay with
+  every cap, and the joiner takes its host's messages within the same caps (`host.js` `meteredReceiver`). torque-app's
+  `web_join`: `Target::Page` (a link the page holds), `link_opened`, `link_ended`, `ask_page`; `web_host_exports!` takes
+  `start_link_client`. torque-client's `net::held::HeldDatagrams` holds what a page hands the client (none over the most
+  bytes for a datagram, the count and the bytes capped). Codes (`web/codes.js`): the SDP cut to what a data channel
+  needs, deflated, base64url, a version byte, a kind byte and a CRC-32 (about 230 characters with three candidates); a
+  cap on the code's length and on its inflated size, strict lines, and the STUN server named by a key into the page's
+  own list (Cloudflare, Google, or same network only), never by a URL. On the same-network server only, a host candidate
+  may be a browser's mDNS name (a lowercase version 4 UUID and `.local`, nothing else), handed to the browser's ICE
+  unresolved. The panels say which server is asked for the player's public address, and that the links carry it. `node
+  --test web/codes.test.mjs`; `just examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded
+  browsers trade the links on this computer's own addresses, the joiner walks, each holds the other's figure, and bad,
+  cut short, oversized and used codes are refused with a message. The examples' pause menu takes an optional Invite
+  players entry (`$Pause::CanInvite`, the game's `invitePlayers()`).
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
   compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
   picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time
