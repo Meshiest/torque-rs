@@ -11,6 +11,13 @@ license = "MIT"
 repository = "https://github.com/TODO/torque-rs"
 publish = false
 
+[workspace.dependencies]
+# Vector math. The features are pinned: the f32 and f64 types only, no `scalar-math`, no `fast-math` style option. The
+# scalar `Vec3` and `DVec3` round as the plain arithmetic they replace; bit-exact TGE math keeps its own order.
+glam = { version = "0.34.2", default-features = false, features = ["std", "f64"] }
+# The microbenchmarks (`benches/`).
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
 # Lints the whole workspace passes today. Each crate opts in with `[lints] workspace = true`.
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -52,6 +52,7 @@ web-sys = { version = "0.3", features = ["BinaryType", "MessageEvent", "WebSocke
 wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 # The host tests' draw cache (no font files: nothing is drawn as text).
 fonts = { package = "torque-fonts", path = "../torque-fonts" }
 # The synced pose tests' figure.
@@ -90,6 +91,10 @@ webrtc = [
     "web-sys/RtcSessionDescription",
     "web-sys/RtcSessionDescriptionInit",
 ]
+
+[[bench]]
+name = "client"
+harness = false
 
 [lints]
 workspace = true

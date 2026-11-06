@@ -57,5 +57,12 @@ web = ["torque-server/web", "torque-client/web-socket"]
 # Browsers on WebRTC data channels beside their game sockets (the server's `WebSetup::rtc`, the client's `web_rtc`).
 webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc"]
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "app"
+harness = false
+
 [lints]
 workspace = true

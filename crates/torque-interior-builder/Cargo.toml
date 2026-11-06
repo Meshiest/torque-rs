@@ -26,6 +26,7 @@ torque-mapcore = { path = "../torque-mapcore", optional = true }
 torque-import = { path = "../torque-import", optional = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 png = "0.18"
 torque-collide = { path = "../torque-collide" }
 torque-mapcore = { path = "../torque-mapcore" }
@@ -33,6 +34,10 @@ torque-import = { path = "../torque-import" }
 
 [features]
 verify = ["dep:torque-collide", "dep:torque-mapcore", "dep:torque-import"]
+
+[[bench]]
+name = "builder"
+harness = false
 
 [[example]]
 name = "dif-verify"

@@ -29,5 +29,14 @@ torque-import = { path = "../torque-import" }
 # The day's sun the TimeOfDay ghost runs on the client (`hd::environment`).
 torque-scene = { path = "../torque-scene" }
 
+[dev-dependencies]
+criterion = { workspace = true }
+# The benches' interior (`benches/scene.rs`).
+torque-interior-builder = { path = "../torque-interior-builder" }
+
+[[bench]]
+name = "scene"
+harness = false
+
 [lints]
 workspace = true
