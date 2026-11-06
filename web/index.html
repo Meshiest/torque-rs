@@ -98,7 +98,9 @@
   // its menus offer neither hosting nor joining through a room service; `?host=1` is then ignored. Its menu's Host with a link
   // and Join with a link trade connection codes by hand instead (invites.js): an invite link (`#join=<code>`) opens the page
   // joining that host (`startLinkClient`), and a reply link (`#reply=<code>`) hands its reply to this browser's game tab and
-  // starts no game.
+  // starts no game. A game played alone in the page itself (the vehicle demo) hosts with a link by opening the page again
+  // with `?invites=1`: its server then runs in the worker (`startHostClient`, as `?host=1` with no room) and the invites
+  // panel opens.
   //
   // Esc: a browser keeps it for itself while the pointer is locked (it ends the lock) and in full screen (it leaves it). The
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
@@ -107,7 +109,7 @@
   import { fpsText, later, readStreamed, stageText } from './loading.js';
   import * as settings from './settings.js';
   import { createTorque } from './bridge.js';
-  import { hostInvites, joinInvite, replyTab, takeFragment } from './invites.js';
+  import { hostInvites, joinInvite, replyTab, soloAsks, takeFragment } from './invites.js';
 
   // `?nolock` (the browser checks load every page with it): the page never takes the pointer lock. In headless Chrome on Windows
   // a lock confines the real cursor to the invisible window.
@@ -258,7 +260,9 @@
     // played alone runs a game that has its own server the same way, with no room.
     const alone = root.dataset.torqueSolo === '1';
     const solo = alone && typeof game.startSoloClient === 'function';
-    const hosting = !joining && (solo || (!alone && new URLSearchParams(location.search).has('host')));
+    const invitesHost =
+      alone && !solo && typeof game.startHostClient === 'function' && new URLSearchParams(location.search).has('invites');
+    const hosting = !joining && (solo || invitesHost || (!alone && new URLSearchParams(location.search).has('host')));
     if (joining) {
       if (typeof game.startLinkClient !== 'function') throw new Error('this game cannot be joined by an invite link');
       joining.attach(game);
@@ -280,8 +284,11 @@
       game.startLinkClient();
     } else if (hosting) {
       const { hostGame } = await import('./host.js');
-      await hostGame(game, (text) => (status.textContent = text), { solo, onHost: solo ? hostInvites() : null });
+      const onHost = solo || invitesHost ? hostInvites({ open: invitesHost }) : null;
+      await hostGame(game, (text) => (status.textContent = text), { solo: solo || invitesHost, client: invitesHost ? 'host' : 'solo', onHost });
     } else {
+      // a game played alone in the page: its menu's invite entries open the page again to host, or join by a link
+      if (alone && typeof game.startLinkClient === 'function') soloAsks();
       game.startFetched();
     }
   }

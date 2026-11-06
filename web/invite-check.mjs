@@ -135,8 +135,16 @@ try {
   let h = await wait(host, Number(seconds) * 1000, (s) => s.figure);
   if (!h.figure) problems.push(`the host page has no figure (status "${h.status}")`);
 
-  // The menu's Host with a link: the panel, its privacy text shown before any link is made.
-  await host.evaluate(() => globalThis.torqueAsk('host'));
+  // The menu's Host with a link: the panel, its privacy text shown before any link is made. A game played alone in the
+  // page itself (the vehicle demo) opens the page again to host (`?invites=1`), and the panel opens once its server runs.
+  const reopened = host.waitForNavigation({ waitUntil: 'load', timeout: 5000 }).then(() => true, () => false);
+  await host.evaluate(() => globalThis.torqueAsk('host')).catch(() => {});
+  if (await reopened) {
+    console.log(`host page opened again to host: ${host.url()}`);
+    h = await wait(host, Number(seconds) * 1000, (s) => s.figure);
+    if (!h.figure) problems.push(`the hosting page has no figure (status "${h.status}")`);
+  }
+  await host.waitForSelector('#invites .privacy', { timeout: 20_000 }).catch(() => problems.push('no host panel'));
   await panelShot(host, 'host-panel.png');
   const privacy = await host.evaluate(() => document.querySelector('#invites .privacy')?.textContent ?? '');
   if (!/Cloudflare's free public STUN server/.test(privacy)) problems.push(`the host panel's privacy text: "${privacy}"`);

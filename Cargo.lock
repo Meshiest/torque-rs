@@ -3248,7 +3248,6 @@ dependencies = [
  "torque-render-scene",
  "wasm-bindgen",
  "web-sys",
- "web-time",
 ]
 
 [[package]]

@@ -190,9 +190,59 @@ const message = (e) => (e instanceof CodeError ? e.message : `Something went wro
 
 // ---- the host
 
+// A paste field for an invite link that opens the page again, joining.
+function showJoinPaste() {
+  const p = openPanel('Join with a link');
+  const paste = el('input', { type: 'text', 'aria-label': 'An invite link', placeholder: 'Paste an invite link' });
+  const said = el('p', { class: 'said', 'data-said': '' });
+  const go = el('button', {
+    type: 'button',
+    class: 'primary',
+    text: 'Join',
+    on: {
+      click: async () => {
+        const code = codeFromPaste(paste.value, KIND_JOIN);
+        if (code === null) {
+          said.textContent = 'This is not an invite link.';
+          return;
+        }
+        try {
+          await decodeCode(code, KIND_JOIN);
+        } catch (e) {
+          said.textContent = message(e);
+          return;
+        }
+        // the page again, joining: this game ends
+        location.hash = `join=${code}`;
+        location.reload();
+      },
+    },
+  });
+  p.append(
+    el('p', { text: 'Paste the invite link a friend sent you. Your own game here ends when you join theirs.' }),
+    el('div', { class: 'row' }, paste, go),
+    said,
+    el('button', { type: 'button', class: 'close', text: 'Close', on: { click: closePanel } }),
+  );
+  paste.focus();
+}
+
+// A game played alone in the page (no server in a worker): its menu's Host with a link opens the page again hosting
+// (`?invites=1`), and Join with a link the paste field.
+export function soloAsks() {
+  globalThis.torqueAsk = (what) => {
+    if (what === 'join') return showJoinPaste();
+    if (what !== 'host') return;
+    const url = new URL(location.href);
+    url.hash = '';
+    url.searchParams.set('invites', '1');
+    location.assign(url.href);
+  };
+}
+
 // The host's invites, for host.js's `onHost`: the menu's Host with a link opens its panel (`torqueAsk('host')`), and
-// Join with a link a paste field that reloads the page into joining.
-export function hostInvites() {
+// Join with a link a paste field that reloads the page into joining. `open`: the panel opens once the server runs.
+export function hostInvites({ open = false } = {}) {
   let host = null;
   const invites = new Map();
   const used = new Set();
@@ -387,42 +437,6 @@ export function hostInvites() {
     p.querySelector('.primary').focus();
   }
 
-  function showJoinPaste() {
-    const p = openPanel('Join with a link');
-    const paste = el('input', { type: 'text', 'aria-label': 'An invite link', placeholder: 'Paste an invite link' });
-    const said = el('p', { class: 'said', 'data-said': '' });
-    const go = el('button', {
-      type: 'button',
-      class: 'primary',
-      text: 'Join',
-      on: {
-        click: async () => {
-          const code = codeFromPaste(paste.value, KIND_JOIN);
-          if (code === null) {
-            said.textContent = 'This is not an invite link.';
-            return;
-          }
-          try {
-            await decodeCode(code, KIND_JOIN);
-          } catch (e) {
-            said.textContent = message(e);
-            return;
-          }
-          // the page again, joining: this game ends
-          location.hash = `join=${code}`;
-          location.reload();
-        },
-      },
-    });
-    p.append(
-      el('p', { text: 'Paste the invite link a friend sent you. Your own game here ends when you join theirs.' }),
-      el('div', { class: 'row' }, paste, go),
-      said,
-      el('button', { type: 'button', class: 'close', text: 'Close', on: { click: closePanel } }),
-    );
-    paste.focus();
-  }
-
   globalThis.torqueAsk = (what) => {
     if (what === 'host') showHost();
     else if (what === 'join') showJoinPaste();
@@ -442,6 +456,7 @@ export function hostInvites() {
 
   return (h) => {
     host = h;
+    if (open) showHost();
   };
 }
 

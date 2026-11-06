@@ -70,7 +70,8 @@ pub struct ClientOptions {
     pub port: u16,
     /// The address a hosted game binds (the loopback address: this computer's LAN address).
     pub host_address: Ipv4Addr,
-    /// A client with no socket of its own and no list of games, that can only play alone (a browser's).
+    /// A client with no socket of its own and no list of games (a browser's): it plays alone, or joins on a socket it is
+    /// given ([`VehicleDemo::set_socket`]).
     pub alone_only: bool,
 }
 
@@ -288,6 +289,16 @@ impl VehicleDemo {
         self.client.start_local(server, ALONE_CLIENT, ALONE_ADDR);
         self.call("connectTo", &[ALONE_ADDR.to_string().as_str()])?;
         Ok(())
+    }
+
+    /// Gives the client `socket` (a browser's link to its game: a game socket, a player's host's data channel or the local
+    /// link to the server in its page's worker), its address rule the loopback one (the link names its server by a stand-in
+    /// loopback address). A game played alone sets it aside while it runs.
+    pub fn set_socket(&mut self, socket: Box<dyn torque::client::net::Datagrams>) {
+        let st = self.client.host.client.borrow();
+        let mut n = st.net.borrow_mut();
+        n.socket = Some(socket);
+        n.policy = torque::client::net::NetPolicy::Loopback;
     }
 
     /// Joins the game at `address` (`a.b.c.d:port`).
@@ -508,6 +519,20 @@ impl VehicleDemo {
             })
             .flatten()?;
         pose_matrix(&pose, None).map(|(m, _)| m)
+    }
+
+    /// Where the client draws each buggy it holds (where it runs it, else where its record put it), in no set order.
+    pub fn buggy_positions(&self) -> Vec<[f32; 3]> {
+        self.with_world(|w| {
+            w.records
+                .ghosts
+                .iter()
+                .filter(|(_, g)| g.class == Some(TgeClass::WheeledVehicle))
+                .filter_map(|(i, g)| w.vehicle_render.get(i).copied().or_else(|| g.pose()))
+                .filter_map(|pose| pose_matrix(&pose, None).map(|(m, _)| m.column(3)))
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// The buggy's wheels' spring extensions (0 pressed up to 1 hanging) as the client runs it.

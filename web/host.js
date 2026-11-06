@@ -163,10 +163,11 @@ export function iceServersFrom(body) {
 }
 
 // Hosts the game: `game` is the module (its files fetched), `say(text)` shows the page's status line; `solo`: played alone,
-// no room. `onHost({ adopt })`, called on a solo page once the server runs: `adopt(pc, channel, ip, onEnd)` takes an invited
+// no room, and the host player's client is `client`'s: `solo` (`startSoloClient`) or `host` (`startHostClient`).
+// `onHost({ adopt })`, called on a solo page once the server runs: `adopt(pc, channel, ip, onEnd)` takes an invited
 // joiner's peer connection and its channel (open, or opening) from `ip` and returns null, or why it was refused; `onEnd()`
 // is called when that joiner is ended.
-export async function hostGame(game, say, { solo = false, onHost = null } = {}) {
+export async function hostGame(game, say, { solo = false, client = 'solo', onHost = null } = {}) {
   const root = document.documentElement;
   const params = new URLSearchParams(location.search);
   const lan = params.has('lan');
@@ -356,7 +357,7 @@ export async function hostGame(game, say, { solo = false, onHost = null } = {}) 
         return null;
       },
     });
-    return game.startSoloClient();
+    return client === 'host' ? game.startHostClient() : game.startSoloClient();
   }
   room = new WebSocket(roomsUrl);
   room.binaryType = 'arraybuffer';

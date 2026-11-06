@@ -314,17 +314,23 @@ The first development version. Nothing is published yet; this is what exists.
   strictly. `web-fps-p2p-check`'s browser part: a second page
   joins by code, each page holds the other's figure, the joiner walks, and it says the host left when the host page
   closes. The p2p check launches its browsers through `web/guard.mjs` with `?nolock`.
-- Invite links for the arena on its page played alone (a static site, no server of ours): the menu's "Host with a link"
-  makes one invite link per player (`<page>#join=<code>`, each works once), the player's page makes a reply link
+- Invite links for the arena and the vehicle demo on their pages played alone (a static site, no server of ours): the
+  menu's "Host with a link" (and the Esc menu's "Invite players") makes one invite link per player (`<page>#join=<code>`, each works once), the player's page makes a reply link
   (`#reply=<code>`), and the host opens it in the same browser, where it hands the reply to the game's tab over a
   BroadcastChannel and closes (or it is pasted into the host's panel). The host's server runs in the page's worker as
-  for `?host=1`; the joiner's data channel goes to its relay with every cap. Codes (`web/codes.js`): the SDP cut to what
+  for `?host=1` (the vehicle demo, played alone in the page, opens it again with `?invites=1`); the joiner's data channel
+  goes to its relay with every cap, and the joiner takes its host's messages within the same caps
+  (`host.js` `meteredReceiver`). torque-app's `web_join`: `Target::Page` (a link the page holds), `link_opened`,
+  `link_ended`, `ask_page`; `web_host_exports!` takes `start_link_client`. torque-client's `net::held::HeldDatagrams`
+  holds what a page hands the client (none over the most bytes for a datagram, the count and the bytes capped). Codes (`web/codes.js`): the SDP cut to what
   a data channel needs, deflated, base64url, a version byte, a kind byte and a CRC-32 (about 230 characters with three
   candidates); a cap on the code's length and on its inflated size, strict lines, and the STUN server named by a key into
   the page's own list (Cloudflare, Google, or same network only), never by a URL. The panels say which server is asked for
   the player's public address, and that the links carry it. `node --test web/codes.test.mjs`; `just
-  examples/web-fps-invite-check`: two guarded browsers trade the links on this computer's own addresses, the joiner walks,
-  each holds the other's figure, and bad, cut short, oversized and used codes are refused with a message.
+  examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded browsers trade the links on this
+  computer's own addresses, the joiner walks, each holds the other's figure, and bad, cut short, oversized and used codes
+  are refused with a message. The examples' pause menu takes an optional Invite players entry (`$Pause::CanInvite`,
+  the game's `invitePlayers()`).
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
   compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
   picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time
@@ -342,6 +348,17 @@ The first development version. Nothing is published yet; this is what exists.
 - The vehicle demo in a browser, played alone (the server on an in-memory link in the page): `just
   examples/web-vehicle-demo` builds and serves it, `vehicle-demo --web-files <dir>` writes its pack and list,
   `just examples/web-vehicle-demo-check` walks its figure in headless Chrome.
+- The vehicle demo for browsers: `vehicle-demo-server`, its dedicated server, takes the arena server's switches
+  (`--transport both`, `--webrtc`, `--room`, TLS, the `--rtc-*` ones), now shared as `torque::app::serve`. The page
+  still plays alone; `?join` joins the server that served it (`just examples/web-vehicle-demo-server`), `?room=<code>` a
+  player's host, and `?host=1` hosts with the server in the page's Web Worker (`just examples/web-vehicle-demo-rooms`).
+  Its menu offers to host and to join a room by its code, and shows a hosted game's code; a page built `--solo` offers
+  only to play alone.
+  The browser's join targets, its local link and its link's marks (`torque::app::web_join`) and the worker's server with
+  its page calls (`torque::app::web_host`, `web_host_exports!`) moved out of the arena and are shared. A browser whose
+  game socket closes now ends the game with "The server closed the connection." `just
+  examples/web-vehicle-demo-mp-check`: two headless pages (served by the server, joined through a room, and a host page
+  with a joiner) take turns driving, riding as the passenger and walking, and the second says so when the host goes.
 - Pictures of the world alone: `Seat::world_picture` draws a game's world without its GUI (no HUD, hints or menus) over the
   whole picture, and the character example's `Step::WorldShot` does the same. `WorldView::set_water` draws a sheet of
   water (`Water`: its height, rectangle, texture and tint) as the enhanced renderer's water; `WorldView::clear_ground` and

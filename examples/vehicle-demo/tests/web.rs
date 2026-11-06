@@ -56,3 +56,51 @@ fn the_web_builds_menu_offers_only_to_play_alone() {
     }
     assert!(!eval("return MenuLine.getValue();").contains("network"));
 }
+
+#[test]
+fn a_page_not_played_alone_also_offers_to_host_and_join_by_room_code() {
+    let pack = web_pack(&GameFiles::bundled().expect("the game folder"));
+    let mut game =
+        alone(GameFiles::unpack(&pack).expect("the pack reads back")).expect("the game starts");
+    game.set_global("$World::WebRooms", "1");
+    game.client.call("showMenu", &[]).unwrap();
+    let mut eval = |code: &str| game.client.call("eval", &[code]).unwrap();
+    for shown in [
+        "AloneButton",
+        "HostButton",
+        "AddressLabel",
+        "AddressEdit",
+        "JoinAddressButton",
+    ] {
+        assert_eq!(
+            eval(&format!("return {shown}.isVisible();")),
+            "1",
+            "{shown}"
+        );
+    }
+    // The network's list stays hidden: a browser finds games by room code only.
+    for hidden in [
+        "GamesLabel",
+        "GamesScroll",
+        "RefreshButton",
+        "JoinSelectedButton",
+    ] {
+        assert_eq!(
+            eval(&format!("return {hidden}.isVisible();")),
+            "0",
+            "{hidden}"
+        );
+    }
+    assert_eq!(eval("return JoinAddressButton.getText();"), "Join room");
+    assert!(!eval("return MenuLine.getValue();").contains("network"));
+    // Host asks the page to host; a code typed in asks it to join that room, and none asks nothing.
+    eval("JoinAddressButton.performClick();");
+    assert_eq!(eval("return $World::WebJoinCode;"), "");
+    eval("AddressEdit.setValue(\"abcd-efgh\"); joinRoomCode();");
+    assert_eq!(eval("return $World::WebJoinCode;"), "abcd-efgh");
+    eval("hostOnPage();");
+    assert_eq!(eval("return $World::WebHostAsked;"), "1");
+    // A hosted game's code shows on the menu.
+    eval("$World::RoomCode = \"ABCD-EFGH\"; showMenu();");
+    assert!(eval("return MenuStatus.getValue();").contains("ABCD-EFGH"));
+}
