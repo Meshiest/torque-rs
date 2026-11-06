@@ -55,7 +55,7 @@ export function serve(folder, port, prefix = '/') {
         const query = new URL(req.url, 'http://localhost').search;
         // Built from the folder found, not from the request: no leading `/` or `\` can make it a link to another host.
         const rel = relative(root, file).split(sep).map(encodeURIComponent).join('/');
-        res.writeHead(301, { Location: `${base}${rel}/${query}` }).end();
+        res.writeHead(301, { Location: rel ? `${base}${rel}/${query}` : `${base}${query}` }).end();
         return;
       }
       const body = await readFile(file);
