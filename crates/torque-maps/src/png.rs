@@ -20,11 +20,26 @@ pub struct Png {
     pub bytes: Vec<u8>,
 }
 
-/// The CRC-32 of PNG (ISO 3309, reflected polynomial 0xEDB88320).
+/// The CRC-32 of PNG (ISO 3309, reflected polynomial 0xEDB88320), eight bytes a step ([`CRC_TABLES`]: the same value as one
+/// byte a step, [`CRC_TABLE`]).
 pub fn crc32(parts: &[&[u8]]) -> u32 {
     let mut c = 0xffff_ffffu32;
     for part in parts {
-        for &b in *part {
+        let (words, rest) = part.as_chunks::<8>();
+        for w in words {
+            let one = u32::from_le_bytes([w[0], w[1], w[2], w[3]]) ^ c;
+            let two = u32::from_le_bytes([w[4], w[5], w[6], w[7]]);
+            let t = &CRC_TABLES;
+            c = t[7][(one & 0xff) as usize]
+                ^ t[6][((one >> 8) & 0xff) as usize]
+                ^ t[5][((one >> 16) & 0xff) as usize]
+                ^ t[4][(one >> 24) as usize]
+                ^ t[3][(two & 0xff) as usize]
+                ^ t[2][((two >> 8) & 0xff) as usize]
+                ^ t[1][((two >> 16) & 0xff) as usize]
+                ^ t[0][(two >> 24) as usize];
+        }
+        for &b in rest {
             c = CRC_TABLE[((c ^ b as u32) & 0xff) as usize] ^ (c >> 8);
         }
     }
@@ -49,6 +64,22 @@ const CRC_TABLE: [u32; 256] = {
         n += 1;
     }
     table
+};
+
+/// [`CRC_TABLE`] and seven more: table `k` is a byte's CRC with `k` zero bytes after it (slicing by eight).
+const CRC_TABLES: [[u32; 256]; 8] = {
+    let mut tables = [CRC_TABLE; 8];
+    let mut k = 1;
+    while k < 8 {
+        let mut n = 0;
+        while n < 256 {
+            let c = tables[k - 1][n];
+            tables[k][n] = (c >> 8) ^ CRC_TABLE[(c & 0xff) as usize];
+            n += 1;
+        }
+        k += 1;
+    }
+    tables
 };
 
 pub(crate) fn read(r: &mut Reader, what: &'static str) -> Result<Png, MapError> {
