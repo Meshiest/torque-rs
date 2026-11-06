@@ -92,7 +92,7 @@ The first development version. Nothing is published yet; this is what exists.
   command line's flags.
 - `torque-server`: `game::install` (TGE's game classes on one container and the process list, `GameBase::onAdd`), the
   GameConnection's ghosting and control methods (`activateGhosting`, `resetGhosting`, `setControlObject`,
-  `getControlObject`), the `NetObject` behaviour that enters ghostable objects in the hub, the command natives registered
+  `getControlObject`), the `NetObject` behavior that enters ghostable objects in the hub, the command natives registered
   with the host, and records packed from the simulated Player's state.
 - `torque-client`: TGE's feed reads datablock events and answers `DataBlocksDone`.
 - `torque-client`: named keys and mouse buttons (`Key`, `MouseButton`, also `torque::client::Key`) with the client host's
