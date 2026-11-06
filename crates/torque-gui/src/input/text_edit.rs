@@ -665,7 +665,7 @@ fn history_key(vm: &mut Vm, gui: &Gui, id: ObjId, up: bool) {
     }
 }
 
-/// A character key (`switchD_..._caseD_3`).
+/// A character key.
 fn character(
     vm: &mut Vm,
     gui: &Gui,
