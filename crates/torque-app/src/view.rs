@@ -427,6 +427,18 @@ impl WorldView {
         self.scene.cloud_time = time;
     }
 
+    /// The effects' clock in seconds: the water's waves and ripples, the sky's cloud layers (and the volumetric clouds without
+    /// a clock of their own) and the image's grain run on it. It starts at 0 and stands still until a game runs it
+    /// ([`WorldView::advance_time`]).
+    pub fn time(&self) -> f32 {
+        self.scene.time
+    }
+
+    /// Runs the effects' clock on by `seconds`, a frame's time ([`advance_effect_time`]).
+    pub fn advance_time(&mut self, seconds: f32) {
+        self.scene.time = advance_effect_time(self.scene.time, seconds);
+    }
+
     /// No ground and no water: the floor, the terrain and the water taken away.
     pub fn clear_ground(&mut self) {
         self.scene.planes.clear();
@@ -800,6 +812,20 @@ impl WorldView {
     }
 }
 
+/// The effects' clock starts over here (seconds: about an hour, well within an `f32`'s precision for the waves' motion).
+pub const EFFECT_TIME_WRAP: f32 = 4_096.0;
+
+/// The effects' clock `time` run on by `seconds`, wrapped at [`EFFECT_TIME_WRAP`]: a step that is not a positive finite number
+/// leaves it, and a clock that is not finite starts over from 0.
+pub fn advance_effect_time(time: f32, seconds: f32) -> f32 {
+    let time = if time.is_finite() { time } else { 0.0 };
+    if !(seconds.is_finite() && seconds > 0.0) {
+        return time;
+    }
+    let next = (time + seconds) % EFFECT_TIME_WRAP;
+    if next.is_finite() { next } else { 0.0 }
+}
+
 /// A floor's two triangles at height 0, `half` each way from the origin, tinted `color`, with texture `texture` of the frame's
 /// set (if any) repeated every `tile` units.
 fn floor_draw(texture: Option<usize>, color: [u8; 3], half: f32, tile: f32) -> Draw {
@@ -916,6 +942,16 @@ fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_effect_clock_runs_wraps_and_ignores_steps_that_are_not_forward() {
+        assert_eq!(advance_effect_time(1.0, 0.5), 1.5);
+        assert!(advance_effect_time(EFFECT_TIME_WRAP - 0.25, 0.5) < 0.5);
+        assert_eq!(advance_effect_time(2.0, -1.0), 2.0);
+        assert_eq!(advance_effect_time(2.0, f32::NAN), 2.0);
+        assert_eq!(advance_effect_time(2.0, f32::INFINITY), 2.0);
+        assert_eq!(advance_effect_time(f32::NAN, 0.5), 0.5);
+    }
 
     /// A sheet of water from a hostile map: a height, a corner or a tile that is not a finite number (or a span that overflows)
     /// is refused; a plain one is drawn as cells of its rectangle.
