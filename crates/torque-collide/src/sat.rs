@@ -17,7 +17,9 @@ use crate::mesh::HullAccel;
 pub const EDGE_BIAS: f32 = 1e-3;
 /// The most corners [`penetration`] reports.
 pub const MAX_POINTS: usize = 32;
-/// The cap on face normals and on edges a [`Polytope`] keeps (more are dropped).
+/// The cap on the points, face normals and edges a [`Polytope`] keeps; more are dropped. A hull past it is tested on fewer
+/// axes than it has, so a dropped face's axis cannot separate it: [`penetration`] may then report an overlap with something
+/// only that face clears (and its corners may miss parts of the hull). A tree trunk or a buggy body has a few dozen.
 pub const MAX_FEATURES: usize = 256;
 
 /// A convex polytope: its points, its face normals (unit, no two parallel, either sense) and its edges (pairs of point
