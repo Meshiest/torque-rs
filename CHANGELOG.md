@@ -262,6 +262,12 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- The website (`just site`, `node web/site.mjs`; deployed to GitHub Pages by `.github/workflows/pages.yml`): a gallery
+  of the web examples with their pictures, each example in its own folder with its files fetched by URL, the guide in
+  `book/` and the API reference in `api/`, every link relative. `node web/build.mjs <example> --solo` marks a page to be
+  played alone (a site with no game server): the arena plays on its own server in the page's worker with no room, and
+  neither it nor the vehicle demo offers to host or join. `web/serve.mjs` serves under a path (`/torque-rs/`);
+  `just site-check` loads the gallery, its links and each card's game in headless Chrome from the cursor guard.
 - `torque-rooms`: a room service for player-hosted games (library and `torque-rooms` binary). A host opens a room and
   gets a code (8 characters, 40 bits); joiners name the code, and the service carries only the signaling of one WebRTC
   data channel between each joiner and the host (a body must be an offer or answer that is an SDP of at most 4 KiB in

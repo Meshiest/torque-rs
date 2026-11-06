@@ -9,6 +9,8 @@
 
 All four are drawn offscreen with the HD renderer by `just examples/showcase` (see [Examples](#examples)).
 
+Play the examples in your browser: https://meshiest.github.io/torque-rs/
+
 A game engine library in Rust, based on the Torque Game Engine (TGE) and Torque3D, with features of its own. It has
 TorqueScript and the console, SimObjects and datablocks, client/server networking with ghosting, DTS shapes, convex
 collision and the game object model (players, items, projectiles, vehicles).
@@ -86,9 +88,9 @@ Some are options beside the original behavior.
   Blockbench draws them: nearest-sampled, with see-through pixels for glass.
 - **Model import and conversion** (`torque-import`, `torque-convert`). glTF 2.0, OBJ and Blockbench models convert to
   `.dts` (and `.dts` to `.glb`), with skins and sequences. `torque-convert` is the command-line tool.
-- **Web build.** The level demo and the arena run in the browser on WebGPU. A build loads its files by URL from a list
-  (`files.json`, with sizes and SHA-256 hashes, cached by the browser) or embeds them in the module. The arena's server
-  takes browsers over WebSocket and WebRTC alongside desktop players on UDP, in the same game.
+- **Web build.** The level demo, the arena and the vehicle demo run in the browser on WebGPU. A build loads its files by
+  URL from a list (`files.json`, with sizes and SHA-256 hashes, cached by the browser) or embeds them in the module. The
+  arena's server takes browsers over WebSocket and WebRTC alongside desktop players on UDP, in the same game.
 - **Hitboxes with lag compensation** (`torque-game`, opt-in). A Player can be hit on its posed shape instead of its box,
   and the server can check a shot against where the shooter saw the other players.
 - **Vehicles on the client.** Tire tracks (TGE has none), wheel dust (TGE's emitters), and other players' vehicles drawn
@@ -107,7 +109,7 @@ and in the browser. In short:
 |---|---|---|
 | The level demo (plaza, maze, ramps, towers, office, valley) | `just examples/level-demo` | `just examples/web-level-demo` (`?map=valley`) |
 | The arena shooter | `just examples/fps-client` | `just examples/web-fps` |
-| The vehicle demo | `just examples/vehicle-demo` | |
+| The vehicle demo | `just examples/vehicle-demo` | `just examples/web-vehicle-demo` |
 | The character | `just examples/character` | |
 | The minimal server and client | `just examples/min-server`, `just examples/min-client` | |
 

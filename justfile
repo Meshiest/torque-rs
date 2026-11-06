@@ -3,6 +3,9 @@ set windows-shell := ["powershell", "-NoProfile", "-Command"]
 # Kept in step with `rust-version` in Cargo.toml and MSRV in .github/workflows/ci.yml.
 msrv := "1.88"
 
+# The build folder: CARGO_TARGET_DIR's, else the workspace's (the site goes into its `site` folder)
+web_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
+
 default:
     @just --list
 
@@ -27,6 +30,25 @@ book:
 # Serve the guide with live reload
 book-serve:
     mdbook serve book --open
+
+# Each web example played alone in its own folder, the guide in book/ and the API reference in api/ (needs the wasm32
+# target, Node and mdbook); for GitHub Pages (.github/workflows/pages.yml)
+# The website into the target folder's `site`: the gallery of the web examples, the guide and the API reference
+site:
+    node web/site.mjs
+
+# Serve the site on http://127.0.0.1:{{port}}/torque-rs/, as GitHub Pages does (build it first with `site`)
+site-serve port="8080":
+    node web/serve.mjs "{{web_target}}/site" {{port}} /torque-rs/
+
+# Headless Chrome from the cursor guard loads the gallery under /torque-rs/ (no console error, every link HTTP 200), the
+# guide's and the API docs' front pages, and each card's game to its world; pictures of the gallery at a desktop's and a
+# phone's width go into the target folder's `site-check`
+# The site's check (build it first with `site`)
+site-check:
+    node web/guard-scan.mjs
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
 # Licenses, advisories, bans and sources of the dependency tree (cargo-deny)
 deny:
