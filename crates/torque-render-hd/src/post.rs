@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+use glam::Vec3;
 use torque_render_core::wgpu;
 use torque_render_scene::hd::HdMode;
 use torque_render_scene::hd::post::{COLUMN_IDENTITY, CUT_DISTANCE};
@@ -301,10 +302,9 @@ pub struct Temporal {
 impl Temporal {
     /// Whether this frame is a cut: the mode changed or the eye jumped.
     pub fn is_cut(&self, mode: Option<HdMode>, eye: [f32; 3]) -> bool {
-        let jumped = self.prev_eye.is_some_and(|p| {
-            let d = [0, 1, 2].map(|k| eye[k] - p[k]);
-            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() > CUT_DISTANCE
-        });
+        let jumped = self
+            .prev_eye
+            .is_some_and(|p| Vec3::from(eye).distance(p.into()) > CUT_DISTANCE);
         jumped || self.mode.is_some_and(|m| m != mode)
     }
 

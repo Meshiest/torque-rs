@@ -6,9 +6,19 @@
 //! draw lists ([`cull`]); what a world's static geometry brings beside the engine's frame ([`ext`]); with the helpers they share (bind group entries, compute filter chains, full-frame pipelines, the pass
 //! and draw counts by kind).
 
+use glam::Vec3;
 use torque_render_core::wgpu;
 
 use crate::shaders::Permutation;
+
+/// Whether the sphere at `c` of radius `r` is not wholly outside any of `planes` (`a x + b y + c z + d >= 0` inside, the normal
+/// not unit).
+pub(crate) fn sphere_seen(planes: &[[f32; 4]], c: [f32; 3], r: f32) -> bool {
+    planes.iter().all(|p| {
+        let n = Vec3::new(p[0], p[1], p[2]);
+        n.dot(c.into()) + p[3] >= -r * n.length()
+    })
+}
 
 pub mod arena;
 pub mod bloom;

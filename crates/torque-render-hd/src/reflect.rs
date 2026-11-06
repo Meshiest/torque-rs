@@ -18,6 +18,8 @@
 //! a frame does not keep them.
 
 use std::collections::HashMap;
+
+use glam::Vec3;
 use torque_render_scene::hd::reflect::QualityReflections;
 
 use crate::ext::{HdExtension, Surfaces};
@@ -546,16 +548,11 @@ impl<E: HdExtension> HdWorld<E> {
             sources.extend(self.loose.planes.iter().map(loose));
             let planes = camera.planes();
             for o in &self.loose.objects {
-                let seen = planes.iter().all(|p| {
-                    p[0] * o.centre[0] + p[1] * o.centre[1] + p[2] * o.centre[2] + p[3]
-                        >= -o.radius * (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
-                });
+                let seen = crate::sphere_seen(&planes, o.centre, o.radius);
                 // The objects the extension keeps stay (a floor the eye stands over holds the eye in its sphere).
                 let near = !E::kept_near_capture(o.ghost)
                     && clear_of.is_some_and(|e| {
-                        let d = [0, 1, 2].map(|k| o.centre[k] - e[k]);
-                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-                            < o.radius + CAPTURE_SHAPE_CLEAR
+                        Vec3::from(o.centre).distance(e.into()) < o.radius + CAPTURE_SHAPE_CLEAR
                     });
                 if seen && !near {
                     sources.extend(

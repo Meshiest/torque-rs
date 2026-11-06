@@ -14,6 +14,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use glam::Vec3;
+
 use torque_render_core::wgpu;
 
 use crate::arena::{Lists, MAX_SEGMENTS, Table};
@@ -163,12 +165,14 @@ impl ViewPlanes {
 
     /// Whether a box may be seen: `cull.wgsl`'s `box_seen`, the same arithmetic.
     pub fn seen(&self, lo: [f32; 3], hi: [f32; 3]) -> bool {
-        let c = [0, 1, 2].map(|k| 0.5 * (lo[k] + hi[k]));
-        let e = [0, 1, 2].map(|k| 0.5 * (hi[k] - lo[k]));
+        let (lo, hi) = (Vec3::from(lo), Vec3::from(hi));
+        let c = (lo + hi) * 0.5;
+        let e = (hi - lo) * 0.5;
         for p in &self.planes[..(self.count as usize).min(MAX_PLANES)] {
-            let dc = p[0] * c[0] + p[1] * c[1] + p[2] * c[2];
+            let n = Vec3::new(p[0], p[1], p[2]);
+            let dc = n.dot(c);
             let s = dc + p[3];
-            let r = p[0].abs() * e[0] + p[1].abs() * e[1] + p[2].abs() * e[2];
+            let r = n.abs().dot(e);
             let margin = 1e-5 * (dc.abs() + p[3].abs() + r);
             if s + r < -margin {
                 return false;

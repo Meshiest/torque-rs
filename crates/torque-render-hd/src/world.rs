@@ -73,6 +73,8 @@ pub use crate::arena::ARENA_BUDGET;
 
 use std::collections::{BTreeMap, HashMap};
 
+use glam::Vec3;
+
 use torque_render_core::wgpu;
 use torque_render_scene::hd::{
     HD_VERTEX_BYTES, HdCamera, HdDraw, HdLight, HdSpot, HdVertex, srgb_to_linear,
@@ -5094,18 +5096,10 @@ impl<E: HdExtension> HdWorld<E> {
 
         // What is drawn, in order, with its pipeline and texture.
         let clustered = !self.brute_force_lights;
-        let eye = camera.eye;
-        let dist = |c: [f32; 3]| {
-            let d = [c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]];
-            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-        };
+        let eye = Vec3::from(camera.eye);
+        let dist = |c: [f32; 3]| Vec3::from(c).distance(eye);
         let planes = camera.planes();
-        let sees_sphere = |c: [f32; 3], r: f32| {
-            planes.iter().all(|p| {
-                p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3]
-                    >= -r * (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
-            })
-        };
+        let sees_sphere = |c: [f32; 3], r: f32| crate::sphere_seen(&planes, c, r);
         enum Item {
             Loose(DrawRef),
             /// A cell's batch, drawn on its own (the sorted translucent pass).

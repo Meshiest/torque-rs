@@ -29,6 +29,7 @@
 
 use std::collections::BTreeMap;
 
+use glam::Vec3;
 use torque_render_core::wgpu;
 use torque_render_scene::hd::shadow::{
     Cascade, MAX_CASCADES, MAX_POINT_SHADOWS, ShadowQuality, cascades, casts_into, cone_meets_face,
@@ -1332,14 +1333,10 @@ impl Shadows {
             .filter(|(_, l)| {
                 l.radius > 0.0
                     && l.color.iter().any(|c| *c > 0.0)
-                    && planes.iter().all(|p| {
-                        p[0] * l.position[0] + p[1] * l.position[1] + p[2] * l.position[2] + p[3]
-                            >= -l.radius * (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()
-                    })
+                    && crate::sphere_seen(&planes, l.position, l.radius)
             })
             .map(|(i, l)| {
-                let d = [0, 1, 2].map(|k| l.position[k] - e[k]);
-                let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-3);
+                let dist = Vec3::from(l.position).distance(e.into()).max(1e-3);
                 let lum = 0.2126 * l.color[0] + 0.7152 * l.color[1] + 0.0722 * l.color[2];
                 let screen = (l.radius / dist).powi(2).min(4.0);
                 // A spot lights the share of its sphere inside its cone.

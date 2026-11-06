@@ -3401,6 +3401,7 @@ dependencies = [
 name = "torque-render-hd"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "naga",
  "png",
  "pollster",

@@ -7,6 +7,7 @@
 //! group (bindings 6 and 7): the forward pass reads the shadow at Ultra (the clouds' shadows on the ground) and the volumetric light
 //! always (no god rays under a cloud).
 
+use glam::Vec3;
 use torque_render_core::wgpu;
 use torque_render_scene::hd::clouds::{
     self as cl, BLUE_SIZE, CIRRUS_SIZE, CLOUD_SUN, CloudLook, CloudQuality, DETAIL_SIZE, LayerForm,
@@ -674,9 +675,8 @@ impl Clouds {
         };
         let valid = self.written && prev.is_some();
         let s = {
-            let v = scene.sun.towards;
-            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
-            v.map(|c| c / l)
+            let v = Vec3::from(scene.sun.towards);
+            (v / v.length().max(1e-6)).to_array()
         };
         let sun = &scene.sun;
         // An overcast's light is neutral (cl::OVERCAST): the sun's light on the clouds, their tint and the ambient lose their colour.
@@ -684,8 +684,8 @@ impl Clouds {
         let neutral = 1.0 - overcast;
         // The look's own sunlight through the air while the scene's light is the sun (under the moon the scene's).
         let by_sun = scene.atmosphere_sun.is_none_or(|a| {
-            let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt().max(1e-6);
-            (a[0] * s[0] + a[1] * s[1] + a[2] * s[2]) / l > 0.999
+            let a = Vec3::from(a);
+            a.dot(s.into()) / a.length().max(1e-6) > 0.999
         });
         let physical = look.sun.filter(|_| by_sun);
         let sun_light = cl::keep_chroma(
