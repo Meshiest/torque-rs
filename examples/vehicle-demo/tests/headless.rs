@@ -667,22 +667,21 @@ fn readout(game: &mut VehicleDemo) -> String {
         .unwrap()
 }
 
-/// The corner readout over the network: the frame rate and the round trip to the server, on the host's client and on the one
-/// that joined it; played alone, the frame rate alone.
+/// The corner readout: on the client that joined over the network, the frame rate and the round trip to the server; on the
+/// host's own client and played alone (the server in the same process), the frame rate alone.
 #[test]
-fn the_corner_readout_holds_the_frame_rate_and_the_round_trip() {
+fn the_corner_readout_holds_the_frame_rate_and_the_joiners_round_trip() {
     let mut a = host();
     let mut b = join(&mut a);
     drawn_frames(&mut [&mut a, &mut b], 0.0, 1000);
-    for (who, g) in [("host", &mut a), ("joined", &mut b)] {
-        let text = readout(g);
-        let words: Vec<&str> = text.split(' ').collect();
-        assert!(
-            matches!(words[..], ["60", "fps", "", ping, "ms"] if ping.parse::<u32>().is_ok()),
-            "{who}: {text:?}"
-        );
-    }
-    let ping: u32 = readout(&mut b).split(' ').nth(3).unwrap().parse().unwrap();
+    assert_eq!(readout(&mut a), "60 fps");
+    let text = readout(&mut b);
+    let words: Vec<&str> = text.split(' ').collect();
+    assert!(
+        matches!(words[..], ["60", "fps", "", ping, "ms"] if ping.parse::<u32>().is_ok()),
+        "{text:?}"
+    );
+    let ping: u32 = words[3].parse().unwrap();
     assert!(ping > 0 && ping < 500, "{ping}");
     drop(b);
     drop(a);

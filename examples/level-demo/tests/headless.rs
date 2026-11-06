@@ -173,6 +173,16 @@ fn the_corner_readout_holds_the_frame_rate_and_esc_lists_the_keys() {
         .unwrap();
     // Three headings, and a key and its action for each of the 10 rows.
     assert_eq!(shown, format!("1 {}", 3 + 2 * 10));
+    // A small window: the groups in one column, scrolled with the wheel.
+    game.host.window_resized((640, 480));
+    game.step(64);
+    let small = game
+        .call(
+            "eval",
+            &["return $Pause::ControlsStacked TAB ControlsNote.getValue() TAB ControlsScroll.getExtent();"],
+        )
+        .unwrap();
+    assert!(small.starts_with("1\tMouse wheel: more keys"), "{small:?}");
     // Esc from the panel goes back to the game.
     hold(&mut game, Key::Escape, 64);
     assert!(!game.flag("$Client::Paused"));

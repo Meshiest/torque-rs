@@ -1,7 +1,7 @@
 //! The level demo's HUD for review: the view in play with the corner readout, the pause menu and its Controls panel, at
-//! 1280x720 and 800x600, drawn offscreen.
+//! 1280x720, 800x600 and 640x480, drawn offscreen.
 //!
-//! `cargo run -p torque-example-level-demo --release --example hud-shots -- <dir>`
+//! `cargo run -p torque-example-level-demo --release --example level-hud-shots -- <dir>`
 
 use std::path::PathBuf;
 
@@ -15,10 +15,14 @@ use torque_example_level_demo::files::GameFiles;
 const START_LIMIT_MS: u32 = 60_000;
 
 fn main() -> Result<(), String> {
-    let dir = PathBuf::from(std::env::args().nth(1).ok_or("usage: hud-shots <dir>")?);
+    let dir = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .ok_or("usage: level-hud-shots <dir>")?,
+    );
     let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
     let mut shots = Shots::new(&dir)?;
-    for size in [(1280, 720), (800, 600)] {
+    for size in [(1280, 720), (800, 600), (640, 480)] {
         let tag = format!("{}x{}", size.0, size.1);
         let files = GameFiles::bundled().map_err(|e| e.to_string())?;
         let mut seat = Seat::new(LevelDemo::new(files)?, &gpu, size)?;

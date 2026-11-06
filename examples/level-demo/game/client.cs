@@ -125,7 +125,7 @@ new GameTSCtrl(PlayGui)
 
 // ---- the keys
 
-function resetCanvas() {}
+function resetCanvas() { pauseResized(); }
 
 new ActionMap(MenuMap);
 function menuKey(%i, %down) { if (%down) pickMap(%i); }

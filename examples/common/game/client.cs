@@ -39,8 +39,8 @@ function clearNote()
 // ---- the corner readout
 //
 // A line at the top right of the view, as "60 fps  32 ms", four times a second: the frames a second the host counted
-// ($Client::FrameRate) and the connection's round trip (getPing). A game played alone over the in-memory link
-// ($Client::MemoryLink) has no network to measure, so its line shows the frames alone.
+// ($Client::FrameRate) and the connection's round trip (getPing). A client that runs the server it plays on
+// ($Client::HostsServer: a game played alone or hosted here) has no network between them, so its line shows the frames alone.
 new GuiControlProfile(StatsProfile) { fontType = "Arial"; fontSize = 14; fontColors[0] = "176 186 204 255"; justify = "right"; };
 
 function statsText()
@@ -48,7 +48,7 @@ function statsText()
    %text = "";
    if ($Client::FrameRate !$= "")
       %text = $Client::FrameRate @ " fps";
-   if (isObject(ServerConnection) && !$Client::MemoryLink && ServerConnection.isConnected())
+   if (isObject(ServerConnection) && !$Client::HostsServer && ServerConnection.isConnected())
       %text = %text @ (%text $= "" ? "" : "  ") @ ServerConnection.getPing() @ " ms";
    return %text;
 }

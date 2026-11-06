@@ -182,7 +182,7 @@ impl ClientBuilder {
             server_log: Vec::new(),
             client_log: Vec::new(),
         };
-        client.mark_memory_link();
+        client.set_global("$Client::HostsServer", "0");
         client
     }
 }
@@ -331,13 +331,6 @@ impl<S> GameClient<S> {
         <[i32; 4]>::try_from(n).map_err(|_| format!("{name}: no place on the screen ({text:?})"))
     }
 
-    /// `$Client::MemoryLink`: 1 while the client's socket is an in-memory one to a server in this process (a game played
-    /// alone: its round trip is no network's, and a readout shows none), else 0.
-    fn mark_memory_link(&mut self) {
-        let memory = if self.link.is_some() { "1" } else { "0" };
-        self.set_global("$Client::MemoryLink", memory);
-    }
-
     /// Sets a global of the client's scripts.
     pub fn set_global(&mut self, name: &str, value: &str) {
         self.vm_mut().set_global(name, value);
@@ -479,12 +472,14 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
         }
     }
 
-    /// Runs `server` here from now on (its lines so far kept): the client then joins it at its address.
+    /// Runs `server` here from now on (its lines so far kept): the client then joins it at its address. The scripts see
+    /// `$Client::HostsServer` 1 until hosting stops.
     pub fn start_hosting(&mut self, mut server: S) {
         self.server_log
             .extend(std::borrow::BorrowMut::<GameServer>::borrow_mut(&mut server).drain_log());
         self.server = Some(server);
         self.server_lag = 0;
+        self.set_global("$Client::HostsServer", "1");
     }
 
     /// Runs `server`, started on [`super::server::Listen::Memory`] at `at`, here over an in-memory link from `client` (a game
@@ -504,7 +499,6 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
                 link: self.link.replace(link),
             });
         }
-        self.mark_memory_link();
         self.start_hosting(server);
     }
 
@@ -531,7 +525,7 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
             n.policy = p.policy;
             self.link = p.link;
         }
-        self.mark_memory_link();
+        self.set_global("$Client::HostsServer", "0");
     }
 
     /// The hosted server's address, if this client hosts one.

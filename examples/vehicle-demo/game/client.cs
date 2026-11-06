@@ -301,7 +301,7 @@ function setHint(%text)
 
 // ---- the keys on foot
 
-function resetCanvas() {}
+function resetCanvas() { pauseResized(); }
 
 new ActionMap(PlayMap);
 // The figure walks (a share of its full speed) and sprints at its full speed while Shift is held.

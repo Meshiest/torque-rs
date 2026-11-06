@@ -13,7 +13,8 @@
 //
 // The game lists its keys for the Controls panel once its client.cs has run this: addControls(%column, %title) starts a group
 // of rows under a heading in column %column (0 or 1; the groups of a column stack), and addControl(%key, %action) adds a row
-// to the last group. A game that lists none has no Controls entry.
+// to the last group. A game that lists none has no Controls entry. In a view too narrow for two columns the groups stack in
+// one, and a list taller than the view scrolls. A game's resetCanvas() calls pauseResized().
 
 new GuiControlProfile(PauseShadeProfile) { opaque = true; fillColor = "8 10 16 140"; };
 new GuiControlProfile(PausePanelProfile) { opaque = true; border = true; fillColor = "30 36 48 235"; borderColor = "70 82 104 255"; };
@@ -31,6 +32,7 @@ new GuiControlProfile(PauseListProfile)
    opaque = false;
    canKeyFocus = true;
 };
+new GuiControlProfile(PauseClearScrollProfile) { opaque = false; border = false; borderColor = "70 82 104 255"; fillColor = "16 20 28 255"; };
 new GuiControlProfile(PauseGroupProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "150 160 178 255"; };
 new GuiControlProfile(PauseKeyProfile) { fontType = "Arial"; fontSize = 18; fontColors[0] = "255 208 120 255"; };
 new GuiControlProfile(PauseActionProfile) { fontType = "Arial"; fontSize = 18; fontColors[0] = "226 230 238 255"; };
@@ -133,7 +135,12 @@ new GuiControl(PauseGui)
          profile = PauseHeadProfile; position = "0 26"; extent = "400 40"; visible = true; enabled = true;
          text = "Controls";
       };
-      new GuiControl(ControlsList) { position = "40 84"; extent = "320 260"; visible = true; };
+      new GuiScrollCtrl(ControlsScroll)
+      {
+         profile = PauseClearScrollProfile; position = "40 84"; extent = "320 260"; visible = true; enabled = true;
+         hScrollBar = "alwaysOff"; vScrollBar = "dynamic";
+         new GuiControl(ControlsList) { position = "0 0"; extent = "320 260"; visible = true; };
+      };
       new GuiButtonCtrl(ControlsBackButton)
       {
          profile = PauseButtonProfile; position = "80 364"; extent = "240 48"; visible = true; enabled = true;
@@ -262,9 +269,9 @@ function addControl(%key, %action)
    $Pause::ControlsBuilt = 0;
 }
 
-// The rows of every group, each group under its heading in its column; the list's size goes in $Pause::ControlsWidth and
-// $Pause::ControlsHeight.
-function buildControls()
+// The rows of every group, each group under its heading in its column (in one column when %stacked); the list's size goes
+// in $Pause::ControlsWidth and $Pause::ControlsHeight.
+function buildControls(%stacked)
 {
    ControlsList.clear();
    %columns = 1;
@@ -274,7 +281,7 @@ function buildControls()
    %actionWidth = $Pause::ColumnWidth - $Pause::KeyWidth;
    for (%g = 0; %g < $Pause::GroupCount; %g++)
    {
-      %c = $Pause::GroupColumn[%g] ? 1 : 0;
+      %c = ($Pause::GroupColumn[%g] && !%stacked) ? 1 : 0;
       if (%c + 1 > %columns)
          %columns = %c + 1;
       %x = %c * ($Pause::ColumnWidth + $Pause::ColumnGap);
@@ -310,24 +317,60 @@ function buildControls()
    }
    $Pause::ControlsWidth = %columns * $Pause::ColumnWidth + (%columns - 1) * $Pause::ColumnGap;
    $Pause::ControlsHeight = %height;
+   $Pause::ControlsStacked = %stacked;
    $Pause::ControlsBuilt = 1;
 }
 
-// The panel as large as its list, in the middle of the view.
+// Whether any group asks for the second column.
+function controlsHaveTwoColumns()
+{
+   for (%g = 0; %g < $Pause::GroupCount; %g++)
+      if ($Pause::GroupColumn[%g])
+         return true;
+   return false;
+}
+
+// The panel as large as its list, in the middle of the view: the groups in one column when two do not fit across it, and
+// the list scrolled when it does not fit down it.
 function layoutControls()
 {
-   if (!$Pause::ControlsBuilt)
-      buildControls();
-   %w = $Pause::ControlsWidth + 80;
+   %size = PauseGui.getExtent();
+   %viewW = getWord(%size, 0);
+   %viewH = getWord(%size, 1);
+   %twoWidth = 2 * $Pause::ColumnWidth + $Pause::ColumnGap + 80;
+   %stacked = controlsHaveTwoColumns() && %twoWidth > %viewW - 16;
+   if (!$Pause::ControlsBuilt || %stacked != $Pause::ControlsStacked)
+      buildControls(%stacked);
    %list = $Pause::ControlsHeight;
+   // The title, the space under the list, the Back button and the note: what the panel holds besides the list.
+   %room = %viewH - 16 - 84 - 116;
+   %scroll = 0;
+   if (%list > %room)
+   {
+      %list = getMax(%room, $Pause::RowHeight * 3);
+      %scroll = 20;
+   }
+   %w = $Pause::ControlsWidth + 80 + %scroll;
    ControlsTitle.resize(0, 26, %w, 40);
-   ControlsList.resize(40, 84, $Pause::ControlsWidth, %list);
+   ControlsScroll.resize(40, 84, $Pause::ControlsWidth + %scroll, %list);
+   ControlsList.resize(0, 0, $Pause::ControlsWidth, $Pause::ControlsHeight);
+   ControlsScroll.scrollToTop();
    %y = 84 + %list + 20;
    ControlsBackButton.resize(mFloor((%w - 240) / 2), %y, 240, 48);
    ControlsNote.resize(0, %y + 60, %w, 20);
+   ControlsNote.setText(%scroll ? "Mouse wheel: more keys    Esc: back to the game" : "Esc: back to the game");
    %h = %y + 96;
-   %size = PauseGui.getExtent();
-   ControlsPanel.resize(mFloor((getWord(%size, 0) - %w) / 2), mFloor((getWord(%size, 1) - %h) / 2), %w, %h);
+   ControlsPanel.resize(mFloor((%viewW - %w) / 2), mFloor((%viewH - %h) / 2), %w, %h);
+}
+
+// The window changed size: the menu laid out again for it.
+function pauseResized()
+{
+   if (!$Client::Paused)
+      return;
+   layoutPause();
+   if (ControlsPanel.isVisible())
+      layoutControls();
 }
 
 function showControls()

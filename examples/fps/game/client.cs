@@ -348,6 +348,7 @@ function layoutJoin()
 function resetCanvas()
 {
    layoutJoin();
+   pauseResized();
 }
 
 function showJoin()

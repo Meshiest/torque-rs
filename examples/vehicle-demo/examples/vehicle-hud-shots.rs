@@ -1,7 +1,7 @@
 //! The vehicle demo's HUD for review: a joined player's view on foot with the corner readout, the pause menu and its Controls
-//! panel, then the view at the wheel, at 1280x720 and 800x600, drawn offscreen over the loopback address.
+//! panel, then the view at the wheel, at 1280x720, 800x600 and 640x480, drawn offscreen over the loopback address.
 //!
-//! `cargo run -p torque-example-vehicle-demo --release --example hud-shots -- <dir>`
+//! `cargo run -p torque-example-vehicle-demo --release --example vehicle-hud-shots -- <dir>`
 
 use std::path::PathBuf;
 
@@ -48,10 +48,14 @@ fn until(
 }
 
 fn main() -> Result<(), String> {
-    let dir = PathBuf::from(std::env::args().nth(1).ok_or("usage: hud-shots <dir>")?);
+    let dir = PathBuf::from(
+        std::env::args()
+            .nth(1)
+            .ok_or("usage: vehicle-hud-shots <dir>")?,
+    );
     let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
     let mut shots = Shots::new(&dir)?;
-    for size in [(1280, 720), (800, 600)] {
+    for size in [(1280, 720), (800, 600), (640, 480)] {
         let tag = format!("{}x{}", size.0, size.1);
         let (mut a, mut b) = (client(&gpu, "Ann", size)?, client(&gpu, "Bob", size)?);
         a.game.host_game()?;
