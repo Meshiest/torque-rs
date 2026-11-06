@@ -93,8 +93,9 @@ pub const MAX_REMOTES: usize = 4;
 /// The most addresses kept as verified for one peer (its checks came from them and held their integrity; a browser checks
 /// from a socket on each of its network interfaces).
 pub const VERIFIED_PER_PEER: usize = 16;
-/// The most candidates a player's host takes from one joiner, in its offer and trickled (its checks go to each).
-pub const MAX_REMOTE_CANDIDATES: u32 = 8;
+/// The most candidate lines a player's host reads from one joiner, in its offer and trickled, those it refuses included
+/// (its checks go to each one it takes).
+pub const MAX_REMOTE_CANDIDATES: u32 = 16;
 /// The most distinct candidate IP addresses a player's host holds across every joiner, per peer it may have.
 pub const CANDIDATE_IPS_PER_PEER: usize = 2;
 /// The most outputs taken from a peer that is closing (its DTLS close notify).
@@ -1555,6 +1556,123 @@ a=mid:0
         assert!(remote_candidate("candidate:1 1 udp 1 1.2.3.4 0 typ host").is_none());
         assert!(remote_candidate("garbage").is_none());
         assert!(remote_candidate("a=candidate:1 1 udp 1 1.2.3.4 9 typ host").is_some());
+    }
+
+    #[test]
+    fn a_host_takes_few_candidates_and_only_ipv4_addresses() {
+        use super::super::super::transport::LanRules;
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let policy = BindPolicy::new(ip, false, &LanRules::PLAIN).unwrap();
+        let setup = RtcSetup {
+            host: true,
+            ..RtcSetup::default()
+        };
+        let mut side = RtcSide::new(policy, setup);
+        side.bind(ip).unwrap();
+        let mut joiner = RtcConfig::new()
+            .set_crypto_provider(Arc::new(str0m::crypto::from_feature_flags()))
+            .build(Instant::now());
+        let mut api = joiner.sdp_api();
+        api.add_channel(signal::CHANNEL_LABEL.to_string());
+        let (offer, _pending) = api.apply().unwrap();
+        let stand_in: SocketAddr = "10.200.0.1:1".parse().unwrap();
+        let offer = signal::message(signal::OFFER, &offer.to_sdp_string());
+        let reply = side.signal(stand_in, ip, &offer, Instant::now());
+        assert!(matches!(reply, Ok(Reply::Text(_))));
+        let refused = |side: &RtcSide| side.counters().candidates_refused;
+        let trickle = |side: &mut RtcSide, line: &str| {
+            let text = signal::message(signal::CANDIDATE, line);
+            side.signal(stand_in, ip, &text, Instant::now()).unwrap();
+        };
+        // An IPv6 address, a `.local` name and a TCP candidate are refused, and count toward the joiner's lines.
+        for line in [
+            "candidate:1 1 udp 2122260223 2001:4860::1 40000 typ host",
+            "candidate:2 1 udp 2122260223 0a1b2c3d-1111-2222-3333-444455556666.local 40000 typ host",
+            "candidate:3 1 tcp 1518280447 93.184.216.40 9 typ host tcptype active",
+        ] {
+            trickle(&mut side, line);
+        }
+        assert_eq!(refused(&side), 3);
+        for n in 0..40u8 {
+            let line = format!("candidate:9 1 udp 1 93.184.216.{} 40000 typ srflx", 40 + n);
+            trickle(&mut side, &line);
+        }
+        let taken = MAX_REMOTE_CANDIDATES as usize - 3;
+        assert_eq!(refused(&side), 3 + 40 - taken as u64);
+        assert_eq!(side.peers[&stand_in].candidate_ips.len(), taken);
+        assert_eq!(side.candidate_ips.len(), taken);
+        // Giving the peer up gives its addresses back.
+        side.remove(stand_in);
+        assert!(side.candidate_ips.is_empty());
+    }
+
+    #[test]
+    fn checks_go_by_user_fragment_at_a_rate_per_source() {
+        fn check(ufrag: &str) -> Vec<u8> {
+            let name = format!("{ufrag}:joiner");
+            let mut value = name.into_bytes();
+            let len = value.len() as u16;
+            value.resize(value.len().div_ceil(4) * 4, 0);
+            let mut body = vec![0x00, 0x06];
+            body.extend_from_slice(&len.to_be_bytes());
+            body.extend_from_slice(&value);
+            let mut d = vec![0x00, 0x01];
+            d.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            d.extend_from_slice(&[0x21, 0x12, 0xa4, 0x42]);
+            d.extend_from_slice(&[7; 12]);
+            d.extend_from_slice(&body);
+            d
+        }
+        let limits = RtcLimits::default();
+        let stand_in: SocketAddr = "10.200.0.1:1".parse().unwrap();
+        let joiner_ip: IpAddr = "93.184.216.40".parse().unwrap();
+        let by_ufrag = HashMap::from([(b"abcdefgh".to_vec(), (stand_in, joiner_ip))]);
+        let mut sources = HashMap::new();
+        let now = Instant::now();
+        let relayed: SocketAddr = "198.51.100.7:3478".parse().unwrap();
+        let ours = check("abcdefgh");
+        let route = |sources: &mut _, from, data: &[u8], any, now| {
+            route_check(&by_ufrag, sources, &limits, from, data, now, any)
+        };
+        // A player's host takes a check from any address (a relayed joiner's comes from its TURN server); a server only
+        // from its peer's game socket.
+        assert!(matches!(
+            route(&mut sources, relayed, &ours, true, now),
+            Routed::Peer(s) if s == stand_in
+        ));
+        assert!(matches!(
+            route(&mut sources, relayed, &ours, false, now),
+            Routed::Stray
+        ));
+        assert!(matches!(
+            route(&mut sources, relayed, &check("zzzzzzzz"), true, now),
+            Routed::Stray
+        ));
+        assert!(matches!(
+            route(&mut sources, relayed, b"not stun", true, now),
+            Routed::NotACheck
+        ));
+        // Each source address has its rate; another source still gets through, and the next second clears it.
+        sources.clear();
+        let routed = (0..100)
+            .filter(|_| {
+                matches!(
+                    route(&mut sources, relayed, &ours, true, now),
+                    Routed::Peer(_)
+                )
+            })
+            .count();
+        assert_eq!(routed, limits.stun_per_ip_per_s as usize);
+        let other: SocketAddr = "93.184.216.41:5000".parse().unwrap();
+        assert!(matches!(
+            route(&mut sources, other, &ours, true, now),
+            Routed::Peer(_)
+        ));
+        let later = now + Duration::from_secs(1);
+        assert!(matches!(
+            route(&mut sources, relayed, &ours, true, later),
+            Routed::Peer(_)
+        ));
     }
 
     #[test]

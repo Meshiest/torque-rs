@@ -253,7 +253,7 @@ The first development version. Nothing is published yet; this is what exists.
   room service and takes joiners over WebRTC data channels with no port forwarded: W4's data channels in a host mode
   (full ICE, so the host's own checks open its NAT; checks from any address under the per-source rate; a server-reflexive
   candidate from the room's STUN server). A joiner cannot aim the host's checks: its candidates, offered or trickled, are
-  taken only as IPv4 UDP (no `.local` names), at most 8 a joiner, with distinct addresses capped across joiners, and never
+  taken only as IPv4 UDP (no `.local` names), at most 16 lines a joiner (refused ones counted), with distinct addresses capped across joiners, and never
   loopback, unspecified, broadcast, multicast, link-local, documentation, benchmarking, shared, reserved or the host's
   own; private ones only with `--rtc-lan`. Checks to addresses nothing authenticated came from are rated per joiner and
   in all.
