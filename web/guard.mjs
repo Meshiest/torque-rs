@@ -156,6 +156,8 @@ async function launchFirefox(puppeteer, { browser: _, prefs = {}, args = [], ...
     args: [...args],
     extraPrefsFirefox: { ...prefs, ...FIREFOX_GUARDS },
     headless: true,
+    // A browser that crashes, or is ended on close, never opens the crash reporter's window on the desktop.
+    env: { ...process.env, ...options.env, MOZ_CRASHREPORTER_DISABLE: '1', MOZ_CRASHREPORTER_NO_REPORT: '1' },
   });
   await Promise.all((await browser.pages()).map(guardPage));
   guardContext(browser.defaultBrowserContext());
