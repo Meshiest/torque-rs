@@ -804,8 +804,7 @@ fn aes_extra(inner: u16) -> Vec<u8> {
 
 #[test]
 fn a_method_99_entry_without_its_aes_field_drops_only_itself() {
-    // The `zip` crate refuses the whole directory for such an entry; the reader drops just the entry (as for every
-    // method it cannot read).
+    // The reader drops just the entry and the archive loads (as for every method it cannot read).
     let mut aes = raw(b"aes.cs", b"x");
     aes.method = 99;
     aes.flags = 1;
@@ -903,7 +902,7 @@ fn a_method_99_header_with_its_own_extra_field_and_comment_is_still_found_in_the
 #[test]
 fn bytes_that_only_look_like_a_method_99_header_are_left_alone() {
     // A stored file whose data holds a central-header signature with method 99 in the right place, but no
-    // directory around it, must come back byte for byte: the repair applies to headers in a chain only.
+    // directory around it, must come back byte for byte.
     let mut lookalike = CENTRAL.to_vec();
     lookalike.extend_from_slice(&[20, 0, 20, 0, 0, 0, 99, 0]);
     lookalike.extend_from_slice(&[0; 48]);
@@ -1428,7 +1427,7 @@ fn mutated_archives_never_panic() {
         w.finish().unwrap().into_inner()
     };
     // Names the reader rewrites or refuses, a flagged entry, and method-99 headers with and without their
-    // AE-x field: the places where it changes bytes before the crate sees them.
+    // AE-x field.
     let hostile_names = build(&[
         raw(b"a\\b.cs", b"x"),
         raw(b"hi\xe9.txt", b"y"),
