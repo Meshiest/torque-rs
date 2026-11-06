@@ -133,7 +133,10 @@ impl Fallback for BrowserFonts {
                     .actual_bounding_box_descent()
                     .ceil()
                     .min(f64::from(cell) - oy) as i32;
-                let (w, h) = ((left + right).max(0) as u32, (up + down).max(0) as u32);
+                let (w, h) = (
+                    left.saturating_add(right).max(0) as u32,
+                    up.saturating_add(down).max(0) as u32,
+                );
                 let mut at = None;
                 if w > 0 && h > 0 && c != ' ' {
                     if x > 0 && x + w > DRAW_WIDTH {
