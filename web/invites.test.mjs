@@ -1,7 +1,7 @@
 // The invite panels' rules that need no page: `node --test web/invites.test.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { browserFamily, connectionDetails, minutes, privateAllowed } from './invites.js';
+import { browserFamily, connectionDetails, filterCandidates, minutes, privateAllowed } from './invites.js';
 
 test("a joining page ignores ?lan: only the invite's server allows private addresses", () => {
   assert.equal(privateAllowed('lan', '', true), true);
@@ -50,13 +50,74 @@ const STATS = [
   { type: 'certificate', fingerprint: 'AA:BB' },
 ];
 
+// The other side's candidates as its code carried them, and what the page's filter and the browser made of them.
+const NAME = '0b1d2c3e-4f50-4a6b-8c7d-9e0f1a2b3c4d.local';
+const CODE = [
+  { type: 'srflx', ip: '203.0.113.7', port: 61000 },
+  { type: 'host', ip: NAME, port: 54321 },
+  { type: 'host', ip: '192.168.1.20', port: 50001 },
+];
+const FACTS = {
+  side: 'joiner',
+  server: 'cloudflare',
+  attempts: 3,
+  gathering: 'complete',
+  code: CODE,
+  kept: 2,
+  dropped: { own: 0, private: 1, reserved: 0, malformed: 0 },
+  addFailed: 1,
+};
+
 test("a failed connection's details count its candidates and pairs and keep its states in order", () => {
   const seen = { ice: ['new', 'checking', 'disconnected', 'failed'], peer: ['new', 'connecting', 'failed'] };
   assert.equal(
-    connectionDetails(AGENTS.Blink, seen, STATS),
-    'Blink; ice new>checking>disconnected>failed; connection new>connecting>failed; local 1 host (1 mDNS), 1 srflx; ' +
-      'remote 2 host (1 address), 1 srflx, 1 unresolved; pairs 2 failed, 1 waiting, 1 frozen',
+    connectionDetails(AGENTS.Blink, seen, STATS, FACTS),
+    'joiner; Blink; server cloudflare; attempt 3; ice new>checking>disconnected>failed; ' +
+      'connection new>connecting>failed; gathering complete; local 1 host (1 mDNS), 1 srflx; ' +
+      'code 2 host (1 mDNS, 1 address), 1 srflx; ' +
+      'kept 2, dropped 1 private; adds failed 1; remote 2 host (1 address), 1 srflx, 1 unresolved; ' +
+      'pairs 2 failed, 1 waiting, 1 frozen',
   );
+  // the host's side names no attempts
+  assert.equal(
+    connectionDetails(AGENTS.Gecko, { ice: ['new', 'failed'], peer: ['new', 'failed'] }, [], {
+      side: 'host',
+      server: 'lan',
+      gathering: 'complete',
+      code: [{ type: 'host', ip: NAME, port: 1 }],
+      kept: 1,
+      dropped: {},
+      addFailed: 0,
+    }),
+    'host; Gecko; server lan; ice new>failed; connection new>failed; gathering complete; local none; ' +
+      'code 1 host (1 mDNS); kept 1, dropped none; adds failed 0; remote none; pairs none',
+  );
+});
+
+test("the candidate filter keeps what the rules take and says why it dropped the rest", () => {
+  const data = {
+    candidates: [
+      { type: 'srflx', ip: '93.184.216.34', port: 61000 },
+      { type: 'srflx', ip: '151.101.1.69', port: 61001 },
+      { type: 'host', ip: NAME, port: 54321 },
+      { type: 'host', ip: '192.168.1.20', port: 50001 },
+      { type: 'host', ip: '127.0.0.1', port: 50002 },
+      { type: 'host', ip: 'other.local', port: 50003 },
+      { type: 'host', ip: '10.0.0.5', port: 0 },
+    ],
+  };
+  // a host's own public address (a joiner behind the same router has it too) and a private one on a public server
+  const own = new Set(['151.101.1.69']);
+  const out = filterCandidates(data, false, own);
+  assert.equal(out.kept, 2);
+  assert.equal(out.lines.length, 2);
+  assert.ok(out.lines[0].includes(' 93.184.216.34 61000 typ srflx'));
+  assert.ok(out.lines[1].includes(NAME));
+  assert.deepEqual(out.dropped, { own: 1, private: 1, reserved: 1, malformed: 2 });
+  // on the same-network server the private address is kept; the page's own mDNS name never is
+  const lan = filterCandidates(data, true, new Set([NAME]));
+  assert.equal(lan.kept, 3);
+  assert.deepEqual(lan.dropped, { own: 1, private: 0, reserved: 1, malformed: 2 });
 });
 
 test("a failed connection's details never hold an address, port, name, ufrag or anything the stats make up", () => {
@@ -67,25 +128,46 @@ test("a failed connection's details never hold an address, port, name, ufrag or 
     { type: 'remote-candidate', candidateType: 'prflx', address: 'evil.local' },
   ];
   const seen = { ice: ['new', 'checking 10.0.0.3', '<script>'], peer: undefined };
-  const text = connectionDetails(`${AGENTS.Gecko} 10.0.0.4`, seen, odd);
+  const facts = {
+    side: 'joiner 10.0.0.5',
+    server: 'stun.evil.example',
+    attempts: '7 10.0.0.6',
+    gathering: 'gathering 10.0.0.7',
+    code: [...CODE, { type: '<i>srflx</i>', ip: 'evil.local', port: 9 }, null],
+    kept: -1,
+    dropped: { own: 1.5, private: 2, '10.0.0.8': 4, malformed: 'evil' },
+    addFailed: Infinity,
+  };
+  const text = connectionDetails(`${AGENTS.Gecko} 10.0.0.4`, seen, odd, facts);
   assert.equal(
     text,
-    'Gecko; ice new>other>other; connection none; local 1 host (1 mDNS), 1 srflx, 1 other; ' +
+    'other; Gecko; server other; ice new>other>other; connection none; gathering other; ' +
+      'local 1 host (1 mDNS), 1 srflx, 1 other; code 2 host (1 mDNS, 1 address), 1 srflx, 2 other; ' +
+      'kept 0, dropped 2 private; adds failed 0; ' +
       'remote 2 host (1 address), 1 srflx, 1 prflx, 1 unresolved; pairs 2 failed, 1 waiting, 1 frozen, 1 other',
   );
-  for (const bad of ['.local', '203.0', '198.51', '192.168', '10.0', '5432', 'AbCd', '<', 'evil', 'stolen']) {
+  const leaks = ['.local', '203.0', '198.51', '192.168', '10.0', '5432', '61000', 'AbCd', '<', 'evil', 'stolen'];
+  leaks.push('example');
+  for (const bad of leaks) {
     assert.ok(!text.includes(bad), `${bad} in "${text}"`);
   }
 });
 
 test('a connection with no stats says so', () => {
   assert.equal(
-    connectionDetails(AGENTS.WebKit, { ice: ['new'], peer: ['new'] }, []),
-    'WebKit; ice new; connection new; local none; remote none; pairs none',
+    connectionDetails(AGENTS.WebKit, { ice: ['new'], peer: ['new'] }, [], {
+      side: 'joiner',
+      server: 'google',
+      attempts: 1,
+      gathering: 'new',
+    }),
+    'joiner; WebKit; server google; attempt 1; ice new; connection new; gathering new; local none; code none; ' +
+      'kept 0, dropped none; adds failed 0; remote none; pairs none',
   );
   assert.equal(
     connectionDetails('', null, null),
-    'other; ice none; connection none; local none; remote none; pairs none',
+    'other; other; server other; ice none; connection none; gathering none; local none; code none; ' +
+      'kept 0, dropped none; adds failed 0; remote none; pairs none',
   );
 });
 

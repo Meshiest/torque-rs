@@ -5,12 +5,14 @@
 // browser, which hands it to the host's panel. The data channel must open, a message must go each way, and no console
 // error may show.
 //
-// Usage: node invite-link-check.mjs <host browser>[,<joiner browser>] [same|two] [delay]
+// Usage: node invite-link-check.mjs <host browser>[,<joiner browser>] [same|two|fail] [delay]
 // The browsers are names `guard.mjs`'s `launchGuarded` takes (as `browser`), each in its own headless instance with its
 // own defaults (mDNS names for host candidates included). With `same` (the default) the two pages are tabs of ONE
 // browser and the invite is on the default server (Cloudflare); with `two` they are two browsers (the same program twice,
-// or the two named) and the invite is on Same network only. The delay is 30 s by default: longer than a joiner's browser
-// waits before it gives up on a host it cannot reach yet.
+// or the two named) and the invite is on Same network only. With `fail` the two pages are tabs of one browser, the invite
+// is on Same network only and every page's browser refuses every candidate it is given, so the host's connection must
+// fail: its connection details are printed and checked (the host's side, the server, the refused adds, no address). The
+// delay is 30 s by default: longer than a joiner's browser waits before it gives up on a host it cannot reach yet.
 // No STUN server is ever contacted: every page's `RTCPeerConnection` is given no ICE servers, whatever the page asks for
 // (what it asked for is checked). The page is served from 127.0.0.1; buttons are pressed by script, never by the mouse.
 import { createServer } from 'node:http';
@@ -22,12 +24,14 @@ import { launchGuarded, noLock } from './guard.mjs';
 const [names = '', mode = 'same', delayText = '30'] = process.argv.slice(2);
 const [hostName, joinName = hostName] = names.split(',');
 const delay = Number(delayText);
-if (!/^[a-z]+$/.test(hostName ?? '') || !/^[a-z]+$/.test(joinName) || !['same', 'two'].includes(mode) || !(delay >= 0)) {
-  console.error('usage: node invite-link-check.mjs <host browser>[,<joiner browser>] [same|two] [delay]');
+const modes = ['same', 'two', 'fail'];
+if (!/^[a-z]+$/.test(hostName ?? '') || !/^[a-z]+$/.test(joinName) || !modes.includes(mode) || !(delay >= 0)) {
+  console.error('usage: node invite-link-check.mjs <host browser>[,<joiner browser>] [same|two|fail] [delay]');
   process.exit(2);
 }
-if (mode === 'same' && joinName !== hostName) {
-  console.error('`same` puts both pages in one browser: name one');
+const oneBrowser = mode !== 'two';
+if (oneBrowser && joinName !== hostName) {
+  console.error('`same` and `fail` put both pages in one browser: name one');
   process.exit(2);
 }
 const here = dirname(fileURLToPath(import.meta.url));
@@ -86,11 +90,17 @@ function noStun() {
   globalThis.RTCPeerConnection = Stunless;
   globalThis.iceServersAsked = asked;
 }
+// Every candidate the page gives its browser is refused (`fail`): no connection can open.
+function noCandidates() {
+  if (!globalThis.RTCPeerConnection) return;
+  RTCPeerConnection.prototype.addIceCandidate = () => Promise.reject(new DOMException('refused here', 'OperationError'));
+}
 
 let base;
 async function watched(browser, name) {
   const page = await browser.newPage();
   await page.evaluateOnNewDocument(noStun);
+  if (mode === 'fail') await page.evaluateOnNewDocument(noCandidates);
   page.on('console', (m) => {
     const line = `${name} ${m.type()}: ${m.text()}`;
     log.push(line);
@@ -121,6 +131,7 @@ const state = (page) =>
       said: [...document.querySelectorAll('#invites [data-said]')].map((e) => e.textContent).join(' | '),
       links: [...document.querySelectorAll('#invites input[data-link]')].map((e) => e.value),
       lines: [...document.querySelectorAll('#invites li > p')].map((e) => e.textContent),
+      details: [...document.querySelectorAll('#invites input[data-details]')].map((e) => e.value),
       asked: globalThis.iceServersAsked ?? [],
     };
   });
@@ -169,13 +180,14 @@ try {
     return browser;
   };
   const hostBrowser = await launch(hostName);
-  const joinBrowser = mode === 'same' ? hostBrowser : await launch(joinName);
-  console.log(`${hostName} hosts, ${joinName} joins, ${mode === 'same' ? 'one browser' : 'two browsers'}, reply after ${delay} s`);
+  const joinBrowser = oneBrowser ? hostBrowser : await launch(joinName);
+  const browsersText = oneBrowser ? 'one browser' : 'two browsers';
+  console.log(`${hostName} hosts, ${joinName} joins, ${browsersText}, ${mode}, reply after ${delay} s`);
 
   const host = await watched(hostBrowser, 'host');
   await host.goto(noLock(base), { waitUntil: 'load' });
   await host.waitForSelector('#invites .privacy', { timeout: 20_000 });
-  if (mode === 'two') await press(host, 'Same network only');
+  if (mode !== 'same') await press(host, 'Same network only');
   await press(host, 'Create Invite Offer');
   let h = await wait(host, 20_000, (s) => s.links.length > 0 || /failed/.test(s.invites));
   const invite = h.links[0];
@@ -202,20 +214,36 @@ try {
   const t = await wait(tab, 10_000, (s) => s.reply !== '').catch(() => ({ reply: 'taken', said: '(closed)' }));
   if (t.reply !== 'taken') throw new Error(`the reply tab: ${t.reply} ("${t.said}")`);
 
-  j = await wait(joiner, 60_000, (s) => s.echo !== '' || s.ended !== '');
-  h = await wait(host, 5_000, (s) => /joined|failed/.test(s.invites));
-  console.log(`after ${((Date.now() - taken) / 1000).toFixed(1)} s: joiner "${j.join}", echo "${j.echo}"; host "${h.invites}", got "${h.hostGot}"`);
-  if (j.join !== 'open' || j.link !== 'datachannel') problems.push(`the joiner did not connect ("${j.join}": ${j.said} ${j.ended})`);
-  if (j.echo !== '2 4 6' || h.hostGot !== '1 2 3') problems.push(`the messages: host got "${h.hostGot}", joiner got "${j.echo}"`);
-  if (!/joined/.test(h.invites)) problems.push(`the host's invite is not joined ("${h.invites}": ${h.lines.join(' | ')})`);
-  console.log(`ICE failures reported: host ${iceFailed.host}, joiner ${iceFailed.joiner}`);
-  if (iceFailed.host) problems.push(`the host's connection failed ${iceFailed.host} time(s)`);
-  // what each page asked for: the invite's server (given none here)
-  const want = mode === 'same' ? 'stun:stun.cloudflare.com:3478' : '';
-  for (const [name, page] of [['host', host], ['joiner', joiner]]) {
-    const asked = (await state(page)).asked;
-    if (!asked.length || asked.some((a) => a !== want)) problems.push(`${name} asked for ICE servers "${asked.join(' | ')}", not "${want}"`);
-    else console.log(`${name}: ${asked.length} connection(s), each asked for "${want}"`);
+  if (mode === 'fail') {
+    // the host's connection gives up after its 30 s, with its details
+    h = await wait(host, 45_000, (s) => /failed/.test(s.invites) && s.details.length > 0);
+    const details = h.details[0] ?? '';
+    console.log(`the host's details: ${details}`);
+    if (!/failed/.test(h.invites)) problems.push(`the host's invite did not fail ("${h.invites}")`);
+    if (!/^host; \w+; server lan; /.test(details)) problems.push("the details do not name the host's side and server");
+    if (!/; adds failed [1-9]\d*; /.test(details)) problems.push('the details count no refused adds');
+    if (/srflx/.test(details.split('; code ')[0])) problems.push('a Same network only invite gathered a server address');
+    if (/\.local|\d+\.\d+\.\d+|:\d/.test(details)) problems.push('the details hold an address or a name');
+    for (const [name, page] of [['host', host], ['joiner', joiner]]) {
+      const asked = (await state(page)).asked;
+      if (!asked.length || asked.some((a) => a !== '')) problems.push(`${name} asked for ICE servers "${asked.join(' | ')}"`);
+    }
+  } else {
+    j = await wait(joiner, 60_000, (s) => s.echo !== '' || s.ended !== '');
+    h = await wait(host, 5_000, (s) => /joined|failed/.test(s.invites));
+    console.log(`after ${((Date.now() - taken) / 1000).toFixed(1)} s: joiner "${j.join}", echo "${j.echo}"; host "${h.invites}", got "${h.hostGot}"`);
+    if (j.join !== 'open' || j.link !== 'datachannel') problems.push(`the joiner did not connect ("${j.join}": ${j.said} ${j.ended})`);
+    if (j.echo !== '2 4 6' || h.hostGot !== '1 2 3') problems.push(`the messages: host got "${h.hostGot}", joiner got "${j.echo}"`);
+    if (!/joined/.test(h.invites)) problems.push(`the host's invite is not joined ("${h.invites}": ${h.lines.join(' | ')})`);
+    console.log(`ICE failures reported: host ${iceFailed.host}, joiner ${iceFailed.joiner}`);
+    if (iceFailed.host) problems.push(`the host's connection failed ${iceFailed.host} time(s)`);
+    // what each page asked for: the invite's server (given none here)
+    const want = mode === 'same' ? 'stun:stun.cloudflare.com:3478' : '';
+    for (const [name, page] of [['host', host], ['joiner', joiner]]) {
+      const asked = (await state(page)).asked;
+      if (!asked.length || asked.some((a) => a !== want)) problems.push(`${name} asked for ICE servers "${asked.join(' | ')}", not "${want}"`);
+      else console.log(`${name}: ${asked.length} connection(s), each asked for "${want}"`);
+  }
   }
 } catch (e) {
   problems.push(e.stack ?? e.message);
@@ -228,5 +256,5 @@ if (problems.length) {
   console.error('console:\n  ' + log.slice(0, 200).join('\n  '));
   process.exit(1);
 }
-console.log('ok: connected, a message each way, no console errors');
+console.log(mode === 'fail' ? 'ok: failed with its details, no console errors' : 'ok: connected, a message each way, no console errors');
 process.exit(0);

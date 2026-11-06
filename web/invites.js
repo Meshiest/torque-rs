@@ -14,9 +14,11 @@
 // Nothing from a code or a message is written as HTML: every text goes in by `textContent` or an input's `value`. The
 // fragment is cleared from the address bar as soon as it is read.
 //
-// A connection that does not open shows its details under the message, to copy into a report: the browser's family, how the
-// connection's states went and counts of its candidates and candidate pairs by type and state (`connectionDetails`, from
-// the connection's stats just before it is closed). They never hold an address, a port, an mDNS name, a ufrag or a code.
+// A connection that does not open shows its details under the message, to copy into a report: which side wrote them,
+// the browser's family, the invite's server, how the connection's states went, counts of its candidates and candidate
+// pairs by type and state, and what became of the other side's candidates (what its code carried, what the filter kept
+// and why it dropped the rest, what the browser refused) (`connectionDetails`, from the connection's stats just before
+// it is closed). They never hold an address, a port, an mDNS name, a ufrag or a code.
 //
 // Caps: at most MAX_INVITES invites wait at once, each for INVITE_MS; a reply has CONNECT_MS for its channel to open; one
 // reply is read at a time; a code is refused whole when it breaks any of codes.js's caps; an invite's reply is taken once.
@@ -212,17 +214,30 @@ function watchStates(pc, seen = { ice: [], peer: [] }) {
   return seen;
 }
 
-// One line of a failed connection's details, from the browser's user agent, the states `seen` (`watchStates`) and the
-// connection's stats (a list of `getStats` entries): the browser's family, each state history, the local and remote
-// candidates by type (host ones as mDNS names or addresses; a remote one with no address is unresolved: Chrome reports an
-// mDNS name it could not resolve so) and the candidate pairs by state. Counts and the browser's own state words only:
-// nothing of an address, port, name, ufrag or code, whatever the stats hold.
-export function connectionDetails(userAgent, seen, stats) {
+const GATHERING_STATES = ['new', 'gathering', 'complete'];
+const SIDES = ['host', 'joiner'];
+// Why the candidate filter (`filterCandidates`) left one of the other side's out, in the order the details list them.
+const DROPPED = ['own', 'private', 'reserved', 'malformed'];
+
+// One line of a failed connection's details, from the browser's user agent, the states `seen` (`watchStates`), the
+// connection's stats (a list of `getStats` entries) and what the page knows of it (`facts`): which side wrote the line
+// (`host` or `joiner`), the invite's server key, the joiner's attempts (a Firefox joiner makes a new connection while
+// it waits), the browser's own states, ICE gathering's state at the failure, the local candidates by type (host ones as
+// mDNS names or addresses), the other side's candidates as its code carried them (`code`), how many the filter kept and
+// why it dropped the others (`kept`, `dropped`), how many the browser refused to add (`addFailed`), the remote
+// candidates the browser holds (a remote one with no address is unresolved: Chrome reports an mDNS name it could not
+// resolve so) and the candidate pairs by state. So "remote none" tells apart: the code carried none, the filter dropped
+// them, the browser refused them, or (all kept and added) it could not resolve their mDNS names. Counts and fixed words
+// only: nothing of an address, port, name, ufrag or code, whatever the stats or facts hold.
+export function connectionDetails(userAgent, seen, stats, facts = {}) {
   const word = (v, known) => (known.includes(v) ? v : 'other');
+  const number = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : 0);
   const count = (map, key) => map.set(key, (map.get(key) ?? 0) + 1);
-  const sides = { local: { types: new Map(), host: new Map() }, remote: { types: new Map(), host: new Map() } };
+  const newSide = () => ({ types: new Map(), host: new Map() });
+  const sides = { local: newSide(), remote: newSide(), code: newSide() };
   const pairs = new Map();
   let unresolved = 0;
+  const hostKind = (address) => (address.toLowerCase().endsWith('.local') ? 'mDNS' : 'address');
   for (const s of stats ?? []) {
     if (s?.type === 'candidate-pair') {
       count(pairs, word(s.state, PAIR_STATES));
@@ -236,8 +251,13 @@ export function connectionDetails(userAgent, seen, stats) {
     if (!address) {
       if (side === sides.remote) unresolved++;
     } else if (type === 'host') {
-      count(side.host, address.toLowerCase().endsWith('.local') ? 'mDNS' : 'address');
+      count(side.host, hostKind(address));
     }
+  }
+  for (const c of Array.isArray(facts.code) ? facts.code : []) {
+    const type = word(c?.type, CANDIDATE_TYPES);
+    count(sides.code.types, type);
+    if (type === 'host') count(sides.code.host, hostKind(String(c?.ip ?? '')));
   }
   const list = (map, order, each) => {
     const keys = [...order, 'other'].filter((k) => map.has(k));
@@ -252,23 +272,33 @@ export function connectionDetails(userAgent, seen, stats) {
     Array.isArray(states) && states.length
       ? states.slice(0, MAX_STATES).map((v) => word(v, CONNECTION_STATES)).join('>')
       : 'none';
+  const dropped = DROPPED.filter((k) => number(facts.dropped?.[k]) > 0).map((k) => `${number(facts.dropped[k])} ${k}`);
+  const side = word(facts.side, SIDES);
   return [
+    side,
     browserFamily(userAgent),
+    `server ${word(facts.server, Object.keys(STUN_SERVERS))}`,
+    ...(side === 'joiner' ? [`attempt ${number(facts.attempts)}`] : []),
     `ice ${history(seen?.ice)}`,
     `connection ${history(seen?.peer)}`,
+    `gathering ${facts.gathering === undefined ? 'none' : word(facts.gathering, GATHERING_STATES)}`,
     `local ${candidates(sides.local)}`,
+    `code ${candidates(sides.code)}`,
+    `kept ${number(facts.kept)}, dropped ${dropped.length ? dropped.join(', ') : 'none'}`,
+    `adds failed ${number(facts.addFailed)}`,
     `remote ${candidates(sides.remote)}${unresolved ? `, ${unresolved} unresolved` : ''}`,
     `pairs ${list(pairs, PAIR_STATES, (k) => `${pairs.get(k)} ${k}`)}`,
   ].join('; ');
 }
 
-// The details of `pc`, gathered before it is closed (a closed connection has no stats).
-async function detailsOf(pc, seen) {
+// The details of `pc` (with the page's `facts` of it, `connectionDetails`), gathered before it is closed (a closed
+// connection has no stats).
+async function detailsOf(pc, seen, facts) {
   let stats = [];
   try {
     stats = [...(await pc.getStats()).values()];
   } catch {}
-  return connectionDetails(navigator.userAgent, seen, stats);
+  return connectionDetails(navigator.userAgent, seen, stats, { ...facts, gathering: pc.iceGatheringState });
 }
 
 // Resolves once ICE gathering is complete, or after `ms`.
@@ -287,14 +317,29 @@ function gathered(pc, ms) {
 
 const sdpLines = (sdp) => sdp.split(/\r?\n/).filter((l) => l.startsWith('a=candidate:'));
 
-// The code's candidates as lines the browser may take (each through `candidateAllowed`, mDNS names included).
-function allowedLines(data, lan, own) {
+// The code's candidates as lines the browser may take (each through `candidateAllowed`, mDNS names included), with how
+// many were kept and why the others were dropped: `own` (one of this page's own addresses or names), `private` (a
+// private address, allowed only on the same-network server), `reserved` (an address no invite takes) or `malformed`.
+export function filterCandidates(data, lan, own) {
   const lines = [];
+  const dropped = { own: 0, private: 0, reserved: 0, malformed: 0 };
   data.candidates.forEach((c, i) => {
-    const taken = candidateAllowed(candidateLine(c, i), lan, own, { mdns: true });
+    const line = candidateLine(c, i);
+    const taken = candidateAllowed(line, lan, own, { mdns: true });
     if (taken) lines.push(taken.line);
+    else if (own.has(c.ip)) dropped.own++;
+    else if (candidateAllowed(line, true, new Set(), { mdns: true })) dropped.private++;
+    else if (ipv4(c.ip) && !addressAllowed(ipv4(c.ip), true)) dropped.reserved++;
+    else dropped.malformed++;
   });
-  return lines;
+  return { lines, kept: lines.length, dropped };
+}
+
+// Adds each line to `pc`, counting in `facts.addFailed` the ones the browser refused.
+async function addLines(pc, lines, facts) {
+  for (const line of lines) {
+    await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => facts.addFailed++);
+  }
 }
 
 // The address the connection's traffic comes from (the selected pair's remote candidate), or null.
@@ -439,6 +484,8 @@ export function hostInvites({ open = false } = {}) {
     }
     const key = server;
     const inv = { n: ++count, token: newToken(), server: key, state: 'making', own: new Set(), status: el('p') };
+    // what this page knows of the connection, for its details if it fails (`connectionDetails`)
+    inv.facts = { side: 'host', server: key, code: [], kept: 0, dropped: {}, addFailed: 0 };
     invites.set(inv.token, inv);
     if (made.length < 64) made.push(inv);
     const item = el('li', {}, inv.status);
@@ -510,9 +557,9 @@ export function hostInvites({ open = false } = {}) {
     const { pc } = inv;
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp: toSdp(data) });
-      for (const line of allowedLines(data, lanFor(inv.server), inv.own)) {
-        await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
-      }
+      const { lines, kept, dropped } = filterCandidates(data, lanFor(inv.server), inv.own);
+      Object.assign(inv.facts, { code: data.candidates, kept, dropped });
+      await addLines(pc, lines, inv.facts);
     } catch {
       pc.close();
       forget(inv);
@@ -530,7 +577,7 @@ export function hostInvites({ open = false } = {}) {
     // closed meanwhile (`closeAll`)
     if (!invites.has(inv.token)) return pc.close();
     if (!opened) {
-      const details = await detailsOf(pc, inv.seen);
+      const details = await detailsOf(pc, inv.seen, inv.facts);
       pc.close();
       forget(inv);
       setState(inv, 'failed', NO_RELAY);
@@ -821,13 +868,17 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     let started = 0;
     // The states of this join's connections (`watchStates`), one history through every connection that took over.
     let seen = undefined;
+    // What this page knows of its connections, for their details (`connectionDetails`): the filter's counts are the
+    // latest connection's, the attempts and refused adds every connection's.
+    const facts = { side: 'joiner', server: data.server, attempts: 0, code: data.candidates, kept: 0, dropped: {} };
+    facts.addFailed = 0;
     // The channel did not open: the current connection's details are gathered, then it is closed.
     let failing = false;
     const noRelay = async () => {
       if (failing || opened || ended || disposed) return;
       failing = true;
       const last = pc;
-      const found = await detailsOf(last, seen);
+      const found = await detailsOf(last, seen, facts);
       // the channel opened while the details were gathered: it stays
       if (opened) return;
       last.close();
@@ -841,6 +892,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     async function answer() {
       const next = new RTCPeerConnection({ iceServers: iceServersFor(data.server), certificates });
       pc = next;
+      facts.attempts++;
       seen = watchStates(next, seen);
       started = performance.now();
       next.ondatachannel = (e) => {
@@ -887,13 +939,14 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
       const sdp = next.localDescription.sdp;
       if (details && !sameDetails(fromSdp(sdp), details)) throw new Error("the browser did not keep the reply link's details");
       for (const line of sdpLines(sdp)) ownName(line.split(' ')[4]);
-      const lines = allowedLines(data, lan, own);
+      const { lines, kept, dropped } = filterCandidates(data, lan, own);
+      Object.assign(facts, { kept, dropped });
       if (!lines.length) {
         next.close();
         refuse('This invite offer has no address this page can reach. Ask the host for a new one.');
         return null;
       }
-      for (const line of lines) await next.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
+      await addLines(next, lines, facts);
       return sdp;
     }
 

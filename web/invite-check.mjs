@@ -119,6 +119,7 @@ const state = (page) =>
       back: [...document.querySelectorAll('#invites button')].some((b) => b.textContent === 'Back to the menu'),
       panel: Boolean(document.getElementById('invites')),
       details: document.querySelectorAll('#invites li .details').length,
+      detailsText: [...document.querySelectorAll('#invites li input[data-details]')].map((e) => e.value),
       server: r.dataset.torqueServer ?? '',
       kept: globalThis.checkMarker === 'kept',
       asked: globalThis.iceServersAsked ?? [],
@@ -462,7 +463,12 @@ try {
       h = await wait(host, 60_000, (s) => /failed/.test(s.invites));
       const count = h.invites.split(' ').length;
       console.log(`failed invite: "${h.invites}", details ${h.details}`);
+      for (const text of h.detailsText) console.log(`  details: ${text}`);
       if (!/failed/.test(h.invites)) problems.push(`the made-up reply's invite did not fail ("${h.invites}")`);
+      // the made-up reply carried no address: the details say whose they are, and that its code had none
+      if (!h.detailsText.some((t) => /^host; \w+; server lan; .*; code none; kept 0, dropped none; /.test(t))) {
+        problems.push(`the failed invite's details: "${h.detailsText.join(' | ')}"`);
+      }
       await panelShot(host, 'host-invite-failed.png');
       if (!(await dismissWhere(host, /^Invite \d+: (Could not connect|the reply does not fit)/))) problems.push('a failed invite has no Dismiss');
       h = await state(host);

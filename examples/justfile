@@ -184,7 +184,8 @@ web-fps-invite-check: web-guard-test
 # defaults, mDNS names included; installed where `web/guard.mjs` looks, or `FIREFOX` names it): a small page runs
 # `web/invites.js`, the joiner presses Connect, the reply link is opened 30 s later (a joiner's browser gives up on a host
 # it cannot reach yet after a few seconds; a Firefox host's addresses answer only once it has the reply), and a message
-# must go each way. One browser with two tabs, two browsers, and each browser hosting the other. No STUN server is
+# must go each way. One browser with two tabs, two browsers, and each browser hosting the other; then a Firefox invite
+# whose candidates are all refused fails, and its connection details are printed and checked. No STUN server is
 # contacted. Runs the guard's test in Firefox first
 web-invite-link-check: web-guard-test
     node ../web/guard.test.mjs firefox
@@ -193,6 +194,7 @@ web-invite-link-check: web-guard-test
     node ../web/invite-link-check.mjs firefox two 30
     node ../web/invite-link-check.mjs chrome,firefox two 30
     node ../web/invite-link-check.mjs firefox,chrome two 30
+    node ../web/invite-link-check.mjs firefox fail 0
 
 # The vehicle demo joined by an invite link, as `web-fps-invite-check` (build it first with `node web/build.mjs vehicle-demo
 # --solo`): its Host with a link starts its server in the worker on the same page. Pictures into the target folder's
