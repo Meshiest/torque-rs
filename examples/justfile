@@ -59,7 +59,7 @@ web-level-demo-embedded port="8080":
 
 # The web pages' loading display, settings and script bridge, tested in Node (no browser)
 web-unit:
-    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs
+    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs ../web/host.test.mjs
 
 # Fails when any script in the repository could open a browser other than through `launchGuarded` (web/guard.mjs), whose pages
 # cannot take the pointer lock: a lock confines the real cursor in headless Chrome on Windows
@@ -125,10 +125,37 @@ web-fps-rtc-check: web-guard-test
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-loss.png" 120 rtc-loss
     node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-blocked.png" 120 rtc-blocked
 
+# A room service for player-hosted games on 127.0.0.1:{{port}}, serving the arena's browser build: a desktop host opens
+# a room with `fps-server --room ws://127.0.0.1:{{port}}` and prints its code, and browsers join at
+# http://127.0.0.1:{{port}}/?room=<code> (or host at http://127.0.0.1:{{port}}/?host=1). More switches after the port number
+# (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
+web-fps-rooms port="28100" *args:
+    node ../web/build.mjs fps
+    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/fps" {{args}}
+
+# The arena hosted by a player (build it first as for `web-fps-check`): a room service serving the page, then
+# `fps-server --room` with headless Chrome joining by the room's code on a data channel (it walks, then sees the host
+# leave), then a host page whose server runs in a Web Worker with a second page joining it the same way
+web-fps-p2p-check: web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-desktop.png" 120 desktop
+    node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-browser.png" 120 browser
+
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`
 level-demo-shots dir="../target/level-demo-shots":
     cargo run -p torque-example-level-demo --release -- --shots {{dir}}
+
+# The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
+# into `dir`
+level-demo-valley-shots dir="../target/level-demo-valley-shots":
+    cargo run -p torque-example-level-demo --release -- --valley-shots {{dir}}
+
+# The front page's pictures, each the world alone at the highest quality (the buggy in a turn, a shot in the arena, the valley,
+# the office), and the 2 x 2 grid of them (`hero.png`, `hero@2x.png`), drawn offscreen into `dir`. `--size WxH` sets the
+# pictures' size, `--only <name>` draws one, `--grid` sets the grid again from the pictures in `dir`
+showcase dir="../target/showcase" *args:
+    cargo run -p torque-example-showcase --release -- {{dir}} {{args}}
 
 # Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
 kit-shots dir="../target/kit-shots":

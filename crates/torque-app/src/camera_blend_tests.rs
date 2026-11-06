@@ -400,3 +400,17 @@ fn an_eye_that_is_not_a_place_leaves_the_blend_as_it_was() {
     b.advance(1.0 / 60.0);
     assert!(finite(&b.eye(walking(0.0, 0.0, false), |p| p)));
 }
+
+#[test]
+fn a_jump_beyond_what_travels_in_the_frame_is_a_teleport() {
+    let at = [1.0, 2.0, 3.0];
+    // A run, a car at speed, a fall: no teleport.
+    assert!(!teleported(at, [1.1, 2.0, 3.0], 1.0 / 60.0));
+    assert!(!teleported(at, [1.0, 3.5, 3.0], 1.0 / 60.0));
+    assert!(!teleported(at, [1.0, 2.0, -10.0], 0.25));
+    // A respawn across the map, in a frame or after a hitch, and any jump with no time between.
+    assert!(teleported(at, [1.0, 14.0, 3.0], 1.0 / 60.0));
+    assert!(teleported(at, [1.0, 40.0, 3.0], 0.25));
+    assert!(teleported(at, [5.0, 2.0, 3.0], 0.0));
+    assert!(teleported(at, [5.0, 2.0, 3.0], f32::NAN));
+}

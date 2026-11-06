@@ -1,0 +1,27 @@
+// Valley
+// A lake in a wooded valley between mountains, opening onto the sea in the west, the sun low over the water.
+
+new SimGroup(MissionGroup)
+{
+   // The start: a meadow east of the lake, facing west down the valley. The ground's textures varied against tiling, and the
+   // clouds run 150 times as fast as the clock (a timelapse over the held golden hour).
+   new ScriptObject(MapInfo) { title = "Valley"; spawn = "180 -30 36"; spawnYaw = -1.5708; groundVariation = 1; cloudTimeScale = 150; };
+   // The sky: a warm haze from 2,400 units out, nothing drawn past 6,000 (the sea runs out to it).
+   new Sky(WorldSky) { visibleDistance = 6000; fogDistance = 2400; fogColor = "0.86 0.74 0.62 1"; };
+   // The day held at golden hour: the sun low in the west (0 sunrise, 0.25 noon, 0.5 sunset); its sky and light the physical
+   // sky's.
+   new TimeOfDay(WorldDay) { dayLength = 1200; startTime = 0.475; azimuthOverride = 1.5708; play = 0; };
+   new ScatterSky(WorldScatter) {
+      nightColor = "0.15 0.17 0.24 1";
+      nightFogColor = "0.04 0.05 0.08 1";
+      moonAzimuth = 200;
+      moonElevation = 50;
+      moonLightColor = "0.29 0.32 0.39 1";
+   };
+   // The ground: TGE's default block, 256 squares of 8 units a side, centered on the origin (the kit's valley.ter).
+   new TerrainBlock(Valley) { terrainFile = "kit/valley.ter"; squareSize = 8; };
+   // The water: the lake and the sea it runs into, the top of the box at 30 units, from just east of the lake out past the
+   // terrain's western edge to the haze.
+   new WaterBlock(Lake) { position = "-7000 -3500 0"; rotation = "1 0 0 0"; scale = "7170 7000 30"; surfaceTexture = "kit/valley_water.png"; surfaceOpacity = 0.8; liquidType = "OceanWater"; };
+%woods%
+};

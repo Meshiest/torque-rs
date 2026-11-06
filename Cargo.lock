@@ -3248,6 +3248,7 @@ dependencies = [
  "torque-render-scene",
  "wasm-bindgen",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]
@@ -3263,6 +3264,20 @@ dependencies = [
  "torque-render-core",
  "torque-render-scene",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "torque-example-showcase"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "torque",
+ "torque-example-character",
+ "torque-example-fps",
+ "torque-example-level-demo",
+ "torque-example-vehicle-demo",
+ "torque-render-core",
+ "torque-render-scene",
 ]
 
 [[package]]
@@ -3441,6 +3456,17 @@ version = "0.1.0"
 dependencies = [
  "torque-ts-vm",
  "zip",
+]
+
+[[package]]
+name = "torque-rooms"
+version = "0.1.0"
+dependencies = [
+ "ring",
+ "str0m",
+ "torque-net",
+ "torque-server",
+ "tungstenite",
 ]
 
 [[package]]

@@ -17,6 +17,11 @@
 //! carries the datagrams), `data-torque-rtc-tried` and `data-torque-rtc-failed` (`1` once a data channel was tried, or
 //! failed or was refused), `data-torque-rtc-in` (the messages the channel brought) and `data-torque-rtc-gap` (the longest
 //! time between two of them, in milliseconds, over the last two seconds or so).
+//!
+//! **A player's game** (`?room=<code>`): the page joins the game a player hosts (`fps-server --room`), found by its code
+//! through the room service at `?rooms=<ws or wss URL>` (else the page's own host at `/ws`: the service serves the
+//! page). Every datagram goes on the data channel to the host; when it closes, the game ends with a message on the menu
+//! (`data-torque-ended` carries it).
 
 use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -24,6 +29,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use torque::app::manifest::Manifest;
 use torque::app::view::WorldView;
 use torque::app::{App, Host};
+use torque::client::net::Datagrams;
+use torque::client::net::room_join::RoomDatagrams;
 use torque::client::net::web_rtc::{LinkWatch, WebRtcDatagrams};
 use torque::client::net::web_socket::WebSocketDatagrams;
 use torque::gui::GuiDraws;
@@ -64,7 +71,7 @@ pub fn embedded() -> bool {
 /// Starts the game on the files the module carries.
 #[cfg(feature = "embed-pack")]
 pub fn start_embedded() -> Result<(), String> {
-    start(GameFiles::unpack(PACK)?)
+    start(GameFiles::unpack(PACK)?, None)
 }
 
 /// Starts the game on the files the module carries: this build carries none.
@@ -101,8 +108,8 @@ pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
     })
 }
 
-/// Starts the game on the fetched files (Err: one the list names is missing, or a pack is broken).
-pub fn start_fetched() -> Result<(), String> {
+/// The fetched files, taken (Err: one the list names is missing, or a pack is broken).
+pub(crate) fn fetched_files() -> Result<GameFiles, String> {
     let Fetched { manifest, files } = FETCHED.take().ok_or("no list of files was read")?;
     if let Some(missing) = manifest
         .files
@@ -111,27 +118,128 @@ pub fn start_fetched() -> Result<(), String> {
     {
         return Err(format!("{} was not fetched", missing.path));
     }
-    start(GameFiles::from_fetched(files)?)
+    GameFiles::from_fetched(files)
 }
 
-fn start(files: GameFiles) -> Result<(), String> {
-    let url = socket_url()?;
+/// Starts the game on the fetched files (Err: one the list names is missing, or a pack is broken).
+pub fn start_fetched() -> Result<(), String> {
+    start(fetched_files()?, None)
+}
+
+/// Starts the host player's game on the fetched files: its server runs in the page's worker (`web_host`), and the client
+/// reaches it over the local link ([`local_datagram`], [`set_local_sender`]).
+pub fn start_host_client() -> Result<(), String> {
+    start(fetched_files()?, Some(Target::Local))
+}
+
+/// What the local link holds: datagrams from the worker's server, and the page's function that posts one to it.
+#[derive(Default)]
+struct Local {
+    held: std::collections::VecDeque<Vec<u8>>,
+    sender: Option<js_sys::Function>,
+}
+
+thread_local! {
+    static LOCAL: RefCell<Local> = RefCell::default();
+}
+
+/// A datagram from the worker's server for the host player's client (at most 4,096 wait; the rest are dropped).
+pub fn local_datagram(bytes: Vec<u8>) {
+    LOCAL.with_borrow_mut(|l| {
+        if l.held.len() < 4096 {
+            l.held.push_back(bytes);
+        }
+    });
+}
+
+/// The page's function that posts the host player's datagrams to the worker's server (called with a `Uint8Array`).
+pub fn set_local_sender(sender: js_sys::Function) {
+    LOCAL.with_borrow_mut(|l| l.sender = Some(sender));
+}
+
+/// The host player's link to the server in the page's worker.
+struct LocalLink;
+
+impl Datagrams for LocalLink {
+    fn send_to(&mut self, to: SocketAddrV4, bytes: &[u8]) -> bool {
+        if to != SERVER {
+            return false;
+        }
+        LOCAL.with_borrow(|l| {
+            l.sender.as_ref().is_some_and(|f| {
+                f.call1(
+                    &wasm_bindgen::JsValue::NULL,
+                    &js_sys::Uint8Array::from(bytes),
+                )
+                .is_ok()
+            })
+        })
+    }
+
+    fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
+        LOCAL
+            .with_borrow_mut(|l| l.held.pop_front())
+            .map(|d| (SERVER, d))
+    }
+
+    fn port(&self) -> u16 {
+        0
+    }
+}
+
+/// Where the page's game is: a server that served the page, a player's host found by a room's code, or the server in
+/// this page's worker (the host player's own game).
+#[derive(Clone)]
+enum Target {
+    Server(String),
+    Room { url: String, code: String },
+    Local,
+}
+
+impl Target {
+    /// A new link to the game (the join, and each Join after).
+    fn open(&self) -> Result<(Box<dyn Datagrams>, LinkWatch), String> {
+        match self {
+            Target::Server(url) => {
+                let socket = WebRtcDatagrams::new(WebSocketDatagrams::open(url, SERVER)?);
+                let watch = socket.watch();
+                Ok((Box::new(socket), watch))
+            }
+            Target::Room { url, code } => {
+                let socket = RoomDatagrams::open(url, code, SERVER)?;
+                let watch = socket.watch();
+                Ok((Box::new(socket), watch))
+            }
+            Target::Local => Ok((Box::new(LocalLink), LinkWatch::default())),
+        }
+    }
+}
+
+fn start(files: GameFiles, target: Option<Target>) -> Result<(), String> {
+    let target = match (target, query("room")) {
+        (Some(target), _) => target,
+        (None, Some(code)) => Target::Room {
+            url: rooms_url()?,
+            code,
+        },
+        (None, None) => Target::Server(socket_url()?),
+    };
     let options = ClientOptions {
         name: query("name")
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| "Browser player".to_string()),
         ..ClientOptions::default()
     };
-    let socket = WebRtcDatagrams::new(WebSocketDatagrams::open(&url, SERVER)?);
-    let watch = socket.watch();
-    let mut game = ArenaGame::with_socket(files, options, Box::new(socket))?;
+    let (socket, watch) = target.open()?;
+    let mut game = ArenaGame::with_socket(files, options, socket)?;
     game.set_global("$Arena::JoinOnly", "1");
     game.call("showMainMenu", &[])?;
     let mut web = WebArena {
         game,
-        url,
+        target,
         frames: 0,
         watch,
+        ended: false,
     };
     web.join()?;
     torque::app::window::run(web)
@@ -149,6 +257,17 @@ fn query(name: &str) -> Option<String> {
     js_sys::decode_uri_component(&raw)
         .ok()
         .and_then(|v| v.as_string())
+}
+
+/// The room service's URL: `?rooms=`, else the page's own host at `/ws`.
+fn rooms_url() -> Result<String, String> {
+    match query("rooms") {
+        Some(url) if url.starts_with("ws://") || url.starts_with("wss://") => Ok(url),
+        Some(url) => Err(format!(
+            "?rooms= takes a ws:// or wss:// address, not {url:?}"
+        )),
+        None => socket_url(),
+    }
 }
 
 /// The game socket's URL: `?server=`, else the page's own host at `/ws`.
@@ -172,10 +291,12 @@ fn socket_url() -> Result<String, String> {
 /// The arena, its state written on the page as it draws (module docs).
 struct WebArena {
     game: ArenaGame,
-    url: String,
+    target: Target,
     frames: u64,
     /// The links of the present game socket.
     watch: LinkWatch,
+    /// Whether the present link's end was shown.
+    ended: bool,
 }
 
 impl WebArena {
@@ -185,12 +306,28 @@ impl WebArena {
         Ok(())
     }
 
-    /// Opens a new game socket and joins again (the menu's Join).
+    /// Opens a new link and joins again (the menu's Join).
     fn rejoin(&mut self) -> Result<(), String> {
-        let socket = WebRtcDatagrams::new(WebSocketDatagrams::open(&self.url, SERVER)?);
-        self.watch = socket.watch();
-        self.game.set_socket(Box::new(socket));
+        let (socket, watch) = self.target.open()?;
+        self.watch = watch;
+        self.ended = false;
+        self.game.set_socket(socket);
         self.join()
+    }
+
+    /// A link that ended for good (a player's host left, or the room refused): out of the game, with why on the menu.
+    fn show_end(&mut self) {
+        let Some(text) = self.watch.borrow().ended.clone() else {
+            return;
+        };
+        self.ended = true;
+        let text = text.replace(['"', '\\'], "'");
+        let _ = self.game.call(
+            "eval",
+            &[&format!(
+                "if ($Arena::InGame) leaveGame(); MainStatus.setText(\"{text}\");"
+            )],
+        );
     }
 
     fn mark(&mut self) {
@@ -246,6 +383,7 @@ impl WebArena {
         let _ = root.set_attribute("data-torque-rtc-failed", flag(link.failed));
         let _ = root.set_attribute("data-torque-rtc-in", &link.messages_in.to_string());
         let _ = root.set_attribute("data-torque-rtc-gap", &format!("{:.0}", link.max_gap_ms));
+        let _ = root.set_attribute("data-torque-ended", link.ended.as_deref().unwrap_or(""));
         // A window of about two seconds (eight marks).
         if self.frames % 120 == 1 {
             link.max_gap_ms = 0.0;
@@ -276,6 +414,9 @@ impl App for WebArena {
 
     fn advance(&mut self, ms: u32) {
         App::advance(&mut self.game, ms);
+        if !self.ended {
+            self.show_end();
+        }
         if self.game.take_flag("$Arena::JoinAsked")
             && let Err(e) = self.rejoin()
         {

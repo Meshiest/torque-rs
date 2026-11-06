@@ -18,7 +18,8 @@ export class Refused extends Error {}
 // Fetches and hands over every file of `files.json`; `progress(done, total)` follows the bytes. `game` is the module
 // (`manifestMaxBytes`, `readManifest`, `addFile`).
 export async function fetchFiles(game, progress) {
-  const list = new URL('files.json', document.baseURI);
+  // A page's base, or a worker's own address (a browser host's server fetches the same files).
+  const list = new URL('files.json', globalThis.document?.baseURI ?? self.location.href);
   const text = new TextDecoder().decode(await download(list, game.manifestMaxBytes()));
   refusing(() => game.readManifest(text));
   // The module has checked the list against its caps.

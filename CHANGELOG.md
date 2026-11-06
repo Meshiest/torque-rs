@@ -262,6 +262,52 @@ The first development version. Nothing is published yet; this is what exists.
   see each other, chat and hit each other; with the channel's datagrams all dropped the browser plays over its socket.
   `just examples/web-fps-rtc-check`: headless Chrome joins on the data channel, keeps getting messages with 10% of them
   dropped, and plays over its game socket with UDP blocked.
+- `torque-rooms`: a room service for player-hosted games (library and `torque-rooms` binary). A host opens a room and
+  gets a code (8 characters, 40 bits); joiners name the code, and the service carries only the signaling of one WebRTC
+  data channel between each joiner and the host (a body must be an offer or answer that is an SDP of at most 4 KiB in
+  printable ASCII, one candidate line of at most 512 bytes, or a busy or closed message with no body: the game's datagrams
+  never go through it, though an SDP could still carry a little other text under the message caps). It runs on torque-server's web transport with its TLS, Host and Origin checks, per-address
+  caps and wire meters, and adds caps on rooms in all and per address, joins per address a minute and failed joins a
+  second (code guessing), joiners per room, signaling messages per joiner, and room, joiner and idle lifetimes. It hands
+  each room's players STUN URLs and TURN credentials in the TURN REST API form (HMAC-SHA1 of `<expiry>:<id>` under a
+  secret shared with the TURN server). torque-server's `rooms` feature: the room protocol (`net::room`); the web
+  transport's `close_socket`, and its sends capped by its message limit (unchanged by default).
+- `torque-rooms`' TURN credentials: a lifetime of 1 minute to 48 hours (`--turn-ttl`), an expiry that cannot wrap, and
+  the secret file (`--turn-secret-file`) read only when it is a regular file of at most a little over a kilobyte and, on
+  Unix, closed to other users. Tests: the credential against HMAC-SHA1 vectors computed outside Rust, the expiry, the
+  ICE JSON, and credentials given only to a room's host (on `room`) and joiners (on `joined`), never on a refusal.
+- `torque-server`'s `p2p` feature: a player's host (`net::web::p2p::P2pHost`), a `Transport` that opens a room on a
+  room service and takes joiners over WebRTC data channels with no port forwarded: the web transport's data channels in a host mode
+  (full ICE, so the host's own checks open its NAT; a server-reflexive candidate from the room's STUN server). A
+  joiner's checks are taken only from the address the service saw it at or from a candidate's the host took (a check
+  with USE-CANDIDATE from anywhere else would aim the joiner's traffic there), from at most 16 source addresses a joiner,
+  under the per-source rate; an address counts as verified only when a response to the host's own check comes from it. A joiner cannot aim the host's checks: its candidates, offered or trickled, are
+  taken only as IPv4 UDP (no `.local` names), at most 16 lines a joiner (refused ones counted), with distinct
+  addresses capped across joiners, and never
+  loopback, unspecified, broadcast, multicast, link-local, documentation, benchmarking, shared, reserved or the host's
+  own; private ones only with `--rtc-lan`. Checks to addresses nothing authenticated came from are rated per joiner and
+  in all.
+  Each joiner goes by a stand-in of the IP the service saw, so per-address limits and bans hold; every signaling message
+  goes through the data channels' caps, and a joiner whose channel closes is reported gone. `net::relay::RelayTransport`:
+  the same caps (links in all, per address and a second; messages and wire bytes a second; oversize) for a server whose
+  links someone else holds (a browser host's worker). `cargo test -p torque-rooms --test p2p`: a joiner reaches a host
+  through a live service, datagrams both ways, the channel outlives the room socket and closes when the host leaves;
+  media offers, broken offers and candidate floods are turned away with the open channel untouched and passes short.
+- The arena hosted by a player: `fps-server --room ws://<service>` opens a room and prints its code (no UDP game
+  socket); the browser build joins with `?room=<code>` (torque-client's `p2p` feature, `net::room_join`: signaling
+  through the room, every datagram on the channel, none through the service) and ends the game with "The host left the
+  game." when the channel closes. torque-app's `Listen::Bound` (a transport made and bound by the caller); the
+  `torque` and `torque-app` `p2p` features. `just examples/web-fps-rooms` runs a service serving the page;
+  `just examples/web-fps-p2p-check`: headless Chrome joins `fps-server --room` by code on a data channel, walks, and
+  sees the host leave.
+- A browser hosts the arena (`?host=1`): the page opens a room and shows its code (`data-torque-room`), runs the
+  server in a Web Worker (`web/host-worker.js`, on `net::relay`, which holds every cap on what joiners send), plays in it
+  over a local link, and holds each joiner's peer connection and data channel (`web/host.js`). A joiner's candidates go
+  through the desktop host's rules (IPv4 UDP, no `.local`, no reserved or private addresses unless `?lan=1`, at most 16
+  lines); at most 4 peer connections come from one address, and the room's peer numbers and ICE servers are read
+  strictly. `web-fps-p2p-check`'s browser part: a second page
+  joins by code, each page holds the other's figure, the joiner walks, and it says the host left when the host page
+  closes. The p2p check launches its browsers through `web/guard.mjs` with `?nolock`.
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
   compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
   picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time
@@ -279,6 +325,63 @@ The first development version. Nothing is published yet; this is what exists.
 - The vehicle demo in a browser, played alone (the server on an in-memory link in the page): `just
   examples/web-vehicle-demo` builds and serves it, `vehicle-demo --web-files <dir>` writes its pack and list,
   `just examples/web-vehicle-demo-check` walks its figure in headless Chrome.
+- Pictures of the world alone: `Seat::world_picture` draws a game's world without its GUI (no HUD, hints or menus) over the
+  whole picture, and the character example's `Step::WorldShot` does the same. `WorldView::set_water` draws a sheet of
+  water (`Water`: its height, rectangle, texture and tint) as the enhanced renderer's water; `WorldView::clear_ground` and
+  `WorldView::clear_day` take a map's ground and its day's light away again.
+- The level demo draws a map's `TerrainBlock` and `WaterBlock` (read from the map the server runs, as the server reads
+  them): the terrain also the own figure's ground in the prediction (`CubeClient::set_terrain`, changed as each map
+  starts) and the floor of the camera behind it. A map's `TimeOfDay` under its `ScatterSky` lights its world, with sunlit
+  clouds.
+- The examples' `showcase` modules (the vehicle demo, the arena, the level demo): the buggy taken through the race
+  track's tightest turn, its dust and tracks behind it; a shot in the arena from the side, frame by frame from its flash
+  (the muzzle's flare, the bolt, the hit); the office's desks; each the world alone at the Ultra quality.
+- The level demo's valley map (`missions/valley.mis`, 6 on the menu, `?map=valley` on the web): a lake in a long valley
+  between mountains, the sun held low over a pass at its western end, woods on the lower slopes and sunlit clouds. The
+  asset kit makes it (`torque_example_assets::valley`: the terrain with grass, rock and sand, and woods of the hills'
+  trees; `trees::chunks_of` and `trees::build_chunks` cut any trees into interiors); the level demo adds it to the kit
+  when it starts and to its web pack. `just examples/level-demo-valley-shots` draws it from a few places.
+- `just examples/showcase` (`torque-example-showcase`): the front page's four pictures (the buggy in a turn, a shot in the
+  arena, the valley at golden hour, the office), each the world alone at the Ultra quality, set in a 2 x 2 grid with thin
+  transparent gutters (`hero.png`, 1920 x 1080, and `hero@2x.png`); `--examples` the examples' other pictures.
+- `HdScene::ground_variation` (opt-in, `WorldView::set_ground_variation`): the ground's textures varied against visible
+  tiling: every terrain layer's texture tiled stochastically and tinted by a large-scale noise. Off, the planes are drawn as
+  before. `HdScene::cloud_time` (opt-in, `WorldView::set_cloud_time`): the volumetric clouds' own clock (their drift,
+  change of shape and shadows) in place of the effect time.
+- The valley opens onto the sea: west of the lake it sinks under the water, its mountains running out as headlands, and
+  one water block runs from the lake out past the terrain's western edge into the haze (the sky drawn to 6,000 units), the
+  low sun's glint along it. Its clouds run 150 times as fast as the clock; `--valley-clip` also writes its last frame
+  moving and held still (the moving clouds keep their sharpness: no trail from their history).
+- The valley made larger and wilder: jagged mountains of up to about 500 m from ridged noise (crests, crags and gullies)
+  with the block's rim raised so no edge shows, its haze from 1,400 units and its sky to 3,500. Its woods are a few trees
+  and groves of three to five trees built once (`valley_tree_*.dif`, `valley_grove_*.dif`) and placed, turned and scaled
+  by about 500 `InteriorInstance`s (`trees::tree_sunk` sinks a grove's trunks deeper): the level demo's web pack is
+  3.4 MB with the valley. Its map asks for the ground's variation (`groundVariation = 1`) and runs its clouds 30 times as
+  fast as the clock (`cloudTimeScale = 30`, a timelapse over the held golden hour), both read by the level demo from the
+  map's `MapInfo`; the level demo asks for a packet every tick at the largest size (the valley's places ghost in about
+  7 s). `--valley-shots` writes each view's GPU frame time, and `--valley-clip` eight seconds of the sky moving.
+- The showcase's buggy drives through the turn in the late afternoon with its roof lamps on, their beam on the track
+  ahead; its valley is seen from over the lake's eastern end, the lake in the middle; `--examples` adds the valley's
+  ground close up and the whole valley from far up its eastern end.
+- Water reflects the volumetric clouds: where its reflection is the sky (the planar reflection's sky, which its target now
+  marks with an alpha of -1; a screen-space reflection's miss; the sky cube at Low) the clouds' image of this frame is laid
+  over it along the reflected direction, off a calmer surface than the waves' (a third of their slope), and past the view's
+  top edge the image's edge at the same heading stands in for it, read blurrier. No history of its own: fast clouds leave no
+  trail in it.
+- The valley's far ranges: three rows of jagged mountains on each side of the sea (a summit and its shoulders each, one
+  interior a mountain: 84 small interiors), farther, broader and taller row by row, fading into the haze toward the
+  horizon with the sea open between them; the haze starts at 2,400 units. The level demo's web pack is 4.5 MB with the
+  valley. A sixth valley view, low over the sea with the clouds in its reflection (`valley-sea`, also in the showcase's
+  `--examples`).
+- The water's mirrored view fogs toward the atmosphere's own sky (its light toward the point, turned up), as the main view
+  fogs toward the sky behind a point, instead of the horizon ban's flat color: a far shape fogged into the sky reflects
+  in the color it is seen in. Capture faces, the sky cube's faces and a server's sky box keep the ban's color.
+- The showcase's valley is the view low over the sea (`SEA_PICTURE_MS` into the timelapse, when the clouds' reflections read
+  best), the far ranges' peaks with more faces, and a valley view's eye kept above the water where the ground is under it.
+- A map's numbers are not trusted: the level demo refuses a `WaterBlock` whose position, scale or opacity is not finite
+  numbers (`nan` and `inf` parse as numbers) and holds `cloudTimeScale` to 0 to 1,000; its clouds' clock starts over when it
+  is not finite; `WorldView::set_water` draws no water of non-finite numbers; the renderer sends the effect time in place of
+  a cloud clock that is not finite.
 - The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
   lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
   down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
@@ -358,6 +461,9 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- Examples' pose keys: Ctrl holds the crouch and C toggles it; C or Ctrl lying down gets up to a crouch, Space lying down
+  or crouched by C stands rather than jumping, and a respawn or a restart starts the figure standing (it kept the prone
+  toggle).
 - `torque-client`: in a browser the window's loop no longer spins between frames: the clock steps and the frame is drawn
   once per animation frame (a hidden page still runs its clock five times a second).
 - `torque-client`: in a browser, the keys and buttons held are let go when the page loses the focus, is hidden or loses

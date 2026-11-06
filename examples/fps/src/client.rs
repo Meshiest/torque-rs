@@ -28,7 +28,8 @@
 //! eye, the view is drawn as the first person's (the figure hidden, the pistol in view) until there is room again.
 //! `Tab` moves the camera from one to the other ([`CameraBlend`], each eye of the move kept in front of walls the same way);
 //! the figure is hidden while the camera is close to its eyes ([`CLOSE`]), on the way in and on the way out, and its pistol is
-//! drawn in its hand while it is seen.
+//! drawn in its hand while it is seen. A new figure (a respawn) or a teleport cuts the camera to it
+//! ([`torque::app::ghosts::OwnView::cut`]), and while the server's next figure is on its way the view stays where it was.
 //!
 //! Credit: the frame between the last two ticks follows `Player::interpolateTick` and the client's `ProcessList` in Torque3D's
 //! MIT-licensed `T3D/player.cpp` and `T3D/gameBase/processList.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
@@ -133,6 +134,8 @@ pub struct ArenaGame {
     behind: Option<[f32; 3]>,
     /// Where the camera was drawn last frame.
     drawn_at: Option<[f32; 3]>,
+    /// The eye last drawn from the own figure, held while the server's next figure for it is on its way (a respawn).
+    held: Option<Eye>,
 }
 
 impl Deref for ArenaGame {
@@ -205,6 +208,7 @@ impl ArenaGame {
             boom: CameraBoom::new(0.0, CAMERA_CLEARANCE),
             behind: None,
             drawn_at: None,
+            held: None,
         })
     }
 
@@ -332,6 +336,7 @@ impl ArenaGame {
         self.camera_mode = None;
         self.boom.reset();
         self.behind = None;
+        self.held = None;
     }
 
     /// `ms` of the clock (see the module docs).
@@ -481,6 +486,12 @@ impl ArenaGame {
             None => self.scene.clear(),
         }
         drop(st);
+        // A new figure (a respawn) or a teleport cuts the camera to it: nothing eased across the way between.
+        if self.scene.own().is_some_and(|o| o.cut) {
+            self.blend.reset();
+            self.boom.reset();
+            self.behind = None;
+        }
         self.place_behind(dt);
         dt
     }
@@ -578,6 +589,14 @@ impl ArenaGame {
 
     /// The eye drawn this frame: [`ArenaGame::mode_eye`], eased from the last mode's after a switch.
     pub fn drawn_eye(&mut self) -> Eye {
+        // The figure gone and the server's next one not here yet (a respawn): the view stays where it was.
+        if self.in_game()
+            && self.scene.own().is_none()
+            && self.own_look().is_some()
+            && let Some(eye) = self.held
+        {
+            return eye;
+        }
         let target = self.mode_eye();
         let from = self.eye().position;
         let mut blend = self.blend;
@@ -596,6 +615,7 @@ impl ArenaGame {
         self.cramped = self.third_person() && blend.arrived() && room < least;
         let eye = if self.cramped { self.eye() } else { eye };
         self.drawn_at = Some(eye.position);
+        self.held = self.scene.own().map(|_| eye);
         eye
     }
 

@@ -259,7 +259,7 @@ function pollJoinLookup()
 
 // ---- the world's view
 
-$World::FootHelp = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
+$World::FootHelp = "W A S D walk   Shift sprint   Ctrl crouch   C toggle crouch   Z prone   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
 $World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   F light   Mouse turns the camera   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
 $World::RideHelp = "Mouse looks around   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
 
@@ -324,7 +324,7 @@ function updateMove()
    $mvRightAction = $World::Right * $World::Pace;
 }
 // The jump trigger is held while the key is (an odd count).
-function jump(%v) { $mvTriggerCount2++; }
+function jump(%v) { if (!poseJumpKey(%v)) $mvTriggerCount2++; }
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it (in a seat: behind the buggy).
@@ -528,11 +528,13 @@ function quitGame() { quit(); }
 function clientCmdFell()
 {
    showNote("You fell off. Back to the start.");
+   releasePoseKeys();
 }
 
 function clientCmdRespawned()
 {
    showNote("Back to the start.");
+   releasePoseKeys();
 }
 
 // The day's pace changed (%speed times its own, 0 stopped) at %time of the day (0 sunrise, 0.25 noon), or (%speed "") it may

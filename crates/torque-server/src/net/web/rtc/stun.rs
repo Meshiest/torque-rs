@@ -7,6 +7,8 @@ const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
 const BINDING_REQUEST: [u8; 2] = [0x00, 0x01];
 /// The USERNAME attribute.
 const USERNAME: u16 = 0x0006;
+/// The XOR-MAPPED-ADDRESS attribute.
+const XOR_MAPPED_ADDRESS: u16 = 0x0020;
 /// The most attributes looked at before the USERNAME (a browser puts it first or second).
 const MAX_ATTRIBUTES: usize = 16;
 
@@ -36,6 +38,66 @@ pub(crate) fn binding_ufrag(datagram: &[u8]) -> Option<&[u8]> {
     None
 }
 
+/// The transaction ID of a STUN message of `kind` (a binding request [`BINDING`], a success response
+/// [`BINDING_SUCCESS`]) whose header is well formed and whose length is the datagram's.
+pub(crate) fn transaction(datagram: &[u8], kind: [u8; 2]) -> Option<[u8; 12]> {
+    let header = datagram.get(..20)?;
+    if header.get(..2)? != kind || header.get(4..8)? != MAGIC_COOKIE {
+        return None;
+    }
+    let len = usize::from(u16::from_be_bytes([*header.get(2)?, *header.get(3)?]));
+    if 20 + len != datagram.len() {
+        return None;
+    }
+    header.get(8..20)?.try_into().ok()
+}
+
+/// A binding success response's message type.
+pub(crate) const BINDING_SUCCESS: [u8; 2] = [0x01, 0x01];
+/// A binding request's message type, for [`transaction`].
+pub(crate) const BINDING: [u8; 2] = BINDING_REQUEST;
+
+/// A binding request with transaction `id` and no attributes (asking a STUN server which address it sees us at).
+pub(crate) fn binding_request(id: &[u8; 12]) -> [u8; 20] {
+    let mut d = [0u8; 20];
+    d[..2].copy_from_slice(&BINDING_REQUEST);
+    d[4..8].copy_from_slice(&MAGIC_COOKIE);
+    d[8..].copy_from_slice(id);
+    d
+}
+
+/// The XOR-MAPPED-ADDRESS of a binding success response to transaction `id` (IPv4 only), if the datagram is one.
+pub(crate) fn mapped_address(datagram: &[u8], id: &[u8; 12]) -> Option<std::net::SocketAddr> {
+    let header = datagram.get(..20)?;
+    if header.get(..2)? != [0x01, 0x01]
+        || header.get(4..8)? != MAGIC_COOKIE
+        || header.get(8..20)? != id
+    {
+        return None;
+    }
+    let len = usize::from(u16::from_be_bytes([*header.get(2)?, *header.get(3)?]));
+    if len % 4 != 0 || 20 + len != datagram.len() {
+        return None;
+    }
+    let mut at = 20;
+    for _ in 0..MAX_ATTRIBUTES {
+        let head = datagram.get(at..at + 4)?;
+        let kind = u16::from_be_bytes([*head.first()?, *head.get(1)?]);
+        let size = usize::from(u16::from_be_bytes([*head.get(2)?, *head.get(3)?]));
+        let value = datagram.get(at + 4..at + 4 + size)?;
+        if kind == XOR_MAPPED_ADDRESS && size == 8 && value.get(1) == Some(&1) {
+            let port = u16::from_be_bytes([*value.get(2)?, *value.get(3)?]) ^ 0x2112;
+            let mut ip = [0u8; 4];
+            for (i, b) in ip.iter_mut().enumerate() {
+                *b = value.get(4 + i)? ^ MAGIC_COOKIE.get(i)?;
+            }
+            return Some(std::net::SocketAddr::from((ip, port)));
+        }
+        at += 4 + size.div_ceil(4) * 4;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,6 +116,34 @@ mod tests {
         d.extend_from_slice(&[7; 12]);
         d.extend_from_slice(&body);
         d
+    }
+
+    #[test]
+    fn a_binding_answer_says_where_we_are_seen() {
+        let id = [3u8; 12];
+        let req = binding_request(&id);
+        assert_eq!(binding_ufrag(&req), None, "it names no fragment");
+        // 192.0.2.7:40000 as a STUN server writes it (RFC 5389: port XOR 0x2112, address XOR the cookie).
+        let port = (40000u16 ^ 0x2112).to_be_bytes();
+        let ip = [192 ^ 0x21, 0x12, 2 ^ 0xa4, 7 ^ 0x42];
+        let mut d = vec![0x01, 0x01, 0, 12];
+        d.extend_from_slice(&MAGIC_COOKIE);
+        d.extend_from_slice(&id);
+        d.extend_from_slice(&[
+            0x00, 0x20, 0, 8, 0, 1, port[0], port[1], ip[0], ip[1], ip[2], ip[3],
+        ]);
+        assert_eq!(
+            mapped_address(&d, &id),
+            Some("192.0.2.7:40000".parse().unwrap())
+        );
+        assert_eq!(mapped_address(&d, &[4; 12]), None, "another transaction");
+        let mut v6 = d.clone();
+        v6[25] = 2;
+        assert_eq!(mapped_address(&v6, &id), None);
+        assert_eq!(mapped_address(&d[..d.len() - 1], &id), None);
+        for cut in 0..d.len() {
+            let _ = mapped_address(&d[..cut], &id);
+        }
     }
 
     #[test]

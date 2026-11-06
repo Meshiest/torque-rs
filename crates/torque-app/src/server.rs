@@ -71,6 +71,20 @@ pub enum Listen {
         public: bool,
         web: Rc<WebListen>,
     },
+    /// A transport the caller made and bound (a player's host found through a room service, torque-server's
+    /// `net::web::p2p`; a browser host's worker link).
+    Bound(BoundTransport),
+}
+
+/// A transport made and bound before the server starts ([`Listen::Bound`]).
+#[derive(Clone)]
+pub struct BoundTransport(pub SharedTransport);
+
+impl std::fmt::Debug for BoundTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let at = self.0.borrow().local_addr();
+        f.debug_tuple("BoundTransport").field(&at).finish()
+    }
 }
 
 /// How a server starts: where it listens, the globals set before `server.cs` runs, and the script function that starts the
@@ -147,6 +161,7 @@ impl GameServer {
                 public,
                 web,
             } => (web_transport(*address, *port, *public, web)?, None),
+            Listen::Bound(bound) => (Rc::clone(&bound.0), None),
             &Listen::Memory(at) => {
                 let (transport, end) = MemoryTransport::new();
                 let transport: SharedTransport = Rc::new(RefCell::new(transport));

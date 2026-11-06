@@ -53,6 +53,44 @@ pub const SUN_RADIUS: f32 = 0.27;
 pub const AO_RADIUS: f32 = 1.0;
 pub const AO_SUN: f32 = 0.5;
 
+/// The largest cell of a sheet of water ([`WorldView::set_water`]).
+pub const WATER_CELL: f32 = 32.0;
+/// The most cells on a side of a sheet of water.
+pub const WATER_MAX_CELLS: usize = 64;
+
+/// A sheet of water ([`WorldView::set_water`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Water<'a> {
+    /// Its texture (a path the reader finds) and how many units one repeat of it covers.
+    pub texture: &'a str,
+    pub tile: f32,
+    /// Its tint (gamma bytes; the alpha is the surface's opacity): the renderer's light absorption under it follows it.
+    pub color: [u8; 4],
+    /// Its surface's height, and the rectangle it covers (x, y).
+    pub level: f32,
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+}
+
+impl Water<'_> {
+    /// Whether its height, rectangle and tile are finite numbers, its rectangle's span too.
+    pub fn is_finite(&self) -> bool {
+        let span = [self.max[0] - self.min[0], self.max[1] - self.min[1]];
+        [
+            self.level,
+            self.tile,
+            self.min[0],
+            self.min[1],
+            self.max[0],
+            self.max[1],
+            span[0],
+            span[1],
+        ]
+        .iter()
+        .all(|v| v.is_finite())
+    }
+}
+
 /// The most triangles of one part of a static mesh the GPU culls on its own ([`WorldView::set_static_mesh`]).
 pub const MESH_CLUSTER_TRIANGLES: u32 = 512;
 /// The sampler of a static mesh's untextured surfaces.
@@ -347,6 +385,57 @@ impl WorldView {
             })
             .collect();
         self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+        self.statics_changed = true;
+    }
+
+    /// A sheet of water: the plane at height `level` over the rectangle `min`..`max` (x, y), tinted `color` (its alpha the
+    /// surface's opacity) with `texture` (a path the reader finds) repeated every `tile` units, drawn by the renderer as water
+    /// (its waves, refraction, reflection and the sun's glint). It is cut into cells of at most [`WATER_CELL`] units so the
+    /// fog and the light are interpolated over it. Replaces the water there was.
+    /// A sheet whose height, rectangle or tile is not finite numbers (a map's file is not trusted) is not drawn: the water
+    /// there was is taken away.
+    pub fn set_water(&mut self, assets: &dyn Assets, water: &Water<'_>) {
+        if !water.is_finite() {
+            self.scene.water.clear();
+            self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+            self.statics_changed = true;
+            return;
+        }
+        let mut set = TextureSet::new(assets);
+        let found = set.get(water.texture);
+        let local = self.intern(set.into_textures());
+        let draw = water_draw(found, water);
+        self.scene.water = vec![HdDraw::from_fixed(&draw, material::KIND_PLANE, &local)];
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+        self.statics_changed = true;
+    }
+
+    /// Whether the ground's textures are varied against visible tiling (stochastic tiling of every terrain layer and a
+    /// large-scale tint: [`torque_render_scene::hd::HdScene::ground_variation`]); off by default.
+    pub fn set_ground_variation(&mut self, on: bool) {
+        self.scene.ground_variation = on;
+    }
+
+    /// The volumetric clouds' own clock in seconds ([`torque_render_scene::hd::HdScene::cloud_time`]: their drift, change of
+    /// shape and shadows), or None for the effect time. A game advances it as fast as it wants the clouds to run.
+    pub fn set_cloud_time(&mut self, time: Option<f32>) {
+        self.scene.cloud_time = time;
+    }
+
+    /// No ground and no water: the floor, the terrain and the water taken away.
+    pub fn clear_ground(&mut self) {
+        self.scene.planes.clear();
+        self.scene.water.clear();
+        self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
+        self.statics_changed = true;
+    }
+
+    /// Forgets the day's light ([`WorldView::set_day`]): the sky made for its sun and its clouds' light. The view is lit by
+    /// the next [`Daylight`] it is given (a world without a day after one with it).
+    pub fn clear_day(&mut self) {
+        self.scene.atmosphere_sun = None;
+        self.scene.clouds = None;
+        self.day_sun = None;
         self.statics_changed = true;
     }
 
@@ -748,6 +837,55 @@ fn floor_draw(texture: Option<usize>, color: [u8; 3], half: f32, tile: f32) -> D
     }
 }
 
+/// A sheet of water's draw: its rectangle cut into cells of at most [`WATER_CELL`] units, blended, both sides drawn, no depth
+/// written (the renderer draws a blended plane as water).
+fn water_draw(texture: Option<usize>, w: &Water<'_>) -> Draw {
+    let cells = |len: f32| ((len.abs() / WATER_CELL).ceil() as usize).clamp(1, WATER_MAX_CELLS);
+    let size = [w.max[0] - w.min[0], w.max[1] - w.min[1]];
+    let (nx, ny) = (cells(size[0]), cells(size[1]));
+    let tile = w.tile.max(1e-3);
+    let point = |i: usize, j: usize| {
+        let x = w.min[0] + size[0] * i as f32 / nx as f32;
+        let y = w.min[1] + size[1] * j as f32 / ny as f32;
+        Vertex {
+            position: [x, y, w.level],
+            normal: [0.0, 0.0, 1.0],
+            color: w.color,
+            uv: [x / tile, y / tile],
+        }
+    };
+    let mut vertices = Vec::with_capacity(nx * ny * 6);
+    for j in 0..ny {
+        for i in 0..nx {
+            let q = [
+                point(i, j),
+                point(i + 1, j),
+                point(i + 1, j + 1),
+                point(i, j + 1),
+            ];
+            vertices.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+        }
+    }
+    Draw {
+        label: "water".to_string(),
+        vertices,
+        lighting: true,
+        tex_env: if texture.is_some() {
+            TexEnv::Modulate
+        } else {
+            TexEnv::None
+        },
+        texture: texture.map(|i| (i, MESH_SAMPLER)),
+        blend: Blend::Alpha,
+        cull: Cull::None,
+        depth_test: true,
+        depth_write: false,
+        fog: true,
+        lights: Vec::new(),
+        vertex_key: None,
+    }
+}
+
 /// A static mesh object of `draws` (their textures indices into `local`, the frame's table): translucent when a draw blends.
 fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
     let translucent = draws.iter().any(|d| d.blend != Blend::Opaque);
@@ -767,5 +905,53 @@ fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sheet of water from a hostile map: a height, a corner or a tile that is not a finite number (or a span that overflows)
+    /// is refused; a plain one is drawn as cells of its rectangle.
+    #[test]
+    fn water_with_numbers_that_are_not_finite_is_refused() {
+        let plain = Water {
+            texture: "kit/water.png",
+            tile: 24.0,
+            color: [64, 112, 120, 200],
+            level: 30.0,
+            min: [-100.0, -50.0],
+            max: [100.0, 50.0],
+        };
+        assert!(plain.is_finite());
+        let d = water_draw(None, &plain);
+        assert_eq!(d.vertices.len(), 7 * 4 * 6);
+        assert!(d.vertices.iter().all(|v| v.position[2] == 30.0));
+        for hostile in [
+            Water {
+                level: f32::NAN,
+                ..plain
+            },
+            Water {
+                tile: f32::INFINITY,
+                ..plain
+            },
+            Water {
+                min: [f32::NEG_INFINITY, 0.0],
+                ..plain
+            },
+            Water {
+                max: [0.0, f32::NAN],
+                ..plain
+            },
+            Water {
+                min: [-3e38, 0.0],
+                max: [3e38, 1.0],
+                ..plain
+            },
+        ] {
+            assert!(!hostile.is_finite(), "{hostile:?}");
+        }
     }
 }

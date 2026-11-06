@@ -43,6 +43,8 @@
 //! on it both ways, under the same stand-in address.
 
 pub mod http;
+#[cfg(feature = "p2p")]
+pub mod p2p;
 #[cfg(feature = "webrtc")]
 pub mod rtc;
 pub mod stand_in;
@@ -254,6 +256,22 @@ impl WebTransport {
             .iter()
             .find(|c| c.stand_in == Some(addr) && c.is_socket())
             .map(|c| c.peer)
+    }
+
+    /// Closes the game socket that stands for `addr` (it is reported gone, [`Transport::take_gone`]); false when there is
+    /// none.
+    pub fn close_socket(&mut self, addr: SocketAddr) -> bool {
+        let now = Instant::now();
+        let (mut pass, conns) = self.pass_parts(now);
+        let Some(conn) = conns
+            .iter_mut()
+            .find(|c| c.stand_in == Some(addr) && c.is_socket())
+        else {
+            return false;
+        };
+        conn.shut(conn::Closed::Done, &mut pass);
+        conns.retain(|c| !c.is_gone());
+        true
     }
 
     /// The game sockets open or reserved from the peer address `ip`.
@@ -493,7 +511,7 @@ impl Transport for WebTransport {
     }
 
     fn send_to(&mut self, to: SocketAddr, data: &[u8]) -> bool {
-        if data.len() > NET_MAX_DATAGRAM {
+        if data.len() > self.setup.limits.max_message.max(NET_MAX_DATAGRAM) {
             return false;
         }
         let now = Instant::now();

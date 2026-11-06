@@ -57,6 +57,9 @@ web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Win
 web = ["torque-server/web", "torque-client/web-socket"]
 # Browsers on WebRTC data channels beside their game sockets (the server's `WebSetup::rtc`, the client's `web_rtc`).
 webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc"]
+# Player-hosted games through a room service: a server on a player's host transport (`Listen::Bound` with torque-server's
+# `net::web::p2p`) and a client's datagrams to it (torque-client's `net::room_join`).
+p2p = ["webrtc", "torque-server/p2p", "torque-client/p2p"]
 
 [dev-dependencies]
 criterion = { workspace = true }

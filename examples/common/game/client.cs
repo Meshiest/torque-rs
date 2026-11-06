@@ -38,9 +38,10 @@ function clearNote()
 
 // ---- the figure's poses
 //
-// Ctrl (or C: a browser closes its tab on Ctrl+W) held crouches and Z lies down or gets up again: each is a move trigger the
-// server reads as Torque3D names them ($player::crouchTrigger 3 and $player::proneTrigger 1, set in common/server.cs), held while its count is odd. The server
-// refuses a pose with no room for it (no standing up under a low ceiling) and shows the others the pose it chose. (The
+// Ctrl held crouches, C crouches or stands (a browser closes its tab on Ctrl+W), Z lies down or gets up, and Space while
+// crouched by C or lying down stands up rather than jumping. Each pose is a move trigger the server reads as Torque3D names
+// them ($player::crouchTrigger 3 and $player::proneTrigger 1, set in common/server.cs), held while its count is odd. The
+// server refuses a pose with no room for it (no standing up under a low ceiling) and shows the others the pose it chose. (The
 // figure walks by default and Shift sprints: each game's own moves.)
 $Pose::CrouchTrigger = 3;
 $Pose::ProneTrigger = 1;
@@ -50,17 +51,66 @@ function setTriggerHeld(%trigger, %held)
    if ((%count % 2 == 1) != (%held != 0))
       $mvTriggerCount[%trigger] = %count + 1;
 }
-function crouchKey(%v) { setTriggerHeld($Pose::CrouchTrigger, %v); }
-// C's own function: an action map keeps one key for each function.
-function crouchKeyC(%v) { crouchKey(%v); }
+function poseProne() { return $mvTriggerCount[$Pose::ProneTrigger] % 2 == 1; }
+// The crouch trigger: held while Ctrl is or while C left the figure crouched.
+function holdCrouch() { setTriggerHeld($Pose::CrouchTrigger, $Pose::CrouchHeld || $Pose::CrouchToggled); }
+// Ctrl: crouched while held; pressed lying down, the figure gets up to its knees.
+function crouchKey(%v)
+{
+   if (%v && poseProne())
+      setTriggerHeld($Pose::ProneTrigger, false);
+   $Pose::CrouchHeld = %v != 0;
+   holdCrouch();
+}
+// C: crouches or stands; lying down, it gets up to a crouch.
+function crouchToggleKey(%v)
+{
+   if (!%v)
+      return;
+   if (poseProne())
+   {
+      setTriggerHeld($Pose::ProneTrigger, false);
+      $Pose::CrouchToggled = true;
+   }
+   else
+      $Pose::CrouchToggled = !$Pose::CrouchToggled;
+   holdCrouch();
+}
+// Z: lies down or gets up.
 function proneKey(%v)
 {
-   if (%v)
-      setTriggerHeld($Pose::ProneTrigger, $mvTriggerCount[$Pose::ProneTrigger] % 2 == 0);
+   if (!%v)
+      return;
+   %down = !poseProne();
+   setTriggerHeld($Pose::ProneTrigger, %down);
+   if (%down)
+      $Pose::CrouchToggled = false;
+   holdCrouch();
 }
-// Lets go of both pose keys (a map change or a seat leaves neither held: the figure stands up when there is room).
+// Space lying down or crouched by C stands up rather than jumping: the press lets go of the pose and its release is eaten
+// too, so the jump trigger's count stays even. True when the key was the pose's (the game's jump leaves its trigger alone).
+function poseJumpKey(%v)
+{
+   if (%v && (poseProne() || $Pose::CrouchToggled))
+   {
+      setTriggerHeld($Pose::ProneTrigger, false);
+      $Pose::CrouchToggled = false;
+      holdCrouch();
+      $Pose::JumpEaten = true;
+      return true;
+   }
+   if (!%v && $Pose::JumpEaten)
+   {
+      $Pose::JumpEaten = false;
+      return true;
+   }
+   return false;
+}
+// Lets go of every pose (a map change, a seat or a respawn leaves none held: the figure stands up when there is room).
 function releasePoseKeys()
 {
+   $Pose::CrouchHeld = false;
+   $Pose::CrouchToggled = false;
    setTriggerHeld($Pose::CrouchTrigger, false);
    setTriggerHeld($Pose::ProneTrigger, false);
 }
@@ -68,6 +118,6 @@ function releasePoseKeys()
 function bindPoseKeys(%map)
 {
    %map.bind(keyboard, lcontrol, crouchKey);
-   %map.bind(keyboard, c, crouchKeyC);
+   %map.bind(keyboard, c, crouchToggleKey);
    %map.bind(keyboard, z, proneKey);
 }
