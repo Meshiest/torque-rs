@@ -342,8 +342,9 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
 
 impl<G> AppWindow<G> {
     /// Lets go of the window's state in order: the view first (its renderer stops and waits for its worker threads, which hold
-    /// the device), then the surface and the device, then the game. The device is let go here, with nothing of the driver's
-    /// still running on another thread, rather than at the process's end.
+    /// the device), then the surface and the device, then the game. The device is let go here rather than at the process's
+    /// end; the arena's ahead thread may still hold a clone for the buffers it is making (the device is counted, so nothing is
+    /// freed under it).
     #[cfg(not(target_arch = "wasm32"))]
     fn end(self) {
         let AppWindow {
