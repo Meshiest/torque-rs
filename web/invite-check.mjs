@@ -214,6 +214,10 @@ try {
   if (!h.figure) await playAlone(host).catch((e) => problems.push(`Play alone: ${e.message}`));
   h = await wait(host, Number(seconds) * 1000, (s) => s.figure);
   if (!h.figure) problems.push(`the host page has no figure after Play alone (status "${h.status}")`);
+  // In the game: the gear under the frame-rate line.
+  await new Promise((r) => setTimeout(r, 1000));
+  await writeFile(shot('solo-play.png'), await host.screenshot({ type: 'png' }));
+  console.log(`picture: ${shot('solo-play.png')}`);
 
   // The menu's Host with a link: the panel, its privacy text shown before any link is made. A game played alone in the
   // page itself (the vehicle demo) opens the page again to host (`?invites=1`), and the panel opens once its server runs.

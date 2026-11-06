@@ -55,3 +55,15 @@ export function save(storage, settings) {
     return false;
   }
 }
+
+// The bottom of the game's frame-rate line, in the GUI pixels the game lays out at: each example's play view has it at the
+// top right (`PlayStats`, 18 pixels tall from 6 down; the arena's sits in a band from 12 to 36 down).
+export const HUD_BOTTOM = 36;
+
+// Where the gear goes, in CSS pixels from the top, so it sits under the frame-rate line: `height` is the window's height in
+// CSS pixels and `size` the size the game draws at (`data-torque-size`, `WxH`). Null while the game has not said its size.
+export function gearTop(height, size) {
+  const drawn = Number(/^\d+x(\d+)$/.exec(String(size ?? ''))?.[1]);
+  if (!(drawn > 0) || !(height > 0)) return null;
+  return Math.max(8, Math.ceil((HUD_BOTTOM * height) / drawn) + 8);
+}
