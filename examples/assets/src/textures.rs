@@ -490,3 +490,65 @@ pub fn foliage(color: Rgb, seed: u32) -> io::Result<Vec<u8>> {
         scaled(color, 1.0 + 0.14 * mottle + 0.05 * grain)
     })
 }
+
+/// The valley's ground: a meadow's grass, the mountains' rock, the lake's shore sand, and the lake's water.
+pub const GRASS: Rgb = [96, 128, 58];
+pub const ROCK: Rgb = [128, 120, 110];
+pub const SHORE_SAND: Rgb = [196, 178, 140];
+pub const WATER: Rgb = [92, 128, 132];
+/// The valley's ground textures' size (one repeat [`crate::valley::GROUND_TILE`] m).
+pub const GROUND_SIZE: u32 = 128;
+
+/// The valley's grass: a meadow green, patchy in larger drifts (drier, yellower) and fine blades of grain.
+pub fn valley_grass() -> io::Result<Vec<u8>> {
+    let size = [GROUND_SIZE; 2];
+    png(GROUND_SIZE, GROUND_SIZE, |x, y| {
+        let drift = fbm(x, y, size, [2, 2], 3, 211);
+        let mottle = fbm(x, y, size, [8, 8], 3, 223) - 0.5;
+        let grain = lattice(x, y, 227) - 0.5;
+        let dry = smoothstep(0.5, 0.75, drift);
+        let c = [0, 1, 2].map(|k| {
+            let green = f32::from(GRASS[k]);
+            let straw = f32::from([150u8, 150, 76][k]);
+            (green + (straw - green) * 0.45 * dry) as u8
+        });
+        scaled(c, 1.0 + 0.16 * mottle + 0.10 * grain)
+    })
+}
+
+/// The valley's rock: gray stone in broad bands and cracks; its alpha its height (high on the bands, low in the cracks), so it
+/// breaks into the grass unevenly.
+pub fn valley_rock() -> io::Result<Vec<u8>> {
+    let size = [GROUND_SIZE; 2];
+    png_rgba(GROUND_SIZE, GROUND_SIZE, |x, y| {
+        let bands = fbm(x, y, size, [2, 6], 4, 233);
+        let crack = 1.0 - (2.0 * fbm(x, y, size, [6, 6], 3, 239) - 1.0).abs();
+        let grain = lattice(x, y, 241) - 0.5;
+        let by = 0.82 + 0.35 * bands - 0.22 * smoothstep(0.8, 0.95, crack) + 0.08 * grain;
+        let c = scaled(ROCK, by);
+        let alpha = (255.0 * (0.25 + 0.75 * bands)).round() as u8;
+        [c[0], c[1], c[2], alpha]
+    })
+}
+
+/// The lake's shore: pale sand, rippled and speckled; its alpha its height in soft patches.
+pub fn valley_sand() -> io::Result<Vec<u8>> {
+    let size = [GROUND_SIZE; 2];
+    png_rgba(GROUND_SIZE, GROUND_SIZE, |x, y| {
+        let ripple = fbm(x, y, size, [3, 24], 2, 251) - 0.5;
+        let patch = fbm(x, y, size, [4, 4], 3, 257);
+        let grain = lattice(x, y, 263) - 0.5;
+        let c = scaled(SHORE_SAND, 1.0 + 0.08 * ripple + 0.10 * grain);
+        let alpha = (255.0 * (0.3 + 0.7 * patch)).round() as u8;
+        [c[0], c[1], c[2], alpha]
+    })
+}
+
+/// The lake's surface: a soft blue-green with slow ripples (the water's bump and its light detail).
+pub fn valley_water() -> io::Result<Vec<u8>> {
+    let size = [GROUND_SIZE; 2];
+    png(GROUND_SIZE, GROUND_SIZE, |x, y| {
+        let ripple = fbm(x, y, size, [6, 4], 4, 269) - 0.5;
+        scaled(WATER, 1.0 + 0.25 * ripple)
+    })
+}

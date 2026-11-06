@@ -504,7 +504,7 @@ new GameTSCtrl(PlayGui)
       new GuiTextCtrl(PoseHelp)
       {
          profile = ArenaDimProfile; position = "10 24"; extent = "442 18"; visible = true; enabled = true;
-         text = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump";
+         text = "W A S D walk   Shift sprint   Ctrl crouch   C toggle crouch   Z prone   Space jump";
       };
    };
 };
@@ -743,7 +743,7 @@ function moveBack(%v) { $Arena::KeyBack = %v; applyMoves(); }
 function moveLeft(%v) { $Arena::KeyLeft = %v; applyMoves(); }
 function moveRight(%v) { $Arena::KeyRight = %v; applyMoves(); }
 function sprint(%v) { $Arena::Sprint = %v != 0; applyMoves(); }
-function jump(%v) { $mvTriggerCount2++; }
+function jump(%v) { if (!poseJumpKey(%v)) $mvTriggerCount2++; }
 // The trigger counts once going down and once coming up.
 function fire(%v) { $mvTriggerCount0++; }
 // Aiming down the sights while the right button is held: the move's trigger 4 tells the server (the figure raises its pistol
@@ -994,6 +994,8 @@ function clientCmdHit(%name, %part)
 function clientCmdKnockedOut(%ms)
 {
    showNote("Knocked out. Back in a moment...");
+   // The next figure starts standing.
+   releasePoseKeys();
 }
 
 // ---- the screen's hurt and hit marks (the client draws them from these: a red edge and a mark toward %from when hurt, an X

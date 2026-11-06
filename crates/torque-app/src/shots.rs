@@ -60,6 +60,19 @@ impl<G: App> Seat<G> {
         }
         gpu.read_back(&self.target).map_err(|e| e.to_string())
     }
+
+    /// A picture of the world alone as it stands (the clock held), over the whole target, after the renderer settled on it:
+    /// no GUI drawn over it (no HUD, hints or menus), whatever rectangle the game's canvas gives the world.
+    pub fn world_picture(&mut self, gpu: &Gpu) -> Result<Frame, String> {
+        let rect = [0, 0, self.target.width, self.target.height];
+        self.view.reset_history();
+        for _ in 0..SETTLE_FRAMES {
+            let (_, eye) = self.game.frame(&mut self.view);
+            let eye = self.eye.unwrap_or(eye);
+            self.view.draw_world(&self.target.color, rect, eye)?;
+        }
+        gpu.read_back(&self.target).map_err(|e| e.to_string())
+    }
 }
 
 /// The seats' clocks run `ms`, a frame of each every [`FRAME_MS`].

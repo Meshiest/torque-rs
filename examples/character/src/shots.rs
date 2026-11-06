@@ -22,6 +22,8 @@ pub enum Step {
     Wait(u32),
     /// A picture of the last frame, named.
     Shot(&'static str),
+    /// A picture of the world alone as the last frame saw it (no hints over it, over the whole picture), named.
+    WorldShot(&'static str),
 }
 
 /// The run that shows each state: standing, walking sideways past the camera, then a jump while walking.
@@ -34,6 +36,20 @@ pub const STATES: &[Step] = &[
     Step::Key(Key::Space, true),
     Step::Wait(300),
     Step::Shot("jump"),
+    Step::Key(Key::Space, false),
+    Step::Key(Key::D, false),
+];
+
+/// [`STATES`]' run with pictures of the world alone (the front page's).
+pub const WORLD_STATES: &[Step] = &[
+    Step::Wait(1000),
+    Step::WorldShot("idle"),
+    Step::Key(Key::D, true),
+    Step::Wait(800),
+    Step::WorldShot("walk"),
+    Step::Key(Key::Space, true),
+    Step::Wait(300),
+    Step::WorldShot("jump"),
     Step::Key(Key::Space, false),
     Step::Key(Key::D, false),
 ];
@@ -56,6 +72,7 @@ pub fn play(
     game.host.surface_size(size);
     let target = gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?;
     let mut shots = Vec::new();
+    let mut last_eye = None;
     for step in script {
         match *step {
             Step::Key(key, down) => game.key(key, down),
@@ -64,9 +81,15 @@ pub fn play(
                     game.step(FRAME_MS);
                     let (gui, eye) = game.frame(view);
                     view.draw(gpu, &target.color, &gui, eye)?;
+                    last_eye = Some(eye);
                 }
             }
             Step::Shot(name) => {
+                shots.push((name, gpu.read_back(&target).map_err(|e| e.to_string())?));
+            }
+            Step::WorldShot(name) => {
+                let eye = last_eye.ok_or("no frame drawn before the picture")?;
+                view.draw_world(&target.color, [0, 0, size.0, size.1], eye)?;
                 shots.push((name, gpu.read_back(&target).map_err(|e| e.to_string())?));
             }
         }
