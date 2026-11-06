@@ -330,7 +330,7 @@ fn create(device: &wgpu::Device, data: Option<&[u8]>) -> wgpu::PipelineCache {
     // SAFETY: wgpu requires `data` to be bytes an earlier `PipelineCache::get_data` returned, for an adapter with the
     // same `util::pipeline_cache_key`, because the driver trusts them. That cannot be proven of a file, so this rests
     // on what is checked. The file is read from the directory a host set (`set_dir`: one only the current user may
-    // write, such as `user_dir`'s; that adds no privilege boundary, since the driver's own caches are just as writable
+    // write, such as `user_dir`'s; that crosses no privilege boundary, since the driver's own caches are just as writable
     // by that user), under a name made of the pipeline cache key (backend, vendor, device) and a hash of the driver's
     // name and version, so another GPU's or driver's file is not picked. It is written whole to a temporary file and
     // renamed over the old one, so it is never read half-written, and at most `MAX_FILE` bytes are read. Its own
