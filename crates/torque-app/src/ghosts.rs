@@ -28,6 +28,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
+use glam::Vec3;
+
 use torque_ghost_world::images::ImageRecoil;
 use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
 use torque_render_scene::hd::DynamicObject;
@@ -639,36 +641,29 @@ struct Bolt {
 
 /// Where the segment `from`..`to` first crosses one of `faces` (either side), as its share of the way (0 to 1).
 pub fn first_hit(from: [f32; 3], to: [f32; 3], faces: &[Triangle]) -> Option<f32> {
-    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let cross = |a: [f32; 3], b: [f32; 3]| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
-    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let d = sub(to, from);
+    let from = Vec3::from(from);
+    let d = Vec3::from(to) - from;
     let mut best: Option<f32> = None;
-    for [a, b, c] in faces {
-        let (e1, e2) = (sub(*b, *a), sub(*c, *a));
-        let h = cross(d, e2);
-        let det = dot(e1, h);
+    for face in faces {
+        let [a, b, c] = face.map(Vec3::from);
+        let (e1, e2) = (b - a, c - a);
+        let h = d.cross(e2);
+        let det = e1.dot(h);
         if det.abs() < 1e-9 {
             continue;
         }
         let inv = 1.0 / det;
-        let s = sub(from, *a);
-        let u = dot(s, h) * inv;
+        let s = from - a;
+        let u = s.dot(h) * inv;
         if !(0.0..=1.0).contains(&u) {
             continue;
         }
-        let q = cross(s, e1);
-        let v = dot(d, q) * inv;
+        let q = s.cross(e1);
+        let v = d.dot(q) * inv;
         if v < 0.0 || u + v > 1.0 {
             continue;
         }
-        let t = dot(e2, q) * inv;
+        let t = e2.dot(q) * inv;
         if (0.0..=1.0).contains(&t) && best.is_none_or(|b| t < b) {
             best = Some(t);
         }

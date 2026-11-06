@@ -20,6 +20,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+use glam::Vec3;
+
 use torque_ghost_world::tge::TgeClientSet;
 use torque_ghost_world::world::{ClientWorld, Pose};
 use torque_ghosts::TgeRecord;
@@ -171,22 +173,6 @@ pub struct Interiors {
     pane_counts: BTreeMap<u32, usize>,
     panes_used: usize,
     serial: u32,
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 impl Interiors {
@@ -350,20 +336,17 @@ fn build(
         for t in corners.chunks_exact(3) {
             let mut v = [0, 1, 2].map(|c| {
                 let (p, n, uv) = t[c];
-                let normal = m.mul_v([n[0] / scale[0], n[1] / scale[1], n[2] / scale[2]]);
-                let len = dot(normal, normal).sqrt().max(1e-12);
+                let scale = Vec3::from(scale);
+                let normal = Vec3::from(m.mul_v((Vec3::from(n) / scale).to_array()));
                 Vertex {
-                    position: m.mul_p([p[0] * scale[0], p[1] * scale[1], p[2] * scale[2]]),
-                    normal: normal.map(|x| x / len),
+                    position: m.mul_p((Vec3::from(p) * scale).to_array()),
+                    normal: (normal / normal.length().max(1e-12)).to_array(),
                     color: [255; 4],
                     uv,
                 }
             });
-            let face = cross(
-                sub(v[1].position, v[0].position),
-                sub(v[2].position, v[0].position),
-            );
-            if dot(face, v[0].normal) > 0.0 {
+            let [a, b, c] = v.map(|x| Vec3::from(x.position));
+            if (b - a).cross(c - a).dot(v[0].normal.into()) > 0.0 {
                 v.swap(1, 2);
             }
             faces.push([v[0].position, v[2].position, v[1].position]);

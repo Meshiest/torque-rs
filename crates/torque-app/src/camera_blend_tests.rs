@@ -1,3 +1,5 @@
+use glam::Vec3;
+
 use super::*;
 
 fn eye(position: [f32; 3], yaw: f32, pitch: f32, fov: Option<u8>) -> Eye {
@@ -10,15 +12,7 @@ fn eye(position: [f32; 3], yaw: f32, pitch: f32, fov: Option<u8>) -> Eye {
 }
 
 fn apart(a: [f32; 3], b: [f32; 3]) -> f32 {
-    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>().sqrt()
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn length(a: [f32; 3]) -> f32 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+    Vec3::from(a).distance(b.into())
 }
 
 /// The milliseconds of each frame at `fps` (the way a window's clock hands them out: 17, 17, 16 at 60).
@@ -73,11 +67,11 @@ fn run(fps: f32, seconds: f32, speed: f32, switch: u32, again: &[u32]) -> Vec<(f
 }
 
 /// Each frame's velocity (from the frame before).
-fn velocities(frames: &[(f32, Eye, Eye)]) -> Vec<[f32; 3]> {
-    let mut v = vec![[0.0; 3]];
+fn velocities(frames: &[(f32, Eye, Eye)]) -> Vec<Vec3> {
+    let mut v = vec![Vec3::ZERO];
     for w in frames.windows(2) {
         let dt = w[1].0 - w[0].0;
-        v.push(sub(w[1].1.position, w[0].1.position).map(|x| x / dt));
+        v.push((Vec3::from(w[1].1.position) - Vec3::from(w[0].1.position)) / dt);
     }
     v
 }
@@ -87,7 +81,7 @@ fn largest_kick(frames: &[(f32, Eye, Eye)], from: f32) -> f32 {
     let v = velocities(frames);
     (2..frames.len())
         .filter(|&i| frames[i].0 > from)
-        .map(|i| length(sub(v[i], v[i - 1])))
+        .map(|i| v[i].distance(v[i - 1]))
         .fold(0.0, f32::max)
 }
 
@@ -164,7 +158,7 @@ fn a_switch_while_walking_keeps_the_cameras_velocity_and_does_not_lag() {
         let k = frames.iter().position(|f| f.0 >= 0.5).unwrap() + 1;
         // Up to the switch the camera walks with the figure.
         assert!(
-            apart(v[k - 1], [0.0, 4.0, 0.0]) < 0.05,
+            v[k - 1].distance(Vec3::new(0.0, 4.0, 0.0)) < 0.05,
             "{fps} fps: {:?}",
             v[k - 1]
         );
@@ -205,16 +199,16 @@ fn switching_again_mid_blend_continues_from_the_cameras_velocity_without_a_kink(
         let v = velocities(&frames);
         // The switch's frame: the first after the one at or past 0.38 s.
         let k = frames.iter().position(|f| f.0 >= 0.38).unwrap() + 1;
-        assert!(length(v[k - 1]) > 10.0, "{fps} fps: {:?}", v[k - 1]);
+        assert!(v[k - 1].length() > 10.0, "{fps} fps: {:?}", v[k - 1]);
         // The spring turns the camera's speed round: its push is the steepest from rest plus the carried speed's damping, at the
         // switch as after it.
         let kick = largest_kick(&frames, 0.0);
-        let carried = length(v[k - 1]);
+        let carried = v[k - 1].length();
         let w = CameraBlend::default().rate();
         let dt = 1.0 / fps;
         let bound = (steepest(whole) + 3.0 * w * carried) * dt + 0.05;
         assert!(
-            apart(v[k], v[k - 1]) <= bound,
+            v[k].distance(v[k - 1]) <= bound,
             "{fps} fps: the switch's frame {:?} after {:?}",
             v[k],
             v[k - 1]
@@ -224,10 +218,10 @@ fn switching_again_mid_blend_continues_from_the_cameras_velocity_without_a_kink(
         // Back at the eyes without passing them: the offset never turns past the eye along the way it came.
         let home = frames.last().unwrap();
         assert_eq!(home.1, home.2);
-        let from = sub(frames[k - 1].1.position, home.2.position);
+        let from = Vec3::from(frames[k - 1].1.position) - Vec3::from(home.2.position);
         for f in &frames[k..] {
-            let along = sub(f.1.position, f.2.position);
-            let dot: f32 = (0..3).map(|i| along[i] * from[i]).sum();
+            let along = Vec3::from(f.1.position) - Vec3::from(f.2.position);
+            let dot = along.dot(from);
             assert!(dot >= -1e-4, "{fps} fps: past the eye at {}", f.0);
         }
     }

@@ -3096,6 +3096,7 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "criterion",
+ "glam",
  "js-sys",
  "png",
  "serde_json",
@@ -3142,6 +3143,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "criterion",
+ "glam",
  "js-sys",
  "open",
  "str0m",

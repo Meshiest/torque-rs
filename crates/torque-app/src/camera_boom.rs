@@ -16,6 +16,8 @@
 //! stay [`BEHIND_MARGIN`] in front of it; else the camera is put at the room at once. A figure backing into a wall so pushes
 //! the camera in with it, frame by frame, and a camera pulled in behind a post comes the last bit past it in one step.
 
+use glam::Vec3;
+
 /// How far round the boom's end the side lines reach (m): beyond the near plane's corners (0.1 m out, 90° wide).
 pub const SIDE_RADIUS: f32 = 0.15;
 /// The time the camera takes to come 95% of the way in when the room shrinks, and out when it grows (seconds).
@@ -40,23 +42,6 @@ pub struct CameraBoom {
     length: Option<(f32, f32)>,
     /// Where the camera was last put.
     point: Option<[f32; 3]>,
-}
-
-fn add(a: [f32; 3], b: [f32; 3], s: f32) -> [f32; 3] {
-    [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit(a: [f32; 3]) -> Option<[f32; 3]> {
-    let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-    (n > 1e-6).then(|| a.map(|x| x / n))
 }
 
 impl Default for CameraBoom {
@@ -102,9 +87,13 @@ impl CameraBoom {
         let full = full.max(0.0);
         let least = self.nearest.clamp(0.0, full);
         let clearance = self.clearance;
-        let end = add(pivot, dir, full);
-        let side = unit(cross(dir, [0.0, 0.0, 1.0])).unwrap_or([1.0, 0.0, 0.0]);
-        let up = cross(side, dir);
+        let (from, dir) = (Vec3::from(pivot), Vec3::from(dir));
+        let along = |l: f32| (from + dir * l).to_array();
+        let end = from + dir * full;
+        let across = dir.cross(Vec3::Z);
+        let n = across.length();
+        let side = if n > 1e-6 { across / n } else { Vec3::X };
+        let up = side.cross(dir);
         let mut hit = full;
         for (axis, s) in [
             (side, 0.0),
@@ -113,7 +102,7 @@ impl CameraBoom {
             (up, SIDE_RADIUS),
             (up, -SIDE_RADIUS),
         ] {
-            if let Some(f) = cast(pivot, add(end, axis, s)) {
+            if let Some(f) = cast(pivot, (end + axis * s).to_array()) {
                 hit = hit.min(f.clamp(0.0, 1.0) * full);
             }
         }
@@ -145,14 +134,14 @@ impl CameraBoom {
         if length > room + 1e-4 {
             // Beyond the room, behind what came in the way: only while the camera got there without passing through anything
             // and keeps its near plane off the back of it.
-            let there = add(pivot, dir, length);
+            let there = along(length);
             let crossed = self.point.is_none_or(|from| cast(from, there).is_some());
             let close_behind = cast(there, pivot).is_some_and(|f| f * length < BEHIND_MARGIN);
             if crossed || close_behind {
                 (length, speed) = (room, 0.0);
             }
         }
-        let point = add(pivot, dir, length);
+        let point = along(length);
         self.length = Some((length, speed));
         self.point = Some(point);
         point
