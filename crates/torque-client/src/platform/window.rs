@@ -641,9 +641,11 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
     }
 
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
-        // The mouse's own counts while the game holds it (in game: moveMap's yaw and pitch).
+        // The mouse's own counts while the game holds it (in game: moveMap's yaw and pitch); in a browser, not while one of
+        // the page's panels is open over the game.
+        let held = self.grabbed && !web_input::page_panel_open();
         if let DeviceEvent::MouseMotion { delta } = event
-            && self.grabbed
+            && held
         {
             self.game
                 .host()
@@ -651,7 +653,7 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
         }
         // the wheel while the game holds the mouse (a `moveMap`'s `mouse0 zaxis`).
         if let DeviceEvent::MouseWheel { delta } = event
-            && self.grabbed
+            && held
         {
             for (m, w, l) in self.input.wheel(delta) {
                 self.game.host().post(m, w, l);
