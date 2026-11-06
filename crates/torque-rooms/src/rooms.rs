@@ -12,7 +12,9 @@
 //! name no room in a second from every address together, joiners waiting in one room. A joiner may send, and be sent, at
 //! most [`RoomLimits::signals_per_joiner`] signaling messages each way (an offer, an answer and a few candidates are a
 //! dozen), and a body must be a signaling message ([`torque_server::net::room::is_signal`]), so the service cannot carry
-//! a game. Lifetimes: a room ([`RoomLimits::room_lifetime`], then its host is told `expired` and its socket closed), a
+//! a game. Of those, one SDP each way: the joiner's offer and the host's answer to it (a second offer closes the joiner,
+//! as does a second answer to it; an answer from a joiner or an offer from a host closes its sender), so a join carries
+//! at most two SDPs and the rest is candidate lines. Lifetimes: a room ([`RoomLimits::room_lifetime`], then its host is told `expired` and its socket closed), a
 //! joiner's signaling ([`RoomLimits::joiner_lifetime`]), and a socket that has neither hosted nor joined
 //! ([`RoomLimits::unplaced_lifetime`] from its first message). The counts per address are capped
 //! ([`RoomLimits::tracked_addresses`]); when they are full a new address's requests are refused.
@@ -67,6 +69,15 @@ impl Default for RoomLimits {
 /// The longest body a message to the service may carry (room for the head the service puts on it).
 pub const MAX_BODY: usize = MAX_MESSAGE - 32;
 
+/// The signaling kinds that carry an SDP: one each per joiner, the offer from it and the answer to it.
+const OFFER: &str = "offer";
+const ANSWER: &str = "answer";
+
+/// A signaling body's kind (its first line).
+fn signal_kind(body: &str) -> &str {
+    body.split_once('\n').map_or(body, |(kind, _)| kind)
+}
+
 /// What the service does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Out {
@@ -88,7 +99,7 @@ pub struct RoomCounters {
     pub closed_bad: u64,
     /// Sockets closed by a lifetime.
     pub closed_late: u64,
-    /// Joiners closed for too many signaling messages.
+    /// Joiners closed for too many signaling messages (a second offer or answer among them).
     pub closed_chatty: u64,
     pub expired: u64,
 }
@@ -119,6 +130,10 @@ struct Joiner {
     since: Ms,
     sent: u32,
     got: u32,
+    /// Its offer went to the host.
+    offered: bool,
+    /// The host's answer went to it.
+    answered: bool,
 }
 
 #[derive(Debug)]
@@ -393,6 +408,8 @@ impl Rooms {
                 since: now,
                 sent: 0,
                 got: 0,
+                offered: false,
+                answered: false,
             },
         );
         let host = room.host;
@@ -413,6 +430,12 @@ impl Rooms {
             self.counters.closed_bad += 1;
             return self.close(socket, out);
         };
+        let kind = signal_kind(body);
+        if kind == OFFER {
+            // A host answers; it never offers.
+            self.counters.closed_bad += 1;
+            return self.close(socket, out);
+        }
         let cap = self.limits.signals_per_joiner;
         let Some(joiner) = self
             .rooms
@@ -423,7 +446,8 @@ impl Rooms {
             return;
         };
         joiner.got += 1;
-        if joiner.got > cap {
+        let second = kind == ANSWER && std::mem::replace(&mut joiner.answered, true);
+        if joiner.got > cap || second {
             let to = joiner.socket;
             self.counters.closed_chatty += 1;
             return self.close(to, out);
@@ -438,6 +462,12 @@ impl Rooms {
             return self.close(socket, out);
         };
         let peer = *peer;
+        let kind = signal_kind(body);
+        if kind == ANSWER {
+            // A joiner offers; it never answers.
+            self.counters.closed_bad += 1;
+            return self.close(socket, out);
+        }
         let cap = self.limits.signals_per_joiner;
         let Some(room) = self.rooms.get_mut(code) else {
             return;
@@ -447,7 +477,8 @@ impl Rooms {
             return;
         };
         joiner.sent += 1;
-        if joiner.sent > cap {
+        let second = kind == OFFER && std::mem::replace(&mut joiner.offered, true);
+        if joiner.sent > cap || second {
             self.counters.closed_chatty += 1;
             return self.close(socket, out);
         }
@@ -832,6 +863,45 @@ mod tests {
         let out = say(&mut r, 1, 1, "drop 3", 3);
         assert_eq!(sent(&out, 4), ["closed dropped"]);
         assert!(closed(&out, 4));
+    }
+
+    #[test]
+    fn one_offer_and_one_answer_cross_per_joiner() {
+        let offer = "signal\noffer\nv=0\r\na=x:aaaa";
+        let answer = "to 1\nanswer\nv=0\r\na=x:bbbb";
+        let not_from = |out: &[Out]| sent(out, 1).iter().all(|m| !m.starts_with("from"));
+        let mut r = rooms(RoomLimits::default());
+        say(&mut r, 1, 1, "host", 0);
+        say(&mut r, 2, 2, "join 00000001", 0);
+        assert_eq!(sent(&say(&mut r, 2, 2, offer, 1), 1).len(), 1);
+        assert_eq!(sent(&say(&mut r, 1, 1, answer, 1), 2).len(), 1);
+        // Candidates still cross both ways.
+        let out = say(&mut r, 2, 2, "signal\ncandidate\ncandidate:x", 1);
+        assert_eq!(sent(&out, 1).len(), 1);
+        let out = say(&mut r, 1, 1, "to 1\ncandidate\ncandidate:x", 1);
+        assert_eq!(sent(&out, 2).len(), 1);
+        // A second answer to the joiner is not passed on, and the joiner goes (not the host).
+        let out = say(&mut r, 1, 1, answer, 2);
+        assert!(sent(&out, 2).is_empty());
+        assert!(closed(&out, 2) && !closed(&out, 1));
+        assert_eq!(sent(&out, 1), ["left 1"]);
+        assert_eq!(r.counters().closed_chatty, 1);
+        // A second offer from a joiner: not passed on, and the joiner goes.
+        say(&mut r, 3, 3, "join 00000001", 3);
+        assert_eq!(sent(&say(&mut r, 3, 3, offer, 3), 1).len(), 1);
+        let out = say(&mut r, 3, 3, offer, 4);
+        assert!(not_from(&out));
+        assert!(closed(&out, 3) && !closed(&out, 1));
+        assert_eq!(r.counters().closed_chatty, 2);
+        // A joiner's answer and a host's offer are not theirs to send.
+        say(&mut r, 4, 4, "join 00000001", 5);
+        let out = say(&mut r, 4, 4, "signal\nanswer\nv=0", 5);
+        assert!(closed(&out, 4) && not_from(&out));
+        say(&mut r, 5, 5, "join 00000001", 6);
+        let out = say(&mut r, 1, 1, "to 4\noffer\nv=0", 6);
+        assert!(closed(&out, 1));
+        assert!(sent(&out, 5).iter().all(|m| !m.starts_with("signal")));
+        assert_eq!(r.counters().closed_bad, 2);
     }
 
     #[test]
