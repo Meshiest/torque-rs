@@ -1,275 +1,334 @@
-//! A camera that eases from one mode's eye to another's when the game switches modes (first person to third and back, say),
+//! A camera that moves from one mode's eye to another's when the game switches modes (first person to third and back, say),
 //! instead of cutting.
 //!
-//! **A switch** ([`CameraBlend::switch`]) starts a blend from the eye last drawn: switching again mid-blend starts from where
-//! the camera is, so it never jumps. **Each frame** the game advances the clock ([`CameraBlend::advance`]), then hands the
-//! new mode's eye as it is this frame ([`CameraBlend::eye`]): the blend follows it as it moves. Over [`BLEND_SECONDS`],
-//! eased in and out, the position moves along a short arc (the straight line lifted a little in the middle, so it passes over
-//! a figure's head rather than through it), the look turns along the great circle between the two directions, and the field of
-//! view moves between the two when both have one. At the end the eye is the new mode's exactly.
+//! **Relative to the new eye.** The blend keeps the drawn eye as an offset from the new mode's eye (its position, its look's
+//! yaw and pitch, its field of view), and only the offset is eased away: the camera moves with the figure the eye is on as
+//! that moves, and closes on it on top, so a switch while walking, running or driving never lags behind or stops the camera.
+//!
+//! **A critically damped spring.** Each part of the offset falls to zero as a critically damped system of the third order
+//! (three equal poles at [`CameraBlend::rate`]): from standing its acceleration grows from nothing, it is fastest some 0.08 s
+//! in and slows from there all the way, and it never passes the eye. Its position, speed and acceleration are
+//! worked out exactly for any frame time, so the motion is the same at 60 frames a second as at 144 or after a hitch.
+//! [`SETTLE_SECONDS`] after a switch from standing the camera has covered 95% of the way.
+//!
+//! **A switch** ([`CameraBlend::switch`]) keeps the camera's motion: the spring starts at the last frame before it, from the
+//! camera's offset and velocity less the new eye's. The new eye's own motion is known only a frame later, so the first frame
+//! after a switch takes it to move as the old eye did (true while a figure walks, runs or drives: both eyes ride on it), and
+//! the frame after works the spring out again from the switch with the motion measured. A switch mid-blend so continues
+//! from where the camera is going, with no stop and no kink, and the motion is the same at any frame rate.
+//!
+//! **Each frame** the game advances the clock ([`CameraBlend::advance`]), then hands the new mode's eye as it is this frame
+//! ([`CameraBlend::eye`]). With no blend running the eye is the mode's exactly, so the mouse's look reaches the view with
+//! nothing added.
 //!
 //! **Walls and ground.** The game's own third-person camera keeps clear of what it would look through; the blend gives every
 //! eye it makes to the same rule (the `keep` of [`CameraBlend::eye`]).
 //!
-//! **The figure** the game hides in first person is hidden only once the blend has arrived there ([`CameraBlend::arrived`]),
-//! and shown as soon as a switch leaves it.
+//! **The figure** whose eyes the first person looks from is hidden by the game while the camera is within [`CLOSE`] of them,
+//! either way: coming in, the camera's last stretch passes through the back of the head, and going out its first.
+//! [`CameraBlend::remaining`] says how far the camera still is from the mode's eye.
 
 use torque_render_scene::source::Eye;
 
-/// How long a switch takes (seconds).
-pub const BLEND_SECONDS: f32 = 0.3;
-/// How far the path rises in its middle, over the distance it covers.
-pub const ARC_LIFT: f32 = 0.15;
+/// The time a switch from standing takes to cover 95% of the way (seconds).
+pub const SETTLE_SECONDS: f32 = 0.24;
+/// How near a figure's eyes the camera is when the game hides the figure (m): within it, coming in from behind and above,
+/// the head would fill the view.
+pub const CLOSE: f32 = 1.2;
+
+/// `u` at which a third-order critically damped system from rest has 5% of its way left: `(1 + u + u²/2) e^-u = 0.05`.
+const U95: f32 = 6.295_794;
+/// The blend is over when the offset is under these (m, rad, degrees) and its position moves slower than this (m/s).
+const DONE_DISTANCE: f32 = 1e-3;
+const DONE_ANGLE: f32 = 1e-3;
+const DONE_FOV: f32 = 0.05;
+const DONE_SPEED: f32 = 0.05;
+
+/// The parts of an eye the blend moves: position, yaw, pitch and field of view (degrees; 0 for none).
+const PARTS: usize = 6;
+const YAW: usize = 3;
+const FOV: usize = 5;
+
+type Parts = [f32; PARTS];
+
+/// One part of the offset: its value, rate and acceleration.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct Spring {
+    x: f32,
+    v: f32,
+    a: f32,
+}
+
+impl Spring {
+    /// `t` seconds of the system with three poles at `-w` (exact).
+    fn step(self, w: f32, t: f32) -> Spring {
+        let c0 = self.x;
+        let c1 = self.v + w * c0;
+        let c2 = 0.5 * (self.a + 2.0 * w * c1 - w * w * c0);
+        let p = c0 + (c1 + c2 * t) * t;
+        let dp = c1 + 2.0 * c2 * t;
+        let ddp = 2.0 * c2;
+        let e = (-w * t).exp();
+        Spring {
+            x: p * e,
+            v: (dp - w * p) * e,
+            a: (ddp - 2.0 * w * dp + w * w * p) * e,
+        }
+    }
+}
+
+/// The eye last drawn and how fast each part of it was changing (per second).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Drawn {
+    parts: Parts,
+    rate: Parts,
+}
+
+/// What the frame after a switch needs to start the spring at the switch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Measuring {
+    before: Drawn,
+    dt: f32,
+    accel: Parts,
+}
 
 /// The blend between two modes' eyes (module docs).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraBlend {
-    duration: f32,
-    /// The eye the blend leaves, and the seconds since the switch; None when no blend runs.
-    from: Option<(Eye, f32)>,
-    /// The eye last drawn.
-    last: Option<Eye>,
+    rate: f32,
+    /// The clock since the last eye (seconds).
+    dt: f32,
+    /// The drawn eye less the mode's, part by part; none when no blend runs.
+    offset: Option<[Spring; PARTS]>,
+    /// A switch the next eye starts from.
+    switched: bool,
+    /// After a switch's frame, until the new eye's motion is known: the eye drawn before the switch, that frame's time, and
+    /// the offset's acceleration carried from a blend that ran.
+    measuring: Option<Measuring>,
+    last: Option<Drawn>,
+    last_target: Option<Parts>,
+    /// How fast the mode's eye was moving (per second), as last measured between two frames of one mode.
+    target_rate: Parts,
 }
 
 impl Default for CameraBlend {
     fn default() -> CameraBlend {
-        CameraBlend::new(BLEND_SECONDS)
+        CameraBlend::new(SETTLE_SECONDS)
     }
 }
 
+/// `a - b`, the yaw's difference taken the short way round.
+fn difference(a: &Parts, b: &Parts) -> Parts {
+    let mut d = [0.0; PARTS];
+    for i in 0..PARTS {
+        d[i] = a[i] - b[i];
+    }
+    d[YAW] = wrap(d[YAW]);
+    d
+}
+
+/// An angle in `-π..π`.
+fn wrap(a: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    a - tau * (a / tau).round()
+}
+
+fn parts(e: &Eye) -> Parts {
+    [
+        e.position[0],
+        e.position[1],
+        e.position[2],
+        e.yaw,
+        e.pitch,
+        e.fov.map_or(0.0, f32::from),
+    ]
+}
+
 impl CameraBlend {
-    /// A blend over `duration` seconds (0 cuts).
-    pub fn new(duration: f32) -> CameraBlend {
+    /// A blend that covers 95% of the way from standing in `settle` seconds (0 cuts).
+    pub fn new(settle: f32) -> CameraBlend {
+        let rate = if settle > 0.0 && settle.is_finite() {
+            U95 / settle
+        } else {
+            0.0
+        };
         CameraBlend {
-            duration: duration.max(0.0),
-            from: None,
+            rate,
+            dt: 0.0,
+            offset: None,
+            switched: false,
+            measuring: None,
             last: None,
+            last_target: None,
+            target_rate: [0.0; PARTS],
         }
     }
 
-    /// The mode changed: the camera leaves the eye last drawn (none yet: it starts at the new mode's).
+    /// The spring's rate (its three poles, per second); 0 cuts.
+    pub fn rate(&self) -> f32 {
+        self.rate
+    }
+
+    /// The mode changed: the camera leaves the eye last drawn, carrying on its motion (none drawn yet: it starts at the new
+    /// mode's eye).
     pub fn switch(&mut self) {
-        self.from = self.last.map(|e| (e, 0.0));
+        self.switched = self.last.is_some() && self.rate > 0.0;
+        if self.rate <= 0.0 {
+            self.offset = None;
+        }
     }
 
     /// Forgets the blend and the eye last drawn (a new world: the next eye is the mode's own).
     pub fn reset(&mut self) {
-        self.from = None;
-        self.last = None;
+        *self = CameraBlend {
+            rate: self.rate,
+            ..CameraBlend::new(0.0)
+        };
     }
 
     /// `dt` seconds of the clock.
     pub fn advance(&mut self, dt: f32) {
-        if let Some((_, t)) = &mut self.from {
-            *t += dt.max(0.0);
-            if *t >= self.duration {
-                self.from = None;
-            }
+        if dt.is_finite() {
+            self.dt += dt.max(0.0);
         }
     }
 
     /// Whether the camera is at the current mode's eye (no blend runs).
     pub fn arrived(&self) -> bool {
-        self.from.is_none()
+        self.offset.is_none() && !self.switched
     }
 
-    /// How far along the blend is, eased: 0 at the switch, 1 arrived.
-    pub fn progress(&self) -> f32 {
-        match self.from {
-            Some((_, t)) if self.duration > 0.0 => ease((t / self.duration).clamp(0.0, 1.0)),
-            _ => 1.0,
+    /// How far the camera is from the mode's eye (m) as it was last drawn; 0 once arrived. Right after a switch, before the
+    /// next eye, the distance is not known yet: infinite.
+    pub fn remaining(&self) -> f32 {
+        if self.switched {
+            return f32::INFINITY;
         }
+        self.offset.map_or(0.0, |o| {
+            (o[0].x * o[0].x + o[1].x * o[1].x + o[2].x * o[2].x).sqrt()
+        })
+    }
+
+    /// The offset `m.dt + more` seconds after the frame before a switch, for the new mode's eye at `goal` at the switch's
+    /// frame moving at `moving` (per second).
+    fn spring_since_switch(
+        &self,
+        m: &Measuring,
+        goal: &Parts,
+        moving: &Parts,
+        more: f32,
+    ) -> [Spring; PARTS] {
+        let mut offset = [Spring::default(); PARTS];
+        for i in 0..PARTS {
+            let mut x = m.before.parts[i] - (goal[i] - moving[i] * m.dt);
+            if i == YAW {
+                x = wrap(x);
+            }
+            offset[i] = Spring {
+                x,
+                v: m.before.rate[i] - moving[i],
+                a: m.accel[i],
+            }
+            .step(self.rate, m.dt + more);
+        }
+        offset
     }
 
     /// The eye to draw this frame given the current mode's eye `target` (module docs); `keep` moves a position the blend makes
     /// out of walls and ground as the game's camera keeps its own.
     pub fn eye(&mut self, target: Eye, keep: impl FnOnce([f32; 3]) -> [f32; 3]) -> Eye {
-        let eye = match self.from {
-            Some((from, _)) => {
-                let mut e = mix(&from, &target, self.progress());
-                e.position = keep(e.position);
-                e
+        let dt = std::mem::take(&mut self.dt);
+        let goal = parts(&target);
+        // An eye that is not a place (a NaN or an infinite part) is drawn as it is and leaves the blend alone; its time counts
+        // toward the next eye's.
+        if goal.iter().any(|x| !x.is_finite()) {
+            self.dt += dt;
+            return target;
+        }
+        let switching = self.switched && self.last.is_some();
+        let previous_goal = self.last_target.replace(goal);
+        if let Some(before) = previous_goal
+            && dt > 0.0
+            && !switching
+        {
+            self.target_rate = difference(&goal, &before).map(|d| d / dt);
+        }
+        let fov_blends = target.fov.is_some() && self.last.is_some_and(|d| d.parts[FOV] > 0.0);
+        if std::mem::take(&mut self.switched)
+            && let Some(last) = self.last
+        {
+            // The switch's frame: the spring from the frame before, the new eye taken to move as the old one did.
+            let m = Measuring {
+                before: last,
+                dt,
+                accel: self.offset.unwrap_or_default().map(|s| s.a),
+            };
+            let mut offset = self.spring_since_switch(&m, &goal, &self.target_rate, 0.0);
+            if !fov_blends {
+                offset[FOV] = Spring::default();
+            }
+            let finite = offset
+                .iter()
+                .all(|s| s.x.is_finite() && s.v.is_finite() && s.a.is_finite());
+            self.offset = finite.then_some(offset);
+            self.measuring = finite.then_some(m);
+        } else if self.offset.is_some() && dt > 0.0 {
+            let offset = match self.measuring.take() {
+                // The frame after: the spring from the switch again, with the new eye's motion measured.
+                Some(m) => {
+                    let back = previous_goal.unwrap_or(goal);
+                    self.spring_since_switch(&m, &back, &self.target_rate, dt)
+                }
+                None => self
+                    .offset
+                    .unwrap_or_default()
+                    .map(|s| s.step(self.rate, dt)),
+            };
+            let mut offset = offset;
+            if !fov_blends {
+                offset[FOV] = Spring::default();
+            }
+            let distance = (offset[0].x.powi(2) + offset[1].x.powi(2) + offset[2].x.powi(2)).sqrt();
+            let speed = (offset[0].v.powi(2) + offset[1].v.powi(2) + offset[2].v.powi(2)).sqrt();
+            let done = distance < DONE_DISTANCE
+                && speed < DONE_SPEED
+                && offset[YAW].x.abs() < DONE_ANGLE
+                && offset[4].x.abs() < DONE_ANGLE
+                && offset[FOV].x.abs() < DONE_FOV;
+            // An offset that is not finite (from a frame time or eye the spring cannot follow) ends the blend.
+            let finite = offset
+                .iter()
+                .all(|s| s.x.is_finite() && s.v.is_finite() && s.a.is_finite());
+            self.offset = (!done && finite).then_some(offset);
+        }
+        let eye = match &self.offset {
+            Some(offset) => {
+                let at = |i: usize| goal[i] + offset[i].x;
+                let fov = if fov_blends {
+                    Some(at(FOV).round().clamp(1.0, 179.0) as u8)
+                } else {
+                    target.fov
+                };
+                Eye {
+                    position: keep([at(0), at(1), at(2)]),
+                    yaw: wrap(at(YAW)),
+                    pitch: at(4),
+                    fov,
+                }
             }
             None => target,
         };
-        self.last = Some(eye);
+        let drawn = parts(&eye);
+        let rate = match self.last {
+            Some(before) if dt > 0.0 => difference(&drawn, &before.parts).map(|d| d / dt),
+            Some(before) => before.rate,
+            None => [0.0; PARTS],
+        };
+        self.last = Some(Drawn { parts: drawn, rate });
         eye
     }
 }
 
-/// Smoothstep: eased in and out.
-fn ease(x: f32) -> f32 {
-    x * x * (3.0 - 2.0 * x)
-}
-
-/// The unit direction an eye looks along (yaw about z from +y, pitch positive looking down).
-fn direction(e: &Eye) -> [f32; 3] {
-    let (sy, cy) = e.yaw.sin_cos();
-    let (sp, cp) = e.pitch.sin_cos();
-    [sy * cp, cy * cp, -sp]
-}
-
-/// The point `s` of the way along the great circle from unit `a` to unit `b`.
-fn slerp(a: [f32; 3], b: [f32; 3], s: f32) -> [f32; 3] {
-    let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).clamp(-1.0, 1.0);
-    let angle = dot.acos();
-    if angle < 1e-4 {
-        return b;
-    }
-    // Opposite directions: the turn goes round the vertical.
-    let b = if dot < -0.9999 {
-        let side = [-a[1], a[0], 0.0];
-        let n = (side[0] * side[0] + side[1] * side[1]).sqrt();
-        if n < 1e-6 {
-            return if s < 0.5 { a } else { b };
-        }
-        let side = side.map(|x| x / n);
-        let half = s * std::f32::consts::PI;
-        return [0, 1, 2].map(|i| a[i] * half.cos() + side[i] * half.sin());
-    } else {
-        b
-    };
-    let sin = angle.sin();
-    let (wa, wb) = (((1.0 - s) * angle).sin() / sin, (s * angle).sin() / sin);
-    [0, 1, 2].map(|i| a[i] * wa + b[i] * wb)
-}
-
-/// The eye `s` (eased) of the way from `a` to `b`.
-fn mix(a: &Eye, b: &Eye, s: f32) -> Eye {
-    let d = [0, 1, 2].map(|i| b.position[i] - a.position[i]);
-    let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    let lift = ARC_LIFT * length * (s * std::f32::consts::PI).sin();
-    let mut position = [0, 1, 2].map(|i| a.position[i] + d[i] * s);
-    position[2] += lift;
-    let look = slerp(direction(a), direction(b), s);
-    let fov = match (a.fov, b.fov) {
-        (Some(x), Some(y)) if x != y => {
-            Some((f32::from(x) + (f32::from(y) - f32::from(x)) * s).round() as u8)
-        }
-        _ => b.fov,
-    };
-    Eye {
-        position,
-        yaw: look[0].atan2(look[1]),
-        pitch: (-look[2]).atan2(look[0].hypot(look[1])),
-        fov,
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn eye(position: [f32; 3], yaw: f32, pitch: f32, fov: Option<u8>) -> Eye {
-        Eye {
-            position,
-            yaw,
-            pitch,
-            fov,
-        }
-    }
-
-    fn apart(a: [f32; 3], b: [f32; 3]) -> f32 {
-        (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>().sqrt()
-    }
-
-    fn turn(a: &Eye, b: &Eye) -> f32 {
-        let (x, y) = (direction(a), direction(b));
-        (x[0] * y[0] + x[1] * y[1] + x[2] * y[2])
-            .clamp(-1.0, 1.0)
-            .acos()
-    }
-
-    const FRAME: f32 = 1.0 / 60.0;
-    /// Smoothstep's steepest slope, and the arc's.
-    const STEEPEST: f32 = 1.5 + ARC_LIFT * std::f32::consts::PI;
-
-    #[test]
-    fn a_switch_moves_on_without_a_jump_and_ends_exactly_at_the_new_eye() {
-        let third = eye([0.0, -5.5, 3.0], 0.0, 0.3, Some(90));
-        let first = eye([0.0, 0.0, 1.7], 0.4, -0.1, Some(70));
-        let mut b = CameraBlend::default();
-        assert_eq!(b.eye(third, |p| p), third);
-        b.switch();
-        assert!(!b.arrived());
-        let mut last = third;
-        let distance = apart(third.position, first.position);
-        let angle = turn(&third, &first);
-        let mut frames = 0;
-        while !b.arrived() {
-            b.advance(FRAME);
-            let e = b.eye(first, |p| p);
-            let step = apart(last.position, e.position);
-            assert!(
-                step <= STEEPEST * distance * FRAME / BLEND_SECONDS + 1e-4,
-                "frame {frames}: a step of {step}"
-            );
-            assert!(turn(&last, &e) <= 1.5 * angle * FRAME / BLEND_SECONDS + 1e-3);
-            let fov = i32::from(e.fov.unwrap());
-            assert!((70..=90).contains(&fov));
-            last = e;
-            frames += 1;
-        }
-        assert!((17..=19).contains(&frames), "{frames} frames");
-        assert_eq!(last, first);
-        // Arrived: the eye is the mode's own, frame after frame.
-        b.advance(FRAME);
-        let moved = eye([1.0, 0.0, 1.7], 0.5, 0.0, Some(70));
-        assert_eq!(b.eye(moved, |p| p), moved);
-    }
-
-    #[test]
-    fn switching_again_mid_blend_starts_from_where_the_camera_is() {
-        let third = eye([0.0, -5.5, 3.0], 0.0, 0.3, None);
-        let first = eye([0.0, 0.0, 1.7], 0.0, 0.0, None);
-        let mut b = CameraBlend::default();
-        b.eye(third, |p| p);
-        b.switch();
-        for _ in 0..8 {
-            b.advance(FRAME);
-            b.eye(first, |p| p);
-        }
-        let mid = b.eye(first, |p| p);
-        assert!(apart(mid.position, first.position) > 0.5);
-        // Back the other way: the next frame is a frame's share from where it was.
-        b.switch();
-        b.advance(FRAME);
-        let next = b.eye(third, |p| p);
-        let share = STEEPEST * apart(mid.position, third.position) * FRAME / BLEND_SECONDS;
-        assert!(apart(mid.position, next.position) <= share + 1e-4);
-        for _ in 0..30 {
-            b.advance(FRAME);
-            b.eye(third, |p| p);
-        }
-        assert!(b.arrived());
-        assert_eq!(b.eye(third, |p| p), third);
-    }
-
-    #[test]
-    fn the_blend_follows_a_moving_target_and_keeps_its_eyes_where_the_game_says() {
-        let mut b = CameraBlend::default();
-        b.eye(eye([0.0, -6.0, 3.0], 0.0, 0.3, None), |p| p);
-        b.switch();
-        b.advance(BLEND_SECONDS * 0.5);
-        let ground = 2.5;
-        let e = b.eye(eye([0.0, 10.0, 1.7], 0.0, 0.0, None), |p| {
-            [p[0], p[1], p[2].max(ground)]
-        });
-        assert!(e.position[2] >= ground && e.position[1] > 0.0, "{e:?}");
-        // No eye yet: the first switch has nothing to leave.
-        let mut fresh = CameraBlend::default();
-        fresh.switch();
-        assert!(fresh.arrived());
-    }
-
-    #[test]
-    fn opposite_looks_turn_round_the_vertical() {
-        let a = eye([0.0; 3], 0.0, 0.0, None);
-        let b = eye([0.0; 3], std::f32::consts::PI, 0.0, None);
-        let m = mix(&a, &b, 0.5);
-        assert!(
-            m.pitch.abs() < 1e-4 && (m.yaw.abs() - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
-            "{m:?}"
-        );
-    }
-}
+#[path = "camera_blend_tests.rs"]
+mod tests;

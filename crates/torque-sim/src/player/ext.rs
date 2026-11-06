@@ -107,16 +107,17 @@ pub trait PlayerClass: Debug {
     /// `processTick`, before `ShapeBase::processTick`, with the move the Player runs this tick.
     fn on_move(&self, _s: &mut PlayerState, _mv: &Move) {}
 
-    /// `updateMove`, after the image triggers and before the head and rotation: a pose change of the class's own (its box,
-    /// its threads).
+    /// `updateMove`, after the image triggers and before the head and rotation: a pose change (its box, its threads). By
+    /// default the engine's poses after Torque3D's ([`super::pose::update_pose`]), which change nothing for a datablock that
+    /// allows none (TGE's).
     fn update_pose(
         &self,
-        _p: &mut Player,
-        _db: &PlayerData,
-        _mv: &Move,
-        _host: &mut dyn PlayerHost,
+        p: &mut Player,
+        db: &PlayerData,
+        mv: &Move,
+        host: &mut dyn PlayerHost,
     ) -> Result<(), Exhausted> {
-        Ok(())
+        super::pose::update_pose(p, db, mv, host)
     }
 
     /// `updateMove`'s head and rotation (run while the Player is enabled): the look angles, the yaw, their wrap and the deltas.

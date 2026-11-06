@@ -144,27 +144,49 @@ The first development version. Nothing is published yet; this is what exists.
   their light, coverage and ground shadow, sunlight reddened by the air at each layer's height, and finer steps inside the
   clouds. `CloudLook::SUNLIT_CUMULUS` gives sunlit cumulus; without a look the clouds are as before. The vehicle demo uses
   it.
-- `torque::app::camera_blend`: `CameraBlend`, a camera that eases from one mode's eye to another's on a switch (first person
-  to third and back), restartable mid-way, kept out of walls and ground by the game's own rule; the level demo's V uses it.
+- `torque::app::camera_blend`: `CameraBlend`, a camera that moves from one mode's eye to another's on a switch (first person
+  to third and back): a critically damped spring on the offset from the new eye (95% of the way in `SETTLE_SECONDS`, 0.24 s,
+  never past it), worked out exactly for any frame time, carrying the camera's velocity through a switch and a switch
+  mid-way, kept out of walls and ground by the game's own rule; the level demo's, the arena's and the vehicle demo's Tab use
+  it.
+- `torque::app::camera_boom`: `CameraBoom`, a third-person camera's boom: five lines look for what is in the way (so a wall the
+  boom grazes keeps off the near plane), the camera comes in fast (`PULL_IN_SECONDS`) and goes out slowly
+  (`EASE_OUT_SECONDS`), and never moves through anything. The level demo's and the arena's camera behind the figure ride
+  it.
+- The examples' camera logs (`just examples/camera-log`): Tab in and out standing, walking, running, mid-turn and pressed
+  again, the camera behind the figure past walls and glass, and Tab while driving, frame by frame at 60 and 144 frames a
+  second as CSV (the camera's position, velocity and turn rate, the mode's eye and the figure), with `--render` the frames
+  too.
 - The level demo's camera behind the figure stays in front of interior walls and under their ceilings (its line of sight
   meets the interiors' hulls as it meets the cubes), and a map's SpotLights light the level demo's world (its server ghosts
   the engine's own classes to every client).
 - The level demo's office map: a Blockbench model (`game/levels/office.bbmodel`, made by `tools/office.py`) built into an
   interior when the demo starts, with pixel textures drawn nearest, glass windows, a roof and ceiling lights.
+- `torque-example-fps`: Tab eases the camera behind the figure (over the shoulder, kept in front of cubes and interior walls)
+  and back to its eyes; backed against a wall it draws the first person's view. `torque-client`'s
+  `Predictor::cast_ray` casts a segment in the client's container (the static index's objects near it and the ghosts).
 - `torque::app::client`: `GameClient::start_local` runs a game alone over an in-memory link, the client's socket set aside
   while it runs.
 - `torque-example-vehicle-demo`: the buggy's headlight (F, the driver's) from the lamps on its roof, which glow while it is on, a day that runs through sunrise, noon, sunset and
   night, "Play alone" (and `--solo`: no socket for the game, nobody on the network sees it), and Tab easing between the
   eyes and the chase camera.
-- `torque-example-fps`: a map rotation. A round lasts `$Pref::Server::RoundSeconds` (ten minutes); then every player sees the
+- `torque-example-fps`: a map rotation. A round lasts `$Pref::Server::RoundSeconds` (five minutes); then every player sees the
   round's scores and the next map's name, and the next map of `$Pref::Server::MapList` (or of `missions/`) loads under the same
   connections, the scores back at 0; the view shows the round's clock. The examples' `loadMission` ends the running map for
   the clients in the game (`endMission`, `'MissionEnd'`, their ghosting reset) and sends them the new one's datablocks.
+- `torque-example-fps`: a round also ends when a player's score reaches `$Pref::Server::ScoreLimit` (10; 0 turns it off), and
+  the host of a game picks the next map from the pause menu's Change map entry (`serverCmdChangeMap`): only the connection that
+  presents the key its own process gave the server may ask, only for a map of the server's list, and not twice within three
+  seconds; the map loads at once under the same connections, the scores back at 0. The examples' `connectTo` takes that key.
 - `torque-example-vehicle-demo`: a brown dirt race track of about 2 km round the start field and over the hill's shoulder (the
   hills' second terrain material, its texture laid along the track with tire-worn bands), the ground shaped along it (crests,
   dips, a shallow valley, a ridge and banked turns), and forests of low-poly trees round it (tall redwoods and firs, pines,
   and young spruces, oaks and birches under them, built from brushes into interiors, one a square of the map);
   `just examples/vehicle-demo-track-shots` draws them.
+- The examples' pause menu (`examples/common/game/pause.cs`: Resume, Leave game and Quit over the view, the cursor on and the
+  game's keys off), the FPS example's moved there and shared; in the vehicle demo Esc opens it on foot and at the wheel (it
+  left the game at once). `cargo run -p torque-example-vehicle-demo --release --example steer-clip -- <dir>` draws frame
+  sequences of the steering and of the tracks at speed on the driver's client and another's.
 - The level demo in a browser: `just examples/web-level-demo` builds it for the web (WebGPU) and serves it on
   `http://127.0.0.1:8080/` (`?map=office` starts a map at once). The page fetches the game's files by their list
   (`files.json`) with a progress bar, keeps them in the browser's Cache Storage under their hashes (a second load requests
@@ -270,12 +292,144 @@ The first development version. Nothing is published yet; this is what exists.
   `torque` and `torque-app` `p2p` features. `just examples/web-fps-rooms` runs a service serving the page;
   `just examples/web-fps-p2p-check`: headless Chrome joins `fps-server --room` by code on a data channel, walks, and
   sees the host leave.
+- The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
+  compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
+  picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time
+  (also F8); both are kept in the browser's storage, and Firefox starts at Low until the player picks
+  (`web/settings.js`). `just examples/web-unit` tests both in Node. The module is built in a `web` profile (thin LTO) and
+  run through `wasm-opt -O2` when it is installed.
+- `torque::app::web_page`: the entry web builds share: the page's calls (`web_exports!`), the files the page fetches by
+  its list, its settings, the loading stages and the frame times.
+- `torque::app::page_bridge` and `web/bridge.js`: a web build's page and the game's scripts call each other. The page's
+  `torque.call`, `eval` (a syntax error comes back with its line and column, and nothing runs), `getVar` and `setVar` are
+  served at the next frame; script's `callPage(name, args...)` reaches only the handlers the page registered
+  (`torque.on`). Arguments are strings within caps (count, size, calls a frame, requests waiting). The level demo emits
+  `mapLoaded` and `playerFell`. The guide's "Games in a browser" shows it and the rule that a server reaches the page only
+  through the game's own `clientCmd` functions.
+- The vehicle demo in a browser, played alone (the server on an in-memory link in the page): `just
+  examples/web-vehicle-demo` builds and serves it, `vehicle-demo --web-files <dir>` writes its pack and list,
+  `just examples/web-vehicle-demo-check` walks its figure in headless Chrome.
+- The example kit's figure walks (`walk`, worked out from where its feet stand: `torque_example_assets::gait`): each foot
+  lands on its heel with the toe up, rolls flat, stays put while the body passes over it and leaves from its toe, both feet
+  down at each landing and the hips dipping a little, at 2.1 units a second (a held-Shift pace in the demos), the left heel
+  landing where `run`'s left leg reaches furthest forward. The feet turn at new `ankle_l` and `ankle_r` nodes. A test
+  holds a planted foot to under 5% of the ground's speed.
+- The example kit's figure's `run` is worked out the same way and bounces: a short flight between steps, the hips sinking as
+  the body passes over the planted foot and rising into the air, the heel kicked up and the knee driven forward through the
+  swing, its planted feet held by the same test.
+- `torque-client`: a Player walks at walking pace (`player_anim`, the engine's own `walk` action): a shape with a forward
+  `walk` plays it instead of `run` under the geometric mean of the two speeds, and backward instead of `back` under that of
+  the walk's and the back's, with a 5% margin either way; walk and run keep their place in the loop as they blend. A shape
+  without `walk` keeps TGE's pick.
+- `torque-game`: a synced Player (one with hitboxes) walks by the same rule (`synced::walk_or`), its walk stepped by the
+  ground covered and keeping its place in the loop as it changes to and from the run, so its hitboxes follow the walk the
+  clients draw; a Player without hitboxes keeps TGE's pick.
+- `just examples/walk-clip`: a clip of the kit's figure walking, running and walking backward, its action chosen by the
+  client's Player animation, drawn offscreen from the side and three-quarters (an mp4 through ffmpeg, and a strip).
+- `torque-render-hd`: a ghosting check (`cargo run -p torque-render-hd --release --example ghosting`): scripted scenes (a
+  moving shape's shadow under a still camera, a fast sun, a light switched, a moving camera, smoke) drawn with every history
+  and against a reference of each instant drawn with none and settled, printing per scene the share of pixels off and the
+  frames until the image settles after each change (`--max-settle`, `--max-trail` fail past a limit); `--audit` turns each
+  pass's history off on its own (`HdWorld::histories`, all on by default). The vehicle demo's `ghost-shots` example measures
+  the buggy driving past a still camera at golden hour the same way.
+- `torque::app::ghosts`: a steady first-person view (`GhostOptions::steady_eye`, the engine's own; TGE stands the view at
+  the drawn `eye` node): the own Player's view at its `eye` node at the rest pose, carried by its real motion, while the
+  body and its hitboxes keep their animation; `eye_sway` keeps the sideways sway, and `OwnView::drawn_eye` gives TGE's eye.
+  On in the level, vehicle and arena demos; `just examples/eye-clip` draws a before-and-after clip.
+- The example kit's figure crouches and lies down (`torque_example_assets::poses`): `crouch_root`, `crouch_forward`,
+  `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward` and `prone_backward`, posed from where its feet and hands
+  stand (each leg and arm turned to reach there), the crouched walk from the walk's model with the hips low, a crouched
+  side step and a crawl whose standing feet and hands stay put (the slide test holds them under 6% of the ground's speed);
+  `prone_hold` and `prone_aim` hold the pistol ahead lying down. Each pose fits its box (1 x 1 x 1.6 crouched, 2 x 2 x 0.8
+  prone), and a crouch lowers the body over feet that stay where they stand.
+- The example kit's figure gets down to prone and up again (`prone_down`, 0.768 s; `prone_up`, 0.864 s): from the crouch it drops
+  to its right knee, puts its left hand down where it lies, comes onto both knees, lowers its chest and slides its legs back
+  to lie flat, the head up and looking ahead; up is the same played back (it pushes up on the hand, brings its knees under and
+  rises). Its feet, knees and hand touch the floor without sinking, the planted hand stays put, the right arm reaches ahead
+  (over a held pistol's arm), and each starts and ends in the pose it joins. Crouched still, the figure is on the balls of
+  its feet, the feet where the standing ones are.
+- The example kit's figure reacts to hits: blend sequences played once over any pose or gait, `flinch_front`, `flinch_back`,
+  `flinch_left` and `flinch_right` (the body punched away from the side hit, the hips pushed back and a small step) and
+  `flinch_head_front` and the rest (a sharp snap of the head, the torso barely moving), each at rest at its start and end.
+- `torque-sim`: poses after Torque3D's (`player::pose`, the engine's own): standing, sprinting, crouched and prone, each with
+  its own box (`crouchBoundingBox`, `proneBoundingBox`), speeds (`maxCrouchForwardSpeed`, `maxProneForwardSpeed`,
+  `maxSprintForwardSpeed` and the rest) and run force, picked from the move's pose triggers (`$player::crouchTrigger`,
+  `$player::proneTrigger`, `$player::sprintTrigger`). A pose with no room for its box is refused (no standing up under a low
+  ceiling), between standing and prone the Player kneels in the crouch for 10 ticks, it cannot jump lying down, and a mounted
+  Player stands. A datablock without the fields is TGE's.
+- `torque-game`: a `PlayerData`'s pose fields (`sim::player::poses`), and each pose's own actions (`crouch_root`,
+  `crouch_forward`, `prone_root`, ...) picked on the server by the rule its clients use, an action of another pose blending
+  in over a longer, eased transition; a pose's own arm action (`prone_hold` for `hold`) on both sides. A Player record's move
+  shows the pose its server chose in its pose triggers, so clients draw the pose taken, not the one asked for. Hitboxes and
+  lag compensation follow the pose, and a script thread's reaction.
+- `torque-shapes`: an eased transition (`ShapeInstance::transition_to_sequence_eased`, the engine's own).
+- `torque-client`: a Player's animation plays its pose's actions (`PlayerMotion::pose`, `record_pose`) and the script
+  threads its server runs on it over its own (`PlayerAnimation::script_threads`); the prediction keeps the own Player's pose
+  (`ControlState::pose`), from the pose fields a game gives in `PredictGame::player_preload`.
+- `torque::app::ghosts`: other Players drawn in the pose their server chose (`GhostOptions::poses`), and the script threads on
+  every Player, so a hit's reaction drawn is the one its hitboxes have; the steady first-person eye lowers with crouching and
+  lying down and rises again, eased with the body (a hit's reaction never moves it).
+- The demos walk by default and sprint with Shift held (was: run, and walk with Shift); Ctrl held crouches and Z lies down or
+  gets up, in the level, vehicle and arena demos and the character example, their hints and the justfile saying so. A hit in
+  the arena plays a reaction away from the shot (`playerFlinch`, common/server.cs), the head's for a head shot.
+- Getting down and up between the crouch and prone (the engine's own): the step holds the Player still for 24 ticks lying down
+  and 27 pushing up (`pose::settling`), and crouched two ticks more before it stands; a shape's `prone_down` and `prone_up`
+  play to their end on the server and the clients alike (`PoseSets::way`), so the hitboxes and the eased first-person eye
+  follow the same timing. C crouches too in every demo (a browser closes its tab on Ctrl+W), and the hints say so.
+- While a Player's body moves between two poses (the blend, or the way down or up), shots reach it through the union of
+  both poses' boxes (`pose::reach_box`: the scene's world box and the lag samples), so its drawn head and chest stay hittable;
+  the movement box changes at once as before. A pose with another box is kept at least 8 ticks, so a client cannot flip its
+  box every tick.
+- `just examples/poses-clip`: a clip of the figure crouching, lying down, walking crouched, crawling, sprinting and reacting
+  to hits from four sides and to the head, as another player's client draws it.
 - The guide (mdBook) and the API reference with no rustdoc warnings.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
 ### Fixed
 
+- `torque-client`: in a browser the window's loop no longer spins between frames: the clock steps and the frame is drawn
+  once per animation frame (a hidden page still runs its clock five times a second).
+- `torque-client`: in a browser, the keys and buttons held are let go when the page loses the focus, is hidden or loses
+  the pointer lock (a key let go meanwhile stayed held in the game). A pointer lock the browser ends while the game holds
+  the mouse (its Esc) is the game's Esc, so the level demo's menu opens; in full screen, Chromium passes Esc on to the
+  game (the page's keyboard lock).
+- The third-person Tab camera: a switch while walking, running or driving no longer stops the camera dead and lunges after
+  the figure (the camera's speed fell from the figure's to near 0 at the switch: 17 to 2 m/s in the buggy, 7 to 1 m/s in the
+  arena), and Tab pressed again mid-way no longer stops it at full speed (54 m/s to 0 in one frame); the move eases from
+  smoothstep's slow start and late peak to a quick start and a soft arrival, relative to the figure, so it never lags it.
+  The figure is hidden while the camera is within `CLOSE` of its eyes on the way in and out, so its head no longer fills
+  the view.
+- The level demo's camera behind the figure looks through glass instead of stopping in front of it, and comes in fast and
+  goes out slowly past walls, posts and furniture instead of jumping in and out (walking along the office's desks: 10 jumps
+  of up to a meter a frame before, 2 of 0.7 m after, where a hanging light crosses the line right by the camera).
+
+- `torque-render-hd`: the sun disk no longer shows as a dull orange dot darker than the sky about it at golden hour. The
+  neutral tonemap keeps every color's hue past white, so a saturated disk 100 times over white showed as the same orange as
+  the sky about it and darker than a paler sky. The disk now takes its own path to white (white-hot overhead; cream, peach
+  and orange toward the horizon; the tonemap itself is unchanged) and dims with the air it shines through (the atmosphere's
+  transmittance), so it stays the brightest thing in the sky at every elevation.
+- `torque-shape-builder`: a sequence with ground frames is a path-making one (`MakePath`, as TGE's exporter marks it), so a
+  Player finds the example figure's gait speeds and plays its gaits at the rate it moves (they played at one rate at any
+  speed).
+- `torque-render-hd`: a change of light no longer leaves a smeared copy behind under a still camera (the tree shadows
+  stepping with the running day, a shape's shadow sweeping past, a light switched). The TAA clips its history into the
+  neighborhood's box every frame and starts it again where the neighborhood's mean changes, with no rules for moving shadows,
+  water, the sky or see-through shapes; the ambient occlusion keeps no history (a pattern fixed per pixel, always filtered in
+  space) and the contact shadows' march has a fixed pattern. The ghosting check: the fast sun settles in 7 frames, not
+  never (71 % of the frame off before), the vehicle demo's buggy pass at once, not never.
+- The level demo's office: textures redrawn as clean pixel art (flat areas, a few shading steps, lit and shaded edges, no
+  noise), the office chairs' bases on the floor (they hovered 4 cm over it), and the screens drawn unlit (monitors, two new
+  laptops on the meeting table, a chart on the meeting room's screen).
+- The level demo: a quick tap of Space held the jump until the next tap (the script counted only the press); now it jumps
+  once. Tab switches the camera (it was V), as in the other demos, and every map draws its textures nearest (cubes, tiles,
+  figures, interiors; the mipmaps kept).
+- `torque-render-hd`: every point or spot light whose light reaches the view has a shadow cube, sized by its importance (its
+  brightness, the share of the view its sphere takes, its cone): three tiers of cube arrays at the quality's face size, a half
+  and a quarter of it (High: 4 x 512, 8 x 256, 16 x 128, less memory than its 8 equal cubes), where a fixed 8 cubes were
+  traded among the lights in view and a light without one shone unshadowed, so shadows popped on and off as the camera
+  turned or walked. A light that changes tier crossfades from one cube to the other over 12 frames, a light that holds a
+  cube counts 1.25 times as much, and off-screen casters keep shadowing the view (a test with a point light and a low sun).
 - Four HD shaders mixed `*` and `^` without parentheses, which WebGPU's WGSL rules (Chrome's compiler) refuse.
 - `torque::app`: an interior ghost that takes the index of another map's interior at the same place is drawn from its own
   file (the old one stayed).
@@ -290,5 +444,57 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque-game`: a shape with fewer than eight collision details (the bounds report and the hull slots read past its
   lists); the class specs name TGE's console methods (the crate's natives were refused without them), and `SceneObject`,
   `ShapeBaseData` and `PlayerData` read their constructors' values (a Player made from a script datablock could not move).
+- `torque-client`: the steering a vehicle is drawn with (its front wheels, its `steering` thread and the hands of a figure
+  on it) eases each frame toward the ticks' steering (`look::SteeringEase`, a critically damped follow, the same at any frame
+  rate; `seconds: None` draws the last tick's, as TGE does); another's vehicle eases toward its newest value run on at
+  the rate its updates bring. It turned in a tick's steps, and another's in its updates' steps.
+- `torque-client`: a vehicle's drawn wheel contacts, where its tire tracks start and its tires' dust rises, are under the
+  tires the frame draws; they were a tick's travel behind them at speed.
+- `torque-client`: the client's ticks fall on their 32 ms grid at any frame rate (`conn::tick_time`). A frame that did not end
+  on the grid ran the tick late and counted the next tick from the frame, so at 144 frames a second the client ticked every
+  35 ms (fewer moves than the server's ticks) and drew the Players and vehicles unevenly between ticks.
+- `torque-client`: a vehicle's springs are drawn between its last two ticks' extensions, as its body is
+  (`look::SpringLooks`); the tires, and the tracks and dust under them, stepped once a tick.
+- `torque-client`: another player's vehicle is drawn where it is now: through the warp its update's state coasts on at its
+  velocities (and by the update's age, measured and eased over updates, at most 0.1 s), and the drawn pose eases to it
+  (TGE holds the state while the drawn pose warps to the update's position, the past by then). At 15 to 20 m/s it
+  was drawn 1.7 m behind the server's on average, 2 m at most; now 0.15 m ahead, as the driver's own (0.06 m behind at most).
+- `torque-client`: a ghost vehicle's update age never turns into NaN and is capped at 3 units of travel and half a radian of
+  turn; an update's rotation of no length is left out, momenta that give velocities that are not finite leave the body at
+  rest, and a tick that makes anything not finite is undone, so a hostile update never draws a vehicle at NaN and the next
+  one heals it. The drawn offset from an update shrinks by a share each tick (an update coming before the last one's ease
+  ended slowed it), and past 10 units it is drawn there at once. A warp or first-sight update draws it at its pose with no
+  offset left of an earlier update.
+- `torque-example-vehicle-demo`: the seated look stops at the edge of its range as the mouse moves (the mouse turned back
+  had to undo what went past the edge first), and Tab puts it in the new camera's range (a look behind the buggy becomes the
+  head turned as far as it goes).
+- `torque-client`: a window takes the system cursor (lock, confine, center) only while it is focused and shown. It lets go the
+  moment it loses focus or is hidden, never moves the cursor then, and takes it again when it is focused and shown and the
+  game still wants the hold (a window made in the background held it before). In a browser the pointer lock is asked for
+  only right after a click, never renewed on a timer or after Esc.
+- The web page: `?nolock` stops every pointer-lock request (a non-writable, non-configurable no-op). The browser checks get
+  their browser only from `launchGuarded` (`web/guard.mjs`), whose pages (and popups and frames) cannot take the pointer
+  lock whatever they load, and also load with `?nolock`. `web/guard-scan.mjs` fails any script in the repository that names a
+  browser driver or program or loads a module by a computed name, and `web/guard.test.mjs` shows a page that locks on click
+  never gets it; both run in `just examples/web-guard-test` (first in each check recipe) and in CI. Headless Chrome on
+  Windows confined the real cursor when a check clicked the canvas.
+- `torque-render-hd`, `torque::app`: the arena's first shot no longer stops the game for a moment. The effects'
+  pipelines (particles, trails, decals) are made on a worker thread when the world view is made
+  (`HdWorld::warm_effects`), and the ghost scene loads the shapes and textures its datablocks name as they arrive; a
+  first shot with a cold shader cache took 0.44-0.68 s (12 pipelines made), now within a millisecond of the median frame
+  (the fps example `first_use` measures it).
+- `examples/fps`: aiming down the sights eases both ways on a critically damped spring (0.18 s, the same at any frame
+  rate, no overshoot; a press let go mid-way turns back from where it is at the speed it had), the pistol arcs in and
+  up, and a synced Player's arm moves between its arm actions over 0.18 s (`ARM_BLEND`) instead of switching at once.
+- `torque::app`: a client draws a projectile on the server's line, from the raw floats every first update carries (the
+  bounce block) instead of the initial block's 10-bit direction and centimeter start (up to 0.18 degrees off: at a
+  wall's corner one screen showed a graze and another a miss, and the trail jumped back when the server's explosion
+  came); with `GhostOptions::bolt_stops` it stops a bolt where that line meets the world (the arena: within a millimeter
+  of the server's hit on both clients, `tests/bolt_line.rs`). The arena fires from `getSteadyEyePoint` (engine addition:
+  the eye at the shape's rest pose), so it keeps the steady first-person eye on with its shots on the crosshair.
+  Crouched or prone `getSteadyEyePoint` is the eye of the pose's root held at its start, eased from the last pose's over the
+  body's blend as the client's view is, so shots leave from the lowered view in every pose (`tests/aim.rs`).
+- The camera behind the figure rides lower with a crouched or prone figure: the arena's boom from the lowered eye, the level
+  demo's looking no higher than the eye; lying down and looking up, the boom stops above the floor.
 
 [Unreleased]: https://github.com/TODO/torque-rs/commits/main

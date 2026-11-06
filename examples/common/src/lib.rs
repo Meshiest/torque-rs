@@ -5,7 +5,10 @@
 //! - [`GameFiles`]: the kit, the shared scripts (`game/` here, under `common/`) and an example's own game folder.
 //! - [`prediction`]: what the client's prediction of its own figure asks a game of kit cubes (the cubes it collides with, smooth
 //!   aim).
+//! - [`ray_box`]: a ray against a box, for a camera behind a figure kept in front of the cubes.
+//! - [`camera_log`]: the camera's motion frame by frame, for the examples' camera clips.
 
+pub mod camera_log;
 pub mod prediction;
 
 use std::collections::HashMap;
@@ -52,6 +55,50 @@ impl Assets for KitAssets {
         self.files
             .get(&path.replace('\\', "/").to_ascii_lowercase())
             .cloned()
+    }
+}
+
+/// The ghost scene's options the examples share: TGE's, with the first-person view held steady over the figure's bobbing
+/// gaits ([`torque::app::ghosts::GhostOptions::steady_eye`], the engine's own) and the other figures drawn in the pose their
+/// server chose ([`figure_poses`]).
+pub fn ghost_options() -> torque::app::ghosts::GhostOptions {
+    torque::app::ghosts::GhostOptions {
+        steady_eye: true,
+        poses: Some(figure_poses()),
+        ..Default::default()
+    }
+}
+
+/// The figure's poses as the examples' servers give them (the engine's own after Torque3D's: the figure datablocks'
+/// `crouchBoundingBox`, `maxCrouchForwardSpeed` and the rest, and `common/server.cs`'s `$player::crouchTrigger` 3 and
+/// `$player::proneTrigger` 1). A client cannot read a datablock's dynamic fields, so the client's prediction takes them from
+/// here ([`prediction::CubePrediction`]); a test holds the two the same.
+pub fn figure_poses() -> torque::game::sim::player::poses::PoseData {
+    use torque::game::sim::player::poses::{PoseData, PoseSpeeds, PoseTriggers};
+    PoseData {
+        crouch: true,
+        prone: true,
+        sprint: false,
+        crouch_box: [1.0, 1.0, 1.6],
+        prone_box: [2.0, 2.0, 0.8],
+        crouch_speeds: PoseSpeeds {
+            forward: 1.3,
+            backward: 1.1,
+            side: 1.0,
+        },
+        prone_speeds: PoseSpeeds {
+            forward: 0.75,
+            backward: 0.6,
+            side: 0.0,
+        },
+        crouch_force: 3600.0,
+        prone_force: 2400.0,
+        triggers: PoseTriggers {
+            crouch: 3,
+            prone: 1,
+            sprint: 5,
+        },
+        ..PoseData::default()
     }
 }
 
@@ -189,6 +236,28 @@ impl<G: GameDir> GameFiles<G> {
     pub fn bundled() -> io::Result<GameFiles<G>> {
         GameFiles::load(Path::new(G::DIR))
     }
+}
+
+/// Where the ray from `from` along the unit `dir` enters the box `min`..`max` (its distance), if it does ahead.
+pub fn ray_box(from: [f32; 3], dir: [f32; 3], min: [f32; 3], max: [f32; 3]) -> Option<f32> {
+    let (mut near, mut far) = (0.0f32, f32::MAX);
+    for i in 0..3 {
+        if dir[i].abs() < 1e-6 {
+            if from[i] < min[i] || from[i] > max[i] {
+                return None;
+            }
+            continue;
+        }
+        let a = (min[i] - from[i]) / dir[i];
+        let b = (max[i] - from[i]) / dir[i];
+        near = near.max(a.min(b));
+        far = far.min(a.max(b));
+        if near > far {
+            return None;
+        }
+    }
+    // A ray that starts inside a box (the figure's own floor) does not count.
+    (near > 0.0).then_some(near)
 }
 
 #[cfg(test)]

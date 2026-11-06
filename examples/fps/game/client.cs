@@ -495,68 +495,32 @@ new GameTSCtrl(PlayGui)
    };
    new GuiControl(HelpBand)
    {
-      profile = ArenaBandProfile; position = "428 12"; extent = "360 26"; horizSizing = "left";
+      profile = ArenaBandProfile; position = "328 12"; extent = "460 46"; horizSizing = "left";
       new GuiTextCtrl(PlayHelp)
       {
-         profile = ArenaDimProfile; position = "10 4"; extent = "342 18"; visible = true; enabled = true;
-         text = "Click shoot   R reload   T chat   Esc menu";
+         profile = ArenaDimProfile; position = "10 4"; extent = "442 18"; visible = true; enabled = true;
+         text = "Click shoot   R reload   Tab camera   T chat   Esc menu";
+      };
+      new GuiTextCtrl(PoseHelp)
+      {
+         profile = ArenaDimProfile; position = "10 24"; extent = "442 18"; visible = true; enabled = true;
+         text = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump";
       };
    };
 };
 
-// ---- the pause menu: over the view (the game goes on: others still play), the cursor on and the keys off the figure
+// ---- the pause menu (common/pause.cs): over the view (the game goes on: others still play), the cursor on and the keys off
+// the figure
 
-new GuiControl(PauseGui)
-{
-   profile = ArenaShadeProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
-   new GuiControl(PausePanel)
-   {
-      profile = ArenaPanelProfile; position = "240 160"; extent = "320 280"; horizSizing = "center"; vertSizing = "center";
-      new GuiTextCtrl(PauseTitle)
-      {
-         profile = ArenaHeadProfile; position = "0 26"; extent = "320 40"; visible = true; enabled = true;
-         text = "Paused";
-      };
-      new GuiButtonCtrl(ResumeButton)
-      {
-         profile = ArenaButtonProfile; position = "40 92"; extent = "240 56"; visible = true; enabled = true;
-         text = "Resume"; command = "resumeGame();";
-      };
-      new GuiButtonCtrl(LeaveButton)
-      {
-         profile = ArenaButtonProfile; position = "40 168"; extent = "240 56"; visible = true; enabled = true;
-         text = "Leave game"; command = "leaveGame();";
-      };
-      new GuiTextCtrl(PauseNote)
-      {
-         profile = ArenaHintProfile; position = "0 240"; extent = "320 20"; visible = true; enabled = true;
-         text = "Esc: back to the game";
-      };
-   };
-};
+exec("common/pause.cs");
 
-function pauseGame()
+function pauseAllowed() { return !$Arena::Chatting && $Arena::InGame; }
+function onPause()
 {
-   if ($Arena::Paused || $Arena::Chatting || !$Arena::InGame)
-      return;
-   $Arena::Paused = 1;
    PlayMap.pop();
    releaseKeys();
-   Canvas.pushDialog(PauseGui);
-   Canvas.cursorOn();
-   PauseMap.push();
 }
-
-function resumeGame()
-{
-   if (!$Arena::Paused)
-      return;
-   $Arena::Paused = 0;
-   PauseMap.pop();
-   Canvas.popDialog(PauseGui);
-   Canvas.cursorOff();
-   PlayMap.push();
-}
+function onResume() { PlayMap.push(); }
 
 // ---- the round's end: its scores over the view until the next map is in (the game goes on underneath, without shots)
 
@@ -662,16 +626,6 @@ function showRoundClock()
    $Arena::ClockTimer = schedule(1000, 0, "showRoundClock");
 }
 
-// Leaving from the pause menu closes it first.
-function closePause()
-{
-   if (!$Arena::Paused)
-      return;
-   $Arena::Paused = 0;
-   PauseMap.pop();
-   Canvas.popDialog(PauseGui);
-}
-
 $Arena::ChatRows = 6;
 for (%i = 0; %i < $Arena::ChatRows; %i++)
 {
@@ -761,11 +715,15 @@ function say(%text)
 // ---- the keys
 
 new ActionMap(PlayMap);
-// The keys held, and the moves made of them: slower while aiming down the sights.
+// The keys held, and the moves made of them: a walk (a share of the full speed), the full speed while Shift is held (a
+// sprint), and no faster than $Arena::AimWalk while aiming down the sights.
 $Arena::AimWalk = 0.6;
+$Arena::WalkPace = 0.35;
 function applyMoves()
 {
-   %speed = $Arena::Aiming ? $Arena::AimWalk : 1;
+   %speed = $Arena::Sprint ? 1 : $Arena::WalkPace;
+   if ($Arena::Aiming && %speed > $Arena::AimWalk)
+      %speed = $Arena::AimWalk;
    $mvForwardAction = $Arena::KeyForward * %speed;
    $mvBackwardAction = $Arena::KeyBack * %speed;
    $mvLeftAction = $Arena::KeyLeft * %speed;
@@ -774,14 +732,17 @@ function applyMoves()
 function releaseKeys()
 {
    $Arena::KeyForward = $Arena::KeyBack = $Arena::KeyLeft = $Arena::KeyRight = 0;
+   $Arena::Sprint = 0;
    if ($Arena::Aiming)
       aim(0);
    applyMoves();
+   releasePoseKeys();
 }
 function moveForward(%v) { $Arena::KeyForward = %v; applyMoves(); }
 function moveBack(%v) { $Arena::KeyBack = %v; applyMoves(); }
 function moveLeft(%v) { $Arena::KeyLeft = %v; applyMoves(); }
 function moveRight(%v) { $Arena::KeyRight = %v; applyMoves(); }
+function sprint(%v) { $Arena::Sprint = %v != 0; applyMoves(); }
 function jump(%v) { $mvTriggerCount2++; }
 // The trigger counts once going down and once coming up.
 function fire(%v) { $mvTriggerCount0++; }
@@ -813,15 +774,18 @@ function look(%v)
    $mvPitch += %pitch - $Arena::LookPitch;
    $Arena::LookPitch = %pitch;
 }
+// Tab: the camera behind the figure or at its eyes.
+function switchCamera(%v) { if (%v) $Arena::ThirdPerson = !$Arena::ThirdPerson; }
 function chatKey(%v) { if (%v) openChat(); }
-function pauseKey(%v) { if (%v) pauseGame(); }
-function resumeKey(%v) { if (%v) resumeGame(); }
 function reloadKey(%v) { if (%v && isObject(ServerConnection)) commandToServer('Reload'); }
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
 PlayMap.bind(keyboard, space, jump);
+PlayMap.bind(keyboard, lshift, sprint);
+bindPoseKeys(PlayMap);
+PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, t, chatKey);
 PlayMap.bind(keyboard, r, reloadKey);
 PlayMap.bind(keyboard, escape, pauseKey);
@@ -829,10 +793,6 @@ PlayMap.bind(mouse, button0, fire);
 PlayMap.bind(mouse, button1, aim);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
-
-// While paused, Esc goes back to the game.
-new ActionMap(PauseMap);
-PauseMap.bind(keyboard, escape, resumeKey);
 
 // ---- in and out
 

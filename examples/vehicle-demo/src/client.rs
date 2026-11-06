@@ -24,9 +24,9 @@
 //! canvas drawn, the hint line, and the eye: on foot behind the figure (or at its eyes, `Tab`); in a seat behind and above the
 //! buggy, turned round it by the mouse, kept above the ground, or (`Tab`) at the seated figure's eyes, looking along the buggy
 //! turned by the mouse as far as a head turns ([`VehicleDemo::seated_eye_point`]: just ahead of the face, so the head does not
-//! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` eases the camera from one to the other
-//! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden only once the camera has
-//! arrived at its eyes. Getting in or out cuts. The wheel moves each camera behind (on foot, behind the buggy) in or out within its
+//! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` moves the camera from one to the other
+//! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden while the camera is
+//! close to its eyes ([`CLOSE`]), on the way in and on the way out. Getting in or out cuts. The wheel moves each camera behind (on foot, behind the buggy) in or out within its
 //! own limits ([`FOOT_ZOOM`], [`DRIVE_ZOOM`]), eased ([`Zoom`]); in the first person it does nothing.
 
 use std::ops::{Deref, DerefMut};
@@ -34,8 +34,8 @@ use std::ops::{Deref, DerefMut};
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 
-use torque::app::camera_blend::CameraBlend;
-use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
+use torque::app::camera_blend::{CLOSE, CameraBlend};
+use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 use torque::app::hosting::{join_address, lan_bind_address, register_join_natives};
 use torque::app::lights::WorldLights;
 use torque::app::orbit::Zoom;
@@ -68,6 +68,8 @@ pub struct ClientOptions {
     pub port: u16,
     /// The address a hosted game binds (the loopback address: this computer's LAN address).
     pub host_address: Ipv4Addr,
+    /// A client with no socket of its own and no list of games, that can only play alone (a browser's).
+    pub alone_only: bool,
 }
 
 impl Default for ClientOptions {
@@ -77,6 +79,7 @@ impl Default for ClientOptions {
             name: "Player".to_string(),
             port: DEFAULT_PORT,
             host_address: Ipv4Addr::LOCALHOST,
+            alone_only: false,
         }
     }
 }
@@ -150,6 +153,9 @@ pub const HEAD_UP: f32 = 1.05;
 /// How far the camera in a seat looks up (negative) and down at most (radians): above the buggy, short of straight down.
 pub const DRIVE_PITCH_RANGE: (f32, f32) = (-0.5, 1.3);
 pub const EYE_AHEAD: f32 = 0.12;
+/// How far a pixel of the mouse turns and tilts the look in a seat (radians; `orbitYaw` and `orbitPitch` in `client.cs`).
+pub const MOUSE_YAW: f32 = 0.004;
+pub const MOUSE_PITCH: f32 = 0.003;
 
 /// The predicted state of the buggy the client drives that the keys at the wheel read.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -180,6 +186,8 @@ pub struct VehicleDemo {
     lights: WorldLights,
     /// The camera's ease between first and third person, and the mode it last eased to: (first person, seated).
     blend: CameraBlend,
+    /// Where the camera was drawn last frame.
+    drawn_at: Option<[f32; 3]>,
     camera_mode: Option<(bool, bool)>,
     /// The wheel's distances of the camera on foot and the one behind the buggy, each its own.
     foot_zoom: Zoom,
@@ -214,8 +222,13 @@ impl VehicleDemo {
             ))),
             // The list of games measures its text as it lays out: its fonts are the drawing's.
             layout_fonts: true,
-            net: options.net.client_net(),
-            server_query: true,
+            // A client that only plays alone gets its in-memory socket when the game starts (`start_local`).
+            net: if options.alone_only {
+                ClientNet::External
+            } else {
+                options.net.client_net()
+            },
+            server_query: !options.alone_only,
         })?;
         register_join_natives(&mut b.vm, &b.state);
         b.vm.set_global("$World::Port", &options.port.to_string());
@@ -233,6 +246,7 @@ impl VehicleDemo {
             seat_eyes: [0, 1].map(torque_example_assets::buggy::seated_eye),
             lights: WorldLights::default(),
             blend: CameraBlend::default(),
+            drawn_at: None,
             camera_mode: None,
             foot_zoom: Zoom::new(CAMERA_DISTANCE, FOOT_ZOOM.0, FOOT_ZOOM.1),
             drive_zoom: Zoom::new(DRIVE_DISTANCE, DRIVE_ZOOM.0, DRIVE_ZOOM.1),
@@ -315,7 +329,7 @@ impl VehicleDemo {
         self.seat().is_some()
     }
 
-    /// Whether the camera on foot is at the figure's eyes (`V`).
+    /// Whether the camera on foot is at the figure's eyes (`Tab`).
     pub fn first_person(&self) -> bool {
         self.flag("$World::FirstPerson")
     }
@@ -612,12 +626,14 @@ impl VehicleDemo {
     pub fn drawn_eye(&mut self, dt: f32) -> Eye {
         let target = self.eye(dt);
         let terrain = &self.terrain;
-        self.blend.eye(target, |mut p| {
+        let eye = self.blend.eye(target, |mut p| {
             if let Some(ground) = terrain.height(p[0], p[1]) {
                 p[2] = p[2].max(ground + DRIVE_CLEARANCE);
             }
             p
-        })
+        });
+        self.drawn_at = Some(eye.position);
+        eye
     }
 
     /// The distance of the third-person camera the mode has (on foot or behind the buggy), as the wheel left it.
@@ -651,6 +667,60 @@ impl VehicleDemo {
     /// Whether the camera is easing between modes.
     pub fn camera_blending(&self) -> bool {
         !self.blend.arrived()
+    }
+
+    /// The range the mouse turns the look in a seat (`$Drive::OrbitYaw`, `$Drive::OrbitPitch`) for the camera there: at the
+    /// eyes, a head's turn ([`HEAD_TURN`]) and tilt ([`HEAD_UP`], [`HEAD_DOWN`] about [`HEAD_REST`]); behind the buggy, all the
+    /// way round and the camera's pitch range ([`DRIVE_PITCH_RANGE`] about [`DRIVE_PITCH`]). Yaw, then pitch, each low and high.
+    pub fn look_range(&self) -> [(f32, f32); 2] {
+        if self.first_person() {
+            [
+                (-HEAD_TURN, HEAD_TURN),
+                (-HEAD_UP - HEAD_REST, HEAD_DOWN - HEAD_REST),
+            ]
+        } else {
+            [
+                (-std::f32::consts::PI, std::f32::consts::PI),
+                (
+                    DRIVE_PITCH_RANGE.0 - DRIVE_PITCH,
+                    DRIVE_PITCH_RANGE.1 - DRIVE_PITCH,
+                ),
+            ]
+        }
+    }
+
+    /// The seated look kept in the camera's range: the script clamps each mouse move to the range the globals give (so a
+    /// mouse pushed past the edge and turned back moves the view at once), and each frame the look itself is put in range,
+    /// after `Tab` too (a look behind the buggy becomes the head turned as far as it goes that way; the camera eases there).
+    /// Behind the buggy the yaw goes all the way round, kept within a turn either side.
+    fn keep_look_in_range(&mut self) {
+        if !self.seated() {
+            return;
+        }
+        let [(y0, y1), (p0, p1)] = self.look_range();
+        // Behind the buggy the script's yaw has no edge (the frame wraps it).
+        let (s0, s1) = if self.first_person() {
+            (y0, y1)
+        } else {
+            (-1.0e6, 1.0e6)
+        };
+        for (name, v) in [
+            ("$Drive::YawMin", s0),
+            ("$Drive::YawMax", s1),
+            ("$Drive::PitchMin", p0),
+            ("$Drive::PitchMax", p1),
+        ] {
+            self.set_global(name, &v.to_string());
+        }
+        let yaw = self.number("$Drive::OrbitYaw");
+        let pitch = self.number("$Drive::OrbitPitch");
+        let tau = std::f32::consts::TAU;
+        let wrapped = yaw - tau * (yaw / tau).round();
+        let kept = (wrapped.clamp(y0, y1), pitch.clamp(p0, p1));
+        if kept != (yaw, pitch) {
+            self.set_global("$Drive::OrbitYaw", &kept.0.to_string());
+            self.set_global("$Drive::OrbitPitch", &kept.1.to_string());
+        }
     }
 
     /// The seated figure's look in the buggy's space: along the buggy turned by the mouse (`$Drive::OrbitYaw`,
@@ -778,9 +848,15 @@ impl VehicleDemo {
             Some(last) if last.0 != mode.0 => self.blend.switch(),
             _ => {}
         }
+        self.keep_look_in_range();
         self.blend.advance(dt);
         self.zoom(dt);
-        let hide = mode.0 && !mode.1 && self.blend.arrived();
+        // On foot the figure is hidden while the camera is close to its eyes (module docs).
+        let hide = !mode.1
+            && match (self.figure(), self.drawn_at) {
+                (Some(f), Some(p)) => near_eyes(p, f.eye),
+                _ => mode.0,
+            };
         let mut st = self.client.host.client.borrow_mut();
         match st.conn.conn.as_mut() {
             Some(conn) => {
@@ -905,4 +981,9 @@ impl App for VehicleDemo {
 fn with_fov(mut eye: Eye) -> Eye {
     eye.fov = None;
     eye
+}
+
+/// Whether the camera drawn at `camera` is within [`CLOSE`] of a figure's `eyes`: the figure is hidden.
+fn near_eyes(camera: [f32; 3], eyes: [f32; 3]) -> bool {
+    (0..3).map(|k| (camera[k] - eyes[k]).powi(2)).sum::<f32>() < CLOSE * CLOSE
 }

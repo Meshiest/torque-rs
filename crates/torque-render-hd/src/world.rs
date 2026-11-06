@@ -21,8 +21,9 @@
 //! **Anti-aliasing and AO** ([`post`]; the ladder is `torque_render_scene::hd::post`): the frame is drawn at the quality's internal
 //! size (75 %, 85 %, 100 %, 100 %) with, under the TAA, a sub-pixel jitter (Halton(2, 3), 8 phases). The prepass also writes each
 //! pixel's motion (the camera's and, for a shape that moved since the last frame, its own: its previous transform) and normal. Before
-//! the opaque pass the AO pass (GTAO at High and Ultra, SSAO at Medium; half resolution but at Ultra) estimates and accumulates the
-//! ambient occlusion, which the forward pass upsamples by depth into the ambient light. After the translucent pass the TAA resolve
+//! the opaque pass the AO pass (GTAO at High and Ultra, SSAO at Medium; half resolution but at Ultra) estimates the ambient
+//! occlusion with a pattern fixed per pixel and its spatial filter smooths it (no history: nothing lags behind a moving shape),
+//! which the forward pass upsamples by depth into the ambient light. After the translucent pass the TAA resolve
 //! (with TAAU when the internal frame is smaller) writes the history at the output's size; at Low the FXAA-style filter runs
 //! instead. The tonemap pass reads that (scaling it up at Low) and at Ultra sharpens it. The specular AA (normal variance) is in the
 //! forward pass at every quality.
@@ -115,7 +116,7 @@ pub const LDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const CLUSTER_GRID: [u32; 3] = [16, 9, 24];
 pub const MAX_LIGHTS: usize = 1024;
 /// One light's bytes in the lights buffer (`common.wgsl`'s `Light`).
-pub const LIGHT_BYTES: usize = 48;
+pub const LIGHT_BYTES: usize = 64;
 
 /// The lights a frame uploads, in the buffer's order: the shadowed ones first (the point lights but the glowing surfaces', then
 /// the spots that cast shadows), then the spots that do not and the glowing surfaces' lights (`glow`: else left out); each one's
@@ -162,7 +163,8 @@ pub(crate) fn frame_size<E: HdExtension>() -> usize {
     FRAME_CORE_BYTES + E::FRAME_EXT_BYTES
 }
 
-/// The moving shapes the TAA is told of each frame (the frame uniform's `movers`; the WGSL's MOVING_CASTERS).
+/// The frame uniform's `movers` block (the WGSL's MOVING_CASTERS): no pass reads it now (the histories keep no rules about
+/// what moved); it keeps its place for the extension's block after it.
 pub const MOVING_CASTERS: usize = 16;
 /// The tonemap pass's uniform (`tonemap.wgsl`'s `Post`).
 const POST_BYTES: u64 = 160;
@@ -303,9 +305,6 @@ struct Particles {
     draws: Vec<(f32, DrawRef)>,
     /// The multiplied decals ([`Blend::Modulate2x`]): their own pass over the opaque frame, in any order.
     decals: Vec<DrawRef>,
-    /// The bounds of the particle draws the TAA's frame has (not the late ones): centre and radius, the radius negative (they
-    /// change every frame and have no motion: the TAA keeps little history where they are).
-    bounds: Vec<[f32; 4]>,
 }
 
 /// A cell on the GPU: its slabs in the static arena ([`arena::Arena`]; its indices relative to its first vertex, `base_vertex`, from
@@ -390,16 +389,11 @@ struct Loose {
     /// Each corona's eye distance, draw and light (its anchor: the opaque shapes in front of it hide it, each frame).
     coronas: Vec<(f32, DrawRef, [f32; 3])>,
     flare: Option<DrawRef>,
-    /// The last upload's shapes or parts this one lacks: their bounds, the radius negative (`HdWorld::reactive_now`).
-    vanished: Vec<[f32; 4]>,
     /// Where the planes' vertices and indices were written, for which static sync ([`PlanesAt`]), and whether the previous
     /// positions' buffer holds them too: an upload with the same place leaves them as they are (a terrain is hundreds of
     /// thousands of vertices, and a window uploads every frame).
     planes_at: Option<PlanesAt>,
     planes_previous: bool,
-    /// The shapes that moved since the last frame (`DynamicObject::moving_bound`): where the TAA keeps little history under their
-    /// shadows.
-    movers: Vec<[f32; 4]>,
 }
 
 /// A part of the loose rest's draws written side by side (each from its vertex), and whether its vertices and its previous
@@ -447,11 +441,11 @@ struct Targets {
     contact_group: wgpu::BindGroup,
     ao_views: [wgpu::TextureView; 2],
     ao_groups: [wgpu::BindGroup; 2],
-    /// The AO filtered (the scene's smooth occlusion: the forward pass reads it in place of the AO pass's output).
+    /// The AO filtered in space: what the forward pass reads, always.
     ao_smooth_view: wgpu::TextureView,
     history: [wgpu::Texture; 2],
     history_views: [wgpu::TextureView; 2],
-    /// The TAA's shown colour (and its luma's second moment), the tonemap's source.
+    /// The TAA's shown color (and its neighborhood's mean luma), the tonemap's source.
     shown: [wgpu::Texture; 2],
     shown_views: [wgpu::TextureView; 2],
     taa_groups: [wgpu::BindGroup; 2],
@@ -809,6 +803,31 @@ impl HdFeatures {
     };
 }
 
+/// Which passes read what earlier frames left (all by default). The ghosting check (`examples/ghosting.rs`) turns each off on
+/// its own to measure its share of a trail: off, that pass starts its history again every frame (its per-frame noise still turns).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Histories {
+    /// The TAA's history (off: each frame's jittered image as it is).
+    pub taa: bool,
+    /// The screen-space reflections' history.
+    pub ssr: bool,
+    /// The volumetric clouds' reprojected history.
+    pub clouds: bool,
+    /// The automatic exposure's adaptation.
+    pub exposure: bool,
+}
+
+impl Default for Histories {
+    fn default() -> Histories {
+        Histories {
+            taa: true,
+            ssr: true,
+            clouds: true,
+            exposure: true,
+        }
+    }
+}
+
 /// What the forward pass writes: the shaded frame, or a visibility the shadows' checks read from the HDR target.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DebugView {
@@ -1010,7 +1029,7 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     light_bytes: Vec<u8>,
     /// Per light, the static geometry's owners it is mounted in ([`HdExtension::light_hosts`]: left out of its shadow cube).
     light_hosts: Vec<[u32; 4]>,
-    written_slots: Option<Vec<i32>>,
+    written_slots: Option<Vec<[f32; 4]>>,
     /// The lights as uploaded (the scene's point lights and spots in the buffer's order) and each one's packed cone
     /// ([`HdSpot::cone`]; zeros: a point light).
     frame_lights: Vec<HdLight>,
@@ -1034,6 +1053,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     /// The brute-force light loop instead of the clusters (the clusters check's reference).
     pub brute_force_lights: bool,
     pub features: HdFeatures,
+    /// The histories the passes keep ([`Histories`]: all by default).
+    pub histories: Histories,
     pub debug: DebugView,
     /// What the last frame drew.
     pub stats: DrawStats,
@@ -1097,14 +1118,12 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     cpu_frames: u64,
     /// The render pipelines made so far (a frame that makes one waits for its shader's compile).
     pub pipelines_made: u64,
+    /// The effects' pipelines being made on a worker thread ([`HdWorld::warm_effects`]).
+    warming: Option<Warming>,
     /// The scene's generation and control generation at the last upload.
     uploaded: Option<(u64, u64)>,
     /// The scene's lights generation last uploaded, whether with the glow lights, and how many of them may cast shadows.
     lights_generation: Option<u64>,
-    /// The lights last uploaded (position, linear colour, radius), and the bounds of those switched off, dimmed, brightened or on
-    /// at the last upload with the TAA frame they were found at (`post::changed_lights`: reactive that frame).
-    uploaded_lights: Vec<([f32; 3], [f32; 3], f32)>,
-    changed_lights: (Option<u64>, Vec<[f32; 4]>),
     uploaded_glow: bool,
     shadowed_lights: usize,
 }
@@ -1307,6 +1326,57 @@ pub fn f32_to_f16(v: f32) -> u16 {
         h += 1;
     }
     h
+}
+
+/// The forward pass's pipeline for `key`: of `module` (the forward module of its `clustered` and `front_layer`), the stage's
+/// fragment entry.
+fn make_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    key: PipelineKey,
+) -> wgpu::RenderPipeline {
+    match key.stage {
+        Stage::Main if key.blend == Blend::Modulate2x => {
+            forward_pipeline(device, layout, module, key, "fs_modulate2x")
+        }
+        Stage::Main | Stage::Over => forward_pipeline(device, layout, module, key, "fs_main"),
+        Stage::Particle => forward_pipeline(device, layout, module, key, "fs_particle"),
+        s => trans_pipeline(device, layout, module, key.cull, s),
+    }
+}
+
+/// The forward pass's states the effects are drawn with: particles, ribbons, bolt trails, decals and tire tracks are two-sided,
+/// depth-tested and not written, added (their late pass's own entry too), alpha-blended (the translucent pass's front layer and
+/// its weighted-blend stages) or multiplied over the surface.
+pub(crate) fn effect_keys(clustered: bool) -> Vec<PipelineKey> {
+    let key = |blend, front_layer, stage| PipelineKey {
+        blend,
+        cull: Cull::None,
+        depth_test: true,
+        depth_write: false,
+        clustered,
+        front_layer,
+        stage,
+    };
+    let mut keys = Vec::new();
+    for blend in [Blend::Additive, Blend::One] {
+        keys.push(key(blend, false, Stage::Main));
+        keys.push(key(blend, false, Stage::Particle));
+    }
+    keys.push(key(Blend::Alpha, false, Stage::Main));
+    for stage in [Stage::Main, Stage::FrontDepth, Stage::Tail, Stage::Front] {
+        keys.push(key(Blend::Alpha, true, stage));
+    }
+    keys.push(key(Blend::Modulate2x, false, Stage::Main));
+    keys
+}
+
+/// The warm-up's thread and the pipelines it makes ([`HdWorld::warm_effects`]).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Warming {
+    keys: Vec<PipelineKey>,
+    thread: std::thread::JoinHandle<Vec<(PipelineKey, wgpu::RenderPipeline)>>,
 }
 
 /// A forward-pass pipeline of `module`'s `entry` for `key` (HDR target, the forward layout).
@@ -1744,6 +1814,17 @@ impl<E: HdExtension> HdWorld<E> {
                 storage(15, true, wgpu::ShaderStages::FRAGMENT),
                 // The meshes' places the shapes' vertices in their meshes' own space name (torque_render_scene::hd::NodePlace).
                 storage(16, true, wgpu::ShaderStages::VERTEX),
+                // The point lights' cubes of the second and third tiers (the first is binding 8).
+                texture_entry(
+                    17,
+                    wgpu::TextureSampleType::Depth,
+                    wgpu::TextureViewDimension::CubeArray,
+                ),
+                texture_entry(
+                    18,
+                    wgpu::TextureSampleType::Depth,
+                    wgpu::TextureViewDimension::CubeArray,
+                ),
             ],
         });
         let contact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2166,10 +2247,9 @@ impl<E: HdExtension> HdWorld<E> {
             cpu_passes: Vec::new(),
             cpu_frames: 0,
             pipelines_made: 0,
+            warming: None,
             uploaded: None,
             lights_generation: None,
-            uploaded_lights: Vec::new(),
-            changed_lights: (None, Vec::new()),
             uploaded_glow: true,
             shadowed_lights: 0,
             marks: device
@@ -2290,6 +2370,7 @@ impl<E: HdExtension> HdWorld<E> {
             output: Output::Hdr,
             brute_force_lights: false,
             features: HdFeatures::default(),
+            histories: Histories::default(),
             debug: DebugView::Off,
             stats: DrawStats::default(),
             refl,
@@ -2607,7 +2688,7 @@ impl<E: HdExtension> HdWorld<E> {
                 },
                 wgpu::BindGroupEntry {
                     binding: 8,
-                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view()),
+                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view(0)),
                 },
                 wgpu::BindGroupEntry {
                     binding: 9,
@@ -2634,6 +2715,14 @@ impl<E: HdExtension> HdWorld<E> {
                 wgpu::BindGroupEntry {
                     binding: 16,
                     resource: self.nodes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 17,
+                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view(1)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 18,
+                    resource: wgpu::BindingResource::TextureView(self.shadows.point_view(2)),
                 },
             ],
         })
@@ -2703,32 +2792,87 @@ impl<E: HdExtension> HdWorld<E> {
         if self.pipelines.contains_key(&key) {
             return;
         }
+        // One the warm-up is making: waited for rather than made twice.
+        if self.warming.as_ref().is_some_and(|w| w.keys.contains(&key)) {
+            self.take_warmed(true);
+            if self.pipelines.contains_key(&key) {
+                return;
+            }
+        }
         let module = &self.forward[&(key.clustered, key.front_layer)];
-        let pipeline = match key.stage {
-            Stage::Main if key.blend == Blend::Modulate2x => forward_pipeline(
-                &self.device,
-                &self.forward_layout,
-                module,
-                key,
-                "fs_modulate2x",
-            ),
-            Stage::Main => {
-                forward_pipeline(&self.device, &self.forward_layout, module, key, "fs_main")
-            }
-            Stage::Particle => forward_pipeline(
-                &self.device,
-                &self.forward_layout,
-                module,
-                key,
-                "fs_particle",
-            ),
-            Stage::Over => {
-                forward_pipeline(&self.device, &self.forward_layout, module, key, "fs_main")
-            }
-            s => trans_pipeline(&self.device, &self.forward_layout, module, key.cull, s),
-        };
+        let pipeline = make_pipeline(&self.device, &self.forward_layout, module, key);
         self.pipelines.insert(key, pipeline);
         self.pipelines_made += 1;
+    }
+
+    /// Starts making the pipelines the effects draw with ([`effect_keys`]: particles, ribbons, bolt trails, decals and tire
+    /// tracks, which a scene often first shows mid-game, at a shot or an impact), on a worker thread where there is one, so their
+    /// shaders' compiles cost no frame (a cold first shot made seven in two frames of 0.6 s each). Each frame takes the ones
+    /// made; a frame that needs one still being made waits for the rest. Where no thread can be started (a browser) they are
+    /// made now (a browser compiles them on its own threads).
+    pub fn warm_effects(&mut self) {
+        if self.warming.is_some() {
+            return;
+        }
+        let keys: Vec<PipelineKey> = effect_keys(!self.brute_force_lights)
+            .into_iter()
+            .filter(|k| !self.pipelines.contains_key(k))
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        let make = {
+            let device = self.device.clone();
+            let layout = self.forward_layout.clone();
+            let modules = self.forward.clone();
+            let keys = keys.clone();
+            move || {
+                keys.into_iter()
+                    .map(|k| {
+                        let module = &modules[&(k.clustered, k.front_layer)];
+                        (k, make_pipeline(&device, &layout, module, k))
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Ok(thread) = std::thread::Builder::new()
+            .name("pipeline warm-up".into())
+            .spawn(make.clone())
+        {
+            self.warming = Some(Warming { keys, thread });
+            return;
+        }
+        for (k, p) in make() {
+            self.pipelines.insert(k, p);
+            self.pipelines_made += 1;
+        }
+    }
+
+    /// Whether the warm-up's thread ([`HdWorld::warm_effects`]) is still making pipelines (a frame takes them once it is done).
+    pub fn warming(&self) -> bool {
+        self.warming.is_some()
+    }
+
+    /// The warm-up's pipelines, once its thread is done (or waiting for it: `wait`).
+    fn take_warmed(&mut self, wait: bool) {
+        if !self
+            .warming
+            .as_ref()
+            .is_some_and(|w| wait || w.thread.is_finished())
+        {
+            return;
+        }
+        let Some(w) = self.warming.take() else {
+            return;
+        };
+        // A thread that panicked made none: each is made when first drawn, as before.
+        for (k, p) in w.thread.join().unwrap_or_default() {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.pipelines.entry(k) {
+                e.insert(p);
+                self.pipelines_made += 1;
+            }
+        }
     }
 
     /// The grade the table holds: the image settings', or the identity for the check.
@@ -3688,7 +3832,6 @@ impl<E: HdExtension> HdWorld<E> {
 
     /// The scene's lights into their buffer (with the static geometry's owners that host them).
     fn upload_lights(&mut self, scene: &E::Scene) {
-        let first = self.lights_generation.is_none();
         self.lights_generation = Some(scene.lights_generation);
         self.uploaded_glow = self.features.glow_lights;
         let (lights, cones, shadowed) = frame_lights(
@@ -3710,18 +3853,6 @@ impl<E: HdExtension> HdWorld<E> {
                 &self.masks,
             );
         }
-        // What changed since the last upload: the TAA keeps little history where those lights reached.
-        let now: Vec<([f32; 3], [f32; 3], f32)> = lights
-            .iter()
-            .map(|l| (l.position, l.color, l.radius))
-            .collect();
-        if !first {
-            let eye = scene.eye.map_or([0.0; 3], |e| e.position);
-            let changed =
-                post::changed_lights(&self.uploaded_lights, &now, eye, post::REACTIVE_BOUNDS);
-            self.changed_lights = (Some(self.temporal.frame), changed);
-        }
-        self.uploaded_lights = now;
         let mut lb = Vec::with_capacity(n * LIGHT_BYTES);
         for (l, cone) in lights.iter().zip(&cones) {
             push_f32(
@@ -3734,11 +3865,12 @@ impl<E: HdExtension> HdWorld<E> {
                     l.color[0],
                     l.color[1],
                     l.color[2],
-                    // No shadow slot yet (the frame sets them).
-                    -1.0,
+                    0.0,
                 ],
             );
             push_f32(&mut lb, cone);
+            // No shadow cube yet (the frame sets them).
+            push_f32(&mut lb, &[-1.0, 0.0, -1.0, 0.0]);
         }
         if !lb.is_empty() {
             self.queue.write_buffer(&self.lights, 0, &lb);
@@ -3800,25 +3932,6 @@ impl<E: HdExtension> HdWorld<E> {
             ));
             vcount += d.vertices.len() as u32;
         }
-        // The nearest REACTIVE_BOUNDS by their eye distance (a server makes as many emitters as it likes).
-        let mut alpha: Vec<(f32, &HdDraw)> = scene
-            .particles
-            .iter()
-            .zip(&draws)
-            .filter(|(_, (_, r))| !r.late && r.blend == Blend::Alpha)
-            .map(|((dist, d), _)| (*dist, d))
-            .collect();
-        if alpha.len() > post::REACTIVE_BOUNDS {
-            alpha.select_nth_unstable_by(post::REACTIVE_BOUNDS - 1, |a, b| a.0.total_cmp(&b.0));
-            alpha.truncate(post::REACTIVE_BOUNDS);
-        }
-        let bounds = alpha
-            .into_iter()
-            .filter_map(|(_, d)| {
-                let (c, r) = torque_render_scene::hd::bounding_sphere(std::slice::from_ref(d));
-                (r.is_finite() && c.iter().all(|v| v.is_finite())).then_some([c[0], c[1], c[2], -r])
-            })
-            .collect();
         let (decals, draws): (Vec<_>, Vec<_>) = draws
             .into_iter()
             .partition(|(_, r)| r.blend == Blend::Modulate2x);
@@ -3826,7 +3939,6 @@ impl<E: HdExtension> HdWorld<E> {
             generation: Some(scene.particles_generation),
             draws,
             decals: decals.into_iter().map(|(_, r)| r).collect(),
-            bounds,
             ..Particles::default()
         };
         if !indices.is_empty() {
@@ -4114,45 +4226,6 @@ impl<E: HdExtension> HdWorld<E> {
         // The meshes' places: each object's at its first, the rows of its placement now, its normals' turn and its placement at
         // the last frame.
         self.upload_nodes(scene, &loose.objects, node_end);
-        // A see-through shape's bound has its radius negative: its blended parts have no motion of their own in the TAA's frame
-        // (their colour is blended over what is behind them), so the TAA keeps little history where it is seen. (Not every
-        // shape with translucency: a Player's opaque parts are in the prepass with their motion.)
-        loose.movers = scene
-            .objects
-            .iter()
-            .zip(&still_objects)
-            .filter(|(_, still)| !**still)
-            .filter_map(|(o, _)| {
-                let see_through = o
-                    .draws
-                    .iter()
-                    .any(|d| d.blend == Blend::Alpha && !d.depth_write);
-                o.moving_bound().map(|mut b| {
-                    // (A late object is drawn after the TAA.)
-                    if see_through && !E::drawn_late(o.ghost) {
-                        b[3] = -b[3];
-                    }
-                    b
-                })
-            })
-            .collect();
-        // The last upload's shapes (or their parts: an item put away) that are gone from this one: where they were, the TAA keeps
-        // little history for a frame or two (their pixels held them).
-        let now_ids: std::collections::HashSet<u32> = loose
-            .objects
-            .iter()
-            .flat_map(|o| o.ids.iter().map(|v| v.to_bits()))
-            .collect();
-        loose.vanished = post::nearest_bounds(
-            self.loose
-                .objects
-                .iter()
-                .filter(|o| !o.late && o.ids.iter().any(|v| !now_ids.contains(&v.to_bits())))
-                .map(|o| [o.centre[0], o.centre[1], o.centre[2], -o.radius])
-                .collect(),
-            scene.eye.map_or([0.0; 3], |e| e.position),
-            post::REACTIVE_BOUNDS,
-        );
         if !indices.is_empty() || !index_writes.is_empty() {
             // A window syncs its control object every frame: the buffers are written in place while they are big enough (made
             // anew, with room to grow, only when they are not), the runs that hold their stamps' vertices not at all.
@@ -4737,23 +4810,6 @@ impl<E: HdExtension> HdWorld<E> {
         Ok(true)
     }
 
-    /// This frame's bounds whose pixels the TAA keeps little history of (their radius negative): the moving see-through shapes,
-    /// the particles, the shapes gone at this frame's upload and the lights switched off, dimmed or on at it.
-    fn reactive_now(&self) -> Vec<[f32; 4]> {
-        // The vanished shapes only on the frame of the upload that lost them (the next one keeps them as last frame's).
-        let fresh = self.temporal.generation != self.loose.generation;
-        let lights = self.changed_lights.0 == Some(self.temporal.frame);
-        self.loose
-            .movers
-            .iter()
-            .chain(&self.particles.bounds)
-            .chain(self.loose.vanished.iter().filter(|_| fresh))
-            .chain(self.changed_lights.1.iter().filter(|_| lights))
-            .filter(|b| b[3] < 0.0)
-            .copied()
-            .collect()
-    }
-
     /// The frame uniform for the (jittered, internal) `camera`; `post` turns on `common.wgsl`'s `prev_view_proj`; `main` the main
     /// view's (a secondary view, the water's mirrored camera or a capture face, is never under water: its eye is not the camera's).
     fn frame_bytes(&self, scene: &E::Scene, camera: &HdCamera, post: &[u8], main: bool) -> Vec<u8> {
@@ -4819,8 +4875,7 @@ impl<E: HdExtension> HdWorld<E> {
         push_f32(&mut b, &surfaces.table);
         // x 1 for WBOIT, y 1 for coloured sun shadows; z 1 where no TAA averages a per-pixel pattern (the anti-aliasing off or
         // the FXAA-style filter, a debug view): the near detail's fade is a cut there; w 1 where the frame is shown through the
-        // FXAA-style filter (Low): the shadows' filter keeps a fixed pattern (no speckle). Then last frame's effect time and 1 when
-        // the scene smooths its occlusion.
+        // FXAA-style filter (Low): the shadows' filter keeps a fixed pattern (no speckle). Then last frame's effect time.
         let taa = self.features.anti_aliasing
             && quality.post().aa == torque_render_scene::hd::post::AntiAliasing::Taa
             && self.debug == DebugView::Off;
@@ -4840,7 +4895,7 @@ impl<E: HdExtension> HdWorld<E> {
             &mut b,
             &[
                 self.temporal.prev_time.unwrap_or(E::time(scene)),
-                flag(scene.smooth_occlusion || mode.image.smooth_occlusion),
+                0.0,
                 0.0,
                 0.0,
             ],
@@ -4848,23 +4903,8 @@ impl<E: HdExtension> HdWorld<E> {
         // The sky's way from where its draws were built to this camera's eye.
         let e = camera.eye;
         let s = scene.sky_eye;
-        // The moving shapes nearest the eye (their bounds' near sides), at most MOVING_CASTERS.
-        // With last frame's reactive bounds too (the pixels a particle or a see-through shape has just left held it in their
-        // history).
-        let mut now: Vec<[f32; 4]> = self.loose.movers.clone();
-        now.extend_from_slice(&self.particles.bounds);
-        if self.temporal.generation != self.loose.generation {
-            now.extend_from_slice(&self.loose.vanished);
-        }
-        // The lights switched off, dimmed or on at this frame's upload (their light changed with no motion).
-        if self.changed_lights.0 == Some(self.temporal.frame) {
-            now.extend_from_slice(&self.changed_lights.1);
-        }
-        let movers = post::frame_movers(now, &self.temporal.reactive, e, MOVING_CASTERS);
-        push_f32(
-            &mut b,
-            &[e[0] - s[0], e[1] - s[1], e[2] - s[2], movers.len() as f32],
-        );
+        // (w: the count of `movers`, none: no pass reads them now; the block keeps its place for the extension's after it.)
+        push_f32(&mut b, &[e[0] - s[0], e[1] - s[1], e[2] - s[2], 0.0]);
         let drawn_as_water = self.features.reflections && !self.loose.water.is_empty();
         let terms = water::frame_terms(
             &**scene,
@@ -4875,9 +4915,7 @@ impl<E: HdExtension> HdWorld<E> {
         );
         push_f32(&mut b, &terms.water);
         push_f32(&mut b, &terms.under);
-        for k in 0..MOVING_CASTERS {
-            push_f32(&mut b, &movers.get(k).copied().unwrap_or([0.0; 4]));
-        }
+        b.resize(b.len() + 16 * MOVING_CASTERS, 0);
         b.extend_from_slice(&self.ext.frame_ext(scene));
         debug_assert_eq!(b.len(), frame_size::<E>());
         b
@@ -4903,6 +4941,7 @@ impl<E: HdExtension> HdWorld<E> {
         let cpu_start = web_time::Instant::now();
         let mut cpu_at = cpu_start;
         let mut cpu_marks: Vec<(&'static str, f64)> = Vec::new();
+        self.take_warmed(false);
         let passes_before = PASSES.load(std::sync::atomic::Ordering::Relaxed);
         let kinds_before = passes_by_kind();
         let _ = set_pass_kind(PassKind::Post);
@@ -4962,6 +5001,12 @@ impl<E: HdExtension> HdWorld<E> {
         if remade || self.temporal.is_cut(E::mode(scene), camera.eye) {
             self.reset_history();
         }
+        if !self.histories.clouds {
+            self.clouds.reset();
+        }
+        if !self.histories.exposure {
+            self.exposure.reset();
+        }
         cpu_mark!("begin: targets");
         let icam = camera.sized(iw, ih);
         let j = if taa {
@@ -5004,7 +5049,11 @@ impl<E: HdExtension> HdWorld<E> {
                 j[0],
                 j[1],
                 (self.temporal.frame % 1024) as f32,
-                if self.temporal.taa_written { 1.0 } else { 0.0 },
+                if self.temporal.taa_written && self.histories.taa {
+                    1.0
+                } else {
+                    0.0
+                },
             ],
         );
         let method = match pq.ao {
@@ -5642,9 +5691,11 @@ impl<E: HdExtension> HdWorld<E> {
         if self.written_slots.as_ref() != Some(&self.shadows.light_slots) {
             let mut lb = self.light_bytes.clone();
             for (i, s) in self.shadows.light_slots.iter().enumerate() {
-                let at = i * LIGHT_BYTES + 28;
-                if at + 4 <= lb.len() {
-                    lb[at..at + 4].copy_from_slice(&(*s as f32).to_le_bytes());
+                let at = i * LIGHT_BYTES + 48;
+                if at + 16 <= lb.len() {
+                    for (k, v) in s.iter().enumerate() {
+                        lb[at + 4 * k..at + 4 * k + 4].copy_from_slice(&v.to_le_bytes());
+                    }
                 }
             }
             if !lb.is_empty() {
@@ -5654,13 +5705,8 @@ impl<E: HdExtension> HdWorld<E> {
         }
 
         let targets = self.targets.as_ref().ok_or("no targets")?;
-        // The AO the forward pass reads: the AO pass's, or with the scene's (or the look's) smooth occlusion its filtered copy.
-        let smooth_ao = ao_on && (scene.smooth_occlusion || image.smooth_occlusion);
-        let ao_shown = if smooth_ao {
-            &targets.ao_smooth_view
-        } else {
-            &targets.ao_views[p]
-        };
+        // The AO the forward pass reads: the AO pass's filtered copy (each frame's estimate stands alone, smoothed in space).
+        let ao_shown = &targets.ao_smooth_view;
         {
             crate::count_pass();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -5981,7 +6027,7 @@ impl<E: HdExtension> HdWorld<E> {
             crate::count_draws(1);
         }
         mark!("contact");
-        // The ambient occlusion and its history.
+        // The ambient occlusion and its spatial filter.
         let ao_timed = ao_on && self.timer.is_some();
         if ao_on {
             crate::count_pass();
@@ -6000,17 +6046,12 @@ impl<E: HdExtension> HdWorld<E> {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            let pipes = if smooth_ao {
-                &self.post.ao_moving
-            } else {
-                &self.post.ao
-            };
-            pass.set_pipeline(&pipes[&(pq.ao == AoMethod::Gtao)]);
+            pass.set_pipeline(&self.post.ao[&(pq.ao == AoMethod::Gtao)]);
             pass.set_bind_group(0, &targets.ao_groups[p], &[]);
             pass.draw(0..3, 0..1);
             crate::count_draws(1);
         }
-        if smooth_ao {
+        if ao_on {
             // The other parity's group reads this frame's AO as its history binding.
             crate::count_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -6930,7 +6971,6 @@ impl<E: HdExtension> HdWorld<E> {
         self.refl.history_valid = refl_kept;
         self.output = output;
         self.clouds.advance();
-        let reactive = post::nearest_bounds(self.reactive_now(), camera.eye, post::REACTIVE_BOUNDS);
         self.temporal.advance(
             icam.view_proj,
             camera.eye,
@@ -6940,7 +6980,6 @@ impl<E: HdExtension> HdWorld<E> {
             E::mode(scene),
             E::time(scene),
         );
-        self.temporal.reactive = reactive;
         self.stats = DrawStats {
             draw_calls,
             cells_drawn,

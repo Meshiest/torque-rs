@@ -7,7 +7,8 @@
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
 // $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
-// camera at the figure's eyes or behind it, on foot and in a seat. The host writes the hint line (setHint).
+// camera at the figure's eyes or behind it, on foot and in a seat. Esc opens the examples' pause menu (common/pause.cs: Resume,
+// Leave game, Quit). The host writes the hint line (setHint).
 
 exec("common/client.cs");
 
@@ -67,6 +68,7 @@ new GuiControlProfile(WorldButtonProfile)
 };
 
 createCanvas("torque-rs vehicle demo");
+exec("common/pause.cs");
 
 // ---- the menu
 
@@ -257,7 +259,7 @@ function pollJoinLookup()
 
 // ---- the world's view
 
-$World::FootHelp = "W A S D move   Shift walk   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
+$World::FootHelp = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump   Mouse look   Click the buggy to get in   Tab camera   Wheel zoom   [ ] time   R restart   Esc menu";
 $World::DriveHelp = "W throttle   S reverse   A D steer   Space brake   F light   Mouse turns the camera   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
 $World::RideHelp = "Mouse looks around   Tab camera   Wheel zoom   [ ] time   E get out   R restart   Esc menu";
 
@@ -306,12 +308,14 @@ function setHint(%text)
 function resetCanvas() {}
 
 new ActionMap(PlayMap);
-$World::Pace = 1;
+// The figure walks (a share of its full speed) and sprints at its full speed while Shift is held.
+$World::WalkPace = 0.35;
+$World::Pace = $World::WalkPace;
 function moveForward(%v) { $World::Forward = %v; updateMove(); }
 function moveBack(%v) { $World::Back = %v; updateMove(); }
 function moveLeft(%v) { $World::Left = %v; updateMove(); }
 function moveRight(%v) { $World::Right = %v; updateMove(); }
-function walkSlowly(%v) { $World::Pace = %v ? 0.35 : 1; updateMove(); }
+function sprint(%v) { $World::Pace = %v ? 1 : $World::WalkPace; updateMove(); }
 function updateMove()
 {
    $mvForwardAction = $World::Forward * $World::Pace;
@@ -327,7 +331,6 @@ function look(%v) { $mvPitch += %v * 0.003; }
 function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
 function getIn(%v) { if (%v && isObject(ServerConnection)) commandToServer('GetIn'); }
-function menuKey(%v) { if (%v) leaveWorld(); }
 // The wheel: the camera behind in (away from you) or out; the client takes the notches each frame.
 function zoomCamera(%v) { $World::Zoom += %v; }
 // ] and [: the day faster or slower, \ back to its own pace (the server's day: only the host may).
@@ -338,11 +341,12 @@ PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
-PlayMap.bind(keyboard, lshift, walkSlowly);
+PlayMap.bind(keyboard, lshift, sprint);
+bindPoseKeys(PlayMap);
 PlayMap.bind(keyboard, space, jump);
 PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
-PlayMap.bind(keyboard, escape, menuKey);
+PlayMap.bind(keyboard, escape, pauseKey);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
 PlayMap.bind(mouse, button0, getIn);
@@ -360,9 +364,14 @@ function steerLeft(%v) { $Drive::Left = %v; $Drive::Steer = $Drive::Left - $Driv
 function steerRight(%v) { $Drive::Right = %v; $Drive::Steer = $Drive::Left - $Drive::Right; }
 // The brake: the jump trigger held while the key is (a driver's goes to the buggy).
 function brake(%v) { $Drive::Brake = %v; $mvTriggerCount2++; }
-function orbitYaw(%v) { $Drive::OrbitYaw += %v * 0.004; }
-// (mClamp is an integer's: the pitch is kept by getMin and getMax.)
-function orbitPitch(%v) { $Drive::OrbitPitch = getMax(-1.5, getMin($Drive::OrbitPitch + %v * 0.003, 0.9)); }
+// Each move is kept in the range the host gives the camera ($Drive::YawMin to $Drive::YawMax, $Drive::PitchMin to
+// $Drive::PitchMax), so a mouse pushed past the edge turns the view back at once. (mClamp is an integer's: getMin and getMax.)
+function orbitYaw(%v) { $Drive::OrbitYaw = getMax($Drive::YawMin, getMin($Drive::OrbitYaw + %v * 0.004, $Drive::YawMax)); }
+function orbitPitch(%v) { $Drive::OrbitPitch = getMax($Drive::PitchMin, getMin($Drive::OrbitPitch + %v * 0.003, $Drive::PitchMax)); }
+$Drive::YawMin = -1000000;
+$Drive::YawMax = 1000000;
+$Drive::PitchMin = -0.8;
+$Drive::PitchMax = 1.0;
 function getOut(%v) { if (%v && isObject(ServerConnection)) commandToServer('GetOut'); }
 // F: the headlight on or off (the server lets only the driver).
 function toggleLight(%v) { if (%v && isObject(ServerConnection)) commandToServer('ToggleLight'); }
@@ -374,7 +383,7 @@ DriveMap.bind(keyboard, space, brake);
 DriveMap.bind(keyboard, e, getOut);
 DriveMap.bind(keyboard, tab, switchCamera);
 DriveMap.bind(keyboard, f, toggleLight);
-DriveMap.bind(keyboard, escape, menuKey);
+DriveMap.bind(keyboard, escape, pauseKey);
 DriveMap.bind(mouse, xaxis, orbitYaw);
 DriveMap.bind(mouse, yaxis, orbitPitch);
 DriveMap.bind(mouse, zaxis, zoomCamera);
@@ -387,12 +396,14 @@ DriveMap.bind(keyboard, backslash, dayNormal);
 function releaseKeys()
 {
    $World::Forward = $World::Back = $World::Left = $World::Right = 0;
+   $World::Pace = $World::WalkPace;
    updateMove();
    $Drive::Forward = $Drive::Back = $Drive::Left = $Drive::Right = 0;
    $Drive::Throttle = $Drive::Steer = 0;
    $Drive::Brake = 0;
    if ($mvTriggerCount2 % 2)
       $mvTriggerCount2++;
+   releasePoseKeys();
 }
 
 // ---- in and out
@@ -410,6 +421,7 @@ function showMenu()
 
 function leaveWorld()
 {
+   closePause();
    disconnect();
    releaseKeys();
    MenuStatus.setText("");
@@ -454,6 +466,7 @@ function GameConnection::onConnectionTimedOut(%this)
 
 function clientCmdWorldStarted(%title)
 {
+   closePause();
    PlayTitle.setText(%title);
    DriveMap.pop();
    PlayMap.push();
@@ -474,19 +487,43 @@ function clientCmdSeated(%seat)
    $Drive::Seat = %seat;
    $Drive::OrbitYaw = 0;
    $Drive::OrbitPitch = 0;
-   if (%seat >= 0)
+   PlayHelp.setText(%seat < 0 ? $World::FootHelp : (%seat == 0 ? $World::DriveHelp : $World::RideHelp));
+   // While the pause menu is up the keys stay off: closing it brings back the map of the seat or of the feet.
+   if (!$Client::Paused)
+      pushPlayKeys();
+}
+
+// The keys of where the figure is: on foot or in a seat.
+function pushPlayKeys()
+{
+   PlayMap.pop();
+   DriveMap.pop();
+   // In a seat the figure sits: no pose key stays held.
+   if ($Drive::Seat >= 0)
    {
-      PlayMap.pop();
+      releasePoseKeys();
       DriveMap.push();
-      PlayHelp.setText(%seat == 0 ? $World::DriveHelp : $World::RideHelp);
    }
    else
-   {
-      DriveMap.pop();
       PlayMap.push();
-      PlayHelp.setText($World::FootHelp);
-   }
 }
+
+// ---- the pause menu's hooks (common/pause.cs)
+
+function pauseAllowed() { return $World::InWorld; }
+function onPause()
+{
+   PlayMap.pop();
+   DriveMap.pop();
+   releaseKeys();
+}
+function onResume() { pushPlayKeys(); }
+function leaveGame()
+{
+   closePause();
+   leaveWorld();
+}
+function quitGame() { quit(); }
 
 function clientCmdFell()
 {

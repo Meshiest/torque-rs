@@ -202,8 +202,50 @@ fn a_figure_that_walks_into_a_cube_stops_at_it_and_jumps() {
     assert!(errors(&game).is_empty(), "{:?}", errors(&game));
 }
 
+/// Space pressed and let go in the same frame (no step between) jumps once, and the jump is not held after it: the figure lands
+/// and stays on the floor.
 #[test]
-fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
+fn a_tap_of_space_inside_one_frame_jumps_once_and_lets_go() {
+    let mut files = GameFiles::bundled().expect("the game folder");
+    files.insert(WALL_PATH, WALL_MAP.as_bytes());
+    let mut game = LevelDemo::new(files).expect("the client");
+    let map = game
+        .maps
+        .iter()
+        .position(|m| m.path == WALL_PATH)
+        .expect("the test map is listed");
+    assert!(enter(&mut game, map), "the test map did not start");
+    for _ in 0..30 {
+        game.step(32);
+    }
+    assert!(server_position(&game)[2].abs() < 0.1, "standing first");
+    for tap in 0..2 {
+        game.key(Key::Space, true);
+        game.key(Key::Space, false);
+        let (mut takeoffs, mut aloft, mut highest) = (0, false, 0.0f32);
+        // Three seconds: a held jump would leave the floor again and again in that time (its delay is 10 ticks).
+        for _ in 0..94 {
+            game.step(32);
+            let z = server_position(&game)[2];
+            highest = highest.max(z);
+            if !aloft && z > 0.3 {
+                takeoffs += 1;
+            }
+            aloft = z > 0.3;
+        }
+        assert!(highest > 0.5, "tap {tap}: the jump reached {highest}");
+        assert_eq!(takeoffs, 1, "tap {tap}: one jump for one tap");
+        assert!(
+            server_position(&game)[2].abs() < 0.1,
+            "tap {tap}: landed and not jumping again"
+        );
+    }
+}
+
+#[test]
+fn tab_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
+    use torque::app::camera_blend::CLOSE;
+    // The figure is hidden while the camera is within CLOSE of its eyes; the frame's flag is the frame before's distance.
     let files = GameFiles::bundled().expect("the game folder");
     let mut game = LevelDemo::new(files).expect("the client");
     assert!(enter(&mut game, 0), "the first map did not start");
@@ -212,6 +254,14 @@ fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
         game.update_scene(0.016);
         game.drawn_eye()
     };
+    // The own figure placed (the camera behind it), then a moment more.
+    for _ in 0..600 {
+        frame(&mut game);
+        if game.figure().is_some() {
+            break;
+        }
+    }
+    assert!(game.figure().is_some(), "no own figure");
     for _ in 0..30 {
         frame(&mut game);
     }
@@ -220,35 +270,46 @@ fn v_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
         |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt();
     let behind = frame(&mut game);
     assert!(!game.first_person() && !hidden(&game));
-    game.key(Key::V, true);
-    game.key(Key::V, false);
+    game.key(Key::Tab, true);
+    game.key(Key::Tab, false);
     let mut last = behind;
     let mut biggest = 0.0f32;
     let mut frames = 0;
+    let mut hidden_frames = 0;
     while frames == 0 || game.camera_blending() {
         let e = frame(&mut game);
-        assert!(game.camera_blending() || hidden(&game));
+        let left = apart(e.position, game.eye().position);
+        // Hidden only once the camera is close to the eyes (the frame before's distance decides: the camera only closes in).
         assert!(
-            !game.camera_blending() || !hidden(&game),
-            "hidden before the eyes"
+            !hidden(&game) || left < CLOSE,
+            "hidden {left} from the eyes"
         );
+        hidden_frames += usize::from(hidden(&game));
         biggest = biggest.max(apart(last.position, e.position));
         last = e;
         frames += 1;
         assert!(frames < 60);
     }
+    assert!(hidden(&game) && hidden_frames > 1);
     let eyes = game.eye();
     assert_eq!(last, eyes);
+    // No frame's step more than the spring's fastest share of the way: 0.27 of its rate times the way, a second.
     let whole = apart(behind.position, eyes.position);
+    assert!(whole > 3.0, "{whole} from behind to the eyes");
     assert!(
-        biggest < whole * 2.0 / 18.0 + 0.05,
+        biggest < whole * 0.13 + 0.05,
         "a step of {biggest} over {whole}"
     );
-    // Back: shown at once.
-    game.key(Key::V, true);
-    game.key(Key::V, false);
-    frame(&mut game);
-    assert!(!hidden(&game) && game.camera_blending());
+    // Back: shown once the camera is out of the head, early in the move.
+    game.key(Key::Tab, true);
+    game.key(Key::Tab, false);
+    let mut frames = 0;
+    while hidden(&game) {
+        frame(&mut game);
+        frames += 1;
+        assert!(frames < 12, "still hidden after {frames} frames");
+    }
+    assert!(game.camera_blending());
 }
 
 /// A test map: a floor, and an interior over the spawn point (which faces +y) with a ceiling 2.6 units up and a wall 5 units

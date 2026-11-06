@@ -198,7 +198,7 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
     assert!(!g.host.system_cursor());
 
     g.key(Key::W, true);
-    assert_eq!(g.global("$mvForwardAction"), "1", "W moves forward");
+    assert_eq!(g.global("$mvForwardAction"), "0.35", "W walks forward");
     g.key(Key::W, false);
     assert_eq!(g.global("$mvForwardAction"), "0");
 
@@ -225,7 +225,7 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
 
     press(&mut g, Key::Escape);
     g.step(32);
-    assert_eq!(g.global("$Arena::Paused"), "1", "Escape pauses");
+    assert_eq!(g.global("$Client::Paused"), "1", "Escape pauses");
     assert!(g.in_game(), "and stays in the arena");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
@@ -260,7 +260,7 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     press(&mut g, Key::Escape);
     g.step(32);
     g.host.draw_frame();
-    assert_eq!(g.global("$Arena::Paused"), "1");
+    assert_eq!(g.global("$Client::Paused"), "1");
     assert!(
         g.host.system_cursor(),
         "the cursor is on over the pause menu"
@@ -282,21 +282,21 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     click(&mut g, resume);
     g.step(32);
     g.host.draw_frame();
-    assert_eq!(g.global("$Arena::Paused"), "0", "Resume goes back");
+    assert_eq!(g.global("$Client::Paused"), "0", "Resume goes back");
     assert!(g.host.wants_mouse(), "the arena holds the mouse again");
     g.key(Key::W, true);
-    assert_eq!(g.global("$mvForwardAction"), "1", "W moves again");
+    assert_eq!(g.global("$mvForwardAction"), "0.35", "W walks again");
     g.key(Key::W, false);
 
     // Escape twice: paused, then back.
     press(&mut g, Key::Escape);
     g.step(32);
-    assert_eq!(g.global("$Arena::Paused"), "1");
+    assert_eq!(g.global("$Client::Paused"), "1");
     press(&mut g, Key::Escape);
     g.step(32);
-    assert_eq!(g.global("$Arena::Paused"), "0", "Escape again goes back");
+    assert_eq!(g.global("$Client::Paused"), "0", "Escape again goes back");
     g.key(Key::W, true);
-    assert_eq!(g.global("$mvForwardAction"), "1");
+    assert_eq!(g.global("$mvForwardAction"), "0.35");
     g.key(Key::W, false);
 
     // T still opens the chat when not paused.
@@ -305,7 +305,7 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     assert_eq!(g.global("$Arena::Chatting"), "1");
     press(&mut g, Key::Escape);
     assert_eq!(g.global("$Arena::Chatting"), "0", "Escape closes the chat");
-    assert_eq!(g.global("$Arena::Paused"), "0", "without pausing");
+    assert_eq!(g.global("$Client::Paused"), "0", "without pausing");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
 
@@ -319,7 +319,7 @@ fn leave_game_from_the_pause_menu_returns_to_the_main_menu() {
     click(&mut g, leave);
     g.step(32);
     assert!(!g.in_game(), "Leave game leaves the arena");
-    assert_eq!(g.global("$Arena::Paused"), "0");
+    assert_eq!(g.global("$Client::Paused"), "0");
     assert_eq!(
         g.call("eval", &["return Canvas.getContent().getName();"])
             .unwrap(),

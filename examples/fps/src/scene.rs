@@ -30,11 +30,12 @@ use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::mounts::pose_matrix;
 use torque_render_scene::source::Eye;
+use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Draw, Filter, Vertex};
 
 use crate::style::{ArenaStyle, BoltPath, Kick, ShotFlare, Sights};
 
-pub use crate::style::aim_ease;
+pub use crate::style::{SightsBlend, sights_path};
 pub use torque::app::ghosts::{bolt_trail, fire_emitter, hit_burst};
 
 /// The field of view (degrees, horizontal).
@@ -208,6 +209,12 @@ pub fn options() -> GhostOptions {
         },
         // The server's figures have hitboxes: drawn as posed for hits.
         synced_poses: true,
+        // A steady view; the server fires from the same steady eye (`getSteadyEyePoint`), so the shot follows the crosshair.
+        steady_eye: true,
+        // The client has the map's surfaces as the server does: a bolt stops where the server's hits.
+        bolt_stops: true,
+        // The other figures crouched or prone as their server chose.
+        poses: Some(torque_example_common::figure_poses()),
         ..GhostOptions::default()
     }
 }
@@ -219,6 +226,8 @@ pub struct ArenaScene {
     cubes: BTreeMap<u32, KeptCube>,
     /// How the cubes and interiors are drawn.
     filter: TextureFilter,
+    /// Whether the style's own textures (the shot's flare) were loaded.
+    style_loaded: bool,
 }
 
 /// The engine's scene: the figures, the bolts and their effects as the last frame left them.
@@ -250,6 +259,7 @@ impl ArenaScene {
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
             filter: TextureFilter::Smooth,
+            style_loaded: false,
         }
     }
 
@@ -299,6 +309,12 @@ impl ArenaScene {
             dt,
             surfaces: &cube_triangles_near,
         };
+        // The flare's texture loaded with the map, not in the first shot's frame (the datablocks' are the engine's to load).
+        if !std::mem::replace(&mut self.style_loaded, true)
+            && let Some(flare) = &self.ghosts.style.flare
+        {
+            let _ = TextureSet::new(assets).get_modulated(&flare.texture);
+        }
         self.ghosts.update(assets, world, &input);
     }
 
@@ -379,6 +395,31 @@ impl ArenaScene {
         eye.fov = Some(FOV);
         eye
     }
+}
+
+/// The boxes (min, max) of the map's cubes (its StaticShapes, each the kit's unit cube scaled and turned as its record says): the
+/// camera behind the figure stays in front of them.
+pub fn cube_boxes(world: &ClientWorld<TgeClientSet>) -> Vec<([f32; 3], [f32; 3])> {
+    let mut out = Vec::new();
+    for ghost in world.ghosts.values() {
+        let (Some(TgeClass::StaticShape), Some(pose)) = (ghost.class, ghost.pose()) else {
+            continue;
+        };
+        let Some((m, scale)) = pose_matrix(&pose, None) else {
+            continue;
+        };
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for corner in 0..8 {
+            let local = [0, 1, 2].map(|k| if corner >> k & 1 != 0 { 0.5 } else { -0.5 } * scale[k]);
+            let p = m.mul_p(local);
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        out.push((lo, hi));
+    }
+    out
 }
 
 /// The faces (as triangles) of the map's cubes (its StaticShapes, each the kit's unit cube scaled and turned as its record

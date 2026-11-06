@@ -685,20 +685,8 @@ impl ImageFrames {
         let records = world.records();
         let g = records.ghosts.get(&ghost)?;
         let owner_db = g.datablock()?;
-        let owner_path = String::from_utf8_lossy(records.datablock_text(owner_db, "shapeFile")?)
-            .replace('\\', "/");
         let pose = render_pose(world, ghost);
-        let (xform, scale) =
-            match mounted_transform(world, assets, &mut self.models, notes, ghost, 0) {
-                Some(m) => (m, g.scale().unwrap_or([1.0; 3])),
-                None => pose.as_ref().and_then(|p| pose_matrix(p, g.scale()))?,
-            };
-        let owner = self.models.get(
-            &|p| records.constructor_sequences(p),
-            assets,
-            &owner_path,
-            notes,
-        )?;
+        let (owner, xform, scale) = self.owner_frame(world, assets, ghost, notes)?;
         let dl = owner.model.shape.smallest_visible_dl.max(0) as usize;
         let dl = dl.min(owner.model.shape.details.len().saturating_sub(1));
         let shape = &owner.model.shape;
@@ -739,6 +727,82 @@ impl ImageFrames {
             }
         };
         Some((owner, posed, xform, scale))
+    }
+
+    /// Ghost `ghost`'s shape and where the frame draws it: its render transform (its mount's when it rides one) and scale.
+    fn owner_frame<W: ShapeWorld + ?Sized>(
+        &mut self,
+        world: &W,
+        assets: &dyn Assets,
+        ghost: u32,
+        notes: &mut Vec<String>,
+    ) -> Option<(Arc<Loaded>, Mat, [f32; 3])> {
+        let records = world.records();
+        let g = records.ghosts.get(&ghost)?;
+        let owner_db = g.datablock()?;
+        let owner_path = String::from_utf8_lossy(records.datablock_text(owner_db, "shapeFile")?)
+            .replace('\\', "/");
+        let pose = render_pose(world, ghost);
+        let (xform, scale) =
+            match mounted_transform(world, assets, &mut self.models, notes, ghost, 0) {
+                Some(m) => (m, g.scale().unwrap_or([1.0; 3])),
+                None => pose.as_ref().and_then(|p| pose_matrix(p, g.scale()))?,
+            };
+        let owner = self.models.get(
+            &|p| records.constructor_sequences(p),
+            assets,
+            &owner_path,
+            notes,
+        )?;
+        Some((owner, xform, scale))
+    }
+
+    /// The world frames of ghost `ghost`'s nodes named `names` at its shape's rest pose (no thread playing), through the
+    /// transform the frame draws it at, as [`Self::owner_nodes`] gives them at the drawn pose: where a node is with the
+    /// animation's motion taken away and the object's own kept. A node the shape lacks is `None`.
+    pub fn owner_rest_nodes<W: ShapeWorld + ?Sized>(
+        &mut self,
+        world: &W,
+        assets: &dyn Assets,
+        ghost: u32,
+        names: &[&[u8]],
+    ) -> Option<Vec<Option<Mat>>> {
+        self.owner_held_nodes(world, assets, ghost, names, None)
+    }
+
+    /// [`Self::owner_rest_nodes`] with the shape held at the start of its sequence named `sequence` instead of its rest pose
+    /// (a pose's own root, `crouch_root` say), the rest pose when it has none of that name: where a node is in that pose with the
+    /// animation's motion taken away.
+    pub fn owner_held_nodes<W: ShapeWorld + ?Sized>(
+        &mut self,
+        world: &W,
+        assets: &dyn Assets,
+        ghost: u32,
+        names: &[&[u8]],
+        sequence: Option<&[u8]>,
+    ) -> Option<Vec<Option<Mat>>> {
+        let mut notes = Vec::new();
+        let (owner, xform, scale) = self.owner_frame(world, assets, ghost, &mut notes)?;
+        let shape = &owner.model.shape;
+        let mut charge = |_: u64| true;
+        let mut instance = ShapeInstance::new(shape, &mut charge).ok()?;
+        if let Some(seq) = sequence.and_then(|n| shapes::instance::find_sequence(shape, n))
+            && let Some(t) = instance.create_thread(shape)
+        {
+            instance.set_sequence(shape, t, seq as i32, 0.0);
+        }
+        let dl =
+            (shape.smallest_visible_dl.max(0) as usize).min(shape.details.len().saturating_sub(1));
+        instance.animate(shape, dl, None, &mut charge).ok()?;
+        let node = |name: &[u8]| {
+            let n = crate::images::node_named(shape, name)?;
+            let m = instance.node_transform(n)?;
+            Some(Mat::mul(
+                &xform,
+                &crate::images::scaled_translation(&Mat { m: *m }, scale),
+            ))
+        };
+        Some(names.iter().map(|n| node(n)).collect())
     }
 
     /// The world frames of ghost `ghost`'s nodes named `names` at the pose the frame draws it in: the render transform times the

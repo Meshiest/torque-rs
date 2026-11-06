@@ -61,3 +61,8 @@ zero_sized_map_values = "warn"
 # Process control belongs to the host, never to a library.
 exit = "warn"
 mem_forget = "warn"
+
+# The web builds' module (`web/build.mjs`): release, optimized across the crates at the link (thin LTO).
+[profile.web]
+inherits = "release"
+lto = "thin"

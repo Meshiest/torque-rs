@@ -21,6 +21,10 @@ torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The host key's random bits.
+getrandom = "0.3"
+
 [features]
 # Built for the web: the module carries its files (the pack whose path is in `TORQUE_WEB_PACK` when it is built) instead of
 # fetching them by the list beside the page (`files.json`).

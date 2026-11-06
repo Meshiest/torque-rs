@@ -209,15 +209,60 @@ fn the_pause_menu_stays_in_the_middle_of_the_view() {
         }
     }
     assert!(g.in_game());
+    // The host's menu has the Change map entry once the server has sent the maps.
+    for _ in 0..200 {
+        g.step(32);
+        if g.global("$Client::MapCount") != "0" {
+            break;
+        }
+    }
+    assert_ne!(
+        g.global("$Client::MapCount"),
+        "0",
+        "the host was sent the maps"
+    );
     g.call("pauseGame", &[]).unwrap();
     for size in SIZES {
         resize(&mut g, size);
         let p = check(
             &mut g,
             "PausePanel",
-            &["PauseTitle", "ResumeButton", "LeaveButton", "PauseNote"],
+            &[
+                "PauseTitle",
+                "ResumeButton",
+                "ChangeMapButton",
+                "LeaveButton",
+                "PauseQuitButton",
+                "PauseNote",
+            ],
             size,
         );
-        assert_eq!((p[2], p[3]), (320, 280), "the pause panel keeps its size");
+        assert_eq!((p[2], p[3]), (320, 432), "the pause panel keeps its size");
+    }
+}
+
+#[test]
+fn the_hosts_map_list_stays_in_the_middle_of_the_view_and_lists_the_maps() {
+    let mut g = client();
+    g.call("hostGame", &["lan"]).unwrap();
+    for _ in 0..400 {
+        g.step(32);
+        if g.in_game() && g.global("$Client::MapCount") != "0" {
+            break;
+        }
+    }
+    let maps: usize = g.global("$Client::MapCount").parse().unwrap();
+    assert!(maps > 0, "the host was sent the maps");
+    g.call("pauseGame", &[]).unwrap();
+    g.call("showMapPick", &[]).unwrap();
+    for size in SIZES {
+        resize(&mut g, size);
+        let p = check(
+            &mut g,
+            "MapPanel",
+            &["MapTitle", "MapScroll", "MapLoadButton", "MapBackButton"],
+            size,
+        );
+        assert_eq!((p[2], p[3]), (320, 440), "the map panel keeps its size");
     }
 }

@@ -1226,6 +1226,12 @@ pub struct ActionRequest {
     /// The action blends in over [`TRANSITION`](crate::sim::player::synced::TRANSITION) seconds (a synced Player's; TGE's
     /// server sets the sequence).
     pub blend: bool,
+    /// With `blend`, a change of pose ([`poses`](crate::sim::player::poses)): the action blends in over these seconds, eased,
+    /// instead of the usual transition.
+    pub pose_blend: Option<f32>,
+    /// Where in its sequence the action starts, when not at its start (forward) or end (backward): the engine's walk and run
+    /// keep their place in the loop ([`keeps_phase`](crate::sim::player::synced::keeps_phase)).
+    pub start: Option<f32>,
 }
 
 /// `Player::setActionThread` on a server: the action's sequence on the action thread, from its start when the action plays
@@ -1257,7 +1263,7 @@ pub fn action_thread(st: &mut ShapeBaseState, action: usize, r: ActionRequest) -
     player.at_end = false;
     let kept = Rc::clone(&body.kept);
     if let (Some(shape), Some(thread)) = (kept.shape.as_ref(), player.action_thread) {
-        let pos = if r.forward { 0.0 } else { 1.0 };
+        let pos = r.start.unwrap_or(if r.forward { 0.0 } else { 1.0 });
         let scale = if r.forward { 1.0 } else { -1.0 };
         match usize::try_from(sequence) {
             // The direction first: a transition runs the way the thread plays when it starts.
@@ -1265,13 +1271,18 @@ pub fn action_thread(st: &mut ShapeBaseState, action: usize, r: ActionRequest) -
                 if let Some(t) = body.instance.thread_mut(thread) {
                     t.time_scale = scale;
                 }
-                body.instance.transition_to_sequence(
-                    shape,
-                    thread,
-                    seq,
-                    pos,
-                    crate::sim::player::synced::TRANSITION,
-                );
+                match r.pose_blend {
+                    Some(seconds) => body
+                        .instance
+                        .transition_to_sequence_eased(shape, thread, seq, pos, seconds),
+                    None => body.instance.transition_to_sequence(
+                        shape,
+                        thread,
+                        seq,
+                        pos,
+                        crate::sim::player::synced::TRANSITION,
+                    ),
+                }
             }
             _ => {
                 body.instance.set_sequence(shape, thread, sequence, pos);
@@ -1338,6 +1349,8 @@ fn set_action_thread(vm: &mut Vm, c: &NativeCall) -> Native {
             fsp,
             force: true,
             blend: crate::scene::hitboxes::wanted(vm, id),
+            pose_blend: None,
+            start: None,
         };
         message = action_thread(&mut st, i, request);
     }

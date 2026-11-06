@@ -11,8 +11,8 @@
 //! rate follows the velocity along the action's direction over its speed, at most `maxTimeScale`.
 //!
 //! A synced Player (one with hitboxes) follows its clients' rules instead ([`synced`]): the action thread steps every tick
-//! after the pick, by the ground covered for a moving action, a jump plays on the rise, a new action blends in and the spine
-//! bones are let go.
+//! after the pick, by the ground covered for a moving action, a jump plays on the rise, a new action blends in, the spine
+//! bones are let go, and it walks at walking pace when its shape has a walk (the engine's own, [`synced::walk_or`]).
 //!
 //! The shape work (`animate`, thread steps) is counted here and charged to the run by the tick when it next holds the `Vm`.
 //!
@@ -120,6 +120,17 @@ impl HostSkeleton {
         wait: bool,
         fsp: bool,
     ) {
+        // A synced walk and run keep their place in the loop, as the clients' do.
+        let now = self.threads().map(|p| (p.action as usize, p.forward));
+        let walk = self.info.walk.map(|w| w as usize);
+        let start = now
+            .filter(|&n| self.synced && synced::keeps_phase(n, (action as usize, forward), walk))
+            .and_then(|_| self.pos_of(self.threads().and_then(|p| p.action_thread)));
+        // A synced action that only turns around (a walk forward into one backward) is set again, as the clients set it.
+        let force = self.synced && now == Some((action as usize, !forward));
+        // An action of another pose blends in slower and eased, as the clients blend it.
+        let sets = &self.info.pose_sets;
+        let pose_blend = now.and_then(|(a, _)| super::poses::blend_for(sets, a, action as usize));
         let Some(st) = self.st.as_mut() else {
             return;
         };
@@ -128,8 +139,10 @@ impl HostSkeleton {
             hold,
             wait,
             fsp,
-            force: false,
+            force,
             blend: self.synced,
+            pose_blend,
+            start,
         };
         // The out-of-range line needs the console; the server's own calls never ask past the table.
         let _ = action_thread(st, action as usize, request);
@@ -175,9 +188,50 @@ impl HostSkeleton {
             held: self.threads().is_some_and(|p| p.hold),
             synced: self.synced,
         };
-        let Some((action, forward)) = self.info.class.pick_action(&pick) else {
+        let Some((mut action, mut forward)) = self.info.class.pick_action(&pick) else {
             return;
         };
+        // A synced Player walks at walking pace, by its clients' rule (the engine's own).
+        if self.synced
+            && let Some(walk) = self.info.walk
+            && let Some(m) = self.info.motions.get(action as usize)
+        {
+            let along = pick.velocity[0] * m.dir[0]
+                + pick.velocity[1] * m.dir[1]
+                + pick.velocity[2] * m.dir[2];
+            let speed_of = |i: usize| self.info.motions.get(i).map(|m| m.speed);
+            let now = self
+                .threads()
+                .map_or((usize::MAX, true), |p| (p.action as usize, p.forward));
+            let (a, f) = synced::walk_or(
+                action as usize,
+                forward,
+                along,
+                walk as usize,
+                speed_of,
+                now,
+            );
+            (action, forward) = (u32::try_from(a).unwrap_or(action), f);
+        }
+        // A synced Player plays the way down or up between the crouch and prone to its end first, as the clients do.
+        let now = self.threads().map_or(usize::MAX, |p| p.action as usize);
+        if self.synced
+            && !s.falling
+            && let Some(way) = self.info.pose_sets.way(now, s.pose)
+        {
+            self.set_action(s, way as u32, true, false, true, false);
+            return;
+        }
+        // A pose with actions of its own picks among them (the engine's poses, [`poses`](super::poses)); falling keeps the fall.
+        if !s.falling
+            && let Some(set) = self.info.pose_sets.of_pose(s.pose)
+        {
+            let motions = &self.info.motions;
+            let dir_of = |a: usize| motions.get(a).map_or([0.0; 3], |m| m.dir);
+            if let Some((a, f)) = super::poses::pick_in(set, pick.velocity, dir_of) {
+                (action, forward) = (u32::try_from(a).unwrap_or(action), f);
+            }
+        }
         self.set_action(s, action, forward, false, false, false);
     }
 
@@ -216,16 +270,24 @@ impl HostSkeleton {
             return;
         }
         let mut scale = 1.0f32;
-        if action < MOVES
+        let walking =
+            self.info.walk == Some(action) || self.info.pose_sets.is_moving(action as usize);
+        if (action < MOVES || walking)
             && let Some(m) = self.info.motions.get(action as usize)
-            && m.velocity_scale
+            && (m.velocity_scale || walking)
             && m.speed != 0.0
         {
             let moved = from.map_or(s.velocity.map(|v| v * dt), |(f, _)| {
                 [0, 1, 2].map(|i| position[i] - f[i])
             });
             let step = mul_v(&s.world_to_obj, moved);
-            scale = synced::step_scale(step, dt, m.dir, m.speed, self.info.max_time_scale);
+            // The walk is held to no maxTimeScale (its limit keeps it near 1), as on the clients.
+            let max = if walking {
+                synced::WALK_MAX_TIME_SCALE
+            } else {
+                self.info.max_time_scale
+            };
+            scale = synced::step_scale(step, dt, m.dir, m.speed, max);
         }
         self.with_thread(th, |inst, _, t| {
             if let Some(th) = inst.thread_mut(t) {
@@ -233,6 +295,46 @@ impl HostSkeleton {
             }
         });
         self.advance_time(th, dt);
+    }
+
+    /// The pose's own version of the arm action (the engine's poses, [`poses::pose_arm`](super::poses::pose_arm)) on the arm
+    /// thread, at the place the arm is, as the clients play it.
+    fn pose_arm(&mut self, s: &PlayerState) {
+        let Some(st) = self.st.as_mut() else {
+            return;
+        };
+        let (Some(body), Some(p)) = (st.body.as_mut(), st.player.as_ref()) else {
+            return;
+        };
+        let (Some(t), Some(a)) = (p.arm, p.actions.get(p.arm_action as usize)) else {
+            return;
+        };
+        let names = p
+            .actions
+            .iter()
+            .map(|a| (a.name.as_slice(), a.sequence != -1));
+        let played =
+            super::poses::pose_arm(names, &a.name, s.pose).unwrap_or(p.arm_action as usize);
+        let Some(seq) = p
+            .actions
+            .get(played)
+            .map(|a| a.sequence)
+            .and_then(|q| usize::try_from(q).ok())
+        else {
+            return;
+        };
+        let kept = Rc::clone(&body.kept);
+        let Some(shape) = kept.shape.as_ref() else {
+            return;
+        };
+        let Some(th) = body.instance.thread(t) else {
+            return;
+        };
+        if th.sequence != Some(seq) {
+            let pos = th.pos;
+            body.instance.set_sequence(shape, t, seq as i32, pos);
+            self.work = self.work.saturating_add(1);
+        }
     }
 
     /// `updateAnimation` on a server.
@@ -281,7 +383,7 @@ impl HostSkeleton {
         // negated.
         let mut scale = 1.0f32;
         if let Some(m) = self.info.motions.get(action as usize)
-            && m.velocity_scale
+            && (m.velocity_scale || self.info.pose_sets.is_moving(action as usize))
             && m.speed != 0.0
         {
             let v = mul_v(&s.world_to_obj, s.velocity);
@@ -442,6 +544,7 @@ impl Skeleton for HostSkeleton {
         if self.synced {
             self.synced_step(s);
         }
+        self.pose_arm(s);
         let fsp = self.threads().is_some_and(|p| p.fsp) || self.synced;
         if let Some(body) = self.st.as_mut().and_then(|st| st.body.as_mut()) {
             update_node_masks(body, fsp);

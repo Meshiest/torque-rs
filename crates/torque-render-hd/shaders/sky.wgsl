@@ -7,7 +7,9 @@
 //   sun, darker away from it, the box's colours kept), the colour procedural stars where the server's sky is dark: one in a few
 //   hundred cells of a cube-map-like grid of directions holds a star at a hashed spot, its brightness a hashed power law, dimmed by
 //   the transmittance toward it (so they fade at the horizon) and twinkling with the effect time.
-// - fs_sun_disk (always): only the disk with limb darkening (a linear law per channel, I(mu) = 1 - u (1 - mu)), added over the
+// - fs_sun_disk (always): only the disk with limb darkening (a linear law per channel, I(mu) = 1 - u (1 - mu)), dimmed toward the
+//   horizon by the air it shines through (sun_air_mass_dimming) and made white-hot on its own path to white (disk_white_hot),
+//   added over the
 //   sky box before the clouds and the fog bans (they cover it as they cover the box), its colour the fixed-function sun's, at the sun as
 //   the sky shows it (sky.drawn: on the sun the server's box paints where it paints one off the Sun's direction).
 // - fs_clouds (where the settings and quality have them): the volumetric clouds' image (clouds.wgsl, its own history at a reduced
@@ -59,7 +61,45 @@ fn sun_disk(dir: vec3<f32>, frag_angle: f32) -> vec3<f32> {
     let mu = sqrt(max(1.0 - x * x, 0.0));
     let limb = vec3<f32>(1.0) - sky.limb.rgb * (1.0 - mu);
     let edge = clamp((radius - ang) / max(frag_angle, 1e-6) + 0.5, 0.0, 1.0);
-    return sky.disk.rgb * limb * edge;
+    return disk_white_hot(sky.disk.rgb * limb * sun_air_mass_dimming(dir)) * edge;
+}
+
+// The neutral tonemap's shoulder (tonemap.wgsl's SHOULDER) and the disk's overshoot past white at which its color has gone half
+// way to white (hd::sky's DISK_SHOULDER and DISK_WHITE_SPILL; a test compares them).
+const DISK_SHOULDER: f32 = 0.8;
+const DISK_WHITE_SPILL: f32 = 16.0;
+
+fn disk_shoulder(v: f32) -> f32 {
+    if v <= DISK_SHOULDER {
+        return v;
+    }
+    let span = 1.0 - DISK_SHOULDER;
+    return DISK_SHOULDER + span * (1.0 - exp(-(v - DISK_SHOULDER) / span));
+}
+
+// The disk's light made white-hot (hd::sky::disk_white_hot, its CPU form): the tonemap keeps a color's hue however far past white
+// it is, so a saturated disk showed as the same orange as the sky about it and darker than a paler sky. The disk's hue goes
+// q / (1 + q) of the way (q the square of the overshoot over DISK_WHITE_SPILL) to each channel's own shoulder, its largest
+// channel kept: white overhead, cream, peach and orange as the air dims and reddens it. Before the edge's coverage, so the
+// anti-aliased rim is as white as the disk.
+fn disk_white_hot(d: vec3<f32>) -> vec3<f32> {
+    let m = max(d.r, max(d.g, d.b));
+    if m <= 1.0 {
+        return d;
+    }
+    let x = (m - 1.0) / DISK_WHITE_SPILL;
+    let q = x * x;
+    let own = vec3<f32>(disk_shoulder(d.r), disk_shoulder(d.g), disk_shoulder(d.b));
+    let shown = mix(d / m, own, q / (1.0 + q));
+    return shown * (m / max(max(shown.r, max(shown.g, shown.b)), 1e-6));
+}
+
+// How much dimmer the disk is toward dir than overhead: the luminance of the atmosphere's transmittance toward it over the
+// zenith's (1 overhead, falling toward the horizon, 0 behind the planet). A scalar: the disk's color (the sun's) is already
+// reddened.
+fn sun_air_mass_dimming(dir: vec3<f32>) -> f32 {
+    let zenith = sky_luminance(sky_transmittance_toward(vec3<f32>(0.0, 0.0, 1.0)));
+    return clamp(sky_luminance(sky_transmittance_toward(dir)) / max(zenith, 1e-6), 0.0, 1.0);
 }
 
 // A hash of a cell (Hugo Elias's integer hash, our arrangement).

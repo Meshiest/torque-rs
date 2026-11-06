@@ -16,6 +16,12 @@
 // Torque3D carries them (MIT: `core/scripts/server/clientConnection.cs`, `missionDownload.cs` and `missionLoad.cs`,
 // Copyright (c) 2012 GarageGames, LLC). The code here is the examples' own.
 
+// The figures' pose triggers (Torque3D's globals; the engine reads them for the datablocks' crouched and prone poses): Ctrl
+// held is the move's trigger 3, Z's prone the trigger 1 (the clients' keys, common/client.cs). Trigger 4 is the arena's
+// aim and 5 the buggy's way out, so neither is Torque3D's prone or sprint here.
+$player::crouchTrigger = 3;
+$player::proneTrigger = 1;
+
 new SimGroup(ClientGroup);
 
 $Server::MissionSequence = 0;
@@ -63,8 +69,12 @@ function GameConnection::endMission(%client)
 
 // ---- a client's way in and out
 
-function GameConnection::onConnect(%client, %name)
+// %key is the second connect argument: the host's own client sends the key its process gave the server in $Server::HostKey
+// (a game that has a host sets it when it starts the server; a dedicated server has none), and that is what marks the
+// connection as the host's (%client.isHost). Nothing a client says about itself marks it.
+function GameConnection::onConnect(%client, %name, %key)
 {
+   %client.isHost = $Server::HostKey !$= "" && %key $= $Server::HostKey;
    %client.onClientConnect(%name);
    %client.transmitDataBlocks($Server::MissionSequence);
 }
@@ -118,4 +128,47 @@ function watchFalls()
    // One watch however often a game starts it (each map it loads may).
    cancel($Server::FallWatch);
    $Server::FallWatch = schedule(500, 0, "watchFalls");
+}
+
+// ---- hit reactions
+//
+// A hit's reaction on a figure (the kit figure's flinch blends): away from the side the shot came from (%travel, the way the
+// shot flew), the head snapped back for a head shot (%part "head") and a punch to the body with a small step otherwise. The
+// server plays it as a script thread, so its hitboxes have it and every client draws it from the thread its record carries;
+// two threads (2 and 3) take turns, so a reaction still playing goes on while the next starts, and each is stopped once over
+// (playerFlinchEnded, from the datablock's onEndSequence), so the next one on it starts from its start on every client too.
+// The view of the figure's own client does not move (its first-person eye is steady).
+$Flinch::Ms = 320;
+function playerFlinch(%obj, %travel, %part)
+{
+   if (!isObject(%obj) || %obj.getState() $= "Dead")
+      return;
+   %fwd = %obj.getForwardVector();
+   %right = getWord(%fwd, 1) SPC -getWord(%fwd, 0) SPC 0;
+   // The side the shot came from: against the way it flew.
+   %ahead = -VectorDot(%travel, %fwd);
+   %side = -VectorDot(%travel, %right);
+   if (mAbs(%ahead) >= mAbs(%side))
+      %dir = %ahead >= 0 ? "front" : "back";
+   else
+      %dir = %side >= 0 ? "right" : "left";
+   %name = (%part $= "head" ? "flinch_head_" : "flinch_") @ %dir;
+   %slot = %obj.flinchSlot == 2 ? 3 : 2;
+   // The same reaction still playing on that thread is left to play (a client would not start it again).
+   if (%obj.flinchName[%slot] $= %name && getSimTime() < %obj.flinchUntil[%slot])
+      return;
+   %obj.flinchSlot = %slot;
+   %obj.flinchName[%slot] = %name;
+   %obj.flinchUntil[%slot] = getSimTime() + $Flinch::Ms;
+   %obj.playThread(%slot, %name);
+}
+
+// A reaction's thread over: stopped (at its start, at rest).
+function playerFlinchEnded(%obj, %slot)
+{
+   if (%slot == 2 || %slot == 3)
+   {
+      %obj.stopThread(%slot);
+      %obj.flinchName[%slot] = "";
+   }
 }

@@ -9,6 +9,7 @@
 //! - [`shots`]: the example without a window, drawn offscreen: pictures of the buggy, its cockpit, two players seated, a
 //!   passenger's view, the hill and the start.
 //! - [`cloud_shots`]: the sky's clouds through the day, drawn offscreen with the engine's clouds and with the demo's.
+//! - [`web`]: the example in a browser, played alone, its files fetched by the page.
 //!
 //! The window is the engine's ([`torque::app::window::run`]).
 
@@ -19,3 +20,4 @@ pub mod scene;
 pub mod seats;
 pub mod server;
 pub mod shots;
+pub mod web;

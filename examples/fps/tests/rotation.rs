@@ -174,3 +174,176 @@ fn rounds_end_with_scores_and_the_next_map_loads_in_place() {
     );
     assert_eq!(bounded, "30000 1000");
 }
+
+/// Ann hosts a game on `fixtures/floor.mis` and Bob joins it, both playing, with the rotation list `floor`, `aim`.
+fn two_players() -> (ArenaGame, ArenaGame) {
+    let mut a = client("Ann");
+    let mut b = client("Bob");
+    a.call("hostGame", &[]).unwrap();
+    assert!(until(&mut a, &mut b, 300, |a, _| a.in_game()), "Ann hosts");
+    let address = a.hosted_address().unwrap().to_string();
+    b.call("connectTo", &[&address]).unwrap();
+    assert!(until(&mut a, &mut b, 400, both_play), "Bob joins");
+    eval(
+        &mut a,
+        "$Pref::Server::MapList = \"fixtures/floor.mis fixtures/aim.mis\"; \
+         function byName(%n) { for (%i = 0; %i < ClientGroup.getCount(); %i++) \
+         if (ClientGroup.getObject(%i).name $= %n) return ClientGroup.getObject(%i); return 0; } \
+         sendMapChoices(byName(\"Ann\"));",
+    );
+    // The host's client is sent the list again.
+    assert!(
+        until(&mut a, &mut b, 100, |a, _| count(a, "$Client::MapCount")
+            == 2),
+        "the host was sent the maps"
+    );
+    (a, b)
+}
+
+#[test]
+fn a_round_has_five_minutes_and_ten_kills_by_default() {
+    let (mut a, _b) = two_players();
+    assert_eq!(eval(&mut a, "return $Pref::Server::RoundSeconds;"), "300");
+    assert_eq!(eval(&mut a, "return $Pref::Server::ScoreLimit;"), "10");
+    assert_eq!(eval(&mut a, "return roundMs();"), "300000");
+}
+
+#[test]
+fn reaching_the_score_limit_ends_the_round_and_zero_turns_it_off() {
+    let (mut a, mut b) = two_players();
+    eval(
+        &mut a,
+        "$T::Log = \"\"; function messageAll(%k, %a, %b) { $T::Log = $T::Log @ %a @ \"|\"; }",
+    );
+    let knock = |a: &mut ArenaGame| {
+        eval(
+            a,
+            "%ann = byName(\"Ann\"); %bob = byName(\"Bob\"); knockOut(%ann, %bob); return %bob.score;",
+        )
+    };
+
+    // Short of the limit the round goes on.
+    eval(&mut a, "byName(\"Bob\").score = 8;");
+    assert_eq!(knock(&mut a), "9");
+    assert_eq!(eval(&mut a, "return $Arena::RoundOver;"), "0");
+
+    // With the limit off, a long lead does not end it either.
+    eval(
+        &mut a,
+        "$Pref::Server::ScoreLimit = 0; byName(\"Bob\").score = 50;",
+    );
+    assert_eq!(knock(&mut a), "51");
+    assert_eq!(eval(&mut a, "return $Arena::RoundOver;"), "0");
+
+    // Bob's tenth ends it at once: the chat says who reached it, the knocked-out Ann does not respawn, and both screens show
+    // the scores.
+    eval(
+        &mut a,
+        "$Pref::Server::ScoreLimit = 10; byName(\"Bob\").score = 9;",
+    );
+    assert_eq!(knock(&mut a), "10");
+    assert_eq!(eval(&mut a, "return $Arena::RoundOver;"), "1");
+    assert_eq!(
+        eval(&mut a, "return isEventPending(byName(\"Ann\").respawn);"),
+        "0",
+        "endRound canceled the respawn"
+    );
+    let log = eval(&mut a, "return $T::Log;");
+    assert!(log.contains("Bob reached the score limit of 10.|"), "{log}");
+    assert!(log.contains("Bob wins the round on"), "{log}");
+    assert!(
+        until(&mut a, &mut b, 400, |a, b| ended(a, 1) && ended(b, 1)),
+        "the round ends on both screens"
+    );
+}
+
+#[test]
+fn the_host_changes_the_map_and_both_clients_stay_connected() {
+    let (mut a, mut b) = two_players();
+    // Only the host's client was sent the maps (the pause menu's Change map entry).
+    assert_eq!(count(&a, "$Client::MapCount"), 2);
+    assert_eq!(count(&b, "$Client::MapCount"), 0);
+    let connections = |a: &mut ArenaGame| {
+        eval(
+            a,
+            "%l = \"\"; for (%i = 0; %i < ClientGroup.getCount(); %i++) %l = %l SPC ClientGroup.getObject(%i); return trim(%l);",
+        )
+    };
+    let joined = connections(&mut a);
+    eval(&mut a, "byName(\"Bob\").score = 4;");
+
+    // Asked twice at once: the second is held back by the rate limit.
+    a.call("changeMap", &["fixtures/aim.mis"]).unwrap();
+    a.call("changeMap", &["fixtures/floor.mis"]).unwrap();
+    assert!(
+        until(&mut a, &mut b, 600, |a, b| on_map(a, 2)
+            && on_map(b, 2)
+            && both_play(a, b)),
+        "both clients play on the chosen map"
+    );
+    assert_eq!(
+        eval(&mut a, "return $Server::MissionFile;"),
+        "fixtures/aim.mis"
+    );
+    for g in [&a, &b] {
+        assert_eq!(g.global("$Arena::Map"), "aim");
+    }
+    assert_eq!(connections(&mut a), joined, "the same connections");
+    assert_eq!(
+        eval(&mut a, "return byName(\"Bob\").score;"),
+        "0",
+        "the scores start again"
+    );
+    assert_eq!(eval(&mut a, "return $Arena::RoundOver;"), "0");
+    assert_eq!(
+        count(&a, "$Client::MapCount"),
+        2,
+        "sent again for the new map"
+    );
+    let log = a.server_log.join("\n");
+    assert!(log.contains("too soon after the last"), "{log}");
+}
+
+#[test]
+fn a_remote_clients_map_change_and_a_map_off_the_list_are_refused() {
+    let (mut a, mut b) = two_players();
+    a.server_log.clear();
+    let sequence = eval(&mut a, "return $Server::MissionSequence;");
+    let quiet = |a: &mut ArenaGame, b: &mut ArenaGame| {
+        for _ in 0..60 {
+            frame(a, b, 16);
+        }
+        assert_eq!(eval(a, "return $Server::MissionSequence;"), sequence);
+        assert_eq!(
+            eval(a, "return $Server::MissionFile;"),
+            "fixtures/floor.mis"
+        );
+        std::mem::take(&mut a.server_log).join("\n")
+    };
+
+    // Bob, who joined over the network, is not the host: a listed map is refused too. A guessed key does not help.
+    b.call("changeMap", &["fixtures/aim.mis"]).unwrap();
+    let log = quiet(&mut a, &mut b);
+    assert!(log.contains("not the host"), "{log}");
+    assert!(!log.contains("Map change to"), "{log}");
+    let address = a.hosted_address().unwrap().to_string();
+    b.call("connectTo", &[&address, "0123456789abcdef0123456789abcdef"])
+        .unwrap();
+    assert!(until(&mut a, &mut b, 600, both_play), "Bob joins again");
+    a.server_log.clear();
+    b.call("changeMap", &["fixtures/aim.mis"]).unwrap();
+    let log = quiet(&mut a, &mut b);
+    assert!(log.contains("not the host"), "{log}");
+
+    // The host asks for maps that are not in the server's list, in the ways a client might.
+    for name in [
+        "fixtures/nothere.mis",
+        "../fixtures/aim.mis",
+        "missions/arena.mis",
+        "",
+    ] {
+        a.call("changeMap", &[name]).unwrap();
+        let log = quiet(&mut a, &mut b);
+        assert!(log.contains("not in the map list"), "{name:?}: {log}");
+    }
+}

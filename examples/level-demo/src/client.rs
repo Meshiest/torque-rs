@@ -11,14 +11,16 @@
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
 //! ([`crate::scene`]) and the map's spot lights, the canvas drawn, and the eye: behind the client's own figure (or at its eyes,
-//! `V`), kept in front of the cubes and the interiors' walls between. `V` eases the camera from one to the other
-//! ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden only once the camera has arrived at
-//! its eyes.
+//! `Tab`). The camera behind rides a boom ([`CameraBoom`]) from above the figure's feet, pulled in fast in front of the cubes
+//! and the interiors' walls that come between and let out slowly when they go; it looks through glass. `Tab` moves the camera
+//! from one to the other ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden while the
+//! camera is close to its eyes ([`CLOSE`]), on the way in and on the way out.
 
 use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
 
-use torque::app::camera_blend::CameraBlend;
+use torque::app::camera_blend::{CLOSE, CameraBlend};
+use torque::app::camera_boom::CameraBoom;
 use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 use torque::app::lights::WorldLights;
 use torque::app::view::{Daylight, WorldView};
@@ -41,8 +43,9 @@ pub const CLIENT_ADDR: SocketAddrV4 = SocketAddrV4::new(std::net::Ipv4Addr::LOCA
 pub const CAMERA_DISTANCE: f32 = 6.5;
 pub const CAMERA_TARGET_HEIGHT: f32 = 1.7;
 pub const CAMERA_PITCH: f32 = 0.3;
-/// The nearest the camera comes to a cube between it and the figure.
+/// The nearest the camera comes to a cube between it and the figure, and to the point it looks at.
 pub const CAMERA_CLEARANCE: f32 = 0.3;
+pub const CAMERA_NEAREST: f32 = 0.4;
 
 /// The example's client (the engine's [`GameClient`], which it derefs to: its host, its globals, the map's server and their
 /// logs) and the level demo's own parts.
@@ -58,6 +61,11 @@ pub struct LevelDemo {
     /// The camera's ease between first and third person, and the mode it last eased to (first person).
     blend: CameraBlend,
     camera_mode: Option<bool>,
+    /// The camera behind the figure: its boom, and the eye it gave this frame.
+    boom: CameraBoom,
+    behind: Option<Eye>,
+    /// Where the camera was drawn last frame.
+    drawn_at: Option<[f32; 3]>,
     /// The map's spot lights (SpotLight objects), drawn where their ghosts are.
     lights: WorldLights,
 }
@@ -109,6 +117,9 @@ impl LevelDemo {
             blend: CameraBlend::default(),
             lights: WorldLights::default(),
             camera_mode: None,
+            boom: CameraBoom::new(CAMERA_NEAREST, CAMERA_CLEARANCE),
+            behind: None,
+            drawn_at: None,
         })
     }
 
@@ -135,6 +146,8 @@ impl LevelDemo {
         self.playing = None;
         self.blend.reset();
         self.camera_mode = None;
+        self.boom.reset();
+        self.behind = None;
     }
 
     /// `ms` of the clock (see the module docs).
@@ -176,7 +189,7 @@ impl LevelDemo {
         self.scene.own()
     }
 
-    /// Whether the camera is at the figure's eyes (`V`).
+    /// Whether the camera is at the figure's eyes (`Tab`).
     pub fn first_person(&self) -> bool {
         self.flag("$World::FirstPerson")
     }
@@ -202,13 +215,31 @@ impl LevelDemo {
         }
     }
 
+    /// The camera behind the figure this frame: on its boom when the frame placed it, else where the boom's room puts it.
     fn third_person(&self, f: &OwnView) -> Eye {
+        if let Some(e) = self.behind {
+            return e;
+        }
         let target = camera_target(f);
-        let pitch = (CAMERA_PITCH + f.pitch * 0.6).clamp(-0.6, 1.2);
-        let (s, c) = pitch.sin_cos();
-        let back = [-f.yaw.sin() * c, -f.yaw.cos() * c, s];
-        let at = self.kept_clear(target, back, CAMERA_DISTANCE, 0.4);
+        let at = self.kept_clear(target, boom_direction(f), CAMERA_DISTANCE, CAMERA_NEAREST);
         look_at(at, target)
+    }
+
+    /// The boom behind the figure moved on `dt` seconds (module docs).
+    fn place_behind(&mut self, dt: f32) {
+        let Some(f) = self.figure() else {
+            self.boom.reset();
+            self.behind = None;
+            return;
+        };
+        let target = camera_target(&f);
+        let scene = &self.scene;
+        let at = self
+            .boom
+            .follow(target, boom_direction(&f), CAMERA_DISTANCE, dt, |a, b| {
+                scene.sight_share(a, b)
+            });
+        self.behind = Some(look_at(at, target));
     }
 
     /// The point `distance` from `target` along unit `back`, brought in front of the first cube or interior wall between (no
@@ -245,7 +276,14 @@ impl LevelDemo {
             None => p,
         });
         self.blend = blend;
+        self.drawn_at = Some(eye.position);
         eye
+    }
+
+    /// The share of the way from `from` to `to` at which the camera's line of sight first meets something, if it does
+    /// ([`WorldScene::sight_share`]).
+    pub fn sight_share(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+        self.scene.sight_share(from, to)
     }
 
     /// Whether the camera is easing between modes.
@@ -303,7 +341,11 @@ impl LevelDemo {
             self.blend.switch();
         }
         self.blend.advance(dt);
-        let hidden = first_person && self.blend.arrived();
+        // The figure is hidden while the camera is close to its eyes, on the way in and on the way out.
+        let hidden = match (self.figure(), self.drawn_at) {
+            (Some(f), Some(p)) => near_eyes(p, f.eye),
+            _ => first_person,
+        };
         {
             let mut st = self.client.host.client.borrow_mut();
             match st.conn.conn.as_mut() {
@@ -321,6 +363,7 @@ impl LevelDemo {
                 None => self.scene.clear(),
             }
         }
+        self.place_behind(dt);
     }
 
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
@@ -389,12 +432,22 @@ impl App for LevelDemo {
     }
 }
 
-/// What the camera behind the figure looks at: above its feet.
+/// The way from the point the camera behind the figure looks at back to the camera (unit): behind the figure's yaw, raised by
+/// the camera's pitch and a share of the head's.
+fn boom_direction(f: &OwnView) -> [f32; 3] {
+    let pitch = (CAMERA_PITCH + f.pitch * 0.6).clamp(-0.6, 1.2);
+    let (s, c) = pitch.sin_cos();
+    [-f.yaw.sin() * c, -f.yaw.cos() * c, s]
+}
+
+/// What the camera behind the figure looks at: above its feet, no higher than its eye (crouched or prone the camera rides lower
+/// with the eye, eased as the eye is).
 fn camera_target(f: &OwnView) -> [f32; 3] {
+    let eye = (f.eye[2] - f.position[2]).max(0.0);
     [
         f.position[0],
         f.position[1],
-        f.position[2] + CAMERA_TARGET_HEIGHT,
+        f.position[2] + CAMERA_TARGET_HEIGHT.min(eye),
     ]
 }
 
@@ -403,24 +456,9 @@ pub fn with_fov(mut eye: Eye) -> Eye {
     eye
 }
 
-/// Where the ray from `from` along the unit `dir` enters the box `min`..`max` (its distance), if it does ahead.
-pub fn ray_box(from: [f32; 3], dir: [f32; 3], min: [f32; 3], max: [f32; 3]) -> Option<f32> {
-    let (mut near, mut far) = (0.0f32, f32::MAX);
-    for i in 0..3 {
-        if dir[i].abs() < 1e-6 {
-            if from[i] < min[i] || from[i] > max[i] {
-                return None;
-            }
-            continue;
-        }
-        let a = (min[i] - from[i]) / dir[i];
-        let b = (max[i] - from[i]) / dir[i];
-        near = near.max(a.min(b));
-        far = far.min(a.max(b));
-        if near > far {
-            return None;
-        }
-    }
-    // A ray that starts inside a box (the figure's own floor) does not count.
-    (near > 0.0).then_some(near)
+pub use torque_example_common::ray_box;
+
+/// Whether the camera drawn at `camera` is within [`CLOSE`] of a figure's `eyes`: the figure is hidden.
+fn near_eyes(camera: [f32; 3], eyes: [f32; 3]) -> bool {
+    (0..3).map(|k| (camera[k] - eyes[k]).powi(2)).sum::<f32>() < CLOSE * CLOSE
 }

@@ -1802,6 +1802,7 @@ const SHAPE_BASE_METHODS: &[MethodSpec] = &[
     ),
     method("getEyeVector", 2, 2, "()", Returns::String),
     method("getEyePoint", 2, 2, "()", Returns::String),
+    method("getSteadyEyePoint", 2, 2, "()", Returns::String),
     method("getEyeTransform", 2, 2, "()", Returns::String),
     method("setShapeName", 3, 3, "(string tag)", Returns::Void),
     method("getShapeName", 2, 2, "()", Returns::String),

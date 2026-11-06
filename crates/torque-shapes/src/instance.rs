@@ -162,6 +162,9 @@ pub struct Transition {
     /// The sequence and position it left: a transition run backwards past its start goes back there.
     pub old_sequence: Option<usize>,
     pub old_pos: f32,
+    /// The blend eases in and out (smoothstep of the position) instead of running straight: an addition of this crate, not
+    /// part of Torque ([`ShapeInstance::transition_to_sequence_eased`]).
+    pub eased: bool,
 }
 
 impl Thread {
@@ -661,6 +664,24 @@ impl ShapeInstance {
         }
     }
 
+    /// [`Self::transition_to_sequence`] with a blend that eases in and out (the engine's own, [`Transition::eased`]): the new
+    /// pose's weight is the smoothstep of the transition's position, so the body starts and settles gently.
+    pub fn transition_to_sequence_eased(
+        &mut self,
+        shape: &Shape,
+        id: ThreadId,
+        seq: usize,
+        pos: f32,
+        duration: f32,
+    ) {
+        self.transition_to_sequence(shape, id, seq, pos, duration);
+        if let Some(th) = self.arena.get_mut(id.0).and_then(Option::as_mut)
+            && th.transition.in_transition
+        {
+            th.transition.eased = true;
+        }
+    }
+
     /// `TSShapeInstance::transitionToSequence` (the thread's half included): the thread moves to sequence `seq` at `pos`
     /// over `duration` seconds, blending from the pose the instance has now, and goes on playing meanwhile (`continuePlay`: the
     /// target scale 1). A sequence the shape does not have changes nothing.
@@ -708,6 +729,7 @@ impl ShapeInstance {
         tr.direction = if thread.time_scale > 0.0 { 1.0 } else { -1.0 };
         tr.target_scale = 1.0;
         tr.in_transition = true;
+        tr.eased = false;
         thread.set_sequence(shape, seq as i32, pos);
         let old = thread.transition;
         self.set_all_dirty();
@@ -852,10 +874,15 @@ impl ShapeInstance {
                     }
                 })
             })?;
-            self.arena
-                .get(t)
-                .and_then(Option::as_ref)
-                .map(|th| th.transition.pos)
+            self.arena.get(t).and_then(Option::as_ref).map(|th| {
+                let p = th.transition.pos;
+                if th.transition.eased {
+                    let u = p.clamp(0.0, 1.0);
+                    u * u * (3.0 - 2.0 * u)
+                } else {
+                    p
+                }
+            })
         };
         for n in members_range(&self.transition_rotation_nodes, a, b) {
             let Some(p) = pick(n, set_by.0.get(n).copied().flatten(), true) else {

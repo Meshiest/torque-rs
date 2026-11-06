@@ -40,8 +40,9 @@ impl Kick {
     }
 }
 
-/// Aiming down the sights: how long an image takes to come up to its sights (seconds), how far ahead of the eye its rear sight is
-/// held ([`sight_offset`]), and where an image without sights is held there (its place in the eye's frame).
+/// Aiming down the sights: how long an image takes to come up to its sights (seconds: [`SightsBlend`] is within 1% of them by
+/// then), how far ahead of the eye its rear sight is held ([`sight_offset`]), and where an image without sights is held there
+/// (its place in the eye's frame).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sights {
     pub seconds: f32,
@@ -59,10 +60,46 @@ impl Default for Sights {
     }
 }
 
-/// The ease of the sights' blend: `t` (0 to 1 of [`Sights::seconds`]) smoothed at both ends.
-pub fn aim_ease(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+/// `1 - (1 + x) e^-x` at this `x` is 0.99: a critically damped spring of rate `x / seconds` is within 1% of its target then.
+const SETTLED_RATE: f32 = 6.638;
+
+/// How far the sights are up (0 at the hip, 1 at the sights) and how fast that changes (a second): a critically damped spring
+/// toward the hip or the sights, stepped exactly ([`SightsBlend::step`]), so it moves the same at any frame rate, never overshoots
+/// from rest, and a press let go mid-way turns back from where it is at the speed it had.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SightsBlend {
+    pub at: f32,
+    pub speed: f32,
+}
+
+impl SightsBlend {
+    /// `dt` seconds toward `target` (0 or 1), settled within 1% after `seconds`.
+    pub fn step(&mut self, target: f32, seconds: f32, dt: f32) {
+        let dt = dt.max(0.0);
+        let w = SETTLED_RATE / seconds.max(1e-3);
+        let off = self.at - target;
+        let e = (-w * dt).exp();
+        let k = (self.speed + w * off) * dt;
+        self.speed = (self.speed - w * k) * e;
+        self.at = target + (off + k) * e;
+        // Within a thousandth and slow: settled there (a step no one sees), not a tail that never ends.
+        if (self.at - target).abs() < 1e-3 && self.speed.abs() < 0.05 {
+            *self = SightsBlend {
+                at: target,
+                speed: 0.0,
+            };
+        }
+        self.at = self.at.clamp(0.0, 1.0);
+    }
+}
+
+/// The image's way from the hip to the sights at `aim` (0 to 1): its turn and its height and distance follow `aim`, and it
+/// comes in toward the eye's line ahead of them (the side's share of the way), so it arcs in and up instead of sliding along the
+/// straight line.
+pub fn sights_path(aim: f32) -> [f32; 3] {
+    let a = aim.clamp(0.0, 1.0);
+    let side = 1.0 - (1.0 - a) * (1.0 - a);
+    [side, a, a]
 }
 
 /// How a projectile is drawn leaving its source's muzzle: curving from there onto its flight over its first `blend` units, its
@@ -170,8 +207,8 @@ pub struct ArenaStyle {
     pub sights: Sights,
     pub bolt: BoltPath,
     pub flare: Option<ShotFlare>,
-    /// How far the sights' blend has run (0 at the hip, 1 at the sights; not eased).
-    aim: f32,
+    /// How far the sights are up and how fast they move.
+    aim: SightsBlend,
     /// Each image shape's sights ([`sight_offset`]) and its `sightFront` and `sightRear` nodes, by path.
     sight_nodes: HashMap<String, Option<SightNodes>>,
     own_sights: Option<[[f32; 3]; 2]>,
@@ -192,27 +229,23 @@ impl ArenaStyle {
             sights,
             bolt,
             flare,
-            aim: 0.0,
+            aim: SightsBlend::default(),
             sight_nodes: HashMap::new(),
             own_sights: None,
             nearest: false,
         }
     }
 
-    /// `dt` seconds of the sights' blend toward the sights (`aiming`) or the hip; returns how far up they are (eased).
+    /// `dt` seconds of the sights' blend toward the sights (`aiming`) or the hip; returns how far up they are.
     pub fn update_aim(&mut self, aiming: bool, dt: f32) -> f32 {
-        let step = dt.max(0.0) / self.sights.seconds.max(1e-3);
-        self.aim = if aiming {
-            (self.aim + step).min(1.0)
-        } else {
-            (self.aim - step).max(0.0)
-        };
-        aim_ease(self.aim)
+        let target = if aiming { 1.0 } else { 0.0 };
+        self.aim.step(target, self.sights.seconds, dt);
+        self.aim.at
     }
 
-    /// How far the sights are up (eased, 0 to 1).
+    /// How far the sights are up (0 to 1).
     pub fn aim(&self) -> f32 {
-        aim_ease(self.aim)
+        self.aim.at
     }
 
     /// Where the own Player's first image's sights (`sightFront`, `sightRear`) were drawn in the last frame.
@@ -295,7 +328,7 @@ impl GhostStyle for ArenaStyle {
     }
 
     fn clear(&mut self) {
-        self.aim = 0.0;
+        self.aim = SightsBlend::default();
         self.sight_nodes.clear();
         self.own_sights = None;
     }
@@ -322,7 +355,8 @@ impl GhostStyle for ArenaStyle {
                 &Mat::mul(&Mat::euler_x(-up * kick), &Mat::euler_x(pitch * aim)),
             );
             let from = eye_offset.column(3);
-            let [x, y, z] = [0, 1, 2].map(|k| from[k] + (place[k] - from[k]) * aim);
+            let way = sights_path(aim);
+            let [x, y, z] = [0, 1, 2].map(|k| from[k] + (place[k] - from[k]) * way[k]);
             m.set_column3([x, y - back * kick, z + 0.2 * back * kick]);
             motion.eye = Some(m);
         }
@@ -448,8 +482,99 @@ mod tests {
     #[test]
     fn the_sights_come_up_eased_and_go_down() {
         let mut g = ArenaStyle::new(None, Sights::default(), BoltPath::default(), None);
-        assert_eq!(g.update_aim(true, 0.09), aim_ease(0.5));
+        let half = g.update_aim(true, 0.09);
+        assert!(half > 0.5 && half < 0.95, "{half}");
         assert_eq!(g.update_aim(true, 1.0), 1.0);
         assert_eq!(g.update_aim(false, 1.0), 0.0);
+    }
+
+    /// The blend at `fps` with the press down for `down` seconds, then up, sampled each frame for `seconds`: (time, place).
+    fn blend_at(fps: f32, down: f32, seconds: f32) -> Vec<(f32, SightsBlend)> {
+        let (mut b, dt) = (SightsBlend::default(), 1.0 / fps);
+        let mut out = Vec::new();
+        let mut t = 0.0;
+        while t < seconds {
+            let target = if t < down { 1.0 } else { 0.0 };
+            b.step(target, Sights::default().seconds, dt);
+            t += dt;
+            out.push((t, b));
+        }
+        out
+    }
+
+    #[test]
+    fn the_sights_blend_is_the_same_at_60_and_144_frames_a_second() {
+        let seconds = Sights::default().seconds;
+        for down in [1.0, 0.08] {
+            let (a, b) = (blend_at(60.0, down, 0.6), blend_at(144.0, down, 0.6));
+            // Every 12th of a second both have a frame: the same place within float noise.
+            for k in 1..7 {
+                let t = k as f32 / 12.0;
+                let near = |v: &[(f32, SightsBlend)]| {
+                    v.iter()
+                        .min_by(|x, y| (x.0 - t).abs().total_cmp(&(y.0 - t).abs()))
+                        .unwrap()
+                        .1
+                };
+                let (pa, pb) = (near(&a), near(&b));
+                assert!(
+                    (pa.at - pb.at).abs() < 2e-3,
+                    "down {down} at {t}: {pa:?} {pb:?}"
+                );
+            }
+            // Within 1% of the sights by their time (the long press).
+            if down == 1.0 {
+                let at = a.iter().find(|(t, _)| *t >= seconds).unwrap().1.at;
+                assert!(at > 0.985, "{at}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_sights_move_smoothly_never_past_their_ends_and_turn_back_without_a_jump() {
+        for fps in [60.0, 144.0] {
+            let dt = 1.0 / fps;
+            for down in [0.3, 0.08, 0.03] {
+                let v = blend_at(fps, down, 1.0);
+                // The fastest the spring moves (from rest to the far end): at most `w / e` a second.
+                let most = SETTLED_RATE / Sights::default().seconds / std::f32::consts::E;
+                let mut last = SightsBlend::default();
+                for (t, b) in &v {
+                    assert!((0.0..=1.0).contains(&b.at), "{fps} {down} {t}: {b:?}");
+                    assert!(
+                        (b.at - last.at).abs() <= most * dt * 1.05,
+                        "a jump at {t}: {last:?} -> {b:?}"
+                    );
+                    // The speed changes by at most the spring's pull a frame (no step in it).
+                    let w = SETTLED_RATE / Sights::default().seconds;
+                    assert!(
+                        (b.speed - last.speed).abs() <= w * w * dt * 1.05,
+                        "a kick at {t}"
+                    );
+                    last = *b;
+                }
+                // Up then down: never past the sights, and back at the hip.
+                let peak = v.iter().map(|(_, b)| b.at).fold(0.0, f32::max);
+                assert!(peak <= 1.0);
+                assert_eq!(v.last().unwrap().1.at, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_pistol_arcs_in_then_up() {
+        assert_eq!(sights_path(0.0), [0.0; 3]);
+        assert_eq!(sights_path(1.0), [1.0; 3]);
+        let mid = sights_path(0.5);
+        assert!(
+            mid[0] > mid[2],
+            "in toward the eye's line ahead of the rise: {mid:?}"
+        );
+        let mut last = sights_path(0.0);
+        for k in 1..=100 {
+            let p = sights_path(k as f32 / 100.0);
+            assert!((0..3).all(|i| p[i] >= last[i]), "monotone");
+            last = p;
+        }
     }
 }

@@ -105,7 +105,7 @@ new GameTSCtrl(PlayGui)
       new GuiTextCtrl(PlayHelp)
       {
          profile = WorldDimProfile; position = "170 5"; extent = "620 18"; horizSizing = "width"; visible = true; enabled = true;
-         text = "W A S D move   Shift walk   Space jump   Mouse look   V camera   R restart   Esc menu";
+         text = "W A S D walk   Shift sprint   Ctrl/C crouch   Z prone   Space jump   Mouse look   Tab camera   R restart   Esc menu";
       };
    };
    new GuiTextCtrl(PlayNote)
@@ -144,12 +144,14 @@ MenuMap.bind(keyboard, 9, menuNine);
 MenuMap.bind(keyboard, escape, menuQuit);
 
 new ActionMap(PlayMap);
-$World::Pace = 1;
+// The figure walks (a share of its full speed) and sprints at its full speed while Shift is held.
+$World::WalkPace = 0.35;
+$World::Pace = $World::WalkPace;
 function moveForward(%v) { $World::Forward = %v; updateMove(); }
 function moveBack(%v) { $World::Back = %v; updateMove(); }
 function moveLeft(%v) { $World::Left = %v; updateMove(); }
 function moveRight(%v) { $World::Right = %v; updateMove(); }
-function walkSlowly(%v) { $World::Pace = %v ? 0.35 : 1; updateMove(); }
+function sprint(%v) { $World::Pace = %v ? 1 : $World::WalkPace; updateMove(); }
 function updateMove()
 {
    $mvForwardAction = $World::Forward * $World::Pace;
@@ -157,9 +159,11 @@ function updateMove()
    $mvLeftAction = $World::Left * $World::Pace;
    $mvRightAction = $World::Right * $World::Pace;
 }
-function jump(%v) { if (%v) $mvTriggerCount2++; }
+// The count goes up on the press and on the release: odd while held, so a quick tap (both in one frame) jumps once.
+function jump(%v) { $mvTriggerCount2++; }
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
+// Tab: the camera at the figure's eyes or behind it.
 function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
 function leaveKey(%v) { if (%v) leaveWorld(); }
@@ -167,9 +171,10 @@ PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
-PlayMap.bind(keyboard, lshift, walkSlowly);
+PlayMap.bind(keyboard, lshift, sprint);
+bindPoseKeys(PlayMap);
 PlayMap.bind(keyboard, space, jump);
-PlayMap.bind(keyboard, v, switchCamera);
+PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
 PlayMap.bind(keyboard, escape, leaveKey);
 PlayMap.bind(mouse, xaxis, turn);
@@ -181,6 +186,10 @@ function showMenu()
 {
    $World::InWorld = 0;
    PlayMap.pop();
+   releasePoseKeys();
+   $World::Forward = $World::Back = $World::Left = $World::Right = 0;
+   $World::Pace = $World::WalkPace;
+   updateMove();
    MenuMap.push();
    Canvas.setContent(MenuGui);
    Canvas.cursorOn();
@@ -222,8 +231,17 @@ function GameConnection::onConnectionDropped(%this, %reason)
    MenuStatus.setText("Left the world: " @ %reason);
 }
 
+// An event for the page of a web build (`torque.on(name, ...)` there; the page bridge's `callPage`), with a fixed name: what the
+// server sends is only ever an argument. Off the web there is no page and nothing happens.
+function pageEvent(%name, %arg)
+{
+   if (isFunction("callPage"))
+      callPage(%name, %arg);
+}
+
 function clientCmdWorldStarted(%title)
 {
+   pageEvent("mapLoaded", %title);
    PlayTitle.setText(%title);
    MenuMap.pop();
    PlayMap.push();
@@ -235,6 +253,7 @@ function clientCmdWorldStarted(%title)
 
 function clientCmdFell()
 {
+   pageEvent("playerFell");
    showNote("You fell off. Back to the start.");
 }
 

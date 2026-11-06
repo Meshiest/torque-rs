@@ -115,6 +115,18 @@ fn the_sky_and_tonemap_constants_are_the_scenes() {
     ] {
         assert_eq!(constant("tonemap.wgsl", name) as f32, value, "{name}");
     }
+    // The sun disk's own path to white starts at the tonemap's shoulder.
+    use torque_render_scene::hd::sky as s;
+    assert_eq!(
+        constant("tonemap.wgsl", "SHOULDER") as f32,
+        s::DISK_SHOULDER
+    );
+    for (name, value) in [
+        ("DISK_SHOULDER", s::DISK_SHOULDER),
+        ("DISK_WHITE_SPILL", s::DISK_WHITE_SPILL),
+    ] {
+        assert_eq!(constant("sky.wgsl", name) as f32, value, "{name}");
+    }
 }
 
 #[test]

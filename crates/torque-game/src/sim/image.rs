@@ -479,6 +479,8 @@ fn stand_in_info(vm: &Vm) -> Rc<PlayerInfo> {
         look_action: 0,
         max_time_scale: 1.5,
         max_freelook: 0.0,
+        walk: None,
+        pose_sets: Default::default(),
     })
 }
 

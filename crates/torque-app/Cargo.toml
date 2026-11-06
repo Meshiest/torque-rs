@@ -31,6 +31,8 @@ torque-render-hd = { path = "../torque-render-hd" }
 torque-render-scene = { path = "../torque-render-scene" }
 torque-server = { path = "../torque-server" }
 torque-shapes = { path = "../torque-shapes" }
+# The page bridge's syntax check of the page's script text.
+torque-ts-compiler = { path = "../torque-ts-compiler" }
 torque-ts-text = { path = "../torque-ts-text" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
@@ -39,9 +41,15 @@ png = "0.18"
 serde_json = "1.0.140"
 sha2 = "0.10"
 
-# In a browser: the canvas's device is asked for without blocking.
+# In a browser: the canvas's device is asked for without blocking; the page's address and root element, a panic shown in its
+# console.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+# The page bridge's calls to the page's handlers and its answers to the page's requests.
+js-sys = "0.3"
+wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Window"] }
 
 [features]
 # Browsers as players: a server listening on the web (`Listen::Web`) and a client's game socket over WebSocket.

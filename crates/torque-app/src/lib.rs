@@ -16,14 +16,19 @@
 //! - [`lights::WorldLights`]: the engine's spot lights and the day (TimeOfDay, ScatterSky) of a client's world, into the view.
 //! - [`orbit::Orbit`]: a third-person camera that circles a point; [`orbit::Zoom`]: a camera distance the wheel moves.
 //! - [`camera_blend::CameraBlend`]: a camera that eases from one mode's eye to another's on a switch.
+//! - [`camera_boom::CameraBoom`]: a third-person camera's boom, pulled in fast and let out slowly by what is in the way.
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
+//! - [`page_bridge`]: a web build's page and the game's scripts calling each other (`torque.call`, `callPage`), within caps.
+//! - [`web_page`]: the entry web builds share: the page's calls ([`web_exports!`]), the files it fetches, its settings, and
+//!   the loading stages and frame times written on the page.
 //! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
 
 pub mod camera_blend;
+pub mod camera_boom;
 pub mod cli;
 pub mod client;
 pub mod files;
@@ -33,10 +38,12 @@ pub mod interiors;
 pub mod lights;
 pub mod manifest;
 pub mod orbit;
+pub mod page_bridge;
 pub mod server;
 pub mod shots;
 pub mod terrain;
 pub mod view;
+pub mod web_page;
 pub mod window;
 
 use torque_render_core::Gpu;
@@ -76,6 +83,11 @@ pub trait App {
 
     /// The frame: the world into `view`, the canvas drawn (with the world's rectangle) and the eye.
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye);
+
+    /// Whether the game is still loading its map (a browser's page keeps its loading display up until it is not).
+    fn loading(&self) -> bool {
+        false
+    }
 }
 
 /// The system's fonts as the fallback for a face with no font cache in `fonts/` (none where the system has none); in a

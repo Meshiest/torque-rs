@@ -49,11 +49,16 @@ use torque_render_scene::{Assets, Draw};
 use super::view::WorldView;
 use crate::interiors::Interiors;
 use torque_client::conn::tge::TgeWorld;
-use torque_client::player_anim::{PlayerAnimation, PlayerMotion, ServerAction};
+use torque_client::player_anim::{
+    PlayerAnimation, PlayerMotion, SCRIPT_SLOTS, ScriptPlay, ServerAction, record_pose,
+};
 use torque_client::predict::ghost_players::GhostPlayers;
+use torque_game::sim::player::poses::{Pose as BodyPose, PoseData, pose_blend};
 use torque_ghost_world::tge::TgeClientSet;
+use torque_ghost_world::threads::ThreadState;
 use torque_ghost_world::world::{ClientWorld, Pose, ProjectileLook};
 use torque_ghosts::{TgeClass, TgeRecord, Value};
+use torque_shapes::instance::FLAG_CYCLIC;
 use torque_shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 
 /// The record world the scene draws.
@@ -63,6 +68,53 @@ type World = ClientWorld<TgeClientSet>;
 pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 /// The most a frame advances a Player's animation (seconds: a stall or a clock that jumped).
 const MAX_FRAME_STEP: f32 = 0.25;
+
+/// The own Player's steady eye between poses: after a change of pose the view eases from where it stood to the new pose's eye
+/// over the body's blend ([`pose_blend`]), what is left of the way kept in the Player's own frame so a turn meanwhile carries it.
+#[derive(Debug, Clone, Copy, Default)]
+struct EyePose {
+    pose: BodyPose,
+    /// The way left at the change (the old eye less the new one, the Player's frame), the seconds since and the blend's.
+    left: [f32; 3],
+    since: f32,
+    seconds: f32,
+    /// The eye of the last frame (the world).
+    last: Option<[f32; 3]>,
+}
+
+impl EyePose {
+    /// The eye this frame for pose `pose`, whose own eye is at `target` (the world), the Player at yaw `yaw`, `dt` seconds on.
+    fn step(&mut self, pose: BodyPose, target: [f32; 3], yaw: f32, dt: f32) -> [f32; 3] {
+        let (s, c) = yaw.sin_cos();
+        if pose != self.pose {
+            if let (Some(seconds), Some(last)) = (pose_blend(self.pose, pose), self.last) {
+                let d = [0, 1, 2].map(|k| last[k] - target[k]);
+                self.left = [d[0] * c - d[1] * s, d[0] * s + d[1] * c, d[2]];
+                self.seconds = seconds;
+            } else {
+                self.left = [0.0; 3];
+                self.seconds = 0.0;
+            }
+            self.pose = pose;
+            self.since = 0.0;
+        }
+        self.since += dt;
+        let w = if self.seconds > 0.0 {
+            let u = (self.since / self.seconds).clamp(0.0, 1.0);
+            1.0 - u * u * (3.0 - 2.0 * u)
+        } else {
+            0.0
+        };
+        let [x, y, z] = self.left.map(|v| v * w);
+        let eye = [
+            target[0] + x * c + y * s,
+            target[1] - x * s + y * c,
+            target[2] + z,
+        ];
+        self.last = Some(eye);
+        eye
+    }
+}
 
 /// The bolt holes kept: at most `max`, each for `seconds`, fading out over its last `fade`; multiplied over the surface they
 /// lie on (`Blend::Modulate2x`) with `multiply`.
@@ -99,6 +151,24 @@ pub struct GhostOptions {
     /// Players are posed by the synced rules of a server whose Players have hitboxes
     /// ([`PlayerAnimation::set_synced`]), so the figure drawn is the one hits are cast at.
     pub synced_poses: bool,
+    /// A steady first-person view (the engine's own; TGE stands the view at the drawn `eye` node, so the view bobs with the
+    /// walk and the run): the own Player's view stands at its `eye` node at the shape's rest pose, carried by the Player's real
+    /// motion (its position, a landing, a mount), while the body drawn and its hitboxes keep their animation. The first
+    /// person's images ride the view, so they stay steady with it.
+    pub steady_eye: bool,
+    /// With [`Self::steady_eye`], the view keeps the drawn eye's sway across the ground (its height steady); off, the view is
+    /// steady every way.
+    pub eye_sway: bool,
+    /// A projectile stops where its line meets the world's surfaces as the client has them, waiting there for the server's
+    /// explosion, instead of flying on through them until it comes (the line is the server's: its first update's raw floats).
+    /// For a game whose client has the world's surfaces as the server collides with them.
+    pub bolt_stops: bool,
+    /// The poses a server's Players have, whose triggers their records show the pose with (the engine's own poses after
+    /// Torque3D's, `::sim::player::pose`): the other Players are drawn crouched, prone or sprinting as their server chose. None:
+    /// every other Player stands (TGE's). The own Player's pose is the one the client predicts either way, and with
+    /// [`Self::steady_eye`] the view stands at the eye of its pose (its shape's `crouch_root` or `prone_root` held at its
+    /// start), eased over the body's own blend between poses.
+    pub poses: Option<PoseData>,
 }
 
 impl Default for GhostOptions {
@@ -109,6 +179,10 @@ impl Default for GhostOptions {
             ribbon_trails: false,
             decals: DecalLimits::default(),
             synced_poses: false,
+            steady_eye: false,
+            eye_sway: false,
+            bolt_stops: false,
+            poses: None,
         }
     }
 }
@@ -351,6 +425,53 @@ fn drive_steering(
 struct PlayerInput {
     motion: Option<([f32; 3], f32, Option<bool>)>,
     recoil: Option<ImageRecoil>,
+    /// Its pose: the own one's as the client predicts it, another's as its record shows it.
+    pose: BodyPose,
+}
+
+/// The script threads of ghost `index` as a Player's animation plays them over its own ([`PlayerAnimation::script_threads`]):
+/// each slot's sequence at its place at the world's clock (a thread that does not cycle held at its end; a stopped one at
+/// its start).
+fn script_plays(
+    world: &World,
+    index: u32,
+    shape: &torque_shapes::shape::Shape,
+) -> [Option<ScriptPlay>; SCRIPT_SLOTS] {
+    let mut out = [None; SCRIPT_SLOTS];
+    let Some(slots) = world.threads.get(&index) else {
+        return out;
+    };
+    for (o, t) in out.iter_mut().zip(slots.iter()) {
+        let Some(t) = t else {
+            continue;
+        };
+        let Some(seq) = shape.sequences.get(t.sequence as usize) else {
+            continue;
+        };
+        let pos = match t.state {
+            ThreadState::Stop => 0.0,
+            _ if t.at_end => {
+                if t.forward {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            _ => {
+                let at = t.position(world.clock_ms) / seq.duration.max(1e-3);
+                if seq.flags & FLAG_CYCLIC != 0 {
+                    at.rem_euclid(1.0)
+                } else {
+                    at.clamp(0.0, 1.0)
+                }
+            }
+        };
+        *o = Some(ScriptPlay {
+            sequence: t.sequence as usize,
+            pos,
+        });
+    }
+    out
 }
 
 /// The live poses and image clocks kept between frames, the frame's Player inputs and the host's motion of each held image.
@@ -437,6 +558,7 @@ impl Hooks<World> for GhostHooks {
         motion.position = position;
         motion.mounted = world.mount_of(ask.index).is_some();
         let input = self.inputs.get(&ask.index).copied().unwrap_or_default();
+        motion.pose = input.pose;
         if let Some((velocity, _, falling)) = input.motion {
             motion.velocity = velocity;
             if let Some(falling) = falling {
@@ -454,6 +576,10 @@ impl Hooks<World> for GhostHooks {
         let max_look = max_look(world, ask.db);
         motion.look = ((head / max_look + 1.0) * 0.5).clamp(0.0, 1.0);
         live.anim.update(ask.shape, &mut live.instance, &motion, dt);
+        // The script threads its server plays on it (a hit's flinch), over its own threads, as its hitboxes have them.
+        let plays = script_plays(world, ask.index, ask.shape);
+        live.anim
+            .script_threads(ask.shape, &mut live.instance, &plays);
         drive_steering(world, ask.index, ask.shape, &mut live);
         let _ = live
             .instance
@@ -506,13 +632,56 @@ struct Bolt {
     flight: Flight,
     trail: Option<Emitter>,
     ribbon: Option<Ribbon>,
+    /// Where its flight met the world's surfaces as the client has them ([`first_hit`]): it waits there for the server's
+    /// explosion instead of flying on through the wall.
+    stop: Option<[f32; 3]>,
+}
+
+/// Where the segment `from`..`to` first crosses one of `faces` (either side), as its share of the way (0 to 1).
+pub fn first_hit(from: [f32; 3], to: [f32; 3], faces: &[Triangle]) -> Option<f32> {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let d = sub(to, from);
+    let mut best: Option<f32> = None;
+    for [a, b, c] in faces {
+        let (e1, e2) = (sub(*b, *a), sub(*c, *a));
+        let h = cross(d, e2);
+        let det = dot(e1, h);
+        if det.abs() < 1e-9 {
+            continue;
+        }
+        let inv = 1.0 / det;
+        let s = sub(from, *a);
+        let u = dot(s, h) * inv;
+        if !(0.0..=1.0).contains(&u) {
+            continue;
+        }
+        let q = cross(s, e1);
+        let v = dot(d, q) * inv;
+        if v < 0.0 || u + v > 1.0 {
+            continue;
+        }
+        let t = dot(e2, q) * inv;
+        if (0.0..=1.0).contains(&t) && best.is_none_or(|b| t < b) {
+            best = Some(t);
+        }
+    }
+    best
 }
 
 /// The most hit bursts [`GhostScene::hit_bursts`] keeps.
 pub const MAX_HIT_BURSTS: usize = 16;
 
-/// The client's own Player as the last frame placed it: its ghost, its feet, its yaw and head's pitch (positive looks down), and
-/// the eye.
+/// The client's own Player as the last frame placed it: its ghost, its feet, its yaw and head's pitch (positive looks down), the
+/// eye its first-person view stands at (steady with [`GhostOptions::steady_eye`]), and its `eye` node as the body is drawn
+/// (TGE's eye, moving with the animation).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OwnView {
     pub ghost: u32,
@@ -520,6 +689,7 @@ pub struct OwnView {
     pub yaw: f32,
     pub pitch: f32,
     pub eye: [f32; 3],
+    pub drawn_eye: [f32; 3],
 }
 
 /// The faces of `world` near a point, within a reach: the surface a projectile's decal there may lie on.
@@ -574,10 +744,14 @@ pub struct GhostScene<S = Plain> {
     pub flashes: usize,
     /// The map's interiors.
     interiors: Interiors,
+    /// The own Player's eye between poses ([`GhostOptions::poses`]).
+    eye_pose: EyePose,
     /// The dust the vehicles the client runs kick up ([`VehicleDust`]: TGE's tire and lift-off dust).
     pub dust: VehicleDust,
     /// The tire tracks they leave, when the game asks for them ([`GhostScene::set_tire_tracks`]).
     pub tracks: Option<TireTracks>,
+    /// The datablocks whose shapes and textures were loaded ([`GhostScene::preload`]).
+    preloaded: BTreeSet<u32>,
 }
 
 impl GhostScene {
@@ -619,8 +793,10 @@ impl<S: GhostStyle> GhostScene<S> {
             ribbons_drawn: 0,
             flashes: 0,
             interiors: Interiors::default(),
+            eye_pose: EyePose::default(),
             dust: VehicleDust::default(),
             tracks: None,
+            preloaded: BTreeSet::new(),
         }
     }
 
@@ -663,8 +839,10 @@ impl<S: GhostStyle> GhostScene<S> {
             ribbons_drawn: self.ribbons_drawn,
             flashes: _,
             interiors: _,
+            eye_pose: self.eye_pose,
             dust: _,
             tracks: _,
+            preloaded: self.preloaded,
         } = GhostScene::new(self.options.clone());
         self.tracks = tracks;
         self.dust = dust;
@@ -749,6 +927,11 @@ impl<S: GhostStyle> GhostScene<S> {
         out
     }
 
+    /// Where the projectiles stopped at the world's surfaces as this client has them (the ones that did).
+    pub fn bolt_stops(&self) -> Vec<[f32; 3]> {
+        self.bolts.values().filter_map(|b| b.stop).collect()
+    }
+
     /// Where the projectiles are drawn this frame.
     pub fn bolt_positions(&self) -> Vec<[f32; 3]> {
         self.bolts
@@ -762,9 +945,10 @@ impl<S: GhostStyle> GhostScene<S> {
     /// their trails, bursts and holes.
     pub fn update(&mut self, assets: &dyn Assets, world: &mut TgeWorld, input: &FrameInput<'_>) {
         let dt = input.dt.max(0.0);
+        self.preload(assets, &world.records);
         self.forget_reborn(&world.records.birth_order);
         self.player_inputs(world, input.ghosts);
-        self.place_players(assets, world, input.fov);
+        self.place_players(assets, world, input.fov, dt);
         self.update_images(assets, &world.records, dt);
         self.update_bolts(assets, &world.records, input, dt);
         world
@@ -806,6 +990,41 @@ impl<S: GhostStyle> GhostScene<S> {
                 })
                 .collect();
             tracks.update(&wheels, &surfaces, dt);
+        }
+    }
+
+    /// Loads the shapes and the particles' and decals' textures each new datablock names (`shapeFile`, `projectileShapeName`,
+    /// `textureName`), as TGE's datablocks preload theirs: kept by the loaders' caches, they are not read and decoded mid-game
+    /// in the frame of a first shot, hit or hole.
+    fn preload(&mut self, assets: &dyn Assets, world: &World) {
+        if world.datablocks.len() == self.preloaded.len() {
+            return;
+        }
+        let mut set = TextureSet::new(assets);
+        let mut notes = Vec::new();
+        for (&id, db) in &world.datablocks {
+            if !self.preloaded.insert(id) {
+                continue;
+            }
+            for (name, _, value) in &db.fields {
+                let Value::Str(text) = value else {
+                    continue;
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(text);
+                match name.as_str() {
+                    "shapeFile" | "projectileShapeName" => {
+                        let seqs = |p: &str| world.constructor_sequences(p);
+                        let _ = torque_render_scene::shapes::load(&seqs, assets, &text, &mut notes);
+                    }
+                    "textureName" | "textureNames" => {
+                        let _ = set.get_modulated(&text);
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -862,6 +1081,19 @@ impl<S: GhostStyle> GhostScene<S> {
             .filter(|_| world.control_render.is_some());
         for class in [TgeClass::Player, TgeClass::AiPlayer] {
             for (index, ghost) in world.of_class(class) {
+                let pose = if Some(index) == control {
+                    world
+                        .control_state
+                        .as_ref()
+                        .map_or(BodyPose::Stand, |c| c.pose)
+                } else {
+                    self.options
+                        .poses
+                        .as_ref()
+                        .zip(ghost.record.as_ref())
+                        .and_then(|(d, r)| record_pose(r, d))
+                        .unwrap_or(BodyPose::Stand)
+                };
                 let motion = if Some(index) == control {
                     let head = match world.control_render {
                         Some(Pose::Euler { pitch, .. }) => pitch,
@@ -884,16 +1116,27 @@ impl<S: GhostStyle> GhostScene<S> {
                     .into_iter()
                     .filter_map(|(_, m)| m.recoil)
                     .max_by_key(|r| r.count);
-                self.hooks
-                    .inputs
-                    .insert(index, PlayerInput { motion, recoil });
+                self.hooks.inputs.insert(
+                    index,
+                    PlayerInput {
+                        motion,
+                        recoil,
+                        pose,
+                    },
+                );
             }
         }
     }
 
     /// Each Player posed for the frame (its live pose run), the others' places kept, and the own one's view: at its drawn `eye`
     /// node in its first-person view.
-    fn place_players(&mut self, assets: &dyn Assets, world: &mut TgeWorld, fov: Option<u8>) {
+    fn place_players(
+        &mut self,
+        assets: &dyn Assets,
+        world: &mut TgeWorld,
+        fov: Option<u8>,
+        dt: f32,
+    ) {
         self.own = None;
         self.others.clear();
         let control = world
@@ -924,13 +1167,45 @@ impl<S: GhostStyle> GhostScene<S> {
                 self.others.push((index, position, yaw));
                 continue;
             }
-            let eye = eye.unwrap_or_else(|| w.eye().map_or(position, |e| e.position));
+            // A steady view: the eye at the rest pose, where the Player really is (the engine's own, [`GhostOptions::steady_eye`]),
+            // lowered with its pose and eased between poses as its body is.
+            let pose = self
+                .hooks
+                .inputs
+                .get(&index)
+                .map_or(BodyPose::Stand, |i| i.pose);
+            let sequence = pose.action_prefix().map(|n| format!("{n}_root"));
+            let rest = self
+                .options
+                .steady_eye
+                .then(|| {
+                    self.frames
+                        .owner_held_nodes(
+                            w,
+                            assets,
+                            index,
+                            &[b"eye"],
+                            sequence.as_deref().map(str::as_bytes),
+                        )
+                        .and_then(|n| n.into_iter().next().flatten())
+                        .map(|m| m.column(3))
+                })
+                .flatten()
+                .map(|target| self.eye_pose.step(pose, target, yaw, dt));
+            let fallback = || w.eye().map_or(position, |e| e.position);
+            let drawn_eye = eye.unwrap_or_else(fallback);
+            let eye = match (rest, eye) {
+                (Some(r), Some(d)) if self.options.eye_sway => [d[0], d[1], r[2]],
+                (Some(r), _) => r,
+                (None, _) => drawn_eye,
+            };
             self.own = Some(OwnView {
                 ghost: index,
                 position,
                 yaw,
                 pitch,
                 eye,
+                drawn_eye,
             });
             if world.hide_control {
                 world.records.view = Some(Eye {
@@ -1144,9 +1419,19 @@ impl<S: GhostStyle> GhostScene<S> {
                 let (Some(start), Some(initial)) = (ghost.position, p.initial.as_ref()) else {
                     continue;
                 };
-                let velocity = initial.velocity.map_or([0.0; 3], |v| {
-                    v.value(torque_ghosts::projectile::VELOCITY_NORMAL_BITS)
-                });
+                // Its flight as its first update sends it whole: the bounce block (raw floats, in every first update: TGE's
+                // `packUpdate` of all bits) over the initial block's 10-bit direction and centimeter start, which put the line
+                // up to 0.18 degrees and a centimeter off the server's (decimeters at the far wall; a graze or a miss at a
+                // corner).
+                let (start, velocity) = match p.bounce {
+                    Some((at, v)) => (at.map(|c| c.get()), v.map(|c| c.get())),
+                    None => (
+                        start,
+                        initial.velocity.map_or([0.0; 3], |v| {
+                            v.value(torque_ghosts::projectile::VELOCITY_NORMAL_BITS)
+                        }),
+                    ),
+                };
                 // Drawn from its source's muzzle as the frame draws it.
                 let muzzle = initial.source.as_ref().and_then(|s| {
                     self.frames
@@ -1164,6 +1449,7 @@ impl<S: GhostStyle> GhostScene<S> {
                         },
                         trail: None,
                         ribbon: None,
+                        stop: None,
                     },
                 );
                 continue;
@@ -1183,7 +1469,29 @@ impl<S: GhostStyle> GhostScene<S> {
                 }
             }
             let from = self.style.projectile(&bolt.flight).column(3);
-            bolt.flight.age += dt;
+            if !self.options.bolt_stops {
+                bolt.flight.age += dt;
+            } else if bolt.stop.is_none() {
+                let line_from = bolt.flight.position();
+                bolt.flight.age += dt;
+                let line_to = bolt.flight.position();
+                // Its line through the world as the client has it: stopped at the first surface it meets, where the server's
+                // flight (the same line) explodes.
+                let mid = [0, 1, 2].map(|k| 0.5 * (line_from[k] + line_to[k]));
+                let reach = 0.5
+                    * (0..3)
+                        .map(|k| (line_to[k] - line_from[k]).powi(2))
+                        .sum::<f32>()
+                        .sqrt()
+                    + 0.05;
+                let mut faces = (input.surfaces)(world, mid, reach);
+                faces.extend(self.interiors.faces_near(mid, reach));
+                if let Some(t) = first_hit(line_from, line_to, &faces) {
+                    let hit = [0, 1, 2].map(|k| line_from[k] + (line_to[k] - line_from[k]) * t);
+                    bolt.flight.age -= dt * (1.0 - t);
+                    bolt.stop = Some(hit);
+                }
+            }
             let (at, v) = (
                 self.style.projectile(&bolt.flight).column(3),
                 bolt.flight.velocity,
@@ -1225,6 +1533,7 @@ impl<S: GhostStyle> GhostScene<S> {
         }
         if let Some(mut r) = bolt.ribbon {
             if let Some(end) = end {
+                r.cut_past(end, bolt.flight.velocity);
                 r.add_point(end);
             }
             r.dead = true;
@@ -1456,6 +1765,7 @@ mod tests {
                     },
                     trail: None,
                     ribbon: None,
+                    stop: None,
                 },
             );
             scene.burst.insert(g);

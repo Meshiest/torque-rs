@@ -628,9 +628,9 @@ fn a_game_played_alone_binds_no_socket_and_the_player_drives() {
     assert!(game.sun().is_some());
     tab(&mut game);
     assert!(game.first_person());
-    // Back to the menu: the client's own socket is given back.
-    game.key(Key::Escape, true);
-    game.key(Key::Escape, false);
+    // Back to the menu (Esc, then Leave game): the client's own socket is given back.
+    press(&mut game, Key::Escape);
+    press_button(&mut game, "LeaveButton");
     steps(&mut [&mut game], 100);
     assert!(game.server.is_none() && !game.local());
     assert!(errors(&game).is_empty(), "{:?}", errors(&game));
@@ -678,10 +678,11 @@ fn tab_eases_the_camera_between_the_seat_and_behind_and_on_foot_hides_the_figure
     }
     let seat = game.seated_eye_point().unwrap();
     let whole = apart(behind.position, seat);
-    // Some 0.3 s at 60 frames a second, no frame's step more than its eased share of the way.
-    assert!((16..=21).contains(&frames), "{frames} frames");
+    // 95% of the way in a quarter second, the last millimeter some 0.5 s in at 60 frames a second; no frame's step more than
+    // the spring's fastest share of the way.
+    assert!((25..=40).contains(&frames), "{frames} frames");
     assert!(
-        biggest < whole * 2.0 / 18.0 + 0.05,
+        biggest < whole * 0.13 + 0.05,
         "a step of {biggest} over {whole}"
     );
     assert!(
@@ -696,12 +697,12 @@ fn tab_eases_the_camera_between_the_seat_and_behind_and_on_foot_hides_the_figure
     }
     press(&mut game, Key::Tab);
     let next = drawn(&mut game);
-    assert!(apart(last.position, next.position) < whole * 2.0 / 18.0 + 0.05);
-    for _ in 0..30 {
+    assert!(apart(last.position, next.position) < whole * 0.13 + 0.05);
+    for _ in 0..40 {
         drawn(&mut game);
     }
     assert!(!game.camera_blending());
-    // On foot: the figure shows until the camera reaches its eyes, and again as soon as it leaves them.
+    // On foot: the figure shows until the camera is close to its eyes, and again once it is out of the head.
     press(&mut game, Key::E);
     for _ in 0..60 {
         drawn(&mut game);
@@ -709,16 +710,35 @@ fn tab_eases_the_camera_between_the_seat_and_behind_and_on_foot_hides_the_figure
     assert!(!game.seated() && game.first_person());
     let hidden = |g: &VehicleDemo| g.with_world(|w| w.hide_control).unwrap();
     assert!(hidden(&game));
+    // Out: shown once the camera is out of the head, early in the move.
+    let shown_within = |game: &mut VehicleDemo| {
+        for _ in 0..12 {
+            drawn(game);
+            if !hidden(game) {
+                return game.camera_blending();
+            }
+        }
+        false
+    };
     press(&mut game, Key::Tab);
-    drawn(&mut game);
-    assert!(!hidden(&game) && game.camera_blending());
+    assert!(shown_within(&mut game));
     for _ in 0..30 {
         drawn(&mut game);
+    }
+    // In, and out again before it got there: shown all the while.
+    press(&mut game, Key::Tab);
+    for _ in 0..4 {
+        drawn(&mut game);
+        assert!(!hidden(&game) && game.camera_blending());
     }
     press(&mut game, Key::Tab);
     drawn(&mut game);
     assert!(!hidden(&game) && game.camera_blending());
-    for _ in 0..30 {
+    for _ in 0..40 {
+        drawn(&mut game);
+    }
+    press(&mut game, Key::Tab);
+    for _ in 0..40 {
         drawn(&mut game);
     }
     assert!(hidden(&game));
@@ -887,13 +907,36 @@ fn the_mouse_tilts_the_seated_view_up_and_down_for_driver_and_passenger() {
 }
 
 /// The newest tracks and dust of `buggy` on `game` against its wheels as `game` draws them this frame: the farthest along
-/// its way of each strip's head and the newest dust's spawn, each the least distance from a contact (along the way and across
-/// it within a tire's width). None while it shows neither.
+/// its way of each strip's head and the newest dust's spawn, each the least distance along the way from the bottom of a tire
+/// as the frame draws it, across it within a tire's width. None while it shows neither.
 fn under_wheels(game: &VehicleDemo, buggy: u32, dir: [f32; 2]) -> Option<(f32, f32)> {
-    let contacts = game.wheel_contacts_of(buggy);
-    if contacts.is_empty() {
+    use torque_example_assets::buggy::{HUB_FRONT, HUB_REAR, HUB_X, HUB_Z, TIRE_RADIUS};
+    // `BuggySpring`'s length (server.cs).
+    const SPRING_LENGTH: f32 = 0.42;
+    if game.wheel_contacts_of(buggy).is_empty() {
         return None;
     }
+    let (pose, extensions) = game
+        .with_world(|w| {
+            let look = w.vehicle_look.get(&buggy)?;
+            Some((
+                *w.vehicle_render.get(&buggy)?,
+                look.wheels.iter().map(|w| w.extension).collect::<Vec<_>>(),
+            ))
+        })
+        .flatten()?;
+    let (m, _) = torque_render_scene::mounts::pose_matrix(&pose, None)?;
+    // The bottom of each tire as the frame draws it: its hub on the buggy, down the spring and the tire's radius.
+    let contacts: Vec<[f32; 3]> = [
+        (-HUB_X, HUB_FRONT),
+        (HUB_X, HUB_FRONT),
+        (-HUB_X, HUB_REAR),
+        (HUB_X, HUB_REAR),
+    ]
+    .into_iter()
+    .zip(extensions)
+    .map(|((x, y), e)| m.mul_p([x, y, HUB_Z - SPRING_LENGTH * e - TIRE_RADIUS]))
+    .collect();
     let along = |p: [f32; 3]| p[0] * dir[0] + p[1] * dir[1];
     let across = |p: [f32; 3]| p[1] * dir[0] - p[0] * dir[1];
     let mut head = 0.0f32;
@@ -915,9 +958,11 @@ fn under_wheels(game: &VehicleDemo, buggy: u32, dir: [f32; 2]) -> Option<(f32, f
         .iter()
         .filter(|(_, age)| *age < 16)
         .map(|(p, _)| {
+            // Along the way (the dust leaves the tire across it, the emitter's offset out to the side).
             contacts
                 .iter()
-                .map(|c| (p[0] - c[0]).hypot(p[1] - c[1]))
+                .filter(|c| (across(**c) - across(*p)).abs() < 0.45)
+                .map(|c| (along(*c) - along(*p)).abs())
                 .fold(f32::MAX, f32::min)
         })
         .fold(0.0f32, f32::max);
@@ -949,12 +994,13 @@ fn at_speed_the_tracks_and_dust_start_under_the_wheels_for_the_driver_and_for_an
             .enumerate()
         {
             if let Some((head, dust)) = under_wheels(g, ghost, dir) {
+                // A tick's travel at this speed is over 0.6: the head and the dust start under the tire drawn this frame.
                 assert!(
-                    head < 0.15,
+                    head < 0.08,
                     "{who}: a track head {head} from its wheel at {speed} m/s"
                 );
                 assert!(
-                    dust < 0.15,
+                    dust < 0.08,
                     "{who}: new dust {dust} from the wheels at {speed} m/s"
                 );
                 checked[k] += 1;
@@ -1712,4 +1758,426 @@ fn the_map_places_every_square_of_the_forest_once() {
     for name in squares {
         assert!(files.kit.read(&format!("kit/{name}")).is_some(), "{name}");
     }
+}
+
+/// `ms` of frames of one client (its clock, then its scene), and the eye of the last.
+fn frames_eye(g: &mut VehicleDemo, ms: u32) -> torque_render_scene::source::Eye {
+    let mut eye = None;
+    for _ in 0..ms / 16 {
+        g.step(16);
+        g.update_scene(0.016);
+        eye = Some(g.drawn_eye(0.016));
+    }
+    eye.expect("a frame")
+}
+
+/// The difference of two yaws, the short way round.
+fn yaw_apart(a: f32, b: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let d = a - b;
+    d - tau * (d / tau).round()
+}
+
+#[test]
+fn the_seated_look_stops_at_its_edge_and_turns_back_at_once_and_tab_brings_it_into_range() {
+    use torque_example_vehicle_demo::client::{HEAD_TURN, MOUSE_PITCH, MOUSE_YAW};
+    let mut a = host();
+    get_in(&mut [&mut a], 0);
+    assert!(a.driving());
+    // At the eyes: the mouse pushed 2 radians past the head's turn, then back a tenth of a radian.
+    a.set_first_person(true);
+    let rest = frames_eye(&mut a, 200).yaw;
+    a.host.mouse_motion((HEAD_TURN + 2.0) / MOUSE_YAW, 0.0);
+    let edge = frames_eye(&mut a, 200).yaw;
+    assert!((a.number("$Drive::OrbitYaw") - HEAD_TURN).abs() < 1e-4);
+    assert!(
+        (yaw_apart(edge, rest).abs() - HEAD_TURN).abs() < 0.02,
+        "{rest} {edge}"
+    );
+    a.host.mouse_motion(-0.1 / MOUSE_YAW, 0.0);
+    let back = frames_eye(&mut a, 32).yaw;
+    assert!(
+        (yaw_apart(edge, back).abs() - 0.1).abs() < 0.01,
+        "the view turned back {} of 0.1",
+        yaw_apart(edge, back)
+    );
+    // The same for the tilt, both ways.
+    for dir in [1.0f32, -1.0] {
+        a.host.mouse_motion(0.0, dir * 3.0 / MOUSE_PITCH);
+        let tilted = frames_eye(&mut a, 100).pitch;
+        a.host.mouse_motion(0.0, -dir * 0.1 / MOUSE_PITCH);
+        let eased = frames_eye(&mut a, 32).pitch;
+        assert!(
+            ((tilted - eased).abs() - 0.1).abs() < 0.02,
+            "tilt {dir}: {tilted} then {eased}"
+        );
+    }
+    // Behind the buggy, looking back (a half turn and more); Tab: the head turned as far as it goes, and the mouse moves it
+    // at once.
+    a.set_first_person(false);
+    a.set_global("$Drive::OrbitPitch", "0");
+    frames_eye(&mut a, 100);
+    a.host
+        .mouse_motion((std::f32::consts::PI + 7.0) / MOUSE_YAW, 0.0);
+    frames_eye(&mut a, 100);
+    let behind = a.number("$Drive::OrbitYaw");
+    assert!(behind.abs() <= std::f32::consts::PI + 1e-4, "{behind}");
+    a.key(Key::Tab, true);
+    a.key(Key::Tab, false);
+    let at_eyes = frames_eye(&mut a, 600).yaw;
+    let yaw = a.number("$Drive::OrbitYaw");
+    assert!(yaw.abs() <= HEAD_TURN + 1e-4, "{yaw}");
+    a.host.mouse_motion(-yaw.signum() * 0.1 / MOUSE_YAW, 0.0);
+    let moved = frames_eye(&mut a, 32).yaw;
+    assert!(
+        (yaw_apart(at_eyes, moved).abs() - 0.1).abs() < 0.01,
+        "after Tab the view turned {} of 0.1",
+        yaw_apart(at_eyes, moved)
+    );
+    // And back behind the buggy: the pitch within the camera's range there.
+    a.host.mouse_motion(0.0, -3.0 / MOUSE_PITCH);
+    frames_eye(&mut a, 100);
+    a.key(Key::Tab, true);
+    a.key(Key::Tab, false);
+    frames_eye(&mut a, 100);
+    let [_, (low, high)] = a.look_range();
+    let pitch = a.number("$Drive::OrbitPitch");
+    assert!((low..=high).contains(&pitch), "{pitch} in {low}..{high}");
+}
+
+/// A click on the GUI control `name` (its middle), the canvas drawn first so its place is known.
+fn press_button(game: &mut VehicleDemo, name: &str) {
+    game.host.draw_frame();
+    let [x, y, w, h] = game.control_rect(name).expect(name);
+    let at = (x + w / 2, y + h / 2);
+    game.host.mouse_move(at);
+    game.host.mouse_button(MouseButton::Left, true, at);
+    game.host.mouse_button(MouseButton::Left, false, at);
+}
+
+#[test]
+fn escape_opens_the_pause_menu_at_the_wheel_and_resume_or_escape_gives_the_keys_and_mouse_back() {
+    let mut a = host();
+    get_in(&mut [&mut a], 0);
+    assert!(a.driving());
+    a.host.draw_frame();
+    assert!(a.host.wants_mouse(), "the view holds the mouse");
+    for close in ["ResumeButton", "Escape"] {
+        press(&mut a, Key::Escape);
+        steps(&mut [&mut a], 32);
+        a.host.draw_frame();
+        assert_eq!(a.global("$Client::Paused"), "1", "Esc pauses");
+        assert!(!a.host.wants_mouse(), "the mouse is free over the menu");
+        assert!(a.host.system_cursor(), "the cursor is on");
+        // The keys are off the buggy: W does not drive, the mouse turns nothing.
+        a.key(Key::W, true);
+        assert_eq!(
+            a.global("$Drive::Throttle"),
+            "0",
+            "W does not reach the wheel"
+        );
+        a.key(Key::W, false);
+        let yaw = a.global("$Drive::OrbitYaw");
+        a.host.mouse_motion(50.0, 0.0);
+        assert_eq!(a.global("$Drive::OrbitYaw"), yaw);
+        if close == "Escape" {
+            press(&mut a, Key::Escape);
+        } else {
+            press_button(&mut a, close);
+        }
+        steps(&mut [&mut a], 32);
+        a.host.draw_frame();
+        assert_eq!(a.global("$Client::Paused"), "0", "{close} goes back");
+        assert!(
+            a.host.wants_mouse(),
+            "{close}: the view holds the mouse again"
+        );
+        assert!(a.driving(), "still at the wheel");
+        a.key(Key::W, true);
+        assert_eq!(a.global("$Drive::Throttle"), "1", "{close}: W drives again");
+        a.key(Key::W, false);
+    }
+    // Leave game: the menu, the server stopped.
+    press(&mut a, Key::Escape);
+    press_button(&mut a, "LeaveButton");
+    steps(&mut [&mut a], 100);
+    assert_eq!(a.global("$Client::Paused"), "0");
+    assert!(!a.in_world() && a.server.is_none());
+    assert_eq!(
+        a.call("eval", &["return Canvas.getContent().getName();"])
+            .unwrap(),
+        "MenuGui"
+    );
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}
+
+/// The front of the strip wheel `wheel` of `buggy` lays on `game`: its head's end, or its newest segment's when it has no head.
+fn track_front(game: &VehicleDemo, buggy: u32, wheel: usize) -> Option<[f32; 3]> {
+    let t = game.scene().tracks()?;
+    t.heads()
+        .find(|(k, _)| **k == (buggy, wheel))
+        .map(|(_, s)| s.line[1])
+        .or_else(|| {
+            t.segments()
+                .filter(|s| s.wheel == (buggy, wheel))
+                .last()
+                .map(|s| s.line[1])
+        })
+}
+
+#[test]
+fn at_speed_the_track_runs_on_under_the_wheel_evenly_at_144_and_59_frames_a_second() {
+    for frame_ms in [7u32, 17] {
+        let mut a = host();
+        let mut b = join(&mut a);
+        get_in(&mut [&mut a, &mut b], 0);
+        let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+        a.key(Key::W, true);
+        // Each client's last front and how far it went the frame before; the most a frame's move differed from the last's, and
+        // how many frames differed by more than a few mm (the springs' own motion over the hill's bumps, which grows with the
+        // frame's time squared: 3 mm at 144 frames a second, 6 mm at 59).
+        let scale = (frame_ms as f32 / 7.0).powi(2).min(2.0);
+        let mut last: [Option<([f32; 3], Option<f32>)>; 2] = [None, None];
+        let mut worst = [0.0f32; 2];
+        let mut over = [0; 2];
+        let mut checked = [0; 2];
+        for _ in 0..(6000 / frame_ms) {
+            for g in [&mut a, &mut b] {
+                g.step(frame_ms);
+                g.update_scene(frame_ms as f32 / 1000.0);
+            }
+            let v = server(&a).buggy_velocity().unwrap();
+            let speed = horizontal(v);
+            if speed < 19.0 {
+                continue;
+            }
+            let dir = [v[0] / speed, v[1] / speed];
+            let along = |p: [f32; 3]| p[0] * dir[0] + p[1] * dir[1];
+            for (k, (g, ghost)) in [(&a, ga), (&b, gb)].into_iter().enumerate() {
+                // A wheel off the ground (a bump at speed) ends its strip: the measure starts again once it is down.
+                let down = g
+                    .with_world(|w| w.vehicle_look.get(&ghost)?.wheels.get(2).map(|w| w.contact))
+                    .flatten()
+                    .unwrap_or(false);
+                let Some(front) = track_front(g, ghost, 2).filter(|_| down) else {
+                    last[k] = None;
+                    continue;
+                };
+                if let Some((before, moved)) = last[k] {
+                    let m = along(front) - along(before);
+                    assert!(
+                        m >= 0.0,
+                        "{frame_ms} ms, client {k}: the track's front went back {m}"
+                    );
+                    if let Some(prev) = moved {
+                        worst[k] = worst[k].max((m - prev).abs());
+                        over[k] += usize::from((m - prev).abs() > 0.003 * scale);
+                        checked[k] += 1;
+                    }
+                    last[k] = Some((front, Some(m)));
+                } else {
+                    last[k] = Some((front, None));
+                }
+            }
+        }
+        a.key(Key::W, false);
+        assert!(checked[0] > 50 && checked[1] > 50, "{checked:?}");
+        // A frame drawn at the tick's springs, or a tick's place between frames off its time, moved it by a share of a frame's
+        // travel (13 cm at 144 frames a second, 4 cm at 59).
+        let most = 0.01 * scale;
+        assert!(
+            worst[0] < most && worst[1] < most,
+            "{frame_ms} ms: a frame's move of the track's front changed by {worst:?}"
+        );
+        assert!(
+            over[0] * 20 <= checked[0] && over[1] * 20 <= checked[1],
+            "{frame_ms} ms: {over:?} of {checked:?} frames changed by more than {} mm",
+            3.0 * scale
+        );
+    }
+}
+
+#[test]
+fn at_speed_another_players_buggy_is_drawn_where_the_server_has_it() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+    a.key(Key::W, true);
+    // How far behind the server's buggy each client draws it, along its way (m): the driver's (predicted) and the other's.
+    let mut lags = [Vec::new(), Vec::new()];
+    for _ in 0..(7000 / 16) {
+        for g in [&mut a, &mut b] {
+            g.step(16);
+            g.update_scene(0.016);
+        }
+        let v = server(&a).buggy_velocity().unwrap();
+        let speed = horizontal(v);
+        if speed < 15.0 {
+            continue;
+        }
+        let dir = [v[0] / speed, v[1] / speed];
+        let truth = server(&a).buggy_position().unwrap();
+        for (k, (g, ghost)) in [(&a, ga), (&b, gb)].into_iter().enumerate() {
+            let drawn = g
+                .with_world(|w| match w.vehicle_render.get(&ghost)? {
+                    torque::ghost_world::world::Pose::Quat { position, .. } => Some(*position),
+                    _ => None,
+                })
+                .flatten();
+            if let Some(p) = drawn {
+                lags[k].push((truth[0] - p[0]) * dir[0] + (truth[1] - p[1]) * dir[1]);
+            }
+        }
+    }
+    a.key(Key::W, false);
+    for (k, l) in lags.iter().enumerate() {
+        assert!(l.len() > 100, "client {k}: {} frames", l.len());
+        let mean = l.iter().sum::<f32>() / l.len() as f32;
+        let most = l.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        // The other's was drawn its update's age and a warp behind: 1.7 m on average at 15 to 20 m/s, 2 m at most.
+        assert!(
+            mean.abs() < 0.4 && most < 0.8,
+            "client {k}: drawn {mean} m behind on average, {most} m at most"
+        );
+    }
+}
+
+/// Where `game` draws vehicle ghost `index` this frame, its rotation too.
+fn drawn_pose(game: &VehicleDemo, index: u32) -> Option<([f32; 3], [f32; 4])> {
+    game.with_world(|w| match w.vehicle_render.get(&index)? {
+        torque::ghost_world::world::Pose::Quat { position, rotation } => {
+            Some((*position, *rotation))
+        }
+        _ => None,
+    })
+    .flatten()
+}
+
+#[test]
+fn hostile_vehicle_updates_never_draw_another_players_buggy_at_nan_and_the_next_update_heals_it() {
+    use torque::client::predict::ClientCollision;
+    use torque::client::records::EngineRecord as _;
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let gb = b.buggy_ghost().unwrap();
+    a.key(Key::W, true);
+    frames_both(&mut a, &mut b, 1500);
+    type Hostile = fn(&mut torque::client::records::VehicleUpdate, &mut [f32; 3]);
+    let cases: [(&str, Hostile); 6] = [
+        ("a far position", |_, p| *p = [1e38; 3]),
+        ("an infinite velocity", |r, _| {
+            r.pose.as_mut().unwrap().linear = [f32::INFINITY, 0.0, 0.0]
+        }),
+        ("a NaN velocity", |r, _| {
+            r.pose.as_mut().unwrap().linear = [f32::NAN; 3]
+        }),
+        ("a huge momentum", |r, _| {
+            r.pose.as_mut().unwrap().linear = [3e38; 3]
+        }),
+        ("a huge spin", |r, _| {
+            r.pose.as_mut().unwrap().angular = [3e38; 3]
+        }),
+        ("a rotation of no length", |r, _| {
+            r.pose.as_mut().unwrap().rotation = [0.0; 4]
+        }),
+    ];
+    for (name, hostile) in cases {
+        // The newest real update of the buggy, made hostile, as the other client's ghost takes it.
+        let (mut rec, mut at) = b
+            .with_world(|w| {
+                w.vehicle_updates
+                    .iter()
+                    .rev()
+                    .filter(|u| u.index == gb)
+                    .find_map(|u| Some((u.record.vehicle()?, u.position?)))
+            })
+            .flatten()
+            .expect("an update of the buggy");
+        assert!(rec.pose.is_some(), "{name}");
+        hostile(&mut rec, &mut at);
+        {
+            let mut st = b.client.host.client.borrow_mut();
+            let c = st.conn.conn.as_mut().expect("the connection");
+            let g = c.predict.ghost_vehicles.get_mut(&gb).expect("the ghost");
+            g.unpack(&rec, Some(at), true, &mut ClientCollision::empty());
+        }
+        for _ in 0..30 {
+            frames_both(&mut a, &mut b, 16);
+            let (p, q) = drawn_pose(&b, gb).expect(name);
+            assert!(
+                p.iter().chain(&q).all(|c| c.is_finite()),
+                "{name}: drawn at {p:?} {q:?}"
+            );
+        }
+        // The server's next updates bring it back to where the buggy is.
+        frames_both(&mut a, &mut b, 1500);
+        let (p, _) = drawn_pose(&b, gb).unwrap();
+        let truth = server(&a).buggy_position().unwrap();
+        assert!(
+            apart(p, truth) < 3.0,
+            "{name}: drawn at {p:?}, the buggy at {truth:?}"
+        );
+    }
+    a.key(Key::W, false);
+}
+
+#[test]
+fn a_warp_or_first_sight_update_draws_another_players_buggy_at_its_pose_with_no_offset_left() {
+    use torque::client::predict::ClientCollision;
+    use torque::client::records::EngineRecord as _;
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let gb = b.buggy_ghost().unwrap();
+    a.key(Key::W, true);
+    frames_both(&mut a, &mut b, 1500);
+    let newest = |b: &VehicleDemo| {
+        b.with_world(|w| {
+            w.vehicle_updates
+                .iter()
+                .rev()
+                .filter(|u| u.index == gb)
+                .find_map(|u| Some((u.record.vehicle()?, u.position?)))
+        })
+        .flatten()
+        .expect("an update of the buggy")
+    };
+    for (name, warp, added) in [("a warp", true, true), ("first sight", false, false)] {
+        // An update 5 units aside leaves an offset to ease out; then the warp (or first sight) at the buggy's own pose.
+        let (rec, at) = newest(&b);
+        let aside = [at[0] + 5.0, at[1], at[2]];
+        let unpack = |b: &mut VehicleDemo, rec: &_, at: [f32; 3], added: bool| {
+            let mut st = b.client.host.client.borrow_mut();
+            let c = st.conn.conn.as_mut().expect("the connection");
+            let g = c.predict.ghost_vehicles.get_mut(&gb).expect("the ghost");
+            g.unpack(rec, Some(at), added, &mut ClientCollision::empty());
+        };
+        unpack(&mut b, &rec, aside, true);
+        frames_both(&mut a, &mut b, 32);
+        let (mut rec, at) = newest(&b);
+        rec.pose.as_mut().unwrap().warp = warp;
+        // One tick of its own straight after (no other update between).
+        let mut st = b.client.host.client.borrow_mut();
+        let c = st.conn.conn.as_mut().unwrap();
+        let g = c.predict.ghost_vehicles.get_mut(&gb).unwrap();
+        g.unpack(&rec, Some(at), added, &mut ClientCollision::empty());
+        g.tick(&mut ClientCollision::empty(), 0);
+        // Its drawn pose at its tick is its state run on by its lead, nothing more.
+        let s = &g.body.v.s;
+        let want: [f32; 3] =
+            std::array::from_fn(|i| s.rigid.lin_pos[i] + s.rigid.lin_vel[i] * g.warp.lead);
+        assert!(
+            apart(s.delta_pos, want) < 1e-3,
+            "{name}: drawn at {:?}, its state at {want:?}",
+            s.delta_pos
+        );
+        let turn = (0..4)
+            .map(|i| s.delta_rot[1][i] * s.rigid.ang_pos[i])
+            .sum::<f32>()
+            .abs();
+        assert!(turn > 1.0 - 1e-5, "{name}: turned from its state ({turn})");
+    }
+    a.key(Key::W, false);
 }

@@ -18,7 +18,17 @@
 //! **A frame** ([`ArenaGame::frame`]): the client's own figure where the client predicts it, between its last two ticks
 //! (`Player::interpolateTick`) and turned ahead by the mouse's waiting turn ([`torque_example_common::prediction`]), the other figures where the
 //! client runs them between their records, the ghosts as the world view's objects ([`crate::scene`]), the canvas drawn, and
-//! the eye at the own figure's eye.
+//! the eye at the own figure's eye, or behind it (`Tab`).
+//!
+//! **The camera** ([`ArenaGame::drawn_eye`]): at the own figure's eye, or with `Tab` ([`ArenaGame::third_person`]) behind it,
+//! [`CAMERA_DISTANCE`] back along its look, [`CAMERA_SIDE`] to its right and [`CAMERA_LIFT`] up, looking the same way (the
+//! crosshair stays on the shots' line far off), on a boom from the eye ([`CameraBoom`]) kept [`CAMERA_CLEARANCE`] in front of
+//! the first cube or interior wall between (their boxes; an interior's walls in the client's container): pulled in fast when
+//! one comes between, let out slowly when it goes. Backed against a wall, with less than [`CAMERA_NEAREST`] left behind the
+//! eye, the view is drawn as the first person's (the figure hidden, the pistol in view) until there is room again.
+//! `Tab` moves the camera from one to the other ([`CameraBlend`], each eye of the move kept in front of walls the same way);
+//! the figure is hidden while the camera is close to its eyes ([`CLOSE`]), on the way in and on the way out, and its pistol is
+//! drawn in its hand while it is seen.
 //!
 //! Credit: the frame between the last two ticks follows `Player::interpolateTick` and the client's `ProcessList` in Torque3D's
 //! MIT-licensed `T3D/player.cpp` and `T3D/gameBase/processList.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
@@ -28,6 +38,8 @@ use std::net::Ipv4Addr;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
+use torque::app::camera_blend::{CLOSE, CameraBlend};
+use torque::app::camera_boom::CameraBoom;
 use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
@@ -46,6 +58,33 @@ use crate::server::{ArenaServer, DEFAULT_PORT, ServerOptions};
 pub use torque::app::hosting::{NetMode, parse_join_address};
 use torque::app::hosting::{join_address, lan_bind_address, lan_reach, register_join_natives};
 use torque_example_common::prediction::CubeClient;
+
+/// A fresh secret (128 random bits from the operating system, in hex) a hosted game's server and its own client share: the
+/// connection that presents it is the host's.
+#[cfg(not(target_arch = "wasm32"))]
+fn host_key() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| format!("no secure random source for the host key: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// A page joins games and never hosts one, so it has no host key.
+#[cfg(target_arch = "wasm32")]
+fn host_key() -> Result<String, String> {
+    Err("a page cannot host a game".into())
+}
+
+/// The camera behind the figure: how far back along its look, how far above its eye, and the nearest it comes to a wall.
+pub const CAMERA_DISTANCE: f32 = 3.5;
+pub const CAMERA_SIDE: f32 = 0.6;
+pub const CAMERA_LIFT: f32 = 0.45;
+pub const CAMERA_CLEARANCE: f32 = 0.3;
+/// The least room behind the eye the camera behind the figure needs; with less, the view is the first person's.
+pub const CAMERA_NEAREST: f32 = 0.8;
+
+/// What the camera behind the figure keeps clear of in the client's container: the interiors (the cubes by their boxes).
+const CAMERA_MASK: u32 = torque::game::scene::interior::INTERIOR_TYPE_MASK;
 
 /// How a client is made.
 #[derive(Debug, Clone)]
@@ -84,6 +123,16 @@ pub struct ArenaGame {
     sky: Option<(f32, f32)>,
     /// The screen's hurt and hit marks.
     pub marks: ScreenMarks,
+    /// The camera's ease between the eye and behind the figure, and the mode it last eased to (behind).
+    blend: CameraBlend,
+    camera_mode: Option<bool>,
+    /// The camera behind the figure had less than [`CAMERA_NEAREST`] of room last frame.
+    cramped: bool,
+    /// The camera behind the figure: its boom, and where the boom put it this frame.
+    boom: CameraBoom,
+    behind: Option<[f32; 3]>,
+    /// Where the camera was drawn last frame.
+    drawn_at: Option<[f32; 3]>,
 }
 
 impl Deref for ArenaGame {
@@ -150,6 +199,12 @@ impl ArenaGame {
             scene: ArenaScene::new(),
             sky: None,
             marks: ScreenMarks::default(),
+            blend: CameraBlend::default(),
+            camera_mode: None,
+            cramped: false,
+            boom: CameraBoom::new(0.0, CAMERA_CLEARANCE),
+            behind: None,
+            drawn_at: None,
         })
     }
 
@@ -184,7 +239,7 @@ impl ArenaGame {
         } else {
             self.lan_bind_address()
         };
-        let server = ArenaServer::start(
+        let mut server = ArenaServer::start(
             &self.files,
             &ServerOptions {
                 address,
@@ -194,12 +249,16 @@ impl ArenaGame {
                 public,
             },
         )?;
+        // The secret that marks this process's own connection as the host's: only the server and the connection that
+        // follows ever see it.
+        let key = host_key()?;
+        server.vm_mut().set_global("$Server::HostKey", &key);
         let bound = server.address().ok_or("the server has no socket")?;
         let join = join_address(bound).to_string();
         self.client.start_hosting(server);
         self.set_host_info(public, bound.port());
         self.vm_mut()
-            .invoke(None, b"connectTo", &[join.into_bytes()])
+            .invoke(None, b"connectTo", &[join.into_bytes(), key.into_bytes()])
             .map_err(|e| format!("connectTo: {e}"))?;
         Ok(())
     }
@@ -269,6 +328,10 @@ impl ArenaGame {
     pub fn stop_hosting(&mut self) {
         self.client.stop_hosting();
         self.scene.clear();
+        self.blend.reset();
+        self.camera_mode = None;
+        self.boom.reset();
+        self.behind = None;
     }
 
     /// `ms` of the clock (see the module docs).
@@ -389,17 +452,151 @@ impl ArenaGame {
         let scale = self.scene.turn_scale();
         self.set_global("$Arena::TurnScale", &scale.to_string());
         self.client.predict_frame();
+        let behind = self.in_game() && self.third_person();
+        if self
+            .camera_mode
+            .replace(behind)
+            .is_some_and(|m| m != behind)
+        {
+            self.blend.switch();
+        }
+        self.blend.advance(dt);
+        // The figure is seen (and holds its pistol in its hand) unless the camera is close to its eyes.
+        let eyes = self.eye().position;
+        let seen = match self.drawn_at {
+            Some(p) => (0..3).map(|k| (p[k] - eyes[k]).powi(2)).sum::<f32>() >= CLOSE * CLOSE,
+            None => behind,
+        };
         let mut st = self.client.host.client.borrow_mut();
         match st.conn.conn.as_mut() {
             Some(conn) => {
                 let conn = &mut **conn;
+                if seen {
+                    conn.world.hide_control = false;
+                }
                 let world: &mut World = &mut conn.world;
                 self.scene
                     .update(&self.files.kit, world, &conn.predict.ghost_players, dt);
             }
             None => self.scene.clear(),
         }
+        drop(st);
+        self.place_behind(dt);
         dt
+    }
+
+    /// The boom behind the figure moved on `dt` seconds (module docs); none while the camera is not behind it.
+    fn place_behind(&mut self, dt: f32) {
+        if !(self.in_game() && self.third_person() && self.scene.own().is_some()) {
+            self.boom.reset();
+            self.behind = None;
+            return;
+        }
+        let (at, back) = self.behind_line();
+        let d = [0, 1, 2].map(|k| back[k] - at[k]);
+        let full = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let mut boom = self.boom;
+        let point = boom.follow(at, d.map(|x| x / full), full, dt, |a, b| {
+            self.sight_share(a, b)
+        });
+        self.boom = boom;
+        self.behind = Some(point);
+    }
+
+    /// The figure's eye and where the camera behind it would be with nothing in the way (module docs).
+    fn behind_line(&self) -> ([f32; 3], [f32; 3]) {
+        let eye = self.eye();
+        let (sp, cp) = eye.pitch.sin_cos();
+        let (sy, cy) = eye.yaw.sin_cos();
+        let at = eye.position;
+        let back = [
+            at[0] - sy * cp * CAMERA_DISTANCE + cy * CAMERA_SIDE,
+            at[1] - cy * cp * CAMERA_DISTANCE - sy * CAMERA_SIDE,
+            at[2] + sp * CAMERA_DISTANCE + CAMERA_LIFT,
+        ];
+        (at, back)
+    }
+
+    /// Whether the camera is behind the figure (`Tab`: `$Arena::ThirdPerson`).
+    pub fn third_person(&self) -> bool {
+        self.flag("$Arena::ThirdPerson")
+    }
+
+    /// Whether the camera is easing between the eye and behind the figure.
+    pub fn camera_blending(&self) -> bool {
+        !self.blend.arrived()
+    }
+
+    /// The eye of the mode this frame: the figure's eye, or behind it (module docs).
+    pub fn mode_eye(&self) -> Eye {
+        let eye = self.eye();
+        if !(self.in_game() && self.third_person() && self.scene.own().is_some()) {
+            return eye;
+        }
+        let position = match self.behind {
+            Some(p) => p,
+            None => {
+                let (at, back) = self.behind_line();
+                self.kept_clear(at, back)
+            }
+        };
+        Eye { position, ..eye }
+    }
+
+    /// The point `to`, brought [`CAMERA_CLEARANCE`] in front of the first cube or interior wall between `from` (the figure's
+    /// eye) and it.
+    fn kept_clear(&self, from: [f32; 3], to: [f32; 3]) -> [f32; 3] {
+        let d = [0, 1, 2].map(|k| to[k] - from[k]);
+        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let Some(share) = self.sight_share(from, to) else {
+            return to;
+        };
+        let reach = (share * length - CAMERA_CLEARANCE).max(0.0);
+        [0, 1, 2].map(|k| from[k] + d[k] / length * reach)
+    }
+
+    /// The share of the way from `from` to `to` at which the line first meets a cube's box or an interior wall, if it does.
+    fn sight_share(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+        let d = [0, 1, 2].map(|k| to[k] - from[k]);
+        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if length < 1e-4 {
+            return None;
+        }
+        let dir = d.map(|v| v / length);
+        let mut st = self.client.host.client.borrow_mut();
+        let conn = &mut **st.conn.conn.as_mut()?;
+        let mut first = crate::scene::cube_boxes(&conn.world.records)
+            .into_iter()
+            .filter_map(|(lo, hi)| torque_example_common::ray_box(from, dir, lo, hi))
+            .fold(length, f32::min)
+            / length;
+        if let Some(hit) = conn.predict.cast_ray(&conn.world, from, to, CAMERA_MASK) {
+            first = first.min(hit.t);
+        }
+        (first < 1.0).then_some(first)
+    }
+
+    /// The eye drawn this frame: [`ArenaGame::mode_eye`], eased from the last mode's after a switch.
+    pub fn drawn_eye(&mut self) -> Eye {
+        let target = self.mode_eye();
+        let from = self.eye().position;
+        let mut blend = self.blend;
+        let eye = blend.eye(target, |p| self.kept_clear(from, p));
+        self.blend = blend;
+        let room = (0..3)
+            .map(|k| (eye.position[k] - from[k]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        // A little more room to leave the first person than to take it, so a step at the edge does not flicker.
+        let least = if self.cramped {
+            CAMERA_NEAREST + 0.2
+        } else {
+            CAMERA_NEAREST
+        };
+        self.cramped = self.third_person() && blend.arrived() && room < least;
+        let eye = if self.cramped { self.eye() } else { eye };
+        self.drawn_at = Some(eye.position);
+        eye
     }
 
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
@@ -420,7 +617,7 @@ impl ArenaGame {
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
         let mut draws = host.draw_frame();
-        let eye = self.eye();
+        let eye = self.drawn_eye();
         if let Some(world) = draws.worlds.first() {
             let marks = self.marks.batches(world.rect, eye.position, eye.yaw);
             insert_over_world(&mut draws, marks);
