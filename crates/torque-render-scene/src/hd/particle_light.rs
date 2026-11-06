@@ -8,6 +8,8 @@
 
 use std::fmt;
 
+use glam::Vec3;
+
 use crate::hd::{HdDraw, material, oct_encode};
 use crate::{Blend, Draw};
 
@@ -59,18 +61,18 @@ pub fn shape_sprites(hd: &mut HdDraw) -> bool {
         if corners.len() != 4 {
             return false;
         }
-        let center = [0, 1, 2].map(|k| corners.iter().map(|c| c[k]).sum::<f32>() * 0.25);
-        let offset = |p: [f32; 3]| [0, 1, 2].map(|k| p[k] - center[k]);
-        let len = |o: [f32; 3]| (o[0] * o[0] + o[1] * o[1] + o[2] * o[2]).sqrt();
-        let half = corners.iter().map(|&c| len(offset(c))).sum::<f32>() * 0.25;
+        let center =
+            Vec3::from_array([0, 1, 2].map(|k| corners.iter().map(|c| c[k]).sum::<f32>() * 0.25));
+        let offset = |p: [f32; 3]| Vec3::from(p) - center;
+        let half = corners.iter().map(|&c| offset(c).length()).sum::<f32>() * 0.25;
         if !(half > 1e-6 && half.is_finite()) {
             return false;
         }
         for v in quad {
             let o = offset(v.position);
-            let l = len(o).max(1e-6);
+            let l = o.length().max(1e-6);
             let mut v = *v;
-            v.normal = oct_encode(o.map(|x| x / l));
+            v.normal = oct_encode((o / l).to_array());
             v.extra = half.to_bits();
             v.material = (v.material & !material::ZERO_NORMAL) | material::LIT;
             shaped.push(v);

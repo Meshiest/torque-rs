@@ -44,7 +44,9 @@ use ghost_world::tge::TgeClientSet;
 use ghost_world::world::ClientWorld;
 use ghosts::Value;
 
-use crate::math::Mat;
+use glam::Vec3;
+
+use crate::math::{Mat, unit_over};
 use crate::textures::TextureSet;
 use crate::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Vertex};
 
@@ -308,49 +310,20 @@ pub struct Particle {
     fresh: bool,
 }
 
-fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale3(a: [f32; 3], s: f32) -> [f32; 3] {
-    a.map(|x| x * s)
-}
-
-fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
-    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t)
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if l > 1e-6 && l.is_finite() {
-        v.map(|x| x / l)
-    } else {
-        v
-    }
+/// `v` at unit length (as it is when that is 1e-6 or less, or not finite).
+fn unit_dir(v: Vec3) -> Vec3 {
+    unit_over(v, 1e-6).unwrap_or(v)
 }
 
 /// `v` turned by `angle` (radians) about the unit `axis` (an `AngAxisF`'s matrix applied).
-fn rotate(v: [f32; 3], axis: [f32; 3], angle: f32) -> [f32; 3] {
-    let m = Mat::from_axis_angle(axis, angle);
-    m.mul_v(v)
+fn rotate(v: Vec3, axis: Vec3, angle: f32) -> Vec3 {
+    let m = Mat::from_axis_angle(axis.to_array(), angle);
+    m.mul_v(v.to_array()).into()
 }
 
 /// The axis a projectile's trail is emitted along (`Projectile::emitParticles`): against its velocity, up when it has none.
 pub fn trail_axis(vel: [f32; 3]) -> [f32; 3] {
-    let l = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
-    if l > 1e-6 && l.is_finite() {
-        vel.map(|x| -x / l)
-    } else {
-        [0.0, 0.0, 1.0]
-    }
+    unit_over(-Vec3::from(vel), 1e-6).map_or([0.0, 0.0, 1.0], |a| a.to_array())
 }
 
 /// One emitter: its datablocks, its particles and its clock.
@@ -422,10 +395,10 @@ impl Emitter {
 
     fn add_particle(
         &mut self,
-        pos: [f32; 3],
-        axis: [f32; 3],
-        vel: [f32; 3],
-        axisx: [f32; 3],
+        pos: Vec3,
+        axis: Vec3,
+        vel: Vec3,
+        axisx: Vec3,
         rng: &mut Rng,
         live: &mut usize,
     ) -> Option<usize> {
@@ -437,24 +410,23 @@ impl Emitter {
         let theta = (d.theta_max - d.theta_min) * rng.f() + d.theta_min;
         let reference = (self.clock_ms as f32 / 1000.0) * d.phi_ref_vel;
         let phi = reference + rng.f() * d.phi_variance;
-        let mut dir = rotate(axis, normalize(axisx), theta.to_radians());
-        dir = rotate(dir, normalize(axis), phi.to_radians());
+        let mut dir = rotate(axis, unit_dir(axisx), theta.to_radians());
+        dir = rotate(dir, unit_dir(axis), phi.to_radians());
         let which = ((rng.f() * self.particle_data.len() as f32).ceil() as usize)
             .saturating_sub(1)
             .min(self.particle_data.len() - 1);
         let p = &self.particle_data[which];
-        let mut v = scale3(dir, initial);
-        v = add3(v, scale3(vel, p.inherited_vel));
-        let acc = scale3(v, p.constant_accel);
+        let v = dir * initial + vel * p.inherited_vel;
+        let acc = v * p.constant_accel;
         let mut life = p.lifetime_ms;
         if p.lifetime_variance_ms > 0 {
             life += rng.i(-p.lifetime_variance_ms, p.lifetime_variance_ms);
         }
         let spin = p.spin_speed + p.spin_min + rng.f() * (p.spin_max - p.spin_min);
         self.particles.push(Particle {
-            pos: add3(pos, scale3(dir, d.offset)),
-            vel: v,
-            acc,
+            pos: (pos + dir * d.offset).to_array(),
+            vel: v.to_array(),
+            acc: acc.to_array(),
             life_ms: life.max(0),
             age_ms: 0,
             data: which,
@@ -471,12 +443,11 @@ impl Emitter {
     fn step(&self, q: &mut Particle, ms: i32) {
         let p = &self.particle_data[q.data.min(self.particle_data.len() - 1)];
         let dt = ms as f32 / 1000.0;
-        for k in 0..3 {
-            let g = if k == 2 { GRAVITY * p.gravity } else { 0.0 };
-            // Still air: the wind term is 0.
-            q.vel[k] += (q.acc[k] - p.drag * q.vel[k] - g) * dt;
-            q.pos[k] += q.vel[k] * dt;
-        }
+        // Still air: the wind term is 0.
+        let g = Vec3::new(0.0, 0.0, GRAVITY * p.gravity);
+        let vel = Vec3::from(q.vel) + (Vec3::from(q.acc) - Vec3::from(q.vel) * p.drag - g) * dt;
+        q.vel = vel.to_array();
+        q.pos = (Vec3::from(q.pos) + vel * dt).to_array();
         let t = if q.life_ms > 0 {
             q.age_ms as f32 / q.life_ms as f32
         } else {
@@ -525,13 +496,20 @@ impl Emitter {
         if self.data.lifetime_ms > 0 && self.clock_ms > self.data.lifetime_ms {
             return;
         }
-        let axis = normalize(axis);
-        let axisx = if axis[2].abs() >= 0.9 {
-            normalize(cross(axis, self.near_z_cross))
+        let axis = unit_dir(axis.into()).to_array();
+        let axisx = unit_dir(Vec3::from(axis).cross(if axis[2].abs() >= 0.9 {
+            self.near_z_cross.into()
         } else {
-            normalize(cross(axis, [0.0, 0.0, 1.0]))
-        };
+            Vec3::Z
+        }));
         let (start, start_axis, start_vel) = self.last.unwrap_or((end, axis, vel));
+        let along = |t: f32| {
+            (
+                Vec3::from(start).lerp_monotonic(end.into(), t),
+                unit_dir(Vec3::from(start_axis).lerp_monotonic(axis.into(), t)),
+                Vec3::from(start_vel).lerp_monotonic(vel.into(), t),
+            )
+        };
         let ms = ms as i32;
         let mut done = 0i32;
         if self.next_ms > 0 {
@@ -543,15 +521,8 @@ impl Emitter {
             }
             done = self.next_ms;
             self.clock_ms += self.next_ms;
-            let t = done as f32 / ms as f32;
-            if let Some(i) = self.add_particle(
-                lerp3(start, end, t),
-                normalize(lerp3(start_axis, axis, t)),
-                lerp3(start_vel, vel, t),
-                axisx,
-                rng,
-                live,
-            ) {
+            let (at, at_axis, at_vel) = along(done as f32 / ms as f32);
+            if let Some(i) = self.add_particle(at, at_axis, at_vel, axisx, rng, live) {
                 self.run_new(i, ms - done);
             }
             self.next_ms = 0;
@@ -570,15 +541,9 @@ impl Emitter {
             }
             done += step;
             self.clock_ms += step;
-            let t = done as f32 / ms as f32;
-            if let Some(i) = self.add_particle(
-                lerp3(start, end, t),
-                normalize(lerp3(start_axis, axis, t)),
-                lerp3(start_vel, vel, t),
-                axisx,
-                rng,
-                live,
-            ) && !self.data.override_advance
+            let (at, at_axis, at_vel) = along(done as f32 / ms as f32);
+            if let Some(i) = self.add_particle(at, at_axis, at_vel, axisx, rng, live)
+                && !self.data.override_advance
             {
                 self.run_new(i, ms - done);
             }
@@ -631,27 +596,22 @@ impl Emitter {
         rng: &mut Rng,
         live: &mut usize,
     ) {
-        let mut z = normalize(normal);
-        if z == [0.0; 3] || z.iter().any(|v| !v.is_finite()) {
-            z = [0.0, 0.0, 1.0];
+        let mut z = unit_dir(normal.into());
+        if z == Vec3::ZERO || !z.is_finite() {
+            z = Vec3::Z;
         }
-        let y = if z[2].abs() < 0.98 {
-            normalize(cross(z, [0.0, 0.0, 1.0]))
-        } else {
-            normalize(cross(z, [0.0, 1.0, 0.0]))
-        };
-        let x = normalize(cross(z, y));
+        let y = unit_dir(z.cross(if z.z.abs() < 0.98 { Vec3::Z } else { Vec3::Y }));
+        let x = unit_dir(z.cross(y));
         let radius = if radius.is_finite() { radius } else { 0.0 };
         for _ in 0..count.min(MAX_BURST) {
-            let mut pos = scale3(x, radius * (1.0 - 2.0 * rng.f()));
-            pos = add3(pos, scale3(y, radius * (1.0 - 2.0 * rng.f())));
-            pos = add3(pos, scale3(z, radius * rng.f()));
-            let axis = normalize(pos);
-            let axis = if axis == [0.0; 3] { z } else { axis };
-            let at = add3(pos, center);
-            self.add_particle(at, axis, [0.0; 3], z, rng, live);
+            let mut pos = x * (radius * (1.0 - 2.0 * rng.f()));
+            pos += y * (radius * (1.0 - 2.0 * rng.f()));
+            pos += z * (radius * rng.f());
+            let axis = unit_dir(pos);
+            let axis = if axis == Vec3::ZERO { z } else { axis };
+            self.add_particle(pos + Vec3::from(center), axis, Vec3::ZERO, z, rng, live);
         }
-        self.last = Some((center, z, [0.0; 3]));
+        self.last = Some((center, z.to_array(), [0.0; 3]));
     }
 
     /// A frame of `ms` (`ParticleEmitter::advanceTime`): the particles aged, the dead ones removed, the others stepped.
@@ -683,11 +643,8 @@ impl Emitter {
         if n == 0 {
             return None;
         }
-        let mut c = [0.0f32; 3];
-        for q in &self.particles {
-            c = add3(c, q.pos);
-        }
-        Some(scale3(c, 1.0 / n as f32))
+        let c: Vec3 = self.particles.iter().map(|q| Vec3::from(q.pos)).sum();
+        Some((c * (1.0 / n as f32)).to_array())
     }
 
     /// The emitter's particles as one draw (`renderObject`): `right` and `up` the camera's axes.

@@ -34,7 +34,9 @@ use rayon::prelude::*;
 
 use super::Fnv;
 use super::interior::Local;
-use crate::math::Mat;
+use glam::Vec3;
+
+use crate::math::{Mat, unit_or_up};
 use crate::{Sun, Texture};
 
 /// Texels a side of a terrain block's lightmap (TGE's 512: two a square).
@@ -757,25 +759,26 @@ fn tri_hit(t: &[[f32; 3]; 3], o: [f32; 3], d: [f32; 3], far: f32) -> bool {
 
 /// Where the ray meets the triangle (its `t` in (0, `far`)), both faces.
 fn tri_t(t: &[[f32; 3]; 3], o: [f32; 3], d: [f32; 3], far: f32) -> Option<f32> {
-    let e1 = sub(t[1], t[0]);
-    let e2 = sub(t[2], t[0]);
-    let p = cross(d, e2);
-    let det = dot(e1, p);
+    let [a, b, c] = t.map(Vec3::from);
+    let d = Vec3::from(d);
+    let (e1, e2) = (b - a, c - a);
+    let p = d.cross(e2);
+    let det = e1.dot(p);
     if det.abs() < 1e-12 {
         return None;
     }
     let inv = 1.0 / det;
-    let s = sub(o, t[0]);
-    let u = dot(s, p) * inv;
+    let s = Vec3::from(o) - a;
+    let u = s.dot(p) * inv;
     if !(0.0..=1.0).contains(&u) {
         return None;
     }
-    let q = cross(s, e1);
-    let v = dot(d, q) * inv;
+    let q = s.cross(e1);
+    let v = d.dot(q) * inv;
     if v < 0.0 || u + v > 1.0 {
         return None;
     }
-    let tt = dot(e2, q) * inv;
+    let tt = e2.dot(q) * inv;
     (tt > 0.0 && tt < far).then_some(tt)
 }
 
@@ -851,7 +854,7 @@ impl Ground {
             let b = n01[c] + (n11[c] - n01[c]) * fx;
             a + (b - a) * fy
         });
-        Some((z + t.origin[2], normalize(n)))
+        Some((z + t.origin[2], unit_or_up(n.into()).to_array()))
     }
 
     /// Whether the ray from `o` along `d` passes under this block's surface within `far`, walked in half squares.
@@ -1062,7 +1065,7 @@ fn terrain_job(
     let t = &g.t;
     let span = SIZE as f32 * t.square;
     let tile = [map.tile[0] as f32 * span, map.tile[1] as f32 * span];
-    let d = normalize(sun.towards);
+    let d = unit_or_up(sun.towards.into());
     let mut texels = Vec::with_capacity((rows.1 - rows.0) * TERRAIN_SIDE);
     let mut rays = 0;
     let per = SIZE as f32 / TERRAIN_SIDE as f32;
@@ -1074,15 +1077,15 @@ fn terrain_job(
                 texels.push(shade([0.0; 3], sun, 1.0, true));
                 continue;
             };
-            let ndotl = dot(n, d);
+            let ndotl = Vec3::from(n).dot(d);
             let mut visible = ndotl > 0.0;
             if visible {
                 rays += 1;
                 let o = [x + n[0] * LIFT, y + n[1] * LIFT, z + n[2] * LIFT + 0.02];
                 visible = if map.interiors {
-                    !world.occluded(o, d, &mut work)
+                    !world.occluded(o, d.to_array(), &mut work)
                 } else {
-                    !world.ground_occluded(o, d, &mut work)
+                    !world.ground_occluded(o, d.to_array(), &mut work)
                 };
             }
             texels.push(shade([0.0; 3], sun, ndotl, visible));
@@ -1191,19 +1194,19 @@ fn rects_job(
 ) -> Done {
     let inst = &inputs.instances[instance];
     let sun = &inputs.sun;
-    let d = normalize(sun.towards);
-    let s = inst.scale;
+    let d = unit_or_up(sun.towards.into());
+    let s = Vec3::from(inst.scale);
     let maps = baked.get(&inst.local.content);
     let mut texels = Vec::new();
     let mut rays = 0;
     for &ri in rects {
         let r = &inst.local.rects[ri];
-        let n = normalize(inst.matrix.mul_v([
-            r.normal[0] / s[0],
-            r.normal[1] / s[1],
-            r.normal[2] / s[2],
-        ]));
-        let ndotl = dot(n, d);
+        let n = unit_or_up(
+            inst.matrix
+                .mul_v((Vec3::from(r.normal) / s).to_array())
+                .into(),
+        );
+        let ndotl = n.dot(d);
         let source = maps
             .and_then(|m| m.get(r.lightmap as usize))
             .and_then(Option::as_ref);
@@ -1224,7 +1227,7 @@ fn rects_job(
                             let w = inst.matrix.mul_p([p[0] * s[0], p[1] * s[1], p[2] * s[2]]);
                             let o = [w[0] + n[0] * LIFT, w[1] + n[1] * LIFT, w[2] + n[2] * LIFT];
                             rays += 1;
-                            visible = !world.occluded(o, d, &mut work);
+                            visible = !world.occluded(o, d.to_array(), &mut work);
                         }
                         None => visible = false,
                     }
@@ -1569,35 +1572,10 @@ pub(crate) fn terrain_reading(lit: &Lit, inputs: &Inputs, x: f32, y: f32) -> Opt
     let lum = |c: [f32; 3]| 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
     let here = lum([0, 1, 2].map(|c| f32::from(px[c]) / 255.0));
     let s = &inputs.sun;
-    let ndotl = dot(n, normalize(s.towards)).max(0.0);
+    let ndotl = Vec3::from(n).dot(unit_or_up(s.towards.into())).max(0.0);
     let open = lum(std::array::from_fn(|c| {
         (s.ambient[c] + s.diffuse[c] * ndotl).min(1.0)
     }));
     let ambient = lum(std::array::from_fn(|c| s.ambient[c].min(1.0)));
     Some([here, open, ambient])
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = dot(v, v).sqrt();
-    if l > 0.0 {
-        v.map(|c| c / l)
-    } else {
-        [0.0, 0.0, 1.0]
-    }
 }

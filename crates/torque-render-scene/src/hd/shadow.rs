@@ -10,6 +10,8 @@
 //!
 //! Matrices are column-major, world to clip with wgpu's depth range; the light looks along `-towards`, depth grows away from the sun.
 
+use glam::{DVec3, Vec2, Vec3};
+
 use crate::hd::{HdCamera, Quality};
 
 /// The practical split's weight of the logarithmic split.
@@ -139,34 +141,19 @@ pub struct Cascade {
 
 /// The light's basis: right, up, forward (`-towards`).
 pub fn light_basis(towards: [f32; 3]) -> [[f64; 3]; 3] {
-    let t = towards.map(f64::from);
-    let l = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt().max(1e-12);
-    let f = [-t[0] / l, -t[1] / l, -t[2] / l];
-    let helper = if f[2].abs() < 0.99 {
-        [0.0, 0.0, 1.0]
-    } else {
-        [0.0, 1.0, 0.0]
-    };
-    let right = normalize(cross(f, helper));
-    let up = cross(right, f);
+    let [right, up, f] = basis(towards);
+    [right.to_array(), up.to_array(), f.to_array()]
+}
+
+/// [`light_basis`] as vectors.
+fn basis(towards: [f32; 3]) -> [DVec3; 3] {
+    let t = Vec3::from(towards).as_dvec3();
+    let f = -t / t.length().max(1e-12);
+    let helper = if f.z.abs() < 0.99 { DVec3::Z } else { DVec3::Y };
+    let right = f.cross(helper);
+    let right = right / right.length().max(1e-300);
+    let up = right.cross(f);
     [right, up, f]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(a: [f64; 3]) -> [f64; 3] {
-    let l = dot(a, a).sqrt().max(1e-300);
-    a.map(|v| v / l)
 }
 
 /// The practical split distances: `n + 1` view depths from `near` to `far` (Zhang et al. 2006, λ = [`SPLIT_LAMBDA`]).
@@ -280,49 +267,48 @@ pub const MIN_FITTED_START: f32 = 16.0;
 pub const FIRST_SPLIT_MAX: f32 = 4.0;
 
 /// The camera's eye-space to world rotation's columns (the view matrix's rotation transposed) and the eye.
-fn eye_to_world(camera: &HdCamera) -> ([[f64; 3]; 3], [f64; 3]) {
+fn eye_to_world(camera: &HdCamera) -> ([DVec3; 3], DVec3) {
     let v = camera.view.map(f64::from);
     // view = [R | -R e]: row r of R is (v[r], v[4 + r], v[8 + r]); eye-space axis k in world is row k of R.
-    let axis = |k: usize| [v[k], v[4 + k], v[8 + k]];
-    ([axis(0), axis(1), axis(2)], camera.eye.map(f64::from))
+    let axis = |k: usize| DVec3::new(v[k], v[4 + k], v[8 + k]);
+    (
+        [axis(0), axis(1), axis(2)],
+        Vec3::from(camera.eye).as_dvec3(),
+    )
 }
 
 /// The bounding sphere (eye space) of the view slice between depths `d0` and `d1` (the frustum's rectangles' centres on a line).
-fn slice_sphere(camera: &HdCamera, d0: f64, d1: f64) -> ([f64; 3], f64) {
+fn slice_sphere(camera: &HdCamera, d0: f64, d1: f64) -> (DVec3, f64) {
     let [l, r, b, t] = camera.frustum.map(f64::from);
     let n = f64::from(camera.near);
-    let corners = |d: f64| -> [[f64; 3]; 4] {
+    let corners = |d: f64| -> [DVec3; 4] {
         let s = d / n;
         [
-            [l * s, b * s, -d],
-            [r * s, b * s, -d],
-            [l * s, t * s, -d],
-            [r * s, t * s, -d],
+            DVec3::new(l * s, b * s, -d),
+            DVec3::new(r * s, b * s, -d),
+            DVec3::new(l * s, t * s, -d),
+            DVec3::new(r * s, t * s, -d),
         ]
     };
     let (c0, c1) = (corners(d0), corners(d1));
-    let mid = |c: &[[f64; 3]; 4]| [0, 1, 2].map(|k| 0.25 * (c[0][k] + c[1][k] + c[2][k] + c[3][k]));
+    let mid = |c: &[DVec3; 4]| (c[0] + c[1] + c[2] + c[3]) * 0.25;
     let (mid0, mid1) = (mid(&c0), mid(&c1));
     // On the line mid0 + (mid1 - mid0) s, equally far from the slice's farthest near and far corners.
-    let far_corner = |c: &[[f64; 3]; 4], m: [f64; 3]| {
+    let far_corner = |c: &[DVec3; 4], m: DVec3| {
         c.iter()
-            .map(|p| [p[0] - m[0], p[1] - m[1], p[2] - m[2]])
-            .map(|d| dot(d, d))
+            .map(|&p| (p - m).length_squared())
             .fold(0.0, f64::max)
     };
     let (h0, h1) = (far_corner(&c0, mid0), far_corner(&c1, mid1));
-    let axis = [mid1[0] - mid0[0], mid1[1] - mid0[1], mid1[2] - mid0[2]];
-    let len2 = dot(axis, axis).max(1e-300);
+    let axis = mid1 - mid0;
+    let len2 = axis.length_squared().max(1e-300);
     // |s a|^2 + h0 = |(1 - s) a|^2 + h1  =>  s = (len2 + h1 - h0) / (2 len2).
     let s = ((len2 + h1 - h0) / (2.0 * len2)).clamp(0.0, 1.0);
-    let centre = [0, 1, 2].map(|k| mid0[k] + axis[k] * s);
+    let centre = mid0 + axis * s;
     let radius = c0
         .iter()
         .chain(&c1)
-        .map(|p| {
-            let d = [p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]];
-            dot(d, d).sqrt()
-        })
+        .map(|&p| (p - centre).length())
         .fold(0.0, f64::max);
     (centre, radius)
 }
@@ -358,9 +344,9 @@ pub fn cascades(
         }
     }
     let (rot, eye) = eye_to_world(camera);
-    let [right, up, fwd] = light_basis(towards);
+    let [right, up, fwd] = basis(towards);
     let res = f64::from(quality.cascade_size.max(16));
-    let spheres: Vec<([f64; 3], f64)> = (0..n)
+    let spheres: Vec<(DVec3, f64)> = (0..n)
         .map(|i| slice_sphere(camera, f64::from(splits[i]), f64::from(splits[i + 1])))
         .collect();
     (0..n)
@@ -372,17 +358,12 @@ pub fn cascades(
             // stopped along a line.
             let deep = spheres[i..]
                 .iter()
-                .map(|(c, s)| {
-                    let d = [c[0] - c_eye[0], c[1] - c_eye[1], c[2] - c_eye[2]];
-                    dot(d, d).sqrt() + s
-                })
+                .map(|&(c, s)| (c - c_eye).length() + s)
                 .fold(r, f64::max);
             // Both on a 1/64-unit grid (they depend only on the frustum: the same every frame).
             let r = (r * 64.0).ceil() / 64.0;
             let deep = (deep * 64.0).ceil() / 64.0;
-            let c = [0, 1, 2].map(|k| {
-                eye[k] + rot[0][k] * c_eye[0] + rot[1][k] * c_eye[1] + rot[2][k] * c_eye[2]
-            });
+            let c = eye + rot[0] * c_eye.x + rot[1] * c_eye.y + rot[2] * c_eye.z;
             // The centre snapped to a coarse grid of SNAP_TEXELS texels (a sixteenth of the map), the square widened by a
             // step so it still holds the slice's sphere, so the cached static cascade is drawn again only when the camera crosses a
             // step (it was snapped to one texel and its depth not at all: walking drew all four cascades whole every frame).
@@ -390,10 +371,10 @@ pub fn cascades(
             let texel = 2.0 * r / (res - 2.0 * k);
             let step = k * texel;
             let r = 0.5 * texel * res;
-            let cx = (dot(c, right) / step).round() * step;
-            let cy = (dot(c, up) / step).round() * step;
+            let cx = (c.dot(right) / step).round() * step;
+            let cy = (c.dot(up) / step).round() * step;
             let zstep = step * CASCADE_DEPTH_STEPS;
-            let cz = (dot(c, fwd) / zstep).round() * zstep;
+            let cz = (c.dot(fwd) / zstep).round() * zstep;
             let pull = r.max(20.0);
             let dn = cz - r - 0.5 * zstep - pull;
             // The far side reaches every receiver past the slice (`deep`), at least the square's half side.
@@ -411,7 +392,7 @@ pub fn cascades(
                     m[col * 4 + row] = *v as f32;
                 }
             }
-            let centre = [0, 1, 2].map(|k| (right[k] * cx + up[k] * cy + fwd[k] * cz) as f32);
+            let centre = (right * cx + up * cy + fwd * cz).as_vec3().to_array();
             Cascade {
                 view_proj: m,
                 centre,
@@ -521,12 +502,12 @@ pub fn cube_face(light: [f32; 3], far: f32, face: usize) -> [f32; 16] {
     let f = far.max(n * 2.0);
     let a = f / (f - n);
     let b = -n * f / (f - n);
-    let dot3 = |r: [f32; 3]| r[0] * light[0] + r[1] * light[1] + r[2] * light[2];
+    let light_dot = |r: [f32; 3]| Vec3::from(r).dot(light.into());
     let rows = [
-        [sc[0], sc[1], sc[2], -dot3(sc)],
-        [-tc[0], -tc[1], -tc[2], dot3(tc)],
-        [a * ma[0], a * ma[1], a * ma[2], -a * dot3(ma) + b],
-        [ma[0], ma[1], ma[2], -dot3(ma)],
+        [sc[0], sc[1], sc[2], -light_dot(sc)],
+        [-tc[0], -tc[1], -tc[2], light_dot(tc)],
+        [a * ma[0], a * ma[1], a * ma[2], -a * light_dot(ma) + b],
+        [ma[0], ma[1], ma[2], -light_dot(ma)],
     ];
     let mut m = [0.0f32; 16];
     for (row, vals) in rows.iter().enumerate() {
@@ -683,7 +664,7 @@ pub fn convex_hull(mut pts: Vec<[f32; 2]>) -> Vec<[f32; 2]> {
         return pts;
     }
     let cross2 = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| {
-        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        (Vec2::from(a) - Vec2::from(o)).perp_dot(Vec2::from(b) - Vec2::from(o))
     };
     let mut hull: Vec<[f32; 2]> = Vec::new();
     for pass in 0..2 {

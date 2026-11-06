@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 
+use glam::Vec3;
+
 use crate::math::Mat;
 use crate::{Blend, Cull, Draw, Sampler, TexEnv, Texture};
 
@@ -382,32 +384,24 @@ pub fn shapes_hide(
     if *work >= MAX_CORONA_SHAPE_WORK {
         return false;
     }
-    let d = [0, 1, 2].map(|k| target[k] - eye[k]);
-    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let eye = Vec3::from(eye);
+    let d = Vec3::from(target) - eye;
+    let len = d.length();
     if !len.is_finite() || len <= CORONA_SHAPE_MARGIN {
         return false;
     }
     let t_max = 1.0 - CORONA_SHAPE_MARGIN / len;
-    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let cross = |a: [f32; 3], b: [f32; 3]| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
     for o in objects {
         if *work >= MAX_CORONA_SHAPE_WORK {
             return false;
         }
         *work += 1;
         // The segment against the bounding sphere first.
-        let oc = sub(o.centre, eye);
-        let s = (dot(oc, d) / (len * len)).clamp(0.0, t_max);
-        let near = sub(oc, d.map(|v| v * s));
+        let oc = Vec3::from(o.centre) - eye;
+        let s = (oc.dot(d) / (len * len)).clamp(0.0, t_max);
+        let near = oc - d * s;
         // (A NaN sphere is skipped.)
-        let within = dot(near, near) <= o.radius * o.radius;
+        let within = near.length_squared() <= o.radius * o.radius;
         if !within {
             continue;
         }
@@ -445,26 +439,26 @@ pub fn shapes_hide(
                 let (Some(a), Some(b), Some(c)) = (v.get(t[0]), v.get(t[1]), v.get(t[2])) else {
                     continue;
                 };
-                let (a, b, c) = (o.world_point(a), o.world_point(b), o.world_point(c));
+                let [a, b, c] = [a, b, c].map(|p| Vec3::from(o.world_point(p)));
                 // Möller-Trumbore, both faces.
-                let (e1, e2) = (sub(b, a), sub(c, a));
-                let p = cross(d, e2);
-                let det = dot(e1, p);
+                let (e1, e2) = (b - a, c - a);
+                let p = d.cross(e2);
+                let det = e1.dot(p);
                 if det.abs() < 1e-12 {
                     continue;
                 }
                 let inv = 1.0 / det;
-                let tv = sub(eye, a);
-                let u = dot(tv, p) * inv;
+                let tv = eye - a;
+                let u = tv.dot(p) * inv;
                 if !(0.0..=1.0).contains(&u) {
                     continue;
                 }
-                let q = cross(tv, e1);
-                let w = dot(d, q) * inv;
+                let q = tv.cross(e1);
+                let w = d.dot(q) * inv;
                 if w < 0.0 || u + w > 1.0 {
                     continue;
                 }
-                let t = dot(e2, q) * inv;
+                let t = e2.dot(q) * inv;
                 if t > 1e-5 && t < t_max {
                     return true;
                 }

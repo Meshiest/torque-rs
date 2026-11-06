@@ -36,7 +36,10 @@ fn the_transmittance_is_bluer_lost_at_the_horizon() {
     let r = a.bottom + CAMERA_HEIGHT;
     let zenith = a.transmittance_direct(r, 1.0, 512);
     let horizon = a.transmittance_direct(r, 0.01, 2048);
-    assert!(zenith.iter().all(|t| *t > 0.6 && *t < 1.0), "{zenith:?}");
+    assert!(
+        zenith.cmpgt(DVec3::splat(0.6)).all() && zenith.cmplt(DVec3::ONE).all(),
+        "{zenith:?}"
+    );
     assert!(
         horizon[2] < horizon[0] && horizon[0] < zenith[0],
         "{horizon:?}"
@@ -57,7 +60,7 @@ fn the_phases_integrate_to_one() {
 
 #[test]
 fn directions_have_their_azimuth_and_elevation() {
-    let sun = normalize([0.3, -0.8, 0.4]);
+    let sun = DVec3::new(0.3, -0.8, 0.4).normalize().to_array();
     let d = direction(sun, 0.0, 0.0);
     let h = (sun[0] * sun[0] + sun[1] * sun[1]).sqrt();
     assert!((d[0] - sun[0] / h).abs() < 1e-12 && d[2].abs() < 1e-12);

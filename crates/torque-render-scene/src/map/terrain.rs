@@ -34,6 +34,9 @@ use mapcore::budget::HEIGHTFIELD_SIDE as SIZE;
 use mapcore::collision::{Heightfield as Terrain, HeightfieldPlacement};
 
 use super::{Fnv, Mesh, Object, TexRef, find_texture, folder_of};
+use glam::Vec3;
+
+use crate::math::unit_or_up;
 use crate::textures::TextureSet;
 use crate::{Assets, Blend, Cull, TexEnv, Vertex};
 
@@ -174,7 +177,7 @@ fn sample(
         let z = h(1, 1) + (1.0 - fx) * (h(0, 1) - h(1, 1)) + (1.0 - fy) * (h(1, 0) - h(1, 1));
         (z, h(1, 1) - h(0, 1), h(1, 1) - h(1, 0))
     };
-    let n = normalize([-a / square, -b / square, 1.0]);
+    let n = unit_or_up(Vec3::new(-a / square, -b / square, 1.0)).to_array();
     Some((z + origin[2], n))
 }
 
@@ -279,11 +282,12 @@ impl Block {
                 self.origin[1] + gy as f32 * sq,
                 self.origin[2] + self.h(gx, gy),
             ];
-            let n = normalize([
+            let n = unit_or_up(Vec3::new(
                 (self.h(gx - step, gy) - self.h(gx + step, gy)) / (2.0 * sq * step as f32),
                 (self.h(gx, gy - step) - self.h(gx, gy + step)) / (2.0 * sq * step as f32),
                 1.0,
-            ]);
+            ))
+            .to_array();
             Vertex {
                 position: p,
                 normal: n,
@@ -436,11 +440,12 @@ impl Block {
                 self.origin[1] + gy as f32 * sq,
                 self.origin[2] + self.h(gx, gy),
             ];
-            let n = normalize([
+            let n = unit_or_up(Vec3::new(
                 (self.h(gx - 1, gy) - self.h(gx + 1, gy)) / (2.0 * sq),
                 (self.h(gx, gy - 1) - self.h(gx, gy + 1)) / (2.0 * sq),
                 1.0,
-            ]);
+            ))
+            .to_array();
             Vertex {
                 position: p,
                 normal: n,
@@ -571,15 +576,6 @@ impl Block {
             });
         }
         out
-    }
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if l > 0.0 {
-        v.map(|c| c / l)
-    } else {
-        [0.0, 0.0, 1.0]
     }
 }
 

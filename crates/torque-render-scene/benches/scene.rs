@@ -7,8 +7,10 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use torque_interior_builder::{Brush, Options, TexGen, build};
 use torque_render_scene::decals::{DecalData, DecalManager, Triangle};
 use torque_render_scene::hd::{TextureTable, sh};
-use torque_render_scene::map::{self, MapClass, MapInput, MapProfile, MapRecords, MapValue, Object};
-use torque_render_scene::particles::{EmitterData, Emitter, ParticleData, Rng};
+use torque_render_scene::map::{
+    self, MapClass, MapInput, MapProfile, MapRecords, MapValue, Object,
+};
+use torque_render_scene::particles::{Emitter, EmitterData, ParticleData, Rng};
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Sun, TexEnv, Vertex};
 

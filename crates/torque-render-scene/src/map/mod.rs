@@ -35,6 +35,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use glam::Vec3;
+
 use crate::textures::TextureSet;
 use crate::{Assets, Blend, Cull, Draw, Filter, Sampler, Sun, TexEnv, Texture, Vertex};
 
@@ -629,7 +631,7 @@ pub fn draws(
         }
         for set in &built.foliage {
             if let Some(d) = foliage::draw(set, eye, textures) {
-                let distance = dist(set.centre, eye);
+                let distance = Vec3::from(set.centre).distance(eye.into());
                 out.translucent.push((distance, d));
             }
         }
@@ -638,11 +640,6 @@ pub fn draws(
         }
         out
     })
-}
-
-fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
-    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
 /// A kept mesh's draw state for this frame, its vertices left out: the texture looked up again (None: still being decoded, the
@@ -741,7 +738,8 @@ fn emit(
     if d.blend == Blend::Opaque || m.overlay {
         out.opaque.push(d);
     } else {
-        out.translucent.push((dist(m.centre, eye), d));
+        out.translucent
+            .push((Vec3::from(m.centre).distance(eye.into()), d));
     }
 }
 

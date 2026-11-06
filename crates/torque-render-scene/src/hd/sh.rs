@@ -7,6 +7,8 @@
 //! (Ramamoorthi and Hanrahan 2001). The result is normalised so that its mean over the horizontal normals is 1: the shader
 //! multiplies the frame's ambient by this shape (only its variation is used: the ambient stays calibrated to the sun's).
 
+use glam::Vec3;
+
 use crate::hd::{TextureTable, srgb_to_linear};
 use crate::{Blend, Draw, TexEnv};
 
@@ -61,43 +63,27 @@ pub fn direction(n: usize) -> [f32; 3] {
     [r * phi.cos(), r * phi.sin(), z]
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 /// The barycentric `(u, v)` where a ray from the origin along `d` meets the triangle, if it does (Moller and Trumbore 1997).
-fn hit(d: [f32; 3], p: [[f32; 3]; 3]) -> Option<(f32, f32)> {
-    let e1 = sub(p[1], p[0]);
-    let e2 = sub(p[2], p[0]);
-    let h = cross(d, e2);
-    let a = dot(e1, h);
+fn hit(d: Vec3, p: [Vec3; 3]) -> Option<(f32, f32)> {
+    let e1 = p[1] - p[0];
+    let e2 = p[2] - p[0];
+    let h = d.cross(e2);
+    let a = e1.dot(h);
     if a.abs() < 1e-12 {
         return None;
     }
     let f = 1.0 / a;
-    let s = [-p[0][0], -p[0][1], -p[0][2]];
-    let u = f * dot(s, h);
+    let s = -p[0];
+    let u = f * s.dot(h);
     if !(0.0..=1.0).contains(&u) {
         return None;
     }
-    let q = cross(s, e1);
-    let v = f * dot(d, q);
+    let q = s.cross(e1);
+    let v = f * d.dot(q);
     if v < 0.0 || u + v > 1.0 {
         return None;
     }
-    (f * dot(e2, q) > 0.0).then_some((u, v))
+    (f * e2.dot(q) > 0.0).then_some((u, v))
 }
 
 /// A texel of the table's texture `t` at `uv` (repeat wrap, nearest), from its first level no wider than `width`.
@@ -153,8 +139,10 @@ pub fn radiance_at(
             continue;
         }
         for t in draw.vertices.chunks_exact(3) {
-            let p = [0, 1, 2].map(|k| sub(t[k].position, eye));
-            let Some((u, v)) = hit(d, p) else { continue };
+            let p = [0, 1, 2].map(|k| Vec3::from(t[k].position) - Vec3::from(eye));
+            let Some((u, v)) = hit(d.into(), p) else {
+                continue;
+            };
             let w = [1.0 - u - v, u, v];
             let mut col = [0.0f32; 4];
             let mut uv = [0.0f32; 2];

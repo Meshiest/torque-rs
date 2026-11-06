@@ -43,22 +43,10 @@ fn text(s: &str) -> MapValue {
     MapValue::Text(s.as_bytes().to_vec())
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
 /// A triangle's face normal along `n` (negative: clockwise seen from `n`'s side).
 fn facing(t: &[Vertex], n: [f32; 3]) -> f32 {
-    let (a, b) = (
-        sub(t[1].position, t[0].position),
-        sub(t[2].position, t[0].position),
-    );
-    let c = [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ];
-    c[0] * n[0] + c[1] * n[1] + c[2] * n[2]
+    let [a, b, c] = [0, 1, 2].map(|k| Vec3::from(t[k].position));
+    (b - a).cross(c - a).dot(n.into())
 }
 
 /// The interiors' meshes GL-lit (before any relight).

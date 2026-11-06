@@ -4,6 +4,27 @@
 //! Credit: this module follows Torque3D's MIT-licensed `math/mMath_C.cpp`, `math/mQuat.cpp` and `math/mMatrix.cpp`
 //! (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
+use glam::{DMat4, Vec3};
+
+/// `v` over its length when that is over `min` and finite (a division, as the draws were made: not glam's product with the
+/// reciprocal); `None` otherwise.
+pub fn unit_over(v: Vec3, min: f32) -> Option<Vec3> {
+    let l = v.length();
+    (l > min && l.is_finite()).then(|| v / l)
+}
+
+/// `v` over its length, or as it is when that is 0.
+pub fn unit_or_same(v: Vec3) -> Vec3 {
+    let l = v.length();
+    if l > 0.0 { v / l } else { v }
+}
+
+/// `v` over its length, or up (+z) when that is 0.
+pub fn unit_or_up(v: Vec3) -> Vec3 {
+    let l = v.length();
+    if l > 0.0 { v / l } else { Vec3::Z }
+}
+
 /// A TGE `MatrixF`: `m[r * 4 + c]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Mat {
@@ -134,13 +155,7 @@ impl Mat {
 
 /// A 4 x 4 product of column-major `f64` matrices (GL's convention): `a * b`.
 pub fn gl_mul(a: &[f64; 16], b: &[f64; 16]) -> [f64; 16] {
-    let mut r = [0.0f64; 16];
-    for c in 0..4 {
-        for row in 0..4 {
-            r[c * 4 + row] = (0..4).map(|k| a[k * 4 + row] * b[c * 4 + k]).sum();
-        }
-    }
-    r
+    (DMat4::from_cols_array(a) * DMat4::from_cols_array(b)).to_cols_array()
 }
 
 #[cfg(test)]

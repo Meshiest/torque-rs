@@ -27,6 +27,8 @@
 //! Credit: follows TGE 1.4's `terrain/sky.cc` and `sceneGraph/windingClipper.cc` (Copyright (C) GarageGames.com, Inc.); the code
 //! here is this crate's own.
 
+use glam::{Vec2, Vec3};
+
 use crate::source::SceneSource;
 
 use crate::textures::TextureSet;
@@ -660,11 +662,11 @@ fn clip_cloud(pts: &[CloudPoint], n: [f32; 3]) -> Vec<CloudPoint> {
         return Vec::new();
     };
     let lerp = |a: &CloudPoint, b: &CloudPoint| {
-        let v = [0, 1, 2].map(|k| b.p[k] - a.p[k]);
-        let t = -(dist(a) / (n[0] * v[0] + n[1] * v[1] + n[2] * v[2]));
+        let v = Vec3::from(b.p) - Vec3::from(a.p);
+        let t = -(dist(a) / Vec3::from(n).dot(v));
         CloudPoint {
-            p: [0, 1, 2].map(|k| a.p[k] + v[k] * t),
-            uv: [0, 1].map(|k| a.uv[k] + (b.uv[k] - a.uv[k]) * t),
+            p: (Vec3::from(a.p) + v * t).to_array(),
+            uv: Vec2::from(a.uv).lerp_monotonic(b.uv.into(), t).to_array(),
             a: a.a + (b.a - a.a) * t,
         }
     };

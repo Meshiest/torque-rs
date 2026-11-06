@@ -6,6 +6,8 @@
 use crate::source::Eye;
 
 use crate::camera::Camera;
+use glam::{Vec3, Vec4};
+
 use crate::math::gl_mul;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -105,27 +107,20 @@ impl HdCamera {
         ];
         // The view's rotation transposed: eye axis k in world is the view's row k.
         let v = &self.view;
-        let d = [0, 1, 2].map(|k| v[k * 4] * e[0] + v[k * 4 + 1] * e[1] + v[k * 4 + 2] * e[2]);
-        let l2 = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-12);
-        d.map(|c| c / l2)
+        let e = Vec3::from(e);
+        let d = Vec3::from_array(
+            [0, 1, 2].map(|k| Vec3::new(v[k * 4], v[k * 4 + 1], v[k * 4 + 2]).dot(e)),
+        );
+        (d / d.length().max(1e-12)).to_array()
     }
 
     /// The six frustum planes (`a x + b y + c z + d >= 0` inside), from the view-projection (Gribb and Hartmann 2001).
     pub fn planes(&self) -> [[f32; 4]; 6] {
         let m = &self.view_proj;
-        let row = |r: usize| [m[r], m[4 + r], m[8 + r], m[12 + r]];
+        let row = |r: usize| Vec4::new(m[r], m[4 + r], m[8 + r], m[12 + r]);
         let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
-        let add = |a: [f32; 4], b: [f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
-        let subv = |a: [f32; 4], b: [f32; 4]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
         // Reversed depth in [0, 1]: z >= 0 is the far side, w - z >= 0 the near.
-        [
-            add(r3, r0),
-            subv(r3, r0),
-            add(r3, r1),
-            subv(r3, r1),
-            r2,
-            subv(r3, r2),
-        ]
+        [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2].map(|p| p.to_array())
     }
 
     /// Whether a box may be seen (not wholly outside a frustum plane).

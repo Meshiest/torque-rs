@@ -35,6 +35,9 @@ use ghost_world::tge::TgeClientSet;
 use ghost_world::world::ClientWorld;
 use ghosts::Value;
 
+use glam::Vec3;
+
+use crate::math::unit_over;
 use crate::particles::Rng;
 use crate::textures::TextureSet;
 use crate::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Vertex};
@@ -128,13 +131,10 @@ pub struct Decal {
     pub triangles: Vec<[DecalPoint; 3]>,
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 /// The part of the polygon `poly` where `dot(p - at, axis) <= limit` (Sutherland-Hodgman against one plane).
 pub(crate) fn clip(poly: &[[f32; 3]], at: [f32; 3], axis: [f32; 3], limit: f32) -> Vec<[f32; 3]> {
-    let side = |p: &[f32; 3]| limit - dot([0, 1, 2].map(|k| p[k] - at[k]), axis);
+    let (at, axis) = (Vec3::from(at), Vec3::from(axis));
+    let side = |p: &[f32; 3]| limit - (Vec3::from(*p) - at).dot(axis);
     let mut out = Vec::with_capacity(poly.len() + 2);
     for i in 0..poly.len() {
         let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
@@ -144,7 +144,7 @@ pub(crate) fn clip(poly: &[[f32; 3]], at: [f32; 3], axis: [f32; 3], limit: f32) 
         }
         if (da >= 0.0) != (db >= 0.0) {
             let t = da / (da - db);
-            out.push([0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t));
+            out.push(Vec3::from(a).lerp_monotonic(b.into(), t).to_array());
         }
     }
     out
@@ -173,17 +173,9 @@ impl Default for DecalManager {
     }
 }
 
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit(v: [f32; 3]) -> Option<[f32; 3]> {
-    let len = v.iter().map(|c| c * c).sum::<f32>().sqrt();
-    (len > 1e-6 && len.is_finite()).then(|| v.map(|c| c / len))
+/// `v` at unit length (None at 1e-6 or less, or not finite).
+fn unit(v: Vec3) -> Option<Vec3> {
+    unit_over(v, 1e-6)
 }
 
 impl DecalManager {
@@ -255,31 +247,30 @@ impl DecalManager {
         if hx <= 0.0 || hy <= 0.0 {
             return;
         }
-        let (Some(x), Some(y)) = (unit(d.half_x), unit(d.half_y)) else {
+        let (Some(x), Some(y)) = (unit(d.half_x.into()), unit(d.half_y.into())) else {
             return;
         };
         let depth = hx.max(hy);
-        let n = d.normal;
+        let n = Vec3::from(d.normal);
         for tri in surface {
-            let e1 = [0, 1, 2].map(|k| tri[1][k] - tri[0][k]);
-            let e2 = [0, 1, 2].map(|k| tri[2][k] - tri[0][k]);
-            let Some(face) = unit(cross(e1, e2)) else {
+            let [a, b, c] = tri.map(Vec3::from);
+            let Some(face) = unit((b - a).cross(c - a)) else {
                 continue;
             };
-            if dot(face, n) < CLIP_ANGLE_COS {
+            if face.dot(n) < CLIP_ANGLE_COS {
                 continue;
             }
             let mut poly = tri.to_vec();
             for (axis, limit) in [(x, hx), (y, hy), (n, depth)] {
-                poly = clip(&poly, at, axis, limit);
-                poly = clip(&poly, at, axis.map(|e| -e), limit);
+                poly = clip(&poly, at, axis.to_array(), limit);
+                poly = clip(&poly, at, (-axis).to_array(), limit);
             }
             if poly.len() < 3 {
                 continue;
             }
             let point = |p: [f32; 3]| -> DecalPoint {
-                let r = [0, 1, 2].map(|k| p[k] - at[k]);
-                (p, [0.5 + 0.5 * dot(r, x) / hx, 0.5 - 0.5 * dot(r, y) / hy])
+                let r = Vec3::from(p) - Vec3::from(at);
+                (p, [0.5 + 0.5 * r.dot(x) / hx, 0.5 - 0.5 * r.dot(y) / hy])
             };
             for i in 1..poly.len() - 1 {
                 d.triangles
@@ -300,26 +291,22 @@ impl DecalManager {
 
     /// A decal's place and sides, with no mesh yet.
     fn lay(&self, data: &DecalData, at: [f32; 3], normal: [f32; 3], angle: f32) -> Option<Decal> {
-        let n = unit(normal)?;
+        let n = unit(normal.into())?;
         if self.max == 0 || at.iter().any(|c| !c.is_finite()) {
             return None;
         }
         // A side in the surface's plane: across the world's up, or across x for a floor or a ceiling.
-        let across = if n[2].abs() > 0.9 {
-            [1.0, 0.0, 0.0]
-        } else {
-            [0.0, 0.0, 1.0]
-        };
-        let u = unit(cross(across, n))?;
-        let v = cross(n, u);
+        let across = if n.z.abs() > 0.9 { Vec3::X } else { Vec3::Z };
+        let u = unit(across.cross(n))?;
+        let v = n.cross(u);
         let (s, c) = angle.sin_cos();
-        let x = [0, 1, 2].map(|k| u[k] * c + v[k] * s);
-        let y = [0, 1, 2].map(|k| v[k] * c - u[k] * s);
+        let x = u * c + v * s;
+        let y = v * c - u * s;
         Some(Decal {
             position: at,
-            normal: n,
-            half_x: x.map(|e| e * data.size[0] * 0.5),
-            half_y: y.map(|e| e * data.size[1] * 0.5),
+            normal: n.to_array(),
+            half_x: (x * data.size[0] * 0.5).to_array(),
+            half_y: (y * data.size[1] * 0.5).to_array(),
             texture: data.texture.clone(),
             blend: data.blend,
             age: 0.0,

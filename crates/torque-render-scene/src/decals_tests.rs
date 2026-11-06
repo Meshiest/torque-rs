@@ -18,10 +18,6 @@ fn hole() -> DecalData {
     }
 }
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 #[test]
 fn a_decal_lies_in_the_surfaces_plane() {
     let mut m = DecalManager::default();
@@ -33,14 +29,14 @@ fn a_decal_lies_in_the_surfaces_plane() {
         m.clear();
         m.add(&hole(), [1.0, 2.0, 3.0], normal, angle);
         let d = m.decals().next().unwrap();
-        let n = unit(normal).unwrap();
+        let n = unit(normal.into()).unwrap();
         for k in 0..3 {
             assert!((d.position[k] - [1.0, 2.0, 3.0][k]).abs() < 1e-5);
         }
-        assert!(dot(d.half_x, n).abs() < 1e-5 && dot(d.half_y, n).abs() < 1e-5);
-        assert!(dot(d.half_x, d.half_y).abs() < 1e-5);
-        let len = |v: [f32; 3]| dot(v, v).sqrt();
-        assert!((len(d.half_x) - 0.1).abs() < 1e-5 && (len(d.half_y) - 0.05).abs() < 1e-5);
+        let (hx, hy) = (Vec3::from(d.half_x), Vec3::from(d.half_y));
+        assert!(hx.dot(n).abs() < 1e-5 && hy.dot(n).abs() < 1e-5);
+        assert!(hx.dot(hy).abs() < 1e-5);
+        assert!((hx.length() - 0.1).abs() < 1e-5 && (hy.length() - 0.05).abs() < 1e-5);
     }
     // No normal, no decal.
     m.clear();
@@ -179,10 +175,8 @@ fn area(d: &Decal) -> f32 {
     d.triangles
         .iter()
         .map(|t| {
-            let e1 = [0, 1, 2].map(|k| t[1].0[k] - t[0].0[k]);
-            let e2 = [0, 1, 2].map(|k| t[2].0[k] - t[0].0[k]);
-            let c = cross(e1, e2);
-            0.5 * dot(c, c).sqrt()
+            let [a, b, c] = t.map(|p| Vec3::from(p.0));
+            0.5 * (b - a).cross(c - a).length()
         })
         .sum()
 }
@@ -253,11 +247,10 @@ fn a_decal_is_drawn_nearer_the_eye_along_its_ray() {
         .flat_map(|t| t.map(|p| p.0))
         .collect();
     for (v, p) in draws[0].1.vertices.iter().zip(laid) {
-        let to_eye = [0, 1, 2].map(|k| eye[k] - p[k]);
-        let moved = [0, 1, 2].map(|k| v.position[k] - p[k]);
-        let c = cross(to_eye, moved);
-        assert!(dot(c, c).sqrt() < 1e-5, "along the eye's ray");
-        assert!(dot(moved, to_eye) > 0.0, "toward the eye");
+        let to_eye = Vec3::from(eye) - Vec3::from(p);
+        let moved = Vec3::from(v.position) - Vec3::from(p);
+        assert!(to_eye.cross(moved).length() < 1e-5, "along the eye's ray");
+        assert!(moved.dot(to_eye) > 0.0, "toward the eye");
         assert!(v.position[1] < 5.0 && v.position[1] > 4.98);
     }
 }

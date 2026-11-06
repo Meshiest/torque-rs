@@ -13,6 +13,8 @@
 use crate::source::Eye;
 
 use crate::hd::{HdCamera, HdScene, Quality};
+use glam::{DVec3, Vec3};
+
 use crate::math::gl_mul;
 
 /// Where the screen-space reflections are traced.
@@ -165,15 +167,15 @@ pub fn cube_face_axes(face: usize) -> ([f64; 3], [f64; 3], [f64; 3]) {
 /// axes are left-handed (front faces turn the other way, as in a mirror).
 pub fn cube_face_camera(eye: [f32; 3], face: usize, near: f32, far: f32, size: u32) -> HdCamera {
     let (fwd, right, up) = cube_face_axes(face);
-    let e = eye.map(f64::from);
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let [fwd, right, up] = [fwd, right, up].map(DVec3::from);
+    let e = Vec3::from(eye).as_dvec3();
     // World to eye space: rows right, up, -forward.
     #[rustfmt::skip]
     let view = [
         right[0], up[0], -fwd[0], 0.0,
         right[1], up[1], -fwd[1], 0.0,
         right[2], up[2], -fwd[2], 0.0,
-        -dot(right, e), -dot(up, e), dot(fwd, e), 1.0,
+        -right.dot(e), -up.dot(e), fwd.dot(e), 1.0,
     ];
     let (n, f) = (f64::from(near), f64::from(far.max(near * 2.0)));
     #[rustfmt::skip]

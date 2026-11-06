@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::{Fnv, Mesh, TexRef};
-use crate::math::Mat;
+use glam::Vec3;
+
+use crate::math::{Mat, unit_or_same};
 use crate::textures::TextureSet;
 use crate::{Assets, Draw, Vertex};
 
@@ -15,11 +17,6 @@ type Group = (Draw, TexRef, Vec<Vertex>, [f64; 3]);
 
 /// The most instances merged (statics and replicas together).
 pub const MAX_INSTANCES: usize = 100_000;
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if l > 0.0 { v.map(|c| c / l) } else { v }
-}
 
 /// The statics and replicas merged a draw per shape, at most `cap` vertices in all.
 #[allow(clippy::too_many_arguments)]
@@ -86,8 +83,11 @@ pub(crate) fn meshes(
                     let p = x.position;
                     let n = x.normal;
                     Vertex {
-                        position: m.mul_p([p[0] * s[0], p[1] * s[1], p[2] * s[2]]),
-                        normal: normalize(m.mul_v([n[0] / s[0], n[1] / s[1], n[2] / s[2]])),
+                        position: m.mul_p((Vec3::from(p) * Vec3::from(s)).to_array()),
+                        normal: unit_or_same(
+                            m.mul_v((Vec3::from(n) / Vec3::from(s)).to_array()).into(),
+                        )
+                        .to_array(),
                         ..x
                     }
                 });

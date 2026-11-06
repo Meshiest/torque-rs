@@ -28,7 +28,9 @@ use std::sync::Arc;
 use super::light::Lit;
 use super::{Fnv, Mesh, Object, TexRef, find_texture, folder_of};
 use super::{MapClass, MapProfile};
-use crate::math::Mat;
+use glam::Vec3;
+
+use crate::math::{Mat, unit_or_same};
 use crate::textures::TextureSet;
 use crate::{Assets, Blend, Cull, TexEnv, Vertex};
 use mapcore::material::MaterialFlags;
@@ -78,27 +80,6 @@ pub(crate) fn local(
         f.insert(folded, (generation, made.clone()));
     });
     made
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = dot(v, v).sqrt();
-    if l > 0.0 { v.map(|c| c / l) } else { v }
 }
 
 /// An instance's placement: the matrix (rotation and translation) and the scale.
@@ -326,22 +307,21 @@ pub(crate) fn meshes_capped(
                     .and_then(|p| p.get(lm.rect as usize).copied().flatten());
                 let mut v = [0, 1, 2].map(|k| {
                     let (p, n, uv) = t[k];
-                    let w = m.mul_p([p[0] * s[0], p[1] * s[1], p[2] * s[2]]);
-                    let wn = normalize(m.mul_v([n[0] / s[0], n[1] / s[1], n[2] / s[2]]));
+                    let s = Vec3::from(s);
+                    let w = m.mul_p((Vec3::from(p) * s).to_array());
+                    let wn = Vec3::from(m.mul_v((Vec3::from(n) / s).to_array()));
                     Vertex {
                         position: w,
-                        normal: wn,
+                        normal: unit_or_same(wn).to_array(),
                         color: [255; 4],
                         uv,
                     }
                 });
                 let mut lm_uv = [0, 1, 2].map(|k| lm.texel[k]);
-                let face = cross(
-                    sub(v[1].position, v[0].position),
-                    sub(v[2].position, v[0].position),
-                );
+                let [a, b, c] = v.map(|x| Vec3::from(x.position));
+                let facing = (b - a).cross(c - a).dot(v[0].normal.into());
                 // Clockwise seen from the front.
-                if dot(face, v[0].normal) > 0.0 || (mirrored && dot(face, v[0].normal) == 0.0) {
+                if facing > 0.0 || (mirrored && facing == 0.0) {
                     v.swap(1, 2);
                     lm_uv.swap(1, 2);
                 }

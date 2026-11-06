@@ -21,6 +21,8 @@
 //!
 //! [`SkyPart`] sorts the fixed-function sky's draws (box faces, the remote flare, clouds, bans).
 
+use glam::Vec3;
+
 use crate::hd::{HdDraw, Quality};
 
 /// Which sky the physical sky draws (the caller's setting: `auto`, `atmosphere` or `server`; without the physical sky always the
@@ -296,13 +298,9 @@ impl PaintedSun {
     }
 }
 
-fn normalized(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
-    v.map(|c| c / l)
-}
-
-fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+/// `v` at unit length (a zero vector stays zero).
+fn normalized(v: Vec3) -> Vec3 {
+    v / v.length().max(1e-12)
 }
 
 /// The sun the server's sky box paints near the Sun's direction `sun`, if it paints one ([`PaintedSunSearch`]): `radiance` is the
@@ -313,29 +311,17 @@ pub fn painted_sun(
     sun: [f32; 3],
     search: PaintedSunSearch,
 ) -> Option<PaintedSun> {
-    let s = normalized(sun);
+    let s = normalized(sun.into());
     // The plane facing the Sun: right and up.
-    let helper = if s[2].abs() < 0.9 {
-        [0.0, 0.0, 1.0]
-    } else {
-        [1.0, 0.0, 0.0]
-    };
-    let right = normalized([
-        s[1] * helper[2] - s[2] * helper[1],
-        s[2] * helper[0] - s[0] * helper[2],
-        s[0] * helper[1] - s[1] * helper[0],
-    ]);
-    let up = [
-        right[1] * s[2] - right[2] * s[1],
-        right[2] * s[0] - right[0] * s[2],
-        right[0] * s[1] - right[1] * s[0],
-    ];
+    let helper = if s.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
+    let right = normalized(s.cross(helper));
+    let up = right.cross(s);
     let half = (search.reach.tan() / search.step).ceil() as i32;
     let n = (2 * half + 1) as usize;
     let at = |i: usize, j: usize| {
         let x = (i as i32 - half) as f32 * search.step;
         let y = (j as i32 - half) as f32 * search.step;
-        normalized([0, 1, 2].map(|k| s[k] + right[k] * x + up[k] * y))
+        normalized(s + right * x + up * y)
     };
     let cos_reach = search.reach.cos();
     let mut hot = vec![false; n * n];
@@ -343,11 +329,11 @@ pub fn painted_sun(
     for j in 0..n {
         for i in 0..n {
             let d = at(i, j);
-            if dot3(d, s) < cos_reach {
+            if d.dot(s) < cos_reach {
                 continue;
             }
             inside[j * n + i] = true;
-            let c = radiance(d, search.width);
+            let c = radiance(d.to_array(), search.width);
             hot[j * n + i] = c.iter().all(|&v| v >= search.hot);
         }
     }
@@ -385,25 +371,22 @@ pub fn painted_sun(
         if edge {
             continue;
         }
-        let mut sum = [0.0f32; 3];
+        let mut sum = Vec3::ZERO;
         for &c in &cells {
-            let d = at(c % n, c / n);
-            for k in 0..3 {
-                sum[k] += d[k];
-            }
+            sum += at(c % n, c / n);
         }
         let centre = normalized(sum);
         let radius = cells
             .iter()
-            .map(|&c| dot3(at(c % n, c / n), centre).clamp(-1.0, 1.0).acos())
+            .map(|&c| at(c % n, c / n).dot(centre).clamp(-1.0, 1.0).acos())
             .fold(0.0f32, f32::max);
         if radius > search.max_radius || radius < search.min_radius {
             continue;
         }
-        let offset = dot3(centre, s).clamp(-1.0, 1.0).acos();
+        let offset = centre.dot(s).clamp(-1.0, 1.0).acos();
         if best.is_none_or(|b| offset < b.offset) {
             best = Some(PaintedSun {
-                towards: centre,
+                towards: centre.to_array(),
                 radius,
                 offset,
             });

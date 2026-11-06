@@ -23,6 +23,8 @@
 
 use std::sync::OnceLock;
 
+use glam::DVec3;
+
 use crate::hd::atmosphere::{
     Atmosphere, CAMERA_HEIGHT, EARTH, Medium, Rgb, mie_phase, rayleigh_phase,
 };
@@ -155,10 +157,6 @@ pub struct ScatterTable {
     atmosphere: Atmosphere,
 }
 
-fn add(a: Rgb, b: Rgb) -> Rgb {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
 fn luminance(c: [f32; 3]) -> f32 {
     0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
 }
@@ -171,38 +169,35 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 /// The transmittance from radius `r` along `mu` (cosine from the zenith) out of the atmosphere; none through the ground.
 fn transmittance(a: &Atmosphere, r: f64, mu: f64, steps: usize) -> Rgb {
     if a.hits_ground(r, mu) {
-        return [0.0; 3];
+        return DVec3::ZERO;
     }
     a.transmittance_direct(r, mu, steps)
 }
 
 /// The sky's single scattering toward the eye at radius `r` from `view` with the sun toward `sun` (unit, z up), for a sun of 1.
-fn single_scattering(a: &Atmosphere, r: f64, view: [f64; 3], sun: [f64; 3]) -> Rgb {
-    let mu = view[2];
+fn single_scattering(a: &Atmosphere, r: f64, view: DVec3, sun: DVec3) -> Rgb {
+    let mu = view.z;
     let d = if a.hits_ground(r, mu) {
         a.distance_to_bottom(r, mu)
     } else {
         a.distance_to_top(r, mu)
     };
-    let nu = view[0] * sun[0] + view[1] * sun[1] + view[2] * sun[2];
+    let nu = view.dot(sun);
     let (pr, pm) = (rayleigh_phase(nu), mie_phase(nu, a.mie_g));
     let dt = d / VIEW_STEPS as f64;
-    let mut path = [1.0f64; 3];
-    let mut l = [0.0f64; 3];
+    let mut path = DVec3::ONE;
+    let mut l = DVec3::ZERO;
     for i in 0..VIEW_STEPS {
         let t = (i as f64 + 0.5) * dt;
-        let p = [view[0] * t, view[1] * t, r + view[2] * t];
-        let rx = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
-        let mu_s = (p[0] * sun[0] + p[1] * sun[1] + p[2] * sun[2]) / rx;
+        let p = DVec3::new(view.x * t, view.y * t, r + view.z * t);
+        let rx = p.length();
+        let mu_s = p.dot(sun) / rx;
         let m: Medium = a.medium(rx - a.bottom);
         let tsun = transmittance(a, rx, mu_s, SUN_STEPS);
         let step = m.extinction.map(|e| (-e * dt).exp());
-        for k in 0..3 {
-            let s = (m.rayleigh[k] * pr + m.mie * pm) * tsun[k];
-            let e = m.extinction[k].max(1e-12);
-            l[k] += path[k] * (s - s * step[k]) / e;
-            path[k] *= step[k];
-        }
+        let s = (m.rayleigh * pr + m.mie * pm) * tsun;
+        l += path * (s - s * step) / m.extinction.max(DVec3::splat(1e-12));
+        path *= step;
     }
     l
 }
@@ -217,31 +212,32 @@ impl ScatterTable {
         let mut horizon = Vec::with_capacity(n);
         for i in 0..n {
             let e = f64::from(TABLE_LOW + i as f32 * TABLE_STEP).to_radians();
-            let sun = [0.0, e.cos(), e.sin()];
-            let mut irradiance = [0.0f64; 3];
-            let mut edge = [0.0f64; 3];
+            let sun = DVec3::new(0.0, e.cos(), e.sin());
+            let mut irradiance = DVec3::ZERO;
+            let mut edge = DVec3::ZERO;
             for j in 0..AZIMUTHS {
                 let phi = (j as f64 + 0.5) / AZIMUTHS as f64 * std::f64::consts::TAU;
                 let (sp, cp) = phi.sin_cos();
                 for b in 0..BANDS {
                     let el = (b as f64 + 0.5) / BANDS as f64 * std::f64::consts::FRAC_PI_2;
                     let (se, ce) = el.sin_cos();
-                    let l = single_scattering(a, r, [sp * ce, cp * ce, se], sun);
+                    let l = single_scattering(a, r, DVec3::new(sp * ce, cp * ce, se), sun);
                     // cos(zenith) x the band's solid angle.
                     let w = se
                         * ce
                         * (std::f64::consts::FRAC_PI_2 / BANDS as f64)
                         * (std::f64::consts::TAU / AZIMUTHS as f64);
-                    irradiance = add(irradiance, l.map(|v| v * w));
+                    irradiance += l * w;
                 }
                 let h = HORIZON_VIEW.to_radians();
-                let l = single_scattering(a, r, [sp * h.cos(), cp * h.cos(), h.sin()], sun);
-                edge = add(edge, l.map(|v| v / AZIMUTHS as f64));
+                let l =
+                    single_scattering(a, r, DVec3::new(sp * h.cos(), cp * h.cos(), h.sin()), sun);
+                edge += l / AZIMUTHS as f64;
             }
-            ambient.push(irradiance.map(|v| v as f32));
-            horizon.push(edge.map(|v| v as f32));
+            ambient.push(irradiance.as_vec3().to_array());
+            horizon.push(edge.as_vec3().to_array());
         }
-        let sun_noon = transmittance(a, r, 1.0, 64).map(|v| v as f32);
+        let sun_noon = transmittance(a, r, 1.0, 64).as_vec3().to_array();
         ScatterTable {
             ambient,
             horizon,

@@ -62,9 +62,9 @@ fn towards(az: f32, el: f32) -> [f32; 3] {
 fn sky_of(suns: Vec<([f32; 3], f32)>) -> impl Fn([f32; 3], u32) -> [f32; 3] {
     move |d: [f32; 3], _| {
         let white = d[2] < 0.05
-            || suns
-                .iter()
-                .any(|(s, r)| dot3(d, *s).clamp(-1.0, 1.0).acos() <= r.to_radians());
+            || suns.iter().any(|(s, r)| {
+                Vec3::from(d).dot((*s).into()).clamp(-1.0, 1.0).acos() <= r.to_radians()
+            });
         if white { [1.0; 3] } else { [0.4, 0.6, 0.9] }
     }
 }
@@ -78,7 +78,12 @@ fn a_sun_painted_off_the_suns_direction_is_found_and_drawn_there() {
     assert!((p.radius.to_degrees() - 3.0).abs() < 0.5, "{p:?}");
     let d = p.drawn().expect("drawn on the painted sun");
     assert!(
-        dot3(d, painted).clamp(-1.0, 1.0).acos().to_degrees() < 0.2,
+        Vec3::from(d)
+            .dot(painted.into())
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees()
+            < 0.2,
         "{p:?}"
     );
 }
@@ -111,7 +116,6 @@ fn no_sun_in_a_plain_or_white_box_nor_in_a_speck() {
 fn the_white_hot_disk_shows_brighter_than_the_sky_about_it() {
     use crate::hd::lut::neutral_tonemap;
     let lum = |c: [f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    let add = |a: [f32; 3], b: [f32; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
     // The disk and the sky about it as the vehicle demo draws them (linear HDR), from noon to just over the horizon: through the
     // neutral tonemap the disk over the sky shows brighter than the sky alone, and the white-hot disk keeps its largest channel.
     for (disk, sky) in [
@@ -126,7 +130,9 @@ fn the_white_hot_disk_shows_brighter_than_the_sky_about_it() {
             (hot[0].max(hot[1]).max(hot[2]) - disk[0]).abs() < 1e-3,
             "{hot:?}"
         );
-        let shown = lum(neutral_tonemap(add(sky, hot)));
+        let shown = lum(neutral_tonemap(
+            (Vec3::from(sky) + Vec3::from(hot)).to_array(),
+        ));
         let around = lum(neutral_tonemap(sky));
         assert!(
             shown > around + 0.04,

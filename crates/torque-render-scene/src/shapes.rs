@@ -42,7 +42,7 @@ use shapes::dts;
 use shapes::instance::ShapeInstance;
 use shapes::shape::{MeshExtra, MeshRender, Model, SkinData};
 
-use crate::math::Mat;
+use crate::math::{Mat, unit_or_same};
 use crate::textures::TextureSet;
 use crate::{Assets, Blend, Cull, Draw, Filter, PointLight, Sampler, TexEnv, Vertex};
 
@@ -132,11 +132,6 @@ pub fn mat3_scale(m: &Mat, s: [f32; 3]) -> Mat {
         }
     }
     r
-}
-
-pub fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if l > 0.0 { v.map(|x| x / l) } else { v }
 }
 
 /// A shape as the client loads it: the parsed file with the constructor's sequences imported, and the frames of its IFL materials.
@@ -1168,7 +1163,7 @@ impl FillView<'_> {
                         let normal = if o.unscaled {
                             o.n_xform.mul_v(*n)
                         } else {
-                            normalize(o.n_xform.mul_v(*n))
+                            unit_or_same(o.n_xform.mul_v(*n).into()).to_array()
                         };
                         (o.m.mul_p(*pos), normal)
                     })

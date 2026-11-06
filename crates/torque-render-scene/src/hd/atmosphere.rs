@@ -18,37 +18,39 @@
 //! integrator takes the transmittance by direct integration (fine steps), its multiple scattering from its own finer table, and the
 //! view rays in fine uniform steps.
 
+use glam::DVec3;
+
 /// The atmosphere's parameters (km, per km).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Atmosphere {
     pub bottom: f64,
     pub top: f64,
-    pub rayleigh: [f64; 3],
+    pub rayleigh: Rgb,
     pub rayleigh_height: f64,
     pub mie_scattering: f64,
     pub mie_absorption: f64,
     pub mie_height: f64,
     pub mie_g: f64,
-    pub ozone: [f64; 3],
+    pub ozone: Rgb,
     pub ozone_centre: f64,
     pub ozone_half_width: f64,
-    pub ground_albedo: [f64; 3],
+    pub ground_albedo: Rgb,
 }
 
 /// The Earth-like atmosphere (Bruneton 2017's published parameters; Hillaire 2020 uses the same).
 pub const EARTH: Atmosphere = Atmosphere {
     bottom: 6360.0,
     top: 6460.0,
-    rayleigh: [5.802e-3, 13.558e-3, 33.1e-3],
+    rayleigh: DVec3::new(5.802e-3, 13.558e-3, 33.1e-3),
     rayleigh_height: 8.0,
     mie_scattering: 3.996e-3,
     mie_absorption: 0.444e-3,
     mie_height: 1.2,
     mie_g: 0.8,
-    ozone: [0.650e-3, 1.881e-3, 0.085e-3],
+    ozone: DVec3::new(0.650e-3, 1.881e-3, 0.085e-3),
     ozone_centre: 25.0,
     ozone_half_width: 15.0,
-    ground_albedo: [0.3, 0.3, 0.3],
+    ground_albedo: DVec3::splat(0.3),
 };
 
 /// The camera's height above the ground (km): a world is small against the atmosphere, so the sky is that of one height.
@@ -78,28 +80,8 @@ const REF_MS_DIRECTIONS: usize = 256;
 const REF_MS_STEPS: usize = 192;
 const REF_T_TABLE: (usize, usize) = (512, 256);
 
-pub type Rgb = [f64; 3];
-
-fn add(a: Rgb, b: Rgb) -> Rgb {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale(a: Rgb, s: f64) -> Rgb {
-    a.map(|v| v * s)
-}
-
-fn mul(a: Rgb, b: Rgb) -> Rgb {
-    [a[0] * b[0], a[1] * b[1], a[2] * b[2]]
-}
-
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(a: [f64; 3]) -> [f64; 3] {
-    let l = dot3(a, a).sqrt().max(1e-300);
-    a.map(|v| v / l)
-}
+/// A color (or a direction, z up).
+pub type Rgb = DVec3;
 
 /// A texel coordinate's [0, 1] value with the texel centres at the ends (Bruneton 2017's `GetTextureCoordFromUnitRange`).
 pub fn to_unit(x: f64, n: u32) -> f64 {
@@ -125,10 +107,10 @@ impl Atmosphere {
         let dr = (-h / self.rayleigh_height).exp();
         let dm = (-h / self.mie_height).exp();
         let dozone = (1.0 - (h - self.ozone_centre).abs() / self.ozone_half_width).max(0.0);
-        let rayleigh = scale(self.rayleigh, dr);
+        let rayleigh = self.rayleigh * dr;
         let mie = self.mie_scattering * dm;
         let mie_ext = (self.mie_scattering + self.mie_absorption) * dm;
-        let extinction = [0, 1, 2].map(|k| rayleigh[k] + mie_ext + self.ozone[k] * dozone);
+        let extinction = rayleigh + mie_ext + self.ozone * dozone;
         Medium {
             rayleigh,
             mie,
@@ -192,11 +174,11 @@ impl Atmosphere {
     pub fn transmittance_direct(&self, r: f64, mu: f64, steps: usize) -> Rgb {
         let d = self.distance_to_top(r, mu);
         let dt = d / steps as f64;
-        let mut depth = [0.0; 3];
+        let mut depth = DVec3::ZERO;
         for i in 0..steps {
             let t = (i as f64 + 0.5) * dt;
             let h = (r * r + t * t + 2.0 * r * mu * t).sqrt() - self.bottom;
-            depth = add(depth, scale(self.medium(h).extinction, dt));
+            depth += self.medium(h).extinction * dt;
         }
         depth.map(|v| (-v).exp())
     }
@@ -325,7 +307,7 @@ impl Reference {
     fn sun_transmittance_table(&self, r: f64, mu: f64) -> Rgb {
         let a = &self.atmosphere;
         if a.hits_ground(r, mu) {
-            return [0.0; 3];
+            return DVec3::splat(0.0);
         }
         let (u, v) = ref_t_uv(a, r, mu);
         bilinear(&self.t_table, REF_T_TABLE.0, REF_T_TABLE.1, u, v)
@@ -335,34 +317,34 @@ impl Reference {
     pub fn sun_transmittance(&self, r: f64, mu: f64) -> Rgb {
         let a = &self.atmosphere;
         if a.hits_ground(r, mu) {
-            return [0.0; 3];
+            return DVec3::ZERO;
         }
         a.transmittance_direct(r, mu, REF_TRANSMITTANCE_STEPS)
     }
 
     /// Hillaire's Ψms at (r, μsun) by direct integration over the sphere (spherical Fibonacci directions).
     fn multiscatter_at(&self, r: f64, mu_s: f64) -> Rgb {
-        let sun = [(1.0 - mu_s * mu_s).max(0.0).sqrt(), 0.0, mu_s];
+        let sun = DVec3::new((1.0 - mu_s * mu_s).max(0.0).sqrt(), 0.0, mu_s);
         let n = REF_MS_DIRECTIONS;
-        let mut l2 = [0.0; 3];
-        let mut fms = [0.0; 3];
+        let mut l2 = DVec3::ZERO;
+        let mut fms = DVec3::ZERO;
         let golden = std::f64::consts::PI * (3.0 - 5.0f64.sqrt());
         for k in 0..n {
             let z = 1.0 - 2.0 * (k as f64 + 0.5) / n as f64;
             let s = (1.0 - z * z).max(0.0).sqrt();
             let phi = golden * k as f64;
-            let w = [s * phi.cos(), s * phi.sin(), z];
+            let w = DVec3::new(s * phi.cos(), s * phi.sin(), z);
             let (l, f) = self.ms_ray(r, w, sun);
-            l2 = add(l2, l);
-            fms = add(fms, f);
+            l2 += l;
+            fms += f;
         }
-        let l2 = scale(l2, 1.0 / n as f64);
-        let fms = scale(fms, 1.0 / n as f64);
-        [0, 1, 2].map(|k| l2[k] / (1.0 - fms[k]).max(1e-6))
+        let l2 = l2 * (1.0 / n as f64);
+        let fms = fms * (1.0 / n as f64);
+        l2 / (1.0 - fms).max(DVec3::splat(1e-6))
     }
 
     /// One direction of the multiple scattering's integral: the second order's light (isotropic phase, the ground's albedo) and fms.
-    fn ms_ray(&self, r: f64, w: [f64; 3], sun: [f64; 3]) -> (Rgb, Rgb) {
+    fn ms_ray(&self, r: f64, w: DVec3, sun: DVec3) -> (Rgb, Rgb) {
         let a = &self.atmosphere;
         let mu = w[2];
         let ground = a.hits_ground(r, mu);
@@ -374,37 +356,32 @@ impl Reference {
         let iso = 1.0 / (4.0 * std::f64::consts::PI);
         let steps = REF_MS_STEPS;
         let dt = d / steps as f64;
-        let mut t_path = [1.0; 3];
-        let mut l = [0.0; 3];
-        let mut f = [0.0; 3];
+        let mut t_path = DVec3::ONE;
+        let mut l = DVec3::ZERO;
+        let mut f = DVec3::ZERO;
         for i in 0..steps {
             let t = (i as f64 + 0.5) * dt;
-            let p = [w[0] * t, w[1] * t, r + w[2] * t];
-            let rx = dot3(p, p).sqrt();
-            let mu_s = dot3(p, sun) / rx;
+            let p = DVec3::new(w[0] * t, w[1] * t, r + w[2] * t);
+            let rx = p.length();
+            let mu_s = p.dot(sun) / rx;
             let m = a.medium(rx - a.bottom);
-            let sigma_s = [0, 1, 2].map(|k| m.rayleigh[k] + m.mie);
+            let sigma_s = m.rayleigh + m.mie;
             let tsun = self.sun_transmittance_table(rx, mu_s);
-            let s = scale(mul(sigma_s, tsun), iso);
+            let s = sigma_s * tsun * iso;
             let step_t = m.extinction.map(|e| (-e * dt).exp());
-            let integ = |src: Rgb| {
-                [0, 1, 2].map(|k| {
-                    let e = m.extinction[k].max(1e-12);
-                    (src[k] - src[k] * step_t[k]) / e
-                })
-            };
-            l = add(l, mul(t_path, integ(s)));
-            f = add(f, mul(t_path, integ(sigma_s)));
-            t_path = mul(t_path, step_t);
+            let integ = |src: Rgb| (src - src * step_t) / m.extinction.max(DVec3::splat(1e-12));
+            l += t_path * integ(s);
+            f += t_path * integ(sigma_s);
+            t_path *= step_t;
         }
         if ground {
-            let p = [w[0] * d, w[1] * d, r + w[2] * d];
-            let n = normalize(p);
+            let p = DVec3::new(w[0] * d, w[1] * d, r + w[2] * d);
+            let n = p / p.length().max(1e-300);
             let rx = a.bottom;
-            let mu_s = dot3(n, sun);
+            let mu_s = n.dot(sun);
             let tsun = self.sun_transmittance_table(rx, mu_s);
             let lit = mu_s.clamp(0.0, 1.0) / std::f64::consts::PI;
-            l = add(l, scale(mul(mul(t_path, tsun), a.ground_albedo), lit));
+            l += t_path * tsun * a.ground_albedo * lit;
         }
         (l, f)
     }
@@ -421,6 +398,7 @@ impl Reference {
     /// The sky's light toward the camera at radius `r` from the direction `view` with the sun toward `sun` (both unit, z up),
     /// for a sun of 1: the single scattering with the sun's transmittance by direct integration, plus the multiple scattering.
     pub fn sky(&self, r: f64, view: [f64; 3], sun: [f64; 3]) -> Rgb {
+        let (view, sun) = (DVec3::from(view), DVec3::from(sun));
         let a = &self.atmosphere;
         let mu = view[2];
         let d = if a.hits_ground(r, mu) {
@@ -428,31 +406,26 @@ impl Reference {
         } else {
             a.distance_to_top(r, mu)
         };
-        let nu = dot3(view, sun);
+        let nu = view.dot(sun);
         let pr = rayleigh_phase(nu);
         let pm = mie_phase(nu, a.mie_g);
         let steps = REF_VIEW_STEPS;
         let dt = d / steps as f64;
-        let mut t_path = [1.0; 3];
-        let mut l = [0.0; 3];
+        let mut t_path = DVec3::ONE;
+        let mut l = DVec3::ZERO;
         for i in 0..steps {
             let t = (i as f64 + 0.5) * dt;
-            let p = [view[0] * t, view[1] * t, r + view[2] * t];
-            let rx = dot3(p, p).sqrt();
-            let mu_s = dot3(p, sun) / rx;
+            let p = DVec3::new(view[0] * t, view[1] * t, r + view[2] * t);
+            let rx = p.length();
+            let mu_s = p.dot(sun) / rx;
             let m = a.medium(rx - a.bottom);
             let tsun = self.sun_transmittance(rx, mu_s);
             let psi = self.multiscatter(rx, mu_s);
-            let s = [0, 1, 2].map(|k| {
-                (m.rayleigh[k] * pr + m.mie * pm) * tsun[k] + (m.rayleigh[k] + m.mie) * psi[k]
-            });
+            let s = (m.rayleigh * pr + m.mie * pm) * tsun + (m.rayleigh + m.mie) * psi;
             let step_t = m.extinction.map(|e| (-e * dt).exp());
-            let integ = [0, 1, 2].map(|k| {
-                let e = m.extinction[k].max(1e-12);
-                (s[k] - s[k] * step_t[k]) / e
-            });
-            l = add(l, mul(t_path, integ));
-            t_path = mul(t_path, step_t);
+            let integ = (s - s * step_t) / m.extinction.max(DVec3::splat(1e-12));
+            l += t_path * integ;
+            t_path *= step_t;
         }
         l
     }
@@ -496,9 +469,9 @@ fn bilinear(t: &[Rgb], w: usize, h: usize, u: f64, v: f64) -> Rgb {
     let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
     let (fx, fy) = (x - x0 as f64, y - y0 as f64);
     let at = |i: usize, j: usize| t[j * w + i];
-    let top = add(scale(at(x0, y0), 1.0 - fx), scale(at(x1, y0), fx));
-    let bottom = add(scale(at(x0, y1), 1.0 - fx), scale(at(x1, y1), fx));
-    add(scale(top, 1.0 - fy), scale(bottom, fy))
+    let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
+    let bottom = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
+    top * (1.0 - fy) + bottom * fy
 }
 
 /// The atmosphere as the sky uniform's floats (`sky.wgsl`'s `Atmosphere`): radii, then Rayleigh, Mie and ozone, the ground.

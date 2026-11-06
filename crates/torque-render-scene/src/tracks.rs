@@ -23,6 +23,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use glam::Vec3;
+
 use crate::decals::{CLIP_ANGLE_COS, DecalPoint, Triangle, clip};
 use crate::textures::TextureSet;
 use crate::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Vertex};
@@ -123,10 +125,6 @@ pub struct TireTracks {
     segments: VecDeque<TrackSegment>,
     ends: BTreeMap<(u32, usize), End>,
     heads: BTreeMap<(u32, usize), TrackSegment>,
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn flat(v: [f32; 3]) -> Option<[f32; 2]> {
@@ -288,38 +286,33 @@ impl TireTracks {
     ) -> Option<TrackSegment> {
         let half = 0.5 * self.rules.width;
         let a = end.point;
-        let mid = [0, 1, 2].map(|k| 0.5 * (a[k] + to[k]));
-        let side = [-along[1], along[0], 0.0];
-        let start = [start_along[0], start_along[1], 0.0];
-        let ahead = [along[0], along[1], 0.0];
+        let mid = ((Vec3::from(a) + Vec3::from(to)) * 0.5).to_array();
+        let side = Vec3::new(-along[1], along[0], 0.0);
+        let start = Vec3::new(start_along[0], start_along[1], 0.0);
+        let ahead = Vec3::new(along[0], along[1], 0.0);
         let reach = 0.5 * (to[0] - a[0]).hypot(to[1] - a[1]) + half + 1.0;
         let mut triangles = Vec::new();
         for tri in surfaces(mid, reach) {
-            let e1 = [0, 1, 2].map(|k| tri[1][k] - tri[0][k]);
-            let e2 = [0, 1, 2].map(|k| tri[2][k] - tri[0][k]);
-            let n = [
-                e1[1] * e2[2] - e1[2] * e2[1],
-                e1[2] * e2[0] - e1[0] * e2[2],
-                e1[0] * e2[1] - e1[1] * e2[0],
-            ];
-            let len = dot(n, n).sqrt();
-            if len < 1e-9 || n[2].abs() / len < CLIP_ANGLE_COS {
+            let [p0, p1, p2] = tri.map(Vec3::from);
+            let n = (p1 - p0).cross(p2 - p0);
+            let len = n.length();
+            if len < 1e-9 || n.z.abs() / len < CLIP_ANGLE_COS {
                 continue;
             }
             let mut poly = tri.to_vec();
             // Past the end the strip ended on, before its new end, within its sides.
-            poly = clip(&poly, a, start.map(|c| -c), 0.0);
-            poly = clip(&poly, to, ahead, 0.0);
-            poly = clip(&poly, mid, side, half);
-            poly = clip(&poly, mid, side.map(|c| -c), half);
+            poly = clip(&poly, a, (-start).to_array(), 0.0);
+            poly = clip(&poly, to, ahead.to_array(), 0.0);
+            poly = clip(&poly, mid, side.to_array(), half);
+            poly = clip(&poly, mid, (-side).to_array(), half);
             if poly.len() < 3 {
                 continue;
             }
             // u across from side to side; v on from the end's by the distance along the strip.
             let point = |p: [f32; 3]| -> DecalPoint {
-                let r = [p[0] - a[0], p[1] - a[1], 0.0];
-                let u = 0.5 + dot(r, side) / (2.0 * half);
-                (p, [u, end.v + dot(r, ahead) / self.rules.width.max(0.01)])
+                let r = Vec3::new(p[0] - a[0], p[1] - a[1], 0.0);
+                let u = 0.5 + r.dot(side) / (2.0 * half);
+                (p, [u, end.v + r.dot(ahead) / self.rules.width.max(0.01)])
             };
             for i in 1..poly.len() - 1 {
                 triangles.push([point(poly[0]), point(poly[i]), point(poly[i + 1])]);

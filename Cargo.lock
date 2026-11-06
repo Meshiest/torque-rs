@@ -3415,6 +3415,7 @@ name = "torque-render-scene"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "glam",
  "rayon",
  "torque-collide",
  "torque-ghost-world",
