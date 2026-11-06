@@ -758,7 +758,8 @@ impl Body {
                     let t = vt.map(|x| -x / ul);
                     let jt = ul * rb.zero_impulse(r, t);
                     let mut want: F3 = std::array::from_fn(|i| slide[k][i] + t[i] * jt);
-                    let cap = rb.friction * sum[k];
+                    // `bodyFriction` is script data: below 0 (or NaN) would push the corner along, so it counts as 0.
+                    let cap = rb.friction.max(0.0) * sum[k];
                     let wl = len_sq(want).sqrt();
                     if wl > cap {
                         want = want.map(|x| x * (cap / wl));
