@@ -14,7 +14,8 @@
 //! `Tab`). The camera behind rides a boom ([`CameraBoom`]) from above the figure's feet, pulled in fast in front of the cubes
 //! and the interiors' walls that come between and let out slowly when they go; it looks through glass. `Tab` moves the camera
 //! from one to the other ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden while the
-//! camera is close to its eyes ([`CLOSE`]), on the way in and on the way out.
+//! camera is close to its eyes ([`CLOSE`]), on the way in and on the way out. A new figure (a respawn) or a teleport cuts the
+//! camera to it ([`OwnView::cut`]), and while the next figure is on its way the view stays where it was.
 
 use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
@@ -66,6 +67,8 @@ pub struct LevelDemo {
     behind: Option<Eye>,
     /// Where the camera was drawn last frame.
     drawn_at: Option<[f32; 3]>,
+    /// The eye last drawn from the figure, held while the server's next figure is on its way (a respawn).
+    held: Option<Eye>,
     /// The map's spot lights (SpotLight objects), drawn where their ghosts are.
     lights: WorldLights,
 }
@@ -120,6 +123,7 @@ impl LevelDemo {
             boom: CameraBoom::new(CAMERA_NEAREST, CAMERA_CLEARANCE),
             behind: None,
             drawn_at: None,
+            held: None,
         })
     }
 
@@ -148,6 +152,7 @@ impl LevelDemo {
         self.camera_mode = None;
         self.boom.reset();
         self.behind = None;
+        self.held = None;
     }
 
     /// `ms` of the clock (see the module docs).
@@ -260,8 +265,15 @@ impl LevelDemo {
 
     /// The eye drawn this frame: [`LevelDemo::eye`], eased from the last mode's after a switch (module docs).
     pub fn drawn_eye(&mut self) -> Eye {
-        let target = self.eye();
         let figure = self.figure();
+        // The figure gone and the server's next one not here yet (a respawn): the view stays where it was.
+        if self.playing.is_some()
+            && figure.is_none()
+            && let Some(eye) = self.held
+        {
+            return eye;
+        }
+        let target = self.eye();
         let mut blend = self.blend;
         let eye = blend.eye(target, |p| match figure {
             Some(f) => {
@@ -277,6 +289,7 @@ impl LevelDemo {
         });
         self.blend = blend;
         self.drawn_at = Some(eye.position);
+        self.held = figure.map(|_| eye);
         eye
     }
 
@@ -362,6 +375,12 @@ impl LevelDemo {
                 }
                 None => self.scene.clear(),
             }
+        }
+        // A new figure (a respawn) or a teleport cuts the camera to it: nothing eased across the way between.
+        if self.figure().is_some_and(|f| f.cut) {
+            self.blend.reset();
+            self.boom.reset();
+            self.behind = None;
         }
         self.place_behind(dt);
     }

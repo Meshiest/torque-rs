@@ -143,3 +143,79 @@ fn a_respawned_figure_stands_on_both_screens() {
         );
     }
 }
+
+fn apart(a: [f32; 3], b: [f32; 3]) -> f32 {
+    (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt()
+}
+
+/// 16 ms and a frame after it: the eye drawn, and where the client has its figure's feet.
+fn drawn_frame(a: &mut ArenaGame) -> ([f32; 3], Option<[f32; 3]>) {
+    a.step(16);
+    a.add_frame_time(0.016);
+    a.view_frame();
+    (
+        a.drawn_eye().position,
+        a.own_look().and_then(|o| o.position),
+    )
+}
+
+/// Ann, knocked out, comes back at the other spawn point (12 m off): her camera cuts there, in the first person and behind
+/// her (`Tab`), standing, crouched or prone, never drawn on the way between nor anywhere else meanwhile (crouched or prone,
+/// the new figure takes a pose other than the fallen one's, which eased the eye from the old place to the new).
+#[test]
+fn the_respawned_figures_camera_cuts_to_the_spawn() {
+    for (behind, pose) in [
+        (false, None),
+        (true, None),
+        (false, Some("crouchKey")),
+        (true, Some("crouchKey")),
+        (false, Some("proneKey")),
+        (true, Some("proneKey")),
+    ] {
+        let label = format!("behind {behind}, {pose:?}");
+        let mut a = client("Ann");
+        a.call("hostGame", &[]).unwrap();
+        for _ in 0..300 {
+            drawn_frame(&mut a);
+            if a.in_game() && a.own_look().is_some_and(|o| o.position.is_some()) {
+                break;
+            }
+        }
+        if behind {
+            a.key(torque::client::input::Key::Tab, true);
+            a.key(torque::client::input::Key::Tab, false);
+        }
+        if let Some(key) = pose {
+            a.call(key, &["1"]).unwrap();
+        }
+        for _ in 0..90 {
+            drawn_frame(&mut a);
+        }
+        let (before, feet) = drawn_frame(&mut a);
+        let feet = feet.unwrap();
+        eval(
+            &mut a,
+            "ArenaFigure.hurt(figureOf(\"Ann\"), 0, 1000, \"\");",
+        );
+        let mut drawn = Vec::new();
+        for _ in 0..240 {
+            drawn.push(drawn_frame(&mut a));
+        }
+        let after = drawn.last().unwrap().0;
+        let back = drawn.last().unwrap().1.unwrap();
+        assert!(
+            apart(feet, back) > 10.0,
+            "{label}: Ann respawns at the other spawn point ({feet:?} to {back:?})"
+        );
+        // Across the ground: the new figure may go on into its pose at the spawn point, its eye lowered there.
+        let across = |p: [f32; 3], q: [f32; 3]| apart([p[0], p[1], 0.0], [q[0], q[1], 0.0]);
+        for (i, (p, _)) in drawn.iter().enumerate() {
+            let gap = across(*p, before).min(across(*p, after));
+            assert!(
+                gap < 1.0,
+                "{label}: frame {i} drew Ann's eye at {p:?}, {gap} m from {before:?} and {after:?}: {:?}",
+                &drawn[i.saturating_sub(4)..(i + 12).min(drawn.len())]
+            );
+        }
+    }
+}

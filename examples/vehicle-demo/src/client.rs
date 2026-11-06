@@ -26,8 +26,10 @@
 //! turned by the mouse as far as a head turns ([`VehicleDemo::seated_eye_point`]: just ahead of the face, so the head does not
 //! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` moves the camera from one to the other
 //! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden while the camera is
-//! close to its eyes ([`CLOSE`]), on the way in and on the way out. Getting in or out cuts. The wheel moves each camera behind (on foot, behind the buggy) in or out within its
-//! own limits ([`FOOT_ZOOM`], [`DRIVE_ZOOM`]), eased ([`Zoom`]); in the first person it does nothing.
+//! close to its eyes ([`CLOSE`]), on the way in and on the way out. Getting in or out cuts, and so does a new figure or a
+//! teleport (R, a fall: [`OwnView::cut`]); while the next figure is on its way the view stays where it was. The wheel moves
+//! each camera behind (on foot, behind the buggy) in or out within its own limits ([`FOOT_ZOOM`], [`DRIVE_ZOOM`]), eased
+//! ([`Zoom`]); in the first person it does nothing.
 
 use std::ops::{Deref, DerefMut};
 
@@ -188,6 +190,8 @@ pub struct VehicleDemo {
     blend: CameraBlend,
     /// Where the camera was drawn last frame.
     drawn_at: Option<[f32; 3]>,
+    /// The eye last drawn from the figure or the buggy, held while the server's next figure is on its way (R, a fall).
+    held: Option<Eye>,
     camera_mode: Option<(bool, bool)>,
     /// The wheel's distances of the camera on foot and the one behind the buggy, each its own.
     foot_zoom: Zoom,
@@ -247,6 +251,7 @@ impl VehicleDemo {
             lights: WorldLights::default(),
             blend: CameraBlend::default(),
             drawn_at: None,
+            held: None,
             camera_mode: None,
             foot_zoom: Zoom::new(CAMERA_DISTANCE, FOOT_ZOOM.0, FOOT_ZOOM.1),
             drive_zoom: Zoom::new(DRIVE_DISTANCE, DRIVE_ZOOM.0, DRIVE_ZOOM.1),
@@ -294,6 +299,7 @@ impl VehicleDemo {
         self.scene.clear();
         self.blend.reset();
         self.camera_mode = None;
+        self.held = None;
     }
 
     /// A world view on `gpu`, the terrain its ground, the sky's clouds sunlit cumulus.
@@ -624,6 +630,14 @@ impl VehicleDemo {
 
     /// The eye drawn this frame: [`VehicleDemo::eye`], eased from the last mode's after a switch (module docs).
     pub fn drawn_eye(&mut self, dt: f32) -> Eye {
+        let followed = self.figure().is_some() || (self.seated() && self.buggy_pose().is_some());
+        // The figure gone and the server's next one not here yet (R, a fall): the view stays where it was.
+        if self.in_world()
+            && !followed
+            && let Some(eye) = self.held
+        {
+            return eye;
+        }
         let target = self.eye(dt);
         let terrain = &self.terrain;
         let eye = self.blend.eye(target, |mut p| {
@@ -633,6 +647,7 @@ impl VehicleDemo {
             p
         });
         self.drawn_at = Some(eye.position);
+        self.held = followed.then_some(eye);
         eye
     }
 
@@ -876,6 +891,12 @@ impl VehicleDemo {
                 self.scene.clear();
                 self.lights.clear();
             }
+        }
+        drop(st);
+        // A new figure (a restart) or a teleport (a fall, the buggy put back with its riders) cuts the camera to it.
+        if self.figure().is_some_and(|f| f.cut) {
+            self.blend.reset();
+            self.drive_yaw = None;
         }
     }
 

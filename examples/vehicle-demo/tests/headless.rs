@@ -2181,3 +2181,49 @@ fn a_warp_or_first_sight_update_draws_another_players_buggy_at_its_pose_with_no_
     }
     a.key(Key::W, false);
 }
+
+/// R far from the start puts a new figure beside the buggy: the camera cuts there, at the eyes and behind, standing or
+/// crouched, never drawn on the way between nor anywhere else while the new figure is on its way (across the ground: the new
+/// figure may go on into its pose there).
+#[test]
+fn r_far_from_the_start_cuts_the_camera_to_the_new_figure() {
+    for (first, crouched) in [(false, false), (true, false), (false, true), (true, true)] {
+        let label = format!("first person {first}, crouched {crouched}");
+        let mut game = host();
+        if first {
+            tab(&mut game);
+        }
+        // 20 m off, dropped onto the ground there.
+        eval(
+            &mut game,
+            "%p = ClientGroup.getObject(0).player; %t = %p.getTransform();
+             %p.setTransform(getWord(%t, 0) + 20 SPC getWord(%t, 1) + 20 SPC getWord(%t, 2) + 4 SPC \"0 0 1 0\");",
+        );
+        for _ in 0..120 {
+            drawn(&mut game);
+        }
+        if crouched {
+            game.call("crouchKey", &["1"]).unwrap();
+        }
+        for _ in 0..60 {
+            drawn(&mut game);
+        }
+        let before = drawn(&mut game).position;
+        game.call("restart", &["1"]).unwrap();
+        let eyes: Vec<[f32; 3]> = (0..120).map(|_| drawn(&mut game).position).collect();
+        let after = *eyes.last().unwrap();
+        let across = |p: [f32; 3], q: [f32; 3]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        assert!(
+            across(before, after) > 8.0,
+            "{label}: {before:?} to {after:?}"
+        );
+        for (i, p) in eyes.iter().enumerate() {
+            let gap = across(*p, before).min(across(*p, after));
+            assert!(
+                gap < 1.0,
+                "{label}: frame {i} drew the eye at {p:?}, {gap} m from {before:?} and {after:?}: {:?}",
+                &eyes[i.saturating_sub(3)..(i + 10).min(eyes.len())]
+            );
+        }
+    }
+}

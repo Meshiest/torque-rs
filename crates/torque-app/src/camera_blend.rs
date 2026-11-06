@@ -24,6 +24,11 @@
 //! **Walls and ground.** The game's own third-person camera keeps clear of what it would look through; the blend gives every
 //! eye it makes to the same rule (the `keep` of [`CameraBlend::eye`]).
 //!
+//! **A teleport** cuts. When what the camera follows moves farther in one frame than anything travels ([`teleported`]: a
+//! respawn, a figure put back at the start), or the client's control object changes, the game resets the blend (and its
+//! boom): the camera is at the new place at once, as TGE's camera is when a control object warps, never eased across what
+//! lies between.
+//!
 //! **The figure** whose eyes the first person looks from is hidden by the game while the camera is within [`CLOSE`] of them,
 //! either way: coming in, the camera's last stretch passes through the back of the head, and going out its first.
 //! [`CameraBlend::remaining`] says how far the camera still is from the mode's eye.
@@ -35,6 +40,21 @@ pub const SETTLE_SECONDS: f32 = 0.24;
 /// How near a figure's eyes the camera is when the game hides the figure (m): within it, coming in from behind and above,
 /// the head would fill the view.
 pub const CLOSE: f32 = 1.2;
+
+/// The fastest a camera's subject is taken to travel (m/s), and the least jump that is a teleport whatever the frame's time (m).
+pub const TELEPORT_SPEED: f32 = 100.0;
+pub const TELEPORT_DISTANCE: f32 = 3.0;
+
+/// Whether a subject at `from` last frame and at `to` this one, `dt` seconds on, was teleported: moved farther than
+/// [`TELEPORT_DISTANCE`] and than [`TELEPORT_SPEED`] carries it in that time (module docs).
+pub fn teleported(from: [f32; 3], to: [f32; 3], dt: f32) -> bool {
+    let d = (0..3)
+        .map(|k| (to[k] - from[k]).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    let reach = TELEPORT_SPEED * if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+    d > TELEPORT_DISTANCE.max(reach)
+}
 
 /// `u` at which a third-order critically damped system from rest has 5% of its way left: `(1 + u + u²/2) e^-u = 0.05`.
 const U95: f32 = 6.295_794;
