@@ -7,7 +7,7 @@
 //! refuses any other public address. The LAN list's pings and queries are answered on the same socket. In memory, the server's
 //! transport is bound at an address and its other end ([`GameServer::memory_end`]) carries the datagrams: a client in the same
 //! process joins it with no socket opened ([`crate::client::ClientNet::Memory`]). On the web (the `web` feature,
-//! [`Listen::Web`]) the server takes browsers' game sockets over WebSocket and serves them the game's page on one TCP port,
+//! `Listen::Web`) the server takes browsers' game sockets over WebSocket and serves them the game's page on one TCP port,
 //! with UDP on the same port number beside it or not at all (torque-server's `net::web`).
 //!
 //! **A tick** ([`GameServer::tick`]) is one 32 ms pass of the main loop: the datagrams waiting, the scripts' events, the
@@ -38,7 +38,7 @@ const SERVICE_EVERY: Duration = Duration::from_millis(2);
 /// The server's main loop over a network host of Torque's net game.
 pub type NetServer = Server<HostParts<TorqueNet>>;
 
-/// The web side of a server that browsers join ([`Listen::Web`]).
+/// The web side of a server that browsers join (`Listen::Web`).
 #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
 #[derive(Debug, Clone)]
 pub struct WebListen {

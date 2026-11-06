@@ -1259,12 +1259,27 @@ fn getting_out_at_speed_or_at_rest_the_buggy_goes_on_smoothly_for_both_players()
     }
 }
 
-/// The breaks in `lines` (a strip's segments, oldest first, from `from` on): where one does not start at the last one's end.
-fn breaks(lines: &[[[f32; 3]; 2]], from: usize) -> usize {
+/// The breaks in `lines` (a strip's segments, oldest first, from `from` on) that are not handed over to `others` (the other
+/// wheels' strips): where one does not start at the last one's end, and that end or the next start lies outside the other
+/// strips (a wheel lays none in the strip of a wheel of its vehicle ahead of it, a rear tire in the front's).
+fn breaks(lines: &[[[f32; 3]; 2]], from: usize, others: &[[[f32; 3]; 2]]) -> usize {
+    let half = 0.5 * torque_example_vehicle_demo::scene::track_rules().width;
+    let covered = |p: [f32; 3]| {
+        others.iter().any(|[a, b]| {
+            let way = [b[0] - a[0], b[1] - a[1]];
+            let t = ((p[0] - a[0]) * way[0] + (p[1] - a[1]) * way[1])
+                / (way[0] * way[0] + way[1] * way[1]).max(1e-8);
+            let on = [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t.clamp(0.0, 1.0));
+            (p[0] - on[0]).hypot(p[1] - on[1]) < half + 0.01
+        })
+    };
     lines
         .windows(2)
         .skip(from.saturating_sub(1))
-        .filter(|w| apart(w[0][1], w[1][0]) > 1e-3)
+        .filter(|w| {
+            let (e, s) = (w[0][1], w[1][0]);
+            apart(e, s) > 1e-3 && !(covered(e) && covered(s))
+        })
         .count()
 }
 
@@ -1313,12 +1328,24 @@ fn another_players_buggy_and_one_rolling_on_without_a_driver_lay_unbroken_tracks
         assert_eq!(lines.len(), 4, "{who}: four strips");
         for (w, l) in &lines {
             let start = from[k].get(*w).copied().unwrap_or(0);
-            assert!(
-                l.len() > start + 100,
-                "{who} wheel {w}: {} laid",
-                l.len() - start
+            // A rear wheel lays none where it rolls in a front wheel's strip.
+            if *w < 2 {
+                assert!(
+                    l.len() > start + 100,
+                    "{who} wheel {w}: {} laid",
+                    l.len() - start
+                );
+            }
+            let others: Vec<_> = lines
+                .iter()
+                .filter(|(o, _)| *o != w)
+                .flat_map(|(_, l)| l.iter().copied())
+                .collect();
+            assert_eq!(
+                breaks(l, start, &others),
+                0,
+                "{who} wheel {w}: breaks in its strip"
             );
-            assert_eq!(breaks(l, start), 0, "{who} wheel {w}: breaks in its strip");
             let longest = l[start..]
                 .iter()
                 .map(|s| apart(s[0], s[1]))
@@ -1927,12 +1954,20 @@ fn escape_opens_the_pause_menu_at_the_wheel_and_resume_or_escape_gives_the_keys_
     assert!(errors(&a).is_empty(), "{:?}", errors(&a));
 }
 
-/// The front of the strip wheel `wheel` of `buggy` lays on `game`: its head's end, or its newest segment's when it has no head.
+/// The front of the strip under wheel `wheel` of `buggy` on `game`: its head's end; where it rolls in the strip of the wheel
+/// ahead of it (and lays none), its contact point, which that strip reaches; else its newest segment's end.
 fn track_front(game: &VehicleDemo, buggy: u32, wheel: usize) -> Option<[f32; 3]> {
     let t = game.scene().tracks()?;
     t.heads()
         .find(|(k, _)| **k == (buggy, wheel))
         .map(|(_, s)| s.line[1])
+        .or_else(|| {
+            game.with_world(|w| {
+                let rolled = w.vehicle_look.get(&buggy)?.wheels.get(wheel)?;
+                rolled.contact.then_some(rolled.point)
+            })
+            .flatten()
+        })
         .or_else(|| {
             t.segments()
                 .filter(|s| s.wheel == (buggy, wheel))
@@ -2242,4 +2277,72 @@ fn r_far_from_the_start_cuts_the_camera_to_the_new_figure() {
             );
         }
     }
+}
+
+/// The pose of the first client's figure on the server.
+fn server_pose(game: &mut VehicleDemo) -> torque::game::sim::player::poses::Pose {
+    let id: u32 = eval(game, "return ClientGroup.getObject(0).player.getId();")
+        .parse()
+        .expect("the figure");
+    let vm = server_mut(game).0.vm_mut();
+    torque::game::sim::player::state(vm, id)
+        .expect("the figure's state")
+        .pose
+}
+
+/// The grade of the terrain at `(x, y)`: the most it rises over a unit step.
+fn grade(game: &VehicleDemo, x: f32, y: f32) -> Option<f32> {
+    let h = game.terrain.height(x, y)?;
+    let mut most = 0.0f32;
+    for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        most = most.max((game.terrain.height(x + dx, y + dy)? - h).abs());
+    }
+    Some(most)
+}
+
+#[test]
+fn standing_on_a_slope_of_the_terrain_z_lies_the_figure_down_and_z_again_stands_it_up() {
+    use torque::game::sim::player::poses::Pose;
+    let mut game = host();
+    // A slope near the start, steep enough that a wide box at the feet would meet the ground uphill (a rise of 0.1 to 0.35
+    // over a unit step: well within the figure's run surface).
+    let spot = (0..80)
+        .flat_map(|i| (0..80).map(move |j| (i as f32 * 2.0 - 80.0, j as f32 * 2.0 - 80.0)))
+        .filter(|&(x, y)| grade(&game, x, y).is_some_and(|g| (0.1..0.35).contains(&g)))
+        .min_by(|a, b| (a.0.hypot(a.1)).total_cmp(&b.0.hypot(b.1)))
+        .expect("a slope near the start");
+    eval(
+        &mut game,
+        &format!(
+            "%p = ClientGroup.getObject(0).player;              %p.setTransform(\"{} {}\" SPC groundAt({}, {}) + 0.1 SPC \"0 0 1 0\"); %p.setVelocity(\"0 0 0\");",
+            spot.0, spot.1, spot.0, spot.1
+        ),
+    );
+    steps(&mut [&mut game], 1500);
+    let feet = server(&game).figure_position().expect("the figure");
+    let ground = game
+        .terrain
+        .height(feet[0], feet[1])
+        .expect("on the terrain");
+    assert!(
+        (feet[2] - ground).abs() < 0.3,
+        "standing at {feet:?} over {ground}"
+    );
+    assert_eq!(server_pose(&mut game), Pose::Stand);
+    press(&mut game, Key::Z);
+    steps(&mut [&mut game], 2000);
+    assert_eq!(
+        server_pose(&mut game),
+        Pose::Prone,
+        "on the slope at {spot:?}"
+    );
+    let lying = server(&game).figure_position().expect("the figure");
+    let ground = game.terrain.height(lying[0], lying[1]).unwrap();
+    assert!(
+        (lying[2] - ground).abs() < 0.5,
+        "lying at {lying:?} over {ground}"
+    );
+    press(&mut game, Key::Z);
+    steps(&mut [&mut game], 2000);
+    assert_eq!(server_pose(&mut game), Pose::Stand);
 }

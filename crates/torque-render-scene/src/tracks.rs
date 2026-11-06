@@ -11,6 +11,12 @@
 //!   or a turn sharper than [`MAX_TURN_COS`] in one segment) starts the next segment square across its own way: the end's
 //!   plane would face the other way and the segment would run on ahead of the wheel. A wheel that leaves the ground, or
 //!   jumps further than [`MAX_GAP`] past what [`MAX_SPEED`] covers in the frame (a respawn), ends its strip.
+//! - **In a leading wheel's strip**: a wheel rolling in the strip of a wheel of its vehicle ahead of it on its way (a rear
+//!   tire in the front tire's track; the front in the rear's backing up) lays none there (where its line lies within half the
+//!   width of that strip's segments laid in the last [`FOLLOW_AGE`] seconds), so the strip is multiplied over the ground once,
+//!   not darkened again by each tire that follows it; over an older strip of its vehicle it lays its own. A segment or head
+//!   that enters or leaves the leader's strip is cut square across where its line crosses that strip's edge (found in
+//!   [`EDGE_STEPS`] halvings), so the two meet with no gap. A leading wheel lays its own strip whatever lies under it.
 //! - **The head** ([`TireTracks::heads`]): each strip runs on from its last segment to the wheel's contact point this frame,
 //!   in a head laid again every frame (replaced by the next segment), so the strip ends under the tire.
 //! - **Textured**: [`TrackRules::texture`] across the strip (u from side to side) and repeating along it every strip's width
@@ -49,6 +55,14 @@ pub const MAX_BRIDGE_DT: f32 = 0.25;
 /// The sharpest turn between a strip's last segment and its next that still joins them (the cosine of the angle between their
 /// ways): past it the next starts square across its own way.
 pub const MAX_TURN_COS: f32 = 0.5;
+
+/// The age (seconds) under which a leading wheel's segment keeps a following wheel from laying its own over it: longer than a
+/// rear tire takes to reach the front's track at a crawl, short enough that a vehicle crossing its own older strip (a turn, a
+/// lap, a figure eight) lays a new one there instead of leaving a hole in it when the old one fades.
+pub const FOLLOW_AGE: f32 = 3.0;
+
+/// The halvings that find where a strip crosses the edge of another's (to 1/4096 of a piece).
+pub const EDGE_STEPS: u32 = 12;
 
 /// The shortest head laid (units): a wheel nearer its strip's end than this draws none.
 pub const MIN_HEAD: f32 = 0.05;
@@ -233,7 +247,7 @@ impl TireTracks {
                 // The head: from the strip's end to the wheel, as the next segment will start.
                 if gone >= MIN_HEAD
                     && let Some(head) =
-                        self.segment(w.key, end, w.point, start_of(end, along), along, surfaces)
+                        self.piece(w.key, end, w.point, start_of(end, along), along, surfaces)
                 {
                     self.heads.insert(w.key, head);
                 }
@@ -248,7 +262,7 @@ impl TireTracks {
                 let to = [0, 1, 2].map(|c| end.point[c] + d[c] * f);
                 let step = (to[0] - at.point[0]).hypot(to[1] - at.point[1]);
                 let start_along = start_of(at, along);
-                if let Some(seg) = self.segment(w.key, at, to, start_along, along, surfaces) {
+                if let Some(seg) = self.piece(w.key, at, to, start_along, along, surfaces) {
                     self.push(seg);
                 }
                 at = End {
@@ -260,6 +274,81 @@ impl TireTracks {
             kept.insert(w.key, at);
         }
         self.ends = kept;
+    }
+
+    /// Whether `p` lies in the strip of one of the `leaders` (module docs): beside one of their segments younger than
+    /// [`FOLLOW_AGE`] (between its ends; not a head, which a wheel that leaves the ground never lays), within half the width of
+    /// its line along the ground and within a width up or down.
+    fn in_strip(&self, leaders: &[(u32, usize)], p: [f32; 3]) -> bool {
+        let half = 0.5 * self.rules.width;
+        let p = Vec3::from(p);
+        self.segments
+            .iter()
+            .filter(|s| s.age < FOLLOW_AGE && leaders.contains(&s.wheel))
+            .any(|s| {
+                let [a, b] = s.line.map(Vec3::from);
+                let way = (b - a).truncate();
+                let t = (p - a).truncate().dot(way) / way.length_squared().max(1e-8);
+                let on = a.lerp(b, t);
+                (0.0..=1.0).contains(&t)
+                    && (p - on).truncate().length() < half
+                    && (p.z - on.z).abs() < 2.0 * half
+            })
+    }
+
+    /// The part of the piece of `wheel`'s strip from `end` to `to` that lies outside the strips of the wheels of its vehicle
+    /// ahead of it along `along` (module docs; where their strips ended last frame): all of it, none, or the part before it
+    /// enters one or after it leaves one, cut square across where it crosses that strip's edge.
+    fn piece(
+        &self,
+        wheel: (u32, usize),
+        end: End,
+        to: [f32; 3],
+        start_along: [f32; 2],
+        along: [f32; 2],
+        surfaces: &Surfaces<'_>,
+    ) -> Option<TrackSegment> {
+        let leaders: Vec<(u32, usize)> = self
+            .ends
+            .iter()
+            .filter(|(k, o)| {
+                k.0 == wheel.0
+                    && **k != wheel
+                    && (o.point[0] - end.point[0]) * along[0]
+                        + (o.point[1] - end.point[1]) * along[1]
+                        > 0.0
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        let from_in = self.in_strip(&leaders, end.point);
+        if from_in == self.in_strip(&leaders, to) {
+            if from_in {
+                return None;
+            }
+            return self.segment(wheel, end, to, start_along, along, surfaces);
+        }
+        let at = |f: f32| (Vec3::from(end.point).lerp(Vec3::from(to), f)).to_array();
+        let (mut lo, mut hi) = (0.0f32, 1.0f32);
+        for _ in 0..EDGE_STEPS {
+            let m = 0.5 * (lo + hi);
+            if self.in_strip(&leaders, at(m)) == from_in {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        let edge = at(0.5 * (lo + hi));
+        if from_in {
+            let step = (edge[0] - end.point[0]).hypot(edge[1] - end.point[1]);
+            let out = End {
+                point: edge,
+                along,
+                v: end.v + step / self.rules.width.max(0.01),
+            };
+            self.segment(wheel, out, to, along, along, surfaces)
+        } else {
+            self.segment(wheel, end, edge, start_along, along, surfaces)
+        }
     }
 
     /// Keeps a segment laid (the oldest let go past [`TrackRules::max_segments`]).

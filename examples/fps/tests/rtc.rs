@@ -188,7 +188,12 @@ fn a_browser_whose_channel_cannot_open_plays_over_its_socket() {
         ..RtcSetup::default()
     });
     let (mut ann, mut bob, watch) = two_players(&mut s, 1500);
-    run(&mut s, &mut [&mut ann, &mut bob], 2000);
+    // The channel's open time is the wall clock's, the game's is stepped: step until the wall clock passes it (at most 10 s),
+    // however fast the steps run.
+    let began = std::time::Instant::now();
+    while !watch.borrow().failed && began.elapsed().as_secs() < 10 {
+        run(&mut s, &mut [&mut ann, &mut bob], 100);
+    }
     {
         let w = watch.borrow();
         assert!(
