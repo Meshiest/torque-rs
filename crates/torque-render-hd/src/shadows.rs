@@ -8,7 +8,7 @@
 //!   cascade at all ([`ShadowStats::static_redraws`]).
 //! - **The dynamic overlay**: each frame a cascade (or a face) with shapes in it is copied from the static map and the shapes are
 //!   drawn over the copy; one that had shapes last frame but none now is copied back clean.
-//! - **Point lights** ([`assign_slots`]): every light whose lit sphere meets the view gets a cube, at a resolution by its importance:
+//! - **Point lights** (`assign_slots`): every light whose lit sphere meets the view gets a cube, at a resolution by its importance:
 //!   the shadow maps are three cube arrays ([`point_tiers`]), the quality's face size for the few most important lights, half of
 //!   it for the next, a quarter for the rest (the first tier's size, its count half the quality's point lights; then as many as the
 //!   quality's; then 16), so a room of twenty lamps keeps every lamp's shadow within less memory than equal slots took. A

@@ -13,7 +13,7 @@
 //! canvas's device is asked for, `map` while the game says it is loading ([`crate::App::loading`]), then `ready`) and, every
 //! [`FrameTimes::EVERY`], the frames a second (`data-torque-fps`) and the mean and longest time between two frames in ms
 //! (`data-torque-frame-ms`, `mean max`), and the quality last applied (`data-torque-quality`). A game marks what a check
-//! waits on with [`mark_play`].
+//! waits on with `mark_play`.
 
 use std::cell::{Cell, RefCell};
 

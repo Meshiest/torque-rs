@@ -2834,7 +2834,7 @@ impl<E: HdExtension> HdWorld<E> {
         self.pipelines_made += 1;
     }
 
-    /// Starts making the pipelines the effects draw with ([`effect_keys`]: particles, ribbons, bolt trails, decals and tire
+    /// Starts making the pipelines the effects draw with (`effect_keys`: particles, ribbons, bolt trails, decals and tire
     /// tracks, which a scene often first shows mid-game, at a shot or an impact), on a worker thread where there is one, so their
     /// shaders' compiles cost no frame (a cold first shot made seven in two frames of 0.6 s each). Each frame takes the ones
     /// made; a frame that needs one still being made waits for the rest. Where no thread can be started (a browser) they are
