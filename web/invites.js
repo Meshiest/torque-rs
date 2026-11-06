@@ -719,8 +719,10 @@ export function joinInvite(code) {
       if (failing || opened || ended) return;
       failing = true;
       const details = await detailsOf(pc, seen);
+      // the channel opened while the details were gathered: it stays
+      if (opened) return;
       pc.close();
-      if (opened || ended) return;
+      if (ended) return;
       fail(NO_RELAY);
       said.after(detailsBox(details));
     };
