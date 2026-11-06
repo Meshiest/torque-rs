@@ -867,7 +867,7 @@ impl VehicleDemo {
             return note;
         }
         if self.seated() {
-            return format!("E to get out      {:.0} km/h", self.buggy_speed() * 3.6);
+            return format!("E to exit         {:.0} km/h", self.buggy_speed() * 3.6);
         }
         let (Some(f), Some(m)) = (self.figure(), self.buggy_pose()) else {
             return String::new();
