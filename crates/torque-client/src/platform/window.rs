@@ -11,6 +11,10 @@
 //! What the window draws, and with what, is the game's ([`WindowGame`]): it makes its GPU state when the window is made, draws
 //! each frame and runs the host's clock (so it can time it).
 //!
+//! In a browser the window is a canvas the page sizes (it fills the page): the game draws at its device pixels under the
+//! page's render scale ([`web_input::RenderScale`]), and every size and mouse position the game is given is in those drawn
+//! pixels. A native window draws every pixel.
+//!
 //! Credit: the window's half of the screen modes and the cursor's hold follow TGE's Windows platform layer as Torque3D (MIT)
 //! keeps it, `platformWin32/winWindow.cpp` (Copyright (c) 2012 GarageGames, LLC). The code is this crate's own.
 
@@ -270,6 +274,10 @@ struct WindowApp<G: WindowGame> {
     /// In a browser: the page's focus and pointer lock ([`web_input::PageEvents`]).
     #[cfg(target_arch = "wasm32")]
     page: web_input::PageEvents,
+    /// The window's client area in device pixels, the part of them the game draws, and the size that gives (the game's).
+    device: (u32, u32),
+    scale: web_input::RenderScale,
+    drawn: (u32, u32),
 }
 
 /// In a browser, a page whose animation frames stopped (a hidden tab) still runs its clock this often (its network, its
@@ -330,6 +338,13 @@ fn window_app<G: WindowGame>(game: G, event_loop: &EventLoop<()>) -> WindowApp<G
         redraw_asked: None,
         #[cfg(target_arch = "wasm32")]
         page: web_input::PageEvents::listen(),
+        device: (1, 1),
+        scale: if cfg!(target_arch = "wasm32") {
+            web_input::RenderScale::Auto
+        } else {
+            web_input::RenderScale::Factor(1.0)
+        },
+        drawn: (1, 1),
     }
 }
 impl<G: WindowGame> WindowApp<G> {
@@ -481,7 +496,13 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
             self.game.note(&line);
         }
         let inner = window.inner_size();
-        let size = (inner.width.max(1), inner.height.max(1));
+        #[cfg(target_arch = "wasm32")]
+        if let Some(scale) = web_input::page_render_scale() {
+            self.scale = scale;
+        }
+        self.device = (inner.width.max(1), inner.height.max(1));
+        self.drawn = web_input::drawn_size(self.device, self.scale);
+        let size = self.drawn;
         if let Err(e) = self.game.window_made(&window, size) {
             self.error = Some(e);
             event_loop.exit();
@@ -514,10 +535,11 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
                     self.display_mhz = window
                         .current_monitor()
                         .and_then(|m| m.refresh_rate_millihertz());
-                    let size = (size.width.max(1), size.height.max(1));
-                    self.game.resized(size);
+                    self.device = (size.width.max(1), size.height.max(1));
+                    self.drawn = web_input::drawn_size(self.device, self.scale);
+                    self.game.resized(self.drawn);
                     // a size the window was given by a screen mode or by hand lays the HUD out again.
-                    self.game.host().window_resized(size);
+                    self.game.host().window_resized(self.drawn);
                 }
             }
             // losing the focus, or being hidden or minimised, frees the cursor in the same event.
@@ -538,7 +560,8 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
             WindowEvent::CursorMoved { position, .. } => {
                 // TGE posts no mouse moves while the window holds the cursor (it is put back at the centre each pass).
                 if !self.lock.held() {
-                    self.cursor = (position.x as i32, position.y as i32);
+                    self.cursor =
+                        web_input::drawn_point((position.x, position.y), self.device, self.drawn);
                     self.game.host().mouse_move(self.cursor);
                 }
             }
@@ -681,6 +704,19 @@ impl<G: WindowGame> WindowApp<G> {
         {
             let news = self.page.take();
             self.page_news(news);
+            // The page's render scale, changed: the game draws and lays out at the new size.
+            if let Some(scale) = web_input::page_render_scale()
+                && scale != self.scale
+                && self.window.is_some()
+            {
+                self.scale = scale;
+                let drawn = web_input::drawn_size(self.device, scale);
+                if drawn != self.drawn {
+                    self.drawn = drawn;
+                    self.game.resized(drawn);
+                    self.game.host().window_resized(drawn);
+                }
+            }
         }
         self.owed += now.duration_since(self.last).as_secs_f64() * 1000.0;
         self.last = now;

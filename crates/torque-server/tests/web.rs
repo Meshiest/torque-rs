@@ -441,10 +441,15 @@ fn quiet_sockets_and_slow_readers_are_closed() {
     let local = first.expect("the slow reader's first datagram").0;
     let start = Instant::now();
     let mut sent = 0usize;
+    let mut talked = start;
     while t.holds(local) && start.elapsed() < Duration::from_secs(20) {
         let pass = Instant::now();
-        // The slow reader keeps talking, so it is not closed as quiet.
-        let _ = slow.send(Message::binary(vec![5]));
+        // The slow reader keeps talking, so it is not closed as quiet; well inside the message rate, since the loop runs
+        // until the kernel's buffers fill, and Linux's on loopback hold megabytes (thousands of passes).
+        if talked.elapsed() >= Duration::from_millis(50) {
+            let _ = slow.send(Message::binary(vec![5]));
+            talked = Instant::now();
+        }
         if t.send_to(local, &[0; 1400]) {
             sent += 1;
         }
@@ -455,7 +460,8 @@ fn quiet_sockets_and_slow_readers_are_closed() {
         !t.holds(local),
         "the slow reader is closed after {sent} datagrams"
     );
-    assert_eq!(t.counters().closed_stalled, 1);
+    let c = t.counters();
+    assert_eq!(c.closed_stalled, 1, "after {sent} datagrams: {c:?}");
 }
 
 #[test]

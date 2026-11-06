@@ -6,8 +6,12 @@
 //! mouse is free over it. Unless an Esc reached the game just before ([`ESCAPE_WINDOW_MS`]): a browser that passes the key on
 //! (Chromium's keyboard lock in full screen) must not have it run twice.
 //!
-//! [`PageEvents`] (web builds) listens on the page for the losses the window's own events do not carry: the window's `blur`
+//! `PageEvents` (web builds) listens on the page for the losses the window's own events do not carry: the window's `blur`
 //! and the document's `pointerlockchange`.
+//!
+//! **The render scale.** A page's canvas fills its window; the game draws at the canvas's device pixels times the page's
+//! render scale ([`RenderScale`], the page's root element's `data-torque-render-scale`: `auto`, or a factor such as `0.75`),
+//! and its GUI is laid out at that size ([`drawn_size`]). The browser stretches the drawing over the canvas.
 
 use crate::input::Key;
 
@@ -38,6 +42,67 @@ impl HeldKeys {
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
+}
+
+/// How many of the canvas's device pixels the game draws.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RenderScale {
+    /// Every device pixel up to about a 1920x1080 screen's worth ([`AUTO_PIXELS`]), fewer past it (the same shape).
+    Auto,
+    /// This part of the device pixels on each side (from [`MIN_FACTOR`] to 1).
+    Factor(f32),
+}
+
+/// The most pixels [`RenderScale::Auto`] draws: a 1920x1080 screen's.
+pub const AUTO_PIXELS: u64 = 1920 * 1080;
+
+/// The least part of the device pixels a page may ask for.
+pub const MIN_FACTOR: f32 = 0.25;
+
+impl RenderScale {
+    /// The scale a page's `text` names (`auto`, or a factor from [`MIN_FACTOR`] to 1); None for anything else.
+    pub fn parse(text: &str) -> Option<RenderScale> {
+        if text == "auto" {
+            return Some(RenderScale::Auto);
+        }
+        let f: f32 = text.parse().ok()?;
+        (MIN_FACTOR..=1.0)
+            .contains(&f)
+            .then_some(RenderScale::Factor(f))
+    }
+}
+
+/// The size the game draws at for a canvas of `device` pixels under `scale` (each side at least 1).
+pub fn drawn_size(device: (u32, u32), scale: RenderScale) -> (u32, u32) {
+    let (w, h) = (device.0.max(1), device.1.max(1));
+    let f = match scale {
+        RenderScale::Factor(f) => f64::from(f),
+        RenderScale::Auto => {
+            let pixels = u64::from(w) * u64::from(h);
+            if pixels <= AUTO_PIXELS {
+                return (w, h);
+            }
+            (AUTO_PIXELS as f64 / pixels as f64).sqrt()
+        }
+    };
+    let side = |n: u32| ((f64::from(n) * f).floor() as u32).clamp(1, n);
+    (side(w), side(h))
+}
+
+/// A point at `at` on a canvas of `device` pixels, in the game's `drawn` pixels.
+pub fn drawn_point(at: (f64, f64), device: (u32, u32), drawn: (u32, u32)) -> (i32, i32) {
+    let along = |p: f64, d: u32, g: u32| (p * f64::from(g) / f64::from(d.max(1))) as i32;
+    (along(at.0, device.0, drawn.0), along(at.1, device.1, drawn.1))
+}
+
+/// The render scale the page asks for (its root element's `data-torque-render-scale`), if it names one.
+#[cfg(target_arch = "wasm32")]
+pub fn page_render_scale() -> Option<RenderScale> {
+    let text = web_sys::window()?
+        .document()?
+        .document_element()?
+        .get_attribute("data-torque-render-scale")?;
+    RenderScale::parse(&text)
 }
 
 /// What the page said since the window last looked.

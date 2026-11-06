@@ -379,3 +379,31 @@ fn the_hosts_map_list_stays_in_the_middle_of_the_view_and_lists_the_maps() {
         assert_eq!((p[2], p[3]), (320, 440), "the map panel keeps its size");
     }
 }
+
+#[test]
+fn a_browser_pages_main_menu_is_a_centered_column_at_wide_and_tall_sizes() {
+    let mut g = client();
+    g.set_global("$Arena::JoinOnly", "1");
+    g.set_global("$Arena::Solo", "1");
+    for size in [(2560, 1080), (1000, 700), (800, 1400), (2217, 935)] {
+        resize(&mut g, size);
+        g.call("showMainMenu", &[]).unwrap();
+        g.step(64);
+        check(
+            &mut g,
+            "MainPanel",
+            &[
+                "MainTitle",
+                "MainLine",
+                "NameEdit",
+                "HostButton",
+                "JoinButton",
+                "QuitButton",
+                "HostNote",
+                "JoinNote",
+                "MainStatus",
+            ],
+            size,
+        );
+    }
+}

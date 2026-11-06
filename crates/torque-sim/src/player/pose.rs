@@ -22,7 +22,7 @@
 //!   (`canCrouch`, `canStand`), from the top of the box the Player has.
 //! - **The box**: the object box becomes the pose's (`boundingBox`, `crouchBoundingBox` or `proneBoundingBox`): half its
 //!   width and depth each side of the origin, from the feet up its height, as `Player::setPose` makes it.
-//! - **The speeds** ([`super::update_move::move_speed`]): the pose's forward, backward and side speeds
+//! - **The speeds** (`super::update_move::move_speed`): the pose's forward, backward and side speeds
 //!   (`maxCrouchForwardSpeed` and the rest), the underwater ones first as before; the run force is the pose's (`sprintForce`,
 //!   `crouchForce`, `proneForce`).
 //! - **The reach** ([`reach_box`]): while the body still moves between two poses (the blend, or the way down or up), the box

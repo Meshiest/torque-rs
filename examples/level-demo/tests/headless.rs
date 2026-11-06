@@ -425,3 +425,37 @@ fn the_camera_behind_the_figure_stays_under_an_interior_ceiling_and_in_front_of_
         "the camera at {eye:?} behind the figure at {figure:?}"
     );
 }
+
+/// The panel `p` is centered in a window of `size` (to a pixel or two), and each rect of `inner` is inside it.
+fn centered(p: [i32; 4], size: (u32, u32), inner: &[(&str, [i32; 4])]) {
+    let (w, h) = (size.0 as i32, size.1 as i32);
+    assert!(
+        (2 * p[0] + p[2] - w).abs() <= 2,
+        "across at {size:?}: {p:?}"
+    );
+    assert!((2 * p[1] + p[3] - h).abs() <= 2, "down at {size:?}: {p:?}");
+    for (name, r) in inner {
+        let inside = r[0] >= p[0]
+            && r[1] >= p[1]
+            && r[0] + r[2] <= p[0] + p[2]
+            && r[1] + r[3] <= p[1] + p[3];
+        assert!(inside, "{name} {r:?} outside the panel {p:?} at {size:?}");
+    }
+}
+
+#[test]
+fn the_menu_stays_centered_at_wide_and_tall_sizes() {
+    let files = GameFiles::bundled().expect("the game folder");
+    let mut game = LevelDemo::new(files).expect("the client");
+    game.step(64);
+    for size in [(2560, 1080), (1000, 700), (800, 1400), (2217, 935)] {
+        game.client.host.window_resized(size);
+        game.step(64);
+        let panel = game.client.control_rect("MenuPanel").unwrap();
+        let inner: Vec<(&str, [i32; 4])> = ["MenuTitle", "MenuList", "MenuStatus", "MapButton0"]
+            .into_iter()
+            .map(|n| (n, game.client.control_rect(n).unwrap()))
+            .collect();
+        centered(panel, size, &inner);
+    }
+}

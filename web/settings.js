@@ -1,11 +1,16 @@
-// The page's settings: the renderer's quality and the frame-rate display, kept in the browser's storage (`localStorage`) for
-// the next visit. No page needed: the tests run it in Node (`node --test web/settings.test.mjs`).
+// The page's settings: the renderer's quality, the render scale and the frame-rate display, kept in the browser's storage
+// (`localStorage`) for the next visit. No page needed: the tests run it in Node (`node --test web/settings.test.mjs`).
 //
 // Until the player picks a quality, Firefox starts at Low (its WebGPU spends far more on each pass and draw than Chromium's)
 // and every other browser at High. Storage that is missing, full, blocked or holding something else never stops the page: the
 // settings are then the defaults, and a change lasts until the page is closed.
+//
+// The render scale is how many of the canvas's device pixels the game draws (the page's `data-torque-render-scale`, which
+// the game reads): `auto` (the default) draws every one up to a 1920x1080 screen's worth and fewer past it, so a large or
+// sharp screen keeps its frame rate; the others are a part of them on each side.
 
 export const QUALITIES = ['low', 'medium', 'high', 'ultra'];
+export const SCALES = ['auto', '1', '0.75', '0.5'];
 
 // The storage key.
 export const KEY = 'torque-settings';
@@ -17,7 +22,7 @@ export function isGecko(userAgent) {
 
 // The settings before the player picks any (`picked`: whether the player picked the quality).
 export function defaults(userAgent) {
-  return { quality: isGecko(userAgent) ? 'low' : 'high', picked: false, fps: false };
+  return { quality: isGecko(userAgent) ? 'low' : 'high', picked: false, fps: false, scale: 'auto' };
 }
 
 // The settings kept in `storage` (a `localStorage`), over the defaults for `userAgent`; a value that is not a setting's is
@@ -33,6 +38,7 @@ export function load(storage, userAgent) {
   if (kept && typeof kept === 'object') {
     if (QUALITIES.includes(kept.quality)) Object.assign(settings, { quality: kept.quality, picked: true });
     if (typeof kept.fps === 'boolean') settings.fps = kept.fps;
+    if (SCALES.includes(kept.scale)) settings.scale = kept.scale;
   }
   return settings;
 }
@@ -40,7 +46,10 @@ export function load(storage, userAgent) {
 // Keeps `settings` in `storage` (the quality only once the player picked it); false when it could not.
 export function save(storage, settings) {
   try {
-    storage.setItem(KEY, JSON.stringify({ quality: settings.picked ? settings.quality : undefined, fps: settings.fps }));
+    storage.setItem(
+      KEY,
+      JSON.stringify({ quality: settings.picked ? settings.quality : undefined, fps: settings.fps, scale: settings.scale }),
+    );
     return true;
   } catch {
     return false;

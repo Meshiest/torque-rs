@@ -104,3 +104,39 @@ fn a_page_not_played_alone_also_offers_to_host_and_join_by_room_code() {
     eval("$World::RoomCode = \"ABCD-EFGH\"; showMenu();");
     assert!(eval("return MenuStatus.getValue();").contains("ABCD-EFGH"));
 }
+
+#[test]
+fn the_web_builds_menu_is_a_centered_column_at_wide_and_tall_sizes() {
+    let pack = web_pack(&GameFiles::bundled().expect("the game folder"));
+    let mut game =
+        alone(GameFiles::unpack(&pack).expect("the pack reads back")).expect("the game starts");
+    game.set_global("$World::WebInvites", "1");
+    for size in [(2560, 1080), (1000, 700), (800, 1400), (2217, 935)] {
+        game.client.host.window_resized(size);
+        game.client.call("showMenu", &[]).unwrap();
+        game.step(64);
+        let p = game.client.control_rect("MenuPanel").unwrap();
+        let (w, h) = (size.0 as i32, size.1 as i32);
+        assert!(
+            (2 * p[0] + p[2] - w).abs() <= 2,
+            "across at {size:?}: {p:?}"
+        );
+        assert!((2 * p[1] + p[3] - h).abs() <= 2, "down at {size:?}: {p:?}");
+        for name in [
+            "MenuTitle",
+            "MenuLine",
+            "NameEdit",
+            "AloneButton",
+            "HostButton",
+            "JoinAddressButton",
+            "MenuStatus",
+        ] {
+            let r = game.client.control_rect(name).unwrap();
+            let inside = r[0] >= p[0]
+                && r[1] >= p[1]
+                && r[0] + r[2] <= p[0] + p[2]
+                && r[1] + r[3] <= p[1] + p[3];
+            assert!(inside, "{name} {r:?} outside the panel {p:?} at {size:?}");
+        }
+    }
+}

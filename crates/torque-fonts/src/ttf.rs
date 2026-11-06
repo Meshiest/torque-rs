@@ -605,25 +605,31 @@ pub fn cp1252(b: u8) -> char {
     }
 }
 
+/// Checks the file ([`check`]), then reads it with fontdue (no substitutions).
+pub(crate) fn load(bytes: &[u8]) -> Result<(fontdue::Font, Checked), TtfError> {
+    let metrics = check(bytes)?;
+    let settings = fontdue::FontSettings {
+        load_substitutions: false,
+        scale: FONTDUE_SCALE,
+        ..fontdue::FontSettings::default()
+    };
+    // fontdue reads a kern table on every load (its format 3 loops over glyphCount squared); this crate does no kerning, so it
+    // gets the file with the kern table's version made one it does not read.
+    let mut owned = bytes.to_vec();
+    if let Some(at) = metrics.kern_at
+        && let Some(v) = owned.get_mut(at..at + 2)
+    {
+        v.copy_from_slice(&[0xff, 0xff]);
+    }
+    let font =
+        fontdue::Font::from_bytes(owned, settings).map_err(|e| TtfError::Parse(e.to_string()))?;
+    Ok((font, metrics))
+}
+
 impl TtfFace {
     /// Checks the file ([`check`]), then reads it with fontdue (no substitutions).
     pub fn parse(bytes: &[u8]) -> Result<TtfFace, TtfError> {
-        let metrics = check(bytes)?;
-        let settings = fontdue::FontSettings {
-            load_substitutions: false,
-            scale: FONTDUE_SCALE,
-            ..fontdue::FontSettings::default()
-        };
-        // fontdue reads a kern table on every load (its format 3 loops over glyphCount squared); this crate does no kerning, so it
-        // gets the file with the kern table's version made one it does not read.
-        let mut owned = bytes.to_vec();
-        if let Some(at) = metrics.kern_at
-            && let Some(v) = owned.get_mut(at..at + 2)
-        {
-            v.copy_from_slice(&[0xff, 0xff]);
-        }
-        let font = fontdue::Font::from_bytes(owned, settings)
-            .map_err(|e| TtfError::Parse(e.to_string()))?;
+        let (font, metrics) = load(bytes)?;
         Ok(TtfFace { font, metrics })
     }
 

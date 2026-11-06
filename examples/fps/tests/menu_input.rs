@@ -79,6 +79,34 @@ fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
 
+#[test]
+fn the_menu_draws_its_text_with_the_system_fonts() {
+    if torque::fonts::system::SystemFonts::new().is_none() {
+        // CI's images have fonts (the test job installs DejaVu); elsewhere a system with none skips.
+        assert!(std::env::var_os("CI").is_none(), "CI has no font files");
+        eprintln!("this system has no font files: skipped");
+        return;
+    }
+    let mut g = client();
+    let draws = g.host.draw_frame();
+    assert_eq!(
+        draws.report.no_font, 0,
+        "text drawn with no font: {:?}",
+        draws.report.missing_fonts
+    );
+    let glyphs: usize = draws
+        .batches
+        .iter()
+        .filter(|b| {
+            b.texture
+                .as_ref()
+                .is_some_and(|t| t.name.starts_with("font:"))
+        })
+        .map(|b| b.quads.len())
+        .sum();
+    assert!(glyphs > 20, "the menu's glyphs drawn: {glyphs}");
+}
+
 /// `key` pressed with Ctrl held.
 fn ctrl(game: &mut ArenaGame, key: Key) {
     game.key(Key::ControlLeft, true);
@@ -340,7 +368,7 @@ fn a_page_played_alone_offers_to_play_alone_or_play_by_link() {
     // Play alone, host with an invite link, or join with one: no game server's host or join.
     for (button, text, command) in [
         ("JoinButton", "Play alone", "joinPage();"),
-        ("HostButton", "Host with a link", "invitePlayers();"),
+        ("HostButton", "Host with a link", "hostWithLink();"),
         (
             "QuitButton",
             "Join with Link",
@@ -364,4 +392,32 @@ fn a_page_played_alone_offers_to_play_alone_or_play_by_link() {
         );
     }
     assert!(!eval("return MainLine.getValue();").contains("network"));
+}
+
+#[test]
+fn host_with_a_link_joins_the_pages_game_and_an_invited_page_offers_to_play_alone_instead() {
+    let mut g = client();
+    g.set_global("$Arena::JoinOnly", "1");
+    g.set_global("$Arena::Solo", "1");
+    g.call("showMainMenu", &[]).unwrap();
+    g.call("eval", &["hostWithLink();"]).unwrap();
+    assert_eq!(
+        g.global("$Arena::JoinAsked"),
+        "1",
+        "into the page's own game"
+    );
+    assert_eq!(g.global("$Arena::PageAsk"), "host", "with the panel");
+
+    let mut g = client();
+    g.set_global("$Arena::JoinOnly", "1");
+    g.set_global("$Arena::Invited", "1");
+    g.call("showMainMenu", &[]).unwrap();
+    let mut eval = |code: &str| g.call("eval", &[code]).unwrap();
+    assert_eq!(eval("return QuitButton.isVisible();"), "1");
+    assert_eq!(eval("return QuitButton.getText();"), "Play alone instead");
+    assert_eq!(
+        eval("return QuitButton.command;"),
+        "$Arena::PageAsk = \"back\";"
+    );
+    assert_eq!(eval("return HostButton.isVisible();"), "0");
 }

@@ -152,6 +152,31 @@ mod page {
     pub fn host_closed() -> Vec<u32> {
         web_host::host_closed()
     }
+
+    /// The page bridge: a request of the page's (`torque.call`, `eval`, `getVar`, `setVar`; the settings' quality).
+    #[wasm_bindgen(js_name = torqueRequest)]
+    pub fn torque_request(
+        kind: &str,
+        a: String,
+        b: String,
+        args: Vec<String>,
+        resolve: wasm_bindgen::JsValue,
+        reject: wasm_bindgen::JsValue,
+    ) {
+        torque::app::page_bridge::page::request(kind, a, b, args, resolve, reject)
+    }
+
+    /// The page bridge: the page registers its handler `name` (`torque.on`).
+    #[wasm_bindgen(js_name = torqueOn)]
+    pub fn torque_on(name: &str) -> Result<(), String> {
+        torque::app::page_bridge::register_handler(name).map_err(|e| e.to_json())
+    }
+
+    /// The page bridge: the page drops its handler `name` (`torque.off`).
+    #[wasm_bindgen(js_name = torqueOff)]
+    pub fn torque_off(name: &str) {
+        torque::app::page_bridge::unregister_handler(name)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

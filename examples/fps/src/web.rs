@@ -24,12 +24,13 @@
 //! (`data-torque-ended` carries it).
 //!
 //! **Played alone** (a page `web/build.mjs --solo` marked, for a site with no game server): the page runs the server in its
-//! worker as a host player's does, with no room, and calls [`start_solo_client`]; the main menu offers to play again, to
-//! host with a link and to join with one, and the Esc menu to invite players. Those ask the page (its `torqueAsk`,
+//! worker as a host player's does, with no room, and calls [`start_solo_client`]; the game waits at the main menu, which
+//! offers to play alone, to host with a link and to join with one, and the Esc menu to invite players. Those ask the page (its `torqueAsk`,
 //! `web/invites.js`, through [`torque::app::web_join::ask_page`]), which trades connection codes by hand.
 //!
 //! **Joined by an invite link** (`web/invites.js`): the page holds the data channel to the host and calls
-//! [`start_link_client`]; the client is on [`Target::Page`], fed by the page as the host player's local link is.
+//! [`start_link_client`]; the client is on [`Target::Page`], fed by the page as the host player's local link is. It joins
+//! once the channel opens ([`link_opened`]): the trade of links by hand takes longer than a join waits for its answer.
 
 use std::cell::RefCell;
 
@@ -37,7 +38,7 @@ use torque::app::manifest::Manifest;
 use torque::app::view::WorldView;
 use torque::app::web_join::{SERVER, Target, query, rooms_url, socket_url};
 use torque::app::{App, Host};
-use torque::client::net::web_rtc::LinkWatch;
+use torque::client::net::web_rtc::{Link, LinkWatch};
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
 use torque_render_core::Gpu;
@@ -179,8 +180,15 @@ fn start(files: GameFiles, target: Option<Target>, solo: bool) -> Result<(), Str
         frames: 0,
         watch,
         ended: false,
+        joined: false,
     };
-    web.join()?;
+    // Played alone the game waits at the main menu; a link's join waits for its channel (module docs).
+    if !solo && web.target != Target::Page {
+        web.joined = true;
+        web.join()?;
+    } else if web.target == Target::Page {
+        web.status("Waiting for the connection to the host...");
+    }
     torque::app::window::run(web)
 }
 
@@ -193,6 +201,8 @@ struct WebArena {
     watch: LinkWatch,
     /// Whether the present link's end was shown.
     ended: bool,
+    /// Whether the client joined on its link yet (a game played alone waits at the menu, a link's join for its channel).
+    joined: bool,
 }
 
 impl WebArena {
@@ -200,6 +210,34 @@ impl WebArena {
     fn join(&mut self) -> Result<(), String> {
         self.game.call("connectTo", &[&SERVER.to_string()])?;
         Ok(())
+    }
+
+    /// The menu's Join (Play alone): the first join on the link the client has, then a new link each time.
+    fn join_asked(&mut self) -> Result<(), String> {
+        if self.joined {
+            return self.rejoin();
+        }
+        let (open, ended) = {
+            let w = self.watch.borrow();
+            (w.link == Link::Channel, w.ended.is_some())
+        };
+        if self.target == Target::Page && !open {
+            if ended {
+                return self.rejoin();
+            }
+            self.status("Waiting for the connection to the host...");
+            return Ok(());
+        }
+        self.joined = true;
+        self.join()
+    }
+
+    /// Shows `text` on the main menu's status line, handed to `setText` as an argument (never built into script source).
+    fn status(&mut self, text: &str) {
+        let vm = self.game.vm_mut();
+        if let Some(status) = vm.objects().find(b"MainStatus") {
+            let _ = vm.call_method(status, b"setText", &[text.as_bytes().to_vec()]);
+        }
     }
 
     /// Opens a new link and joins again (the menu's Join).
@@ -220,11 +258,7 @@ impl WebArena {
         if self.game.global("$Arena::InGame") == "1" {
             let _ = self.game.call("leaveGame", &[]);
         }
-        // Handed to `setText` as an argument, never built into script source.
-        let vm = self.game.vm_mut();
-        if let Some(status) = vm.objects().find(b"MainStatus") {
-            let _ = vm.call_method(status, b"setText", &[text.into_bytes()]);
-        }
+        self.status(&text);
     }
 
     fn mark(&mut self) {
@@ -304,21 +338,25 @@ impl App for WebArena {
         if !self.ended {
             self.show_end();
         }
-        // The menus' Host with a link, Join with Link and Invite players (played alone): the page's invite panels.
+        // The menus' Host with a link, Join with Link and Invite players (played alone), and an invited game's Play alone
+        // instead: the page's invite panels, or the page again with no invite.
         let ask = self.game.global("$Arena::PageAsk");
         if !ask.is_empty() {
             self.game.set_global("$Arena::PageAsk", "");
             torque::app::web_join::ask_page(&ask);
         }
-        if self.game.take_flag("$Arena::JoinAsked")
-            && let Err(e) = self.rejoin()
+        // A link's channel open: its join.
+        if !self.joined && self.target == Target::Page && self.watch.borrow().link == Link::Channel
         {
-            // Handed to `setText` as an argument, never built into script source.
-            let text = format!("Could not join: {e}");
-            let vm = self.game.vm_mut();
-            if let Some(status) = vm.objects().find(b"MainStatus") {
-                let _ = vm.call_method(status, b"setText", &[text.into_bytes()]);
+            self.joined = true;
+            if let Err(e) = self.join() {
+                self.status(&format!("Could not join: {e}"));
             }
+        }
+        if self.game.take_flag("$Arena::JoinAsked")
+            && let Err(e) = self.join_asked()
+        {
+            self.status(&format!("Could not join: {e}"));
         }
     }
 

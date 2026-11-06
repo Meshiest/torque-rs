@@ -19,7 +19,7 @@ torque-images = { path = "../torque-images" }
 # The zlib inflate of a `.uft`'s remap.
 miniz_oxide = "0.8"
 # The rasterizer of `ttf` (the TrueType faces a host serves) and of the fallback (a face
-# and size with no cache file: the system's font of that name; feature `system-fonts`, off by default).
+# and size with no cache file: the system's font of that name, or a free stand-in; feature `system-fonts`, off by default).
 fontdue = "0.9.3"
 # The cmap lookups `ttf::check` makes once it has bounded them (the version fontdue reads the file with).
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
