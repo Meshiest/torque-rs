@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 use collide::math::{mul_p, quat_matrix};
 use ghost_world::world::{LOOK_WHEELS, Pose, VehicleLook, WheelLook};
 use ghosts::Value;
+use glam::Vec3;
 
 use super::game::PredictWorld;
 use crate::records::{EngineDatablock, EngineRecord};
@@ -377,12 +378,14 @@ impl FlyingWarp {
         let t = now_ms.wrapping_sub(self.at_ms) as f32;
         if t < self.warp_ms && self.warp_ms > 0.0 {
             let f = (t / self.warp_ms).clamp(0.0, 1.0);
-            let p = [0, 1, 2].map(|k| self.from.0[k] + (self.to.0[k] - self.from.0[k]) * f);
+            let p = Vec3::from(self.from.0)
+                .lerp_monotonic(self.to.0.into(), f)
+                .to_array();
             return (p, drive::quat_slerp(self.from.1, self.to.1, f));
         }
         let run = ((t - self.warp_ms) / 1000.0)
             .clamp(0.0, drive::MAX_PREDICTION_TICKS as f32 * TICK_MS / 1000.0);
-        let p = [0, 1, 2].map(|k| self.to.0[k] + self.velocity[k] * run);
+        let p = (Vec3::from(self.to.0) + Vec3::from(self.velocity) * run).to_array();
         (p, self.to.1)
     }
 }
@@ -442,12 +445,8 @@ impl FlyingWarps {
                 continue;
             }
             // `Vehicle::unpackUpdate`'s warp length: the offset over the speed a tick covers, in whole ticks, 1 to 3 (none moving: 3).
-            let off = [0, 1, 2].map(|k| position[k] - from.0[k]);
-            let dist = (off[0] * off[0] + off[1] * off[1] + off[2] * off[2]).sqrt();
-            let speed =
-                (velocity[0] * velocity[0] + velocity[1] * velocity[1] + velocity[2] * velocity[2])
-                    .sqrt()
-                    * (TICK_MS / 1000.0);
+            let dist = Vec3::from(position).distance(from.0.into());
+            let speed = Vec3::from(velocity).length() * (TICK_MS / 1000.0);
             let ticks = if speed > 0.0 {
                 (dist / speed).ceil().clamp(1.0, 3.0)
             } else {

@@ -21,7 +21,7 @@ fn run(speed: f32, turn: f32, every: f32, frame: f32) -> (f32, f32, f32) {
             next += every;
         }
         let (p, y) = (m.position(), m.yaw());
-        max_step = max_step.max(distance(p, last.0));
+        max_step = max_step.max(Vec3::from(p).distance(last.0.into()));
         max_back = max_back.max(last.0[1] - p[1]);
         max_turn = max_turn.max(wrap_angle(y - last.1).abs());
         last = (p, y);

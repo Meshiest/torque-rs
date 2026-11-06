@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use std::f32::consts::{PI, TAU};
 
 use ghost_world::world::Pose;
+use glam::Vec3;
 use torque_server::server::TICK_MS;
 
 use super::game::PredictWorld;
@@ -83,10 +84,6 @@ pub fn wrap_angle(a: f32) -> f32 {
     if a.is_finite() { a } else { 0.0 }
 }
 
-fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
-    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>().sqrt()
-}
-
 impl GhostMotion {
     /// A Player where its first update puts it.
     pub fn new(u: Update) -> GhostMotion {
@@ -119,7 +116,7 @@ impl GhostMotion {
         self.since = 0.0;
         self.velocity = u.velocity;
         self.run_left = self.interval + MAX_EXTRAPOLATION;
-        let far = distance(u.position, self.position);
+        let far = Vec3::from(u.position).distance(self.position.into());
         if far.is_nan() || far > SNAP_DISTANCE {
             *self = GhostMotion {
                 interval: self.interval,
@@ -132,7 +129,8 @@ impl GhostMotion {
         // early or late is not caught up in one frame.
         let span = self.interval.clamp(TICK, MAX_WARP);
         let position_span = self.interval.clamp(WARP_TICKS as f32 * TICK, MAX_WARP);
-        self.warp_position = [0, 1, 2].map(|i| (u.position[i] - self.position[i]) / position_span);
+        self.warp_position =
+            ((Vec3::from(u.position) - Vec3::from(self.position)) / position_span).to_array();
         self.warp_position_left = position_span;
         self.warp_yaw = wrap_angle(u.yaw - self.yaw) / span;
         self.warp_head = (u.head - self.head) / span;
@@ -153,9 +151,9 @@ impl GhostMotion {
         self.warp_left -= warp;
         let warp_position = dt.min(self.warp_position_left);
         self.warp_position_left -= warp_position;
-        for i in 0..3 {
-            self.position[i] += self.velocity[i] * run + self.warp_position[i] * warp_position;
-        }
+        self.position = (Vec3::from(self.position)
+            + (Vec3::from(self.velocity) * run + Vec3::from(self.warp_position) * warp_position))
+            .to_array();
         // Falling, the Player is not drawn below the last update's height (where the warp ends): without the ghost's own
         // collision the client cannot tell where it lands, and a landing run on along its fall would sink through the floor until
         // the next update.

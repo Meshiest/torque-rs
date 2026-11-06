@@ -51,6 +51,7 @@ use ghost_world::Ghost;
 use ghost_world::effects::Effect;
 use ghost_world::world::{Eye, Pose};
 use ghosts::Value;
+use glam::Vec3;
 use net::control::{ControlData, ControlSection, checksum};
 use net::moves::{Move, MoveQueue};
 use sim::player::host::{LiquidStatics, PlayerHost};
@@ -1816,24 +1817,23 @@ pub fn tge_third_person_eye<W: PredictWorld>(
     let max = datablock_f32(world, db, "cameraMaxDist", 0)?;
     let min = datablock_f32(world, db, "cameraMinDist", 0).unwrap_or(0.0);
     let view = torque_game::scene::camera::pose_matrix([0.0; 3], v.head, v.yaw + v.head_z);
-    let forward = [view[1], view[5], view[9]];
+    let forward = Vec3::new(view[1], view[5], view[9]);
     let back = -((max - min) * v.camera_pos);
-    let vec = forward.map(|f| f * back);
-    let start = v.eye;
-    let end = add3(start, vec);
+    let vec = forward * back;
+    let start = Vec3::from(v.eye);
+    let end = start + vec;
     let mut c = collision();
-    let eye = match solid_hit(&mut c, start, end, cast) {
-        None => end,
+    let eye = match solid_hit(&mut c, v.eye, end.to_array(), cast) {
+        None => end.to_array(),
         Some(hit) => {
-            let len = len3(vec);
+            let len = vec.length();
             let t = if len > 0.0 {
-                len3(sub3(hit.point, start)) / len
+                Vec3::from(hit.point).distance(start) / len
             } else {
                 0.0
             };
             let adj = if len > 0.0 {
-                -(vec[0] * hit.normal[0] + vec[1] * hit.normal[1] + vec[2] * hit.normal[2]) / len
-                    * 0.1
+                -vec.dot(hit.normal.into()) / len * 0.1
             } else {
                 0.0
             };
@@ -1841,7 +1841,7 @@ pub fn tge_third_person_eye<W: PredictWorld>(
             if at == 0.0 {
                 v.eye
             } else {
-                add3(start, vec.map(|x| x * at))
+                (start + vec * at).to_array()
             }
         }
     };
@@ -1858,13 +1858,9 @@ pub struct CameraCast<'a> {
 /// The frame of a forward vector without roll (`Vehicle::getCameraTransform`'s non-roll path): x = `normalize(f x z)`, y = `f`,
 /// z = `normalize(x x f)`.
 pub fn unrolled(f: F3) -> Matrix {
-    let f = normalize3(f);
-    let x = normalize3([f[1], -f[0], 0.0]);
-    let z = normalize3([
-        x[1] * f[2] - x[2] * f[1],
-        x[2] * f[0] - x[0] * f[2],
-        x[0] * f[1] - x[1] * f[0],
-    ]);
+    let f = unit_or_same(f.into());
+    let x = unit_or_same(Vec3::new(f.y, -f.x, 0.0));
+    let z = unit_or_same(x.cross(f));
     let mut m = collide::math::IDENTITY;
     for k in 0..3 {
         m[k * 4] = x[k];
@@ -1921,30 +1917,29 @@ pub fn tge_vehicle_eye<W: PredictWorld>(
     let forward = [m[1], m[5], m[9]];
     let frame = if roll { m } else { unrolled(forward) };
     let back = -((max - min) * v.camera_pos);
-    let vec = forward.map(|f| f * back);
+    let vec = Vec3::from(forward) * back;
     let at = [m[3], m[7], m[11]];
     let from = v.cam.unwrap_or(at);
-    let start = add3(from, [0.0, 0.0, offset]);
-    let end = add3(start, vec);
+    let start = Vec3::from(from) + Vec3::new(0.0, 0.0, offset);
+    let end = start + vec;
     let mut c = collision();
-    let eye = match solid_hit(&mut c, from, end, cast) {
-        None => end,
+    let eye = match solid_hit(&mut c, from, end.to_array(), cast) {
+        None => end.to_array(),
         Some(hit) => {
-            let (span, len) = (len3(sub3(end, from)), len3(vec));
+            let (span, len) = (end.distance(from.into()), vec.length());
             let t = if span > 0.0 {
-                len3(sub3(hit.point, from)) / span
+                Vec3::from(hit.point).distance(from.into()) / span
             } else {
                 0.0
             };
             let adj = if len > 0.0 {
-                -(vec[0] * hit.normal[0] + vec[1] * hit.normal[1] + vec[2] * hit.normal[2]) / len
-                    * 0.1
+                -vec.dot(hit.normal.into()) / len * 0.1
             } else {
                 0.0
             };
             let t = t - adj;
             if t > 0.0 {
-                add3(start, vec.map(|x| x * t))
+                (start + vec * t).to_array()
             } else {
                 at
             }
@@ -1955,7 +1950,7 @@ pub fn tge_vehicle_eye<W: PredictWorld>(
         eye,
         pitch,
         yaw,
-        start,
+        start: start.to_array(),
     })
 }
 
@@ -1978,7 +1973,7 @@ pub fn tab_blend(
         return third;
     }
     let k = 1.0 - pos;
-    let eye = [0, 1, 2].map(|i| third.0[i] + (first.0[i] - start[i]) * k);
+    let eye = (Vec3::from(third.0) + (Vec3::from(first.0) - Vec3::from(start)) * k).to_array();
     let turn = |from: f32, to: f32| {
         let tau = std::f32::consts::TAU;
         let d = (from - to).rem_euclid(tau);
@@ -1996,36 +1991,25 @@ pub fn solid_hit(
     to: F3,
     cast: &CameraCast<'_>,
 ) -> Option<RayHit> {
-    let dir = normalize3(sub3(to, from));
+    let dir = unit_or_same(Vec3::from(to) - Vec3::from(from));
     let mut start = from;
     for _ in 0..64 {
         let hit = c.cast_ray(start, to, cast.mask)?;
         if !(cast.see_through)(c, hit.object) {
             return Some(hit);
         }
-        if len3(sub3(to, hit.point)) < 0.11 {
+        if Vec3::from(to).distance(hit.point.into()) < 0.11 {
             return None;
         }
-        start = add3(hit.point, dir.map(|d| d * 0.1));
+        start = (Vec3::from(hit.point) + dir * 0.1).to_array();
     }
     None
 }
 
-pub fn sub3(a: F3, b: F3) -> F3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-pub fn add3(a: F3, b: F3) -> F3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-pub fn len3(a: F3) -> f32 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
-}
-
-pub fn normalize3(a: F3) -> F3 {
-    let l = len3(a);
-    if l > 0.0 { a.map(|x| x / l) } else { a }
+/// `a` over its length, or as it is when that is 0.
+fn unit_or_same(a: Vec3) -> Vec3 {
+    let l = a.length();
+    if l > 0.0 { a / l } else { a }
 }
 
 /// What the step reads of the client's globals, taken before it runs: the game's preferences ([`game::client_prefs`]) and the

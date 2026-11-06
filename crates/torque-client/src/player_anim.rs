@@ -73,6 +73,7 @@
 use collide::math::F3;
 use ghosts::TgeRecord;
 use ghosts::player::VELOCITY_NORMAL_BITS;
+use glam::Vec3;
 use shapes::Shape;
 use shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use sim::player::{Pose, PoseData};
@@ -524,7 +525,7 @@ impl PlayerAnimation {
             if a.sequence.is_none() || a.motion.speed == 0.0 {
                 continue;
             }
-            let d = vel[0] * a.motion.dir[0] + vel[1] * a.motion.dir[1] + vel[2] * a.motion.dir[2];
+            let d = Vec3::from(vel).dot(a.motion.dir.into());
             if d > best {
                 (best, chosen, forward) = (d, i, true);
             } else if i == action::SIDE && -d > best {
@@ -630,7 +631,7 @@ impl PlayerAnimation {
         let walking = self.walk == Some(self.action) || self.pose_sets.is_moving(self.action);
         if walking {
             if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
-                let step = m.local([0, 1, 2].map(|i| to[i] - from[i]));
+                let step = m.local((Vec3::from(to) - Vec3::from(from)).to_array());
                 scale = synced::step_scale(
                     step,
                     dt,
@@ -639,21 +640,17 @@ impl PlayerAnimation {
                     synced::WALK_MAX_TIME_SCALE,
                 );
             } else {
-                let v = m.local_velocity();
-                let along =
-                    v[0] * a.motion.dir[0] + v[1] * a.motion.dir[1] + v[2] * a.motion.dir[2];
+                let along = Vec3::from(m.local_velocity()).dot(a.motion.dir.into());
                 scale = (along / a.motion.speed)
                     .abs()
                     .min(synced::WALK_MAX_TIME_SCALE);
             }
         } else if self.action < action::MOVES && a.motion.velocity_scale && a.motion.speed != 0.0 {
             if let (true, Some(from), Some(to)) = (self.synced, from, m.position) {
-                let step = m.local([0, 1, 2].map(|i| to[i] - from[i]));
+                let step = m.local((Vec3::from(to) - Vec3::from(from)).to_array());
                 scale = synced::step_scale(step, dt, a.motion.dir, a.motion.speed, MAX_TIME_SCALE);
             } else {
-                let v = m.local_velocity();
-                let along =
-                    v[0] * a.motion.dir[0] + v[1] * a.motion.dir[1] + v[2] * a.motion.dir[2];
+                let along = Vec3::from(m.local_velocity()).dot(a.motion.dir.into());
                 scale = (along / a.motion.speed).abs().min(MAX_TIME_SCALE);
             }
         }

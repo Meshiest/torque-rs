@@ -5,6 +5,8 @@
 //! its current look meanwhile). What a build and a draw are is the renderer's and the game's.
 
 use std::sync::mpsc;
+
+use glam::Vec3;
 use web_time::{Duration, Instant};
 
 /// The scene is built again at most this often (a window), and when the eye is this far (units) from where it was built.
@@ -45,9 +47,9 @@ impl<S: PartialEq> RebuildPace<S> {
     /// Whether the scene would differ from the last build: the world's signature `sig` or the frame `size` changed, or the eye
     /// at `eye` is more than [`REBUILD_DISTANCE`] from where it was built.
     pub fn changed(&self, sig: &S, eye: [f32; 3], size: (u32, u32)) -> bool {
-        let far_moved = self.built_eye.is_none_or(|b| {
-            (0..3).map(|i| (b[i] - eye[i]).powi(2)).sum::<f32>().sqrt() > REBUILD_DISTANCE
-        });
+        let far_moved = self
+            .built_eye
+            .is_none_or(|b| Vec3::from(b).distance(eye.into()) > REBUILD_DISTANCE);
         self.built_sig.as_ref() != Some(sig) || far_moved || self.built_size != Some(size)
     }
 
