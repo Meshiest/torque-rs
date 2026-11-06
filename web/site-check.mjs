@@ -4,7 +4,8 @@
 // with no console error, and each card's game reaches its world (the page's `data-torque-figure`) with no console error,
 // page error or failed request. A card that opens a map (`?map=`) goes straight to it; any other waits at its game's menu
 // (no figure while the menu is up) until the check presses Play alone (by script: the vehicle demo's `playAlone`, the
-// arena's `joinPage`). Pictures of the gallery at a desktop's and a phone's width go into the pictures folder.
+// arena's `joinPage`); its button back to the gallery is shown and leads there. Pictures of the gallery at a desktop's and
+// a phone's width go into the pictures folder.
 //
 // Usage: node site-check.mjs [site] [pictures] [seconds per game]
 // (default: <target>/site, <target>/site-check, 120). Needs puppeteer-core in the folder `TORQUE_WEB_TOOLS` names (default:
@@ -92,6 +93,9 @@ try {
     const page = await watched(card.text);
     const started = Date.now();
     await page.goto(noLock(card.href), { waitUntil: 'load' });
+    // its button back to the gallery, shown, leads to the gallery
+    const back = await page.$eval('#gallery', (a) => (a.hidden ? 'hidden' : a.href)).catch(() => 'missing');
+    if (back !== front) problems.push(`${card.text}: the gallery button is ${back.startsWith('http') ? `at ${back}` : back}`);
     const deadline = started + Number(seconds) * 1000;
     const menuFirst = !new URL(card.href).searchParams.has('map');
     let menuSince = null;

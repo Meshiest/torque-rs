@@ -13,7 +13,13 @@ const ZONE: WaterZone = WaterZone {
 fn the_waterline_splits_a_view_across_the_surface() {
     let s = HdScene::new(());
     let line = |z: f32| {
-        let cam = HdCamera::new(look_at([0.0, 0.0, z], [10.0, 0.0, z]), 90.0, 100.0, 64, 48);
+        let cam = HdCamera::new(
+            look_at([0.0, 0.0, z], [10.0, 0.0, z]),
+            90.0_f32,
+            100.0,
+            64,
+            48,
+        );
         post_terms(Some(ZONE), &cam)
     };
     let under = |w: [f32; 4], x: f32, y: f32| {

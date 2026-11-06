@@ -7,7 +7,7 @@
 // can lock the pointer. Pages also load with `?nolock` (`noLock`), which `index.html` honors the same way.
 // `guard-scan.mjs` fails any other file that names a browser driver or a browser program.
 import { createRequire } from 'node:module';
-import { join, resolve } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 
 // Runs in the page, before any of its scripts. `requestPointerLock` (with or without `{ unadjustedMovement: true }`) is one
 // method on `Element.prototype`; each prototype below gets its own non-writable, non-configurable no-op so that neither an
@@ -73,11 +73,17 @@ export function noLock(url) {
  * Launches headless Chrome with puppeteer-core (from the folder `TORQUE_WEB_TOOLS` names; the program `CHROME` names, else the
  * installed stable channel) and returns the browser. Every page it opens, in any context, has the pointer lock replaced
  * before its own scripts run. `options` are puppeteer's launch options (`args`, `defaultViewport`); `headless` is always on.
+ * With `browser: 'firefox'` it is headless Firefox instead (the program `FIREFOX` names, else the installed one), driven over
+ * WebDriver BiDi in a fresh profile with Firefox's own defaults but for the guards: the pointer lock switched off in the
+ * browser itself (and replaced in every page as in Chrome), and no popup allowed at all.
+ * `prefs` are further Firefox preferences (a guard's preference is never overridden).
  */
 export async function launchGuarded(options = {}) {
   if (options.headless === false) throw new Error('a guarded browser is always headless');
   const tools = resolve(process.env.TORQUE_WEB_TOOLS ?? '.');
   const puppeteer = createRequire(join(tools, 'package.json'))('puppeteer-core');
+  if (options.browser === 'firefox') return launchFirefox(puppeteer, options);
+  if (options.browser && options.browser !== 'chrome') throw new Error(`no guarded browser "${options.browser}"`);
   // No popups: `window.open` and `target=_blank` open nothing (a page made outside `newPage` could run a script before the
   // guard reaches it).
   const args = [...(options.args ?? []), '--block-new-web-contents', ...(process.env.CI ? ['--no-sandbox'] : [])];
@@ -114,6 +120,53 @@ export async function launchGuarded(options = {}) {
     filter: [{ type: 'page' }, { exclude: true }],
   });
   // and as soon as it is known, should that not have caught it.
+  browser.on('targetcreated', async (target) => {
+    if (target.type() === 'page') {
+      const page = await target.page().catch(() => null);
+      if (page) await guardPage(page).catch(() => {});
+    }
+  });
+  return browser;
+}
+
+// Firefox's guards, set last so no caller's preference undoes them.
+const FIREFOX_GUARDS = Object.freeze({
+  // no page can lock the pointer at all
+  'full-screen-api.pointer-lock.enabled': false,
+  // no popups: the blocker on (puppeteer's profile turns it off), no event lets one through, and none may be open
+  'dom.disable_open_during_load': true,
+  'dom.popup_allowed_events': '',
+  'dom.disable_window_flip': true,
+  'dom.popup_maximum': 0,
+});
+
+// Where Firefox's installer puts it (on Windows with the file extension Node's own program has).
+const INSTALLED_FIREFOX = {
+  win32: join(process.env.ProgramFiles ?? 'C:/Program Files', 'Mozilla Firefox', `firefox${extname(process.execPath)}`),
+  darwin: '/Applications/Firefox.app/Contents/MacOS/firefox',
+  linux: '/usr/bin/firefox',
+};
+
+async function launchFirefox(puppeteer, { browser: _, prefs = {}, args = [], ...options }) {
+  const browser = await puppeteer.launch({
+    executablePath: process.env.FIREFOX ?? INSTALLED_FIREFOX[process.platform] ?? 'firefox',
+    ...options,
+    browser: 'firefox',
+    protocol: 'webDriverBiDi',
+    args: [...args],
+    extraPrefsFirefox: { ...prefs, ...FIREFOX_GUARDS },
+    headless: true,
+  });
+  await Promise.all((await browser.pages()).map(guardPage));
+  guardContext(browser.defaultBrowserContext());
+  const createContext = browser.createBrowserContext.bind(browser);
+  browser.createBrowserContext = async (...a) => guardContext(await createContext(...a));
+  const newPage = browser.newPage.bind(browser);
+  browser.newPage = async (...a) => {
+    const page = await newPage(...a);
+    await guardPage(page);
+    return page;
+  };
   browser.on('targetcreated', async (target) => {
     if (target.type() === 'page') {
       const page = await target.page().catch(() => null);

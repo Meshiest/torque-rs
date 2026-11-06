@@ -84,7 +84,7 @@ fn every_light_in_view_keeps_its_whole_shadow_as_lights_change_tiers() {
         let to = [eye[0] + yaw.cos() * 5.0, eye[1] + yaw.sin() * 5.0, 1.2];
         let camera = HdCamera::new(
             torque_render_scene::hd::kit::look_at(eye, to),
-            90.0,
+            90.0_f32,
             300.0,
             1280,
             720,

@@ -343,6 +343,27 @@ export function fromSdp(sdp) {
   return data;
 }
 
+// A page's own answer `sdp` with the ICE credentials and DTLS setup of `details` (an earlier answer's `fromSdp`) in place of
+// its own, so a new connection answers as the reply link already said. Only the page's own descriptions go through this.
+export function withDetails(sdp, { ufrag, pwd, setup }) {
+  return sdp
+    .replace(/^a=ice-ufrag:.*$/gm, `a=ice-ufrag:${ufrag}`)
+    .replace(/^a=ice-pwd:.*$/gm, `a=ice-pwd:${pwd}`)
+    .replace(/^a=setup:.*$/gm, `a=setup:${setup}`);
+}
+
+// Whether two `fromSdp` results carry the same ICE credentials, fingerprint and DTLS setup.
+export function sameDetails(a, b) {
+  return (
+    a.ufrag === b.ufrag &&
+    a.pwd === b.pwd &&
+    a.setup === b.setup &&
+    a.sctpPort === b.sctpPort &&
+    a.fingerprint.length === b.fingerprint.length &&
+    a.fingerprint.every((v, i) => v === b.fingerprint[i])
+  );
+}
+
 // The candidates a code carries from candidate lines (with or without `a=`): component 1, UDP, a canonical IPv4 address
 // `allowed(octets)` takes, host, srflx or prflx; with `mdns` also a host candidate's browser mDNS name (any other `.local`
 // is left out); each address once, srflx first, then prflx, then host, at most PICKED_CANDIDATES.

@@ -41,7 +41,7 @@ env:
   CARGO_PROFILE_DEV_DEBUG: 0
   RUST_BACKTRACE: 1
   # Keep in step with `rust-version` in Cargo.toml.
-  MSRV: "1.88"
+  MSRV: "1.99"
 
 jobs:
   fmt:
@@ -79,12 +79,15 @@ jobs:
         run: cargo clippy -p torque --no-default-features -- -D warnings
 
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}, ${{ matrix.partition }}/3)
     strategy:
       fail-fast: false
       matrix:
         # Windows is off for now (owner, 2026-11-06): `os: [ubuntu-latest, windows-latest]` turns it back on.
         os: [ubuntu-latest]
+        # The tests in three jobs that run side by side (nextest's `--partition`); each builds the workspace from the
+        # same cache.
+        partition: [1, 2, 3]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,17 +103,18 @@ jobs:
           tool: cargo-nextest
       - name: Tests (the whole workspace)
         if: runner.os == 'Linux'
-        run: cargo nextest run --workspace --all-features --no-fail-fast
+        run: cargo nextest run --workspace --all-features --no-fail-fast --partition hash:${{ matrix.partition }}/3
       - name: Doc tests
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.partition == 1
         run: cargo test --workspace --all-features --doc
       - name: Tests (the crates with platform-dependent behavior)
         if: runner.os == 'Windows'
         run: >-
-          cargo nextest run --all-features --no-fail-fast
+          cargo nextest run --all-features --no-fail-fast --partition hash:${{ matrix.partition }}/3
           -p torque-client -p torque-server -p torque-resource -p torque-rooms -p torque-ts-vm
           -p torque-app -p torque-render-core -p torque-render-hd -p torque-audio
       - name: Examples
+        if: matrix.partition == 1
         shell: bash
         run: |
           for example in script shape collide net; do

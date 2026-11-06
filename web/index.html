@@ -13,19 +13,25 @@
   body > canvas { display: block; outline: none; position: fixed; inset: 0; z-index: 0;
     width: 100% !important; height: 100% !important; min-width: 0 !important; max-width: none !important;
     min-height: 0 !important; max-height: none !important; }
-  #loading, #fps, #gear, #settings, #invites { z-index: 1; }
+  #loading, #fps, #gear, #gallery, #settings, #invites { z-index: 1; }
   #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
   #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
   #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
   #fps { position: fixed; top: 0.5rem; left: 0.5rem; padding: 0.2rem 0.5rem; background: #000a; color: #e8ecf4;
     font: 13px ui-monospace, monospace; border-radius: 4px; pointer-events: none; }
-  #gear { position: fixed; top: 0.5rem; right: 0.5rem; width: 2.25rem; height: 2.25rem; padding: 0; border: 1px solid #3a4152;
-    border-radius: 6px; background: #1c2029e6; color: #dde2ec; font-size: 1.25rem; line-height: 1; cursor: pointer; }
-  #gear:hover { background: #262c38; }
-  #gear:focus-visible, #settings select:focus-visible, #settings input:focus-visible, #settings button:focus-visible {
-    outline: 2px solid #7aa2f7; outline-offset: 2px; }
-  #settings { position: fixed; top: 3.25rem; right: 0.5rem; width: 15rem; padding: 0.75rem 0.9rem; border: 1px solid #3a4152;
-    border-radius: 8px; background: #1c2029f2; box-shadow: 0 6px 20px #0008; }
+  /* The gear and the gallery button sit under the game's frame-rate line at the top right (`--gear-top`, set by the script
+     from the size the game draws at), and the settings panel opens under them. */
+  #gear, #gallery { position: fixed; top: var(--gear-top, 3rem); right: 0.5rem; box-sizing: border-box; width: 2.25rem;
+    height: 2.25rem; padding: 0; border: 1px solid #3a4152; border-radius: 6px; background: #1c2029e6; color: #dde2ec;
+    font-size: 1.25rem; line-height: 1; cursor: pointer; }
+  #gallery { right: 3.15rem; display: flex; align-items: center; justify-content: center; }
+  #gallery[hidden] { display: none; }
+  #gallery svg { width: 1.1rem; height: 1.1rem; fill: currentColor; }
+  #gear:hover, #gallery:hover { background: #262c38; }
+  #gear:focus-visible, #gallery:focus-visible, #settings select:focus-visible, #settings input:focus-visible,
+  #settings button:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
+  #settings { position: fixed; top: calc(var(--gear-top, 3rem) + 2.75rem); right: 0.5rem; width: 15rem; padding: 0.75rem 0.9rem;
+    border: 1px solid #3a4152; border-radius: 8px; background: #1c2029f2; box-shadow: 0 6px 20px #0008; }
   #settings h2 { margin: 0 0 0.6rem; font-size: 0.95rem; font-weight: 600; }
   #settings .row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0.45rem 0; font-size: 0.9rem; }
   #settings select { font: inherit; padding: 0.15rem 0.3rem; background: #12141a; color: #dde2ec; border: 1px solid #3a4152; border-radius: 4px; }
@@ -52,9 +58,12 @@
     border-radius: 4px; cursor: pointer; }
   #invites button.primary { background: #2f4a80; border-color: #7aa2f7; }
   #invites button.close { margin-top: 0.8rem; }
+  #invites button + button { margin-left: 0.5rem; }
+  #invites .row > button + button { margin-left: 0; }
   #invites button:focus-visible, #invites input:focus-visible, #invites a:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
   #invites ol { margin: 0.6rem 0; padding-left: 0; list-style: none; }
   #invites li { margin: 0.5rem 0; padding: 0.4rem 0.6rem; border: 1px solid #2c3240; border-radius: 6px; }
+  #invites .details p { margin: 0.3rem 0; color: #9aa3b5; font-size: 0.85rem; }
 </style>
 </head>
 <body>
@@ -63,6 +72,12 @@
   <progress id="progress"></progress>
 </div>
 <div id="fps" hidden></div>
+<a id="gallery" href="../" aria-label="Back to the gallery" title="Back to the gallery" hidden>
+  <svg viewBox="0 0 16 16" aria-hidden="true">
+    <rect x="1" y="1" width="6" height="6" rx="1"/><rect x="9" y="1" width="6" height="6" rx="1"/>
+    <rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/>
+  </svg>
+</a>
 <button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings" title="Settings">&#9881;</button>
 <div id="settings" role="dialog" aria-labelledby="settings-title" hidden>
   <h2 id="settings-title">Settings</h2>
@@ -98,10 +113,14 @@
   // on the root element's `data-torque-stage`. A refused file or list is shown here, and its message is on the root element's
   // `data-torque-refused` for a test.
   //
-  // The settings (the gear, top right; settings.js): the renderer's quality, through the scripts' `setRenderQuality` and
-  // applied at the game's next frame; the render scale, the root element's `data-torque-render-scale`, which the game reads
-  // each frame (`auto`: every device pixel of the full-window canvas up to a 1920x1080 screen's worth); and the frame-rate
-  // display (also F8), from the game's `data-torque-fps` and `data-torque-frame-ms`. All are kept in the browser's storage.
+  // The gallery button, beside the gear: shown on a page that is part of the website (`site.mjs` marks it with the root
+  // element's `data-torque-gallery="1"`), whose gallery is the folder above it.
+  //
+  // The settings (the gear, top right, under the game's frame-rate line; settings.js): the renderer's quality, through the
+  // scripts' `setRenderQuality` and applied at the game's next frame; the render scale, the root element's
+  // `data-torque-render-scale`, which the game reads each frame (`auto`: every device pixel of the full-window canvas up to
+  // a 1920x1080 screen's worth); and the frame-rate display (also F8), from the game's `data-torque-fps` and
+  // `data-torque-frame-ms`. All are kept in the browser's storage.
   //
   // `torque` (bridge.js, also `window.torque`): the page calls the game's scripts (`torque.call`, `eval`, `getVar`,
   // `setVar`) and registers handlers the scripts call (`torque.on`, `callPage` in script).
@@ -185,6 +204,7 @@
   const showFps = document.getElementById('show-fps');
   const note = document.getElementById('settings-note');
   const fps = document.getElementById('fps');
+  document.getElementById('gallery').hidden = root.dataset.torqueGallery !== '1';
   quality.value = chosen.quality;
   scale.value = chosen.scale;
   root.dataset.torqueRenderScale = chosen.scale;
@@ -235,8 +255,18 @@
   addEventListener('keydown', (e) => {
     if (e.code === 'F8' && !e.repeat) setFps(fps.hidden);
   }, { capture: true });
+  // The gear (and the gallery button) under the game's frame-rate line, at the size the game draws at.
+  let gearAt = null;
+  function placeGear() {
+    const top = settings.gearTop(innerHeight, root.dataset.torqueSize);
+    if (top === null || top === gearAt) return;
+    gearAt = top;
+    root.style.setProperty('--gear-top', `${top}px`);
+  }
+  addEventListener('resize', placeGear);
   setInterval(() => {
     if (!fps.hidden) fps.textContent = fpsText(root.dataset.torqueFps, root.dataset.torqueFrameMs);
+    placeGear();
   }, 250);
 
   function openPanel(open) {

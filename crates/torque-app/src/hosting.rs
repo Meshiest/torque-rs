@@ -205,7 +205,7 @@ struct Slot(&'static AtomicUsize);
 impl Slot {
     fn take(count: &'static AtomicUsize) -> Option<Slot> {
         count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < MAX_LOOKUPS).then_some(n + 1)
             })
             .ok()

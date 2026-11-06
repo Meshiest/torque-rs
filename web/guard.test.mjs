@@ -1,7 +1,8 @@
 // The guard's own test: a page that asks for the pointer lock when it is clicked (on the body, on a canvas, with the
 // `unadjustedMovement` option, from an iframe, and after trying to put the real method back) never gets one, in a page opened
 // through `launchGuarded`: no `pointerlockchange`, no `pointerlockerror` and no `pointerLockElement`.
-// Usage: node guard.test.mjs      (puppeteer-core in the folder TORQUE_WEB_TOOLS names)
+// Usage: node guard.test.mjs [browser]      (puppeteer-core in the folder TORQUE_WEB_TOOLS names; `browser` as launchGuarded
+// takes it, default Chrome)
 import { createServer } from 'node:http';
 import { launchGuarded } from './guard.mjs';
 
@@ -49,7 +50,7 @@ const server = createServer((req, res) => {
 await new Promise((ok) => server.once('listening', ok));
 const url = `http://127.0.0.1:${server.address().port}/`;
 
-const browser = await launchGuarded({ defaultViewport: { width: 800, height: 600 } });
+const browser = await launchGuarded({ browser: process.argv[2], defaultViewport: { width: 800, height: 600 } });
 const problems = [];
 const native = (tab) =>
   tab.evaluate(() => /native code/.test(Function.prototype.toString.call(Element.prototype.requestPointerLock)));

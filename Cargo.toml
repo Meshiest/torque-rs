@@ -7,8 +7,8 @@ exclude = ["examples/screenshots"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# Verified with `cargo +1.88 check --workspace --all-targets --all-features` (let chains need 1.88); CI checks it.
-rust-version = "1.88"
+# Verified with `cargo +1.99 check --workspace --all-targets --all-features` (the stable release when it was last raised).
+rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/Meshiest/torque-rs"
 publish = false
