@@ -280,7 +280,7 @@ pub fn read(
                     };
                     let t = index(f.next(), uvs.len())?;
                     let nn = index(f.next(), normals.len())?;
-                    let key = (v, t.map_or(u32::MAX, |x| x), nn.map_or(u32::MAX, |x| x));
+                    let key = (v, t.unwrap_or(u32::MAX), nn.unwrap_or(u32::MAX));
                     let mesh = &mut cur.mesh;
                     let id = match cur.corners.get(&key) {
                         Some(&id) => id,

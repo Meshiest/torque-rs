@@ -251,8 +251,7 @@ mod native {
                                 return false;
                             };
                             SdpAnswer::from_sdp_string(body)
-                                .ok()
-                                .is_some_and(|a| p.rtc.sdp_api().accept_answer(pending, a).is_ok())
+                                .is_ok_and(|a| p.rtc.sdp_api().accept_answer(pending, a).is_ok())
                         });
                         if !ok {
                             self.fail(true);

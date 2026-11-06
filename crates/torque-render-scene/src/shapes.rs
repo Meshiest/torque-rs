@@ -863,9 +863,7 @@ fn drawn_mesh(s: &shapes::shape::Shape, parts: &ShapeParts<'_>, oi: usize) -> Op
 /// Whether the build leaves object `oi` out: hidden by name (the record's hidden nodes) or by index, its visibility under
 /// [`MIN_VISIBILITY`].
 fn object_hidden(parts: &ShapeParts<'_>, obj: &shapes::shape::Object, oi: usize) -> bool {
-    let hidden = u8::try_from(obj.name)
-        .ok()
-        .is_some_and(|n| parts.hidden.contains(&n))
+    let hidden = u8::try_from(obj.name).is_ok_and(|n| parts.hidden.contains(&n))
         || parts
             .hidden_objects
             .is_some_and(|h| h.get(oi).copied().unwrap_or(false));
