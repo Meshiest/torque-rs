@@ -180,10 +180,14 @@ fn an_empty_or_unbounded_polytope_never_overlaps() {
     assert!(!penetration(&a, &flat, &mut out));
     let mut nan = cuboid([0.0; 3], [1.0; 3]);
     nan.points[0] = [f32::NAN; 3];
-    // A NaN point only widens nothing (min and max skip it); the answer stays finite or none.
-    if penetration(&a, &nan, &mut out) {
-        assert!(out.depth.is_finite());
-    }
+    // A NaN point widens nothing (min and max skip it): the answer is finite, and no corner is NaN.
+    assert!(penetration(&a, &nan, &mut out));
+    assert!(out.depth.is_finite() && out.normal.iter().all(|c| c.is_finite()));
+    assert!(!out.points.is_empty());
+    assert!(
+        out.points.iter().flatten().all(|c| c.is_finite()),
+        "{out:?}"
+    );
     // Normals that are zero or not finite are not taken; edges to points that are not there are not either.
     let mut p = Polytope::default();
     p.add_normal([0.0; 3]);

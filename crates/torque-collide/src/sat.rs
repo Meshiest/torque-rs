@@ -154,7 +154,7 @@ pub struct Penetration {
     pub depth: f32,
     /// The unit direction to move `a` in.
     pub normal: F3,
-    /// Corners of the common volume (at most [`MAX_POINTS`]).
+    /// Corners of the common volume (at most [`MAX_POINTS`], all finite).
     pub points: Vec<F3>,
 }
 
@@ -231,7 +231,7 @@ pub fn penetration(a: &Polytope, b: &Polytope, out: &mut Penetration) -> bool {
     true
 }
 
-/// Each edge of `p` clipped to the slabs of `q`: the ends of what is left, while there is room.
+/// Each edge of `p` clipped to the slabs of `q`: the ends of what is left that are finite, while there is room.
 fn clip_edges(p: &Polytope, q: &Polytope, out: &mut Vec<F3>) {
     let slabs: Vec<(F3, f32, f32)> = q
         .normals
@@ -272,7 +272,10 @@ fn clip_edges(p: &Polytope, q: &Polytope, out: &mut Vec<F3>) {
             if out.len() >= MAX_POINTS {
                 return;
             }
-            out.push(add(s, d.map(|c| c * t)));
+            let at = add(s, d.map(|c| c * t));
+            if at.iter().all(|c| c.is_finite()) {
+                out.push(at);
+            }
         }
     }
 }
