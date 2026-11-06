@@ -100,6 +100,7 @@ function el(tag, props = {}, ...children) {
 }
 
 let panel = null;
+let backdrop = null;
 // `escape`: what Esc does on the panel (by default it closes it).
 function openPanel(title, escape = closePanel) {
   panel?.remove();
@@ -112,11 +113,21 @@ function openPanel(title, escape = closePanel) {
     }
   });
   document.body.append(panel);
+  panelUp();
   return panel;
+}
+// While a panel is open the mouse is the panel's: the game takes no look or wheel from it (`data-torque-panel`, read by the
+// game's window), and a backdrop over the game takes the clicks beside the panel, so none locks the pointer.
+function panelUp() {
+  backdrop ??= el('div', { id: 'invites-backdrop' });
+  panel.before(backdrop);
+  document.documentElement.dataset.torquePanel = '1';
 }
 function closePanel() {
   panel?.remove();
   panel = null;
+  backdrop?.remove();
+  delete document.documentElement.dataset.torquePanel;
   document.querySelector('canvas')?.focus();
 }
 
@@ -888,6 +899,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
       panel?.remove();
       document.body.append(p);
       panel = p;
+      panelUp();
     }
     if (next === 'refused') mark('refused');
     end(text);

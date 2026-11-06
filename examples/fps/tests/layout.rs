@@ -242,6 +242,69 @@ fn the_pause_menu_stays_in_the_middle_of_the_view() {
     }
 }
 
+/// The host playing alone has every entry (Resume, Change map, Invite players, Controls, Leave, Quit): the menu fits a short
+/// view by shrinking its buttons and keeps their full size where there is room.
+#[test]
+fn the_hosts_pause_menu_with_every_entry_fits_a_short_view() {
+    let mut g = client();
+    g.call("hostGame", &["lan"]).unwrap();
+    for _ in 0..400 {
+        g.step(32);
+        if g.in_game() && g.global("$Client::MapCount") != "0" {
+            break;
+        }
+    }
+    assert!(g.in_game());
+    assert_ne!(g.global("$Client::MapCount"), "0");
+    g.set_global("$Pause::CanInvite", "1");
+    g.call("pauseGame", &[]).unwrap();
+    let leaves = [
+        "PauseTitle",
+        "ResumeButton",
+        "ChangeMapButton",
+        "InviteButton",
+        "ControlsButton",
+        "LeaveButton",
+        "PauseQuitButton",
+        "PauseNote",
+    ];
+    let sizes = [
+        (640, 480),
+        (800, 480),
+        (800, 600),
+        (1024, 576),
+        (1280, 720),
+        (1920, 1080),
+    ];
+    for size in sizes {
+        resize(&mut g, size);
+        let p = check(&mut g, "PausePanel", &leaves, size);
+        assert_eq!(p[2], 320, "the pause panel's width at {size:?}");
+        assert!(
+            p[3] <= size.1 - 16,
+            "the panel {p:?} fits {size:?} with a margin"
+        );
+        let first = rect(&mut g, "ResumeButton");
+        let last = rect(&mut g, "PauseQuitButton");
+        assert_eq!(first[2], 240, "button width at {size:?}");
+        assert!(
+            first[3] >= 33 && first[3] == last[3],
+            "button height at {size:?}: {first:?}"
+        );
+        if size.1 >= 720 {
+            assert_eq!((first[3], p[3]), (56, 584), "full size at {size:?}");
+        }
+    }
+    // The panel returns to its full size when the view grows again.
+    resize(&mut g, (640, 480));
+    resize(&mut g, (1920, 1080));
+    assert_eq!(rect(&mut g, "PausePanel")[3], 584);
+    // Without Invite players it keeps the size it always had.
+    g.set_global("$Pause::CanInvite", "0");
+    g.call("layoutPause", &[]).unwrap();
+    assert_eq!(rect(&mut g, "PausePanel")[3], 508);
+}
+
 #[test]
 fn the_controls_panel_stays_in_the_middle_of_the_view_with_its_keys_in_two_columns() {
     let mut g = client();

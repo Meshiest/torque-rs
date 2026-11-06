@@ -13,13 +13,6 @@ ignore = [
     # ttf-parser is unmaintained; fontdue (the TrueType rasterizer of torque-fonts) reads faces with it. Moving off it means
     # replacing fontdue; until then the faces it reads are bounded by `torque_fonts::ttf::check` first.
     { id = "RUSTSEC-2026-0192", reason = "no maintained fontdue release without ttf-parser yet" },
-    # zip 8's extraction to disk (`ZipArchive::extract`, `ZipStreamReader::extract`): torque-resource only reads entries in
-    # memory and never extracts (clippy.toml disallows the methods). The fixed zip 9 changes reading behavior the resource
-    # tests pin down, so the move to it is its own change.
-    { id = "RUSTSEC-2026-0367", reason = "extraction only; nothing extracts" },
-    { id = "RUSTSEC-2026-0368", reason = "extraction only; nothing extracts" },
-    { id = "RUSTSEC-2026-0369", reason = "extraction only; nothing extracts" },
-    { id = "RUSTSEC-2026-0429", reason = "extraction only; nothing extracts" },
 ]
 
 [licenses]

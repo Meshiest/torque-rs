@@ -36,6 +36,12 @@ export function decodeError(e) {
   return new TorqueError({ kind: 'failed', message: String(e?.message ?? e) });
 }
 
+// The game's rule for a handler name (torque-app's `is_name`): an ASCII identifier of at most 64 bytes.
+const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+// The most handlers (as the game's `MAX_HANDLERS`) and the most calls queued before the game is attached.
+const MAX_HANDLERS = 64;
+const MAX_WAITING = 256;
+
 // A `torque` object; `attach(module)` connects it to the game's module once it is loaded (until then requests wait).
 export function createTorque() {
   let game = null;
@@ -44,6 +50,10 @@ export function createTorque() {
 
   function send(kind, a, b, args) {
     return new Promise((resolve, reject) => {
+      if (!game && waiting.length >= MAX_WAITING) {
+        reject(new TorqueError({ kind: 'queue-full', message: `more than ${MAX_WAITING} calls wait for the game to start` }));
+        return;
+      }
       const go = () => {
         if (!game.torqueRequest) {
           reject(new TorqueError({ kind: 'no-bridge', message: "this game's page has no bridge to its scripts" }));
@@ -72,8 +82,15 @@ export function createTorque() {
     setVar: (name, value) => send('set', String(name), String(value), []),
     on(name, fn) {
       if (typeof fn !== 'function') throw new TypeError(`torque.on(${name}): a handler is a function`);
-      handlers.set(String(name), fn);
-      register(String(name));
+      name = String(name);
+      if (!NAME.test(name)) {
+        throw new TorqueError({ kind: 'bad-name', message: `${JSON.stringify(name)} is not a name (an identifier of at most 64 bytes)` });
+      }
+      if (!handlers.has(name) && handlers.size >= MAX_HANDLERS) {
+        throw new TorqueError({ kind: 'failed', message: `at most ${MAX_HANDLERS} handlers` });
+      }
+      handlers.set(name, fn);
+      register(name);
     },
     off(name) {
       handlers.delete(String(name));
@@ -88,7 +105,12 @@ export function createTorque() {
     },
     attach(module) {
       game = module;
-      for (const name of [...handlers.keys()]) register(name);
+      // Each name on its own: one the game refuses leaves the rest registered and the waiting calls still sent.
+      for (const name of [...handlers.keys()]) {
+        try {
+          register(name);
+        } catch {}
+      }
       for (const go of waiting.splice(0)) go();
     },
   };

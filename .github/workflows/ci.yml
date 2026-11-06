@@ -3,7 +3,7 @@
 # Every third-party action is pinned to a full commit SHA (the tag it was taken from is in the comment); update them
 # together.
 #
-# Off for now (owner, 2026-11-06): the clippy and MSRV jobs (`if: false`) and the Windows tests (the test matrix).
+# Off for now (owner, 2026-11-06): the clippy job (`if: false`) and the Windows tests (the test matrix).
 #
 # Platforms: lints run on Linux and Windows, everything else on Linux only, except the tests: Linux runs the whole
 # workspace (and its doc tests), Windows only the crates whose behavior depends on the platform (sockets, the window and
@@ -156,8 +156,6 @@ jobs:
 
   msrv:
     name: MSRV
-    # Off for now (owner, 2026-11-06); set back to run by removing this line.
-    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

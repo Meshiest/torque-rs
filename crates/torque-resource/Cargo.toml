@@ -15,7 +15,7 @@ categories = ["game-development", "filesystem"]
 
 [dependencies]
 torque-ts-vm = { path = "../torque-ts-vm" }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints]
 workspace = true
