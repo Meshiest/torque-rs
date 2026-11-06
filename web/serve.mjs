@@ -4,7 +4,7 @@
 // A folder's path without its closing `/` is sent there (as a static host does), so a page's relative links resolve.
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const types = {
@@ -53,8 +53,9 @@ export function serve(folder, port, prefix = '/') {
     try {
       if (!path.endsWith('/') && (await stat(file)).isDirectory()) {
         const query = new URL(req.url, 'http://localhost').search;
-        // Leading slashes collapsed: `//name` must not become a link to another host.
-        res.writeHead(301, { Location: `${base}${path.replace(/^\/+/, '')}/${query}` }).end();
+        // Built from the folder found, not from the request: no leading `/` or `\` can make it a link to another host.
+        const rel = relative(root, file).split(sep).map(encodeURIComponent).join('/');
+        res.writeHead(301, { Location: `${base}${rel}/${query}` }).end();
         return;
       }
       const body = await readFile(file);
