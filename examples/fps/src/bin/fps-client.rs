@@ -110,10 +110,28 @@ mod page {
         web::link_ended(why)
     }
 
-    /// A datagram for the client on the page's link (false: dropped).
+    /// A datagram for the client on the link to the worker's server (false: dropped).
     #[wasm_bindgen(js_name = localDatagram)]
     pub fn local_datagram(bytes: &[u8]) -> bool {
         web::local_datagram(bytes)
+    }
+
+    /// A datagram for the client on the page's data channel to a player's host (false: dropped).
+    #[wasm_bindgen(js_name = linkDatagram)]
+    pub fn link_datagram(bytes: &[u8]) -> bool {
+        web::link_datagram(bytes)
+    }
+
+    /// The page's function that sends the client's datagrams on its data channel to a player's host.
+    #[wasm_bindgen(js_name = setLinkSender)]
+    pub fn set_link_sender(sender: js_sys::Function) {
+        web::set_link_sender(sender)
+    }
+
+    /// The running game switches in place: `solo`, `link` or `host`.
+    #[wasm_bindgen(js_name = switchTo)]
+    pub fn switch_to(mode: &str) -> Result<(), String> {
+        web::switch_to(mode)
     }
 
     /// The page's function that posts the host player's datagrams to the worker.
