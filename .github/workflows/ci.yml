@@ -3,13 +3,13 @@
 # Every third-party action is pinned to a full commit SHA (the tag it was taken from is in the comment); update them
 # together.
 #
-# Off for now (owner, 2026-11-06): the clippy job (`if: false`) and the Windows tests (the test matrix).
+# Off for now (owner, 2026-11-06): the Windows tests (the test matrix) and the Windows clippy run (the clippy matrix).
 #
-# Platforms: lints run on Linux and Windows, everything else on Linux only, except the tests: Linux runs the whole
-# workspace (and its doc tests), Windows only the crates whose behavior depends on the platform (sockets, the window and
-# input, files, the GPU through WARP, audio, the room service, the script VM's file rules). The other crates are pure
-# logic the Linux run already covers, and the example games' long headless runs stay on Linux. Tests run under
-# cargo-nextest, which runs the test binaries in parallel.
+# Platforms: lints and everything else run on Linux only (Windows is off, see above), except the tests: Linux runs the
+# whole workspace (and its doc tests), Windows (when on) only the crates whose behavior depends on the platform
+# (sockets, the window and input, files, the GPU through WARP, audio, the room service, the script VM's file rules). The
+# other crates are pure logic the Linux run already covers, and the example games' long headless runs stay on Linux.
+# Tests run under cargo-nextest, which runs the test binaries in parallel.
 #
 # GPU crates: crates that draw through wgpu build and lint on both runners (wgpu compiles without a GPU). Their tests
 # that need an adapter get Mesa's software Vulkan driver (lavapipe, `mesa-vulkan-drivers`) on Linux and WARP on Windows;
@@ -57,12 +57,11 @@ jobs:
 
   clippy:
     name: clippy (${{ matrix.os }})
-    # Off for now (owner, 2026-11-06); set back to run by removing this line.
-    if: false
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # Windows is off for now (owner, 2026-11-06): `os: [ubuntu-latest, windows-latest]` turns it back on.
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
