@@ -46,7 +46,7 @@ fn main() {
 #[cfg(target_arch = "wasm32")]
 mod page {
     use torque::app::manifest;
-    use torque_example_fps::web;
+    use torque_example_fps::{web, web_host};
     use wasm_bindgen::prelude::wasm_bindgen;
 
     /// Whether the module carries its files; if not, the page fetches them by `files.json`.
@@ -79,6 +79,55 @@ mod page {
     #[wasm_bindgen(js_name = startFetched)]
     pub fn start_fetched() -> Result<(), String> {
         web::start_fetched()
+    }
+
+    /// The host player's game: the client, joined to the server in the page's worker over the local link.
+    #[wasm_bindgen(js_name = startHostClient)]
+    pub fn start_host_client() -> Result<(), String> {
+        web::start_host_client()
+    }
+
+    /// A datagram from the worker's server for the host player's client.
+    #[wasm_bindgen(js_name = localDatagram)]
+    pub fn local_datagram(bytes: Vec<u8>) {
+        web::local_datagram(bytes)
+    }
+
+    /// The page's function that posts the host player's datagrams to the worker.
+    #[wasm_bindgen(js_name = setLocalSender)]
+    pub fn set_local_sender(sender: js_sys::Function) {
+        web::set_local_sender(sender)
+    }
+
+    /// In the worker: starts the server on the fetched files and `map` (empty: the first); returns the map.
+    #[wasm_bindgen(js_name = hostStart)]
+    pub fn host_start(map: &str) -> Result<String, String> {
+        web_host::host_start(map)
+    }
+
+    #[wasm_bindgen(js_name = hostOpen)]
+    pub fn host_open(id: u32, ip: &str) -> bool {
+        web_host::host_open(id, ip)
+    }
+
+    #[wasm_bindgen(js_name = hostDatagram)]
+    pub fn host_datagram(id: u32, bytes: &[u8]) -> bool {
+        web_host::host_datagram(id, bytes)
+    }
+
+    #[wasm_bindgen(js_name = hostClose)]
+    pub fn host_close(id: u32) {
+        web_host::host_close(id)
+    }
+
+    #[wasm_bindgen(js_name = hostTick)]
+    pub fn host_tick() -> js_sys::Array {
+        web_host::host_tick()
+    }
+
+    #[wasm_bindgen(js_name = hostClosed)]
+    pub fn host_closed() -> Vec<u32> {
+        web_host::host_closed()
     }
 }
 

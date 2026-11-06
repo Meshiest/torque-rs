@@ -59,7 +59,7 @@ web-level-demo-embedded port="8080":
 
 # The web pages' loading display, settings and script bridge, tested in Node (no browser)
 web-unit:
-    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs
+    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs ../web/host.test.mjs
 
 # Fails when any script in the repository could open a browser other than through `launchGuarded` (web/guard.mjs), whose pages
 # cannot take the pointer lock: a lock confines the real cursor in headless Chrome on Windows
@@ -136,7 +136,7 @@ web-fps-rooms port="28100" *args:
 # The arena hosted by a player (build it first as for `web-fps-check`): a room service serving the page, then
 # `fps-server --room` with headless Chrome joining by the room's code on a data channel (it walks, then sees the host
 # leave), then a host page whose server runs in a Web Worker with a second page joining it the same way
-web-fps-p2p-check:
+web-fps-p2p-check: web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-desktop.png" 120 desktop
     node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-browser.png" 120 browser

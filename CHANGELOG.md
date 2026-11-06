@@ -272,10 +272,11 @@ The first development version. Nothing is published yet; this is what exists.
   secret shared with the TURN server). torque-server's `rooms` feature: the room protocol (`net::room`); the web
   transport's `close_socket`, and its sends capped by its message limit (unchanged by default).
 - `torque-server`'s `p2p` feature: a player's host (`net::web::p2p::P2pHost`), a `Transport` that opens a room on a
-  room service and takes joiners over WebRTC data channels with no port forwarded: W4's data channels in a host mode
+  room service and takes joiners over WebRTC data channels with no port forwarded: the web transport's data channels in a host mode
   (full ICE, so the host's own checks open its NAT; checks from any address under the per-source rate; a server-reflexive
   candidate from the room's STUN server). A joiner cannot aim the host's checks: its candidates, offered or trickled, are
-  taken only as IPv4 UDP (no `.local` names), at most 16 lines a joiner (refused ones counted), with distinct addresses capped across joiners, and never
+  taken only as IPv4 UDP (no `.local` names), at most 16 lines a joiner (refused ones counted), with distinct
+  addresses capped across joiners, and never
   loopback, unspecified, broadcast, multicast, link-local, documentation, benchmarking, shared, reserved or the host's
   own; private ones only with `--rtc-lan`. Checks to addresses nothing authenticated came from are rated per joiner and
   in all.
@@ -292,6 +293,13 @@ The first development version. Nothing is published yet; this is what exists.
   `torque` and `torque-app` `p2p` features. `just examples/web-fps-rooms` runs a service serving the page;
   `just examples/web-fps-p2p-check`: headless Chrome joins `fps-server --room` by code on a data channel, walks, and
   sees the host leave.
+- A browser hosts the arena (`?host=1`): the page opens a room and shows its code (`data-torque-room`), runs the
+  server in a Web Worker (`web/host-worker.js`, on `net::relay`, which holds every cap on what joiners send), plays in it
+  over a local link, and holds each joiner's peer connection and data channel (`web/host.js`). A joiner's candidates go
+  through the desktop host's rules (IPv4 UDP, no `.local`, no reserved or private addresses unless `?lan=1`, at most 16
+  lines); the room's peer numbers and ICE servers are read strictly. `web-fps-p2p-check`'s browser part: a second page
+  joins by code, each page holds the other's figure, the joiner walks, and it says the host left when the host page
+  closes. The p2p check launches its browsers through `web/guard.mjs` with `?nolock`.
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
   compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
   picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time

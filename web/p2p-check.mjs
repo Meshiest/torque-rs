@@ -10,12 +10,13 @@
 //   joiner's, the joiner walks on its data channel, and no console error shows on either. Then the host page closes, and
 //   the joiner must say that the host left within 15 s.
 // Build first: `node build.mjs fps` (the folder is <target>/web/fps). The native programs are built in release by cargo
-// here. TORQUE_WEB_TOOLS and CHROME as `check.mjs` reads them.
+// here. The browser comes from `guard.mjs` (TORQUE_WEB_TOOLS and CHROME as it reads them), and every page loads with
+// `?nolock`: no page can take the pointer lock. The check presses keys only; it never moves or clicks the mouse.
 import { spawn, spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { writeFile } from 'node:fs/promises';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { launchGuarded, noLock } from './guard.mjs';
 
 const [folder, out, seconds = '120', mode = 'desktop'] = process.argv.slice(2);
 if (!folder || !out || !['desktop', 'browser'].includes(mode)) {
@@ -24,8 +25,6 @@ if (!folder || !out || !['desktop', 'browser'].includes(mode)) {
 }
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const tools = resolve(process.env.TORQUE_WEB_TOOLS ?? '.');
-const puppeteer = createRequire(join(tools, 'package.json'))('puppeteer-core');
 const programs = ['--bin', 'torque-rooms', ...(mode === 'desktop' ? ['--bin', 'fps-server'] : [])];
 const built = spawnSync('cargo', ['build', '--release', '-p', 'torque-rooms', '-p', 'torque-example-fps', ...programs], {
   cwd: root,
@@ -64,19 +63,18 @@ function start(file, args, name) {
 const problems = [];
 const log = [];
 // Each page in a browser of its own: a page a browser hides (one behind another) stops drawing, and its client with it.
-const launch = () => puppeteer.launch({
-  ...(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: 'chrome' }),
-  headless: true,
-  args: [
-    '--enable-unsafe-webgpu',
-    '--enable-gpu',
-    '--ignore-gpu-blocklist',
-    '--window-size=1400,900',
-    // Two pages on one computer: their host candidates as addresses, not `.local` names.
-    '--disable-features=WebRtcHideLocalIpsWithMdns',
-  ],
-  defaultViewport: { width: 1400, height: 900 },
-});
+const launch = () =>
+  launchGuarded({
+    args: [
+      '--enable-unsafe-webgpu',
+      '--enable-gpu',
+      '--ignore-gpu-blocklist',
+      '--window-size=1400,900',
+      // Two pages on one computer: their host candidates as addresses, not `.local` names.
+      '--disable-features=WebRtcHideLocalIpsWithMdns',
+    ],
+    defaultViewport: { width: 1400, height: 900 },
+  });
 const browsers = [];
 
 
@@ -172,12 +170,12 @@ try {
     const code = /room code (\S+)/.exec(await host.until(/room code /, 60_000))[1];
     console.log(`fps-server hosts room ${code}`);
     const page = await watched('joiner');
-    await page.goto(`${pageAt}?room=${code.toLowerCase()}`, { waitUntil: 'load' });
+    await page.goto(noLock(`${pageAt}?room=${code.toLowerCase()}`), { waitUntil: 'load' });
     await play(page, 0);
     if (!problems.length) await hostLeaves(page, async () => host.child.kill());
   } else {
     const hostPage = await watched('host');
-    await hostPage.goto(`${pageAt}?host=1&name=Host`, { waitUntil: 'load' });
+    await hostPage.goto(noLock(`${pageAt}?host=1&name=Host`), { waitUntil: 'load' });
     let h = await wait(hostPage, Number(seconds) * 1000, (s) => (s.room !== '' && s.figure) || s.ended !== '');
     console.log(`host page: room "${h.room}", server in "${h.server}", figure ${h.figure}`);
     if (h.server !== 'worker') problems.push(`the host's server does not run in a worker ("${h.server}")`);
@@ -185,7 +183,7 @@ try {
     if (!h.figure) problems.push('the host page has no figure');
     if (!problems.length) {
       const page = await watched('joiner');
-      await page.goto(`${pageAt}?room=${h.room}&name=Joiner`, { waitUntil: 'load' });
+      await page.goto(noLock(`${pageAt}?room=${h.room}&name=Joiner`), { waitUntil: 'load' });
       await play(page, 1);
       h = await wait(hostPage, 20_000, (s) => s.others >= 1);
       console.log(`host page: other figures ${h.others}`);

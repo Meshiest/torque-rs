@@ -40,8 +40,9 @@ pub const CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// The characters of a room code (40 bits).
 pub const CODE_LEN: usize = 8;
 
-/// The signaling messages the service carries between a host and a joiner (W4's, `net::web::rtc::signal`): a body must
-/// begin with one of them, so nothing else (a game's datagrams) can ride through the service.
+/// The signaling messages the service carries between a host and a joiner (the data channels' own,
+/// `net::web::rtc::signal`): a body must begin with one of them, so nothing else (a game's datagrams) can ride through
+/// the service.
 pub const SIGNALS: [&str; 5] = ["offer", "answer", "candidate", "busy", "closed"];
 
 /// A message to the service.
