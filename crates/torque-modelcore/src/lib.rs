@@ -458,7 +458,7 @@ impl Model {
                     .iter()
                     .enumerate()
                     .map(|(v, &p)| {
-                        let mut out = [0.0f32; 3];
+                        let mut out = glam::Vec3::ZERO;
                         let (js, ws) = (m.joints.get(v), m.weights.get(v));
                         for k in 0..4 {
                             let (Some(j), Some(w)) = (js.map(|j| j[k]), ws.map(|w| w[k])) else {
@@ -467,12 +467,9 @@ impl Model {
                             let Some(b) = bones.get(usize::from(j)) else {
                                 continue;
                             };
-                            let q = math::point(b, p);
-                            for c in 0..3 {
-                                out[c] += q[c] * w;
-                            }
+                            out += glam::Vec3::from(math::point(b, p)) * w;
                         }
-                        out
+                        out.to_array()
                     })
                     .collect()
             }

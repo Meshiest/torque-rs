@@ -11,9 +11,11 @@ keywords = ["torque", "model", "mesh", "animation", "gamedev"]
 categories = ["game-development", "data-structures"]
 
 # The format-neutral model layer: what a model is once a reader has turned its file into Torque's frame (Z up, meters). The
-# readers (`torque-import`) write it; the shape writer and the interior builder read it. Std only, no dependency at all.
+# readers (`torque-import`) write it; the shape writer and the interior builder read it. Its data stays plain arrays (the
+# readers' and writers' layout); glam does the vector arithmetic.
 
 [dependencies]
+glam = { workspace = true }
 
 [lints]
 workspace = true

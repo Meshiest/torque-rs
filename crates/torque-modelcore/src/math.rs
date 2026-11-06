@@ -26,16 +26,21 @@ pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
     out
 }
 
+/// Row `r`'s first three elements.
+fn row(m: &Mat4, r: usize) -> glam::Vec3 {
+    glam::Vec3::new(m[r * 4], m[r * 4 + 1], m[r * 4 + 2])
+}
+
 /// The point `p` placed by `m`.
 pub fn point(m: &Mat4, p: Vec3) -> Vec3 {
-    std::array::from_fn(|r| {
-        m[r * 4] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3]
-    })
+    let p = glam::Vec3::from(p);
+    std::array::from_fn(|r| row(m, r).dot(p) + m[r * 4 + 3])
 }
 
 /// The direction `v` turned (and scaled) by `m`.
 pub fn vector(m: &Mat4, v: Vec3) -> Vec3 {
-    std::array::from_fn(|r| m[r * 4] * v[0] + m[r * 4 + 1] * v[1] + m[r * 4 + 2] * v[2])
+    let v = glam::Vec3::from(v);
+    std::array::from_fn(|r| row(m, r).dot(v))
 }
 
 /// The rotation matrix of a unit quaternion.
@@ -95,10 +100,6 @@ pub fn inverse(m: &Mat4) -> Mat4 {
     out
 }
 
-fn length(v: Vec3) -> f32 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
-}
-
 /// The quaternion of a rotation matrix (the upper 3x3 of `m`, assumed orthonormal).
 pub fn quat_of(m: &Mat4) -> Quat {
     let (m00, m01, m02) = (m[0], m[1], m[2]);
@@ -124,8 +125,8 @@ pub fn quat_of(m: &Mat4) -> Quat {
 /// An affine matrix as translation, rotation and scale (a mirror goes into a negative x scale; shear is dropped).
 pub fn decompose(m: &Mat4) -> (Vec3, Quat, Vec3) {
     let t = [m[3], m[7], m[11]];
-    let col = |c: usize| [m[c], m[4 + c], m[8 + c]];
-    let mut s = [length(col(0)), length(col(1)), length(col(2))];
+    let col = |c: usize| glam::Vec3::new(m[c], m[4 + c], m[8 + c]);
+    let mut s = [0, 1, 2].map(|c| col(c).length());
     let det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8])
         + m[2] * (m[4] * m[9] - m[5] * m[8]);
     if det < 0.0 {
@@ -179,8 +180,4 @@ pub fn slerp(a: Quat, b: Quat, t: f32) -> Quat {
     let s = theta.sin();
     let (wa, wb) = (((1.0 - t) * theta).sin() / s, (t * theta).sin() / s);
     normalize_quat(std::array::from_fn(|i| a[i] * wa + b[i] * wb))
-}
-
-pub fn lerp3(a: Vec3, b: Vec3, t: f32) -> Vec3 {
-    std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
 }
