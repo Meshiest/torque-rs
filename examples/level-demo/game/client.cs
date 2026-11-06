@@ -44,25 +44,38 @@ exec("common/pause.cs");
 new GuiControl(MenuGui)
 {
    profile = WorldBackProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
-   new GuiTextCtrl(MenuTitle)
+   // the menu's column, centered in the window at any size
+   new GuiControl(MenuPanel)
    {
-      profile = WorldTitleProfile; position = "60 50"; extent = "680 48"; visible = true; enabled = true;
-      text = "Level Demo";
-   };
-   new GuiTextCtrl(MenuLine)
-   {
-      profile = WorldDimProfile; position = "62 104"; extent = "680 20"; visible = true; enabled = true;
-      text = "Pick a map to walk around in. Click it, or press its number.";
-   };
-   new GuiControl(MenuList) { position = "60 150"; extent = "680 400"; horizSizing = "width"; };
-   new GuiTextCtrl(MenuStatus)
-   {
-      profile = WorldNoteProfile; position = "60 540"; extent = "680 26"; vertSizing = "top"; visible = true; enabled = true;
-      text = "";
+      position = "60 42"; extent = "680 516"; horizSizing = "center"; vertSizing = "center";
+      new GuiTextCtrl(MenuTitle)
+      {
+         profile = WorldTitleProfile; position = "0 0"; extent = "680 48"; visible = true; enabled = true;
+         text = "Level Demo";
+      };
+      new GuiTextCtrl(MenuLine)
+      {
+         profile = WorldDimProfile; position = "2 54"; extent = "678 20"; visible = true; enabled = true;
+         text = "Pick a map to walk around in. Click it, or press its number.";
+      };
+      new GuiControl(MenuList) { position = "0 100"; extent = "680 384"; };
+      new GuiTextCtrl(MenuStatus)
+      {
+         profile = WorldNoteProfile; position = "0 490"; extent = "680 26"; visible = true; enabled = true;
+         text = "";
+      };
    };
 };
 
-// One button and one line for each map the host found.
+// Gives `%panel` the size `%w` by `%h`, centered in `%parent` (its horizSizing and vertSizing "center" keep it there as the
+// window changes).
+function fitPanel(%panel, %parent, %w, %h)
+{
+   %size = %parent.getExtent();
+   %panel.resize(mFloor((getWord(%size, 0) - %w) / 2), mFloor((getWord(%size, 1) - %h) / 2), %w, %h);
+}
+
+// One button and one line for each map the host found; the panel fits the list, centered.
 function buildMenu()
 {
    MenuList.clear();
@@ -71,9 +84,13 @@ function buildMenu()
       MenuStatus.setText("No maps found in the missions folder.");
       return;
    }
+   %rows = $World::MapCount * 80;
+   MenuList.resize(0, 100, 680, %rows);
+   MenuStatus.resize(0, 106 + %rows, 680, 26);
+   fitPanel(MenuPanel, MenuGui, 680, 132 + %rows);
    for (%i = 0; %i < $World::MapCount; %i++)
    {
-      %y = %i * 84;
+      %y = %i * 80;
       MenuList.add(new GuiButtonCtrl("MapButton" @ %i)
       {
          profile = WorldButtonProfile; position = "0" SPC %y; extent = "260 56"; visible = true; enabled = true;

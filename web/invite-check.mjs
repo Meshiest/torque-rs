@@ -204,6 +204,8 @@ try {
   // The canvas follows the page: two sizes, the second wider than Auto draws in full (a miss is shown at the end).
   if (!problems.length) {
     await sized(host, 'host', 1000, 700);
+    await writeFile(shot('solo-menu-small.png'), await host.screenshot({ type: 'png' }));
+    console.log(`picture: ${shot('solo-menu-small.png')}`);
     await sized(host, 'host', 2560, 1080);
     await writeFile(shot('solo-menu-wide.png'), await host.screenshot({ type: 'png' }));
     console.log(`picture: ${shot('solo-menu-wide.png')}`);

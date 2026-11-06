@@ -346,7 +346,8 @@ impl App for WebArena {
             torque::app::web_join::ask_page(&ask);
         }
         // A link's channel open: its join.
-        if !self.joined && self.target == Target::Page && self.watch.borrow().link == Link::Channel {
+        if !self.joined && self.target == Target::Page && self.watch.borrow().link == Link::Channel
+        {
             self.joined = true;
             if let Err(e) = self.join() {
                 self.status(&format!("Could not join: {e}"));

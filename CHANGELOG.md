@@ -327,8 +327,10 @@ The first development version. Nothing is published yet; this is what exists.
   needs, deflated, base64url, a version byte, a kind byte and a CRC-32 (about 230 characters with three candidates); a
   cap on the code's length and on its inflated size, strict lines, and the STUN server named by a key into the page's
   own list (Cloudflare, Google, or same network only), never by a URL. On any server, a host candidate may be a
-  browser's mDNS name (a lowercase version 4 UUID and `.local`, nothing else), handed to the browser's ICE unresolved. The panels say which server is asked for the player's public address, and that the links carry it. `node
-  --test web/codes.test.mjs`; `just examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded
+  browser's mDNS name (a lowercase version 4 UUID and `.local`, nothing else), handed to the browser's ICE
+  unresolved; neither side takes the other's code at its own names. The panels say which server is asked for the
+  player's public address, and that the links carry it. `node --test web/codes.test.mjs`;
+  `just examples/web-fps-invite-check` and `web-vehicle-demo-invite-check`: two guarded
   browsers trade the links on this computer's own addresses, the joiner walks, each holds the other's figure, and bad,
   cut short, oversized and used codes are refused with a message. The examples' pause menu takes an optional Invite
   players entry (`$Pause::CanInvite`, the game's `invitePlayers()`).

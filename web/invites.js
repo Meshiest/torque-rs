@@ -34,7 +34,7 @@ import {
   serverFor,
   toSdp,
 } from './codes.js';
-import { addressAllowed, candidateAllowed, ipv4, meteredReceiver } from './host.js';
+import { MDNS_NAME, addressAllowed, candidateAllowed, ipv4, meteredReceiver } from './host.js';
 
 const MAX_INVITES = 8;
 const INVITE_MS = 15 * 60_000;
@@ -622,17 +622,23 @@ export function joinInvite(code) {
     pc.oniceconnectionstatechange = () => {
       if (opened && pc.iceConnectionState === 'failed') end('The host left the game.');
     };
+    // This page's own mDNS names: an invite that names them is not taken at them (a host could point this browser at its
+    // own network address and a port of its choice). Addresses stay: two pages on one computer share them.
+    const own = new Set();
+    const ownName = (address) => MDNS_NAME.test(address ?? '') && own.add(address);
+    pc.onicecandidate = (e) => ownName(e.candidate?.candidate?.split(' ')[4]);
     await pc.setRemoteDescription({ type: 'offer', sdp: toSdp(data) });
-    const lines = allowedLines(data, lan, new Set());
+    await pc.setLocalDescription(await pc.createAnswer());
+    await gathered(pc, GATHER_MS);
+    if (ended) return pc.close();
+    const sdp = pc.localDescription.sdp;
+    for (const line of sdpLines(sdp)) ownName(line.split(' ')[4]);
+    const lines = allowedLines(data, lan, own);
     if (!lines.length) {
       pc.close();
       return refuse('This invite offer has no address this page can reach. Ask the host for a new one.');
     }
     for (const line of lines) await pc.addIceCandidate({ candidate: line, sdpMid: '0' }).catch(() => {});
-    await pc.setLocalDescription(await pc.createAnswer());
-    await gathered(pc, GATHER_MS);
-    if (ended) return pc.close();
-    const sdp = pc.localDescription.sdp;
     const candidates = pickCandidates(sdpLines(sdp), (o) => addressAllowed(o, lan), { mdns: true });
     const reply = await encodeCode({ kind: KIND_REPLY, token: data.token, ...fromSdp(sdp), candidates });
     markUsed(data.token);

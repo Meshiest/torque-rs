@@ -404,6 +404,14 @@ function releaseKeys()
 
 // ---- in and out
 
+// Gives `%panel` the size `%w` by `%h`, centered in `%parent` (its horizSizing and vertSizing "center" keep it there as the
+// window changes): a menu with fewer controls shows as a narrower column in the middle.
+function fitPanel(%panel, %parent, %w, %h)
+{
+   %size = %parent.getExtent();
+   %panel.resize(mFloor((getWord(%size, 0) - %w) / 2), mFloor((getWord(%size, 1) - %h) / 2), %w, %h);
+}
+
 function showMenu()
 {
    $World::InWorld = 0;
@@ -417,9 +425,14 @@ function showMenu()
       showAloneOnly();
 }
 
-// A client with no socket of its own ($World::AloneOnly, a browser's) only plays alone: the menu offers that and nothing else.
+// A client with no socket of its own ($World::AloneOnly, a browser's) only plays alone: the menu offers that and nothing else,
+// in a column the panel fits, centered.
 function showAloneOnly()
 {
+   fitPanel(MenuPanel, MenuGui, 480, 370);
+   MenuTitle.resize(0, 0, 480, 52);
+   MenuLine.resize(2, 56, 478, 20);
+   MenuStatus.resize(0, 338, 480, 28);
    MenuLine.setText("Drive a buggy over the hills.");
    HostButton.setVisible(0);
    GamesLabel.setVisible(0);

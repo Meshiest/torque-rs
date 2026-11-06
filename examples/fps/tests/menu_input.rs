@@ -373,7 +373,11 @@ fn host_with_a_link_joins_the_pages_game_and_an_invited_page_offers_to_play_alon
     g.set_global("$Arena::Solo", "1");
     g.call("showMainMenu", &[]).unwrap();
     g.call("eval", &["hostWithLink();"]).unwrap();
-    assert_eq!(g.global("$Arena::JoinAsked"), "1", "into the page's own game");
+    assert_eq!(
+        g.global("$Arena::JoinAsked"),
+        "1",
+        "into the page's own game"
+    );
     assert_eq!(g.global("$Arena::PageAsk"), "host", "with the panel");
 
     let mut g = client();
@@ -383,6 +387,9 @@ fn host_with_a_link_joins_the_pages_game_and_an_invited_page_offers_to_play_alon
     let mut eval = |code: &str| g.call("eval", &[code]).unwrap();
     assert_eq!(eval("return QuitButton.isVisible();"), "1");
     assert_eq!(eval("return QuitButton.getText();"), "Play alone instead");
-    assert_eq!(eval("return QuitButton.command;"), "$Arena::PageAsk = \"back\";");
+    assert_eq!(
+        eval("return QuitButton.command;"),
+        "$Arena::PageAsk = \"back\";"
+    );
     assert_eq!(eval("return HostButton.isVisible();"), "0");
 }

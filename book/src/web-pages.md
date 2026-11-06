@@ -98,7 +98,9 @@ line out of its form or order, and a STUN server key not in its own fixed list; 
 The host takes a joiner's candidates by the same rules as a room's joiners (canonical IPv4, no `.local` names, private
 addresses only on the same-network server or with `?lan=1`, never its own). On any server, a host candidate may also be a
 browser's mDNS name, strictly a lowercase version 4 UUID and `.local`, handed to the browser's own ICE unresolved: only
-the browser resolves it, and only on its own network. That is how two tabs of one browser, or two computers on one
+the browser resolves it, and only on its own network. So pressing Connect (or adding a reply) also makes the browser
+ask its local network, by multicast, for the other player's `.local` name; only a device that registered that random
+name answers. That is how two tabs of one browser, or two computers on one
 network, reach each other through Cloudflare's or Google's server, whose public address alone needs a router that loops
 it back, which most home routers do not. The host counts the joiner by the address its traffic
 comes from (or by a stand-in of its invite's own when the browser hides that address, as it does for a peer-reflexive

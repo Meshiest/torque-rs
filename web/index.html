@@ -309,6 +309,11 @@
     if (game.embedded()) {
       game.startEmbedded();
     } else if (joining) {
+      // refused while the files came: no game starts
+      if (joining.refused()) {
+        document.getElementById('loading')?.remove();
+        return;
+      }
       game.startLinkClient();
     } else if (hosting) {
       const { hostGame } = await import('./host.js');

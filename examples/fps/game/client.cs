@@ -809,6 +809,14 @@ PlayMap.bind(mouse, yaxis, look);
 
 // ---- in and out
 
+// Gives `%panel` the size `%w` by `%h`, centered in `%parent` (its horizSizing and vertSizing "center" keep it there as the
+// window changes): a menu with fewer controls shows as a narrower column in the middle.
+function fitPanel(%panel, %parent, %w, %h)
+{
+   %size = %parent.getExtent();
+   %panel.resize(mFloor((getWord(%size, 0) - %w) / 2), mFloor((getWord(%size, 1) - %h) / 2), %w, %h);
+}
+
 function showMainMenu()
 {
    $Arena::InGame = 0;
@@ -832,6 +840,13 @@ function showJoinOnly()
    HostNote.setVisible(0);
    QuitButton.setVisible(0);
    JoinButton.command = "joinPage();";
+   // the column of buttons and their notes: the panel fits it, centered
+   fitPanel(MainPanel, MainMenuGui, 620, 470);
+   MainTitle.resize(20, 20, 580, 56);
+   MainLine.resize(22, 80, 578, 20);
+   MainStatus.resize(20, 436, 580, 28);
+   HostNote.resize(322, 218, 278, 20);
+   JoinNote.resize(322, 290, 278, 20);
    if ($Arena::Solo)
    {
       MainLine.setText("A small shooter, played alone on this page.");
