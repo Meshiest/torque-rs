@@ -204,12 +204,14 @@ struct Slot(&'static AtomicUsize);
 
 impl Slot {
     fn take(count: &'static AtomicUsize) -> Option<Slot> {
-        count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < MAX_LOOKUPS).then_some(n + 1)
-            })
-            .ok()
-            .map(|_| Slot(count))
+        let mut n = count.load(Ordering::Acquire);
+        while n < MAX_LOOKUPS {
+            match count.compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(Slot(count)),
+                Err(now) => n = now,
+            }
+        }
+        None
     }
 }
 
