@@ -13,7 +13,7 @@
   body > canvas { display: block; outline: none; position: fixed; inset: 0; z-index: 0;
     width: 100% !important; height: 100% !important; min-width: 0 !important; max-width: none !important;
     min-height: 0 !important; max-height: none !important; }
-  #loading, #fps, #gear, #gallery, #settings, #invites { z-index: 1; }
+  #loading, #fps, #gear, #gallery, #settings, #leave, #invites { z-index: 1; }
   #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
   #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
   #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
@@ -39,6 +39,15 @@
   #settings .note { margin: 0.5rem 0 0; font-size: 0.8rem; color: #9aa3b5; }
   #settings .close { margin-top: 0.6rem; font: inherit; font-size: 0.85rem; padding: 0.2rem 0.7rem; background: #262c38;
     color: #dde2ec; border: 1px solid #3a4152; border-radius: 4px; cursor: pointer; }
+  /* Asked before the gallery button leaves the game. */
+  #leave { position: fixed; top: calc(var(--gear-top, 3rem) + 2.75rem); right: 0.5rem; width: 15rem; padding: 0.75rem 0.9rem;
+    border: 1px solid #3a4152; border-radius: 8px; background: #1c2029f2; box-shadow: 0 6px 20px #0008; font-size: 0.9rem; }
+  #leave p { margin: 0 0 0.7rem; }
+  #leave .row { display: flex; gap: 0.5rem; }
+  #leave a, #leave button { font: inherit; font-size: 0.85rem; padding: 0.2rem 0.7rem; background: #262c38; color: #dde2ec;
+    border: 1px solid #3a4152; border-radius: 4px; cursor: pointer; text-decoration: none; }
+  #leave a { background: #2f4a80; border-color: #7aa2f7; }
+  #leave a:focus-visible, #leave button:focus-visible { outline: 2px solid #7aa2f7; outline-offset: 2px; }
   #invites { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(34rem, calc(100% - 2rem));
     max-height: calc(100% - 2rem); overflow-y: auto; box-sizing: border-box; padding: 1rem 1.2rem; border: 1px solid #3a4152;
     border-radius: 8px; background: #1c2029f7; box-shadow: 0 6px 20px #0008; font-size: 0.92rem; line-height: 1.4; }
@@ -78,6 +87,10 @@
     <rect x="1" y="9" width="6" height="6" rx="1"/><rect x="9" y="9" width="6" height="6" rx="1"/>
   </svg>
 </a>
+<div id="leave" role="alertdialog" aria-labelledby="leave-text" hidden>
+  <p id="leave-text">Leave the game and go back to the gallery?</p>
+  <div class="row"><a href="../">Leave</a><button type="button">Stay</button></div>
+</div>
 <button id="gear" type="button" aria-label="Settings" aria-expanded="false" aria-controls="settings" title="Settings">&#9881;</button>
 <div id="settings" role="dialog" aria-labelledby="settings-title" hidden>
   <h2 id="settings-title">Settings</h2>
@@ -275,7 +288,35 @@
     if (open) quality.focus();
     else gear.focus();
   }
-  gear.addEventListener('click', () => openPanel(panel.hidden));
+  gear.addEventListener('click', () => {
+    leave.hidden = true;
+    openPanel(panel.hidden);
+  });
+
+  // The gallery button asks first (a plain click; a middle click or a new tab still just opens the gallery).
+  const galleryButton = document.getElementById('gallery');
+  const leave = document.getElementById('leave');
+  function askLeave(open) {
+    leave.hidden = !open;
+    if (open) {
+      openPanel(false);
+      leave.querySelector('a').focus();
+    } else {
+      galleryButton.focus();
+    }
+  }
+  galleryButton.addEventListener('click', (e) => {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    askLeave(leave.hidden);
+  });
+  leave.querySelector('button').addEventListener('click', () => askLeave(false));
+  leave.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      askLeave(false);
+    }
+  });
   panel.querySelector('.close').addEventListener('click', () => openPanel(false));
   panel.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {

@@ -96,6 +96,14 @@ try {
     // its button back to the gallery, shown, leads to the gallery
     const back = await page.$eval('#gallery', (a) => (a.hidden ? 'hidden' : a.href)).catch(() => 'missing');
     if (back !== front) problems.push(`${card.text}: the gallery button is ${back.startsWith('http') ? `at ${back}` : back}`);
+    // a click on it asks first and stays on the page; Stay closes the question
+    if (back === front) {
+      await page.evaluate(() => document.getElementById('gallery').click());
+      const asked = await page.evaluate(() => !document.getElementById('leave').hidden && location.href);
+      if (asked !== page.url()) problems.push(`${card.text}: the gallery button left without asking`);
+      await page.evaluate(() => document.querySelector('#leave button').click());
+      if (!(await page.$eval('#leave', (d) => d.hidden))) problems.push(`${card.text}: Stay left the question open`);
+    }
     const deadline = started + Number(seconds) * 1000;
     const menuFirst = !new URL(card.href).searchParams.has('map');
     let menuSince = null;
