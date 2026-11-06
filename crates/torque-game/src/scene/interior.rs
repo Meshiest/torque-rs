@@ -20,7 +20,6 @@ use std::sync::Arc;
 use collide::convex::ObjectView;
 use collide::map::{InteriorGeom, InteriorShape, MapShape};
 use collide::math::{Box3, affine_inverse};
-use torque_mapcore::Importer as _;
 use torque_resource::files::MAX_READ_BYTES;
 use ts_vm::classes::EngineClass;
 use ts_vm::host::{FileRead, FileStat};
@@ -57,19 +56,91 @@ pub fn torque_crc(bytes: &[u8]) -> u32 {
 }
 
 /// The hulls and box of a `.dif`'s bytes; `None` for a file the importer refuses or one with no hull. `pay` is asked for the
-/// hulls' cost first.
+/// hulls' cost first. A file whose hulls were made already in this process ([`made`]: a server and its client in one process
+/// read the same files) is not made again; its cost is asked for all the same.
 pub fn read_interior(bytes: &[u8], pay: &mut dyn FnMut(u64) -> bool) -> Option<KeptInterior> {
-    let set = torque_maps::legacy::IMPORTER.convexes(bytes).ok()?;
-    if !pay(collide::map::interior::build_cost(&set)) {
+    let crc = torque_crc(bytes);
+    if let Some(made) = made::find(bytes, crc) {
+        let (cost, kept) = made?;
+        return pay(cost).then_some(kept);
+    }
+    // One reading of the file: the importer's hulls are its first detail level's (`IMPORTER.convexes`), as is the box.
+    let Some(dif) = torque_maps::dif::parse(bytes).ok() else {
+        made::keep(bytes, crc, None);
+        return None;
+    };
+    let Some(first) = dif.details.first() else {
+        made::keep(bytes, crc, None);
+        return None;
+    };
+    let set = torque_maps::legacy::convexes(first);
+    let cost = collide::map::interior::build_cost(&set);
+    if !pay(cost) {
         return None;
     }
     let geom = InteriorGeom::new(&set);
-    let b = torque_maps::dif::parse(bytes).ok()?.details.first()?.bounds;
-    Some(KeptInterior {
+    let b = first.bounds;
+    let kept = KeptInterior {
         bounds: Box3::new(b.min, b.max),
         geom: Arc::new(geom),
-        crc: torque_crc(bytes),
-    })
+        crc,
+    };
+    made::keep(bytes, crc, Some((cost, kept.clone())));
+    Some(kept)
+}
+
+/// The interiors made in this process, by their files' bytes (the same bytes, the same hulls), each known by its length, its
+/// CRC and a 64-bit hash of its own ([`made::fingerprint`]): at most [`made::MAX_FILES`] files, the first ones read kept.
+pub mod made {
+    use std::sync::{Mutex, PoisonError};
+
+    use super::KeptInterior;
+
+    /// The most files kept.
+    pub const MAX_FILES: usize = 256;
+
+    /// A file's length, CRC and hash.
+    type Key = (usize, u32, u64);
+
+    /// What a file made: its hulls' cost and the interior, or `None` for a file that does not read.
+    type Made = Option<(u64, KeptInterior)>;
+
+    static MADE: Mutex<Vec<(Key, Made)>> = Mutex::new(Vec::new());
+
+    /// A hash of `bytes`, eight at a time (a multiply and a rotate a word, the length and the last bytes mixed in): with the
+    /// length and the CRC, a key no two files of a game share by chance.
+    pub fn fingerprint(bytes: &[u8]) -> u64 {
+        const K: u64 = 0x9e37_79b9_7f4a_7c15;
+        let (words, rest) = bytes.as_chunks::<8>();
+        let mut h = (bytes.len() as u64).wrapping_mul(K);
+        for w in words {
+            h = (h ^ u64::from_le_bytes(*w)).wrapping_mul(K).rotate_left(29);
+        }
+        let mut last = [0u8; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        h = (h ^ u64::from_le_bytes(last)).wrapping_mul(K);
+        h ^ (h >> 32)
+    }
+
+    fn key(bytes: &[u8], crc: u32) -> Key {
+        (bytes.len(), crc, fingerprint(bytes))
+    }
+
+    /// What `bytes` (whose CRC is `crc`) made, if they were read before: `Some(None)` for a file that does not read.
+    pub(super) fn find(bytes: &[u8], crc: u32) -> Option<Made> {
+        let key = key(bytes, crc);
+        let made = MADE.lock().unwrap_or_else(PoisonError::into_inner);
+        made.iter().find(|(k, _)| *k == key).map(|(_, m)| m.clone())
+    }
+
+    /// Keeps what `bytes` made, while there is room.
+    pub(super) fn keep(bytes: &[u8], crc: u32, made_of: Made) {
+        let key = key(bytes, crc);
+        let mut made = MADE.lock().unwrap_or_else(PoisonError::into_inner);
+        if made.len() < MAX_FILES && !made.iter().any(|(k, _)| *k == key) {
+            made.push((key, made_of));
+        }
+    }
 }
 
 /// The CRC of interior object `id`'s file.
@@ -175,3 +246,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         }),
     );
 }
+
+#[cfg(test)]
+#[path = "interior_tests.rs"]
+mod tests;
