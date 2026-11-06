@@ -26,15 +26,16 @@
 
 use std::f32::consts::{PI, TAU};
 
+use glam::Vec3 as V3;
 use torque_shapes::shape::Quat16;
 
 use crate::builder::{SequenceDef, ShapeBuilder, Track, Vec3};
 use crate::gait;
 use crate::shapes::{
     AIM_ELBOW, AIM_IN, AIM_SHOULDER, FOOT_HEEL, FOOT_TOE, FOREARM, GRIP, HOLD_ELBOW, HOLD_SHOULDER,
-    LOOK_KEYS, LOOK_TORSO, Limbs, Rot, SHIN, SOLE, THIGH, UPPER_ARM, X, Y, Z, apply, cross3, dot3,
-    hip_track, leg_tracks, look_pitch, quat16_of, rot_about, rot_mul, rot_t, sub3, travel,
-    travel_along, turns, unit,
+    LOOK_KEYS, LOOK_TORSO, Limbs, Rot, SHIN, SOLE, THIGH, UPPER_ARM, X, Y, Z, apply, hip_track,
+    leg_tracks, look_pitch, quat16_of, rot_about, rot_mul, rot_t, travel, travel_along, turns,
+    unit,
 };
 
 /// The ground speeds of `crouch_forward`, `crouch_side` and `prone_forward` (units a second).
@@ -120,65 +121,53 @@ fn deg(axis: Vec3, degrees: f32) -> Rot {
     rot_about(axis, degrees.to_radians())
 }
 
-fn add3(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale3(a: Vec3, k: f32) -> Vec3 {
-    a.map(|v| v * k)
-}
-
 fn side_x(side: usize) -> f32 {
     if side == 0 { -1.0 } else { 1.0 }
 }
 
 /// The frame whose -z runs along `down` and whose +y leans toward `side`: a limb's turn in the world.
-fn frame(down: Vec3, side: Vec3) -> Rot {
-    let z = unit(scale3(down, -1.0));
-    let mut y = sub3(side, scale3(z, dot3(side, z)));
-    if dot3(y, y) < 1e-8 {
-        y = if z[1].abs() < 0.9 { Y } else { Z };
-        y = sub3(y, scale3(z, dot3(y, z)));
+fn frame(down: V3, side: V3) -> Rot {
+    let z = unit(-down);
+    let mut y = side - z * side.dot(z);
+    if y.dot(y) < 1e-8 {
+        y = if z.y.abs() < 0.9 { V3::Y } else { V3::Z };
+        y -= z * y.dot(z);
     }
     let y = unit(y);
-    let x = cross3(y, z);
+    let x = y.cross(z);
     [0, 1, 2].map(|i| [x[i], y[i], z[i]])
 }
 
 /// The middle joint of a two-bone reach from `start` toward `target` (bones `a` and `b`), bent toward `pole`, and where the end
 /// gets to (the target, or as near as the bones reach).
-fn reach(start: Vec3, target: Vec3, a: f32, b: f32, pole: Vec3) -> (Vec3, Vec3) {
-    let to = sub3(target, start);
-    let d = dot3(to, to)
-        .sqrt()
-        .clamp((a - b).abs() + 1e-4, a + b - 1e-4);
+fn reach(start: V3, target: V3, a: f32, b: f32, pole: V3) -> (V3, V3) {
+    let to = target - start;
+    let d = to.length().clamp((a - b).abs() + 1e-4, a + b - 1e-4);
     let dir = unit(to);
-    let mut perp = sub3(pole, scale3(dir, dot3(pole, dir)));
-    if dot3(perp, perp) < 1e-8 {
-        perp = if dir[1].abs() < 0.9 { Y } else { Z };
-        perp = sub3(perp, scale3(dir, dot3(perp, dir)));
+    let mut perp = pole - dir * pole.dot(dir);
+    if perp.dot(perp) < 1e-8 {
+        perp = if dir.y.abs() < 0.9 { V3::Y } else { V3::Z };
+        perp -= dir * perp.dot(dir);
     }
     let perp = unit(perp);
     let cos_a = ((a * a + d * d - b * b) / (2.0 * a * d)).clamp(-1.0, 1.0);
     let sin_a = (1.0 - cos_a * cos_a).sqrt();
-    let joint = add3(
-        start,
-        scale3(add3(scale3(dir, cos_a), scale3(perp, sin_a)), a),
-    );
-    (joint, add3(start, scale3(dir, d)))
+    let joint = start + (dir * cos_a + perp * sin_a) * a;
+    (joint, start + dir * d)
 }
 
 /// The hinge's turn about x that takes the limb's -z (in `upper`'s frame) to `dir` (the world).
-fn hinge(upper: &Rot, dir: Vec3) -> Rot {
+fn hinge(upper: &Rot, dir: V3) -> Rot {
     let l = apply(&rot_t(upper), unit(dir));
     deg(X, l[1].atan2(-l[2]).to_degrees())
 }
 
 /// A leg's local turns (hip, knee, ankle) from its socket `hip` under a parent turned `parent` to `foot`.
-fn leg(hip: Vec3, parent: &Rot, foot: &Foot) -> [Rot; 3] {
-    let (knee, ankle) = reach(hip, foot.ankle, THIGH, LOWER, foot.pole);
-    let thigh = frame(sub3(knee, hip), foot.pole);
-    let shin = hinge(&thigh, sub3(ankle, knee));
+fn leg(hip: V3, parent: &Rot, foot: &Foot) -> [Rot; 3] {
+    let pole = V3::from(foot.pole);
+    let (knee, ankle) = reach(hip, foot.ankle.into(), THIGH, LOWER, pole);
+    let thigh = frame(knee - hip, pole);
+    let shin = hinge(&thigh, ankle - knee);
     let lower = rot_mul(&thigh, &shin);
     [
         rot_mul(&rot_t(parent), &thigh),
@@ -189,10 +178,10 @@ fn leg(hip: Vec3, parent: &Rot, foot: &Foot) -> [Rot; 3] {
 
 /// An arm's local turns (shoulder, elbow) from its socket `shoulder` under a torso turned `parent` to its grip `grip`, the
 /// elbow pointing toward `pole` (the forearm bends the other way).
-fn arm(shoulder: Vec3, parent: &Rot, grip: Vec3, pole: Vec3) -> [Rot; 2] {
+fn arm(shoulder: V3, parent: &Rot, grip: V3, pole: V3) -> [Rot; 2] {
     let (elbow, hand) = reach(shoulder, grip, REACH[0], REACH[1], pole);
-    let upper = frame(sub3(elbow, shoulder), scale3(pole, -1.0));
-    let fore = hinge(&upper, sub3(hand, elbow));
+    let upper = frame(elbow - shoulder, -pole);
+    let fore = hinge(&upper, hand - elbow);
     [rot_mul(&rot_t(parent), &upper), fore]
 }
 
@@ -206,24 +195,25 @@ struct Turned {
 }
 
 fn solve(k: &Key) -> Turned {
-    let torso_at = add3(k.root_t, apply(&k.root_r, [0.0, 0.0, PELVIS]));
+    let root_t = V3::from(k.root_t);
+    let torso_at = root_t + apply(&k.root_r, V3::new(0.0, 0.0, PELVIS));
     let torso_turn = rot_mul(&k.root_r, &k.torso);
     let legs = [0, 1].map(|side| {
-        let socket = add3(
-            k.root_t,
-            apply(&k.root_r, [side_x(side) * HIP_X, 0.0, PELVIS]),
-        );
+        let socket = root_t + apply(&k.root_r, V3::new(side_x(side) * HIP_X, 0.0, PELVIS));
         leg(socket, &k.root_r, &k.feet[side])
     });
     let arms = [0, 1].map(|side| {
-        let socket = add3(
-            torso_at,
-            apply(
+        let socket = torso_at
+            + apply(
                 &torso_turn,
-                [side_x(side) * SHOULDER[0], SHOULDER[1], SHOULDER[2]],
-            ),
-        );
-        arm(socket, &torso_turn, k.arms[side].grip, k.arms[side].pole)
+                V3::new(side_x(side) * SHOULDER[0], SHOULDER[1], SHOULDER[2]),
+            );
+        arm(
+            socket,
+            &torso_turn,
+            k.arms[side].grip.into(),
+            k.arms[side].pole.into(),
+        )
     });
     Turned {
         root: k.root_r,
@@ -655,7 +645,9 @@ pub(crate) fn flinches(b: &mut ShapeBuilder, body: &Body<'_>) {
             rotations,
             translations: vec![Track {
                 node: body.root,
-                keys: (0..n).map(|k| scale3(shift, punch[k])).collect(),
+                keys: (0..n)
+                    .map(|k| (V3::from(shift) * punch[k]).to_array())
+                    .collect(),
             }],
             ground: Vec::new(),
         });
@@ -881,40 +873,36 @@ fn stage_at(t: f32) -> Stage {
 
 /// The world frames (place and turn) of the nodes a contact is measured on: each knee, ankle and elbow, and the right shoulder.
 struct Frames {
-    thighs: [(Vec3, Rot); 2],
-    knees: [(Vec3, Rot); 2],
-    ankles: [(Vec3, Rot); 2],
-    elbows: [(Vec3, Rot); 2],
-    shoulders: [Vec3; 2],
+    thighs: [(V3, Rot); 2],
+    knees: [(V3, Rot); 2],
+    ankles: [(V3, Rot); 2],
+    elbows: [(V3, Rot); 2],
+    shoulders: [V3; 2],
 }
 
 fn frames(k: &Key, t: &Turned) -> Frames {
-    let torso_at = add3(k.root_t, apply(&k.root_r, [0.0, 0.0, PELVIS]));
+    let root_t = V3::from(k.root_t);
+    let torso_at = root_t + apply(&k.root_r, V3::new(0.0, 0.0, PELVIS));
     let torso_turn = rot_mul(&k.root_r, &t.torso);
     let leg = |side: usize| {
-        let at = add3(
-            k.root_t,
-            apply(&k.root_r, [side_x(side) * HIP_X, 0.0, PELVIS]),
-        );
+        let at = root_t + apply(&k.root_r, V3::new(side_x(side) * HIP_X, 0.0, PELVIS));
         let turn = rot_mul(&k.root_r, &t.legs[side][0]);
-        let knee_at = add3(at, apply(&turn, [0.0, 0.0, -THIGH]));
+        let knee_at = at + apply(&turn, V3::new(0.0, 0.0, -THIGH));
         let knee_turn = rot_mul(&turn, &t.legs[side][1]);
-        let ankle_at = add3(knee_at, apply(&knee_turn, [0.0, 0.0, SOLE - SHIN]));
+        let ankle_at = knee_at + apply(&knee_turn, V3::new(0.0, 0.0, SOLE - SHIN));
         let ankle_turn = rot_mul(&knee_turn, &t.legs[side][2]);
         ((at, turn), (knee_at, knee_turn), (ankle_at, ankle_turn))
     };
     let shoulder = |side: usize| {
-        add3(
-            torso_at,
-            apply(
+        torso_at
+            + apply(
                 &torso_turn,
-                [side_x(side) * SHOULDER[0], SHOULDER[1], SHOULDER[2]],
-            ),
-        )
+                V3::new(side_x(side) * SHOULDER[0], SHOULDER[1], SHOULDER[2]),
+            )
     };
     let elbow = |side: usize| {
         let turn = rot_mul(&torso_turn, &t.arms[side][0]);
-        let at = add3(shoulder(side), apply(&turn, [0.0, 0.0, -UPPER_ARM]));
+        let at = shoulder(side) + apply(&turn, V3::new(0.0, 0.0, -UPPER_ARM));
         (at, rot_mul(&turn, &t.arms[side][1]))
     };
     let (l, r) = (leg(0), leg(1));
@@ -928,7 +916,7 @@ fn frames(k: &Key, t: &Turned) -> Frames {
 }
 
 /// The lowest point of a box `min..max` on a node at `frame`.
-fn lowest(frame: &(Vec3, Rot), min: Vec3, max: Vec3) -> f32 {
+fn lowest(frame: &(V3, Rot), min: Vec3, max: Vec3) -> f32 {
     (0..8)
         .map(|c| {
             let p = [
@@ -936,7 +924,7 @@ fn lowest(frame: &(Vec3, Rot), min: Vec3, max: Vec3) -> f32 {
                 if c & 2 == 0 { min[1] } else { max[1] },
                 if c & 4 == 0 { min[2] } else { max[2] },
             ];
-            frame.0[2] + apply(&frame.1, p)[2]
+            frame.0[2] + apply(&frame.1, V3::from(p))[2]
         })
         .fold(f32::MAX, f32::min)
 }
@@ -959,7 +947,7 @@ fn way_key(t: f32) -> Key {
     let mut ankles = s.ankles;
     let mut grip = s.left_grip;
     let make = |socket: Vec3, ankles: [Vec3; 2], grip: Vec3, right: Vec3| Key {
-        root_t: sub3(socket, apply(&root_r, [0.0, 0.0, PELVIS])),
+        root_t: (V3::from(socket) - apply(&root_r, V3::new(0.0, 0.0, PELVIS))).to_array(),
         root_r,
         torso: deg(X, s.torso),
         head: deg(X, s.head - s.pitch - s.torso),
@@ -979,17 +967,17 @@ fn way_key(t: f32) -> Key {
             },
         ],
     };
-    let mut right = [0.0; 3];
+    let mut right = V3::ZERO;
     for _ in 0..6 {
-        let key = make(socket, ankles, grip, right);
+        let key = make(socket, ankles, grip, right.to_array());
         let f = frames(&key, &solve(&key));
-        right = add3(f.shoulders[1], s.right_reach);
+        right = f.shoulders[1] + V3::from(s.right_reach);
         // A hand still reaching keeps its elbow bent: its grip no further than most of the arm's reach.
-        let to = sub3(grip, f.shoulders[0]);
-        let d = dot3(to, to).sqrt();
+        let to = V3::from(grip) - f.shoulders[0];
+        let d = to.length();
         let most = 0.9 * (UPPER_ARM + GRIP);
         if s.hand_down < 1.0 && d > most {
-            grip = add3(f.shoulders[0], scale3(to, most / d));
+            grip = (f.shoulders[0] + to * (most / d)).to_array();
         }
         for (ankle, frame) in ankles.iter_mut().zip(&f.ankles) {
             ankle[2] += (TOUCH - lowest(frame, FOOT_BOX.0, FOOT_BOX.1)).max(0.0);
@@ -1014,7 +1002,7 @@ fn way_key(t: f32) -> Key {
         let floor = legs[0].min(legs[1]);
         socket[2] += (w * (TOUCH - low)).max(TOUCH - floor);
     }
-    make(socket, ankles, grip, right)
+    make(socket, ankles, grip, right.to_array())
 }
 
 /// `prone_down` and `prone_up` (see the module docs): the way down from the crouch to prone and the same way back up, each a

@@ -3226,6 +3226,7 @@ dependencies = [
 name = "torque-example-common"
 version = "0.1.0"
 dependencies = [
+ "glam",
  "torque",
  "torque-example-assets",
  "torque-render-core",
@@ -3238,6 +3239,7 @@ version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
  "getrandom 0.3.4",
+ "glam",
  "js-sys",
  "torque",
  "torque-example-assets",

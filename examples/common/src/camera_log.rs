@@ -7,6 +7,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
+use glam::Vec3;
 use torque_render_scene::source::Eye;
 
 /// The milliseconds of each frame at a frame rate, carried so they add up to the rate's time.
@@ -64,18 +65,8 @@ pub fn look_direction(e: &Eye) -> [f32; 3] {
     [sy * cp, cy * cp, -sp]
 }
 
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn length(a: [f32; 3]) -> f32 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
-}
-
 fn angle(a: [f32; 3], b: [f32; 3]) -> f32 {
-    (a[0] * b[0] + a[1] * b[1] + a[2] * b[2])
-        .clamp(-1.0, 1.0)
-        .acos()
+    Vec3::from(a).dot(b.into()).clamp(-1.0, 1.0).acos()
 }
 
 /// The frames of a run.
@@ -98,7 +89,8 @@ impl CameraLog {
                 continue;
             };
             let dt = f.dt.max(1e-6);
-            let v = sub(f.drawn.position, prev.drawn.position).map(|x| x / dt);
+            let v =
+                ((Vec3::from(f.drawn.position) - Vec3::from(prev.drawn.position)) / dt).to_array();
             let w = angle(look_direction(&prev.drawn), look_direction(&f.drawn)) / dt;
             out.push((v, w));
         }
@@ -112,7 +104,7 @@ impl CameraLog {
             self.frames
                 .windows(2)
                 .map(|w| match (w[0].figure, w[1].figure) {
-                    (Some(a), Some(b)) => length(sub(b, a)) / w[1].dt.max(1e-6),
+                    (Some(a), Some(b)) => Vec3::from(b).distance(a.into()) / w[1].dt.max(1e-6),
                     _ => 0.0,
                 }),
         );
@@ -138,7 +130,7 @@ impl CameraLog {
                         "{:.5},{:.5},{:.5}",
                         t.position[0], t.position[1], t.position[2]
                     ),
-                    format!("{:.5}", length(sub(p, t.position))),
+                    format!("{:.5}", Vec3::from(p).distance(t.position.into())),
                 ),
                 None => (",,".to_string(), String::new()),
             };
@@ -159,7 +151,7 @@ impl CameraLog {
                 v[0],
                 v[1],
                 v[2],
-                length(v),
+                Vec3::from(v).length(),
                 w,
                 figure[i],
                 f.mark

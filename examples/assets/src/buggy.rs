@@ -27,6 +27,7 @@
 
 use std::f32::consts::TAU;
 
+use glam::Vec3 as V3;
 use torque_shapes::instance::{ShapeInstance, find_sequence};
 use torque_shapes::math::mul_p;
 use torque_shapes::shape::Model;
@@ -101,55 +102,31 @@ const TIRE: (u32, u32) = (0, 2);
 const RIM: (u32, u32) = (1, 2);
 const TREAD: (u32, u32) = (2, 2);
 
-fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale(a: Vec3, k: f32) -> Vec3 {
-    a.map(|v| v * k)
-}
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit(a: Vec3) -> Vec3 {
-    let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt().max(1e-6);
-    a.map(|v| v / l)
+/// `a` over its length (at least 1e-6).
+fn unit(a: V3) -> V3 {
+    a / a.length().max(1e-6)
 }
 
 /// The vertices of `mesh` from `from` on moved into a frame: a position `p` becomes `origin + p.x * axes[0] + p.y * axes[1] +
 /// p.z * axes[2]`, a normal turns with it (`axes` right-handed and unit, so the winding is kept).
 fn orient(mesh: &mut MeshData, from: usize, origin: Vec3, axes: [Vec3; 3]) {
-    let turn =
-        |v: Vec3| [0, 1, 2].map(|k| v[0] * axes[0][k] + v[1] * axes[1][k] + v[2] * axes[2][k]);
+    let axes = axes.map(V3::from);
+    let turn = |v: Vec3| axes[0] * v[0] + axes[1] * v[1] + axes[2] * v[2];
     for p in &mut mesh.positions[from..] {
-        *p = add(origin, turn(*p));
+        *p = (V3::from(origin) + turn(*p)).to_array();
     }
     for n in &mut mesh.normals[from..] {
-        *n = turn(*n);
+        *n = turn(*n).to_array();
     }
 }
 
 /// A right-handed frame whose first axis is along `along` (the others any way round it).
-fn frame_along(along: Vec3) -> [Vec3; 3] {
+fn frame_along(along: V3) -> [Vec3; 3] {
     let x = unit(along);
-    let helper = if x[2].abs() < 0.9 {
-        [0.0, 0.0, 1.0]
-    } else {
-        [0.0, 1.0, 0.0]
-    };
-    let z = unit(cross(x, helper));
-    let y = cross(z, x);
-    [x, y, z]
+    let helper = if x.z.abs() < 0.9 { V3::Z } else { V3::Y };
+    let z = unit(x.cross(helper));
+    let y = z.cross(x);
+    [x, y, z].map(|a| a.to_array())
 }
 
 /// A round profile of `sides` points, radius `r`, in the (y, z) plane.
@@ -164,8 +141,8 @@ fn round(sides: usize, r: f32) -> Vec<[f32; 2]> {
 
 /// A tube of radius `r` from `a` to `b` (eight-sided).
 fn tube(mesh: &mut MeshData, a: Vec3, b: Vec3, r: f32, swatch: (u32, u32)) {
-    let d = sub(b, a);
-    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let d = V3::from(b) - V3::from(a);
+    let len = d.length();
     let from = mesh.positions.len();
     mesh.add_prism(&round(8, r), 0.0, len, cell(swatch), cell(swatch));
     orient(mesh, from, a, frame_along(d));
@@ -213,7 +190,7 @@ fn block_pair(mesh: &mut MeshData, min: Vec3, max: Vec3, swatch: (u32, u32)) {
 fn lamp(mesh: &mut MeshData, at: Vec3, facing: Vec3, r: f32, depth: f32, swatch: (u32, u32)) {
     let from = mesh.positions.len();
     mesh.add_prism(&round(12, r), -depth, 0.0, cell(swatch), cell(TRIM));
-    orient(mesh, from, at, frame_along(facing));
+    orient(mesh, from, at, frame_along(facing.into()));
 }
 
 /// An arch over a wheel whose middle is `center`: `segments` slabs from `inner` to `outer` radius, `half_width` each side of
@@ -282,15 +259,15 @@ pub fn grips() -> [Vec3; 2] {
 pub fn seated_eye(seat: usize) -> Vec3 {
     let pose = if seat == 0 { "sit" } else { "ride" };
     let [eye] = posed_figure(pose, ["eye"], [0.0; 3]);
-    add(SEATS[seat.min(SEATS.len() - 1)], eye)
+    (V3::from(SEATS[seat.min(SEATS.len() - 1)]) + V3::from(eye)).to_array()
 }
 
 /// The steering wheel's middle and radius in the buggy's space: halfway between the driver's grips, as wide as they are apart.
 pub fn steering_wheel() -> (Vec3, f32) {
     let [l, r] = grips();
-    let mid = scale(add(l, r), 0.5);
+    let mid = (V3::from(l) + V3::from(r)) * 0.5;
     let radius = 0.5 * (r[0] - l[0]).abs();
-    (add(SEATS[0], mid), radius)
+    ((V3::from(SEATS[0]) + mid).to_array(), radius)
 }
 
 /// The steering wheel (a ring of `sides` tubes with three spokes and a hub) and its short column down to the dash.
@@ -298,12 +275,12 @@ fn wheel_and_column(mesh: &mut MeshData, trim: &mut MeshData) {
     let (center, radius) = steering_wheel();
     let (s, c) = COLUMN_DROP.to_radians().sin_cos();
     // The column runs forward and down from the wheel's middle; the wheel faces back up it.
-    let along = [0.0, c, -s];
-    let x = [1.0, 0.0, 0.0];
-    let up = cross(x, along);
+    let along = V3::new(0.0, c, -s);
+    let x = V3::X;
+    let up = x.cross(along);
     let rim = |deg: f32| {
         let (sa, ca) = deg.to_radians().sin_cos();
-        add(center, add(scale(x, radius * ca), scale(up, radius * sa)))
+        (V3::from(center) + (x * (radius * ca) + up * (radius * sa))).to_array()
     };
     let sides = 20;
     for k in 0..sides {
@@ -319,14 +296,14 @@ fn wheel_and_column(mesh: &mut MeshData, trim: &mut MeshData) {
     oriented_box(
         mesh,
         center,
-        [x, cross(up, x), up],
+        [x, up.cross(x), up].map(|a| a.to_array()),
         [0.045, 0.03, 0.045],
         TRIM,
     );
     tube(
         trim,
         center,
-        add(center, scale(along, COLUMN_LENGTH)),
+        (V3::from(center) + along * COLUMN_LENGTH).to_array(),
         0.025,
         METAL,
     );
@@ -643,7 +620,7 @@ pub fn buggy() -> Model {
     let mut column = MeshData::new(Some(m));
     wheel_and_column(&mut wheel, &mut column);
     for p in &mut wheel.positions {
-        *p = sub(*p, wheel_center);
+        *p = (V3::from(*p) - V3::from(wheel_center)).to_array();
     }
     b.object("steering_wheel", wheel_node, drawn, wheel);
     b.object("column", root, drawn, column);

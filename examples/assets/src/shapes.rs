@@ -72,6 +72,7 @@
 
 use std::f32::consts::TAU;
 
+use glam::Vec3 as V3;
 use torque_shapes::shape::{Model, Quat16};
 
 use crate::builder::{
@@ -833,25 +834,9 @@ pub(crate) fn rot_t(a: &Rot) -> Rot {
     [0, 1, 2].map(|i| [0, 1, 2].map(|j| a[j][i]))
 }
 
-pub(crate) fn sub3(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-pub(crate) fn dot3(a: Vec3, b: Vec3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(crate) fn cross3(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub(crate) fn unit(v: Vec3) -> Vec3 {
-    let l = dot3(v, v).sqrt().max(1e-9);
-    v.map(|c| c / l)
+/// `v` over its length (at least 1e-9).
+pub(crate) fn unit(v: V3) -> V3 {
+    v / v.length().max(1e-9)
 }
 
 /// The rotation by `angle` (radians) about unit `axis` (Rodrigues).
@@ -867,19 +852,19 @@ pub(crate) fn rot_about(axis: Vec3, angle: f32) -> Rot {
 }
 
 /// The smallest rotation taking direction `a` to direction `b`.
-fn rot_between(a: Vec3, b: Vec3) -> Rot {
+fn rot_between(a: V3, b: V3) -> Rot {
     let (a, b) = (unit(a), unit(b));
-    let axis = cross3(a, b);
-    let s = dot3(axis, axis).sqrt();
-    let c = dot3(a, b).clamp(-1.0, 1.0);
+    let axis = a.cross(b);
+    let s = axis.length();
+    let c = a.dot(b).clamp(-1.0, 1.0);
     if s < 1e-6 {
         return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     }
-    rot_about(axis.map(|v| v / s), s.atan2(c))
+    rot_about((axis / s).to_array(), s.atan2(c))
 }
 
-pub(crate) fn apply(r: &Rot, v: Vec3) -> Vec3 {
-    [0, 1, 2].map(|i| dot3(r[i], v))
+pub(crate) fn apply(r: &Rot, v: V3) -> V3 {
+    V3::from_array([0, 1, 2].map(|i| V3::from(r[i]).dot(v)))
 }
 
 /// A node rotation (`Quat16`) whose matrix, as the shape's math makes it, is `r`.
@@ -957,27 +942,24 @@ fn steering_arms(
     }
     let _ = inst.animate(base, 0, None, &mut free);
     let xf = inst.node_transforms().to_vec();
-    let at = |n: usize| [xf[n][3], xf[n][7], xf[n][11]];
-    let hands = arms.map(|(_, _, elbow)| mul_p(&xf[elbow], [0.0, 0.0, -GRIP]));
-    let center = [0, 1, 2].map(|k| 0.5 * (hands[0][k] + hands[1][k]));
+    let at = |n: usize| V3::new(xf[n][3], xf[n][7], xf[n][11]);
+    let hands = arms.map(|(_, _, elbow)| V3::from(mul_p(&xf[elbow], [0.0, 0.0, -GRIP])));
+    let center = (hands[0] + hands[1]) * 0.5;
     let (s, c) = crate::buggy::COLUMN_DROP.to_radians().sin_cos();
     let along = [0.0, c, -s];
     let n = crate::buggy::STEERING_KEYS;
     let mut tracks = Vec::new();
     for (k, &(parent, shoulder, elbow)) in arms.iter().enumerate() {
         let (sh, el, hand) = (at(shoulder), at(elbow), hands[k]);
-        let (a, b) = (
-            dot3(sub3(el, sh), sub3(el, sh)).sqrt(),
-            dot3(sub3(hand, el), sub3(hand, el)).sqrt(),
-        );
+        let (a, b) = ((el - sh).length(), (hand - el).length());
         let (rp, rs, re) = (
             rot_of(&xf[parent]),
             rot_of(&xf[shoulder]),
             rot_of(&xf[elbow]),
         );
-        let reach = unit(sub3(hand, sh));
-        let bend = sub3(el, sh);
-        let pole = unit(sub3(bend, reach.map(|v| v * dot3(bend, reach))));
+        let reach = unit(hand - sh);
+        let bend = el - sh;
+        let pole = unit(bend - reach * bend.dot(reach));
         let mut arm_keys = Vec::with_capacity(n);
         let mut elbow_keys = Vec::with_capacity(n);
         for key in 0..n {
@@ -987,20 +969,17 @@ fn steering_arms(
                 .to_radians();
             let target = {
                 let r = rot_about(along, turn);
-                let v = apply(&r, sub3(hand, center));
-                [0, 1, 2].map(|i| center[i] + v[i])
+                center + apply(&r, hand - center)
             };
-            let to = sub3(target, sh);
-            let d = dot3(to, to)
-                .sqrt()
-                .clamp((a - b).abs() + 1e-3, a + b - 1e-3);
+            let to = target - sh;
+            let d = to.length().clamp((a - b).abs() + 1e-3, a + b - 1e-3);
             let dir = unit(to);
-            let perp = unit(sub3(pole, dir.map(|v| v * dot3(pole, dir))));
+            let perp = unit(pole - dir * pole.dot(dir));
             let cos_a = ((a * a + d * d - b * b) / (2.0 * a * d)).clamp(-1.0, 1.0);
             let sin_a = (1.0 - cos_a * cos_a).sqrt();
-            let new_el = [0, 1, 2].map(|i| sh[i] + a * (dir[i] * cos_a + perp[i] * sin_a));
-            let r1 = rot_between(sub3(el, sh), sub3(new_el, sh));
-            let r2 = rot_between(apply(&r1, sub3(hand, el)), sub3(target, new_el));
+            let new_el = sh + (dir * cos_a + perp * sin_a) * a;
+            let r1 = rot_between(el - sh, new_el - sh);
+            let r2 = rot_between(apply(&r1, hand - el), target - new_el);
             let rs2 = rot_mul(&r1, &rs);
             let re2 = rot_mul(&r2, &rot_mul(&r1, &re));
             arm_keys.push(quat16_of(&rot_mul(&rot_t(&rp), &rs2)));

@@ -3,6 +3,7 @@
 //! hits the block stops on both clients where the server's explosion is (the holes both clients lay there), and is never drawn
 //! past it: no bolt runs on through the block and jumps back when the server's explosion arrives.
 
+use glam::Vec3;
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
 
@@ -34,10 +35,6 @@ fn place(a: &mut ArenaGame, name: &str, at: [f32; 3], yaw: f32) {
     server
         .call("placeFigure", &[name, &x, &y, &z, &yaw.to_string()])
         .unwrap();
-}
-
-fn dist(p: [f32; 3], q: [f32; 3]) -> f32 {
-    (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f32>().sqrt()
 }
 
 /// The block's sides, a unit cube scaled 2 x 2 x 3 about (3, 8, 1.5): whether `p` lies on one (within `eps`).
@@ -109,7 +106,10 @@ fn sweep() -> Sweep {
             frame(&mut a, &mut b, 16);
             for (k, g) in [&a, &b].into_iter().enumerate() {
                 for s in g.scene().bolt_stops() {
-                    if !stops[k].iter().any(|q| dist(*q, s) < 1e-6) {
+                    if !stops[k]
+                        .iter()
+                        .any(|q| Vec3::from(*q).distance(s.into()) < 1e-6)
+                    {
                         stops[k].push(s);
                     }
                 }
@@ -139,11 +139,11 @@ fn sweep() -> Sweep {
                     h[2].clamp(0.0, 3.0),
                 ];
                 // The client stopped the bolt where the server hit, within millimeters.
-                let stop = stops[k]
-                    .iter()
-                    .copied()
-                    .min_by(|p, q| dist(*p, hit).total_cmp(&dist(*q, hit)));
-                let off = stop.map_or(f32::INFINITY, |s| dist(s, hit));
+                let stop = stops[k].iter().copied().min_by(|p, q| {
+                    let d = |a: [f32; 3]| Vec3::from(a).distance(hit.into());
+                    d(*p).total_cmp(&d(*q))
+                });
+                let off = stop.map_or(f32::INFINITY, |s| Vec3::from(s).distance(hit.into()));
                 worst = worst.max(off);
                 compared += 1;
                 if (h[0] - 2.0).abs() < 0.08 || (h[1] - 7.0).abs() < 0.08 && h[0] < 2.1 {

@@ -11,6 +11,7 @@ keywords = ["torque", "example", "rendering", "gamedev"]
 categories = ["game-development", "rendering"]
 
 [dependencies]
+glam = { workspace = true }
 torque = { path = "../../crates/torque", default-features = false, features = ["app"] }
 torque-example-assets = { path = "../assets" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }

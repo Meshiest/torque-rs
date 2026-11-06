@@ -1,3 +1,4 @@
+use glam::Vec3;
 use torque_images::{Format, Kind};
 use torque_shapes::instance::{ShapeInstance, find_sequence};
 use torque_shapes::math::{mul_p, mul_v};
@@ -56,19 +57,11 @@ fn every_triangle_is_clockwise_seen_from_its_front() {
             let p = &mesh.positions;
             let centre = mesh.center;
             for t in mesh.indices.chunks_exact(3) {
-                let [a, b, c] = [0, 1, 2].map(|i| p[usize::from(t[i])]);
-                let (e1, e2) = (
-                    [0, 1, 2].map(|k| b[k] - a[k]),
-                    [0, 1, 2].map(|k| c[k] - a[k]),
-                );
-                let cross = [
-                    e1[1] * e2[2] - e1[2] * e2[1],
-                    e1[2] * e2[0] - e1[0] * e2[2],
-                    e1[0] * e2[1] - e1[1] * e2[0],
-                ];
+                let [a, b, c] = [0, 1, 2].map(|i| Vec3::from(p[usize::from(t[i])]));
+                let cross = (b - a).cross(c - a);
                 // Outward: from the box's centre to the triangle; the normals the renderer lights with agree.
-                let out = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0 - centre[k]);
-                let dot = |v: [f32; 3]| v[0] * cross[0] + v[1] * cross[1] + v[2] * cross[2];
+                let out = ((a + b + c) / 3.0 - Vec3::from(centre)).to_array();
+                let dot = |v: [f32; 3]| Vec3::from(v).dot(cross);
                 // The buggy's meshes are many parts each: their faces agree with their own normals instead.
                 if name.starts_with("buggy") {
                     if render.normals.len() == p.len() {
@@ -166,11 +159,9 @@ fn bend(shape: &Shape, seq: &str, pos: f32, upper: &str, joint: &str, lower: f32
     let top = posed(shape, seq, pos, upper, [0.0; 3]);
     let mid = posed(shape, seq, pos, joint, [0.0; 3]);
     let end = posed(shape, seq, pos, joint, [0.0, 0.0, -lower]);
-    let a = [0, 1, 2].map(|k| mid[k] - top[k]);
-    let b = [0, 1, 2].map(|k| end[k] - mid[k]);
-    let dot = (0..3).map(|k| a[k] * b[k]).sum::<f32>();
-    let len = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    (dot / (len(a) * len(b)))
+    let a = Vec3::from(mid) - Vec3::from(top);
+    let b = Vec3::from(end) - Vec3::from(mid);
+    (a.dot(b) / (a.length() * b.length()))
         .clamp(-1.0, 1.0)
         .acos()
         .to_degrees()

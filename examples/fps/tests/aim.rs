@@ -3,6 +3,7 @@
 //! flies along the crosshair's ray; and walking forward, the own figure the client draws keeps up with the server's and never
 //! steps back. The game plays `game/fixtures/aim.mis`: a floor and one block ahead and to the right of the first spawn point.
 
+use glam::Vec3;
 use torque::client::input::Key;
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
 use torque_example_fps::files::GameFiles;
@@ -54,23 +55,10 @@ fn crosshair(a: &ArenaGame) -> (F3, F3) {
     (own.eye, [sy * cp, cy * cp, -sp])
 }
 
-fn sub(a: F3, b: F3) -> F3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: F3, b: F3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn len(a: F3) -> f32 {
-    dot(a, a).sqrt()
-}
-
 /// How far `p` is from the ray from `o` along unit `d`.
 fn off_ray(p: F3, o: F3, d: F3) -> f32 {
-    let v = sub(p, o);
-    let along = dot(v, d);
-    len(sub(v, [d[0] * along, d[1] * along, d[2] * along]))
+    let (v, d) = (Vec3::from(p) - Vec3::from(o), Vec3::from(d));
+    (v - d * v.dot(d)).length()
 }
 
 /// The server's Projectiles: id, position, velocity, exploded, explosion point.
@@ -144,7 +132,7 @@ fn the_bolt_bursts_where_the_crosshair_meets_the_block() {
         }
     }
     let burst = burst.expect("the bolt burst");
-    let miss = len(sub(burst, hit));
+    let miss = Vec3::from(burst).distance(hit.into());
     assert!(
         miss < 0.1,
         "the bolt burst {miss} from where the crosshair meets the block ({burst:?}, {hit:?})"
@@ -169,7 +157,11 @@ fn looking_up_into_the_sky_the_bolt_flies_along_the_crosshair() {
         frame(&mut a, 16);
         for (_, p, v, exploded, _) in bolts(&mut a) {
             assert!(!exploded, "nothing to hit");
-            let angle = (dot(v, aim) / len(v)).clamp(-1.0, 1.0).acos().to_degrees();
+            let v = Vec3::from(v);
+            let angle = (v.dot(aim.into()) / v.length())
+                .clamp(-1.0, 1.0)
+                .acos()
+                .to_degrees();
             assert!(
                 angle < 0.25,
                 "the bolt flies {angle} degrees off the crosshair"
@@ -201,7 +193,7 @@ fn the_own_figure_keeps_up_with_the_server_and_never_steps_back() {
                 "frame {i}: back from {last:?} to {own:?}"
             );
             assert!(
-                len(sub(own, last)) < 0.4,
+                Vec3::from(own).distance(last.into()) < 0.4,
                 "frame {i}: a jump from {last:?} to {own:?}"
             );
         }
@@ -224,7 +216,7 @@ fn the_own_figure_keeps_up_with_the_server_and_never_steps_back() {
             [v[0], v[1], v[2]]
         };
         // The client runs its moves before the server has them: up to two ticks ahead at a walk.
-        let ahead = len(sub(own, server));
+        let ahead = Vec3::from(own).distance(server.into());
         assert!(
             ahead < 0.5,
             "frame {i}: {ahead} from the server's ({own:?}, {server:?})"
@@ -256,7 +248,7 @@ fn the_drawn_bolt_leaves_the_pistol_and_curves_onto_the_crosshair() {
         };
         if first.is_none() {
             let muzzle = a.scene().own_muzzle().expect("the pistol's muzzle");
-            let from = len(sub(p, muzzle));
+            let from = Vec3::from(p).distance(muzzle.into());
             assert!(
                 from < 0.02,
                 "the bolt is first drawn {from} from the muzzle"
@@ -266,10 +258,10 @@ fn the_drawn_bolt_leaves_the_pistol_and_curves_onto_the_crosshair() {
                 "the muzzle is beside the crosshair's ray"
             );
             first = Some(p);
-        } else if len(sub(p, eye)) > torque_example_fps::scene::BOLT_BLEND + 1.5 {
+        } else if Vec3::from(p).distance(eye.into()) > torque_example_fps::scene::BOLT_BLEND + 1.5 {
             // On the line, to within the record's quantized direction.
             let off = off_ray(p, eye, aim);
-            let far = len(sub(p, eye));
+            let far = Vec3::from(p).distance(eye.into());
             assert!(
                 off < 0.05 || off / far < 0.002,
                 "past its curve the bolt is drawn {off} off the crosshair's ray, {far} out"
@@ -278,7 +270,7 @@ fn the_drawn_bolt_leaves_the_pistol_and_curves_onto_the_crosshair() {
         } else {
             // Curving in: nearer the line each frame (to within the record's quantized direction).
             let off = off_ray(p, eye, aim);
-            let far = len(sub(p, eye));
+            let far = Vec3::from(p).distance(eye.into());
             assert!(
                 off <= last_off + 0.002 * far,
                 "it curves in: {off} after {last_off}, {far} out"
@@ -363,7 +355,7 @@ fn a_bolt_that_hits_the_block_leaves_a_hole_on_its_face_and_nowhere_else() {
     let decals: Vec<_> = a.scene().decals.decals().cloned().collect();
     assert_eq!(decals.len(), 1, "one hole");
     let d = &decals[0];
-    let lifted = len(sub(d.position, hit));
+    let lifted = Vec3::from(d.position).distance(hit.into());
     assert!(
         lifted < 0.1,
         "the hole is {lifted} from the hit ({:?}, {hit:?})",
@@ -388,11 +380,11 @@ fn a_bolt_that_hits_the_block_leaves_a_hole_on_its_face_and_nowhere_else() {
 fn project(p: F3, eye: F3, yaw: f32, pitch: f32, fov: f32, size: (f32, f32)) -> (f32, f32) {
     let (sy, cy) = yaw.sin_cos();
     let (sp, cp) = pitch.sin_cos();
-    let forward = [sy * cp, cy * cp, -sp];
-    let right = [cy, -sy, 0.0];
-    let up = [sy * sp, cy * sp, cp];
-    let v = sub(p, eye);
-    let (x, y, z) = (dot(v, right), dot(v, up), dot(v, forward));
+    let forward = Vec3::new(sy * cp, cy * cp, -sp);
+    let right = Vec3::new(cy, -sy, 0.0);
+    let up = Vec3::new(sy * sp, cy * sp, cp);
+    let v = Vec3::from(p) - Vec3::from(eye);
+    let (x, y, z) = (v.dot(right), v.dot(up), v.dot(forward));
     let focal = size.0 * 0.5 / (fov.to_radians() * 0.5).tan();
     (focal * x / z, -focal * y / z)
 }
@@ -419,7 +411,7 @@ fn aimed_the_front_post_sits_in_the_rear_notch_on_the_crosshair() {
     // The bolt still leaves the muzzle.
     let muzzle = a.scene().own_muzzle().unwrap();
     assert!(
-        len(sub(muzzle, own.eye)) > AIM_SIGHT_TO_MUZZLE,
+        Vec3::from(muzzle).distance(own.eye.into()) > AIM_SIGHT_TO_MUZZLE,
         "{muzzle:?}"
     );
 }
@@ -468,7 +460,7 @@ fn in_every_pose_the_shot_starts_at_the_view_and_bursts_where_the_crosshair_meet
         take_pose(&mut a, pose);
         let (eye, aim) = crosshair(&a);
         let server = server_eye(&mut a);
-        let apart = len(sub(server, eye));
+        let apart = Vec3::from(server).distance(eye.into());
         assert!(
             apart < 0.02,
             "{pose}: the server's steady eye is {apart} from the view ({server:?}, {eye:?})"
@@ -491,7 +483,7 @@ fn in_every_pose_the_shot_starts_at_the_view_and_bursts_where_the_crosshair_meet
             }
         }
         let burst = burst.unwrap_or_else(|| panic!("{pose}: the bolt burst"));
-        let miss = len(sub(burst, hit));
+        let miss = Vec3::from(burst).distance(hit.into());
         assert!(
             miss < 0.1,
             "{pose}: the bolt burst {miss} from where the crosshair meets the block ({burst:?}, {hit:?})"
