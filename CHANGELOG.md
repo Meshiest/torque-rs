@@ -509,17 +509,12 @@ The first development version. Nothing is published yet; this is what exists.
 - Continuous integration on Linux and Windows (formatting, clippy, tests, examples, rustdoc, the guide, the MSRV and
   cargo-deny), workspace lints, and the contributing, security and notice files.
 
-### Changed
-
-- The web pages start Firefox at Medium quality (was Low) until the player picks one.
-
 ### Fixed
 
-- The level demo's water moves: its waves, ripples and foam ran on an effect clock no game advanced, so every map's water
-  stood still, natively and in the browser. `WorldView::advance_time` runs the effect clock (`WorldView::time`, wrapping
-  at `EFFECT_TIME_WRAP`), and the level demo runs it by each frame's time. On it now: the water, the volumetric clouds
-  of a map without a clock of their own and the stars' twinkle. The film grain no longer follows the effect time: its
-  pattern is fixed (`GRAIN_SEED`), so it never shimmers.
+- `torque::app`, `torque-render-hd`: the effect clock could not be advanced, so water, the volumetric clouds of a map
+  without a clock of their own and the stars' twinkle stood still. `WorldView::advance_time` runs it (`WorldView::time`,
+  wrapping at `EFFECT_TIME_WRAP`). The film grain no longer follows the effect time: its pattern is fixed (`GRAIN_SEED`),
+  so it never shimmers.
 - `torque-fonts`: the system fonts on Linux and macOS (the menus drew no text outside Windows). The font folders (XDG's, or
   macOS's three) are scanned once, with depth, entry, file and size limits, and every file is checked (`ttf::check`) before
   it is read. A face missing there falls back on a metric-compatible free face (Arial on Liberation Sans, then DejaVu Sans;
