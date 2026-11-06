@@ -276,8 +276,40 @@ struct WindowApp<G: WindowGame> {
 /// server).
 pub const WEB_IDLE_PASS: Duration = Duration::from_millis(200);
 
-/// Runs `game`'s window on `event_loop` until it is closed or a script quits; gives the game back for its end.
+/// Ctrl-C presses in the console since the process started ([`stop_on_ctrl_c`]).
+static CTRL_C: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Ctrl-C in the console closes the window as its close button does, so the game ends in order (its threads stopped, its
+/// device let go) rather than being cut off where it stands; a second Ctrl-C ends the process at once, as the console's own
+/// handling would have. Set once a process, by [`run`].
+#[cfg(not(target_arch = "wasm32"))]
+fn stop_on_ctrl_c() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        let set = ctrlc::set_handler(|| {
+            if CTRL_C.fetch_add(1, std::sync::atomic::Ordering::Relaxed) > 0 {
+                // Pressed again while the first is being handled: the person wants the process gone now.
+                #[allow(clippy::exit)]
+                std::process::exit(130);
+            }
+        });
+        if let Err(e) = set {
+            println!("window: Ctrl-C keeps the console's handling ({e})");
+        }
+    });
+}
+
+/// Whether Ctrl-C was pressed in the console ([`stop_on_ctrl_c`]).
+fn ctrl_c_pressed() -> bool {
+    CTRL_C.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+/// Runs `game`'s window on `event_loop` until it is closed, a script quits or Ctrl-C is pressed in the console; gives the game
+/// back for its end. The window is hidden as soon as the loop ends, so a game that takes a moment to let go of its state does
+/// not leave it on the screen.
 pub fn run<G: WindowGame>(game: G, event_loop: EventLoop<()>) -> Result<G, (G, String)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    stop_on_ctrl_c();
     let mut app = window_app(game, &event_loop);
     let ran = event_loop.run_app(&mut app);
     let error = match ran {
@@ -647,6 +679,16 @@ impl<G: WindowGame> ApplicationHandler for WindowApp<G> {
         self.game.pass_work(began.elapsed());
     }
 
+    /// The window hidden (and the cursor let go) at once: what the game lets go of after the loop takes a moment.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            let _ = window.set_cursor_grab(CursorGrabMode::None);
+            window.set_cursor_visible(true);
+            window.set_visible(false);
+        }
+    }
+
     /// In a browser nobody is given the error back ([`spawn`]): it is raised as a panic, which the page's console shows.
     #[cfg(target_arch = "wasm32")]
     #[allow(clippy::panic)]
@@ -681,7 +723,7 @@ impl<G: WindowGame> WindowApp<G> {
             // crosses (a pass cut into ticks of its own would run no tick for a frame under 32 ms).
             self.game.step(ms);
         }
-        if self.game.host_ref().server.vm().quit_requested() {
+        if self.game.host_ref().server.vm().quit_requested() || ctrl_c_pressed() {
             event_loop.exit();
             return None;
         }

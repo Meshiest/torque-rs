@@ -77,3 +77,41 @@ fn a_cell_s_indices_go_to_runs_of_16_bits_that_draw_every_triangle_as_it_was() {
     let (_, runs) = short_indices(&far, &[cl]);
     assert_eq!(runs.iter().map(|r| r.2).sum::<u32>(), 3);
 }
+
+/// A warm-up dropped unfinished (the window closed while its pipelines are still being made) tells its thread to stop and
+/// waits for it: nothing of it runs on after the world is gone, and the drop takes no longer than the thread's current step.
+#[test]
+fn an_unfinished_warm_up_is_stopped_and_waited_for_when_dropped() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let stop = Arc::new(AtomicBool::new(false));
+    let ended = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let (stop, ended) = (stop.clone(), ended.clone());
+        std::thread::spawn(move || {
+            // A warm-up that would run for a minute: a pipeline every 10 ms until told to stop.
+            for _ in 0..6000 {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            ended.store(true, Ordering::Relaxed);
+            Vec::new()
+        })
+    };
+    let warming = Warming {
+        keys: Vec::new(),
+        stop,
+        thread: Some(thread),
+    };
+    assert!(!warming.finished());
+    let began = std::time::Instant::now();
+    drop(warming);
+    assert!(ended.load(Ordering::Relaxed), "the thread still runs");
+    assert!(
+        began.elapsed() < std::time::Duration::from_millis(1000),
+        "the drop took {:?}",
+        began.elapsed()
+    );
+}

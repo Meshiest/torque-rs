@@ -78,6 +78,38 @@ impl WindowSurface {
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
         self.gpu.present(frame);
     }
+
+    /// Shows a frame of one color: what the window shows while the game's view is made (a new window is white until its first
+    /// frame, and the view's pipelines take seconds on a driver whose shader cache is cold, after every build).
+    pub fn clear(&mut self, color: wgpu::Color) {
+        let Some(frame) = self.frame() else {
+            return;
+        };
+        let target = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder =
+            self.gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("window clear"),
+                });
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("window clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(color),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        self.gpu.queue().submit([encoder.finish()]);
+        self.present(frame);
+    }
 }
 
 /// An [`App`] in a window: its surface and world view once the window is made.
@@ -205,7 +237,8 @@ impl<G: App> WindowGame for AppWindow<G> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let surface = WindowSurface::new(window, size)?;
+            let mut surface = WindowSurface::new(window, size)?;
+            surface.clear(wgpu::Color::BLACK);
             self.made(surface);
             Ok(())
         }
@@ -297,5 +330,29 @@ pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
         Ok(())
     }
     #[cfg(not(target_arch = "wasm32"))]
-    driver::run(w, event_loop).map(|_| ()).map_err(|(_, e)| e)
+    {
+        let (w, ran) = match driver::run(w, event_loop) {
+            Ok(w) => (w, Ok(())),
+            Err((w, e)) => (w, Err(e)),
+        };
+        w.end();
+        ran
+    }
+}
+
+impl<G> AppWindow<G> {
+    /// Lets go of the window's state in order: the view first (its renderer stops and waits for its worker threads, which hold
+    /// the device), then the surface and the device, then the game. The device is let go here, with nothing of the driver's
+    /// still running on another thread, rather than at the process's end.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn end(self) {
+        let AppWindow {
+            game,
+            surface,
+            view,
+        } = self;
+        drop(view);
+        drop(surface);
+        drop(game);
+    }
 }

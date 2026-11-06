@@ -40,6 +40,8 @@ open = { version = "5.4.4", default-features = false, features = ["shellexecute-
 
 # A game socket over WebSocket (the `web-socket` feature): natively a plain `ws` connection made with tungstenite...
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The window's Ctrl-C in the console (the `window` feature): the window closed in order rather than the process cut off.
+ctrlc = { version = "3.5", optional = true }
 tungstenite = { version = "0.30", default-features = false, optional = true }
 # A data channel beside it (the `webrtc` feature): natively ICE, DTLS and SCTP over a UDP socket made here...
 str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"], optional = true }
@@ -64,6 +66,7 @@ torque-shape-builder = { path = "../torque-shape-builder" }
 # (`platform::web_input`).
 window = [
     "dep:winit",
+    "dep:ctrlc",
     "dep:open",
     "dep:wasm-bindgen",
     "dep:web-sys",
