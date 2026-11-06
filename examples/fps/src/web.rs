@@ -24,15 +24,12 @@
 //! (`data-torque-ended` carries it).
 
 use std::cell::RefCell;
-use std::net::{Ipv4Addr, SocketAddrV4};
 
 use torque::app::manifest::Manifest;
 use torque::app::view::WorldView;
+use torque::app::web_join::{SERVER, Target, query, rooms_url, socket_url};
 use torque::app::{App, Host};
-use torque::client::net::Datagrams;
-use torque::client::net::room_join::RoomDatagrams;
-use torque::client::net::web_rtc::{LinkWatch, WebRtcDatagrams};
-use torque::client::net::web_socket::WebSocketDatagrams;
+use torque::client::net::web_rtc::LinkWatch;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
 use torque_render_core::Gpu;
@@ -54,9 +51,6 @@ struct Fetched {
 thread_local! {
     static FETCHED: RefCell<Option<Fetched>> = const { RefCell::new(None) };
 }
-
-/// The address the client names the server by: the game socket goes to the page's server whatever it is sent to.
-const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_000);
 
 /// Shows a panic in the page's console.
 pub fn init() {
@@ -132,88 +126,7 @@ pub fn start_host_client() -> Result<(), String> {
     start(fetched_files()?, Some(Target::Local))
 }
 
-/// What the local link holds: datagrams from the worker's server, and the page's function that posts one to it.
-#[derive(Default)]
-struct Local {
-    held: std::collections::VecDeque<Vec<u8>>,
-    sender: Option<js_sys::Function>,
-}
-
-thread_local! {
-    static LOCAL: RefCell<Local> = RefCell::default();
-}
-
-/// A datagram from the worker's server for the host player's client (at most 4,096 wait; the rest are dropped).
-pub fn local_datagram(bytes: Vec<u8>) {
-    LOCAL.with_borrow_mut(|l| {
-        if l.held.len() < 4096 {
-            l.held.push_back(bytes);
-        }
-    });
-}
-
-/// The page's function that posts the host player's datagrams to the worker's server (called with a `Uint8Array`).
-pub fn set_local_sender(sender: js_sys::Function) {
-    LOCAL.with_borrow_mut(|l| l.sender = Some(sender));
-}
-
-/// The host player's link to the server in the page's worker.
-struct LocalLink;
-
-impl Datagrams for LocalLink {
-    fn send_to(&mut self, to: SocketAddrV4, bytes: &[u8]) -> bool {
-        if to != SERVER {
-            return false;
-        }
-        LOCAL.with_borrow(|l| {
-            l.sender.as_ref().is_some_and(|f| {
-                f.call1(
-                    &wasm_bindgen::JsValue::NULL,
-                    &js_sys::Uint8Array::from(bytes),
-                )
-                .is_ok()
-            })
-        })
-    }
-
-    fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
-        LOCAL
-            .with_borrow_mut(|l| l.held.pop_front())
-            .map(|d| (SERVER, d))
-    }
-
-    fn port(&self) -> u16 {
-        0
-    }
-}
-
-/// Where the page's game is: a server that served the page, a player's host found by a room's code, or the server in
-/// this page's worker (the host player's own game).
-#[derive(Clone)]
-enum Target {
-    Server(String),
-    Room { url: String, code: String },
-    Local,
-}
-
-impl Target {
-    /// A new link to the game (the join, and each Join after).
-    fn open(&self) -> Result<(Box<dyn Datagrams>, LinkWatch), String> {
-        match self {
-            Target::Server(url) => {
-                let socket = WebRtcDatagrams::new(WebSocketDatagrams::open(url, SERVER)?);
-                let watch = socket.watch();
-                Ok((Box::new(socket), watch))
-            }
-            Target::Room { url, code } => {
-                let socket = RoomDatagrams::open(url, code, SERVER)?;
-                let watch = socket.watch();
-                Ok((Box::new(socket), watch))
-            }
-            Target::Local => Ok((Box::new(LocalLink), LinkWatch::default())),
-        }
-    }
-}
+pub use torque::app::web_join::{local_datagram, set_local_sender};
 
 fn start(files: GameFiles, target: Option<Target>) -> Result<(), String> {
     let target = match (target, query("room")) {
@@ -245,49 +158,6 @@ fn start(files: GameFiles, target: Option<Target>) -> Result<(), String> {
     torque::app::window::run(web)
 }
 
-/// The value of `name` in the page's query string, decoded.
-fn query(name: &str) -> Option<String> {
-    let search = web_sys::window()?.location().search().ok()?;
-    let raw = search
-        .trim_start_matches('?')
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v.replace('+', " "))?;
-    js_sys::decode_uri_component(&raw)
-        .ok()
-        .and_then(|v| v.as_string())
-}
-
-/// The room service's URL: `?rooms=`, else the page's own host at `/ws`.
-fn rooms_url() -> Result<String, String> {
-    match query("rooms") {
-        Some(url) if url.starts_with("ws://") || url.starts_with("wss://") => Ok(url),
-        Some(url) => Err(format!(
-            "?rooms= takes a ws:// or wss:// address, not {url:?}"
-        )),
-        None => socket_url(),
-    }
-}
-
-/// The game socket's URL: `?server=`, else the page's own host at `/ws`.
-fn socket_url() -> Result<String, String> {
-    if let Some(url) = query("server") {
-        if url.starts_with("ws://") || url.starts_with("wss://") {
-            return Ok(url);
-        }
-        return Err(format!(
-            "?server= takes a ws:// or wss:// address, not {url:?}"
-        ));
-    }
-    let location = web_sys::window().ok_or("no window")?.location();
-    let protocol = location.protocol().map_err(|e| format!("{e:?}"))?;
-    let host = location.host().map_err(|e| format!("{e:?}"))?;
-    let scheme = if protocol == "https:" { "wss" } else { "ws" };
-    // The server's web transport opens game sockets on this path (its `WEB_SOCKET_PATH`).
-    Ok(format!("{scheme}://{host}/ws"))
-}
-
 /// The arena, its state written on the page as it draws (module docs).
 struct WebArena {
     game: ArenaGame,
@@ -317,11 +187,10 @@ impl WebArena {
 
     /// A link that ended for good (a player's host left, or the room refused): out of the game, with why on the menu.
     fn show_end(&mut self) {
-        let Some(text) = self.watch.borrow().ended.clone() else {
+        let Some(text) = torque::app::web_join::ended_text(&self.watch) else {
             return;
         };
         self.ended = true;
-        let text = text.replace(['"', '\\'], "'");
         let _ = self.game.call(
             "eval",
             &[&format!(
@@ -376,18 +245,8 @@ impl WebArena {
         let _ = root.set_attribute("data-torque-position", &position);
         let _ = root.set_attribute("data-torque-others", &others.to_string());
         let _ = root.set_attribute("data-torque-status", &status);
-        let mut link = self.watch.borrow_mut();
-        let flag = |b: bool| if b { "1" } else { "0" };
-        let _ = root.set_attribute("data-torque-link", link.link.name());
-        let _ = root.set_attribute("data-torque-rtc-tried", flag(link.tried));
-        let _ = root.set_attribute("data-torque-rtc-failed", flag(link.failed));
-        let _ = root.set_attribute("data-torque-rtc-in", &link.messages_in.to_string());
-        let _ = root.set_attribute("data-torque-rtc-gap", &format!("{:.0}", link.max_gap_ms));
-        let _ = root.set_attribute("data-torque-ended", link.ended.as_deref().unwrap_or(""));
         // A window of about two seconds (eight marks).
-        if self.frames % 120 == 1 {
-            link.max_gap_ms = 0.0;
-        }
+        torque::app::web_join::mark_link(&self.watch, self.frames % 120 == 1);
     }
 }
 

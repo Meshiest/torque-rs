@@ -34,6 +34,9 @@ pub mod signal {
     pub const CHANNEL_LABEL: &str = "game";
 }
 
+/// Why a browser's link ended when its game socket closed ([`LinkState::ended`]): the data channel closes with it.
+pub const SOCKET_CLOSED: &str = "The server closed the connection.";
+
 /// How long a data channel has to open before the client stays on its game socket.
 pub const OPEN_TIMEOUT_MS: u64 = 10_000;
 
@@ -76,7 +79,7 @@ pub struct LinkState {
     /// When the channel's last message came (milliseconds on the link's clock).
     pub last_ms: Option<f64>,
     /// Why the link ended for good, in a player's words (a player's host's joiner, `room_join`: the host left, the room
-    /// refused, the host could not be reached).
+    /// refused, the host could not be reached; a browser on a game socket: [`SOCKET_CLOSED`]).
     pub ended: Option<String>,
 }
 
@@ -604,6 +607,10 @@ mod web {
         }
 
         fn step(&mut self) {
+            // The game socket closed (the server stopped or closed it): the data channel goes with it, so the link is over.
+            if !self.ws.is_open() && self.watch.borrow().ended.is_none() {
+                self.watch.borrow_mut().ended = Some(SOCKET_CLOSED.to_string());
+            }
             self.signals();
             let Some(peer) = self.peer.as_ref() else {
                 return;

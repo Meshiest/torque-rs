@@ -20,35 +20,9 @@ use torque::app::server::{GameServer, Listen, ServerStart};
 
 use crate::files::GameFiles;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use torque::app::serve::Transports;
 pub use torque::app::server::{DEFAULT_PORT, lan_addresses};
-
-/// The extra addresses a dedicated server's data channels advertise to browsers beside the bind address: `named` (each
-/// `--rtc-public-ip`), and on `0.0.0.0` the computer's `lan` addresses, which are private. A public server (`0.0.0.0`) is
-/// seen by the internet, so it leaves the private ones out unless `with_lan` asks for them (a LAN address told to every
-/// browser discloses the network behind the server). With neither a public address named nor `with_lan`, it refuses to run
-/// data channels; with `with_lan` alone the candidates are the LAN's, which only players on that network can use.
-pub fn rtc_candidates(
-    public: bool,
-    named: &[Ipv4Addr],
-    with_lan: bool,
-    lan: &[Ipv4Addr],
-) -> Result<Vec<Ipv4Addr>, String> {
-    if !public {
-        return Ok(named.to_vec());
-    }
-    if named.is_empty() && !with_lan {
-        return Err("--webrtc on a public server (--bind 0.0.0.0) needs --rtc-public-ip <address>, the address browsers reach this computer by, or --rtc-lan to advertise this computer's private LAN addresses (only players on that network can use them)".to_string());
-    }
-    let mut found = named.to_vec();
-    if with_lan {
-        for &ip in lan {
-            if !found.contains(&ip) {
-                found.push(ip);
-            }
-        }
-    }
-    Ok(found)
-}
 
 /// How a server is started.
 #[derive(Debug, Clone)]
@@ -64,30 +38,6 @@ pub struct ServerOptions {
     /// Whether `0.0.0.0` (every interface, so players outside the network can join when their traffic reaches this computer) is
     /// allowed as the address; no other public address is.
     pub public: bool,
-}
-
-/// Which transports a dedicated server listens on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Transports {
-    /// UDP only.
-    #[default]
-    Udp,
-    /// HTTP and WebSocket only: no UDP socket is opened.
-    Web,
-    /// UDP, and HTTP and WebSocket on the same port number.
-    Both,
-}
-
-impl Transports {
-    /// `udp`, `web` or `both`.
-    pub fn parse(text: &str) -> Result<Transports, String> {
-        match text {
-            "udp" => Ok(Transports::Udp),
-            "web" => Ok(Transports::Web),
-            "both" => Ok(Transports::Both),
-            _ => Err(format!("--transport takes udp, web or both, not {text:?}")),
-        }
-    }
 }
 
 /// The kit's files the figure, the pistol and the cube are loaded from: `glb` when the environment variable `ARENA_SHAPES` is
@@ -125,68 +75,22 @@ impl ArenaServer {
         transports: Transports,
         setup: torque::server::net::web::WebSetup,
     ) -> Result<GameServer, String> {
-        use std::rc::Rc;
-        use torque::app::server::WebListen;
-        let listen = match transports {
-            Transports::Udp => udp_listen(options),
-            Transports::Web | Transports::Both => Listen::Web {
-                address: options.address,
-                port: options.port,
-                public: options.public,
-                web: Rc::new(WebListen {
-                    udp: transports == Transports::Both,
-                    setup,
-                }),
-            },
+        let bind = torque::app::serve::Bind {
+            address: options.address,
+            port: options.port,
+            public: options.public,
         };
-        ArenaServer::start_on(files, options, listen, true)
+        let listen = torque::app::serve::web_listen(transports, bind, setup);
+        ArenaServer::start_dedicated_listen(files, options, listen)
     }
 
-    /// A dedicated server hosted through a room service (`room`: its `ws://` URL): players find it by the room's code and
-    /// join over WebRTC data channels, with no port forwarded. The channels' UDP socket binds the options' address and port
-    /// (a LAN address lets players outside the computer reach it, with the room's STUN server's help outside the network).
-    /// `lan` takes joiners' private (LAN) addresses as candidates: players on this computer's network (off, a joiner
-    /// could aim the host's checks at machines on that network). Returns the server and the room's code.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn start_hosted(
+    /// A dedicated server on `listen` (a dedicated server's command line says where: `torque::app::serve`).
+    pub fn start_dedicated_listen(
         files: &GameFiles,
         options: &ServerOptions,
-        room: &str,
-        lan: bool,
-    ) -> Result<(GameServer, String), String> {
-        use std::cell::RefCell;
-        use std::net::IpAddr;
-        use std::rc::Rc;
-        use torque::app::server::BoundTransport;
-        use torque::server::net::transport::{BindPolicy, LanRules, SharedTransport, Transport};
-        use torque::server::net::web::p2p::{P2pHost, P2pSetup};
-        let ip = IpAddr::V4(options.address);
-        let policy = BindPolicy::new(ip, options.public, &LanRules::PLAIN)
-            .map_err(|e| format!("the address {}: {e}", options.address))?;
-        let mut host = P2pHost::new(
-            policy,
-            P2pSetup {
-                service: room.to_string(),
-                queue: 4096,
-                rtc: torque::server::net::web::rtc::RtcSetup {
-                    lan_candidates: lan,
-                    ..Default::default()
-                },
-            },
-        );
-        if let Err(e) = host.bind(ip, options.port) {
-            let why = host.status().join("; ");
-            return Err(format!("hosting through {room}: {e} {why}"));
-        }
-        let code = host.code().ok_or("the room service gave no code")?;
-        let transport: SharedTransport = Rc::new(RefCell::new(host));
-        let server = ArenaServer::start_on(
-            files,
-            options,
-            Listen::Bound(BoundTransport(transport)),
-            true,
-        )?;
-        Ok((server, code))
+        listen: Listen,
+    ) -> Result<GameServer, String> {
+        ArenaServer::start_on(files, options, listen, true)
     }
 
     /// A dedicated server on a transport the caller made and bound (a browser host's worker relays its links).
@@ -243,35 +147,5 @@ fn udp_listen(options: &ServerOptions) -> Listen {
         address: options.address,
         port: options.port,
         public: options.public,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const PUBLIC: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
-    const LAN: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 20);
-
-    #[test]
-    fn a_public_server_advertises_no_private_address_unless_asked() {
-        // A private bind keeps what it is given (the library adds the bind address).
-        assert_eq!(rtc_candidates(false, &[], false, &[LAN]), Ok(vec![]));
-        assert_eq!(
-            rtc_candidates(false, &[PUBLIC], false, &[LAN]),
-            Ok(vec![PUBLIC])
-        );
-        // A public bind needs a public address, and does not add the LAN's on its own.
-        assert!(rtc_candidates(true, &[], false, &[LAN]).is_err());
-        assert_eq!(rtc_candidates(true, &[], true, &[LAN]), Ok(vec![LAN]));
-        assert_eq!(
-            rtc_candidates(true, &[PUBLIC], false, &[LAN]),
-            Ok(vec![PUBLIC])
-        );
-        // The flag adds them, once each.
-        assert_eq!(
-            rtc_candidates(true, &[PUBLIC], true, &[LAN, LAN, PUBLIC]),
-            Ok(vec![PUBLIC, LAN])
-        );
     }
 }

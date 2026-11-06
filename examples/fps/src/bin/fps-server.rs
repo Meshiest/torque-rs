@@ -36,21 +36,15 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::Ipv4Addr;
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::PathBuf;
 
 #[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
 #[cfg(not(target_arch = "wasm32"))]
-use torque::server::net::web::rtc::RtcSetup;
-#[cfg(not(target_arch = "wasm32"))]
-use torque::server::net::web::{Access, Origins, Tls, TlsFiles, WebFiles, WebSetup};
+use torque::app::serve::{Bind, WebFlags};
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_fps::files::GameFiles;
 #[cfg(not(target_arch = "wasm32"))]
-use torque_example_fps::server::{
-    ArenaServer, DEFAULT_PORT, ServerOptions, Transports, lan_addresses, rtc_candidates,
-};
+use torque_example_fps::server::{ArenaServer, DEFAULT_PORT, ServerOptions};
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,21 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         public: false,
     };
     let mut ticks = None;
-    let mut transports = Transports::Udp;
-    let mut web_root = None;
-    let mut no_files = false;
-    let mut cert = None;
-    let mut key = None;
-    let mut access = Access::default();
-    let mut origins = Vec::new();
-    let mut webrtc = false;
-    let mut rtc_port = None;
-    let mut rtc_public = Vec::new();
-    let mut rtc_lan = false;
-    let mut rtc_lan_only = false;
-    let mut rtc_loss = 0u8;
-    let mut rtc_stats = false;
-    let mut room = None;
+    let mut web = WebFlags::default();
     let mut args = Args::from_env();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -86,22 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--name" => options.name = args.value(&arg, "a name")?,
             "--map" => options.mission = args.value(&arg, "a map")?,
             "--ticks" => ticks = Some(args.number(&arg)?),
-            "--transport" => {
-                transports = Transports::parse(&args.value(&arg, "udp, web or both")?)?
-            }
-            "--web-root" => web_root = Some(args.dir(&arg)?),
-            "--no-files" => no_files = true,
-            "--tls-cert" => cert = Some(args.dir(&arg)?),
-            "--tls-key" => key = Some(args.dir(&arg)?),
-            "--web-host" => access.hosts.push(args.value(&arg, "a host name")?),
-            "--allow-origin" => origins.push(args.value(&arg, "an origin")?),
-            "--webrtc" => webrtc = true,
-            "--rtc-port" => rtc_port = Some(args.number(&arg)?),
-            "--rtc-public-ip" => rtc_public.push(args.ipv4(&arg)?),
-            "--rtc-lan" => rtc_lan = true,
-            "--rtc-loss" => rtc_loss = args.number::<u8>(&arg)?.min(100),
-            "--rtc-stats" => rtc_stats = true,
-            "--room" => room = Some(args.value(&arg, "a room service's ws:// URL")?),
+            _ if web.take(&arg, &mut args)? => {}
             _ => return Err(unknown(&arg).into()),
         }
     }
@@ -113,156 +78,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .next()
             .ok_or("no map in the game folder's missions")?;
     }
-    let mut web_scheme = "http";
-    let web_flags = web_root.is_some()
-        || no_files
-        || cert.is_some()
-        || key.is_some()
-        || !access.hosts.is_empty()
-        || !origins.is_empty();
-    if transports == Transports::Udp && (web_flags || webrtc) {
-        return Err("--web-root, --no-files, --tls-cert, --tls-key, --web-host, --allow-origin and --webrtc are for the web: add --transport web or --transport both"
-            .into());
+    web.check()?;
+    for warning in web.warnings() {
+        eprintln!("fps-server: warning: {warning}");
     }
-    if !webrtc
-        && (rtc_port.is_some()
-            || !rtc_public.is_empty()
-            || (rtc_lan && room.is_none())
-            || rtc_loss > 0
-            || rtc_stats)
-    {
-        return Err("--rtc-port, --rtc-public-ip, --rtc-lan, --rtc-loss and --rtc-stats are for the data channels: add --webrtc".into());
-    }
-    if rtc_loss > 0 {
-        eprintln!(
-            "fps-server: warning: --rtc-loss {rtc_loss} drops {rtc_loss}% of the data channels' datagrams both ways; it is for checks, not for a server players use"
-        );
-    }
-    if rtc_stats {
-        eprintln!(
-            "fps-server: warning: --rtc-stats prints each data channel peer's traffic every 2 s; it is for checks, not for a server players use"
-        );
-    }
-    if let Some(room) = room {
-        if transports != Transports::Udp || webrtc {
-            return Err(
-                "--room hosts over data channels alone: leave out --transport and --webrtc".into(),
-            );
-        }
-        let (mut server, code) = ArenaServer::start_hosted(&files, &options, &room, rtc_lan)?;
-        println!(
-            "fps-server: {} hosted through {room}, map {}",
-            options.name, options.mission
-        );
-        println!("fps-server: room code {code}");
-        if let Some(addr) = server.address() {
-            println!("fps-server: data channels on udp {addr}");
-            if addr.ip().is_loopback() {
-                println!(
-                    "fps-server: only this computer can reach it: pass --bind <this computer's LAN address> for other players"
-                );
-            }
-        }
-        server.set_status_every(Some(std::time::Duration::from_secs(1)));
-        server.run_dedicated(ticks, |line| println!("{line}"));
-        return Ok(());
-    }
-    let mut server = if transports == Transports::Udp {
-        ArenaServer::start_dedicated(&files, &options)?
-    } else {
-        let tls = match (cert, key) {
-            (Some(cert), Some(key)) => {
-                web_scheme = "https";
-                Some(Tls::load(&TlsFiles { cert, key })?)
-            }
-            (None, None) => None,
-            _ => return Err("--tls-cert and --tls-key go together".into()),
-        };
-        let files_served = if no_files {
-            None
-        } else {
-            let root = match web_root {
-                Some(dir) => dir,
-                None => default_web_root()
-                    .ok_or("no folder for the page: pass --web-root <dir> or --no-files")?,
-            };
-            Some(WebFiles::from_dir(&root).map_err(|e| {
-                format!(
-                    "the page's files in {}: {e} (build them with `node web/build.mjs fps`, or pass --web-root or --no-files)",
-                    root.display()
-                )
-            })?)
-        };
-        access.origins = if origins.iter().any(|o| o == "*") {
-            Origins::Any
-        } else if origins.is_empty() {
-            Origins::SameHost
-        } else {
-            Origins::List(origins)
-        };
-        let rtc = if webrtc {
-            let port = match rtc_port {
-                Some(port) => port,
-                None if options.port == 0 => 0,
-                None => options
-                    .port
-                    .checked_add(1)
-                    .ok_or("--rtc-port is needed when --port is 65535")?,
-            };
-            rtc_lan_only = options.public && rtc_public.is_empty();
-            rtc_public = rtc_candidates(options.public, &rtc_public, rtc_lan, &lan_addresses())?;
-            Some(RtcSetup {
-                port,
-                public: rtc_public,
-                loss_percent: rtc_loss,
-                ..RtcSetup::default()
-            })
-        } else {
-            None
-        };
-        let setup = WebSetup {
-            files: files_served,
-            tls,
-            access,
-            rtc,
-            ..WebSetup::default()
-        };
-        ArenaServer::start_dedicated_on(&files, &options, transports, setup)?
+    let bind = Bind {
+        address: options.address,
+        port: options.port,
+        public: options.public,
     };
-    if let Some(addr) = server.address() {
-        println!(
-            "fps-server: {} on {addr}, map {}",
-            options.name, options.mission
-        );
-        if transports != Transports::Udp {
-            println!("fps-server: browsers join {web_scheme}://{addr}/");
-        }
-        if webrtc {
-            for line in server.transport_status() {
-                println!("fps-server: {line}");
-            }
-            if rtc_lan_only {
-                println!(
-                    "fps-server: data channels advertise only this computer's LAN addresses: players outside the network cannot use WebRTC and stay on the WebSocket (add --rtc-public-ip for them)"
-                );
-            }
-        }
-        if rtc_stats {
-            server.set_status_every(Some(std::time::Duration::from_secs(2)));
-        }
-        if options.public {
-            let port = addr.port();
-            let lan = lan_addresses();
-            if lan.is_empty() {
-                println!("fps-server: no LAN address found on this computer");
-            }
-            for ip in lan {
-                println!("fps-server: players on this network join {ip}:{port}");
-            }
-            println!(
-                "fps-server: players outside the network need UDP {port} forwarded to this computer, and the firewall to allow it"
-            );
-        }
+    let served = web.listen(bind, "fps")?;
+    let mut server = ArenaServer::start_dedicated_listen(&files, &options, served.listen.clone())?;
+    for line in served.start_lines(&mut server, &options.name, &options.mission, "/") {
+        println!("fps-server: {line}");
     }
     server.run_dedicated(ticks, |line| println!("{line}"));
     Ok(())
@@ -271,11 +99,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// No dedicated server runs in a browser.
 #[cfg(target_arch = "wasm32")]
 fn main() {}
-
-/// The browser build's folder next to this program's: `<target>/web/fps` for `<target>/release/fps-server`.
-#[cfg(not(target_arch = "wasm32"))]
-fn default_web_root() -> Option<PathBuf> {
-    let program = std::env::current_exe().ok()?;
-    let dir = program.parent()?.parent()?.join("web").join("fps");
-    dir.is_dir().then_some(dir)
-}

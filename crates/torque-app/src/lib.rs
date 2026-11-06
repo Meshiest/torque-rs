@@ -23,6 +23,10 @@
 //! - [`page_bridge`]: a web build's page and the game's scripts calling each other (`torque.call`, `callPage`), within caps.
 //! - [`web_page`]: the entry web builds share: the page's calls ([`web_exports!`]), the files it fetches, its settings, and
 //!   the loading stages and frame times written on the page.
+//! - `serve` (the `p2p` feature, natively): a dedicated server's switches for browsers (the web beside UDP, data channels,
+//!   a room) and its start-up lines.
+//! - `web_join` and `web_host` (the `p2p` feature, built for the web): a browser's client joining a server, a room's host
+//!   or the server in its page's worker; and that worker's server (`web_host_exports!`).
 //! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
@@ -39,10 +43,16 @@ pub mod lights;
 pub mod manifest;
 pub mod orbit;
 pub mod page_bridge;
+#[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+pub mod serve;
 pub mod server;
 pub mod shots;
 pub mod terrain;
 pub mod view;
+#[cfg(all(feature = "p2p", target_arch = "wasm32"))]
+pub mod web_host;
+#[cfg(all(feature = "p2p", target_arch = "wasm32"))]
+pub mod web_join;
 pub mod web_page;
 pub mod window;
 
