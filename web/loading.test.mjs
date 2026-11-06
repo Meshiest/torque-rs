@@ -1,7 +1,7 @@
 // The loading display's stages and streamed reads, without a page: `node --test web/loading.test.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { STAGES, fpsText, later, percent, readStreamed, stageText } from './loading.js';
+import { STAGES, fpsText, later, percent, readStreamed, showBar, stageText } from './loading.js';
 
 test('the stages run in the order the page and the game set them', () => {
   assert.deepEqual(STAGES, ['module', 'compile', 'files', 'start', 'gpu', 'map', 'ready']);
@@ -65,4 +65,38 @@ test('the frame-time line', () => {
   assert.equal(fpsText('', ''), 'fps: waiting for frames');
   assert.equal(fpsText('59.6', '16.78 22.1'), '60 fps, 16.78 ms a frame, worst 22.1 ms');
   assert.equal(fpsText('120', '8.33'), '120 fps, 8.33 ms a frame');
+});
+
+// A loading bar as the page has it: an element with a fill (its first child), its classes and its attributes.
+function fakeBar() {
+  const classes = new Set(['busy']);
+  const attributes = new Map();
+  return {
+    firstElementChild: { style: { transform: '' } },
+    classList: { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c) },
+    setAttribute: (k, v) => attributes.set(k, v),
+    removeAttribute: (k) => attributes.delete(k),
+    getAttribute: (k) => attributes.get(k) ?? null,
+  };
+}
+
+test('the loading bar fills by a transform and tells a screen reader the percent', () => {
+  const bar = fakeBar();
+  showBar(bar, 3 * 1048576, 12 * 1048576);
+  assert.ok(!bar.classList.contains('busy'));
+  assert.equal(bar.firstElementChild.style.transform, 'scaleX(0.25)');
+  assert.equal(bar.getAttribute('aria-valuenow'), '25');
+  showBar(bar, 20, 10);
+  assert.equal(bar.firstElementChild.style.transform, 'scaleX(1)');
+});
+
+test('a stage of unknown length shows the moving bar with no value', () => {
+  const bar = fakeBar();
+  showBar(bar, 5, 10);
+  showBar(bar);
+  assert.ok(bar.classList.contains('busy'));
+  assert.equal(bar.getAttribute('aria-valuenow'), null);
+  assert.equal(bar.firstElementChild.style.transform, '');
+  showBar(bar, 1048576, null);
+  assert.ok(bar.classList.contains('busy'), 'bytes with no total have no share to show');
 });

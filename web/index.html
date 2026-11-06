@@ -16,7 +16,23 @@
   #loading, #fps, #gear, #gallery, #settings, #leave, #invites { z-index: 1; }
   #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
   #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
-  #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
+  /* The loading bar (loading.js `showBar`): a download's share fills it; a stage of unknown length slides a piece of it across.
+     Both are drawn by a transform alone, which the browser animates on its compositor: the bar keeps moving while the game's
+     work holds the page's thread. With reduced motion the piece stays still and the whole bar pulses (opacity, also the
+     compositor's). */
+  #progress { position: relative; width: min(24rem, 100%); height: 0.5rem; overflow: hidden; border-radius: 0.25rem;
+    background: #2a3040; }
+  #progress[hidden] { display: none; }
+  #progress > span { position: absolute; inset: 0; border-radius: inherit; background: #7aa2f7; transform-origin: left center;
+    transform: scaleX(0); }
+  #progress.busy > span { right: auto; width: 40%; transform: translateX(-100%); will-change: transform;
+    animation: progress-slide 1.4s ease-in-out infinite; }
+  @keyframes progress-slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+  @media (prefers-reduced-motion: reduce) {
+    #progress.busy > span { width: 100%; transform: none; will-change: opacity;
+      animation: progress-pulse 1.6s ease-in-out infinite alternate; }
+  }
+  @keyframes progress-pulse { from { opacity: 0.35; } to { opacity: 0.9; } }
   #fps { position: fixed; top: 0.5rem; left: 0.5rem; padding: 0.2rem 0.5rem; background: #000a; color: #e8ecf4;
     font: 13px ui-monospace, monospace; border-radius: 4px; pointer-events: none; }
   /* The gear and the gallery button sit under the game's frame-rate line at the top right (`--gear-top`, set by the script
@@ -78,7 +94,7 @@
 <body>
 <div id="loading">
   <p id="status">Loading...</p>
-  <progress id="progress"></progress>
+  <div id="progress" class="busy" role="progressbar" aria-labelledby="status" aria-valuemin="0" aria-valuemax="100"><span></span></div>
 </div>
 <div id="fps" hidden></div>
 <a id="gallery" href="../" aria-label="Back to the gallery" title="Back to the gallery" hidden>
@@ -153,7 +169,7 @@
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
   // leaves full screen).
   import { fetchFiles, Refused } from './files.js';
-  import { fpsText, later, readStreamed, stageText } from './loading.js';
+  import { fpsText, later, readStreamed, showBar, stageText } from './loading.js';
   import * as settings from './settings.js';
   import { createTorque } from './bridge.js';
   import { hostInvites, joinInvite, replyTab, soloAsks, takeFragment } from './invites.js';
@@ -184,12 +200,7 @@
   function show(next, done = null, total = null) {
     stage = next;
     status.textContent = stageText(next, done, total);
-    if (done !== null && total) {
-      bar.max = total;
-      bar.value = done;
-    } else {
-      bar.removeAttribute('value');
-    }
+    showBar(bar, done, total);
   }
 
   // The game's own stages, as it writes them; the display goes once it is ready.

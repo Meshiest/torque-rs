@@ -38,6 +38,23 @@ export function percent(done, total) {
   return Math.max(0, Math.min(100, Math.floor((done * 100) / total)));
 }
 
+// Shows `done` of `total` bytes on the loading bar `bar` (its fill, the first child, scaled; its `aria-valuenow` for a screen
+// reader), or with no total a stage whose length is not known: the bar's `busy` look, a piece that slides across. Both are drawn
+// by a transform alone, which the browser animates off the page's thread: the bar keeps moving while the game's work holds it.
+export function showBar(bar, done = null, total = null) {
+  const fill = bar.firstElementChild;
+  if (done !== null && total) {
+    const p = percent(done, total);
+    bar.classList.remove('busy');
+    bar.setAttribute('aria-valuenow', String(p));
+    if (fill) fill.style.transform = `scaleX(${p / 100})`;
+  } else {
+    bar.classList.add('busy');
+    bar.removeAttribute('aria-valuenow');
+    if (fill) fill.style.transform = '';
+  }
+}
+
 // Whether the game's stage `next` (from `data-torque-stage`) is a later one than `now`: a stage never goes back.
 export function later(now, next) {
   return STAGES.indexOf(next) > STAGES.indexOf(now);
