@@ -244,6 +244,9 @@ The first development version. Nothing is published yet; this is what exists.
 - `torque::app::manifest`: the list of a web build's files (`files.json`: each file's path, size and SHA-256), read with caps
   on its size, its file count, the files' total bytes, the paths and the hashes' form; a fetched file is taken only when its
   size and hash are the list's. The examples' `GameFiles::from_fetched` reads the fetched files (packs and loose files).
+- `torque::app::web_page::add_file_digest` (the page's `addFileDigest`): takes a fetched file on the SHA-256 the page computed with
+  `crypto.subtle`, checking the size, the path and the list's hash as `add_file` does, so the module does not hash it on the
+  page's thread.
 - The arena for browsers: `fps-server --transport udp|web|both` (default `udp`) serves the browser build's folder over HTTP
   (`--web-root`, or `--no-files`) and takes game sockets over WebSocket on the same port, with TLS from `--tls-cert` and
   `--tls-key`, host names from `--web-host` and other pages' origins from `--allow-origin`; `node web/build.mjs fps` builds

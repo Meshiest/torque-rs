@@ -137,20 +137,41 @@ impl Manifest {
 impl ManifestFile {
     /// Whether `bytes` are this file: its size and its hash (Err: the message to show).
     pub fn check(&self, bytes: &[u8]) -> Result<(), String> {
-        if bytes.len() as u64 != self.size {
+        self.check_size(bytes.len())?;
+        self.check_hash(&Sha256::digest(bytes).into())
+    }
+
+    /// Whether a file of `len` bytes whose SHA-256 the caller computed, `digest`, is this file (Err: the message to show,
+    /// also when `digest` is not 32 bytes). The caller vouches for the digest: it must come from hashing the very bytes it
+    /// hands over, never from a server or a cache.
+    pub fn check_digest(&self, len: usize, digest: &[u8]) -> Result<(), String> {
+        self.check_size(len)?;
+        let digest: &[u8; 32] = digest.try_into().map_err(|_| {
+            format!(
+                "{}: a SHA-256 digest has 32 bytes, not {}",
+                self.path,
+                digest.len()
+            )
+        })?;
+        self.check_hash(digest)
+    }
+
+    fn check_size(&self, len: usize) -> Result<(), String> {
+        if len as u64 != self.size {
             return Err(format!(
                 "{} has {} bytes where the list of files says {}",
-                self.path,
-                bytes.len(),
-                self.size
+                self.path, len, self.size
             ));
         }
-        let got: [u8; 32] = Sha256::digest(bytes).into();
-        if got != self.sha256 {
+        Ok(())
+    }
+
+    fn check_hash(&self, got: &[u8; 32]) -> Result<(), String> {
+        if *got != self.sha256 {
             return Err(format!(
                 "{} is not the file the list names: its SHA-256 is {} where the list says {}",
                 self.path,
-                hex(&got),
+                hex(got),
                 hex(&self.sha256)
             ));
         }

@@ -101,13 +101,29 @@ pub fn read_manifest(text: &str) -> Result<(), String> {
 
 /// Takes the fetched file `path` (Err, the file left out: the list does not name it, or its size or hash is not the list's).
 pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
+    take(path, bytes, |entry, bytes| entry.check(bytes))
+}
+
+/// [`add_file`] on `digest`, the file's SHA-256 as the page computed it over the bytes it holds (never one read from the
+/// network or the cache); the size, the path and the list's hash are checked as before.
+pub fn add_file_digest(path: &str, bytes: Vec<u8>, digest: &[u8]) -> Result<(), String> {
+    take(path, bytes, |entry, bytes| {
+        entry.check_digest(bytes.len(), digest)
+    })
+}
+
+fn take(
+    path: &str,
+    bytes: Vec<u8>,
+    check: impl FnOnce(&torque::app::manifest::ManifestFile, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     FETCHED.with_borrow_mut(|f| {
         let f = f.as_mut().ok_or("no list of files was read")?;
         let entry = f
             .manifest
             .file(path)
             .ok_or_else(|| format!("{path} is not in the list of files"))?;
-        entry.check(&bytes)?;
+        check(entry, &bytes)?;
         let path = entry.path.clone();
         f.files.retain(|(p, _)| *p != path);
         f.files.push((path, bytes));

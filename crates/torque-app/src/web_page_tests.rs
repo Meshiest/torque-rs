@@ -54,6 +54,43 @@ fn fetched_files_are_taken_only_as_the_list_names_them() {
 }
 
 #[test]
+fn a_file_with_the_pages_digest_is_taken_only_as_the_list_names_it() {
+    use sha2::{Digest, Sha256};
+    let pack = b"the pack's bytes".to_vec();
+    let digest: [u8; 32] = Sha256::digest(&pack).into();
+    let list = Manifest::of([(WEB_PACK, pack.as_slice())]).unwrap();
+    assert!(
+        add_file_digest(WEB_PACK, pack.clone(), &digest).is_err(),
+        "no list read yet"
+    );
+    read_manifest(&list.to_json()).unwrap();
+    let refused = |path: &str, bytes: &[u8], digest: &[u8]| {
+        add_file_digest(path, bytes.to_vec(), digest).unwrap_err()
+    };
+    assert!(refused("other.pack", &pack, &digest).contains("not in the list"));
+    assert!(refused(WEB_PACK, &pack, &digest[..31]).contains("32 bytes, not 31"));
+    assert!(
+        refused(WEB_PACK, &pack, &[digest.as_slice(), &[0]].concat()).contains("32 bytes, not 33")
+    );
+    assert!(refused(WEB_PACK, &pack, &[]).contains("32 bytes, not 0"));
+    let mut wrong = digest;
+    wrong[0] ^= 1;
+    assert!(refused(WEB_PACK, &pack, &wrong).contains("not the file the list names"));
+    // the size is checked beside the digest
+    let mut short = pack.clone();
+    short.pop();
+    assert!(refused(WEB_PACK, &short, &digest).contains("bytes where the list of files says"));
+    assert_eq!(
+        take_fetched().unwrap_err(),
+        format!("{WEB_PACK} was not fetched"),
+        "every refusal left the file out"
+    );
+    read_manifest(&list.to_json()).unwrap();
+    add_file_digest(WEB_PACK, pack.clone(), &digest).unwrap();
+    assert_eq!(take_fetched().unwrap(), vec![(WEB_PACK.to_string(), pack)]);
+}
+
+#[test]
 fn frame_times_are_summed_up_every_half_second() {
     let start = Instant::now();
     let mut times = FrameTimes::new();

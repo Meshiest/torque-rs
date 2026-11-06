@@ -1,9 +1,11 @@
 //! A game in a browser and its page (`web/index.html`): the entry every web build shares.
 //!
 //! **The page's calls.** [`web_exports!`](crate::web_exports) gives a game's program the functions the page calls: whether
-//! the module carries its files, the list's cap, `readManifest` and `addFile` for the files the page fetches by `files.json`
-//! ([`read_manifest`], [`add_file`]: a file is taken only when its size and hash are the list's), the game's start (on the files
-//! fetched, [`take_fetched`], or on those the module carries) and the page bridge's ([`crate::page_bridge`]).
+//! the module carries its files, the list's cap, `readManifest`, `addFile` and `addFileDigest` for the files the page fetches
+//! by `files.json` ([`read_manifest`], [`add_file`], [`add_file_digest`]: a file is taken only when its size and hash are the
+//! list's; `addFileDigest` takes the hash the page computed with the browser's crypto, off the module's thread), the game's
+//! start (on the files fetched, [`take_fetched`], or on those the module carries) and the page bridge's
+//! ([`crate::page_bridge`]).
 //!
 //! **The quality** is the page's to pick (its settings panel; Firefox starts at Medium until the player picks): the panel calls
 //! the script engine's `setRenderQuality` through the bridge ([`request_quality`]), and the window applies it at its next
@@ -51,13 +53,31 @@ pub fn read_manifest(text: &str) -> Result<(), String> {
 
 /// Takes the fetched file `path` (Err, the file left out: the list does not name it, or its size or hash is not the list's).
 pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
+    take(path, bytes, |entry, bytes| entry.check(bytes))
+}
+
+/// Takes the fetched file `path` like [`add_file`], on `digest`, its SHA-256 computed by the caller (the page, with the
+/// browser's crypto, off the module's thread), instead of hashing the bytes here. The size, the path and the list's hash are
+/// checked as before, so the list stays the one source of truth; the digest is trusted only as the page's own hash of the
+/// bytes it holds, and must never be a value read from the network or the cache.
+pub fn add_file_digest(path: &str, bytes: Vec<u8>, digest: &[u8]) -> Result<(), String> {
+    take(path, bytes, |entry, bytes| {
+        entry.check_digest(bytes.len(), digest)
+    })
+}
+
+fn take(
+    path: &str,
+    bytes: Vec<u8>,
+    check: impl FnOnce(&crate::manifest::ManifestFile, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     FETCHED.with_borrow_mut(|f| {
         let f = f.as_mut().ok_or("no list of files was read")?;
         let entry = f
             .manifest
             .file(path)
             .ok_or_else(|| format!("{path} is not in the list of files"))?;
-        entry.check(&bytes)?;
+        check(entry, &bytes)?;
         let path = entry.path.clone();
         f.files.retain(|(p, _)| *p != path);
         f.files.push((path, bytes));
@@ -227,7 +247,7 @@ pub fn mark_play(frames: u64, map: &str, figure: Option<[f32; 3]>) {
 
 /// The functions a web build's page calls (`web/index.html`, `web/files.js`, `web/bridge.js`), in the game's program (the
 /// module's exports must be the program's own): `embedded`, `manifestMaxBytes`, `startEmbedded`, `readManifest`, `addFile`,
-/// `startFetched`, and the page bridge's `torqueRequest`, `torqueOn` and `torqueOff` ([`crate::page_bridge`]). `embedded` is whether the module carries its files; `start_embedded` and `start_fetched` start the game
+/// `addFileDigest`, `startFetched`, and the page bridge's `torqueRequest`, `torqueOn` and `torqueOff` ([`crate::page_bridge`]). `embedded` is whether the module carries its files; `start_embedded` and `start_fetched` start the game
 /// (functions returning `Result<(), String>`). The program depends on `wasm-bindgen`.
 ///
 /// ```ignore
@@ -269,6 +289,16 @@ macro_rules! web_exports {
             #[wasm_bindgen(js_name = addFile)]
             pub fn add_file(path: &str, bytes: Vec<u8>) -> Result<(), String> {
                 $crate::web_page::add_file(path, bytes)
+            }
+
+            /// `addFile` on a SHA-256 the page computed (`crypto.subtle`), not hashed in the module.
+            #[wasm_bindgen(js_name = addFileDigest)]
+            pub fn add_file_digest(
+                path: &str,
+                bytes: Vec<u8>,
+                digest: &[u8],
+            ) -> Result<(), String> {
+                $crate::web_page::add_file_digest(path, bytes, digest)
             }
 
             #[wasm_bindgen(js_name = startFetched)]
