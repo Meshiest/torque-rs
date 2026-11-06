@@ -1,6 +1,6 @@
 //! The system fonts' scan of font folders (Linux's and macOS's way) over temporary folders of synthetic faces: a face found by
 //! file name, TGE's common faces on their metric-compatible stand-ins, the last resort, refused and oversized files passed over,
-//! the depth limit; and the system's own fonts drawing `A` when it has any.
+//! the depth limit, link loops; and the system's own fonts drawing `A` when it has any.
 #![cfg(feature = "system-fonts")]
 
 use std::path::{Path, PathBuf};
@@ -172,6 +172,18 @@ fn the_scan_stops_at_its_depth() {
     assert_eq!(fonts.resolve("Arial"), Some(kept));
 }
 
+#[cfg(unix)]
+#[test]
+fn a_link_loop_is_read_once() {
+    let dir = folder("link-loop");
+    let only = face(&dir, "fonts/Plain.ttf");
+    std::os::unix::fs::symlink(&dir, dir.join("fonts/loop")).unwrap();
+    std::os::unix::fs::symlink(dir.join("fonts"), dir.join("fonts/again")).unwrap();
+    let fonts = SystemFonts::scan(&[dir.clone(), dir.join("fonts")]);
+    assert_eq!(fonts.indexed(), 1);
+    assert_eq!(fonts.resolve("Arial"), Some(only));
+}
+
 #[test]
 fn a_file_named_for_a_face_is_found_by_its_name() {
     let dir = folder("with-file");
@@ -186,6 +198,8 @@ fn a_file_named_for_a_face_is_found_by_its_name() {
 #[test]
 fn the_systems_fonts_draw_arial() {
     let Some(fonts) = SystemFonts::new() else {
+        // CI's images have fonts (the test job installs DejaVu); elsewhere a system with none skips.
+        assert!(std::env::var_os("CI").is_none(), "CI has no font files");
         eprintln!("this system has no font files: skipped");
         return;
     };

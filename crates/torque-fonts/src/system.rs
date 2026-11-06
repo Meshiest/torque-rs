@@ -3,15 +3,18 @@
 //! Windows-1252 characters of bytes 32 to 255, remapped from their code points), packed into 256-wide sheets. The
 //! [`crate::FontCache`] counts every font it makes.
 //!
-//! **Windows:** a face's file is `{name without spaces}.ttf` in `%WINDIR%\Fonts`, unless the host named another file for it
-//! ([`SystemFonts::with_file`]).
+//! **Windows:** a face's file is `{name without spaces}.ttf` (any case) among the files of `%WINDIR%\Fonts`, unless the host
+//! named another file for it ([`SystemFonts::with_file`]). The name is looked up in the folder's listing, never joined into a
+//! path, and a name with a separator, `..`, a colon or NUL has no file.
 //!
 //! **Linux and macOS:** the system's font folders (the XDG font folders, or macOS's three) are scanned once per process, within
-//! [`MAX_SCAN_DEPTH`], [`MAX_SCAN_ENTRIES`] and [`MAX_INDEXED_FILES`], for `.ttf` files no larger than [`ttf::MAX_TTF_BYTES`]. A
+//! [`MAX_SCAN_DEPTH`], [`MAX_SCAN_ENTRIES`], [`MAX_INDEXED_FILES`] and [`MAX_SCAN_TIME`], each folder once, for `.ttf` files no larger than [`ttf::MAX_TTF_BYTES`]. A
 //! face is the file whose name, in lower case without spaces, separators or a trailing `Regular`, is the face's name
 //! ([`face_key`]). TGE's common faces fall back on metric-compatible free faces ([`candidates`]: Arial on Liberation Sans, then
-//! DejaVu Sans), and when none of those is there, on any sans face found, so text always shows. Every file goes through
-//! [`ttf::check`] before fontdue reads it; a file it refuses is passed over.
+//! DejaVu Sans), and when none of those is there, on any sans face found, so text always shows.
+//!
+//! On every system, a file goes through [`ttf::check`] (which caps its size) before fontdue reads it; a file it refuses is passed
+//! over. A face read is kept for its other sizes.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -35,6 +38,10 @@ pub const MAX_INDEXED_FILES: usize = 8_192;
 pub const MAX_TRIES: usize = 16;
 /// The most faces whose file is remembered.
 const MAX_RESOLVED: usize = 1_024;
+/// The most faces kept read (each a few hundred KiB to a few MiB of outlines).
+const MAX_FACES_KEPT: usize = 16;
+/// How long a scan may take before it stops with what it found.
+pub const MAX_SCAN_TIME: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// TGE's common faces and the metric-compatible free faces that stand in for them, best first (keys as [`face_key`] makes them).
 const SUBSTITUTES: &[(&str, &[&str])] = &[
@@ -60,18 +67,16 @@ const STYLES: &[&str] = &["bolditalic", "boldoblique", "bold", "italic", "obliqu
 
 /// The system's font files.
 pub struct SystemFonts {
-    source: Source,
+    index: Arc<FontIndex>,
+    /// Whether a face whose own file is missing falls back on its stand-ins and the last resort (scanned folders; a folder's face
+    /// is its own file only, as `WinFont` finds it).
+    stand_ins: bool,
     /// Face names (lower case) and their files, where the file is not the face name without spaces.
     files: HashMap<String, String>,
-    /// The file each face (lower case) was made from, or None when none was (scanned folders only).
+    /// The file each face (lower case) was made from, or None when none was.
     resolved: Mutex<HashMap<String, Option<PathBuf>>>,
-}
-
-enum Source {
-    /// A folder whose faces are found by file name (Windows' fonts folder).
-    Folder(PathBuf),
-    /// The font files a scan found.
-    Scanned(Arc<FontIndex>),
+    /// The faces read, by file, so the sizes of a face share one read.
+    faces: Mutex<HashMap<PathBuf, Arc<fontdue::Font>>>,
 }
 
 impl SystemFonts {
@@ -81,13 +86,14 @@ impl SystemFonts {
         #[cfg(windows)]
         {
             let windir = std::env::var_os("WINDIR").map(PathBuf::from)?;
-            SystemFonts::folder(windir.join("Fonts"))
+            SystemFonts::folder(&windir.join("Fonts"))
         }
         #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             static NATIVE: std::sync::OnceLock<Arc<FontIndex>> = std::sync::OnceLock::new();
-            let index = NATIVE.get_or_init(|| Arc::new(FontIndex::scan(&native_roots())));
-            (index.files > 0).then(|| SystemFonts::with_source(Source::Scanned(Arc::clone(index))))
+            let index =
+                NATIVE.get_or_init(|| Arc::new(FontIndex::scan(&native_roots(), MAX_SCAN_DEPTH)));
+            (index.files > 0).then(|| SystemFonts::with_index(Arc::clone(index), true))
         }
         #[cfg(not(any(windows, all(unix, not(target_arch = "wasm32")))))]
         {
@@ -95,22 +101,27 @@ impl SystemFonts {
         }
     }
 
-    /// The faces of a folder, each found by file name (`{name without spaces}.ttf`), when the folder exists.
-    pub fn folder(dir: PathBuf) -> Option<SystemFonts> {
-        dir.is_dir()
-            .then(|| SystemFonts::with_source(Source::Folder(dir)))
+    /// The faces of one folder (its own files, no subfolder), each its file `{name without spaces}.ttf` in any case, when the
+    /// folder exists.
+    #[cfg(any(windows, test))]
+    pub(crate) fn folder(dir: &Path) -> Option<SystemFonts> {
+        dir.is_dir().then(|| {
+            SystemFonts::with_index(Arc::new(FontIndex::scan(&[dir.to_path_buf()], 0)), false)
+        })
     }
 
     /// The faces of the font files a scan of `roots` finds, in that order (see the module's notes); the scan is not cached.
     pub fn scan(roots: &[PathBuf]) -> SystemFonts {
-        SystemFonts::with_source(Source::Scanned(Arc::new(FontIndex::scan(roots))))
+        SystemFonts::with_index(Arc::new(FontIndex::scan(roots, MAX_SCAN_DEPTH)), true)
     }
 
-    fn with_source(source: Source) -> SystemFonts {
+    fn with_index(index: Arc<FontIndex>, stand_ins: bool) -> SystemFonts {
         SystemFonts {
-            source,
+            index,
+            stand_ins,
             files: HashMap::new(),
             resolved: Mutex::new(HashMap::new()),
+            faces: Mutex::new(HashMap::new()),
         }
     }
 
@@ -121,33 +132,37 @@ impl SystemFonts {
         self
     }
 
-    fn file_of(&self, face: &str) -> String {
-        let face = face.to_ascii_lowercase();
-        match self.files.get(&face) {
-            Some(file) => file.clone(),
-            None => format!("{}.ttf", face.replace(' ', "")),
-        }
-    }
-
-    /// The font files a scan found (0 for a folder).
+    /// The font files found.
     pub fn indexed(&self) -> usize {
-        match &self.source {
-            Source::Folder(_) => 0,
-            Source::Scanned(index) => index.files,
-        }
+        self.index.files
     }
 
-    /// The file a face is made from, of the scanned folders (None for a folder).
+    /// The file a face is made from.
     pub fn resolve(&self, face: &str) -> Option<PathBuf> {
         self.load(face).map(|(path, _)| path)
     }
 
-    /// The first file of a face's ([`FontIndex::tries`], at most [`MAX_TRIES`]) that passes the checks, read; remembered per
-    /// face.
-    fn load(&self, face: &str) -> Option<(PathBuf, fontdue::Font)> {
-        let Source::Scanned(index) = &self.source else {
-            return None;
+    /// The files tried for a face (lower case), in order: its own file (`{name without spaces}.ttf`, or the one
+    /// [`with_file`](SystemFonts::with_file) named), then, in scanned folders, [`FontIndex::tries`]; each once.
+    fn tries(&self, name: &str) -> Vec<&PathBuf> {
+        let file = match self.files.get(name) {
+            Some(file) => file.to_ascii_lowercase(),
+            None => format!("{}.ttf", name.replace(' ', "")),
         };
+        let own = self.index.by_name.get(&file);
+        let mut out: Vec<&PathBuf> = own.into_iter().collect();
+        if self.stand_ins {
+            out.extend(self.index.tries(name).filter(|p| Some(*p) != own));
+        }
+        out
+    }
+
+    /// The first of a face's files (at most [`MAX_TRIES`]) that passes the checks, read; the file is remembered per face, the
+    /// read per file. A face name that could name a path ([`plain_name`]) has none.
+    fn load(&self, face: &str) -> Option<(PathBuf, Arc<fontdue::Font>)> {
+        if !plain_name(face) {
+            return None;
+        }
         let name = face.to_ascii_lowercase();
         let known = self
             .resolved
@@ -156,18 +171,14 @@ impl SystemFonts {
             .and_then(|r| r.get(&name).cloned());
         if let Some(known) = known {
             let path = known?;
-            let font = read_checked(&path)?;
+            let font = self.read(&path)?;
             return Some((path, font));
         }
-        let named = self
-            .files
-            .get(&name)
-            .and_then(|file| index.by_name.get(&file.to_ascii_lowercase()));
-        let found = named
+        let found = self
+            .tries(&name)
             .into_iter()
-            .chain(index.tries(face))
             .take(MAX_TRIES)
-            .find_map(|path| Some((path.clone(), read_checked(path)?)));
+            .find_map(|path| Some((path.clone(), self.read(path)?)));
         if let Ok(mut r) = self.resolved.lock()
             && r.len() < MAX_RESOLVED
         {
@@ -175,6 +186,25 @@ impl SystemFonts {
         }
         found
     }
+
+    /// A file's face ([`read_checked`]), read once while fewer than [`MAX_FACES_KEPT`] are kept.
+    fn read(&self, path: &Path) -> Option<Arc<fontdue::Font>> {
+        if let Some(font) = self.faces.lock().ok().and_then(|f| f.get(path).cloned()) {
+            return Some(font);
+        }
+        let font = Arc::new(read_checked(path)?);
+        if let Ok(mut f) = self.faces.lock()
+            && f.len() < MAX_FACES_KEPT
+        {
+            f.insert(path.to_path_buf(), Arc::clone(&font));
+        }
+        Some(font)
+    }
+}
+
+/// Whether a face name is a name only: not empty, with no path separator, `..`, drive letter (a colon) or NUL in it.
+fn plain_name(face: &str) -> bool {
+    !face.is_empty() && !face.contains(['/', '\\', ':', '\0']) && !face.contains("..")
 }
 
 impl Fallback for SystemFonts {
@@ -182,33 +212,32 @@ impl Fallback for SystemFonts {
         if !(1..=MAX_SIZE).contains(&size) {
             return None;
         }
-        let font = match &self.source {
-            Source::Folder(dir) => {
-                let bytes = std::fs::read(dir.join(self.file_of(face))).ok()?;
-                fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()?
-            }
-            Source::Scanned(_) => self.load(face)?.1,
-        };
-        let px = size as f32;
-        let lines = font.horizontal_line_metrics(px)?;
-        let ascent = lines.ascent.ceil() as i32;
-        let height = (lines.ascent - lines.descent).ceil().max(1.0) as u32;
-        Some(pack(ascent, height, |c| {
-            let (m, coverage) = font.rasterize(c, px);
-            GlyphImage {
-                width: m.width,
-                height: m.height,
-                coverage,
-                xmin: m.xmin,
-                ymin: m.ymin,
-                advance: m.advance_width,
-            }
-        }))
+        let (_, font) = self.load(face)?;
+        rasterize(&font, size)
     }
 
     fn name(&self) -> &'static str {
         "system fonts (fontdue)"
     }
+}
+
+/// The font of a face at `size` pixels: the ANSI charset's glyphs, packed ([`pack`]).
+fn rasterize(font: &fontdue::Font, size: i32) -> Option<Font> {
+    let px = size as f32;
+    let lines = font.horizontal_line_metrics(px)?;
+    let ascent = lines.ascent.ceil() as i32;
+    let height = (lines.ascent - lines.descent).ceil().max(1.0) as u32;
+    Some(pack(ascent, height, |c| {
+        let (m, coverage) = font.rasterize(c, px);
+        GlyphImage {
+            width: m.width,
+            height: m.height,
+            coverage,
+            xmin: m.xmin,
+            ymin: m.ymin,
+            advance: m.advance_width,
+        }
+    }))
 }
 
 /// A file read whole when it is no larger than [`ttf::MAX_TTF_BYTES`], checked ([`ttf::check`]) and read by fontdue.
@@ -302,6 +331,15 @@ pub fn candidates(face: &str) -> Vec<String> {
     out
 }
 
+/// A scan's running limits.
+struct Walk {
+    entries: usize,
+    max_depth: usize,
+    /// The folders read (their canonical paths).
+    visited: HashSet<PathBuf>,
+    deadline: Option<std::time::Instant>,
+}
+
 /// The font files a scan found.
 struct FontIndex {
     /// Files by the [`face_key`] of their name, the first found kept.
@@ -314,31 +352,51 @@ struct FontIndex {
 }
 
 impl FontIndex {
-    /// Scans `roots` in order, each folder's entries sorted by name, within the module's limits.
-    fn scan(roots: &[PathBuf]) -> FontIndex {
+    /// Scans `roots` in order, each folder's entries sorted by name, `depth` folders deep at most, within the module's limits.
+    fn scan(roots: &[PathBuf], depth: usize) -> FontIndex {
         let mut index = FontIndex {
             by_key: HashMap::new(),
             by_name: HashMap::new(),
             keys: Vec::new(),
             files: 0,
         };
-        let mut entries = 0usize;
+        let mut walk = Walk {
+            entries: 0,
+            max_depth: depth,
+            visited: HashSet::new(),
+            // A browser has no clock to read here (and no folders to scan).
+            deadline: (!cfg!(target_arch = "wasm32"))
+                .then(|| std::time::Instant::now() + MAX_SCAN_TIME),
+        };
         for root in roots {
-            index.walk(root, 0, &mut entries);
+            index.walk(root, 0, &mut walk);
         }
         index
     }
 
-    fn walk(&mut self, dir: &Path, depth: usize, entries: &mut usize) {
+    fn walk(&mut self, dir: &Path, depth: usize, walk: &mut Walk) {
+        if walk
+            .deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            return;
+        }
+        // Each folder once, however it is reached (a linked folder, a root inside another, a link loop).
+        let Ok(real) = std::fs::canonicalize(dir) else {
+            return;
+        };
+        if !walk.visited.insert(real) {
+            return;
+        }
         let Ok(read) = std::fs::read_dir(dir) else {
             return;
         };
         let mut paths = Vec::new();
         for entry in read {
-            if *entries >= MAX_SCAN_ENTRIES {
+            if walk.entries >= MAX_SCAN_ENTRIES {
                 break;
             }
-            *entries += 1;
+            walk.entries += 1;
             if let Ok(entry) = entry {
                 paths.push(entry.path());
             }
@@ -349,7 +407,7 @@ impl FontIndex {
             if self.files >= MAX_INDEXED_FILES {
                 return;
             }
-            // Links are followed (a linked folder's loop ends at the depth and entry limits).
+            // Links are followed.
             let Ok(meta) = std::fs::metadata(&path) else {
                 continue;
             };
@@ -359,9 +417,9 @@ impl FontIndex {
                 self.add(path);
             }
         }
-        if depth < MAX_SCAN_DEPTH {
+        if depth < walk.max_depth {
             for d in dirs {
-                self.walk(&d, depth + 1, entries);
+                self.walk(&d, depth + 1, walk);
             }
         }
     }
@@ -505,3 +563,7 @@ pub(crate) fn pack(ascent: i32, height: u32, mut glyph: impl FnMut(char) -> Glyp
         tab: Tab::Spaces,
     }
 }
+
+#[cfg(test)]
+#[path = "system_tests.rs"]
+mod tests;

@@ -82,6 +82,8 @@ fn the_pointer_hovers_the_menu_buttons_and_the_name_box_takes_keys() {
 #[test]
 fn the_menu_draws_its_text_with_the_system_fonts() {
     if torque::fonts::system::SystemFonts::new().is_none() {
+        // CI's images have fonts (the test job installs DejaVu); elsewhere a system with none skips.
+        assert!(std::env::var_os("CI").is_none(), "CI has no font files");
         eprintln!("this system has no font files: skipped");
         return;
     }
