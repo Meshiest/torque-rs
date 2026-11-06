@@ -48,6 +48,17 @@ fn hold(game: &mut LevelDemo, key: Key, ms: u32) {
     game.key(key, false);
 }
 
+/// Esc opens the pause menu over the world; its Leave game goes back to the menu of maps.
+fn leave(game: &mut LevelDemo) {
+    hold(game, Key::Escape, 64);
+    assert!(
+        game.flag("$Client::Paused"),
+        "Esc did not open the pause menu"
+    );
+    game.call("leaveGame", &[]).expect("leaveGame");
+    game.step(32);
+}
+
 fn errors(game: &LevelDemo) -> Vec<&String> {
     game.server_log
         .iter()
@@ -88,7 +99,7 @@ fn every_map_loads_and_its_figure_spawns_and_walks() {
             errors(&game)
         );
         // Leaving goes back to the menu and stops the server.
-        hold(&mut game, Key::Escape, 64);
+        leave(&mut game);
         assert!(!game.in_world() && game.server.is_none(), "{}", map.title);
     }
 }
@@ -130,9 +141,54 @@ fn every_map_starts_from_its_number_key() {
             game.server_log
         );
         assert_eq!(game.playing, Some(index), "{}", map.title);
-        hold(&mut game, Key::Escape, 64);
+        leave(&mut game);
         assert!(!game.in_world(), "{}", map.title);
     }
+}
+
+/// The corner readout once frames were drawn 60 a second (the host counts them as the window does): the frame rate alone, since
+/// the link to the map's server is in memory and has no round trip to show; Esc opens the pause menu, whose Controls panel
+/// lists the keys.
+#[test]
+fn the_corner_readout_holds_the_frame_rate_and_esc_lists_the_keys() {
+    let mut game = LevelDemo::new(GameFiles::bundled().expect("the game folder")).unwrap();
+    game.step(64);
+    assert!(enter(&mut game, 0), "the first map did not start");
+    for i in 0..60 {
+        game.host.frame_drawn(f64::from(i) * 1000.0 / 60.0);
+        game.step(16);
+    }
+    game.step(300);
+    let text = game
+        .call("eval", &["return PlayStats.getValue();"])
+        .unwrap();
+    assert_eq!(text, "60 fps");
+    hold(&mut game, Key::Escape, 64);
+    game.call("showControls", &[]).unwrap();
+    let shown = game
+        .call(
+            "eval",
+            &["return ControlsPanel.isVisible() SPC ControlsList.getCount();"],
+        )
+        .unwrap();
+    // Three headings, and a key and its action for each of the 10 rows.
+    assert_eq!(shown, format!("1 {}", 3 + 2 * 10));
+    // A small window: the groups in one column, scrolled with the wheel.
+    game.host.window_resized((640, 480));
+    game.step(64);
+    let small = game
+        .call(
+            "eval",
+            &["return $Pause::ControlsStacked TAB ControlsNote.getValue() TAB ControlsScroll.getExtent();"],
+        )
+        .unwrap();
+    assert!(small.starts_with("1\tMouse wheel: more keys"), "{small:?}");
+    // Esc from the panel goes back to the game.
+    hold(&mut game, Key::Escape, 64);
+    assert!(!game.flag("$Client::Paused"));
+    leave(&mut game);
+    assert!(!game.in_world());
+    assert!(errors(&game).is_empty(), "{:?}", errors(&game));
 }
 
 #[test]

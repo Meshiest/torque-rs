@@ -1,5 +1,5 @@
-// What the example games' clients share: the way to a server and back, and a note in the middle of the view. A game's
-// client.cs execs this first; its view has a GuiTextCtrl named PlayNote.
+// What the example games' clients share: the way to a server and back, a note in the middle of the view and the readout in
+// its corner. A game's client.cs execs this first; its view has a GuiTextCtrl named PlayNote and one named PlayStats.
 
 // Connects to the server at %address ("a.b.c.d:port"), in place of any connection there is, as $Pref::Player::Name when the
 // game names its player. A host's client passes %key, the secret its own server gave it (it marks the connection as the host's).
@@ -35,6 +35,32 @@ function clearNote()
 {
    PlayNote.setText("");
 }
+
+// ---- the corner readout
+//
+// A line at the top right of the view, as "60 fps  32 ms", four times a second: the frames a second the host counted
+// ($Client::FrameRate) and the connection's round trip (getPing). A client that runs the server it plays on
+// ($Client::HostsServer: a game played alone or hosted here) has no network between them, so its line shows the frames alone.
+new GuiControlProfile(StatsProfile) { fontType = "Arial"; fontSize = 14; fontColors[0] = "176 186 204 255"; justify = "right"; };
+
+function statsText()
+{
+   %text = "";
+   if ($Client::FrameRate !$= "")
+      %text = $Client::FrameRate @ " fps";
+   if (isObject(ServerConnection) && !$Client::HostsServer && ServerConnection.isConnected())
+      %text = %text @ (%text $= "" ? "" : "  ") @ ServerConnection.getPing() @ " ms";
+   return %text;
+}
+
+function updateStats()
+{
+   cancel($Client::StatsTimer);
+   if (isObject(PlayStats))
+      PlayStats.setText(statsText());
+   $Client::StatsTimer = schedule(250, 0, "updateStats");
+}
+updateStats();
 
 // ---- the figure's poses
 //
