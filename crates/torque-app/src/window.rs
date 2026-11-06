@@ -212,6 +212,7 @@ impl<G: App> AppWindow<G> {
         };
         let web = self.web.take().ok_or("no device asked for")?;
         let (gpu, surface) = answer.map_err(|e| format!("WebGPU: {e}"))?;
+        crate::web_page::mark("size", &format!("{}x{}", web.size.0, web.size.1));
         let surface = WindowSurface::of(&web.window, gpu, surface, web.size);
         self.made(surface);
         Ok(())
@@ -261,8 +262,12 @@ impl<G: App> WindowGame for AppWindow<G> {
 
     fn resized(&mut self, size: (u32, u32)) {
         #[cfg(target_arch = "wasm32")]
-        if let Some(web) = self.web.as_mut() {
-            web.size = size;
+        {
+            if let Some(web) = self.web.as_mut() {
+                web.size = size;
+            }
+            // the size the game draws and lays its GUI out at (`WxH`), for a test
+            crate::web_page::mark("size", &format!("{}x{}", size.0, size.1));
         }
         if let Some(s) = self.surface.as_mut() {
             s.resize(size);

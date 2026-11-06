@@ -333,6 +333,11 @@ The first development version. Nothing is published yet; this is what exists.
   browsers trade the links on this computer's own addresses, the joiner walks, each holds the other's figure, and bad,
   cut short, oversized and used codes are refused with a message. The examples' pause menu takes an optional Invite
   players entry (`$Pause::CanInvite`, the game's `invitePlayers()`).
+- The web pages' canvas fills the browser window and follows it. The game draws at the canvas's device pixels under
+  the settings' Render scale (Auto, the default: all of them up to a 1920x1080 screen's worth, fewer past it; or 100%,
+  75%, 50%), kept with the other settings, and lays its GUI out at that size (torque-client's
+  `platform::web_input::RenderScale`; the page's `data-torque-render-scale`, and `data-torque-size` for the size drawn).
+  The arena's page has the page bridge (`torque.call`), so its quality setting works too.
 - The web builds' page shows each loading stage: the module's download (its bytes and percent as they come), its
   compile, the game's files, the start, the GPU, the map, then the game (`web/loading.js`). Its settings panel (the gear)
   picks the renderer's quality, applied at the next frame (the scripts' `setRenderQuality`), and shows the frames a second and the frame time

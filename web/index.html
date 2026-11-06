@@ -8,7 +8,12 @@
 <style>
   html, body { margin: 0; height: 100%; background: #12141a; color: #dde2ec; font: 16px system-ui, sans-serif; }
   body { display: flex; align-items: center; justify-content: center; }
-  canvas { display: block; outline: none; }
+  /* The game's canvas fills the window (over the size the window driver writes on it) and follows it; the game draws at its
+     device pixels under the render scale, and the browser stretches that over it. The page's own panels sit above it. */
+  body > canvas { display: block; outline: none; position: fixed; inset: 0; z-index: 0;
+    width: 100% !important; height: 100% !important; min-width: 0 !important; max-width: none !important;
+    min-height: 0 !important; max-height: none !important; }
+  #loading, #fps, #gear, #settings, #invites { z-index: 1; }
   #loading { position: fixed; inset: auto 1rem 1.5rem 1rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
   #status { margin: 0; text-align: center; max-width: 48rem; overflow-wrap: anywhere; }
   #progress { width: min(24rem, 100%); accent-color: #7aa2f7; }
@@ -71,6 +76,15 @@
     </select>
   </div>
   <div class="row">
+    <label for="scale">Render scale</label>
+    <select id="scale">
+      <option value="auto">Auto</option>
+      <option value="1">100%</option>
+      <option value="0.75">75%</option>
+      <option value="0.5">50%</option>
+    </select>
+  </div>
+  <div class="row">
     <label for="show-fps">Show frame rate (F8)</label>
     <input id="show-fps" type="checkbox">
   </div>
@@ -85,8 +99,9 @@
   // `data-torque-refused` for a test.
   //
   // The settings (the gear, top right; settings.js): the renderer's quality, through the scripts' `setRenderQuality` and
-  // applied at the game's next frame, and the frame-rate display (also F8), from the game's `data-torque-fps` and
-  // `data-torque-frame-ms`. Both are kept in the browser's storage.
+  // applied at the game's next frame; the render scale, the root element's `data-torque-render-scale`, which the game reads
+  // each frame (`auto`: every device pixel of the full-window canvas up to a 1920x1080 screen's worth); and the frame-rate
+  // display (also F8), from the game's `data-torque-fps` and `data-torque-frame-ms`. All are kept in the browser's storage.
   //
   // `torque` (bridge.js, also `window.torque`): the page calls the game's scripts (`torque.call`, `eval`, `getVar`,
   // `setVar`) and registers handlers the scripts call (`torque.on`, `callPage` in script).
@@ -166,10 +181,13 @@
   const gear = document.getElementById('gear');
   const panel = document.getElementById('settings');
   const quality = document.getElementById('quality');
+  const scale = document.getElementById('scale');
   const showFps = document.getElementById('show-fps');
   const note = document.getElementById('settings-note');
   const fps = document.getElementById('fps');
   quality.value = chosen.quality;
+  scale.value = chosen.scale;
+  root.dataset.torqueRenderScale = chosen.scale;
   showFps.checked = chosen.fps;
   fps.hidden = !chosen.fps;
 
@@ -200,6 +218,11 @@
     chosen.quality = quality.value;
     chosen.picked = true;
     applyQuality();
+    keep();
+  });
+  scale.addEventListener('change', () => {
+    chosen.scale = scale.value;
+    root.dataset.torqueRenderScale = chosen.scale;
     keep();
   });
   function setFps(on) {

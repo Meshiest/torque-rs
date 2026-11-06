@@ -3,7 +3,11 @@
 A game made on `torque::app` runs in a browser on WebGPU: `node web/build.mjs <example>` builds it for the web (the module,
 its page and the game's files), and `just examples/web-level-demo` or `just examples/web-vehicle-demo` builds and serves one
 on `http://127.0.0.1:8080/`. Every web build shares one page (`web/index.html`) and one entry (`torque::app::web_page`): the
-page shows each loading stage, and its gear opens the settings (the renderer's quality, the frame-rate display).
+page shows each loading stage, and its gear opens the settings (the renderer's quality, the render scale, the frame-rate
+display). The game's canvas fills the browser window and follows it. The game draws at the canvas's device pixels under
+the render scale (Auto, the default, draws all of them up to a 1920x1080 screen's worth and fewer past it; or 100%, 75%,
+50%), and lays its GUI out at that size; the browser stretches the drawing over the canvas. The page tells the game the
+scale on its root element's `data-torque-render-scale`, and the game writes the size it draws at on `data-torque-size`.
 
 ## The page and the scripts
 
