@@ -233,11 +233,16 @@ impl<'g> Builder<'g> {
     /// The LR(1) closure of items with lookahead sets.
     fn closure1(&self, kernel: &[(Item, Set)]) -> Vec<(Item, Set)> {
         let mut items: Vec<(Item, Set)> = kernel.to_vec();
-        let mut index: HashMap<Item, usize> = items
-            .iter()
-            .enumerate()
-            .map(|(i, (it, _))| (*it, i))
-            .collect();
+        // By rule, where its item with the dot at the start is among the items (the only items the closure adds; a kernel's own
+        // are found first).
+        let mut index: Vec<Option<usize>> = vec![None; self.g.rules.len()];
+        for (i, ((rule, dot), _)) in items.iter().enumerate() {
+            if *dot == 0
+                && let Some(slot) = index.get_mut(usize::from(*rule))
+            {
+                *slot = Some(i);
+            }
+        }
         let mut work: Vec<usize> = (0..items.len()).collect();
         while let Some(i) = work.pop() {
             let Some(&((rule, dot), la)) = items.get(i) else {
@@ -252,8 +257,11 @@ impl<'g> Builder<'g> {
                 .unwrap_or(&[]);
             let la_new = self.first_of(beta, la);
             for &r in self.rules_of(n) {
-                match index.get(&(r, 0)) {
-                    Some(&j) => {
+                let Some(at) = index.get_mut(usize::from(r)) else {
+                    continue;
+                };
+                match *at {
+                    Some(j) => {
                         if let Some(item) = items.get_mut(j)
                             && item.1 | la_new != item.1
                         {
@@ -262,7 +270,7 @@ impl<'g> Builder<'g> {
                         }
                     }
                     None => {
-                        index.insert((r, 0), items.len());
+                        *at = Some(items.len());
                         work.push(items.len());
                         items.push(((r, 0), la_new));
                     }
