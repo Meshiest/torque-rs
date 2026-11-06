@@ -696,7 +696,6 @@ impl Body {
             return;
         };
         let c = hull_matrix(s, world);
-        let scaled = torque_collide::feature::mat_scale(&c, s.scale);
         let mut built = false;
         for st in &self.states.states {
             let terrain = match st.b.kind {
@@ -714,7 +713,7 @@ impl Body {
                 if !world.charge(torque_collide::work::FEATURE * accel.verts.len() as u64) {
                     return;
                 }
-                self.me.set_hull(accel, &scaled, &c);
+                self.me.set_hull(accel, &c, s.scale);
                 built = true;
             }
             self.other.set_map_piece(&shape, &st.b.kind);

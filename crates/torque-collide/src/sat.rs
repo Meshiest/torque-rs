@@ -75,19 +75,24 @@ impl Polytope {
         }
     }
 
-    /// A hull's accelerator as a polytope: its points moved by `mat`, its face normals turned by `turn` (the same pose without
-    /// the scale), and the edges its emit strings name.
-    pub fn set_hull(&mut self, accel: &HullAccel, mat: &Matrix, turn: &Matrix) {
+    /// A hull's accelerator as a polytope at `pose` scaled by `scale`: its points scaled then moved by `pose`, its face normals
+    /// by the inverse transpose (each divided by the scale, then turned by `pose`; a zero scale drops them), and the edges its
+    /// emit strings name.
+    pub fn set_hull(&mut self, accel: &HullAccel, pose: &Matrix, scale: F3) {
         self.clear();
+        let mat = crate::feature::mat_scale(pose, scale);
         self.points.extend(
             accel
                 .verts
                 .iter()
                 .take(MAX_FEATURES)
-                .map(|&v| mul_p(mat, v)),
+                .map(|&v| mul_p(&mat, v)),
         );
         for &n in &accel.normals {
-            self.add_normal(mul_v(turn, n));
+            self.add_normal(mul_v(
+                pose,
+                [n[0] / scale[0], n[1] / scale[1], n[2] / scale[2]],
+            ));
         }
         // Each emit string: `nv`, its vertices, `ne`, its edges as pairs of indices into those vertices, then its faces.
         for s in &accel.emit {

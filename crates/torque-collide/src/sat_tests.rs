@@ -195,3 +195,49 @@ fn an_empty_or_unbounded_polytope_never_overlaps() {
     p.add_edge(0, 1);
     assert!(p.normals.is_empty() && p.edges.is_empty());
 }
+
+/// A slanted hull scaled twice as wide: its slanted face's normal follows the scale (the inverse transpose), so a box just
+/// off that face, which only the face's axis separates (the hull has no edges here), does not overlap it.
+#[test]
+fn a_scaled_hull_turns_its_normals_by_the_inverse_transpose() {
+    use crate::math::IDENTITY;
+    use crate::mesh::HullAccel;
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    // A wedge: the right triangle (0,0) (1,0) (0,1) from z 0 to 1, its slanted face facing (1, 1, 0).
+    let accel = HullAccel {
+        verts: vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ],
+        normals: vec![
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [s, s, 0.0],
+        ],
+        emit: Vec::new(),
+    };
+    let mut hull = Polytope::default();
+    hull.set_hull(&accel, &IDENTITY, [2.0, 1.0, 1.0]);
+    // Scaled, the slanted face runs from (2, 0) to (0, 1): its normal is (1, 2, 0) / sqrt 5.
+    let k = 1.0 / 5.0f32.sqrt();
+    let want = [k, 2.0 * k, 0.0];
+    assert!(
+        hull.normals.iter().any(|n| near(*n, want)),
+        "{:?}",
+        hull.normals
+    );
+    assert!(!hull.normals.iter().any(|n| near(*n, [s, s, 0.0])));
+    // A small box 0.13 off the scaled face (x + 2y = 2.3 at its middle).
+    let off = cuboid([1.05, 0.55, 0.4], [1.15, 0.65, 0.6]);
+    let mut out = Penetration::default();
+    assert!(!penetration(&hull, &off, &mut out), "{out:?}");
+    // And one pushed into it does.
+    let into = cuboid([0.85, 0.45, 0.4], [0.95, 0.55, 0.6]);
+    assert!(penetration(&hull, &into, &mut out));
+}
