@@ -1,3 +1,9 @@
 # The MSRV clippy checks against comes from `rust-version` in the root Cargo.toml.
 # `dbg!` is a warning in library code (see `[workspace.lints.clippy]`) but fine while a test is being written.
 allow-dbg-in-tests = true
+# The resource layer reads zips in memory and never unpacks one to disk: `deny.toml` ignores the zip crate's advisories
+# about extraction on that ground, so extraction stays out of the code.
+disallowed-methods = [
+    { path = "zip::read::ZipArchive::extract", reason = "zip advisories on extraction are ignored in deny.toml because nothing extracts" },
+    { path = "zip::read::ZipArchive::extract_unwrapped_root_dir", reason = "as extract" },
+]

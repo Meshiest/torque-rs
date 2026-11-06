@@ -32,7 +32,7 @@ ts-text = { package = "torque-ts-text", path = "../torque-ts-text" }
 ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The window glue (`platform`): the window's keys and buttons, the cursor's hold.
-winit = { version = "0.30", default-features = false, features = ["rwh_06"], optional = true }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"], optional = true }
 
 # The window glue's URL opener: Windows' URL handler (ShellExecuteExW, no command line).
 [target.'cfg(windows)'.dependencies]

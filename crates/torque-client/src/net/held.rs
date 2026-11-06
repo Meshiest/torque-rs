@@ -24,7 +24,10 @@ pub struct HeldDatagrams {
 impl HeldDatagrams {
     /// Holds `data`; false (dropped and counted) when it is over [`NET_MAX_DATAGRAM`] bytes or the queue is full.
     pub fn push(&mut self, data: &[u8]) -> bool {
-        if data.len() > NET_MAX_DATAGRAM || self.held.len() >= MAX_INBOX || self.bytes + data.len() > MAX_HELD_BYTES {
+        if data.len() > NET_MAX_DATAGRAM
+            || self.held.len() >= MAX_INBOX
+            || self.bytes + data.len() > MAX_HELD_BYTES
+        {
             self.dropped += 1;
             return false;
         }

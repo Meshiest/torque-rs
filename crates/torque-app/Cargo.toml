@@ -36,7 +36,7 @@ torque-shapes = { path = "../torque-shapes" }
 torque-ts-compiler = { path = "../torque-ts-compiler" }
 torque-ts-text = { path = "../torque-ts-text" }
 torque-ts-vm = { path = "../torque-ts-vm" }
-winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 png = "0.18"
 # The list of a web build's files (`manifest`): its JSON and its files' hashes.
 serde_json = "1.0.140"

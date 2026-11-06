@@ -331,21 +331,37 @@ fn leave_game_from_the_pause_menu_returns_to_the_main_menu() {
 }
 
 #[test]
-fn a_page_played_alone_offers_only_to_play_again() {
+fn a_page_played_alone_offers_to_play_alone_or_play_by_link() {
     let mut g = client();
     g.set_global("$Arena::JoinOnly", "1");
     g.set_global("$Arena::Solo", "1");
     g.call("showMainMenu", &[]).unwrap();
     let mut eval = |code: &str| g.call("eval", &[code]).unwrap();
-    for hidden in ["HostButton", "HostNote", "QuitButton"] {
+    // Play alone, host with an invite link, or join with one: no game server's host or join.
+    for (button, text, command) in [
+        ("JoinButton", "Play alone", "joinPage();"),
+        ("HostButton", "Host with a link", "invitePlayers();"),
+        (
+            "QuitButton",
+            "Join with Link",
+            "$Arena::PageAsk = \"join\";",
+        ),
+    ] {
         assert_eq!(
-            eval(&format!("return {hidden}.isVisible();")),
-            "0",
-            "{hidden}"
+            eval(&format!("return {button}.isVisible();")),
+            "1",
+            "{button}"
+        );
+        assert_eq!(
+            eval(&format!("return {button}.getText();")),
+            text,
+            "{button}"
+        );
+        assert_eq!(
+            eval(&format!("return {button}.command;")),
+            command,
+            "{button}"
         );
     }
-    assert_eq!(eval("return JoinButton.isVisible();"), "1");
-    assert_eq!(eval("return JoinButton.getText();"), "Play alone");
-    assert_eq!(eval("return JoinButton.command;"), "joinPage();");
     assert!(!eval("return MainLine.getValue();").contains("network"));
 }

@@ -17,7 +17,7 @@ categories = ["game-development", "network-programming"]
 torque = { path = "../torque", default-features = false, features = ["script", "resource", "game", "server", "ghost-world"] }
 # The window client (feature `window`): the client host and its window driver, the GUI pass, the window.
 torque-render-core = { path = "../torque-render-core", optional = true }
-winit = { version = "0.30", default-features = false, features = ["rwh_06"], optional = true }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"], optional = true }
 
 [features]
 # `example-window`: the example's client in a window (a GPU and a display). The tests stay headless.

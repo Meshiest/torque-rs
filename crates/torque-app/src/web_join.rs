@@ -112,9 +112,7 @@ impl Datagrams for LocalLink {
     }
 
     fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
-        LOCAL
-            .with_borrow_mut(|l| l.held.pop())
-            .map(|d| (SERVER, d))
+        LOCAL.with_borrow_mut(|l| l.held.pop()).map(|d| (SERVER, d))
     }
 
     fn port(&self) -> u16 {
