@@ -191,12 +191,18 @@ impl WebVehicle {
             return;
         };
         link.ended = true;
-        let _ = self.game.call(
-            "eval",
-            &[&format!(
-                "if ($World::InWorld) leaveWorld(); MenuStatus.setText(\"{text}\");"
-            )],
-        );
+        if self.game.global("$World::InWorld") == "1" {
+            let _ = self.game.call("leaveWorld", &[]);
+        }
+        self.menu_status(&text);
+    }
+
+    /// Shows `text` on the menu's status line, handed to `setText` as an argument (never built into script source).
+    fn menu_status(&mut self, text: &str) {
+        let vm = self.game.vm_mut();
+        if let Some(status) = vm.objects().find(b"MenuStatus") {
+            let _ = vm.call_method(status, b"setText", &[text.as_bytes().to_vec()]);
+        }
     }
 
     /// What the menu asked of the page: to host a game, or to join a room by its code (the page opens again for it), or
@@ -218,10 +224,7 @@ impl WebVehicle {
             })
         };
         if let Some(Err(e)) = asked {
-            let text = e.replace(['"', '\\'], "'");
-            let _ = self
-                .game
-                .call("eval", &[&format!("MenuStatus.setText(\"{text}\");")]);
+            self.menu_status(&e);
         }
     }
 

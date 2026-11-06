@@ -311,14 +311,12 @@ impl App for WebArena {
         if self.game.take_flag("$Arena::JoinAsked")
             && let Err(e) = self.rejoin()
         {
+            // Handed to `setText` as an argument, never built into script source.
             let text = format!("Could not join: {e}");
-            let _ = self.game.call(
-                "eval",
-                &[&format!(
-                    "MainStatus.setText(\"{}\");",
-                    text.replace('"', "'")
-                )],
-            );
+            let vm = self.game.vm_mut();
+            if let Some(status) = vm.objects().find(b"MainStatus") {
+                let _ = vm.call_method(status, b"setText", &[text.into_bytes()]);
+            }
         }
     }
 
