@@ -17,6 +17,7 @@ use crate::natives::{self, AlxProfile, AudioHost};
 /// The `alx` console functions, `AudioDescription`, `AudioProfile` and `AudioSampleEnvironment` on every client, over a
 /// mixer of the client's own that the client's tick moves.
 #[derive(Clone, Copy, Debug, Default, PluginId)]
+#[plugin(id = "torque.audio")]
 pub struct AudioPlugin;
 
 impl AudioPlugin {

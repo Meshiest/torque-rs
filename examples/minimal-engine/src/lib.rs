@@ -3,7 +3,8 @@
 //! example does by hand.
 //!
 //! The game is one plugin, [`ExamplePlugin`]: its files, and the one global its client's GUI reads. The server, the console client and
-//! the window client are each an engine of `(DefaultPlugins, ExamplePlugin)` run or started in a few lines (see `src/bin`).
+//! the window client are each an engine of `(DefaultPlugins, ExamplePlugin)` run or started in a few lines (see `src/bin`). Which plugins
+//! are on and which scripts the server and the client start with are not in the Rust: `game/game.toml` says (see [`builder`]).
 //!
 //! `cargo run -p torque-example-minimal-engine --bin min-engine-server`, and beside it `cargo run -p torque-example-minimal-engine
 //! --bin min-engine-client` (or `cargo run -p torque-example-minimal-engine --features window --bin example-window-engine`, which with
@@ -13,7 +14,9 @@ use std::io;
 use std::path::Path;
 
 use torque::app::client::{ClientBuilder, ClientNet, GameClient};
+use torque::app::config::{EngineConfig, GameConfig};
 use torque::app::files::GameFiles;
+use torque::app::plugins::DefaultPlugins;
 use torque::app::run::Dedicated;
 use torque::app::server::{GameServer, Listen, ServerStart};
 use torque::engine::{ClientStage, Engine, EngineBuilder, Plugin, PluginId};
@@ -39,6 +42,17 @@ pub fn files() -> io::Result<GameFiles> {
     files.insert("example/shapes/crate.dts", &cube);
     files.insert("example/shapes/gem.dts", &cube);
     Ok(files)
+}
+
+/// An engine builder for the game: `DefaultPlugins` and [`ExamplePlugin`], then `game/game.toml` applied (the plugins it turns
+/// off, the scripts it names as the server's and the client's first). A game with no such file runs as it always did.
+pub fn builder(files: &GameFiles) -> Result<EngineBuilder, String> {
+    let config = GameConfig::load(files).map_err(|e| e.to_string())?;
+    let mut builder = EngineBuilder::new();
+    builder
+        .add_plugins((DefaultPlugins, ExamplePlugin(files.clone())))
+        .config(&config);
+    Ok(builder)
 }
 
 /// The game: its files, which the server and the client read, and the number of boxes its client's GUI makes.
@@ -80,7 +94,7 @@ pub fn server(engine: &Engine, listen: Listen) -> Result<GameServer, String> {
 pub fn client(engine: &Engine, net: ClientNet) -> Result<GameClient, String> {
     let files = engine.resource::<GameFiles>().ok_or("no ExamplePlugin")?;
     let mut builder = ClientBuilder::from_engine(engine, Some(files.mem_files()), net)?;
-    builder.exec("client.cs")?;
+    builder.exec_entry()?;
     Ok(builder.build())
 }
 

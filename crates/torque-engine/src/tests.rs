@@ -824,7 +824,7 @@ fn plugin_ids_are_checked() {
         "torque.gamepad",
         "a",
         "my-game_2.props",
-        "torque_audio::AudioPlugin",
+        "my_game::HudPlugin",
     ] {
         assert!(PluginId::is_valid(good), "{good}");
     }

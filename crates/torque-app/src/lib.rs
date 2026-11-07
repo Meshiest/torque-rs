@@ -4,6 +4,7 @@
 //! GUI, audio or window crate and is re-exported here under the same module paths.
 //!
 //! - [`files::GameFiles`]: a game folder read once into memory, served to the scripts as their files.
+//! - [`config::GameConfig`]: `game.toml`, a game's config: entry scripts, plugins on and off, the runner.
 //! - [`manifest::Manifest`]: the list of a web build's files (`files.json`: paths, sizes, hashes) and its caps.
 //! - [`server::GameServer`]: the server's main loop with TGE's game classes and a network host, on a UDP socket or an in-memory
 //!   link: started, ticked, called, its console drained; [`server::GameServer::run_dedicated`] paces a dedicated one.
@@ -48,7 +49,7 @@
 // crate's paths.
 #[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
 pub use torque_app_server::serve;
-pub use torque_app_server::{cli, files, manifest, server, water};
+pub use torque_app_server::{cli, config, files, manifest, server, water};
 
 pub mod camera_blend;
 pub mod camera_boom;

@@ -222,6 +222,13 @@ impl ClientBuilder {
         }
     }
 
+    /// Runs the client's entry script: the one `game.toml` names (`[game] client`), else `main.cs`
+    /// ([`config`](crate::config)).
+    pub fn exec_entry(&mut self) -> Result<(), String> {
+        let entry = crate::config::client_entry(&self.engine).to_string();
+        self.exec(&entry)
+    }
+
     /// Calls the script function `function` with no arguments.
     pub fn invoke(&mut self, function: &str) -> Result<(), String> {
         self.vm

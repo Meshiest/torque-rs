@@ -143,7 +143,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.screen",
             "torque.conn",
             "torque.server-query",
-            "torque_audio::AudioPlugin",
+            "torque.audio",
             "torque.frame-host",
             "torque.renderer-slot",
             "torque.renderer",
@@ -195,7 +195,7 @@ fn each_stage_replays_its_plugins_in_add_order() {
     assert_eq!(client(ClientStage::Query), ["torque.server-query"]);
     assert_eq!(
         client(ClientStage::Natives),
-        ["torque_audio::AudioPlugin", "torque.renderer-slot"]
+        ["torque.audio", "torque.renderer-slot"]
     );
     assert!(client(ClientStage::Host).is_empty());
     // The page bridge is filed for web builds only, by the web page runner.

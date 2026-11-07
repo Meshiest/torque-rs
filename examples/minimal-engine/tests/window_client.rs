@@ -4,10 +4,8 @@
 use std::time::{Duration, Instant};
 
 use torque::app::App;
-use torque::app::plugins::DefaultPlugins;
-use torque::engine::EngineBuilder;
 use torque_example_minimal_engine::window::ExampleGame;
-use torque_example_minimal_engine::{ExamplePlugin, MAX_BOXES, files};
+use torque_example_minimal_engine::{MAX_BOXES, builder, files};
 
 /// What the client's scripts answer for `code`.
 fn eval(game: &mut ExampleGame, code: &str) -> String {
@@ -21,10 +19,7 @@ fn eval(game: &mut ExampleGame, code: &str) -> String {
 
 #[test]
 fn the_window_clients_gui_shows_the_ghosts_it_is_sent() {
-    let engine = EngineBuilder::new()
-        .add_plugins((DefaultPlugins, ExamplePlugin(files().unwrap())))
-        .build()
-        .unwrap();
+    let engine = builder(&files().unwrap()).unwrap().build().unwrap();
     let mut game = ExampleGame::new(&engine, None).expect("the window client");
     let status = "return ExampleStatus.getValue();";
     let start = Instant::now();

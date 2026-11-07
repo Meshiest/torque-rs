@@ -3,11 +3,9 @@
 //! `cargo run -p torque-example-minimal-engine --features window --bin example-window-engine -- [--server 127.0.0.1:28000 | --local]`
 
 use torque::app::cli::{Args, unknown};
-use torque::app::plugins::DefaultPlugins;
 use torque::app::run::EngineRun;
-use torque::engine::EngineBuilder;
 use torque_example_minimal_engine::window::ExampleGame;
-use torque_example_minimal_engine::{ExamplePlugin, files};
+use torque_example_minimal_engine::{builder, files};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Some("127.0.0.1:28000".parse()?);
@@ -19,8 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(unknown(&arg).into()),
         }
     }
-    EngineBuilder::new()
-        .add_plugins((DefaultPlugins, ExamplePlugin(files()?)))
+    builder(&files()?)?
         .app(move |engine| ExampleGame::new(engine, server))
         .run()?;
     Ok(())

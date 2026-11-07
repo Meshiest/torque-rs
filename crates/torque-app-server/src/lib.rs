@@ -17,9 +17,11 @@
 //!   [`Engine::run`](torque_engine::Engine::run).
 //! - `serve` (the `p2p` feature, natively): a dedicated server's switches for browsers (the web beside UDP, data channels,
 //!   a room) and its start-up lines.
+//! - [`config`]: `game.toml`, the config a game's folder carries: entry scripts, plugins on and off, the runner.
 //! - [`cli`]: the command line's flags and their values.
 
 pub mod cli;
+pub mod config;
 pub mod files;
 pub mod manifest;
 pub mod plugins;
@@ -31,6 +33,8 @@ pub mod terrain;
 pub mod transports;
 pub mod water;
 
+#[cfg(test)]
+mod config_tests;
 #[cfg(test)]
 mod plugins_tests;
 #[cfg(test)]

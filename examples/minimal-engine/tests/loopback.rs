@@ -5,10 +5,8 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use torque::app::client::ClientNet;
-use torque::app::plugins::DefaultPlugins;
 use torque::app::server::Listen;
-use torque::engine::EngineBuilder;
-use torque_example_minimal_engine::{ExamplePlugin, client, files, ghosts, server};
+use torque_example_minimal_engine::{builder, client, files, ghosts, server};
 
 fn count(ghosts: &[(&str, [f32; 3])], class: &str) -> usize {
     ghosts.iter().filter(|(c, _)| *c == class).count()
@@ -16,10 +14,7 @@ fn count(ghosts: &[(&str, [f32; 3])], class: &str) -> usize {
 
 #[test]
 fn a_client_on_the_loopback_address_sees_the_missions_ghosts() {
-    let engine = EngineBuilder::new()
-        .add_plugins((DefaultPlugins, ExamplePlugin(files().unwrap())))
-        .build()
-        .unwrap();
+    let engine = builder(&files().unwrap()).unwrap().build().unwrap();
     let mut server = server(
         &engine,
         Listen::Udp {

@@ -48,10 +48,10 @@ fn text_that_is_not_an_item_is_refused() {
 
 #[test]
 fn a_plugin_id_defaults_to_the_package_and_type() {
-    let out = derive_plugin_id(quote! { struct AudioPlugin; }, "torque-audio", &engine());
+    let out = derive_plugin_id(quote! { struct HudPlugin; }, "my-game", &engine());
     let want = quote! {
-        impl ::torque_engine::PluginType for AudioPlugin {
-            const ID: ::torque_engine::PluginId = ::torque_engine::PluginId::new("torque_audio::AudioPlugin");
+        impl ::torque_engine::PluginType for HudPlugin {
+            const ID: ::torque_engine::PluginId = ::torque_engine::PluginId::new("my_game::HudPlugin");
         }
     };
     same(&out, &want);
@@ -79,10 +79,7 @@ fn a_plugin_id_and_crate_path_can_be_given() {
 
 #[test]
 fn default_ids_keep_only_id_characters() {
-    assert_eq!(
-        default_id("torque-audio", "AudioPlugin"),
-        "torque_audio::AudioPlugin"
-    );
+    assert_eq!(default_id("my-game", "HudPlugin"), "my_game::HudPlugin");
     assert_eq!(default_id("my_game2", "Rope"), "my_game2::Rope");
     assert_eq!(default_id("caf\u{e9}", "R\u{f6}pe"), "caf_::R_pe");
 }

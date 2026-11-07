@@ -21,7 +21,7 @@
 //! | [`ConnPlugin`] | `torque.conn` | client, `Conn` | `torque_client::conn::register` |
 //! | [`ServerQueryPlugin`] | `torque.server-query` | client, `Query` | `torque_client::query::register` |
 //! | [`ClientTransportPlugins`] | `torque.transport-udp-client`, ... | the transports a client connects over, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
-//! | [`AudioPlugin`] | `torque_audio::AudioPlugin` | client, `Natives` | the `alx` natives, the audio datablocks and the mixer |
+//! | [`AudioPlugin`] | `torque.audio` | client, `Natives` | the `alx` natives, the audio datablocks and the mixer |
 //! | [`ClientHostPlugin`] | `torque.frame-host` | client, `Host` | what [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the host of |
 //! | [`RendererSlotPlugin`] | `torque.renderer-slot` | client, `Natives` | the renderer slot and `setRenderer`/`getRenderer` ([`renderers`](crate::renderers)) |
 //! | [`RendererPlugin`] | `torque.renderer` | the engine's renderer on the slot, `default` (`renderer` feature) | the view's renderer |

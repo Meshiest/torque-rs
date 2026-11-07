@@ -194,6 +194,13 @@ impl EngineBuilder {
         self.position(id).is_some()
     }
 
+    /// Records a warning of the caller's own (a config file's unknown key, say) with the build's, for the host to show
+    /// ([`Engine::warnings`]).
+    pub fn warn(&mut self, message: impl Into<String>) -> &mut EngineBuilder {
+        self.warnings.push(Warning::Message(message.into()));
+        self
+    }
+
     /// The ids of the plugins added so far, in add order, disabled ones too.
     pub fn ids(&self) -> impl Iterator<Item = PluginId> + '_ {
         self.entries
@@ -675,6 +682,8 @@ pub enum Warning {
         /// The plugin that had built already.
         then: PluginId,
     },
+    /// A warning a caller recorded with [`EngineBuilder::warn`].
+    Message(String),
 }
 
 impl fmt::Display for Warning {
@@ -705,6 +714,7 @@ impl fmt::Display for Warning {
                 f,
                 "the plugin `{first}` was to build before `{then}`, which had built already"
             ),
+            Warning::Message(message) => f.write_str(message),
         }
     }
 }

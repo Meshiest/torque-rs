@@ -71,7 +71,7 @@ client's script engine the way a Torque game expects. Here is what it adds, in o
 | `ConnPlugin` | `torque.conn` | the client's connection to a server and the ghosts' natives |
 | `ServerQueryPlugin` | `torque.server-query` | the server browser's natives |
 | `ServerTransportPlugins`, `ClientTransportPlugins` | `torque.transport-udp-server`, ... | the transports a server listens on and a client connects over, a plugin each (see [Transports](#transports)) |
-| `AudioPlugin` | `torque_audio::AudioPlugin` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick; it plays through the null sink and opens no sound card |
+| `AudioPlugin` | `torque.audio` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick; it plays through the null sink and opens no sound card |
 | `ClientHostPlugin` | `torque.frame-host` | the client host that runs the frames |
 | `RendererSlotPlugin` | `torque.renderer-slot` | the renderer slot each client shares with its world view, and `setRenderer`/`getRenderer` |
 | `RendererPlugin` | `torque.renderer` | the engine's renderer, registered on the slot as `default` (the `renderer` feature) |
@@ -409,7 +409,7 @@ Turning off a plugin also turns off the plugins that require it, with a `Require
 was added only as another plugin's default, and that no plugin still on requires, is dropped.
 
 **From a config file, by id.** A config file cannot name a Rust type, so the builder has the same calls by id:
-`disable_id` and `enable_id`. A game that lets its players or its `game.toml` switch plugins off reads the ids and
+`disable_id` and `enable_id`. A game that lets its players or its `game.toml` (see [the game's config](#the-games-config-gametoml)) switch plugins off reads the ids and
 passes them on:
 
 ```rust
@@ -672,6 +672,57 @@ what a dedicated server needs: its files, where it listens, the script function 
 
 An engine does not need `DefaultPlugins` to run. It needs a plugin that sets the runner slot, and you can write that
 plugin yourself (a type that implements `Runner`, set with `set_slot::<dyn Runner>`).
+
+## The game's config: `game.toml`
+
+A prebuilt engine runs a game that is only files: scripts, assets and a small `game.toml` that says how to run it. The
+file sits at the top of the game's files, so it comes from a folder, a zip or the web pack alike. Every key is optional,
+and a game with no `game.toml` runs as it always did.
+
+```toml
+[game]
+name = "Minimal, on the engine"
+server = "server.cs"      # the script a server runs first (default server.cs)
+client = "client.cs"      # the script a client runs first (default main.cs)
+
+[plugins]
+disable = ["torque.water", "torque.terrain"]   # plugin ids to turn off
+enable = []                                   # plugin ids to turn on
+
+[runner]
+id = "torque.dedicated-runner"   # which runner plugin runs the game
+```
+
+`GameConfig::load(&files)` reads it from the game's `GameFiles` (a missing file gives the default config), and
+`.config(&config)` (`EngineConfig`, from `torque::app::config`) applies it to the builder:
+
+```rust
+let files = files()?;
+let config = GameConfig::load(&files)?;
+let engine = EngineBuilder::new()
+    .add_plugins((DefaultPlugins, ExamplePlugin(files)))
+    .config(&config)
+    .build()?;
+```
+
+- **Plugins.** `disable` and `enable` go to `disable_id` and `enable_id`, so an id no plugin has is a warning, as above.
+  Call `config` after the plugins are added: that is how it can tell the runners a game has. The warnings are in
+  `engine.warnings()`, and a server or a client prints them first on its console.
+- **Entry scripts.** A server runs `server` (`GameServer::start_engine`) and `ClientBuilder::exec_entry` runs `client`, in
+  place of the fixed `server.cs`. The engine keeps the config as a resource; `server_entry(&engine)` and
+  `client_entry(&engine)` read it. A script is a path inside the game's files (no leading `/`, no `..`).
+- **Runner.** `[runner] id` names one of the runner plugins in the build. The others the engine ships are turned off,
+  as the runner slot holds one. Naming a runner the build does not have is a warning, and the one already set stays.
+
+The file may come from a game folder someone downloaded, so it is read strictly. It is at most 64 KiB and its lists
+hold at most 256 ids. A key the engine does not know is a warning (`config.warnings`; they reach the engine's warnings
+as `game.toml: the key `plugins.reload` is not known; skipped`). A file that is not valid TOML, or has a key of the
+wrong type, is an error that says where: `game.toml:4:11: invalid type: string "torque.water", expected a sequence`.
+Neither case panics, and a parser test throws damaged and random files at it to keep it so.
+
+The minimal example does this: `examples/minimal-engine/game/game.toml` turns off the plugins that game never uses
+(sound, water, terrain, the game list) and names the client's script, and its `builder` function applies the file for
+the server, the client and the window alike.
 
 ## The two minimal examples
 

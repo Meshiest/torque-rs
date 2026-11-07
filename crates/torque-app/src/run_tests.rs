@@ -291,3 +291,48 @@ fn a_game_that_cannot_be_made_comes_out_of_run() {
         .unwrap_err();
     assert_eq!(err, RunError::Failed("the files are not there".into()));
 }
+
+#[test]
+fn the_config_knows_the_runner_ids_the_engine_ships() {
+    use crate::config::RUNNER_IDS;
+    let mut ids = [
+        WindowRunnerPlugin::ID,
+        WebPageRunnerPlugin::ID,
+        OffscreenRunnerPlugin::ID,
+        DedicatedRunnerPlugin::ID,
+    ]
+    .map(|id| id.as_str());
+    let mut known = RUNNER_IDS;
+    ids.sort_unstable();
+    known.sort_unstable();
+    assert_eq!(known, ids);
+}
+
+#[test]
+fn a_config_chooses_the_runner_by_id() {
+    use crate::config::{EngineConfig, GameConfig};
+    // Two runners fail the build; the config's choice turns the group's off.
+    let mut clash = EngineBuilder::new();
+    clash.add_plugins((DefaultPlugins, DedicatedRunnerPlugin));
+    assert!(clash.build().is_err());
+
+    let config = GameConfig::parse("[runner]\nid = \"torque.dedicated-runner\"\n").unwrap();
+    let engine = EngineBuilder::new()
+        .add_plugins((DefaultPlugins, DedicatedRunnerPlugin))
+        .config(&config)
+        .build()
+        .expect("one runner is left");
+    assert!(engine.is_plugin_added::<DedicatedRunnerPlugin>());
+    assert!(!engine.is_plugin_added::<WindowRunnerPlugin>());
+    assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
+
+    // The other way round: the window's, with the dedicated one added but not wanted.
+    let config = GameConfig::parse("[runner]\nid = \"torque.window-runner\"\n").unwrap();
+    let engine = EngineBuilder::new()
+        .add_plugins((DefaultPlugins, DedicatedRunnerPlugin))
+        .config(&config)
+        .build()
+        .expect("one runner is left");
+    assert!(engine.is_plugin_added::<WindowRunnerPlugin>());
+    assert!(!engine.is_plugin_added::<DedicatedRunnerPlugin>());
+}

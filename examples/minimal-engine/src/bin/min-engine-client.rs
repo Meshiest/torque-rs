@@ -6,9 +6,7 @@ use std::time::{Duration, Instant};
 
 use torque::app::cli::{Args, unknown};
 use torque::app::client::ClientNet;
-use torque::app::plugins::DefaultPlugins;
-use torque::engine::EngineBuilder;
-use torque_example_minimal_engine::{ExamplePlugin, client, files, ghosts};
+use torque_example_minimal_engine::{builder, client, files, ghosts};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut server, mut seconds) = ("127.0.0.1:28000".to_string(), 5);
@@ -20,9 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(unknown(&arg).into()),
         }
     }
-    let engine = EngineBuilder::new()
-        .add_plugins((DefaultPlugins, ExamplePlugin(files()?)))
-        .build()?;
+    let engine = builder(&files()?)?.build()?;
     let mut client = client(&engine, ClientNet::Loopback)?;
     client.call("connectTo", &[&server])?;
     for _ in 0..seconds {

@@ -30,7 +30,7 @@ fn expand_passthrough(args: TokenStream, item: TokenStream) -> syn::Result<Token
 ///
 /// The id is `#[plugin(id = "...")]` when given (checked: ASCII letters, digits, `_`, `-`, `.` and `:`), and
 /// otherwise the deriving package's name `crate_name` and the type's name as a path ([`default_id`]):
-/// `torque_audio::AudioPlugin`. The impl names the engine crate by `engine` ([`find_engine`]) unless
+/// `my_game::HudPlugin`. The impl names the engine crate by `engine` ([`find_engine`]) unless
 /// `#[plugin(crate = path)]` gives another path. Generic types are refused: every instance would share one id.
 pub fn derive_plugin_id(input: TokenStream, crate_name: &str, engine: &syn::Path) -> TokenStream {
     expand_plugin_id(input, crate_name, engine).unwrap_or_else(syn::Error::into_compile_error)
@@ -124,7 +124,7 @@ fn expand_plugin_id(
     })
 }
 
-/// The id of type `ty` in the package `package`: the two as a Rust path, `torque_audio::AudioPlugin`. The package's
+/// The id of type `ty` in the package `package`: the two as a Rust path, `my_game::HudPlugin`. The package's
 /// `-` become `_`, as in its crate name, and anything else outside an id's characters becomes `_`.
 pub fn default_id(package: &str, ty: &str) -> String {
     let clean = |c: char| match c {

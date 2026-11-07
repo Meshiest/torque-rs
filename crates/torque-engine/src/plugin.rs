@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::EngineBuilder;
 
-/// A plugin's stable name, such as `torque_audio::AudioPlugin` or `torque.gamepad`.
+/// A plugin's stable name, such as `my_game::HudPlugin` or `torque.gamepad`.
 ///
 /// The id is a plugin's identity: duplicate checks, ordering, config files (which name plugins to turn on or off) and
 /// peers (which compare the plugins that have a [`net_version`](Plugin::net_version)) all go by it. The typed calls
@@ -17,7 +17,7 @@ use crate::EngineBuilder;
 ///
 /// const GAMEPAD: PluginId = PluginId::new("torque.gamepad");
 /// assert_eq!(GAMEPAD.as_str(), "torque.gamepad");
-/// assert!(PluginId::is_valid("torque_audio::AudioPlugin"));
+/// assert!(PluginId::is_valid("my_game::HudPlugin"));
 /// assert!(!PluginId::is_valid("torque gamepad"));
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -174,7 +174,7 @@ pub trait Plugin: 'static {
 /// `add_before::<P>`, [`Requires::plugin`], ...) take the id from.
 ///
 /// `#[derive(PluginId)]` implements it. The id is the package's name (with `-` as `_`) and the type's, as a path:
-/// `torque_audio::AudioPlugin` for `AudioPlugin` in the package `torque-audio`; `#[plugin(id = "torque.audio")]` gives
+/// `my_game::HudPlugin` for `HudPlugin` in the package `my-game`; `#[plugin(id = "torque.audio")]` gives
 /// another. The derive finds this crate in the deriving crate's manifest (`torque-engine`, or
 /// `torque` as `torque::engine`); `#[plugin(crate = path)]` names it otherwise. Generic types are refused (each instance would share one id). By hand:
 ///

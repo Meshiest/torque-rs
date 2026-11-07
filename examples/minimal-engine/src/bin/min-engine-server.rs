@@ -7,11 +7,10 @@
 use std::net::Ipv4Addr;
 
 use torque::app::cli::{Args, unknown};
-use torque::app::plugins::{DefaultPlugins, WindowRunnerPlugin};
+use torque::app::plugins::WindowRunnerPlugin;
 use torque::app::run::{Dedicated, DedicatedRunnerPlugin, EngineDedicated};
 use torque::app::server::Listen;
-use torque::engine::{EngineBuilder, PluginGroup as _};
-use torque_example_minimal_engine::{ExamplePlugin, dedicated, files};
+use torque_example_minimal_engine::{builder, dedicated, files};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut port, mut ticks) = (28000, None);
@@ -29,12 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         port,
         public: false,
     };
-    EngineBuilder::new()
-        .add_plugins((
-            DefaultPlugins.disable::<WindowRunnerPlugin>(),
-            DedicatedRunnerPlugin,
-            ExamplePlugin(files.clone()),
-        ))
+    builder(&files)?
+        .disable::<WindowRunnerPlugin>()
+        .add_plugins(DedicatedRunnerPlugin)
         .dedicated(Dedicated {
             ticks,
             ..dedicated(&files, listen)

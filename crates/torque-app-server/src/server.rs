@@ -134,7 +134,7 @@ pub struct GameServer {
 }
 
 impl GameServer {
-    /// A server over `files`, listening as `start` says, that has run `server.cs` and the start function and takes
+    /// A server over `files`, listening as `start` says, that has run `server.cs` (or the entry script `game.toml` names) and the start function and takes
     /// connections.
     pub fn start(files: MemFiles, start: &ServerStart) -> Result<GameServer, String> {
         GameServer::start_with(files, start, |_| {})
@@ -216,12 +216,13 @@ impl GameServer {
         for (name, value) in start.globals {
             server.vm.set_global(name, value);
         }
+        let entry = crate::config::server_entry(engine);
         if !server
             .vm
-            .exec_file(b"server.cs", false)
-            .map_err(|e| format!("server.cs: {e}"))?
+            .exec_file(entry.as_bytes(), false)
+            .map_err(|e| format!("{entry}: {e}"))?
         {
-            return Err("server.cs is not in the game folder".to_string());
+            return Err(format!("{entry} is not in the game folder"));
         }
         let args: Vec<Vec<u8>> = start.args.iter().map(|a| a.as_bytes().to_vec()).collect();
         server
