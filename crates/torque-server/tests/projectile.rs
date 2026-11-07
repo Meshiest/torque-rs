@@ -1,6 +1,7 @@
 //! A Projectile on a server with TGE's game classes ([`torque_server::game::install`]): it starts where its persist fields put
 //! it, flies along its velocity a tick at a time, hits a Player in its way (the datablock's `onCollision` and `onExplode`), and
-//! is deleted half a second after it exploded; one that hits nothing is deleted when its lifetime runs out.
+//! is deleted half a second after it exploded; one that hits nothing is deleted when its lifetime runs out. The ghost view reads
+//! the fields the records carry (a shape's name among them).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -209,4 +210,29 @@ new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVel
         ..view(&s.vm, shot)
     };
     assert_eq!(unlinked.link("source_object"), Link::NotGhosted);
+}
+
+#[test]
+fn the_ghost_view_gives_a_shapes_name_as_its_text() {
+    use torque_ghosts::ObjectView;
+    use torque_ghosts::codec::NetStr;
+    use torque_server::net::torque::{FieldView, GameView};
+
+    let mut s = game_server();
+    s.vm.eval(b"new Player(Named) { dataBlock = Body; position = \"0 0 0\"; };")
+        .unwrap();
+    let obj = s.vm.objects().find(b"Named").unwrap();
+    let name = |vm: &Vm| {
+        GameView {
+            fields: FieldView { vm, obj },
+            controlled: false,
+            ghost_of: None,
+        }
+        .net_string("shape_name", 0)
+    };
+    assert_eq!(name(&s.vm), NetStr::Null, "no name yet");
+    s.vm.eval(b"Named.setShapeName(\"Ann\");").unwrap();
+    assert_eq!(name(&s.vm), NetStr::Text(b"Ann".to_vec()));
+    s.vm.eval(b"Named.setShapeName(\"\");").unwrap();
+    assert_eq!(name(&s.vm), NetStr::Null, "the name cleared");
 }
