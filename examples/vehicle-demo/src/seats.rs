@@ -1,6 +1,7 @@
 //! The demo's Player: TGE's, with the seat rules of a game where E gets out. A seated Player hands the vehicle it drives every
 //! trigger of its move, the jump trigger (2) included, which is a WheeledVehicle's brake (TGE keeps that trigger for the Player,
-//! which dismounts with it); and no trigger of a move dismounts it ([`DISMOUNT_TRIGGER`] is one the demo's keys never set).
+//! which dismounts with it); no trigger of a move dismounts it ([`DISMOUNT_TRIGGER`] is one the demo's keys never set); and no
+//! move turns a seated Player, which faces its seat's way, its head level (TGE's passenger turns by its moves' yaw).
 //! The vehicle turns its wheels only by the yaw of a move made at the wheel ([`DRIVE_TRIGGER`] held): the moves the client made
 //! on foot before it learned it was seated carry the mouse's turn, which would steer. `straightenWheels(%vehicle)` sets a
 //! vehicle's wheels straight (a new driver's start); `stopVehicle(%vehicle)` stops it still, its wheels straight and not
@@ -19,7 +20,7 @@ use torque::game::sim_classes::{PlayerKind, SimClasses, set_sim_classes};
 use torque::script::vm::sim::ObjId;
 use torque::script::vm::vm::{Native, Vm};
 use torque::sim::Move;
-use torque::sim::player::{PlayerClass, PlayerHost, PlayerState, TorquePlayer};
+use torque::sim::player::{PlayerClass, PlayerData, PlayerHost, PlayerState, TorquePlayer};
 use torque::vehicle::state::{VehicleState, net_mask};
 use torque::vehicle::wheeled::WheeledClass;
 
@@ -56,6 +57,29 @@ impl PlayerClass for SeatedPlayer {
 
     fn dismount_trigger(&self) -> usize {
         DISMOUNT_TRIGGER
+    }
+
+    /// TGE's, except that a seated Player faces the seat's way, its head level and to the front: no move turns its body, and
+    /// its head comes back level. TGE's passenger turns by its moves' yaw and keeps the head's pitch it had on foot, and the
+    /// moves its client made on foot before it learned it was seated (the mouse still turning as the click went) reach the
+    /// server after the mount, which left the figure sitting askew. The seated look is the client's camera alone.
+    fn head_and_rotation(
+        &self,
+        s: &mut PlayerState,
+        db: &PlayerData,
+        mv: &Move,
+        host: &mut dyn PlayerHost,
+    ) {
+        if s.mount.is_some() {
+            let mv = Move {
+                yaw: 0.0,
+                pitch: -s.head[0],
+                ..*mv
+            };
+            TorquePlayer.head_and_rotation(s, db, &mv, host);
+        } else {
+            TorquePlayer.head_and_rotation(s, db, mv, host);
+        }
     }
 }
 

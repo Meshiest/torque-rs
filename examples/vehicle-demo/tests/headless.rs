@@ -2617,3 +2617,98 @@ fn a_drivers_client_predicts_the_buggy_as_the_server_drives_it_never_meeting_the
     assert!(worst < 0.25, "drawn {worst} m off the server's buggy");
     assert_eq!(server(&a).seat_of(server(&a).figures()[1]), Some((id, 1)));
 }
+
+/// The seated yaw of figure `id` on `host`'s server (its turn on its seat, and its head's pitch and turn), and of the figure
+/// `game`'s client predicts.
+fn seated_yaws(host: &VehicleDemo, game: &VehicleDemo, id: u32) -> ([f32; 3], Option<f32>) {
+    let s = torque::game::sim::player::state(server(host).vm(), id).expect("the figure");
+    let st = game.client.host.client.borrow();
+    let predicted = st
+        .conn
+        .conn
+        .as_ref()
+        .and_then(|c| c.predict.predicted.as_ref())
+        .map(|p| p.player.s.rot[2]);
+    ([s.rot[2], s.head[0], s.head[2]], predicted)
+}
+
+/// Stands client `k`'s figure `reach` from its buggy at `angle` round it (radians from the buggy's front, to its right),
+/// facing the buggy's middle.
+fn stand_round(games: &mut [&mut VehicleDemo], k: usize, angle: f32, reach: f32) {
+    eval(
+        games[0],
+        &format!(
+            "%c = ClientGroup.getObject({k}); %v = $World::Buggy; %xf = %v.getTransform(); \
+             %d = MatrixMulVector(%xf, mSin({angle}) * {reach} SPC mCos({angle}) * {reach} SPC 0); \
+             %x = getWord(%xf, 0) + getWord(%d, 0); %y = getWord(%xf, 1) + getWord(%d, 1); \
+             %yaw = mAtan(-getWord(%d, 0), -getWord(%d, 1)); \
+             %c.player.setTransform(%x SPC %y SPC groundAt(%x, %y) + 0.1 SPC \"0 0 1\" SPC %yaw); \
+             %c.player.setVelocity(\"0 0 0\");"
+        ),
+    );
+    steps(games, 800);
+}
+
+#[test]
+fn a_figure_sits_facing_the_seats_way_from_any_side_it_came_in_turning_the_mouse() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    let figures = server(&a).figures();
+    // From ahead, beside the seat, behind it and from the back.
+    let angles = [0.5f32, 1.3, 1.9, 2.7];
+    for (n, &angle) in angles.iter().enumerate() {
+        // The driver comes in from the left, the passenger from the right; each turns the mouse as its click lands and after.
+        for (k, side) in [(0usize, -1.0f32), (1, 1.0)] {
+            let reach = 2.3 + 0.9 * angle.cos().abs();
+            stand_round(&mut [&mut a, &mut b], k, side * angle, reach);
+            let games = &mut [&mut a, &mut b];
+            // The look all the way up, then down at the buggy as `get_in` looks.
+            games[k].host.mouse_motion(0.0, -1000.0);
+            steps(games, 100);
+            games[k].host.mouse_motion(0.0, 1.4 / 0.003 + 110.0);
+            steps(games, 300);
+            let turn = if n % 2 == 0 { 120.0 } else { -120.0 };
+            games[k].host.mouse_motion(turn * 0.25, 0.0);
+            click(games[k]);
+            for _ in 0..12 {
+                games[k].host.mouse_motion(turn, 0.0);
+                steps(games, 32);
+            }
+            steps(games, 400);
+        }
+        let buggy = server(&a).buggy().unwrap();
+        assert_eq!(
+            (
+                server(&a).seat_of(figures[0]),
+                server(&a).seat_of(figures[1])
+            ),
+            (Some((buggy, 0)), Some((buggy, 1))),
+            "from {angle}"
+        );
+        // A second seated, the mouse still turning (the seated look turns the view, not the figure).
+        for _ in 0..1000 / 32 {
+            a.host.mouse_motion(150.0, 0.0);
+            b.host.mouse_motion(-150.0, 0.0);
+            steps(&mut [&mut a, &mut b], 32);
+        }
+        for (k, game) in [&a, &b].into_iter().enumerate() {
+            let (on_server, predicted) = seated_yaws(&a, game, figures[k]);
+            assert!(
+                on_server.iter().all(|a| yaw_apart(*a, 0.0).abs() < 1e-3),
+                "from {angle}, seat {k}: the server's figure sits {on_server:?} rad (turn, head pitch, head turn) off                  the seat's way"
+            );
+            if let Some(p) = predicted {
+                assert!(
+                    yaw_apart(p, 0.0).abs() < 1e-3,
+                    "from {angle}, seat {k}: the client's figure sits {p} rad off the seat's way"
+                );
+            }
+        }
+        for game in [&mut a, &mut b] {
+            press(game, Key::E);
+        }
+        steps(&mut [&mut a, &mut b], 800);
+        assert!(!a.seated() && !b.seated(), "from {angle}");
+    }
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}
