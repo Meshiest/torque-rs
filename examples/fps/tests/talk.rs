@@ -239,3 +239,79 @@ fn the_view_names_the_other_player_not_its_own_and_none_through_a_wall() {
     step_both(&mut a, &mut b, 1000);
     assert_eq!(names(&a), [("Bob".to_string(), true)], "behind the wall");
 }
+
+/// Ann hosts on the floor; Bob and Mallory join from the same address (this computer).
+fn three() -> (ArenaGame, ArenaGame, ArenaGame) {
+    let (mut a, mut b) = two("Bob", Some("fixtures/floor.mis"));
+    let mut c = client(
+        "<\u{7f}color:ff0000>Mallory<\u{7f}br>",
+        Some("fixtures/floor.mis"),
+    );
+    let address = a.hosted_address().unwrap().to_string();
+    c.call("connectTo", &[&address]).unwrap();
+    for _ in 0..300 {
+        steps(&mut a, &mut b, &mut c, 32);
+        if c.in_game() {
+            break;
+        }
+    }
+    assert!(c.in_game(), "the third player joined");
+    steps(&mut a, &mut b, &mut c, 1000);
+    (a, b, c)
+}
+
+fn steps(a: &mut ArenaGame, b: &mut ArenaGame, c: &mut ArenaGame, ms: u32) {
+    for _ in 0..ms / 32 {
+        a.step(32);
+        b.step(32);
+        c.step(32);
+    }
+}
+
+#[test]
+fn connections_from_one_address_share_the_allowance_and_a_reconnect_does_not_refill_it() {
+    let (mut a, mut b, mut c) = three();
+    // The name's tag, hidden by control bytes, is stripped too.
+    assert_eq!(a.global("$Chat::Last"), "Mallory joined the arena.");
+    // Slow the allowance's refill, so the test's own seconds add nothing to it.
+    a.server
+        .as_mut()
+        .unwrap()
+        .call("eval", &["$Server::ChatRefillMs = 600000;"])
+        .unwrap();
+    let before = count(&a);
+    for i in 0..3 {
+        b.call("say", &[&format!("bob {i}")]).unwrap();
+        c.call("say", &[&format!("mallory {i}")]).unwrap();
+    }
+    steps(&mut a, &mut b, &mut c, 300);
+    assert_eq!(count(&a) - before, 4, "four lines between the two");
+    assert_eq!(
+        c.global("$Chat::Last"),
+        "Too many messages. Wait a moment, then try again."
+    );
+
+    // Mallory leaves and comes back: still no lines left.
+    c.call("disconnect", &[]).unwrap();
+    steps(&mut a, &mut b, &mut c, 500);
+    let address = a.hosted_address().unwrap().to_string();
+    c.call("connectTo", &[&address]).unwrap();
+    for _ in 0..300 {
+        steps(&mut a, &mut b, &mut c, 32);
+        if c.in_game() {
+            break;
+        }
+    }
+    assert!(c.in_game(), "Mallory is back");
+    steps(&mut a, &mut b, &mut c, 1000);
+    let before = count(&a);
+    for i in 0..4 {
+        c.call("say", &[&format!("again {i}")]).unwrap();
+    }
+    steps(&mut a, &mut b, &mut c, 300);
+    assert_eq!(count(&a), before, "the reconnect started no new allowance");
+    // The host's own connection has an allowance of its own.
+    a.call("say", &["host"]).unwrap();
+    steps(&mut a, &mut b, &mut c, 300);
+    assert_eq!(a.global("$Chat::Last"), "Ann: host");
+}
