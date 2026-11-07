@@ -108,8 +108,14 @@ pub(super) fn update_container(
             st.liquid_height = zone.world_box.max[2];
             st.color = zone.color;
             st.liquid_type = zone.liquid_type;
-            // The vertical extent the coverage is measured over.
+            // The vertical extent the coverage is measured over: for a Player that may swim, the standing box's whatever its
+            // pose, so the coverage (its buoyancy and drag) does not jump when its box changes.
             let (zb, zt) = class.liquid_extent(s);
+            let zt = if db.poses.swim {
+                zb + db.bounding_box[2] * s.scale[2]
+            } else {
+                zt
+            };
             let res = zone_coverage(
                 st.coverage,
                 zb,

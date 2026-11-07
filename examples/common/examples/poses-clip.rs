@@ -306,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Pose::Crouch => [70, 120, 230],
                 Pose::Prone => [150, 80, 200],
                 Pose::Sprint => [235, 140, 40],
+                Pose::Swim => [40, 170, 200],
                 Pose::Stand if anim.action().0 == walk => [70, 190, 90],
                 Pose::Stand => [140, 140, 140],
             }

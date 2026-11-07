@@ -3,14 +3,20 @@
 //! and `cap` the speed cap.
 //!
 //! The step's shape follows TGE 1.4's `Player::updateMove` (`player.cc`), and its run-surface, jump, resistance and drag
-//! rules are the same in Torque3D: the underwater speeds from a coverage of 0.9 on (no swimming pose), buoyancy as a lift
-//! applied after the resistances, no stroke in water. A subclass ([`PlayerClass`]) may replace a section.
+//! rules are the same in Torque3D: the underwater speeds from a coverage of 0.9 on, buoyancy as a lift applied after the
+//! resistances. A subclass ([`PlayerClass`]) may replace a section.
+//!
+//! **Swimming** follows Torque3D's swim pose ([`super::pose::swims`]): a swimmer has no run surface (its feet do not push on
+//! the bed) and does not jump; its stroke ([`swim`]) accelerates it toward its wish by at most `swimForce / mass` a tick, the
+//! head's pitch steering the wish and the move's `z` swimming up or down. Its buoyancy stays TGE's lift (not Torque3D's
+//! `gravity / (1 - buoyancy)`, which divides by zero at a buoyancy of 1), and the stroke does not take the gravity back: a
+//! swimmer with no up or down to its wish floats where its buoyancy meets its weight.
 //!
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `T3D/player.cpp` (Copyright (c) 2012
 //! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.); the code here is this crate's own.
 
 use torque_collide::Exhausted;
-use torque_collide::math::{F3, set_euler};
+use torque_collide::math::{F3, matrix_product, set_euler};
 
 use super::data::PlayerData;
 use super::ext::{PlayerClass, TorquePlayer};
@@ -177,7 +183,7 @@ impl Player {
                 self.s.jump_normal = normal;
             }
         }
-        if run {
+        if run && self.s.pose != super::pose::Pose::Swim {
             class.run_surface(&mut self.s, db, &w, cap, &mut acc, normal);
         } else {
             self.s.contact_timer = self.s.contact_timer.wrapping_add(1);
@@ -241,9 +247,10 @@ pub(super) fn head_and_rotation(s: &mut PlayerState, db: &PlayerData, mv: &Move)
 }
 
 /// The wish's speed cap: the forward (or, for a backward or no move, the backward) speed times the move's `|y|`, or the side
-/// speed times its `|x|`, whichever is larger; the underwater set from a coverage of 0.9 on.
+/// speed times its `|x|`, whichever is larger; the underwater set from a coverage of 0.9 on, and swimming.
 pub(super) fn move_speed(s: &PlayerState, db: &PlayerData, mv: &Move) -> f32 {
-    let [ahead, behind, side] = if f64::from(s.water_coverage) >= UNDERWATER {
+    let swimming = s.pose == super::pose::Pose::Swim;
+    let [ahead, behind, side] = if swimming || f64::from(s.water_coverage) >= UNDERWATER {
         [
             db.max_underwater_forward_speed,
             db.max_underwater_backward_speed,
@@ -321,6 +328,60 @@ pub(super) fn run_surface(
     }
 }
 
+/// The swim stroke (see the module docs), for a swimmer in its move state and enabled: the wish of the move's `x` and `y`
+/// turned by the yaw and the head's pitch (level when it would rise while the Player's standing box is not under the water:
+/// no climbing out of the water by looking up), plus the move's `z`, rising no further at the surface; held to the underwater
+/// speeds (the forward one for `z`), draining the run energy as the run does. The stroke accelerates the velocity toward it by
+/// at most `swimForce / mass` a tick, its up or down part by the share of the wish that goes up or down; the gravity and the
+/// buoyancy act on their own, so a swimmer that strokes neither up nor down floats where its buoyancy meets its weight.
+pub fn swim(s: &mut PlayerState, db: &PlayerData, mv: &Move, acc: &mut F3) {
+    if s.pose != super::pose::Pose::Swim || s.action_state != 1 || s.damage_state != 0 {
+        return;
+    }
+    let yaw = set_euler([0.0, 0.0, s.rot[2]]);
+    let head = matrix_product(&yaw, &set_euler([s.head[0], 0.0, 0.0]));
+    let along = |m: &torque_collide::math::Matrix| -> F3 {
+        std::array::from_fn(|i| m[4 * i] * mv.x + m[4 * i + 1] * mv.y)
+    };
+    let at_surface = s.water_coverage < 1.0;
+    let mut wish = along(&head);
+    if wish[2] > 0.0 && at_surface {
+        wish = along(&yaw);
+    }
+    wish[2] += mv.z;
+    if at_surface && wish[2] > 0.0 {
+        wish[2] = 0.0;
+    }
+    let speeds = db.poses.speeds(db, super::pose::Pose::Swim);
+    let along_y = if mv.y > 0.0 {
+        speeds.forward * mv.y
+    } else {
+        speeds.backward * mv.y.abs()
+    };
+    let cap = larger(
+        larger(along_y, speeds.side * mv.x.abs()),
+        speeds.forward * mv.z.abs(),
+    );
+    if s.energy >= db.min_run_energy {
+        if cap != 0.0 {
+            s.energy -= db.run_energy_drain;
+        }
+    } else {
+        wish = [0.0; 3];
+    }
+    let len = len3(wish);
+    let target = if len != 0.0 {
+        scale(wish, cap / len)
+    } else {
+        [0.0; 3]
+    };
+    // Up or down only as far as the wish goes that way: a stroke across the water leaves the float to the buoyancy.
+    let mut push = sub(target, s.velocity);
+    push[2] *= if len != 0.0 { wish[2].abs() / len } else { 0.0 };
+    let most = (db.poses.swim_force / s.mass) * DT;
+    *acc = add(*acc, at_most(push, len3(push), most));
+}
+
 /// The speed resistance: above `resist` a speed (no more than `max`) loses `factor * dt` of what it has over `resist`.
 fn resisted(speed: f32, max: f32, resist: f32, factor: f32) -> f32 {
     let speed = if speed > max { max } else { speed };
@@ -371,9 +432,9 @@ pub(super) fn integrate(s: &mut PlayerState, db: &PlayerData, acc: &F3, run: boo
 /// `Player::canJump`: in the move state, enabled, not mounted, no jump delay, the energy for it, and a jump surface touched
 /// within the last [`JUMP_SKIP_CONTACTS_MAX`] contacts.
 pub fn can_jump(s: &PlayerState, db: &PlayerData) -> bool {
-    // The poses (the engine's own after Torque3D's): no jump lying down, nor sprinting without `sprintCanJump`.
+    // The poses (the engine's own after Torque3D's): no jump lying down or swimming, nor sprinting without `sprintCanJump`.
     let posed = match s.pose {
-        super::pose::Pose::Prone => false,
+        super::pose::Pose::Prone | super::pose::Pose::Swim => false,
         super::pose::Pose::Sprint => db.poses.sprint_can_jump,
         _ => true,
     };

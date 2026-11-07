@@ -7,7 +7,8 @@
 //!   lying down, and `maxSprintForwardSpeed` sprinting; the speeds (`maxCrouchForwardSpeed`, `maxCrouchBackwardSpeed`,
 //!   `maxCrouchSideSpeed`, the same for prone and sprint), the forces (`crouchForce`, `proneForce`, `sprintForce`) and
 //!   `sprintCanJump`. The triggers are Torque3D's globals `$player::crouchTrigger`, `$player::proneTrigger` and
-//!   `$player::sprintTrigger` (3, 4 and 5 unset).
+//!   `$player::sprintTrigger` (3, 4 and 5 unset). `swimBoundingBox` allows swimming, with `swimForce`: a shape without
+//!   `swim_root` swims with the standing actions.
 //! - **The actions** ([`PoseSets`]): a pose's `<pose>_root`, `<pose>_forward`, `<pose>_backward` and `<pose>_side` (a step to
 //!   the left, played backward for a step to the right), as Torque3D names them (`crouch_root`, `prone_forward`, ...). A pose
 //!   whose shape has no `<pose>_root` plays the standing actions (sprinting, unless the shape has `sprint_root`).
@@ -94,6 +95,10 @@ pub fn pose_data(vm: &Vm, db: ObjId, has: impl Fn(&[u8]) -> bool) -> PoseData {
         d.prone = true;
         d.prone_box = b;
     }
+    if floats(b"swimBoundingBox", &mut b) {
+        d.swim = true;
+        d.swim_box = b;
+    }
     d.sprint = !text(vm, db, b"maxSprintForwardSpeed").is_empty();
     let speeds = |p: &mut PoseSpeeds, names: [&[u8]; 3]| {
         float(names[0], &mut p.forward);
@@ -127,6 +132,7 @@ pub fn pose_data(vm: &Vm, db: ObjId, has: impl Fn(&[u8]) -> bool) -> PoseData {
     float(b"crouchForce", &mut d.crouch_force);
     float(b"proneForce", &mut d.prone_force);
     float(b"sprintForce", &mut d.sprint_force);
+    float(b"swimForce", &mut d.swim_force);
     let jump = text(vm, db, b"sprintCanJump");
     if !jump.is_empty() {
         d.sprint_can_jump = ts_vm::fields::atob(&jump);
@@ -173,7 +179,7 @@ impl PoseActions {
 /// Every pose's actions (standing's are the table's, so its set is empty).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PoseSets {
-    sets: [PoseActions; 4],
+    sets: [PoseActions; 5],
 }
 
 fn index(pose: Pose) -> usize {
@@ -182,6 +188,7 @@ fn index(pose: Pose) -> usize {
         Pose::Sprint => 1,
         Pose::Crouch => 2,
         Pose::Prone => 3,
+        Pose::Swim => 4,
     }
 }
 
@@ -196,7 +203,7 @@ impl PoseSets {
             if !has {
                 continue;
             }
-            for pose in [Pose::Sprint, Pose::Crouch, Pose::Prone] {
+            for pose in [Pose::Sprint, Pose::Crouch, Pose::Prone, Pose::Swim] {
                 let Some(prefix) = pose.action_prefix() else {
                     continue;
                 };
@@ -241,7 +248,7 @@ impl PoseSets {
         {
             return Pose::Crouch;
         }
-        [Pose::Sprint, Pose::Crouch, Pose::Prone]
+        [Pose::Sprint, Pose::Crouch, Pose::Prone, Pose::Swim]
             .into_iter()
             .find(|p| self.sets[index(*p)].contains(action))
             .unwrap_or(Pose::Stand)
