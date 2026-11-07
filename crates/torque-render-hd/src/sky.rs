@@ -177,6 +177,23 @@ pub struct SkyGpu {
     pub fog_mean: bool,
 }
 
+/// The sky group's bindings (the tables, the fog's frame and the clouds' images).
+pub(crate) fn group_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+    let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
+    vec![
+        uniform_entry(1, all),
+        sampled(2, all),
+        sampled(3, all),
+        sampler_entry(4, all),
+        // The frame after the sky's draws (the fog's colour).
+        sampled(5, all),
+        // The volumetric clouds' image, their shadow map and the sun through them.
+        sampled(6, all),
+        sampled(7, all),
+        sampled(8, all),
+    ]
+}
+
 impl SkyGpu {
     #[allow(clippy::too_many_arguments)]
     fn make_group(
@@ -255,7 +272,6 @@ impl SkyGpu {
         texture_layout: &wgpu::BindGroupLayout,
         clouds: (&wgpu::TextureView, &wgpu::TextureView, &wgpu::TextureView),
     ) -> SkyGpu {
-        let all = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hd sky"),
             size: SKY_BYTES,
@@ -264,18 +280,7 @@ impl SkyGpu {
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd sky group"),
-            entries: &[
-                uniform_entry(1, all),
-                sampled(2, all),
-                sampled(3, all),
-                sampler_entry(4, all),
-                // The frame after the sky's draws (the fog's colour).
-                sampled(5, all),
-                // The volumetric clouds' image, their shadow map and the sun through them.
-                sampled(6, all),
-                sampled(7, all),
-                sampled(8, all),
-            ],
+            entries: &group_entries(),
         });
         let transmittance = lut(device, "hd sky transmittance", TRANSMITTANCE_SIZE);
         let multiscatter = lut(

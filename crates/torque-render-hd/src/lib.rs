@@ -28,6 +28,7 @@ pub mod cull;
 pub mod exposure;
 pub mod ext;
 pub mod ghosting;
+pub mod limits;
 pub mod post;
 pub mod shaders;
 pub mod shadows;

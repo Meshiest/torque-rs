@@ -106,7 +106,7 @@ use crate::{
 };
 
 #[path = "reflect.rs"]
-mod reflect;
+pub(crate) mod reflect;
 
 /// The most bytes of the levels' block meshes a live window's upload puts in (at least one block).
 pub const LOD_BYTES_A_FRAME: u64 = 4 << 20;
@@ -1777,9 +1777,120 @@ fn cluster_count() -> u32 {
     CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]
 }
 
+/// The frame group's bindings (group 0 of the forward, sky and effect pipelines).
+pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+    let vf = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
+    vec![
+        uniform(0, vf | wgpu::ShaderStages::COMPUTE),
+        storage(1, true, wgpu::ShaderStages::FRAGMENT),
+        storage(2, true, wgpu::ShaderStages::FRAGMENT),
+        texture_entry(
+            3,
+            wgpu::TextureSampleType::Float { filterable: false },
+            wgpu::TextureViewDimension::D2,
+        ),
+        uniform(4, wgpu::ShaderStages::FRAGMENT),
+        texture_entry(
+            5,
+            wgpu::TextureSampleType::Depth,
+            wgpu::TextureViewDimension::D2Array,
+        ),
+        wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 7,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+            count: None,
+        },
+        texture_entry(
+            8,
+            wgpu::TextureSampleType::Depth,
+            wgpu::TextureViewDimension::CubeArray,
+        ),
+        texture_entry(
+            9,
+            wgpu::TextureSampleType::Float { filterable: false },
+            wgpu::TextureViewDimension::D2,
+        ),
+        texture_entry(
+            10,
+            wgpu::TextureSampleType::Float { filterable: false },
+            wgpu::TextureViewDimension::D2,
+        ),
+        // The translucent front layer's depth, the cascades' transmittance and its sampler.
+        texture_entry(
+            11,
+            wgpu::TextureSampleType::Depth,
+            wgpu::TextureViewDimension::D2,
+        ),
+        texture_entry(
+            12,
+            wgpu::TextureSampleType::Float { filterable: true },
+            wgpu::TextureViewDimension::D2Array,
+        ),
+        wgpu::BindGroupLayoutEntry {
+            binding: 13,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        // The extension's slots ([`ExtSlots::forward`]).
+        storage(14, true, wgpu::ShaderStages::FRAGMENT),
+        storage(15, true, wgpu::ShaderStages::FRAGMENT),
+        // The meshes' places the shapes' vertices in their meshes' own space name (torque_render_scene::hd::NodePlace).
+        storage(16, true, wgpu::ShaderStages::VERTEX),
+        // The point lights' cubes of the second and third tiers (the first is binding 8).
+        texture_entry(
+            17,
+            wgpu::TextureSampleType::Depth,
+            wgpu::TextureViewDimension::CubeArray,
+        ),
+        texture_entry(
+            18,
+            wgpu::TextureSampleType::Depth,
+            wgpu::TextureViewDimension::CubeArray,
+        ),
+    ]
+}
+
+/// The texture group's bindings (group 1 of the forward and sky pipelines).
+pub(crate) fn texture_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+    vec![
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ]
+}
+
 impl<E: HdExtension> HdWorld<E> {
-    /// The enhanced renderer on `gpu`'s device (its queue and the optional features it asked for).
+    /// The enhanced renderer on `gpu`'s device (its queue and the optional features it asked for). Panics with
+    /// [`crate::limits::LimitError`]'s message where the device cannot run it ([`HdWorld::try_new`]).
     pub fn new(gpu: &torque_render_core::Gpu) -> HdWorld<E> {
+        HdWorld::<E>::try_new(gpu).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`HdWorld::new`], or the limits the device falls short of for the enhanced renderer (nothing is made then): a caller can
+    /// draw with a renderer that needs less.
+    pub fn try_new(gpu: &torque_render_core::Gpu) -> Result<HdWorld<E>, crate::limits::LimitError> {
+        crate::limits::check(&gpu.limits())?;
         // The clouds' noise is made once a process (half a second): begun now beside the caller, so the first frame that draws
         // clouds finds it made (or waits only for the rest of it) instead of making it then.
         // Where no thread can be started (a browser) the frames that want clouds make it a share at a time
@@ -1791,7 +1902,7 @@ impl<E: HdExtension> HdWorld<E> {
                     let _ = torque_render_scene::hd::clouds::noise();
                 });
         }
-        HdWorld::<E>::from_device(
+        HdWorld::<E>::try_from_device(
             gpu.device().clone(),
             gpu.queue().clone(),
             gpu.pipeline_cache().cloned(),
@@ -1800,11 +1911,23 @@ impl<E: HdExtension> HdWorld<E> {
 
     /// [`HdWorld::new`] on a device and queue (a window may build one on a worker thread), its pipelines made with
     /// `pipeline_cache` (the device's: [`torque_render_core::Gpu::pipeline_cache`]).
+    /// Panics with [`crate::limits::LimitError`]'s message where the device cannot run it ([`HdWorld::try_from_device`]).
     pub fn from_device(
         device: wgpu::Device,
         queue: wgpu::Queue,
         pipeline_cache: Option<wgpu::PipelineCache>,
     ) -> HdWorld<E> {
+        HdWorld::<E>::try_from_device(device, queue, pipeline_cache)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`HdWorld::from_device`], or the limits the device falls short of ([`crate::limits::check`]).
+    pub fn try_from_device(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        pipeline_cache: Option<wgpu::PipelineCache>,
+    ) -> Result<HdWorld<E>, crate::limits::LimitError> {
+        crate::limits::check(&device.limits())?;
         let cache = pipeline_cache.as_ref();
         // The modules are composed with the extension's chunks.
         let chunks = E::shaders();
@@ -1813,85 +1936,9 @@ impl<E: HdExtension> HdWorld<E> {
             "the shaders were composed with another extension before this one was registered"
         );
         let timestamps = device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
-        let vf = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd frame"),
-            entries: &[
-                uniform(0, vf | wgpu::ShaderStages::COMPUTE),
-                storage(1, true, wgpu::ShaderStages::FRAGMENT),
-                storage(2, true, wgpu::ShaderStages::FRAGMENT),
-                texture_entry(
-                    3,
-                    wgpu::TextureSampleType::Float { filterable: false },
-                    wgpu::TextureViewDimension::D2,
-                ),
-                uniform(4, wgpu::ShaderStages::FRAGMENT),
-                texture_entry(
-                    5,
-                    wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::D2Array,
-                ),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-                texture_entry(
-                    8,
-                    wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::CubeArray,
-                ),
-                texture_entry(
-                    9,
-                    wgpu::TextureSampleType::Float { filterable: false },
-                    wgpu::TextureViewDimension::D2,
-                ),
-                texture_entry(
-                    10,
-                    wgpu::TextureSampleType::Float { filterable: false },
-                    wgpu::TextureViewDimension::D2,
-                ),
-                // The translucent front layer's depth, the cascades' transmittance and its sampler.
-                texture_entry(
-                    11,
-                    wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::D2,
-                ),
-                texture_entry(
-                    12,
-                    wgpu::TextureSampleType::Float { filterable: true },
-                    wgpu::TextureViewDimension::D2Array,
-                ),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 13,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                // The extension's slots ([`ExtSlots::forward`]).
-                storage(14, true, wgpu::ShaderStages::FRAGMENT),
-                storage(15, true, wgpu::ShaderStages::FRAGMENT),
-                // The meshes' places the shapes' vertices in their meshes' own space name (torque_render_scene::hd::NodePlace).
-                storage(16, true, wgpu::ShaderStages::VERTEX),
-                // The point lights' cubes of the second and third tiers (the first is binding 8).
-                texture_entry(
-                    17,
-                    wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::CubeArray,
-                ),
-                texture_entry(
-                    18,
-                    wgpu::TextureSampleType::Depth,
-                    wgpu::TextureViewDimension::CubeArray,
-                ),
-            ],
+            entries: &frame_entries(),
         });
         let contact_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd contact"),
@@ -1915,24 +1962,7 @@ impl<E: HdExtension> HdWorld<E> {
         });
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd texture"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+            entries: &texture_entries(),
         });
         let tonemap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd tonemap"),
@@ -2301,7 +2331,7 @@ impl<E: HdExtension> HdWorld<E> {
             .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
         let nodes_table = Self::nodes_buffer(&device, 1);
         let ext_slots = ExtSlots::new(&device);
-        HdWorld {
+        Ok(HdWorld {
             wboit_pipeline,
             comp_layout,
             comp_uniform,
@@ -2456,7 +2486,7 @@ impl<E: HdExtension> HdWorld<E> {
             mirror_reflections: false,
             capture_every_frame: false,
             motion_per_draw: false,
-        }
+        })
     }
 
     /// What the last frame's shadow passes did.
@@ -7533,6 +7563,15 @@ impl<E: HdExtension> HdWorld<E> {
         let p = self.temporal.parity ^ 1;
         let (w, h, bytes) = self.read_texture(&t.motions[p], 8)?;
         Ok((w, h, halves(&bytes)))
+    }
+
+    /// The face of the clouds' cube the last frame drew, if it drew one (+x, -x, +y, -y, +z as 0, 1, 2, 3, 4), and whether the
+    /// cube holds all its faces.
+    pub fn cloud_cube_state(&self) -> (Option<usize>, bool) {
+        (
+            self.clouds.cube_face().map(|(f, _)| f),
+            self.clouds.cube_ready(),
+        )
     }
 
     /// The last frame's HDR target (the internal frame's size, before the anti-aliasing), RGBA as floats.

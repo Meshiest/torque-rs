@@ -160,3 +160,59 @@ fn the_water_reflects_the_clouds_off_screen_from_the_cube_and_keeps_those_on_scr
         "the cube changed the on-screen clouds' reflection by {worst}"
     );
 }
+
+#[test]
+fn the_cube_draws_no_face_while_the_eye_is_under_the_water_and_resumes_after() {
+    let gpu = match torque_render_core::Gpu::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipped: no GPU ({e})");
+            return;
+        }
+    };
+    let mut world: HdWorld<NoExtension> = HdWorld::new(&gpu);
+    let mut scene = scene();
+    world.features.cloud_cube = true;
+    let mut frame = |world: &mut HdWorld<NoExtension>, height: f32| {
+        let eye = look_at([0.0, 0.0, height], [100.0, 0.0, height]);
+        scene.frame.eye = Some(eye);
+        scene.frame.fov = FOV;
+        scene.frame.size = SIZE;
+        let camera = HdCamera::new(eye, FOV, scene.frame.visible_distance, SIZE.0, SIZE.1);
+        scene.frame.generation += 1;
+        world.upload(&scene);
+        world.draw(&scene, &camera, None).expect("draw");
+        world.cloud_cube_state()
+    };
+    // Above the water the faces are drawn in turn until the cube holds them all.
+    let mut faces = Vec::new();
+    for _ in 0..FRAMES {
+        let (face, _) = frame(&mut world, EYE);
+        faces.extend(face);
+    }
+    assert!(faces.len() >= 5, "faces drawn above the water: {faces:?}");
+    assert!(
+        frame(&mut world, EYE).1,
+        "the cube is ready above the water"
+    );
+    // Under it none is drawn, and the cube keeps what it holds. (The eye dives in steps: a jump would be a cut that starts the
+    // histories again.)
+    let step = 1.0;
+    let mut height = EYE;
+    while height > -EYE {
+        height -= step;
+        let (face, ready) = frame(&mut world, height);
+        if height < 0.0 {
+            assert_eq!(face, None, "a face drawn with the eye under the water");
+        }
+        assert!(ready, "the cube was dropped at height {height}");
+    }
+    // Back above, the faces come again.
+    while height < EYE - step {
+        height += step;
+        frame(&mut world, height);
+    }
+    let (face, ready) = frame(&mut world, EYE);
+    assert!(face.is_some(), "no face drawn after the eye came up");
+    assert!(ready, "the cube was not ready when the eye came up");
+}

@@ -192,33 +192,38 @@ fn turned(c: Cull) -> Cull {
     }
 }
 
+/// The reflections group's bindings (group 3 of the forward pipelines).
+pub(crate) fn layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+    use wgpu::TextureSampleType as S;
+    use wgpu::TextureViewDimension as D;
+    let float = S::Float { filterable: true };
+    vec![
+        crate::uniform(0, wgpu::ShaderStages::FRAGMENT),
+        tex_entry(1, D::D2, float),
+        tex_entry(2, D::Cube, float),
+        tex_entry(3, D::Cube, float),
+        wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        crate::storage(5, true, wgpu::ShaderStages::FRAGMENT),
+        tex_entry(6, D::D2, float),
+        tex_entry(7, D::D2, S::Depth),
+        tex_entry(8, D::Cube, float),
+    ]
+}
+
 impl Reflections {
     pub fn new(
         device: &wgpu::Device,
         cache: Option<&wgpu::PipelineCache>,
         frame_bytes: u64,
     ) -> Reflections {
-        use wgpu::TextureSampleType as S;
-        use wgpu::TextureViewDimension as D;
-        let float = S::Float { filterable: true };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd reflections"),
-            entries: &[
-                crate::uniform(0, wgpu::ShaderStages::FRAGMENT),
-                tex_entry(1, D::D2, float),
-                tex_entry(2, D::Cube, float),
-                tex_entry(3, D::Cube, float),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                crate::storage(5, true, wgpu::ShaderStages::FRAGMENT),
-                tex_entry(6, D::D2, float),
-                tex_entry(7, D::D2, S::Depth),
-                tex_entry(8, D::Cube, float),
-            ],
+            entries: &layout_entries(),
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("hd reflections"),
@@ -809,8 +814,10 @@ impl<E: HdExtension> HdWorld<E> {
         let ext = self.ext.refl_ext(scene);
         let lv = level.unwrap_or(0.0);
         let mirror = self.mirror_reflections || self.debug == DebugView::Reflection;
-        // The clouds' cube is read where the water is drawn and it holds the clouds (its faces drawn by the frames before).
-        let cloud_cube = plan.water && self.features.cloud_cube && self.clouds.cube_ready();
+        // The clouds' cube is read where the water is drawn, the eye is above it and the cube holds the clouds (its faces drawn
+        // by the frames before); under the water it is held, not drawn, so it is not read either.
+        let cloud_cube =
+            plan.water && self.features.cloud_cube && above && self.clouds.cube_ready();
         let shifts: [[f32; 3]; 6] = if capture_valid {
             std::array::from_fn(|f| {
                 let e = self.refl.capture.eyes[f];
@@ -873,8 +880,13 @@ impl<E: HdExtension> HdWorld<E> {
         );
         self.queue
             .write_buffer(&self.refl.uniforms[U_SKY], 0, &view(false, false, false));
-        // A face of the clouds' cube when the water is drawn (what it reflects off screen).
-        self.clouds.cube_wanted = plan.water && self.features.cloud_cube;
+        // A face of the clouds' cube when the water is drawn (what it reflects off screen); not while the eye is under the water,
+        // which shows no reflection of the sky (the cube keeps what it holds for the eye's return).
+        self.clouds.cube_wanted = match (plan.water && self.features.cloud_cube, above) {
+            (false, _) => crate::clouds::CubeWanted::No,
+            (true, false) => crate::clouds::CubeWanted::Held,
+            (true, true) => crate::clouds::CubeWanted::Draw,
+        };
         self.refl.plan = plan;
     }
 

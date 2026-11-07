@@ -10,7 +10,8 @@
 //! With water in the frame the clouds are also marched into a small cube around the eye ([`CLOUD_CUBE_SIZE`] a face, one face a
 //! frame in turn, its mips filtered after it): what the water reflects and the reflections' fog take where the main view's image
 //! does not reach (a direction off screen). Its march is the main one through a face's camera, at a fixed dither and with no
-//! history (the reads are of its blurred mips).
+//! history (the reads are of its blurred mips). While the eye is under the water, which shows no reflection of the sky, no face is
+//! drawn and the cube keeps what it holds.
 
 use glam::Vec3;
 use torque_render_core::wgpu;
@@ -138,8 +139,21 @@ pub struct Clouds {
     /// lowest base, as before.
     pub from_eye: bool,
     cube: CloudCube,
-    /// Whether this frame draws a face of the clouds' cube (the renderer's: the frame has water).
-    pub cube_wanted: bool,
+    /// What this frame does with the clouds' cube (the renderer's choice).
+    pub cube_wanted: CubeWanted,
+}
+
+/// What a frame does with the clouds' cube.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CubeWanted {
+    /// Nothing reads the cube (no water): it starts again when it next is wanted.
+    #[default]
+    No,
+    /// The water is there but the eye is under it, where no sky is reflected: no face is drawn, and what the cube holds is kept
+    /// for the eye's return.
+    Held,
+    /// A face is drawn.
+    Draw,
 }
 
 /// In a browser: how long a frame that wants clouds spends making their noise while it is not all made ([`cl::make_noise_for`]:
@@ -477,7 +491,7 @@ impl Clouds {
         Clouds {
             down,
             cube,
-            cube_wanted: false,
+            cube_wanted: CubeWanted::No,
             from_eye: true,
             frame_layout: frame_layout.clone(),
             march_layout,
@@ -1021,7 +1035,7 @@ impl Clouds {
         );
         debug_assert_eq!(b.len() as u64, UNIFORM_BYTES);
         queue.write_buffer(&self.uniform, 0, &b);
-        if self.cube_wanted {
+        if self.cube_wanted == CubeWanted::Draw {
             // The cube's march: a fixed dither (no history averages it), a texel a pixel of the face's camera (its footprint the
             // texel's angle), and cheaper (its few rays' longest is the pass's time, and it is read blurred): fewer steps along
             // the ray and toward the sun. (The detail volume stays: without it the layers thicken into an overcast.)
@@ -1058,7 +1072,7 @@ impl Clouds {
             queue.write_buffer(&self.cube.uniform, 0, &b);
             self.cube.face = Some(CLOUD_CUBE_FACES[self.cube.next]);
             self.cube.next = (self.cube.next + 1) % CLOUD_CUBE_FACES.len();
-        } else {
+        } else if self.cube_wanted == CubeWanted::No {
             self.cube.drawn = 0;
         }
         self.drawn = true;
