@@ -623,3 +623,59 @@ pub fn write_lit_particles(
     paths.push(times);
     Ok(paths)
 }
+
+/// The head's pitches the camera-switch pictures look at (radians, positive down): down, level and up.
+pub const SWITCH_PITCHES: [(&str, f32); 3] = [("down", 0.6), ("level", 0.0), ("up", -0.45)];
+
+/// The camera-switch pictures at `size` into `dir`: a game played alone, the figure on foot at its spawn with its head at each
+/// of [`SWITCH_PITCHES`], seen from behind it (`switch-<pitch>-third`) and from its eyes (`switch-<pitch>-first`), so the two
+/// views' directions can be compared.
+pub fn write_switch(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let files = make_files().map_err(|e| e.to_string())?;
+    let options = ClientOptions {
+        net: NetMode::Loopback,
+        port: 0,
+        ..ClientOptions::default()
+    };
+    let game = VehicleDemo::new(files, options)?;
+    let mut seat = Seat::new(game, &gpu, size)?;
+    let mut shots = Shots::new(dir)?;
+    run(&gpu, &mut [&mut seat], 200)?;
+    seat.game.play_alone()?;
+    let mut waited = 0;
+    while !(seat.game.in_world() && seat.game.figure().is_some()) {
+        if waited >= WAIT_LIMIT_MS {
+            return Err("the game played alone did not start".into());
+        }
+        run(&gpu, &mut [&mut seat], 100)?;
+        waited += 100;
+    }
+    run(&gpu, &mut [&mut seat], 3000)?;
+    for (name, pitch) in SWITCH_PITCHES {
+        let now = seat.game.figure().ok_or("no figure")?.pitch;
+        let mouse = ((pitch - now) / 0.003).to_string();
+        seat.game.call("look", &[mouse.as_str()])?;
+        seat.game.set_first_person(false);
+        run(&gpu, &mut [&mut seat], 1500)?;
+        save_picture(&gpu, &mut seat, &mut shots, &format!("switch-{name}-third"))?;
+        seat.game.set_first_person(true);
+        run(&gpu, &mut [&mut seat], 100)?;
+        save_picture(&gpu, &mut seat, &mut shots, &format!("switch-{name}-first"))?;
+    }
+    Ok(shots.paths)
+}
+
+/// A picture of `seat` from its own eye saved as `name`.
+fn save_picture(
+    gpu: &Gpu,
+    seat: &mut Seat<VehicleDemo>,
+    shots: &mut Shots,
+    name: &str,
+) -> Result<(), String> {
+    shots.save(&picture(gpu, seat, None)?, name)
+}

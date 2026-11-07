@@ -11,7 +11,8 @@
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
 //! ([`crate::scene`]) and the map's spot lights, the canvas drawn, and the eye: behind the client's own figure (or at its eyes,
-//! `Tab`). The camera behind rides a boom ([`CameraBoom`]) from above the figure's feet (no higher than its eye), pulled in
+//! `Tab`), both looking where the figure looks ([`behind`]: `Tab` moves the camera, never turns it). The camera behind rides a
+//! boom ([`CameraBoom`]) back from above the figure's feet (no higher than its eye), pulled in
 //! fast in front of the cubes, the interiors' walls, the terrain and the water that come between and let out slowly when they
 //! go; it looks through glass. `Tab` moves the camera from one to the other ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden while the
 //! camera is close to its eyes ([`CLOSE`]), on the way in and on the way out. A new figure (a respawn) or a teleport cuts the
@@ -42,18 +43,20 @@ use crate::ground::MapGround;
 use crate::scene::WorldScene;
 use crate::server::{SERVER_ADDR, WorldServer};
 use torque::app::ghosts::OwnView;
+use torque_example_common::behind::{boom_line, looking, moved_only};
 use torque_example_common::prediction::CubeClient;
 
 /// The client's address on the link.
 pub const CLIENT_ADDR: SocketAddrV4 = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 50_000);
 
-/// The third-person camera: how far behind the figure, how high above its feet it looks, and how much it looks down.
+/// The third-person camera: how far behind the figure, how high above its feet its boom starts, and how far up the view it
+/// rides off the boom's line (the figure a little below the middle of the view).
 pub const CAMERA_DISTANCE: f32 = 6.5;
 pub const CAMERA_TARGET_HEIGHT: f32 = 1.7;
-pub const CAMERA_PITCH: f32 = 0.3;
+pub const CAMERA_LIFT: f32 = 0.6;
 /// Where a map's own cloud clock starts over (seconds): long past any session, short enough to keep its precision.
 pub const CLOUD_CLOCK_WRAP: f32 = 100_000.0;
-/// The nearest the camera comes to a cube between it and the figure, and to the point it looks at.
+/// The nearest the camera comes to a cube between it and the figure, and to the boom's pivot behind the figure.
 pub const CAMERA_CLEARANCE: f32 = 0.3;
 pub const CAMERA_NEAREST: f32 = 0.4;
 
@@ -265,13 +268,8 @@ impl LevelDemo {
     /// The eye this frame: behind the figure or at its eyes; a fixed view of the middle of the map before there is one.
     pub fn eye(&self) -> Eye {
         match self.figure() {
-            Some(f) if self.first_person() => {
-                let at = f.eye;
-                let (s, c) = f.pitch.sin_cos();
-                let ahead = [at[0] + f.yaw.sin() * c, at[1] + f.yaw.cos() * c, at[2] - s];
-                with_fov(look_at(at, ahead))
-            }
-            Some(f) => with_fov(self.third_person(&f)),
+            Some(f) if self.first_person() => looking(f.eye, f.yaw, f.pitch),
+            Some(f) => self.third_person(&f),
             None => with_fov(look_at([0.0, -30.0, 18.0], [0.0, 0.0, 0.0])),
         }
     }
@@ -281,10 +279,10 @@ impl LevelDemo {
         if let Some(e) = self.behind {
             return e;
         }
-        let target = camera_target(f);
-        let mut at = self.kept_clear(target, boom_direction(f), CAMERA_DISTANCE, CAMERA_NEAREST);
+        let (back, length) = boom(f);
+        let mut at = self.kept_clear(camera_target(f), back, length, CAMERA_NEAREST);
         self.above_ground(&mut at);
-        look_at(at, target)
+        looking(at, f.yaw, f.pitch)
     }
 
     /// Point `at` raised to stay [`CAMERA_CLEARANCE`] twice over above the terrain or water under it.
@@ -301,20 +299,18 @@ impl LevelDemo {
             self.behind = None;
             return;
         };
-        let target = camera_target(&f);
+        let (back, length) = boom(&f);
         let (scene, ground) = (&self.scene, &self.ground);
-        let mut at = self.boom.follow(
-            target,
-            boom_direction(&f),
-            CAMERA_DISTANCE,
-            dt,
-            |a, b| match (scene.sight_share(a, b), ground.line_share(a, b)) {
-                (Some(x), Some(y)) => Some(x.min(y)),
-                (x, y) => x.or(y),
-            },
-        );
+        let mut at = self
+            .boom
+            .follow(camera_target(&f), back, length, dt, |a, b| {
+                match (scene.sight_share(a, b), ground.line_share(a, b)) {
+                    (Some(x), Some(y)) => Some(x.min(y)),
+                    (x, y) => x.or(y),
+                }
+            });
         self.above_ground(&mut at);
-        self.behind = Some(look_at(at, target));
+        self.behind = Some(looking(at, f.yaw, f.pitch));
     }
 
     /// The point `distance` from `target` along unit `back`, brought in front of the first cube, interior wall, terrain or water between (no
@@ -339,7 +335,8 @@ impl LevelDemo {
         [0, 1, 2].map(|i| target[i] + back[i] * reach)
     }
 
-    /// The eye drawn this frame: [`LevelDemo::eye`], eased from the last mode's after a switch (module docs).
+    /// The eye drawn this frame: [`LevelDemo::eye`], its camera eased from the last mode's after a switch, its look the
+    /// mode's own (module docs).
     pub fn drawn_eye(&mut self) -> Eye {
         let figure = self.figure();
         // The figure gone and the server's next one not here yet (a respawn): the view stays where it was.
@@ -364,6 +361,11 @@ impl LevelDemo {
             None => p,
         });
         self.blend = blend;
+        // Both modes look where the figure looks: the ease moves the camera only.
+        let eye = match figure {
+            Some(_) => moved_only(eye, target),
+            None => eye,
+        };
         self.drawn_at = Some(eye.position);
         self.held = figure.map(|_| eye);
         eye
@@ -544,16 +546,14 @@ impl App for LevelDemo {
     }
 }
 
-/// The way from the point the camera behind the figure looks at back to the camera (unit): behind the figure's yaw, raised by
-/// the camera's pitch and a share of the head's.
-fn boom_direction(f: &OwnView) -> [f32; 3] {
-    let pitch = (CAMERA_PITCH + f.pitch * 0.6).clamp(-0.6, 1.2);
-    let (s, c) = pitch.sin_cos();
-    [-f.yaw.sin() * c, -f.yaw.cos() * c, s]
+/// The boom from [`camera_target`] back to the camera behind the figure with nothing in the way: its way (unit) and length,
+/// back against the figure's look ([`boom_line`]).
+fn boom(f: &OwnView) -> ([f32; 3], f32) {
+    boom_line(f.yaw, f.pitch, CAMERA_DISTANCE, CAMERA_LIFT)
 }
 
-/// What the camera behind the figure looks at: above its feet, no higher than its eye (crouched or prone the camera rides lower
-/// with the eye, eased as the eye is).
+/// Where the camera behind the figure's boom starts: above its feet, no higher than its eye (crouched or prone the camera rides
+/// lower with the eye, eased as the eye is).
 fn camera_target(f: &OwnView) -> [f32; 3] {
     let eye = (f.eye[2] - f.position[2]).max(0.0);
     [

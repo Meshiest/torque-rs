@@ -7,8 +7,11 @@
 //!   aim).
 //! - [`ray_box`]: a ray against a box, for a camera behind a figure kept in front of the cubes.
 //! - [`camera_log`]: the camera's motion frame by frame, for the examples' camera clips.
+//! - [`behind`]: the camera behind a figure, looking where the figure looks (a switch to the first person moves it, never turns
+//!   it).
 //! - [`names_camera`]: the camera the names over the other players are placed from, the one the example draws the world from.
 
+pub mod behind;
 pub mod camera_log;
 pub mod prediction;
 

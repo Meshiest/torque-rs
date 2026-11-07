@@ -222,6 +222,11 @@ level-demo-valley-shots dir="../target/level-demo-valley-shots":
 level-demo-swim-shots dir="../target/level-demo-swim-shots":
     cargo run -p torque-example-level-demo --release -- --swim-shots {{dir}}
 
+# The figure in the valley from behind and from its eyes, looking down, level and up (`Tab` keeps where the view looks), drawn
+# offscreen into `dir`
+level-demo-switch-shots dir="../target/level-demo-switch-shots":
+    cargo run -p torque-example-level-demo --release -- --switch-shots {{dir}}
+
 # The front page's pictures, each the world alone at the highest quality (the buggy in a turn, a shot in the arena, the valley,
 # the office), and the 2 x 2 grid of them (`hero.png`, `hero@2x.png`), drawn offscreen into `dir`. `--size WxH` sets the
 # pictures' size, `--only <name>` draws one, `--grid` sets the grid again from the pictures in `dir`
@@ -326,6 +331,11 @@ vehicle-demo *args:
 # (a browser's half-scale canvas), drawn offscreen into `dir`
 vehicle-demo-name-shots dir="../target/vehicle-demo-name-shots":
     cargo run -p torque-example-vehicle-demo --release -- --name-shots {{dir}}
+
+# The figure on foot in the vehicle demo from behind and from its eyes, looking down, level and up (`Tab` keeps where the view
+# looks), drawn offscreen into `dir`
+vehicle-demo-switch-shots dir="../target/vehicle-demo-switch-shots":
+    cargo run -p torque-example-vehicle-demo --release -- --switch-shots {{dir}}
 
 # The vehicle demo's pictures over the loopback address (the menu, the start, the buggy, its cockpit, two players seated, the
 # passenger's view, the climb up the hill), drawn offscreen into `dir`

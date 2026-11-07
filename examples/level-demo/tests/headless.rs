@@ -368,6 +368,90 @@ fn tab_eases_the_camera_to_the_eyes_and_back_and_hides_the_figure_only_there() {
     assert!(game.camera_blending());
 }
 
+#[test]
+fn tab_moves_the_camera_between_the_eyes_and_behind_and_never_turns_the_view() {
+    use torque_example_common::behind::{forward, look};
+    let files = GameFiles::bundled().expect("the game folder");
+    let mut game = LevelDemo::new(files).expect("the client");
+    assert!(enter(&mut game, 0), "the first map did not start");
+    let frame = |game: &mut LevelDemo| {
+        game.step(16);
+        game.update_scene(0.016);
+        game.drawn_eye()
+    };
+    for _ in 0..600 {
+        if game.figure().is_some() {
+            break;
+        }
+        frame(&mut game);
+    }
+    assert!(game.figure().is_some(), "no figure");
+    let same = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-4);
+    let figure_look = |game: &LevelDemo| {
+        let f = game.figure().expect("the figure");
+        look(f.yaw, f.pitch)
+    };
+    let apart =
+        |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt();
+    // Turned and tilted by the mouse (to the head's limits, 1.4 radians either way), then held: from the eyes and from behind
+    // the figure the view looks the same way, the figure's.
+    for (turn, tilt) in [
+        ("0", "0"),
+        ("300", "150"),
+        ("-700", "-270"),
+        ("1200", "600"),
+        ("-400", "-900"),
+    ] {
+        game.call("turn", &[turn]).unwrap();
+        game.call("look", &[tilt]).unwrap();
+        for _ in 0..20 {
+            frame(&mut game);
+        }
+        game.set_first_person(false);
+        let behind = frame(&mut game);
+        game.set_first_person(true);
+        let eyes = frame(&mut game);
+        let want = figure_look(&game);
+        assert!(
+            same(forward(&behind), want) && same(forward(&eyes), want),
+            "turn {turn} tilt {tilt}: behind {:?}, eyes {:?}, the figure's {want:?}",
+            forward(&behind),
+            forward(&eyes)
+        );
+        assert!(apart(behind.position, eyes.position) > 1.0);
+    }
+    // Through the ease, either way, held still and with the mouse moving: every frame looks where the figure looks.
+    game.call("look", &["300"]).unwrap();
+    game.set_first_person(false);
+    for _ in 0..30 {
+        frame(&mut game);
+    }
+    for moving in [false, true, false, true] {
+        let from = frame(&mut game);
+        game.key(Key::Tab, true);
+        game.key(Key::Tab, false);
+        let mut frames = 0;
+        let mut last = from;
+        while frames == 0 || game.camera_blending() {
+            if moving {
+                game.call("turn", &["4"]).unwrap();
+                game.call("look", &["-2"]).unwrap();
+            }
+            let e = frame(&mut game);
+            assert!(
+                same(forward(&e), figure_look(&game)),
+                "frame {frames} of the ease: {:?}, the figure's {:?}",
+                forward(&e),
+                figure_look(&game)
+            );
+            last = e;
+            frames += 1;
+            assert!(frames < 60, "the ease never ends");
+        }
+        assert!(frames > 5 && apart(from.position, last.position) > 1.0);
+    }
+}
+
 /// A test map: a floor, and an interior over the spawn point (which faces +y) with a ceiling 2.6 units up and a wall 5 units
 /// behind; the camera behind the figure would be 6.5 units back and above the ceiling without them.
 #[test]

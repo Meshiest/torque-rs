@@ -6,7 +6,8 @@
 //! `--bind <address>` hosts on that address instead of this computer's LAN address. `--shots <dir>` draws its pictures offscreen
 //! into `dir` (two clients over the loopback address, no window); `--lit-particle-shots <dir>` the tires' dust unlit and lit;
 //! `--cloud-shots <dir>` the sky's clouds through the day, with the engine's clouds and with the demo's; `--name-shots <dir>` the
-//! other player's name over his head on foot and in a seat (at 1280x720 and at 640x360). `--web-files <dir>`
+//! other player's name over his head on foot and in a seat (at 1280x720 and at 640x360); `--switch-shots <dir>` the figure on
+//! foot from behind and from its eyes, looking down, level and up. `--web-files <dir>`
 //! writes the files a build for the web fetches into `dir`: the pack (`files::web_pack`) as `game.pack` and the list naming it
 //! (`files.json`).
 //!
@@ -55,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut lit_dir = None;
     let mut cloud_dir = None;
     let mut name_dir = None;
+    let mut switch_dir = None;
     let mut web_dir = None;
     let mut options = ClientOptions::default();
     let mut host = false;
@@ -66,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--lit-particle-shots" => lit_dir = Some(args.dir(&arg)?),
             "--cloud-shots" => cloud_dir = Some(args.dir(&arg)?),
             "--name-shots" => name_dir = Some(args.dir(&arg)?),
+            "--switch-shots" => switch_dir = Some(args.dir(&arg)?),
             "--web-files" => web_dir = Some(args.dir(&arg)?),
             "--host" => host = true,
             "--solo" => solo = true,
@@ -80,6 +83,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pack = files::web_pack(&GameFiles::bundled()?);
         let file = torque::app::web_page::write_web_files(&dir, &pack)?;
         println!("{} ({} bytes)", file.display(), pack.len());
+        return Ok(());
+    }
+    if let Some(dir) = switch_dir {
+        for path in shots::write_switch(&dir, SHOT_SIZE, GameFiles::bundled)? {
+            println!("{}", path.display());
+        }
         return Ok(());
     }
     if let Some(dir) = name_dir {

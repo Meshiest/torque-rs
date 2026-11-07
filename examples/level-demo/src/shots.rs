@@ -236,3 +236,47 @@ pub fn write_swim(files: GameFiles, dir: &Path, size: (u32, u32)) -> Result<Vec<
     )?;
     Ok(shots.paths)
 }
+
+/// The head's pitches the camera-switch pictures look at (radians, positive down): down, level and up.
+pub const SWITCH_PITCHES: [(&str, f32); 3] = [("down", 0.6), ("level", 0.0), ("up", -0.45)];
+
+/// The valley's camera-switch pictures at `size` into `dir`: the figure standing at the spawn with its head at each of
+/// [`SWITCH_PITCHES`], seen from behind it (`switch-<pitch>-third`) and from its eyes (`switch-<pitch>-first`), so the two
+/// views' directions can be compared.
+pub fn write_switch(
+    files: GameFiles,
+    dir: &Path,
+    size: (u32, u32),
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let mut seat = Seat::new(LevelDemo::new(files)?, &gpu, size)?;
+    let mut shots = Shots::new(dir)?;
+    seat.run(&gpu, 200)?;
+    let index = seat
+        .game
+        .maps
+        .iter()
+        .position(|m| map_name(&m.path) == "valley")
+        .ok_or("no valley map")?;
+    seat.game.start_map(index)?;
+    let mut waited = 0;
+    while !(seat.game.in_world() && seat.game.figure().is_some()) && waited < START_LIMIT_MS {
+        seat.run(&gpu, 100)?;
+        waited += 100;
+    }
+    seat.run(&gpu, 2800)?;
+    for (name, pitch) in SWITCH_PITCHES {
+        let now = seat.game.figure().ok_or("no figure")?.pitch;
+        let mouse = ((pitch - now) / 0.003).to_string();
+        seat.game.call("look", &[mouse.as_str()])?;
+        seat.game.set_first_person(false);
+        seat.run(&gpu, 1500)?;
+        let frame = seat.picture(&gpu)?;
+        shots.save(&frame, &format!("switch-{name}-third"))?;
+        seat.game.set_first_person(true);
+        seat.run(&gpu, 100)?;
+        let frame = seat.picture(&gpu)?;
+        shots.save(&frame, &format!("switch-{name}-first"))?;
+    }
+    Ok(shots.paths)
+}

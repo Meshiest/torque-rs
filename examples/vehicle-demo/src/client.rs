@@ -21,7 +21,8 @@
 //! keys move nothing.
 //!
 //! **A frame** ([`VehicleDemo::frame`]): the own figure where the client predicts it, the buggy where the client runs it, the
-//! canvas drawn, the hint line, and the eye: on foot behind the figure (or at its eyes, `Tab`); in a seat behind and above the
+//! canvas drawn, the hint line, and the eye: on foot behind the figure (or at its eyes, `Tab`), both looking where the figure
+//! looks ([`behind`]: `Tab` on foot moves the camera, never turns it); in a seat behind and above the
 //! buggy, turned round it by the mouse, kept above the ground, or (`Tab`) at the seated figure's eyes, looking along the buggy
 //! turned by the mouse as far as a head turns ([`VehicleDemo::seated_eye_point`]: just ahead of the face, so the head does not
 //! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` moves the camera from one to the other
@@ -58,6 +59,7 @@ use crate::seats::SeatedPlayerKind;
 use crate::server::{ALONE_ADDR, DEFAULT_PORT, ServerOptions, WorldServer};
 use torque::app::ghosts::OwnView;
 pub use torque::app::hosting::NetMode;
+use torque_example_common::behind::{boom_line, looking, moved_only};
 use torque_example_common::prediction::CubeClient;
 
 /// How a client is made.
@@ -126,10 +128,11 @@ impl Start {
 pub const ALONE_CLIENT: std::net::SocketAddrV4 =
     std::net::SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_000);
 
-/// The camera on foot: how far behind the figure, how high above its feet it looks, and how much it looks down.
+/// The camera on foot: how far behind the figure, how high above its feet its boom starts, and how far up the view it rides
+/// off the boom's line (the figure a little below the middle of the view).
 pub const CAMERA_DISTANCE: f32 = 5.5;
 pub const CAMERA_TARGET_HEIGHT: f32 = 1.7;
-pub const CAMERA_PITCH: f32 = 0.3;
+pub const CAMERA_LIFT: f32 = 0.6;
 /// The camera in a seat: how far from the buggy, how high above its origin it looks, how much it looks down, how fast it
 /// swings round behind the buggy as it turns (per second), and the least it keeps above the ground.
 pub const DRIVE_DISTANCE: f32 = 8.0;
@@ -651,18 +654,14 @@ impl VehicleDemo {
         }
         self.drive_yaw = None;
         match self.figure() {
-            Some(f) if self.first_person() => {
-                let at = f.eye;
-                let (s, c) = f.pitch.sin_cos();
-                let ahead = [at[0] + f.yaw.sin() * c, at[1] + f.yaw.cos() * c, at[2] - s];
-                with_fov(look_at(at, ahead))
-            }
-            Some(f) => with_fov(self.foot_eye(&f)),
+            Some(f) if self.first_person() => looking(f.eye, f.yaw, f.pitch),
+            Some(f) => self.foot_eye(&f),
             None => with_fov(look_at([-12.0, -14.0, 28.0], [0.0, 0.0, 20.0])),
         }
     }
 
-    /// The eye drawn this frame: [`VehicleDemo::eye`], eased from the last mode's after a switch (module docs).
+    /// The eye drawn this frame: [`VehicleDemo::eye`], eased from the last mode's after a switch (module docs); on foot the
+    /// camera only, its look the mode's own.
     pub fn drawn_eye(&mut self, dt: f32) -> Eye {
         let followed = self.figure().is_some() || (self.seated() && self.buggy_pose().is_some());
         // The figure gone and the server's next one not here yet (R, a fall): the view stays where it was.
@@ -680,6 +679,12 @@ impl VehicleDemo {
             }
             p
         });
+        // On foot both modes look where the figure looks: the ease moves the camera only.
+        let eye = if !self.seated() && self.figure().is_some() {
+            moved_only(eye, target)
+        } else {
+            eye
+        };
         self.drawn_at = Some(eye.position);
         self.held = followed.then_some(eye);
         eye
@@ -805,14 +810,18 @@ impl VehicleDemo {
         Some(look_at(at, [0, 1, 2].map(|i| at[i] + look[i])))
     }
 
+    /// The camera behind the figure on foot: on a boom from [`CAMERA_TARGET_HEIGHT`] above its feet back against its look
+    /// ([`boom_line`]), as far as the wheel left it, kept above the ground, looking where the figure looks.
     fn foot_eye(&self, f: &OwnView) -> Eye {
-        let target = [
+        let pivot = [
             f.position[0],
             f.position[1],
             f.position[2] + CAMERA_TARGET_HEIGHT,
         ];
-        let pitch = (CAMERA_PITCH + f.pitch * 0.6).clamp(-0.6, 1.2);
-        self.orbit(target, f.yaw, pitch, self.foot_zoom.distance())
+        let (back, length) = boom_line(f.yaw, f.pitch, self.foot_zoom.distance(), CAMERA_LIFT);
+        let mut at = [0, 1, 2].map(|i| pivot[i] + back[i] * length);
+        self.keep_above_ground(&mut at);
+        looking(at, f.yaw, f.pitch)
     }
 
     fn drive_eye(&mut self, m: &torque_render_scene::math::Mat, dt: f32) -> Eye {
@@ -841,10 +850,15 @@ impl VehicleDemo {
         let (s, c) = pitch.sin_cos();
         let back = [-yaw.sin() * c, -yaw.cos() * c, s];
         let mut at = [0, 1, 2].map(|i| target[i] + back[i] * distance);
+        self.keep_above_ground(&mut at);
+        look_at(at, target)
+    }
+
+    /// Point `at` raised to stay [`DRIVE_CLEARANCE`] above the terrain under it.
+    fn keep_above_ground(&self, at: &mut [f32; 3]) {
         if let Some(ground) = self.terrain.height(at[0], at[1]) {
             at[2] = at[2].max(ground + DRIVE_CLEARANCE);
         }
-        look_at(at, target)
     }
 
     /// The daylight of the map's Sky as the client's ghost of it has it: its fog color, fog distance and visible distance

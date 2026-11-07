@@ -801,6 +801,77 @@ fn tab_eases_the_camera_between_the_seat_and_behind_and_on_foot_hides_the_figure
     assert!(hidden(&game));
 }
 
+#[test]
+fn tab_on_foot_moves_the_camera_between_the_eyes_and_behind_and_never_turns_the_view() {
+    use torque_example_common::behind::{forward, look};
+    let mut game = host();
+    for _ in 0..30 {
+        drawn(&mut game);
+    }
+    assert!(!game.seated() && game.figure().is_some());
+    let same = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-4);
+    let figure_look = |game: &VehicleDemo| {
+        let f = game.figure().expect("the figure");
+        look(f.yaw, f.pitch)
+    };
+    // Turned and tilted by the mouse (to the head's limits, 1.4 radians either way), then held: from the eyes and from behind
+    // the figure the view looks the same way, the figure's.
+    for (turn, tilt) in [
+        ("0", "0"),
+        ("300", "150"),
+        ("-700", "-270"),
+        ("1200", "600"),
+        ("-400", "-900"),
+    ] {
+        game.call("turn", &[turn]).unwrap();
+        game.call("look", &[tilt]).unwrap();
+        for _ in 0..20 {
+            drawn(&mut game);
+        }
+        game.set_first_person(false);
+        let behind = drawn(&mut game);
+        game.set_first_person(true);
+        let eyes = drawn(&mut game);
+        let want = figure_look(&game);
+        assert!(
+            same(forward(&behind), want) && same(forward(&eyes), want),
+            "turn {turn} tilt {tilt}: behind {:?}, eyes {:?}, the figure's {want:?}",
+            forward(&behind),
+            forward(&eyes)
+        );
+        assert!(apart(behind.position, eyes.position) > 1.0);
+    }
+    // Through the ease, either way, held still and with the mouse moving: every frame looks where the figure looks.
+    game.call("look", &["300"]).unwrap();
+    game.set_first_person(false);
+    for _ in 0..30 {
+        drawn(&mut game);
+    }
+    for moving in [false, true, false, true] {
+        let from = drawn(&mut game);
+        press(&mut game, Key::Tab);
+        let mut frames = 0;
+        let mut last = from;
+        while frames == 0 || game.camera_blending() {
+            if moving {
+                game.call("turn", &["4"]).unwrap();
+                game.call("look", &["-2"]).unwrap();
+            }
+            let e = drawn(&mut game);
+            assert!(
+                same(forward(&e), figure_look(&game)),
+                "frame {frames} of the ease: {:?}, the figure's {:?}",
+                forward(&e),
+                figure_look(&game)
+            );
+            last = e;
+            frames += 1;
+            assert!(frames < 60, "the ease never ends");
+        }
+        assert!(frames > 5 && apart(from.position, last.position) > 1.0);
+    }
+}
+
 /// Each client's wheels' spin over `ms` of frames, unwrapped (turns).
 fn turned(games: &mut [&mut VehicleDemo], watched: &[u32], ms: u32) -> Vec<Vec<f32>> {
     let mut last: Vec<Vec<(f32, bool)>> = games
