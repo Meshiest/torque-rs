@@ -1,6 +1,7 @@
 // The invite panels' rules that need no page: `node --test web/invites.test.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as invites from './invites.js';
 import { browserFamily, connectionDetails, filterCandidates, minutes, privateAllowed } from './invites.js';
 
 test("a joining page ignores ?lan: only the invite's server allows private addresses", () => {
@@ -175,4 +176,10 @@ test('a time for the player reads in whole minutes', () => {
   assert.equal(minutes(15 * 60_000), '15 minutes');
   assert.equal(minutes(5 * 60_000), '5 minutes');
   assert.equal(minutes(60_000), '1 minute');
+});
+
+test('a reply is handed back as a code: a page opened on a reply link only shows it', () => {
+  assert.equal(typeof invites.replyNote, 'function');
+  // the reply-tab handoff to the game's tab is gone
+  assert.equal('replyTab' in invites, false);
 });

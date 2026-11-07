@@ -1,9 +1,9 @@
 // The invite links' connection on its own, with no game and no build: a small page runs `invites.js` as a page played
-// alone does (the host's panel, the joiner's, the reply tab), with stand-ins for the game (the host's side echoes what
+// alone does (the host's panel, the joiner's, a reply link's note), with stand-ins for the game (the host's side echoes what
 // the joiner sends, doubled). The host page makes an invite offer, the joiner's page opens it and presses Connect, and
-// after `delay` seconds (a person relaying the reply link by hand) the reply link is opened in a new tab of the host's
-// browser, which hands it to the host's panel. The data channel must open, a message must go each way, and no console
-// error may show.
+// after `delay` seconds (a person relaying the reply code by hand) the reply code is pasted into the host's panel. A new
+// tab opened on the reply as a link only shows the code. The data channel must open, a message must go each way, and no
+// console error may show.
 //
 // Usage: node invite-link-check.mjs <host browser>[,<joiner browser>] [same|two|fail] [delay]
 // The browsers are names `guard.mjs`'s `launchGuarded` takes (as `browser`), each in its own headless instance with its
@@ -39,10 +39,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 // The page: `invites.js` as `index.html` uses it on a page played alone, with stand-ins for the game.
 const PAGE = `<!doctype html><meta charset=utf-8><title>Invite links</title><body><script type=module>
-import { hostInvites, joinInvite, replyTab, takeFragment } from './invites.js';
+import { hostInvites, joinInvite, replyNote, takeFragment } from './invites.js';
 const root = document.documentElement;
 const found = takeFragment();
-if (found?.kind === 'reply') replyTab(found.code);
+if (found?.kind === 'reply') replyNote(found.code);
 else if (found?.kind === 'join') {
   const join = joinInvite(found.code);
   let send = null;
@@ -76,7 +76,7 @@ const problems = [];
 const log = [];
 const browsers = [];
 // how many times each page's browser reported a connection's ICE failing
-const iceFailed = { host: 0, joiner: 0, 'reply tab': 0 };
+const iceFailed = { host: 0, joiner: 0, 'reply note': 0 };
 // Every page's peer connections get no ICE servers, so no STUN server is contacted; what the page asked for is kept.
 function noStun() {
   const Real = globalThis.RTCPeerConnection;
@@ -132,6 +132,9 @@ const state = (page) =>
       said: [...document.querySelectorAll('#invites [data-said]')].map((e) => e.textContent).join(' | '),
       status: document.querySelector('#invites [data-status]')?.textContent ?? '',
       links: [...document.querySelectorAll('#invites input[data-link]')].map((e) => e.value),
+      codes: [...document.querySelectorAll('#invites input[data-code]')].map((e) => e.value),
+      heading: document.querySelector('#invites h3.reply-heading')?.textContent ?? '',
+      warn: [...document.querySelectorAll('#invites .warn')].map((e) => e.textContent).join(' | '),
       lines: [...document.querySelectorAll('#invites li > p')].map((e) => e.textContent),
       details: [...document.querySelectorAll('#invites input[data-details]')].map((e) => e.value),
       listHidden: document.getElementById('invites-list')?.hidden ?? null,
@@ -217,20 +220,46 @@ try {
   let j = await wait(joiner, 20_000, (s) => s.join === 'ready' || s.join === 'refused');
   if (j.join !== 'ready') throw new Error(`the joiner's page did not take the invite ("${j.said}")`);
   await press(joiner, 'Connect');
-  j = await wait(joiner, 20_000, (s) => s.links.length > 0 || s.join === 'refused');
-  const replyLink = j.links[0];
-  if (!replyLink) throw new Error(`no reply link ("${j.said}")`);
-  console.log(`reply link: code ${replyLink.split('#reply=')[1].length} characters`);
+  j = await wait(joiner, 20_000, (s) => s.codes.length > 0 || s.join === 'refused');
+  const replyCode = j.codes[0];
+  if (!replyCode) throw new Error(`no reply code ("${j.said}")`);
+  console.log(`reply code: ${replyCode.length} characters`);
+  if (!/^[A-Za-z0-9_-]+$/.test(replyCode)) problems.push('the reply is not a bare code');
+  if (j.links.length) problems.push('the joiner still shows a link');
+  if (j.heading !== 'Send this code back to the host') problems.push(`the reply's heading: "${j.heading}"`);
+  if (!j.warn.includes('Only send this to the host. It contains your IP address.')) problems.push(`the reply's warning: "${j.warn}"`);
+  if (!/Host with a link panel, under "A reply came back\?"/.test(j.said) || !/waits up to 5 minutes/.test(j.said)) {
+    problems.push(`the reply's instructions: "${j.said}"`);
+  }
+
+  // A reply opened as a link (an old one) is no use to its page: it says so and shows the code to copy.
+  {
+    const note = await watched(hostBrowser, 'reply note');
+    await note.goto(noLock(`${base}#reply=${replyCode}`), { waitUntil: 'load' });
+    const n = await wait(note, 10_000, (s) => s.reply === 'shown');
+    if (n.reply !== 'shown' || !n.said.includes("This is a reply for a host. Paste it into the host's panel instead.")) {
+      problems.push(`a reply link's page: "${n.reply}" ("${n.said}")`);
+    }
+    if (n.codes[0] !== replyCode) problems.push("a reply link's page does not show its code");
+    if ((await note.evaluate(() => location.hash)) !== '') problems.push('the reply stayed in the address bar');
+    await note.close();
+  }
 
   if (delay > 0) {
-    console.log(`waiting ${delay} s before the reply link is opened`);
+    console.log(`waiting ${delay} s before the reply code is pasted`);
     await new Promise((r) => setTimeout(r, delay * 1000));
   }
   const taken = Date.now();
-  const tab = await watched(hostBrowser, 'reply tab');
-  await tab.goto(noLock(replyLink), { waitUntil: 'load' });
-  const t = await wait(tab, 10_000, (s) => s.reply !== '').catch(() => ({ reply: 'taken', said: '(closed)' }));
-  if (t.reply !== 'taken') throw new Error(`the reply tab: ${t.reply} ("${t.said}")`);
+  // the host pastes the code into its panel's field for it
+  const pasted = await host.evaluate((code) => {
+    const input = [...document.querySelectorAll('#invites input')].find((i) => i.placeholder === "Paste the player's reply code");
+    if (input) input.value = code;
+    return Boolean(input);
+  }, replyCode);
+  if (!pasted) throw new Error("no field for the player's reply code on the host's panel");
+  await press(host, 'Add');
+  h = await wait(host, 10_000, (s) => /The reply is in/.test(s.said));
+  if (!/The reply is in/.test(h.said)) throw new Error(`the host's panel did not take the reply code ("${h.said}")`);
   j = await state(joiner);
   console.log(`the joiner's status: "${j.status}"`);
   if (!j.link && !['Waiting for the host...', 'Connecting...', 'Connected'].includes(j.status)) {

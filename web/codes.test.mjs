@@ -109,8 +109,8 @@ test('a payload that inflates past the cap is refused, and so is one that is not
 });
 
 test('a code of the other kind or another version is refused', async () => {
-  await refused(c.decodeCode(await c.encodeCode(invite()), c.KIND_REPLY), /invite offer link, not a reply link/);
-  await refused(c.decodeCode(await c.encodeCode(reply()), c.KIND_JOIN), /reply link, not an invite offer link/);
+  await refused(c.decodeCode(await c.encodeCode(invite()), c.KIND_REPLY), /invite offer link, not a reply code/);
+  await refused(c.decodeCode(await c.encodeCode(reply()), c.KIND_JOIN), /reply code, not an invite offer link/);
   const text = c.payloadText(invite());
   await refused(c.decodeCode(rawCode(text, { version: 2 }), c.KIND_JOIN), /different version/);
   await refused(c.decodeCode(rawCode(text, { kind: 7 }), c.KIND_JOIN), /not an invite offer or a reply/);
@@ -148,7 +148,11 @@ test("a code's lines are read strictly", async () => {
 test('a pasted link or code gives its code, and a fragment its kind', () => {
   assert.equal(c.codeFromPaste('https://example.org/fps/#join=AbC-_9', c.KIND_JOIN), 'AbC-_9');
   assert.equal(c.codeFromPaste('  AbC-_9  ', c.KIND_REPLY), 'AbC-_9');
+  // a reply is handed back as a bare code; an old reply link gives the same code
+  assert.equal(c.codeFromPaste('https://example.org/fps/#reply=AbC-_9', c.KIND_REPLY), 'AbC-_9');
+  assert.equal(c.codeFromPaste('\n AbC-_9 \n', c.KIND_REPLY), 'AbC-_9');
   assert.equal(c.codeFromPaste('https://example.org/fps/#reply=AbC', c.KIND_JOIN), null);
+  assert.equal(c.codeFromPaste('https://example.org/fps/#join=AbC', c.KIND_REPLY), null);
   assert.equal(c.codeFromPaste('https://example.org/fps/#join=AbC&via=x', c.KIND_JOIN), null);
   assert.equal(c.codeFromPaste('not a code!', c.KIND_JOIN), null);
   assert.deepEqual(c.codeFromFragment('#reply=xyz'), { kind: 'reply', code: 'xyz' });

@@ -173,7 +173,7 @@
   // and Join with Link trade connection codes by hand instead (invites.js `soloPage`), and the page never loads again: an
   // invite link (`#join=<code>`, or one pasted into Join with Link) starts the game as played alone with the join's panel
   // over its menu, and switches it to the host's game once the channel opens (the game's `switchTo`); Back to the menu,
-  // and leaving that game, switch it back. A reply link (`#reply=<code>`) hands its reply to this browser's game tab and
+  // and leaving that game, switch it back. A reply link (`#reply=<code>`) only shows its code, for the host's panel, and
   // starts no game unless its Back to the menu is pressed. A game played alone in the page itself (the vehicle demo) hosts
   // with a link by starting its server in the worker then (as `?host=1` with no room) and switching its game to it.
   //
@@ -184,7 +184,7 @@
   import { fpsText, later, readStreamed, showBar, stageText } from './loading.js';
   import * as settings from './settings.js';
   import { createTorque } from './bridge.js';
-  import { replyTab, soloPage, takeFragment } from './invites.js';
+  import { replyNote, soloPage, takeFragment } from './invites.js';
 
   // `?nolock` (the browser checks load every page with it): the page never takes the pointer lock. In headless Chrome on Windows
   // a lock confines the real cursor to the invisible window.
@@ -444,8 +444,9 @@
     }
   }
 
-  // A reply link's tab starts the game only when its Back to the menu is pressed.
-  (invite?.kind === 'reply' ? replyTab(invite.code, { back: () => start().catch(failed) }) : start()).catch(failed);
+  // A page opened on a reply link starts the game only when its Back to the menu is pressed.
+  if (invite?.kind === 'reply') replyNote(invite.code, { back: () => start().catch(failed) });
+  else start().catch(failed);
 </script>
 </body>
 </html>
