@@ -111,7 +111,7 @@ fn every_feature_plugin_on_is_the_renderer_as_it_always_drew() {
     assert_eq!(RenderFeatures::ALL.mode(Quality::High), HdMode::default());
     let engine = engine(DefaultPlugins);
     assert_eq!(
-        engine.resource::<RenderFeatures>(),
+        engine.resource::<RenderFeatures>().as_deref(),
         Some(&RenderFeatures::ALL)
     );
     let slot = slot(&client(&engine));

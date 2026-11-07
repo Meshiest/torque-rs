@@ -144,10 +144,12 @@ fn a_session_runs_over_a_transport_a_plugin_registered() {
     let mut server = server(&engine, Listen::custom("test.channel", ())).expect("the server");
     assert_eq!(server.address(), Some(SocketAddr::V4(SERVER)));
 
-    let game = engine.resource::<torque::app::files::GameFiles>().unwrap();
+    let files = engine
+        .resource::<torque::app::files::GameFiles>()
+        .unwrap()
+        .mem_files();
     let mut builder =
-        ClientBuilder::from_engine(&engine, Some(game.mem_files()), ClientNet::External)
-            .expect("the client");
+        ClientBuilder::from_engine(&engine, Some(files), ClientNet::External).expect("the client");
     builder
         .connect("test.channel", &ChannelTarget)
         .expect("the client connects over the channel");

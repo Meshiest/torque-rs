@@ -437,6 +437,7 @@ impl Plugin for RendererSlotPlugin {
         engine.client(ClientStage::Natives, |vm, engine| {
             let features = engine
                 .resource::<RenderFeatures>()
+                .as_deref()
                 .copied()
                 .unwrap_or(RenderFeatures::NONE);
             let (slot, warnings) = RendererSlot::new(engine.list::<RendererEntry>(), features);

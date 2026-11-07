@@ -391,15 +391,19 @@ impl EngineConfig for EngineBuilder {
 }
 
 /// The script a server of `engine` runs first: the config's, or [`DEFAULT_SERVER_ENTRY`].
-pub fn server_entry(engine: &Engine) -> &str {
+pub fn server_entry(engine: &Engine) -> String {
     engine
         .resource::<GameConfig>()
-        .map_or(DEFAULT_SERVER_ENTRY, |config| config.server.as_str())
+        .map_or(DEFAULT_SERVER_ENTRY.to_string(), |config| {
+            config.server.clone()
+        })
 }
 
 /// The script a client of `engine` runs first: the config's, or [`DEFAULT_CLIENT_ENTRY`].
-pub fn client_entry(engine: &Engine) -> &str {
+pub fn client_entry(engine: &Engine) -> String {
     engine
         .resource::<GameConfig>()
-        .map_or(DEFAULT_CLIENT_ENTRY, |config| config.client.as_str())
+        .map_or(DEFAULT_CLIENT_ENTRY.to_string(), |config| {
+            config.client.clone()
+        })
 }

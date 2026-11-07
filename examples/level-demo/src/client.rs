@@ -119,9 +119,12 @@ impl LevelDemo {
     /// The client `engine` makes (over the files its [`LevelPlugin`](crate::plugin::LevelPlugin) holds): `client.cs` run, the menu built from the maps
     /// found.
     pub fn from_engine(engine: &Engine) -> Result<LevelDemo, String> {
-        let level = engine
-            .resource::<Rc<Level>>()
-            .ok_or("the engine has no level demo (LevelPlugin)")?;
+        // The shared level, not the resource's borrow, which would be held across the client's recipes.
+        let level = Rc::clone(
+            &*engine
+                .resource::<Rc<Level>>()
+                .ok_or("the engine has no level demo (LevelPlugin)")?,
+        );
         let mut b = ClientBuilder::from_engine(
             engine,
             Some(level.files.mem_files()),

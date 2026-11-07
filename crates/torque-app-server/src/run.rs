@@ -128,10 +128,11 @@ struct DedicatedRunner;
 
 impl Runner for DedicatedRunner {
     fn run(&self, engine: &Engine) -> Result<(), String> {
-        let server = engine.resource::<Dedicated>().ok_or(
+        // A copy, so no borrow of the resource is held while the server runs.
+        let server = engine.resource::<Dedicated>().as_deref().cloned().ok_or(
             "the engine has no dedicated server to run: name it with `EngineDedicated::dedicated`",
         )?;
-        run_dedicated(engine, server)
+        run_dedicated(engine, &server)
     }
 }
 

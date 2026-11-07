@@ -37,9 +37,9 @@
 //!         engine.server(ServerStage::Game, |vm, engine| {
 //!             let engine = engine.clone();
 //!             vm.register("hello", 2, 2, "(name) a greeting", move |_vm, call| {
-//!                 let Greeting(greeting) = engine.resource().expect("the hello plugin's greeting");
+//!                 let greeting = engine.resource::<Greeting>().expect("the hello plugin's greeting");
 //!                 let name = String::from_utf8_lossy(&call.argv[1]);
-//!                 Native::Str(format!("{greeting}, {name}!").into_bytes())
+//!                 Native::Str(format!("{}, {name}!", greeting.0).into_bytes())
 //!             });
 //!             Ok(())
 //!         });
@@ -67,21 +67,31 @@ extern crate self as torque_engine;
 mod builder;
 mod engine;
 mod group;
+pub mod param;
 mod plugin;
 mod recipe;
 mod run;
+pub mod script;
 mod slots;
 
+#[cfg(test)]
+mod script_tests;
 #[cfg(test)]
 mod tests;
 
 pub use builder::{BuildError, EngineBuilder, Warning};
 pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
+pub use param::{
+    Cx, IntoRecipe, Local, Param, ParamError, ParamKind, RecipeReturn, Res, ResMut, ResourceError,
+    Slot, This, VmMut, VmRef,
+};
 pub use plugin::{Plugin, PluginId, PluginSet, PluginType, Requires};
 pub use recipe::{ClientStage, ClientTick, RecipeError, ServerStage, Stage};
 pub use run::{RunError, Runner};
+pub use script::{IntoNative, ScriptRegistry, TypedNative};
 /// Implements [`PluginType`] for a plugin type: the id is the package's name and the type's, as a path
 /// (`my_game::ArenaPlugin`), or `#[plugin(id = "...")]`. `#[plugin(crate = path)]` names this crate when it is reached
 /// through another path, such as `torque::engine`. See [`PluginType`].
 pub use torque_macros::PluginId;
+pub use torque_ts_vm::convert::{Rest, ScriptError};

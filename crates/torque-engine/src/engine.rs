@@ -6,8 +6,10 @@ use std::rc::Rc;
 
 use torque_ts_vm::vm::Vm;
 
+use crate::param::{Res, ResMut, ResourceError};
 use crate::recipe::Recipe;
-use crate::slots::Store;
+use crate::script::{ScriptEntry, replay_entries};
+use crate::slots::{Resources, Store};
 use crate::{EngineBuilder, PluginId, PluginType, RecipeError, Stage, Warning};
 
 /// The plugins built into recipes, resources, slots and lists. Cheap to clone (one `Rc`); a game keeps it and makes
@@ -56,6 +58,8 @@ struct Inner {
     net_versions: Vec<(PluginId, u32)>,
     recipes: Vec<Recipe>,
     store: Store,
+    resources: Resources,
+    script: Vec<ScriptEntry>,
     warnings: Vec<Warning>,
 }
 
@@ -69,20 +73,27 @@ impl Engine {
         plugins: Vec<PluginId>,
         net_versions: Vec<(PluginId, u32)>,
         recipes: Vec<Recipe>,
-        store: Store,
+        mut store: Store,
+        script: Vec<ScriptEntry>,
         warnings: Vec<Warning>,
     ) -> Engine {
+        let resources = store.take_resources();
         Engine(Rc::new(Inner {
             plugins,
             net_versions,
             recipes,
             store,
+            resources,
+            script,
             warnings,
         }))
     }
 
     /// Runs, on `vm`, every recipe recorded for `stage`, in order. The first recipe that fails stops the replay; its
-    /// error names the plugin and the stage.
+    /// error names the plugin and the stage. At the last stage before scripts run
+    /// ([`SERVER_SCRIPT_STAGE`](crate::script::SERVER_SCRIPT_STAGE), [`CLIENT_SCRIPT_STAGE`](crate::script::CLIENT_SCRIPT_STAGE)),
+    /// the script registry's functions, methods and globals for that side are registered after the recipes, in the
+    /// order the plugins declared them ([`ScriptRegistry`](crate::ScriptRegistry)).
     pub fn replay(&self, stage: impl Into<Stage>, vm: &mut Vm) -> Result<(), RecipeError> {
         let stage = stage.into();
         for recipe in self.0.recipes.iter().filter(|r| r.stage == stage) {
@@ -92,6 +103,7 @@ impl Engine {
                 message,
             })?;
         }
+        replay_entries(&self.0.script, stage, vm, self);
         Ok(())
     }
 
@@ -134,9 +146,41 @@ impl Engine {
         &self.0.net_versions
     }
 
-    /// The resource of type `T`.
-    pub fn resource<T: Any>(&self) -> Option<&T> {
-        self.0.store.resource()
+    /// The resource of type `T`, to read while the returned guard lives.
+    ///
+    /// # Panics
+    ///
+    /// When it is borrowed to change ([`resource_mut`](Self::resource_mut), a [`ResMut`] parameter); see
+    /// [`try_resource`](Self::try_resource) to handle that.
+    pub fn resource<T: Any>(&self) -> Option<Res<'_, T>> {
+        match self.try_resource() {
+            Ok(value) => Some(value),
+            Err(ResourceError::Missing { .. }) => None,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// The resource of type `T`, to change while the returned guard lives.
+    ///
+    /// # Panics
+    ///
+    /// When it is borrowed; see [`try_resource_mut`](Self::try_resource_mut) to handle that.
+    pub fn resource_mut<T: Any>(&self) -> Option<ResMut<'_, T>> {
+        match self.try_resource_mut() {
+            Ok(value) => Some(value),
+            Err(ResourceError::Missing { .. }) => None,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// The resource of type `T`, to read; an error naming it when it is missing or borrowed to change.
+    pub fn try_resource<T: Any>(&self) -> Result<Res<'_, T>, ResourceError> {
+        self.0.resources.get()
+    }
+
+    /// The resource of type `T`, to change; an error naming it when it is missing or borrowed.
+    pub fn try_resource_mut<T: Any>(&self) -> Result<ResMut<'_, T>, ResourceError> {
+        self.0.resources.get_mut()
     }
 
     /// The value of the slot of type `T`, if a plugin set it.

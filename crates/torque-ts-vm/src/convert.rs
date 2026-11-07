@@ -10,6 +10,10 @@
 //!   it is a float;
 //! - text is the bytes up to the first NUL, as a C string.
 //!
+//! A typed native's parameters read their arguments through [`ScriptArg`] (one argument for each [`FromScript`] type,
+//! none or one for `Option<T>`, the rest for [`Rest`]) and its result goes back through [`ScriptReturn`] (an
+//! [`IntoScript`] value, or `Result<T, ScriptError>`, whose error is printed).
+//!
 //! Reading never fails for a number: text that is not a number reads as 0, as in TGE. Only text asked for as `&str`
 //! can be refused, when it is not UTF-8.
 
@@ -24,12 +28,16 @@ use crate::vm::Native;
 pub enum ConvertError {
     /// The text is not valid UTF-8 (a script's text is bytes; only `&str` needs more than that).
     NotUtf8,
+    /// A required argument was not passed (the interpreter checks the count first, so only a host's own call that skips
+    /// that check meets this).
+    Missing,
 }
 
 impl fmt::Display for ConvertError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConvertError::NotUtf8 => f.write_str("the argument is not valid UTF-8 text"),
+            ConvertError::Missing => f.write_str("a required argument is missing"),
         }
     }
 }
@@ -81,6 +89,13 @@ impl FromScript<'_> for bool {
     /// `dAtob`.
     fn from_script(arg: &[u8]) -> Result<Self, ConvertError> {
         Ok(crate::fields::atob(arg))
+    }
+}
+
+impl<'a> FromScript<'a> for &'a [u8] {
+    /// The bytes up to the first NUL, as they are.
+    fn from_script(arg: &'a [u8]) -> Result<Self, ConvertError> {
+        Ok(until_nul(arg))
     }
 }
 
@@ -145,6 +160,195 @@ impl IntoScript for &str {
 impl IntoScript for String {
     fn into_script(self) -> Native {
         Native::Str(self.into_bytes())
+    }
+}
+
+impl IntoScript for Native {
+    /// The result as it is: for a native that picks the kind itself (or fails with [`Native::Fail`]).
+    fn into_script(self) -> Native {
+        self
+    }
+}
+
+/// How a typed native's parameter takes script arguments: what its argument counts and its usage text are made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArgKind {
+    /// One argument the script must pass.
+    Required,
+    /// One argument the script may leave out (`Option<T>`): only after the required ones.
+    Optional,
+    /// Every argument left ([`Rest`]): the last one.
+    Rest,
+}
+
+/// A parameter of a typed native that reads script arguments: one ([`FromScript`] types), one or none (`Option<T>`), or
+/// the rest ([`Rest`]).
+///
+/// `Item<'a>` is the type with the arguments' lifetime: `&str` borrows the argument's text. The engine's natives take
+/// these beside injected parameters; the argument counts come from the kinds in order.
+pub trait ScriptArg {
+    /// The parameter's type, borrowing the arguments for `'a`.
+    type Item<'a>;
+    /// How many arguments it takes.
+    const KIND: ArgKind;
+    /// Takes its argument (or arguments) from the front of `args`, the ones not taken yet.
+    fn take<'a>(args: &mut &'a [Vec<u8>]) -> Result<Self::Item<'a>, ConvertError>;
+}
+
+/// The front argument of `args`, taken off.
+fn next<'a>(args: &mut &'a [Vec<u8>]) -> Option<&'a [u8]> {
+    let (first, rest) = args.split_first()?;
+    *args = rest;
+    Some(first)
+}
+
+macro_rules! owned_script_args {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl ScriptArg for $ty {
+                type Item<'a> = $ty;
+                const KIND: ArgKind = ArgKind::Required;
+                fn take(args: &mut &[Vec<u8>]) -> Result<$ty, ConvertError> {
+                    <$ty>::from_script(next(args).ok_or(ConvertError::Missing)?)
+                }
+            }
+        )*
+    };
+}
+
+owned_script_args!(i32, u32, f32, bool, String);
+
+impl ScriptArg for &str {
+    type Item<'a> = &'a str;
+    const KIND: ArgKind = ArgKind::Required;
+    fn take<'a>(args: &mut &'a [Vec<u8>]) -> Result<&'a str, ConvertError> {
+        <&str>::from_script(next(args).ok_or(ConvertError::Missing)?)
+    }
+}
+
+impl ScriptArg for &[u8] {
+    type Item<'a> = &'a [u8];
+    const KIND: ArgKind = ArgKind::Required;
+    fn take<'a>(args: &mut &'a [Vec<u8>]) -> Result<&'a [u8], ConvertError> {
+        <&[u8]>::from_script(next(args).ok_or(ConvertError::Missing)?)
+    }
+}
+
+impl ScriptArg for Cow<'_, str> {
+    type Item<'a> = Cow<'a, str>;
+    const KIND: ArgKind = ArgKind::Required;
+    fn take<'a>(args: &mut &'a [Vec<u8>]) -> Result<Cow<'a, str>, ConvertError> {
+        Cow::from_script(next(args).ok_or(ConvertError::Missing)?)
+    }
+}
+
+impl<T: ScriptArg> ScriptArg for Option<T> {
+    type Item<'a> = Option<T::Item<'a>>;
+    const KIND: ArgKind = match T::KIND {
+        ArgKind::Required => ArgKind::Optional,
+        _ => panic!(
+            "`Option<T>` takes a type that reads one argument, not another `Option` or `Rest`"
+        ),
+    };
+    fn take<'a>(args: &mut &'a [Vec<u8>]) -> Result<Self::Item<'a>, ConvertError> {
+        if args.is_empty() {
+            return Ok(None);
+        }
+        T::take(args).map(Some)
+    }
+}
+
+/// The arguments left after the others, for a native that takes any number (`schedule(delay, method, args...)`): the
+/// last script parameter. Each is the argument's bytes as passed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rest<'a>(&'a [Vec<u8>]);
+
+impl<'a> Rest<'a> {
+    /// The arguments in `args`.
+    pub fn new(args: &'a [Vec<u8>]) -> Rest<'a> {
+        Rest(args)
+    }
+
+    /// How many arguments there are.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The argument at `index`, as passed.
+    pub fn get(&self, index: usize) -> Option<&'a [u8]> {
+        self.0.get(index).map(Vec::as_slice)
+    }
+
+    /// Each argument, as passed.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &'a [u8]> + 'a {
+        self.0.iter().map(Vec::as_slice)
+    }
+
+    /// Each argument read as `T` (the rules of [`FromScript`]).
+    pub fn parse<T: FromScript<'a>>(&self) -> Result<Vec<T>, ConvertError> {
+        self.iter().map(T::from_script).collect()
+    }
+}
+
+impl ScriptArg for Rest<'_> {
+    type Item<'a> = Rest<'a>;
+    const KIND: ArgKind = ArgKind::Rest;
+    fn take<'a>(args: &mut &'a [Vec<u8>]) -> Result<Rest<'a>, ConvertError> {
+        Ok(Rest(std::mem::take(args)))
+    }
+}
+
+/// A typed native's failure: printed as a console error (with the native's name and usage), and the call returns the
+/// empty string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptError(String);
+
+impl ScriptError {
+    /// An error saying `message`.
+    pub fn new(message: impl Into<String>) -> ScriptError {
+        ScriptError(message.into())
+    }
+
+    /// What it says.
+    pub fn message(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ScriptError {}
+
+impl From<ConvertError> for ScriptError {
+    fn from(error: ConvertError) -> ScriptError {
+        ScriptError(error.to_string())
+    }
+}
+
+/// What a typed native returns: a value ([`IntoScript`]) or `Result<T, ScriptError>`, whose error is printed.
+pub trait ScriptReturn {
+    /// The result for the interpreter, or the error to print.
+    fn into_result(self) -> Result<Native, ScriptError>;
+}
+
+impl<T: IntoScript> ScriptReturn for T {
+    fn into_result(self) -> Result<Native, ScriptError> {
+        Ok(self.into_script())
+    }
+}
+
+impl<T: IntoScript> ScriptReturn for Result<T, ScriptError> {
+    fn into_result(self) -> Result<Native, ScriptError> {
+        self.map(IntoScript::into_script)
     }
 }
 

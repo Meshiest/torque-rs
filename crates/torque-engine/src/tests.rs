@@ -677,13 +677,16 @@ fn resources_insert_init_and_change() {
             engine.insert_resource(replaced);
         }),
     )));
-    assert_eq!(engine.resource::<u32>(), Some(&1));
-    assert_eq!(engine.resource::<u8>(), Some(&0));
+    assert_eq!(engine.resource::<u32>().as_deref(), Some(&1));
+    assert_eq!(engine.resource::<u8>().as_deref(), Some(&0));
     assert_eq!(
-        engine.resource::<String>().map(String::as_str),
+        engine.resource::<String>().as_deref().map(String::as_str),
         Some("replaced xy")
     );
-    assert_eq!(engine.resource::<i64>(), None);
+    assert!(engine.resource::<i64>().is_none());
+    // The built engine lends a resource out to change, too.
+    *engine.resource_mut::<u32>().unwrap() += 1;
+    assert_eq!(engine.resource::<u32>().as_deref(), Some(&2));
 }
 
 /// A plugin whose server recipe registers `count()`, which counts calls in that Vm only, and bumps a shared resource.

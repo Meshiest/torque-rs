@@ -7,11 +7,14 @@ use std::rc::Rc;
 use torque_ts_vm::vm::Vm;
 
 use crate::group::Entry;
+use crate::param::IntoRecipe;
 use crate::plugin::{Requires, ids_of};
 use crate::recipe::{Recipe, RecipeFn};
+use crate::script::{ScriptRegistry, ScriptTable, Side};
 use crate::slots::Store;
 use crate::{
     ClientStage, Engine, PluginGroupBuilder, PluginId, PluginSet, PluginType, Plugins, ServerStage,
+    Stage,
 };
 
 /// What recipes, slots and the rest are filed under when they are recorded outside any plugin's `build`.
@@ -36,7 +39,10 @@ const OUTSIDE: PluginId = PluginId::new("engine");
 ///   made while plugins build is refused with a [`Warning::ToggleDuringBuild`] (a plugin that does not want another
 ///   one does not add or require it).
 /// - **Resources** ([`insert_resource`](Self::insert_resource)): one value per type, shared by every script engine the
-///   engine makes (use a `Cell` or `RefCell` inside for state that changes).
+///   engine makes. The built engine lends them out checked at run time ([`Engine::resource`],
+///   [`Engine::resource_mut`], the [`Res`](crate::Res) and [`ResMut`](crate::ResMut) parameters).
+/// - **Script functions, methods and globals** ([`script`](Self::script)): registered into every script engine; a name
+///   taken by two plugins fails the build ([`BuildError::DuplicateScriptName`]).
 /// - **Slots** ([`set_slot`](Self::set_slot)): one value per type that exactly one plugin may set, such as the game's
 ///   simulation classes; a second setter fails the build ([`BuildError::DuplicateSlot`]).
 /// - **Lists** ([`push`](Self::push)): values of one type that any plugin may add to, in plugin order.
@@ -91,6 +97,7 @@ pub struct EngineBuilder {
     current: PluginId,
     recipes: Vec<Recipe>,
     store: Store,
+    script: ScriptTable,
     warnings: Vec<Warning>,
     error: Option<BuildError>,
 }
@@ -116,6 +123,7 @@ impl Default for EngineBuilder {
             current: OUTSIDE,
             recipes: Vec::new(),
             store: Store::default(),
+            script: ScriptTable::default(),
             warnings: Vec::new(),
             error: None,
         }
@@ -221,7 +229,7 @@ impl EngineBuilder {
         stage: ServerStage,
         recipe: impl Fn(&mut Vm, &Engine) -> Result<(), String> + 'static,
     ) -> &mut EngineBuilder {
-        self.recipe(stage.into(), Box::new(recipe))
+        self.push_recipe(stage.into(), Box::new(recipe))
     }
 
     /// Records a recipe that runs on every client script engine at `stage` (a dedicated server makes none).
@@ -230,7 +238,59 @@ impl EngineBuilder {
         stage: ClientStage,
         recipe: impl Fn(&mut Vm, &Engine) -> Result<(), String> + 'static,
     ) -> &mut EngineBuilder {
-        self.recipe(stage.into(), Box::new(recipe))
+        self.push_recipe(stage.into(), Box::new(recipe))
+    }
+
+    /// Records a recipe written as a function of [injected parameters](crate::param), at a server or a client `stage`:
+    /// it names what it needs (`VmMut`, `Res<T>`, `ResMut<T>`, `Slot<dyn T>`, `&Engine`, `Local<T>`) and returns
+    /// nothing or `Result<(), E>`. A parameter that cannot be fetched (a missing resource) stops the replay with its
+    /// error. The closure form that [`server`](Self::server) takes works here too.
+    ///
+    /// ```
+    /// use torque_engine::{EngineBuilder, Local, ServerStage, VmMut};
+    ///
+    /// // Counts the servers made from this engine: the recipe's own state outlives each replay.
+    /// fn count(mut vm: VmMut, mut starts: Local<u32>) {
+    ///     *starts += 1;
+    ///     vm.set_global("$Server::Starts", &starts.to_string());
+    /// }
+    ///
+    /// let mut builder = EngineBuilder::new();
+    /// builder.recipe(ServerStage::Game, count);
+    /// let engine = builder.build()?;
+    /// for starts in ["1", "2"] {
+    ///     let mut vm = torque_ts_vm::vm::Vm::new();
+    ///     engine.replay(ServerStage::Game, &mut vm)?;
+    ///     assert_eq!(vm.global("$Server::Starts").as_deref(), Some(starts.as_bytes()));
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn recipe<M>(
+        &mut self,
+        stage: impl Into<Stage>,
+        recipe: impl IntoRecipe<M>,
+    ) -> &mut EngineBuilder {
+        self.push_recipe(stage.into(), recipe.into_recipe())
+    }
+
+    /// The script registry for every script engine, server and client: console functions, methods and globals (see
+    /// [`ScriptRegistry`]).
+    pub fn script(&mut self) -> ScriptRegistry<'_> {
+        ScriptRegistry::new(self, Side::Both)
+    }
+
+    /// The script registry for the servers' script engines only.
+    pub fn server_script(&mut self) -> ScriptRegistry<'_> {
+        ScriptRegistry::new(self, Side::Server)
+    }
+
+    /// The script registry for the clients' script engines only (a dedicated server makes none).
+    pub fn client_script(&mut self) -> ScriptRegistry<'_> {
+        ScriptRegistry::new(self, Side::Client)
+    }
+
+    pub(crate) fn script_table(&mut self) -> &mut ScriptTable {
+        &mut self.script
     }
 
     /// Stores `value` as the resource of its type, replacing one stored before.
@@ -335,6 +395,7 @@ impl EngineBuilder {
             net_versions,
             this.recipes,
             this.store,
+            this.script.entries,
             this.warnings,
         ))
     }
@@ -373,7 +434,7 @@ impl EngineBuilder {
         self
     }
 
-    fn recipe(&mut self, stage: crate::Stage, run: RecipeFn) -> &mut EngineBuilder {
+    fn push_recipe(&mut self, stage: Stage, run: RecipeFn) -> &mut EngineBuilder {
         self.recipes.push(Recipe {
             stage,
             plugin: self.current,
@@ -382,7 +443,7 @@ impl EngineBuilder {
         self
     }
 
-    fn fail(&mut self, err: BuildError) {
+    pub(crate) fn fail(&mut self, err: BuildError) {
         self.error.get_or_insert(err);
     }
 
@@ -611,6 +672,24 @@ pub enum BuildError {
         /// The plugin that set it again.
         second: PluginId,
     },
+    /// Two plugins declared one script function, method or global on a side they share (names compare without case).
+    DuplicateScriptName {
+        /// `"function"`, `"method"` or `"global"`: what the second plugin declared.
+        kind: &'static str,
+        /// The name, as the second plugin spelled it (`Namespace::name`, or a global's `$name`).
+        name: String,
+        /// The plugin that declared it first (and keeps it).
+        first: PluginId,
+        /// The plugin that declared it again.
+        second: PluginId,
+    },
+    /// A script function's argument names do not match its function's script arguments.
+    ScriptSignature {
+        /// The plugin that declared it.
+        plugin: PluginId,
+        /// What does not match.
+        message: String,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -631,6 +710,18 @@ impl fmt::Display for BuildError {
                 f,
                 "the slot `{slot}` is set by both `{first}` and `{second}`; only one plugin may set it"
             ),
+            BuildError::DuplicateScriptName {
+                kind,
+                name,
+                first,
+                second,
+            } => write!(
+                f,
+                "the script {kind} `{name}` is declared by both `{first}` and `{second}`; only one plugin may declare it"
+            ),
+            BuildError::ScriptSignature { plugin, message } => {
+                write!(f, "the plugin `{plugin}`: {message}")
+            }
         }
     }
 }

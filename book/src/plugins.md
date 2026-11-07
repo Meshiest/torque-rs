@@ -150,9 +150,9 @@ impl Plugin for HelloPlugin {
         engine.server(ServerStage::Game, |vm, engine| {
             let engine = engine.clone();
             vm.register("hello", 2, 2, "(name) a greeting", move |_vm, call| {
-                let Greeting(greeting) = engine.resource().expect("the hello plugin's greeting");
+                let greeting = engine.resource::<Greeting>().expect("the hello plugin's greeting");
                 let name = String::from_utf8_lossy(&call.argv[1]);
-                Native::Str(format!("{greeting}, {name}!").into_bytes())
+                Native::Str(format!("{}, {name}!", greeting.0).into_bytes())
             });
             Ok(())
         });
@@ -183,8 +183,27 @@ derive an id, because each instance would share one.
 as its files, sockets and globals, are not plugin state; they belong to the host that makes the server or client.
 
 **Shared state.** The recipe runs for every server, so anything it keeps goes in a resource. A
-resource is one value per type, read back with `engine.resource::<T>()`. For state that changes, put a `Cell` or
-`RefCell` inside it.
+resource is one value per type, read back with `engine.resource::<T>()` and changed with `engine.resource_mut::<T>()`.
+Both lend it out checked at run time, as a `RefCell` does.
+
+**Shorter, with parameters.** The same plugin can declare `hello` in the script registry, as a plain function whose
+parameters say what it needs: script arguments (`name: &str`) and things the engine hands over (`Res<Greeting>`). The
+argument counts and the usage text come from the signature:
+
+```rust,ignore
+fn hello(greeting: Res<Greeting>, name: &str) -> String {
+    format!("{}, {name}!", greeting.0)
+}
+
+engine.script().function("", "hello", &["name"], "a greeting", hello);
+// Its line in `native_listing()`: hello 2..2 hello(name) - a greeting
+```
+
+`engine.recipe(stage, f)` takes a recipe written the same way (`fn(vm: VmMut, motd: Res<Motd>)`). The parameters are
+`VmMut` (the script engine to change, at most one), `VmRef` (to read, any number, never beside a `VmMut`), `Res<T>` and `ResMut<T>` (resources), `Slot<dyn T>`, `&Engine`, `Local<T>`
+(state of the function's own, kept between runs) and, for a method, `This`. A native's script arguments are numbers,
+truth values, text, `Option<T>` for one that may be left out, and `Rest` for the rest. Two plugins declaring one name
+(compared without case) fail the build, naming both.
 
 ### Recipes by stage
 
@@ -280,7 +299,8 @@ assert_eq!(engine.list::<Welcome>().len(), 2);
 
 - A **resource** is one value per type. `insert_resource` replaces one stored before; `init_resource` stores
   `T::default()` unless there is one. `resource` and `resource_mut` read it while the engine is built; the built `Engine`
-  has `resource`.
+  has `resource` and `resource_mut`, which lend it out checked at run time (`try_resource` and `try_resource_mut` give an
+  error naming it instead of a panic).
 - A **slot** is one value per type, often a `dyn Trait`, that exactly one plugin sets (`set_slot`, read with `slot`).
   Use a slot when the engine needs a single answer: the runner, the client game, the game's simulation classes.
 - A **list** collects values of one type from any number of plugins (`push`, read with `list`), in plugin order. Use a list

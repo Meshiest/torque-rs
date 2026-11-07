@@ -80,20 +80,26 @@ pub fn dedicated(files: &GameFiles, listen: Listen) -> Dedicated {
 
 /// A server of the game on `listen`, started by the engine's plugins, for a game that ticks it itself.
 pub fn server(engine: &Engine, listen: Listen) -> Result<GameServer, String> {
-    let files = engine.resource::<GameFiles>().ok_or("no ExamplePlugin")?;
+    let files = engine
+        .resource::<GameFiles>()
+        .ok_or("no ExamplePlugin")?
+        .mem_files();
     let start = ServerStart {
         listen,
         globals: &[],
         start: START,
         args: &[MISSION],
     };
-    GameServer::start_engine(engine, files.mem_files(), &start)
+    GameServer::start_engine(engine, files, &start)
 }
 
 /// A client of the game with its socket as `net` says and its scripts run, not yet connected: `client.call("connectTo", ..)`.
 pub fn client(engine: &Engine, net: ClientNet) -> Result<GameClient, String> {
-    let files = engine.resource::<GameFiles>().ok_or("no ExamplePlugin")?;
-    let mut builder = ClientBuilder::from_engine(engine, Some(files.mem_files()), net)?;
+    let files = engine
+        .resource::<GameFiles>()
+        .ok_or("no ExamplePlugin")?
+        .mem_files();
+    let mut builder = ClientBuilder::from_engine(engine, Some(files), net)?;
     builder.exec_entry()?;
     Ok(builder.build())
 }

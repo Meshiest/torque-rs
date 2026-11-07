@@ -325,6 +325,7 @@ impl VehicleDemo {
     ) -> Result<VehicleDemo, String> {
         let terrain = engine
             .resource::<Terrain>()
+            .as_deref()
             .cloned()
             .ok_or("the engine has no terrain: add VehicleClientPlugin")?;
         let mut b = ClientBuilder::from_engine(
