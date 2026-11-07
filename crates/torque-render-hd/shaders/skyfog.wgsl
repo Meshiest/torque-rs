@@ -4,7 +4,9 @@
 //   an exponential height fog's transmittance, its optical depth along the segment in closed form) toward the sky drawn behind the
 //   pixel (the horizon ban's colour at the horizon; a fogged-out surface is the sky beside it), the server's sky too;
 //   without the sky's detail (its low mip: no clouds' shapes on a fogged wall), the detail only where a surface wholly fogged ends
-//   at the visible distance.
+//   at the visible distance. A secondary view fogs toward the sky cube (its low mip) instead; the water's mirrored view fogs along
+//   the reflected path (the eye down to the water, then up to the surface) toward the sky cube in the reflected direction (the
+//   clouds' cube over it).
 // - The clouds over a surface the eye sees through a cloud layer's slab (clouds_over_share).
 // - Emitters: glow surfaces are their paint times the settings' glow gain; self-illuminating shape parts and the coronas and flares are
 //   scaled into the HDR range (the bloom then picks them up).
@@ -18,7 +20,24 @@
 // The frame after the sky's draws: the sky behind each pixel (the fog's colour).
 @group(2) @binding(5) var sky_behind: texture_2d<f32>;
 
-// The share of a surface's colour the fog leaves at `p` (1 none).
+// The height fog's optical depth along a segment `d` long from height `z0` to `z1` (world heights; closed form).
+fn height_fog_depth(z0w: f32, z1w: f32, d: f32) -> f32 {
+    let h = max(sky.height_fog.y, 1e-3);
+    let z0 = z0w - sky.height_fog.z;
+    let z1 = z1w - sky.height_fog.z;
+    let dz = z1 - z0;
+    let e0 = exp(-max(z0, 0.0) / h);
+    if abs(dz) < 1e-3 {
+        return sky.height_fog.x * d * e0;
+    }
+    let e1 = exp(-max(z1, 0.0) / h);
+    return sky.height_fog.x * d * h * (e0 - e1) / dz;
+}
+
+// The share of a surface's color the fog leaves at `p` (1 none). In the water's mirrored view (the view clipped at the water
+// plane) the fog is the reflected path's: the mirrored eye's distance to `p` is that path's length (the eye down to the water,
+// then up to `p`), and the height fog is taken along its two legs, the first from the real eye (the mirrored one turned back over
+// the plane) down to the water.
 fn fog_keep(p: vec3<f32>) -> f32 {
     let d = distance(p, frame.eye.xyz);
     let span = max(frame.fog.y - frame.fog.x, 1e-3);
@@ -29,17 +48,14 @@ fn fog_keep(p: vec3<f32>) -> f32 {
     }
     var keep = near * near;
     if sky.height_fog.w > 0.0 {
-        let h = max(sky.height_fog.y, 1e-3);
-        let z0 = frame.eye.z - sky.height_fog.z;
-        let z1 = p.z - sky.height_fog.z;
-        let dz = z1 - z0;
-        let e0 = exp(-max(z0, 0.0) / h);
         var od: f32;
-        if abs(dz) < 1e-3 {
-            od = sky.height_fog.x * d * e0;
+        if CLIP && frame.flags.z > 0.5 {
+            let level = frame.flags.w;
+            let under = max(level - frame.eye.z, 0.0);
+            let down = clamp(under / max(p.z - frame.eye.z, 1e-6), 0.0, 1.0);
+            od = height_fog_depth(2.0 * level - frame.eye.z, level, d * down) + height_fog_depth(level, p.z, d * (1.0 - down));
         } else {
-            let e1 = exp(-max(z1, 0.0) / h);
-            od = sky.height_fog.x * d * h * (e0 - e1) / dz;
+            od = height_fog_depth(frame.eye.z, p.z, d);
         }
         keep = keep * exp(-max(od, 0.0));
     }
@@ -52,6 +68,8 @@ fn fog_keep(p: vec3<f32>) -> f32 {
 const FOG_SUN_INNER: f32 = 0.08;
 const FOG_SUN_OUTER: f32 = 0.2;
 const FOG_SKY_CAP: f32 = 64.0;
+// The sky cube's mip the secondary views' fog takes (a texel about 6 degrees across: the main view's low mip of its sky copy).
+const FOG_CUBE_LOD: f32 = 4.0;
 
 // A mip level of `t` at `uv` through a cubic B-spline (4 bilinear taps; smooth across its texels, so a low level's cells leave no
 // creases).
@@ -102,19 +120,22 @@ const FOG_LOW_SUN: f32 = 0.45;
 // (HDR emitters drawn with the sky) do not shine through a fogged surface. Elsewhere the sky's own light, so a fogged-out surface
 // is the sky beside it (all of it held to white cut the clouds' highlights: a fogged wall showed as a lighter patch).
 fn fog_color_toward(frag: vec2<f32>, p: vec3<f32>, keep: f32) -> vec3<f32> {
-    // A secondary view (the water's mirrored camera, a capture face) has no sky copy of its own: the horizon ban's color. The
-    // water's mirrored camera (the view clipped at the water plane) under the atmosphere's own sky takes that sky's light
-    // toward the point instead (its direction turned up, as the main view sees the sky behind it), held as below: a far shape
-    // fogged into the sky reflects in the color the view sees it in, not as a flat block of the ban's.
+    // A secondary view (the water's mirrored camera, a capture face) has no sky copy of its own: the sky cube toward the point
+    // stands in for it (the sky those views draw, without its detail at FOG_CUBE_LOD), held near the sun as below. From the
+    // mirrored eye that direction is the reflected path's last leg (up toward the point), as the main view sees the sky behind it
+    // along that path: a far shape fogged into the sky reflects in the color of the sky reflected beside it.
     if CLIP {
-        if frame.flags.z > 0.5 && sky.params.w > 1.5 {
-            let d = normalize(p - frame.eye.xyz);
-            let up = normalize(vec3<f32>(d.xy, abs(d.z)));
-            let near = smoothstep(cos(FOG_SUN_OUTER), cos(FOG_SUN_INNER), dot(up, normalize(sky.drawn.xyz)));
-            let held = atmosphere_drawn(up) * cloud_aureole(up);
-            return min(held, mix(vec3<f32>(FOG_SKY_CAP), held, near));
+        let d = normalize(p - frame.eye.xyz);
+        let near = smoothstep(cos(FOG_SUN_OUTER), cos(FOG_SUN_INNER), dot(d, normalize(sky.drawn.xyz)));
+        var held = vec3<f32>(1.0);
+        if sky.params.w > 1.5 {
+            held = atmosphere_drawn(d) * cloud_aureole(d);
         }
-        return frame.fog_color.rgb;
+        let lod = select(FOG_CUBE_LOD, 0.0, sky.fog_low.z < 0.0);
+        // The volumetric clouds over it (the main view's sky copy holds them too).
+        let c = cube_clouds(d, lod);
+        let behind = textureSampleLevel(sky_cube, refl_samp, d, lod).rgb * clamp(c.a, 0.0, 1.0) + max(c.rgb, vec3<f32>(0.0));
+        return min(behind, mix(vec3<f32>(FOG_SKY_CAP), held, near));
     }
     let dir = normalize(p - frame.eye.xyz);
     let to_sun = dot(dir, normalize(sky.drawn.xyz));

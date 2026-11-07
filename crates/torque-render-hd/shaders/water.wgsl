@@ -16,6 +16,9 @@
 // - Above it: the reflection by Schlick's Fresnel (F0 0.02): the planar reflection (High and up; the uv offset by the normal), the
 //   screen-space reflection over the sky cube (Medium), the sky cube (Low); none with the eye under the water. The sun's glint: GGX on
 //   the wave normal at roughness 0.06, through the sun's shadow.
+// - The fog: the surface's own over its distance (skyfog.wgsl's, with the height fog, toward the sky behind it) on its own light
+//   and on the sky cube's and the screen-space reflections; the planar reflection was fogged along the reflected path in the
+//   mirrored view and is not fogged again.
 // - A water the extension draws a face for (`ext_water_face`, where `ext_water_faced` says so): that face's normal, occlusion and
 //   sun on the water's colour, the texture neither mixed in nor bumped. The face shades the water's colour; the refraction, the
 //   reflection's offset, its Fresnel and the glint follow the waves alone (the face is painted relief, not a mirror's facets).
@@ -273,32 +276,51 @@ fn planar_at(uv: vec2<f32>) -> vec4<f32> {
     return g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d);
 }
 
-// The volumetric clouds in the sky the water reflects: `base` (the reflected sky toward `r`, which points up) with the clouds'
-// image laid over it (skyfog.wgsl's: their light and transmittance, this frame's, so they move with the clouds and leave no trail)
-// where the main view sees `r`. Where it does not (a reflection steeper than the view's top edge, or off its sides) the image's
-// edge at the same heading stands in for it, read blurrier the farther out, so the clouds go on over the water instead of stopping
-// at a line. Nothing without clouds.
+// The volumetric clouds in the sky the water reflects: `base` (the reflected sky toward `r`, which points up) with the clouds laid
+// over it (their light and transmittance). Where the main view sees `r`, its image of them (skyfog.wgsl's: this frame's, so they
+// move with the clouds and leave no trail); where it does not (a reflection steeper than the view's top edge, or off its sides),
+// the clouds' cube (reflect.wgsl's cube_clouds: every direction, blurrier), the two crossing over within REFLECTED_CLOUD_SEAM of
+// the image's edges. Without the cube the image's edge at the same heading stands in for it, read blurrier the farther out, so the
+// clouds go on over the water instead of stopping at a line. Nothing without clouds.
 const REFLECTED_CLOUD_LOD: f32 = 1.0;
 const REFLECTED_CLOUD_WAVES: f32 = 0.3;
 const REFLECTED_CLOUD_EDGE: f32 = 0.004;
+// The share of the frame inside its edges over which the image gives way to the cube, and the sky cube's mip the cube is read at
+// (a texel about 3 degrees across: the low resolution's blocks smoothed).
+const REFLECTED_CLOUD_SEAM: f32 = 0.08;
+const REFLECTED_CLOUD_CUBE_LOD: f32 = 3.0;
 fn reflected_clouds(base: vec3<f32>, r: vec3<f32>) -> vec3<f32> {
     if sky.cloud_sun.x <= 0.0 || r.z <= 0.0 {
         return base;
     }
+    let cube = refl.capture.w > 0.5;
     let clip = frame.unjit_view_proj * vec4<f32>(frame.eye.xyz + r * 1000.0, 1.0);
-    if clip.w <= 1e-4 {
-        return base;
+    var c = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    var shown = 0.0;
+    if clip.w > 1e-4 {
+        let ndc = clip.xy / clip.w;
+        let uv = vec2<f32>(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
+        let at = clamp(uv, vec2<f32>(REFLECTED_CLOUD_EDGE), vec2<f32>(1.0 - REFLECTED_CLOUD_EDGE));
+        if cube {
+            let inside = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+            shown = smoothstep(0.0, REFLECTED_CLOUD_SEAM, inside);
+            if shown > 0.0 {
+                c = smooth_level(cloud_image, at * sky.cloud_use.zw, REFLECTED_CLOUD_LOD);
+            }
+        } else {
+            let out = max(max(-uv.x, uv.x - 1.0), -uv.y);
+            let lod = REFLECTED_CLOUD_LOD + clamp(out * 6.0, 0.0, 3.0);
+            c = smooth_level(cloud_image, at * sky.cloud_use.zw, lod);
+            // Off the sides the heading no longer matches: eased out there.
+            shown = 1.0 - smoothstep(0.0, 0.25, max(-uv.x, uv.x - 1.0));
+        }
     }
-    let ndc = clip.xy / clip.w;
-    let uv = vec2<f32>(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);
-    let out = max(max(-uv.x, uv.x - 1.0), -uv.y);
-    let lod = REFLECTED_CLOUD_LOD + clamp(out * 6.0, 0.0, 3.0);
-    let at = clamp(uv, vec2<f32>(REFLECTED_CLOUD_EDGE), vec2<f32>(1.0 - REFLECTED_CLOUD_EDGE));
-    let c = smooth_level(cloud_image, at * sky.cloud_use.zw, lod);
-    // Off the sides the heading no longer matches: eased out there.
-    let side = 1.0 - smoothstep(0.0, 0.25, max(-uv.x, uv.x - 1.0));
+    if cube {
+        c = mix(cube_clouds(r, REFLECTED_CLOUD_CUBE_LOD), c, shown);
+        shown = 1.0;
+    }
     let clouded = base * clamp(c.a, 0.0, 1.0) + max(c.rgb, vec3<f32>(0.0));
-    return mix(base, clouded, side);
+    return mix(base, clouded, shown);
 }
 
 // Whether the water's depth copy at pixel position `q` holds something behind the water's depth `lin_w` (else the offset point
@@ -445,8 +467,18 @@ fn fs_water(in: VertexOut) -> @location(0) vec4<f32> {
         under = srgb_to_linear(mix(linear_to_srgb(seen), linear_to_srgb(lit), alpha));
     }
 
+    // The surface's own fog over its distance, as every surface's (skyfog.wgsl: the height fog, toward the sky behind it): on its
+    // own light (under it, the glint) and on the sky cube's and the screen-space reflections; the planar reflection was fogged
+    // along the whole reflected path in the mirrored view (the eye down to the water, then up to what it shows) and is not fogged
+    // again.
+    var keep = 1.0;
+    var fog_c = vec3<f32>(0.0);
+    if frame.fog_color.w > 0.0 {
+        keep = ext_fog_keep((material >> MAT_KIND_SHIFT) & 3u, p, fog_keep(p));
+        fog_c = fog_color_toward(frag, p, keep);
+    }
     // Above it: the reflection by Fresnel, and the sun's glint.
-    var c = under;
+    var c = mix(fog_c, under, keep);
     var mirror = vec3<f32>(0.0);
     if refl.water.y > 0.5 && refl.mode.y > 0.5 {
         let r = reflect(-v, n);
@@ -461,30 +493,35 @@ fn fs_water(in: VertexOut) -> @location(0) vec4<f32> {
         if ol > lim {
             off = off * (lim / ol);
         }
+        var seen: vec3<f32>;
         if mode == 3u {
             let uv = (frag + off) * frame.screen.zw;
             let pl = planar_at(clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)));
             mirror = mix(pl.rgb, reflected_clouds(pl.rgb, rrc), clamp(-pl.a, 0.0, 1.0));
-        } else if mode == 2u {
-            // A miss falls back to the clouded sky.
-            let s = ssr_at(frag + off);
-            mirror = mix(reflected_clouds(sky_radiance(rr, 0.0), rrc), s.rgb, s.a);
+            seen = mirror;
         } else {
-            mirror = reflected_clouds(sky_radiance(rr, 0.0), rrc);
+            if mode == 2u {
+                // A miss falls back to the clouded sky.
+                let s = ssr_at(frag + off);
+                mirror = mix(reflected_clouds(sky_radiance(rr, 0.0), rrc), s.rgb, s.a);
+            } else {
+                mirror = reflected_clouds(sky_radiance(rr, 0.0), rrc);
+            }
+            seen = mix(fog_c, mirror, keep);
         }
         var f = schlick(WATER_F0, nv);
         if !clear {
             // The texture stays the water's face: the reflection takes at most three quarters.
             f = f * 0.75;
         }
-        c = mix(c, mirror, f);
+        c = mix(c, seen, f);
         let sun_up = dot(up, frame.sun_dir.xyz);
         if sun_up > 0.0 {
             // The clouds between the sun and the water dim the glint as they dim the sun's light on any surface.
             let vis = sun_shadow(p, up, sun_up, frag) * cloud_sun(p, sky.cloud_use.x);
             // The waves and ripples faded out with distance still scatter the glint: their slope widens its lobe.
             let rough = pow(pow(WATER_ROUGHNESS, 4.0) + waves.lost, 0.25);
-            c = c + specular(n, v, frame.sun_dir.xyz, vec3<f32>(WATER_F0), rough) * frame.sun_linear.rgb * (max(dot(n, frame.sun_dir.xyz), 0.0) * vis);
+            c = c + specular(n, v, frame.sun_dir.xyz, vec3<f32>(WATER_F0), rough) * frame.sun_linear.rgb * (max(dot(n, frame.sun_dir.xyz), 0.0) * vis * keep);
         }
     }
     if shadows.config.w == 4u {
@@ -492,11 +529,6 @@ fn fs_water(in: VertexOut) -> @location(0) vec4<f32> {
     }
     if shadows.config.w != 0u {
         return vec4<f32>(1.0);
-    }
-    if frame.fog_color.w > 0.0 {
-        let span = max(frame.fog.y - frame.fog.x, 1e-3);
-        let near = clamp((frame.fog.y - dist) / span, 0.0, 1.0);
-        c = mix(frame.fog_color.rgb, c, select(near * near, near, frame.fog.z > 0.5));
     }
     return vec4<f32>(c, 1.0);
 }

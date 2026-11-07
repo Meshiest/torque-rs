@@ -709,6 +709,9 @@ pub struct HdFeatures {
     /// The clouds marched from the eye wherever it is (in a layer, over it: seen from inside and from above, and laid over a surface
     /// the ray reaches through a layer); off: as before, from no higher than a little under the lowest base.
     pub cloud_from_eye: bool,
+    /// The clouds' cube (`clouds::CLOUD_CUBE_SIZE`, a face a frame where the water is drawn): the water reflects the clouds
+    /// off screen and the reflections' fog takes them; off: the main view's image alone, its edge stretched past it, as before.
+    pub cloud_cube: bool,
 }
 
 impl Default for HdFeatures {
@@ -733,6 +736,7 @@ impl Default for HdFeatures {
             cloud_sun: true,
             fog_sky_mean: true,
             cloud_from_eye: true,
+            cloud_cube: true,
         }
     }
 }
@@ -758,6 +762,7 @@ impl HdFeatures {
         cloud_sun: true,
         fog_sky_mean: true,
         cloud_from_eye: true,
+        cloud_cube: true,
     };
     /// No anti-aliasing and no AO.
     pub const NO_POST: HdFeatures = HdFeatures {
@@ -780,6 +785,7 @@ impl HdFeatures {
         cloud_sun: true,
         fog_sky_mean: true,
         cloud_from_eye: true,
+        cloud_cube: true,
     };
     /// No reflections.
     pub const NO_REFLECTIONS: HdFeatures = HdFeatures {
@@ -802,6 +808,7 @@ impl HdFeatures {
         cloud_sun: true,
         fog_sky_mean: true,
         cloud_from_eye: true,
+        cloud_cube: true,
     };
 }
 
@@ -1963,7 +1970,8 @@ impl<E: HdExtension> HdWorld<E> {
             ],
         });
         let refl = reflect::Reflections::new(&device, cache, frame_size::<E>() as u64);
-        let mut clouds = clouds::Clouds::new(&device, cache, &frame_layout);
+        let mut clouds =
+            clouds::Clouds::new(&device, cache, &frame_layout, frame_size::<E>() as u64);
         let sky = sky::SkyGpu::new(
             &device,
             cache,
@@ -6236,6 +6244,13 @@ impl<E: HdExtension> HdWorld<E> {
                 .map(|t| (&t.queries, Q_CLOUDS_BEGIN, Q_CLOUDS_END)),
         );
         mark!("clouds");
+        self.encode_cloud_face(
+            scene,
+            &mut encoder,
+            icam.eye,
+            scene.visible_distance.max(1.0),
+        );
+        mark!("clouds' cube");
         // The volumetric light's march, from the prepass's depth.
         if let (true, Some(vq)) = (vol_on, vol_quality) {
             self.volumetric.encode_march(

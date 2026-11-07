@@ -7,6 +7,8 @@
 //   pixel; where it misses (weight below 1) the environment shows through.
 // - The split-sum's environment BRDF in closed form (Karis 2014, "Physically Based Shading on Mobile", after Lazarov 2013).
 // - Binding 5 is the extension's (its chunk declares it).
+// - The clouds' cube (binding 8; clouds.rs): the volumetric clouds around the eye at a low resolution (rgb their light, a their
+//   transmittance), read where the main view's image of them does not reach.
 
 @group(3) @binding(0) var<uniform> refl: Refl;
 @group(3) @binding(1) var ssr_tex: texture_2d<f32>;
@@ -15,6 +17,19 @@
 @group(3) @binding(4) var refl_samp: sampler;
 @group(3) @binding(6) var planar_tex: texture_2d<f32>;
 @group(3) @binding(7) var refract_depth: texture_depth_2d;
+@group(3) @binding(8) var cloud_cube: texture_cube<f32>;
+
+// The clouds' cube's side over the sky cube's (texels; a mip of the one is as wide as the other's this many levels down).
+const CLOUD_CUBE_SHIFT: f32 = 2.0;
+
+// The clouds toward `r` from the clouds' cube at the sky cube's mip `lod` (rgb their light, a their transmittance); none where the
+// cube does not hold them.
+fn cube_clouds(r: vec3<f32>, lod: f32) -> vec4<f32> {
+    if refl.capture.w < 0.5 || r.z <= 0.0 {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    return textureSampleLevel(cloud_cube, refl_samp, r, max(lod - CLOUD_CUBE_SHIFT, 0.0));
+}
 
 
 // The sky cube in direction `r` at roughness `rough`.

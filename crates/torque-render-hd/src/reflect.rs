@@ -9,7 +9,8 @@
 //! 2. After the depth prepass: the Hi-Z pyramid, the screen-space reflections' trace and accumulation ([`crate::ssr`]) when a
 //!    reflective surface is in sight at High and up, or the water is traced at Medium.
 //! 3. The forward passes read group 3: this view's `Refl` (common.wgsl) uniform, the SSR result, the capture, the sky
-//!    cube, the extension's slot, the planar reflection and the depth's copy (the water's path).
+//!    cube, the extension's slot, the planar reflection, the depth's copy (the water's path) and the clouds' cube (a face of it
+//!    marched after the clouds' march when the water is drawn: [`crate::clouds`]).
 //! 4. Before the translucent pass the depth is copied (the water reads it); the water plane is drawn by `fs_water`.
 //! 5. After the anti-aliasing the frame (the TAA's, else the translucent pass's) is copied for the next frame's rays, with its mip
 //!    chain.
@@ -216,6 +217,7 @@ impl Reflections {
                 crate::storage(5, true, wgpu::ShaderStages::FRAGMENT),
                 tex_entry(6, D::D2, float),
                 tex_entry(7, D::D2, S::Depth),
+                tex_entry(8, D::Cube, float),
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -293,6 +295,7 @@ impl Reflections {
         sky: &wgpu::TextureView,
         planar: &wgpu::TextureView,
         depth: &wgpu::TextureView,
+        clouds: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hd reflections"),
@@ -315,6 +318,7 @@ impl Reflections {
                 },
                 crate::tv(6, planar),
                 crate::tv(7, depth),
+                crate::tv(8, clouds),
             ],
         })
     }
@@ -333,7 +337,8 @@ impl Reflections {
         self.main_groups.as_ref().map(|g| &g[p])
     }
 
-    fn ensure_groups(&mut self, device: &wgpu::Device) {
+    /// `clouds`: the clouds' cube ([`crate::clouds::Clouds::cube_view`]).
+    fn ensure_groups(&mut self, device: &wgpu::Device, clouds: &wgpu::TextureView) {
         if self.main_groups.is_none() {
             let groups = [0, 1].map(|p| {
                 let ssr = self.ssr.as_ref().map_or(&self.dummy_2d, |s| &s.history[p]);
@@ -350,6 +355,7 @@ impl Reflections {
                     &self.capture.sky.view,
                     planar,
                     depth,
+                    clouds,
                 )
             });
             self.main_groups = Some(groups);
@@ -365,6 +371,7 @@ impl Reflections {
                     &self.capture.sky.view,
                     d.0,
                     d.1,
+                    clouds,
                 ),
                 // A capture face reads the sky cube in the capture's place (it is drawing the capture).
                 self.group(
@@ -375,6 +382,7 @@ impl Reflections {
                     &self.capture.sky.view,
                     d.0,
                     d.1,
+                    clouds,
                 ),
                 self.group(
                     device,
@@ -384,6 +392,7 @@ impl Reflections {
                     &self.dummy_cube,
                     d.0,
                     d.1,
+                    &self.dummy_cube,
                 ),
             ]);
         }
@@ -417,6 +426,7 @@ fn refl_bytes(
     history: bool,
     time: f32,
     capture_face: bool,
+    cloud_cube: bool,
     shifts: &[[f32; 3]; 6],
 ) -> Vec<u8> {
     let b = |v: bool| if v { 1.0 } else { 0.0 };
@@ -440,7 +450,7 @@ fn refl_bytes(
             b(capture_face),
             specular,
             CAPTURE_MIPS as f32,
-            0.0,
+            b(cloud_cube),
         ],
     );
     for s in shifts {
@@ -719,7 +729,8 @@ impl<E: HdExtension> HdWorld<E> {
             self.refl.made_for = Some(want);
             self.refl.history_valid = false;
         }
-        self.refl.ensure_groups(&self.device);
+        self.refl
+            .ensure_groups(&self.device, self.clouds.cube_view());
         if !ssr {
             self.refl.history_valid = false;
         }
@@ -798,6 +809,8 @@ impl<E: HdExtension> HdWorld<E> {
         let ext = self.ext.refl_ext(scene);
         let lv = level.unwrap_or(0.0);
         let mirror = self.mirror_reflections || self.debug == DebugView::Reflection;
+        // The clouds' cube is read where the water is drawn and it holds the clouds (its faces drawn by the frames before).
+        let cloud_cube = plan.water && self.features.cloud_cube && self.clouds.cube_ready();
         let shifts: [[f32; 3]; 6] = if capture_valid {
             std::array::from_fn(|f| {
                 let e = self.refl.capture.eyes[f];
@@ -822,11 +835,12 @@ impl<E: HdExtension> HdWorld<E> {
             self.refl.history_valid && ssr && self.histories.ssr,
             time,
             false,
+            cloud_cube,
             &shifts,
         );
         self.queue
             .write_buffer(&self.refl.uniforms[U_MAIN], 0, &main);
-        let view = |capture: bool, face: bool| {
+        let view = |capture: bool, face: bool, cloud_cube: bool| {
             refl_bytes(
                 false,
                 0,
@@ -843,18 +857,24 @@ impl<E: HdExtension> HdWorld<E> {
                 false,
                 time,
                 face,
+                cloud_cube,
                 &[[0.0; 3]; 6],
             )
         };
         self.queue.write_buffer(
             &self.refl.uniforms[U_PLANAR],
             0,
-            &view(capture_valid, false),
+            &view(capture_valid, false, cloud_cube),
+        );
+        self.queue.write_buffer(
+            &self.refl.uniforms[U_CAPTURE],
+            0,
+            &view(false, true, cloud_cube),
         );
         self.queue
-            .write_buffer(&self.refl.uniforms[U_CAPTURE], 0, &view(false, true));
-        self.queue
-            .write_buffer(&self.refl.uniforms[U_SKY], 0, &view(false, false));
+            .write_buffer(&self.refl.uniforms[U_SKY], 0, &view(false, false, false));
+        // A face of the clouds' cube when the water is drawn (what it reflects off screen).
+        self.clouds.cube_wanted = plan.water && self.features.cloud_cube;
         self.refl.plan = plan;
     }
 
@@ -1067,6 +1087,32 @@ impl<E: HdExtension> HdWorld<E> {
             );
         }
         true
+    }
+
+    /// This frame's face of the clouds' cube (after the clouds' march: it reads the sky group they bound): the face's camera
+    /// around the eye `eye` (reaching `far`), then its march and mips.
+    pub(crate) fn encode_cloud_face(
+        &self,
+        scene: &E::Scene,
+        encoder: &mut wgpu::CommandEncoder,
+        eye: [f32; 3],
+        far: f32,
+    ) {
+        let Some((face, frame)) = self.clouds.cube_face() else {
+            return;
+        };
+        let cam = cube_face_camera(eye, face, CAPTURE_NEAR, far, crate::clouds::CLOUD_CUBE_SIZE);
+        let bytes = self.view_frame(scene, &cam, None);
+        self.queue.write_buffer(frame, 0, &bytes);
+        let frame_group = self.frame_group_with(
+            frame,
+            &self.refl.dummy_2d,
+            &self.refl.dummy_2d,
+            &self.refl.dummy_2d,
+            self.dummy_depth(),
+        );
+        self.clouds
+            .encode_cube(encoder, &frame_group, &self.sky.group);
     }
 
     /// The Hi-Z, the trace and the accumulation into this frame's SSR history (after the prepass).

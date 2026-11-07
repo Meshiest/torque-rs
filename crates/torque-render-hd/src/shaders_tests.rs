@@ -140,3 +140,45 @@ fn the_sun_rays_constants_are_the_scenes() {
         assert_eq!(constant("clouds.wgsl", name) as u32, value, "{name}");
     }
 }
+
+#[test]
+fn the_cloud_cubes_uniform_places_and_mips_are_the_shaders() {
+    use crate::clouds::{CLOUD_CUBE_MIPS, CLOUD_CUBE_SIZE, LAYER_VEC4S, LOD_VEC4, MARCH_VEC4};
+    use torque_render_scene::hd::clouds::MAX_LAYERS;
+    use torque_render_scene::hd::reflect::CAPTURE_SIZE;
+    // The cube's march changes the clouds' uniform's `march` and `lod` (clouds.rs): their places in clouds.wgsl's struct, the
+    // layers first and then a vec4 a field.
+    let text = FILES.iter().find(|(n, _)| *n == "clouds.wgsl").unwrap().1;
+    let body = text
+        .split("struct Clouds {")
+        .nth(1)
+        .and_then(|b| b.split("};").next())
+        .unwrap();
+    let fields: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+        .filter_map(|l| l.split(':').next())
+        .collect();
+    assert_eq!(fields[0], "layers");
+    let at = |name: &str| {
+        let k = fields.iter().position(|f| *f == name).unwrap();
+        MAX_LAYERS * LAYER_VEC4S + k - 1
+    };
+    assert_eq!(at("march"), MARCH_VEC4);
+    assert_eq!(at("lod"), LOD_VEC4);
+    // reflect.wgsl reads the cube's mips as many levels down from the sky cube's as the sky cube is wider, and the cube has
+    // the mips its reads take (the water's clouds and the reflections' fog).
+    let shift = f64::from((CAPTURE_SIZE / CLOUD_CUBE_SIZE).ilog2());
+    assert_eq!(constant("reflect.wgsl", "CLOUD_CUBE_SHIFT"), shift);
+    for (file, name) in [
+        ("water.wgsl", "REFLECTED_CLOUD_CUBE_LOD"),
+        ("skyfog.wgsl", "FOG_CUBE_LOD"),
+    ] {
+        let level = constant(file, name) - shift;
+        assert!(
+            (0.0..f64::from(CLOUD_CUBE_MIPS)).contains(&level),
+            "{name}: level {level}"
+        );
+    }
+}

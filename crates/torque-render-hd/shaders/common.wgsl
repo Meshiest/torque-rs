@@ -128,7 +128,8 @@ struct Refl {
     // w: the effect time (the water's waves).
     ssr: vec4<f32>,
     // x: 1 in a capture face (its alpha holds 2 + the distance of what it drew; the sky leaves 1 or less), y: the share of the sun's
-    // and the lights' highlights plain plastic takes (the material table's), z: the cube maps' mip levels.
+    // and the lights' highlights plain plastic takes (the material table's), z: the cube maps' mip levels, w: 1 when the clouds'
+    // cube holds the clouds (clouds.rs).
     capture: vec4<f32>,
     // The light capture's faces (+x, -x, +y, -y, +z, -z): xyz this view's eye less the eye the face was drawn from (zero in every
     // view but the main one).

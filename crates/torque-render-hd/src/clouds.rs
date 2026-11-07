@@ -6,6 +6,11 @@
 //! composites (`sky.wgsl`'s `fs_clouds`, in front of the server's flat cloud layers). The image and the shadow map are in the sky
 //! group (bindings 6 and 7): the forward pass reads the shadow at Ultra (the clouds' shadows on the ground) and the volumetric light
 //! always (no god rays under a cloud).
+//!
+//! With water in the frame the clouds are also marched into a small cube around the eye ([`CLOUD_CUBE_SIZE`] a face, one face a
+//! frame in turn, its mips filtered after it): what the water reflects and the reflections' fog take where the main view's image
+//! does not reach (a direction off screen). Its march is the main one through a face's camera, at a fixed dither and with no
+//! history (the reads are of its blurred mips).
 
 use glam::Vec3;
 use torque_render_core::wgpu;
@@ -24,14 +29,40 @@ pub const CLOUD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The march's distance target (r the distance over the shader's DIST_SCALE, gb the layers' motion since the last frame).
 const DIST_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The clouds' uniform (`clouds.wgsl`'s `Clouds`: [`MAX_LAYERS`] layers of 8 vec4, then 16 vec4).
-const LAYER_VEC4S: usize = 8;
+pub(crate) const LAYER_VEC4S: usize = 8;
 const UNIFORM_BYTES: u64 = ((MAX_LAYERS * LAYER_VEC4S + 16) * 16) as u64;
 /// The clouds' shadows on the ground at the qualities that cast them (the share of the sun a full cloud takes away).
 pub const GROUND_SHADOW: f32 = 0.4;
+/// The clouds' cube: its faces' side (texels) and mips (down to the blurriest its reads take: the reflections' fog's).
+pub const CLOUD_CUBE_SIZE: u32 = 64;
+pub const CLOUD_CUBE_MIPS: u32 = 3;
+/// The share of the quality's steps the cube's march takes along a ray, and the most it takes toward the sun.
+const CUBE_STEPS: f32 = 0.5;
+const CUBE_LIGHT_STEPS: f32 = 3.0;
+/// The faces of the clouds' cube drawn in turn (+x, -x, +y, -y, +z): the one straight down shows no cloud over the water.
+const CLOUD_CUBE_FACES: [usize; 5] = [0, 1, 2, 3, 4];
+/// The vec4s of the uniform the cube's march changes besides the layers' steps: the march's (its frame index, its pixels a
+/// texel) and the pixel's angle.
+pub(crate) const MARCH_VEC4: usize = MAX_LAYERS * LAYER_VEC4S + 7;
+pub(crate) const LOD_VEC4: usize = MAX_LAYERS * LAYER_VEC4S + 10;
 
 /// The noise volumes on the GPU and the march's group (the uniform, the volumes, their sampler).
 struct Noise {
     group: wgpu::BindGroup,
+    /// The same over the cube's uniform.
+    cube_group: wgpu::BindGroup,
+}
+
+/// The clouds' cube (see the module's docs): its faces and mips, the march's distance target (unread), the uniforms (the march's
+/// and the face camera's frame), the face drawn this frame and the faces drawn since it started again.
+struct CloudCube {
+    cube: crate::capture::Cube,
+    dist: wgpu::TextureView,
+    uniform: wgpu::Buffer,
+    frame: wgpu::Buffer,
+    next: usize,
+    face: Option<usize>,
+    drawn: u32,
 }
 
 /// The per-size targets: the march's light and distance, the two histories, the image the sky pass reads, the resolve's groups
@@ -106,6 +137,9 @@ pub struct Clouds {
     /// The march from the eye wherever it is (the renderer's choice); off: from no higher than [`CLAMPED_UNDER`] under the
     /// lowest base, as before.
     pub from_eye: bool,
+    cube: CloudCube,
+    /// Whether this frame draws a face of the clouds' cube (the renderer's: the frame has water).
+    pub cube_wanted: bool,
 }
 
 /// In a browser: how long a frame that wants clouds spends making their noise while it is not all made ([`cl::make_noise_for`]:
@@ -275,10 +309,12 @@ fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
 }
 
 impl Clouds {
+    /// `frame_bytes`: the frame uniform's size (the cube's face camera's).
     pub fn new(
         device: &wgpu::Device,
         cache: Option<&wgpu::PipelineCache>,
         frame_layout: &wgpu::BindGroupLayout,
+        frame_bytes: u64,
     ) -> Clouds {
         let march_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd clouds"),
@@ -405,8 +441,43 @@ impl Clouds {
             wgpu::TextureUsages::TEXTURE_BINDING,
         )
         .create_view(&wgpu::TextureViewDescriptor::default());
+        let down = crate::capture::DownPipe::new(device, cache);
+        let cube = CloudCube {
+            cube: crate::capture::Cube::new(
+                device,
+                "hd clouds cube",
+                CLOUD_CUBE_SIZE,
+                CLOUD_CUBE_MIPS,
+                &down,
+            ),
+            dist: plain_texture(
+                device,
+                "hd clouds cube distance",
+                (CLOUD_CUBE_SIZE, CLOUD_CUBE_SIZE),
+                DIST_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+            .create_view(&wgpu::TextureViewDescriptor::default()),
+            uniform: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hd clouds cube"),
+                size: UNIFORM_BYTES,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            frame: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("hd clouds cube frame"),
+                size: frame_bytes,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            next: 0,
+            face: None,
+            drawn: 0,
+        };
         Clouds {
-            down: crate::capture::DownPipe::new(device, cache),
+            down,
+            cube,
+            cube_wanted: false,
             from_eye: true,
             frame_layout: frame_layout.clone(),
             march_layout,
@@ -478,6 +549,23 @@ impl Clouds {
         self.written = false;
         self.frame = 0;
         self.prev_drift = None;
+        self.cube.drawn = 0;
+    }
+
+    /// The clouds' cube (rgb their light, a their transmittance).
+    pub fn cube_view(&self) -> &wgpu::TextureView {
+        &self.cube.cube.view
+    }
+
+    /// Whether the clouds' cube holds the clouds: all its faces drawn since it started again (the last of them last frame or
+    /// before), and the clouds drawn last frame.
+    pub fn cube_ready(&self) -> bool {
+        self.written && self.cube.drawn == CLOUD_CUBE_FACES.iter().fold(0, |m, f| m | 1 << f)
+    }
+
+    /// The face of the clouds' cube this frame draws, and its frame uniform (the renderer writes it: the face's camera).
+    pub fn cube_face(&self) -> Option<(usize, &wgpu::Buffer)> {
+        self.cube.face.map(|f| (f, &self.cube.frame))
     }
 
     /// Whether the noise is made. Natively it is (its thread began with the renderer, and the first frame that draws clouds waits
@@ -555,26 +643,31 @@ impl Clouds {
         );
         let cirrus = noise_texture(device, queue, "hd clouds cirrus", &n.cirrus, CIRRUS_SIZE, 1);
         let blue = blue.create_view(&wgpu::TextureViewDescriptor::default());
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hd clouds"),
-            layout: &self.march_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform.as_entire_binding(),
-                },
-                crate::tv(1, &shape),
-                crate::tv(2, &detail),
-                crate::tv(3, &weather),
-                crate::tv(4, &blue),
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Sampler(&self.repeat),
-                },
-                crate::tv(6, &cirrus),
-            ],
+        let group = |uniform: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("hd clouds"),
+                layout: &self.march_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    crate::tv(1, &shape),
+                    crate::tv(2, &detail),
+                    crate::tv(3, &weather),
+                    crate::tv(4, &blue),
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.repeat),
+                    },
+                    crate::tv(6, &cirrus),
+                ],
+            })
+        };
+        self.noise = Some(Noise {
+            group: group(&self.uniform),
+            cube_group: group(&self.cube.uniform),
         });
-        self.noise = Some(Noise { group });
     }
 
     /// The targets at the march's size `key`, the image's mips down to level `low`.
@@ -661,6 +754,7 @@ impl Clouds {
         sun_through: bool,
     ) -> SkyClouds {
         self.waiting = false;
+        self.cube.face = None;
         let (Some(q), Some(sky)) = (quality, scene.clouds.as_ref()) else {
             self.drawn = false;
             return SkyClouds::default();
@@ -927,6 +1021,46 @@ impl Clouds {
         );
         debug_assert_eq!(b.len() as u64, UNIFORM_BYTES);
         queue.write_buffer(&self.uniform, 0, &b);
+        if self.cube_wanted {
+            // The cube's march: a fixed dither (no history averages it), a texel a pixel of the face's camera (its footprint the
+            // texel's angle), and cheaper (its few rays' longest is the pass's time, and it is read blurred): fewer steps along
+            // the ray and toward the sun. (The detail volume stays: without it the layers thicken into an overcast.)
+            let at = |vec4: usize, k: usize| (vec4 * 4 + k) * 4;
+            let get = |b: &[u8], vec4: usize, k: usize| {
+                let i = at(vec4, k);
+                f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
+            };
+            let set = |b: &mut [u8], vec4: usize, k: usize, v: f32| {
+                let i = at(vec4, k);
+                b[i..i + 4].copy_from_slice(&v.to_le_bytes());
+            };
+            for l in 0..layers.len().min(MAX_LAYERS) {
+                let steps = get(&b, l * LAYER_VEC4S, 3);
+                if steps > 0.0 {
+                    set(
+                        &mut b,
+                        l * LAYER_VEC4S,
+                        3,
+                        (steps * CUBE_STEPS).round().max(8.0),
+                    );
+                }
+                let light = get(&b, l * LAYER_VEC4S + 2, 3);
+                set(&mut b, l * LAYER_VEC4S + 2, 3, light.min(CUBE_LIGHT_STEPS));
+            }
+            let mut set = |vec4: usize, k: usize, v: f32| set(&mut b, vec4, k, v);
+            set(MARCH_VEC4, 0, 0.0);
+            set(MARCH_VEC4, 2, 1.0);
+            set(
+                LOD_VEC4,
+                0,
+                std::f32::consts::FRAC_PI_2 / CLOUD_CUBE_SIZE as f32,
+            );
+            queue.write_buffer(&self.cube.uniform, 0, &b);
+            self.cube.face = Some(CLOUD_CUBE_FACES[self.cube.next]);
+            self.cube.next = (self.cube.next + 1) % CLOUD_CUBE_FACES.len();
+        } else {
+            self.cube.drawn = 0;
+        }
         self.drawn = true;
         self.prev_drift = Some((drift, q.layers));
         SkyClouds {
@@ -1076,8 +1210,50 @@ impl Clouds {
         t.out.encode(encoder, &self.down);
     }
 
+    /// This frame's face of the clouds' cube ([`Clouds::cube_face`]) and its mips. `frame_group`: the group over the face's
+    /// frame uniform; `sky_group`: the sky's group.
+    pub fn encode_cube(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame_group: &wgpu::BindGroup,
+        sky_group: &wgpu::BindGroup,
+    ) {
+        let (Some(face), Some(n), Some(march), true) = (
+            self.cube.face,
+            self.noise.as_ref(),
+            self.march.as_ref(),
+            self.drawn,
+        ) else {
+            return;
+        };
+        {
+            crate::count_pass();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hd clouds cube"),
+                color_attachments: &[
+                    Some(crate::colour(&self.cube.cube.faces[face][0])),
+                    Some(crate::colour(&self.cube.dist)),
+                ],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(march);
+            pass.set_bind_group(0, frame_group, &[]);
+            pass.set_bind_group(1, &n.cube_group, &[]);
+            pass.set_bind_group(2, sky_group, &[]);
+            pass.draw(0..3, 0..1);
+            crate::count_draws(1);
+        }
+        self.cube.cube.encode_mips(encoder, face, &self.down);
+    }
+
     /// After a frame: the next history, and whether this one was written.
     pub fn advance(&mut self) {
+        if let (true, Some(f)) = (self.drawn, self.cube.face) {
+            self.cube.drawn |= 1 << f;
+        }
         if self.drawn {
             self.parity ^= 1;
             self.written = true;
@@ -1085,6 +1261,7 @@ impl Clouds {
         } else {
             self.written = false;
             self.prev_drift = None;
+            self.cube.drawn = 0;
         }
     }
 
