@@ -1,8 +1,10 @@
 // The ambient occlusion's spatial filter, after the AO pass at its resolution: each AO texel becomes
-// the average of the 5 x 5 texels about it, weighted by a Gaussian of their distance and by how near each one's point lies to the
-// texel's plane (its point and normal from the prepass) and how alike their normals are: a cross-bilateral filter (Tomasi and
-// Manduchi 1998; Petschnigg et al. 2004) that keeps the occlusion off other surfaces and across creases and removes the per-pixel
-// noise of the estimate (fixed per pixel: no history averages it). The forward pass upsamples this one.
+// the average of the 5 x 5 texels about it, weighted by a tent that covers each texel of a 4 x 4 tile of the AO pass's interleaved
+// noise alike (1/2, 1, 1, 1, 1/2 along each axis: the two ends are the same place in the tile) and by how near each one's point lies
+// to the texel's plane (its point and normal from the prepass) and how alike their normals are: a cross-bilateral filter (Tomasi
+// and Manduchi 1998; Petschnigg et al. 2004) that keeps the occlusion off other surfaces and across creases and, on a flat patch,
+// averages the tile's 16 estimates to one (the noise is fixed per texel: no history averages it). The forward pass upsamples this
+// one.
 //
 // Writes r: the filtered occlusion, g and b as the AO pass wrote them.
 
@@ -13,9 +15,8 @@
 @group(0) @binding(4) var ao_in: texture_2d<f32>;
 
 const RADIUS: i32 = 2;
-// The Gaussian's sigma (AO texels), the plane's tolerance (a share of the distance, units), the normals' cosine below which a
-// neighbor has no weight and the one above which it has all.
-const SIGMA: f32 = 1.2;
+// The plane's tolerance (a share of the distance, units), the normals' cosine below which a neighbor has no weight and the one
+// above which it has all.
 const PLANE_TOL: vec2<f32> = vec2<f32>(0.01, 0.004);
 const NORMAL_COS: vec2<f32> = vec2<f32>(0.8, 0.95);
 
@@ -69,8 +70,8 @@ fn fs_ao_filter(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
             let tn = normalize((frame.view * vec4<f32>(oct_decode(textureLoad(normals, tp, 0).xy), 0.0)).xyz);
             let pw = clamp(1.0 - abs(dot(q - p, n)) / tol, 0.0, 1.0);
             let nw = smoothstep(NORMAL_COS.x, NORMAL_COS.y, dot(n, tn));
-            let r2 = f32(x * x + y * y);
-            let w = exp(-r2 / (2.0 * SIGMA * SIGMA)) * pw * nw;
+            let tent = select(1.0, 0.5, abs(x) == RADIUS) * select(1.0, 0.5, abs(y) == RADIUS);
+            let w = tent * pw * nw;
             sum = sum + textureLoad(ao_in, t, 0).r * w;
             weight = weight + w;
         }

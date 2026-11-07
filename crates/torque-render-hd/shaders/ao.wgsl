@@ -1,17 +1,23 @@
 // Ambient occlusion: one pass at the AO's resolution (half the internal frame's at High, the whole at Ultra) that estimates
 // the occlusion at each AO texel's pixel (the top left of its block) from the depth prepass and its normals. Each frame's estimate
-// stands alone: its noise is fixed per pixel (the same every frame) and the spatial filter after this pass (`ao_filter.wgsl`)
-// smooths it, so nothing lags behind a moving shape, a moving light or a moving camera.
+// stands alone: its noise is fixed per AO texel (the same every frame) and the spatial filter after this pass (`ao_filter.wgsl`)
+// averages it out, so nothing lags behind a moving shape, a moving light or a moving camera.
+//
+// The noise is interleaved (Keller and Heidrich 2001): each texel of a 4 x 4 tile takes one of 16 turns of the
+// directions and one of 16 offsets of the steps (an ordered-dither matrix, so neighbors differ most), and the filter weighs every
+// texel of a tile alike, so on a flat patch the tile's 16 estimates average to one estimate of 16 times the directions and steps.
+// (A noise without that period, such as interleaved gradient noise taken at the AO texels, leaves what the filter does not average
+// as fixed stripes that wave across flat walls.)
 //
 // - GTAO (GTAO = true; Jimenez et al. 2016, "Practical Realtime Strategies for Accurate Indirect Occlusion"): in each of SLICES
-//   screen-space directions (turned per pixel by interleaved gradient noise) the highest horizon on either side is found
+//   screen-space directions (turned per texel by the interleaved noise) the highest horizon on either side is found
 //   from STEPS depth samples a side within the reach (a sample's horizon fades to the tangent plane's over the last tenth of the reach,
 //   so what lies farther in depth, such as the background around an object's outline, occludes nothing), clamped to the hemisphere
 //   of the normal projected into the slice, and the cosine-weighted visible arc integrated in closed form. The result is the
 //   cosine-weighted visibility of rays of the reach's length against the depth buffer taken as a height field: what the CPU
 //   reference measures with rays against the boxes.
 // - SSAO (GTAO = false; a normal-oriented hemisphere after Mittring 2007 and Bavoil and Sainz 2008): TAPS points in the hemisphere
-//   (cosine-distributed, turned per pixel), each occluded where the depth buffer holds a surface in front of it that lies within the
+//   (cosine-distributed, turned per texel), each occluded where the depth buffer holds a surface in front of it that lies within the
 //   reach of the pixel's point.
 //
 // Writes r: the occlusion (1 none), g: the pixel's eye distance (the forward pass's upsampling by depth), b: 1.
@@ -47,6 +53,17 @@ fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
     let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);
     let p = frame.inv_proj * vec4<f32>(ndc, d, 1.0);
     return p.xyz / p.w;
+}
+
+// The interleaved noise of AO texel `t`: x the turn of the directions, y the offset of the steps, each one of 16 values in (0, 1)
+// that every 4 x 4 tile takes once (the offset's order a permutation of the turn's, so the two do not move together).
+fn interleaved(t: vec2<i32>) -> vec2<f32> {
+    // The 4 x 4 ordered-dither (Bayer) matrix's entry: the bits of x xor y and of y, interleaved and reversed.
+    let x = u32(t.x & 3);
+    let y = u32(t.y & 3);
+    let e = x ^ y;
+    let k = ((e & 1u) << 3u) | ((y & 1u) << 2u) | (e & 2u) | ((y >> 1u) & 1u);
+    return (vec2<f32>(f32(k), f32((k * 5u + 3u) & 15u)) + 0.5) / 16.0;
 }
 
 fn safe_acos(x: f32) -> f32 {
@@ -167,7 +184,7 @@ fn fs_ao(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = view_point(centre, d);
     let nw = oct_decode(textureLoad(normals, rep, 0).xy);
     let n = normalize((frame.view * vec4<f32>(nw, 0.0)).xyz);
-    let noise = vec2<f32>(ign(centre), ign(centre.yx * 1.31 + vec2<f32>(11.0, 7.0)));
+    let noise = interleaved(vec2<i32>(frag.xy));
     let lin = -p.z;
     var raw = 1.0;
     let radius_px = frame.ao.x * frame.proj[0][0] * 0.5 * frame.screen.x / max(lin, 1e-4);
