@@ -23,8 +23,9 @@ fn the_client_has_these_natives() {
 
 #[test]
 fn the_server_has_these_natives() {
-    let files = GameFiles::bundled().unwrap();
-    let map = maps(&files).into_iter().next().expect("a map");
-    let server = WorldServer::start(&files, &map.path).expect("the server starts");
+    let game = LevelDemo::new(GameFiles::bundled().unwrap()).unwrap();
+    let map = maps(&game.files).into_iter().next().expect("a map");
+    let server =
+        WorldServer::start(game.engine(), &game.files, &map.path).expect("the server starts");
     check_listing(&listing("server.txt"), &server.vm().native_listing());
 }

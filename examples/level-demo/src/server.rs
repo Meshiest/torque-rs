@@ -12,6 +12,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::{Deref, DerefMut};
 
 use torque::app::server::{GameServer, Listen, ServerStart};
+use torque::engine::Engine;
 
 use crate::files::GameFiles;
 
@@ -23,9 +24,11 @@ pub const SERVER_ADDR: SocketAddr =
 pub struct WorldServer(pub GameServer);
 
 impl WorldServer {
-    /// A server that has run `server.cs` and started the map `mission` (a path under the game folder, `missions/plaza.mis`).
-    pub fn start(files: &GameFiles, mission: &str) -> Result<WorldServer, String> {
-        GameServer::start(
+    /// A server `engine` makes over `files`, that has run `server.cs` and started the map `mission` (a path under the game
+    /// folder, `missions/plaza.mis`).
+    pub fn start(engine: &Engine, files: &GameFiles, mission: &str) -> Result<WorldServer, String> {
+        GameServer::start_engine(
+            engine,
             files.mem_files(),
             &ServerStart {
                 listen: Listen::Memory(SERVER_ADDR),

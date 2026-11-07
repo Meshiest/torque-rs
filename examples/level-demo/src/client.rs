@@ -28,10 +28,11 @@ use std::rc::Rc;
 
 use torque::app::camera_blend::{CLOSE, CameraBlend};
 use torque::app::camera_boom::CameraBoom;
-use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::lights::WorldLights;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
+use torque::engine::Engine;
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
 use torque_render_scene::hd::clouds::CloudLook;
@@ -40,6 +41,7 @@ use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::{GameFiles, MapEntry};
 use crate::ground::MapGround;
+use crate::plugin::{Level, level_engine};
 use crate::scene::WorldScene;
 use crate::server::{SERVER_ADDR, WorldServer};
 use torque::app::ghosts::OwnView;
@@ -64,7 +66,8 @@ pub const CAMERA_NEAREST: f32 = 0.4;
 /// logs) and the level demo's own parts.
 pub struct LevelDemo {
     pub client: GameClient<WorldServer>,
-    pub files: GameFiles,
+    pub files: Rc<GameFiles>,
+    engine: Engine,
     pub maps: Vec<MapEntry>,
     scene: WorldScene,
     /// The map being played (its index in [`LevelDemo::maps`]).
@@ -107,35 +110,33 @@ impl DerefMut for LevelDemo {
 }
 
 impl LevelDemo {
-    /// The client over `files`: `client.cs` run, the menu built from the maps found.
-    pub fn new(mut files: GameFiles) -> Result<LevelDemo, String> {
-        crate::levels::add_levels(&mut files)?;
-        crate::files::add_valley(&mut files)?;
-        let maps = crate::files::maps(&files);
-        let cube = Rc::new(CubeClient::new(files.mem_files()));
-        cube.set_poses(crate::figure_poses());
-        let mut b = ClientBuilder::new(ClientSetup {
-            files: Some(files.mem_files()),
-            game_classes: true,
-            client_game: Some(Rc::clone(&cube) as _),
-            net: ClientNet::Memory {
+    /// The client over `files`: [`level_engine`] built, then [`LevelDemo::from_engine`].
+    pub fn new(files: GameFiles) -> Result<LevelDemo, String> {
+        let engine = level_engine(files)?.build().map_err(|e| e.to_string())?;
+        LevelDemo::from_engine(&engine)
+    }
+
+    /// The client `engine` makes (over the files its [`LevelPlugin`](crate::plugin::LevelPlugin) holds): `client.cs` run, the menu built from the maps
+    /// found.
+    pub fn from_engine(engine: &Engine) -> Result<LevelDemo, String> {
+        let level = engine
+            .resource::<Rc<Level>>()
+            .ok_or("the engine has no level demo (LevelPlugin)")?;
+        let mut b = ClientBuilder::from_engine(
+            engine,
+            Some(level.files.mem_files()),
+            ClientNet::Memory {
                 client: CLIENT_ADDR,
                 server: SERVER_ADDR,
             },
-            layout_fonts: true,
-            ..ClientSetup::default()
-        })?;
-        b.vm.set_global("$World::MapCount", &maps.len().to_string());
-        for (i, m) in maps.iter().enumerate() {
-            b.vm.set_global(&format!("$World::MapTitle{i}"), &m.title);
-            b.vm.set_global(&format!("$World::MapAbout{i}"), &m.about);
-        }
+        )?;
         b.exec("client.cs")?;
         b.invoke("buildMenu")?;
         Ok(LevelDemo {
             client: b.build(),
-            files,
-            maps,
+            engine: engine.clone(),
+            files: Rc::clone(&level.files),
+            maps: level.maps.clone(),
             scene: WorldScene::default(),
             playing: None,
             daylight: Daylight::default(),
@@ -146,11 +147,16 @@ impl LevelDemo {
             behind: None,
             drawn_at: None,
             held: None,
-            cube,
+            cube: Rc::clone(&level.cube),
             ground: MapGround::default(),
             ground_changed: false,
             cloud_clock: 0.0,
         })
+    }
+
+    /// The engine this client and its servers are made by.
+    pub fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     /// A world view on `gpu`, the sky's clouds sunlit cumulus (a map with a day has them), the ground of the map being played.
@@ -172,7 +178,7 @@ impl LevelDemo {
         self.cube.set_water(&self.ground.waters);
         self.scene.set_water(&self.ground.waters);
         self.ground_changed = true;
-        let server = WorldServer::start(&self.files, &map.path)?;
+        let server = WorldServer::start(&self.engine, &self.files, &map.path)?;
         self.client.start_hosting(server);
         self.playing = Some(index);
         self.call("connectTo", &[SERVER_ADDR.to_string().as_str()])?;

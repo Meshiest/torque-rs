@@ -16,9 +16,13 @@
 #[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
 #[cfg(not(target_arch = "wasm32"))]
+use torque::app::run::EngineRun as _;
+#[cfg(not(target_arch = "wasm32"))]
 use torque_example_level_demo::client::LevelDemo;
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_level_demo::files::{self, GameFiles};
+#[cfg(not(target_arch = "wasm32"))]
+use torque_example_level_demo::plugin::level_engine;
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_level_demo::shots;
 
@@ -129,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", path.display());
             }
         }
-        None => torque::app::window::run(LevelDemo::new(files)?)?,
+        None => level_engine(files)?.app(LevelDemo::from_engine).run()?,
     }
     Ok(())
 }

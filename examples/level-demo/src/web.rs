@@ -10,6 +10,7 @@
 //! carries the game's state for a test to wait on ([`web_page::mark_play`]): the frames drawn, the map being played (empty on
 //! the menu), whether the client holds its figure's ghost and where it sees it.
 
+use torque::app::run::EngineRun as _;
 use torque::app::view::WorldView;
 use torque::app::web_page;
 use torque::app::{App, Host};
@@ -19,6 +20,7 @@ use torque_render_scene::source::Eye;
 
 use crate::client::LevelDemo;
 use crate::files::GameFiles;
+use crate::plugin::level_engine;
 
 /// The files the build carries.
 #[cfg(feature = "embed-pack")]
@@ -45,17 +47,22 @@ pub fn start_fetched() -> Result<(), String> {
 }
 
 fn start(files: GameFiles) -> Result<(), String> {
-    let mut demo = LevelDemo::new(files)?;
-    if let Some(name) = web_page::query("map") {
-        let want = format!("missions/{name}.mis");
-        let index = demo
-            .maps
-            .iter()
-            .position(|m| m.path.eq_ignore_ascii_case(&want))
-            .ok_or_else(|| format!("no map {want}"))?;
-        demo.start_map(index)?;
-    }
-    torque::app::window::run(WebDemo { demo, frames: 0 })
+    level_engine(files)?
+        .app(|engine| {
+            let mut demo = LevelDemo::from_engine(engine)?;
+            if let Some(name) = web_page::query("map") {
+                let want = format!("missions/{name}.mis");
+                let index = demo
+                    .maps
+                    .iter()
+                    .position(|m| m.path.eq_ignore_ascii_case(&want))
+                    .ok_or_else(|| format!("no map {want}"))?;
+                demo.start_map(index)?;
+            }
+            Ok(WebDemo { demo, frames: 0 })
+        })
+        .run()
+        .map_err(|e| e.to_string())
 }
 
 /// The level demo, its state written on the page as it draws (module docs).
