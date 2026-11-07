@@ -787,8 +787,20 @@ function look(%v)
    $mvPitch += %pitch - $Arena::LookPitch;
    $Arena::LookPitch = %pitch;
 }
-// Tab: the camera behind the figure or at its eyes.
-function switchCamera(%v) { if (%v) $Arena::ThirdPerson = !$Arena::ThirdPerson; }
+// Tab: the camera behind the figure or at its eyes. The server is told which, for where the shots go (behind the figure, to
+// what that camera's crosshair is over).
+function switchCamera(%v)
+{
+   if (!%v)
+      return;
+   $Arena::ThirdPerson = !$Arena::ThirdPerson;
+   sendCameraMode();
+}
+function sendCameraMode()
+{
+   if (isObject(ServerConnection))
+      commandToServer('ThirdPerson', $Arena::ThirdPerson ? 1 : 0);
+}
 function chatKey(%v) { if (%v) openChat(); }
 function reloadKey(%v) { if (%v && isObject(ServerConnection)) commandToServer('Reload'); }
 PlayMap.bind(keyboard, w, moveForward);
@@ -1020,6 +1032,7 @@ function clientCmdOwnFigure(%ghost, %yaw)
    $Arena::OwnGhost = %ghost;
    $Arena::LookYaw = %yaw;
    $Arena::LookPitch = 0;
+   sendCameraMode();
 }
 
 function clientCmdArenaMessage(%kind, %a, %b)

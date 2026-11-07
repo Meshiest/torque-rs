@@ -470,9 +470,12 @@ function ArenaWeapon::onFire(%this, %obj, %slot)
       commandToClient(%client, 'SetAmmo', %obj.ammo, $Arena::Rounds);
    // The bolt flies along the eye's line (the crosshair) at every range: it starts on that line as far ahead of the eye as
    // the muzzle is, instead of at the muzzle beside it, whose corrected aim only meets the line where the eye's ray ends.
-   // The steady eye (the head's rest pose, not its walking bob): where the client's view and crosshair are.
+   // The steady eye (the head's rest pose, not its walking bob): where the client's view and crosshair are. From behind the
+   // figure the crosshair is on the camera's line instead: the bolt goes to what that line meets (thirdPersonAim).
    %eye = %obj.getSteadyEyePoint();
    %aim = %obj.getEyeVector();
+   if (isObject(%client) && %client.thirdPerson && !%obj.aiming)
+      %aim = thirdPersonAim(%obj, %eye, %aim);
    %ahead = VectorDot(VectorSub(%obj.getMuzzlePoint(%slot), %eye), %aim);
    if (%ahead < 0.25)
       %ahead = 0.25;
@@ -486,6 +489,51 @@ function ArenaWeapon::onFire(%this, %obj, %slot)
       client = %client;
    };
    MissionCleanup.add(%bolt);
+}
+
+// The camera behind the figure as the client places it (client.rs: CAMERA_DISTANCE back along the look, CAMERA_SIDE to the
+// right, CAMERA_LIFT up, CAMERA_CLEARANCE in front of a wall between, and the first person's view with less than
+// CAMERA_NEAREST of room), what it keeps clear of (the map's static shapes, terrain and interiors) and what its crosshair's
+// line stops at (those and the figures), and how far that line reaches.
+$Arena::CameraDistance = 3.5;
+$Arena::CameraSide = 0.6;
+$Arena::CameraLift = 0.45;
+$Arena::CameraClearance = 0.3;
+$Arena::CameraNearest = 0.8;
+$Arena::CameraMask = 8205;
+$Arena::AimMask = 24589;
+$Arena::AimRange = 300;
+
+// The direction from %eye (the figure %obj's steady eye, looking along %look) to what the crosshair of the camera behind the
+// figure is over: the server places that camera itself, as the client does, and casts along its line, so a client says only
+// which camera it looks through (serverCmdThirdPerson), never where it aims. A camera with no room behind the figure is the
+// first person's, and a point no further ahead of the eye than a unit (the camera's line meeting something between the camera
+// and the eye) keeps the eye's own line.
+function thirdPersonAim(%obj, %eye, %look)
+{
+   %right = VectorNormalize(VectorCross(%look, "0 0 1"));
+   %back = VectorAdd(VectorSub(%eye, VectorScale(%look, $Arena::CameraDistance)), VectorScale(%right, $Arena::CameraSide));
+   %back = VectorAdd(%back, "0 0" SPC $Arena::CameraLift);
+   %room = VectorDist(%eye, %back);
+   %hit = containerRayCast(%eye, %back, $Arena::CameraMask, %obj);
+   if (%hit)
+      %room = VectorDist(%eye, getWords(%hit, 1, 3)) - $Arena::CameraClearance;
+   if (%room < $Arena::CameraNearest)
+      return %look;
+   %camera = VectorAdd(%eye, VectorScale(VectorNormalize(VectorSub(%back, %eye)), %room));
+   %end = VectorAdd(%camera, VectorScale(%look, $Arena::AimRange));
+   %hit = containerRayCast(%camera, %end, $Arena::AimMask, %obj);
+   %target = %hit ? getWords(%hit, 1, 3) : %end;
+   %to = VectorSub(%target, %eye);
+   if (VectorDot(%to, %look) < 1)
+      return %look;
+   return VectorNormalize(%to);
+}
+
+// Which camera the client looks through: behind its figure (Tab) or at its eye.
+function serverCmdThirdPerson(%client, %on)
+{
+   %client.thirdPerson = %on ? 1 : 0;
 }
 
 function ArenaBolt::onCollision(%this, %bolt, %col, %fade, %pos, %normal)
@@ -541,6 +589,8 @@ function ArenaFigure::onTrigger(%this, %obj, %slot, %down)
 {
    if (%slot != 4 || %obj.getState() $= "Dead")
       return;
+   // Aiming from behind the figure, the client's view is the first person's at the sights (and so is the shot's line).
+   %obj.aiming = %down ? 1 : 0;
    %obj.setArmThread(%down ? "aim" : "hold");
 }
 

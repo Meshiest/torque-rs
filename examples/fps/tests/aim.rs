@@ -513,3 +513,80 @@ fn in_every_pose_the_shot_starts_at_the_view_and_bursts_where_the_crosshair_meet
         "and rises again: {heights:?}"
     );
 }
+
+/// The first bolt to burst after a shot: where.
+fn burst_after_fire(a: &mut ArenaGame) -> F3 {
+    fire(a);
+    for _ in 0..60 {
+        frame(a, 16);
+        if let Some(b) = bolts(a).into_iter().find(|b| b.3) {
+            return b.4;
+        }
+    }
+    panic!("the bolt burst");
+}
+
+/// The camera drawn this frame and the direction it looks in (the crosshair's ray from behind the figure).
+fn camera_crosshair(a: &mut ArenaGame) -> (F3, F3) {
+    let eye = a.drawn_eye();
+    let (sy, cy) = eye.yaw.sin_cos();
+    let (sp, cp) = eye.pitch.sin_cos();
+    (eye.position, [sy * cp, cy * cp, -sp])
+}
+
+/// From behind the figure (`Tab`) the crosshair is on the camera's line, beside and above the eye's: the bolt bursts where
+/// that line meets the block, not where the eye's does. The server places the camera itself (the client only says it looks
+/// from behind) with the client's numbers. Aiming down the sights from there, the view and the shot are the first person's.
+#[test]
+fn from_behind_the_figure_the_bolt_bursts_where_the_cameras_crosshair_meets_the_block() {
+    use torque_example_fps::client::{
+        CAMERA_CLEARANCE, CAMERA_DISTANCE, CAMERA_LIFT, CAMERA_NEAREST, CAMERA_SIDE,
+    };
+    let mut a = host();
+    for (name, value) in [
+        ("CameraDistance", CAMERA_DISTANCE),
+        ("CameraSide", CAMERA_SIDE),
+        ("CameraLift", CAMERA_LIFT),
+        ("CameraClearance", CAMERA_CLEARANCE),
+        ("CameraNearest", CAMERA_NEAREST),
+    ] {
+        let script: f32 = server_eval(&mut a, &format!("return $Arena::{name};"))
+            .parse()
+            .unwrap();
+        assert_eq!(script, value, "the server's ${name}");
+    }
+    turn(&mut a, 0.6, 0.3);
+    turn(&mut a, -0.37, -0.25);
+    a.key(Key::Tab, true);
+    a.key(Key::Tab, false);
+    frames(&mut a, 800);
+    assert!(a.third_person() && !a.camera_blending());
+    let (camera, look) = camera_crosshair(&mut a);
+    let (eye, aim) = crosshair(&a);
+    let want = block_hit(camera, look).expect("the camera's crosshair is on the block");
+    let first = block_hit(eye, aim).expect("the eye's line meets the block too");
+    assert!(
+        Vec3::from(want).distance(first.into()) > 0.4,
+        "the two lines meet the block apart ({want:?}, {first:?})"
+    );
+    let burst = burst_after_fire(&mut a);
+    let miss = Vec3::from(burst).distance(want.into());
+    assert!(
+        miss < 0.1,
+        "the bolt burst {miss} from where the camera's crosshair meets the block ({burst:?}, {want:?}; the eye's {first:?})"
+    );
+
+    // Aiming down the sights from behind: the first person's view, and the bolt along the eye's line.
+    a.call("aim", &["1"]).unwrap();
+    frames(&mut a, 400);
+    let drawn = a.drawn_eye().position;
+    assert!(Vec3::from(drawn).distance(a.eye().position.into()) < 1e-3);
+    let (eye, aim) = crosshair(&a);
+    let want = block_hit(eye, aim).unwrap();
+    let burst = burst_after_fire(&mut a);
+    let miss = Vec3::from(burst).distance(want.into());
+    assert!(
+        miss < 0.1,
+        "aimed: the bolt burst {miss} from where the eye's line meets the block ({burst:?}, {want:?})"
+    );
+}
