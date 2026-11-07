@@ -10,13 +10,15 @@
 //! The demo's WheeledVehicle ([`SteeredWheels`]) sends its steering whenever it changes: TGE sends a vehicle's steering only with
 //! its pose, so a parked buggy's steering wheel, turned by its driver, would stay still for everyone else.
 //!
-//! The server runs it ([`install`]) and the client predicts with it ([`SeatedPlayerKind`] through
+//! The server runs it ([`SeatsPlugin`]) and the client predicts with it ([`SeatedPlayerKind`] through
 //! [`torque_example_common::prediction::CubeClient::with_terrain`]), so the client's drive matches the server's.
 
 use std::rc::Rc;
 
+use torque::app::plugins::DefaultPlugins;
 use torque::collide::ObjectId;
-use torque::game::sim_classes::{PlayerKind, SimClasses, set_sim_classes};
+use torque::engine::{Engine, EngineBuilder, Plugin, PluginId, ServerStage};
+use torque::game::sim_classes::{PlayerKind, SimClasses};
 use torque::script::vm::sim::ObjId;
 use torque::script::vm::vm::{Native, Vm};
 use torque::sim::Move;
@@ -125,9 +127,32 @@ impl SimClasses for DemoClasses {
     }
 }
 
-/// Gives a server's script engine the demo's classes (before its game classes are installed).
-pub fn install(vm: &mut Vm) {
-    set_sim_classes(vm, Rc::new(DemoClasses));
+/// The demo's server side: its simulated classes ([`DemoClasses`], the engine's `SimClasses` slot, installed before the server
+/// game reads them) and the natives its scripts call (`straightenWheels`, `stopVehicle`).
+#[derive(Debug, Clone, Copy, Default, PluginId)]
+#[plugin(id = "vehicle-demo.seats")]
+pub struct SeatsPlugin;
+
+impl Plugin for SeatsPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.set_slot::<dyn SimClasses>(Rc::new(DemoClasses));
+        engine.server(ServerStage::Prepare, |vm, _| {
+            register_natives(vm);
+            Ok(())
+        });
+    }
+}
+
+/// An engine for a server alone: the engine's defaults and [`SeatsPlugin`] (the dedicated server, the page's worker).
+pub fn server_engine() -> Result<Engine, String> {
+    EngineBuilder::new()
+        .add_plugins((DefaultPlugins, SeatsPlugin))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// The natives the demo's scripts call on a server.
+fn register_natives(vm: &mut Vm) {
     vm.register(
         "straightenWheels",
         2,

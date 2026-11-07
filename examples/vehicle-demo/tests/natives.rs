@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use torque::script::vm::listing::check_listing;
 use torque_example_vehicle_demo::client::{ClientOptions, NetMode, VehicleDemo};
 use torque_example_vehicle_demo::files::GameFiles;
+use torque_example_vehicle_demo::seats::server_engine;
 use torque_example_vehicle_demo::server::WorldServer;
 
 fn listing(name: &str) -> PathBuf {
@@ -32,6 +33,7 @@ fn the_client_has_these_natives() {
 #[test]
 fn the_server_has_these_natives() {
     let files = GameFiles::bundled().unwrap();
-    let server = WorldServer::start_alone(&files, "natives").expect("the server starts");
+    let server = WorldServer::start_alone(&server_engine().unwrap(), &files, "natives")
+        .expect("the server starts");
     check_listing(&listing("server.txt"), &server.vm().native_listing());
 }

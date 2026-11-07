@@ -16,9 +16,16 @@
 //! dedicated server is `vehicle-demo-server`.
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::cell::Cell;
+
+#[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
 #[cfg(not(target_arch = "wasm32"))]
-use torque_example_vehicle_demo::client::{ClientOptions, Start, VehicleDemo};
+use torque::app::run::EngineRun as _;
+#[cfg(not(target_arch = "wasm32"))]
+use torque::engine::EngineBuilder;
+#[cfg(not(target_arch = "wasm32"))]
+use torque_example_vehicle_demo::client::{ClientOptions, DemoPlugins, Start, VehicleDemo};
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_vehicle_demo::files::{self, GameFiles};
 #[cfg(not(target_arch = "wasm32"))]
@@ -117,8 +124,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let mut game = VehicleDemo::new(GameFiles::bundled()?, options)?;
-    start.apply(&mut game)?;
-    torque::app::window::run(game)?;
+    let files = GameFiles::bundled()?;
+    let plugins = DemoPlugins::new(&files, &options)?;
+    // The runner makes the game from the built engine, once.
+    let files = Cell::new(Some(files));
+    EngineBuilder::new()
+        .add_plugins(plugins)
+        .app(move |engine| {
+            let files = files.take().ok_or("the game is made once")?;
+            let mut game = VehicleDemo::from_engine(engine, files, options.clone())?;
+            start.clone().apply(&mut game)?;
+            Ok(game)
+        })
+        .run()?;
     Ok(())
 }

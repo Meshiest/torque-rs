@@ -38,13 +38,20 @@ use std::net::Ipv4Addr;
 use std::rc::Rc;
 
 use torque::app::camera_blend::{CLOSE, CameraBlend};
-use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::hosting::{join_address, lan_bind_address, register_join_natives};
 use torque::app::lights::WorldLights;
 use torque::app::orbit::Zoom;
+use torque::app::plugins::{
+    ClientGamePlugin, ClientWiring, DefaultPlugins, GuiPlugin, ServerQueryPlugin,
+};
 use torque::app::terrain::Terrain;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
+use torque::client::game::ClientGame;
+use torque::engine::{
+    ClientStage, Engine, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, PluginId,
+};
 use torque::ghosts::TgeClass;
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
@@ -55,7 +62,7 @@ use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::GameFiles;
 use crate::scene::WorldScene;
-use crate::seats::SeatedPlayerKind;
+use crate::seats::{SeatedPlayerKind, SeatsPlugin};
 use crate::server::{ALONE_ADDR, DEFAULT_PORT, ServerOptions, WorldServer};
 use torque::app::ghosts::OwnView;
 pub use torque::app::hosting::NetMode;
@@ -172,10 +179,96 @@ pub struct Driven {
     pub forward: [f32; 3],
 }
 
+/// The demo's client game: the prediction over the map's terrain with the Players of [`crate::seats`], as the engine's client
+/// game ([`ClientGamePlugin`]), and the terrain itself as a resource for the view ([`VehicleDemo::from_engine`] reads it).
+#[derive(Clone, PluginId)]
+#[plugin(id = "vehicle-demo.client")]
+pub struct VehicleClientPlugin {
+    game: Rc<dyn ClientGame>,
+    terrain: Terrain,
+}
+
+impl VehicleClientPlugin {
+    /// The client game over `files` and the map's terrain.
+    pub fn new(files: &GameFiles) -> Result<VehicleClientPlugin, String> {
+        let terrain = crate::files::terrain(files)?;
+        let game: Rc<dyn ClientGame> = Rc::new(CubeClient::with_terrain(
+            files.mem_files(),
+            Some(&terrain),
+            Some(Rc::new(SeatedPlayerKind)),
+        ));
+        Ok(VehicleClientPlugin { game, terrain })
+    }
+}
+
+impl Plugin for VehicleClientPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.add_plugins(ClientGamePlugin::new(Rc::clone(&self.game)));
+        engine.insert_resource(self.terrain.clone());
+    }
+}
+
+/// The join screen's natives (`checkJoinAddress` and the lookups behind it), just before the game's client script runs.
+#[derive(Debug, Clone, Copy, Default, PluginId)]
+#[plugin(id = "vehicle-demo.join-screen")]
+pub struct JoinScreenPlugin;
+
+impl Plugin for JoinScreenPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.client(ClientStage::Natives, |vm, _| {
+            let wiring = vm
+                .extension::<ClientWiring>()
+                .ok_or("the join screen runs only when a game client is made")?;
+            register_join_natives(vm, wiring.state());
+            Ok(())
+        });
+    }
+}
+
+/// The demo's plugins: the engine's defaults (the GUI measuring text with the fonts it is drawn with; no list of games for a
+/// client that only plays alone), the seats of both sides ([`SeatsPlugin`]), the client game and the join screen.
+pub struct DemoPlugins {
+    client: VehicleClientPlugin,
+    server_query: bool,
+}
+
+impl DemoPlugins {
+    /// The plugins for a client over `files` made as `options` say.
+    pub fn new(files: &GameFiles, options: &ClientOptions) -> Result<DemoPlugins, String> {
+        Ok(DemoPlugins {
+            client: VehicleClientPlugin::new(files)?,
+            server_query: !options.alone_only,
+        })
+    }
+}
+
+impl PluginGroup for DemoPlugins {
+    fn build(self) -> PluginGroupBuilder {
+        let mut group = DefaultPlugins.set(GuiPlugin { layout_fonts: true });
+        if !self.server_query {
+            group = group.disable::<ServerQueryPlugin>();
+        }
+        group
+            .add(SeatsPlugin)
+            .add(self.client)
+            .add(JoinScreenPlugin)
+    }
+}
+
+/// The engine of a client over `files` made as `options` say, and of the servers it hosts.
+pub fn engine(files: &GameFiles, options: &ClientOptions) -> Result<Engine, String> {
+    EngineBuilder::new()
+        .add_plugins(DemoPlugins::new(files, options)?)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 /// The example's client (the engine's [`GameClient`], which it derefs to: its host, its globals, the server it hosts and their
 /// logs) and the vehicle demo's own parts.
 pub struct VehicleDemo {
     pub client: GameClient<WorldServer>,
+    /// The engine that made the client and makes the servers it hosts.
+    pub engine: Engine,
     pub files: GameFiles,
     pub options: ClientOptions,
     pub terrain: Terrain,
@@ -217,28 +310,33 @@ impl DerefMut for VehicleDemo {
 }
 
 impl VehicleDemo {
-    /// The client over `files`: `client.cs` run, the menu showing.
+    /// The client over `files`: `client.cs` run, the menu showing. Its engine is [`engine`] over the same files and options.
     pub fn new(files: GameFiles, options: ClientOptions) -> Result<VehicleDemo, String> {
-        let terrain = crate::files::terrain(&files)?;
-        let mut b = ClientBuilder::new(ClientSetup {
-            files: Some(files.mem_files()),
-            game_classes: true,
-            client_game: Some(Rc::new(CubeClient::with_terrain(
-                files.mem_files(),
-                Some(&terrain),
-                Some(Rc::new(SeatedPlayerKind)),
-            ))),
-            // The list of games measures its text as it lays out: its fonts are the drawing's.
-            layout_fonts: true,
+        let engine = engine(&files, &options)?;
+        VehicleDemo::from_engine(&engine, files, options)
+    }
+
+    /// The client over `files` made by `engine` (the demo's [`DemoPlugins`] over `files`): `client.cs` run, the menu showing.
+    /// The servers it hosts are made by the same engine.
+    pub fn from_engine(
+        engine: &Engine,
+        files: GameFiles,
+        options: ClientOptions,
+    ) -> Result<VehicleDemo, String> {
+        let terrain = engine
+            .resource::<Terrain>()
+            .cloned()
+            .ok_or("the engine has no terrain: add VehicleClientPlugin")?;
+        let mut b = ClientBuilder::from_engine(
+            engine,
+            Some(files.mem_files()),
             // A client that only plays alone gets its in-memory socket when the game starts (`start_local`).
-            net: if options.alone_only {
+            if options.alone_only {
                 ClientNet::External
             } else {
                 options.net.client_net()
             },
-            server_query: !options.alone_only,
-        })?;
-        register_join_natives(&mut b.vm, &b.state);
+        )?;
         b.vm.set_global("$World::Port", &options.port.to_string());
         if options.alone_only {
             b.vm.set_global("$World::AloneOnly", "1");
@@ -247,6 +345,7 @@ impl VehicleDemo {
         b.exec("client.cs")?;
         Ok(VehicleDemo {
             client: b.build(),
+            engine: engine.clone(),
             files,
             options,
             terrain,
@@ -271,6 +370,7 @@ impl VehicleDemo {
         self.stop_hosting();
         let loopback = self.options.net == NetMode::Loopback;
         let server = WorldServer::start(
+            &self.engine,
             &self.files,
             &ServerOptions {
                 address: lan_bind_address(self.options.net, self.options.host_address),
@@ -288,7 +388,7 @@ impl VehicleDemo {
     pub fn play_alone(&mut self) -> Result<(), String> {
         self.stop_hosting();
         let name = format!("{}'s game", self.global("$Pref::Player::Name"));
-        let server = WorldServer::start_alone(&self.files, &name)?;
+        let server = WorldServer::start_alone(&self.engine, &self.files, &name)?;
         self.client.start_local(server, ALONE_CLIENT, ALONE_ADDR);
         self.call("connectTo", &[ALONE_ADDR.to_string().as_str()])?;
         Ok(())

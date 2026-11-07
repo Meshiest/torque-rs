@@ -47,14 +47,18 @@
 //! buggy it holds, `x y z` separated by `;`), `data-torque-status` (the menu's status line), and for a joined game the link's
 //! state (`torque::app::web_join::mark_link`).
 
+use std::cell::Cell;
+
+use torque::app::run::EngineRun as _;
 use torque::app::view::WorldView;
 use torque::app::web_page;
 use torque::app::{App, Host};
+use torque::engine::{Engine, EngineBuilder};
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
-use crate::client::{ClientOptions, VehicleDemo};
+use crate::client::{ClientOptions, DemoPlugins, VehicleDemo};
 use crate::files::GameFiles;
 
 /// The module carries no files: the page fetches them.
@@ -73,55 +77,71 @@ pub fn start_fetched() -> Result<(), String> {
     if let Some(target) = torque::app::web_join::Target::from_page()? {
         return joined(files, target);
     }
-    // A page played alone at once starts at the menu too: its first steps make the map's interiors a few at a time
-    // ([`WebVehicle::warm_interiors`]), then ask to play alone, so neither this call nor any one step holds the page's thread
-    // for the server's start and its map's interiors together.
-    #[cfg(target_arch = "wasm32")]
-    let mut game = menu(files)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    let game = alone(files)?;
-    #[cfg(target_arch = "wasm32")]
-    {
-        offer_rooms(&mut game);
-        game.call("showMenu", &[])?;
+    run_page(files, page_options(), |engine, files, options| {
+        // A page played alone at once starts at the menu too: its first steps make the map's interiors a few at a time
+        // ([`WebVehicle::warm_interiors`]), then ask to play alone, so neither this call nor any one step holds the page's
+        // thread for the server's start and its map's interiors together.
+        let mut game = VehicleDemo::from_engine(engine, files, options)?;
+        #[cfg(target_arch = "wasm32")]
+        {
+            offer_rooms(&mut game);
+            game.call("showMenu", &[])?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        game.play_alone()?;
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut web = WebVehicle::new(game, None);
+        #[cfg(target_arch = "wasm32")]
+        if !torque::app::web_join::solo_page() {
+            web.warm = WarmStart::new(
+                web.game
+                    .files
+                    .kit
+                    .paths()
+                    .filter(|p| p.ends_with(".dif"))
+                    .map(String::from)
+                    .collect(),
+            );
+        }
+        Ok(web)
+    })
+}
+
+/// The options of a client with no socket of its own and no list of games: a page's.
+fn page_options() -> ClientOptions {
+    ClientOptions {
+        alone_only: true,
+        ..ClientOptions::default()
     }
-    #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
-    let mut web = WebVehicle::new(game, None);
-    #[cfg(target_arch = "wasm32")]
-    if !torque::app::web_join::solo_page() {
-        web.warm = WarmStart::new(
-            web.game
-                .files
-                .kit
-                .paths()
-                .filter(|p| p.ends_with(".dif"))
-                .map(String::from)
-                .collect(),
-        );
-    }
-    torque::app::window::run(web)
+}
+
+/// Runs the page's game: the engine of a client over `files` made as `options` say, and the game `make` makes from it when
+/// the runner starts.
+fn run_page(
+    files: GameFiles,
+    options: ClientOptions,
+    make: impl Fn(&Engine, GameFiles, ClientOptions) -> Result<WebVehicle, String> + 'static,
+) -> Result<(), String> {
+    let plugins = DemoPlugins::new(&files, &options)?;
+    let files = Cell::new(Some(files));
+    EngineBuilder::new()
+        .add_plugins(plugins)
+        .app(move |engine| {
+            let files = files.take().ok_or("the game is made once")?;
+            make(engine, files, options.clone())
+        })
+        .run()
+        .map_err(|e| e.to_string())
 }
 
 /// The client over `files` with no socket of its own, at its menu (a page played alone: Play alone starts the game).
 pub fn menu(files: GameFiles) -> Result<VehicleDemo, String> {
-    VehicleDemo::new(
-        files,
-        ClientOptions {
-            alone_only: true,
-            ..ClientOptions::default()
-        },
-    )
+    VehicleDemo::new(files, page_options())
 }
 
 /// The client over `files` with no socket of its own, playing alone.
 pub fn alone(files: GameFiles) -> Result<VehicleDemo, String> {
-    let mut game = VehicleDemo::new(
-        files,
-        ClientOptions {
-            alone_only: true,
-            ..ClientOptions::default()
-        },
-    )?;
+    let mut game = menu(files)?;
     game.play_alone()?;
     Ok(game)
 }
@@ -149,8 +169,9 @@ pub fn host_start(map: &str) -> Result<String, String> {
         return Err(format!("no map {map:?}: the demo has {MISSION}"));
     }
     let files = GameFiles::from_fetched(web_page::take_fetched()?)?;
+    let engine = crate::seats::server_engine()?;
     torque::app::web_host::start(|relay| {
-        crate::server::WorldServer::start_bound(&files, relay, "Hills").map(Into::into)
+        crate::server::WorldServer::start_bound(&engine, &files, relay, "Hills").map(Into::into)
     })?;
     Ok(MISSION.to_string())
 }
@@ -162,30 +183,32 @@ fn joined(files: GameFiles, target: torque::app::web_join::Target) -> Result<(),
     let name = query("name")
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| "Browser player".to_string());
-    let mut game = VehicleDemo::new(
-        files,
-        ClientOptions {
-            alone_only: true,
-            name,
-            ..ClientOptions::default()
-        },
-    )?;
-    offer_rooms(&mut game);
-    game.call("showMenu", &[])?;
-    let (socket, watch) = target.open()?;
-    game.set_socket(socket);
-    // A link's join waits for its channel (module docs).
-    let waiting = target == torque::app::web_join::Target::Page;
-    if waiting {
-        let vm = game.vm_mut();
-        if let Some(status) = vm.objects().find(b"MenuStatus") {
-            let text = b"Waiting for the connection to the host...".to_vec();
-            let _ = vm.call_method(status, b"setText", &[text]);
+    let options = ClientOptions {
+        name,
+        ..page_options()
+    };
+    run_page(files, options, move |engine, files, options| {
+        let mut game = VehicleDemo::from_engine(engine, files, options)?;
+        offer_rooms(&mut game);
+        game.call("showMenu", &[])?;
+        let (socket, watch) = target.open()?;
+        game.set_socket(socket);
+        // A link's join waits for its channel (module docs).
+        let waiting = target == torque::app::web_join::Target::Page;
+        if waiting {
+            let vm = game.vm_mut();
+            if let Some(status) = vm.objects().find(b"MenuStatus") {
+                let text = b"Waiting for the connection to the host...".to_vec();
+                let _ = vm.call_method(status, b"setText", &[text]);
+            }
+        } else {
+            game.join(&SERVER.to_string())?;
         }
-    } else {
-        game.join(&SERVER.to_string())?;
-    }
-    torque::app::window::run(WebVehicle::new(game, Some(Link::new(target, watch))))
+        Ok(WebVehicle::new(
+            game,
+            Some(Link::new(target.clone(), watch)),
+        ))
+    })
 }
 
 /// A page that is not one played alone (`data-torque-solo`) offers the page's own hosting and joining by room code on the
