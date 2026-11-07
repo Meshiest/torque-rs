@@ -82,13 +82,13 @@ pub fn figure_poses() -> torque::game::sim::player::poses::PoseData {
         crouch_box: [1.0, 1.0, 1.6],
         prone_box: [2.0, 2.0, 0.8],
         crouch_speeds: PoseSpeeds {
-            forward: 1.95,
-            backward: 1.65,
-            side: 1.5,
+            forward: 1.3,
+            backward: 1.1,
+            side: 1.0,
         },
         prone_speeds: PoseSpeeds {
-            forward: 1.125,
-            backward: 0.9,
+            forward: 0.75,
+            backward: 0.6,
             side: 0.0,
         },
         crouch_force: 3600.0,

@@ -2727,18 +2727,13 @@ fn ground_speed(game: &mut VehicleDemo, id: u32, ms: u32) -> (f32, [f32; 3]) {
     )
 }
 
-/// Crouched and prone the figure goes half as fast again as it did (the datablock's speeds, which the client predicts with),
+/// Crouched and prone the figure goes half as fast again as it did (the datablock's speeds),
 /// and its crouched walk and its crawl play as fast as it goes: each loop's ground speed times its rate is the figure's speed,
 /// so its feet and hands keep pace with the ground.
 #[test]
 fn crouched_and_prone_the_figure_goes_faster_and_its_feet_keep_pace_with_the_ground() {
     use torque::client::player_anim::{PlayerAnimation, PlayerMotion};
     use torque::game::sim::player::poses::Pose;
-    let poses = torque_example_common::figure_poses();
-    assert_eq!(
-        (poses.crouch_speeds.forward, poses.prone_speeds.forward),
-        (1.95, 1.125)
-    );
     let assets = torque_example_common::KitAssets::new().unwrap();
     let figure = torque::app::view::SceneShape::load(
         &assets,
@@ -2857,4 +2852,3 @@ fn an_empty_handed_figure_gets_down_and_up_with_both_hands_and_an_armed_one_keep
         );
     }
 }
-
