@@ -1,5 +1,5 @@
 # The website on GitHub Pages: the gallery of the web examples (each played alone, its files fetched by URL), the guide
-# (mdBook) and the API reference (rustdoc), built by `node web/site.mjs` (`just site`) and deployed on each push to main.
+# (mdBook) and the API reference (rustdoc), built by `node web/site.mjs` (`just site`) and deployed on pushes to main.
 #
 # Pages must be enabled in the repository's settings (Settings, Pages) with the source "GitHub Actions".
 # The site is served at https://reheatedcake.io/torque-rs/: the account's custom domain covers its project sites, under the
@@ -15,9 +15,23 @@
 
 name: Pages
 
+# Pushes that cannot change the site (tests, CI settings, the top-level notes) do not build it; run it by hand when needed.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**/*_tests.rs"
+      - "crates/*/tests/**"
+      - "examples/*/tests/**"
+      - "crates/*/benches/**"
+      - ".github/workflows/ci.yml"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "README.md"
+      - "deny.toml"
+      - "clippy.toml"
+      - "rustfmt.toml"
   workflow_dispatch:
 
 permissions:
@@ -76,5 +90,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # GitHub's side usually confirms in seconds to a few minutes; past 6 minutes it is stuck, so stop paying for the wait
+      # and use "Re-run failed jobs" (it redeploys the built site without building it again).
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        with:
+          timeout: 360000
