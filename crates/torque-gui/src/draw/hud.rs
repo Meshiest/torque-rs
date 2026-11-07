@@ -203,6 +203,14 @@ impl Walk<'_> {
         };
         let mut v_off = [0.0f32];
         torque_ts_vm::text::scan_floats(&text_field(vm, id, b"verticalOffset"), &mut v_off);
+        let distance_fade = {
+            let text = text_field(vm, id, b"distanceFade");
+            let mut f = [0.0f32];
+            (!text.trim_ascii().is_empty()).then(|| {
+                torque_ts_vm::text::scan_floats(&text, &mut f);
+                f[0]
+            })
+        };
         let half = (camera.fov * std::f32::consts::PI / 180.0 * 0.5) as f64;
         let fov_min = (half + 0.043_633_230_030_536_65) as f32;
         let dir = [
@@ -218,26 +226,16 @@ impl Walk<'_> {
             ];
             let dot = dir[0] * d[0] + dir[1] * d[1] + dir[2] * d[2];
             let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            let nd = s.distance;
-            let max_dist = if visible > nd { nd } else { visible };
-            let a = (f64::from(nd) * 0.8) as f32;
-            let b = (f64::from(nd) - 5.0) as f32;
-            let mut fade_start = if a > b { a } else { b };
-            if fog <= fade_start {
-                fade_start = fog;
-            }
-            if dist > max_dist || fov_min > dot || s.hidden {
+            let Some(opacity) = name_opacity(dist, s.distance, visible, fog, distance_fade) else {
+                continue;
+            };
+            if fov_min > dot || s.hidden {
                 continue;
             }
             let mut p = s.position;
             p[2] += v_off[0];
             let Some(proj) = project(&camera, visible, control_rect, ts_update, p) else {
                 continue;
-            };
-            let opacity = if fade_start > dist {
-                1.0
-            } else {
-                1.0 - (dist - fade_start) / (max_dist - fade_start)
             };
             let at = (proj.0 as i32, proj.1 as i32);
             self.draw_name(
@@ -476,3 +474,58 @@ impl Walk<'_> {
         self.fill(r, [color[0], color[1], color[2], 255]);
     }
 }
+
+/// A name's opacity at `dist` from the camera, `None` when it is not drawn (past its range). `name_distance` is the shape's
+/// name distance, `visible` and `fog` the scene's distances.
+///
+/// With `distance_fade` (GuiShapeNameHud's `distanceFade`, as Torque3D's `guiShapeNameHud.cpp` reads it): none at the camera
+/// (0) or past the visible distance (or the name distance, when nearer); full up to `visible * distanceFade` (a negative one
+/// read as 0), then down in a line to 0 at the visible distance. A fade start at or past the visible distance draws the name
+/// whole until it is out of range, where it is 0 (Torque3D's division by zero there). Without it: full up to the larger of
+/// 80% of the name distance and 5 less than it (the fog distance when that is nearer), then down to 0 at the range.
+pub fn name_opacity(
+    dist: f32,
+    name_distance: f32,
+    visible: f32,
+    fog: f32,
+    distance_fade: Option<f32>,
+) -> Option<f32> {
+    let max_dist = if visible > name_distance {
+        name_distance
+    } else {
+        visible
+    };
+    if dist > max_dist {
+        return None;
+    }
+    if let Some(fade) = distance_fade {
+        if dist == 0.0 {
+            return None;
+        }
+        let start = visible * fade.max(0.0);
+        if dist < start {
+            return Some(1.0);
+        }
+        let span = visible - start;
+        return Some(if span > 0.0 {
+            1.0 - (dist - start) / span
+        } else {
+            0.0
+        });
+    }
+    let a = (f64::from(name_distance) * 0.8) as f32;
+    let b = (f64::from(name_distance) - 5.0) as f32;
+    let mut fade_start = if a > b { a } else { b };
+    if fog <= fade_start {
+        fade_start = fog;
+    }
+    Some(if fade_start > dist {
+        1.0
+    } else {
+        1.0 - (dist - fade_start) / (max_dist - fade_start)
+    })
+}
+
+#[cfg(test)]
+#[path = "hud_tests.rs"]
+mod tests;

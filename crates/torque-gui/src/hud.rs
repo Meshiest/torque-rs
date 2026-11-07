@@ -11,7 +11,9 @@
 //!   added when its update carries a name and taken out, the last one moved into its place, when its name goes or it is deleted), the
 //!   control object left out, with the control camera's transform and fov and the scene's visible and fog distances. The ray test
 //!   against the static world (`castRay` with the host's mask, the shape and its mounts out of it) is the host's
-//!   ([`NamedShape::hidden`]); the distance, the field-of-view test, the fade and the projection are the GUI's.
+//!   ([`NamedShape::hidden`]); the distance, the field-of-view test, the fade and the projection are the GUI's. With its
+//!   `distanceFade` set the fade is Torque3D's (whole up to that share of the visible distance, then down to 0 at it); without
+//!   it, it follows the shape's name distance and the fog ([`crate::draw::name_opacity`]).
 //! - **GuiGraphCtrl**: six plots of at most [`GRAPH_SAMPLES`] values, newest first.
 //!
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `T3D/fps/guiHealthBarHud.cpp` (Copyright (c)

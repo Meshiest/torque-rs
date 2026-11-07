@@ -268,6 +268,8 @@ new GameTSCtrl(PlayGui)
    {
       profile = NamePlateProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
       visible = true; showFill = false; showFrame = false; verticalOffset = $Client::NameLift;
+      // Whole near the buggies and along the track, fading from 70 units out to nothing at the hills' 1400.
+      distanceFade = 0.05;
    };
    new GuiControl(PlayBand)
    {

@@ -66,8 +66,9 @@ updateStats();
 //
 // A game's view puts a GuiShapeNameHud over its whole area, first among its children (the names drawn under the rest of the
 // HUD), with this profile: the engine draws the name each other figure's server gave it (`setShapeName`, common/server.cs),
-// never the player's own, white with a dark edge, fading out from the scene's fog distance to its visible distance, and none
-// behind a wall or the ground. The label sits $Client::NameLift above the figure's eyes.
+// never the player's own, white with a dark edge, and none behind a wall or the ground. The label sits $Client::NameLift
+// above the figure's eyes. Each view sets its HUD's `distanceFade`: a name is whole up to that share of the map's visible
+// distance, then fades out to nothing at it.
 new GuiControlProfile(NamePlateProfile) { fontType = "Arial"; fontSize = 20; fontColors[0] = "255 255 255 255"; };
 $Client::NameLift = 0.4;
 

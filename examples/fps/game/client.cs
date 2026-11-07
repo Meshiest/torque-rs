@@ -459,6 +459,8 @@ new GameTSCtrl(PlayGui)
    {
       profile = NamePlateProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
       visible = true; showFill = false; showFrame = false; verticalOffset = $Client::NameLift;
+      // Whole across the arena (the fade starts 150 units out, past its walls).
+      distanceFade = 0.1;
    };
    new GuiTextCtrl(Crosshair)
    {
