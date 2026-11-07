@@ -366,7 +366,6 @@ function GameConnection::spawnFigure(%client)
    cancel(%client.respawn);
    %spawn = nextSpawn();
    %player = %client.createFigure(ArenaFigure, getWords(%spawn, 0, 2) SPC "0 0 1" SPC getWord(%spawn, 3));
-   %player.setShapeName(%client.name);
    %player.mountImage(ArenaPistolImage, 0);
    // The pistol is held up (the arm thread's `hold`): every client draws the figure as its record says.
    %player.setArmThread(hold);

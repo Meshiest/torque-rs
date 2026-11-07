@@ -994,9 +994,11 @@ impl VehicleDemo {
             let _ = self.call("setHint", &[&hint]);
             self.hint = hint;
         }
-        // The client's camera is the example's own: the GameTSCtrl draws the world whatever the connection's camera is.
+        // The client's camera is the example's own: the GameTSCtrl draws the world whatever the connection's camera is, and the
+        // names over the others are placed from it.
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
+        torque_example_common::names_camera(&host.gui, &eye);
         (host.draw_frame(), eye)
     }
 }

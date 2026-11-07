@@ -662,11 +662,13 @@ impl ArenaGame {
         };
         view.set_objects(objects);
         self.apply_sky(view);
-        // The example draws the world itself: the GameTSCtrl draws the world whatever the connection's camera is.
+        // The example draws the world itself: the GameTSCtrl draws the world whatever the connection's camera is, and the names
+        // over the others are placed from its eye.
+        let eye = self.drawn_eye();
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
+        torque_example_common::names_camera(&host.gui, &eye);
         let mut draws = host.draw_frame();
-        let eye = self.drawn_eye();
         if let Some(world) = draws.worlds.first() {
             let marks = self.marks.batches(world.rect, eye.position, eye.yaw);
             insert_over_world(&mut draws, marks);

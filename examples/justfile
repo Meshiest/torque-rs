@@ -281,6 +281,11 @@ fps-shots dir="../target/fps-shots":
 fps-menu-shots dir="../target/fps-menu-shots":
     cargo run -p torque-example-fps --release --bin fps-client -- --menu-shots {{dir}}
 
+# The other player's name over his head in the arena, at 1280x720 and at 640x360 (a browser's half-scale canvas), drawn
+# offscreen into `dir`
+fps-name-shots dir="../target/fps-name-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --name-shots {{dir}}
+
 # The arena's motion pictures (side steps, the walk backward, the look, the falls, a shot's kick and flash, the reload HUD, the
 # pause menu), drawn offscreen into `dir`
 fps-motion-shots dir="../target/fps-motion-shots":
@@ -306,6 +311,11 @@ fps-hitbox-shots dir="../target/fps-hitbox-shots":
 # turns the camera, E get out). `--host`, `--join <address>`, `--name <name>`, `--bind <LAN address>`
 vehicle-demo *args:
     cargo run -p torque-example-vehicle-demo --release -- {{args}}
+
+# The other player's name over his head in the vehicle demo, on foot and in the passenger's seat, at 1280x720 and at 640x360
+# (a browser's half-scale canvas), drawn offscreen into `dir`
+vehicle-demo-name-shots dir="../target/vehicle-demo-name-shots":
+    cargo run -p torque-example-vehicle-demo --release -- --name-shots {{dir}}
 
 # The vehicle demo's pictures over the loopback address (the menu, the start, the buggy, its cockpit, two players seated, the
 # passenger's view, the climb up the hill), drawn offscreen into `dir`

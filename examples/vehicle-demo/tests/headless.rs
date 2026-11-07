@@ -2953,3 +2953,72 @@ fn chat_goes_round_and_at_the_wheel_t_opens_it_without_driving() {
     assert!(a.host.input_errors.is_empty(), "{:?}", a.host.input_errors);
     assert!(errors(&a).is_empty(), "{:?}", errors(&a));
 }
+
+/// The names the view's HUD has this tick: each name, where its label stands and whether something hides it.
+fn names(game: &VehicleDemo) -> Vec<(String, [f32; 3], bool)> {
+    game.host
+        .gui
+        .0
+        .borrow()
+        .hud
+        .names
+        .iter()
+        .map(|n| {
+            (
+                String::from_utf8_lossy(&n.name).into_owned(),
+                n.position,
+                n.hidden,
+            )
+        })
+        .collect()
+}
+
+/// The one name `game`'s view has, which must be `who`'s, showing: where its label stands.
+fn name_of(game: &VehicleDemo, who: &str) -> [f32; 3] {
+    let seen = names(game);
+    match seen.as_slice() {
+        [(name, at, false)] if name == who => *at,
+        _ => panic!("expected only {who}'s name, showing: {seen:?}"),
+    }
+}
+
+#[test]
+fn each_sees_the_others_name_on_foot_and_in_a_seat_never_its_own() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    // On foot: each sees the other's name over the head, never its own.
+    let bob = name_of(&a, "Bob");
+    name_of(&b, "Ann");
+    let feet = server(&a)
+        .figure_position_of(server(&a).figures()[1])
+        .unwrap();
+    assert!(
+        horizontal([bob[0] - feet[0], bob[1] - feet[1], 0.0]) < 0.5 && bob[2] - feet[2] > 1.2,
+        "Bob's label at {bob:?}, his feet at {feet:?}"
+    );
+
+    // Both seated, Ann at the wheel: still each other's name only, over the seats, and it rides along with the buggy.
+    get_in(&mut [&mut a, &mut b], 0);
+    get_in(&mut [&mut a, &mut b], 1);
+    assert!(a.driving() && b.seat() == Some(1));
+    steps(&mut [&mut a, &mut b], 500);
+    let near = |game: &VehicleDemo, who: &str| {
+        let at = name_of(game, who);
+        let buggy = game.buggy_pose().unwrap().column(3);
+        let off = horizontal([at[0] - buggy[0], at[1] - buggy[1], 0.0]);
+        assert!(off < 1.5, "{who}'s label at {at:?}, the buggy at {buggy:?}");
+        assert!(at[2] > buggy[2], "{who}'s label over the buggy");
+        at
+    };
+    let before = near(&a, "Bob");
+    near(&b, "Ann");
+    a.key(Key::W, true);
+    steps(&mut [&mut a, &mut b], 2500);
+    a.key(Key::W, false);
+    a.key(Key::Space, true);
+    steps(&mut [&mut a, &mut b], 2000);
+    a.key(Key::Space, false);
+    let after = near(&a, "Bob");
+    near(&b, "Ann");
+    assert!(after[1] - before[1] > 6.0, "from {before:?} to {after:?}");
+}

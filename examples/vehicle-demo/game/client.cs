@@ -8,7 +8,8 @@
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
 // $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
 // camera at the figure's eyes or behind it, on foot and in a seat. Esc opens the examples' pause menu (common/pause.cs: Resume,
-// Controls, Leave game, Quit) and T the chat (common/chat.cs). The host writes the hint line (setHint).
+// Controls, Leave game, Quit) and T the chat (common/chat.cs). The other players' names show over their heads. The host
+// writes the hint line (setHint).
 
 exec("common/client.cs");
 
@@ -262,6 +263,12 @@ function pollJoinLookup()
 new GameTSCtrl(PlayGui)
 {
    position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+   // The other players' names over their heads, on foot and in a seat (common/client.cs), under the rest of the HUD.
+   new GuiShapeNameHud(NamePlates)
+   {
+      profile = NamePlateProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+      visible = true; showFill = false; showFrame = false; verticalOffset = $Client::NameLift;
+   };
    new GuiControl(PlayBand)
    {
       profile = WorldBandProfile; position = "0 0"; extent = "800 28"; horizSizing = "width";

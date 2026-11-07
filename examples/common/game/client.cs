@@ -62,6 +62,15 @@ function updateStats()
 }
 updateStats();
 
+// ---- the names over the other players
+//
+// A game's view puts a GuiShapeNameHud over its whole area, first among its children (the names drawn under the rest of the
+// HUD), with this profile: the engine draws the name each other figure's server gave it (`setShapeName`, common/server.cs),
+// never the player's own, white with a dark edge, fading out from the scene's fog distance to its visible distance, and none
+// behind a wall or the ground. The label sits $Client::NameLift above the figure's eyes.
+new GuiControlProfile(NamePlateProfile) { fontType = "Arial"; fontSize = 20; fontColors[0] = "255 255 255 255"; };
+$Client::NameLift = 0.4;
+
 // ---- the figure's poses
 //
 // Ctrl held crouches, C crouches or stands (a browser closes its tab on Ctrl+W), Z lies down or gets up, and Space while

@@ -77,8 +77,8 @@ map); a few tree and grove interiors placed hundreds of times.
 ![A shot in the arena: the bolt in flight, the muzzle's flare, the other player hit](screenshots/fps-shot.webp)
 
 An arena shooter for a few players. Host or join from the main menu (from the list of games on the network, or by
-address), then play as the box figure with a pistol, in rounds, with chat. A dedicated server takes desktop players on UDP
-and browsers over WebSocket and WebRTC data channels in the same game.
+address), then play as the box figure with a pistol, in rounds, with chat and the other players' names over their heads.
+A dedicated server takes desktop players on UDP and browsers over WebSocket and WebRTC data channels in the same game.
 
 **Controls:** W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space jump, mouse look, left button
 shoot, right button aim down the sights, R reload, Tab first or third person, T chat, Esc pause menu.
@@ -102,12 +102,13 @@ projectiles with trails, muzzle flashes and smoke; bolt holes as decals; cross p
 ![The buggy in a turn of the race track, dust and tire tracks behind it](screenshots/vehicle-demo-turn.webp)
 
 Driving for one or more players. Walk the box figure up to a dune buggy, click to get in (as driver or passenger), and
-drive around a dirt race track over checkerboard hills and through forests of low-poly trees, while the day passes.
+drive around a dirt race track over checkerboard hills and through forests of low-poly trees, while the day passes. The
+other players' names show over their heads, on foot and in a seat, and T opens the chat.
 
 **Controls:** on foot W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space jump, mouse look, Tab first
 or third person, click the buggy to get in; at the wheel W throttle, S reverse, A D steer, Space brake, mouse turns the
 camera, wheel zooms, F headlight, Tab the driver's eyes, E get out;
-`[` and `]` slow down or speed up the day, `\` its normal speed; R restart, Esc menu.
+`[` and `]` slow down or speed up the day, `\` its normal speed; R restart, T chat, Esc menu.
 
 **Run it:**
 

@@ -97,7 +97,7 @@ function GameConnection::onDrop(%client, %reason)
 }
 
 // A new figure of %dataBlock for the client at %transform (its last one deleted), in MissionCleanup, the client's control
-// object.
+// object, named as the client is (%client.name).
 function GameConnection::createFigure(%client, %dataBlock, %transform)
 {
    if (isObject(%client.player))
@@ -109,6 +109,9 @@ function GameConnection::createFigure(%client, %dataBlock, %transform)
    };
    MissionCleanup.add(%player);
    %player.setTransform(%transform);
+   // The name the other players see over it (cleanName).
+   if (%client.name !$= "")
+      %player.setShapeName(%client.name);
    %client.player = %player;
    %client.setControlObject(%player);
    return %player;

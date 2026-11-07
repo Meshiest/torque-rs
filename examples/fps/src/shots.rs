@@ -247,6 +247,32 @@ fn meet(
     Ok((a, b))
 }
 
+/// The names over the players at each of `sizes` (the first the clients start at), into `dir` as `names-<w>x<h>.png`: Bob
+/// a few steps ahead of Ann, his name over his head in her view (hers is never drawn in it), a chat line each in the box.
+/// Returns the paths.
+pub fn write_names(
+    dir: &Path,
+    sizes: &[(u32, u32)],
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let first = *sizes.first().ok_or("no sizes")?;
+    let (mut a, mut b) = meet(&gpu, first, &make_files)?;
+    let mut shots = Shots::new(dir)?;
+    place(&mut a.game, "Ann", [4.0, -16.0, 0.1], 0.0)?;
+    place(&mut a.game, "Bob", [5.2, -9.5, 0.1], 3.4)?;
+    a.game.call("say", &["Ready when you are"])?;
+    b.game.call("say", &["Coming for you"])?;
+    run(&gpu, &mut [&mut a, &mut b], 1200)?;
+    for &size in sizes {
+        a.game.host.surface_size(size);
+        a.target = gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?;
+        run(&gpu, &mut [&mut a, &mut b], 200)?;
+        shots.save(&a.picture(&gpu)?, &format!("names-{}x{}", size.0, size.1))?;
+    }
+    Ok(shots.paths)
+}
+
 /// The HUD for review at `size`, into `dir` with `tag` in each name: Bob's view in play (the corner readout with his round trip
 /// to Ann's server), then the pause menu over it and its Controls panel. Returns the paths.
 pub fn write_hud(

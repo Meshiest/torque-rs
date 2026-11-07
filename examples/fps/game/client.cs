@@ -454,6 +454,12 @@ function pollJoinLookup()
 new GameTSCtrl(PlayGui)
 {
    position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+   // The other players' names over their heads (common/client.cs), under the rest of the HUD.
+   new GuiShapeNameHud(NamePlates)
+   {
+      profile = NamePlateProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+      visible = true; showFill = false; showFrame = false; verticalOffset = $Client::NameLift;
+   };
    new GuiTextCtrl(Crosshair)
    {
       profile = ArenaCrossProfile; position = "380 282"; extent = "40 36"; horizSizing = "center"; vertSizing = "center";

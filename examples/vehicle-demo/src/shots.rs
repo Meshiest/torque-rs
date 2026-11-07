@@ -120,6 +120,90 @@ fn click(game: &mut VehicleDemo) {
     game.host.mouse_button(MouseButton::Left, false, (640, 360));
 }
 
+/// Turns `seat`'s figure on foot to face the figure of `other` (the mouse's turn, as a player's).
+fn face(seat: &mut Seat<VehicleDemo>, other: &Seat<VehicleDemo>) -> Result<(), String> {
+    let own = seat.game.figure().ok_or("no figure")?;
+    let to = other.game.figure().ok_or("no other figure")?.position;
+    let target = (to[0] - own.position[0]).atan2(to[1] - own.position[1]);
+    let tau = std::f32::consts::TAU;
+    let turn = (target - own.yaw + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
+    seat.game.host.mouse_motion(turn / 0.003, 0.0);
+    Ok(())
+}
+
+/// The names over the players at each of `sizes` (the first the clients start at), into `dir`: `names-foot-<w>x<h>.png` (Bob
+/// across the buggy from Ann, his name over his head; Ann seen from behind, her own name never drawn) and
+/// `names-seated-<w>x<h>.png` (Bob in the passenger's seat, his name over it, seen from Ann's eyes). Returns the paths.
+pub fn write_names(
+    dir: &Path,
+    sizes: &[(u32, u32)],
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let first = *sizes.first().ok_or("no sizes")?;
+    let seat = |name: &str| -> Result<Seat<VehicleDemo>, String> {
+        let files = make_files().map_err(|e| e.to_string())?;
+        let game = VehicleDemo::new(
+            files,
+            ClientOptions {
+                net: NetMode::Loopback,
+                name: name.to_string(),
+                port: 0,
+                ..ClientOptions::default()
+            },
+        )?;
+        Seat::new(game, &gpu, first)
+    };
+    let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
+    let mut shots = Shots::new(dir)?;
+    a.game.host_game()?;
+    run_until(&gpu, &mut a, &mut b, "the hosted game", |a, _| {
+        a.in_world() && a.figure().is_some()
+    })?;
+    let address = a.game.hosted_address().ok_or("no hosted address")?;
+    b.game.join(&address.to_string())?;
+    run_until(&gpu, &mut a, &mut b, "the second player", |a, b| {
+        b.in_world() && b.figure().is_some() && a.ghost_count() > 3
+    })?;
+    run(&gpu, &mut [&mut a, &mut b], 3000)?;
+    a.game.call("say", &["Want a ride?"])?;
+    b.game.call("say", &["Sure, I will sit on the right"])?;
+    face(&mut a, &b)?;
+    a.game.set_first_person(false);
+    run(&gpu, &mut [&mut a, &mut b], 1500)?;
+    let mut take = |a: &mut Seat<VehicleDemo>, b: &mut Seat<VehicleDemo>, name: &str| {
+        for &size in sizes {
+            a.game.host.surface_size(size);
+            a.target = gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?;
+            run(&gpu, &mut [&mut *a, &mut *b], 200)?;
+            shots.save(
+                &picture(&gpu, a, None)?,
+                &format!("{name}-{}x{}", size.0, size.1),
+            )?;
+        }
+        Ok::<(), String>(())
+    };
+    take(&mut a, &mut b, "names-foot")?;
+
+    // Bob looks down at the buggy and clicks: the passenger's seat, on his side.
+    b.game.host.mouse_motion(0.0, 110.0);
+    run(&gpu, &mut [&mut a, &mut b], 300)?;
+    click(&mut b.game);
+    run_until(&gpu, &mut a, &mut b, "the passenger's seat", |_, b| {
+        b.seat() == Some(1)
+    })?;
+    // Ann at her own eyes, a few steps back from the buggy, facing him.
+    face(&mut a, &b)?;
+    a.game.set_first_person(true);
+    a.game.key(Key::S, true);
+    run(&gpu, &mut [&mut a, &mut b], 1200)?;
+    a.game.key(Key::S, false);
+    face(&mut a, &b)?;
+    run(&gpu, &mut [&mut a, &mut b], 1500)?;
+    take(&mut a, &mut b, "names-seated")?;
+    Ok(shots.paths)
+}
+
 /// The pictures at `size`, written into `dir`: `menu.png` (host or join), `start.png` (the two figures beside the buggy, the
 /// hills beyond), `buggy.png` (the buggy from its front three quarters), `cockpit.png` (the driver's hands on the wheel, close
 /// up), `two-seated.png` (the driver and the passenger from outside), `passenger.png` (the passenger's view while the other

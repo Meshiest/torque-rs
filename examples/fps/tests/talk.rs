@@ -1,6 +1,7 @@
 //! What the players say and the names over them, over the loopback address: a chat line from one client shows in the other's
 //! chat box, cleaned of markup and control bytes and cut to its length (never inside a character); a client that sends too
-//! many lines at once has the rest dropped and is told once; a name is cleaned the same way.
+//! many lines at once has the rest dropped and is told once; a name is cleaned the same way. The view's names show the other
+//! player's name over its head, never the player's own, and none through a wall.
 
 use torque::client::input::{Key, MouseButton};
 use torque_example_fps::client::{ArenaGame, ClientOptions, NetMode};
@@ -203,4 +204,28 @@ fn the_chat_frees_the_mouse_and_typing_moves_nothing() {
     assert_eq!(a.global("$Chat::Open"), "0");
     assert_ne!(a.global("$Client::Paused"), "1");
     assert!(a.host.input_errors.is_empty(), "{:?}", a.host.input_errors);
+}
+
+#[test]
+fn the_view_names_the_other_player_not_its_own_and_none_through_a_wall() {
+    let (mut a, mut b) = two("Bob", None);
+    let place = |a: &mut ArenaGame, name: &str, at: [f32; 3], yaw: f32| {
+        let [x, y, z] = at.map(|v| v.to_string());
+        a.server
+            .as_mut()
+            .unwrap()
+            .call("placeFigure", &[name, &x, &y, &z, &yaw.to_string()])
+            .unwrap();
+    };
+    // Face to face in the open, a few steps apart: each sees the other's name, not its own.
+    place(&mut a, "Ann", [4.0, -16.0, 0.1], 0.0);
+    place(&mut a, "Bob", [4.6, -11.5, 0.1], 3.6);
+    step_both(&mut a, &mut b, 1000);
+    assert_eq!(names(&a), [("Bob".to_string(), false)]);
+    assert_eq!(names(&b), [("Ann".to_string(), false)]);
+    // Bob behind the ring of cover: his name is hidden from Ann.
+    place(&mut a, "Ann", [0.0, -16.0, 0.1], 0.0);
+    place(&mut a, "Bob", [0.0, -5.5, 0.1], std::f32::consts::PI);
+    step_both(&mut a, &mut b, 1000);
+    assert_eq!(names(&a), [("Bob".to_string(), true)], "behind the wall");
 }
