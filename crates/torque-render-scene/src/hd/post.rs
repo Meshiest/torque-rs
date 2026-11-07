@@ -20,7 +20,7 @@ pub const CUT_DISTANCE: f32 = 32.0;
 /// The ambient occlusion's reach (world units).
 pub const AO_RADIUS: f32 = 0.5;
 /// GTAO's slices and steps a side (Jimenez et al. 2016), and SSAO's taps.
-pub const GTAO_SLICES: u32 = 2;
+pub const GTAO_SLICES: u32 = 3;
 pub const GTAO_STEPS: u32 = 6;
 pub const SSAO_TAPS: u32 = 8;
 

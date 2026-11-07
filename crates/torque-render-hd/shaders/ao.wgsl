@@ -3,19 +3,20 @@
 // stands alone: its noise is fixed per AO texel (the same every frame) and the spatial filter after this pass (`ao_filter.wgsl`)
 // averages it out, so nothing lags behind a moving shape, a moving light or a moving camera.
 //
-// The noise is interleaved (Keller and Heidrich 2001): each texel of a 4 x 4 tile takes one of 16 turns of the
-// directions and one of 16 offsets of the steps (an ordered-dither matrix, so neighbors differ most), and the filter weighs every
-// texel of a tile alike, so on a flat patch the tile's 16 estimates average to one estimate of 16 times the directions and steps.
-// (A noise without that period, such as interleaved gradient noise taken at the AO texels, leaves what the filter does not average
-// as fixed stripes that wave across flat walls.)
+// The noise is interleaved (Keller and Heidrich 2001): each texel of a 4 x 4 tile takes one of 16 turns of the directions and one
+// of 16 offsets of the steps (an ordered-dither matrix, so neighbors differ most), all 16 moved by a share of a sixteenth hashed
+// from the tile, and the filter weighs every texel of a tile alike, so on a flat patch the tile's 16 estimates average to one
+// estimate of 16 times the directions and steps. (A noise without that period, such as interleaved gradient noise taken at the
+// AO texels, leaves what the filter does not average as fixed stripes that wave across flat walls; the same 16 turns in every
+// tile leave, where the occlusion changes, a faint crosshatch of the tile's period.)
 //
 // - GTAO (GTAO = true; Jimenez et al. 2016, "Practical Realtime Strategies for Accurate Indirect Occlusion"): in each of SLICES
-//   screen-space directions (turned per texel by the interleaved noise) the highest horizon on either side is found
-//   from STEPS depth samples a side within the reach (a sample's horizon fades to the tangent plane's over the last tenth of the reach,
-//   so what lies farther in depth, such as the background around an object's outline, occludes nothing), clamped to the hemisphere
-//   of the normal projected into the slice, and the cosine-weighted visible arc integrated in closed form. The result is the
-//   cosine-weighted visibility of rays of the reach's length against the depth buffer taken as a height field: what the CPU
-//   reference measures with rays against the boxes.
+//   screen-space directions (turned per texel by the interleaved noise) the highest horizon on either side is found from STEPS
+//   depth samples a side within the reach (a sample's horizon fades to the tangent plane's from 3/4 of the reach to 5/4 of it, so
+//   what lies farther in depth, such as the background around an object's outline, occludes nothing, and the steps crossing the
+//   reach leave no contour of their own: a fade over its last tenth drew bands along the edges of what occludes), clamped to the
+//   hemisphere of the normal projected into the slice, and the cosine-weighted visible arc integrated in closed form. The result
+//   is the cosine-weighted visibility of rays of about the reach's length against the depth buffer taken as a height field.
 // - SSAO (GTAO = false; a normal-oriented hemisphere after Mittring 2007 and Bavoil and Sainz 2008): TAPS points in the hemisphere
 //   (cosine-distributed, turned per texel), each occluded where the depth buffer holds a surface in front of it that lies within the
 //   reach of the pixel's point.
@@ -27,11 +28,11 @@
 @group(0) @binding(2) var normals: texture_2d<f32>;
 // (Bindings 3 and 4, the motion and last frame's AO, are the layout's; this pass reads neither.)
 
-const SLICES: u32 = 2u;
+const SLICES: u32 = 3u;
 const STEPS: u32 = 6u;
 const TAPS: u32 = 8u;
-// The share of the reach over which a sample's weight fades out.
-const FALLOFF: f32 = 0.1;
+// The share of the reach over which a sample's weight fades out, centered on the reach (full to 3/4 of it, none past 5/4).
+const FALLOFF: f32 = 0.5;
 // The reach's largest screen size (internal pixels) and the closest a sample is taken (pixels).
 const MAX_RADIUS_PX: f32 = 192.0;
 const MIN_STEP_PX: f32 = 1.3;
@@ -55,15 +56,35 @@ fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
     return p.xyz / p.w;
 }
 
-// The interleaved noise of AO texel `t`: x the turn of the directions, y the offset of the steps, each one of 16 values in (0, 1)
-// that every 4 x 4 tile takes once (the offset's order a permutation of the turn's, so the two do not move together).
-fn interleaved(t: vec2<i32>) -> vec2<f32> {
-    // The 4 x 4 ordered-dither (Bayer) matrix's entry: the bits of x xor y and of y, interleaved and reversed.
-    let x = u32(t.x & 3);
-    let y = u32(t.y & 3);
+// The 4 x 4 ordered-dither (Bayer) matrix's entry at `t`: the bits of x xor y and of y, interleaved and reversed.
+fn bayer(t: vec2<u32>) -> u32 {
+    let x = t.x & 3u;
+    let y = t.y & 3u;
     let e = x ^ y;
-    let k = ((e & 1u) << 3u) | ((y & 1u) << 2u) | (e & 2u) | ((y >> 1u) & 1u);
-    return (vec2<f32>(f32(k), f32((k * 5u + 3u) & 15u)) + 0.5) / 16.0;
+    return ((e & 1u) << 3u) | ((y & 1u) << 2u) | (e & 2u) | ((y >> 1u) & 1u);
+}
+
+// A hash of an integer pair to [0, 1) (PCG's output permutation).
+fn hash2(v: vec2<u32>) -> f32 {
+    var h = v.x * 747796405u + v.y * 2891336453u + 2654435769u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    return f32(h >> 8u) / 16777216.0;
+}
+
+// The interleaved noise of AO texel `t`: x the turn of the directions, y the offset of the steps, each one of 16 evenly spaced
+// values in (0, 1) that every 4 x 4 tile takes once (the offset's order a permutation of the turn's, so the two do not move
+// together), all moved by the tile's own share of a sixteenth (neighboring tiles do not repeat each other's directions).
+fn interleaved(t: vec2<i32>) -> vec2<f32> {
+    let k = bayer(vec2<u32>(t));
+    let tile = vec2<u32>(t) >> vec2<u32>(2u);
+    let turn = vec2<f32>(hash2(tile), hash2(tile + vec2<u32>(7919u, 104729u)));
+    return fract((vec2<f32>(f32(k), f32((k * 5u + 3u) & 15u)) + 0.5 + turn) / 16.0);
+}
+
+// A sample's weight at distance `dl` from the point: 1 within 3/4 of the reach, falling to none at 5/4 of it.
+fn fade(dl: f32, reach: f32) -> f32 {
+    return clamp((reach * (1.0 + 0.5 * FALLOFF) - dl) / (FALLOFF * reach), 0.0, 1.0);
 }
 
 fn safe_acos(x: f32) -> f32 {
@@ -118,7 +139,7 @@ fn gtao(centre: vec2<f32>, p: vec3<f32>, n: vec3<f32>, noise: vec2<f32>, radius_
                     continue;
                 }
                 let c = dot(delta / dl, v);
-                let w = clamp((reach - dl) / (FALLOFF * reach), 0.0, 1.0);
+                let w = fade(dl, reach);
                 if side == 0u {
                     h_pos = max(h_pos, mix(low_pos, c, w));
                 } else {
@@ -166,7 +187,7 @@ fn ssao(p: vec3<f32>, n: vec3<f32>, noise: vec2<f32>) -> f32 {
         if q.z >= sp.z + bias {
             // Only a surface within the reach of the point occludes it (no halo from what lies far in front).
             let dq = length(q.xyz - p);
-            occ = occ + clamp((reach - dq) / (FALLOFF * reach), 0.0, 1.0);
+            occ = occ + fade(dq, reach);
         }
     }
     return 1.0 - occ / f32(TAPS);
@@ -187,7 +208,7 @@ fn fs_ao(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let noise = interleaved(vec2<i32>(frag.xy));
     let lin = -p.z;
     var raw = 1.0;
-    let radius_px = frame.ao.x * frame.proj[0][0] * 0.5 * frame.screen.x / max(lin, 1e-4);
+    let radius_px = frame.ao.x * (1.0 + 0.5 * FALLOFF) * frame.proj[0][0] * 0.5 * frame.screen.x / max(lin, 1e-4);
     if radius_px >= 1.0 {
         if GTAO {
             raw = gtao(centre, p, n, noise, min(radius_px, MAX_RADIUS_PX));

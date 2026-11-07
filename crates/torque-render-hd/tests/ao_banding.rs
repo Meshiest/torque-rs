@@ -1,7 +1,8 @@
 //! The ambient occlusion has no banding: a block held out from a wall, a hand's width off it, the wall seen at a slant at each
 //! quality with AO, the occlusion alone (the AO debug view). Along lines on the wall at an even distance from the block the
 //! occlusion keeps to a straight line (the stripes a noise left where the filter did not average it waved across them), and
-//! the wall beside the block still darkens against the open wall.
+//! the wall beside the block still darkens against the open wall. And the same wall seen at a grazing angle, along it from near
+//! the floor's corner: far from the block, the wall takes no occlusion from itself and has no bands.
 
 use torque_render_core::{Frame, Gpu};
 use torque_render_hd::ext::{NoExtension, PlainScene};
@@ -133,10 +134,10 @@ fn scene(quality: Quality) -> PlainScene {
     s
 }
 
-/// The occlusion alone at `quality` and the camera.
-fn draw(gpu: &Gpu, quality: Quality) -> (Frame, HdCamera) {
+/// The occlusion alone at `quality` from `from` looking at `to`, and the camera.
+fn draw(gpu: &Gpu, quality: Quality, from: [f32; 3], to: [f32; 3]) -> (Frame, HdCamera) {
     let mut s = scene(quality);
-    let eye = look_at([3.5, -2.5, 2.0], [0.0, -0.3, 1.1]);
+    let eye = look_at(from, to);
     s.eye = Some(eye);
     s.fov = 70;
     s.size = SIZE;
@@ -212,7 +213,7 @@ fn the_wall_about_a_block_darkens_without_banding() {
     };
     let mut failures = Vec::new();
     for quality in [Quality::Medium, Quality::High, Quality::Ultra] {
-        let (frame, camera) = draw(&gpu, quality);
+        let (frame, camera) = draw(&gpu, quality, [3.5, -2.5, 2.0], [0.0, -0.3, 1.1]);
         // Lines on the wall at a distance from the block (beside it and over it), along which its occlusion is about even.
         let lines = |r: f32| {
             [
@@ -230,7 +231,7 @@ fn the_wall_about_a_block_darkens_without_banding() {
             "{quality:?}: close {:.1} and {:.1}, open {open:.1}; the banding {banding:.2}",
             close[0].0, close[1].0
         );
-        if banding >= 1.35 {
+        if banding >= 1.1 {
             failures.push(format!(
                 "{quality:?}: the occlusion swings {banding} about its lines on the wall"
             ));
@@ -238,6 +239,19 @@ fn the_wall_about_a_block_darkens_without_banding() {
         if close[0].0.min(close[1].0) >= open - 10.0 {
             failures.push(format!(
                 "{quality:?}: the wall beside the block {close:?} against the open wall {open}"
+            ));
+        }
+        // The wall at a grazing angle (about 13 degrees where the line starts), out of the block's and the floor's reach.
+        let (frame, camera) = draw(&gpu, quality, [0.9, -4.0, 1.4], [0.0, 0.5, 1.1]);
+        let graze = along(&frame, &camera, [0.0, -2.9, 1.9], [0.0, -1.8, 1.9], 40);
+        let (open, _) = along(&frame, &camera, [0.0, 2.5, 1.9], [0.0, 3.5, 1.9], 20);
+        eprintln!(
+            "{quality:?}: the grazing wall {:.1} (swing {:.2}) against {open:.1}",
+            graze.0, graze.1
+        );
+        if graze.0 < open - 2.0 || graze.1 >= 1.0 {
+            failures.push(format!(
+                "{quality:?}: the grazing wall {graze:?} against the open wall {open}"
             ));
         }
     }
