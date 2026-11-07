@@ -33,8 +33,10 @@ impl<G: App> Seat<G> {
     /// `game` drawn at `size` on `gpu`.
     pub fn new(mut game: G, gpu: &Gpu, size: (u32, u32)) -> Result<Seat<G>, String> {
         game.host().surface_size(size);
+        let mut view = game.view(gpu);
+        view.attach_to(game.host());
         Ok(Seat {
-            view: game.view(gpu),
+            view,
             target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
             eye: None,
             clock: web_time::Instant::now(),

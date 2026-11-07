@@ -212,6 +212,7 @@ getRealTime 1..1 getRealTime() - a millisecond counter of the computer
 getRecord 3..3 getRecord(text, index) - one newline-separated record
 getRecordCount 2..2 getRecordCount(text) - how many records the text has
 getRecords 3..4 getRecords(text, first [, last]) - the records from first to last
+getRenderer 1..1 getRenderer();
 getSimTime 1..1 getSimTime() - the simulation time in milliseconds
 getSubStr 4..4 getSubStr(text, start, count) - count bytes of the text from start
 getTag 2..2 getTag(taggedText) - the tag's id
@@ -260,6 +261,7 @@ schedule 4..* schedule(delay, object, function, args...) - calls the function la
 setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
 setRecord 4..4 setRecord(text, index, value) - the text with that record replaced
+setRenderer 2..2 setRenderer(id);
 setScreenMode 5..5 ( int width, int height, int bpp, bool fullScreen )
 setWord 4..4 setWord(text, index, value) - the text with that word replaced
 strToPlayerName 2..2 strToPlayerName(text) - the text as a short display name

@@ -5,11 +5,17 @@
 //! renderer ([`HdWorld`]) into the rectangle the canvas's `GameTSCtrl` gave the world this frame ([`GuiDraws::worlds`]), then
 //! the GUI's batches over it with the [`GuiPass`] (no clear between). A canvas without a `GameTSCtrl` drawn draws the GUI alone.
 //!
+//! The view draws with one renderer of the renderer slot ([`renderers`](crate::renderers)): the engine's own by default, any
+//! other a plugin registered when swapped to ([`WorldView::set_renderer`]), or none when the build or the engine has none (the
+//! GUI alone). Attached to a client ([`WorldView::attach_to`]), it follows that client's slot (`setRenderer` in its scripts)
+//! from its next frame.
+//!
 //! The shapes are posed on the CPU: [`WorldView::shape_object`] turns a [`SceneShape`] and its [`ShapeInstance`] (after its
 //! threads were advanced and animated) into an object whose vertices are in the world. [`WorldView::set_objects`] hands the
 //! frame its objects and keeps the last frame's, which give each object its motion (the anti-aliasing's history follows it).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use torque_gui::GuiDraws;
@@ -24,8 +30,7 @@ use torque_render_scene::hd::objects::objects_of;
 use torque_render_scene::hd::particle_light::ParticleLight;
 use torque_render_scene::hd::scatter::ScatterLook;
 use torque_render_scene::hd::{
-    DynamicObject, HdCamera, HdDraw, HdMode, HdScene, HdSpot, Quality, WaterZone, bounding_sphere,
-    material,
+    DynamicObject, HdCamera, HdDraw, HdScene, HdSpot, Quality, WaterZone, bounding_sphere, material,
 };
 use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
@@ -38,6 +43,19 @@ use torque_render_scene::world::ShapeWorld;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
 use torque_shapes::instance::ShapeInstance;
 use torque_shapes::shape::Shape;
+
+use crate::renderers::{DEFAULT_RENDERER, RenderFeatures, RenderFrame, RendererSlot, SwitchError};
+
+/// What the view draws its world with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drawing {
+    /// Nothing: no renderer is built in or registered.
+    None,
+    /// The engine's own renderer (the view's [`HdWorld`]).
+    Default,
+    /// Another registered renderer, made and kept by the slot: its place among the slot's renderers.
+    Other(usize),
+}
 
 /// The least turn of the day's sun the view is lit again for: the cosine of a quarter of a degree.
 pub const DAY_STEP_COS: f32 = 0.999_990_5;
@@ -201,6 +219,18 @@ pub struct WorldView {
     day_sun: Option<[f32; 3]>,
     /// The shadows' color of the last [`Daylight`]: a day whose look names none keeps it.
     daylight_shadow: [f32; 3],
+    /// The renderer drawing.
+    drawing: Drawing,
+    /// The GPU the slot's other renderers are made on.
+    gpu: Gpu,
+    /// The engine's renderer's quality step and features.
+    quality: Quality,
+    features: RenderFeatures,
+    /// The particle light rule the game asked for ([`WorldView::set_particle_light`]), drawn when the features have lit
+    /// particles.
+    particle_light: Option<ParticleLight>,
+    /// The client's renderer slot the view follows, and the switches it has seen.
+    slot: Option<(Rc<RendererSlot>, u64)>,
 }
 
 impl WorldView {
@@ -229,6 +259,16 @@ impl WorldView {
             statics_changed: true,
             day_sun: None,
             daylight_shadow: Daylight::default().shadow,
+            drawing: if cfg!(feature = "renderer") {
+                Drawing::Default
+            } else {
+                Drawing::None
+            },
+            gpu: gpu.clone(),
+            quality: Quality::High,
+            features: RenderFeatures::ALL,
+            particle_light: Some(ParticleLight::BLENDED),
+            slot: None,
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
@@ -262,9 +302,94 @@ impl WorldView {
         self.world.reset_history();
     }
 
-    /// The renderer's quality step.
+    /// The engine's renderer's quality step.
     pub fn set_quality(&mut self, quality: Quality) {
-        self.scene.mode = Some(HdMode::new(quality));
+        self.quality = quality;
+        self.scene.mode = Some(self.features.mode(quality));
+    }
+
+    /// The id of the renderer drawing (None: the world is not drawn).
+    pub fn current_renderer(&self) -> Option<&str> {
+        match self.drawing {
+            Drawing::None => None,
+            Drawing::Default => Some(DEFAULT_RENDERER),
+            Drawing::Other(i) => self.slot.as_ref().and_then(|(slot, _)| slot.ids().nth(i)),
+        }
+    }
+
+    /// Draws with the renderer `id` from the next frame. Attached to a client, through its slot (its scripts' `getRenderer`
+    /// sees it); else only the engine's own renderer is known. Err: no renderer has the id (naming the registered ones), or
+    /// the renderer could not be made (the one drawing stays).
+    pub fn set_renderer(&mut self, id: &str) -> Result<(), String> {
+        if let Some((slot, _)) = &self.slot {
+            slot.switch(id).map_err(|e| e.to_string())?;
+            self.follow_slot();
+            return Ok(());
+        }
+        if !cfg!(feature = "renderer") || id != DEFAULT_RENDERER {
+            let registered = if cfg!(feature = "renderer") {
+                vec![DEFAULT_RENDERER.to_owned()]
+            } else {
+                Vec::new()
+            };
+            return Err(SwitchError::Unknown {
+                id: id.to_owned(),
+                registered,
+            }
+            .to_string());
+        }
+        Ok(())
+    }
+
+    /// Follows the renderer slot of the client `host` runs, when its engine has one ([`RendererSlotPlugin`](crate::renderers::RendererSlotPlugin)):
+    /// the view draws with the slot's renderer and its features, and with each swap from its next frame. A renderer chosen
+    /// before (a script at start-up) that cannot be made on this view's GPU gives way to the engine's own, with a warning on
+    /// the client's console.
+    pub fn attach_to(&mut self, host: &mut crate::Host) {
+        use torque_client::host::GameServer;
+        let vm = host.server.vm_mut();
+        if let Some(slot) = RendererSlot::of(vm)
+            && let Err(e) = self.attach_slot(slot)
+        {
+            vm.warn(format!("renderer: {e}"));
+        }
+    }
+
+    /// Follows `slot` (see [`attach_to`](Self::attach_to)); its renderers are made on this view's GPU. Err: the renderer the
+    /// slot had chosen could not be made (the engine's own draws instead, else none).
+    pub fn attach_slot(&mut self, slot: Rc<RendererSlot>) -> Result<(), String> {
+        self.features = slot.features();
+        self.scene.mode = Some(self.features.mode(self.quality));
+        self.world.features = self.features.features;
+        let lit = self.features.particle_light;
+        self.scene.particle_light = self.particle_light.filter(|_| lit);
+        let made = slot.attach_gpu(&self.gpu).map_err(|e| e.to_string());
+        // Any generation but the slot's: the next follow takes its renderer.
+        self.slot = Some((Rc::clone(&slot), slot.generation().wrapping_sub(1)));
+        self.follow_slot();
+        made
+    }
+
+    /// The slot's renderer, when it was swapped since the last frame (one compare otherwise). The engine's own renderer starts
+    /// its histories again when it comes back.
+    fn follow_slot(&mut self) {
+        let Some((slot, seen)) = &mut self.slot else {
+            return;
+        };
+        let generation = slot.generation();
+        if *seen == generation {
+            return;
+        }
+        *seen = generation;
+        let was = self.drawing;
+        self.drawing = match (slot.current_index(), slot.current_entry()) {
+            (Some(index), Some(e)) if e.make().is_some() => Drawing::Other(index),
+            (_, Some(_)) => Drawing::Default,
+            _ => Drawing::None,
+        };
+        if self.drawing == Drawing::Default && was != Drawing::Default {
+            self.world.reset_history();
+        }
     }
 
     /// How the volumetric clouds look (None: the engine's, [`CloudLook::DEFAULT`]).
@@ -749,7 +874,9 @@ impl WorldView {
     /// Which particle draws the enhanced renderer lights (none: all unlit, as TGE draws them; [`ParticleLight::BLENDED`]: smoke
     /// and dust lit, glows not), from the next frame's particles on.
     pub fn set_particle_light(&mut self, rule: Option<ParticleLight>) {
-        self.scene.particle_light = rule;
+        self.particle_light = rule;
+        let lit = self.features.particle_light;
+        self.scene.particle_light = rule.filter(|_| lit);
     }
 
     /// The frame's particles and decals (the decals' draws lie on surfaces: not faded into them as the particles are), their
@@ -775,14 +902,19 @@ impl WorldView {
     ) -> Result<bool, String> {
         let texture = target.texture();
         let (width, height) = (texture.width(), texture.height());
-        let world = gui.worlds.first().and_then(|w| {
-            let [x, y, w, h] = w.rect;
-            let x0 = u32::try_from(x).ok()?.min(width);
-            let y0 = u32::try_from(y).ok()?.min(height);
-            let w = u32::try_from(w).ok()?.min(width - x0);
-            let h = u32::try_from(h).ok()?.min(height - y0);
-            (w > 0 && h > 0).then_some([x0, y0, w, h])
-        });
+        self.follow_slot();
+        let world = gui
+            .worlds
+            .first()
+            .filter(|_| self.drawing != Drawing::None)
+            .and_then(|w| {
+                let [x, y, w, h] = w.rect;
+                let x0 = u32::try_from(x).ok()?.min(width);
+                let y0 = u32::try_from(y).ok()?.min(height);
+                let w = u32::try_from(w).ok()?.min(width - x0);
+                let h = u32::try_from(h).ok()?.min(height - y0);
+                (w > 0 && h > 0).then_some([x0, y0, w, h])
+            });
         if let Some(rect) = world {
             self.draw_world(target, rect, eye)?;
         }
@@ -798,6 +930,10 @@ impl WorldView {
         [x, y, w, h]: [u32; 4],
         eye: Eye,
     ) -> Result<(), String> {
+        self.follow_slot();
+        if self.drawing == Drawing::None {
+            return Err("no renderer: the build or the engine has none".to_string());
+        }
         let fov = eye.fov.unwrap_or(DEFAULT_FOV);
         let s = &mut self.scene;
         s.eye = Some(eye);
@@ -809,6 +945,17 @@ impl WorldView {
             s.control_generation += 1;
         }
         let camera = HdCamera::new(eye, fov, s.visible_distance, w, h);
+        if let (Drawing::Other(i), Some((slot, _))) = (self.drawing, &self.slot) {
+            return slot.draw(
+                i,
+                RenderFrame {
+                    scene: &self.scene,
+                    camera: &camera,
+                    target,
+                    rect: [x, y, w, h],
+                },
+            );
+        }
         self.world.upload(&self.scene);
         let format = target.texture().format();
         self.world

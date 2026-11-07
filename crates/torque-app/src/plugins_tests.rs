@@ -19,10 +19,13 @@ use torque_ts_vm::vm::Vm;
 
 use crate::client::{ClientBuilder, ClientNet, ClientSetup};
 use crate::plugins::{
-    ActionMapPlugin, AudioPlugin, ClientHostPlugin, ConnPlugin, DefaultPlugins, GameClassesPlugin,
-    GuiPlugin, LivePerfPlugin, MinimalPlugins, NetHostPlugin, ScreenPlugin, ServerGamePlugin,
-    ServerQueryPlugin, SimClassesPlugin, TerrainPlugin, WaterPlugin, WebPageRunnerPlugin,
-    WindowRunnerPlugin, ZoomPlugin,
+    ActionMapPlugin, AmbientOcclusionPlugin, AntiAliasingPlugin, AudioPlugin, BloomPlugin,
+    ClearWaterPlugin, ClientHostPlugin, CloudsPlugin, ConnPlugin, DefaultPlugins,
+    GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, LivePerfPlugin, MinimalPlugins,
+    NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin, RendererPlugin, RendererSlotPlugin,
+    ScreenPlugin, ServerGamePlugin, ServerQueryPlugin, ShadowsPlugin, SimClassesPlugin,
+    SurfaceDetailPlugin, TerrainPlugin, TransparencyPlugin, VolumetricsPlugin, WaterPlugin,
+    WebPageRunnerPlugin, WindowRunnerPlugin, ZoomPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -92,6 +95,21 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ServerQueryPlugin::ID,
             AudioPlugin::ID,
             ClientHostPlugin::ID,
+            RendererSlotPlugin::ID,
+            RendererPlugin::ID,
+            ShadowsPlugin::ID,
+            AntiAliasingPlugin::ID,
+            AmbientOcclusionPlugin::ID,
+            ReflectionsPlugin::ID,
+            ClearWaterPlugin::ID,
+            BloomPlugin::ID,
+            VolumetricsPlugin::ID,
+            CloudsPlugin::ID,
+            TransparencyPlugin::ID,
+            GradingPlugin::ID,
+            GlowLightsPlugin::ID,
+            SurfaceDetailPlugin::ID,
+            ParticleLightPlugin::ID,
             default_runner(),
         ]
     );
@@ -120,6 +138,21 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.server-query",
             "torque_audio::AudioPlugin",
             "torque.frame-host",
+            "torque.renderer-slot",
+            "torque.renderer",
+            "torque.render-shadows",
+            "torque.render-anti-aliasing",
+            "torque.render-ambient-occlusion",
+            "torque.render-reflections",
+            "torque.render-clear-water",
+            "torque.render-bloom",
+            "torque.render-volumetrics",
+            "torque.render-clouds",
+            "torque.render-transparency",
+            "torque.render-grading",
+            "torque.render-glow-lights",
+            "torque.render-surface-detail",
+            "torque.render-particle-light",
             if cfg!(target_arch = "wasm32") {
                 "torque.web-page-runner"
             } else {
@@ -153,7 +186,10 @@ fn each_stage_replays_its_plugins_in_add_order() {
     assert_eq!(client(ClientStage::Screen), ["torque.screen"]);
     assert_eq!(client(ClientStage::Conn), ["torque.conn"]);
     assert_eq!(client(ClientStage::Query), ["torque.server-query"]);
-    assert_eq!(client(ClientStage::Natives), ["torque_audio::AudioPlugin"]);
+    assert_eq!(
+        client(ClientStage::Natives),
+        ["torque_audio::AudioPlugin", "torque.renderer-slot"]
+    );
     assert!(client(ClientStage::Host).is_empty());
     // The page bridge is filed for web builds only, by the web page runner.
     assert_eq!(

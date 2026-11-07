@@ -9,7 +9,9 @@
 //!   link: started, ticked, called, its console drained; [`server::GameServer::run_dedicated`] paces a dedicated one.
 //! - [`client::GameClient`]: a client host (script engine, GUI, action maps, TGE's connection half), its globals and keys, and the
 //!   server it hosts in the same process on the same clock.
-//! - [`view::WorldView`]: the per-frame world view, drawn by the enhanced renderer under the GUI.
+//! - [`view::WorldView`]: the per-frame world view, drawn by the renderer slot's renderer under the GUI.
+//! - [`renderers`]: the renderer slot: renderers registered by plugins under ids and swapped while the game runs
+//!   (`setRenderer`), the engine's own renderer and its features as plugins.
 //! - [`ghosts::GhostScene`]: the client's ghosts drawn through the engine's moving shapes, with live Players, held images and
 //!   projectiles.
 //! - [`interiors::Interiors`]: the map's interiors (InteriorInstance ghosts) as static meshes of the view (kept on the GPU).
@@ -54,6 +56,7 @@ pub mod lights;
 pub mod orbit;
 pub mod page_bridge;
 pub mod plugins;
+pub mod renderers;
 pub mod run;
 pub mod shots;
 pub mod terrain;
@@ -76,6 +79,8 @@ use torque_server::server::Server;
 
 #[cfg(test)]
 mod plugins_tests;
+#[cfg(all(test, feature = "renderer"))]
+mod renderers_tests;
 #[cfg(test)]
 mod run_tests;
 

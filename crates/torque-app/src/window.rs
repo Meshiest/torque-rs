@@ -251,7 +251,9 @@ impl<G: App> AppWindow<G> {
         let Some(surface) = self.surface.as_ref() else {
             return;
         };
-        self.view = Some(self.game.view(&surface.gpu));
+        let mut view = self.game.view(&surface.gpu);
+        view.attach_to(self.game.host());
+        self.view = Some(view);
     }
 
     /// In a browser: the loading stage `stage` on the page, when it is a new one.

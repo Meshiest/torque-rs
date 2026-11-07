@@ -72,6 +72,9 @@ client's script engine the way a Torque game expects. Here is what it adds, in o
 | `ServerQueryPlugin` | `torque.server-query` | the server browser's natives |
 | `AudioPlugin` | `torque_audio::AudioPlugin` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick; it plays through the null sink and opens no sound card |
 | `ClientHostPlugin` | `torque.frame-host` | the client host that runs the frames |
+| `RendererSlotPlugin` | `torque.renderer-slot` | the renderer slot each client shares with its world view, and `setRenderer`/`getRenderer` |
+| `RendererPlugin` | `torque.renderer` | the engine's renderer, registered on the slot as `default` (the `renderer` feature) |
+| `RenderFeaturePlugins` | `torque.render-shadows`, ... | the renderer's features, one plugin each (see [Renderers](#renderers)) |
 | `WindowRunnerPlugin` | `torque.window-runner` | the runner of native builds: plays the game in a window |
 | `WebPageRunnerPlugin` | `torque.web-page-runner` | the runner of web builds: plays the game on the page's canvas, and brings the page and the scripts calling each other (see [Games in a browser](web-pages.md)) |
 
@@ -426,6 +429,90 @@ build skips an unknown id with a warning and goes on.
 
 Toggles are made before `build`, in call order. A plugin that does not want another one does not add or require it; a
 plugin that tries to toggle during its own `build` gets a `ToggleDuringBuild` warning and nothing changes.
+
+## Renderers
+
+A client draws its world with one renderer at a time, chosen from a slot that holds every renderer its engine's plugins
+registered, each under an id. `DefaultPlugins` registers the engine's own renderer, `RendererPlugin`, as `default`. A
+client starts on `default` when its engine has it, else on the first renderer registered.
+
+Any plugin can register a renderer. It names an id and a function that makes the renderer on the view's GPU; the renderer
+draws the view's scene each frame it is chosen (`WorldRenderer`). A type with its own id (`NamedRenderer`) registers with
+one call:
+
+```rust
+use torque::app::renderers::{EngineRenderers, NamedRenderer, RenderFrame, WorldRenderer};
+
+struct Sketch { /* pipelines */ }
+
+impl WorldRenderer for Sketch {
+    fn draw(&mut self, frame: RenderFrame<'_>) -> Result<(), String> {
+        // draw frame.scene through frame.camera into frame.rect of frame.target
+        Ok(())
+    }
+}
+
+impl NamedRenderer for Sketch {
+    const ID: &'static str = "my_game.sketch";
+    fn new(gpu: &Gpu) -> Result<Sketch, String> { /* ... */ }
+}
+
+#[derive(PluginId)]
+struct SketchPlugin;
+
+impl Plugin for SketchPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.add_renderer::<Sketch>();
+    }
+}
+```
+
+The game swaps renderers while it runs. A script calls `setRenderer("my_game.sketch")` (it answers 1 when it swapped
+or already drew with that renderer), and `getRenderer()` names the one drawing. From Rust, `RendererSlot::switch` and
+`WorldView::set_renderer` do the same. The world view swaps at its next frame; between swaps a frame only compares one
+counter. An id no plugin registered is refused, and the error names the ones that are:
+`no renderer "vulkan" (registered: default, my_game.sketch)`. A second renderer under an id already registered is left
+out, with a warning on the client's console.
+
+A renderer is made on the view's GPU the first time it is chosen. If that fails, `setRenderer` answers 0 with the reason
+on the console, the renderer drawing stays, and choosing the id again tries again. A renderer chosen before the view
+exists (a script at start-up) is made when the view attaches; if it fails there, the engine's own renderer draws
+instead. A made renderer is kept while the client lives, so swapping back is immediate, and the GPU memory it holds is
+bounded by the renderers registered.
+
+The engine's renderer is the `renderer` Cargo feature of `torque-app` (on by default). Through the umbrella crate, `app`
+has it and `app-core` does not, for a game that draws only with renderers of its own. With no renderer at all the GUI is
+drawn alone and the client's console says why.
+
+The engine's renderer's features are plugins too, in the group `RenderFeaturePlugins` (`DefaultPlugins` has it). Each
+one turns its switches on, so a game drops a feature by turning its plugin off:
+
+| Plugin | Id | Turns on |
+|---|---|---|
+| `ShadowsPlugin` | `torque.render-shadows` | the sun's cascaded shadows, the lights' shadows and the contact shadows |
+| `AntiAliasingPlugin` | `torque.render-anti-aliasing` | the quality's anti-aliasing (TAA or the FXAA-style filter) |
+| `AmbientOcclusionPlugin` | `torque.render-ambient-occlusion` | the ambient occlusion |
+| `ReflectionsPlugin` | `torque.render-reflections` | screen-space reflections, the light capture, the planar reflection and the water drawn as water |
+| `ClearWaterPlugin` | `torque.render-clear-water` | clear water: absorbing, scattering and foaming where it is shallow |
+| `BloomPlugin` | `torque.render-bloom` | the bloom |
+| `VolumetricsPlugin` | `torque.render-volumetrics` | the volumetric light |
+| `CloudsPlugin` | `torque.render-clouds` | the volumetric clouds (off: the server's flat cloud layers) |
+| `TransparencyPlugin` | `torque.render-transparency` | weighted blended transparency (off: sorted blending) |
+| `GradingPlugin` | `torque.render-grading` | the tonemap through the grading table |
+| `GlowLightsPlugin` | `torque.render-glow-lights` | the glowing surfaces' lights |
+| `SurfaceDetailPlugin` | `torque.render-surface-detail` | an extension's fine surface detail |
+| `ParticleLightPlugin` | `torque.render-particle-light` | smoke and dust lit by the sun, the sky and the lights |
+
+```rust
+use torque::app::plugins::{CloudsPlugin, DefaultPlugins, ReflectionsPlugin};
+
+let engine = EngineBuilder::new()
+    .add_plugins(DefaultPlugins.disable::<(CloudsPlugin, ReflectionsPlugin)>())
+    .build()?;
+```
+
+With every feature plugin on, the renderer draws as it always has. Other renderers on the slot read the same scene and
+decide for themselves what to draw of it.
 
 ## Running an engine
 

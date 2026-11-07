@@ -32,6 +32,9 @@
 //! | `app_server` | `app-server` | `torque-app-server` | the server half of `app`: files, a server, terrain and water, the dedicated runner, `MinimalPlugins` (no GPU) |
 //! | `app` | `app` (off by default) | `torque-app` | what a game made on the engine shares: files, server, client, window, world view, pictures |
 //!
+//! `app` is `app-core` with the engine's renderer (`renderer`); a game that draws only with renderers of its own takes
+//! `app-core` and registers them on the renderer slot (see `torque::app::renderers`).
+//!
 //! Optional features that are off by default:
 //!
 //! - `audio-device`: sound output through the system's audio device (needs ALSA on Linux).
@@ -61,7 +64,7 @@ pub mod script {
     pub use torque_ts_vm as vm;
 }
 
-#[cfg(feature = "app")]
+#[cfg(feature = "app-core")]
 pub use torque_app as app;
 #[cfg(feature = "app-server")]
 pub use torque_app_server as app_server;
