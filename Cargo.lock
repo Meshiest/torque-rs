@@ -3429,6 +3429,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example-minimal-engine"
+version = "0.1.0"
+dependencies = [
+ "torque",
+ "torque-example-assets",
+ "torque-render-core",
+ "torque-render-scene",
+]
+
+[[package]]
 name = "torque-example-showcase"
 version = "0.1.0"
 dependencies = [
