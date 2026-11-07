@@ -9,8 +9,9 @@
 //!   and no ray meets it (a camera's cast goes through its surface).
 //! - **On the client** ([`Water::from_fields`]): the client is not sent a WaterBlock, so a game reads it from the map the server
 //!   runs and gives it to the prediction (its static index's [`torque_client::predict::StaticIndex::zones`]). The block's
-//!   fields are read as the server's script engine reads them (the same parse and the same rotation), so the two zones are
-//!   the same numbers and the client predicts its own Player in the water as the server moves it.
+//!   fields are read as the server's script engine reads them (the same parse and the same rotation, the engine's default
+//!   field rules: a server with its own `FieldRules::rotation_matrix` would turn a rotated block otherwise), so the two
+//!   zones are the same numbers and the client predicts its own Player in the water as the server moves it.
 //!
 //! Credit: the box and the fields follow `WaterBlock` and `ShapeBase::updateContainer`'s water callback in TGE 1.4 as Torque3D
 //! carries them under the MIT license (`Engine/source/environment/waterBlock.cpp`, `T3D/shapeBase.cpp`; Copyright (c) 2012
@@ -26,7 +27,7 @@ use torque_collide::types::WATER;
 use torque_game::scene::access::{matrix_of, scale_of, value_of};
 use torque_game::scene::container::Container;
 use torque_game::scene::{ext, object as scene};
-use torque_sim::player::host::ZoneView;
+use torque_sim::player::host::{MAX_LIQUID_DENSITY, MAX_LIQUID_VISCOSITY, ZoneView};
 use torque_ts_vm::classes::EngineClass;
 use torque_ts_vm::fields::{Value, rotation_matrix};
 use torque_ts_vm::sim::ObjId;
@@ -35,6 +36,8 @@ use torque_ts_vm::vm::{Vm, VmError};
 
 /// A water block's type bits (`WaterObjectType`).
 pub const WATER_TYPE_MASK: u32 = WATER;
+/// The farthest from the origin a water block's box may reach (m).
+pub const MAX_EXTENT: f32 = 1.0e6;
 /// The color a water zone gives a Player (the container update's own).
 pub const WATER_COLOR: [f32; 4] = [0.2, 0.6, 0.6, 0.3];
 
@@ -47,7 +50,9 @@ pub struct Water {
 
 impl Water {
     /// The water of a block placed by `m` (its transform) and `scale`, of `density`, `viscosity` and liquid type `liquid_type`.
-    /// None when its box is not finite numbers (a map is not trusted).
+    /// None when its placement or its box is not finite numbers, or its box reaches past [`MAX_EXTENT`] from the origin, or
+    /// its density or viscosity is not within `0..=` [`MAX_LIQUID_DENSITY`] and [`MAX_LIQUID_VISCOSITY`] (a map is not
+    /// trusted: such values overflow the buoyancy and the drag).
     pub fn new(
         m: Matrix,
         scale: [f32; 3],
@@ -66,8 +71,9 @@ impl Water {
             .chain(&m)
             .chain(&scale)
             .all(|v| v.is_finite())
-            && density.is_finite()
-            && viscosity.is_finite();
+            && w.min.iter().chain(&w.max).all(|v| v.abs() <= MAX_EXTENT)
+            && (0.0..=MAX_LIQUID_DENSITY).contains(&density)
+            && (0.0..=MAX_LIQUID_VISCOSITY).contains(&viscosity);
         if !finite {
             return None;
         }
@@ -256,8 +262,28 @@ mod tests {
         };
         assert!(side(inside) && !side(above));
         assert_eq!(w.view().type_mask, WATER_TYPE_MASK);
-        // A hostile block leaves no water.
-        let bad = |name: &str| (name == "scale").then(|| "inf 1 1".to_string());
-        assert!(Water::from_fields(&bad).is_none());
+        // A hostile block leaves no water: a box not finite or too far out, a density or viscosity past its cap or below 0.
+        for (name, value) in [
+            ("scale", "inf 1 1"),
+            ("scale", "1 nan 1"),
+            ("position", "2e6 0 0"),
+            ("scale", "1 1 3e38"),
+            ("rotation", "1 0 0 nan"),
+            ("density", "3e38"),
+            ("density", "-1"),
+            ("density", "nan"),
+            ("viscosity", "1e38"),
+            ("viscosity", "-1e38"),
+        ] {
+            let bad = |n: &str| (n == name).then(|| value.to_string());
+            assert!(Water::from_fields(&bad).is_none(), "{name} = {value}");
+        }
+        // At the caps it is water.
+        let dense = |n: &str| match n {
+            "density" => Some(MAX_LIQUID_DENSITY.to_string()),
+            "viscosity" => Some(MAX_LIQUID_VISCOSITY.to_string()),
+            _ => None,
+        };
+        assert!(Water::from_fields(&dense).is_some());
     }
 }
