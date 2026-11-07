@@ -2712,3 +2712,96 @@ fn a_figure_sits_facing_the_seats_way_from_any_side_it_came_in_turning_the_mouse
     }
     assert!(errors(&a).is_empty(), "{:?}", errors(&a));
 }
+
+/// Figure `id`'s speed across the ground on `game`'s server over the next `ms`, and its velocity at the end.
+fn ground_speed(game: &mut VehicleDemo, id: u32, ms: u32) -> (f32, [f32; 3]) {
+    let from = server(game).figure_position_of(id).unwrap();
+    steps(&mut [&mut *game], ms);
+    let to = server(game).figure_position_of(id).unwrap();
+    let v = torque::game::sim::player::state(server(game).vm(), id)
+        .unwrap()
+        .velocity;
+    (
+        (to[0] - from[0]).hypot(to[1] - from[1]) * 1000.0 / ms as f32,
+        v,
+    )
+}
+
+/// Crouched and prone the figure goes half as fast again as it did (the datablock's speeds, which the client predicts with),
+/// and its crouched walk and its crawl play as fast as it goes: each loop's ground speed times its rate is the figure's speed,
+/// so its feet and hands keep pace with the ground.
+#[test]
+fn crouched_and_prone_the_figure_goes_faster_and_its_feet_keep_pace_with_the_ground() {
+    use torque::client::player_anim::{PlayerAnimation, PlayerMotion};
+    use torque::game::sim::player::poses::Pose;
+    let poses = torque_example_common::figure_poses();
+    assert_eq!(
+        (poses.crouch_speeds.forward, poses.prone_speeds.forward),
+        (1.95, 1.125)
+    );
+    let assets = torque_example_common::KitAssets::new().unwrap();
+    let figure = torque::app::view::SceneShape::load(
+        &assets,
+        &torque_example_common::kit_path("figure.dts"),
+    )
+    .unwrap();
+    for (pose, key, top, sequence) in [
+        (Pose::Crouch, "crouchKey", 1.95f32, "crouch_forward"),
+        (Pose::Prone, "proneKey", 1.125, "prone_forward"),
+    ] {
+        let mut game = host();
+        let id = server(&game).figure().unwrap();
+        // Off on the flat, facing away from the buggy.
+        eval(
+            &mut game,
+            "%p = ClientGroup.getObject(0).player; %t = %p.getTransform();
+             %p.setTransform(getWord(%t, 0) - 30 SPC getWord(%t, 1) SPC getWord(%t, 2) + 4 SPC \"0 0 1 -1.5708\");",
+        );
+        steps(&mut [&mut game], 1500);
+        game.call(key, &["1"]).unwrap();
+        steps(&mut [&mut game], 1500);
+        // The full pace (Shift: the figure walks a share of its speed without it).
+        game.key(Key::ShiftLeft, true);
+        game.key(Key::W, true);
+        steps(&mut [&mut game], 2000);
+        let (speed, velocity) = ground_speed(&mut game, id, 1000);
+        game.key(Key::W, false);
+        assert!(
+            (speed - top).abs() < 0.12 * top,
+            "{pose:?}: {speed} m/s across the ground, not {top}"
+        );
+        // The figure's animation on a client at that velocity.
+        let shape = figure.shape();
+        let mut instance = figure.instance().unwrap();
+        let mut anim = PlayerAnimation::new(shape, &mut instance).unwrap();
+        let s = torque::game::sim::player::state(server(&game).vm(), id).unwrap();
+        let motion = PlayerMotion {
+            velocity,
+            yaw: s.rot[2],
+            pose,
+            ..PlayerMotion::default()
+        };
+        for _ in 0..60 {
+            anim.update(shape, &mut instance, &motion, 1.0 / 60.0);
+        }
+        let (i, forward) = anim.action();
+        let action = &anim.actions()[i];
+        assert_eq!(
+            (String::from_utf8_lossy(&action.name), forward),
+            (sequence.into(), true),
+            "{pose:?}"
+        );
+        let rate = instance.thread(anim.action_thread()).unwrap().time_scale;
+        let along = motion
+            .local_velocity()
+            .iter()
+            .zip(action.motion.dir)
+            .map(|(v, d)| v * d)
+            .sum::<f32>();
+        let paced = rate * action.motion.speed;
+        assert!(
+            (paced - along).abs() < 0.02 * along,
+            "{pose:?}: the loop covers {paced} m/s at rate {rate}, the figure goes {along} m/s"
+        );
+    }
+}
