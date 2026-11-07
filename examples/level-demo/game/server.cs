@@ -56,11 +56,12 @@ datablock PlayerData(WorldFigureData)
    maxProneSideSpeed = 0;
    proneForce = 2400;
 
-   // Swimming (the engine's own pose, after Torque3D's): in water deeper than about two thirds of the swim box's height the
-   // figure swims, its box low and long, at its underwater speeds. A little lighter than the water, it floats with its head
-   // out.
-   density = 0.85;
-   swimBoundingBox = "1 2.3 1";
+   // Swimming (the engine's own pose, after Torque3D's): in water deeper than about two thirds of the swim box's height (the
+   // chest) the figure swims, its box long, at its underwater speeds. Lighter than the water, it floats with the surface 1.45
+   // up its 2 m box (twice the density), where the treading figure's eye is 15 cm out (the kit's swim_root), and starts to
+   // swim not far short of that depth, so the stroke is drawn at the surface from the start.
+   density = 0.725;
+   swimBoundingBox = "1 2.3 1.8";
    swimForce = 2400;
    maxUnderwaterForwardSpeed = 3;
    maxUnderwaterBackwardSpeed = 2;

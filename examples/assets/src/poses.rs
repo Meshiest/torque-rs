@@ -82,12 +82,12 @@ pub const CRAWL_LOOP: f32 = 1.2;
 pub const SIDE_LOOP: f32 = 0.6;
 
 /// The sockets of the hips and the shoulders, the pelvis's height (the standing figure's).
-const HIP_X: f32 = 0.12;
-const PELVIS: f32 = THIGH + SHIN;
-const SHOULDER: Vec3 = [0.33, 0.0, 0.66];
+pub(crate) const HIP_X: f32 = 0.12;
+pub(crate) const PELVIS: f32 = THIGH + SHIN;
+pub(crate) const SHOULDER: Vec3 = [0.33, 0.0, 0.66];
 /// The shin from the knee to the ankle, and the arm from the shoulder to the grip.
-const LOWER: f32 = SHIN - SOLE;
-const REACH: [f32; 2] = [UPPER_ARM, GRIP];
+pub(crate) const LOWER: f32 = SHIN - SOLE;
+pub(crate) const REACH: [f32; 2] = [UPPER_ARM, GRIP];
 const IDENTITY: Rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
 /// The nodes the poses turn.
@@ -100,35 +100,35 @@ pub(crate) struct Body<'a> {
 
 /// A foot's place: its ankle, the foot's turn, the way the knee points (all in the figure's space).
 #[derive(Clone, Copy)]
-struct Foot {
-    ankle: Vec3,
-    turn: Rot,
-    pole: Vec3,
+pub(crate) struct Foot {
+    pub(crate) ankle: Vec3,
+    pub(crate) turn: Rot,
+    pub(crate) pole: Vec3,
 }
 
 /// An arm: its grip's place and the way the elbow points.
 #[derive(Clone, Copy)]
-struct Arm {
-    grip: Vec3,
-    pole: Vec3,
+pub(crate) struct Arm {
+    pub(crate) grip: Vec3,
+    pub(crate) pole: Vec3,
 }
 
 /// One key of a pose (see the module docs). Side 0 is the left (-x).
 #[derive(Clone, Copy)]
-struct Key {
-    root_t: Vec3,
-    root_r: Rot,
-    torso: Rot,
-    head: Rot,
-    feet: [Foot; 2],
-    arms: [Arm; 2],
+pub(crate) struct Key {
+    pub(crate) root_t: Vec3,
+    pub(crate) root_r: Rot,
+    pub(crate) torso: Rot,
+    pub(crate) head: Rot,
+    pub(crate) feet: [Foot; 2],
+    pub(crate) arms: [Arm; 2],
 }
 
-fn deg(axis: Vec3, degrees: f32) -> Rot {
+pub(crate) fn deg(axis: Vec3, degrees: f32) -> Rot {
     rot_about(axis, degrees.to_radians())
 }
 
-fn side_x(side: usize) -> f32 {
+pub(crate) fn side_x(side: usize) -> f32 {
     if side == 0 { -1.0 } else { 1.0 }
 }
 
@@ -193,15 +193,15 @@ fn arm(shoulder: V3, parent: &Rot, grip: V3, pole: V3) -> [Rot; 2] {
 }
 
 /// The local turns of a key: root, torso, head, then per side hip, knee, ankle, shoulder, elbow.
-struct Turned {
-    root: Rot,
-    torso: Rot,
-    head: Rot,
-    legs: [[Rot; 3]; 2],
-    arms: [[Rot; 2]; 2],
+pub(crate) struct Turned {
+    pub(crate) root: Rot,
+    pub(crate) torso: Rot,
+    pub(crate) head: Rot,
+    pub(crate) legs: [[Rot; 3]; 2],
+    pub(crate) arms: [[Rot; 2]; 2],
 }
 
-fn solve(k: &Key) -> Turned {
+pub(crate) fn solve(k: &Key) -> Turned {
     let root_t = V3::from(k.root_t);
     let torso_at = root_t + apply(&k.root_r, V3::new(0.0, 0.0, PELVIS));
     let torso_turn = rot_mul(&k.root_r, &k.torso);
@@ -232,7 +232,7 @@ fn solve(k: &Key) -> Turned {
 }
 
 /// The tracks of a list of keys (one key each, in order).
-fn tracks(body: &Body<'_>, keys: &[Key]) -> (Vec<Track<Quat16>>, Vec<Track<Vec3>>) {
+pub(crate) fn tracks(body: &Body<'_>, keys: &[Key]) -> (Vec<Track<Quat16>>, Vec<Track<Vec3>>) {
     let turned: Vec<Turned> = keys.iter().map(solve).collect();
     let track = |node: usize, f: &dyn Fn(&Turned) -> Rot| Track {
         node,
@@ -264,7 +264,7 @@ fn reversed<T: Clone>(keys: &[T]) -> Vec<T> {
     (0..n).map(|k| keys[(n - k) % n].clone()).collect()
 }
 
-fn reversed_tracks<T: Clone>(tracks: &[Track<T>]) -> Vec<Track<T>> {
+pub(crate) fn reversed_tracks<T: Clone>(tracks: &[Track<T>]) -> Vec<Track<T>> {
     tracks
         .iter()
         .map(|t| Track {
@@ -353,7 +353,7 @@ fn prone_ankle(side: usize, y: f32, lift: f32) -> Vec3 {
     [side_x(side) * 0.3, PRONE_HIPS[0] + y, 0.19 + lift]
 }
 
-fn sequence(
+pub(crate) fn sequence(
     name: &'static str,
     duration: f32,
     (rotations, translations): (Vec<Track<Quat16>>, Vec<Track<Vec3>>),
@@ -524,12 +524,25 @@ pub(crate) fn prone(b: &mut ShapeBuilder, body: &Body<'_>) {
     ));
 
     // Holding and aiming lying down: `hold` and `aim` with the arm raised as far again as the torso lies over.
-    let arm_r = body.limbs.arms[1];
-    let elbow_r = body.limbs.elbows[1];
-    let pitches: Vec<f32> = (0..LOOK_KEYS)
+    b.sequence(tilted_hold(body, "prone_hold", PRONE_TILT));
+    b.sequence(tilted_aim(body, "prone_aim", PRONE_TILT));
+}
+
+/// The pitches (degrees) the arm takes over the look range: the `head` blend bends the torso its share, the shoulder the rest.
+fn arm_pitches() -> Vec<f32> {
+    (0..LOOK_KEYS)
         .map(|k| (1.0 - LOOK_TORSO) * look_pitch(k as f32 / (LOOK_KEYS - 1) as f32))
-        .collect();
-    let arm_action = |name: &'static str, shoulder: Vec<Quat16>, elbow: Vec<Quat16>| SequenceDef {
+        .collect()
+}
+
+/// An arm action on the right arm over the look range (priority 1, over whatever else plays): its shoulder's and elbow's keys.
+fn arm_action(
+    body: &Body<'_>,
+    name: &'static str,
+    shoulder: Vec<Quat16>,
+    elbow: Vec<Quat16>,
+) -> SequenceDef {
+    SequenceDef {
         name,
         duration: 1.0,
         cyclic: false,
@@ -537,36 +550,58 @@ pub(crate) fn prone(b: &mut ShapeBuilder, body: &Body<'_>) {
         keyframes: LOOK_KEYS,
         rotations: vec![
             Track {
-                node: arm_r,
+                node: body.limbs.arms[1],
                 keys: shoulder,
             },
             Track {
-                node: elbow_r,
+                node: body.limbs.elbows[1],
                 keys: elbow,
             },
         ],
         translations: Vec::new(),
         ground: Vec::new(),
-    };
-    b.sequence(arm_action(
-        "prone_hold",
-        pitches
+    }
+}
+
+/// `hold` for a body whose torso leans `tilt` degrees further forward than standing: the arm raised as much further.
+pub(crate) fn tilted_hold(body: &Body<'_>, name: &'static str, tilt: f32) -> SequenceDef {
+    arm_action(
+        body,
+        name,
+        arm_pitches()
             .iter()
-            .map(|d| turns(&[(X, HOLD_SHOULDER + PRONE_TILT + d)]))
+            .map(|d| turns(&[(X, HOLD_SHOULDER + tilt + d)]))
             .collect(),
         vec![turns(&[(X, HOLD_ELBOW)])],
-    ));
-    let (shoulder, elbow): (Vec<Quat16>, Vec<Quat16>) = pitches
+    )
+}
+
+/// `aim` for a body leaning `tilt` degrees further forward.
+pub(crate) fn tilted_aim(body: &Body<'_>, name: &'static str, tilt: f32) -> SequenceDef {
+    let (shoulder, elbow) = arm_pitches()
         .iter()
         .map(|d| {
-            let a = AIM_SHOULDER + PRONE_TILT + d;
+            let a = AIM_SHOULDER + tilt + d;
             (
                 turns(&[(Z, AIM_IN), (X, a)]),
                 turns(&[(X, -a), (Z, -AIM_IN), (X, a + AIM_ELBOW)]),
             )
         })
         .unzip();
-    b.sequence(arm_action("prone_aim", shoulder, elbow));
+    arm_action(body, name, shoulder, elbow)
+}
+
+/// `point` for a body leaning `tilt` degrees further forward.
+pub(crate) fn tilted_point(body: &Body<'_>, name: &'static str, tilt: f32) -> SequenceDef {
+    arm_action(
+        body,
+        name,
+        arm_pitches()
+            .iter()
+            .map(|d| turns(&[(Z, POINT_IN), (X, POINT_SHOULDER + tilt + d)]))
+            .collect(),
+        vec![turns(&[(X, POINT_ELBOW)])],
+    )
 }
 
 /// A hit reaction's envelope at key `k` of `n`: a sharp rise to its peak by `peak` of the way, then an eased fall to rest.
@@ -1057,34 +1092,8 @@ pub(crate) fn ways(b: &mut ShapeBuilder, body: &Body<'_>) {
 
 /// `point` and `prone_point` (see the module docs): arm actions over the look range, the right arm only.
 pub(crate) fn point(b: &mut ShapeBuilder, body: &Body<'_>) {
-    let arm_r = body.limbs.arms[1];
-    let elbow_r = body.limbs.elbows[1];
     for (name, tilt) in [("point", 0.0), ("prone_point", PRONE_TILT)] {
-        let shoulder = (0..LOOK_KEYS)
-            .map(|k| {
-                let pitch = (1.0 - LOOK_TORSO) * look_pitch(k as f32 / (LOOK_KEYS - 1) as f32);
-                turns(&[(Z, POINT_IN), (X, POINT_SHOULDER + tilt + pitch)])
-            })
-            .collect();
-        b.sequence(SequenceDef {
-            name,
-            duration: 1.0,
-            cyclic: false,
-            priority: 1,
-            keyframes: LOOK_KEYS,
-            rotations: vec![
-                Track {
-                    node: arm_r,
-                    keys: shoulder,
-                },
-                Track {
-                    node: elbow_r,
-                    keys: vec![turns(&[(X, POINT_ELBOW)])],
-                },
-            ],
-            translations: Vec::new(),
-            ground: Vec::new(),
-        });
+        b.sequence(tilted_point(body, name, tilt));
     }
 }
 

@@ -27,7 +27,7 @@ pub mod showcase;
 pub mod web;
 
 /// The figure's `swimBoundingBox` and `swimForce` (`game/server.cs`).
-pub const SWIM_BOX: [f32; 3] = [1.0, 2.3, 1.0];
+pub const SWIM_BOX: [f32; 3] = [1.0, 2.3, 1.8];
 pub const SWIM_FORCE: f32 = 2400.0;
 
 /// The figure's poses as the level demo's server gives them: the examples' ([`torque_example_common::figure_poses`]), and

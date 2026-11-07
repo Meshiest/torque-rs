@@ -41,10 +41,10 @@
 //! the Player was drawn covering ([`PlayerMotion::position`]) along its direction over its speed instead of by the velocity, so
 //! its phase follows the server's path rather than the client's clock.
 //!
-//! **Poses** (the engine's own after Torque3D's, [`torque_game::sim::player::poses`]): a Player crouched, prone or sprinting
+//! **Poses** (the engine's own after Torque3D's, [`torque_game::sim::player::poses`]): a Player crouched, prone, sprinting or swimming
 //! ([`PlayerMotion::pose`]: the client's own as it predicts it, another's as its record's move shows it, [`record_pose`])
 //! plays its pose's own actions when the shape has them (`crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`,
-//! `prone_root`, ...), picked as the standing ones are; its server picks by the same rule. An action of another pose blends in
+//! `prone_root`, `swim_root`, ...), picked as the standing ones are; its server picks by the same rule. An action of another pose blends in
 //! over a longer, eased transition ([`poses::blend_for`]), so the body lowers and rises; between the crouch and prone the shape's
 //! way down or up (`prone_down`, `prone_up`; `prone_down_armed`, `prone_up_armed` when the shape has them and the arm
 //! action is not `look`) plays to its end first. A pose's moving action steps like
@@ -57,7 +57,9 @@
 //! **The arm thread** plays the arm action the record names (the server's `setArmThread`; `look` when the shape has it and
 //! none was named), held at the head's pitch over the look range (`updateLookAnimation`): 0 looking fully up, 1 fully down.
 //! A synced Player's arm moves from one arm action to the next over [`ARM_BLEND`] seconds (engine addition: TGE switches
-//! at once), held at the pitch meanwhile.
+//! at once), held at the pitch meanwhile. The arm action plays the version of the action playing, or of the pose, when the
+//! shape has one ([`poses::pose_arm`]: `swim_forward_point` while the figure swims forward, `prone_hold` lying down); a
+//! change of action or pose that changes the version moves the arm to it over [`TRANSITION`] seconds (engine addition).
 //! **The head thread** plays the shape's `head` sequence, when it has one, at the same position (`mHeadVThread`).
 //! While a death action plays (an action whose name starts with `death`), the death owns the whole body: the arm and head
 //! threads stop (TGE leaves the arm and the look alone once the Player is dead) and start again, on the arm action the record
@@ -448,6 +450,11 @@ impl PlayerAnimation {
         self.arm_action
     }
 
+    /// The arm thread, once the arm plays an action (its sequence the action's version for the pose and the action playing).
+    pub fn arm_thread(&self) -> Option<ThreadId> {
+        self.arm_thread
+    }
+
     /// Whether a death action plays (the arm and head threads stopped).
     pub fn dying(&self) -> bool {
         self.actions
@@ -728,6 +735,12 @@ impl PlayerAnimation {
                     th.pos = m.look.clamp(0.0, 1.0);
                     instance.set_all_dirty();
                 }
+                // The same arm action in another version (the action or the pose changed: `swim_point` to
+                // `swim_forward_point` as the figure starts its stroke): the arm moves to it as the body blends.
+                Some(th) if th.sequence.is_some_and(|q| q != seq) => {
+                    th.time_scale = 1.0;
+                    instance.transition_to_sequence(shape, t, seq, m.look, TRANSITION);
+                }
                 _ => instance.set_sequence(shape, t, seq as i32, m.look),
             }
         }
@@ -736,17 +749,21 @@ impl PlayerAnimation {
         }
     }
 
-    /// The sequence the arm action `arm` plays in `pose`: the pose's own version when the shape has one (`prone_hold`), as
-    /// the server plays it.
+    /// The sequence the arm action `arm` plays in `pose`: the action playing's own version when the shape has one
+    /// (`swim_forward_point`), else the pose's (`prone_hold`), as the server plays it.
     fn arm_sequence(&self, arm: usize, pose: Pose) -> Option<usize> {
         let names = self
             .actions
             .iter()
             .map(|a| (a.name.as_slice(), a.sequence.is_some()));
+        let action = self
+            .actions
+            .get(self.action)
+            .map_or(&[][..], |a| a.name.as_slice());
         let played = self
             .actions
             .get(arm)
-            .and_then(|a| poses::pose_arm(names, &a.name, pose))
+            .and_then(|a| poses::pose_arm(names, &a.name, pose, action))
             .unwrap_or(arm);
         self.actions.get(played)?.sequence
     }

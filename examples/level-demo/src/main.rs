@@ -3,7 +3,8 @@
 //! `example-level-demo` opens the window on the menu of maps; `example-level-demo --shots <dir>` draws pictures of the menu
 //! and of every map (an overview, a view from behind the figure and one from its eyes) offscreen into `dir` instead (no
 //! window); `--valley-shots <dir>` the valley's views of the world alone (and their GPU frame times); `--valley-clip <dir>` eight
-//! seconds of the valley's sky moving, a picture every other frame. `example-level-demo --web-files <dir>` writes the files a
+//! seconds of the valley's sky moving, a picture every other frame; `--swim-shots <dir>` the figure swimming in the valley's
+//! lake. `example-level-demo --web-files <dir>` writes the files a
 //! build for the web fetches into `dir`: the pack (`files::web_pack`) as `game.pack`, and the list of files beside the page
 //! (`files.json`, `torque::app::manifest`) naming it.
 //! `example-level-demo --web-pack <file>` writes the pack alone, for a build that carries it (the `embed-pack` feature).
@@ -45,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut office_dir = None;
     let mut valley_dir = None;
     let mut clip_dir = None;
+    let mut swim_dir = None;
     let mut pack_file = None;
     let mut web_dir = None;
     while let Some(arg) = args.next() {
@@ -53,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--office-shots" => office_dir = Some(args.dir(&arg)?),
             "--valley-shots" => valley_dir = Some(args.dir(&arg)?),
             "--valley-clip" => clip_dir = Some(args.dir(&arg)?),
+            "--swim-shots" => swim_dir = Some(args.dir(&arg)?),
             "--web-pack" => pack_file = Some(args.dir(&arg)?),
             "--web-files" => web_dir = Some(args.dir(&arg)?),
             _ => return Err(unknown(&arg).into()),
@@ -86,6 +89,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let gpu = torque::app::window::offscreen_gpu()?;
         for path in torque_example_level_demo::showcase::write_valley(&gpu, files, &dir, SHOT_SIZE)?
         {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
+    if let Some(dir) = swim_dir {
+        for path in shots::write_swim(files, &dir, SHOT_SIZE)? {
             println!("{}", path.display());
         }
         return Ok(());

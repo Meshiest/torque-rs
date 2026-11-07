@@ -302,7 +302,7 @@ impl HostSkeleton {
         self.advance_time(th, dt);
     }
 
-    /// The pose's own version of the arm action (the engine's poses, [`poses::pose_arm`](super::poses::pose_arm)) on the arm
+    /// The action's or the pose's own version of the arm action (the engine's poses, [`poses::pose_arm`](super::poses::pose_arm)) on the arm
     /// thread, at the place the arm is, as the clients play it.
     fn pose_arm(&mut self, s: &PlayerState) {
         let Some(st) = self.st.as_mut() else {
@@ -318,8 +318,12 @@ impl HostSkeleton {
             .actions
             .iter()
             .map(|a| (a.name.as_slice(), a.sequence != -1));
+        let action = p
+            .actions
+            .get(p.action as usize)
+            .map_or(&[][..], |a| a.name.as_slice());
         let played =
-            super::poses::pose_arm(names, &a.name, s.pose).unwrap_or(p.arm_action as usize);
+            super::poses::pose_arm(names, &a.name, s.pose, action).unwrap_or(p.arm_action as usize);
         let Some(seq) = p
             .actions
             .get(played)

@@ -217,6 +217,11 @@ level-demo-shots dir="../target/level-demo-shots":
 level-demo-valley-shots dir="../target/level-demo-valley-shots":
     cargo run -p torque-example-level-demo --release -- --valley-shots {{dir}}
 
+# The figure swimming in the valley's lake (mid-stroke from beside it, from the camera behind it, and treading water), drawn
+# offscreen into `dir`
+level-demo-swim-shots dir="../target/level-demo-swim-shots":
+    cargo run -p torque-example-level-demo --release -- --swim-shots {{dir}}
+
 # The front page's pictures, each the world alone at the highest quality (the buggy in a turn, a shot in the arena, the valley,
 # the office), and the 2 x 2 grid of them (`hero.png`, `hero@2x.png`), drawn offscreen into `dir`. `--size WxH` sets the
 # pictures' size, `--only <name>` draws one, `--grid` sets the grid again from the pictures in `dir`
@@ -250,6 +255,11 @@ camera-log dir="../target/camera-log" *args:
 # another player's client draws it (side and three-quarter views), drawn offscreen into `dir`
 poses-clip dir="../target/poses-clip":
     cargo run -p torque-example-common --release --example poses-clip -- {{dir}}
+
+# The kit's swimming pictures: a sheet of eight moments of each stroke and a clip of each (treading, the breaststroke, backward,
+# to the side, pointing), drawn offscreen into `dir` (the clips need ffmpeg)
+swim-clip dir="../target/swim-clip":
+    cargo run -p torque-example-common --release --example poses-clip -- {{dir}} swim
 
 # The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
 # `--name`, `--map`, `--ticks N` (stop after N ticks)

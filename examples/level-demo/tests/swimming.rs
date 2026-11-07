@@ -1,7 +1,8 @@
 //! Swimming in the valley's lake: the figure walks in from the spawn and swims once the water is deep, floats steady with its
 //! eye out of the water, swims on, and walks out up a beach and its bank; the client predicts every tick of it as the server
 //! runs it. No window and no GPU: the client and the server in one process, the frames placed and not drawn. (One demo a
-//! process.)
+//! process.) Also: the kit's strokes go at the figure's underwater speeds, and a swimming figure's arm actions play their
+//! swimming versions.
 
 use torque::client::input::Key;
 use torque::game::sim::player::poses::Pose;
@@ -148,7 +149,8 @@ fn the_figure_swims_in_the_lake_floats_steady_and_walks_out_up_the_bank() {
     })
     .expect("the figure did not swim 20 m");
 
-    // Stopped, it floats: after three seconds its height holds within 2 cm, its eye out of the water.
+    // Stopped, it floats: after three seconds its height holds within 2 cm, its eye out of the water (the steady eye, the
+    // treading pose's, 10 to 20 cm out).
     game.key(Key::W, false);
     until(&mut game, 3.0, |_, _| false);
     let (mut low, mut high) = (f32::MAX, f32::MIN);
@@ -158,8 +160,8 @@ fn the_figure_swims_in_the_lake_floats_steady_and_walks_out_up_the_bank() {
         (low, high) = (low.min(z), high.max(z));
         let f = g.figure().expect("the own figure");
         assert!(
-            f.eye[2] > LEVEL && f.drawn_eye[2] > LEVEL,
-            "the eye at {:?} (drawn {:?}) is under the surface",
+            (LEVEL + 0.1..LEVEL + 0.2).contains(&f.eye[2]) && f.drawn_eye[2] > LEVEL + 0.05,
+            "the eye at {:?} (drawn {:?}) is not just out of the water",
             f.eye,
             f.drawn_eye
         );
@@ -210,4 +212,102 @@ fn the_figure_swims_in_the_lake_floats_steady_and_walks_out_up_the_bank() {
         0,
         "the client's prediction was corrected"
     );
+}
+
+/// A field of the figure's datablock in `game/server.cs` (a number).
+fn datablock_number(name: &str) -> f32 {
+    let text = include_str!("../game/server.cs");
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with(&format!("{name} =")))
+        .unwrap_or_else(|| panic!("no {name}"));
+    line.split('=')
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches(';')
+        .parse()
+        .unwrap()
+}
+
+/// The kit's breaststroke, swim backward and side stroke cover the ground at the figure's underwater caps, to within 5%, so
+/// the strokes play at their own pace at full speed; and its float puts the surface where the kit's treading figure has it.
+#[test]
+fn the_kit_s_strokes_go_at_the_figure_s_underwater_speeds() {
+    use torque::shapes::shape::Shape;
+    let shape = Shape::for_server(torque_example_assets::shapes::figure());
+    let speed = |name: &str| {
+        let seq = torque::shapes::instance::find_sequence(&shape, name.as_bytes()).unwrap();
+        let s = &shape.sequences[seq];
+        let g =
+            shape.ground_translations[(s.first_ground_frame + s.num_ground_frames - 1) as usize];
+        g[0].hypot(g[1]) / s.duration
+    };
+    for (name, field) in [
+        ("swim_forward", "maxUnderwaterForwardSpeed"),
+        ("swim_backward", "maxUnderwaterBackwardSpeed"),
+        ("swim_side", "maxUnderwaterSideSpeed"),
+    ] {
+        let (ours, cap) = (speed(name), datablock_number(field));
+        assert!(
+            (ours / cap - 1.0).abs() < 0.05,
+            "{name} goes {ours}, the cap is {cap}"
+        );
+    }
+    // The surface floats twice the density up the figure's 2 m box.
+    let surface = 2.0 * datablock_number("density");
+    assert!(
+        (surface - torque_example_assets::swim::SWIM_WATER).abs() < 0.01,
+        "the figure floats with the surface {surface} up"
+    );
+}
+
+/// Swimming, the figure's arm plays the stroke's own version of an arm action: pointing or holding raises the right arm
+/// (`swim_point` treading, `swim_forward_point` in the breaststroke, `swim_hold`), and empty hands raise none.
+#[test]
+fn each_arm_state_picks_its_swimming_sequence() {
+    use torque::client::player_anim::{PlayerAnimation, PlayerMotion};
+    use torque::shapes::instance::ShapeInstance;
+    use torque::shapes::shape::Shape;
+    let shape = Shape::for_server(torque_example_assets::shapes::figure());
+    let name_of = |seq: usize| {
+        String::from_utf8(shape.names[shape.sequences[seq].name as usize].clone()).unwrap()
+    };
+    for (arm, speed, played) in [
+        ("look", 0.0, "look"),
+        ("look", 3.0, "look"),
+        ("point", 0.0, "swim_point"),
+        ("point", 3.0, "swim_forward_point"),
+        ("hold", 0.0, "swim_hold"),
+        ("hold", 3.0, "swim_forward_hold"),
+        ("aim", 3.0, "swim_forward_aim"),
+        ("point", -2.0, "swim_point"),
+    ] {
+        let mut instance = ShapeInstance::new(&shape, &mut |_| true).unwrap();
+        let mut anim = PlayerAnimation::new(&shape, &mut instance).unwrap();
+        let index = anim
+            .actions()
+            .iter()
+            .position(|a| a.name == arm.as_bytes())
+            .unwrap() as u32;
+        for _ in 0..30 {
+            let motion = PlayerMotion {
+                velocity: [0.0, speed, 0.0],
+                look: 0.5,
+                pose: Pose::Swim,
+                arm_action: Some(index),
+                ..PlayerMotion::default()
+            };
+            anim.update(&shape, &mut instance, &motion, 0.032);
+        }
+        let action = &anim.actions()[anim.action().0].name;
+        let t = anim.arm_thread().expect("an arm thread");
+        let seq = instance.thread(t).unwrap().sequence.unwrap();
+        assert_eq!(
+            name_of(seq),
+            played,
+            "{arm} at {speed} playing {}",
+            String::from_utf8_lossy(action)
+        );
+    }
 }

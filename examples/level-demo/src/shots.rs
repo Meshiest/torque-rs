@@ -160,3 +160,79 @@ pub fn write_office(
     }
     Ok(shots.paths)
 }
+
+/// The valley's swimming pictures at `size` into `dir`: the figure walked from the spawn into the lake until it swims, then
+/// seen from beside and ahead of it mid-stroke (`swim-stroke`) and from the camera behind it (`swim-behind`); stopped and
+/// treading water, from ahead (`swim-tread`).
+pub fn write_swim(files: GameFiles, dir: &Path, size: (u32, u32)) -> Result<Vec<PathBuf>, String> {
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let mut seat = Seat::new(LevelDemo::new(files)?, &gpu, size)?;
+    let mut shots = Shots::new(dir)?;
+    seat.run(&gpu, 200)?;
+    let index = seat
+        .game
+        .maps
+        .iter()
+        .position(|m| map_name(&m.path) == "valley")
+        .ok_or("no valley map")?;
+    seat.game.start_map(index)?;
+    let mut waited = 0;
+    while !(seat.game.in_world() && seat.game.figure().is_some()) && waited < START_LIMIT_MS {
+        seat.run(&gpu, 100)?;
+        waited += 100;
+    }
+    seat.run(&gpu, 2000)?;
+    // West from the spawn, sprinting, into the lake until the figure swims, then on into deeper water.
+    seat.game.key(Key::W, true);
+    seat.game.key(Key::ShiftLeft, true);
+    let mut waited = 0;
+    while !seat.game.swimming() && waited < 40_000 {
+        seat.run(&gpu, 100)?;
+        waited += 100;
+    }
+    if !seat.game.swimming() {
+        return Err("the figure never swam".into());
+    }
+    seat.run(&gpu, 5000)?;
+    let place = |seat: &Seat<LevelDemo>| seat.game.figure().map(|f| f.position);
+    let from = place(&seat).ok_or("no figure")?;
+    seat.run(&gpu, 600)?;
+    let to = place(&seat).ok_or("no figure")?;
+    // The way it swims (flat), and its right.
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let len = dx.hypot(dy).max(1e-3);
+    let ahead = [dx / len, dy / len];
+    let right = [ahead[1], -ahead[0]];
+    let eye_beside = |p: [f32; 3], side: f32, front: f32, up: f32, aim: f32| {
+        let from = [
+            p[0] + right[0] * side + ahead[0] * front,
+            p[1] + right[1] * side + ahead[1] * front,
+            p[2] + up,
+        ];
+        crate::client::with_fov(look_at(from, [p[0], p[1], p[2] + aim]))
+    };
+    let mut picture =
+        |seat: &mut Seat<LevelDemo>, e: Option<Eye>, name: &str| -> Result<(), String> {
+            seat.eye = e;
+            let frame = seat.picture(&gpu);
+            seat.eye = None;
+            shots.save(&frame?, name)
+        };
+    let p = place(&seat).ok_or("no figure")?;
+    picture(
+        &mut seat,
+        Some(eye_beside(p, 3.2, 2.4, 2.6, 1.3)),
+        "swim-stroke",
+    )?;
+    picture(&mut seat, None, "swim-behind")?;
+    seat.game.key(Key::W, false);
+    seat.game.key(Key::ShiftLeft, false);
+    seat.run(&gpu, 4000)?;
+    let p = place(&seat).ok_or("no figure")?;
+    picture(
+        &mut seat,
+        Some(eye_beside(p, 1.4, 3.2, 2.0, 1.4)),
+        "swim-tread",
+    )?;
+    Ok(shots.paths)
+}

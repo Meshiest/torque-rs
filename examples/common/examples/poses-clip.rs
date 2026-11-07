@@ -25,7 +25,13 @@
 //! up, level and down, standing, then pointing as it walks and crouched, then lying down (`prone_point`), each after the arm's
 //! blend from empty hands; two views a tile as above.
 //!
-//! `cargo run -p torque-example-common --release --example poses-clip -- <dir> [transitions [slower] | point]` (default
+//! With `swim` after the folder, the pictures are the swimming ones, the figure over blue marks at the waterline it floats at
+//! ([`torque_example_assets::swim::SWIM_WATER`]): a sheet of eight moments across each loop (`swim_root`, `swim_forward`,
+//! `swim_backward`, `swim_side`, and pointing over the first two), as `swim-<name>.png`, and a clip of each played by the
+//! client's animation from the pose and the velocity (treading, the breaststroke, backward, to the left and the right,
+//! pointing while treading and while swimming forward), as `swim-<name>.mp4`, and one of them all, `swim-all.mp4`.
+//!
+//! `cargo run -p torque-example-common --release --example poses-clip -- <dir> [transitions [slower] | point | swim]` (default
 //! `poses-clip`)
 
 use std::io::Write;
@@ -192,6 +198,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("point") {
         return point_sheet(&dir, &gpu, &mut views, &assets, &figure);
     }
+    if std::env::args().nth(2).as_deref() == Some("swim") {
+        return swim_pictures(&dir, &gpu, &mut views, &assets, &figure);
+    }
     let (w, h) = (2 * VIEW.0, VIEW.1 + BAR);
     let mp4 = dir.join(format!("{name}.mp4"));
     let mut ffmpeg = Command::new("ffmpeg")
@@ -294,7 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &assets,
             &figure,
             &instance,
-            at,
+            (at, None),
             k == 0,
             &mut rgb,
         )?;
@@ -346,7 +355,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// The figure at `at` drawn from its right side and from its front right into the top of `rgb` (two [`VIEW`]s side by side,
-/// rows of `2 * VIEW.0`), over a floor marked every half unit; `first` starts the views' history afresh.
+/// rows of `2 * VIEW.0`), over a floor marked every half unit, with blue marks every half unit at the height `water` when it
+/// is given (the views then look at the waterline); `first` starts the views' history afresh.
 #[allow(clippy::too_many_arguments)]
 fn draw_views(
     gpu: &torque_render_core::Gpu,
@@ -354,7 +364,7 @@ fn draw_views(
     assets: &KitAssets,
     figure: &SceneShape,
     instance: &torque::shapes::instance::ShapeInstance,
-    at: [f32; 2],
+    (at, water): ([f32; 2], Option<f32>),
     first: bool,
     rgb: &mut [u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -383,10 +393,22 @@ fn draw_views(
                     vtx.color = [60, 62, 66, 255];
                 }
                 objects.push(o);
+                if let Some(z) = water {
+                    let mut o = box_object(
+                        id,
+                        [j as f32 * 0.5, i as f32 * 0.5 + 0.25, z],
+                        [0.05, 0.05, 0.004],
+                    );
+                    id += 1;
+                    for vtx in o.draws.iter_mut().flat_map(|d| d.vertices.iter_mut()) {
+                        vtx.color = [40, 110, 220, 255];
+                    }
+                    objects.push(o);
+                }
             }
         }
         view.set_objects(objects);
-        let center = [at[0], at[1], 0.8];
+        let center = [at[0], at[1], water.map_or(0.8, |z| z - 0.35)];
         let distance = 4.2;
         let flat = (1.0 - rise * rise).sqrt();
         let along = (1.0 - side * side).sqrt() * ahead.signum();
@@ -460,7 +482,16 @@ fn point_sheet(
         let mut rgb = vec![0u8; (w * VIEW.1 * 3) as usize];
         // The views' history settles over a few frames of the same pose.
         for f in 0..8 {
-            draw_views(gpu, views, assets, figure, &instance, at, f == 0, &mut rgb)?;
+            draw_views(
+                gpu,
+                views,
+                assets,
+                figure,
+                &instance,
+                (at, None),
+                f == 0,
+                &mut rgb,
+            )?;
         }
         sheet.push(rgb);
     }
@@ -478,5 +509,221 @@ fn point_sheet(
     })?;
     std::fs::write(&png, bytes)?;
     println!("{}", png.display());
+    Ok(())
+}
+
+/// One stretch of a swimming clip: how long, the velocity it eases to (the figure's own frame), and the arm action by name.
+struct Swim {
+    seconds: f32,
+    velocity: [f32; 2],
+    arm: Option<&'static [u8]>,
+}
+
+const fn swim(seconds: f32, velocity: [f32; 2], arm: Option<&'static [u8]>) -> Swim {
+    Swim {
+        seconds,
+        velocity,
+        arm,
+    }
+}
+
+/// The swimming pictures (see the module docs).
+fn swim_pictures(
+    dir: &std::path::Path,
+    gpu: &torque_render_core::Gpu,
+    views: &mut [WorldView; 2],
+    assets: &KitAssets,
+    figure: &SceneShape,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use torque_example_assets::swim::{
+        BACK_LOOP, SIDE_LOOP, STROKE_LOOP, SWIM_BACK_SPEED, SWIM_SIDE_SPEED, SWIM_SPEED,
+        SWIM_WATER, TREAD_LOOP,
+    };
+    let shape = figure.shape();
+    let detail = figure.detail().ok_or("no detail")?;
+    let w = 2 * VIEW.0;
+    // A sheet of eight moments of each loop, the tiles at half size, two a row.
+    let sheets: [(&str, &[&str]); 6] = [
+        ("root", &["swim_root"]),
+        ("forward", &["swim_forward"]),
+        ("backward", &["swim_backward"]),
+        ("side", &["swim_side"]),
+        ("point", &["swim_root", "swim_point"]),
+        ("forward_point", &["swim_forward", "swim_forward_point"]),
+    ];
+    for (name, threads) in sheets {
+        let mut tiles = Vec::new();
+        for k in 0..8 {
+            let mut instance = figure.instance().ok_or("no instance")?;
+            for (i, seq) in threads.iter().enumerate() {
+                let t = instance.create_thread(shape).ok_or("no thread")?;
+                let s = find_sequence(shape, seq.as_bytes()).ok_or("no sequence")?;
+                // The loop at its moment; an arm action at a level look.
+                let pos = if i == 0 { k as f32 / 8.0 } else { 0.5 };
+                instance.set_sequence(shape, t, s as i32, pos);
+            }
+            let _ = instance.animate(shape, detail, None, &mut |_| true);
+            let mut rgb = vec![0u8; (w * VIEW.1 * 3) as usize];
+            for f in 0..8 {
+                let at = ([0.0; 2], Some(SWIM_WATER));
+                draw_views(gpu, views, assets, figure, &instance, at, f == 0, &mut rgb)?;
+            }
+            tiles.push(rgb);
+        }
+        let (tw, th) = (w / 2, VIEW.1 / 2);
+        let png = dir.join(format!("swim-{name}.png"));
+        let bytes = torque_example_assets::textures::png(2 * tw, 4 * th, |x, y| {
+            let f = &tiles[(y / th) as usize * 2 + (x / tw) as usize];
+            let (px, py) = (2 * (x % tw), 2 * (y % th));
+            let mut c = [0u32; 3];
+            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let d = 3 * ((py + dy) * w + px + dx) as usize;
+                for (k, v) in c.iter_mut().enumerate() {
+                    *v += f[d + k] as u32;
+                }
+            }
+            c.map(|v| (v / 4) as u8)
+        })?;
+        std::fs::write(&png, bytes)?;
+        println!("{}", png.display());
+    }
+    let ahead = [0.0, SWIM_SPEED];
+    let back = [0.0, -SWIM_BACK_SPEED];
+    let left = [-SWIM_SIDE_SPEED, 0.0];
+    let right = [SWIM_SIDE_SPEED, 0.0];
+    let still = [0.0, 0.0];
+    let point: Option<&'static [u8]> = Some(b"point");
+    let hold: Option<&'static [u8]> = Some(b"hold");
+    let clips: [(&str, Vec<Swim>); 7] = [
+        ("root", vec![swim(3.0 * TREAD_LOOP, still, None)]),
+        ("forward", vec![swim(4.0 * STROKE_LOOP, ahead, None)]),
+        ("backward", vec![swim(3.0 * BACK_LOOP, back, None)]),
+        (
+            "side",
+            vec![
+                swim(2.0 * SIDE_LOOP, left, None),
+                swim(2.0 * SIDE_LOOP, right, None),
+            ],
+        ),
+        (
+            "point",
+            vec![swim(0.8, still, None), swim(2.0 * TREAD_LOOP, still, point)],
+        ),
+        (
+            "forward_point",
+            vec![
+                swim(0.8, ahead, None),
+                swim(4.0 * STROKE_LOOP, ahead, point),
+            ],
+        ),
+        (
+            "all",
+            vec![
+                swim(2.0, still, None),
+                swim(4.0, ahead, None),
+                swim(1.5, still, None),
+                swim(3.0, back, None),
+                swim(3.0, left, None),
+                swim(3.0, right, None),
+                swim(3.0, still, point),
+                swim(4.0, ahead, point),
+                swim(2.0, still, hold),
+                swim(3.0, ahead, hold),
+                swim(2.0, still, None),
+            ],
+        ),
+    ];
+    for (name, plan) in clips {
+        let mut instance = figure.instance().ok_or("no instance")?;
+        let mut anim = PlayerAnimation::new(shape, &mut instance).ok_or("no threads")?;
+        let arms: Vec<Option<u32>> = plan
+            .iter()
+            .map(|s| {
+                let arm = s.arm?;
+                anim.actions()
+                    .iter()
+                    .position(|a| a.name == arm)
+                    .map(|i| i as u32)
+            })
+            .collect();
+        let mp4 = dir.join(format!("swim-{name}.mp4"));
+        let mut ffmpeg = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-s",
+            ])
+            .arg(format!("{w}x{}", VIEW.1))
+            .args([
+                "-r",
+                &FPS.to_string(),
+                "-i",
+                "-",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .args(["-crf", "18"])
+            .arg(&mp4)
+            .stdin(Stdio::piped())
+            .spawn()?;
+        let mut pipe = ffmpeg.stdin.take().ok_or("no ffmpeg input")?;
+        let dt = 1.0 / FPS as f32;
+        let total: f32 = plan.iter().map(|s| s.seconds).sum();
+        // A clip of one loop starts at its speed, so it shows the loop itself.
+        let (mut at, mut velocity) = ([0.0f32; 2], plan[0].velocity);
+        if name == "all" {
+            velocity = still;
+        }
+        for k in 0..(total * FPS as f32) as usize {
+            let t = k as f32 * dt;
+            let (mut start, mut now) = (0.0, plan.len() - 1);
+            for (i, stretch) in plan.iter().enumerate() {
+                if t < start + stretch.seconds {
+                    now = i;
+                    break;
+                }
+                start += stretch.seconds;
+            }
+            for i in 0..2 {
+                let d = plan[now].velocity[i] - velocity[i];
+                velocity[i] += d.clamp(-EASE * dt, EASE * dt);
+                at[i] += velocity[i] * dt;
+            }
+            let motion = PlayerMotion {
+                velocity: [velocity[0], velocity[1], 0.0],
+                look: 0.5,
+                pose: Pose::Swim,
+                arm_action: arms[now],
+                ..PlayerMotion::default()
+            };
+            anim.update(shape, &mut instance, &motion, dt);
+            let _ = instance.animate(shape, detail, None, &mut |_| true);
+            let mut rgb = vec![0u8; (w * VIEW.1 * 3) as usize];
+            let place = (at, Some(SWIM_WATER));
+            draw_views(
+                gpu,
+                views,
+                assets,
+                figure,
+                &instance,
+                place,
+                k == 0,
+                &mut rgb,
+            )?;
+            pipe.write_all(&rgb)?;
+        }
+        drop(pipe);
+        if !ffmpeg.wait()?.success() {
+            return Err("ffmpeg failed".into());
+        }
+        println!("{}", mp4.display());
+    }
     Ok(())
 }

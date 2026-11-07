@@ -3,7 +3,7 @@
 //! | file | nodes | sequences | material |
 //! |---|---|---|---|
 //! | `cube.dts` | `cube` | | `grid` |
-//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r`, `ankle_l`, `ankle_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2`, `sit`, `ride`, `steering`, `crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward`, `prone_backward`, `prone_hold`, `prone_aim`, `flinch_front`, `flinch_back`, `flinch_left`, `flinch_right`, `flinch_head_front`, `flinch_head_back`, `flinch_head_left`, `flinch_head_right` | `figure` |
+//! | `figure.dts` | `root`, `torso`, `head`, `eye`, `cam`, `arm_l`, `elbow_l`, `arm_r`, `elbow_r`, `mount0`, `leg_l`, `knee_l`, `leg_r`, `knee_r`, `ankle_l`, `ankle_r` | `root`, `idle`, `walk`, `run`, `back`, `side`, `jump`, `hold`, `look`, `aim`, `head`, `light_recoil`, `death1`, `death2`, `sit`, `ride`, `steering`, `crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward`, `prone_backward`, `prone_hold`, `prone_aim`, `flinch_front`, `flinch_back`, `flinch_left`, `flinch_right`, `flinch_head_front`, `flinch_head_back`, `flinch_head_left`, `flinch_head_right`, `point`, `prone_point`, `swim_root`, `swim_forward`, `swim_backward`, `swim_side`, `swim_point`, `swim_hold`, `swim_aim`, `swim_forward_point`, `swim_forward_hold`, `swim_forward_aim` | `figure` |
 //! | `pistol.dts` | `pistol`, `mountPoint`, `muzzlePoint`, `ejectPoint`, `slide` | `fire` | `pistol` |
 //! | `projectile.dts` | `projectile` | | `projectile` |
 //!
@@ -60,6 +60,8 @@
 //! - Crouched and prone (`crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward`,
 //!   `prone_backward`, `prone_hold`, `prone_aim`), the hit reactions (`flinch_front` and the rest) and pointing (`point`,
 //!   `prone_point`: the right arm straight along the aim): [`crate::poses`].
+//! - Swimming (`swim_root` treading water, the breaststroke `swim_forward`, `swim_backward`, `swim_side`, and the arm actions
+//!   over them, `swim_point`, `swim_hold`, `swim_aim` and their `swim_forward_` versions): [`crate::swim`].
 //!
 //! **The pistol** is a large semi-automatic, 26 cm long: a long squared top (the slide, the whole length from the hammer to
 //! the muzzle, with the front and rear sights on it, over a fixed barrel whose end shows as it runs back), an exposed hammer, a trigger in its guard and a grip raked back. It points
@@ -809,6 +811,7 @@ pub fn figure() -> Model {
     crate::poses::ways(&mut b, &body);
     crate::poses::flinches(&mut b, &body);
     crate::poses::point(&mut b, &body);
+    crate::swim::swim(&mut b, &body);
     b.build()
 }
 

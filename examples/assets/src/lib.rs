@@ -1,6 +1,6 @@
 //! The example games' shared asset kit: a unit cube, a box figure with idle, walk, run, back, side, jump, look, death, sit,
-//! crouched, prone and hit-reaction sequences, a pistol, a projectile, a dune buggy and its wheel, a terrain of hills with a race track, the arena's
-//! interior, forests of low-poly trees, their textures and a particle's, all made by this crate's code ([`shapes`], [`poses`], [`buggy`],
+//! crouched, prone, swimming and hit-reaction sequences, a pistol, a projectile, a dune buggy and its wheel, a terrain of hills with a race track, the arena's
+//! interior, forests of low-poly trees, their textures and a particle's, all made by this crate's code ([`shapes`], [`poses`], [`swim`], [`buggy`],
 //! [`terrain`], [`track`], [`interiors`], [`trees`], [`textures`]; the shape
 //! builder is the `torque-shape-builder` crate, [`builder`], the interior builder `torque-interior-builder`) and written as
 //! `.dts` (version 24, through `torque_shapes::write`), `.ter`, `.dif` (version 0, through `torque_maps::dif::write`) and
@@ -21,6 +21,7 @@ pub mod gait;
 pub mod interiors;
 pub mod poses;
 pub mod shapes;
+pub mod swim;
 pub mod terrain;
 pub mod textures;
 pub mod track;
