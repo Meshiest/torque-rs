@@ -150,13 +150,39 @@ fn the_grid_answers_as_a_walk_of_every_cell() {
         let seen = |lo: [f32; 3], _hi: [f32; 3]| lo[0] <= cut;
         let mut want: Option<(f32, f32)> = None;
         for (b, _) in boxes.values() {
-            if seen(b[0], b[1]) {
-                let (n, f) = reach2(eye, b[0], b[1]);
-                let (n, f) = (n.sqrt(), f.sqrt());
-                want = Some(want.map_or((n, f), |(a, c)| (a.min(n), c.max(f))));
-            }
+            let (n, f) = reach2(eye, b[0], b[1]);
+            let (n, f) = (n.sqrt(), f.sqrt());
+            want = Some(want.map_or((n, f), |(a, c)| (a.min(n), c.max(f))));
         }
-        assert_eq!(grid.seen_reach(eye, &seen), want);
+        // Asked for exactly: the extremes over every cell.
+        assert_eq!(grid.reach(eye, None, (0.0, f32::INFINITY)).0, want);
+        // Seeded and bounded: a nearest under the bound stays under it, a farthest past it stays past it, else exact.
+        let (wn, wf) = want.expect("cells");
+        for (seed, bounds) in [
+            (Some((5.0, 60.0)), (16.0, 160.0)),
+            (Some((50.0, 2000.0)), (16.0, 160.0)),
+            (None, (16.0, 300.0)),
+            (Some((0.5, 10.0)), (0.0, f32::INFINITY)),
+        ] {
+            let (sn, sf) = seed.unwrap_or((f32::INFINITY, 0.0));
+            let (n, f) = (wn.min(sn), wf.max(sf));
+            let (got, _) = grid.reach(eye, seed, bounds);
+            let (gn, gf) = got.expect("a reach");
+            assert!(
+                gn >= n - 1e-3 && gf <= f + 1e-3,
+                "within the cells and seed"
+            );
+            assert!(if n < bounds.0 {
+                gn < bounds.0
+            } else {
+                (gn - n).abs() < 1e-3
+            });
+            assert!(if f > bounds.1 {
+                gf > bounds.1
+            } else {
+                (gf - f).abs() < 1e-3
+            });
+        }
         let refl = boxes.values().any(|(b, r)| *r && seen(b[0], b[1]));
         assert_eq!(grid.reflective_seen(&seen), refl);
         for reach in [0.0, 30.0, 200.0] {
@@ -205,4 +231,34 @@ fn a_frustum_keeps_what_it_sees_and_drops_what_lies_behind_a_plane() {
         !c.seen([1.0, 1.0, -50.0], [2.0, 2.0, -40.0]),
         "beyond the far side"
     );
+}
+
+#[test]
+fn a_ground_under_the_eye_leaves_the_cells_walk_nothing_to_look_at() {
+    // A valley's trees: a cell every 24 units over 1.5 km, the eye amid them.
+    let mut grid = CellGrid::default();
+    for x in -32..32 {
+        for y in -32..32 {
+            let o = [x as f32 * 24.0, y as f32 * 24.0];
+            grid.insert(
+                [x, y, 0],
+                [[o[0], o[1], 0.0], [o[0] + 4.0, o[1] + 4.0, 12.0]],
+                false,
+            );
+        }
+    }
+    let eye = [10.0, 10.0, 3.0];
+    let (exact, every) = grid.reach(eye, None, (0.0, f32::INFINITY));
+    // Unseeded, only the unions that cannot lower or raise the extremes found so far are passed over: about half.
+    assert!(every * 3 >= grid.blocks(), "{every} of {}", grid.blocks());
+    // The ground under the eye (2 units down) and past the cap (160): the cells cannot change the range.
+    let ground = Some((2.0, 1100.0));
+    let (seeded, visited) = grid.reach(eye, ground, (16.0, 160.0));
+    assert_eq!(visited, 0, "{every} blocks before");
+    assert_eq!(seeded, ground);
+    // The ground but a short way off (a small floor): only the blocks that could reach past it or come nearer.
+    let (r, visited) = grid.reach(eye, Some((2.0, 40.0)), (16.0, 160.0));
+    assert!(visited > 0 && visited < every / 4, "{visited} of {every}");
+    let (r, e) = (r.expect("a reach"), exact.expect("a reach"));
+    assert!(r.0 <= 2.0 && r.1 > 160.0 && e.1 > 160.0, "{r:?} {e:?}");
 }

@@ -33,8 +33,9 @@ fn particle_sun_shadow(c: vec3<f32>) -> f32 {
     if count == 0u {
         return 1.0;
     }
-    let view_depth = -(frame.view * vec4<f32>(c, 1.0)).z;
-    if view_depth >= shadows.sun.y {
+    // How far the shadows reach is a distance from the eye (a view depth's end would be a plane that moves as the camera turns).
+    let reach = distance(c, frame.eye.xyz);
+    if reach >= shadows.sun.y {
         return 1.0;
     }
     for (var i = 0u; i < count; i = i + 1u) {
@@ -43,7 +44,7 @@ fn particle_sun_shadow(c: vec3<f32>) -> f32 {
         let m = prm.x * 2.0;
         if all(q.xy > vec2<f32>(m)) && all(q.xy < vec2<f32>(1.0 - m)) && q.z < 1.0 {
             let lit = csm_tap(i, q.xy, q.z - 2e-4 / prm.z, vec2<f32>(0.0));
-            return mix(lit, 1.0, smoothstep(shadows.sun.z, shadows.sun.y, view_depth));
+            return mix(lit, 1.0, smoothstep(shadows.sun.z, shadows.sun.y, reach));
         }
     }
     return 1.0;

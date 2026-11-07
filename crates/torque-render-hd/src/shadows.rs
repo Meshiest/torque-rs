@@ -78,6 +78,8 @@ pub struct ShadowStats {
     pub overlays: usize,
     /// Cell draws into static maps.
     pub cell_draws: usize,
+    /// The cell blocks the sun's range looked into (the rest were passed over as unable to change it).
+    pub reach_blocks: usize,
 }
 
 impl ShadowStats {
@@ -153,6 +155,9 @@ pub(crate) struct ShadowInput<'a> {
     pub caster_reach: f32,
     /// The farthest the cascades reach (the scene's `shadow_distance`).
     pub shadow_distance: f32,
+    /// The boxes of the ground's draws (the scene's planes and water): they receive the sun's shadows, so the range reaches over
+    /// them.
+    pub ground: &'a [[[f32; 3]; 2]],
     /// The share of the ambient occlusion the sun's light takes (the scene's `ao_sun`).
     pub ao_sun: f32,
     /// The timestamp queries for the passes' start and end, when timed.
@@ -584,6 +589,8 @@ pub(crate) struct Shadows {
     /// and that one's (-1 for none).
     pub light_slots: Vec<[f32; 4]>,
     pub stats: ShadowStats,
+    /// The sun's shadow range the last frame used (None before the first).
+    pub range: Option<torque_render_scene::hd::shadow::ShadowRange>,
     /// Bumped when the maps are made again (the frame's bind group must be made again).
     pub maps_generation: u64,
     /// The transmittance maps (coloured shadows), their pipeline and the static cascades' group they read, a white stand-in
@@ -1267,6 +1274,7 @@ impl Shadows {
             light_slots: Vec::new(),
             seen_last: Vec::new(),
             stats: ShadowStats::default(),
+            range: None,
             maps_generation: 0,
         }
     }
@@ -1414,24 +1422,32 @@ impl Shadows {
         let sun_on = input.switches.sun
             && input.sun.towards[2] > -0.2
             && input.sun.diffuse.iter().any(|c| *c > 0.0);
-        // The nearest and farthest of what the camera sees: the cells' from their blocks, then the shapes'.
+        // The nearest and farthest of the geometry about the eye in every direction (not only what the camera sees: the shadows reach
+        // as far whichever way it turns): the cells' from their blocks, the shapes', and the ground's (the terrain and the water
+        // receive the shadows but are not cells). The shapes' and the ground's first: the cells' walk then looks only at the blocks
+        // that could still change the range (with a ground under the eye, almost none).
         let cam = input.camera;
-        let seen = |a: [f32; 3], b: [f32; 3]| cam.sees_box(a, b);
-        let cells_reach = input.grid.seen_reach(cam.eye, &seen);
-        let objects_reach = torque_render_scene::hd::shadow::seen_reach(
-            cam,
-            input.objects.iter().map(|o| {
-                let (c, r) = (o.centre, o.radius);
-                [
-                    [c[0] - r, c[1] - r, c[2] - r],
-                    [c[0] + r, c[1] + r, c[2] + r],
-                ]
-            }),
+        let others_reach = torque_render_scene::hd::shadow::reach_around(
+            cam.eye,
+            input
+                .objects
+                .iter()
+                .map(|o| {
+                    let (c, r) = (o.centre, o.radius);
+                    [
+                        [c[0] - r, c[1] - r, c[2] - r],
+                        [c[0] + r, c[1] + r, c[2] + r],
+                    ]
+                })
+                .chain(input.ground.iter().copied()),
         );
-        let reach = match (cells_reach, objects_reach) {
-            (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.max(b.1))),
-            (a, b) => a.or(b),
-        };
+        let bounds = torque_render_scene::hd::shadow::reach_bounds(
+            cam,
+            others_reach.map_or(f32::INFINITY, |r| r.0),
+            input.shadow_distance,
+        );
+        let (reach, visited) = input.grid.reach(cam.eye, others_reach, bounds);
+        stats.reach_blocks = visited;
         let range = shadow_range_within(cam, reach, input.shadow_distance);
         let layers = self.maps.quality.cascades.clamp(1, MAX_CASCADES);
         let mut no_self = 0usize;
@@ -1442,6 +1458,7 @@ impl Shadows {
             Vec::new()
         };
         stats.cascades = cs.len();
+        self.range = Some(range);
         let size = q.cascade_size;
         for (i, c) in cs.iter().enumerate() {
             // The cascade's layer rides in the exclusion's first word (the transmittance pass's depth test reads it).

@@ -231,7 +231,8 @@ struct Shadows {
     fwd: vec4<f32>,
     // x: cascades (0: no sun shadows), y: PCF taps, z: PCSS blocker-search taps (0: plain PCF), w: the debug view.
     config: vec4<u32>,
-    // x: the tangent of the sun's angular radius, y: the shadow distance, z: where its fade starts, w: a cascade's side in texels.
+    // x: the tangent of the sun's angular radius, y: the shadow distance, z: where its fade starts (both from the eye), w: a
+    // cascade's side in texels.
     sun: vec4<f32>,
     // rgb: what of the sun's direct light a shadow lets through (the Sun's shadow colour); w: 1 when contact shadows are on.
     tint: vec4<f32>,

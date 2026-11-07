@@ -217,7 +217,7 @@ fn cube_faces_put_a_direction_where_the_cube_lookup_finds_it() {
 }
 
 #[test]
-fn the_range_fits_the_boxes_seen_in_powers_of_two() {
+fn the_range_fits_the_boxes_about_the_eye_in_powers_of_two() {
     let cam = camera(0.0);
     // Near boxes: from the near plane to the farthest box's power of two.
     let near = [
@@ -248,11 +248,102 @@ fn the_range_fits_the_boxes_seen_in_powers_of_two() {
 }
 
 #[test]
+fn the_range_and_the_cascades_reach_are_the_same_whichever_way_the_camera_turns() {
+    // Ground about the eye in every direction (a terrain's chunks), a near box behind the camera and a far one ahead.
+    let mut boxes: Vec<[[f32; 3]; 2]> = Vec::new();
+    for x in -4..4 {
+        for y in -4..4 {
+            let (x, y) = (x as f32 * 64.0, y as f32 * 64.0);
+            boxes.push([[x, y, -2.0], [x + 64.0, y + 64.0, 3.0]]);
+        }
+    }
+    boxes.push([[1.0, -9.0, 0.0], [2.0, -8.0, 2.0]]);
+    boxes.push([[20.0, 120.0, 0.0], [24.0, 124.0, 30.0]]);
+    let q = Quality::High.shadows();
+    let mut seen = Vec::new();
+    for (yaw, pitch) in [
+        (0.0, 0.0),
+        (0.4, 0.0),
+        (1.3, 0.2),
+        (2.5, -0.3),
+        (-2.0, 0.6),
+        (3.1, 1.2),
+    ] {
+        let mut eye = look_at([3.0, -4.0, 5.0], [10.0, 20.0, 0.0]);
+        eye.yaw += yaw;
+        eye.pitch += pitch;
+        let cam = HdCamera::new(eye, 90u8, 500.0, 1280, 720);
+        let r = shadow_range(&cam, boxes.iter().copied());
+        let cs = cascades(&cam, [0.3, 0.2, 0.9], &q, &r);
+        let last = cs.last().expect("cascades");
+        seen.push((
+            r,
+            last.far_depth,
+            cs.iter().map(|c| c.texel).collect::<Vec<_>>(),
+        ));
+    }
+    let (first, ..) = &seen[0];
+    assert_eq!((first.start, first.end), (0.1, SHADOW_DISTANCE));
+    assert!(first.fade < first.end, "a fade at the end: {first:?}");
+    for s in &seen {
+        assert_eq!(
+            s, &seen[0],
+            "the same range, reach and texels at every turn"
+        );
+    }
+    // Only boxes out of view (behind the camera): the range still reaches them.
+    let cam = camera(0.0);
+    let behind = [[[2.0, -60.0, 0.0], [4.0, -58.0, 1.0]]];
+    assert!(!cam.sees_box(behind[0][0], behind[0][1]));
+    let r = shadow_range(&cam, behind);
+    assert!(r.start <= 54.0 && r.end >= 57.0, "{r:?}");
+}
+
+#[test]
+fn past_its_bounds_a_reach_changes_nothing() {
+    let cam = camera(0.0);
+    for (nearest, distance) in [
+        (0.5, SHADOW_DISTANCE),
+        (20.0, SHADOW_DISTANCE),
+        (90.0, 900.0),
+        (3.0, f32::NAN),
+    ] {
+        let (near, far) = reach_bounds(&cam, nearest, distance);
+        let range = |lo: f32, hi: f32| shadow_range_within(&cam, Some((lo, hi)), distance);
+        // Any nearest under the first bound and any farthest past the second give one range.
+        for lo in [0.01, near * 0.5, near * 0.99] {
+            for hi in [far * 1.01, far * 3.0, 1e6] {
+                assert_eq!(
+                    range(lo, hi),
+                    range(0.01, 1e6),
+                    "{nearest} {distance}: {lo} {hi}"
+                );
+            }
+        }
+        // A nearer point than the one the bounds were taken for only brings the far bound down.
+        for lo in [nearest * 0.5, nearest] {
+            assert!(reach_bounds(&cam, lo, distance).1 <= far);
+            for hi in [far * 1.01, 1e6] {
+                assert_eq!(
+                    range(lo, hi),
+                    range(lo, far * 1.5),
+                    "{nearest} {distance}: {lo} {hi}"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        reach_bounds(&cam, f32::INFINITY, SHADOW_DISTANCE).1,
+        f32::INFINITY
+    );
+}
+
+#[test]
 fn a_maps_range_reaches_past_the_shadow_distance_to_the_far_plane() {
     let cam = camera(0.0);
     let near = [[[4.0, 0.0, 0.0], [6.0, 2.0, 1.0]]];
     let far = [[[60.0, 150.0, 0.0], [80.0, 170.0, 10.0]]];
-    let reach = seen_reach(&cam, [near[0], far[0]]);
+    let reach = reach_around(cam.eye, [near[0], far[0]]);
     // The farthest box's power of two, nothing faded.
     let r = shadow_range_within(&cam, reach, 900.0);
     assert_eq!((r.start, r.end, r.fade), (cam.near, 256.0, 256.0));

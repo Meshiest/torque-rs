@@ -169,12 +169,16 @@ pub fn practical_splits(near: f32, far: f32, n: usize) -> Vec<f32> {
         .collect()
 }
 
-/// The view depths the cascades span, fitted to the static geometry in view (as sample-distribution shadow maps fit them to the depth
-/// buffer's range, Lauritzen et al. 2011, here from the cells' boxes on the CPU): from the nearest box seen (the camera's near plane
-/// when one is within [`MIN_FITTED_START`] units, else a power of two below 0.8 of its distance) to the farthest (a power of two
-/// above), at most [`SHADOW_DISTANCE`] or four times the start, and the far plane; where it was cut short of the farthest box the
-/// shadows fade out over its last [`SHADOW_FADE`]. Powers of two keep the range, so the cascades and their cached maps, the same
-/// while the camera moves about.
+/// The view depths the cascades span, fitted to the geometry about the eye (as sample-distribution shadow maps fit them to the depth
+/// buffer's range, Lauritzen et al. 2011, here from boxes on the CPU): from the nearest box (the camera's near plane when one is
+/// within [`MIN_FITTED_START`] units, else a power of two below 0.8 of its distance) to the farthest (a power of two above), at most
+/// [`SHADOW_DISTANCE`] or four times the start, and the far plane; where it was cut short of the farthest box the shadows fade out
+/// over its last [`SHADOW_FADE`]. Powers of two keep the range, so the cascades and their cached maps, the same while the camera
+/// moves about. The boxes are taken in every direction, not only those in view ([`reach_around`]): the range, and so how far the
+/// shadows reach from the eye, is the same whichever way the camera turns (fitted to the boxes in view, a turn that brought a near
+/// box into view or took a far one out of it moved the end, and a view of the ground alone lost its near shadows). The shaders
+/// measure `end` and `fade` as distances from the eye, not view depths, for the same reason: a view depth's end is a plane square
+/// to the view that crossed sloped ground in a straight line, farther out toward the frame's sides, moving as the camera turned.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShadowRange {
     pub start: f32,
@@ -187,20 +191,17 @@ pub fn shadow_range(
     camera: &HdCamera,
     boxes: impl IntoIterator<Item = [[f32; 3]; 2]>,
 ) -> ShadowRange {
-    shadow_range_of(camera, seen_reach(camera, boxes))
+    shadow_range_of(camera, reach_around(camera.eye, boxes))
 }
 
-/// The nearest point and the farthest corner (units from the eye) of the boxes the camera sees, or None when it sees none.
-pub fn seen_reach(
-    camera: &HdCamera,
+/// The nearest point and the farthest corner (units from `eye`) of the boxes in every direction, or None when there are none.
+pub fn reach_around(
+    eye: [f32; 3],
     boxes: impl IntoIterator<Item = [[f32; 3]; 2]>,
 ) -> Option<(f32, f32)> {
-    let e = camera.eye;
     let (mut lo, mut hi) = (f32::INFINITY, 0.0f32);
+    let e = eye;
     for [a, b] in boxes {
-        if !camera.sees_box(a, b) {
-            continue;
-        }
         let mut near2 = 0.0;
         let mut far2 = 0.0;
         for k in 0..3 {
@@ -215,7 +216,7 @@ pub fn seen_reach(
     lo.is_finite().then_some((lo, hi))
 }
 
-/// [`shadow_range`] from the seen boxes' nearest point and farthest corner ([`seen_reach`]).
+/// [`shadow_range`] from the boxes' nearest point and farthest corner ([`reach_around`]).
 pub fn shadow_range_of(camera: &HdCamera, reach: Option<(f32, f32)>) -> ShadowRange {
     shadow_range_within(camera, reach, SHADOW_DISTANCE)
 }
@@ -226,11 +227,7 @@ pub fn shadow_range_within(
     reach: Option<(f32, f32)>,
     distance: f32,
 ) -> ShadowRange {
-    let distance = if distance.is_finite() {
-        distance.max(1.0)
-    } else {
-        SHADOW_DISTANCE
-    };
+    let distance = shadow_distance(distance);
     let (lo, hi) = reach.unwrap_or((f32::INFINITY, 0.0));
     let cap = distance.min(camera.far);
     if !lo.is_finite() {
@@ -240,11 +237,7 @@ pub fn shadow_range_within(
             fade: cap * SHADOW_FADE,
         };
     }
-    let start = if lo < MIN_FITTED_START {
-        camera.near
-    } else {
-        2f32.powi((0.8 * lo).log2().floor() as i32)
-    };
+    let start = fitted_start(camera, lo);
     let end = 2f32
         .powi(hi.max(1.0).log2().ceil() as i32)
         .max(MIN_FITTED_START)
@@ -256,6 +249,38 @@ pub fn shadow_range_within(
         end,
         fade: if hi > end { end * SHADOW_FADE } else { end },
     }
+}
+
+/// A scene's shadow distance as the range takes it (at least a unit; [`SHADOW_DISTANCE`] when it is not a number).
+fn shadow_distance(distance: f32) -> f32 {
+    if distance.is_finite() {
+        distance.max(1.0)
+    } else {
+        SHADOW_DISTANCE
+    }
+}
+
+/// Where a range fitted to geometry whose nearest point is `lo` units away starts.
+fn fitted_start(camera: &HdCamera, lo: f32) -> f32 {
+    if lo < MIN_FITTED_START {
+        camera.near
+    } else {
+        2f32.powi((0.8 * lo).log2().floor() as i32)
+    }
+}
+
+/// How far a search for the reach ([`shadow_range_within`]'s) need look, given a nearest point `nearest` units away already found:
+/// any nearest point nearer than the first value gives the same range as one at it, any farthest corner past the second the same
+/// as one at it (the range is cut there, with its fade). Finding a nearer point only brings the second value down.
+pub fn reach_bounds(camera: &HdCamera, nearest: f32, distance: f32) -> (f32, f32) {
+    if !nearest.is_finite() {
+        return (MIN_FITTED_START, f32::INFINITY);
+    }
+    let start = fitted_start(camera, nearest);
+    (
+        MIN_FITTED_START,
+        shadow_distance(distance).max(4.0 * start).min(camera.far),
+    )
 }
 
 /// The nearest a fitted range starts away from the camera's near plane (units).

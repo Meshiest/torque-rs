@@ -1041,6 +1041,10 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     /// The boxes of the cells changed since the last frame (old and new), or every cached shadow to be drawn again.
     shadow_dirty: Vec<[[f32; 3]; 2]>,
     shadow_reset: bool,
+    /// The ground's draws' boxes (the scene's planes and water: the shadow range reaches over them), and the draws they were
+    /// taken from (each one's vertex list by address and length, and the planes' generation): taken again only when those change.
+    ground_boxes: Vec<[[f32; 3]; 2]>,
+    ground_key: Vec<[usize; 3]>,
     /// The boxes the last frame's shadow caches were patched in (the reports').
     pub shadow_patched: usize,
     /// The last upload's steps' times (ms), and every upload's since [`HdWorld::take_upload_steps`] summed by step (a frame may
@@ -2425,6 +2429,8 @@ impl<E: HdExtension> HdWorld<E> {
             light_cones: Vec::new(),
             shadow_dirty: Vec::new(),
             shadow_reset: true,
+            ground_boxes: Vec::new(),
+            ground_key: Vec::new(),
             shadow_resets: 0,
             upload_times: Vec::new(),
             upload_steps: Vec::new(),
@@ -2448,6 +2454,11 @@ impl<E: HdExtension> HdWorld<E> {
     /// What the last frame's shadow passes did.
     pub fn shadow_stats(&self) -> ShadowStats {
         self.shadows.stats
+    }
+
+    /// The sun's shadow range the last frame's cascades covered (None before the first frame).
+    pub fn shadow_range(&self) -> Option<torque_render_scene::hd::shadow::ShadowRange> {
+        self.shadows.range
     }
 
     /// The shadow maps' GPU memory (bytes).
@@ -5676,6 +5687,34 @@ impl<E: HdExtension> HdWorld<E> {
                 }
             };
         }
+        // The ground's boxes for the shadows' range (a terrain is hundreds of thousands of vertices: taken again only when it changes).
+        let ground = scene.planes.iter().chain(&scene.water);
+        let key: Vec<[usize; 3]> = ground
+            .clone()
+            .map(|d| {
+                [
+                    d.vertices.as_ptr() as usize,
+                    d.vertices.len(),
+                    scene.planes_generation as usize,
+                ]
+            })
+            .collect();
+        if key != self.ground_key {
+            self.ground_boxes = ground
+                .filter_map(|d| {
+                    let mut it = d.vertices.iter().map(|v| v.position);
+                    let first = it.next()?;
+                    Some(it.fold([first, first], |[lo, hi], p| {
+                        [
+                            [0, 1, 2].map(|k| lo[k].min(p[k])),
+                            [0, 1, 2].map(|k| hi[k].max(p[k])),
+                        ]
+                    }))
+                })
+                .filter(|b| b.iter().flatten().all(|v| v.is_finite()))
+                .collect();
+            self.ground_key = key;
+        }
         // The shadow maps: every shape's opaque draws cast (a Player is a translucent object for its draw order, its body opaque).
         let objects: Vec<ObjectCaster> = self
             .loose
@@ -5743,6 +5782,7 @@ impl<E: HdExtension> HdWorld<E> {
                 }),
             caster_reach: E::caster_reach(quality),
             shadow_distance: scene.shadow_distance,
+            ground: &self.ground_boxes,
             ao_sun: scene.ao_sun,
             stamps: self
                 .timer

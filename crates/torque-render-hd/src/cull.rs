@@ -1314,7 +1314,7 @@ fn reach2(e: [f32; 3], a: [f32; 3], b: [f32; 3]) -> (f32, f32) {
 }
 
 /// The cells grouped in blocks of [`BLOCK`] cells a side with the blocks' union boxes, so the questions a frame asks of every cell
-/// (the nearest and farthest seen, a reflective one in sight, those near the eye) look only at the blocks that can change the
+/// (the nearest and farthest from the eye, a reflective one in sight, those near the eye) look only at the blocks that can change the
 /// answer and the cells inside them. The answers are those a walk of every cell gives.
 #[derive(Debug, Clone, Default)]
 pub struct CellGrid {
@@ -1358,15 +1358,20 @@ impl CellGrid {
         self.cells
     }
 
-    /// The nearest point and the farthest corner (units) of the seen cells from `eye` (`seen` a box test that holds for a
-    /// box whenever it holds for one inside it), or None when none is seen: the extremes over every cell.
-    pub fn seen_reach(
+    /// The nearest point and the farthest corner (units) from `eye` of the cells in every direction and of `seed` (a reach already
+    /// found, the ground's and the shapes'), or None when there are neither, and the blocks whose cells were looked at. Only as
+    /// exact as `bounds` asks ([`torque_render_scene::hd::shadow::reach_bounds`]): once the nearest is under `bounds.0` it may be any
+    /// point under it, once the farthest is past `bounds.1` any corner past it; a block that can change neither is passed over.
+    pub fn reach(
         &self,
         eye: [f32; 3],
-        seen: &dyn Fn([f32; 3], [f32; 3]) -> bool,
-    ) -> Option<(f32, f32)> {
-        let (mut lo2, mut hi2) = (f32::INFINITY, f32::NEG_INFINITY);
-        // The blocks nearest first: the nearest seen cell is found early, and fewer blocks remain that could lower it.
+        seed: Option<(f32, f32)>,
+        bounds: (f32, f32),
+    ) -> (Option<(f32, f32)>, usize) {
+        let (mut lo2, mut hi2) =
+            seed.map_or((f32::INFINITY, f32::NEG_INFINITY), |(n, f)| (n * n, f * f));
+        let (near2, far2) = (bounds.0 * bounds.0, bounds.1 * bounds.1);
+        // The blocks nearest first: the nearest cell is found early, and fewer blocks remain that could lower it.
         let mut order: Vec<(f32, f32, &Block)> = self
             .blocks
             .values()
@@ -1376,23 +1381,30 @@ impl CellGrid {
             })
             .collect();
         order.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut visited = 0;
         for (n, f, b) in order {
+            let near_done = lo2 < near2;
+            let far_done = hi2 > far2;
+            if near_done && far_done {
+                break;
+            }
             // No cell inside can come nearer than the union, nor reach farther.
-            if n >= lo2 && f <= hi2 {
+            if (near_done || n >= lo2) && (far_done || f <= hi2) {
                 continue;
             }
-            if !seen(b.union[0], b.union[1]) {
-                continue;
-            }
+            visited += 1;
             for (bb, _) in b.cells.values() {
-                if seen(bb[0], bb[1]) {
-                    let (cn, cf) = reach2(eye, bb[0], bb[1]);
-                    lo2 = lo2.min(cn);
-                    hi2 = hi2.max(cf);
-                }
+                let (cn, cf) = reach2(eye, bb[0], bb[1]);
+                lo2 = lo2.min(cn);
+                hi2 = hi2.max(cf);
             }
         }
-        lo2.is_finite().then(|| (lo2.sqrt(), hi2.sqrt()))
+        (lo2.is_finite().then(|| (lo2.sqrt(), hi2.sqrt())), visited)
+    }
+
+    /// The blocks the cells are grouped in.
+    pub fn blocks(&self) -> usize {
+        self.blocks.len()
     }
 
     /// Whether a reflective cell is seen.

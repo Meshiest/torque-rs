@@ -441,8 +441,9 @@ fn sun_shadow(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>) -> f32 {
     if count == 0u {
         return 1.0;
     }
-    let view_depth = -(frame.view * vec4<f32>(p, 1.0)).z;
-    if view_depth >= shadows.sun.y {
+    // How far the shadows reach is a distance from the eye (a view depth's end would be a plane that moves as the camera turns).
+    let reach = distance(p, frame.eye.xyz);
+    if reach >= shadows.sun.y {
         return 1.0;
     }
     var layer = count;
@@ -499,7 +500,7 @@ fn sun_shadow(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>) -> f32 {
         lit = lit + csm_tap(map, uvz.xy + o, z + dot(grad, o), grad);
     }
     lit = lit / f32(taps);
-    return mix(lit, 1.0, smoothstep(shadows.sun.z, shadows.sun.y, view_depth));
+    return mix(lit, 1.0, smoothstep(shadows.sun.z, shadows.sun.y, reach));
 }
 
 // A cube slot's face side in texels (its tier's).
