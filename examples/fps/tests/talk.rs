@@ -217,7 +217,7 @@ fn the_chat_frees_the_mouse_and_typing_moves_nothing() {
 }
 
 #[test]
-fn the_view_names_the_other_player_not_its_own_and_none_through_a_wall() {
+fn the_view_names_the_other_player_not_its_own_and_none_through_a_wall_from_the_drawn_camera() {
     let (mut a, mut b) = two("Bob", None);
     let place = |a: &mut ArenaGame, name: &str, at: [f32; 3], yaw: f32| {
         let [x, y, z] = at.map(|v| v.to_string());
@@ -238,6 +238,23 @@ fn the_view_names_the_other_player_not_its_own_and_none_through_a_wall() {
     place(&mut a, "Bob", [0.0, -5.5, 0.1], std::f32::consts::PI);
     step_both(&mut a, &mut b, 1000);
     assert_eq!(names(&a), [("Bob".to_string(), true)], "behind the wall");
+    // A camera of the game's own high above Ann (as one behind her would be): the names are tested from it, as they are
+    // drawn from it, and Bob's shows over the cover.
+    let above = torque_render_scene::source::Eye {
+        position: [0.0, -16.0, 10.0],
+        pitch: 0.63,
+        yaw: 0.0,
+        fov: None,
+    };
+    a.host.client.borrow_mut().names_eye = Some(above);
+    step_both(&mut a, &mut b, 100);
+    assert_eq!(names(&a), [("Bob".to_string(), false)], "seen from above");
+    let camera = a.host.gui.0.borrow().hud.camera.unwrap();
+    assert_eq!(camera.position, above.position);
+    // Back at her eyes: hidden again.
+    a.host.client.borrow_mut().names_eye = None;
+    step_both(&mut a, &mut b, 100);
+    assert_eq!(names(&a), [("Bob".to_string(), true)]);
 }
 
 /// Ann hosts on the floor; Bob and Mallory join from the same address (this computer).

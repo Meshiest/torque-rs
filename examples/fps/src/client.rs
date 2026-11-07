@@ -667,7 +667,7 @@ impl ArenaGame {
         let eye = self.drawn_eye();
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
-        torque_example_common::names_camera(&host.gui, &eye);
+        torque_example_common::names_camera(host, &eye);
         let mut draws = host.draw_frame();
         if let Some(world) = draws.worlds.first() {
             let marks = self.marks.batches(world.rect, eye.position, eye.yaw);

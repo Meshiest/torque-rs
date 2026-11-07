@@ -106,9 +106,11 @@ pub fn figure_poses() -> torque::game::sim::player::poses::PoseData {
 /// Places the names over the other players (the view's GuiShapeNameHud, [`torque::gui::hud`]) from `eye`, the eye the example
 /// draws the world from: its own camera (behind the figure or the buggy, easing between places) rather than the connection's
 /// eye, so each name stands over its figure in every camera. The field of view stays the connection's unless `eye` carries one.
-/// Call it each frame before the canvas is drawn.
-pub fn names_camera(gui: &torque::gui::Gui, eye: &torque_render_scene::source::Eye) {
-    let mut state = gui.0.borrow_mut();
+/// The names' tests against walls and behind the camera start from it too, from the next tick on (the client's
+/// `names_eye`). Call it each frame before the canvas is drawn.
+pub fn names_camera(host: &torque::app::Host, eye: &torque_render_scene::source::Eye) {
+    host.client.borrow_mut().names_eye = Some(*eye);
+    let mut state = host.gui.0.borrow_mut();
     let Some(camera) = state.hud.camera.as_mut() else {
         return;
     };

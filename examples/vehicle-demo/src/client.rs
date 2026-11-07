@@ -998,7 +998,7 @@ impl VehicleDemo {
         // names over the others are placed from it.
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
-        torque_example_common::names_camera(&host.gui, &eye);
+        torque_example_common::names_camera(host, &eye);
         (host.draw_frame(), eye)
     }
 }

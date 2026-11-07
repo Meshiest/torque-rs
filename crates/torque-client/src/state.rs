@@ -69,6 +69,9 @@ pub struct ClientState<G: ConnGame> {
     pub datablocks_refused: u64,
     /// The named-shape list ([`crate::hud::NameList`]).
     pub names: crate::hud::NameList,
+    /// The camera the names are placed and tested from when the game draws the world from its own camera (none: the
+    /// connection's eye, [`crate::hud::feed`]).
+    pub names_eye: Option<ghost_world::world::Eye>,
     /// `setScreenMode`'s current mode and the request the windowed client takes ([`screen`]).
     pub screen: screen::ScreenState,
     /// The zoom ([`crate::zoom`]): `setFov`'s target and the camera's fov.
