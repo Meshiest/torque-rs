@@ -1,5 +1,5 @@
-//! Poses, after Torque3D's Player (TGE's has none): standing, sprinting, crouched and prone, each with its own collision box
-//! and speeds.
+//! Poses, after Torque3D's Player (TGE's has none): standing, sprinting, crouched, prone and swimming, each with its own
+//! collision box and speeds.
 //!
 //! - **The pose** ([`Pose`]) is picked each `updateMove` from the move's pose triggers ([`PoseTriggers`]: crouch 3, prone 4 and
 //!   sprint 5 by default, Torque3D's `$player::crouchTrigger`, `$player::proneTrigger` and `$player::sprintTrigger`), in
@@ -31,11 +31,18 @@
 //! - **The hold**: a pose with another box is kept at least [`POSE_HOLD_TICKS`], so a Player cannot flip its box every tick.
 //! - **Who may**: a Player in its move state, enabled and not mounted; crouching and lying down also on the ground (not
 //!   falling). A mounted Player stands.
+//! - **Swimming** ([`swims`]): a datablock that allows it (`swimBoundingBox`) swims where the water over its feet is deeper
+//!   than [`SWIM_DEPTH_SHARE`] of its swim box's height (Torque3D's `canSwim`), whatever its triggers ask: swimming overrides
+//!   prone, crouching and sprinting, and a swimmer does not jump. It keeps swimming until its feet rise [`SWIM_HYSTERESIS`]
+//!   past the depth it started at, a band wider than a position's quantization on the wire, so a Player at that depth does not
+//!   flip between standing and swimming. The pose comes from the position and the water's level alone: the server, the
+//!   client's prediction and a client drawing another Player derive it the same way, and no record carries it. Its speeds are
+//!   the datablock's underwater ones and its force `swimForce` ([`super::update_move::swim`]).
 //!
 //! A datablock that allows no pose (the default, [`PoseData::default`]) leaves every step as TGE's.
 //!
-//! Credit: this follows `Player::setPose`, `Player::canCrouch`, `Player::canStand`, `Player::canProne` and `updateMove`'s pose
-//! choice in Torque3D's MIT-licensed `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic,
+//! Credit: this follows `Player::setPose`, `Player::canCrouch`, `Player::canStand`, `Player::canProne`, `Player::canSwim` and
+//! `updateMove`'s pose choice in Torque3D's MIT-licensed `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic,
 //! Inc.), with its datablock fields' names. The code here is this crate's own.
 
 use torque_collide::math::{Box3, F3};
@@ -62,6 +69,11 @@ pub const PRONE_UP_TICKS: u32 = 27;
 pub const POSE_HOLD_TICKS: u32 = 8;
 /// The ticks the body takes to ease between standing and crouching (the 0.3 s blend, a tick more).
 pub const CROUCH_BLEND_TICKS: u32 = 11;
+/// The share of the swim box's height the water must stand over the feet for a Player to swim (Torque3D's `canSwim`).
+pub const SWIM_DEPTH_SHARE: f32 = 0.65;
+/// How far a swimmer's feet rise past the depth it started swimming at before it stops (m): wider than a position's
+/// quantization.
+pub const SWIM_HYSTERESIS: f32 = 0.1;
 
 /// The ticks the body moves for after a change from pose `from` to pose `to`: the blend between standing and crouching, the
 /// way down or up between the crouch and prone (a tick more each), none between standing and sprinting.
@@ -120,7 +132,7 @@ pub fn kneel_ticks(from: Pose) -> u32 {
     }
 }
 
-/// A Player's pose (Torque3D's `Player::Pose`, without swimming).
+/// A Player's pose (Torque3D's `Player::Pose`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum Pose {
     #[default]
@@ -128,11 +140,18 @@ pub enum Pose {
     Sprint,
     Crouch,
     Prone,
+    Swim,
 }
 
 impl Pose {
     /// Every pose, in Torque3D's order.
-    pub const ALL: [Pose; 4] = [Pose::Stand, Pose::Sprint, Pose::Crouch, Pose::Prone];
+    pub const ALL: [Pose; 5] = [
+        Pose::Stand,
+        Pose::Sprint,
+        Pose::Crouch,
+        Pose::Prone,
+        Pose::Swim,
+    ];
 
     /// The pose's name, as Torque3D's `getPose` gives it.
     pub fn name(self) -> &'static str {
@@ -141,6 +160,7 @@ impl Pose {
             Pose::Sprint => "Sprint",
             Pose::Crouch => "Crouch",
             Pose::Prone => "Prone",
+            Pose::Swim => "Swim",
         }
     }
 
@@ -158,6 +178,7 @@ impl Pose {
             Pose::Sprint => Some("sprint"),
             Pose::Crouch => Some("crouch"),
             Pose::Prone => Some("prone"),
+            Pose::Swim => Some("swim"),
         }
     }
 
@@ -166,10 +187,10 @@ impl Pose {
         matches!(self, Pose::Crouch | Pose::Prone)
     }
 
-    /// How low the pose is: standing and sprinting 0, crouched 1, prone 2.
+    /// How low the pose is: standing, sprinting and swimming 0, crouched 1, prone 2.
     pub fn lowness(self) -> i32 {
         match self {
-            Pose::Stand | Pose::Sprint => 0,
+            Pose::Stand | Pose::Sprint | Pose::Swim => 0,
             Pose::Crouch => 1,
             Pose::Prone => 2,
         }
@@ -245,6 +266,12 @@ pub struct PoseData {
     /// `sprintCanJump`.
     pub sprint_can_jump: bool,
     pub triggers: PoseTriggers,
+    /// Whether the datablock allows swimming (a host sets it: the datablock gives `swimBoundingBox`).
+    pub swim: bool,
+    /// `swimBoundingBox` (width, depth, height): the swimmer lies along its depth.
+    pub swim_box: F3,
+    /// `swimForce`: the most the swim accelerates the Player toward its wish, as a force.
+    pub swim_force: f32,
 }
 
 impl Default for PoseData {
@@ -276,6 +303,9 @@ impl Default for PoseData {
             sprint_force: 50.0 * 9.0,
             sprint_can_jump: true,
             triggers: PoseTriggers::default(),
+            swim: false,
+            swim_box: [1.0, 2.3, 1.0],
+            swim_force: 55.0 * 9.0,
         }
     }
 }
@@ -283,7 +313,7 @@ impl Default for PoseData {
 impl PoseData {
     /// Whether the datablock allows any pose besides standing.
     pub fn any(&self) -> bool {
-        self.crouch || self.prone || self.sprint
+        self.crouch || self.prone || self.sprint || self.swim
     }
 
     /// Whether the datablock allows `pose`.
@@ -293,6 +323,7 @@ impl PoseData {
             Pose::Sprint => self.sprint,
             Pose::Crouch => self.crouch,
             Pose::Prone => self.prone,
+            Pose::Swim => self.swim,
         }
     }
 
@@ -302,10 +333,11 @@ impl PoseData {
             Pose::Stand | Pose::Sprint => db.bounding_box,
             Pose::Crouch => self.crouch_box,
             Pose::Prone => self.prone_box,
+            Pose::Swim => self.swim_box,
         }
     }
 
-    /// The pose's speeds (the datablock's own standing).
+    /// The pose's speeds (the datablock's own standing, its underwater ones swimming).
     pub fn speeds(&self, db: &PlayerData, pose: Pose) -> PoseSpeeds {
         match pose {
             Pose::Stand => PoseSpeeds {
@@ -316,11 +348,16 @@ impl PoseData {
             Pose::Sprint => self.sprint_speeds,
             Pose::Crouch => self.crouch_speeds,
             Pose::Prone => self.prone_speeds,
+            Pose::Swim => PoseSpeeds {
+                forward: db.max_underwater_forward_speed,
+                backward: db.max_underwater_backward_speed,
+                side: db.max_underwater_side_speed,
+            },
         }
     }
 
     /// The pose a record's move shows (its server's choice, [`PoseData::show`]): the allowed pose whose trigger is held, prone
-    /// first, else standing.
+    /// first, else standing. Swimming is never shown: it comes from the water ([`swims`]).
     pub fn shown(&self, triggers: &[bool]) -> Pose {
         let held = |t: usize| triggers.get(t).copied().unwrap_or(false);
         let t = &self.triggers;
@@ -335,8 +372,8 @@ impl PoseData {
         }
     }
 
-    /// The move's triggers as a record shows `pose`: each allowed pose's trigger held only for that pose; the other triggers
-    /// (a game's own use of the ones no pose takes) kept.
+    /// The move's triggers as a record shows `pose`: each allowed pose's trigger held only for that pose (none for swimming); the
+    /// other triggers (a game's own use of the ones no pose takes) kept.
     pub fn show(&self, pose: Pose, triggers: &mut [bool]) {
         let t = &self.triggers;
         for (allowed, trigger, this) in [
@@ -357,8 +394,25 @@ impl PoseData {
             Pose::Sprint => self.sprint_force,
             Pose::Crouch => self.crouch_force,
             Pose::Prone => self.prone_force,
+            Pose::Swim => self.swim_force,
         }
     }
+}
+
+/// Torque3D's `canSwim` with its hysteresis (see the module docs): whether a Player of poses `d` whose feet are at height `z`
+/// (its scale's height `scale_z`) swims in water whose surface is at `surface` (none: it is in no water), `swimming` whether it
+/// swims already. The server, the client's prediction and a client drawing another Player all ask this.
+pub fn swims(d: &PoseData, z: f32, scale_z: f32, surface: Option<f32>, swimming: bool) -> bool {
+    let Some(level) = surface.filter(|_| d.swim) else {
+        return false;
+    };
+    let band = if swimming { SWIM_HYSTERESIS } else { 0.0 };
+    z + SWIM_DEPTH_SHARE * d.swim_box[2] * scale_z < level + band
+}
+
+/// The water's surface over a Player, as its last container update found it: none out of the water.
+pub fn surface(s: &PlayerState) -> Option<f32> {
+    (s.water_coverage > 0.0).then_some(s.liquid_height)
 }
 
 /// The object box of a box size: half its width and depth each side, from 0 up its height (`Player::setPose`).
@@ -464,8 +518,9 @@ pub fn has_room(
     Ok(true)
 }
 
-/// `updateMove`'s pose choice (see the module docs): the pose the move asks for when it may be taken, else standing when there
-/// is room, else (from prone) crouched when there is room for that, else the pose kept. A mounted Player stands.
+/// `updateMove`'s pose choice (see the module docs): swimming when the Player may swim; else the pose the move asks for when it
+/// may be taken, else standing when there is room, else (from prone) crouched when there is room for that, else the pose kept.
+/// A mounted Player stands.
 pub fn update_pose(
     p: &mut Player,
     db: &PlayerData,
@@ -482,19 +537,32 @@ pub fn update_pose(
     }
     let asked = d.triggers.asked(&mv.triggers);
     let mut tries = Vec::with_capacity(3);
-    // Torque3D's chain: prone, crouch and sprint each when asked for, then standing.
-    if asked == Pose::Prone {
-        tries.push(Pose::Prone);
-    }
-    if mv.triggers.get(d.triggers.crouch).copied().unwrap_or(false) {
-        tries.push(Pose::Crouch);
-    }
-    if mv.triggers.get(d.triggers.sprint).copied().unwrap_or(false) {
-        tries.push(Pose::Sprint);
-    }
-    tries.push(Pose::Stand);
-    if p.s.pose == Pose::Prone {
-        tries.push(Pose::Crouch);
+    let s = &p.s;
+    let swimming = swims(
+        d,
+        s.position()[2],
+        s.scale[2],
+        surface(s),
+        s.pose == Pose::Swim,
+    );
+    let held = |t: usize| mv.triggers.get(t).copied().unwrap_or(false);
+    // Torque3D's chain: swimming over every other pose; else prone, crouch and sprint each when asked for, then standing.
+    if swimming {
+        tries.push(Pose::Swim);
+    } else {
+        if asked == Pose::Prone {
+            tries.push(Pose::Prone);
+        }
+        if held(d.triggers.crouch) {
+            tries.push(Pose::Crouch);
+        }
+        if held(d.triggers.sprint) {
+            tries.push(Pose::Sprint);
+        }
+        tries.push(Pose::Stand);
+        if s.pose == Pose::Prone {
+            tries.push(Pose::Crouch);
+        }
     }
     p.s.pose_ticks = p.s.pose_ticks.saturating_add(1);
     for pose in tries {
@@ -509,6 +577,11 @@ pub fn update_pose(
                 (Pose::Stand | Pose::Sprint, Pose::Stand | Pose::Sprint)
             );
         if !same_box && s.pose_ticks < POSE_HOLD_TICKS {
+            return Ok(());
+        }
+        // Into the water at once.
+        if pose == Pose::Swim {
+            set_pose(&mut p.s, db, pose);
             return Ok(());
         }
         // Between standing and prone by way of the crouch, kneeling there for its ticks (when it may crouch).

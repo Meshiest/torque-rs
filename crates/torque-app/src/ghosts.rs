@@ -56,6 +56,7 @@ use torque_client::player_anim::{
     PlayerAnimation, PlayerMotion, SCRIPT_SLOTS, ScriptPlay, ServerAction, record_pose,
 };
 use torque_client::predict::ghost_players::GhostPlayers;
+use torque_collide::math::Box3;
 use torque_game::sim::player::poses::{Pose as BodyPose, PoseData, pose_blend};
 use torque_ghost_world::tge::TgeClientSet;
 use torque_ghost_world::threads::ThreadState;
@@ -63,6 +64,7 @@ use torque_ghost_world::world::{ClientWorld, Pose, ProjectileLook};
 use torque_ghosts::{TgeClass, TgeRecord, Value};
 use torque_shapes::instance::FLAG_CYCLIC;
 use torque_shapes::instance::{ShapeInstance, ThreadId, find_sequence};
+use torque_sim::player::pose::swims;
 
 /// The record world the scene draws.
 type World = ClientWorld<TgeClientSet>;
@@ -215,6 +217,10 @@ pub struct GhostOptions {
     /// [`Self::steady_eye`] the view stands at the eye of its pose (its shape's `crouch_root` or `prone_root` held at its
     /// start), eased over the body's own blend between poses.
     pub poses: Option<PoseData>,
+    /// The boxes of the water the Players swim in (each a `WaterBlock`'s, its top the surface): with [`Self::poses`] that allow
+    /// swimming, another Player is drawn swimming where its server's rule has it swim ([`swims`]), from where its record puts
+    /// it (no record carries the pose).
+    pub water: Vec<Box3>,
 }
 
 impl Default for GhostOptions {
@@ -229,6 +235,7 @@ impl Default for GhostOptions {
             eye_sway: false,
             bolt_stops: false,
             poses: None,
+            water: Vec::new(),
         }
     }
 }
@@ -473,6 +480,19 @@ struct PlayerInput {
     recoil: Option<ImageRecoil>,
     /// Its pose: the own one's as the client predicts it, another's as its record shows it.
     pose: BodyPose,
+}
+
+/// Whether another Player of poses `d` whose feet are at `at` swims in `water` (its server's rule, [`swims`]: the water's surface
+/// over it when its feet are under a box's top, inside it), `was` whether it was drawn swimming.
+fn swimming(d: &PoseData, water: &[Box3], at: [f32; 3], was: bool) -> bool {
+    let inside = |b: &&Box3| {
+        (b.min[0]..=b.max[0]).contains(&at[0])
+            && (b.min[1]..=b.max[1]).contains(&at[1])
+            && at[2] >= b.min[2] - d.swim_box[2]
+            && at[2] < b.max[2]
+    };
+    let surface = water.iter().find(inside).map(|b| b.max[2]);
+    swims(d, at[2], 1.0, surface, was)
 }
 
 /// The script threads of ghost `index` as a Player's animation plays them over its own ([`PlayerAnimation::script_threads`]):
@@ -1131,7 +1151,7 @@ impl<S: GhostStyle> GhostScene<S> {
 
     /// The frame's Player inputs: the own one's as the client predicts it, the others' as it runs them.
     fn player_inputs(&mut self, world: &TgeWorld, ghosts: Option<&GhostPlayers>) {
-        self.hooks.inputs.clear();
+        let last = std::mem::take(&mut self.hooks.inputs);
         let control = world
             .control
             .object
@@ -1144,12 +1164,24 @@ impl<S: GhostStyle> GhostScene<S> {
                         .as_ref()
                         .map_or(BodyPose::Stand, |c| c.pose)
                 } else {
-                    self.options
+                    let shown = self
+                        .options
                         .poses
                         .as_ref()
                         .zip(ghost.record.as_ref())
                         .and_then(|(d, r)| record_pose(r, d))
-                        .unwrap_or(BodyPose::Stand)
+                        .unwrap_or(BodyPose::Stand);
+                    let was = last.get(&index).is_some_and(|i| i.pose == BodyPose::Swim);
+                    let feet = match ghost.pose() {
+                        Some(Pose::Euler { position, .. }) => Some(position),
+                        _ => None,
+                    };
+                    match (self.options.poses.as_ref(), feet) {
+                        (Some(d), Some(at)) if swimming(d, &self.options.water, at, was) => {
+                            BodyPose::Swim
+                        }
+                        _ => shown,
+                    }
                 };
                 let motion = if Some(index) == control {
                     let head = match world.control_render {
@@ -1740,6 +1772,35 @@ impl<S: GhostStyle> GhostScene<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another Player is drawn swimming by its server's rule: deep enough in a box of water, held through the band once
+    /// swimming, and never for poses that do not swim or out of every box.
+    #[test]
+    fn another_player_swims_where_its_server_has_it_swim() {
+        let d = PoseData {
+            swim: true,
+            ..PoseData::default()
+        };
+        let lake = [Box3::new([-10.0, -10.0, 0.0], [10.0, 10.0, 30.0])];
+        let start = 30.0 - torque_sim::player::pose::SWIM_DEPTH_SHARE * d.swim_box[2];
+        assert!(swimming(&d, &lake, [0.0, 0.0, start - 0.05], false));
+        assert!(!swimming(&d, &lake, [0.0, 0.0, start + 0.05], false));
+        assert!(swimming(&d, &lake, [0.0, 0.0, start + 0.05], true));
+        assert!(
+            !swimming(&d, &lake, [20.0, 0.0, start - 1.0], true),
+            "out of the box"
+        );
+        assert!(
+            !swimming(&d, &lake, [0.0, 0.0, 31.0], true),
+            "above the water"
+        );
+        assert!(!swimming(
+            &PoseData::default(),
+            &lake,
+            [0.0, 0.0, 10.0],
+            false
+        ));
+    }
 
     #[test]
     fn the_plain_style_draws_a_projectile_on_its_flight() {

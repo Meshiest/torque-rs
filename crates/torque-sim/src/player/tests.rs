@@ -29,6 +29,8 @@ pub(crate) struct TestHost {
     dismounts: u32,
     /// The subclass the host hands the step (none: Torque's Player).
     class: Option<Rc<dyn PlayerClass>>,
+    /// A water zone the container update finds where its box overlaps the query.
+    pub(crate) water: Option<super::host::ZoneView>,
 }
 
 impl TestHost {
@@ -42,6 +44,7 @@ impl TestHost {
             impacts: 0,
             dismounts: 0,
             class: None,
+            water: None,
         }
     }
 
@@ -140,6 +143,14 @@ impl PlayerHost for TestHost {
     }
     fn liquid_statics(&mut self) -> &mut LiquidStatics {
         &mut self.statics
+    }
+    fn zones(&mut self, query: &Box3, out: &mut Vec<super::host::ZoneView>) {
+        out.extend(
+            self.water
+                .iter()
+                .filter(|z| z.world_box.overlaps(query))
+                .cloned(),
+        );
     }
     fn on_impact(&mut self, _s: &mut PlayerState, _hit: Option<ObjectId>, _vec: F3) {
         self.impacts += 1;
@@ -814,7 +825,8 @@ fn the_integration_applies_buoyancy_drag_and_the_falling_threshold() {
     assert!(!s.falling);
 }
 
-/// In water there is no swim stroke: the jump trigger at full coverage adds nothing to the acceleration.
+/// A Player whose datablock does not swim (TGE's) takes no stroke in water: the jump trigger at full coverage adds nothing to
+/// the acceleration.
 #[test]
 fn there_is_no_swim_stroke() {
     let db = data();

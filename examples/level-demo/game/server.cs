@@ -55,6 +55,16 @@ datablock PlayerData(WorldFigureData)
    maxProneBackwardSpeed = 0.9;
    maxProneSideSpeed = 0;
    proneForce = 2400;
+
+   // Swimming (the engine's own pose, after Torque3D's): in water deeper than about two thirds of the swim box's height the
+   // figure swims, its box low and long, at its underwater speeds. A little lighter than the water, it floats with its head
+   // out.
+   density = 0.85;
+   swimBoundingBox = "1 2.3 1";
+   swimForce = 2400;
+   maxUnderwaterForwardSpeed = 3;
+   maxUnderwaterBackwardSpeed = 2;
+   maxUnderwaterSideSpeed = 2;
 };
 
 // A hit's reaction over (common/server.cs).

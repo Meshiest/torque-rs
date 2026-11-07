@@ -29,7 +29,10 @@ use std::rc::Rc;
 
 use ::sim::Move;
 use ::sim::Ticking;
-use ::sim::player::host::{ControlledInfo, EnergyLink, LiquidStatics, SimGlobals, ZoneView};
+use ::sim::player::host::{
+    ControlledInfo, EnergyLink, LiquidStatics, MAX_LIQUID_DENSITY, MAX_LIQUID_VISCOSITY,
+    SimGlobals, ZoneView, liquid_value,
+};
 use ::sim::player::{PlayerHost, PlayerState, Skeleton, eye_transform};
 use collide::math::{Box3, F3, Matrix, Plane, PlaneTransformer, matrix_product, sqrt_f32};
 use collide::{ObjectId, World};
@@ -538,8 +541,8 @@ fn zone_view(vm: &Vm, id: ObjId) -> Option<ZoneView> {
         drag: f(b"extraDrag", 1.0),
         applied_force: f3(b"appliedForce"),
         water: matches!(value_of(vm, id, b"isWater"), Some(Value::Bool(true))),
-        viscosity: f(b"waterViscosity", 40.0),
-        density: f(b"waterDensity", 1.0),
+        viscosity: liquid_value(f(b"waterViscosity", 40.0), MAX_LIQUID_VISCOSITY),
+        density: liquid_value(f(b"waterDensity", 1.0), MAX_LIQUID_DENSITY),
         color,
         liquid_type: match value_of(vm, id, b"waterType") {
             Some(Value::Int(n)) => n as u32,
@@ -664,7 +667,10 @@ impl<'a> PlayerHost for HostImpl<'a> {
         }
         self.read(|vm| {
             for id in ids {
-                if is_class(vm, id.0, "PhysicalZone")
+                // A water block's water, as its host made it ([`ext::MapObject::water`]).
+                if let Some(z) = ext::map_of(vm, id.0).and_then(|m| m.water.as_ref()) {
+                    out.push(ZoneView { id, ..z.clone() });
+                } else if is_class(vm, id.0, "PhysicalZone")
                     && let Some(z) = zone_view(vm, id.0)
                 {
                     out.push(z);

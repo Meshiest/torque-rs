@@ -283,10 +283,16 @@ fn a_record_shows_the_pose_chosen_in_its_triggers() {
         prone: 1,
         sprint: 5,
     };
+    // Swimming is not shown: the clients derive it from the water as the server does ([`swims`]).
     for pose in Pose::ALL {
         let mut triggers = [true; crate::MAX_TRIGGERS];
         d.show(pose, &mut triggers);
-        assert_eq!(d.shown(&triggers), pose);
+        let shown = if pose == Pose::Swim {
+            Pose::Stand
+        } else {
+            pose
+        };
+        assert_eq!(d.shown(&triggers), shown);
         assert!(
             triggers[0] && triggers[2] && triggers[4],
             "the other triggers kept"
@@ -393,5 +399,278 @@ fn a_change_reaches_through_both_boxes_while_the_body_moves_and_holds_before_the
             .windows(2)
             .all(|w| w[1] - w[0] >= POSE_HOLD_TICKS as usize),
         "{changes:?}"
+    );
+}
+
+// ---- swimming
+
+/// The lake's surface in the swimming tests.
+const LEVEL: f32 = 10.0;
+
+/// A lake: water from 20 under the origin up to [`LEVEL`], 200 x 200, of density 1 and viscosity 15.
+fn lake() -> super::super::host::ZoneView {
+    use torque_collide::math::Plane;
+    let (min, max) = ([-100.0, -100.0, -20.0], [100.0, 100.0, LEVEL]);
+    super::super::host::ZoneView {
+        id: ObjectId(50),
+        active: true,
+        world_box: Box3::new(min, max),
+        planes: vec![
+            Plane::new(-1.0, 0.0, 0.0, min[0]),
+            Plane::new(1.0, 0.0, 0.0, -max[0]),
+            Plane::new(0.0, -1.0, 0.0, min[1]),
+            Plane::new(0.0, 1.0, 0.0, -max[1]),
+            Plane::new(0.0, 0.0, -1.0, min[2]),
+            Plane::new(0.0, 0.0, 1.0, -max[2]),
+        ],
+        enabled: true,
+        velocity_mod: 1.0,
+        gravity_mod: 1.0,
+        drag: 0.0,
+        applied_force: [0.0; 3],
+        water: true,
+        viscosity: 15.0,
+        density: 1.0,
+        color: [0.0; 4],
+        liquid_type: 0,
+    }
+}
+
+/// The posed datablock that also swims: swim box 1.25 x 2.3 x 1, swim force 900, underwater speeds 3 / 2 / 2, a density of
+/// 0.85 and a drag of 0.3.
+fn swimmer() -> PlayerData {
+    let mut db = posed();
+    db.poses.swim = true;
+    db.poses.swim_box = [1.25, 2.3, 1.0];
+    db.poses.swim_force = 900.0;
+    db.max_underwater_forward_speed = 3.0;
+    db.max_underwater_backward_speed = 2.0;
+    db.max_underwater_side_speed = 2.0;
+    db.density = 0.85;
+    db.drag = 0.3;
+    db
+}
+
+/// A host with the lake and a bed whose top is `bed` under its surface (none: the lake has no bed near).
+fn lake_host(bed: Option<f32>) -> TestHost {
+    let solids = bed.map_or_else(Vec::new, |d| {
+        vec![Solid {
+            id: ObjectId(100),
+            min: [-20.0, -20.0, LEVEL - d - 1.0],
+            max: [20.0, 20.0, LEVEL - d],
+        }]
+    });
+    let mut h = TestHost::new(solids);
+    h.water = Some(lake());
+    h
+}
+
+#[test]
+fn swimming_comes_before_every_pose_the_triggers_ask_for() {
+    assert_eq!(
+        Pose::ALL,
+        [
+            Pose::Stand,
+            Pose::Sprint,
+            Pose::Crouch,
+            Pose::Prone,
+            Pose::Swim
+        ]
+    );
+    assert_eq!(Pose::from_name(b"swim"), Some(Pose::Swim));
+    assert_eq!(Pose::Swim.action_prefix(), Some("swim"));
+    let db = swimmer();
+    // Deep water: swimming whatever is held (prone, crouch, sprint), with the swim box.
+    for triggers in [&[][..], &[4], &[3], &[5], &[3, 4, 5]] {
+        let mut h = lake_host(None);
+        let mut p = player(&db, [0.0, 0.0, LEVEL - 3.0]);
+        run(&mut p, &db, &mut h, &held(triggers, 0.0), 12);
+        assert_eq!(p.s.pose, Pose::Swim, "{triggers:?} held");
+        assert_eq!(p.s.obj_box.max, [0.625, 1.15, 1.0]);
+    }
+    // In water shallower than the swim depth the triggers have their way; deeper, the Player swims.
+    let mut h = lake_host(Some(0.5));
+    let mut p = player(&db, [0.0, 0.0, LEVEL - 0.5]);
+    run(&mut p, &db, &mut h, &held(&[3], 0.0), 12);
+    assert_eq!(p.s.pose, Pose::Crouch);
+    let mut h = lake_host(Some(0.8));
+    let mut p = player(&db, [0.0, 0.0, LEVEL - 0.8]);
+    run(&mut p, &db, &mut h, &held(&[3], 0.0), 12);
+    assert_eq!(p.s.pose, Pose::Swim);
+    // A datablock that does not swim stands in deep water.
+    let db = posed();
+    let mut h = lake_host(None);
+    let mut p = player(&db, [0.0, 0.0, LEVEL - 3.0]);
+    run(&mut p, &db, &mut h, &Move::default(), 12);
+    assert_eq!(p.s.pose, Pose::Stand);
+}
+
+/// The state of a swimmer at rest whose standing box the water covers by `coverage`, its head pitched by `pitch`.
+fn swimming(db: &PlayerData, pitch: f32, coverage: f32) -> PlayerState {
+    let mut s = *player(db, [0.0; 3]).s;
+    s.pose = Pose::Swim;
+    s.water_coverage = coverage;
+    s.head[0] = pitch;
+    s
+}
+
+#[test]
+fn the_stroke_accelerates_toward_the_wish_by_at_most_the_swim_force() {
+    use super::super::update_move::swim;
+    let db = swimmer();
+    let most = (900.0 / 90.0) * super::super::DT;
+    let mut s = swimming(&db, 0.0, 1.0);
+    // From rest toward (0, 3, 0): the whole step, cut to `swimForce / mass` a tick; the gravity's term left alone.
+    let mut acc = [0.0, 0.0, -0.64];
+    swim(&mut s, &db, &held(&[], 1.0), &mut acc);
+    assert_eq!(acc[0], 0.0);
+    assert!((acc[1] - most).abs() < 1e-6, "{acc:?}");
+    assert_eq!(acc[2], -0.64);
+    // Near the wish: just to it.
+    s.velocity = [0.0, 2.9, 0.0];
+    let mut acc = [0.0; 3];
+    swim(&mut s, &db, &held(&[], 1.0), &mut acc);
+    assert!((acc[1] - 0.1).abs() < 1e-5, "{acc:?}");
+    // No wish: the stroke stops the Player across the water, at most as fast.
+    s.velocity = [1.0, 0.0, 0.0];
+    let mut acc = [0.0; 3];
+    swim(&mut s, &db, &Move::default(), &mut acc);
+    assert!((acc[0] + most).abs() < 1e-6, "{acc:?}");
+    // A Player that does not swim takes no stroke.
+    s.pose = Pose::Stand;
+    let mut acc = [0.0; 3];
+    swim(&mut s, &db, &held(&[], 1.0), &mut acc);
+    assert_eq!(acc, [0.0; 3]);
+}
+
+/// The velocity strokes with `mv` bring a swimmer to from rest (no gravity, no buoyancy): what the stroke steers toward.
+fn steered(db: &PlayerData, pitch: f32, coverage: f32, mv: Move) -> F3 {
+    let mut s = swimming(db, pitch, coverage);
+    for _ in 0..60 {
+        let mut acc = [0.0; 3];
+        super::super::update_move::swim(&mut s, db, &mv, &mut acc);
+        s.velocity = std::array::from_fn(|k| s.velocity[k] + acc[k]);
+    }
+    s.velocity
+}
+
+#[test]
+fn the_head_steers_the_stroke_but_not_up_out_of_the_water() {
+    let db = swimmer();
+    let near = |v: F3, want: F3| (0..3).all(|k| (v[k] - want[k]).abs() < 1e-3);
+    // Under the water the stroke goes where the head looks: down (a positive pitch) or up.
+    let p = 0.5f32;
+    let v = steered(&db, p, 1.0, held(&[], 1.0));
+    assert!(near(v, [0.0, 3.0 * p.cos(), -3.0 * p.sin()]), "{v:?}");
+    let v = steered(&db, -p, 1.0, held(&[], 1.0));
+    assert!(near(v, [0.0, 3.0 * p.cos(), 3.0 * p.sin()]), "{v:?}");
+    // At the surface (the standing box not all under), looking up: level, no climbing out of the water. Looking down still
+    // dives.
+    let v = steered(&db, -p, 0.85, held(&[], 1.0));
+    assert!(near(v, [0.0, 3.0, 0.0]), "{v:?}");
+    let v = steered(&db, p, 0.85, held(&[], 1.0));
+    assert!(v[2] < -1.0, "{v:?}");
+    // The move's z swims up under the water (at the forward speed) and down anywhere; not up at the surface.
+    let up = Move {
+        z: 1.0,
+        ..Move::default()
+    };
+    let down = Move {
+        z: -1.0,
+        ..Move::default()
+    };
+    assert!(near(steered(&db, 0.0, 1.0, up), [0.0, 0.0, 3.0]));
+    assert_eq!(steered(&db, 0.0, 0.85, up), [0.0; 3]);
+    assert!(near(steered(&db, 0.0, 0.85, down), [0.0, 0.0, -3.0]));
+}
+
+#[test]
+fn a_swimmer_does_not_jump() {
+    // On the bed in water 1 m over its feet, swimming: the jump trigger does nothing.
+    let db = swimmer();
+    let mut h = lake_host(Some(1.0));
+    let mut p = player(&db, [0.0, 0.0, LEVEL - 1.0]);
+    run(&mut p, &db, &mut h, &Move::default(), 40);
+    assert_eq!(p.s.pose, Pose::Swim);
+    assert!(!super::super::update_move::can_jump(&p.s, &db));
+    p.s.mask_bits = 0;
+    run(&mut p, &db, &mut h, &held(&[2], 0.0), 1);
+    assert_eq!(p.s.mask_bits & net_mask::JUMP, 0, "it jumped");
+    assert!(p.s.velocity[2] < 1.0, "{:?}", p.s.velocity);
+    // A Player that does not swim jumps from the same bed.
+    let db = posed();
+    let mut h = lake_host(Some(1.0));
+    let mut p = player(&db, [0.0, 0.0, LEVEL - 1.0]);
+    run(&mut p, &db, &mut h, &Move::default(), 40);
+    p.s.mask_bits = 0;
+    run(&mut p, &db, &mut h, &held(&[2], 0.0), 1);
+    assert_ne!(
+        p.s.mask_bits & net_mask::JUMP,
+        0,
+        "the control did not jump"
+    );
+}
+
+#[test]
+fn a_swimmer_keeps_swimming_through_the_hysteresis_band() {
+    let d = swimmer().poses;
+    // Where the feet start swimming: the swim box's share under the surface.
+    let at = LEVEL - SWIM_DEPTH_SHARE * d.swim_box[2];
+    assert!(!swims(&d, at + 0.01, 1.0, Some(LEVEL), false));
+    assert!(swims(&d, at - 0.01, 1.0, Some(LEVEL), false));
+    assert!(swims(
+        &d,
+        at + SWIM_HYSTERESIS - 0.01,
+        1.0,
+        Some(LEVEL),
+        true
+    ));
+    assert!(!swims(
+        &d,
+        at + SWIM_HYSTERESIS + 0.01,
+        1.0,
+        Some(LEVEL),
+        true
+    ));
+    assert!(!swims(&d, at - 1.0, 1.0, None, true), "out of the water");
+    let mut dry = d;
+    dry.swim = false;
+    assert!(!swims(&dry, at - 1.0, 1.0, Some(LEVEL), false));
+    // The band is wider than a position's quantization on the wire (a compressed point's 0.01).
+    const { assert!(SWIM_HYSTERESIS > 0.02) };
+    // In the step: on a bed within the band, a Player that stands keeps standing and one that swims keeps swimming.
+    let db = swimmer();
+    let depth = SWIM_DEPTH_SHARE * d.swim_box[2] - SWIM_HYSTERESIS * 0.5;
+    for start in [Pose::Stand, Pose::Swim] {
+        let mut h = lake_host(Some(depth));
+        let mut p = player(&db, [0.0, 0.0, LEVEL - depth]);
+        set_pose(&mut p.s, &db, start);
+        run(&mut p, &db, &mut h, &Move::default(), 40);
+        assert_eq!(p.s.pose, start);
+    }
+}
+
+#[test]
+fn a_swimmer_floats_steady_its_coverage_over_its_standing_box() {
+    let db = swimmer();
+    let mut h = lake_host(None);
+    let mut p = player(&db, [0.0, 0.0, LEVEL - 2.0]);
+    run(&mut p, &db, &mut h, &Move::default(), 94);
+    assert_eq!(p.s.pose, Pose::Swim);
+    // Put in the water a little higher than it floats: three seconds on it holds within 2 cm where its buoyancy meets its weight: the coverage of its standing box (2.65 tall,
+    // not the swim box's 1) the Player's density.
+    let (mut low, mut high) = (f32::MAX, f32::MIN);
+    for _ in 0..60 {
+        run(&mut p, &db, &mut h, &Move::default(), 1);
+        let z = p.s.position()[2];
+        (low, high) = (low.min(z), high.max(z));
+    }
+    assert!(high - low < 0.02, "bobbing {} m", high - low);
+    let under = (LEVEL - p.s.position()[2]) / db.bounding_box[2];
+    assert!((p.s.water_coverage - under).abs() < 1e-4);
+    assert!(
+        (p.s.water_coverage - 0.85).abs() < 0.02,
+        "{}",
+        p.s.water_coverage
     );
 }

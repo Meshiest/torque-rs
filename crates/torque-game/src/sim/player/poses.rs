@@ -7,7 +7,8 @@
 //!   lying down, and `maxSprintForwardSpeed` sprinting; the speeds (`maxCrouchForwardSpeed`, `maxCrouchBackwardSpeed`,
 //!   `maxCrouchSideSpeed`, the same for prone and sprint), the forces (`crouchForce`, `proneForce`, `sprintForce`) and
 //!   `sprintCanJump`. The triggers are Torque3D's globals `$player::crouchTrigger`, `$player::proneTrigger` and
-//!   `$player::sprintTrigger` (3, 4 and 5 unset).
+//!   `$player::sprintTrigger` (3, 4 and 5 unset). `swimBoundingBox` allows swimming, with `swimForce`: a shape without
+//!   `swim_root` swims with the standing actions.
 //! - **The actions** ([`PoseSets`]): a pose's `<pose>_root`, `<pose>_forward`, `<pose>_backward` and `<pose>_side` (a step to
 //!   the left, played backward for a step to the right), as Torque3D names them (`crouch_root`, `prone_forward`, ...). A pose
 //!   whose shape has no `<pose>_root` plays the standing actions (sprinting, unless the shape has `sprint_root`).
@@ -46,6 +47,8 @@ pub const PRONE_DOWN_SECONDS: f32 =
 pub const PRONE_UP_SECONDS: f32 = ::sim::player::pose::PRONE_UP_TICKS as f32 * ::sim::player::DT;
 /// The seconds a way down or up (`prone_down`, `prone_up`) blends in over from the crouch or prone it starts in.
 pub const WAY_BLEND: f32 = 0.12;
+/// The largest size of a pose's box a datablock may give (each of width, depth and height, m).
+pub const MAX_POSE_BOX: f32 = 100.0;
 /// The smallest match a moving action must beat to be chosen over the root (TGE's 0.1).
 pub const MIN_MATCH: f32 = 0.1;
 
@@ -85,14 +88,23 @@ pub fn pose_data(vm: &Vm, db: ObjId, has: impl Fn(&[u8]) -> bool) -> PoseData {
             *v = x[0];
         }
     };
+    // A pose's box: three finite sizes over 0 and at most `MAX_POSE_BOX` (a datablock is not trusted: an infinite box makes
+    // the room test's query infinite).
+    let sized = |name: &[u8], out: &mut [f32; 3]| {
+        floats(name, out) && out.iter().all(|v| *v > 0.0 && *v <= MAX_POSE_BOX)
+    };
     let mut b = [0.0f32; 3];
-    if floats(b"crouchBoundingBox", &mut b) && has(b"crouch_root") {
+    if sized(b"crouchBoundingBox", &mut b) && has(b"crouch_root") {
         d.crouch = true;
         d.crouch_box = b;
     }
-    if floats(b"proneBoundingBox", &mut b) && has(b"prone_root") {
+    if sized(b"proneBoundingBox", &mut b) && has(b"prone_root") {
         d.prone = true;
         d.prone_box = b;
+    }
+    if sized(b"swimBoundingBox", &mut b) {
+        d.swim = true;
+        d.swim_box = b;
     }
     d.sprint = !text(vm, db, b"maxSprintForwardSpeed").is_empty();
     let speeds = |p: &mut PoseSpeeds, names: [&[u8]; 3]| {
@@ -127,6 +139,8 @@ pub fn pose_data(vm: &Vm, db: ObjId, has: impl Fn(&[u8]) -> bool) -> PoseData {
     float(b"crouchForce", &mut d.crouch_force);
     float(b"proneForce", &mut d.prone_force);
     float(b"sprintForce", &mut d.sprint_force);
+    float(b"swimForce", &mut d.swim_force);
+    d.swim_force = d.swim_force.max(0.0);
     let jump = text(vm, db, b"sprintCanJump");
     if !jump.is_empty() {
         d.sprint_can_jump = ts_vm::fields::atob(&jump);
@@ -173,7 +187,7 @@ impl PoseActions {
 /// Every pose's actions (standing's are the table's, so its set is empty).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PoseSets {
-    sets: [PoseActions; 4],
+    sets: [PoseActions; 5],
 }
 
 fn index(pose: Pose) -> usize {
@@ -182,6 +196,7 @@ fn index(pose: Pose) -> usize {
         Pose::Sprint => 1,
         Pose::Crouch => 2,
         Pose::Prone => 3,
+        Pose::Swim => 4,
     }
 }
 
@@ -196,7 +211,7 @@ impl PoseSets {
             if !has {
                 continue;
             }
-            for pose in [Pose::Sprint, Pose::Crouch, Pose::Prone] {
+            for pose in [Pose::Sprint, Pose::Crouch, Pose::Prone, Pose::Swim] {
                 let Some(prefix) = pose.action_prefix() else {
                     continue;
                 };
@@ -241,7 +256,7 @@ impl PoseSets {
         {
             return Pose::Crouch;
         }
-        [Pose::Sprint, Pose::Crouch, Pose::Prone]
+        [Pose::Sprint, Pose::Crouch, Pose::Prone, Pose::Swim]
             .into_iter()
             .find(|p| self.sets[index(*p)].contains(action))
             .unwrap_or(Pose::Stand)
@@ -353,4 +368,40 @@ pub fn pose_arm<'a>(
             && name[prefix.len()] == b'_'
             && name[prefix.len() + 1..].eq_ignore_ascii_case(arm)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The poses of a PlayerData whose fields are `fields` (script text), its shape having every pose's root.
+    fn poses_of(fields: &str) -> PoseData {
+        let mut vm = Vm::new();
+        crate::specs::install(&mut vm);
+        let text = format!("datablock PlayerData(Posed) {{ {fields} }}; return Posed.getId();");
+        let id = vm.eval(text.as_bytes()).expect("the datablock");
+        let id: ObjId = String::from_utf8(id).unwrap().parse().unwrap();
+        pose_data(&vm, id, |_| true)
+    }
+
+    /// A pose's box must be three finite sizes over 0 and at most [`MAX_POSE_BOX`], or the datablock does not allow the
+    /// pose; the swim force is not negative.
+    #[test]
+    fn a_hostile_datablock_s_boxes_and_swim_force_are_refused() {
+        let good = poses_of(
+            r#"crouchBoundingBox = "1 1 1.6"; proneBoundingBox = "2 2 0.8"; swimBoundingBox = "1 2.3 1"; swimForce = 900;"#,
+        );
+        assert!(good.crouch && good.prone && good.swim);
+        assert_eq!((good.swim_box, good.swim_force), ([1.0, 2.3, 1.0], 900.0));
+        for bad in ["inf 1 1", "1 nan 1", "0 1 1", "1 -2 1", "1 1 1e9", "1 1"] {
+            let d = poses_of(&format!(
+                r#"crouchBoundingBox = "{bad}"; proneBoundingBox = "{bad}"; swimBoundingBox = "{bad}";"#
+            ));
+            assert!(!d.crouch && !d.prone && !d.swim, "{bad}: {d:?}");
+        }
+        let d = poses_of(r#"swimBoundingBox = "1 2.3 1"; swimForce = -500;"#);
+        assert_eq!(d.swim_force, 0.0);
+        let d = poses_of(r#"swimBoundingBox = "1 2.3 1"; swimForce = "inf";"#);
+        assert_eq!(d.swim_force, PoseData::default().swim_force);
+    }
 }

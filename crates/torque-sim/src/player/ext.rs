@@ -171,9 +171,11 @@ pub trait PlayerClass: Debug {
     /// `updateMove` after the jump and before swimming: a thrust of the class's own. None by default.
     fn thrust(&self, _s: &mut PlayerState, _db: &PlayerData, _mv: &Move, _w: &F3, _acc: &mut F3) {}
 
-    /// `updateMove` after the thrust: the acceleration a class adds in water. None by default (the Player in water takes the
-    /// underwater speeds, [`PlayerClass::move_speed`], and the container's drag and buoyancy).
-    fn swim(&self, _s: &mut PlayerState, _db: &PlayerData, _mv: &Move, _w: &mut F3, _acc: &mut F3) {
+    /// `updateMove` after the thrust: the acceleration a class adds in water. By default the swim pose's stroke
+    /// ([`super::update_move::swim`]), nothing for a Player that does not swim (it takes the underwater speeds,
+    /// [`PlayerClass::move_speed`], and the container's drag and buoyancy).
+    fn swim(&self, s: &mut PlayerState, db: &PlayerData, mv: &Move, _w: &mut F3, acc: &mut F3) {
+        super::update_move::swim(s, db, mv, acc);
     }
 
     /// `updateMove`'s integration: the applied force and `acc` into the velocity, the speed limits, buoyancy, drag and the
