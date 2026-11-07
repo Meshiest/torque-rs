@@ -54,7 +54,7 @@ use ghosts::Value;
 use glam::Vec3;
 use net::control::{ControlData, ControlSection, checksum};
 use net::moves::{Move, MoveQueue};
-use sim::player::host::{LiquidStatics, PlayerHost};
+use sim::player::host::{LiquidStatics, PlayerHost, ZoneView};
 use sim::player::{NoSkeleton, Player, PlayerClass, PlayerData, PlayerState, Skeleton};
 use torque_game::scene::container::CandidateOrder;
 use torque_game::sim_classes::PlayerKind;
@@ -2288,6 +2288,12 @@ pub trait StaticIndex<W: PredictWorld>: Any {
     fn type_bits(&self) -> u32 {
         0
     }
+
+    /// The water the client's Player swims in (the map's water blocks, as the server's container finds them for its Players:
+    /// the same boxes, density and viscosity), into `out`; none by default.
+    fn zones(&self, out: &mut Vec<ZoneView>) {
+        let _ = out;
+    }
 }
 
 impl<W: PredictWorld> Clone for Box<dyn StaticIndex<W>> {
@@ -2389,6 +2395,8 @@ pub struct ClientCollision {
     /// The type bits the index answers for ([`StaticIndex::type_bits`]).
     index_bits: u32,
     objects: Vec<(ObjectId, Object)>,
+    /// The static index's water ([`StaticIndex::zones`]).
+    zones: Vec<ZoneView>,
     work: u64,
     budget: u64,
     /// The game's working-list order (none: the container's).
@@ -2504,6 +2512,10 @@ impl ClientCollision {
                 None => (None, None, None, None, None, None, None),
             };
         let index_bits = statics.as_deref().map_or(0, |i| i.type_bits());
+        let mut zones = Vec::new();
+        if let Some(i) = statics.as_deref() {
+            i.zones(&mut zones);
+        }
         let mut datablocks: std::collections::HashMap<u32, Option<PlayerData>> =
             std::collections::HashMap::new();
         // The mover: the vehicle the client drives, or the ghost vehicle whose own tick this is. Its collision is off, and with it
@@ -2635,6 +2647,7 @@ impl ClientCollision {
             statics: set,
             index_bits,
             objects,
+            zones,
             work,
             budget,
             order: game.candidate_order(),
@@ -2672,6 +2685,7 @@ impl ClientCollision {
             statics: None,
             index_bits: 0,
             objects: Vec::new(),
+            zones: Vec::new(),
             work: 0,
             budget: TICK_WORK,
             order: None,
@@ -2927,6 +2941,21 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 
     fn liquid_statics(&mut self) -> &mut LiquidStatics {
         self.statics
+    }
+
+    /// The static index's water whose box overlaps `query`, as the server's container finds it.
+    fn zones(&mut self, query: &Box3, out: &mut Vec<ZoneView>) {
+        let w = &mut *self.world;
+        w.work = w.work.saturating_add(w.zones.len() as u64);
+        if w.work > w.budget {
+            return;
+        }
+        out.extend(
+            w.zones
+                .iter()
+                .filter(|z| z.world_box.overlaps(query))
+                .cloned(),
+        );
     }
 
     fn controlled_info(&mut self, id: ObjectId) -> sim::player::host::ControlledInfo {

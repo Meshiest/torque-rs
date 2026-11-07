@@ -355,6 +355,7 @@ impl EngineClass for TerrainClass {
             e.map = Some(ext::MapObject {
                 view,
                 shape: Some(terrain.shape()),
+                water: None,
             });
         }
         scene::add_to_scene(vm, &self.container, id);

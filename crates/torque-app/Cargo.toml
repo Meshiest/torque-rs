@@ -32,6 +32,8 @@ torque-render-hd = { path = "../torque-render-hd" }
 torque-render-scene = { path = "../torque-render-scene" }
 torque-server = { path = "../torque-server" }
 torque-shapes = { path = "../torque-shapes" }
+# The water zone a Player swims in.
+torque-sim = { path = "../torque-sim" }
 # The page bridge's syntax check of the page's script text.
 torque-ts-compiler = { path = "../torque-ts-compiler" }
 torque-ts-text = { path = "../torque-ts-text" }

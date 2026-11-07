@@ -664,7 +664,10 @@ impl<'a> PlayerHost for HostImpl<'a> {
         }
         self.read(|vm| {
             for id in ids {
-                if is_class(vm, id.0, "PhysicalZone")
+                // A water block's water, as its host made it ([`ext::MapObject::water`]).
+                if let Some(z) = ext::map_of(vm, id.0).and_then(|m| m.water.as_ref()) {
+                    out.push(ZoneView { id, ..z.clone() });
+                } else if is_class(vm, id.0, "PhysicalZone")
                     && let Some(z) = zone_view(vm, id.0)
                 {
                     out.push(z);

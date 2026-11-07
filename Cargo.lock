@@ -3231,6 +3231,7 @@ dependencies = [
  "torque-render-scene",
  "torque-server",
  "torque-shapes",
+ "torque-sim",
  "torque-ts-compiler",
  "torque-ts-text",
  "torque-ts-vm",

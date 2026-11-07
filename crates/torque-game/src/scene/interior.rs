@@ -224,6 +224,7 @@ impl EngineClass for InteriorClass {
             e.map = Some(MapObject {
                 view,
                 shape: shape.map(Rc::new),
+                water: None,
             });
         }
         self.kept.crcs.borrow_mut().insert(id, interior.crc);

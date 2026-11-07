@@ -201,6 +201,8 @@ pub fn get_mut(objects: &mut Objects, id: ObjId) -> Option<&mut ObjectExt> {
 pub struct MapObject {
     pub view: collide::convex::ObjectView,
     pub shape: Option<std::rc::Rc<collide::map::MapShape>>,
+    /// A water block's water: the zone a Player's container update finds it as (its box, density and viscosity).
+    pub water: Option<::sim::player::host::ZoneView>,
 }
 
 /// The object's map collision, if it has one.

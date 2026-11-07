@@ -180,6 +180,7 @@ impl GameServer {
         let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
         let game = torque_server::game::install(&mut vm, &state);
         super::terrain::install(&mut vm, &game.container);
+        super::water::install(&mut vm, &game.container);
         let mut server = Server::with_state(vm, Rc::clone(&state));
         let shared = attach_host(
             &mut server.vm,
