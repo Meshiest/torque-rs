@@ -21,8 +21,12 @@
 //! | [`ServerQueryPlugin`] | `torque.server-query` | client, `Query` | `torque_client::query::register` |
 //! | [`AudioPlugin`] | `torque_audio::AudioPlugin` | client, `Natives` | the `alx` natives, the audio datablocks and the mixer |
 //! | [`ClientHostPlugin`] | `torque.frame-host` | client, `Host` | what [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the host of |
-//! | [`PageBridgePlugin`] | `torque.page-bridge` | client, `Window` (web builds) | [`page_bridge::install`](crate::page_bridge::install) |
-//! | [`RunnerPlugin`] | `torque.runner` | the engine's runner slot | [`run`](crate::run): the window, the page, a dedicated server, offscreen |
+//! | [`WindowRunnerPlugin`] | `torque.window-runner` | the engine's runner slot (native builds) | [`window::run`](crate::window::run) |
+//! | [`WebPageRunnerPlugin`] | `torque.web-page-runner` | the engine's runner slot, client `Window` (web builds) | the page's canvas and [`page_bridge::install`](crate::page_bridge::install) |
+//!
+//! A build has one of the two runners in the group (the window natively, the page on the web). The other runners are plugins
+//! to add in their place ([`OffscreenRunnerPlugin`], [`DedicatedRunnerPlugin`]; see [`run`](crate::run)):
+//! `DefaultPlugins.disable::<WindowRunnerPlugin>()` and the one wanted.
 //!
 //! [`ZoomPlugin`] (`setFov` and its kin) and [`LivePerfPlugin`] (the frame breakdown's console function) are not in
 //! [`DefaultPlugins`]; a game adds them.
@@ -40,7 +44,7 @@ use torque_client::game::ClientGame;
 use torque_client::host::{ClientPass, EnginePass};
 use torque_client::state::ClientState;
 use torque_engine::{
-    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires, Runner,
+    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires,
 };
 use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
@@ -51,6 +55,9 @@ pub use torque_app_server::plugins::{
 };
 
 use crate::client::ClientNet;
+pub use crate::run::{
+    DedicatedRunnerPlugin, OffscreenRunnerPlugin, WebPageRunnerPlugin, WindowRunnerPlugin,
+};
 
 /// The plugins that wire a server's and a client's script engine, in the order their installs always ran in. A dedicated
 /// server replays only the server recipes, a client only the client ones.
@@ -70,7 +77,7 @@ pub struct DefaultPlugins;
 
 impl PluginGroup for DefaultPlugins {
     fn build(self) -> PluginGroupBuilder {
-        PluginGroupBuilder::new()
+        let group = PluginGroupBuilder::new()
             .add(GameClassesPlugin)
             .add(ServerGamePlugin)
             .add(TerrainPlugin)
@@ -82,9 +89,12 @@ impl PluginGroup for DefaultPlugins {
             .add(ConnPlugin)
             .add(ServerQueryPlugin)
             .add(AudioPlugin)
-            .add(ClientHostPlugin)
-            .add(PageBridgePlugin)
-            .add(RunnerPlugin)
+            .add(ClientHostPlugin);
+        if cfg!(target_arch = "wasm32") {
+            group.add(WebPageRunnerPlugin)
+        } else {
+            group.add(WindowRunnerPlugin)
+        }
     }
 }
 
@@ -304,37 +314,6 @@ impl Plugin for ClientHostPlugin {
             draw_cache: crate::draw_cache,
             windowed: true,
         });
-    }
-}
-
-/// A web build's page and the game's scripts calling each other (`callPage`, `setRenderQuality`). Its recipe is filed at the
-/// `Window` stage of web builds only, which the window runs once its surface exists.
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
-#[plugin(id = "torque.page-bridge")]
-pub struct PageBridgePlugin;
-
-impl Plugin for PageBridgePlugin {
-    fn build(&self, engine: &mut EngineBuilder) {
-        if cfg!(target_arch = "wasm32") {
-            engine.client(ClientStage::Window, |vm, _| {
-                crate::page_bridge::install(vm);
-                Ok(())
-            });
-        }
-    }
-}
-
-/// What [`Engine::run`](torque_engine::Engine::run) does: sets the engine's runner slot to the runners built in today (the
-/// window, the page's canvas, a dedicated server, offscreen), which the [`RunMode`](crate::run::RunMode) the host chose
-/// picks between. See [`run`](crate::run).
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
-#[plugin(id = "torque.runner")]
-pub struct RunnerPlugin;
-
-impl Plugin for RunnerPlugin {
-    fn build(&self, engine: &mut EngineBuilder) {
-        let runner: Rc<dyn Runner> = Rc::new(crate::run::AppRunner);
-        engine.set_slot::<dyn Runner>(runner);
     }
 }
 

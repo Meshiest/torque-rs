@@ -9,7 +9,8 @@ use std::rc::Rc;
 use torque_client::conn::tge::TgeConn;
 use torque_client::state::ClientState;
 use torque_engine::{
-    ClientStage, Engine, EngineBuilder, Plugin, PluginGroup, PluginType, ServerStage, Stage,
+    ClientStage, Engine, EngineBuilder, Plugin, PluginGroup, PluginId, PluginType, ServerStage,
+    Stage,
 };
 use torque_game::scene::container::{Container, ContainerConfig};
 use torque_game::sim_classes::SimClasses;
@@ -19,11 +20,20 @@ use torque_ts_vm::vm::Vm;
 use crate::client::{ClientBuilder, ClientNet, ClientSetup};
 use crate::plugins::{
     ActionMapPlugin, AudioPlugin, ClientHostPlugin, ConnPlugin, DefaultPlugins, GameClassesPlugin,
-    GuiPlugin, LivePerfPlugin, MinimalPlugins, NetHostPlugin, PageBridgePlugin, RunnerPlugin,
-    ScreenPlugin, ServerGamePlugin, ServerQueryPlugin, SimClassesPlugin, TerrainPlugin,
-    WaterPlugin, ZoomPlugin,
+    GuiPlugin, LivePerfPlugin, MinimalPlugins, NetHostPlugin, ScreenPlugin, ServerGamePlugin,
+    ServerQueryPlugin, SimClassesPlugin, TerrainPlugin, WaterPlugin, WebPageRunnerPlugin,
+    WindowRunnerPlugin, ZoomPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
+
+/// The runner `DefaultPlugins` has on this build: the window natively, the page on the web.
+fn default_runner() -> PluginId {
+    if cfg!(target_arch = "wasm32") {
+        WebPageRunnerPlugin::ID
+    } else {
+        WindowRunnerPlugin::ID
+    }
+}
 
 fn engine(group: impl PluginGroup) -> Engine {
     EngineBuilder::new()
@@ -82,8 +92,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ServerQueryPlugin::ID,
             AudioPlugin::ID,
             ClientHostPlugin::ID,
-            PageBridgePlugin::ID,
-            RunnerPlugin::ID,
+            default_runner(),
         ]
     );
     assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
@@ -111,8 +120,11 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.server-query",
             "torque_audio::AudioPlugin",
             "torque.frame-host",
-            "torque.page-bridge",
-            "torque.runner",
+            if cfg!(target_arch = "wasm32") {
+                "torque.web-page-runner"
+            } else {
+                "torque.window-runner"
+            },
         ]
     );
 }
@@ -143,11 +155,11 @@ fn each_stage_replays_its_plugins_in_add_order() {
     assert_eq!(client(ClientStage::Query), ["torque.server-query"]);
     assert_eq!(client(ClientStage::Natives), ["torque_audio::AudioPlugin"]);
     assert!(client(ClientStage::Host).is_empty());
-    // The page bridge is filed for web builds only.
+    // The page bridge is filed for web builds only, by the web page runner.
     assert_eq!(
         client(ClientStage::Window),
         if cfg!(target_arch = "wasm32") {
-            vec!["torque.page-bridge"]
+            vec!["torque.web-page-runner"]
         } else {
             vec![]
         }
@@ -524,8 +536,10 @@ fn minimal_plugins_make_the_server_default_plugins_make() {
 #[test]
 fn minimal_plugins_and_the_window_runner_do_not_go_together() {
     let err = EngineBuilder::new()
-        .add_plugins((MinimalPlugins, RunnerPlugin))
+        .add_plugins((MinimalPlugins, WindowRunnerPlugin))
         .build()
         .expect_err("two runners fail the build");
-    assert!(err.to_string().contains("torque.runner"), "{err}");
+    let message = err.to_string();
+    assert!(message.contains("torque.window-runner"), "{message}");
+    assert!(message.contains("torque.dedicated-runner"), "{message}");
 }

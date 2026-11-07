@@ -72,8 +72,8 @@ client's script engine the way a Torque game expects. Here is what it adds, in o
 | `ServerQueryPlugin` | `torque.server-query` | the server browser's natives |
 | `AudioPlugin` | `torque_audio::AudioPlugin` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick; it plays through the null sink and opens no sound card |
 | `ClientHostPlugin` | `torque.frame-host` | the client host that runs the frames |
-| `PageBridgePlugin` | `torque.page-bridge` | the page and the scripts calling each other, in web builds only (see [Games in a browser](web-pages.md)) |
-| `RunnerPlugin` | `torque.runner` | sets the runner, which decides what `run` does |
+| `WindowRunnerPlugin` | `torque.window-runner` | the runner of native builds: plays the game in a window |
+| `WebPageRunnerPlugin` | `torque.web-page-runner` | the runner of web builds: plays the game on the page's canvas, and brings the page and the scripts calling each other (see [Games in a browser](web-pages.md)) |
 
 Four more plugins are not in the group, because each game picks its own or wants them only sometimes:
 
@@ -429,7 +429,8 @@ plugin that tries to toggle during its own `build` gets a `ToggleDuringBuild` wa
 
 ## Running an engine
 
-An engine has a runner, a slot that decides what "run" means. `RunnerPlugin`, in `DefaultPlugins`, sets it. With it,
+An engine has a runner, a slot that decides what "run" means. Each runner is a plugin that sets it, and the slot holds
+one. `DefaultPlugins` has the platform's: `WindowRunnerPlugin` on a computer, `WebPageRunnerPlugin` in a browser. With it,
 `run` builds the engine and starts the game:
 
 ```rust
@@ -458,21 +459,32 @@ fn main() -> ExitCode {
 }
 ```
 
-`EngineRun` (from `torque::app::run`) adds the calls that tell the runner what to do. `app` names the game: a function
-that makes your `App` (the client, a title and what to draw) from the built engine, when a mode that needs one starts.
-`run_mode` chooses how to run:
+`EngineRun` (from `torque::app::run`) adds `app`, which names the game: a function that makes your `App` (the client, a
+title and what to draw) from the built engine, when a runner that needs one starts.
 
-| Mode | Runs |
+To run another way, turn the default runner off and add the one you want:
+
+| Plugin | Runs |
 |---|---|
-| `RunMode::Auto` (the default) | the game in a window on a computer, on the page's canvas in a browser |
-| `RunMode::Window` | the game in a native window |
-| `RunMode::Web` | the game on the page's canvas, in a browser build |
-| `RunMode::Dedicated(..)` | a dedicated server with no window and no app |
-| `RunMode::Offscreen(..)` | the game drawn without a window, with a picture of the last frame at the end if you ask |
+| `WindowRunnerPlugin` | the game in a native window |
+| `WebPageRunnerPlugin` | the game on the page's canvas, in a browser build |
+| `OffscreenRunnerPlugin::new(size, ms)` | the game drawn without a window for `ms` of its clock, with a picture of the last frame at the end if you call `.picture(path)` |
+| `DedicatedRunnerPlugin` | a dedicated server with no window and no app |
 
-`dedicated(server)` is `run_mode(RunMode::Dedicated(server))`. A `Dedicated` holds what the server needs: its files, where
-it listens, the script function that starts the map, and when to stop (after a number of ticks, or when a `Stop` you
-hold is requested). The window, web and offscreen modes need the game from `app`; a dedicated server does not.
+```rust
+EngineBuilder::new()
+    .add_plugins((
+        DefaultPlugins.disable::<WindowRunnerPlugin>(),
+        OffscreenRunnerPlugin::new((960, 540), 2000).picture("shot.png"),
+    ))
+    .app(move |engine| ExampleGame::new(engine, server))
+    .run()?;
+```
+
+Two runners in one engine fail the build and the error names both plugins. A `Dedicated` (from `torque::app::run`) holds
+what a dedicated server needs: its files, where it listens, the script function that starts the map, and when to stop
+(after a number of ticks, or when a `Stop` you hold is requested); give it to the engine with `dedicated(server)`
+(`EngineDedicated`). The window, web page and offscreen runners need the game from `app`; a dedicated server does not.
 
 An engine does not need `DefaultPlugins` to run. It needs a plugin that sets the runner slot, and you can write that
 plugin yourself (a type that implements `Runner`, set with `set_slot::<dyn Runner>`).
@@ -520,11 +532,15 @@ server.shutdown();
 ```
 
 The server on the engine (`examples/minimal-engine/src/bin/min-engine-server.rs`): the game is a plugin, the server is a
-run mode.
+runner.
 
 ```rust
 EngineBuilder::new()
-    .add_plugins((DefaultPlugins, ExamplePlugin(files.clone())))
+    .add_plugins((
+        DefaultPlugins.disable::<WindowRunnerPlugin>(),
+        DedicatedRunnerPlugin,
+        ExamplePlugin(files.clone()),
+    ))
     .dedicated(Dedicated { ticks, ..dedicated(&files, listen) })
     .run()?;
 ```

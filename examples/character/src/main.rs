@@ -4,7 +4,7 @@
 //! into `dir` instead (no window).
 
 use torque::app::cli::{Args, unknown};
-use torque::app::plugins::RunnerPlugin;
+use torque::app::plugins::WindowRunnerPlugin;
 use torque::engine::EngineBuilder;
 use torque_example_character::game::CharacterPlugin;
 use torque_example_character::shots;
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         None => EngineBuilder::new()
-            .add_plugins((RunnerPlugin, CharacterPlugin))
+            .add_plugins((WindowRunnerPlugin, CharacterPlugin))
             .run()?,
     }
     Ok(())

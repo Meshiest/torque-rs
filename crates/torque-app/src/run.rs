@@ -1,18 +1,35 @@
-//! Running an engine: what [`Engine::run`](torque_engine::Engine::run) does with the runners compiled in today.
+//! Running an engine: the runners compiled in, each a plugin on the engine's exclusive runner slot
+//! ([`Engine::run`](torque_engine::Engine::run) hands the engine to whichever one the plugins set).
 //!
-//! The engine's [`RunnerPlugin`](crate::plugins::RunnerPlugin) (in [`DefaultPlugins`](crate::plugins::DefaultPlugins)) sets
-//! the engine's runner, which picks one of these by the [`RunMode`] the host chose:
+//! | Plugin | Id | Runs | Built for |
+//! |--------|----|------|-----------|
+//! | [`WindowRunnerPlugin`] | `torque.window-runner` | the game in a native window ([`window::run`](crate::window::run)) | native (in [`DefaultPlugins`](crate::plugins::DefaultPlugins)) |
+//! | [`WebPageRunnerPlugin`] | `torque.web-page-runner` | the game on the page's canvas, with the page's start-up and its script bridge | the web (in [`DefaultPlugins`](crate::plugins::DefaultPlugins)) |
+//! | [`OffscreenRunnerPlugin`] | `torque.offscreen-runner` | the game drawn without a window ([`shots`](crate::shots)), with a picture at the end if asked | native |
+//! | [`DedicatedRunnerPlugin`] | `torque.dedicated-runner` | a dedicated server ([`GameServer::run_dedicated_until`](crate::server::GameServer::run_dedicated_until)) with no window | native |
 //!
-//! | Mode | Runs | Built for |
-//! |------|------|-----------|
-//! | [`RunMode::Auto`] (the default) | the window natively, the page's canvas in a browser | any |
-//! | [`RunMode::Window`] | the game in a native window ([`window::run`](crate::window::run)) | native |
-//! | [`RunMode::Web`] | the game on the page's canvas ([`window::run`](crate::window::run) in a browser) | the web |
-//! | [`RunMode::Dedicated`] | a dedicated server ([`GameServer::run_dedicated_until`](crate::server::GameServer::run_dedicated_until)) with no window | native |
-//! | [`RunMode::Offscreen`] | the game drawn without a window ([`shots`](crate::shots)), with a picture at the end if asked | native |
+//! The slot holds one runner. [`DefaultPlugins`](crate::plugins::DefaultPlugins) has the platform's: a game that runs another
+//! way turns that one off and adds the one it wants.
 //!
-//! The window, web and offscreen modes need the game: the app the plugins named with [`EngineRun::app`], made from the
-//! engine when the mode starts. A dedicated server needs files and a start function ([`Dedicated`]) and no app.
+//! ```
+//! use torque_app::plugins::{DefaultPlugins, WindowRunnerPlugin};
+//! use torque_app::run::OffscreenRunnerPlugin;
+//! use torque_engine::{EngineBuilder, PluginGroup};
+//!
+//! let engine = EngineBuilder::new()
+//!     .add_plugins((
+//!         DefaultPlugins.disable::<WindowRunnerPlugin>(),
+//!         OffscreenRunnerPlugin::new((320, 180), 500),
+//!     ))
+//!     .build()?;
+//! assert!(engine.is_plugin_added::<OffscreenRunnerPlugin>());
+//! # Ok::<(), torque_engine::BuildError>(())
+//! ```
+//!
+//! Two runners in one engine fail the build, naming both plugins.
+//!
+//! The window, web page and offscreen runners need the game: the app the plugins named with [`EngineRun::app`], made from the
+//! engine when the runner starts. A dedicated server needs files and a start function ([`Dedicated`]) and no app.
 //!
 //! ```no_run
 //! use torque_app::App;
@@ -31,62 +48,28 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use torque_engine::{Engine, EngineBuilder, Runner};
+use torque_engine::{ClientStage, Engine, EngineBuilder, Plugin, Runner};
 use torque_gui::GuiDraws;
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
 use crate::view::WorldView;
 use crate::{App, Host};
-pub use torque_app_server::run::{Dedicated, PrintLine, Stop, run_dedicated};
-
-/// How the engine's runner starts the game. Set with [`EngineRun::run_mode`].
-#[derive(Clone, Default)]
-#[non_exhaustive]
-pub enum RunMode {
-    /// The window on a computer, the page's canvas in a browser: what the build is for.
-    #[default]
-    Auto,
-    /// The game in a native window. An error in a browser build.
-    Window,
-    /// The game on the page's canvas, with the page's start-up (a panic shown in its console). An error natively.
-    Web,
-    /// A dedicated server with no window and no app. An error in a browser build.
-    Dedicated(Dedicated),
-    /// The game drawn offscreen with no window. An error in a browser build.
-    Offscreen(Offscreen),
-}
-
-/// The game drawn without a window.
-#[derive(Clone, Debug)]
-pub struct Offscreen {
-    /// The size of the frames.
-    pub size: (u32, u32),
-    /// How much of the game's clock to run (ms), a frame every [`shots::FRAME_MS`](crate::shots::FRAME_MS).
-    pub ms: u32,
-    /// A PNG of the last frame, written here when the clock has run (its folder is made).
-    pub picture: Option<PathBuf>,
-}
+pub use torque_app_server::run::{
+    Dedicated, DedicatedRunnerPlugin, EngineDedicated, PrintLine, Stop, run_dedicated,
+};
 
 /// How the app is made from the engine.
 pub(crate) type MakeApp = dyn Fn(&Engine) -> Result<Box<dyn App>, String>;
 
-/// The engine builder's methods for running: the game, and how to run it.
+/// The engine builder's method for naming the game.
 pub trait EngineRun {
-    /// Names the game: `make` makes the [`App`] from the built engine when a window or an offscreen mode starts. An
-    /// exclusive slot, like the runner's: naming a second game fails the build.
+    /// Names the game: `make` makes the [`App`] from the built engine when a window, a page or an offscreen runner starts.
+    /// An exclusive slot, like the runner's: naming a second game fails the build.
     fn app<A: App + 'static>(
         &mut self,
         make: impl Fn(&Engine) -> Result<A, String> + 'static,
     ) -> &mut EngineBuilder;
-
-    /// Chooses how the runner starts the game (the default is [`RunMode::Auto`]).
-    fn run_mode(&mut self, mode: RunMode) -> &mut EngineBuilder;
-
-    /// [`run_mode`](Self::run_mode) with a dedicated server.
-    fn dedicated(&mut self, server: Dedicated) -> &mut EngineBuilder {
-        self.run_mode(RunMode::Dedicated(server))
-    }
 }
 
 impl EngineRun for EngineBuilder {
@@ -100,24 +83,104 @@ impl EngineRun for EngineBuilder {
         });
         self.set_slot::<MakeApp>(make)
     }
+}
 
-    fn run_mode(&mut self, mode: RunMode) -> &mut EngineBuilder {
-        self.insert_resource(mode)
+/// Sets the engine's runner slot to a native window's: [`Engine::run`](torque_engine::Engine::run) opens the window and
+/// plays the game [`EngineRun::app`] named in it. In [`DefaultPlugins`](crate::plugins::DefaultPlugins) on native builds. In a
+/// browser build it only fails, saying to use [`WebPageRunnerPlugin`].
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.window-runner")]
+pub struct WindowRunnerPlugin;
+
+impl Plugin for WindowRunnerPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        let runner: Rc<dyn Runner> = Rc::new(WindowRunner);
+        engine.set_slot::<dyn Runner>(runner);
     }
 }
 
-/// The engine's runner ([`RunnerPlugin`](crate::plugins::RunnerPlugin)).
-pub(crate) struct AppRunner;
+struct WindowRunner;
 
-impl Runner for AppRunner {
+impl Runner for WindowRunner {
     fn run(&self, engine: &Engine) -> Result<(), String> {
-        match engine.resource::<RunMode>().unwrap_or(&RunMode::Auto) {
-            RunMode::Auto if cfg!(target_arch = "wasm32") => web(engine),
-            RunMode::Auto | RunMode::Window => window(engine),
-            RunMode::Web => web(engine),
-            RunMode::Dedicated(server) => run_dedicated(engine, server),
-            RunMode::Offscreen(offscreen) => offscreen_run(engine, offscreen),
+        window(engine)
+    }
+}
+
+/// Sets the engine's runner slot to the web page's: the game plays on the page's canvas, with the page's start-up (a panic
+/// shown in its console). It also files the page bridge ([`page_bridge::install`](crate::page_bridge::install): the page and
+/// the game's scripts calling each other, `callPage` and `setRenderQuality`) at the client's `Window` stage, which the window
+/// runs once its surface exists. In [`DefaultPlugins`](crate::plugins::DefaultPlugins) on web builds. Natively it only fails,
+/// saying to use [`WindowRunnerPlugin`].
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.web-page-runner")]
+pub struct WebPageRunnerPlugin;
+
+impl Plugin for WebPageRunnerPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        let runner: Rc<dyn Runner> = Rc::new(WebPageRunner);
+        engine.set_slot::<dyn Runner>(runner);
+        if cfg!(target_arch = "wasm32") {
+            engine.client(ClientStage::Window, |vm, _| {
+                crate::page_bridge::install(vm);
+                Ok(())
+            });
         }
+    }
+}
+
+struct WebPageRunner;
+
+impl Runner for WebPageRunner {
+    fn run(&self, engine: &Engine) -> Result<(), String> {
+        web(engine)
+    }
+}
+
+/// Sets the engine's runner slot to an offscreen one: the game is drawn without a window for [`ms`](Self::ms) of its clock (a
+/// frame every [`FRAME_MS`](crate::shots::FRAME_MS)), then a PNG of the last frame is written to [`picture`](Self::picture) if
+/// one is set. Not in [`DefaultPlugins`](crate::plugins::DefaultPlugins). An error in a browser build.
+#[derive(Clone, Debug, torque_engine::PluginId)]
+#[plugin(id = "torque.offscreen-runner")]
+pub struct OffscreenRunnerPlugin {
+    /// The size of the frames.
+    pub size: (u32, u32),
+    /// How much of the game's clock to run (ms).
+    pub ms: u32,
+    /// A PNG of the last frame, written here when the clock has run (its folder is made).
+    pub picture: Option<PathBuf>,
+}
+
+impl OffscreenRunnerPlugin {
+    /// Frames of `size` for `ms` of the game's clock, with no picture written.
+    pub fn new(size: (u32, u32), ms: u32) -> OffscreenRunnerPlugin {
+        OffscreenRunnerPlugin {
+            size,
+            ms,
+            picture: None,
+        }
+    }
+
+    /// Writes a PNG of the last frame to `path`.
+    #[must_use]
+    pub fn picture(mut self, path: impl Into<PathBuf>) -> OffscreenRunnerPlugin {
+        self.picture = Some(path.into());
+        self
+    }
+}
+
+impl Plugin for OffscreenRunnerPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        let runner: Rc<dyn Runner> = Rc::new(OffscreenRunner(self.clone()));
+        engine.set_slot::<dyn Runner>(runner);
+    }
+}
+
+struct OffscreenRunner(OffscreenRunnerPlugin);
+
+impl Runner for OffscreenRunner {
+    fn run(&self, engine: &Engine) -> Result<(), String> {
+        offscreen_run(engine, &self.0)
     }
 }
 
@@ -173,7 +236,7 @@ fn window(engine: &Engine) -> Result<(), String> {
 
 #[cfg(target_arch = "wasm32")]
 fn window(_: &Engine) -> Result<(), String> {
-    Err("a browser build runs on the page's canvas: use RunMode::Web".to_string())
+    Err("a browser build runs on the page's canvas: use WebPageRunnerPlugin".to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -184,11 +247,11 @@ fn web(engine: &Engine) -> Result<(), String> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn web(_: &Engine) -> Result<(), String> {
-    Err("RunMode::Web runs only in a browser build: use RunMode::Window".to_string())
+    Err("WebPageRunnerPlugin runs only in a browser build: use WindowRunnerPlugin".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn offscreen_run(engine: &Engine, offscreen: &Offscreen) -> Result<(), String> {
+fn offscreen_run(engine: &Engine, offscreen: &OffscreenRunnerPlugin) -> Result<(), String> {
     use crate::shots::{Seat, write_png};
 
     let app = make_app(engine)?;
@@ -206,6 +269,6 @@ fn offscreen_run(engine: &Engine, offscreen: &Offscreen) -> Result<(), String> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn offscreen_run(_: &Engine, _: &Offscreen) -> Result<(), String> {
+fn offscreen_run(_: &Engine, _: &OffscreenRunnerPlugin) -> Result<(), String> {
     Err("an offscreen run does not run in a browser build".to_string())
 }

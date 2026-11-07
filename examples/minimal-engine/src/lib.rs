@@ -56,7 +56,7 @@ impl Plugin for ExamplePlugin {
     }
 }
 
-/// A dedicated server of the game on `listen`, for [`EngineRun::dedicated`](torque::app::run::EngineRun::dedicated).
+/// A dedicated server of the game on `listen`, for [`EngineDedicated::dedicated`](torque::app::run::EngineDedicated::dedicated).
 pub fn dedicated(files: &GameFiles, listen: Listen) -> Dedicated {
     Dedicated {
         args: vec![MISSION.to_string()],

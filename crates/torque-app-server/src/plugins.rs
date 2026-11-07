@@ -37,7 +37,9 @@ use crate::run::DedicatedRunnerPlugin;
 /// What a dedicated server needs and nothing else: TGE's game classes, the server game, the terrain and water blocks and the
 /// network host, with the runner that runs a [`Dedicated`](crate::run::Dedicated) server. No client, GUI, drawing, audio or
 /// window crates are involved. A server made on `MinimalPlugins` runs the same scripts as one made on `DefaultPlugins`.
-/// It carries its own dedicated runner, so it does not go with torque-app's `RunnerPlugin` (the runner slot is exclusive).
+/// It carries its own dedicated runner, so it does not go with a window or page runner (the runner slot is exclusive):
+/// torque-app's `DefaultPlugins` swaps its own for this one with `DefaultPlugins.disable::<WindowRunnerPlugin>()` and
+/// `DedicatedRunnerPlugin`.
 ///
 /// ```
 /// use torque_app_server::plugins::{MinimalPlugins, WaterPlugin};

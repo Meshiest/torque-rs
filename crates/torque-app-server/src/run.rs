@@ -111,8 +111,8 @@ impl EngineDedicated for EngineBuilder {
 }
 
 /// Sets the engine's runner slot to a dedicated server's: [`Engine::run`] runs the [`Dedicated`] the engine was given. The
-/// slot is exclusive, so this plugin does not go with a group that has a runner of its own (a window's, which runs a dedicated
-/// server too).
+/// slot is exclusive, so this plugin does not go with a group that has a runner of its own (torque-app's `DefaultPlugins`
+/// has a window's or a page's: turn it off to add this one).
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.dedicated-runner")]
 pub struct DedicatedRunnerPlugin;

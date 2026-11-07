@@ -51,11 +51,16 @@ server.run(ticks, |server| {
 server.shutdown();
 ```
 
-The server on the engine (`src/bin/min-engine-server.rs`): the game is a plugin, the server is a run mode.
+The server on the engine (`src/bin/min-engine-server.rs`): the game is a plugin, the server is a runner (the group's window
+runner turned off, the dedicated one added).
 
 ```rust
 EngineBuilder::new()
-    .add_plugins((DefaultPlugins, ExamplePlugin(files.clone())))
+    .add_plugins((
+        DefaultPlugins.disable::<WindowRunnerPlugin>(),
+        DedicatedRunnerPlugin,
+        ExamplePlugin(files.clone()),
+    ))
     .dedicated(Dedicated { ticks, ..dedicated(&files, listen) })
     .run()?;
 ```

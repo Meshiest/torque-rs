@@ -7,10 +7,10 @@
 use std::net::Ipv4Addr;
 
 use torque::app::cli::{Args, unknown};
-use torque::app::plugins::DefaultPlugins;
-use torque::app::run::{Dedicated, EngineRun};
+use torque::app::plugins::{DefaultPlugins, WindowRunnerPlugin};
+use torque::app::run::{Dedicated, DedicatedRunnerPlugin, EngineDedicated};
 use torque::app::server::Listen;
-use torque::engine::EngineBuilder;
+use torque::engine::{EngineBuilder, PluginGroup as _};
 use torque_example_minimal_engine::{ExamplePlugin, dedicated, files};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,7 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         public: false,
     };
     EngineBuilder::new()
-        .add_plugins((DefaultPlugins, ExamplePlugin(files.clone())))
+        .add_plugins((
+            DefaultPlugins.disable::<WindowRunnerPlugin>(),
+            DedicatedRunnerPlugin,
+            ExamplePlugin(files.clone()),
+        ))
         .dedicated(Dedicated {
             ticks,
             ..dedicated(&files, listen)

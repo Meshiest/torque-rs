@@ -24,8 +24,8 @@
 //! - [`water::Water`]: a `WaterBlock` as water the Players swim in, on the server and in the client's prediction.
 //! - [`plugins`]: [`plugins::DefaultPlugins`], the plugins that wire a server's and a client's script engine, replayed by
 //!   [`server::GameServer::start_engine`] and [`client::ClientBuilder::from_engine`].
-//! - [`run`]: [`run::EngineRun`] and the runners behind [`Engine::run`](torque_engine::Engine::run): the window, the page's
-//!   canvas, a dedicated server and offscreen, chosen by the build and a [`run::RunMode`].
+//! - [`run`]: [`run::EngineRun`] and the runners behind [`Engine::run`](torque_engine::Engine::run), each a plugin on the
+//!   engine's runner slot: the window, the page's canvas, offscreen and a dedicated server.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
 //! - [`page_bridge`]: a web build's page and the game's scripts calling each other (`torque.call`, `callPage`), within caps.
 //! - [`web_page`]: the entry web builds share: the page's calls ([`web_exports!`]), the files it fetches, its settings, and

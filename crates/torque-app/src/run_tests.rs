@@ -1,19 +1,25 @@
-//! `Engine::run` over the runners built in: a dedicated server from `DefaultPlugins` and a test plugin, that errors come out
-//! of `run`, and that no window or device is touched when there is nothing to show.
+//! `Engine::run` over the runners built in: each runner is a plugin on one slot, a dedicated server beside `DefaultPlugins`'
+//! other plugins, that two runners fail the build, that errors come out of `run`, and that no window or device is touched when
+//! there is nothing to show.
 
 use std::cell::{Cell, RefCell};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 
-use torque_engine::{Engine, EngineBuilder, Plugin, PluginGroup, RunError, ServerStage};
+use torque_engine::{
+    Engine, EngineBuilder, Plugin, PluginGroup, PluginType, RunError, Runner, ServerStage,
+};
 use torque_gui::GuiDraws;
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Native;
 
-use crate::plugins::{DefaultPlugins, RunnerPlugin};
-use crate::run::{Dedicated, EngineRun, Offscreen, RunMode, Stop};
+use crate::plugins::{DefaultPlugins, WindowRunnerPlugin};
+use crate::run::{
+    Dedicated, DedicatedRunnerPlugin, EngineDedicated, EngineRun, OffscreenRunnerPlugin, Stop,
+    WebPageRunnerPlugin,
+};
 use crate::server::Listen;
 use crate::view::WorldView;
 use crate::{App, Host};
@@ -74,7 +80,8 @@ fn run_starts_a_dedicated_server_ticks_and_stops_on_request() {
     });
     EngineBuilder::new()
         .add_plugins((
-            DefaultPlugins,
+            DefaultPlugins.disable::<WindowRunnerPlugin>(),
+            DedicatedRunnerPlugin,
             Counter {
                 stop: stop.clone(),
                 ticks: Rc::clone(&ticks),
@@ -100,7 +107,8 @@ fn the_tick_cap_ends_a_dedicated_run_without_a_request() {
     let ticks = Rc::new(Cell::new(0));
     let mut builder = EngineBuilder::new();
     builder.add_plugins((
-        DefaultPlugins,
+        DefaultPlugins.disable::<WindowRunnerPlugin>(),
+        DedicatedRunnerPlugin,
         Counter {
             // Not the server's stop: only the cap ends this run.
             stop: Stop::new(),
@@ -112,19 +120,56 @@ fn the_tick_cap_ends_a_dedicated_run_without_a_request() {
 }
 
 #[test]
-fn a_build_error_comes_out_of_run() {
+fn each_runner_is_a_plugin_that_sets_the_slot() {
+    fn sets_the_slot(plugin: impl PluginType) {
+        let engine = EngineBuilder::new()
+            .add_plugins(plugin)
+            .build()
+            .expect("the engine builds");
+        assert!(engine.slot::<dyn Runner>().is_some());
+    }
+    sets_the_slot(WindowRunnerPlugin);
+    sets_the_slot(WebPageRunnerPlugin);
+    sets_the_slot(OffscreenRunnerPlugin::new((64, 64), 100));
+    sets_the_slot(DedicatedRunnerPlugin);
+}
+
+#[test]
+fn two_runners_fail_the_build_naming_both() {
     let err = EngineBuilder::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(RunnerPlugin)
+        .add_plugins(DedicatedRunnerPlugin)
         .dedicated(Dedicated::new(files(), memory(), "startIt"))
         .run()
         .unwrap_err();
     assert!(matches!(err, RunError::Build(_)), "{err:?}");
+    let message = err.to_string();
     assert!(
-        err.to_string().starts_with("the engine did not build:"),
-        "{err}"
+        message.starts_with("the engine did not build:"),
+        "{message}"
     );
-    assert!(err.to_string().contains("torque.runner"), "{err}");
+    assert!(message.contains("torque.window-runner"), "{message}");
+    assert!(message.contains("torque.dedicated-runner"), "{message}");
+    assert!(message.contains("only one plugin may set it"), "{message}");
+}
+
+#[test]
+fn the_default_runner_is_the_platforms_and_switching_is_a_toggle() {
+    let default = EngineBuilder::new()
+        .add_plugins(DefaultPlugins)
+        .build()
+        .unwrap();
+    assert!(default.is_plugin_added::<WindowRunnerPlugin>());
+    assert!(!default.is_plugin_added::<WebPageRunnerPlugin>());
+    let swapped = EngineBuilder::new()
+        .add_plugins((
+            DefaultPlugins.disable::<WindowRunnerPlugin>(),
+            OffscreenRunnerPlugin::new((64, 64), 100),
+        ))
+        .build()
+        .unwrap();
+    assert!(!swapped.is_plugin_added::<WindowRunnerPlugin>());
+    assert!(swapped.is_plugin_added::<OffscreenRunnerPlugin>());
 }
 
 /// A plugin whose server recipe fails.
@@ -144,7 +189,11 @@ impl Plugin for Broken {
 #[test]
 fn a_recipe_error_comes_out_of_run_naming_the_plugin() {
     let err = EngineBuilder::new()
-        .add_plugins((DefaultPlugins, Broken))
+        .add_plugins((
+            DefaultPlugins.disable::<WindowRunnerPlugin>(),
+            DedicatedRunnerPlugin,
+            Broken,
+        ))
         .dedicated(Dedicated::new(files(), memory(), "startIt"))
         .run()
         .unwrap_err();
@@ -158,37 +207,31 @@ fn a_recipe_error_comes_out_of_run_naming_the_plugin() {
 #[test]
 fn an_engine_without_the_runner_plugin_has_no_runner() {
     let err = EngineBuilder::new()
-        .add_plugins(DefaultPlugins.disable::<RunnerPlugin>())
+        .add_plugins(DefaultPlugins.disable::<WindowRunnerPlugin>())
         .run()
         .unwrap_err();
     assert_eq!(err, RunError::NoRunner);
 }
 
 #[test]
-fn the_window_and_offscreen_modes_need_a_game_and_open_nothing_without_one() {
-    for mode in [
-        RunMode::Auto,
-        RunMode::Window,
-        RunMode::Offscreen(Offscreen {
-            size: (64, 64),
-            ms: 100,
-            picture: None,
-        }),
-    ] {
-        let err = EngineBuilder::new()
-            .add_plugins(DefaultPlugins)
-            .run_mode(mode)
-            .run()
-            .unwrap_err();
-        assert!(err.to_string().contains("no game to show"), "{err}");
-    }
+fn the_window_and_offscreen_runners_need_a_game_and_open_nothing_without_one() {
+    let without_window = DefaultPlugins.disable::<WindowRunnerPlugin>();
+    let err = EngineBuilder::new()
+        .add_plugins(DefaultPlugins)
+        .run()
+        .unwrap_err();
+    assert!(err.to_string().contains("no game to show"), "{err}");
+    let err = EngineBuilder::new()
+        .add_plugins((without_window, OffscreenRunnerPlugin::new((64, 64), 100)))
+        .run()
+        .unwrap_err();
+    assert!(err.to_string().contains("no game to show"), "{err}");
 }
 
 #[test]
-fn the_web_mode_is_for_browser_builds() {
+fn the_web_page_runner_is_for_browser_builds() {
     let err = EngineBuilder::new()
-        .add_plugins(DefaultPlugins)
-        .run_mode(RunMode::Web)
+        .add_plugins(WebPageRunnerPlugin)
         .run()
         .unwrap_err();
     assert!(err.to_string().contains("only in a browser build"), "{err}");
@@ -231,7 +274,6 @@ fn naming_two_games_fails_the_build() {
         .add_plugins(DefaultPlugins)
         .app(|_: &Engine| Ok(Nothing))
         .app(|_: &Engine| Ok(Nothing))
-        .dedicated(Dedicated::new(files(), memory(), "startIt"))
         .run()
         .unwrap_err();
     assert!(matches!(err, RunError::Build(_)), "{err:?}");
@@ -240,13 +282,11 @@ fn naming_two_games_fails_the_build() {
 #[test]
 fn a_game_that_cannot_be_made_comes_out_of_run() {
     let err = EngineBuilder::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins((
+            DefaultPlugins.disable::<WindowRunnerPlugin>(),
+            OffscreenRunnerPlugin::new((64, 64), 100),
+        ))
         .app(|_: &Engine| -> Result<Nothing, String> { Err("the files are not there".into()) })
-        .run_mode(RunMode::Offscreen(Offscreen {
-            size: (64, 64),
-            ms: 100,
-            picture: None,
-        }))
         .run()
         .unwrap_err();
     assert_eq!(err, RunError::Failed("the files are not there".into()));
