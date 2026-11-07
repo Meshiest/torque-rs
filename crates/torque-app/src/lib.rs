@@ -14,6 +14,8 @@
 //!   web, rooms, relay) and picked by id.
 //! - [`renderers`]: the renderer slot: renderers registered by plugins under ids and swapped while the game runs
 //!   (`setRenderer`), the engine's own renderer and its features as plugins.
+//! - [`gizmos`]: debug lines, boxes, spheres, arrows, crosses and labels drawn in world space (`GizmosPlugin`, opt-in; the
+//!   `gizmos` feature).
 //! - [`ghosts::GhostScene`]: the client's ghosts drawn through the engine's moving shapes, with live Players, held images and
 //!   projectiles.
 //! - [`interiors::Interiors`]: the map's interiors (InteriorInstance ghosts) as static meshes of the view (kept on the GPU).
@@ -52,6 +54,7 @@ pub mod camera_blend;
 pub mod camera_boom;
 pub mod client;
 pub mod ghosts;
+pub mod gizmos;
 pub mod hosting;
 pub mod interiors;
 pub mod lights;

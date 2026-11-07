@@ -558,6 +558,59 @@ transport under an id already registered is skipped, with a warning on the conso
 rooms transport: with the `p2p` feature it adds that transport with it, and is turned off, with a warning, when the
 transport is.
 
+## Debug gizmos
+
+`GizmosPlugin` (`torque.gizmos`, not in `DefaultPlugins`) draws lines, boxes, spheres, arrows, crosses and text labels in
+world space, for one frame or a number of seconds, for debugging. Add it while you are developing:
+
+```rust
+use torque::app::gizmos::GizmosPlugin;
+use torque::app::plugins::DefaultPlugins;
+use torque::engine::EngineBuilder;
+
+let engine = EngineBuilder::new()
+    .add_plugins((DefaultPlugins, GizmosPlugin::default()))
+    .build()?;
+```
+
+From Rust, each client has a `Gizmos` set (`GameClient::gizmos()`, or `Gizmos::of(vm)`). It is immediate mode: call the
+drawing function each time the shape should be drawn, with a `Style` for the color, how long it stays and whether the scene
+hides it.
+
+```rust,ignore
+use torque::app::gizmos::Style;
+
+let gizmos = client.gizmos().expect("the engine has the gizmos plugin");
+let red = Style::new([1.0, 0.0, 0.0, 1.0]);
+gizmos.line([0.0, 0.0, 0.0], [0.0, 0.0, 5.0], red);              // this frame
+gizmos.sphere([0.0, 0.0, 5.0], 0.5, red.seconds(2.0));           // for two seconds
+gizmos.aabb([-1.0, -1.0, 0.0], [1.0, 1.0, 2.0], red.depth(false)); // drawn over everything
+gizmos.label([0.0, 0.0, 5.6], "target", Style::default());
+```
+
+Scripts get `drawDebugLine`, `drawDebugBox`, `drawDebugOrientedBox`, `drawDebugSphere`, `drawDebugArrow`, `drawDebugCross`,
+`drawDebugText` and `clearDebug`. A vector is `"x y z"`, a color `"r g b"` or `"r g b a"` (0 to 1), then optionally the
+seconds and a depth switch:
+
+```
+drawDebugLine(%from, %to, "1 0 0");               // this frame
+drawDebugSphere(%center, 0.5, "1 1 0", 2.5);      // for two and a half seconds
+drawDebugBox(%min, %max, "0 1 0", 0, 0);          // this frame, not hidden by the scene
+drawDebugText(%pos, "spawn", "1 1 1", 10);
+```
+
+The view draws what is held after the world and before the GUI: the lines in one batched draw, hidden where the engine's
+renderer drew something nearer (with another renderer on the slot they are drawn over the picture), and the labels with the
+GUI's fonts. Each drawn frame ages the shapes; a view drawing offscreen at a fixed step ages them by that step. With nothing
+held, a frame does nothing on the GPU, and a client made without the plugin has no gizmos at all.
+
+At most `GizmoSettings::max_lines` line segments (a box is twelve, a sphere ninety-six) and `max_labels` labels are held at
+once. A shape that does not fit is dropped whole, and the console says so once for each run of frames that dropped any.
+
+Leave the `gizmos` Cargo feature of `torque-app` off for a shipped build (`torque` has it in `app`; take `app-core` and
+`renderer` instead). The plugin then stays, and registers the console functions as ones that do nothing, so the game's
+scripts need no change.
+
 ## Running an engine
 
 An engine has a runner, a slot that decides what "run" means. Each runner is a plugin that sets it, and the slot holds

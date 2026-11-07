@@ -86,11 +86,14 @@ audio-device = ["audio", "torque-audio/device"]
 system-fonts = ["fonts", "torque-fonts/system-fonts"]
 # What a game made on the engine shares (`torque::app`): its files, a server, a client, a window, the world view and offscreen
 # pictures (`torque-app`), with the engine's renderer. Needs a GPU.
-app = ["app-core", "renderer"]
+app = ["app-core", "renderer", "gizmos"]
 # `app` without the engine's renderer: a game registers its own on the renderer slot.
 app-core = ["client-window", "system-fonts", "shapes", "engine", "dep:torque-app"]
 # The engine's renderer and its feature plugins on the renderer slot (`torque::app::renderers`).
 renderer = ["app-core", "torque-app/renderer"]
+# Debug gizmos (`torque::app::gizmos`): lines, boxes, spheres and labels drawn in world space by `GizmosPlugin`. In `app`; a shipped
+# build takes `app-core` and `renderer` without it.
+gizmos = ["app-core", "torque-app/gizmos"]
 # Browsers as players: the server's web transport (HTTP and WebSocket on one port, UDP beside it) and the client's game
 # socket over WebSocket.
 web = ["server", "client", "torque-server/web", "torque-client/web-socket", "torque-app?/web", "torque-app-server?/web"]

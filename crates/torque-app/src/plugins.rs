@@ -26,6 +26,7 @@
 //! | [`RendererSlotPlugin`] | `torque.renderer-slot` | client, `Natives` | the renderer slot and `setRenderer`/`getRenderer` ([`renderers`](crate::renderers)) |
 //! | [`RendererPlugin`] | `torque.renderer` | the engine's renderer on the slot, `default` (`renderer` feature) | the view's renderer |
 //! | [`RenderFeaturePlugins`] | `torque.render-shadows`, ... | the renderer's switches, a plugin each (`renderer` feature) | [`RenderFeatures`](crate::renderers::RenderFeatures) |
+//! | [`GizmosPlugin`] | `torque.gizmos` | client, `Natives` (not in [`DefaultPlugins`]; `gizmos` feature) | debug lines, boxes, spheres and labels in world space ([`gizmos`](crate::gizmos)) |
 //! | [`WindowRunnerPlugin`] | `torque.window-runner` | the engine's runner slot (native builds) | [`window::run`](crate::window::run) |
 //! | [`WebPageRunnerPlugin`] | `torque.web-page-runner` | the engine's runner slot, client `Window` (web builds) | the page's canvas and [`page_bridge::install`](crate::page_bridge::install) |
 //!
@@ -60,6 +61,7 @@ pub use torque_app_server::plugins::{
 };
 
 use crate::client::ClientNet;
+pub use crate::gizmos::GizmosPlugin;
 pub use crate::renderers::RendererSlotPlugin;
 #[cfg(feature = "renderer")]
 pub use crate::renderers::{

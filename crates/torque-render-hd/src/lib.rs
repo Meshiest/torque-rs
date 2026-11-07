@@ -28,6 +28,8 @@ pub mod cull;
 pub mod exposure;
 pub mod ext;
 pub mod ghosting;
+#[cfg(feature = "gizmos")]
+pub mod gizmos;
 pub mod limits;
 pub mod post;
 pub mod shaders;

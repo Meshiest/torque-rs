@@ -60,10 +60,13 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Document", "Element", "History", "Location", "Window"] }
 
 [features]
-default = ["renderer"]
+default = ["renderer", "gizmos"]
 # The engine's renderer on the renderer slot and its feature plugins (`RendererPlugin`, `RenderFeaturePlugins`), in
 # `DefaultPlugins`. Without it a game registers its own renderers on the slot.
 renderer = []
+# Debug gizmos: `GizmosPlugin`'s lines, boxes, spheres, arrows, crosses and labels, and the pass that draws them. Without it the
+# plugin only registers the console functions as ones that do nothing: leave it out of a shipped build.
+gizmos = ["torque-render-hd/gizmos"]
 # Browsers as players: a server listening on the web (`Listen::Web`) and a client's game socket over WebSocket.
 web = ["torque-app-server/web", "torque-server/web", "torque-client/web-socket"]
 # Browsers on WebRTC data channels beside their game sockets (the server's `WebSetup::rtc`, the client's `web_rtc`).

@@ -5092,6 +5092,12 @@ impl<E: HdExtension> HdWorld<E> {
         self.clouds.reset();
     }
 
+    /// The last frame's working depth, reversed (1 at the near plane, 0 far away), at the internal frame's size: what a pass
+    /// drawn over the tonemapped picture reads to hide what lies behind the scene. None before the first frame.
+    pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.targets.as_ref().map(|t| &t.depth_view)
+    }
+
     /// Draws `scene` (uploaded with [`HdWorld::upload`]) from `camera` and tonemaps it into `target` (an `Rgba8Unorm` view, or
     /// `None` for the world's own image, [`HdWorld::read_ldr`]) at `origin` (the viewport's top left in the target). Submits the work.
     pub fn draw(

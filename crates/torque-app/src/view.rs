@@ -44,6 +44,8 @@ use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Te
 use torque_shapes::instance::ShapeInstance;
 use torque_shapes::shape::Shape;
 
+#[cfg(feature = "gizmos")]
+use crate::gizmos::{GizmoPainter, Gizmos};
 use crate::renderers::{DEFAULT_RENDERER, RenderFeatures, RenderFrame, RendererSlot, SwitchError};
 
 /// What the view draws its world with.
@@ -231,6 +233,9 @@ pub struct WorldView {
     particle_light: Option<ParticleLight>,
     /// The client's renderer slot the view follows, and the switches it has seen.
     slot: Option<(Rc<RendererSlot>, u64)>,
+    /// The client's debug gizmos, drawn over the world.
+    #[cfg(feature = "gizmos")]
+    gizmos: Option<GizmoPainter>,
 }
 
 impl WorldView {
@@ -269,6 +274,8 @@ impl WorldView {
             features: RenderFeatures::ALL,
             particle_light: Some(ParticleLight::BLENDED),
             slot: None,
+            #[cfg(feature = "gizmos")]
+            gizmos: None,
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
@@ -352,6 +359,33 @@ impl WorldView {
             && let Err(e) = self.attach_slot(slot)
         {
             vm.warn(format!("renderer: {e}"));
+        }
+        #[cfg(feature = "gizmos")]
+        if let Some(gizmos) = Gizmos::of(vm) {
+            self.attach_gizmos(gizmos);
+        }
+    }
+
+    /// Draws `gizmos` over the world from the next frame ([`attach_to`](Self::attach_to) does this for the set of the client it
+    /// follows), and ages them by each frame it draws.
+    #[cfg(feature = "gizmos")]
+    pub fn attach_gizmos(&mut self, gizmos: Rc<Gizmos>) {
+        self.gizmos = Some(GizmoPainter::new(gizmos));
+    }
+
+    /// The debug gizmos of the client the view is attached to (None: it was made without
+    /// [`GizmosPlugin`](crate::gizmos::GizmosPlugin), or the view is not attached).
+    #[cfg(feature = "gizmos")]
+    pub fn gizmos(&self) -> Option<&Rc<Gizmos>> {
+        self.gizmos.as_ref().map(GizmoPainter::gizmos)
+    }
+
+    /// Every frame ages the gizmos by `seconds` (None: by the time the clock says passed since the last frame). The offscreen
+    /// runners set it, so a picture does not depend on how long the machine took.
+    #[cfg(feature = "gizmos")]
+    pub fn set_gizmo_frame_seconds(&mut self, seconds: Option<f32>) {
+        if let Some(painter) = &mut self.gizmos {
+            painter.set_frame_seconds(seconds);
         }
     }
 
@@ -945,8 +979,9 @@ impl WorldView {
             s.control_generation += 1;
         }
         let camera = HdCamera::new(eye, fov, s.visible_distance, w, h);
-        if let (Drawing::Other(i), Some((slot, _))) = (self.drawing, &self.slot) {
-            return slot.draw(
+        #[cfg_attr(not(feature = "gizmos"), allow(unused_variables))]
+        let own = if let (Drawing::Other(i), Some((slot, _))) = (self.drawing, &self.slot) {
+            slot.draw(
                 i,
                 RenderFrame {
                     scene: &self.scene,
@@ -954,13 +989,23 @@ impl WorldView {
                     target,
                     rect: [x, y, w, h],
                 },
-            );
+            )?;
+            false
+        } else {
+            self.world.upload(&self.scene);
+            let format = target.texture().format();
+            self.world
+                .draw(&self.scene, &camera, Some((target, format, [x, y])))
+                .map_err(|e| format!("the world: {e}"))?;
+            true
+        };
+        // The debug gizmos over the finished world; the engine's renderer has a depth to hide them behind.
+        #[cfg(feature = "gizmos")]
+        if let Some(painter) = &mut self.gizmos {
+            let depth = own.then(|| self.world.depth_view()).flatten();
+            painter.paint(&self.gpu, target, [x, y, w, h], &camera, depth);
         }
-        self.world.upload(&self.scene);
-        let format = target.texture().format();
-        self.world
-            .draw(&self.scene, &camera, Some((target, format, [x, y])))
-            .map_err(|e| format!("the world: {e}"))
+        Ok(())
     }
 
     /// The scene alone seen from `eye`, drawn offscreen at `size` and read back.

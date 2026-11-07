@@ -35,6 +35,8 @@ different.
 - `torque-gui`: buttons, popups and slider thumbs drawn as rounded boxes; `GuiExtension::classic_boxes` keeps TGE's
   beveled ones.
 - `torque-fonts`: system fonts on Linux and macOS, with metric-compatible free faces in place of missing ones.
+- `torque::app::gizmos`: debug lines, boxes, spheres, arrows, crosses and text labels in world space (`GizmosPlugin`, not in
+  `DefaultPlugins`; the `gizmos` feature), from Rust and as console functions (`drawDebugLine` and kin); TGE has none.
 
 #### Web and networking
 

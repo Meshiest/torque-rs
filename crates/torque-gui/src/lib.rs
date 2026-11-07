@@ -80,7 +80,7 @@ pub use control::{
     awaken, bounds, children, flag, is_a, parent, parent_resized, point, resize, screen_position,
     sleep,
 };
-pub use draw::{DrawCache, GuiDraws, draw_canvas, run_callbacks};
+pub use draw::{DrawCache, GuiDraws, TextLook, draw_canvas, run_callbacks};
 pub use ext::{FontSource, GuiExtension, NoExtension};
 pub use input::{CursorShape, hover_cursor};
 

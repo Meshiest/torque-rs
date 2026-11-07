@@ -52,6 +52,10 @@ impl<G: App> Seat<G> {
         }
         let (gui, eye) = self.game.frame(&mut self.view);
         let eye = self.eye.unwrap_or(eye);
+        // A frame ages the debug gizmos by its step, not by how long the machine took to draw it.
+        #[cfg(feature = "gizmos")]
+        self.view
+            .set_gizmo_frame_seconds(Some(FRAME_MS as f32 / 1000.0));
         self.view.draw(gpu, &self.target.color, &gui, eye)?;
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
         self.game.host().frame_drawn(real_ms);
@@ -80,6 +84,9 @@ impl<G: App> Seat<G> {
         for _ in 0..SETTLE_FRAMES {
             let (_, eye) = self.game.frame(&mut self.view);
             let eye = self.eye.unwrap_or(eye);
+            #[cfg(feature = "gizmos")]
+            self.view
+                .set_gizmo_frame_seconds(Some(FRAME_MS as f32 / 1000.0));
             self.view.draw_world(&self.target.color, rect, eye)?;
         }
         gpu.read_back(&self.target).map_err(|e| e.to_string())

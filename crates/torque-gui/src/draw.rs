@@ -410,6 +410,150 @@ impl DrawCache {
     }
 }
 
+/// How [`DrawCache::push_text`] draws a text: the font's face and size, the color, and the color of the outline one pixel around it
+/// (none: no outline).
+#[derive(Debug, Clone, Copy)]
+pub struct TextLook<'a> {
+    pub face: &'a str,
+    pub size: i32,
+    pub color: [u8; 4],
+    pub outline: Option<[u8; 4]>,
+}
+
+/// What one run of glyphs is drawn with: the clip rectangle, the opacity, and the font (with its face and size, the key of its
+/// sheets' textures).
+struct GlyphRun<'a> {
+    clip: [i32; 4],
+    alpha: f32,
+    font: &'a Arc<torque_fonts::Font>,
+    face: &'a str,
+    size: i32,
+}
+
+impl DrawCache {
+    /// `dglDrawTextN`'s quads for `text` at `at`, pushed to `draws`: the pen's advance. A run cut by the quad budget or the
+    /// sheets' caps is marked in `draws.report.truncated`.
+    fn glyph_quads(
+        &mut self,
+        draws: &mut GuiDraws,
+        run: GlyphRun<'_>,
+        at: (i32, i32),
+        text: &[u8],
+        colors: &mut TextColors,
+        table: Option<&[[u8; 4]]>,
+    ) -> i32 {
+        let GlyphRun {
+            clip,
+            alpha,
+            font,
+            face,
+            size,
+        } = run;
+        // At most one quad a byte: the text is cut to what the budget has left.
+        let left = MAX_QUADS.saturating_sub(draws.pushed);
+        if left == 0 {
+            draws.report.truncated = true;
+            return 0;
+        }
+        let text = &text[..text.len().min(left)];
+        let layout = font.layout(at, text, colors, table, 9);
+        let advance = layout.advance;
+        self.saved_color = colors.saved;
+        draws.report.invalid_glyphs += layout.invalid;
+        for q in layout.quads {
+            if draws.full() {
+                draws.report.truncated = true;
+                return advance;
+            }
+            let key = (face.to_ascii_lowercase(), size, q.sheet);
+            let tex = match self.sheets.get(&key) {
+                Some(t) => t.clone(),
+                None => {
+                    if self.sheets.len() >= MAX_SHEET_TEXTURES
+                        || self.sheet_bytes >= MAX_SHEET_BYTES
+                    {
+                        draws.report.truncated = true;
+                        continue;
+                    }
+                    let Some(t) = font.sheets.get(q.sheet).and_then(|s| {
+                        texture_of(&format!("font:{face}_{size}#{}", q.sheet), s, true, false)
+                    }) else {
+                        continue;
+                    };
+                    self.sheet_bytes += t.rgba.len();
+                    self.sheets.insert(key, t.clone());
+                    t
+                }
+            };
+            let mut color = q.color;
+            if alpha < 1.0 {
+                color[3] = (f32::from(color[3]) * alpha).round() as u8;
+            }
+            let quad = GuiQuad {
+                rect: q.rect.map(|v| v as f32),
+                uv: q.uv,
+                color,
+            };
+            draws.push(clip, Some(&tex), GuiBlend::Alpha, quad);
+        }
+        advance
+    }
+
+    /// The width and height in pixels of `text` in the font `face` at `size` (None: no font was found for them).
+    pub fn text_size(&mut self, face: &str, size: i32, text: &[u8]) -> Option<(i32, i32)> {
+        let font = self.fonts.font(face, size, &|_| None)?;
+        Some((font.str_width(text), font.height as i32))
+    }
+
+    /// Pushes the glyph quads of `text`, its top left corner at `at`, to `draws`, clipped to `clip` (left, top, width and
+    /// height), as `look` says. The fonts are found as the GUI's are, with no file of the game to read. Returns the text's width
+    /// in pixels, or None when no font was found for the face (counted in [`DrawReport::no_font`]).
+    pub fn push_text(
+        &mut self,
+        draws: &mut GuiDraws,
+        clip: [i32; 4],
+        at: (i32, i32),
+        text: &[u8],
+        look: &TextLook<'_>,
+    ) -> Option<i32> {
+        let TextLook {
+            face,
+            size,
+            color,
+            outline,
+        } = *look;
+        let Some(font) = self.fonts.font(face, size, &|_| None) else {
+            draws.report.no_font += 1;
+            if draws.report.missing_fonts.len() < 64 {
+                draws.report.missing_fonts.insert(format!("{face}_{size}"));
+            }
+            return None;
+        };
+        let run = || GlyphRun {
+            clip,
+            alpha: 1.0,
+            font: &font,
+            face,
+            size,
+        };
+        if let Some(outline) = outline {
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let mut colors = TextColors::new(outline, self.saved_color);
+                self.glyph_quads(
+                    draws,
+                    run(),
+                    (at.0 + dx, at.1 + dy),
+                    text,
+                    &mut colors,
+                    None,
+                );
+            }
+        }
+        let mut colors = TextColors::new(color, self.saved_color);
+        Some(self.glyph_quads(draws, run(), at, text, &mut colors, None))
+    }
+}
+
 /// A `ColorI` field: up to four integers (`%d %d %d %d`), the alpha 255 when absent, each kept to its low byte.
 pub fn color_i(text: &[u8]) -> [u8; 4] {
     let mut out = [0, 0, 0, 255];
@@ -1325,52 +1469,20 @@ impl Walk<'_> {
         colors: &mut TextColors,
         table: Option<&[[u8; 4]]>,
     ) -> i32 {
-        // At most one quad a byte: the text is cut to what the budget has left.
-        let left = MAX_QUADS.saturating_sub(self.out.draws.pushed);
-        if left == 0 {
-            self.out.draws.report.truncated = true;
-            return 0;
-        }
-        let text = &text[..text.len().min(left)];
-        let layout = font.layout(at, text, colors, table, 9);
-        let advance = layout.advance;
-        self.cache.saved_color = colors.saved;
-        self.out.draws.report.invalid_glyphs += layout.invalid;
-        for q in layout.quads {
-            if self.out.draws.full() {
-                self.out.draws.report.truncated = true;
-                return advance;
-            }
-            let key = (face.to_ascii_lowercase(), size, q.sheet);
-            let tex = match self.cache.sheets.get(&key) {
-                Some(t) => t.clone(),
-                None => {
-                    if self.cache.sheets.len() >= MAX_SHEET_TEXTURES
-                        || self.cache.sheet_bytes >= MAX_SHEET_BYTES
-                    {
-                        self.out.draws.report.truncated = true;
-                        continue;
-                    }
-                    let Some(t) = font.sheets.get(q.sheet).and_then(|s| {
-                        texture_of(&format!("font:{face}_{size}#{}", q.sheet), s, true, false)
-                    }) else {
-                        continue;
-                    };
-                    self.cache.sheet_bytes += t.rgba.len();
-                    self.cache.sheets.insert(key, t.clone());
-                    t
-                }
-            };
-            let quad = GuiQuad {
-                rect: q.rect.map(|v| v as f32),
-                uv: q.uv,
-                color: self.faded(q.color),
-            };
-            self.out
-                .draws
-                .push(self.clip, Some(&tex), GuiBlend::Alpha, quad);
-        }
-        advance
+        self.cache.glyph_quads(
+            &mut self.out.draws,
+            GlyphRun {
+                clip: self.clip,
+                alpha: self.alpha,
+                font,
+                face,
+                size,
+            },
+            at,
+            text,
+            colors,
+            table,
+        )
     }
 
     /// The cursor (the end of `renderFrame`); notes whether it was drawn ([`crate::GuiState::cursor_drawn`]).

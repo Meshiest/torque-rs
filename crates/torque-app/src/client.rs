@@ -391,6 +391,12 @@ impl<S> GameClient<S> {
         self.host.server.vm_mut()
     }
 
+    /// The client's debug gizmos (None: its engine has no [`GizmosPlugin`](crate::gizmos::GizmosPlugin)).
+    #[cfg(feature = "gizmos")]
+    pub fn gizmos(&self) -> Option<Rc<crate::gizmos::Gizmos>> {
+        crate::gizmos::Gizmos::of(self.vm())
+    }
+
     /// A key going down or up, as the window posts it.
     pub fn key(&mut self, key: Key, down: bool) {
         let (msg, wparam, lparam) = key_message(key, down, false, false);
