@@ -325,7 +325,17 @@ impl GameServer {
 
     /// Runs as a dedicated server: a tick every 32 ms of the wall clock (catching up from now when behind, rather than running
     /// a burst of ticks), each console line handed to `print`, until `ticks` ticks ran (forever with none).
-    pub fn run_dedicated(&mut self, ticks: Option<u64>, mut print: impl FnMut(&str)) {
+    pub fn run_dedicated(&mut self, ticks: Option<u64>, print: impl FnMut(&str)) {
+        self.run_dedicated_until(|done| ticks.is_some_and(|t| done >= t), print);
+    }
+
+    /// [`run_dedicated`](Self::run_dedicated) until `stop`, asked after each tick with the number of ticks run so far, says
+    /// so.
+    pub fn run_dedicated_until(
+        &mut self,
+        mut stop: impl FnMut(u64) -> bool,
+        mut print: impl FnMut(&str),
+    ) {
         let tick = Duration::from_millis(u64::from(TICK_MS));
         let mut next = Instant::now();
         let mut done = 0u64;
@@ -344,7 +354,7 @@ impl GameServer {
                 }
             }
             done += 1;
-            if ticks.is_some_and(|t| done >= t) {
+            if stop(done) {
                 break;
             }
             next += tick;

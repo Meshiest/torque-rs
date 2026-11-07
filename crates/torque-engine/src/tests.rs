@@ -1058,3 +1058,92 @@ fn ids_known_only_at_run_time() {
     assert!(builder.is_plugin_added_id("ext.one"));
     assert!(!builder.is_plugin_added_id("ext.two"));
 }
+
+/// A runner that records the plugins it was given, or fails with `fail`.
+struct Recording {
+    seen: Rc<std::cell::RefCell<Vec<PluginId>>>,
+    fail: Option<&'static str>,
+}
+
+impl crate::Runner for Recording {
+    fn run(&self, engine: &Engine) -> Result<(), String> {
+        self.seen.borrow_mut().extend_from_slice(engine.plugins());
+        self.fail.map_or(Ok(()), |m| Err(m.to_string()))
+    }
+}
+
+fn runner_plugin(runner: Recording) -> P<R> {
+    p::<R>().on_build(move |engine| {
+        engine.set_slot::<dyn crate::Runner>(Rc::new(Recording {
+            seen: Rc::clone(&runner.seen),
+            fail: runner.fail,
+        }));
+    })
+}
+
+#[test]
+fn run_builds_the_engine_and_hands_it_to_the_runner() {
+    let seen = Rc::default();
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins((
+        p::<A>(),
+        runner_plugin(Recording {
+            seen: Rc::clone(&seen),
+            fail: None,
+        }),
+    ));
+    builder.run().expect("runs");
+    assert_eq!(*seen.borrow(), [id("a"), id("r")]);
+}
+
+#[test]
+fn run_without_a_runner_says_so() {
+    let err = EngineBuilder::new().add_plugins(p::<A>()).run();
+    assert_eq!(err, Err(crate::RunError::NoRunner));
+    assert!(err.unwrap_err().to_string().contains("no runner"));
+}
+
+#[test]
+fn a_build_error_comes_out_of_run_and_the_runner_never_runs() {
+    let seen = Rc::default();
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins((
+        p::<A>(),
+        p::<AlsoA>(),
+        runner_plugin(Recording {
+            seen: Rc::clone(&seen),
+            fail: None,
+        }),
+    ));
+    let err = builder.run().unwrap_err();
+    assert!(matches!(
+        err,
+        crate::RunError::Build(BuildError::DuplicatePlugin { .. })
+    ));
+    assert!(
+        err.to_string().starts_with("the engine did not build:"),
+        "{err}"
+    );
+    assert!(seen.borrow().is_empty());
+}
+
+#[test]
+fn the_runners_error_comes_out_of_run_as_it_stands() {
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(runner_plugin(Recording {
+        seen: Rc::default(),
+        fail: Some("the window did not open"),
+    }));
+    let err = builder.run().unwrap_err();
+    assert_eq!(
+        err,
+        crate::RunError::Failed("the window did not open".to_string())
+    );
+    assert_eq!(err.to_string(), "the window did not open");
+}
+
+#[test]
+fn run_exit_is_a_failure_code_for_an_error() {
+    use std::process::ExitCode;
+    assert_eq!(EngineBuilder::new().run_exit(), ExitCode::FAILURE);
+}

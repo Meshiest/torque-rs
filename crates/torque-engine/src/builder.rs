@@ -292,7 +292,7 @@ impl EngineBuilder {
         let mut k = 0;
         while k < this.build_order.len() && this.error.is_none() {
             let i = this.build_order[k];
-            this.run(i, |plugin, engine| plugin.finish(engine));
+            this.run_plugin(i, |plugin, engine| plugin.finish(engine));
             k += 1;
         }
         if let Some(err) = this.error.take() {
@@ -545,13 +545,13 @@ impl EngineBuilder {
                 continue;
             }
             self.built[i] = true;
-            self.run(i, |plugin, engine| plugin.build(engine));
+            self.run_plugin(i, |plugin, engine| plugin.build(engine));
             self.build_order.push(i);
         }
     }
 
     /// Runs `f` on entry `i`'s plugin, with this builder filed under it.
-    fn run(&mut self, i: usize, f: impl FnOnce(&dyn crate::Plugin, &mut EngineBuilder)) {
+    fn run_plugin(&mut self, i: usize, f: impl FnOnce(&dyn crate::Plugin, &mut EngineBuilder)) {
         let Some(plugin) = self.entries[i].plugin.take() else {
             return;
         };

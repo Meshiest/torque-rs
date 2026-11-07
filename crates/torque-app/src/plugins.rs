@@ -21,6 +21,7 @@
 //! | [`ServerQueryPlugin`] | `torque.server-query` | client, `Query` | `torque_client::query::register` |
 //! | [`ClientHostPlugin`] | `torque.frame-host` | client, `Host` | what [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the host of |
 //! | [`PageBridgePlugin`] | `torque.page-bridge` | client, `Window` (web builds) | [`page_bridge::install`](crate::page_bridge::install) |
+//! | [`RunnerPlugin`] | `torque.runner` | the engine's runner slot | [`run`](crate::run): the window, the page, a dedicated server, offscreen |
 //!
 //! A game that needs only a part of this takes the group and turns plugins off (`DefaultPlugins.disable::<WaterPlugin>()`),
 //! or adds the plugins it wants one by one.
@@ -33,7 +34,8 @@ use torque_client::game::ClientGame;
 use torque_client::host::{ClientPass, EnginePass};
 use torque_client::state::ClientState;
 use torque_engine::{
-    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires, ServerStage,
+    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires, Runner,
+    ServerStage,
 };
 use torque_game::sim_classes::SimClasses;
 use torque_gui::{DrawCache, Gui};
@@ -78,6 +80,7 @@ impl PluginGroup for DefaultPlugins {
             .add(ServerQueryPlugin)
             .add(ClientHostPlugin)
             .add(PageBridgePlugin)
+            .add(RunnerPlugin)
     }
 }
 
@@ -440,6 +443,20 @@ impl Plugin for PageBridgePlugin {
                 Ok(())
             });
         }
+    }
+}
+
+/// What [`Engine::run`](torque_engine::Engine::run) does: sets the engine's runner slot to the runners built in today (the
+/// window, the page's canvas, a dedicated server, offscreen), which the [`RunMode`](crate::run::RunMode) the host chose
+/// picks between. See [`run`](crate::run).
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.runner")]
+pub struct RunnerPlugin;
+
+impl Plugin for RunnerPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        let runner: Rc<dyn Runner> = Rc::new(crate::run::AppRunner);
+        engine.set_slot::<dyn Runner>(runner);
     }
 }
 

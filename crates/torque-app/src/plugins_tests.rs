@@ -19,8 +19,8 @@ use torque_ts_vm::vm::Vm;
 use crate::client::{ClientBuilder, ClientNet, ClientSetup};
 use crate::plugins::{
     ActionMapPlugin, ClientHostPlugin, ConnPlugin, DefaultPlugins, GameClassesPlugin, GuiPlugin,
-    NetHostPlugin, PageBridgePlugin, ScreenPlugin, ServerGamePlugin, ServerQueryPlugin,
-    SimClassesPlugin, TerrainPlugin, WaterPlugin,
+    NetHostPlugin, PageBridgePlugin, RunnerPlugin, ScreenPlugin, ServerGamePlugin,
+    ServerQueryPlugin, SimClassesPlugin, TerrainPlugin, WaterPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -81,6 +81,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ServerQueryPlugin::ID,
             ClientHostPlugin::ID,
             PageBridgePlugin::ID,
+            RunnerPlugin::ID,
         ]
     );
     assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
@@ -108,6 +109,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.server-query",
             "torque.frame-host",
             "torque.page-bridge",
+            "torque.runner",
         ]
     );
 }

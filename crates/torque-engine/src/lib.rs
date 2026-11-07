@@ -4,7 +4,8 @@
 //! [`EngineBuilder`]: other **plugins** it builds on, **recipes** that run on every new server or client script engine at a named [`Stage`], **resources**
 //! shared by all of them, **slots** that exactly one plugin may set, and **lists** that any plugin may add to. The
 //! result is an [`Engine`]: frozen, cheap to clone, and replayed into each script engine as it is made, so a game can
-//! start a server many times from one engine. A dedicated server replays only the server recipes.
+//! start a server many times from one engine. A dedicated server replays only the server recipes. The plugin that sets the
+//! [`Runner`] slot says what [`EngineBuilder::run`] does with the built engine (open a window, serve a game).
 //!
 //! A plugin is known by its stable [`PluginId`](struct@PluginId), given by `#[derive(PluginId)]` or by hand
 //! ([`PluginType`]), or reported at run time by a loaded extension ([`Plugin::id`]). Code names plugins by type
@@ -68,6 +69,7 @@ mod engine;
 mod group;
 mod plugin;
 mod recipe;
+mod run;
 mod slots;
 
 #[cfg(test)]
@@ -78,6 +80,7 @@ pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
 pub use plugin::{Plugin, PluginId, PluginSet, PluginType, Requires};
 pub use recipe::{ClientStage, RecipeError, ServerStage, Stage};
+pub use run::{RunError, Runner};
 /// Implements [`PluginType`] for a plugin type: the id is the package's name and the type's, as a path
 /// (`my_game::ArenaPlugin`), or `#[plugin(id = "...")]`. `#[plugin(crate = path)]` names this crate when it is reached
 /// through another path, such as `torque::engine`. See [`PluginType`].
