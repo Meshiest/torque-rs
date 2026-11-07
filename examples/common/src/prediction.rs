@@ -11,7 +11,10 @@
 //! - **A terrain** ([`CubeClient::with_terrain`]): a map's `TerrainBlock` read from the same file the server reads, offered as
 //!   the index's static object ([`TerrainSet`]), so the own figure stands on it and the vehicles the client runs drive on it. A
 //!   game of several maps changes it as it starts each map ([`CubeClient::set_terrain`]).
-//! - **The figure's poses** ([`crate::figure_poses`]): crouched and prone, as the servers' datablocks give them.
+//! - **The water** ([`CubeClient::set_water`]): a map's `WaterBlock`s read from the map the server runs ([`Water`]), offered
+//!   as the index's water ([`StaticIndex::zones`]), so the own figure floats and swims in them as the server's does.
+//! - **The figure's poses** ([`crate::figure_poses`], or a game's own: [`CubeClient::set_poses`]): crouched and prone, as the
+//!   servers' datablocks give them.
 //! - **Smooth aim** ([`PredictGame::smooth_aim`]): the view turns with the mouse within the frame, ahead of the last tick by
 //!   what the next move will make of the waiting turn, instead of a tick or two behind it. The moves are unchanged.
 //!
@@ -28,11 +31,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use torque::app::terrain::{Terrain, TerrainSet};
+use torque::app::water::Water;
 use torque::client::conn::tge::TgeWorld;
 use torque::client::game::ClientGame;
 use torque::client::predict::drive::ShapeCache;
 use torque::client::predict::game::{PredictGame, Prediction};
 use torque::client::predict::{FileReader, Object, Source, StaticIndex, StaticSet, view_of};
+use torque::collide::ObjectId;
 use torque::collide::convex::ConvexSource;
 use torque::collide::map::{InteriorShape, MapShape};
 use torque::collide::math::F3;
@@ -43,6 +48,8 @@ use torque::ghost_world::tge::TgeClientSet;
 use torque::ghosts::{TgeClass, TgeRecord};
 use torque::script::vm::host::MemFiles;
 use torque::script::vm::vm::Vm;
+use torque::sim::player::PoseData;
+use torque::sim::player::host::ZoneView;
 use torque_render_scene::mounts::pose_matrix;
 
 /// A StaticShape's type bits (`StaticShapeObjectType`, `ShapeBaseObjectType`, `GameBaseObjectType`, `StaticObjectType`), as the
@@ -66,6 +73,10 @@ pub struct CubeClient {
     files: MemFiles,
     /// The map's terrain, shared with the prediction's static index.
     terrain: Rc<RefCell<TerrainSet>>,
+    /// The map's water, shared with the prediction's static index.
+    water: Rc<RefCell<Vec<ZoneView>>>,
+    /// The figure's poses the prediction gives the own Player.
+    poses: Rc<std::cell::Cell<PoseData>>,
 }
 
 impl std::fmt::Debug for CubeClient {
@@ -88,14 +99,20 @@ impl CubeClient {
         player: Option<Rc<dyn PlayerKind>>,
     ) -> CubeClient {
         let terrain = Rc::new(RefCell::new(terrain_set(terrain)));
+        let water = Rc::new(RefCell::new(Vec::new()));
+        let poses = Rc::new(std::cell::Cell::new(crate::figure_poses()));
         CubeClient {
             prediction: Rc::new(Prediction(Rc::new(CubePrediction {
                 files: files.clone(),
                 terrain: Rc::clone(&terrain),
+                water: Rc::clone(&water),
+                poses: Rc::clone(&poses),
                 player,
             }))),
             files,
             terrain,
+            water,
+            poses,
         }
     }
 
@@ -103,6 +120,26 @@ impl CubeClient {
     pub fn set_terrain(&self, terrain: Option<&Terrain>) {
         *self.terrain.borrow_mut() = terrain_set(terrain);
     }
+
+    /// The water the own figure swims in from now on (the map's water blocks, none for a map without).
+    pub fn set_water(&self, water: &[Water]) {
+        *self.water.borrow_mut() = water
+            .iter()
+            .enumerate()
+            .map(|(k, w)| w.zone(water_id(k as u32)))
+            .collect();
+    }
+
+    /// The figure's poses the prediction gives the own Player from now on (the game's server's datablock's: by default
+    /// [`crate::figure_poses`]).
+    pub fn set_poses(&self, poses: PoseData) {
+        self.poses.set(poses);
+    }
+}
+
+/// The client's id of the `k`th water block (above any ghost's and any terrain's).
+pub fn water_id(k: u32) -> ObjectId {
+    ObjectId(0x7e00_0000 | k)
 }
 
 fn terrain_set(terrain: Option<&Terrain>) -> TerrainSet {
@@ -130,6 +167,8 @@ impl ClientGame for CubeClient {
 pub struct CubePrediction {
     files: MemFiles,
     terrain: Rc<RefCell<TerrainSet>>,
+    water: Rc<RefCell<Vec<ZoneView>>>,
+    poses: Rc<std::cell::Cell<PoseData>>,
     player: Option<Rc<dyn PlayerKind>>,
 }
 
@@ -144,6 +183,7 @@ impl PredictGame<TgeWorld> for CubePrediction {
             shapes: ShapeCache::default(),
             interiors: Rc::default(),
             terrain: Rc::clone(&self.terrain),
+            water: Rc::clone(&self.water),
         }))
     }
 
@@ -153,10 +193,10 @@ impl PredictGame<TgeWorld> for CubePrediction {
     }
 
     /// TGE's products, with the figure's poses: the servers give them in fields a datablock record does not carry
-    /// ([`crate::figure_poses`]).
+    /// ([`crate::figure_poses`], or the game's own: [`CubeClient::set_poses`]).
     fn player_preload(&self, d: &mut torque::sim::player::PlayerData) {
         d.preload();
-        d.poses = crate::figure_poses();
+        d.poses = self.poses.get();
     }
 
     /// The game's Player class when it has its own, else TGE's.
@@ -178,6 +218,7 @@ pub struct CubeStatics {
     /// The interiors' files read (by path; `None` for one that did not read).
     interiors: Rc<RefCell<HashMap<Vec<u8>, Option<KeptInterior>>>>,
     terrain: Rc<RefCell<TerrainSet>>,
+    water: Rc<RefCell<Vec<ZoneView>>>,
 }
 
 impl CubeStatics {
@@ -244,6 +285,11 @@ impl StaticIndex<TgeWorld> for CubeStatics {
         let _ = (world, reader, near, work, budget);
         let terrain = self.terrain.borrow();
         (!terrain.is_empty()).then(|| Box::new(terrain.clone()) as Box<dyn StaticSet>)
+    }
+
+    /// The map's water.
+    fn zones(&self, out: &mut Vec<ZoneView>) {
+        out.extend(self.water.borrow().iter().cloned());
     }
 
     /// A StaticShape ghost: its shape's collision hulls at its pose and scale; an InteriorInstance ghost: its interior's hulls.

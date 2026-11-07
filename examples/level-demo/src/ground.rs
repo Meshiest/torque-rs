@@ -46,6 +46,8 @@ pub struct MapGround {
     /// The terrain's materials' textures, in the file's order.
     pub layers: Vec<String>,
     pub water: Option<WaterSheet>,
+    /// Every `WaterBlock` as water the own figure swims in, read as the server reads it (the client's prediction's).
+    pub waters: Vec<torque::app::water::Water>,
     /// Whether the ground's textures are varied against visible tiling.
     pub variation: bool,
     /// How many times as fast as the clock the clouds run (0: on the effect time, as every other map's).
@@ -61,6 +63,10 @@ impl MapGround {
             }),
             cloud_time_scale: cloud_time_scale(text),
             water: water_of(text),
+            waters: blocks(text, "WaterBlock")
+                .iter()
+                .filter_map(|b| torque::app::water::Water::from_fields(&|name| field(b, name)))
+                .collect(),
             ..MapGround::default()
         };
         if let Some(block) = blocks(text, "TerrainBlock").into_iter().next() {
