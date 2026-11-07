@@ -4,7 +4,9 @@
 //! into `dir` instead (no window).
 
 use torque::app::cli::{Args, unknown};
-use torque_example_character::game::CharacterGame;
+use torque::app::plugins::RunnerPlugin;
+use torque::engine::EngineBuilder;
+use torque_example_character::game::CharacterPlugin;
 use torque_example_character::shots;
 
 /// The pictures' size.
@@ -25,7 +27,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", path.display());
             }
         }
-        None => torque::app::window::run(CharacterGame::new()?)?,
+        None => EngineBuilder::new()
+            .add_plugins((RunnerPlugin, CharacterPlugin))
+            .run()?,
     }
     Ok(())
 }
