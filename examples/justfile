@@ -266,6 +266,11 @@ poses-clip dir="../target/poses-clip":
 swim-clip dir="../target/swim-clip":
     cargo run -p torque-example-common --release --example poses-clip -- {{dir}} swim
 
+# The blends out of the water onto land at a run and back in, from the side: a clip, one four times slower and a sheet of each
+# blend, drawn offscreen into `dir` (the clips need ffmpeg)
+swim-exit-clip dir="../target/swim-exit-clip":
+    cargo run -p torque-example-common --release --example poses-clip -- {{dir}} swim-exit
+
 # The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
 # `--name`, `--map`, `--ticks N` (stop after N ticks)
 fps-server *args:

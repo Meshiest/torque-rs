@@ -54,6 +54,7 @@ pub mod math;
 pub mod matlist;
 pub mod preload;
 pub mod shape;
+pub mod swing;
 pub mod synth;
 pub mod write;
 

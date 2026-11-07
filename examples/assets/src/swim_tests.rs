@@ -149,9 +149,13 @@ type Part = (String, [f32; 16], [f32; 3], [f32; 3]);
 
 /// The figure's hitboxes at the pose `threads` give.
 fn parts(shape: &Shape, threads: &[(&str, f32)]) -> Vec<Part> {
+    parts_of(shape, &posed(shape, threads))
+}
+
+/// The figure's hitboxes as `inst` stands.
+fn parts_of(shape: &Shape, inst: &ShapeInstance) -> Vec<Part> {
     let facts = preload::facts(shape, &mut free).unwrap();
     let los = facts.slots.los[0] as usize;
-    let inst = posed(shape, threads);
     let mut out = Vec::new();
     for o in &shape.objects {
         let Some(Some(mesh)) = shape.meshes.get(o.start_mesh_index as usize + los) else {
@@ -443,4 +447,92 @@ fn the_swimming_arm_actions_raise_the_right_arm_ahead_and_the_rest_swims_on() {
         }
     }
     assert_eq!(checked, 4 * 8 * 2);
+}
+
+/// The deepest any arm part passes into the torso, the head or a thigh, or a leg part into the other leg's, over the blend
+/// into or out of the water a Player's action thread plays (swung, eased) from `from` at `from_pos` to `to` at `to_pos`: the
+/// pair and the blend's share then.
+fn worst_through(
+    shape: &Shape,
+    from: &str,
+    from_pos: f32,
+    to: &str,
+    to_pos: f32,
+) -> (f32, String, f32) {
+    let mut inst = ShapeInstance::new(shape, &mut free).unwrap();
+    let t = inst.create_thread(shape).unwrap();
+    let seq = |n: &str| find_sequence(shape, n.as_bytes()).unwrap();
+    inst.set_sequence(shape, t, seq(from) as i32, from_pos);
+    inst.animate(shape, 0, None, &mut free).unwrap();
+    inst.transition_to_sequence_swung(shape, t, seq(to), to_pos, SWIM_BLEND);
+    let arms = ["lforearm", "lhand", "rforearm", "rhand"];
+    let core = ["torso", "head", "lleg", "rleg"];
+    let left = ["lleg", "lshin", "lfoot"];
+    let right = ["rleg", "rshin", "rfoot"];
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for a in arms {
+        pairs.extend(core.iter().map(|c| (a, *c)));
+    }
+    for l in left {
+        pairs.extend(right.iter().map(|r| (l, *r)));
+    }
+    let steps = 40;
+    let mut worst = (0.0f32, String::new(), 0.0f32);
+    for k in 0..=steps {
+        if k > 0 {
+            inst.advance_time(shape, t, SWIM_BLEND / steps as f32);
+        }
+        inst.animate(shape, 0, None, &mut free).unwrap();
+        let all = parts_of(shape, &inst);
+        let get = |n: &str| all.iter().find(|p| p.0 == n).unwrap();
+        for (a, b) in &pairs {
+            let d = depth(get(a), get(b)).max(depth(get(b), get(a)));
+            if d > worst.0 {
+                worst = (d, format!("{a} into {b}"), k as f32 / steps as f32);
+            }
+        }
+    }
+    worst
+}
+
+/// The blend into or out of swimming (`SWIM_BLEND` in the engine's poses), seconds.
+const SWIM_BLEND: f32 = 0.4;
+
+#[test]
+fn no_part_passes_into_another_going_into_or_out_of_the_water() {
+    let shape = figure();
+    let swims = ["swim_forward", "swim_root", "swim_side", "swim_backward"];
+    let lands = [
+        "run",
+        "walk",
+        "root",
+        "back",
+        "side",
+        "crouch_root",
+        "crouch_forward",
+    ];
+    let mut bad = Vec::new();
+    for s in swims {
+        for l in lands {
+            for k in 0..8 {
+                let p = k as f32 / 8.0;
+                for (from, to) in [(s, l), (l, s)] {
+                    let (d, pair, at) = worst_through(&shape, from, p, to, 0.0);
+                    if d >= OVERLAP {
+                        bad.push(format!("{from}@{p} -> {to}: {pair} {d:.3} at {at:.2}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} blends pass through:
+{}",
+        bad.len(),
+        bad.join(
+            "
+"
+        )
+    );
 }

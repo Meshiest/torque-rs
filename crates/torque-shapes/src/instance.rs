@@ -46,6 +46,7 @@ use std::cmp::Ordering;
 use crate::library;
 use crate::math::{self, IDENTITY, Matrix, quat16};
 use crate::shape::{IntSet, Sequence, Shape};
+use crate::swing;
 use crate::{Charge, ShapeError};
 
 /// Nodes a six-word set (`TSIntegerSet`) can name.
@@ -165,6 +166,9 @@ pub struct Transition {
     /// The blend eases in and out (smoothstep of the position) instead of running straight: an addition of this crate, not
     /// part of Torque ([`ShapeInstance::transition_to_sequence_eased`]).
     pub eased: bool,
+    /// With `eased`, the limbs swing in the shape's space, out to their sides (an addition of this crate,
+    /// [`ShapeInstance::transition_to_sequence_swung`]).
+    pub swung: bool,
 }
 
 impl Thread {
@@ -682,6 +686,27 @@ impl ShapeInstance {
         }
     }
 
+    /// [`Self::transition_to_sequence_eased`] with the limbs swinging in the shape's space (the engine's own, [`swing`]): each
+    /// arm and leg swings from where it pointed to where it points, out to its own side on the way, and turns about itself
+    /// meanwhile, however its parent turns. For a change of the whole body's pose (out of the water: the body lying
+    /// face down comes upright as the arms come down from over the head), where blending each limb under its parent would
+    /// swing it through the body.
+    pub fn transition_to_sequence_swung(
+        &mut self,
+        shape: &Shape,
+        id: ThreadId,
+        seq: usize,
+        pos: f32,
+        duration: f32,
+    ) {
+        self.transition_to_sequence_eased(shape, id, seq, pos, duration);
+        if let Some(th) = self.arena.get_mut(id.0).and_then(Option::as_mut)
+            && th.transition.in_transition
+        {
+            th.transition.swung = true;
+        }
+    }
+
     /// `TSShapeInstance::transitionToSequence` (the thread's half included): the thread moves to sequence `seq` at `pos`
     /// over `duration` seconds, blending from the pose the instance has now, and goes on playing meanwhile (`continuePlay`: the
     /// target scale 1). A sequence the shape does not have changes nothing.
@@ -730,6 +755,7 @@ impl ShapeInstance {
         tr.target_scale = 1.0;
         tr.in_transition = true;
         tr.eased = false;
+        tr.swung = false;
         thread.set_sequence(shape, seq as i32, pos);
         let old = thread.transition;
         self.set_all_dirty();
@@ -858,7 +884,8 @@ impl ShapeInstance {
                     .is_some_and(|th| th.transition.in_transition)
             })
         };
-        let pick = |n: usize, set: Option<usize>, rot: bool| -> Option<f32> {
+        // The transition's weight for node `n` (smoothstepped when it eases) and whether its limbs swing.
+        let pick = |n: usize, set: Option<usize>, rot: bool| -> Option<(f32, bool)> {
             let t = in_transition(set).or_else(|| {
                 self.transition_threads.iter().copied().find(|t| {
                     let Some(th) = self.arena.get(*t).and_then(Option::as_ref) else {
@@ -878,25 +905,51 @@ impl ShapeInstance {
                 let p = th.transition.pos;
                 if th.transition.eased {
                     let u = p.clamp(0.0, 1.0);
-                    u * u * (3.0 - 2.0 * u)
+                    (u * u * (3.0 - 2.0 * u), th.transition.swung)
                 } else {
-                    p
+                    (p, false)
                 }
             })
         };
-        for n in members_range(&self.transition_rotation_nodes, a, b) {
-            let Some(p) = pick(n, set_by.0.get(n).copied().flatten(), true) else {
-                continue;
-            };
-            let r = self
-                .reference_rotations
-                .get(n)
-                .copied()
-                .unwrap_or([0, 0, 0, 32767]);
-            rotations[n] = interpolate_quat(quat16(r), rotations[n], p);
+        let reference = |n: usize| {
+            quat16(
+                self.reference_rotations
+                    .get(n)
+                    .copied()
+                    .unwrap_or([0, 0, 0, 32767]),
+            )
+        };
+        let swung = self.transition_threads.iter().any(|t| {
+            self.arena
+                .get(*t)
+                .and_then(Option::as_ref)
+                .is_some_and(|th| th.transition.in_transition && th.transition.swung)
+        });
+        if swung {
+            // Only the first `SET_BITS` nodes can be in a transition; the nodes past them (and so their children) are left.
+            let end = b.min(SET_BITS).max(a);
+            let mut weights = [None; SET_BITS];
+            for (n, w) in (a..end).zip(weights.iter_mut()) {
+                if set_has(&self.transition_rotation_nodes, n) {
+                    *w = pick(n, set_by.0.get(n).copied().flatten(), true);
+                }
+            }
+            swing::blend(
+                shape,
+                a,
+                &weights[..end - a],
+                reference,
+                &mut rotations[a..end],
+            );
+        } else {
+            for n in members_range(&self.transition_rotation_nodes, a, b) {
+                if let Some((p, _)) = pick(n, set_by.0.get(n).copied().flatten(), true) {
+                    rotations[n] = interpolate_quat(reference(n), rotations[n], p);
+                }
+            }
         }
         for n in members_range(&self.transition_translation_nodes, a, b) {
-            let Some(p) = pick(n, set_by.1.get(n).copied().flatten(), false) else {
+            let Some((p, _)) = pick(n, set_by.1.get(n).copied().flatten(), false) else {
                 continue;
             };
             let r = self

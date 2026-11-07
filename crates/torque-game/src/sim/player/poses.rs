@@ -369,6 +369,13 @@ pub fn blend_for(sets: &PoseSets, from: usize, to: usize) -> Option<f32> {
     }
 }
 
+/// Whether the change from action `from` to action `to` goes into or out of the water: its blend swings the limbs
+/// ([`ShapeInstance::transition_to_sequence_swung`](shapes::instance::ShapeInstance::transition_to_sequence_swung)),
+/// so an arm raised over the head as the body lies in the water comes down by the side rather than through the head.
+pub fn swings(sets: &PoseSets, from: usize, to: usize) -> bool {
+    swim_change(sets.pose_of(from), sets.pose_of(to))
+}
+
 /// Whether a change from pose `from` to `to` goes into or out of swimming (swimming is as low as standing, so the lowness
 /// alone does not tell).
 fn swim_change(from: Pose, to: Pose) -> bool {

@@ -131,6 +131,7 @@ impl HostSkeleton {
         // An action of another pose blends in slower and eased, as the clients blend it.
         let sets = &self.info.pose_sets;
         let pose_blend = now.and_then(|(a, _)| super::poses::blend_for(sets, a, action as usize));
+        let swing = now.is_some_and(|(a, _)| super::poses::swings(sets, a, action as usize));
         let Some(st) = self.st.as_mut() else {
             return;
         };
@@ -142,6 +143,7 @@ impl HostSkeleton {
             force,
             blend: self.synced,
             pose_blend,
+            swing,
             start,
         };
         // The out-of-range line needs the console; the server's own calls never ask past the table.

@@ -1229,6 +1229,8 @@ pub struct ActionRequest {
     /// With `blend`, a change of pose ([`poses`](crate::sim::player::poses)): the action blends in over these seconds, eased,
     /// instead of the usual transition.
     pub pose_blend: Option<f32>,
+    /// With `pose_blend`, the limbs swing (into or out of the water, [`poses::swings`](crate::sim::player::poses::swings)).
+    pub swing: bool,
     /// Where in its sequence the action starts, when not at its start (forward) or end (backward): the engine's walk and run
     /// keep their place in the loop ([`keeps_phase`](crate::sim::player::synced::keeps_phase)).
     pub start: Option<f32>,
@@ -1272,6 +1274,9 @@ pub fn action_thread(st: &mut ShapeBaseState, action: usize, r: ActionRequest) -
                     t.time_scale = scale;
                 }
                 match r.pose_blend {
+                    Some(seconds) if r.swing => body
+                        .instance
+                        .transition_to_sequence_swung(shape, thread, seq, pos, seconds),
                     Some(seconds) => body
                         .instance
                         .transition_to_sequence_eased(shape, thread, seq, pos, seconds),
@@ -1350,6 +1355,7 @@ fn set_action_thread(vm: &mut Vm, c: &NativeCall) -> Native {
             force: true,
             blend: crate::scene::hitboxes::wanted(vm, id),
             pose_blend: None,
+            swing: false,
             start: None,
         };
         message = action_thread(&mut st, i, request);

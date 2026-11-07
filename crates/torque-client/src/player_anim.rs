@@ -45,7 +45,8 @@
 //! ([`PlayerMotion::pose`]: the client's own as it predicts it, another's as its record's move shows it, [`record_pose`])
 //! plays its pose's own actions when the shape has them (`crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`,
 //! `prone_root`, `swim_root`, ...), picked as the standing ones are; its server picks by the same rule. An action of another pose blends in
-//! over a longer, eased transition ([`poses::blend_for`]), so the body lowers and rises; between the crouch and prone the shape's
+//! over a longer, eased transition ([`poses::blend_for`]), so the body lowers and rises (into or out of the water with the limbs
+//! swinging, [`poses::swings`], so the arms over the head come down by the sides); between the crouch and prone the shape's
 //! way down or up (`prone_down`, `prone_up`; `prone_down_armed`, `prone_up_armed` when the shape has them and the arm
 //! action is not `look`) plays to its end first. A pose's moving action steps like
 //! the walk (by the ground covered when synced, held to [`synced::WALK_MAX_TIME_SCALE`]). An unheld pose action a record
@@ -499,6 +500,7 @@ impl PlayerAnimation {
                 .flatten();
         // An action of another pose blends in slower and eased (the engine's poses).
         let pose_blend = poses::blend_for(&self.pose_sets, self.action, action);
+        let swing = poses::swings(&self.pose_sets, self.action, action);
         self.action = action;
         self.forward = forward;
         self.wait = wait;
@@ -511,6 +513,10 @@ impl PlayerAnimation {
             t.time_scale = if forward { speed } else { -speed };
         }
         match pose_blend {
+            // Into or out of the water the limbs swing, so the arms come down by the sides rather than through the head.
+            Some(seconds) if swing => {
+                instance.transition_to_sequence_swung(shape, self.action_thread, seq, pos, seconds)
+            }
             Some(seconds) => {
                 instance.transition_to_sequence_eased(shape, self.action_thread, seq, pos, seconds)
             }

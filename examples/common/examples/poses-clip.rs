@@ -31,8 +31,12 @@
 //! client's animation from the pose and the velocity (treading, the breaststroke, backward, to the left and the right,
 //! pointing while treading and while swimming forward), as `swim-<name>.mp4`, and one of them all, `swim-all.mp4`.
 //!
-//! `cargo run -p torque-example-common --release --example poses-clip -- <dir> [transitions [slower] | point | swim]` (default
-//! `poses-clip`)
+//! With `swim-exit` after the folder, the clip is the blends out of and into the water: swimming forward, coming up to run
+//! on, then running back into the water, from the side, as `swim-exit.mp4` and four times slower as `swim-exit-x4.mp4`, with a
+//! sheet of the side view every 0.05 s through each blend (out of the water above, into it below) as `swim-exit.png`.
+//!
+//! `cargo run -p torque-example-common --release --example poses-clip -- <dir> [transitions [slower] | point | swim |
+//! swim-exit]` (default `poses-clip`)
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -200,6 +204,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if std::env::args().nth(2).as_deref() == Some("swim") {
         return swim_pictures(&dir, &gpu, &mut views, &assets, &figure);
+    }
+    if std::env::args().nth(2).as_deref() == Some("swim-exit") {
+        return swim_exit(&dir, &gpu, &mut views, &assets, &figure);
     }
     let (w, h) = (2 * VIEW.0, VIEW.1 + BAR);
     let mp4 = dir.join(format!("{name}.mp4"));
@@ -725,5 +732,144 @@ fn swim_pictures(
         }
         println!("{}", mp4.display());
     }
+    Ok(())
+}
+
+/// An ffmpeg taking raw `w` by `h` RGB frames at [`FPS`] into `mp4`.
+fn video(mp4: &std::path::Path, w: u32, h: u32) -> std::io::Result<std::process::Child> {
+    Command::new("ffmpeg")
+        .args([
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+        ])
+        .arg(format!("{w}x{h}"))
+        .args(["-r", &FPS.to_string(), "-i", "-", "-c:v", "libx264"])
+        .args(["-pix_fmt", "yuv420p", "-crf", "18"])
+        .arg(mp4)
+        .stdin(Stdio::piped())
+        .spawn()
+}
+
+/// The blends out of and into the water (see the module docs).
+fn swim_exit(
+    dir: &std::path::Path,
+    gpu: &torque_render_core::Gpu,
+    views: &mut [WorldView; 2],
+    assets: &KitAssets,
+    figure: &SceneShape,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use torque_example_assets::shapes::RUN_SPEED;
+    use torque_example_assets::swim::SWIM_SPEED;
+    let shape = figure.shape();
+    let detail = figure.detail().ok_or("no detail")?;
+    let w = 2 * VIEW.0;
+    // Swimming, out onto land at a run, and back into the water.
+    let plan = [
+        (1.5, Pose::Swim, SWIM_SPEED),
+        (1.5, Pose::Stand, RUN_SPEED),
+        (1.5, Pose::Swim, SWIM_SPEED),
+    ];
+    let changes = [plan[0].0, plan[0].0 + plan[1].0];
+    let (tiles, step) = (10usize, 0.05f32);
+    let mut sheet: Vec<Vec<u8>> = Vec::new();
+    for slower in [1.0f32, 4.0] {
+        let name = if slower > 1.0 {
+            format!("swim-exit-x{slower}")
+        } else {
+            "swim-exit".to_string()
+        };
+        let mp4 = dir.join(format!("{name}.mp4"));
+        let mut ffmpeg = video(&mp4, VIEW.0, VIEW.1)?;
+        let mut pipe = ffmpeg.stdin.take().ok_or("no ffmpeg input")?;
+        let mut instance = figure.instance().ok_or("no instance")?;
+        let mut anim = PlayerAnimation::new(shape, &mut instance).ok_or("no threads")?;
+        // Steps of a 120th of a second (the sheet's moments fall on them), a frame every `4 / slower` of them.
+        let dt = 1.0 / 120.0;
+        let every = (120.0 / FPS as f32 / slower).round() as usize;
+        let total: f32 = plan.iter().map(|p| p.0).sum();
+        let (mut at, mut speed) = ([0.0f32; 2], SWIM_SPEED);
+        for k in 0..(total / dt) as usize {
+            let t = k as f32 * dt;
+            let now = if t < changes[0] {
+                plan[0]
+            } else if t < changes[1] {
+                plan[1]
+            } else {
+                plan[2]
+            };
+            speed += (now.2 - speed).clamp(-EASE * dt, EASE * dt);
+            at[1] += speed * dt;
+            let motion = PlayerMotion {
+                velocity: [0.0, speed, 0.0],
+                look: 0.5,
+                pose: now.1,
+                ..PlayerMotion::default()
+            };
+            anim.update(shape, &mut instance, &motion, dt);
+            let _ = instance.animate(shape, detail, None, &mut |_| true);
+            let moment = changes.iter().enumerate().find_map(|(c, start)| {
+                let i = ((t - start) / step).round();
+                ((0.0..tiles as f32).contains(&i) && (t - start - i * step).abs() < dt / 2.0)
+                    .then_some(c * tiles + i as usize)
+            });
+            let sheet_frame = slower == 1.0 && moment.is_some();
+            if k % every != 0 && !sheet_frame {
+                continue;
+            }
+            let mut rgb = vec![0u8; (w * VIEW.1 * 3) as usize];
+            draw_views(
+                gpu,
+                views,
+                assets,
+                figure,
+                &instance,
+                (at, None),
+                k == 0,
+                &mut rgb,
+            )?;
+            // The side view only.
+            let side: Vec<u8> = (0..VIEW.1)
+                .flat_map(|y| {
+                    let d = 3 * (y * w) as usize;
+                    rgb[d..d + 3 * VIEW.0 as usize].to_vec()
+                })
+                .collect();
+            if k % every == 0 {
+                pipe.write_all(&side)?;
+            }
+            if sheet_frame && let Some(m) = moment {
+                sheet.resize(sheet.len().max(m + 1), Vec::new());
+                sheet[m] = side;
+            }
+        }
+        drop(pipe);
+        if !ffmpeg.wait()?.success() {
+            return Err("ffmpeg failed".into());
+        }
+        println!("{}", mp4.display());
+    }
+    // The sheet: each blend a row of half-size tiles.
+    let (tw, th) = (VIEW.0 / 2, VIEW.1 / 2);
+    let png = dir.join("swim-exit.png");
+    let bytes = torque_example_assets::textures::png(tiles as u32 * tw, 2 * th, |x, y| {
+        let f = &sheet[(y / th) as usize * tiles + (x / tw) as usize];
+        let (px, py) = (2 * (x % tw), 2 * (y % th));
+        let mut c = [0u32; 3];
+        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let d = 3 * ((py + dy) * VIEW.0 + px + dx) as usize;
+            for (k, v) in c.iter_mut().enumerate() {
+                *v += f.get(d + k).copied().unwrap_or(0) as u32;
+            }
+        }
+        c.map(|v| (v / 4) as u8)
+    })?;
+    std::fs::write(&png, bytes)?;
+    println!("{}", png.display());
     Ok(())
 }

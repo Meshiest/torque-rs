@@ -479,6 +479,7 @@ pub fn play_action(
         force: false,
         blend,
         pose_blend: None,
+        swing: false,
         start: None,
     };
     let message = shapebase::action_thread(&mut st, action as usize, request);
@@ -619,6 +620,7 @@ impl EngineClass for PlayerClass {
                 force: true,
                 blend: false,
                 pose_blend: None,
+                swing: false,
                 start: None,
             };
             let _ = shapebase::action_thread(&mut st, 0, request);
