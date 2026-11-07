@@ -27,8 +27,9 @@ pub trait ObjectView {
         let _ = field;
         Link::Null
     }
-    /// A net string field (`index` for the element of an array field). The host maps text to a slot of the connection's string
-    /// table as `NetConnection::packStringHandleU` does (and touches its LRU).
+    /// A net string field (`index` for the element of an array field): a slot of the connection's string table, or the text
+    /// itself (`NetConnection::packStringHandleU`'s form for a string the connection has not mapped; the server's view gives
+    /// a shape's name so).
     fn net_string(&self, field: &str, index: usize) -> NetStr {
         let _ = (field, index);
         NetStr::Null
