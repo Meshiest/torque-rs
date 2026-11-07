@@ -1,5 +1,7 @@
 //! What a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures. The
-//! umbrella crate re-exports it as `torque::app` (its `app` feature).
+//! umbrella crate re-exports it as `torque::app` (its `app` feature). The server half (the files, the server, the water block,
+//! the dedicated runner and the plugins a dedicated server needs) is the `torque-app-server` crate, which depends on no drawing,
+//! GUI, audio or window crate and is re-exported here under the same module paths.
 //!
 //! - [`files::GameFiles`]: a game folder read once into memory, served to the scripts as their files.
 //! - [`manifest::Manifest`]: the list of a web build's files (`files.json`: paths, sizes, hashes) and its caps.
@@ -36,27 +38,26 @@
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
 
+// The server half lives in `torque-app-server` (no drawing, GUI, audio or window crates); these are its modules under this
+// crate's paths.
+#[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+pub use torque_app_server::serve;
+pub use torque_app_server::{cli, files, manifest, server, water};
+
 pub mod camera_blend;
 pub mod camera_boom;
-pub mod cli;
 pub mod client;
-pub mod files;
 pub mod ghosts;
 pub mod hosting;
 pub mod interiors;
 pub mod lights;
-pub mod manifest;
 pub mod orbit;
 pub mod page_bridge;
 pub mod plugins;
 pub mod run;
-#[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
-pub mod serve;
-pub mod server;
 pub mod shots;
 pub mod terrain;
 pub mod view;
-pub mod water;
 #[cfg(all(feature = "p2p", target_arch = "wasm32"))]
 pub mod web_host;
 #[cfg(all(feature = "p2p", target_arch = "wasm32"))]

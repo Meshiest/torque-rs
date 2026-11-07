@@ -19,7 +19,7 @@ use torque_ts_vm::vm::Vm;
 use crate::client::{ClientBuilder, ClientNet, ClientSetup};
 use crate::plugins::{
     ActionMapPlugin, ClientHostPlugin, ConnPlugin, DefaultPlugins, GameClassesPlugin, GuiPlugin,
-    NetHostPlugin, PageBridgePlugin, RunnerPlugin, ScreenPlugin, ServerGamePlugin,
+    MinimalPlugins, NetHostPlugin, PageBridgePlugin, RunnerPlugin, ScreenPlugin, ServerGamePlugin,
     ServerQueryPlugin, SimClassesPlugin, TerrainPlugin, WaterPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
@@ -448,4 +448,20 @@ fn the_sim_classes_slot_is_installed_before_the_server_game() {
         &installed,
         &engine.slot::<dyn SimClasses>().expect("the slot")
     ));
+}
+
+#[test]
+fn minimal_plugins_make_the_server_default_plugins_make() {
+    let minimal = server(&engine(MinimalPlugins)).vm().native_listing();
+    let default = server(&engine(DefaultPlugins)).vm().native_listing();
+    assert_eq!(minimal, default);
+}
+
+#[test]
+fn minimal_plugins_and_the_window_runner_do_not_go_together() {
+    let err = EngineBuilder::new()
+        .add_plugins((MinimalPlugins, RunnerPlugin))
+        .build()
+        .expect_err("two runners fail the build");
+    assert!(err.to_string().contains("torque.runner"), "{err}");
 }

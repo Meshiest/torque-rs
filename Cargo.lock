@@ -3217,6 +3217,7 @@ name = "torque"
 version = "0.1.0"
 dependencies = [
  "torque-app",
+ "torque-app-server",
  "torque-audio",
  "torque-client",
  "torque-collide",
@@ -3254,6 +3255,7 @@ dependencies = [
  "png",
  "serde_json",
  "sha2",
+ "torque-app-server",
  "torque-client",
  "torque-collide",
  "torque-engine",
@@ -3278,6 +3280,23 @@ dependencies = [
  "web-sys",
  "web-time",
  "winit",
+]
+
+[[package]]
+name = "torque-app-server"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "torque-collide",
+ "torque-engine",
+ "torque-game",
+ "torque-mapcore",
+ "torque-maps",
+ "torque-server",
+ "torque-sim",
+ "torque-ts-vm",
+ "web-time",
 ]
 
 [[package]]

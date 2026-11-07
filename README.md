@@ -55,6 +55,7 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-render-core` | the renderers' device layer: the GPU, offscreen targets, a frame read back, a window's surface, the GUI pass |
 | `torque-render-scene` | a frame as plain data: the camera, the sun, textures and draws with their fixed-function state; maps, shapes, particles, decals, tire tracks and the HD renderer's scene |
 | `torque-render-hd` | the HD renderer on the GPU: shadows, sky and clouds, water, reflections, AO, TAA, bloom and exposure |
+| `torque-app-server` | the server half of `torque-app`: its files, a server, the terrain and water blocks, the dedicated runner and `MinimalPlugins`; no drawing, GUI, audio or window crates (CI checks its dependency tree) |
 | `torque-app` | what a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures (needs a GPU) |
 | `torque` | the umbrella crate: the crates above behind features, and headless examples |
 | `torque-example-minimal` (`examples/minimal`) | a dedicated server and a client over the loopback address, wired by hand on the lower crates (`just examples/min-server`, `just examples/min-client`) |

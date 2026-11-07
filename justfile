@@ -84,6 +84,10 @@ shots-all dir="target/shots":
 shots-diff a b:
     cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 {{shots_flapping}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
 
+# The server crate's dependency tree has no wgpu, winit, naga, cpal, drawing, GUI, audio or client crates (CI runs the same check)
+server-deps:
+    $tree = cargo tree -p torque-app-server --all-features --prefix none; if ($LASTEXITCODE -ne 0) { exit 1 }; $bad = $tree | ForEach-Object { ($_ -split ' ')[0] } | Select-String -Pattern '^(wgpu|winit|naga|cpal|raw-window-handle|torque-(render|gui|audio|client|fonts))'; if ($bad) { $bad; exit 1 }
+
 # Licenses, advisories, bans and sources of the dependency tree (cargo-deny)
 deny:
     cargo deny check

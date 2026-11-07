@@ -30,18 +30,15 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use torque_engine::{Engine, EngineBuilder, Runner};
 use torque_gui::GuiDraws;
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
-use torque_ts_vm::host::MemFiles;
 
-use crate::server::Listen;
 use crate::view::WorldView;
 use crate::{App, Host};
+pub use torque_app_server::run::{Dedicated, PrintLine, Stop, run_dedicated};
 
 /// How the engine's runner starts the game. Set with [`EngineRun::run_mode`].
 #[derive(Clone, Default)]
@@ -58,68 +55,6 @@ pub enum RunMode {
     Dedicated(Dedicated),
     /// The game drawn offscreen with no window. An error in a browser build.
     Offscreen(Offscreen),
-}
-
-/// A request to stop a [`Dedicated`] server, from anywhere: a plugin's native, a signal handler, another thread. Clones
-/// share one request.
-#[derive(Clone, Debug, Default)]
-pub struct Stop(Arc<AtomicBool>);
-
-impl Stop {
-    /// A request not made yet.
-    pub fn new() -> Stop {
-        Stop::default()
-    }
-
-    /// Asks the server to stop after the tick it is on.
-    pub fn request(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-
-    /// Whether a stop was requested.
-    pub fn is_requested(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
-    }
-}
-
-/// Takes a console line of a dedicated server.
-pub type PrintLine = Rc<dyn Fn(&str)>;
-
-/// A dedicated server: [`GameServer::start_engine`](crate::server::GameServer::start_engine)'s arguments, and when to stop.
-#[derive(Clone)]
-pub struct Dedicated {
-    /// The game's files, as the server's scripts see them.
-    pub files: MemFiles,
-    /// Where the server listens.
-    pub listen: Listen,
-    /// The globals set before `server.cs` runs.
-    pub globals: Vec<(String, String)>,
-    /// The script function that starts the map.
-    pub start: String,
-    /// The start function's arguments.
-    pub args: Vec<String>,
-    /// Stops after this many ticks (never with none).
-    pub ticks: Option<u64>,
-    /// Stops when this is requested.
-    pub stop: Stop,
-    /// Takes each console line (none: printed to standard output).
-    pub print: Option<PrintLine>,
-}
-
-impl Dedicated {
-    /// A server over `files` on `listen` that calls the script function `start` and runs until it is stopped.
-    pub fn new(files: MemFiles, listen: Listen, start: impl Into<String>) -> Dedicated {
-        Dedicated {
-            files,
-            listen,
-            globals: Vec::new(),
-            start: start.into(),
-            args: Vec::new(),
-            ticks: None,
-            stop: Stop::new(),
-            print: None,
-        }
-    }
 }
 
 /// The game drawn without a window.
@@ -180,7 +115,7 @@ impl Runner for AppRunner {
             RunMode::Auto if cfg!(target_arch = "wasm32") => web(engine),
             RunMode::Auto | RunMode::Window => window(engine),
             RunMode::Web => web(engine),
-            RunMode::Dedicated(server) => dedicated(engine, server),
+            RunMode::Dedicated(server) => run_dedicated(engine, server),
             RunMode::Offscreen(offscreen) => offscreen_run(engine, offscreen),
         }
     }
@@ -250,42 +185,6 @@ fn web(engine: &Engine) -> Result<(), String> {
 #[cfg(not(target_arch = "wasm32"))]
 fn web(_: &Engine) -> Result<(), String> {
     Err("RunMode::Web runs only in a browser build: use RunMode::Window".to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn dedicated(engine: &Engine, server: &Dedicated) -> Result<(), String> {
-    use crate::server::{GameServer, ServerStart};
-
-    let globals: Vec<(&str, &str)> = server
-        .globals
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect();
-    let args: Vec<&str> = server.args.iter().map(String::as_str).collect();
-    let mut game = GameServer::start_engine(
-        engine,
-        server.files.clone(),
-        &ServerStart {
-            listen: server.listen.clone(),
-            globals: &globals,
-            start: &server.start,
-            args: &args,
-        },
-    )?;
-    game.run_dedicated_until(
-        |ticks| server.ticks.is_some_and(|t| ticks >= t) || server.stop.is_requested(),
-        |line| match &server.print {
-            Some(print) => print(line),
-            None => println!("{line}"),
-        },
-    );
-    game.close();
-    Ok(())
-}
-
-#[cfg(target_arch = "wasm32")]
-fn dedicated(_: &Engine, _: &Dedicated) -> Result<(), String> {
-    Err("a dedicated server does not run in a browser build".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

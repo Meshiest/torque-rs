@@ -1,0 +1,43 @@
+[package]
+name = "torque-app-server"
+description = "The server half of torque-app: a game's files, its server (UDP, memory or web), the terrain and water blocks, the dedicated runner and MinimalPlugins, with no drawing, GUI, audio or window crates"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "game-engine", "server", "gamedev"]
+categories = ["game-engines", "game-development"]
+
+# Nothing here draws, plays sound or opens a window: `cargo tree -p torque-app-server` has none of those crates (CI checks it).
+# `torque-app` re-exports every module as its own.
+
+[dependencies]
+# The clock: `std::time` natively, the browser's clock on the web.
+web-time = "1.1"
+torque-collide = { path = "../torque-collide" }
+torque-engine = { path = "../torque-engine" }
+torque-game = { path = "../torque-game" }
+# A TerrainBlock's file and its heightfield.
+torque-mapcore = { path = "../torque-mapcore" }
+torque-maps = { path = "../torque-maps" }
+torque-server = { path = "../torque-server" }
+# The water zone a Player swims in.
+torque-sim = { path = "../torque-sim" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+# The list of a web build's files (`manifest`): its JSON and its files' hashes.
+serde_json = "1.0.140"
+sha2 = "0.10"
+
+[features]
+# Browsers as players: a server listening on the web (`Listen::Web`).
+web = ["torque-server/web"]
+# Browsers on WebRTC data channels beside their game sockets (the server's `WebSetup::rtc`).
+webrtc = ["web", "torque-server/webrtc"]
+# Player-hosted games through a room service: a server on a player's host transport (`Listen::Bound` with torque-server's
+# `net::web::p2p`).
+p2p = ["webrtc", "torque-server/p2p"]
+
+[lints]
+workspace = true

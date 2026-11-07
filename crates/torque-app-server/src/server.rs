@@ -6,7 +6,7 @@
 //! when allowed as public) opens it to players outside the network too (the router must forward its UDP port). The bind policy
 //! refuses any other public address. The LAN list's pings and queries are answered on the same socket. In memory, the server's
 //! transport is bound at an address and its other end ([`GameServer::memory_end`]) carries the datagrams: a client in the same
-//! process joins it with no socket opened ([`crate::client::ClientNet::Memory`]). On the web (the `web` feature,
+//! process joins it with no socket opened (`torque_app::client::ClientNet::Memory`). On the web (the `web` feature,
 //! `Listen::Web`) the server takes browsers' game sockets over WebSocket and serves them the game's page on one TCP port,
 //! with UDP on the same port number beside it or not at all (torque-server's `net::web`).
 //!
@@ -31,7 +31,7 @@ use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
-use crate::plugins::{DefaultPlugins, ServerWiring};
+use crate::plugins::{MinimalPlugins, ServerWiring};
 
 /// The UDP port number games listen on (and the LAN list asks): TGE's.
 pub const DEFAULT_PORT: u16 = 28_000;
@@ -147,14 +147,14 @@ impl GameServer {
 
     /// [`GameServer::start`] with `prepare` run on the script engine before the game classes are installed (a game's own
     /// subclasses of the simulated classes: `torque_game::sim_classes::set_sim_classes`). The server is made by
-    /// [`DefaultPlugins`].
+    /// [`MinimalPlugins`].
     pub fn start_with(
         files: MemFiles,
         start: &ServerStart,
         prepare: impl FnOnce(&mut Vm),
     ) -> Result<GameServer, String> {
         let engine = EngineBuilder::new()
-            .add_plugins(DefaultPlugins)
+            .add_plugins(MinimalPlugins)
             .build()
             .map_err(|e| e.to_string())?;
         let mut prepare = Some(prepare);
@@ -167,7 +167,7 @@ impl GameServer {
 
     /// A server over `files` made by `engine`'s plugins: their server recipes run on the new script engine, stage by stage
     /// ([`ServerStage`]), in the order the engine's plugins were added. The engine can make any number of servers. It needs
-    /// the plugins that make the server's parts: [`ServerGamePlugin`](crate::plugins::ServerGamePlugin) and [`NetHostPlugin`](crate::plugins::NetHostPlugin) (with [`DefaultPlugins`], all of
+    /// the plugins that make the server's parts: [`ServerGamePlugin`](crate::plugins::ServerGamePlugin) and [`NetHostPlugin`](crate::plugins::NetHostPlugin) (with [`MinimalPlugins`], all of
     /// them). What the build warned about ([`Engine::warnings`]) is printed to the server's console first.
     pub fn start_engine(
         engine: &Engine,

@@ -8,7 +8,7 @@
 //!   that zone ([`torque_game::scene::ext::MapObject::water`]). It has no collision: Players, vehicles and items pass into it,
 //!   and no ray meets it (a camera's cast goes through its surface).
 //! - **On the client** ([`Water::from_fields`]): the client is not sent a WaterBlock, so a game reads it from the map the server
-//!   runs and gives it to the prediction (its static index's [`torque_client::predict::StaticIndex::zones`]). The block's
+//!   runs and gives it to the prediction (its static index's `torque_client::predict::StaticIndex::zones`). The block's
 //!   fields are read as the server's script engine reads them (the same parse and the same rotation, the engine's default
 //!   field rules: a server with its own `FieldRules::rotation_matrix` would turn a rotated block otherwise), so the two
 //!   zones are the same numbers and the client predicts its own Player in the water as the server moves it.
@@ -19,9 +19,8 @@
 
 use std::rc::Rc;
 
-use torque_client::predict::view_of;
 use torque_collide::ObjectId;
-use torque_collide::convex::ObjectView;
+use torque_collide::convex::{ObjectView, view_of};
 use torque_collide::math::{Box3, Matrix, Plane, PlaneTransformer};
 use torque_collide::types::WATER;
 use torque_game::scene::access::{matrix_of, scale_of, value_of};

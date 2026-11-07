@@ -43,8 +43,9 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+pub use collide::convex::view_of;
 use collide::convex::{ConvexSource, ObjectView};
-use collide::math::{Box3, F3, Matrix, affine_inverse, mul_box, quat_matrix};
+use collide::math::{Box3, F3, Matrix, quat_matrix};
 use collide::mesh::Hull;
 use collide::{Exhausted, ObjectId};
 use ghost_world::Ghost;
@@ -2441,34 +2442,6 @@ fn damage_state<W: PredictWorld>(world: &W, index: u32) -> Option<u32> {
         return None;
     }
     g.record.as_ref()?.player_state()?.damage
-}
-
-/// An object's view at `m` with object box `obj_box` and `scale` (`resetWorldBox`'s world box and radius).
-pub fn view_of(m: Matrix, obj_box: Box3, scale: F3, type_mask: u32) -> ObjectView {
-    let scaled = Box3::new(
-        [0, 1, 2].map(|i| (f64::from(obj_box.min[i]) * f64::from(scale[i])) as f32),
-        [0, 1, 2].map(|i| (f64::from(obj_box.max[i]) * f64::from(scale[i])) as f32),
-    );
-    let mut w = mul_box(&m, &scaled);
-    if !(w.max[0] >= w.min[0] && w.max[1] >= w.min[1] && w.max[2] >= w.min[2]) {
-        w = Box3::new([-1.0; 3], [1.0; 3]);
-    }
-    let c = |i: usize| ((f64::from(w.max[i]) + f64::from(w.min[i])) * 0.5) as f32;
-    let center = [c(0), c(1), c(2)];
-    let dd = |i: usize| (f64::from(w.max[i]) - f64::from(center[i])) as f32;
-    let (dx, dy, dz) = (dd(0), dd(1), dd(2));
-    let sq = ((f64::from(dx) * f64::from(dx) + f64::from(dy) * f64::from(dy))
-        + f64::from(dz) * f64::from(dz)) as f32;
-    ObjectView {
-        obj_to_world: m,
-        world_to_obj: affine_inverse(&m),
-        scale,
-        obj_box,
-        world_box: w,
-        world_radius: collide::math::sqrt_f32(sq),
-        type_mask,
-        collision_disabled: false,
-    }
 }
 
 impl ClientCollision {

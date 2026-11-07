@@ -29,6 +29,7 @@
 //! | `gui` | `gui` | `torque-gui` | the GUI object model, layout and the script methods of GUI classes |
 //! | `audio` | `audio` | `torque-audio` | sound decoding, sources, channels and the mixer |
 //! | `client` | `client` | `torque-client` | the client's engine half: the connection, prediction, action maps, the server query |
+//! | `app_server` | `app-server` | `torque-app-server` | the server half of `app`: files, a server, terrain and water, the dedicated runner, `MinimalPlugins` (no GPU) |
 //! | `app` | `app` (off by default) | `torque-app` | what a game made on the engine shares: files, server, client, window, world view, pictures |
 //!
 //! Optional features that are off by default:
@@ -62,6 +63,8 @@ pub mod script {
 
 #[cfg(feature = "app")]
 pub use torque_app as app;
+#[cfg(feature = "app-server")]
+pub use torque_app_server as app_server;
 #[cfg(feature = "audio")]
 pub use torque_audio as audio;
 #[cfg(feature = "client")]

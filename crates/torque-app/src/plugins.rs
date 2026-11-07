@@ -24,7 +24,8 @@
 //! | [`RunnerPlugin`] | `torque.runner` | the engine's runner slot | [`run`](crate::run): the window, the page, a dedicated server, offscreen |
 //!
 //! A game that needs only a part of this takes the group and turns plugins off (`DefaultPlugins.disable::<WaterPlugin>()`),
-//! or adds the plugins it wants one by one.
+//! or adds the plugins it wants one by one. The server plugins live in the `torque-app-server` crate (no drawing, GUI, audio
+//! or window crates) and are re-exported here with [`MinimalPlugins`], the group a dedicated server needs.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -35,17 +36,14 @@ use torque_client::host::{ClientPass, EnginePass};
 use torque_client::state::ClientState;
 use torque_engine::{
     ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires, Runner,
-    ServerStage,
 };
-use torque_game::sim_classes::SimClasses;
 use torque_gui::{DrawCache, Gui};
-use torque_server::game::GameParts;
-use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
-use torque_server::net::transport::SharedTransport;
-use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
-use torque_server::server::NetHost;
-use torque_server::state::ServerState;
 use torque_ts_vm::vm::Vm;
+
+pub use torque_app_server::plugins::{
+    GameClassesPlugin, MinimalPlugins, NetHostPlugin, ServerGamePlugin, ServerWiring,
+    SimClassesPlugin, TerrainPlugin, WaterPlugin,
+};
 
 use crate::client::ClientNet;
 
@@ -82,67 +80,6 @@ impl PluginGroup for DefaultPlugins {
             .add(PageBridgePlugin)
             .add(RunnerPlugin)
     }
-}
-
-/// What a server's recipes share while the server is made: the engine state and the transport it was given, and the parts
-/// the server game and the network host hand on. The host sets it as the script engine's extension before the first stage.
-pub struct ServerWiring {
-    state: Rc<RefCell<ServerState<HostParts<TorqueNet>>>>,
-    transport: SharedTransport,
-    game: RefCell<Option<GameParts>>,
-    net: RefCell<Option<NetAttached>>,
-}
-
-/// What the network host's recipe made, for the host to attach to the server's main loop.
-pub(crate) struct NetAttached {
-    pub(crate) shared: Rc<RefCell<NetShared<TorqueNet>>>,
-    pub(crate) passes: Rc<dyn NetHost>,
-}
-
-impl ServerWiring {
-    pub(crate) fn new(
-        state: Rc<RefCell<ServerState<HostParts<TorqueNet>>>>,
-        transport: SharedTransport,
-    ) -> ServerWiring {
-        ServerWiring {
-            state,
-            transport,
-            game: RefCell::new(None),
-            net: RefCell::new(None),
-        }
-    }
-
-    /// The engine state the server's natives share.
-    pub fn state(&self) -> &Rc<RefCell<ServerState<HostParts<TorqueNet>>>> {
-        &self.state
-    }
-
-    /// The transport the server listens on.
-    pub fn transport(&self) -> &SharedTransport {
-        &self.transport
-    }
-
-    /// The parts the server game made ([`ServerGamePlugin`]), once its stage ran.
-    pub fn game(&self) -> Option<GameParts> {
-        self.game.borrow().clone()
-    }
-
-    pub(crate) fn take_net(&self) -> Option<NetAttached> {
-        self.net.borrow_mut().take()
-    }
-}
-
-/// The server wiring a recipe is replayed with.
-fn server_wiring(vm: &Vm, plugin: &str) -> Result<Rc<ServerWiring>, String> {
-    vm.extension::<ServerWiring>()
-        .ok_or_else(|| format!("{plugin} runs only when a game server is made"))
-}
-
-/// The server game's parts, for a plugin that builds on them.
-fn server_game(wiring: &ServerWiring, plugin: &str) -> Result<GameParts, String> {
-    wiring
-        .game()
-        .ok_or_else(|| format!("{plugin} needs the server game, which has not run"))
 }
 
 /// What a client's recipes share while the client is made: the natives' state, the socket kind, and the GUI the GUI plugin
@@ -189,115 +126,6 @@ fn client_gui(wiring: &ClientWiring, plugin: &str) -> Result<Gui, String> {
     wiring
         .gui()
         .ok_or_else(|| format!("{plugin} needs the GUI, which has not run"))
-}
-
-/// TGE's game classes as console classes (the datablocks a connection receives, the simulated objects): on a server first
-/// of all, on a client when the engine has this plugin.
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
-#[plugin(id = "torque.game-classes")]
-pub struct GameClassesPlugin;
-
-impl Plugin for GameClassesPlugin {
-    fn build(&self, engine: &mut EngineBuilder) {
-        engine.server(ServerStage::Classes, |vm, _| {
-            torque_game::specs::install(vm);
-            Ok(())
-        });
-        engine.client(ClientStage::Classes, |vm, _| {
-            torque_game::specs::install(vm);
-            Ok(())
-        });
-    }
-}
-
-/// The server game: the simulation's classes and natives over the scene container the world's objects share.
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
-#[plugin(id = "torque.server-game")]
-pub struct ServerGamePlugin;
-
-impl Plugin for ServerGamePlugin {
-    fn build(&self, engine: &mut EngineBuilder) {
-        engine.server(ServerStage::Game, |vm, _| {
-            let wiring = server_wiring(vm, "the server game")?;
-            let game = torque_server::game::install(vm, wiring.state());
-            *wiring.game.borrow_mut() = Some(game);
-            Ok(())
-        });
-    }
-}
-
-/// `TerrainBlock`: its collision on the server.
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
-#[plugin(id = "torque.terrain")]
-pub struct TerrainPlugin;
-
-impl Plugin for TerrainPlugin {
-    fn requires(&self, requires: &mut Requires) {
-        requires.plugin::<ServerGamePlugin>();
-    }
-
-    fn build(&self, engine: &mut EngineBuilder) {
-        engine.server(ServerStage::World, |vm, _| {
-            let wiring = server_wiring(vm, "the terrain")?;
-            let game = server_game(&wiring, "the terrain")?;
-            crate::terrain::install(vm, &game.container);
-            Ok(())
-        });
-    }
-}
-
-/// `WaterBlock`: water the players swim in, on the server.
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
-#[plugin(id = "torque.water")]
-pub struct WaterPlugin;
-
-impl Plugin for WaterPlugin {
-    fn requires(&self, requires: &mut Requires) {
-        requires.plugin::<ServerGamePlugin>();
-    }
-
-    fn build(&self, engine: &mut EngineBuilder) {
-        engine.server(ServerStage::World, |vm, _| {
-            let wiring = server_wiring(vm, "the water")?;
-            let game = server_game(&wiring, "the water")?;
-            crate::water::install(vm, &game.container);
-            Ok(())
-        });
-    }
-}
-
-/// The server's network host of Torque's net game and the passes that drive it from the main loop.
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
-#[plugin(id = "torque.net-host")]
-pub struct NetHostPlugin;
-
-impl Plugin for NetHostPlugin {
-    fn requires(&self, requires: &mut Requires) {
-        requires.plugin::<ServerGamePlugin>();
-    }
-
-    fn build(&self, engine: &mut EngineBuilder) {
-        engine.server(ServerStage::Net, |vm, _| {
-            let wiring = server_wiring(vm, "the network host")?;
-            let game = server_game(&wiring, "the network host")?;
-            let shared = attach_host(
-                vm,
-                Host {
-                    transport: Rc::clone(wiring.transport()),
-                    game: TorqueNet::default(),
-                    engine: Rc::clone(wiring.state()),
-                    step_limit: None,
-                    clock: NetClock::Sim,
-                    ghosts: TgeGhostGame,
-                    container: Rc::clone(&game.container),
-                    static_writes: None,
-                },
-            );
-            let passes: Rc<dyn NetHost> = Rc::new(NetPasses(Rc::clone(&shared)));
-            *wiring.net.borrow_mut() = Some(NetAttached { shared, passes });
-            Ok(())
-        });
-    }
 }
 
 /// The GUI's classes and natives. `layout_fonts`: the GUI's layout measures text with the fonts it is drawn with
@@ -479,27 +307,5 @@ impl ClientGamePlugin {
 impl Plugin for ClientGamePlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.set_slot::<dyn ClientGame>(Rc::clone(&self.game));
-    }
-}
-
-/// The game's own subclasses of the simulated classes: sets the engine's slot of `dyn SimClasses`, which
-/// [`GameServer::start_engine`](crate::server::GameServer::start_engine) installs at the `Prepare` stage, before the server
-/// game reads it. Not in [`DefaultPlugins`]: a game picks its own.
-#[derive(Clone, torque_engine::PluginId)]
-#[plugin(id = "torque.sim-classes")]
-pub struct SimClassesPlugin {
-    classes: Rc<dyn SimClasses>,
-}
-
-impl SimClassesPlugin {
-    /// The plugin that gives the server `classes`.
-    pub fn new(classes: Rc<dyn SimClasses>) -> SimClassesPlugin {
-        SimClassesPlugin { classes }
-    }
-}
-
-impl Plugin for SimClassesPlugin {
-    fn build(&self, engine: &mut EngineBuilder) {
-        engine.set_slot::<dyn SimClasses>(Rc::clone(&self.classes));
     }
 }
