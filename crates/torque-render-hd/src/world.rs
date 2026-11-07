@@ -178,8 +178,8 @@ const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The contact shadows' mask format.
 const CONTACT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 /// The timestamp queries: the frame's first pass's start, the tonemap's end, the shadow maps' end, the contact pass's start and end,
-/// the AO pass's and the TAA's (or the FXAA-style filter's) start and end, the secondary views' and the SSR's start and end, and the volumetric
-/// clouds' start and end.
+/// the AO pass's start and its filter's end, the TAA's (or the FXAA-style filter's) start and end, the secondary views' and the
+/// SSR's start and end, and the volumetric clouds' start and end.
 const QUERIES: u32 = 20;
 /// The frame's early submits' timestamps (the end of the part submitted, the start of the next: `Q_GAPS` + 2 k, + 2 k + 1), so
 /// the frame's GPU time leaves out the GPU's wait for the CPU between its parts.
@@ -651,8 +651,8 @@ enum Output {
     Hdr,
 }
 
-/// A frame's GPU times (ms): the whole frame, its shadow maps' passes, its contact shadows' pass, its AO pass, its anti-aliasing pass
-/// (the TAA resolve or the FXAA-style filter), its reflections (the secondary views and the SSR passes).
+/// A frame's GPU times (ms): the whole frame, its shadow maps' passes, its contact shadows' pass, its AO pass and the AO's filter,
+/// its anti-aliasing pass (the TAA resolve or the FXAA-style filter), its reflections (the secondary views and the SSR passes).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct GpuTimes {
     pub frame: f64,
@@ -6151,7 +6151,7 @@ impl<E: HdExtension> HdWorld<E> {
                     .map(|t| wgpu::RenderPassTimestampWrites {
                         query_set: &t.queries,
                         beginning_of_pass_write_index: Some(Q_AO_BEGIN),
-                        end_of_pass_write_index: Some(Q_AO_END),
+                        end_of_pass_write_index: None,
                     }),
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -6168,7 +6168,14 @@ impl<E: HdExtension> HdWorld<E> {
                 label: Some("hd ao filter"),
                 color_attachments: &[Some(colour(&targets.ao_smooth_view))],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: self
+                    .timer
+                    .as_ref()
+                    .map(|t| wgpu::RenderPassTimestampWrites {
+                        query_set: &t.queries,
+                        beginning_of_pass_write_index: None,
+                        end_of_pass_write_index: Some(Q_AO_END),
+                    }),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
