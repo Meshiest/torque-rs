@@ -12,6 +12,7 @@
 //! |---|---|---|---|
 //! | `script` | `script` | `torque-ts-*` | TorqueScript: text rules, compiled scripts (DSO), the compiler and the runtime |
 //! | `collide` | `collide` | `torque-collide` | convexes, GJK, polygon lists, working sets, object type masks |
+//! | `engine` | `engine` | `torque-engine` | plugins, plugin groups and the engine builder that replays their recipes into each script engine |
 //! | `shapes` | `shapes` | `torque-shapes` | DTS shapes and DSQ sequences, collision meshes, animated poses |
 //! | `sim` | `sim` | `torque-sim` | the process list, players, AI players, items, projectiles, mounted images |
 //! | `vehicle` | `vehicle` | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
@@ -67,6 +68,8 @@ pub use torque_audio as audio;
 pub use torque_client as client;
 #[cfg(feature = "collide")]
 pub use torque_collide as collide;
+#[cfg(feature = "engine")]
+pub use torque_engine as engine;
 #[cfg(feature = "fonts")]
 pub use torque_fonts as fonts;
 #[cfg(feature = "game")]

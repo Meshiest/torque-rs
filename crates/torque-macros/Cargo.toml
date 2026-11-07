@@ -1,6 +1,6 @@
 [package]
 name = "torque-macros"
-description = "Attribute and derive macros that turn Rust functions into TorqueScript natives"
+description = "Attribute and derive macros for the engine: Rust functions as TorqueScript natives, and plugin ids"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,6 +19,8 @@ torque-macros-core = { path = "../torque-macros-core" }
 [dev-dependencies]
 # Compiles small programs that use the macros and compares the compiler's answer (`tests/ui`).
 trybuild = "1"
+# What `#[derive(PluginId)]` implements, for its `tests/ui` cases.
+torque-engine = { path = "../torque-engine" }
 
 [lints]
 workspace = true

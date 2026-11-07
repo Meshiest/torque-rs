@@ -14,6 +14,7 @@ categories = ["game-engines", "game-development"]
 torque-audio = { path = "../torque-audio", optional = true }
 torque-client = { path = "../torque-client", optional = true }
 torque-collide = { path = "../torque-collide", optional = true }
+torque-engine = { path = "../torque-engine", optional = true }
 torque-fonts = { path = "../torque-fonts", optional = true }
 torque-game = { path = "../torque-game", optional = true }
 torque-ghost-world = { path = "../torque-ghost-world", optional = true }
@@ -41,11 +42,13 @@ torque-app = { path = "../torque-app", optional = true }
 # Everything that needs no GPU, no window and no system library.
 default = [
     "script", "collide", "shapes", "sim", "vehicle", "maps", "net", "ghosts", "ghost-world", "resource", "scene", "game",
-    "server", "images", "fonts", "gui", "audio", "client",
+    "server", "images", "fonts", "gui", "audio", "client", "engine",
 ]
 # TorqueScript: the text rules, compiled scripts, the compiler and the runtime (`torque::script`).
 script = ["dep:torque-ts-text", "dep:torque-ts-bytecode", "dep:torque-ts-compiler", "dep:torque-ts-vm"]
 collide = ["dep:torque-collide", "dep:torque-mapcore"]
+# Plugins, plugin groups and the engine builder that replays their recipes into every server and client script engine.
+engine = ["dep:torque-engine", "script"]
 shapes = ["dep:torque-shapes"]
 # Builds shape models from code: nodes, box and prism meshes, details, materials and sequences.
 shape-builder = ["dep:torque-shape-builder", "shapes"]
@@ -79,7 +82,7 @@ audio-device = ["audio", "torque-audio/device"]
 system-fonts = ["fonts", "torque-fonts/system-fonts"]
 # What a game made on the engine shares (`torque::app`): its files, a server, a client, a window, the world view and offscreen
 # pictures (`torque-app`). Needs a GPU.
-app = ["client-window", "system-fonts", "shapes", "dep:torque-app"]
+app = ["client-window", "system-fonts", "shapes", "engine", "dep:torque-app"]
 # Browsers as players: the server's web transport (HTTP and WebSocket on one port, UDP beside it) and the client's game
 # socket over WebSocket.
 web = ["server", "client", "torque-server/web", "torque-client/web-socket", "torque-app?/web"]

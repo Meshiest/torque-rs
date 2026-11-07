@@ -3220,6 +3220,7 @@ dependencies = [
  "torque-audio",
  "torque-client",
  "torque-collide",
+ "torque-engine",
  "torque-fonts",
  "torque-game",
  "torque-ghost-world",
@@ -3340,6 +3341,14 @@ dependencies = [
  "torque-import",
  "torque-interior-builder",
  "torque-shapes",
+]
+
+[[package]]
+name = "torque-engine"
+version = "0.1.0"
+dependencies = [
+ "torque-macros",
+ "torque-ts-vm",
 ]
 
 [[package]]
@@ -3540,6 +3549,7 @@ dependencies = [
 name = "torque-macros"
 version = "0.1.0"
 dependencies = [
+ "torque-engine",
  "torque-macros-core",
  "trybuild",
 ]
@@ -3548,6 +3558,7 @@ dependencies = [
 name = "torque-macros-core"
 version = "0.1.0"
 dependencies = [
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 3.0.9",

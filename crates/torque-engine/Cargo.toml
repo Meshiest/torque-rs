@@ -1,0 +1,21 @@
+[package]
+name = "torque-engine"
+description = "The engine builder: plugins, plugin groups, and the recipes they record for every server and client script engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "plugins", "game-engine", "gamedev"]
+categories = ["game-engines", "game-development"]
+
+[dependencies]
+# The script engine the recipes are replayed into. Nothing else: a dedicated server and every plugin crate take this crate
+# without the client, the GUI or the renderer.
+torque-ts-vm = { path = "../torque-ts-vm" }
+# `#[derive(PluginId)]`, re-exported.
+torque-macros = { path = "../torque-macros" }
+
+[lints]
+workspace = true
