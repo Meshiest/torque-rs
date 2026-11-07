@@ -2553,3 +2553,67 @@ fn full_throttle_into_a_tree_from_rest_or_at_speed_never_drives_the_buggy_into_i
         }
     }
 }
+
+/// The prediction's counts on `game`'s client: (corrections, heads that matched).
+fn corrections(game: &VehicleDemo) -> (u64, u64) {
+    let st = game.client.host.client.borrow();
+    let p = &st.conn.conn.as_ref().expect("the connection").predict;
+    (p.stats.corrections, p.stats.matching)
+}
+
+#[test]
+fn a_drivers_client_predicts_the_buggy_as_the_server_drives_it_never_meeting_the_passenger() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    get_in(&mut [&mut a, &mut b], 1);
+    assert!(a.driving() && b.seat() == Some(1));
+    let id = server(&a).buggy().unwrap();
+    let from = server(&a).buggy_position().unwrap();
+    let (before, _) = corrections(&a);
+    // Forward, a turn each way, a brake: each tick the driver's client runs the buggy with the passenger seated in it.
+    let keys = [
+        (0, Key::W, true),
+        (1500, Key::A, true),
+        (2500, Key::A, false),
+        (2500, Key::D, true),
+        (3500, Key::D, false),
+        (4500, Key::W, false),
+        (4500, Key::Space, true),
+    ];
+    let mut worst = 0.0f32;
+    let mut t = 0;
+    while t < 7000 {
+        for (at, k, down) in keys {
+            if (t..t + 16).contains(&at) {
+                a.key(k, down);
+            }
+        }
+        for g in [&mut a, &mut b] {
+            g.step(16);
+            g.update_scene(0.016);
+        }
+        t += 16;
+        // The driver's prediction runs a tick or two ahead of the server: never further than that at the speed.
+        let v = horizontal(server(&a).buggy_velocity_of(id).unwrap());
+        let at = server(&a).buggy_position_of(id).unwrap();
+        assert!(
+            a.driven().is_some(),
+            "at {t} ms the driver's client runs no buggy"
+        );
+        let drawn = drawn_at(&a, a.buggy_ghost().unwrap()).unwrap();
+        worst = worst.max(apart(at, drawn) - v * 0.1);
+    }
+    a.key(Key::Space, false);
+    let (after, matching) = corrections(&a);
+    let to = server(&a).buggy_position().unwrap();
+    assert!(apart(from, to) > 10.0, "from {from:?} to {to:?}");
+    assert_eq!(
+        after - before,
+        0,
+        "the driver's client predicted the buggy wrong {} times ({matching} heads matched)",
+        after - before
+    );
+    assert!(worst < 0.25, "drawn {worst} m off the server's buggy");
+    assert_eq!(server(&a).seat_of(server(&a).figures()[1]), Some((id, 1)));
+}

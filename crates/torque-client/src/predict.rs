@@ -2358,7 +2358,7 @@ impl<W: PredictWorld> StaticWorld<W> {
 }
 
 /// What the client's container holds beside the ghosts' own: the static objects near `near`, the vehicles' shapes, the driven vehicle (its
-/// predicted pose; its collision off: it is the mover).
+/// predicted pose; its collision off: it is the mover, and so is that of the Players mounted on it).
 pub struct Ctx<'a, W: PredictWorld> {
     pub near: F3,
     pub static_world: &'a mut StaticWorld<W>,
@@ -2366,7 +2366,7 @@ pub struct Ctx<'a, W: PredictWorld> {
     pub driven: Option<&'a drive::DrivenVehicle>,
     /// The vehicles the client runs on its own: at their own poses.
     pub ghosts: Option<&'a std::collections::BTreeMap<u32, drive::GhostVehicle>>,
-    /// A ghost whose collision is off (the mover of a ghost vehicle's own tick).
+    /// A ghost whose collision is off (the mover of a ghost vehicle's own tick), with the Players mounted on it.
     pub disabled: Option<u32>,
     /// The client's control Player at its predicted position (a ghost vehicle's tick meets it there).
     pub player_at: Option<(u32, F3)>,
@@ -2506,6 +2506,10 @@ impl ClientCollision {
         let index_bits = statics.as_deref().map_or(0, |i| i.type_bits());
         let mut datablocks: std::collections::HashMap<u32, Option<PlayerData>> =
             std::collections::HashMap::new();
+        // The mover: the vehicle the client drives, or the ghost vehicle whose own tick this is. Its collision is off, and with it
+        // that of every Player mounted on it (`ShapeBase::disableCollision` turns off the mount list's too): a passenger's box
+        // sits inside the vehicle and moves with it, so the vehicle never meets it.
+        let mover = driven.map(|d| d.index).or(disabled);
         // The static objects are in the set (none of them is one of the kinds below); the others from the world's index by
         // class, not a walk of every ghost (half a million static ghosts would be walked at every move).
         let mut ghosts = world.container_ghosts();
@@ -2562,7 +2566,9 @@ impl ClientCollision {
                     } else {
                         PLAYER_TYPE_MASK
                     };
-                    let view = view_of(m, obj_box, [1.0; 3], mask);
+                    let mut view = view_of(m, obj_box, [1.0; 3], mask);
+                    view.collision_disabled = mover
+                        .is_some_and(|v| ghost_mount(world, index) == Some(drive::ghost_id(v)));
                     objects.push((
                         id,
                         Object {
