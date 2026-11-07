@@ -10,6 +10,7 @@
 pub mod camera;
 pub mod decals;
 pub mod env;
+pub mod first_person;
 pub mod flare;
 pub mod hd;
 pub mod images;

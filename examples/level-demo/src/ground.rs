@@ -2,7 +2,8 @@
 //! have no ghost here), so it reads them from the map the server runs, as the server does: the terrain from its
 //! `terrainFile` (each of the file's materials drawn with the kit's texture of the same name, `kit/<material>.png`, one repeat
 //! every [`GROUND_TILE`] m), the water from the top of its box (TGE's fluid sits at its box's top: `position` plus `scale`'s
-//! height), with its `surfaceTexture` at its `surfaceOpacity` and the demo's own tint ([`WATER_TINT`]).
+//! height), with its `surfaceTexture` at its `surfaceOpacity` and the demo's own tint ([`WATER_TINT`]). A camera in the box
+//! (under the surface) sees a little of that tint over its view ([`UNDERWATER_TINT`]), split at the waterline when it is half in.
 //!
 //! A map whose `MapInfo` says `groundVariation = 1` has its ground's textures varied against visible tiling (the renderer's
 //! [`WorldView::set_ground_variation`]); the others are drawn as before. One whose `MapInfo` gives a `cloudTimeScale` has its
@@ -24,6 +25,9 @@ pub const GROUND_TILE: f32 = 12.0;
 pub const WATER_TILE: f32 = 24.0;
 /// The water's tint (gamma): a deep blue-green.
 pub const WATER_TINT: [u8; 3] = [64, 112, 120];
+/// How much of the water's tint a camera under its surface sees laid over its view (the rest of the color comes from the light
+/// the water absorbs on the way to it, which grows with it): a little.
+pub const UNDERWATER_TINT: f32 = 0.3;
 /// The steps a line is looked along for the ground ([`MapGround::line_share`]).
 pub const LINE_STEPS: usize = 32;
 /// The terrain's squares when its block names none (TGE's default).
@@ -35,6 +39,8 @@ pub struct WaterSheet {
     pub level: f32,
     pub min: [f32; 2],
     pub max: [f32; 2],
+    /// The bottom of its box.
+    pub bottom: f32,
     pub texture: String,
     pub opacity: f32,
 }
@@ -115,6 +121,8 @@ impl MapGround {
                     level: w.level,
                     min: w.min,
                     max: w.max,
+                    bottom: w.bottom,
+                    underwater: UNDERWATER_TINT,
                 },
             );
         }
@@ -245,6 +253,7 @@ pub fn water_of(text: &str) -> Option<WaterSheet> {
         level: p[2] + s[2],
         min: [p[0].min(p[0] + s[0]), p[1].min(p[1] + s[1])],
         max: [p[0].max(p[0] + s[0]), p[1].max(p[1] + s[1])],
+        bottom: p[2].min(p[2] + s[2]),
         texture: field(&block, "surfaceTexture").unwrap_or_default(),
         opacity: opacity.clamp(0.0, 1.0),
     };
@@ -255,6 +264,7 @@ pub fn water_of(text: &str) -> Option<WaterSheet> {
         sheet.min[1],
         sheet.max[0],
         sheet.max[1],
+        sheet.bottom,
     ]
     .iter()
     .all(|v| v.is_finite());
@@ -296,8 +306,8 @@ mod tests {
         );
         let w = water_of(&good).expect("water");
         assert_eq!(
-            (w.level, w.min, w.max, w.opacity),
-            (12.0, [-10.0, -20.0], [30.0, 10.0], 0.6)
+            (w.level, w.min, w.max, w.bottom, w.opacity),
+            (12.0, [-10.0, -20.0], [30.0, 10.0], 0.0, 0.6)
         );
         assert_eq!(cloud_time_scale(&good), 150.0);
         for water in [

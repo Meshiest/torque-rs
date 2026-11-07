@@ -99,6 +99,21 @@ pub struct HdFog {
     pub linear: bool,
 }
 
+/// A water zone the view is tinted from inside of: its world box (half-open on each axis) and its tint (gamma color, alpha 0..1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterZone {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    pub tint: [f32; 4],
+}
+
+impl WaterZone {
+    /// Whether the point is in the zone (half-open on each axis).
+    pub fn holds(&self, p: [f32; 3]) -> bool {
+        (0..3).all(|k| self.min[k] <= p[k] && p[k] < self.max[k])
+    }
+}
+
 /// The enhanced renderer's frame data, the static geometry from the provider `G`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HdScene<G> {
@@ -157,6 +172,9 @@ pub struct HdScene<G> {
     /// Opaque planes (the ground) and blended ones (water).
     pub planes: Vec<HdDraw>,
     pub water: Vec<HdDraw>,
+    /// The water the eye may be under ([`WaterZone`]): the view takes its tint and absorption there, split at its surface where
+    /// the camera straddles it. The enhanced renderer's default extension reads it; a host that sets water sets it.
+    pub water_zone: Option<WaterZone>,
     /// Counts the changes of `planes`: whoever builds them again bumps it (the GPU side writes them again only when it, or the
     /// lists' places, changed: a window's every frame keeps a terrain of hundreds of thousands of vertices in place).
     pub planes_generation: u64,
@@ -245,6 +263,7 @@ impl<G> HdScene<G> {
             planes: Vec::new(),
             planes_generation: 0,
             water: Vec::new(),
+            water_zone: None,
             cells,
             objects: Vec::new(),
             drawn_objects: None,

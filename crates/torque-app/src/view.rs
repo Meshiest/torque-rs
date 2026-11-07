@@ -24,7 +24,8 @@ use torque_render_scene::hd::objects::objects_of;
 use torque_render_scene::hd::particle_light::ParticleLight;
 use torque_render_scene::hd::scatter::ScatterLook;
 use torque_render_scene::hd::{
-    DynamicObject, HdCamera, HdDraw, HdMode, HdScene, HdSpot, Quality, bounding_sphere, material,
+    DynamicObject, HdCamera, HdDraw, HdMode, HdScene, HdSpot, Quality, WaterZone, bounding_sphere,
+    material,
 };
 use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
@@ -70,6 +71,12 @@ pub struct Water<'a> {
     pub level: f32,
     pub min: [f32; 2],
     pub max: [f32; 2],
+    /// Its bottom's height: a camera between it and the surface, over the rectangle, is under water.
+    pub bottom: f32,
+    /// How much of its tint's color the view takes under its surface (0..1; 0: none): the share laid over the picture, the
+    /// light's absorption along the sight lines under water growing with it (half of it lost over
+    /// [`torque_render_hd::water::UNDERWATER_HALF_DISTANCE`] at a half).
+    pub underwater: f32,
 }
 
 impl Water<'_> {
@@ -405,7 +412,10 @@ impl WorldView {
     /// fog and the light are interpolated over it. Replaces the water there was.
     /// A sheet whose height, rectangle or tile is not finite numbers (a map's file is not trusted) is not drawn: the water
     /// there was is taken away.
+    /// A camera under its surface takes its tint and absorption, split at the waterline when it straddles it
+    /// ([`underwater_zone`]).
     pub fn set_water(&mut self, assets: &dyn Assets, water: &Water<'_>) {
+        self.scene.water_zone = underwater_zone(water);
         if !water.is_finite() {
             self.scene.water.clear();
             self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
@@ -449,6 +459,7 @@ impl WorldView {
     pub fn clear_ground(&mut self) {
         self.scene.planes.clear();
         self.scene.water.clear();
+        self.scene.water_zone = None;
         self.scene.planes_generation = self.scene.planes_generation.wrapping_add(1);
         self.statics_changed = true;
     }
@@ -874,6 +885,24 @@ fn floor_draw(texture: Option<usize>, color: [u8; 3], half: f32, tile: f32) -> D
     }
 }
 
+/// The water zone a camera is under water in ([`torque_render_scene::hd::WaterZone`]): a sheet's box from its bottom up to its
+/// surface over its rectangle, tinted with its color at its `underwater` share. None for a sheet that is not finite numbers,
+/// has no height or rectangle, or takes no tint.
+pub fn underwater_zone(w: &Water<'_>) -> Option<WaterZone> {
+    let share = w.underwater.clamp(0.0, 1.0);
+    let flat = (0..2).any(|k| w.min[k] >= w.max[k]);
+    let finite = w.is_finite() && w.bottom.is_finite() && share.is_finite();
+    if !finite || share <= 0.0 || w.bottom >= w.level || flat {
+        return None;
+    }
+    let c = w.color.map(|b| f32::from(b) / 255.0);
+    Some(WaterZone {
+        min: [w.min[0], w.min[1], w.bottom],
+        max: [w.max[0], w.max[1], w.level],
+        tint: [c[0], c[1], c[2], share],
+    })
+}
+
 /// A sheet of water's draw: its rectangle cut into cells of at most [`WATER_CELL`] units, blended, both sides drawn, no depth
 /// written (the renderer draws a blended plane as water).
 fn water_draw(texture: Option<usize>, w: &Water<'_>) -> Draw {
@@ -970,6 +999,8 @@ mod tests {
             level: 30.0,
             min: [-100.0, -50.0],
             max: [100.0, 50.0],
+            bottom: 0.0,
+            underwater: 0.3,
         };
         assert!(plain.is_finite());
         let d = water_draw(None, &plain);
@@ -999,6 +1030,61 @@ mod tests {
             },
         ] {
             assert!(!hostile.is_finite(), "{hostile:?}");
+            assert_eq!(underwater_zone(&hostile), None, "{hostile:?}");
+        }
+    }
+
+    /// A sheet of water is a zone the view is under water in: its box from its bottom up to its surface over its rectangle,
+    /// tinted its color at its underwater share; none without a share, a depth or a finite bottom.
+    #[test]
+    fn a_sheet_of_water_yields_its_underwater_zone() {
+        let lake = Water {
+            texture: "kit/water.png",
+            tile: 24.0,
+            color: [51, 102, 153, 200],
+            level: 30.0,
+            min: [-100.0, -50.0],
+            max: [100.0, 50.0],
+            bottom: 0.0,
+            underwater: 0.3,
+        };
+        let zone = underwater_zone(&lake).expect("a zone");
+        assert_eq!(zone.min, [-100.0, -50.0, 0.0]);
+        assert_eq!(zone.max, [100.0, 50.0, 30.0]);
+        assert_eq!(zone.tint, [0.2, 0.4, 0.6, 0.3]);
+        assert!(zone.holds([0.0, 0.0, 29.9]) && !zone.holds([0.0, 0.0, 30.0]));
+        assert!(!zone.holds([0.0, 60.0, 10.0]));
+        assert_eq!(
+            underwater_zone(&Water {
+                underwater: 2.0,
+                ..lake
+            })
+            .map(|z| z.tint[3]),
+            Some(1.0)
+        );
+        for none in [
+            Water {
+                underwater: 0.0,
+                ..lake
+            },
+            Water {
+                underwater: f32::NAN,
+                ..lake
+            },
+            Water {
+                bottom: 30.0,
+                ..lake
+            },
+            Water {
+                bottom: f32::NEG_INFINITY,
+                ..lake
+            },
+            Water {
+                max: [-100.0, 50.0],
+                ..lake
+            },
+        ] {
+            assert_eq!(underwater_zone(&none), None, "{none:?}");
         }
     }
 }

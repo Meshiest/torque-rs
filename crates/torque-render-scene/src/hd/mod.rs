@@ -34,7 +34,7 @@ pub mod sky;
 pub mod sync;
 
 pub use camera::HdCamera;
-pub use scene::{HdFog, HdLight, HdScene, HdSpot, HdSun};
+pub use scene::{HdFog, HdLight, HdScene, HdSpot, HdSun, WaterZone};
 pub use settings::{HdMode, ImageSettings};
 
 /// The texture table: each distinct texture once, kept across syncs (the GPU uploads only the new ones).

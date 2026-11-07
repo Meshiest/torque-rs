@@ -448,6 +448,17 @@ pub struct ClientWorld<S: ClientSet> {
     /// `GameConnection::isFirstPerson`, `mCameraPos` 0). A world fed only by records never sets it.
     pub hide_control: bool,
 
+    /// The nodes of the control object whose objects, and those of every node under them, its first-person view still draws while
+    /// `hide_control` hides the rest (a game's own first-person arms, posed by the body's animation; Torque3D draws separate arm
+    /// shapes there, `PlayerData::shapeNameFP`). Empty (TGE's): nothing of the body is drawn. A game sets it.
+    pub first_person_nodes: Vec<Vec<u8>>,
+
+    /// The angle under a level line of sight from the eye, straight ahead, that the first-person parts (`first_person_nodes`)
+    /// are kept under in the middle of the view (radians; 0, the default: wherever the body has them). A pose that raises them
+    /// into the middle of a level view (a swimmer's stroke) has them drawn lower, by as much as that takes; the eye, the body's
+    /// shadow and a view looking down at them are as they were.
+    pub first_person_clear: f32,
+
     /// The control object's transform as the client predicts it: the client host's prediction sets it every tick, and the
     /// renderer draws the control Player and its images there instead of at its ghost's (for the controlling client the server's
     /// updates carry no position: `Player::packUpdate`'s control branch, so the ghost stays where it was first sent). The client
@@ -574,6 +585,8 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             view: Default::default(),
             control_eye: Default::default(),
             hide_control: Default::default(),
+            first_person_nodes: Default::default(),
+            first_person_clear: Default::default(),
             control_render: Default::default(),
             vehicle_render: Default::default(),
             ghost_render: Default::default(),

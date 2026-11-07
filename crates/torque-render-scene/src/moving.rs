@@ -1020,6 +1020,8 @@ struct Body {
     point: Vec<PointLight>,
     label: String,
     key: Option<Vec<u8>>,
+    /// Whether the frame keeps builds ([`Frame::keeping`]): the first-person parts' build is kept then, whether the body's is or not.
+    keeping: bool,
     /// The objects its threads hide (their visibility at or under [`MIN_VISIBILITY`]), when a thread animates visibility.
     vis_hidden: Option<Vec<bool>>,
 }
@@ -1242,6 +1244,7 @@ fn pose<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
             point,
             label,
             key,
+            keeping: f.keeping,
             vis_hidden,
         }),
         images,
@@ -1513,7 +1516,7 @@ fn build_body<W: ShapeWorld + ?Sized, L>(
     } else {
         &body.label
     };
-    let (mut draws, translucent) = if job.first_person && !shadow_body {
+    let (mut draws, mut translucent) = if job.first_person && !shadow_body {
         (Vec::new(), false)
     } else {
         shape_draws_keyed(
@@ -1539,6 +1542,12 @@ fn build_body<W: ShapeWorld + ?Sized, L>(
             job.loaded.node_spheres(b.nodes),
         )
     };
+    if job.first_person
+        && let Some((parts, see_through)) = first_person_parts(b, job, body)
+    {
+        draws.extend(parts);
+        translucent |= see_through;
+    }
     if !job.first_person
         && let Some(wheels) = b.world.wheels(job.ghost)
     {
@@ -1561,6 +1570,92 @@ fn build_body<W: ShapeWorld + ?Sized, L>(
     }
     crate::shapecache::pushed(pushed, translucent);
     push(out, job.index, job.eye_distance, draws, translucent);
+}
+
+/// The parts of the client's own body its first-person view still draws, as a build of their own beside the body's
+/// ([`crate::first_person`]): none when the world names no first-person nodes the shape has.
+fn first_person_parts<W: ShapeWorld + ?Sized, L>(
+    b: &mut Build<'_, '_, W>,
+    job: &Job<'_, W::Set, L>,
+    body: &Body,
+) -> Option<(Vec<Draw>, bool)> {
+    let model = &job.loaded.model;
+    let records = b.world.records();
+    let mut hidden =
+        crate::first_person::hidden_objects(&model.shape, &records.first_person_nodes)?;
+    if let Some(vis) = &body.vis_hidden {
+        for (h, v) in hidden.iter_mut().zip(vis) {
+            *h |= *v;
+        }
+    }
+    let detail = model.shape.details[job.dl];
+    let parts = ShapeParts {
+        sub_shape: detail.sub_shape,
+        object_detail: detail.object_detail,
+        hidden: b.world.hidden_nodes(job.ghost).unwrap_or(&[]),
+        colors: b.world.mesh_colors(job.ghost),
+        ifl_frames: &body.ifl_frames,
+        hidden_objects: Some(&hidden),
+        skin: None,
+        color_all: None,
+    };
+    // Lowered out of the middle of a level view when the world says (the body's other parts, and its shadow, stay where they
+    // are).
+    let mut xform = job.xform;
+    if let Some(eye) = records.eye().filter(|_| records.first_person_clear > 0.0) {
+        let points = crate::first_person::part_points(
+            &model.shape,
+            &body.instance,
+            &hidden,
+            (detail.sub_shape, detail.object_detail),
+            &mat3_scale(&xform, job.scale),
+        );
+        let drop = crate::first_person::clear_drop(
+            &points,
+            eye.position,
+            eye.yaw,
+            records.first_person_clear,
+        );
+        let at = xform.column(3);
+        xform.set_column3([at[0], at[1], at[2] - drop]);
+    }
+    let scaled = mat3_scale(&xform, job.scale);
+    let unscaled = job.scale == [1.0; 3];
+    let spheres = job.loaded.node_spheres(b.nodes);
+    // Beside the enhanced renderer's shadow-only body, which casts their shadow already, drawn before the eye only (as a held
+    // item there is).
+    let label = crate::first_person::label(&body.label);
+    let label = if shadow_body() {
+        view_model_label(&label)
+    } else {
+        label
+    };
+    // Kept when the frame keeps builds (its key names the parts: the arms' build is cached apart from the body's).
+    let key = body.keeping.then(|| {
+        shape_key_bytes(
+            model,
+            &body.instance,
+            &parts,
+            &scaled,
+            &xform,
+            unscaled,
+            &body.point,
+            spheres.is_some(),
+        )
+    });
+    Some(shape_draws_keyed(
+        model,
+        &body.instance,
+        parts,
+        &scaled,
+        &xform,
+        unscaled,
+        &body.point,
+        b.textures,
+        &label,
+        key,
+        spheres,
+    ))
 }
 
 /// An image's build, pushed.

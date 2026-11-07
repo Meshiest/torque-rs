@@ -926,6 +926,8 @@ impl VehicleDemo {
                 let conn = &mut **conn;
                 // The camera is the example's own: the figure is seen unless the view is at its eyes.
                 conn.world.hide_control = hide;
+                // Its arms still drawn there.
+                torque_example_common::show_first_person_arms(&mut conn.world);
                 self.scene.update(
                     &self.files.kit,
                     &mut conn.world,

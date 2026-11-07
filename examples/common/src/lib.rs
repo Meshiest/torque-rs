@@ -131,6 +131,29 @@ pub fn names_camera(host: &torque::app::Host, eye: &torque_render_scene::source:
     }
 }
 
+/// The kit figure's nodes whose parts the own figure's first-person view still draws: its arms (each upper arm, and the forearm
+/// and hand under it), posed by the figure's animation, while its head, torso and legs stay hidden (the client world's
+/// `first_person_nodes`).
+pub const FIRST_PERSON_NODES: [&str; 2] = ["arm_l", "arm_r"];
+
+/// The angle under a level line of sight the own figure's first-person arms stay under in the middle of the view (radians,
+/// about 7°): the breaststroke brings the hands together before the eyes, and they are drawn that much lower there; lower
+/// still would put the stroke's arms under the water's surface for the whole stroke.
+pub const FIRST_PERSON_CLEAR: f32 = 0.12;
+
+/// Shows the own figure's arms in its first-person view ([`FIRST_PERSON_NODES`]), kept out of the middle of a level view
+/// ([`FIRST_PERSON_CLEAR`]): set on `world` when it names none (a world made afresh, a new connection's, starts without them).
+/// Call it each frame the view may be first person.
+pub fn show_first_person_arms(world: &mut torque::client::conn::tge::TgeWorld) {
+    if world.records.first_person_nodes.is_empty() {
+        world.records.first_person_nodes = FIRST_PERSON_NODES
+            .iter()
+            .map(|n| n.as_bytes().to_vec())
+            .collect();
+        world.records.first_person_clear = FIRST_PERSON_CLEAR;
+    }
+}
+
 /// The path of the kit's file `name` (`figure.dts` is `kit/figure.dts`).
 pub fn kit_path(name: &str) -> String {
     format!("{KIT_DIR}/{}", name.to_ascii_lowercase())
@@ -338,5 +361,43 @@ mod tests {
         assert_eq!(fetched.kit.read("kit/extra.png"), Some(vec![7]));
         assert_eq!(fetched.maps(), ["missions/a.mis", "missions/b.mis"]);
         assert!(GameFiles::<Dir>::from_fetched(vec![("bad.pack".to_string(), vec![1])]).is_err());
+    }
+
+    /// The kit figure's first-person view draws its upper arms, forearms and hands, and none of its head, eyes, torso or legs
+    /// (nor its hitboxes, which no detail draws).
+    #[test]
+    fn the_figure_s_first_person_view_draws_its_arms_and_hands_only() {
+        let model = torque_example_assets::shapes::figure();
+        let shape = &model.shape;
+        let nodes: Vec<Vec<u8>> = FIRST_PERSON_NODES
+            .iter()
+            .map(|n| n.as_bytes().to_vec())
+            .collect();
+        let hidden = torque_render_scene::first_person::hidden_objects(shape, &nodes)
+            .expect("the figure has the arms' nodes");
+        // The objects the drawn detail has a mesh in.
+        let od = shape.details[0].object_detail;
+        let drawn = |o: &&torque::shapes::shape::Object| {
+            od < o.num_meshes && shape.meshes[(o.start_mesh_index + od) as usize].is_some()
+        };
+        let shown: std::collections::BTreeSet<String> = shape
+            .objects
+            .iter()
+            .zip(&hidden)
+            .filter(|(o, _)| drawn(o))
+            .filter(|(_, h)| !**h)
+            .map(|(o, _)| String::from_utf8(shape.names[o.name as usize].clone()).unwrap())
+            .collect();
+        let want: std::collections::BTreeSet<String> = [
+            "upperarm_l",
+            "forearm_l",
+            "hand_l",
+            "upperarm_r",
+            "forearm_r",
+            "hand_r",
+        ]
+        .map(String::from)
+        .into();
+        assert_eq!(shown, want);
     }
 }

@@ -260,9 +260,9 @@ pub trait HdExtension: Sized + 'static {
         [true; 6]
     }
 
-    /// The water zone the eye may be under.
-    fn water_zone(_scene: &Self::Scene) -> Option<WaterZone> {
-        None
+    /// The water zone the eye may be under: the scene's ([`torque_render_scene::hd::HdScene::water_zone`]).
+    fn water_zone(scene: &Self::Scene) -> Option<WaterZone> {
+        scene.water_zone
     }
 
     /// Whether the static geometry fades into the fog before the visible distance in some heading.

@@ -243,6 +243,8 @@ fn end_ghosting(world: &mut ClientWorld<TgeClientSet>) {
     world.animate = old.animate;
     world.anim_ms = old.anim_ms;
     world.hide_own_items = old.hide_own_items;
+    world.first_person_nodes = old.first_person_nodes;
+    world.first_person_clear = old.first_person_clear;
     world.max_view_distance = old.max_view_distance;
     world.effect_seq = old.effect_seq;
     world.effects_dropped = old.effects_dropped;

@@ -3,6 +3,7 @@
 //! pipelines (`water.wgsl`'s `fs_water`: the plane drawn over the opaque frame's copy, not blended).
 
 use torque_render_core::wgpu;
+pub use torque_render_scene::hd::WaterZone;
 use torque_render_scene::hd::{HdCamera, HdScene};
 
 /// The planar reflection's colour and depth, and its view's frame uniform.
@@ -71,21 +72,6 @@ impl Planar {
 
 /// How far under water half the light is absorbed at a tint alpha of a half (units); the absorption scales with the tint's alpha.
 pub const UNDERWATER_HALF_DISTANCE: f32 = 12.0;
-
-/// A water zone the view is tinted from inside of: its world box (half-open on each axis) and its tint (gamma colour, alpha 0..1).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WaterZone {
-    pub min: [f32; 3],
-    pub max: [f32; 3],
-    pub tint: [f32; 4],
-}
-
-impl WaterZone {
-    /// Whether the point is in the zone (half-open on each axis).
-    pub fn holds(&self, p: [f32; 3]) -> bool {
-        (0..3).all(|k| self.min[k] <= p[k] && p[k] < self.max[k])
-    }
-}
 
 /// The frame uniform's water terms (`common.wgsl`'s `Frame::water` and `Frame::under`).
 pub struct FrameTerms {

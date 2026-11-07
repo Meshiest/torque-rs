@@ -26,6 +26,12 @@ different.
 - `torque-render-core::pipeline_cache`: compiled pipelines kept in a per-user wgpu pipeline cache on Vulkan, keyed by
   adapter and driver and size-capped, so a start no longer compiles every pipeline again.
 - `torque-render-scene`: tire tracks (TGE has none) and vehicle dust.
+- `torque-render-scene`: the own Player's arms in its first-person view (`ClientWorld::first_person_nodes`), posed by the
+  body's animation and kept out of the middle of a level view (`first_person_clear`), where TGE draws none of the body and
+  Torque3D draws separate arm shapes.
+- `torque-render-hd`, `torque::app`: the view under water (`HdScene::water_zone`, set by `WorldView::set_water` from the
+  water's bottom and its `underwater` share): the water's tint and absorption, split at the waterline when the camera
+  straddles it.
 - `torque-gui`: buttons, popups and slider thumbs drawn as rounded boxes; `GuiExtension::classic_boxes` keeps TGE's
   beveled ones.
 - `torque-fonts`: system fonts on Linux and macOS, with metric-compatible free faces in place of missing ones.
