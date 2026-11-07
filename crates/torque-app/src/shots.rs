@@ -44,6 +44,10 @@ impl<G: App> Seat<G> {
 
     /// Draws one frame.
     pub fn frame(&mut self, gpu: &Gpu) -> Result<(), String> {
+        // Names over the shapes (GuiShapeNameHud) stand where the game's own camera sees them: none from another eye.
+        if self.eye.is_some() {
+            self.game.host().gui.0.borrow_mut().hud.names.clear();
+        }
         let (gui, eye) = self.game.frame(&mut self.view);
         let eye = self.eye.unwrap_or(eye);
         self.view.draw(gpu, &self.target.color, &gui, eye)?;
