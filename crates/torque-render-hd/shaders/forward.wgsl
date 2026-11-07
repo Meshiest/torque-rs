@@ -49,7 +49,8 @@
 //   without the jitter; a shape's previous position through its motion matrix, group 2) with the previous frame's eye distance (the
 //   TAA's and the AO's disocclusion test), and its normal (octahedral) for the AO.
 // - Ambient occlusion: the AO pass's result, upsampled to the pixel from the four nearest AO texels weighted bilinearly and by
-//   how close their depth is to the pixel's (a texel of another surface gets no weight; none near: no occlusion), takes away the
+//   how close their depth is to the pixel's (a texel of another surface gets no weight; none near: the texel nearest in depth's,
+//   so a sliver of a surface between the texels keeps its occlusion instead of a light rim along an outline), takes away the
 //   settings' share of the ambient (and of a reflective surface's sky reflection); the sun's light only by the scene's share of it
 //   (`shadows.colour.w`, 0 by default: a darkening in the sun where surfaces meet).
 // - Specular anti-aliasing (Kaplanyan and Hill 2016's normal-variance filtering): GGX's alpha squared is widened by twice the
@@ -342,18 +343,26 @@ fn ambient_occlusion(frag: vec2<f32>, d: f32) -> f32 {
     let f = u - floor(u);
     var sum = 0.0;
     var weight = 0.0;
+    // The texel nearest the pixel in depth, and how far: the occlusion when no texel lies on the pixel's surface.
+    var nearest = 1.0;
+    var nearest_gap = 1e30;
     for (var k = 0u; k < 4u; k = k + 1u) {
         let o = vec2<i32>(i32(k & 1u), i32(k >> 1u));
         let q = clamp(base + o, vec2<i32>(0), dims - 1);
         let t = textureLoad(ao_tex, q, 0);
         let bw = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
-        let dw = clamp(1.0 - abs(t.g - lin) / tol, 0.0, 1.0);
+        let gap = abs(t.g - lin);
+        let dw = clamp(1.0 - gap / tol, 0.0, 1.0);
         let w = (bw + 1e-3) * dw;
         sum = sum + t.r * w;
         weight = weight + w;
+        if t.g > 0.0 && gap < nearest_gap {
+            nearest = t.r;
+            nearest_gap = gap;
+        }
     }
     if weight < 1e-4 {
-        return 1.0;
+        return clamp(nearest, 0.0, 1.0);
     }
     return clamp(sum / weight, 0.0, 1.0);
 }
