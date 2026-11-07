@@ -83,17 +83,16 @@ With no server of ours, two players trade connection codes by hand (`web/invites
 link" opens a panel: the player picks the STUN server (Cloudflare, Google, or same network only, which uses none), reads
 what that server sees, and presses "Create Invite Offer" once per friend for an invite offer link
 (`<page>#join=<code>`). An invite belongs to one peer connection, so each works once. The friend's page shows which
-server the invite uses before it contacts it, then makes a reply link (`<page>#reply=<code>`). The host opens the reply
-link in the same browser: that tab hands the reply to the game's tab over a `BroadcastChannel` and closes, and the data
-channel opens straight between the two browsers. The friend's game joins once the channel opens, however long the trade
+server the invite uses before it contacts it, then makes a reply code for the friend to send back. The host pastes it
+into their panel under "A reply came back?", and the data channel opens straight between the two browsers. The friend's game joins once the channel opens, however long the trade
 takes. The page never loads again for any of this: a page opened on an invite starts its game as one played alone, with
 the friend's panel over its menu, and switches that game to the host's once the channel opens (and joining with a pasted
 link works the same way). Every state of the friend's panel has "Back to the menu", which closes the panel over the
 game's own menu; a join that failed or was refused also takes a new invite offer link pasted in. Leaving the host's
 game, or the host leaving, brings the page back to its own menu, played alone. On the host's list, an invite that failed,
-expired or whose player left has "Dismiss". The reply can also be pasted into the host's panel. The codes ride in
-the fragment, which a browser never sends to the server, and the page clears it from the address bar once read. Each
-link carries its sender's IP address, which the panels say beside every copy button.
+expired or whose player left has "Dismiss". The invite's code rides in the link's fragment, which a browser never sends
+to the server, and the page clears it from the address bar once read. The invite link and the reply code each carry their
+sender's IP address, which the panels say beside every copy button.
 
 A code is the SDP cut to what a data channel needs (ICE user fragment and password, the DTLS fingerprint and setup, the
 candidates as type, address and port), deflated, in base64url, with a version byte, a kind byte and a CRC-32; about 230
