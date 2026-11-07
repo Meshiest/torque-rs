@@ -70,6 +70,7 @@ client's script engine the way a Torque game expects. Here is what it adds, in o
 | `ScreenPlugin` | `torque.screen` | resolution, full screen and the canvas's natives |
 | `ConnPlugin` | `torque.conn` | the client's connection to a server and the ghosts' natives |
 | `ServerQueryPlugin` | `torque.server-query` | the server browser's natives |
+| `ServerTransportPlugins`, `ClientTransportPlugins` | `torque.transport-udp-server`, ... | the transports a server listens on and a client connects over, a plugin each (see [Transports](#transports)) |
 | `AudioPlugin` | `torque_audio::AudioPlugin` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick; it plays through the null sink and opens no sound card |
 | `ClientHostPlugin` | `torque.frame-host` | the client host that runs the frames |
 | `RendererSlotPlugin` | `torque.renderer-slot` | the renderer slot each client shares with its world view, and `setRenderer`/`getRenderer` |
@@ -513,6 +514,49 @@ let engine = EngineBuilder::new()
 
 With every feature plugin on, the renderer draws as it always has. Other renderers on the slot read the same scene and
 decide for themselves what to draw of it.
+
+## Transports
+
+A server listens, and a client connects, over a transport picked by id. Each transport is a plugin that registers
+itself under an id; the engine's own are in `DefaultPlugins` (and the server's in `MinimalPlugins`), one pair per
+transport, a server half and a client half:
+
+| Id | Server plugin | Client plugin | What it carries |
+|---|---|---|---|
+| `udp` | `UdpServerTransportPlugin` (`torque.transport-udp-server`) | `UdpClientTransportPlugin` (`torque.transport-udp-client`) | UDP datagrams on one socket, the LAN list's pings and queries on the same one (not in a browser) |
+| `memory` | `MemoryServerTransportPlugin` (`torque.transport-memory-server`) | `MemoryClientTransportPlugin` (`torque.transport-memory-client`) | an in-process link: a game played alone, tests |
+| `web` | `WebServerTransportPlugin` (`torque.transport-web-server`) | `WebClientTransportPlugin` (`torque.transport-web-client`) | WebSocket game sockets, the page served on the same port, a WebRTC data channel beside them (the `web` feature; `webrtc` for the channel) |
+| `rooms` | `RoomsServerTransportPlugin` (`torque.transport-rooms-server`) | `RoomsClientTransportPlugin` (`torque.transport-rooms-client`) | a player's host found through a room service by its code (the `p2p` feature; the client half in a browser) |
+| `relay` | `RelayServerTransportPlugin` (`torque.transport-relay-server`) | `RelayClientTransportPlugin` (`torque.transport-relay-client`) | a browser host's links, held by its page (the `p2p` feature; the client half in a browser) |
+
+The server picks the transport by the id of the `Listen` it was started with (`udp` for `Listen::Udp`, `memory` for
+`Listen::Memory`, `web` for `Listen::Web`, and the id of a `BoundTransport` or of `Listen::custom`). A client's
+`ClientNet::Loopback`, `Lan` and `Memory` are `udp` and `memory`; any other transport is used with
+`ClientBuilder::connect(id, &target)` (or `GameClient::connect`) on a client made with `ClientNet::External`, where the
+target is of the type that transport takes.
+
+A plugin adds a transport of its own with `add_server_transport(id, open)` and `add_client_transport(id, open)`:
+
+```rust,ignore
+impl Plugin for ChannelPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        // The server side: a `Listen::custom("channel", ())` opens it.
+        engine.add_server_transport("channel", |_listen| Ok(ServerLink::new(channel_transport())));
+        // The client side: `client.connect("channel", &ChannelTarget)`.
+        engine.add_client_transport("channel", |_: &ChannelTarget| {
+            Ok(ClientLink::new(Box::new(channel_datagrams()), NetPolicy::Loopback))
+        });
+    }
+}
+```
+
+A transport turned off is gone: `DefaultPlugins.disable::<UdpServerTransportPlugin>()` makes a server started on
+`Listen::Udp` fail with a message that names the id, the plugin to add and the ids that are registered. A second
+transport under an id already registered is skipped, with a warning on the console.
+
+`HostingPlugin` (not in `DefaultPlugins`) adds the join screen's natives (`checkJoinAddress` and its kin) on top of the
+rooms transport: with the `p2p` feature it adds that transport with it, and is turned off, with a warning, when the
+transport is.
 
 ## Running an engine
 

@@ -13,6 +13,7 @@
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
+//! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, a plugin each, by id ([`transports`](crate::transports)) | `UdpTransport`, `MemoryTransport`, the web and p2p ones |
 //! | [`DedicatedRunnerPlugin`] | `torque.dedicated-runner` | the engine's runner slot | [`run`](crate::run): a dedicated server |
 //!
 //! `SimClassesPlugin` sets the slot of the game's own simulated classes; it is in no group.
@@ -33,6 +34,7 @@ use torque_server::state::ServerState;
 use torque_ts_vm::vm::Vm;
 
 use crate::run::DedicatedRunnerPlugin;
+pub use crate::transports::ServerTransportPlugins;
 
 /// What a dedicated server needs and nothing else: TGE's game classes, the server game, the terrain and water blocks and the
 /// network host, with the runner that runs a [`Dedicated`](crate::run::Dedicated) server. No client, GUI, drawing, audio or
@@ -62,6 +64,7 @@ impl PluginGroup for MinimalPlugins {
             .add(TerrainPlugin)
             .add(WaterPlugin)
             .add(NetHostPlugin)
+            .add_group(ServerTransportPlugins)
             .add(DedicatedRunnerPlugin)
     }
 }

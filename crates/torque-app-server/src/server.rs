@@ -10,11 +10,15 @@
 //! `Listen::Web`) the server takes browsers' game sockets over WebSocket and serves them the game's page on one TCP port,
 //! with UDP on the same port number beside it or not at all (torque-server's `net::web`).
 //!
+//! **The transport** is picked by id: a [`Listen`] names the transport that serves it ([`Listen::transport_id`]: `udp`, `memory`,
+//! `web`, or the id of a bound or custom one), and the engine's transport plugins register them ([`crate::transports`]).
+//! An id no plugin registered is refused.
+//!
 //! **A tick** ([`GameServer::tick`]) is one 32 ms pass of the main loop: the datagrams waiting, the scripts' events, the
 //! objects' ticks and a packet to every client.
 
 use std::cell::RefCell;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 use web_time::{Duration, Instant};
 
@@ -22,9 +26,7 @@ use torque_engine::{Engine, EngineBuilder, ServerStage};
 use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
 use torque_server::net::torque::TorqueNet;
-use torque_server::net::transport::{
-    BindPolicy, LanRules, MemoryEnd, MemoryTransport, SharedTransport, Transport, UdpTransport,
-};
+use torque_server::net::transport::{MemoryEnd, SharedTransport};
 use torque_server::net::{HostParts, NetShared};
 use torque_server::server::{Server, TICK_MS};
 use torque_server::state::ServerState;
@@ -32,6 +34,8 @@ use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
 use crate::plugins::{MinimalPlugins, ServerWiring};
+pub use crate::transports::{BoundTransport, CustomListen};
+use crate::transports::{ServerLink, open_listen, server_transport_warnings};
 
 /// The UDP port number games listen on (and the LAN list asks): TGE's.
 pub const DEFAULT_PORT: u16 = 28_000;
@@ -76,19 +80,10 @@ pub enum Listen {
         web: Rc<WebListen>,
     },
     /// A transport the caller made and bound (a player's host found through a room service, torque-server's
-    /// `net::web::p2p`; a browser host's worker link).
+    /// `net::web::p2p`, id `rooms`; a browser host's worker link, id `relay`).
     Bound(BoundTransport),
-}
-
-/// A transport made and bound before the server starts ([`Listen::Bound`]).
-#[derive(Clone)]
-pub struct BoundTransport(pub SharedTransport);
-
-impl std::fmt::Debug for BoundTransport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let at = self.0.borrow().local_addr();
-        f.debug_tuple("BoundTransport").field(&at).finish()
-    }
+    /// A transport a plugin registered under its own id ([`Listen::custom`]), with the request it reads.
+    Custom(CustomListen),
 }
 
 /// How a server starts: where it listens, the globals set before `server.cs` runs, and the script function that starts the
@@ -185,34 +180,14 @@ impl GameServer {
         start: &ServerStart,
         prepare: &mut dyn FnMut(&mut Vm),
     ) -> Result<GameServer, String> {
-        let (transport, end) = match &start.listen {
-            &Listen::Udp {
-                address,
-                port,
-                public,
-            } => (udp_transport(address, port, public)?, None),
-            #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
-            Listen::Web {
-                address,
-                port,
-                public,
-                web,
-            } => (web_transport(*address, *port, *public, web)?, None),
-            Listen::Bound(bound) => (Rc::clone(&bound.0), None),
-            &Listen::Memory(at) => {
-                let (transport, end) = MemoryTransport::new();
-                let transport: SharedTransport = Rc::new(RefCell::new(transport));
-                transport
-                    .borrow_mut()
-                    .bind(at.ip(), at.port())
-                    .map_err(|e| format!("the link: {e:?}"))?;
-                (transport, Some(end))
-            }
-        };
+        let ServerLink { transport, end } = open_listen(engine, &start.listen)?;
 
         let mut vm = Vm::new();
         for warning in engine.warnings() {
             vm.warn(warning.to_string());
+        }
+        for warning in server_transport_warnings(engine) {
+            vm.warn(warning);
         }
         let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
         let wiring = Rc::new(ServerWiring::new(Rc::clone(&state), Rc::clone(&transport)));
@@ -312,13 +287,13 @@ impl GameServer {
         self.transport.borrow_mut().close();
     }
 
-    /// Has a dedicated server print its transport's status lines ([`Transport::status`]: a web transport's data channels)
+    /// Has a dedicated server print its transport's status lines ([`Transport::status`](torque_server::net::transport::Transport::status): a web transport's data channels)
     /// every `every` (never with none, the default).
     pub fn set_status_every(&mut self, every: Option<Duration>) {
         self.status_every = every;
     }
 
-    /// The transport's status lines since the last call ([`Transport::status`]).
+    /// The transport's status lines since the last call ([`Transport::status`](torque_server::net::transport::Transport::status)).
     pub fn transport_status(&mut self) -> Vec<String> {
         self.transport.borrow_mut().status()
     }
@@ -366,7 +341,7 @@ impl GameServer {
         }
     }
 
-    /// Waits `wait` of the wall clock; a transport with work of its own between ticks ([`Transport::service`]: a web
+    /// Waits `wait` of the wall clock; a transport with work of its own between ticks ([`Transport::service`](torque_server::net::transport::Transport::service): a web
     /// transport's files and sockets) is serviced every few milliseconds meanwhile.
     fn wait(&mut self, wait: Duration) {
         if !self.transport.borrow().wants_service() {
@@ -384,7 +359,7 @@ impl GameServer {
         }
     }
 
-    /// The transport's work between ticks, done now ([`Transport::service`]; a harness that paces ticks itself calls it).
+    /// The transport's work between ticks, done now ([`Transport::service`](torque_server::net::transport::Transport::service); a harness that paces ticks itself calls it).
     pub fn service(&mut self) {
         self.transport.borrow_mut().service();
     }
@@ -393,55 +368,4 @@ impl GameServer {
 /// Replays `stage` of `engine`'s server recipes on `vm`.
 fn replay(engine: &Engine, stage: ServerStage, vm: &mut Vm) -> Result<(), String> {
     engine.replay(stage, vm).map_err(|e| e.to_string())
-}
-
-/// The bind policy for `address` (`public` allows `0.0.0.0` alone).
-fn bind_policy(address: Ipv4Addr, public: bool) -> Result<BindPolicy, String> {
-    BindPolicy::new(
-        IpAddr::V4(address),
-        public && address.is_unspecified(),
-        &LanRules::PLAIN,
-    )
-    .map_err(|e| {
-        format!(
-            "the address {address} is not a private one; only 0.0.0.0 (every interface) may be public: {e}"
-        )
-    })
-}
-
-/// The web transport (and UDP beside it when `web.udp` says so) bound on `address` and `port` under the bind policy.
-#[cfg(all(feature = "web", not(target_arch = "wasm32")))]
-fn web_transport(
-    address: Ipv4Addr,
-    port: u16,
-    public: bool,
-    web: &WebListen,
-) -> Result<SharedTransport, String> {
-    use torque_server::net::web::{MultiTransport, WebTransport};
-    let policy = bind_policy(address, public)?;
-    let ip = IpAddr::V4(address);
-    let site = WebTransport::new(policy, web.setup.clone());
-    let transport: SharedTransport = if web.udp {
-        Rc::new(RefCell::new(MultiTransport::new(
-            UdpTransport::new(policy),
-            site,
-        )))
-    } else {
-        Rc::new(RefCell::new(site))
-    };
-    transport
-        .borrow_mut()
-        .bind(ip, port)
-        .map_err(|e| format!("the server's socket: {e}"))?;
-    Ok(transport)
-}
-
-/// A UDP transport bound on `address` and `port` under the bind policy (`public` allows `0.0.0.0` alone).
-fn udp_transport(address: Ipv4Addr, port: u16, public: bool) -> Result<SharedTransport, String> {
-    let ip = IpAddr::V4(address);
-    let policy = bind_policy(address, public)?;
-    let mut udp = UdpTransport::new(policy);
-    udp.bind(ip, port)
-        .map_err(|e| format!("the server's socket: {e}"))?;
-    Ok(Rc::new(RefCell::new(udp)))
 }

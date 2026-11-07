@@ -10,6 +10,8 @@
 //! - [`client::GameClient`]: a client host (script engine, GUI, action maps, TGE's connection half), its globals and keys, and the
 //!   server it hosts in the same process on the same clock.
 //! - [`view::WorldView`]: the per-frame world view, drawn by the renderer slot's renderer under the GUI.
+//! - [`transports`]: the transports a client connects over and a server listens on, registered by plugins under ids (UDP, memory,
+//!   web, rooms, relay) and picked by id.
 //! - [`renderers`]: the renderer slot: renderers registered by plugins under ids and swapped while the game runs
 //!   (`setRenderer`), the engine's own renderer and its features as plugins.
 //! - [`ghosts::GhostScene`]: the client's ghosts drawn through the engine's moving shapes, with live Players, held images and
@@ -60,6 +62,7 @@ pub mod renderers;
 pub mod run;
 pub mod shots;
 pub mod terrain;
+pub mod transports;
 pub mod view;
 #[cfg(all(feature = "p2p", target_arch = "wasm32"))]
 pub mod web_host;
@@ -83,6 +86,8 @@ mod plugins_tests;
 mod renderers_tests;
 #[cfg(test)]
 mod run_tests;
+#[cfg(test)]
+mod transports_tests;
 
 pub use client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 pub use files::GameFiles;

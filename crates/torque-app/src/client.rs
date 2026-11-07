@@ -14,8 +14,9 @@
 //! **A step** ([`GameClient::step`]): as many server ticks as the time covers when hosting, then the client's ticks (its input,
 //! its scripts, its connection, its query), the link carried around each, and the console's lines kept.
 
+use std::any::Any;
 use std::cell::RefCell;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
 use torque_client::conn::tge::{TgeConn, TgeWorld};
@@ -23,7 +24,7 @@ use torque_client::game::ClientGame;
 use torque_client::host::{ClientHost, ClientPass};
 use torque_client::hud::HudWorld as _;
 use torque_client::input::{Key, key_message};
-use torque_client::net::{DatagramQueue, Datagrams, MemoryDatagrams, NetPolicy, UdpDatagrams};
+use torque_client::net::{Datagrams, NetPolicy};
 use torque_client::state::ClientState;
 use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder, PluginGroup};
 use torque_gui::Gui;
@@ -38,6 +39,9 @@ use super::plugins::{
     ServerQueryPlugin,
 };
 use super::server::GameServer;
+use super::transports::{
+    Connect, LinkInfo, MemoryLink, MemoryTarget, UdpTarget, client_transport_warnings, open_connect,
+};
 
 /// The most console lines a client keeps of its own and of its server's (it drops the older half past this).
 pub const LOG_LINES: usize = 4000;
@@ -151,8 +155,11 @@ impl ClientBuilder {
         for warning in engine.warnings() {
             vm.warn(warning.to_string());
         }
+        for warning in client_transport_warnings(engine) {
+            vm.warn(warning);
+        }
         let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
-        let link = open_socket(&state, net)?;
+        let link = open_socket(engine, &state, net)?;
         let wiring = Rc::new(ClientWiring::new(Rc::clone(&state), net));
         vm.set_extension(Rc::clone(&wiring));
         replay(engine, ClientStage::Classes, &mut vm)?;
@@ -192,6 +199,14 @@ impl ClientBuilder {
         let mut n = st.net.borrow_mut();
         n.policy = policy;
         n.socket = Some(socket);
+    }
+
+    /// Connects the client over the transport registered under `id`, to `target` (of the type that transport takes; see
+    /// [`transports`](crate::transports)): a client made with [`ClientNet::External`], or one that changes its transport. Any
+    /// other socket it had is closed. Gives back what the transport has to say about its link ([`LinkInfo`]). Err: no
+    /// transport is registered under `id` (its plugin is off), the target is not its type, or it could not open.
+    pub fn connect<T: Any>(&mut self, id: &str, target: &T) -> Result<LinkInfo, String> {
+        self.connect_dyn(id, target)
     }
 
     /// Runs the script file `path` of the files.
@@ -242,6 +257,7 @@ impl ClientBuilder {
         }
         let mut client = GameClient {
             host,
+            engine: self.engine,
             server: None,
             link: self.link,
             parked: None,
@@ -252,6 +268,15 @@ impl ClientBuilder {
         };
         client.set_global("$Client::HostsServer", "0");
         client
+    }
+}
+
+impl Connect for ClientBuilder {
+    fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
+        let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
+        self.set_socket(socket, policy);
+        self.link = link;
+        Ok(info)
     }
 }
 
@@ -279,85 +304,31 @@ fn replay(engine: &Engine, stage: ClientStage, vm: &mut Vm) -> Result<(), String
     engine.replay(stage, vm).map_err(|e| e.to_string())
 }
 
-/// An in-memory socket at `client` and its link to a server at `server`.
-fn memory_socket(client: SocketAddrV4, server: SocketAddr) -> (MemoryLink, MemoryDatagrams) {
-    let link = MemoryLink {
-        sent: DatagramQueue::default(),
-        incoming: DatagramQueue::default(),
-        client,
-        server,
-    };
-    let socket = MemoryDatagrams {
-        sent: Rc::clone(&link.sent),
-        incoming: Rc::clone(&link.incoming),
-        local_port: client.port(),
-    };
-    (link, socket)
-}
-
-/// Opens the client's socket as `net` says; an in-memory one comes with its link.
+/// Opens the client's socket as `net` says, over the engine's transports (`udp` for [`ClientNet::Loopback`] and
+/// [`ClientNet::Lan`], `memory` for [`ClientNet::Memory`]); an in-memory one comes with its link.
 fn open_socket(
+    engine: &Engine,
     state: &Rc<RefCell<ClientState<TgeConn>>>,
     net: ClientNet,
 ) -> Result<Option<MemoryLink>, String> {
+    let (id, target): (&str, &dyn Any) = match &net {
+        ClientNet::None | ClientNet::External => return Ok(None),
+        ClientNet::Loopback => ("udp", &UdpTarget::Loopback),
+        ClientNet::Lan => ("udp", &UdpTarget::Lan),
+        ClientNet::Memory { client, server } => (
+            "memory",
+            &MemoryTarget {
+                client: *client,
+                server: *server,
+            },
+        ),
+    };
+    let (socket, policy, link, _) = open_connect(engine, id, target)?.split();
     let st = state.borrow();
     let mut n = st.net.borrow_mut();
-    match net {
-        ClientNet::None | ClientNet::External => Ok(None),
-        ClientNet::Loopback | ClientNet::Lan => {
-            let (ip, policy, twin) = match net {
-                ClientNet::Loopback => (Ipv4Addr::LOCALHOST, NetPolicy::Loopback, false),
-                _ => (Ipv4Addr::UNSPECIFIED, NetPolicy::Internet, true),
-            };
-            let socket =
-                UdpDatagrams::open(ip, 0, twin).map_err(|e| format!("the client's socket: {e}"))?;
-            n.policy = policy;
-            n.socket = Some(Box::new(socket));
-            Ok(None)
-        }
-        ClientNet::Memory { client, server } => {
-            let (link, socket) = memory_socket(client, server);
-            n.policy = NetPolicy::Loopback;
-            n.socket = Some(Box::new(socket));
-            Ok(Some(link))
-        }
-    }
-}
-
-/// The datagrams between an in-memory client socket and the transport of a server in the same process.
-struct MemoryLink {
-    sent: DatagramQueue,
-    incoming: DatagramQueue,
-    client: SocketAddrV4,
-    server: SocketAddr,
-}
-
-impl MemoryLink {
-    fn carry(&self, server: &GameServer) {
-        let Some(end) = server.memory_end() else {
-            return;
-        };
-        let client = SocketAddr::V4(self.client);
-        for (to, data) in self.sent.borrow_mut().drain(..) {
-            if SocketAddr::V4(to) == self.server {
-                end.inject(client, &data);
-            }
-        }
-        let SocketAddr::V4(from) = self.server else {
-            return;
-        };
-        let mut incoming = self.incoming.borrow_mut();
-        for (to, data) in end.take_sent() {
-            if to == client {
-                incoming.push_back((from, data));
-            }
-        }
-    }
-
-    fn clear(&self) {
-        self.sent.borrow_mut().clear();
-        self.incoming.borrow_mut().clear();
-    }
+    n.policy = policy;
+    n.socket = Some(socket);
+    Ok(link)
 }
 
 /// What [`GameClient::start_local`] set aside.
@@ -371,6 +342,7 @@ struct Parked {
 /// one when it stops).
 pub struct GameClient<S = GameServer> {
     pub host: Host,
+    engine: Engine,
     /// The server this client runs in its own process, if any.
     pub server: Option<S>,
     link: Option<MemoryLink>,
@@ -384,6 +356,30 @@ pub struct GameClient<S = GameServer> {
     pub server_log: Vec<String>,
     /// Lines the client printed.
     pub client_log: Vec<String>,
+}
+
+impl<S> Connect for GameClient<S> {
+    fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
+        let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
+        {
+            let st = self.host.client.borrow();
+            let mut n = st.net.borrow_mut();
+            n.policy = policy;
+            n.socket = Some(socket);
+        }
+        self.link = link;
+        Ok(info)
+    }
+}
+
+impl<S> GameClient<S> {
+    /// Connects the client over the transport registered under `id`, to `target` (of the type that transport takes; see
+    /// [`transports`](crate::transports)), closing any other socket it had: a browser's client opens a new link to join
+    /// again. Not while a game is played alone ([`GameClient::start_local`]). Err: no transport is registered under `id`, the
+    /// target is not its type, or it could not open.
+    pub fn connect<T: Any>(&mut self, id: &str, target: &T) -> Result<LinkInfo, String> {
+        self.connect_dyn(id, target)
+    }
 }
 
 impl<S> GameClient<S> {
@@ -576,22 +572,29 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
 
     /// Runs `server`, started on [`super::server::Listen::Memory`] at `at`, here over an in-memory link from `client` (a game
     /// played alone): the client's socket is set aside until hosting stops, so nothing goes out on the network. The client then
-    /// joins it at `at`.
-    pub fn start_local(&mut self, server: S, client: SocketAddrV4, at: SocketAddr) {
+    /// joins it at `at`. Err: the engine has no `memory` transport (its plugin is off).
+    pub fn start_local(
+        &mut self,
+        server: S,
+        client: SocketAddrV4,
+        at: SocketAddr,
+    ) -> Result<(), String> {
         self.stop_hosting();
-        let (link, socket) = memory_socket(client, at);
+        let target = MemoryTarget { client, server: at };
+        let (socket, policy, link, _) = open_connect(&self.engine, "memory", &target)?.split();
         {
             let st = self.host.client.borrow();
             let mut n = st.net.borrow_mut();
-            let socket = n.socket.replace(Box::new(socket));
-            let policy = std::mem::replace(&mut n.policy, NetPolicy::Loopback);
+            let socket = n.socket.replace(socket);
+            let policy = std::mem::replace(&mut n.policy, policy);
             self.parked = Some(Parked {
                 socket,
                 policy,
-                link: self.link.replace(link),
+                link: std::mem::replace(&mut self.link, link),
             });
         }
         self.start_hosting(server);
+        Ok(())
     }
 
     /// Whether the client plays a game alone ([`GameClient::start_local`]).

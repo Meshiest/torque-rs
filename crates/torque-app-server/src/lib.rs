@@ -11,6 +11,8 @@
 //! - [`water::Water`]: a `WaterBlock` as water the Players swim in.
 //! - [`plugins`]: the plugins that wire a server's script engine, replayed by [`server::GameServer::start_engine`], and
 //!   [`plugins::MinimalPlugins`], the group a dedicated server needs.
+//! - [`transports`]: the transports a server listens on (UDP, memory, web, rooms, relay), a plugin each registered by id, and
+//!   [`transports::ServerTransportPlugins`], which `MinimalPlugins` has.
 //! - [`run`]: [`run::Dedicated`], [`run::Stop`] and [`run::DedicatedRunnerPlugin`], which runs a dedicated server for
 //!   [`Engine::run`](torque_engine::Engine::run).
 //! - `serve` (the `p2p` feature, natively): a dedicated server's switches for browsers (the web beside UDP, data channels,
@@ -26,12 +28,15 @@ pub mod run;
 pub mod serve;
 pub mod server;
 pub mod terrain;
+pub mod transports;
 pub mod water;
 
 #[cfg(test)]
 mod plugins_tests;
 #[cfg(test)]
 mod run_tests;
+#[cfg(test)]
+mod transports_tests;
 
 pub use files::GameFiles;
 pub use server::{GameServer, Listen};

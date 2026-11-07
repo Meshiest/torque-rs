@@ -2,7 +2,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 
-use torque_engine::{Engine, EngineBuilder, PluginGroup, PluginType};
+use torque_engine::{Engine, EngineBuilder, PluginGroup, PluginId, PluginType};
 use torque_ts_vm::host::MemFiles;
 
 use crate::plugins::{
@@ -36,8 +36,14 @@ fn start(engine: &Engine) -> Result<GameServer, String> {
 #[test]
 fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
     let engine = engine(MinimalPlugins);
+    let wiring: Vec<PluginId> = engine
+        .plugins()
+        .iter()
+        .copied()
+        .filter(|id| !id.as_str().starts_with("torque.transport-"))
+        .collect();
     assert_eq!(
-        engine.plugins(),
+        wiring,
         [
             GameClassesPlugin::ID,
             ServerGamePlugin::ID,
@@ -56,6 +62,7 @@ fn the_plugin_ids_are_the_stable_names() {
         .plugins()
         .iter()
         .map(|id| id.as_str())
+        .filter(|id| !id.starts_with("torque.transport-"))
         .collect();
     assert_eq!(
         ids,

@@ -40,6 +40,7 @@ use torque_client::net::room_join::RoomDatagrams;
 use torque_client::net::web_rtc::{Link, LinkWatch, WebRtcDatagrams};
 use torque_client::net::web_socket::WebSocketDatagrams;
 
+use crate::transports::{Connect, RelayTarget, RoomTarget, WebTarget};
 use crate::web_page::mark;
 
 /// The address the client names its server by: each link goes to its own server whatever it is sent to.
@@ -273,6 +274,35 @@ impl Target {
                 Ok((Box::new(PageLink), watch))
             }
         }
+    }
+
+    /// The id of the client transport that opens this target (`web`, `rooms` or `relay`).
+    pub fn transport_id(&self) -> &'static str {
+        match self {
+            Target::Server(_) => "web",
+            Target::Room { .. } => "rooms",
+            Target::Local | Target::Page => "relay",
+        }
+    }
+
+    /// Connects `client` to the game over the transport that opens this target (the engine's `web`, `rooms` or `relay`
+    /// plugin, [`crate::transports`]), and gives the link's state. The same link as [`Target::open`], through the
+    /// engine's transports: Err when the plugin is off.
+    pub fn connect(&self, client: &mut impl Connect) -> Result<LinkWatch, String> {
+        let info = match self {
+            Target::Server(url) => client.connect_dyn("web", &WebTarget::Url(url.clone()))?,
+            Target::Room { url, code } => client.connect_dyn(
+                "rooms",
+                &RoomTarget {
+                    url: url.clone(),
+                    code: code.clone(),
+                },
+            )?,
+            Target::Local => client.connect_dyn("relay", &RelayTarget::Local)?,
+            Target::Page => client.connect_dyn("relay", &RelayTarget::Page)?,
+        };
+        info.take::<LinkWatch>()
+            .ok_or_else(|| format!("the {} transport gave no link state", self.transport_id()))
     }
 
     /// The game the page's address asks to join: `?room=<code>` a player's, else with `?join` (or `?server=`) the server

@@ -38,7 +38,8 @@ use torque_server::net::web::rtc::RtcSetup;
 use torque_server::net::web::{Access, Origins, Tls, TlsFiles, WebFiles, WebSetup};
 
 use crate::cli::Args;
-use crate::server::{BoundTransport, GameServer, Listen, WebListen, lan_addresses};
+use crate::server::{GameServer, Listen, WebListen, lan_addresses};
+use crate::transports::BoundTransport;
 
 /// Which transports a dedicated server listens on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -265,7 +266,7 @@ impl WebFlags {
         };
         if let Some(room) = &self.room {
             let (transport, code) = room_host(bind, room, self.rtc_lan)?;
-            served.listen = Listen::Bound(BoundTransport(transport));
+            served.listen = Listen::Bound(BoundTransport::new(BoundTransport::ROOMS, transport));
             served.code = Some(code);
             return Ok(served);
         }

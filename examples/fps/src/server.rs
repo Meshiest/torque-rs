@@ -105,7 +105,7 @@ impl ArenaServer {
         ArenaServer::start_on(
             files,
             options,
-            Listen::Bound(BoundTransport(transport)),
+            Listen::Bound(BoundTransport::new(BoundTransport::RELAY, transport)),
             true,
         )
     }

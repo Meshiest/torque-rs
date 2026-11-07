@@ -80,8 +80,14 @@ fn added(before: &str, after: &str) -> BTreeSet<String> {
 #[test]
 fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
     let engine = engine(DefaultPlugins);
+    let wiring: Vec<PluginId> = engine
+        .plugins()
+        .iter()
+        .copied()
+        .filter(|id| !id.as_str().starts_with("torque.transport-"))
+        .collect();
     assert_eq!(
-        engine.plugins(),
+        wiring,
         [
             GameClassesPlugin::ID,
             ServerGamePlugin::ID,
@@ -122,6 +128,7 @@ fn the_plugin_ids_are_the_stable_names() {
         .plugins()
         .iter()
         .map(|id| id.as_str())
+        .filter(|id| !id.starts_with("torque.transport-"))
         .collect();
     assert_eq!(
         ids,

@@ -94,7 +94,7 @@ impl WorldServer {
         name: &str,
     ) -> Result<WorldServer, String> {
         use torque::app::server::BoundTransport;
-        let listen = Listen::Bound(BoundTransport(transport));
+        let listen = Listen::Bound(BoundTransport::new(BoundTransport::RELAY, transport));
         WorldServer::start_on(engine, files, listen, name, true)
     }
 

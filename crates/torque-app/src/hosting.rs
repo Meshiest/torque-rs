@@ -20,9 +20,11 @@ use std::sync::{Arc, mpsc};
 use web_time::{Duration, Instant};
 
 use super::client::ClientNet;
+use super::plugins::client_wiring;
 use super::server::lan_addresses;
 use torque_client::conn::tge::TgeConn;
 use torque_client::state::ClientState;
+use torque_engine::{ClientStage, EngineBuilder, Plugin, Requires};
 use torque_ts_vm::vm::{Native, Vm};
 
 /// Where a client's socket binds and what it reaches (see the module docs).
@@ -503,6 +505,53 @@ pub fn register_join_natives_with(
             Native::Void
         },
     );
+}
+
+/// Hosting a game and joining one, on top of the rooms transport: the join screen's natives (`checkJoinAddress`,
+/// `joinLookupResult`, `cancelJoinLookup` and `armPublicJoin`, [`register_join_natives`]) on every client, with the
+/// resolver and the lookup's time limit the game gives (the system's by default). Not in
+/// [`DefaultPlugins`](crate::plugins::DefaultPlugins): a game that lets players type an address adds it.
+///
+/// With the `p2p` feature it needs the rooms transport (natively the server's `RoomsServerTransportPlugin`, in a
+/// browser the client's `RoomsClientTransportPlugin`), the way a player's host is found by its code and joined over data
+/// channels: it is added with the plugin, and turned off, with a warning, when the rooms transport is.
+#[derive(Clone, torque_engine::PluginId)]
+#[plugin(id = "torque.hosting")]
+pub struct HostingPlugin {
+    resolver: Resolver,
+    timeout: Duration,
+}
+
+impl HostingPlugin {
+    /// The plugin that looks names up with `resolver`, each for at most `timeout`.
+    pub fn new(resolver: Resolver, timeout: Duration) -> HostingPlugin {
+        HostingPlugin { resolver, timeout }
+    }
+}
+
+impl Default for HostingPlugin {
+    /// The system's resolver, and [`LOOKUP_TIMEOUT`].
+    fn default() -> HostingPlugin {
+        HostingPlugin::new(system_resolver(), LOOKUP_TIMEOUT)
+    }
+}
+
+impl Plugin for HostingPlugin {
+    fn requires(&self, _requires: &mut Requires) {
+        #[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
+        _requires.plugin::<torque_app_server::transports::RoomsServerTransportPlugin>();
+        #[cfg(all(feature = "p2p", target_arch = "wasm32"))]
+        _requires.plugin::<crate::transports::RoomsClientTransportPlugin>();
+    }
+
+    fn build(&self, engine: &mut EngineBuilder) {
+        let (resolver, timeout) = (Arc::clone(&self.resolver), self.timeout);
+        engine.client(ClientStage::Natives, move |vm, _| {
+            let wiring = client_wiring(vm, "hosting")?;
+            register_join_natives_with(vm, wiring.state(), Arc::clone(&resolver), timeout);
+            Ok(())
+        });
+    }
 }
 
 #[cfg(test)]

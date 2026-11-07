@@ -389,7 +389,7 @@ impl VehicleDemo {
         self.stop_hosting();
         let name = format!("{}'s game", self.global("$Pref::Player::Name"));
         let server = WorldServer::start_alone(&self.engine, &self.files, &name)?;
-        self.client.start_local(server, ALONE_CLIENT, ALONE_ADDR);
+        self.client.start_local(server, ALONE_CLIENT, ALONE_ADDR)?;
         self.call("connectTo", &[ALONE_ADDR.to_string().as_str()])?;
         Ok(())
     }

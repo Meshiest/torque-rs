@@ -14,11 +14,13 @@
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
+//! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register` |
 //! | [`ActionMapPlugin`] | `torque.action-map` | client, `Input` | the `ActionMap` class and its natives |
 //! | [`ScreenPlugin`] | `torque.screen` | client, `Screen` | `torque_client::screen::register` |
 //! | [`ConnPlugin`] | `torque.conn` | client, `Conn` | `torque_client::conn::register` |
 //! | [`ServerQueryPlugin`] | `torque.server-query` | client, `Query` | `torque_client::query::register` |
+//! | [`ClientTransportPlugins`] | `torque.transport-udp-client`, ... | the transports a client connects over, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`AudioPlugin`] | `torque_audio::AudioPlugin` | client, `Natives` | the `alx` natives, the audio datablocks and the mixer |
 //! | [`ClientHostPlugin`] | `torque.frame-host` | client, `Host` | what [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the host of |
 //! | [`RendererSlotPlugin`] | `torque.renderer-slot` | client, `Natives` | the renderer slot and `setRenderer`/`getRenderer` ([`renderers`](crate::renderers)) |
@@ -53,8 +55,8 @@ use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
 
 pub use torque_app_server::plugins::{
-    GameClassesPlugin, MinimalPlugins, NetHostPlugin, ServerGamePlugin, ServerWiring,
-    SimClassesPlugin, TerrainPlugin, WaterPlugin,
+    GameClassesPlugin, MinimalPlugins, NetHostPlugin, ServerGamePlugin, ServerTransportPlugins,
+    ServerWiring, SimClassesPlugin, TerrainPlugin, WaterPlugin,
 };
 
 use crate::client::ClientNet;
@@ -68,6 +70,7 @@ pub use crate::renderers::{
 pub use crate::run::{
     DedicatedRunnerPlugin, OffscreenRunnerPlugin, WebPageRunnerPlugin, WindowRunnerPlugin,
 };
+pub use crate::transports::ClientTransportPlugins;
 
 /// The plugins that wire a server's and a client's script engine, in the order their installs always ran in. A dedicated
 /// server replays only the server recipes, a client only the client ones.
@@ -93,11 +96,13 @@ impl PluginGroup for DefaultPlugins {
             .add(TerrainPlugin)
             .add(WaterPlugin)
             .add(NetHostPlugin)
+            .add_group(ServerTransportPlugins)
             .add(GuiPlugin::default())
             .add(ActionMapPlugin)
             .add(ScreenPlugin)
             .add(ConnPlugin)
             .add(ServerQueryPlugin)
+            .add_group(ClientTransportPlugins)
             .add(AudioPlugin)
             .add(ClientHostPlugin)
             .add(RendererSlotPlugin);
@@ -145,7 +150,7 @@ impl ClientWiring {
 }
 
 /// The client wiring a recipe is replayed with.
-fn client_wiring(vm: &Vm, plugin: &str) -> Result<Rc<ClientWiring>, String> {
+pub(crate) fn client_wiring(vm: &Vm, plugin: &str) -> Result<Rc<ClientWiring>, String> {
     vm.extension::<ClientWiring>()
         .ok_or_else(|| format!("{plugin} runs only when a game client is made"))
 }
