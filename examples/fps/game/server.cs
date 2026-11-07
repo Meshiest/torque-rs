@@ -596,10 +596,12 @@ function ArenaFigure::onTrigger(%this, %obj, %slot, %down)
 }
 
 // Knocked out (the damage reached maxDamage): the figure falls away from the shot, backward when hit from the front, and lies
-// still on the last frame until it respawns.
+// still on the last frame until it respawns. Its pistol goes (the respawned figure mounts a new one): nothing is held before
+// a knocked-out player's eye or in a fallen figure's hand.
 function ArenaFigure::onDisabled(%this, %obj, %state)
 {
    %obj.setActionThread(%obj.hitFromFront ? "death1" : "death2", true);
+   %obj.unmountImage(0);
 }
 
 function knockOut(%client, %attacker)
