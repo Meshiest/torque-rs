@@ -1,5 +1,6 @@
 //! The camera's motion in the arena, frame by frame: `Tab` out to behind the figure and back standing, walking and mid-turn,
-//! `Tab` pressed again mid-switch, and the camera behind the figure backing into the arena's wall while the view sways.
+//! `Tab` pressed again mid-switch, the camera behind the figure backing into the arena's wall while the view sways, and a
+//! knock-out seen in the first person (the view falls with the body).
 //!
 //! `cargo run -p torque-example-fps --release --example arena-camera -- <dir> [fps...] [--render] [--case=<name>]` writes, for
 //! each case and frame rate (60 and 144 when none is given), `<dir>/<case>-<fps>.csv` (a line a frame); with `--render`, the
@@ -110,6 +111,21 @@ fn cases() -> Vec<Case> {
                     turn(g, dt, 1.2 * (s * std::f32::consts::PI * 0.8).sin());
                 }
                 None
+            },
+        },
+        Case {
+            name: "death",
+            place: None,
+            ms: 1600,
+            script: |g, t, dt| {
+                now(t, dt, 300).then(|| {
+                    if let Some(server) = g.server.as_mut() {
+                        let _ = server
+                            .vm_mut()
+                            .eval(b"ArenaFigure.hurt(figureOf(\"Ann\"), 0, 1000, \"\");");
+                    }
+                    "knocked-out"
+                })
             },
         },
     ]

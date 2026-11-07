@@ -516,7 +516,7 @@ impl ArenaGame {
 
     /// The figure's eye and where the camera behind it would be with nothing in the way (module docs).
     fn behind_line(&self) -> ([f32; 3], [f32; 3]) {
-        let eye = self.eye();
+        let eye = self.upright_eye();
         let (sp, cp) = eye.pitch.sin_cos();
         let (sy, cy) = eye.yaw.sin_cos();
         let at = eye.position;
@@ -526,6 +526,20 @@ impl ArenaGame {
             at[2] + sp * CAMERA_DISTANCE + CAMERA_LIFT,
         ];
         (at, back)
+    }
+
+    /// [`ArenaGame::eye`] standing as the head stands: a death's fall neither tips nor carries the camera behind the figure,
+    /// which sees the body fall instead.
+    fn upright_eye(&self) -> Eye {
+        let eye = self.eye();
+        match self.scene.own() {
+            Some(o) => Eye {
+                position: o.eye,
+                pitch: o.pitch,
+                ..eye
+            },
+            None => eye,
+        }
     }
 
     /// Whether the camera is behind the figure (`Tab`: `$Arena::ThirdPerson`).
@@ -540,10 +554,10 @@ impl ArenaGame {
 
     /// The eye of the mode this frame: the figure's eye, or behind it (module docs).
     pub fn mode_eye(&self) -> Eye {
-        let eye = self.eye();
         if !(self.in_game() && self.third_person() && self.scene.own().is_some()) {
-            return eye;
+            return self.eye();
         }
+        let eye = self.upright_eye();
         let position = match self.behind {
             Some(p) => p,
             None => {
@@ -598,7 +612,7 @@ impl ArenaGame {
             return eye;
         }
         let target = self.mode_eye();
-        let from = self.eye().position;
+        let from = self.upright_eye().position;
         let mut blend = self.blend;
         let eye = blend.eye(target, |p| self.kept_clear(from, p));
         self.blend = blend;

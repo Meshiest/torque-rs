@@ -160,7 +160,8 @@ fn drawn_frame(a: &mut ArenaGame) -> ([f32; 3], Option<[f32; 3]>) {
 }
 
 /// Ann, knocked out, comes back at the other spawn point (12 m off): her camera cuts there, in the first person and behind
-/// her (`Tab`), standing, crouched or prone, never drawn on the way between nor anywhere else meanwhile (crouched or prone,
+/// her (`Tab`), standing, crouched or prone, never drawn on the way between nor anywhere else meanwhile but where her fall
+/// takes it (crouched or prone,
 /// the new figure takes a pose other than the fallen one's, which eased the eye from the old place to the new).
 #[test]
 fn the_respawned_figures_camera_cuts_to_the_spawn() {
@@ -209,8 +210,10 @@ fn the_respawned_figures_camera_cuts_to_the_spawn() {
         );
         // Across the ground: the new figure may go on into its pose at the spawn point, its eye lowered there.
         let across = |p: [f32; 3], q: [f32; 3]| apart([p[0], p[1], 0.0], [q[0], q[1], 0.0]);
+        // Meanwhile the first-person view falls with the body, no further from the old feet than the body is long.
         for (i, (p, _)) in drawn.iter().enumerate() {
-            let gap = across(*p, before).min(across(*p, after));
+            let fallen = (across(*p, feet) - 2.2).max(0.0);
+            let gap = across(*p, before).min(across(*p, after)).min(fallen);
             assert!(
                 gap < 1.0,
                 "{label}: frame {i} drew Ann's eye at {p:?}, {gap} m from {before:?} and {after:?}: {:?}",

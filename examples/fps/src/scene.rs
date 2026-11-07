@@ -376,12 +376,13 @@ impl ArenaScene {
         half(self.fov()) / half(f32::from(FOV))
     }
 
-    /// The eye: at the own figure's eye, else over the arena.
+    /// The eye: at the own figure's eye (falling with it as it dies: [`torque::app::ghosts::OwnView::fall`]), else over the
+    /// arena.
     pub fn eye(&self) -> Eye {
         match self.ghosts.own() {
             Some(o) => Eye {
-                position: o.eye,
-                pitch: o.pitch,
+                position: o.view_eye(),
+                pitch: o.view_pitch(),
                 yaw: o.yaw,
                 fov: Some(self.fov().round() as u8),
             },
