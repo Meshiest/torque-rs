@@ -72,9 +72,10 @@ fn names(g: &ArenaGame) -> Vec<(String, bool)> {
 
 #[test]
 fn chat_lines_and_names_are_cleaned_cut_and_limited() {
-    // A name with a color tag, a control byte and more than 24 bytes: the tag and the byte go, the rest is cut.
+    // A name with a color tag, control bytes (one hiding a tag) and more than 24 bytes: the tags and the bytes go, the rest
+    // is cut.
     let (mut a, mut b) = two(
-        "<color:ff0000>Bo\u{1}b the very long-named player",
+        "<color:ff0000>Bo\u{1}b<\u{7f}br> the very long-named player",
         Some("fixtures/floor.mis"),
     );
     let bob = "Bob the very long-named";
@@ -98,6 +99,15 @@ fn chat_lines_and_names_are_cleaned_cut_and_limited() {
         "0",
         "a player's line, never the game's"
     );
+
+    // A control byte inside a tag does not hide it: the bytes go first, then the tag.
+    b.call(
+        "say",
+        &["<\u{7f}color:ff0000>Server: hi<\u{7f}br><\u{1}br>"],
+    )
+    .unwrap();
+    step_both(&mut a, &mut b, 300);
+    assert_eq!(a.global("$Chat::Last"), format!("{bob}: Server: hi"));
 
     // Too long: cut to 120 bytes; a cut inside a character moves back to its start.
     b.call("say", &[&"x".repeat(200)]).unwrap();

@@ -120,9 +120,11 @@ function GameConnection::createFigure(%client, %dataBlock, %transform)
 // ---- names and chat
 //
 // What a client says of itself (the name it connects with, the lines it sends) is cleaned before anything shows it: its
-// markup tags and control bytes are taken out (StripMLControlChars: no color tags or line breaks of its own, so a player's
-// line cannot pass for the game's), the spaces at either end trimmed, and it is cut to $Server::NameBytes (a name) or
-// $Server::ChatBytes (a line), never in the middle of a character. A client sends at most $Server::ChatBurst lines at once,
+// control bytes (0x01 to 0x1F and 0x7F) are taken out first, so none is left to hide a markup tag from the next step; then
+// its markup tags (StripMLControlChars, until none is left: no color tags or line breaks of its own, so a player's line
+// cannot pass for the game's); then the spaces at either end are trimmed and it is cut to $Server::NameBytes (a name) or
+// $Server::ChatBytes (a line), never in the middle of a character. StripMLControlChars keeps only about the first 63 bytes
+// of a line with many `<` in it (a line with none is kept whole). A client sends at most $Server::ChatBurst lines at once,
 // then one more each $Server::ChatRefillMs; a line past that is dropped and its client told once. The lines go to every
 // client as data ('ChatMessage', common/chat.cs), never into a script.
 $Server::NameBytes = 24;
@@ -130,15 +132,19 @@ $Server::ChatBytes = 120;
 $Server::ChatBurst = 4;
 $Server::ChatRefillMs = 1500;
 
+// The bytes taken out before the markup (every control byte a string can hold, and DEL).
+$Server::ControlBytes = "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18" @
+   "\x19\x1a\x1b\x1c\x1d\x1e\x1f\x7f";
+
 // The bytes that continue a UTF-8 character (0x80 to 0xBF): a cut before one of them moves back to the character's start.
 $Server::Utf8Tail = "\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97" @
    "\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3" @
    "\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf";
 
-// %text without markup or control bytes, trimmed, at most %max bytes.
+// %text without control bytes or markup, trimmed, at most %max bytes.
 function cleanText(%text, %max)
 {
-   %text = trim(stripChars(StripMLControlChars(%text), "\x7f"));
+   %text = trim(StripMLControlChars(stripChars(%text, $Server::ControlBytes)));
    %n = strlen(%text);
    if (%n <= %max)
       return %text;
