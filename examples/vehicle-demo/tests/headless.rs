@@ -2899,3 +2899,57 @@ fn a_click_on_nothing_points_the_arm_for_everyone_while_held_or_a_second_and_one
     assert_eq!(server(&a).figure_arm_of(id).as_deref(), Some("look"));
     assert!(errors(&a).is_empty(), "{:?}", errors(&a));
 }
+
+#[test]
+fn chat_goes_round_and_at_the_wheel_t_opens_it_without_driving() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    assert_eq!(a.global("$Chat::Last"), "Bob joined the game.");
+    b.call("say", &["race you <color:ff0000>up the hill"])
+        .unwrap();
+    steps(&mut [&mut a, &mut b], 300);
+    assert_eq!(a.global("$Chat::Last"), "Bob: race you up the hill");
+    assert_eq!(b.global("$Chat::Last"), "Bob: race you up the hill");
+
+    // At the wheel, T opens the chat: the mouse is free, W types and does not drive, Esc closes it and W drives again.
+    get_in(&mut [&mut a, &mut b], 0);
+    assert!(a.driving());
+    press(&mut a, Key::T);
+    steps(&mut [&mut a, &mut b], 64);
+    assert_eq!(a.global("$Chat::Open"), "1");
+    assert!(!a.host.wants_mouse(), "the mouse is free while chatting");
+    a.key(Key::W, true);
+    assert_eq!(
+        a.global("$Drive::Throttle"),
+        "0",
+        "W types, it does not drive"
+    );
+    a.key(Key::W, false);
+    assert_eq!(
+        a.call("eval", &["return ChatEdit.getValue();"]).unwrap(),
+        "w"
+    );
+    press(&mut a, Key::Escape);
+    steps(&mut [&mut a, &mut b], 64);
+    assert_eq!(a.global("$Chat::Open"), "0");
+    assert_ne!(
+        a.global("$Client::Paused"),
+        "1",
+        "Esc closed the chat, not the game"
+    );
+    assert!(a.host.wants_mouse());
+    a.key(Key::W, true);
+    assert_eq!(a.global("$Drive::Throttle"), "1", "W drives again");
+    a.key(Key::W, false);
+    // Enter sends what was typed.
+    press(&mut a, Key::T);
+    steps(&mut [&mut a, &mut b], 64);
+    for key in [Key::G, Key::O] {
+        press(&mut a, key);
+    }
+    press(&mut a, Key::Enter);
+    steps(&mut [&mut a, &mut b], 300);
+    assert_eq!(b.global("$Chat::Last"), "Ann: go");
+    assert!(a.host.input_errors.is_empty(), "{:?}", a.host.input_errors);
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}

@@ -8,7 +8,7 @@
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
 // $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
 // camera at the figure's eyes or behind it, on foot and in a seat. Esc opens the examples' pause menu (common/pause.cs: Resume,
-// Controls, Leave game, Quit). The host writes the hint line (setHint).
+// Controls, Leave game, Quit) and T the chat (common/chat.cs). The host writes the hint line (setHint).
 
 exec("common/client.cs");
 
@@ -292,6 +292,10 @@ new GameTSCtrl(PlayGui)
    };
 };
 
+// The chat (common/chat.cs): its box at the view's bottom left, over the hint line's height.
+exec("common/chat.cs");
+makeChat(PlayGui, 12, 354, "top");
+
 // The hint line at the bottom of the view (none: hidden).
 function setHint(%text)
 {
@@ -352,6 +356,7 @@ bindPoseKeys(PlayMap);
 PlayMap.bind(keyboard, space, jump);
 PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
+PlayMap.bind(keyboard, t, chatKey);
 PlayMap.bind(keyboard, escape, pauseKey);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
@@ -389,6 +394,7 @@ DriveMap.bind(keyboard, space, brake);
 DriveMap.bind(keyboard, e, getOut);
 DriveMap.bind(keyboard, tab, switchCamera);
 DriveMap.bind(keyboard, f, toggleLight);
+DriveMap.bind(keyboard, t, chatKey);
 DriveMap.bind(keyboard, escape, pauseKey);
 DriveMap.bind(mouse, xaxis, orbitYaw);
 DriveMap.bind(mouse, yaxis, orbitPitch);
@@ -401,6 +407,13 @@ DriveMap.bind(keyboard, backslash, dayNormal);
 // Lets go of every key of both maps (a map change leaves no key held).
 function releaseKeys()
 {
+   releaseMoveKeys();
+   releasePoseKeys();
+}
+
+// Lets go of every key of both maps but the poses C and Z chose.
+function releaseMoveKeys()
+{
    $World::Forward = $World::Back = $World::Left = $World::Right = 0;
    $World::Pace = $World::WalkPace;
    updateMove();
@@ -409,7 +422,6 @@ function releaseKeys()
    $Drive::Brake = 0;
    if ($mvTriggerCount2 % 2)
       $mvTriggerCount2++;
-   releasePoseKeys();
    // A held button's point ends as if it came up.
    if (isObject(ServerConnection))
       commandToServer('PointDone');
@@ -538,6 +550,7 @@ function showRoomCode()
 
 function leaveWorld()
 {
+   clearChat();
    closePause();
    disconnect();
    releaseKeys();
@@ -605,8 +618,8 @@ function clientCmdSeated(%seat)
    $Drive::Seat = %seat;
    $Drive::OrbitYaw = 0;
    $Drive::OrbitPitch = 0;
-   // While the pause menu is up the keys stay off: closing it brings back the map of the seat or of the feet.
-   if (!$Client::Paused)
+   // While the pause menu or the chat is up the keys stay off: closing it brings back the map of the seat or of the feet.
+   if (!$Client::Paused && !$Chat::Open)
       pushPlayKeys();
 }
 
@@ -635,6 +648,15 @@ function onPause()
    releaseKeys();
 }
 function onResume() { pushPlayKeys(); }
+// The chat's: the keys off the figure or the buggy while it is open (a pose C or Z chose stays).
+function onChatOpen()
+{
+   PlayMap.pop();
+   DriveMap.pop();
+   releaseMoveKeys();
+   releaseHeldPoseKeys();
+}
+function onChatClose() { pushPlayKeys(); }
 function leaveGame()
 {
    closePause();
@@ -668,6 +690,7 @@ addControl("Mouse wheel", "Zoom the camera");
 addControl("[ and ]", "Day slower or faster");
 addControl("\\", "Day at normal speed");
 addControl("R", "Back to the start");
+addControl("T", "Chat");
 addControl("Esc", "This menu");
 
 function clientCmdFell()

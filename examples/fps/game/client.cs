@@ -24,8 +24,6 @@ new GuiControlProfile(ArenaShadeProfile) { opaque = true; fillColor = "8 10 16 1
 new GuiControlProfile(ArenaBigProfile) { fontType = "Arial"; fontSize = 40; fontColors[0] = "255 236 200 255"; justify = "right"; };
 new GuiControlProfile(ArenaHealthProfile) { fontType = "Arial"; fontSize = 40; fontColors[0] = "170 232 170 255"; };
 new GuiControlProfile(ArenaCrossProfile) { fontType = "Arial"; fontSize = 28; fontColors[0] = "255 255 255 220"; justify = "center"; };
-new GuiControlProfile(ArenaChatProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "236 240 248 255"; };
-new GuiControlProfile(ArenaInfoProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "255 208 120 255"; };
 new GuiControlProfile(ArenaClockProfile) { fontType = "Arial"; fontSize = 28; fontColors[0] = "236 240 248 255"; justify = "center"; };
 new GuiControlProfile(ArenaRowProfile) { fontType = "Arial"; fontSize = 22; fontColors[0] = "226 230 238 255"; };
 new GuiControlProfile(ArenaScoreProfile) { fontType = "Arial"; fontSize = 22; fontColors[0] = "255 236 200 255"; justify = "right"; };
@@ -461,14 +459,6 @@ new GameTSCtrl(PlayGui)
       profile = ArenaCrossProfile; position = "380 282"; extent = "40 36"; horizSizing = "center"; vertSizing = "center";
       visible = true; enabled = true; text = "+";
    };
-   // The chat lines: ChatBox gets one row of two texts for each (a player's line, an arena line), made below.
-   new GuiControl(ChatBox) { profile = ArenaBandProfile; position = "12 12"; extent = "460 132"; };
-   new GuiTextEditCtrl(ChatEdit)
-   {
-      profile = ArenaEditProfile; position = "12 150"; extent = "460 30"; visible = false; enabled = true;
-      maxLength = 120; text = "";
-      altCommand = "sendChat();"; escapeCommand = "closeChat();";
-   };
    new GuiTextCtrl(HealthHud)
    {
       profile = ArenaHealthProfile; position = "24 540"; extent = "220 46"; vertSizing = "top"; visible = true; enabled = true;
@@ -510,13 +500,27 @@ new GameTSCtrl(PlayGui)
 
 exec("common/pause.cs");
 
-function pauseAllowed() { return !$Arena::Chatting && $Arena::InGame; }
+function pauseAllowed() { return $Arena::InGame; }
 function onPause()
 {
    PlayMap.pop();
    releaseKeys();
 }
 function onResume() { PlayMap.push(); }
+
+// ---- the chat (common/chat.cs): its box at the view's top left; while it is open the keys are off the figure (a pose C or Z
+// chose stays)
+
+exec("common/chat.cs");
+makeChat(PlayGui, 12, 12, "bottom");
+
+function onChatOpen()
+{
+   PlayMap.pop();
+   releaseMoveKeys();
+   releaseHeldPoseKeys();
+}
+function onChatClose() { PlayMap.push(); }
 
 addControls(0, "Moving");
 addControl("W A S D", "Walk");
@@ -639,92 +643,6 @@ function showRoundClock()
    $Arena::ClockTimer = schedule(1000, 0, "showRoundClock");
 }
 
-$Arena::ChatRows = 6;
-for (%i = 0; %i < $Arena::ChatRows; %i++)
-{
-   %y = 6 + %i * 20;
-   ChatBox.add(new GuiTextCtrl("ChatRow" @ %i)
-   {
-      profile = ArenaChatProfile; position = "10" SPC %y; extent = "440 20"; visible = true; enabled = true; text = "";
-   });
-   ChatBox.add(new GuiTextCtrl("InfoRow" @ %i)
-   {
-      profile = ArenaInfoProfile; position = "10" SPC %y; extent = "440 20"; visible = true; enabled = true; text = "";
-   });
-}
-
-// The lines the chat box shows, the newest last: each line's tag is 1 for an arena line, 0 for a player's.
-new MessageVector(ChatLines);
-
-function chatLine(%info, %text)
-{
-   ChatLines.pushBackLine(%text, %info ? 1 : 0);
-   $Arena::ChatCount++;
-   $Arena::LastChat = %text;
-   while (ChatLines.getNumLines() > $Arena::ChatRows)
-      ChatLines.popFrontLine();
-   showChat();
-}
-
-function showChat()
-{
-   %count = ChatLines.getNumLines();
-   for (%i = 0; %i < $Arena::ChatRows; %i++)
-   {
-      %text = %i < %count ? ChatLines.getLineText(%i) : "";
-      %info = %i < %count ? ChatLines.getLineTag(%i) : 0;
-      %chat = "ChatRow" @ %i;
-      %line = "InfoRow" @ %i;
-      %chat.setText(%info ? "" : %text);
-      %line.setText(%info ? %text : "");
-   }
-}
-
-// ---- chat
-
-function openChat()
-{
-   if ($Arena::Chatting)
-      return;
-   $Arena::Chatting = 1;
-   PlayMap.pop();
-   ChatEdit.setValue("");
-   ChatEdit.setVisible(true);
-   ChatEdit.makeFirstResponder(true);
-   // The key that opened the box types its letter into it a moment later: take it out again.
-   schedule(1, 0, "clearChatEdit");
-}
-
-function clearChatEdit()
-{
-   ChatEdit.setValue("");
-}
-
-function closeChat()
-{
-   if (!$Arena::Chatting)
-      return;
-   $Arena::Chatting = 0;
-   ChatEdit.setValue("");
-   ChatEdit.setVisible(false);
-   ChatEdit.makeFirstResponder(false);
-   PlayMap.push();
-}
-
-function sendChat()
-{
-   %text = trim(ChatEdit.getValue());
-   closeChat();
-   if (%text !$= "")
-      say(%text);
-}
-
-function say(%text)
-{
-   if (isObject(ServerConnection))
-      commandToServer('Say', %text);
-}
-
 // ---- the keys
 
 new ActionMap(PlayMap);
@@ -744,12 +662,16 @@ function applyMoves()
 }
 function releaseKeys()
 {
+   releaseMoveKeys();
+   releasePoseKeys();
+}
+function releaseMoveKeys()
+{
    $Arena::KeyForward = $Arena::KeyBack = $Arena::KeyLeft = $Arena::KeyRight = 0;
    $Arena::Sprint = 0;
    if ($Arena::Aiming)
       aim(0);
    applyMoves();
-   releasePoseKeys();
 }
 function moveForward(%v) { $Arena::KeyForward = %v; applyMoves(); }
 function moveBack(%v) { $Arena::KeyBack = %v; applyMoves(); }
@@ -801,7 +723,6 @@ function sendCameraMode()
    if (isObject(ServerConnection))
       commandToServer('ThirdPerson', $Arena::ThirdPerson ? 1 : 0);
 }
-function chatKey(%v) { if (%v) openChat(); }
 function reloadKey(%v) { if (%v && isObject(ServerConnection)) commandToServer('Reload'); }
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
@@ -923,16 +844,13 @@ function showHostInfo()
 
 function leaveGame()
 {
-   if ($Arena::Chatting)
-      closeChat();
+   clearChat();
    closePause();
    hideRoundEnd();
    setRoundClock(0);
    disconnect();
    releaseKeys();
    $Arena::OwnGhost = -1;
-   ChatLines.clear();
-   showChat();
    showMainMenu();
    $Arena::LeaveAsked = 1;
 }
@@ -1033,14 +951,6 @@ function clientCmdOwnFigure(%ghost, %yaw)
    $Arena::LookYaw = %yaw;
    $Arena::LookPitch = 0;
    sendCameraMode();
-}
-
-function clientCmdArenaMessage(%kind, %a, %b)
-{
-   if (%kind $= "chat")
-      chatLine(0, %a @ ": " @ %b);
-   else
-      chatLine(1, %a);
 }
 
 function clientCmdSetAmmo(%left, %full)

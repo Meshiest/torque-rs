@@ -260,9 +260,11 @@ function giveHeadlight(%vehicle)
 
 // ---- a client's way in
 
+// The name the others see over its figure and in the chat, cleaned (common/server.cs, as the chat's lines are).
 function GameConnection::onClientConnect(%client, %name)
 {
-   echo("Client" SPC %client SPC "connected");
+   %client.name = cleanName(%name, %client);
+   echo("Client" SPC %client SPC "connected as" SPC %client.name);
    // The host: the first client in (the one that started the game).
    if (!isObject($World::Host))
       $World::Host = %client;
@@ -302,6 +304,7 @@ function GameConnection::onClientEnterGame(%client)
 {
    commandToClient(%client, 'WorldStarted', $World::Title);
    giveBuggy(%client);
+   messageAll("info", %client.name SPC "joined the game.");
 }
 
 // The client's own buggy: the map's for the first client, a new one in its place along the row for each later one (none past
@@ -357,6 +360,7 @@ function freeBuggySlot()
 // may have been riding in one).
 function GameConnection::onClientLeaveGame(%client)
 {
+   messageAll("info", %client.name SPC "left the game.");
    if (isObject(%client.buggy))
    {
       %client.buggy.owner = 0;

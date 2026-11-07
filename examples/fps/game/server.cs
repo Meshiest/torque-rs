@@ -321,23 +321,14 @@ function onServerInfoQuery()
    return "In the arena";
 }
 
-// ---- messages to every client
-
-// %kind is "chat" (a player's line: %a is the name, %b the text) or "info" (a line from the arena: %a).
-function messageAll(%kind, %a, %b)
-{
-   for (%i = 0; %i < ClientGroup.getCount(); %i++)
-      commandToClient(ClientGroup.getObject(%i), 'ArenaMessage', %kind, %a, %b);
-}
-
 // ---- a client's way in
+//
+// The name cleaned (cleanName), the lines to every client (messageAll) and the players' chat (serverCmdSay, with its limits)
+// are common/server.cs's.
 
 function GameConnection::onClientConnect(%client, %name)
 {
-   %name = trim(stripChars(%name, "\t\n\r"));
-   if (%name $= "")
-      %name = "Player" SPC %client;
-   %client.name = getSubStr(%name, 0, 24);
+   %client.name = cleanName(%name, %client);
    %client.score = 0;
    %client.entered = false;
    $Server::PlayerCount++;
@@ -629,16 +620,6 @@ function knockOut(%client, %attacker)
 function GameConnection::onFellOff(%client)
 {
    %client.spawnFigure();
-}
-
-// ---- chat
-
-function serverCmdSay(%client, %text)
-{
-   %text = trim(stripChars(%text, "\t\n\r"));
-   if (%text $= "")
-      return;
-   messageAll("chat", %client.name, getSubStr(%text, 0, 120));
 }
 
 // ---- rounds and the map rotation

@@ -148,10 +148,10 @@ fn a_browser_on_a_data_channel_and_a_desktop_play_one_game() {
 
     bob.call("say", &["over the channel"]).unwrap();
     run(&mut s, &mut [&mut ann, &mut bob], 500);
-    assert_eq!(ann.global("$Arena::LastChat"), "Bob: over the channel");
+    assert_eq!(ann.global("$Chat::Last"), "Bob: over the channel");
     ann.call("say", &["back"]).unwrap();
     run(&mut s, &mut [&mut ann, &mut bob], 500);
-    assert_eq!(bob.global("$Arena::LastChat"), "Ann: back");
+    assert_eq!(bob.global("$Chat::Last"), "Ann: back");
 
     shoot(&mut s, &mut ann, &mut bob);
     assert_eq!(
@@ -205,7 +205,7 @@ fn a_browser_whose_channel_cannot_open_plays_over_its_socket() {
     }
     bob.call("say", &["over the socket"]).unwrap();
     run(&mut s, &mut [&mut ann, &mut bob], 500);
-    assert_eq!(ann.global("$Arena::LastChat"), "Bob: over the socket");
+    assert_eq!(ann.global("$Chat::Last"), "Bob: over the socket");
     shoot(&mut s, &mut bob, &mut ann);
     assert_eq!(bob.global("$Arena::Hits"), "1");
 }

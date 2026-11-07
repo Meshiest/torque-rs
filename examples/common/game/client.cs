@@ -140,6 +140,13 @@ function releasePoseKeys()
    setTriggerHeld($Pose::CrouchTrigger, false);
    setTriggerHeld($Pose::ProneTrigger, false);
 }
+// Lets go of the poses a key holds while it is down (Ctrl's crouch), the ones C and Z left kept: the keys are taken off the
+// figure for a moment (the chat), and the key's release would not be seen.
+function releaseHeldPoseKeys()
+{
+   $Pose::CrouchHeld = false;
+   holdCrouch();
+}
 // Binds the pose keys in action map %map.
 function bindPoseKeys(%map)
 {

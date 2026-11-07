@@ -240,7 +240,7 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
 
     press(&mut g, Key::T);
     g.step(32);
-    assert_eq!(g.global("$Arena::Chatting"), "1", "T opens the chat box");
+    assert_eq!(g.global("$Chat::Open"), "1", "T opens the chat box");
     for key in [Key::H, Key::I] {
         press(&mut g, key);
     }
@@ -249,7 +249,7 @@ fn in_the_arena_the_keys_and_the_mouse_reach_the_play_map() {
         "hi"
     );
     press(&mut g, Key::Enter);
-    assert_eq!(g.global("$Arena::Chatting"), "0", "Return sends the line");
+    assert_eq!(g.global("$Chat::Open"), "0", "Return sends the line");
 
     press(&mut g, Key::Escape);
     g.step(32);
@@ -330,9 +330,9 @@ fn escape_pauses_over_the_view_and_resume_or_escape_goes_back() {
     // T still opens the chat when not paused.
     press(&mut g, Key::T);
     g.step(32);
-    assert_eq!(g.global("$Arena::Chatting"), "1");
+    assert_eq!(g.global("$Chat::Open"), "1");
     press(&mut g, Key::Escape);
-    assert_eq!(g.global("$Arena::Chatting"), "0", "Escape closes the chat");
+    assert_eq!(g.global("$Chat::Open"), "0", "Escape closes the chat");
     assert_eq!(g.global("$Client::Paused"), "0", "without pausing");
     assert!(g.host.input_errors.is_empty(), "{:?}", g.host.input_errors);
 }
