@@ -318,6 +318,8 @@ The first development version. Nothing is published yet; this is what exists.
 
 ### Fixed
 
+- `torque-app`: `GhostScene`'s own first-person view falls with a dying Player (`OwnView` gains `fall`/`fall_moved` and
+  `view_eye()`/`view_pitch()`, which the connection's view uses; `MAX_VIEW_PITCH` 1.55).
 - Web startup without multi-second freezes: `torque-render-scene`'s cloud noise is about 4x faster (the same bytes) and
   made a piece per frame in a browser; `torque::app` loading frames wait for the GPU instead of stalling the page on
   shader compiles; `torque-game` makes an interior file's hulls once per process (the 256 most recently used, their
