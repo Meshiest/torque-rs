@@ -79,7 +79,7 @@ pub use builder::{BuildError, EngineBuilder, Warning};
 pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
 pub use plugin::{Plugin, PluginId, PluginSet, PluginType, Requires};
-pub use recipe::{ClientStage, RecipeError, ServerStage, Stage};
+pub use recipe::{ClientStage, ClientTick, RecipeError, ServerStage, Stage};
 pub use run::{RunError, Runner};
 /// Implements [`PluginType`] for a plugin type: the id is the package's name and the type's, as a path
 /// (`my_game::ArenaPlugin`), or `#[plugin(id = "...")]`. `#[plugin(crate = path)]` names this crate when it is reached

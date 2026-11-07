@@ -19,9 +19,13 @@
 //! | [`ScreenPlugin`] | `torque.screen` | client, `Screen` | `torque_client::screen::register` |
 //! | [`ConnPlugin`] | `torque.conn` | client, `Conn` | `torque_client::conn::register` |
 //! | [`ServerQueryPlugin`] | `torque.server-query` | client, `Query` | `torque_client::query::register` |
+//! | [`AudioPlugin`] | `torque_audio::AudioPlugin` | client, `Natives` | the `alx` natives, the audio datablocks and the mixer |
 //! | [`ClientHostPlugin`] | `torque.frame-host` | client, `Host` | what [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the host of |
 //! | [`PageBridgePlugin`] | `torque.page-bridge` | client, `Window` (web builds) | [`page_bridge::install`](crate::page_bridge::install) |
 //! | [`RunnerPlugin`] | `torque.runner` | the engine's runner slot | [`run`](crate::run): the window, the page, a dedicated server, offscreen |
+//!
+//! [`ZoomPlugin`] (`setFov` and its kin) and [`LivePerfPlugin`] (the frame breakdown's console function) are not in
+//! [`DefaultPlugins`]; a game adds them.
 //!
 //! A game that needs only a part of this takes the group and turns plugins off (`DefaultPlugins.disable::<WaterPlugin>()`),
 //! or adds the plugins it wants one by one. The server plugins live in the `torque-app-server` crate (no drawing, GUI, audio
@@ -30,6 +34,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub use torque_audio::plugin::AudioPlugin;
 use torque_client::conn::tge::TgeConn;
 use torque_client::game::ClientGame;
 use torque_client::host::{ClientPass, EnginePass};
@@ -76,6 +81,7 @@ impl PluginGroup for DefaultPlugins {
             .add(ScreenPlugin)
             .add(ConnPlugin)
             .add(ServerQueryPlugin)
+            .add(AudioPlugin)
             .add(ClientHostPlugin)
             .add(PageBridgePlugin)
             .add(RunnerPlugin)
@@ -223,6 +229,50 @@ impl Plugin for ServerQueryPlugin {
         engine.client(ClientStage::Query, |vm, _| {
             let wiring = client_wiring(vm, "the server query")?;
             torque_client::query::register(vm, wiring.state());
+            Ok(())
+        });
+    }
+}
+
+/// `setFov`, `setDefaultFov`, `setZoomSpeed` and `$cameraFov`, over the zoom the client's state keeps. Not in
+/// [`DefaultPlugins`].
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.zoom")]
+pub struct ZoomPlugin;
+
+impl Plugin for ZoomPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.client(ClientStage::Natives, |vm, _| {
+            let wiring = client_wiring(vm, "the zoom")?;
+            torque_client::zoom::register(vm, wiring.state());
+            Ok(())
+        });
+    }
+}
+
+/// The console function that sets when the window's frame breakdown prints ([`torque_client::live_perf`]): `name([mode])`,
+/// keeping the mode in the pref `pref`. Not in [`DefaultPlugins`]; the game picks the two names.
+#[derive(Clone, Copy, Debug, torque_engine::PluginId)]
+#[plugin(id = "torque.live-perf")]
+pub struct LivePerfPlugin {
+    /// The console function's name.
+    pub name: &'static str,
+    /// The global that keeps the mode (`$pref::...`).
+    pub pref: &'static str,
+}
+
+impl LivePerfPlugin {
+    /// The plugin that registers `name` over the pref `pref`.
+    pub fn new(name: &'static str, pref: &'static str) -> LivePerfPlugin {
+        LivePerfPlugin { name, pref }
+    }
+}
+
+impl Plugin for LivePerfPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        let (name, pref) = (self.name, self.pref);
+        engine.client(ClientStage::Natives, move |vm, _| {
+            torque_client::live_perf::register(vm, name, pref);
             Ok(())
         });
     }

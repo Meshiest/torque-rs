@@ -1,6 +1,7 @@
 //! Recipes: what plugins record to run on every new script engine, filed by [`Stage`].
 
 use std::fmt;
+use std::rc::Rc;
 
 use torque_ts_vm::vm::Vm;
 
@@ -139,3 +140,22 @@ impl fmt::Display for RecipeError {
 }
 
 impl std::error::Error for RecipeError {}
+
+/// Work a plugin has every client do once per tick, beside its recipes: pushed onto the engine's list of `ClientTick`s
+/// (`engine.push(ClientTick::new(..))`) and run by the host after the tick's other client work, in the order pushed. It
+/// gets the client's script engine, where a plugin finds its state again (a [`set_extension`](Vm::set_extension) its recipe
+/// made).
+#[derive(Clone)]
+pub struct ClientTick(Rc<dyn Fn(&mut Vm)>);
+
+impl ClientTick {
+    /// A hook that runs `work`.
+    pub fn new(work: impl Fn(&mut Vm) + 'static) -> ClientTick {
+        ClientTick(Rc::new(work))
+    }
+
+    /// Runs the hook on `vm`.
+    pub fn run(&self, vm: &mut Vm) {
+        (self.0)(vm);
+    }
+}

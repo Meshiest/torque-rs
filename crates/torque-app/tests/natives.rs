@@ -5,9 +5,11 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use torque_app::client::{ClientBuilder, ClientSetup};
+use torque_app::client::{ClientBuilder, ClientNet, ClientSetup};
 use torque_app::page_bridge;
+use torque_app::plugins::{AudioPlugin, DefaultPlugins, GameClassesPlugin, ServerQueryPlugin};
 use torque_app::server::{GameServer, Listen, ServerStart};
+use torque_engine::{EngineBuilder, PluginGroup};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::listing::check_listing;
 use torque_ts_vm::vm::Vm;
@@ -22,6 +24,24 @@ fn listing(name: &str) -> PathBuf {
 fn the_bare_client_has_these_natives() {
     let builder = ClientBuilder::new(ClientSetup::default()).expect("the client");
     check_listing(&listing("client.txt"), &builder.vm.native_listing());
+}
+
+/// With the audio plugin turned off, the client has the natives it had before audio joined the defaults.
+#[test]
+fn the_bare_client_without_audio_has_these_natives() {
+    let mut engine = EngineBuilder::new();
+    engine.add_plugins(
+        DefaultPlugins
+            .disable::<GameClassesPlugin>()
+            .disable::<ServerQueryPlugin>()
+            .disable::<AudioPlugin>(),
+    );
+    let engine = engine.build().expect("the engine builds");
+    let builder = ClientBuilder::from_engine(&engine, None, ClientNet::None).expect("the client");
+    check_listing(
+        &listing("client-no-audio.txt"),
+        &builder.vm.native_listing(),
+    );
 }
 
 #[test]

@@ -25,7 +25,7 @@ use torque_client::hud::HudWorld as _;
 use torque_client::input::{Key, key_message};
 use torque_client::net::{DatagramQueue, Datagrams, MemoryDatagrams, NetPolicy, UdpDatagrams};
 use torque_client::state::ClientState;
-use torque_engine::{ClientStage, Engine, EngineBuilder, PluginGroup};
+use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder, PluginGroup};
 use torque_gui::Gui;
 use torque_server::server::{GameServer as _, Server, TICK_MS};
 use torque_ts_text::{atof, atoi};
@@ -221,11 +221,20 @@ impl ClientBuilder {
         if let Err(e) = self.engine.replay(ClientStage::Host, &mut self.vm) {
             self.vm.warn(e.to_string());
         }
+        let ticks = self.engine.list::<ClientTick>();
+        let pass = if ticks.is_empty() {
+            self.pass
+        } else {
+            Rc::new(TickedPass {
+                pass: self.pass,
+                ticks: ticks.to_vec(),
+            })
+        };
         let mut host = ClientHost::new(
             Server::new(self.vm),
             self.gui,
             self.state,
-            self.pass,
+            pass,
             (self.host.draw_cache)(),
         );
         if self.host.windowed {
@@ -243,6 +252,25 @@ impl ClientBuilder {
         };
         client.set_global("$Client::HostsServer", "0");
         client
+    }
+}
+
+/// The engine's pass with the plugins' per-tick work ([`ClientTick`]) after it, in the order the plugins pushed it.
+struct TickedPass {
+    pass: Rc<dyn ClientPass<TgeConn>>,
+    ticks: Vec<ClientTick>,
+}
+
+impl ClientPass<TgeConn> for TickedPass {
+    fn net(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        self.pass.net(vm, client);
+    }
+
+    fn other(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        self.pass.other(vm, client);
+        for tick in &self.ticks {
+            tick.run(vm);
+        }
     }
 }
 

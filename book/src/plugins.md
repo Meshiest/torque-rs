@@ -70,14 +70,17 @@ client's script engine the way a Torque game expects. Here is what it adds, in o
 | `ScreenPlugin` | `torque.screen` | resolution, full screen and the canvas's natives |
 | `ConnPlugin` | `torque.conn` | the client's connection to a server and the ghosts' natives |
 | `ServerQueryPlugin` | `torque.server-query` | the server browser's natives |
+| `AudioPlugin` | `torque_audio::AudioPlugin` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick; it plays through the null sink and opens no sound card |
 | `ClientHostPlugin` | `torque.frame-host` | the client host that runs the frames |
 | `PageBridgePlugin` | `torque.page-bridge` | the page and the scripts calling each other, in web builds only (see [Games in a browser](web-pages.md)) |
 | `RunnerPlugin` | `torque.runner` | sets the runner, which decides what `run` does |
 
-Two more plugins are not in the group, because each game picks its own:
+Four more plugins are not in the group, because each game picks its own or wants them only sometimes:
 
 - `ClientGamePlugin::new(game)` gives the client its game, the part that draws and predicts the game's objects.
 - `SimClassesPlugin::new(classes)` gives the server a game's own subclasses of the simulated classes.
+- `ZoomPlugin` adds `setFov`, `setDefaultFov`, `setZoomSpeed` and `$cameraFov`.
+- `LivePerfPlugin::new(name, pref)` adds the console function `name([mode])` that sets when the window's frame breakdown prints.
 
 A game that needs only part of this takes the group and turns plugins off, or adds the plugins one by one. A group can
 also swap a plugin for a differently configured one of the same type (`GuiPlugin` has a `layout_fonts` option):

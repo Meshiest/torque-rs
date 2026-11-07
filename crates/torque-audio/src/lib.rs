@@ -24,6 +24,8 @@ pub mod mix;
 #[cfg(feature = "script")]
 pub mod natives;
 pub mod ogg;
+#[cfg(feature = "engine")]
+pub mod plugin;
 pub mod system;
 pub mod vorbis_check;
 pub mod wav;

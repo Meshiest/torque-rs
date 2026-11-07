@@ -136,6 +136,9 @@ MessageVector::popFrontLine 2..2 ()
 MessageVector::pushBackLine 4..4 (string msg, int tag=0)
 MessageVector::pushFrontLine 3..4 (string msg, int tag=0)
 NextToken 4..4 nextToken(text, tokenVariable, delimiters) - stores the first token, returns the rest
+OpenALInitDriver 1..1 Initializes the OpenAL driver.\n\n@note You must call this before any sounds will work!
+OpenALRegisterExtensions 1..1 OpenALRegisterExtensions()
+OpenALShutdownDriver 1..1 OpenALShutdownDriver()
 SimObject::delete 2..2 object.delete() - deletes the object
 SimObject::dump 2..2 object.dump() - prints the object's fields and methods
 SimObject::getClassName 2..2 object.getClassName() - the object's class
@@ -169,6 +172,28 @@ VectorScale 3..3 VectorScale(v, s) - v times s
 VectorSub 3..3 VectorSub(a, b) - a - b
 activatePackage 2..2 activatePackage(name) - puts the package on top of the active ones
 addTaggedString 2..2 addTaggedString(text) - the tag of the text, kept until removed
+alGetListener3f 2..2 alGetListener3f(Alenum)
+alGetListeneri 2..2 alGetListeneri(Alenum)
+alGetString 2..2 (string item)\n\nThis wraps alGetString().
+alListener3f 3..5 alListener3f(ALenum, "x y z") or alListener3f(ALenum, x, y, z)
+alxCreateSource 2..6 (profile) or (profile, x,y,z) or (description, filename) or (description, filename, x,y,z)
+alxGetChannelVolume 2..2 (int channel_id)\n\n@param  channel_id  ID of channel to fetch volume from.\n@return Volume of channel.
+alxGetListenerf 2..2 alxGetListenerf(Alenum)
+alxGetSource3f 3..3 (handle, ALenum)
+alxGetSourcef 3..3 (handle, ALenum)
+alxGetSourcei 3..3 (handle, ALenum)
+alxGetStreamDuration 2..2 alxGetStreamDuration(handle)
+alxGetStreamPosition 2..2 alxGetStreamPosition(handle)
+alxGetWaveLen 2..2 (string filename)\n\n@param filename File to determine length of.\n@returns Length in milliseconds.
+alxIsPlaying 2..5 alxIsPlaying(handle)
+alxListenerf 3..3 alxListener(ALenum, value)
+alxPlay 2..5 alxPlay(handle) or alxPlay(profile) or alxPlay(profile, x,y,z)
+alxSetChannelVolume 3..3 (int channel_id, float volume)\n\n@param channel_id  ID of channel to set volume on.\n@param volume      New volume of channel, from 0.0f-1.0f
+alxSource3f 3..6 (handle, ALenum, x, y, z)\n\n@note You can replace the last three parameters with a string, "x y z"
+alxSourcef 4..4 (handle, ALenum, value)
+alxSourcei 4..4 (handle, ALenum, value)
+alxStop 2..2 (int handle)
+alxStopAll 1..1 ()
 atof 2..2 atof(text) - the number the text starts with
 atoi 2..2 atoi(text) - the integer the text starts with
 backtrace 1..1 backtrace() - prints the script functions that are running

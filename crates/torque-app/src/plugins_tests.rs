@@ -18,9 +18,10 @@ use torque_ts_vm::vm::Vm;
 
 use crate::client::{ClientBuilder, ClientNet, ClientSetup};
 use crate::plugins::{
-    ActionMapPlugin, ClientHostPlugin, ConnPlugin, DefaultPlugins, GameClassesPlugin, GuiPlugin,
-    MinimalPlugins, NetHostPlugin, PageBridgePlugin, RunnerPlugin, ScreenPlugin, ServerGamePlugin,
-    ServerQueryPlugin, SimClassesPlugin, TerrainPlugin, WaterPlugin,
+    ActionMapPlugin, AudioPlugin, ClientHostPlugin, ConnPlugin, DefaultPlugins, GameClassesPlugin,
+    GuiPlugin, LivePerfPlugin, MinimalPlugins, NetHostPlugin, PageBridgePlugin, RunnerPlugin,
+    ScreenPlugin, ServerGamePlugin, ServerQueryPlugin, SimClassesPlugin, TerrainPlugin,
+    WaterPlugin, ZoomPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -79,6 +80,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ScreenPlugin::ID,
             ConnPlugin::ID,
             ServerQueryPlugin::ID,
+            AudioPlugin::ID,
             ClientHostPlugin::ID,
             PageBridgePlugin::ID,
             RunnerPlugin::ID,
@@ -107,6 +109,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.screen",
             "torque.conn",
             "torque.server-query",
+            "torque_audio::AudioPlugin",
             "torque.frame-host",
             "torque.page-bridge",
             "torque.runner",
@@ -138,7 +141,7 @@ fn each_stage_replays_its_plugins_in_add_order() {
     assert_eq!(client(ClientStage::Screen), ["torque.screen"]);
     assert_eq!(client(ClientStage::Conn), ["torque.conn"]);
     assert_eq!(client(ClientStage::Query), ["torque.server-query"]);
-    assert!(client(ClientStage::Natives).is_empty());
+    assert_eq!(client(ClientStage::Natives), ["torque_audio::AudioPlugin"]);
     assert!(client(ClientStage::Host).is_empty());
     // The page bridge is filed for web builds only.
     assert_eq!(
@@ -290,6 +293,67 @@ fn disabling_a_client_plugin_removes_exactly_its_natives() {
     assert!(!expected.is_empty());
     assert_eq!(added(&without, &full), expected);
     assert!(added(&full, &without).is_empty());
+}
+
+/// Audio is the one client plugin whose natives were not wired before: turned off, the client has exactly the natives it had
+/// (`tests/natives/client-no-audio.txt` in the natives test), and turned on it has the audio layer's and nothing else.
+#[test]
+fn disabling_the_audio_plugin_removes_exactly_the_audio_natives() {
+    let full = client(&engine(DefaultPlugins), ClientNet::None)
+        .vm
+        .native_listing();
+    let off = engine(DefaultPlugins.disable::<AudioPlugin>());
+    assert!(!off.is_plugin_added::<AudioPlugin>());
+    let without = client(&off, ClientNet::None).vm.native_listing();
+
+    let mut vm = Vm::new();
+    let before = vm.native_listing();
+    torque_audio::natives::install_classes(&mut vm);
+    torque_audio::natives::register(
+        &mut vm,
+        &Rc::new(RefCell::new(torque_audio::natives::AudioHost::default())),
+        |host| host,
+        torque_audio::natives::AlxProfile::tge(),
+    );
+    let expected = added(&before, &vm.native_listing());
+    assert!(expected.iter().any(|l| l.contains("alxPlay")));
+    assert_eq!(added(&without, &full), expected);
+    assert!(added(&full, &without).is_empty());
+    assert!(!without.contains("alxPlay"));
+}
+
+/// The plugin builds with no sound card: no device is opened, and the client's own mixer is the null sink.
+#[test]
+fn the_audio_plugin_needs_no_sound_card() {
+    let mut builder = client(&engine(DefaultPlugins), ClientNet::None);
+    let host = AudioPlugin::host(&builder.vm).expect("every client has its audio state");
+    assert!(host.borrow().device.is_none());
+    assert_eq!(
+        String::from_utf8_lossy(&builder.vm.eval(b"return OpenALInitDriver();").unwrap()),
+        "1"
+    );
+    let off = engine(DefaultPlugins.disable::<AudioPlugin>());
+    assert!(AudioPlugin::host(&client(&off, ClientNet::None).vm).is_none());
+}
+
+#[test]
+fn zoom_and_live_perf_are_opt_in() {
+    let default = client(&engine(DefaultPlugins), ClientNet::None)
+        .vm
+        .native_listing();
+    for name in ["setFov", "setDefaultFov", "setZoomSpeed", "showPerf"] {
+        assert!(!default.contains(name), "{name}");
+    }
+    let with = engine(
+        PluginGroup::build(DefaultPlugins)
+            .add(ZoomPlugin)
+            .add(LivePerfPlugin::new("showPerf", "$pref::perf")),
+    );
+    let listing = client(&with, ClientNet::None).vm.native_listing();
+    for name in ["setFov", "setDefaultFov", "setZoomSpeed", "showPerf"] {
+        assert!(listing.contains(name), "{name}");
+    }
+    assert!(added(&listing, &default).is_empty());
 }
 
 #[test]

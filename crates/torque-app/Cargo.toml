@@ -17,6 +17,8 @@ categories = ["game-engines", "game-development"]
 glam = { workspace = true }
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
+# The audio plugin: the null sink only (no `device` feature, so no sound card library).
+torque-audio = { path = "../torque-audio", features = ["engine"] }
 torque-client = { path = "../torque-client", features = ["window"] }
 torque-collide = { path = "../torque-collide" }
 torque-fonts = { path = "../torque-fonts", features = ["system-fonts"] }
