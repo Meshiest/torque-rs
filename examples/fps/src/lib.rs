@@ -4,6 +4,7 @@
 //! - [`server`]: torque-server's main loop over TGE's game classes, with a network host on a UDP socket.
 //! - [`client`]: the client host on its own UDP socket, and the server it hosts.
 //! - [`effects`]: the screen's hurt and hit marks.
+//! - [`plugin`]: the arena's plugins and the engine they make with the engine's own.
 //! - [`hitbox_view`]: a figure's hitboxes drawn as lines over a picture.
 //! - [`scene`]: the client's ghosts as the world view's objects.
 //! - [`style`]: the arena's own touches on the engine's ghosts (the pistol's kick and sights, the bolts' curve, the shots'
@@ -12,12 +13,13 @@
 //! - [`showcase`]: a shot fired in the arena seen from the side, the world alone at the highest quality.
 //! - `web` (built for the web only): the client in a browser, join-only, over a game socket to the page's server.
 //!
-//! The window is the engine's ([`torque::app::window::run`]).
+//! The window is the engine's: [`client::ArenaGame::run`] hands the arena's engine to its runner.
 
 pub mod client;
 pub mod effects;
 pub mod files;
 pub mod hitbox_view;
+pub mod plugin;
 pub mod scene;
 pub mod server;
 pub mod shots;

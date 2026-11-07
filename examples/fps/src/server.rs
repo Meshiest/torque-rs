@@ -17,8 +17,10 @@
 use std::net::Ipv4Addr;
 
 use torque::app::server::{GameServer, Listen, ServerStart};
+use torque::engine::Engine;
 
 use crate::files::GameFiles;
+use crate::plugin::{ArenaPlugin, arena_engine};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use torque::app::serve::Transports;
@@ -122,18 +124,41 @@ impl ArenaServer {
         listen: Listen,
         dedicated: bool,
     ) -> Result<GameServer, String> {
+        let engine = arena_engine(ArenaPlugin::new(files))
+            .build()
+            .map_err(|e| e.to_string())?;
+        ArenaServer::start_in(&engine, files, options, listen, dedicated)
+    }
+
+    /// A server bound as `options` say, made by `engine` (the arena's: [`arena_engine`], built): the game a client hosts is
+    /// started from the engine the client was made by.
+    pub fn start_from(
+        engine: &Engine,
+        files: &GameFiles,
+        options: &ServerOptions,
+    ) -> Result<GameServer, String> {
+        ArenaServer::start_in(engine, files, options, udp_listen(options), false)
+    }
+
+    fn start_in(
+        engine: &Engine,
+        files: &GameFiles,
+        options: &ServerOptions,
+        listen: Listen,
+        dedicated: bool,
+    ) -> Result<GameServer, String> {
         if files.file(&options.mission).is_none() {
             return Err(format!("no map {} in the game folder", options.mission));
         }
         let dedicated = if dedicated { "1" } else { "0" };
-        GameServer::start(
+        GameServer::start_engine(
+            engine,
             files.mem_files(),
             &ServerStart {
                 listen,
                 globals: &[
                     ("$Pref::Server::Name", &options.name),
                     ("$Server::Dedicated", dedicated),
-                    ("$Arena::Shapes", shape_files()),
                 ],
                 start: "startArena",
                 args: &[&options.mission],

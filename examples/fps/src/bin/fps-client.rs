@@ -305,7 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", path.display());
             }
         }
-        None => torque::app::window::run(ArenaGame::new(GameFiles::bundled()?, options)?)?,
+        None => ArenaGame::run(GameFiles::bundled()?, options)?,
     }
     Ok(())
 }

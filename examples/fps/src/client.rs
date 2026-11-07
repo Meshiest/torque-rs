@@ -38,17 +38,19 @@
 //! MIT-licensed `T3D/player.cpp` and `T3D/gameBase/processList.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015
 //! Faust Logic, Inc. for `player.cpp`). The code here is this example's own.
 
+use std::cell::RefCell;
 use std::net::Ipv4Addr;
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
 
 use torque::app::camera_blend::{CLOSE, CameraBlend};
 use torque::app::camera_boom::CameraBoom;
-use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+use torque::app::client::{ClientBuilder, ClientNet, GameClient};
+use torque::app::run::EngineRun;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
 use torque::client::conn::tge::TgeWorld as World;
 use torque::client::net::{Datagrams, NetPolicy};
+use torque::engine::Engine;
 use torque::ghost_world::world::Pose;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
@@ -57,11 +59,11 @@ use torque_render_scene::source::Eye;
 
 use crate::effects::{ScreenMarks, insert_over_world};
 use crate::files::GameFiles;
+use crate::plugin::{ArenaPlugin, arena_engine};
 use crate::scene::{ArenaScene, OwnLook, TextureFilter};
 use crate::server::{ArenaServer, DEFAULT_PORT, ServerOptions};
 pub use torque::app::hosting::{NetMode, parse_join_address};
-use torque::app::hosting::{join_address, lan_bind_address, lan_reach, register_join_natives};
-use torque_example_common::prediction::CubeClient;
+use torque::app::hosting::{join_address, lan_bind_address, lan_reach};
 
 /// A fresh secret (128 random bits from the operating system, in hex) a hosted game's server and its own client share: the
 /// connection that presents it is the host's.
@@ -121,6 +123,8 @@ impl Default for ClientOptions {
 pub struct ArenaGame {
     pub client: GameClient,
     pub files: GameFiles,
+    /// The engine the client was made by, and the server it hosts is made by.
+    engine: Engine,
     pub options: ClientOptions,
     scene: ArenaScene,
     /// The Sky's distances the view was given.
@@ -176,31 +180,36 @@ impl ArenaGame {
         options: ClientOptions,
         socket: Option<Box<dyn Datagrams>>,
     ) -> Result<ArenaGame, String> {
+        let engine = arena_engine(ArenaPlugin::new(&files).with_port(options.port))
+            .build()
+            .map_err(|e| e.to_string())?;
+        ArenaGame::from_engine(&engine, files, options, socket)
+    }
+
+    /// The client over `files` made by `engine` (the arena's: [`arena_engine`], built), on `socket` if it has one. The server
+    /// it hosts is made by the same engine.
+    pub fn from_engine(
+        engine: &Engine,
+        files: GameFiles,
+        options: ClientOptions,
+        socket: Option<Box<dyn Datagrams>>,
+    ) -> Result<ArenaGame, String> {
         let net = if socket.is_some() {
             ClientNet::External
         } else {
             options.net.client_net()
         };
-        let mut b = ClientBuilder::new(ClientSetup {
-            files: Some(files.mem_files()),
-            game_classes: true,
-            client_game: Some(Rc::new(CubeClient::new(files.mem_files()))),
-            // The controls that measure text as they lay out (the list of games) find their fonts where the drawing does.
-            layout_fonts: true,
-            net,
-            server_query: true,
-        })?;
+        let mut b = ClientBuilder::from_engine(engine, Some(files.mem_files()), net)?;
         if let Some(socket) = socket {
             b.set_socket(socket, NetPolicy::Loopback);
         }
-        register_join_natives(&mut b.vm, &b.state);
-        b.vm.set_global("$Arena::Port", &options.port.to_string());
         b.exec("client.cs")?;
         b.vm.set_global("$Pref::Player::Name", &options.name);
         b.invoke("showMainMenu")?;
         Ok(ArenaGame {
             client: b.build(),
             files,
+            engine: engine.clone(),
             options,
             scene: ArenaScene::new(),
             sky: None,
@@ -213,6 +222,20 @@ impl ArenaGame {
             drawn_at: None,
             held: None,
         })
+    }
+
+    /// Runs the arena in a window (a page's canvas in a browser): the engine's runner makes the client from the engine and
+    /// shows it.
+    pub fn run(files: GameFiles, options: ClientOptions) -> Result<(), String> {
+        let mut engine = arena_engine(ArenaPlugin::new(&files).with_port(options.port));
+        let start = RefCell::new(Some((files, options)));
+        engine
+            .app(move |engine| {
+                let (files, options) = start.take().ok_or("the arena starts once")?;
+                ArenaGame::from_engine(engine, files, options, None)
+            })
+            .run()
+            .map_err(|e| e.to_string())
     }
 
     /// A world view on `gpu`.
@@ -246,7 +269,8 @@ impl ArenaGame {
         } else {
             self.lan_bind_address()
         };
-        let mut server = ArenaServer::start(
+        let mut server = ArenaServer::start_from(
+            &self.engine,
             &self.files,
             &ServerOptions {
                 address,
