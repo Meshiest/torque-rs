@@ -76,7 +76,7 @@ different.
 - `torque`: the umbrella crate, re-exporting the engine crates behind features; `torque-app` (`torque::app`) holds what
   every game shares (its files, a server, a client, a window, the world view and offscreen pictures).
 - Math on `glam`.
-- Continuous integration on Linux and Windows (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
+- Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and one `unsafe` block in the workspace (the pipeline cache).
 
 [Unreleased]: https://github.com/Meshiest/torque-rs/commits/main
