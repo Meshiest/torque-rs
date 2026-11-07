@@ -1,0 +1,5 @@
+error: `self` in a free function: a native that is called on an object is a method, declared with `#[methods(class = "...")]` on its impl block
+ --> tests/ui/native_self_in_function.rs:5:14
+  |
+5 | fn give_ammo(&mut self, amount: i32) -> i32 {
+  |              ^^^^^^^^^

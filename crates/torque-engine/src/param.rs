@@ -206,6 +206,11 @@ impl<'a> Cx<'a> {
 ///
 /// `Item<'a>` is the parameter's type for one run (`Res<'a, T>` borrows the engine for it). `State` is kept between runs
 /// (a recipe's for the engine's life, a native's for its script engine's): [`Local`] keeps its value there.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is neither a script argument nor an injected parameter",
+    label = "not a parameter a native or a recipe can take",
+    note = "script arguments are numbers, truth values, text, `Option<T>` and `Rest`; injected ones are `VmMut`, `VmRef`, `Res<T>`, `ResMut<T>`, `Slot<T>`, `&Engine`, `Local<T>` and `This`"
+)]
 pub trait Param {
     /// The parameter's type during one run.
     type Item<'a>;
@@ -323,6 +328,12 @@ impl std::error::Error for ResourceError {}
 pub struct VmMut<'a>(&'a mut Vm);
 
 impl<'a> VmMut<'a> {
+    /// The parameter over `vm`: how a wrapper that holds the script engine hands it on (the method natives of
+    /// [`methods`](crate::methods) that take `&self`).
+    pub fn new(vm: &'a mut Vm) -> VmMut<'a> {
+        VmMut(vm)
+    }
+
     /// The script engine for the rest of the run.
     pub fn into_inner(self) -> &'a mut Vm {
         self.0
@@ -378,6 +389,11 @@ impl Param for VmMut<'_> {
 pub struct VmRef<'a>(&'a Vm);
 
 impl<'a> VmRef<'a> {
+    /// The parameter over `vm`: how a wrapper that holds the script engine hands it on.
+    pub fn new(vm: &'a Vm) -> VmRef<'a> {
+        VmRef(vm)
+    }
+
     /// The script engine for the rest of the run.
     pub fn into_inner(self) -> &'a Vm {
         self.0
@@ -633,6 +649,23 @@ pub const fn shape(kinds: &[ParamKind]) -> Shape {
         i += 1;
     }
     shape
+}
+
+/// What is wrong with a native's parameter kinds, in order: too many [`VmMut`]s, a `VmMut` beside a [`VmRef`], or the
+/// script arguments out of order. None for a signature the engine can run. The macros check a signature with it when
+/// the crate is checked; [`IntoNative`](crate::IntoNative) when it is built.
+#[doc(hidden)]
+pub const fn native_shape_error(kinds: &[ParamKind]) -> Option<&'static str> {
+    let shape = shape(kinds);
+    if shape.vms > 1 {
+        Some("a native takes at most one `VmMut`")
+    } else if shape.vms > 0 && shape.vm_reads > 0 {
+        Some("a native takes either one `VmMut` or any number of `VmRef`, never both")
+    } else if shape.misordered {
+        Some("a native's script arguments go required first, then `Option`s, then one `Rest` last")
+    } else {
+        None
+    }
 }
 
 /// What a recipe written as a function returns: nothing, or `Result<(), E>` whose error stops the replay.

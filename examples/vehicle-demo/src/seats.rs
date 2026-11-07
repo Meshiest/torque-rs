@@ -17,10 +17,10 @@ use std::rc::Rc;
 
 use torque::app::plugins::DefaultPlugins;
 use torque::collide::ObjectId;
-use torque::engine::{Engine, EngineBuilder, Plugin, PluginId, ServerStage};
+use torque::engine::{Engine, EngineBuilder, Plugin, PluginId, VmMut};
 use torque::game::sim_classes::{PlayerKind, SimClasses};
 use torque::script::vm::sim::ObjId;
-use torque::script::vm::vm::{Native, Vm};
+use torque::script::vm::vm::Vm;
 use torque::sim::Move;
 use torque::sim::player::{PlayerClass, PlayerData, PlayerHost, PlayerState, TorquePlayer};
 use torque::vehicle::state::{VehicleState, net_mask};
@@ -136,10 +136,9 @@ pub struct SeatsPlugin;
 impl Plugin for SeatsPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.set_slot::<dyn SimClasses>(Rc::new(DemoClasses));
-        engine.server(ServerStage::Prepare, |vm, _| {
-            register_natives(vm);
-            Ok(())
-        });
+        engine
+            .server_script()
+            .natives(torque::natives![straighten_wheels, stop_vehicle]);
     }
 }
 
@@ -151,38 +150,33 @@ pub fn server_engine() -> Result<Engine, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The natives the demo's scripts call on a server.
-fn register_natives(vm: &mut Vm) {
-    vm.register(
-        "straightenWheels",
-        2,
-        2,
-        "straightenWheels(vehicle);",
-        |vm, c| {
-            let id = c.argv.get(1).and_then(|a| vm.objects().find(a));
-            if let Some(s) = id.and_then(|id| torque::game::sim::vehicle::state_mut(vm, id)) {
-                s.steering = [0.0; 2];
-                s.steering_delta = [0.0; 2];
-            }
-            Native::Void
-        },
-    );
-    vm.register("stopVehicle", 2, 2, "stopVehicle(vehicle);", |vm, c| {
-        use torque::game::sim::vehicle::{self, Body};
-        let Some(id) = c.argv.get(1).and_then(|a| vm.objects().find(a)) else {
-            return Native::Void;
-        };
-        vehicle::set_velocity(vm, id, [0.0; 3]);
-        vehicle::set_angular_velocity(vm, id, [0.0; 3]);
-        if let Some(s) = vehicle::state_mut(vm, id) {
-            s.steering = [0.0; 2];
-            s.steering_delta = [0.0; 2];
+/// Sets a vehicle's wheels straight (a new driver's start).
+#[torque::function(usage = "straightenWheels(vehicle);")]
+fn straighten_wheels(mut vm: VmMut, vehicle: &[u8]) {
+    let id = vm.objects().find(vehicle);
+    if let Some(s) = id.and_then(|id| torque::game::sim::vehicle::state_mut(&mut vm, id)) {
+        s.steering = [0.0; 2];
+        s.steering_delta = [0.0; 2];
+    }
+}
+
+/// Stops a vehicle still, its wheels straight and not turning (a buggy put back in its place).
+#[torque::function(usage = "stopVehicle(vehicle);")]
+fn stop_vehicle(vm: VmMut, vehicle: &[u8]) {
+    use torque::game::sim::vehicle::{self, Body};
+    let Some(id) = vm.objects().find(vehicle) else {
+        return;
+    };
+    let vm = vm.into_inner();
+    vehicle::set_velocity(vm, id, [0.0; 3]);
+    vehicle::set_angular_velocity(vm, id, [0.0; 3]);
+    if let Some(s) = vehicle::state_mut(vm, id) {
+        s.steering = [0.0; 2];
+        s.steering_delta = [0.0; 2];
+    }
+    if let Some(Body::Wheeled(v)) = vehicle::ext_mut(vm, id).and_then(|e| e.body.as_mut()) {
+        for w in &mut v.k.wheels {
+            w.avel = 0.0;
         }
-        if let Some(Body::Wheeled(v)) = vehicle::ext_mut(vm, id).and_then(|e| e.body.as_mut()) {
-            for w in &mut v.k.wheels {
-                w.avel = 0.0;
-            }
-        }
-        Native::Void
-    });
+    }
 }

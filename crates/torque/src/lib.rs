@@ -76,6 +76,11 @@ pub use torque_client as client;
 pub use torque_collide as collide;
 #[cfg(feature = "engine")]
 pub use torque_engine as engine;
+/// Rust functions and impl blocks as TorqueScript natives: `#[torque::function(ns = "Pad")]`,
+/// `#[torque::methods(class = "Player")]`, listed with `torque::natives![...]` for the engine's script registry (see
+/// [`engine::function`] and [`engine::methods`]).
+#[cfg(feature = "engine")]
+pub use torque_engine::{function, methods, natives};
 #[cfg(feature = "fonts")]
 pub use torque_fonts as fonts;
 #[cfg(feature = "game")]

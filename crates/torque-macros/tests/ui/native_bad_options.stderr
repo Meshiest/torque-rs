@@ -1,0 +1,17 @@
+error: expected `ns = "..."`, `name = "..."`, `usage = "..."`, `description = "..."`, `dev` or `crate = path`
+ --> tests/ui/native_bad_options.rs:3:12
+  |
+3 | #[function(namespace = "Pad")]
+  |            ^^^^^^^^^
+
+error: a script name is ASCII letters, digits and '_', not starting with a digit
+ --> tests/ui/native_bad_options.rs:6:19
+  |
+6 | #[function(name = "set dead zone")]
+  |                   ^^^^^^^^^^^^^^^
+
+error: only `pub` fns of an inherent block become methods: make it `pub`, or drop the attribute
+  --> tests/ui/native_bad_options.rs:14:7
+   |
+14 |     #[torque(name = "hidden")]
+   |       ^^^^^^

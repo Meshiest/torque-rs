@@ -7,6 +7,10 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 
+mod native;
+
+pub use native::{camel_case, doc_text, first_line, function, methods};
+
 /// The expansion of `#[passthrough]`: the item exactly as written.
 ///
 /// The attribute takes no arguments, and the item must be Rust that parses as one. A refusal comes back as the

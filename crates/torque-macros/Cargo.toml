@@ -19,8 +19,10 @@ torque-macros-core = { path = "../torque-macros-core" }
 [dev-dependencies]
 # Compiles small programs that use the macros and compares the compiler's answer (`tests/ui`).
 trybuild = "1"
-# What `#[derive(PluginId)]` implements, for its `tests/ui` cases.
+# What `#[derive(PluginId)]` and the native attributes implement, for their `tests/ui` cases.
 torque-engine = { path = "../torque-engine" }
+# The script engine the `tests/ui` natives are registered into and called from.
+torque-ts-vm = { path = "../torque-ts-vm" }
 
 [lints]
 workspace = true

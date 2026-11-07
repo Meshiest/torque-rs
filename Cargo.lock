@@ -3585,6 +3585,7 @@ version = "0.1.0"
 dependencies = [
  "torque-engine",
  "torque-macros-core",
+ "torque-ts-vm",
  "trybuild",
 ]
 

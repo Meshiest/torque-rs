@@ -1,5 +1,5 @@
-//! Attribute and derive macros: Rust functions as TorqueScript natives, and plugin ids (`#[derive(PluginId)]`, used
-//! through `torque_engine`, which re-exports it).
+//! Attribute and derive macros: Rust functions as TorqueScript natives (`#[function]`, `#[methods]`) and plugin ids
+//! (`#[derive(PluginId)]`), used through `torque_engine`, which re-exports them.
 //!
 //! The entry points here only hand their tokens to `torque-macros-core`, where the code generation is tested.
 
@@ -28,6 +28,21 @@ pub fn derive_plugin_id(input: TokenStream) -> TokenStream {
     let package = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
     let engine = torque_macros_core::find_engine();
     torque_macros_core::derive_plugin_id(input.into(), &package, &engine).into()
+}
+
+/// Declares a free function as a TorqueScript native: see `torque_engine::function`, which re-exports it with examples.
+#[proc_macro_attribute]
+pub fn function(args: TokenStream, item: TokenStream) -> TokenStream {
+    let engine = torque_macros_core::find_engine();
+    torque_macros_core::function(args.into(), item.into(), &engine).into()
+}
+
+/// Declares the fns of an impl block as TorqueScript methods of a class: see `torque_engine::methods`, which
+/// re-exports it with examples.
+#[proc_macro_attribute]
+pub fn methods(args: TokenStream, item: TokenStream) -> TokenStream {
+    let engine = torque_macros_core::find_engine();
+    torque_macros_core::methods(args.into(), item.into(), &engine).into()
 }
 
 /// Leaves the item it is written on exactly as it is.

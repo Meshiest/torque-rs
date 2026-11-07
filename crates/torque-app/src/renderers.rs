@@ -26,16 +26,17 @@
 //! (`torque_render_hd::HdFeatures` and the water's and particles' looks), so a game drops one by turning its plugin off
 //! (`DefaultPlugins.disable::<CloudsPlugin>()`). With all of them on the renderer draws as it always has.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
 
-use torque_engine::{ClientStage, EngineBuilder, Plugin, PluginId};
+use torque_engine::{ClientStage, EngineBuilder, Plugin, PluginId, VmMut, VmRef};
 use torque_render_core::{Gpu, wgpu};
 use torque_render_hd::HdFeatures;
 use torque_render_hd::ext::PlainScene;
 use torque_render_scene::hd::{HdCamera, HdMode, ImageSettings, Quality};
-use torque_ts_vm::vm::{Native, Vm};
+use torque_ts_vm::vm::Vm;
 
 /// The id of the engine's own renderer ([`RendererPlugin`]).
 pub const DEFAULT_RENDERER: &str = "default";
@@ -447,35 +448,42 @@ impl Plugin for RendererSlotPlugin {
             if slot.current().is_none() {
                 vm.warn("the engine has no renderer: the world is not drawn".to_string());
             }
-            let slot = Rc::new(slot);
-            vm.set_extension(Rc::clone(&slot));
-            register(vm, &slot);
+            vm.set_extension(Rc::new(slot));
             Ok(())
         });
+        engine
+            .client_script()
+            .natives(torque_engine::natives![set_renderer, get_renderer]);
     }
 }
 
-/// `setRenderer` and `getRenderer` over `slot`.
-fn register(vm: &mut Vm, slot: &Rc<RendererSlot>) {
-    let swap = Rc::clone(slot);
-    vm.register("setRenderer", 2, 2, "setRenderer(id);", move |vm, call| {
-        let id = String::from_utf8_lossy(call.argv.get(1).map_or(&[][..], Vec::as_slice));
-        match swap.switch(id.trim()) {
-            Ok(()) => Native::Bool(true),
-            Err(e @ SwitchError::Failed { .. }) => {
-                vm.warn(format!("setRenderer: {e}"));
-                Native::Bool(false)
-            }
-            Err(e) => {
-                vm.error(format!("setRenderer: {e}"));
-                Native::Bool(false)
-            }
+/// Swaps the client's world view to the renderer registered as `id`: true when it swapped or already drew with it;
+/// false, with a console line saying why, when no renderer has the id or it could not be made.
+#[torque_engine::function(name = "setRenderer", usage = "setRenderer(id);")]
+fn set_renderer(mut vm: VmMut, id: Cow<str>) -> bool {
+    let Some(slot) = RendererSlot::of(&vm) else {
+        vm.error("setRenderer: this client has no renderer slot".to_string());
+        return false;
+    };
+    match slot.switch(id.trim()) {
+        Ok(()) => true,
+        Err(e @ SwitchError::Failed { .. }) => {
+            vm.warn(format!("setRenderer: {e}"));
+            false
         }
-    });
-    let read = Rc::clone(slot);
-    vm.register("getRenderer", 1, 1, "getRenderer();", move |_vm, _call| {
-        Native::Str(read.current().unwrap_or("").as_bytes().to_vec())
-    });
+        Err(e) => {
+            vm.error(format!("setRenderer: {e}"));
+            false
+        }
+    }
+}
+
+/// The id of the renderer the client's world view draws with; empty with none.
+#[torque_engine::function(name = "getRenderer", usage = "getRenderer();")]
+fn get_renderer(vm: VmRef) -> String {
+    RendererSlot::of(&vm)
+        .and_then(|slot| slot.current().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// The engine's feature set, made with no feature on if it is not there yet.

@@ -1,14 +1,15 @@
 //! The script registry: console functions, methods and globals that plugins declare, registered into every script engine
 //! the engine makes, and typed natives ([`IntoNative`]) whose argument counts and usage text come from their signature.
 
+use std::any::{Any, type_name};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use torque_ts_vm::convert::{ArgKind, ScriptError, ScriptReturn};
 use torque_ts_vm::vm::{Native, NativeCall, Vm};
 
-use crate::param::{Cx, Param, ParamError, ParamKind, all_arities, shape};
-use crate::{BuildError, ClientStage, Engine, EngineBuilder, PluginId, ServerStage, Stage};
+use crate::param::{Cx, Param, ParamError, ParamKind, all_arities, native_shape_error};
+use crate::{BuildError, ClientStage, Engine, EngineBuilder, PluginId, ServerStage, Stage, This};
 
 /// The global that lets a release build run [development commands](ScriptRegistry::dev).
 pub const DEV_PREF: &str = "$Pref::Dev";
@@ -174,6 +175,8 @@ type MakeNative = dyn Fn(&Engine, Rc<NativeInfo>) -> Box<dyn Fn(&mut Vm, &Native
 /// types) and injected [`Param`]s, made by [`IntoNative`]. Each script engine it is registered in gets its own state
 /// ([`Local`](crate::Local)).
 pub struct TypedNative {
+    /// Every parameter's kind, injected ones too.
+    kinds: Vec<ParamKind>,
     args: Vec<ArgKind>,
     make: Rc<MakeNative>,
 }
@@ -182,6 +185,30 @@ impl TypedNative {
     /// The kinds of its script arguments, in order.
     pub fn args(&self) -> &[ArgKind] {
         &self.args
+    }
+
+    /// The kinds of all its parameters, in order: script arguments and injected ones.
+    pub fn params(&self) -> &[ParamKind] {
+        &self.kinds
+    }
+
+    /// The names of its script arguments out of `params`, a name for each of its parameters (injected ones too); Err
+    /// when `params` does not name each parameter once.
+    fn script_names<'n>(&self, callee: Callee, params: &[&'n str]) -> Result<Vec<&'n str>, String> {
+        if params.len() != self.kinds.len() {
+            return Err(format!(
+                "`{}` names {} parameter(s), but its function takes {}",
+                callee.label(),
+                params.len(),
+                self.kinds.len()
+            ));
+        }
+        Ok(params
+            .iter()
+            .zip(&self.kinds)
+            .filter(|(_, kind)| matches!(kind, ParamKind::Script(_)))
+            .map(|(name, _)| *name)
+            .collect())
     }
 
     /// Its argument counts for `callee`, as [`Vm::register_in`] takes them (the name, and a method's object, counted;
@@ -253,6 +280,10 @@ impl TypedNative {
 /// [`VmMut`](crate::VmMut), and none beside a [`VmRef`](crate::VmRef). A signature that breaks these does not compile.
 ///
 /// `M` tells the parameter lists apart; it is inferred.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a native: each parameter must be a script argument or an injected `Param`",
+    label = "a parameter of this function is neither"
+)]
 pub trait IntoNative<M> {
     /// The native.
     fn into_native(self) -> TypedNative;
@@ -313,16 +344,9 @@ macro_rules! native_fns {
             #[allow(non_snake_case, unused_variables, unused_labels)]
             fn into_native(self) -> TypedNative {
                 const {
-                    let shape = shape(&[$(<$P as Param>::KIND),*]);
-                    assert!(shape.vms <= 1, "a native takes at most one `VmMut`");
-                    assert!(
-                        shape.vms == 0 || shape.vm_reads == 0,
-                        "a native takes either one `VmMut` or any number of `VmRef`, never both"
-                    );
-                    assert!(
-                        !shape.misordered,
-                        "a native's script arguments go required first, then `Option`s, then one `Rest` last"
-                    );
+                    if let Some(error) = native_shape_error(&[$(<$P as Param>::KIND),*]) {
+                        panic!("{}", error);
+                    }
                 }
                 let kinds: &[ParamKind] = &[$(<$P as Param>::KIND),*];
                 let args = kinds
@@ -334,6 +358,7 @@ macro_rules! native_fns {
                     .collect();
                 let f = Rc::new(self);
                 TypedNative {
+                    kinds: kinds.to_vec(),
                     args,
                     make: Rc::new(move |engine: &Engine, info: Rc<NativeInfo>| {
                         let f = Rc::clone(&f);
@@ -512,11 +537,13 @@ impl<'b> ScriptRegistry<'b> {
         usage: &str,
         f: impl IntoNative<M>,
     ) -> &mut Self {
-        self.native(namespace, name, false, args, usage, f.into_native(), false)
+        let native = f.into_native();
+        let usage = native.usage(Callee::Function { namespace, name }, args, usage);
+        self.native(namespace, name, false, usage, native, false)
     }
 
     /// Declares the method `name` of `class`: called on an object (`%obj.name(..)`), which `f` gets as
-    /// [`This`](crate::This).
+    /// [`This`].
     pub fn method<M>(
         &mut self,
         class: &str,
@@ -525,7 +552,9 @@ impl<'b> ScriptRegistry<'b> {
         usage: &str,
         f: impl IntoNative<M>,
     ) -> &mut Self {
-        self.native(class, name, true, args, usage, f.into_native(), false)
+        let native = f.into_native();
+        let usage = native.usage(Callee::Method { class, name }, args, usage);
+        self.native(class, name, true, usage, native, false)
     }
 
     /// Declares a development command: a [`function`](Self::function) that runs in a debug build, or in a release build
@@ -539,7 +568,62 @@ impl<'b> ScriptRegistry<'b> {
         usage: &str,
         f: impl IntoNative<M>,
     ) -> &mut Self {
-        self.native(namespace, name, false, args, usage, f.into_native(), true)
+        let native = f.into_native();
+        let usage = native.usage(Callee::Function { namespace, name }, args, usage);
+        self.native(namespace, name, false, usage, native, true)
+    }
+
+    /// Declares the natives the [`function`](crate::function) and [`methods`](crate::methods) attributes made, as
+    /// [`natives!`](crate::natives) lists them: each a function, method or development command as its declaration says,
+    /// in the list's order.
+    ///
+    /// ```
+    /// use torque_engine::{EngineBuilder, Plugin, PluginId, ResMut, ServerStage, function, natives};
+    /// use torque_ts_vm::vm::Vm;
+    ///
+    /// struct DeadZone(f32);
+    ///
+    /// /// sets the stick dead zone (0 to 0.75), and returns the value kept
+    /// #[function(ns = "Pad")]
+    /// fn set_dead_zone(mut kept: ResMut<DeadZone>, zone: f32) -> f32 {
+    ///     kept.0 = zone.clamp(0.0, 0.75);
+    ///     kept.0
+    /// }
+    ///
+    /// #[derive(PluginId)]
+    /// struct PadPlugin;
+    /// impl Plugin for PadPlugin {
+    ///     fn build(&self, engine: &mut EngineBuilder) {
+    ///         engine.insert_resource(DeadZone(0.15));
+    ///         engine.script().natives(natives![set_dead_zone]);
+    ///     }
+    /// }
+    ///
+    /// let engine = EngineBuilder::new().add_plugins(PadPlugin).build()?;
+    /// let mut vm = Vm::new();
+    /// for &stage in ServerStage::ALL {
+    ///     engine.replay(stage, &mut vm)?;
+    /// }
+    /// assert_eq!(vm.eval(b"return Pad::setDeadZone(2);")?, b"0.75");
+    /// assert!(vm.native_listing().contains(
+    ///     "Pad::setDeadZone 2..2 Pad::setDeadZone(zone) - sets the stick dead zone (0 to 0.75), and returns the value kept\n"
+    /// ));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn natives(&mut self, natives: impl IntoIterator<Item = NativeDecl>) -> &mut Self {
+        for decl in natives {
+            let native = (decl.native)();
+            let usage = decl.usage_text(&native);
+            self.native(
+                decl.namespace,
+                decl.name,
+                decl.method,
+                usage,
+                native,
+                decl.dev,
+            );
+        }
+        self
     }
 
     /// Declares the global variable `name` (with its `$`) and sets it to `default`, before scripts run.
@@ -551,19 +635,17 @@ impl<'b> ScriptRegistry<'b> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn native(
         &mut self,
         namespace: &str,
         name: &str,
         method: bool,
-        args: &[&str],
-        description: &str,
+        usage: Result<String, String>,
         native: TypedNative,
         dev: bool,
     ) -> &mut Self {
         let callee = callee(namespace, name, method);
-        let usage = match native.usage(callee, args, description) {
+        let usage = match usage {
             Ok(usage) => usage,
             Err(message) => {
                 let plugin = self.engine.current_plugin();
@@ -608,4 +690,220 @@ impl<'b> ScriptRegistry<'b> {
         });
         self
     }
+}
+
+/// A native the [`function`](crate::function) or [`methods`](crate::methods) attribute declared: what the registry needs
+/// to register it, as a constant. [`natives!`](crate::natives) lists them for [`ScriptRegistry::natives`];
+/// [`register`](Self::register) registers one by hand.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeDecl {
+    /// A function's namespace (empty for the global one), or a method's class.
+    pub namespace: &'static str,
+    /// The name scripts call it by.
+    pub name: &'static str,
+    /// A method (`%obj.name(..)`), not a function.
+    pub method: bool,
+    /// A development command ([`ScriptRegistry::dev`]).
+    pub dev: bool,
+    /// A name for each parameter of the function [`native`](Self::native) makes, in order, injected ones too: the
+    /// script arguments' names are the usage text's.
+    pub params: &'static [&'static str],
+    /// What follows the signature in the usage text (the doc comment's first line); empty for nothing.
+    pub description: &'static str,
+    /// The usage text exactly as written, in place of the generated one (one kept as it was, such as TGE's).
+    pub usage: Option<&'static str>,
+    /// The whole doc comment, for the script reference.
+    pub docs: &'static str,
+    /// Makes the native.
+    pub native: fn() -> TypedNative,
+}
+
+impl NativeDecl {
+    /// What scripts call it as.
+    pub fn callee(&self) -> Callee<'static> {
+        callee(self.namespace, self.name, self.method)
+    }
+
+    /// Its usage text with `native` (what [`native`](Self::native) made): the kept one, or the one made from its
+    /// script arguments' names and its description ([`usage_text`]). Err when its names do not match the parameters.
+    pub fn usage_text(&self, native: &TypedNative) -> Result<String, String> {
+        let callee = self.callee();
+        let names = native.script_names(callee, self.params)?;
+        match self.usage {
+            Some(usage) => Ok(usage.to_string()),
+            None => Ok(usage_text(callee, &names, &native.args, self.description)),
+        }
+    }
+
+    /// Registers it in `vm` by hand, for a host that makes its script engine without an [`Engine`]'s replay:
+    /// `engine` is what its injected parameters come from. Err when its names do not match its parameters.
+    pub fn register(&self, vm: &mut Vm, engine: &Engine) -> Result<(), String> {
+        let native = (self.native)();
+        let usage = self.usage_text(&native)?;
+        native.install(vm, engine, self.callee(), &usage, self.dev);
+        Ok(())
+    }
+}
+
+/// A list of declared natives: what [`natives!`](crate::natives) takes. The [`function`](crate::function) attribute
+/// implements it for a hidden type named as its function (so the list names the function); the
+/// [`methods`](crate::methods) attribute for the impl block's type (or the type its `list = Name` makes).
+pub trait Natives {
+    /// The natives.
+    const NATIVES: &'static [NativeDecl];
+}
+
+/// Whether two natives of `lists` take one name (namespace and name, without case, as the registry compares them).
+#[doc(hidden)]
+pub const fn has_duplicate(lists: &[&[NativeDecl]]) -> bool {
+    let mut a = 0;
+    while a < lists.len() {
+        let mut i = 0;
+        while i < lists[a].len() {
+            let mut b = a;
+            while b < lists.len() {
+                let mut j = if b == a { i + 1 } else { 0 };
+                while j < lists[b].len() {
+                    let (x, y) = (&lists[a][i], &lists[b][j]);
+                    if same_name(x.namespace, y.namespace) && same_name(x.name, y.name) {
+                        return true;
+                    }
+                    j += 1;
+                }
+                b += 1;
+            }
+            i += 1;
+        }
+        a += 1;
+    }
+    false
+}
+
+/// `a` and `b` alike without ASCII case.
+const fn same_name(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+/// What a method of a [`methods`](crate::methods) block that takes `&self` or `&mut self` returns to the script: its
+/// result, or why its object's data could not be reached.
+pub type MethodResult = Result<Native, ScriptError>;
+
+/// Calls `f` with the Rust data of the object `this` and the script engine: how a method of a
+/// [`methods`](crate::methods) block that takes `&self` or `&mut self` reaches its object.
+///
+/// An object's Rust data is its [`SimObject::ext`](torque_ts_vm::sim::SimObject::ext), which Rust code sets (a class's
+/// `onAdd`, the code that made the object); it must be a `T`. It is taken out of the object for the call and put back
+/// after, so `f` has the data and the whole script engine at once, and no borrow is held across a call back into
+/// script: a call that reaches the same object's data again meanwhile (the method's script calling it again) finds
+/// none and fails with an error, not a panic. An object deleted during the call drops its data, and so does a method
+/// that panics: the data is not put back, so later calls on the object report that it has no data.
+///
+/// ```
+/// use torque_engine::This;
+/// use torque_engine::script::with_object_data;
+/// use torque_ts_vm::vm::Vm;
+///
+/// struct Ammo(i32);
+///
+/// let mut vm = Vm::new();
+/// vm.eval(b"new SimObject(Crate);")?;
+/// let id = vm.objects().find(b"Crate").expect("the object");
+/// vm.objects_mut().get_mut(id).expect("the object").ext = Some(Box::new(Ammo(5)));
+/// let left = with_object_data(&mut vm, This(id), |ammo: &mut Ammo, _vm| {
+///     ammo.0 -= 1;
+///     ammo.0
+/// });
+/// assert!(left.is_ok());
+/// assert!(with_object_data(&mut vm, This(id), |_: &mut String, _vm| 0).is_err(), "not a String");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn with_object_data<T: Any, R: ScriptReturn>(
+    vm: &mut Vm,
+    this: This,
+    f: impl FnOnce(&mut T, &mut Vm) -> R,
+) -> MethodResult {
+    let id = this.0;
+    let Some(object) = vm.objects_mut().get_mut(id) else {
+        return Err(ScriptError::new(format!("object {id} is gone")));
+    };
+    let data = match object.ext.take() {
+        Some(data) if data.is::<T>() => data,
+        other => {
+            object.ext = other;
+            return Err(ScriptError::new(format!(
+                "object {id} has no `{}` data (or a call on it holds the data)",
+                type_name::<T>()
+            )));
+        }
+    };
+    let Ok(mut data) = data.downcast::<T>() else {
+        return Err(ScriptError::new(format!(
+            "object {id} has no `{}` data",
+            type_name::<T>()
+        )));
+    };
+    let result = f(&mut data, vm);
+    if let Some(object) = vm.objects_mut().get_mut(id)
+        && object.ext.is_none()
+    {
+        object.ext = Some(data);
+    }
+    result.into_result()
+}
+
+/// Lists natives that the [`function`](crate::function) and [`methods`](crate::methods) attributes declared, for
+/// [`ScriptRegistry::natives`]: each item a function with `#[function]` (by its path) or a type with a `#[methods]`
+/// block (all of its methods), in order, as a `Vec<NativeDecl>`.
+///
+/// Two natives of one list with the same name (namespace and name, without case) do not compile; one taken by a list
+/// and another plugin fails the engine's build ([`BuildError::DuplicateScriptName`]).
+///
+/// ```
+/// use torque_engine::{function, natives};
+///
+/// /// the sum
+/// #[function]
+/// fn add(a: i32, b: i32) -> i32 {
+///     a + b
+/// }
+///
+/// #[function(ns = "Math")]
+/// fn half(n: f32) -> f32 {
+///     n / 2.0
+/// }
+///
+/// let list = natives![add, half];
+/// assert_eq!(list.iter().map(|n| n.name).collect::<Vec<_>>(), ["add", "half"]);
+/// assert_eq!(list[1].namespace, "Math");
+/// ```
+///
+/// Names compare without case, so these two are one name:
+///
+/// ```compile_fail,E0080
+/// use torque_engine::{function, natives};
+///
+/// #[function(ns = "Pad")]
+/// fn dead_zone() -> f32 {
+///     0.15
+/// }
+///
+/// #[function(ns = "pad", name = "DEADZONE")]
+/// fn other_dead_zone() -> f32 {
+///     0.2
+/// }
+///
+/// let _ = natives![dead_zone, other_dead_zone];
+/// ```
+#[macro_export]
+macro_rules! natives {
+    ($($native:path),* $(,)?) => {{
+        const _: () = ::core::assert!(
+            !$crate::script::has_duplicate(&[$(<$native as $crate::script::Natives>::NATIVES),*]),
+            "two natives of this list have the same name (names compare without case): rename one with `name = \"...\"`"
+        );
+        #[allow(unused_mut)]
+        let mut natives: ::std::vec::Vec<$crate::script::NativeDecl> = ::std::vec::Vec::new();
+        $(natives.extend_from_slice(<$native as $crate::script::Natives>::NATIVES);)*
+        natives
+    }};
 }

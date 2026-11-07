@@ -1,0 +1,5 @@
+error: `#[methods]` goes on an impl block for a concrete type, not on a trait definition: put it on `impl Trait for Type`
+ --> tests/ui/native_on_trait.rs:4:1
+  |
+4 | trait Tool {
+  | ^^^^^

@@ -205,6 +205,27 @@ engine.script().function("", "hello", &["name"], "a greeting", hello);
 truth values, text, `Option<T>` for one that may be left out, and `Rest` for the rest. Two plugins declaring one name
 (compared without case) fail the build, naming both.
 
+**Shortest, with the attribute.** `#[torque::function]` takes the names from the Rust signature (camelCase) and the
+description from the doc comment's first line, and `torque::natives![...]` lists the functions for the registry:
+
+```rust,ignore
+/// a greeting
+#[torque::function]
+fn hello(greeting: Res<Greeting>, name: &str) -> String {
+    format!("{}, {name}!", greeting.0)
+}
+
+engine.script().natives(torque::natives![hello]);
+// The same line: hello 2..2 hello(name) - a greeting
+```
+
+`#[torque::function(ns = "Pad", name = "setDeadZone")]` sets the namespace and the name, `#[arg(name = "...")]` on a
+parameter its name in the usage text, `usage = "..."` keeps a usage text exactly as written. `#[torque::methods(class =
+"Player")]` on an impl block makes every `pub fn` a method (`#[torque(skip)]` leaves one out, `#[torque(name = "...")]`
+renames it); a method with `&self` or `&mut self` is called on its object's Rust data, and `natives![Type]` lists the
+block. A signature the engine cannot run (a parameter type it does not know, two `VmMut`s, an `Option` before a required
+argument, `self` in a free function) does not compile.
+
 ### Recipes by stage
 
 `engine.server(stage, recipe)` and `engine.client(stage, recipe)` record a recipe. A recipe gets the new script engine
