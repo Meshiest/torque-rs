@@ -50,6 +50,40 @@ site-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
+# Pictures that differ between two runs of the same build, as `--skip` switches for `shots-diff`:
+# vehicle-demo/hill.png: 2 pixels off by one level among the hills (rounding noise from run to run)
+shots_flapping := "--skip vehicle-demo/hill.png"
+
+# Every example's offscreen pictures, each recipe's into its own folder below `dir` (the character, level demo, arena and vehicle
+# demo shots, the arena's name and menu shots, the HUD shots and `showcase --examples`), to compare with `shots-diff` after a
+# change. Not drawn: the clips (they need ffmpeg), the race track pictures and `showcase`'s front-page grid. Run it on the same
+# machine and GPU as the folder it is compared with
+shots-all dir="target/shots":
+    just examples/character-shots "{{absolute_path(dir)}}/character"
+    just examples/level-demo-shots "{{absolute_path(dir)}}/level-demo"
+    just examples/level-demo-valley-shots "{{absolute_path(dir)}}/level-demo-valley"
+    just examples/level-demo-swim-shots "{{absolute_path(dir)}}/level-demo-swim"
+    just examples/level-demo-switch-shots "{{absolute_path(dir)}}/level-demo-switch"
+    just examples/fps-shots "{{absolute_path(dir)}}/fps"
+    just examples/fps-menu-shots "{{absolute_path(dir)}}/fps-menu"
+    just examples/fps-name-shots "{{absolute_path(dir)}}/fps-name"
+    just examples/fps-motion-shots "{{absolute_path(dir)}}/fps-motion"
+    just examples/fps-polish-shots "{{absolute_path(dir)}}/fps-polish"
+    just examples/fps-polish2-shots "{{absolute_path(dir)}}/fps-polish2"
+    just examples/fps-hitbox-shots "{{absolute_path(dir)}}/fps-hitbox"
+    just examples/vehicle-demo-shots "{{absolute_path(dir)}}/vehicle-demo"
+    just examples/vehicle-demo-name-shots "{{absolute_path(dir)}}/vehicle-demo-name"
+    just examples/vehicle-demo-switch-shots "{{absolute_path(dir)}}/vehicle-demo-switch"
+    just examples/hud-shots "{{absolute_path(dir)}}/hud"
+    just examples/showcase "{{absolute_path(dir)}}/showcase" --examples
+
+# Compares two folders drawn by `shots-all`: per picture whether the sizes match, the differing pixels and the largest channel
+# difference; the exit code is 1 when any picture differs. Left out, by name: the top right corner of every picture (160x40 px),
+# where the corner readout shows the frame rate measured on the clock, which differs from run to run; and the pictures in
+# `shots_flapping`, each with its reason
+shots-diff a b:
+    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 {{shots_flapping}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
+
 # Licenses, advisories, bans and sources of the dependency tree (cargo-deny)
 deny:
     cargo deny check

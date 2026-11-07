@@ -72,6 +72,13 @@ web-guard-test: web-guard
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/guard.test.mjs
 
+# The size of each web example's module (`game_bg.wasm` of the level demo, the arena and the vehicle demo, built with their files
+# fetched): `just web-size --out /somewhere/outside/the/repo/sizes.json` writes the sizes (the recipe runs in `examples/`, so
+# give an absolute path), `just web-size --compare /somewhere/outside/the/repo/sizes.json` gives each one's change in percent
+# against that file, and `--limit 1` also fails on more than 1% or on a module the file lacks
+web-size *args:
+    node ../web/size.mjs {{args}}
+
 # The web level demo's check (build it first with `web-level-demo`): headless Chrome with WebGPU loads the office, waits for the
 # figure, walks it and takes pictures, loads it again and counts the requests for the listed files (none: they come from the
 # cache), loads it with a changed file (refused, with the message on the page), then loads the menu; fails on any console
@@ -231,7 +238,7 @@ level-demo-switch-shots dir="../target/level-demo-switch-shots":
 # the office), and the 2 x 2 grid of them (`hero.png`, `hero@2x.png`), drawn offscreen into `dir`. `--size WxH` sets the
 # pictures' size, `--only <name>` draws one, `--grid` sets the grid again from the pictures in `dir`
 showcase dir="../target/showcase" *args:
-    cargo run -p torque-example-showcase --release -- {{dir}} {{args}}
+    cargo run -p torque-example-showcase --release --bin showcase -- {{dir}} {{args}}
 
 # Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
 kit-shots dir="../target/kit-shots":
@@ -330,22 +337,22 @@ fps-hitbox-shots dir="../target/fps-hitbox-shots":
 # move, Space jump, mouse look, click the buggy to take a seat; driving W throttle, S reverse, A D steer, Space brake, mouse
 # turns the camera, E get out). `--host`, `--join <address>`, `--name <name>`, `--bind <LAN address>`
 vehicle-demo *args:
-    cargo run -p torque-example-vehicle-demo --release -- {{args}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- {{args}}
 
 # The other player's name over his head in the vehicle demo, on foot and in the passenger's seat, at 1280x720 and at 640x360
 # (a browser's half-scale canvas), drawn offscreen into `dir`
 vehicle-demo-name-shots dir="../target/vehicle-demo-name-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --name-shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --name-shots {{dir}}
 
 # The figure on foot in the vehicle demo from behind and from its eyes, looking down, level and up (`Tab` keeps where the view
 # looks), drawn offscreen into `dir`
 vehicle-demo-switch-shots dir="../target/vehicle-demo-switch-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --switch-shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --switch-shots {{dir}}
 
 # The vehicle demo's pictures over the loopback address (the menu, the start, the buggy, its cockpit, two players seated, the
 # passenger's view, the climb up the hill), drawn offscreen into `dir`
 vehicle-demo-shots dir="../target/vehicle-demo-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --shots {{dir}}
 
 # The HUD of the level demo, the arena and the vehicle demo for review (the view in play with the corner readout, the pause
 # menu and its Controls panel) at 1280x720, 800x600 and 640x480, drawn offscreen into `dir`
@@ -357,7 +364,7 @@ hud-shots dir="../target/hud-shots":
 # The vehicle demo's clouds at noon, golden hour and sunset, looking up and their shadows on the hills, with the engine's clouds
 # (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
 vehicle-demo-cloud-shots dir="../target/vehicle-demo-cloud-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --cloud-shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --cloud-shots {{dir}}
 
 # The vehicle demo's steering and tire tracks as frame sequences (A held and let go at the wheel, then full throttle; on the
 # driver's client and another's) and the pause menu over the view, drawn offscreen into `dir`
