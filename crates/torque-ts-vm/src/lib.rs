@@ -6,6 +6,7 @@
 
 pub mod classes;
 pub mod code;
+pub mod convert;
 pub mod events;
 pub mod exec;
 pub mod fields;

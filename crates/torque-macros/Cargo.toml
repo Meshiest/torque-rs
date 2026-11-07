@@ -1,0 +1,24 @@
+[package]
+name = "torque-macros"
+description = "Attribute and derive macros that turn Rust functions into TorqueScript natives"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "macros", "proc-macro", "torquescript"]
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+torque-macros-core = { path = "../torque-macros-core" }
+
+[dev-dependencies]
+# Compiles small programs that use the macros and compares the compiler's answer (`tests/ui`).
+trybuild = "1"
+
+[lints]
+workspace = true

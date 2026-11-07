@@ -1,0 +1,20 @@
+[package]
+name = "torque-macros-core"
+description = "The code generation behind the torque-macros attributes: tokens in, tokens out, tested without the compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "macros", "proc-macro", "torquescript"]
+categories = ["development-tools::procedural-macro-helpers"]
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+# `full` parses any item, not just a derive input.
+syn = { version = "3", features = ["full"] }
+
+[lints]
+workspace = true
