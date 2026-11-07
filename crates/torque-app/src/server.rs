@@ -18,16 +18,20 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 use web_time::{Duration, Instant};
 
+use torque_engine::{Engine, EngineBuilder, ServerStage};
+use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
-use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
+use torque_server::net::torque::TorqueNet;
 use torque_server::net::transport::{
     BindPolicy, LanRules, MemoryEnd, MemoryTransport, SharedTransport, Transport, UdpTransport,
 };
-use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
+use torque_server::net::{HostParts, NetShared};
 use torque_server::server::{Server, TICK_MS};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
+
+use crate::plugins::{DefaultPlugins, ServerWiring};
 
 /// The UDP port number games listen on (and the LAN list asks): TGE's.
 pub const DEFAULT_PORT: u16 = 28_000;
@@ -142,11 +146,44 @@ impl GameServer {
     }
 
     /// [`GameServer::start`] with `prepare` run on the script engine before the game classes are installed (a game's own
-    /// subclasses of the simulated classes: `torque_game::sim_classes::set_sim_classes`).
+    /// subclasses of the simulated classes: `torque_game::sim_classes::set_sim_classes`). The server is made by
+    /// [`DefaultPlugins`].
     pub fn start_with(
         files: MemFiles,
         start: &ServerStart,
         prepare: impl FnOnce(&mut Vm),
+    ) -> Result<GameServer, String> {
+        let engine = EngineBuilder::new()
+            .add_plugins(DefaultPlugins)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut prepare = Some(prepare);
+        GameServer::start_prepared(&engine, files, start, &mut |vm| {
+            if let Some(prepare) = prepare.take() {
+                prepare(vm);
+            }
+        })
+    }
+
+    /// A server over `files` made by `engine`'s plugins: their server recipes run on the new script engine, stage by stage
+    /// ([`ServerStage`]), in the order the engine's plugins were added. The engine can make any number of servers. It needs
+    /// the plugins that make the server's parts: [`ServerGamePlugin`](crate::plugins::ServerGamePlugin) and [`NetHostPlugin`](crate::plugins::NetHostPlugin) (with [`DefaultPlugins`], all of
+    /// them). What the build warned about ([`Engine::warnings`]) is printed to the server's console first.
+    pub fn start_engine(
+        engine: &Engine,
+        files: MemFiles,
+        start: &ServerStart,
+    ) -> Result<GameServer, String> {
+        GameServer::start_prepared(engine, files, start, &mut |_| {})
+    }
+
+    /// [`GameServer::start_engine`] with `prepare` run on the script engine after the `Prepare` stage (not generic, so a
+    /// game's own closure does not copy this body into its crate).
+    fn start_prepared(
+        engine: &Engine,
+        files: MemFiles,
+        start: &ServerStart,
+        prepare: &mut dyn FnMut(&mut Vm),
     ) -> Result<GameServer, String> {
         let (transport, end) = match &start.listen {
             &Listen::Udp {
@@ -174,29 +211,32 @@ impl GameServer {
         };
 
         let mut vm = Vm::new();
-        torque_game::specs::install(&mut vm);
-        vm.set_file_host(files);
-        prepare(&mut vm);
+        for warning in engine.warnings() {
+            vm.warn(warning.to_string());
+        }
         let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
-        let game = torque_server::game::install(&mut vm, &state);
-        super::terrain::install(&mut vm, &game.container);
-        super::water::install(&mut vm, &game.container);
+        let wiring = Rc::new(ServerWiring::new(Rc::clone(&state), Rc::clone(&transport)));
+        vm.set_extension(Rc::clone(&wiring));
+        replay(engine, ServerStage::Classes, &mut vm)?;
+        vm.set_file_host(files);
+        replay(engine, ServerStage::Prepare, &mut vm)?;
+        if let Some(classes) = engine.slot::<dyn SimClasses>() {
+            torque_game::sim_classes::set_sim_classes(&mut vm, classes);
+        }
+        prepare(&mut vm);
+        replay(engine, ServerStage::Game, &mut vm)?;
+        let game = wiring
+            .game()
+            .ok_or("the engine has no server game (ServerGamePlugin)")?;
+        replay(engine, ServerStage::World, &mut vm)?;
         let mut server = Server::with_state(vm, Rc::clone(&state));
-        let shared = attach_host(
-            &mut server.vm,
-            Host {
-                transport: Rc::clone(&transport),
-                game: TorqueNet::default(),
-                engine: Rc::clone(&state),
-                step_limit: None,
-                clock: NetClock::Sim,
-                ghosts: TgeGhostGame,
-                container: Rc::clone(&game.container),
-                static_writes: None,
-            },
-        );
+        replay(engine, ServerStage::Net, &mut server.vm)?;
+        let net = wiring
+            .take_net()
+            .ok_or("the engine has no network host (NetHostPlugin)")?;
+        let shared = net.shared;
         server
-            .attach_net(Rc::new(NetPasses(Rc::clone(&shared))))
+            .attach_net(net.passes)
             .map_err(|e| format!("the network host: {e:?}"))?;
         for (name, value) in start.globals {
             server.vm.set_global(name, value);
@@ -338,6 +378,11 @@ impl GameServer {
     pub fn service(&mut self) {
         self.transport.borrow_mut().service();
     }
+}
+
+/// Replays `stage` of `engine`'s server recipes on `vm`.
+fn replay(engine: &Engine, stage: ServerStage, vm: &mut Vm) -> Result<(), String> {
+    engine.replay(stage, vm).map_err(|e| e.to_string())
 }
 
 /// The bind policy for `address` (`public` allows `0.0.0.0` alone).

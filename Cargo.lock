@@ -3256,6 +3256,7 @@ dependencies = [
  "sha2",
  "torque-client",
  "torque-collide",
+ "torque-engine",
  "torque-fonts",
  "torque-game",
  "torque-ghost-world",

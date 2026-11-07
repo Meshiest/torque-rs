@@ -20,6 +20,8 @@ web-time = "1.1"
 torque-client = { path = "../torque-client", features = ["window"] }
 torque-collide = { path = "../torque-collide" }
 torque-fonts = { path = "../torque-fonts", features = ["system-fonts"] }
+# The plugins that wire a server's and a client's script engine.
+torque-engine = { path = "../torque-engine" }
 torque-game = { path = "../torque-game" }
 torque-ghost-world = { path = "../torque-ghost-world" }
 torque-ghosts = { path = "../torque-ghosts" }

@@ -20,19 +20,24 @@ use std::rc::Rc;
 
 use torque_client::conn::tge::{TgeConn, TgeWorld};
 use torque_client::game::ClientGame;
-use torque_client::host::{ClientHost, EnginePass};
+use torque_client::host::{ClientHost, ClientPass};
 use torque_client::hud::HudWorld as _;
 use torque_client::input::{Key, key_message};
 use torque_client::net::{DatagramQueue, Datagrams, MemoryDatagrams, NetPolicy, UdpDatagrams};
 use torque_client::state::ClientState;
+use torque_engine::{ClientStage, Engine, EngineBuilder, PluginGroup};
 use torque_gui::Gui;
 use torque_server::server::{GameServer as _, Server, TICK_MS};
 use torque_ts_text::{atof, atoi};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
+use super::Host;
+use super::plugins::{
+    ClientGamePlugin, ClientHostSetup, ClientWiring, DefaultPlugins, GameClassesPlugin, GuiPlugin,
+    ServerQueryPlugin,
+};
 use super::server::GameServer;
-use super::{Host, draw_cache, layout_fonts};
 
 /// The most console lines a client keeps of its own and of its server's (it drops the older half past this).
 pub const LOG_LINES: usize = 4000;
@@ -65,7 +70,7 @@ pub struct ClientSetup {
     pub game_classes: bool,
     /// The game's half of the client's prediction.
     pub client_game: Option<Rc<dyn ClientGame>>,
-    /// Whether the GUI's layout measures text with the fonts it is drawn with ([`layout_fonts`]); else with its default.
+    /// Whether the GUI's layout measures text with the fonts it is drawn with ([`layout_fonts`](crate::layout_fonts)); else with its default.
     pub layout_fonts: bool,
     pub net: ClientNet,
     /// The LAN query's natives (the list of games).
@@ -92,43 +97,91 @@ pub struct ClientBuilder {
     pub gui: Gui,
     pub state: Rc<RefCell<ClientState<TgeConn>>>,
     link: Option<MemoryLink>,
+    engine: Engine,
+    pass: Rc<dyn ClientPass<TgeConn>>,
+    host: ClientHostSetup,
 }
 
 impl ClientBuilder {
     /// The script engine with the GUI's classes, ActionMap's natives (the class itself is a plain SimObject, as TGE's) and the
-    /// screen's, then what `setup` asks for.
+    /// screen's, then what `setup` asks for. It is [`ClientBuilder::from_engine`] over [`DefaultPlugins`] with the plugins
+    /// `setup` does not ask for turned off.
     pub fn new(setup: ClientSetup) -> Result<ClientBuilder, String> {
+        let ClientSetup {
+            files,
+            game_classes,
+            client_game,
+            layout_fonts,
+            net,
+            server_query,
+        } = setup;
+        let mut group = DefaultPlugins.set(GuiPlugin { layout_fonts });
+        if !game_classes {
+            group = group.disable::<GameClassesPlugin>();
+        }
+        if !server_query {
+            group = group.disable::<ServerQueryPlugin>();
+        }
+        let mut engine = EngineBuilder::new();
+        engine.add_plugins(group);
+        if let Some(game) = client_game {
+            engine.add_plugins(ClientGamePlugin::new(game));
+        }
+        let engine = engine.build().map_err(|e| e.to_string())?;
+        ClientBuilder::from_engine(&engine, files, net)
+    }
+
+    /// A client made by `engine`'s plugins: the script engine's client recipes run stage by stage ([`ClientStage`]) up to
+    /// the game's natives, in the order the engine's plugins were added, with `files` as the scripts' files and a socket as
+    /// `net` says. The engine can make any number of clients. It needs the plugins that make the client's parts:
+    /// [`GuiPlugin`] and [`ClientHostPlugin`](crate::plugins::ClientHostPlugin) (with [`DefaultPlugins`], all of them). What the build warned about
+    /// ([`Engine::warnings`]) is printed to the client's console first.
+    pub fn from_engine(
+        engine: &Engine,
+        files: Option<MemFiles>,
+        net: ClientNet,
+    ) -> Result<ClientBuilder, String> {
+        let pass = engine
+            .slot::<dyn ClientPass<TgeConn>>()
+            .ok_or("the engine has no client host (ClientHostPlugin)")?;
+        let host = *engine
+            .resource::<ClientHostSetup>()
+            .ok_or("the engine has no client host (ClientHostPlugin)")?;
         let mut vm = Vm::new();
-        if setup.game_classes {
-            torque_game::specs::install(&mut vm);
-        }
-        if let Some(files) = setup.files {
-            vm.set_file_host(files);
-        }
-        if let Some(game) = setup.client_game {
-            torque_client::game::set_client_game(&mut vm, game);
-        }
-        let gui = torque_gui::register(&mut vm);
-        if setup.layout_fonts {
-            // The controls that measure text as they lay out (a list of games) find their fonts where the drawing does.
-            gui.0.borrow_mut().fonts = torque_gui::SharedFonts::new(Box::new(layout_fonts()));
+        for warning in engine.warnings() {
+            vm.warn(warning.to_string());
         }
         let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
-        let link = open_socket(&state, setup.net)?;
-        vm.register_class("ActionMap", "SimObject", &[]);
-        torque_client::actionmap::register(&mut vm, &state);
-        torque_client::screen::register(&mut vm, &gui, &state);
-        if setup.net != ClientNet::None {
-            torque_client::conn::register(&mut vm, &state, &gui);
+        let link = open_socket(&state, net)?;
+        let wiring = Rc::new(ClientWiring::new(Rc::clone(&state), net));
+        vm.set_extension(Rc::clone(&wiring));
+        replay(engine, ClientStage::Classes, &mut vm)?;
+        if let Some(files) = files {
+            vm.set_file_host(files);
         }
-        if setup.server_query {
-            torque_client::query::register(&mut vm, &state);
+        if let Some(game) = engine.slot::<dyn ClientGame>() {
+            torque_client::game::set_client_game(&mut vm, game);
         }
+        for stage in [
+            ClientStage::Game,
+            ClientStage::Gui,
+            ClientStage::Input,
+            ClientStage::Screen,
+            ClientStage::Conn,
+            ClientStage::Query,
+            ClientStage::Natives,
+        ] {
+            replay(engine, stage, &mut vm)?;
+        }
+        let gui = wiring.gui().ok_or("the engine has no GUI (GuiPlugin)")?;
         Ok(ClientBuilder {
             vm,
             gui,
             state,
             link,
+            engine: engine.clone(),
+            pass,
+            host,
         })
     }
 
@@ -163,15 +216,21 @@ impl ClientBuilder {
     }
 
     /// The client host over the engine, in a window's mode, with no server hosted yet.
-    pub fn build<S>(self) -> GameClient<S> {
+    pub fn build<S>(mut self) -> GameClient<S> {
+        // The host takes the script engine, so the `Host` stage's recipes are the last to see it.
+        if let Err(e) = self.engine.replay(ClientStage::Host, &mut self.vm) {
+            self.vm.warn(e.to_string());
+        }
         let mut host = ClientHost::new(
             Server::new(self.vm),
             self.gui,
             self.state,
-            Rc::new(EnginePass),
-            draw_cache(),
+            self.pass,
+            (self.host.draw_cache)(),
         );
-        host.set_windowed();
+        if self.host.windowed {
+            host.set_windowed();
+        }
         let mut client = GameClient {
             host,
             server: None,
@@ -185,6 +244,11 @@ impl ClientBuilder {
         client.set_global("$Client::HostsServer", "0");
         client
     }
+}
+
+/// Replays `stage` of `engine`'s client recipes on `vm`.
+fn replay(engine: &Engine, stage: ClientStage, vm: &mut Vm) -> Result<(), String> {
+    engine.replay(stage, vm).map_err(|e| e.to_string())
 }
 
 /// An in-memory socket at `client` and its link to a server at `server`.
