@@ -353,3 +353,25 @@ fn the_reader_never_panics() {
     }
     assert!(read_back > 0);
 }
+
+#[test]
+fn a_blockbench_model_becomes_a_shape_sampled_nearest() {
+    let m = read_json(&file(
+        vec![cube("box", [0., 0., 0.], [16., 16., 16.])],
+        vec![json!("u-box")],
+    ))
+    .unwrap();
+    assert!(m.materials.iter().all(|m| m.nearest));
+    let bytes = torque_shapes::write::write_dts(&crate::dts::to_dts(&m).unwrap());
+    let shape = torque_shapes::dts::parse(&bytes, &mut free).unwrap();
+    assert!(!shape.shape.materials.is_empty());
+    assert!(
+        shape
+            .shape
+            .materials
+            .iter()
+            .all(|m| m.flags & torque_shapes::matlist::NEAREST != 0)
+    );
+    let back = crate::dts::from_dts(&shape).unwrap();
+    assert!(back.materials.iter().all(|m| m.nearest));
+}

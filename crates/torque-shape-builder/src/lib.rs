@@ -67,6 +67,8 @@ pub mod material_flags {
     pub const SELF_ILLUMINATING: u32 = 0x20;
     /// Never environment-mapped.
     pub const NEVER_ENV_MAP: u32 = 0x40;
+    /// This engine's own bit, not TGE's: sampled with nearest-neighbor filtering ([`torque_shapes::matlist::NEAREST`]).
+    pub const NEAREST: u32 = torque_shapes::matlist::NEAREST;
 }
 
 /// `TSDrawPrimitive`'s bits: an indexed triangle list, and a primitive with no material.

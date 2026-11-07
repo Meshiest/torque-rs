@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value, json};
 use torque_modelcore::math::{self, Mat4, Quat, Vec3};
-use torque_modelcore::{Alpha, Model};
+use torque_modelcore::{Alpha, Material, Model};
 
 use super::EXTRAS_KEY;
 use crate::ImportError;
@@ -139,11 +139,13 @@ pub fn write_glb(model: &Model) -> Result<Vec<u8>, ImportError> {
         }
         images.push(v);
     }
-    let mut samplers: Vec<[bool; 2]> = Vec::new();
+    // Each sampler: whether it repeats across u and v, and whether it is nearest.
+    let mut samplers: Vec<([bool; 2], bool)> = Vec::new();
     let mut textures: Vec<(usize, usize)> = Vec::new();
-    let mut texture = |image: usize, wrap: [bool; 2]| {
-        let s = samplers.iter().position(|w| *w == wrap).unwrap_or_else(|| {
-            samplers.push(wrap);
+    let mut texture = |image: usize, m: &Material| {
+        let key = (m.wrap, m.nearest);
+        let s = samplers.iter().position(|w| *w == key).unwrap_or_else(|| {
+            samplers.push(key);
             samplers.len() - 1
         });
         let t = textures
@@ -165,10 +167,10 @@ pub fn write_glb(model: &Model) -> Result<Vec<u8>, ImportError> {
                 "roughnessFactor": m.roughness,
             });
             if let Some(t) = m.base_texture {
-                pbr["baseColorTexture"] = texture(t, m.wrap);
+                pbr["baseColorTexture"] = texture(t, m);
             }
             if let Some(t) = m.metal_rough_texture {
-                pbr["metallicRoughnessTexture"] = texture(t, m.wrap);
+                pbr["metallicRoughnessTexture"] = texture(t, m);
             }
             let mut v = json!({
                 "name": m.name,
@@ -185,10 +187,10 @@ pub fn write_glb(model: &Model) -> Result<Vec<u8>, ImportError> {
                 Alpha::Blend => v["alphaMode"] = json!("BLEND"),
             }
             if let Some(t) = m.normal_texture {
-                v["normalTexture"] = texture(t, m.wrap);
+                v["normalTexture"] = texture(t, m);
             }
             if let Some(t) = m.emissive_texture {
-                v["emissiveTexture"] = texture(t, m.wrap);
+                v["emissiveTexture"] = texture(t, m);
             }
             let mut t = Map::new();
             t.insert("name".into(), json!(m.name));
@@ -394,9 +396,15 @@ pub fn write_glb(model: &Model) -> Result<Vec<u8>, ImportError> {
         "samplers",
         samplers
             .iter()
-            .map(|w| {
+            .map(|&(w, nearest)| {
                 let mode = |r: bool| if r { 10497 } else { 33071 };
-                json!({ "wrapS": mode(w[0]), "wrapT": mode(w[1]) })
+                let mut s = json!({ "wrapS": mode(w[0]), "wrapT": mode(w[1]) });
+                if nearest {
+                    // NEAREST up close, NEAREST_MIPMAP_LINEAR far off.
+                    s["magFilter"] = json!(9728);
+                    s["minFilter"] = json!(9986);
+                }
+                s
             })
             .collect(),
     );

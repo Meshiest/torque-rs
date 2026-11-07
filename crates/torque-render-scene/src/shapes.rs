@@ -17,7 +17,9 @@
 //! **The GL state** (`Gl`): `TSMesh::initMaterials` first (blending off with `SRC_ALPHA, ONE_MINUS_SRC_ALPHA`, depth
 //! writes on, `GL_MODULATE`, texturing off, the material's ambient and diffuse white, no current material), then per primitive
 //! whose material changes `TSMesh::setMaterial`:
-//! - the material's texture bound (the IFL slot's current frame for an IFL material); `GL_REPEAT` or `GL_CLAMP` per its S and T flags;
+//! - the material's texture bound (the IFL slot's current frame for an IFL material); `GL_REPEAT` or `GL_CLAMP` per its S
+//!   and T flags; linear filtering, or (this engine's own bit, [`shapes::matlist::NEAREST`]) nearest near and far with the mipmap levels still
+//!   blended between, as an interior's nearest material (a TGE shape never has the bit: it draws as TGE's);
 //! - when the flags changed: `Translucent` turns blending on and depth writes off (else off and on); `Additive` makes the blend
 //!   `SRC_ALPHA, ONE`, else `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` (set only when the additive or subtractive bit changed);
 //!   `SelfIlluminating` turns lighting off (else on);
@@ -61,6 +63,8 @@ const MAT_SUBTRACTIVE: u32 = 0x10;
 const MAT_SELF_ILLUMINATING: u32 = 0x20;
 const MAT_NO_MIPMAP: u32 = 0x80;
 const MAT_IFL: u32 = 0x0800_0000;
+/// This engine's own material bit: sampled nearest ([`shapes::matlist::NEAREST`]).
+pub const MAT_NEAREST: u32 = shapes::matlist::NEAREST;
 /// The screen error the error scheme picks a detail by: TGE's `TSShapeInstance::smScreenError` for the control object and its
 /// mount (its default for other shapes is 5.0), here for every shape.
 pub const SCREEN_ERROR: f32 = 0.001;
@@ -577,6 +581,23 @@ fn material_texture(
     (m.flags, tex)
 }
 
+/// The sampler of a material with `flags`: repeated per its S and T flags, mipmapped unless `NoMipMap`, linear, or with the
+/// nearest bit sharp texels near and far (the mipmap levels still blended between, as an interior's nearest material).
+pub fn material_sampler(flags: u32) -> Sampler {
+    let near = if flags & MAT_NEAREST != 0 {
+        Filter::Nearest
+    } else {
+        Filter::Linear
+    };
+    Sampler {
+        repeat: flags & (MAT_S_WRAP | MAT_T_WRAP) != 0,
+        mag: near,
+        min: near,
+        mip: Filter::Linear,
+        mipmaps: flags & MAT_NO_MIPMAP == 0,
+    }
+}
+
 /// `setMaterial` for the material word `word`.
 fn set_material(gl: &mut Gl, word: u32, flags: u32, tex: Option<usize>) {
     if (word | gl.current) & PRIM_NO_MATERIAL != 0 {
@@ -591,22 +612,11 @@ fn set_material(gl: &mut Gl, word: u32, flags: u32, tex: Option<usize>) {
         gl.texturing = true;
     }
     let index = word & PRIM_MATERIAL_MASK;
-    // Environment mapping is off (it is not drawn): its bit never counts as a change.
-    let changed = (gl.flags ^ flags) & !0x40;
+    // Environment mapping is off (it is not drawn): its bit never counts as a change, nor the nearest bit (TGE has none).
+    let changed = (gl.flags ^ flags) & !(0x40 | MAT_NEAREST);
     gl.flags = flags;
     gl.current = index;
-    gl.texture = tex.map(|t| {
-        (
-            t,
-            Sampler {
-                repeat: flags & (MAT_S_WRAP | MAT_T_WRAP) != 0,
-                mag: Filter::Linear,
-                min: Filter::Linear,
-                mip: Filter::Linear,
-                mipmaps: flags & MAT_NO_MIPMAP == 0,
-            },
-        )
-    });
+    gl.texture = tex.map(|t| (t, material_sampler(flags)));
     if changed == 0 {
         return;
     }

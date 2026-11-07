@@ -63,7 +63,8 @@ different.
 #### Content import
 
 - `torque-import`: glTF 2.0 (read and write), Wavefront OBJ and Blockbench (`.bbmodel`) readers, the model layer
-  (`torque-modelcore`) into `.dts` and back. A datablock's `shapeFile` may name a `.glb` directly.
+  (`torque-modelcore`) into `.dts` and back. A datablock's `shapeFile` may name a `.glb` directly. Shape materials can
+  be nearest-sampled (a material flag bit TGE leaves unused), as Blockbench models and glTF `NEAREST` samplers ask.
 - `torque-interior-builder`: `.dif` interiors built from convex brushes in code, Quake or Valve 220 `.map` files, or
   glTF, OBJ and Blockbench meshes, with hulls made or authored and a `.map`'s water, triggers and spawn points as
   mission objects. Interior materials can be nearest-sampled or see-through glass.

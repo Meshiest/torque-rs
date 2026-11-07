@@ -138,3 +138,136 @@ fn a_missing_shape_draws_nothing() {
         .is_none()
     );
 }
+
+/// TGE's flag bits (`TSMaterialList`): bits 0 to 8 and 27 to 31.
+const TGE_BITS: [u32; 14] = [
+    0x1,
+    0x2,
+    0x4,
+    0x8,
+    0x10,
+    0x20,
+    0x40,
+    0x80,
+    0x100,
+    0x0800_0000,
+    0x1000_0000,
+    0x2000_0000,
+    0x4000_0000,
+    0x8000_0000,
+];
+
+#[test]
+fn a_tge_material_samples_linear_whatever_its_flags() {
+    // Every mix of TGE's bits, the nearest bit clear: the sampler TGE's `setMaterial` gives.
+    for mix in 0u32..1 << TGE_BITS.len() {
+        let flags = TGE_BITS
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| mix >> k & 1 != 0)
+            .fold(0, |f, (_, b)| f | b);
+        let s = material_sampler(flags);
+        assert_eq!(
+            s,
+            Sampler {
+                repeat: flags & (MAT_S_WRAP | MAT_T_WRAP) != 0,
+                mag: Filter::Linear,
+                min: Filter::Linear,
+                mip: Filter::Linear,
+                mipmaps: flags & MAT_NO_MIPMAP == 0,
+            },
+            "{flags:#x}"
+        );
+    }
+    assert!(TGE_BITS.iter().all(|b| b & MAT_NEAREST == 0));
+}
+
+#[test]
+fn a_nearest_material_samples_nearest_and_keeps_its_mipmaps() {
+    let s = material_sampler(MAT_S_WRAP | MAT_T_WRAP | MAT_NEAREST);
+    assert_eq!(
+        (s.mag, s.min, s.mip, s.mipmaps, s.repeat),
+        (Filter::Nearest, Filter::Nearest, Filter::Linear, true, true)
+    );
+    assert!(!material_sampler(MAT_NEAREST | MAT_NO_MIPMAP).mipmaps);
+    // The interiors' nearest sampler is the same.
+    assert_eq!(
+        material_sampler(MAT_S_WRAP | MAT_NEAREST),
+        crate::map::interior::NEAREST_SAMPLER
+    );
+}
+
+#[test]
+fn the_nearest_bit_alone_changes_the_sampler_and_nothing_else() {
+    let mut gl = Gl::init();
+    set_material(&mut gl, 0, MAT_S_WRAP | MAT_T_WRAP, Some(0));
+    // A tint under 1 turns blending on; TGE keeps it while the flags do not change.
+    gl.blend = true;
+    set_material(&mut gl, 1, MAT_S_WRAP | MAT_T_WRAP | MAT_NEAREST, Some(0));
+    assert!(gl.blend, "the nearest bit is no change of TGE's state");
+    assert_eq!(gl.texture.map(|t| t.1.mag), Some(Filter::Nearest));
+    set_material(&mut gl, 2, MAT_S_WRAP | MAT_T_WRAP, Some(0));
+    assert_eq!(gl.texture.map(|t| t.1.mag), Some(Filter::Linear));
+}
+
+/// A textured box shape (material `tex`, `flags`) and its texture, its draws at rest.
+fn box_draws(flags: u32) -> Vec<Draw> {
+    use torque_shape_builder::{FULL_UV, MeshData, ShapeBuilder};
+    let mut b = ShapeBuilder::new();
+    let node = b.node("box", None, [0.0; 3]);
+    let drawn = b.detail("detail1", 1.0);
+    let tex = b.material("tex", flags);
+    let mut mesh = MeshData::new(Some(tex));
+    mesh.add_box([-0.5; 3], [0.5; 3], |_| FULL_UV);
+    b.object("box", node, drawn, mesh);
+    let bytes = shapes::write::write_dts(&b.build());
+    let files = Files(vec![
+        ("demo/box.dts".into(), bytes),
+        (
+            "demo/tex.png".into(),
+            crate::textures::tests::png(4, 4, 200),
+        ),
+    ]);
+    let none = |_: &str| None;
+    clear_loaded();
+    let mut textures = TextureSet::new(&files);
+    let draws = rest_draws(
+        &none,
+        &files,
+        "demo/box.dts",
+        &mut textures,
+        &mut Vec::new(),
+    )
+    .expect("the box loads")
+    .0;
+    clear_loaded();
+    draws
+}
+
+#[test]
+fn a_shape_written_with_the_nearest_bit_draws_nearest_and_one_without_draws_as_tge() {
+    let samplers = |flags| {
+        box_draws(flags)
+            .iter()
+            .map(|d| d.texture.expect("textured").1)
+            .collect::<Vec<_>>()
+    };
+    let wrap = MAT_S_WRAP | MAT_T_WRAP;
+    let nearest = samplers(wrap | MAT_NEAREST);
+    assert!(!nearest.is_empty());
+    assert!(
+        nearest
+            .iter()
+            .all(|s| s.mag == Filter::Nearest && s.min == Filter::Nearest)
+    );
+    let plain = samplers(wrap);
+    assert!(plain.iter().all(|s| *s == material_sampler(wrap)));
+    // Apart from the sampler, the draws are the same.
+    let strip = |mut d: Vec<Draw>| {
+        for d in &mut d {
+            d.texture = d.texture.map(|(t, _)| (t, material_sampler(0)));
+        }
+        d
+    };
+    assert_eq!(strip(box_draws(wrap | MAT_NEAREST)), strip(box_draws(wrap)));
+}

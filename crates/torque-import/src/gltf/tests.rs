@@ -664,3 +664,39 @@ fn a_shape_whose_sequence_claims_too_many_keys_is_refused() {
         Err(ImportError::Cap { .. })
     ));
 }
+
+#[test]
+fn a_nearest_material_keeps_its_filter_through_a_shape_and_back() {
+    let mut m = sample();
+    m.materials[0].nearest = true;
+    let glb = write_glb(&m).unwrap();
+    let (doc, _) = open(&glb);
+    let samplers = doc["samplers"].as_array().unwrap();
+    assert!(samplers.iter().any(|s| s["magFilter"] == json!(9728)));
+    assert!(
+        samplers.iter().any(|s| s.get("magFilter").is_none()),
+        "a linear one writes no filter"
+    );
+    let back = read_ok(&glb).unwrap();
+    assert!(back.materials[0].nearest && !back.materials[1].nearest);
+    // Into a shape: the engine's own bit on the nearest material (its flags derived), not on the other (its flags stated).
+    let bytes = torque_shapes::write::write_dts(&dts::to_dts(&back).unwrap());
+    let shape = torque_shapes::dts::parse(&bytes, &mut free).unwrap();
+    let nearest = torque_shapes::matlist::NEAREST;
+    assert_ne!(shape.shape.materials[0].flags & nearest, 0);
+    assert_eq!(
+        shape.shape.materials[1].flags, 3,
+        "stated flags stay as they are"
+    );
+    // And out of it again.
+    let again = dts::from_dts(&shape).unwrap();
+    assert!(again.materials[0].nearest && !again.materials[1].nearest);
+    let (doc, _) = open(&write_glb(&again).unwrap());
+    assert!(
+        doc["samplers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["magFilter"] == json!(9728))
+    );
+}

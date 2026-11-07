@@ -34,6 +34,8 @@ torque-scene = { path = "../torque-scene" }
 criterion = { workspace = true }
 # The benches' interior (`benches/scene.rs`).
 torque-interior-builder = { path = "../torque-interior-builder" }
+# The shapes' material tests build their shapes.
+torque-shape-builder = { path = "../torque-shape-builder" }
 
 [[bench]]
 name = "scene"

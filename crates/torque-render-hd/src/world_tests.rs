@@ -115,3 +115,41 @@ fn an_unfinished_warm_up_is_stopped_and_waited_for_when_dropped() {
         began.elapsed()
     );
 }
+
+#[test]
+fn a_nearest_shape_material_samples_nearest_and_a_tge_one_as_before() {
+    use torque_render_scene::hd::HdDraw;
+    use torque_render_scene::shapes::{MAT_NEAREST, material_sampler};
+    use torque_render_scene::{Draw, TexEnv};
+    let wrap = 0x3;
+    let nearest = MAT_NEAREST;
+    let key = |flags: u32| {
+        let d = Draw {
+            label: "shape".into(),
+            vertices: Vec::new(),
+            lighting: true,
+            tex_env: TexEnv::Modulate,
+            texture: Some((0, material_sampler(flags))),
+            blend: Blend::Opaque,
+            cull: Cull::BackCw,
+            depth_test: true,
+            depth_write: true,
+            fog: true,
+            lights: Vec::new(),
+            vertex_key: None,
+        };
+        let hd = HdDraw::from_fixed(&d, 0, &[0]);
+        SamplerKey::of(&hd.texture.expect("textured").1)
+    };
+    let k = key(wrap | nearest);
+    assert!(!k.mag && !k.min, "nearest near and far");
+    assert!(
+        k.mip && k.mipmaps && k.repeat,
+        "the mipmap levels still blended"
+    );
+    assert_eq!(
+        key(wrap),
+        SamplerKey::PLAIN,
+        "a TGE material: linear, as before"
+    );
+}

@@ -1,12 +1,13 @@
 //! Pictures of every shape of the asset kit for review, drawn offscreen on a plain gray floor: the cube; the figure from the
-//! front, side and back, its face close up, and in its idle, walk, run and jump poses (the jump also from the front and the
-//! side); the figure holding the pistol (its `hold` arm pose) from the side, front three-quarters and over its shoulder; the
+//! front, side and back, its face, its waist (where the shirt meets the trousers) and its shoes close up, and in its idle,
+//! walk, run and jump poses (the jump also from the front and the side); the figure holding the pistol (its `hold` arm pose) from the side, front three-quarters and over its shoulder; the
 //! pistol from the side and three-quarters with its muzzle, eject and mount points marked; and the projectile. Then strips of
 //! frames side by side: the back walk and the side step through their loops, both deaths from the side and from three-quarters,
 //! the look (the `hold` and `head` sequences) from fully up through level to fully down, and the pistol's slide at rest,
 //! running back and home again.
 //!
-//! `cargo run -p torque-example-common --example kit-shots -- <dir>` (default `kit-shots`)
+//! `cargo run -p torque-example-common --example kit-shots -- <dir> [names...]` (default `kit-shots`; with names, only those
+//! pictures)
 
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::path::PathBuf;
@@ -95,6 +96,22 @@ const PICTURES: &[Picture] = &[
         rise: 0.05,
         zoom: 0.22,
         aim: Some([0.0, 0.0, 1.82]),
+        ..SHAPE
+    },
+    Picture {
+        name: "figure-waist",
+        turn: 0.5,
+        rise: 0.1,
+        zoom: 0.25,
+        aim: Some([0.0, 0.0, 0.97]),
+        ..SHAPE
+    },
+    Picture {
+        name: "figure-shoes",
+        turn: 0.6,
+        rise: 0.35,
+        zoom: 0.25,
+        aim: Some([0.12, 0.03, 0.08]),
         ..SHAPE
     },
     Picture {
@@ -311,11 +328,9 @@ fn node_matrix(instance: &ShapeInstance, node: usize) -> Mat {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .unwrap_or_else(|| "kit-shots".to_string()),
-    );
+    let mut args = std::env::args().skip(1);
+    let dir = PathBuf::from(args.next().unwrap_or_else(|| "kit-shots".to_string()));
+    let only: Vec<String> = args.collect();
     std::fs::create_dir_all(&dir)?;
     let gpu = offscreen_gpu()?;
     let assets = KitAssets::new()?;
@@ -328,7 +343,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         towards: [0.45, 0.6, 0.66],
         ..Daylight::default()
     });
-    for p in PICTURES {
+    for p in PICTURES
+        .iter()
+        .filter(|p| only.is_empty() || only.iter().any(|n| n == p.name))
+    {
         let path = dir.join(format!("{}.png", p.name));
         let png = if p.frames.is_empty() {
             let frame = draw(

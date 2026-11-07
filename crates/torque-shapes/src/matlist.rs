@@ -26,6 +26,11 @@ use crate::{Charge, MAX_MATERIALS, ShapeError, pay, reserved, within};
 pub const IFL_MATERIAL: u32 = 0x0800_0000;
 /// `TSMaterialList::IflFrame` (`BIT(28)`): the material is a frame of an `.ifl`.
 pub const IFL_FRAME: u32 = 0x1000_0000;
+/// This engine's own bit (`BIT(16)`), not TGE's: the material's texture is sampled with nearest-neighbor filtering (pixel
+/// art). TGE's flags use bits 0 to 8 and 27 to 31; bits 9 to 26 are unused, its exporters never set them and its reader keeps
+/// the word as it is, so a TGE shape never has this bit and TGE ignores it in a shape that does. A material without it
+/// draws as TGE's does.
+pub const NEAREST: u32 = 0x0001_0000;
 
 /// What one material list holds, and how many bytes it took.
 #[derive(Debug, Clone, PartialEq)]

@@ -3562,6 +3562,7 @@ dependencies = [
  "torque-mapcore",
  "torque-maps",
  "torque-scene",
+ "torque-shape-builder",
  "torque-shapes",
  "web-time",
 ]

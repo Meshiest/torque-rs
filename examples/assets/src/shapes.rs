@@ -17,8 +17,8 @@
 //! item's `mountPoint` goes), turned so the item's +y runs along the forearm. The eyes are two small dark boxes on the face.
 //! An `LOS-9` detail, never drawn, holds its hitboxes: a box for each part on the part's node, named by the part (`head`,
 //! `torso`, `rarm`, `lforearm`, `lhand`, `lleg`, `lshin`, `lfoot`, ...), each within the drawn one.
-//! Its texture is four swatches: skin, shirt, trousers (with the shoes) and the eyes' colour. The sequences turn the joints
-//! about x (the side step and the falls also about y and z):
+//! Its texture is four swatches: skin, shirt, trousers (with the shoes) and the eyes' colour, sampled nearest. The
+//! sequences turn the joints about x (the side step and the falls also about y and z):
 //!
 //! - `idle` (and `root`, the same keys under the name a player's rest action looks for): 2 s, looped, the arms sway 3°, the
 //!   elbows a little bent.
@@ -119,12 +119,15 @@ pub fn cube() -> Model {
     b.build()
 }
 
-/// The figure's texture swatches (`figure.png`'s quarters; the shoes are the trousers quarter's bottom band).
+/// The figure's texture swatches (`figure.png`'s quarters; the shoes are the trousers quarter's bottom band), each on texel
+/// edges within one band of color: the shirt above its hem (texel rows 0 to 27 of 64), the trousers above the shoes' band
+/// (rows 32 to 60) and the shoes on it (rows 61 to 63). The texture is sampled nearest, so a face's edge never takes in the
+/// swatch beside it.
 const SKIN: UvRect = [0.0, 0.0, 0.5, 0.5];
-const SHIRT: UvRect = [0.5, 0.0, 1.0, 0.44];
-const TROUSERS: UvRect = [0.0, 0.5, 0.5, 0.94];
-const SHOES: UvRect = [0.0, 0.95, 0.5, 1.0];
-const EYES: UvRect = [0.55, 0.55, 0.95, 0.95];
+const SHIRT: UvRect = [0.5, 0.0, 1.0, 28.0 / 64.0];
+const TROUSERS: UvRect = [0.0, 0.5, 0.5, 61.0 / 64.0];
+const SHOES: UvRect = [0.0, 61.0 / 64.0, 0.5, 1.0];
+const EYES: UvRect = [36.0 / 64.0, 36.0 / 64.0, 60.0 / 64.0, 60.0 / 64.0];
 
 /// One box of the figure, every face one swatch.
 fn part(
@@ -405,7 +408,7 @@ pub fn figure() -> Model {
     let ankle_l = b.node("ankle_l", Some(knee_l), [0.0, 0.0, SOLE - SHIN]);
     let ankle_r = b.node("ankle_r", Some(knee_r), [0.0, 0.0, SOLE - SHIN]);
     b.detail("detail1", 1.0);
-    let m = b.material("figure", OPAQUE);
+    let m = b.material("figure", OPAQUE | material_flags::NEAREST);
 
     part(
         &mut b,

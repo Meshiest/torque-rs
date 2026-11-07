@@ -78,6 +78,15 @@ fn flags_of(m: &Material) -> u32 {
     f
 }
 
+/// This engine's own bit for a material sampled nearest ([`material_flags::NEAREST`]), over the flags stated or derived.
+fn nearest_bit(m: &Material) -> u32 {
+    if m.nearest {
+        material_flags::NEAREST
+    } else {
+        0
+    }
+}
+
 /// A diagonal matrix.
 fn diagonal(s: Vec3) -> Mat4 {
     let mut m = math::IDENTITY;
@@ -266,7 +275,8 @@ pub fn to_dts(model: &Model) -> Result<torque_shapes::Model, ImportError> {
     for m in &model.materials {
         b.raw_material(RawMaterial {
             name: m.name.as_bytes().to_vec(),
-            flags: m.flags.unwrap_or_else(|| flags_of(m)),
+            flags: (m.flags.unwrap_or_else(|| flags_of(m)) & !material_flags::NEAREST)
+                | nearest_bit(m),
             reflectance_map: NO_MAP,
             bump_map: NO_MAP,
             detail_map: NO_MAP,
@@ -566,6 +576,7 @@ pub fn from_dts(dts: &torque_shapes::Model) -> Result<Model, ImportError> {
             unlit: flags & material_flags::SELF_ILLUMINATING != 0,
             metallic: 0.0,
             flags: Some(flags),
+            nearest: flags & material_flags::NEAREST != 0,
             ..Material::default()
         });
     }
