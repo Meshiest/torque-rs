@@ -345,7 +345,7 @@ export function fromSdp(sdp) {
 }
 
 // A page's own answer `sdp` with the ICE credentials and DTLS setup of `details` (an earlier answer's `fromSdp`) in place of
-// its own, so a new connection answers as the reply link already said. Only the page's own descriptions go through this.
+// its own, so a new connection answers as the reply code already said. Only the page's own descriptions go through this.
 export function withDetails(sdp, { ufrag, pwd, setup }) {
   return sdp
     .replace(/^a=ice-ufrag:.*$/gm, `a=ice-ufrag:${ufrag}`)
