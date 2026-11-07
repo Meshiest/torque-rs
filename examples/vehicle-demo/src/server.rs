@@ -177,6 +177,16 @@ impl WorldServer {
         Some(String::from_utf8_lossy(&a.name).into_owned())
     }
 
+    /// The arm action figure `id` plays (its arm thread's: `look` with empty hands, `point`).
+    pub fn figure_arm_of(&self, id: u32) -> Option<String> {
+        let st = torque::game::scene::ext::get(self.vm().objects(), id)?
+            .shape
+            .as_ref()?;
+        let p = st.player.as_ref()?;
+        let a = p.actions.get(usize::try_from(p.arm_action).ok()?)?;
+        Some(String::from_utf8_lossy(&a.name).into_owned())
+    }
+
     /// What figure `id` is mounted on and its seat (the mount node).
     pub fn seat_of(&self, id: u32) -> Option<(u32, u32)> {
         let (on, node) = torque::game::sim::mount::link(self.vm(), id);

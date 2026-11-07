@@ -379,28 +379,47 @@ fn far(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 #[test]
 fn the_way_down_kneels_puts_a_hand_down_and_lies_flat_and_the_way_up_is_it_reversed() {
+    for armed in [false, true] {
+        way_down_and_up(armed);
+    }
+}
+
+/// The way down and up, empty-handed (`prone_down`, `prone_up`) or `armed` (`prone_down_armed`, `prone_up_armed`).
+fn way_down_and_up(armed: bool) {
     use crate::poses::{PRONE_DOWN_SECONDS, PRONE_UP_SECONDS};
     let shape = figure();
+    let (down, up) = if armed {
+        ("prone_down_armed", "prone_up_armed")
+    } else {
+        ("prone_down", "prone_up")
+    };
     let seq = |name: &str| &shape.sequences[find_sequence(&shape, name.as_bytes()).unwrap()];
-    assert!((seq("prone_down").duration - PRONE_DOWN_SECONDS).abs() < 1e-6);
-    assert!((seq("prone_up").duration - PRONE_UP_SECONDS).abs() < 1e-6);
-    assert_eq!(seq("prone_down").priority, 2, "over a held pistol's arm");
-    // The way down starts where the crouch is and ends where prone is (the right arm reaches ahead, a held pistol's way).
-    let arm = ["arm_r", "elbow_r", "mount0"];
+    assert!((seq(down).duration - PRONE_DOWN_SECONDS).abs() < 1e-6);
+    assert!((seq(up).duration - PRONE_UP_SECONDS).abs() < 1e-6);
+    assert_eq!(seq(down).priority, 2, "over a held pistol's arm");
+    // The way down starts where the crouch is and ends where prone is (armed, the right arm reaches ahead, a held pistol's way;
+    // empty-handed, it goes down and up as the left does).
+    let arm: &[&str] = if armed {
+        &["arm_r", "elbow_r", "mount0"]
+    } else {
+        &[]
+    };
     for (a, b) in [
-        (("crouch_root", 0.0), ("prone_down", 0.0)),
-        (("prone_root", 0.0), ("prone_down", 1.0)),
-        (("prone_root", 0.0), ("prone_up", 0.0)),
-        (("crouch_root", 0.0), ("prone_up", 1.0)),
+        (("crouch_root", 0.0), (down, 0.0)),
+        (("prone_root", 0.0), (down, 1.0)),
+        (("prone_root", 0.0), (up, 0.0)),
+        (("crouch_root", 0.0), (up, 1.0)),
     ] {
         for ((n, p), (_, q)) in
-            origins(&shape, &[a], &arm)
+            origins(&shape, &[a], arm)
                 .into_iter()
-                .zip(origins(&shape, &[b], &arm))
+                .zip(origins(&shape, &[b], arm))
         {
+            // The hands are set on the floor (the empty right hand's grip, `mount0`, the furthest out, by up to 2 cm).
+            let near = if n == "mount0" { 0.025 } else { 0.01 };
             assert!(
-                far(p, q) < 0.01,
-                "{a:?} and {b:?} differ at {n} by {}",
+                far(p, q) < near,
+                "{down}: {a:?} and {b:?} differ at {n} by {}",
                 far(p, q)
             );
         }
@@ -408,10 +427,11 @@ fn the_way_down_kneels_puts_a_hand_down_and_lies_flat_and_the_way_up_is_it_rever
     // Up is down played backward.
     for k in 0..=8 {
         let t = k as f32 / 8.0;
-        for ((n, p), (_, q)) in origins(&shape, &[("prone_up", t)], &[])
-            .into_iter()
-            .zip(origins(&shape, &[("prone_down", 1.0 - t)], &[]))
-        {
+        for ((n, p), (_, q)) in origins(&shape, &[(up, t)], &[]).into_iter().zip(origins(
+            &shape,
+            &[(down, 1.0 - t)],
+            &[],
+        )) {
             assert!(
                 far(p, q) < 0.04,
                 "up at {t} is not down at {}: {n}",
@@ -420,20 +440,33 @@ fn the_way_down_kneels_puts_a_hand_down_and_lies_flat_and_the_way_up_is_it_rever
         }
     }
     let n = 96;
-    let hand = |t: f32| {
+    let hand_of = |t: f32, elbow: &str| {
         at(
             &shape,
-            &posed(&shape, &[("prone_down", t)]),
-            "elbow_l",
+            &posed(&shape, &[(down, t)]),
+            elbow,
             [0.0, 0.0, -GRIP],
         )
     };
+    let hand = |t: f32| hand_of(t, "elbow_l");
+    // Empty-handed, the right hand goes down as the left does, on its own side: never reaching out ahead.
+    if !armed {
+        for k in 0..=24 {
+            let t = k as f32 / 24.0;
+            let (l, r) = (hand(t), hand_of(t, "elbow_r"));
+            let mirrored = [-l[0], l[1], l[2]];
+            assert!(
+                far(r, mirrored) < 0.03,
+                "at {t} the empty right hand is at {r:?}, the left at {l:?}"
+            );
+        }
+    }
     let planted = hand(0.6);
     let (mut lowest, mut slide, mut step) = (f32::MAX, 0.0f32, 0.0f32);
     let mut last: Option<Vec<(String, [f32; 3])>> = None;
     for k in 0..=n {
         let t = k as f32 / n as f32;
-        let points = drawn(&shape, &[("prone_down", t)]);
+        let points = drawn(&shape, &[(down, t)]);
         lowest = points.iter().map(|p| p.1[2]).fold(lowest, f32::min);
         if t >= 0.6 {
             slide = slide.max(far(hand(t), planted));
@@ -448,7 +481,7 @@ fn the_way_down_kneels_puts_a_hand_down_and_lies_flat_and_the_way_up_is_it_rever
         }
         last = Some(points);
         // The head looks ahead: its face turned no more than 35 degrees down or 15 up.
-        let i = posed(&shape, &[("prone_down", t)]);
+        let i = posed(&shape, &[(down, t)]);
         let m = i.node_transforms()[node(&shape, "head")];
         let ahead = [m[1], m[5], m[9]];
         let pitch = ahead[2].atan2(ahead[1]).to_degrees();
@@ -462,7 +495,7 @@ fn the_way_down_kneels_puts_a_hand_down_and_lies_flat_and_the_way_up_is_it_rever
     assert!(step < 0.06, "a part jumps {step} in a hundredth of the way");
     // The right knee touches the floor first, then both, with the left hand (each shin's end at the knee).
     let shin_low = |t: f32, knee: &str| {
-        let i = posed(&shape, &[("prone_down", t)]);
+        let i = posed(&shape, &[(down, t)]);
         [-0.09f32, 0.09]
             .iter()
             .flat_map(|&x| [-0.1f32, 0.1].map(move |y| [x, y]))

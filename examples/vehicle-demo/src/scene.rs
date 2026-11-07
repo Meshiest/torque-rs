@@ -41,7 +41,13 @@ pub struct WorldScene {
 
 impl Default for WorldScene {
     fn default() -> WorldScene {
-        let mut ghosts = GhostScene::new(torque_example_common::ghost_options());
+        // The synced rules: a figure's arm moves between its arm actions over the arm's blend (raising it to point), and a
+        // moving action steps by the ground the figure covers.
+        let options = torque::app::ghosts::GhostOptions {
+            synced_poses: true,
+            ..torque_example_common::ghost_options()
+        };
+        let mut ghosts = GhostScene::new(options);
         ghosts.dust.rules = DustRules {
             min_slip: DUST_MIN_SLIP,
         };
@@ -113,6 +119,11 @@ impl WorldScene {
     /// Where each figure at a wheel holds its `steering` thread as the last frame posed it, by ghost.
     pub fn figure_steering(&self) -> Vec<(u32, f32)> {
         self.ghosts.player_steering()
+    }
+
+    /// The other figures' arms as the last frame posed them, in ghost order: whether each plays a death, and its arm's action.
+    pub fn figure_arms(&self) -> Vec<(bool, Option<String>)> {
+        self.ghosts.others_arms()
     }
 
     /// The action each figure plays as the last frame posed it, by ghost.

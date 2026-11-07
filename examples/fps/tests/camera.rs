@@ -205,3 +205,66 @@ fn a_teleport_or_a_respawn_cuts_the_camera_in_either_person() {
         cut_on(&mut a, place_far, &format!("{person}, placed far again"));
     }
 }
+
+fn knock_out(a: &mut ArenaGame) {
+    let vm = a.server.as_mut().unwrap().vm_mut();
+    vm.eval(b"ArenaFigure.hurt(figureOf(\"Ann\"), 0, 1000, \"\");")
+        .unwrap();
+}
+
+/// Knocked out (from the front: the figure falls backward), the first-person view falls with the body: its eye drops toward
+/// the floor and tips up toward the sky over the death, then lies still; behind the figure, the camera stays upright and sees
+/// the fall. The figure respawns 2.5 s after the knock-out.
+#[test]
+fn the_first_person_view_falls_over_with_a_knocked_out_figure() {
+    for behind in [false, true] {
+        let mut a = host();
+        if behind {
+            tab(&mut a);
+        }
+        let standing = frames(&mut a, 60);
+        knock_out(&mut a);
+        let mut drawn = Vec::new();
+        for _ in 0..60 {
+            drawn.push(frame(&mut a));
+        }
+        let pitches: Vec<f32> = drawn.iter().map(|e| e.pitch).collect();
+        let last = *drawn.last().unwrap();
+        if behind {
+            assert!(
+                pitches.iter().all(|p| (p - standing.pitch).abs() < 0.05),
+                "behind the figure the camera stays upright: {pitches:?}"
+            );
+            assert!(
+                drawn
+                    .iter()
+                    .all(|e| apart(e.position, standing.position) < 0.1),
+                "and where it was"
+            );
+            continue;
+        }
+        // Positive pitch looks down: falling backward, the view turns up by most of a right angle.
+        assert!(
+            standing.pitch - last.pitch > 1.0,
+            "the view tipped up as the figure fell: {} to {} ({pitches:?})",
+            standing.pitch,
+            last.pitch
+        );
+        assert!(
+            last.position[2] < standing.position[2] - 0.8,
+            "the eye fell toward the floor: {:?} to {:?}",
+            standing.position,
+            last.position
+        );
+        // Eased over the fall, not cut: no frame turns the view by more than a fifth of a right angle.
+        for w in pitches.windows(2) {
+            assert!(
+                (w[1] - w[0]).abs() < 0.32,
+                "a jump in the fall: {pitches:?}"
+            );
+        }
+        // It lies still once the fall ends.
+        let still = frames(&mut a, 10);
+        assert!((still.pitch - last.pitch).abs() < 1e-3);
+    }
+}

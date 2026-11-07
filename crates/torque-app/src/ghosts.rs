@@ -86,6 +86,8 @@ struct EyePose {
     last: Option<[f32; 3]>,
     /// The own Player's ghost and feet the last frame.
     at: Option<(u32, [f32; 3])>,
+    /// While the own Player plays a death: its drawn `eye` node and that node's pitch when the death began.
+    fall: Option<([f32; 3], f32)>,
 }
 
 impl EyePose {
@@ -100,8 +102,22 @@ impl EyePose {
             self.left = [0.0; 3];
             self.seconds = 0.0;
             self.last = None;
+            self.fall = None;
         }
         cut
+    }
+
+    /// While the own Player plays a death (`dying`), the way its drawn `eye` node (`node`) has moved and the pitch it has
+    /// tipped by (positive down) since the death began: the view falls with the body. Standing, none.
+    fn fall(&mut self, dying: bool, node: Option<Mat>) -> Option<([f32; 3], f32)> {
+        let Some(node) = node.filter(|_| dying) else {
+            self.fall = None;
+            return None;
+        };
+        let at = node.column(3);
+        let pitch = node_pitch(node.column(1));
+        let (from, start) = *self.fall.get_or_insert((at, pitch));
+        Some(([0, 1, 2].map(|k| at[k] - from[k]), pitch - start))
     }
 
     /// The eye this frame for pose `pose`, whose own eye is at `target` (the world), the Player at yaw `yaw`, `dt` seconds on.
@@ -136,6 +152,15 @@ impl EyePose {
         eye
     }
 }
+
+/// The pitch (positive down) of a node whose forward (+y) axis is `forward` in the world.
+fn node_pitch(forward: [f32; 3]) -> f32 {
+    let flat = forward[0].hypot(forward[1]);
+    (-forward[2]).atan2(flat)
+}
+
+/// The most a view's pitch reaches either way (radians): short of straight up or down, where its yaw would be lost.
+pub const MAX_VIEW_PITCH: f32 = 1.55;
 
 /// The bolt holes kept: at most `max`, each for `seconds`, fading out over its last `fade`; multiplied over the surface they
 /// lie on (`Blend::Modulate2x`) with `multiply`.
@@ -705,7 +730,23 @@ pub struct OwnView {
     pub pitch: f32,
     pub eye: [f32; 3],
     pub drawn_eye: [f32; 3],
+    /// How far a death has tipped the first-person view (radians, positive down) and moved its eye from `eye` (0 standing):
+    /// the view falls with the body, carried as the drawn `eye` node has moved and turned since the death began.
+    pub fall: f32,
+    pub fall_moved: [f32; 3],
     pub cut: bool,
+}
+
+impl OwnView {
+    /// The first-person view's eye: `eye`, carried by a death's fall ([`OwnView::fall_moved`]).
+    pub fn view_eye(&self) -> [f32; 3] {
+        [0, 1, 2].map(|k| self.eye[k] + self.fall_moved[k])
+    }
+
+    /// The first-person view's pitch: the head's, tipped by a death's fall ([`OwnView::fall`]).
+    pub fn view_pitch(&self) -> f32 {
+        (self.pitch + self.fall).clamp(-MAX_VIEW_PITCH, MAX_VIEW_PITCH)
+    }
 }
 
 /// The faces of `world` near a point, within a reach: the surface a projectile's decal there may lie on.
@@ -1166,11 +1207,11 @@ impl<S: GhostStyle> GhostScene<S> {
         players.sort_unstable();
         for index in players {
             let w: &World = &world.records;
-            let eye = self
+            let eye_node = self
                 .frames
                 .owner_nodes(w, &self.hooks, assets, index, &[b"eye"])
-                .and_then(|n| n.into_iter().next().flatten())
-                .map(|m| m.column(3));
+                .and_then(|n| n.into_iter().next().flatten());
+            let eye = eye_node.map(|m| m.column(3));
             let Some(Pose::Euler {
                 position,
                 yaw,
@@ -1216,19 +1257,33 @@ impl<S: GhostStyle> GhostScene<S> {
                 (Some(r), _) => r,
                 (None, _) => drawn_eye,
             };
-            self.own = Some(OwnView {
+            // A death: the view falls with the body, its eye carried by the drawn `eye` node and tipped as it tips.
+            let dying = self
+                .hooks
+                .live
+                .lock()
+                .is_ok_and(|l| l.get(&index).is_some_and(|l| l.anim.dying()));
+            let (fall_moved, fall) = match self.eye_pose.fall(dying, eye_node) {
+                // Without the steady eye the view is at the drawn node already.
+                Some((moved, tip)) => (if rest.is_some() { moved } else { [0.0; 3] }, tip),
+                None => ([0.0; 3], 0.0),
+            };
+            let own = OwnView {
                 ghost: index,
                 position,
                 yaw,
                 pitch,
                 eye,
                 drawn_eye,
+                fall,
+                fall_moved,
                 cut,
-            });
+            };
+            self.own = Some(own);
             if world.hide_control {
                 world.records.view = Some(Eye {
-                    position: eye,
-                    pitch,
+                    position: own.view_eye(),
+                    pitch: own.view_pitch(),
                     yaw,
                     fov: fov.or(world.control.server_fov.or(world.control.client_fov)),
                 });
