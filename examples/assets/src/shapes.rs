@@ -58,7 +58,8 @@
 //!   driver's seat plays it.
 //! - `ride`: as `sit`, the upper arms hanging and the forearms resting on the thighs: a passenger's seat plays it.
 //! - Crouched and prone (`crouch_root`, `crouch_forward`, `crouch_backward`, `crouch_side`, `prone_root`, `prone_forward`,
-//!   `prone_backward`, `prone_hold`, `prone_aim`) and the hit reactions (`flinch_front` and the rest): [`crate::poses`].
+//!   `prone_backward`, `prone_hold`, `prone_aim`), the hit reactions (`flinch_front` and the rest) and pointing (`point`,
+//!   `prone_point`: the right arm straight along the aim): [`crate::poses`].
 //!
 //! **The pistol** is a large semi-automatic, 26 cm long: a long squared top (the slide, the whole length from the hammer to
 //! the muzzle, with the front and rear sights on it, over a fixed barrel whose end shows as it runs back), an exposed hammer, a trigger in its guard and a grip raked back. It points
@@ -807,6 +808,7 @@ pub fn figure() -> Model {
     crate::poses::prone(&mut b, &body);
     crate::poses::ways(&mut b, &body);
     crate::poses::flinches(&mut b, &body);
+    crate::poses::point(&mut b, &body);
     b.build()
 }
 

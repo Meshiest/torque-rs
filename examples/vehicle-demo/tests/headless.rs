@@ -2852,3 +2852,50 @@ fn an_empty_handed_figure_gets_down_and_up_with_both_hands_and_an_armed_one_keep
         );
     }
 }
+
+/// Each client's arm actions for figure `id` on the server and for the other player's figure on `other` (its frame drawn).
+fn arms(a: &mut VehicleDemo, b: &mut VehicleDemo, id: u32) -> (Option<String>, Option<String>) {
+    for g in [&mut *a, &mut *b] {
+        g.update_scene(0.016);
+    }
+    let on_server = server(a).figure_arm_of(id);
+    let seen = b.scene().figure_arms().into_iter().find_map(|(_, arm)| arm);
+    (on_server, seen)
+}
+
+#[test]
+fn a_click_on_nothing_points_the_arm_for_everyone_while_held_or_a_second_and_one_on_the_buggy_seats()
+ {
+    let mut a = host();
+    let mut b = join(&mut a);
+    let id = server(&a).figures()[0];
+    let point = || (Some("point".to_string()), Some("point".to_string()));
+    let empty = || (Some("look".to_string()), Some("look".to_string()));
+    assert_eq!(arms(&mut a, &mut b, id), empty());
+    // Turned away from the buggy, looking a little up: the click meets nothing.
+    a.host.mouse_motion(std::f32::consts::PI / 0.003, -60.0);
+    steps(&mut [&mut a, &mut b], 500);
+    // Held two seconds: it points as long as the button is down, and lowers the arm soon after it comes up.
+    a.host.mouse_button(MouseButton::Left, true, (400, 300));
+    steps(&mut [&mut a, &mut b], 300);
+    assert_eq!(arms(&mut a, &mut b, id), point());
+    steps(&mut [&mut a, &mut b], 1700);
+    assert_eq!(arms(&mut a, &mut b, id), point());
+    a.host.mouse_button(MouseButton::Left, false, (400, 300));
+    steps(&mut [&mut a, &mut b], 400);
+    assert_eq!(arms(&mut a, &mut b, id), empty());
+    // A quick click points for a second.
+    click(&mut a);
+    steps(&mut [&mut a, &mut b], 600);
+    assert_eq!(arms(&mut a, &mut b, id), point());
+    steps(&mut [&mut a, &mut b], 900);
+    assert_eq!(arms(&mut a, &mut b, id), empty());
+    assert!(!a.seated());
+    // Turned back, a click on the buggy seats the figure, its arm empty.
+    a.host.mouse_motion(-std::f32::consts::PI / 0.003, 60.0);
+    steps(&mut [&mut a, &mut b], 300);
+    get_in(&mut [&mut a, &mut b], 0);
+    assert!(a.driving());
+    assert_eq!(server(&a).figure_arm_of(id).as_deref(), Some("look"));
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}

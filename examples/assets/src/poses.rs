@@ -19,6 +19,9 @@
 //!   reach forward, each hand down 0.6 of the loop and each foot half, the knees drawn up and out.
 //! - `prone_hold` and `prone_aim`: `hold` and `aim` for a figure lying down (a pose's own arm action, `<pose>_<arm>`): the arm
 //!   raised [`PRONE_TILT`] degrees further, so the pistol points ahead along the ground.
+//! - `point` and `prone_point`: the right arm raised straight along the aim, from fully up (position 0) through level (0.5) to
+//!   fully down (1) like `hold`, swung in [`POINT_IN`] degrees so it points where the eyes look a few meters ahead, the elbow
+//!   all but straight; `prone_point` raised [`PRONE_TILT`] degrees further for a figure lying down.
 //! - Hit reactions, blend sequences played once over any pose or gait: `flinch_front`, `flinch_back`, `flinch_left` and
 //!   `flinch_right` ([`FLINCH_SECONDS`], a body shot from that side: the torso punched away from it, the hips pushed back a few
 //!   centimeters and a small step to catch the balance); `flinch_head_front` and the rest ([`HEAD_FLINCH_SECONDS`], a head shot:
@@ -67,6 +70,10 @@ pub const PRONE_ANKLE_Y: f32 = -0.74;
 /// How much further `prone_hold` and `prone_aim` raise the arm than `hold` and `aim` (degrees): the torso lies that much
 /// further over.
 pub const PRONE_TILT: f32 = 90.0 - PRONE_CHEST;
+/// `point`: the shoulder's raise at a level aim, its swing in toward the middle and the elbow's bend (degrees).
+pub const POINT_SHOULDER: f32 = 90.0;
+pub const POINT_IN: f32 = 5.0;
+pub const POINT_ELBOW: f32 = 4.0;
 /// The hit reactions' lengths (seconds).
 pub const FLINCH_SECONDS: f32 = 0.32;
 pub const HEAD_FLINCH_SECONDS: f32 = 0.24;
@@ -1045,6 +1052,39 @@ pub(crate) fn ways(b: &mut ShapeBuilder, body: &Body<'_>) {
         def.cyclic = false;
         def.priority = 2;
         b.sequence(def);
+    }
+}
+
+/// `point` and `prone_point` (see the module docs): arm actions over the look range, the right arm only.
+pub(crate) fn point(b: &mut ShapeBuilder, body: &Body<'_>) {
+    let arm_r = body.limbs.arms[1];
+    let elbow_r = body.limbs.elbows[1];
+    for (name, tilt) in [("point", 0.0), ("prone_point", PRONE_TILT)] {
+        let shoulder = (0..LOOK_KEYS)
+            .map(|k| {
+                let pitch = (1.0 - LOOK_TORSO) * look_pitch(k as f32 / (LOOK_KEYS - 1) as f32);
+                turns(&[(Z, POINT_IN), (X, POINT_SHOULDER + tilt + pitch)])
+            })
+            .collect();
+        b.sequence(SequenceDef {
+            name,
+            duration: 1.0,
+            cyclic: false,
+            priority: 1,
+            keyframes: LOOK_KEYS,
+            rotations: vec![
+                Track {
+                    node: arm_r,
+                    keys: shoulder,
+                },
+                Track {
+                    node: elbow_r,
+                    keys: vec![turns(&[(X, POINT_ELBOW)])],
+                },
+            ],
+            translations: Vec::new(),
+            ground: Vec::new(),
+        });
     }
 }
 

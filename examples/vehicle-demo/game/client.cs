@@ -3,7 +3,7 @@
 //
 // The host watches the globals the menu sets: $World::AloneAsked (start a game here that nobody else can join and join it),
 // $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on; $World::AloneOnly (set by the host) keeps the menu to playing alone, and with $World::WebRooms (a browser's page not played alone) to the page's own hosting and joining by room code. On foot the keys move the figure (as the level demo's); a click asks
-// the server for a seat (serverCmdGetIn). In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
+// the server for a seat (serverCmdGetIn), which points the figure's arm where it looks when the click meets no free seat. In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
 // $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
@@ -326,7 +326,17 @@ function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it (in a seat: behind the buggy).
 function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
-function getIn(%v) { if (%v && isObject(ServerConnection)) commandToServer('GetIn'); }
+// The left button: a click on a buggy takes a seat in it, one on anything else points where the figure looks while the button
+// is held (the server holds it a second at least).
+function getIn(%v)
+{
+   if (!isObject(ServerConnection))
+      return;
+   if (%v)
+      commandToServer('GetIn');
+   else
+      commandToServer('PointDone');
+}
 // The wheel: the camera behind in (away from you) or out; the client takes the notches each frame.
 function zoomCamera(%v) { $World::Zoom += %v; }
 // ] and [: the day faster or slower, \ back to its own pace (the server's day: only the host may).
@@ -400,6 +410,9 @@ function releaseKeys()
    if ($mvTriggerCount2 % 2)
       $mvTriggerCount2++;
    releasePoseKeys();
+   // A held button's point ends as if it came up.
+   if (isObject(ServerConnection))
+      commandToServer('PointDone');
 }
 
 // ---- in and out
