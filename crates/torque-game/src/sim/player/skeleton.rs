@@ -215,9 +215,14 @@ impl HostSkeleton {
         }
         // A synced Player plays the way down or up between the crouch and prone to its end first, as the clients do.
         let now = self.threads().map_or(usize::MAX, |p| p.action as usize);
+        let armed = super::poses::armed(
+            self.threads()
+                .and_then(|p| p.actions.get(p.arm_action as usize))
+                .map(|a| a.name.as_slice()),
+        );
         if self.synced
             && !s.falling
-            && let Some(way) = self.info.pose_sets.way(now, s.pose)
+            && let Some(way) = self.info.pose_sets.way(now, s.pose, armed)
         {
             self.set_action(s, way as u32, true, false, true, false);
             return;

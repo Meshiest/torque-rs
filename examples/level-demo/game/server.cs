@@ -44,16 +44,27 @@ datablock PlayerData(WorldFigureData)
 
    // Crouched and prone (the engine's own poses, after Torque3D's: its fields, by their names): each pose's box and speeds.
    // The kit's figure has the poses' sequences (crouch_root, prone_root and the rest).
+   // Its crouched walk and crawl play faster by the ground covered (they stride 1.2 and 0.75 a second), so no foot slides.
    crouchBoundingBox = "1 1 1.6";
-   maxCrouchForwardSpeed = 1.3;
-   maxCrouchBackwardSpeed = 1.1;
-   maxCrouchSideSpeed = 1;
+   maxCrouchForwardSpeed = 1.95;
+   maxCrouchBackwardSpeed = 1.65;
+   maxCrouchSideSpeed = 1.5;
    crouchForce = 3600;
    proneBoundingBox = "2 2 0.8";
-   maxProneForwardSpeed = 0.75;
-   maxProneBackwardSpeed = 0.6;
+   maxProneForwardSpeed = 1.125;
+   maxProneBackwardSpeed = 0.9;
    maxProneSideSpeed = 0;
    proneForce = 2400;
+
+   // Swimming (the engine's own pose, after Torque3D's): in water deeper than about two thirds of the swim box's height the
+   // figure swims, its box low and long, at its underwater speeds. A little lighter than the water, it floats with its head
+   // out.
+   density = 0.85;
+   swimBoundingBox = "1 2.3 1";
+   swimForce = 2400;
+   maxUnderwaterForwardSpeed = 3;
+   maxUnderwaterBackwardSpeed = 2;
+   maxUnderwaterSideSpeed = 2;
 };
 
 // A hit's reaction over (common/server.cs).

@@ -10,6 +10,7 @@
 //! flight frame by frame, the bolts' holes, a hit from both sides and aiming down the sights; `--polish2-shots <dir>` a shot's
 //! flares and smoke frame by frame, a bolt's ribbon from the side, bolt holes at a wall's middle and edge and in the floor, and
 //! the sights aimed (also at 1920 x 1080); `--hitbox-shots <dir>` the other figure's hitboxes drawn over it in its poses;
+//! `--name-shots <dir>` the other player's name over his head (at 1280x720 and at 640x360, a browser's half-scale canvas);
 //! `--lit-particle-shots <dir>` the muzzle's smoke unlit and lit, in the sun and in shade. `--web-files <dir>` writes the files
 //! a build for the web fetches into `dir`: the pack (`files::web_pack`) as `game.pack` and the list beside the page
 //! (`files.json`, `torque::app::manifest`); `--web-pack <file>` writes the pack alone, for a build that carries it (the
@@ -208,6 +209,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut shots_dir = None;
     let mut motion_dir = None;
     let mut menu_dir = None;
+    let mut name_dir = None;
     let mut polish_dir = None;
     let mut polish2_dir = None;
     let mut hitbox_dir = None;
@@ -220,6 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--shots" => shots_dir = Some(args.dir(&arg)?),
             "--motion-shots" => motion_dir = Some(args.dir(&arg)?),
             "--menu-shots" => menu_dir = Some(args.dir(&arg)?),
+            "--name-shots" => name_dir = Some(args.dir(&arg)?),
             "--polish-shots" => polish_dir = Some(args.dir(&arg)?),
             "--polish2-shots" => polish2_dir = Some(args.dir(&arg)?),
             "--hitbox-shots" => hitbox_dir = Some(args.dir(&arg)?),
@@ -247,6 +250,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(dir.join(WEB_PACK), &pack)?;
         std::fs::write(dir.join(manifest::FILE_NAME), list.to_json())?;
         println!("{} ({} bytes)", dir.join(WEB_PACK).display(), pack.len());
+        return Ok(());
+    }
+    if let Some(dir) = name_dir {
+        let sizes = [(1280, 720), (640, 360)];
+        for path in shots::write_names(&dir, &sizes, GameFiles::bundled)? {
+            println!("{}", path.display());
+        }
         return Ok(());
     }
     if let Some(dir) = menu_dir {

@@ -62,6 +62,16 @@ function updateStats()
 }
 updateStats();
 
+// ---- the names over the other players
+//
+// A game's view puts a GuiShapeNameHud over its whole area, first among its children (the names drawn under the rest of the
+// HUD), with this profile: the engine draws the name each other figure's server gave it (`setShapeName`, common/server.cs),
+// never the player's own, white with a dark edge, and none behind a wall or the ground. The label sits $Client::NameLift
+// above the figure's eyes. Each view sets its HUD's `distanceFade`: a name is whole up to that share of the map's visible
+// distance, then fades out to nothing at it.
+new GuiControlProfile(NamePlateProfile) { fontType = "Arial"; fontSize = 20; fontColors[0] = "255 255 255 255"; };
+$Client::NameLift = 0.4;
+
 // ---- the figure's poses
 //
 // Ctrl held crouches, C crouches or stands (a browser closes its tab on Ctrl+W), Z lies down or gets up, and Space while
@@ -139,6 +149,13 @@ function releasePoseKeys()
    $Pose::CrouchToggled = false;
    setTriggerHeld($Pose::CrouchTrigger, false);
    setTriggerHeld($Pose::ProneTrigger, false);
+}
+// Lets go of the poses a key holds while it is down (Ctrl's crouch), the ones C and Z left kept: the keys are taken off the
+// figure for a moment (the chat), and the key's release would not be seen.
+function releaseHeldPoseKeys()
+{
+   $Pose::CrouchHeld = false;
+   holdCrouch();
 }
 // Binds the pose keys in action map %map.
 function bindPoseKeys(%map)

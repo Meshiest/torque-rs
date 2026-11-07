@@ -110,6 +110,7 @@ impl LevelDemo {
         crate::files::add_valley(&mut files)?;
         let maps = crate::files::maps(&files);
         let cube = Rc::new(CubeClient::new(files.mem_files()));
+        cube.set_poses(crate::figure_poses());
         let mut b = ClientBuilder::new(ClientSetup {
             files: Some(files.mem_files()),
             game_classes: true,
@@ -165,6 +166,8 @@ impl LevelDemo {
             String::from_utf8_lossy(self.files.file(&map.path).unwrap_or_default()).into_owned();
         self.ground = MapGround::read(&self.files, &text)?;
         self.cube.set_terrain(self.ground.terrain.as_ref());
+        self.cube.set_water(&self.ground.waters);
+        self.scene.set_water(&self.ground.waters);
         self.ground_changed = true;
         let server = WorldServer::start(&self.files, &map.path)?;
         self.client.start_hosting(server);
@@ -187,6 +190,8 @@ impl LevelDemo {
         if !self.ground.is_empty() {
             self.ground = MapGround::default();
             self.cube.set_terrain(None);
+            self.cube.set_water(&[]);
+            self.scene.set_water(&[]);
             self.ground_changed = true;
         }
     }
@@ -194,6 +199,14 @@ impl LevelDemo {
     /// `ms` of the clock (see the module docs).
     pub fn step(&mut self, ms: u32) {
         self.client.step(ms);
+        // The scripts swim with the keys while the figure swims as the client predicts it (`$World::Swimming`).
+        let swimming = self.swimming();
+        if swimming != self.flag("$World::Swimming") {
+            self.set_global("$World::Swimming", if swimming { "1" } else { "0" });
+            if let Err(e) = self.call("updateMove", &[]) {
+                eprintln!("example-level-demo: {e}");
+            }
+        }
         if let Some(pick) = self.take_number("$World::Pick")
             && let Ok(index) = usize::try_from(pick)
             && let Err(e) = self.start_map(index)
@@ -203,6 +216,13 @@ impl LevelDemo {
         if self.take_number("$World::Leave").is_some() {
             self.leave();
         }
+    }
+
+    /// Whether the client's own figure swims, as the client predicts it.
+    pub fn swimming(&self) -> bool {
+        self.with_world(|w| w.control_state.as_ref().map(|c| c.pose))
+            .flatten()
+            == Some(torque::sim::player::Pose::Swim)
     }
 
     /// Whether the canvas shows the world (the server said the map started: `$World::InWorld`).

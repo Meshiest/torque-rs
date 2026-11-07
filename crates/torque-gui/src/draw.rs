@@ -54,7 +54,7 @@ use crate::{Gui, MAX_TREE_DEPTH, atoi};
 mod hud;
 mod menus;
 mod rounded;
-pub use hud::{color_byte, project};
+pub use hud::{color_byte, name_opacity, project};
 use menus::CellKind;
 pub use rounded::{BOX_RADIUS, BoxState, DEFAULT_FILL, PRESSED_SHADE, box_colors, box_texture};
 

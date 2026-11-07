@@ -25,7 +25,10 @@
 //! crosshair stays on the shots' line far off), on a boom from the eye ([`CameraBoom`]) kept [`CAMERA_CLEARANCE`] in front of
 //! the first cube or interior wall between (their boxes; an interior's walls in the client's container): pulled in fast when
 //! one comes between, let out slowly when it goes. Backed against a wall, with less than [`CAMERA_NEAREST`] left behind the
-//! eye, the view is drawn as the first person's (the figure hidden, the pistol in view) until there is room again.
+//! eye, the view is drawn as the first person's (the figure hidden, the pistol in view) until there is room again. Aiming
+//! down the sights from behind the figure (the right button) brings the camera in along its boom to the eye as the sights
+//! come up, on the sights' own spring ([`crate::scene::AIM_SECONDS`]), so the view there is the first person's at the sights
+//! (the figure's arm raised for the others, as in the first person); let go, it goes back out the same way.
 //! `Tab` moves the camera from one to the other ([`CameraBlend`], each eye of the move kept in front of walls the same way);
 //! the figure is hidden while the camera is close to its eyes ([`CLOSE`]), on the way in and on the way out, and its pistol is
 //! drawn in its hand while it is seen. A new figure (a respawn) or a teleport cuts the camera to it
@@ -511,12 +514,20 @@ impl ArenaGame {
             self.sight_share(a, b)
         });
         self.boom = boom;
-        self.behind = Some(point);
+        self.behind = Some(self.drawn_in(at, point));
+    }
+
+    /// The camera behind the figure at `point`, brought in toward the eye `at` as the sights come up ([`ArenaScene::aim`]: the
+    /// sights' own eased spring): aiming from behind the figure, the boom shortens to nothing and the view is the first
+    /// person's at the sights; let go, it goes back out the same way.
+    fn drawn_in(&self, at: [f32; 3], point: [f32; 3]) -> [f32; 3] {
+        let out = 1.0 - self.scene.aim();
+        [0, 1, 2].map(|k| at[k] + (point[k] - at[k]) * out)
     }
 
     /// The figure's eye and where the camera behind it would be with nothing in the way (module docs).
     fn behind_line(&self) -> ([f32; 3], [f32; 3]) {
-        let eye = self.eye();
+        let eye = self.upright_eye();
         let (sp, cp) = eye.pitch.sin_cos();
         let (sy, cy) = eye.yaw.sin_cos();
         let at = eye.position;
@@ -526,6 +537,20 @@ impl ArenaGame {
             at[2] + sp * CAMERA_DISTANCE + CAMERA_LIFT,
         ];
         (at, back)
+    }
+
+    /// [`ArenaGame::eye`] standing as the head stands: a death's fall neither tips nor carries the camera behind the figure,
+    /// which sees the body fall instead.
+    fn upright_eye(&self) -> Eye {
+        let eye = self.eye();
+        match self.scene.own() {
+            Some(o) => Eye {
+                position: o.eye,
+                pitch: o.pitch,
+                ..eye
+            },
+            None => eye,
+        }
     }
 
     /// Whether the camera is behind the figure (`Tab`: `$Arena::ThirdPerson`).
@@ -540,15 +565,15 @@ impl ArenaGame {
 
     /// The eye of the mode this frame: the figure's eye, or behind it (module docs).
     pub fn mode_eye(&self) -> Eye {
-        let eye = self.eye();
         if !(self.in_game() && self.third_person() && self.scene.own().is_some()) {
-            return eye;
+            return self.eye();
         }
+        let eye = self.upright_eye();
         let position = match self.behind {
             Some(p) => p,
             None => {
                 let (at, back) = self.behind_line();
-                self.kept_clear(at, back)
+                self.drawn_in(at, self.kept_clear(at, back))
             }
         };
         Eye { position, ..eye }
@@ -598,7 +623,7 @@ impl ArenaGame {
             return eye;
         }
         let target = self.mode_eye();
-        let from = self.eye().position;
+        let from = self.upright_eye().position;
         let mut blend = self.blend;
         let eye = blend.eye(target, |p| self.kept_clear(from, p));
         self.blend = blend;
@@ -612,7 +637,11 @@ impl ArenaGame {
         } else {
             CAMERA_NEAREST
         };
-        self.cramped = self.third_person() && blend.arrived() && room < least;
+        // The boom coming in to the sights or going back out of them is not cramped: it eases through the eye's room.
+        self.cramped = self.third_person()
+            && blend.arrived()
+            && (self.scene.aim() == 0.0 || self.cramped)
+            && room < least;
         let eye = if self.cramped { self.eye() } else { eye };
         self.drawn_at = Some(eye.position);
         self.held = self.scene.own().map(|_| eye);
@@ -633,11 +662,13 @@ impl ArenaGame {
         };
         view.set_objects(objects);
         self.apply_sky(view);
-        // The example draws the world itself: the GameTSCtrl draws the world whatever the connection's camera is.
+        // The example draws the world itself: the GameTSCtrl draws the world whatever the connection's camera is, and the names
+        // over the others are placed from its eye.
+        let eye = self.drawn_eye();
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
+        torque_example_common::names_camera(host, &eye);
         let mut draws = host.draw_frame();
-        let eye = self.drawn_eye();
         if let Some(world) = draws.worlds.first() {
             let marks = self.marks.batches(world.rect, eye.position, eye.yaw);
             insert_over_world(&mut draws, marks);

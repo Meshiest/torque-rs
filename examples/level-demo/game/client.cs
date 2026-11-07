@@ -176,15 +176,34 @@ function moveBack(%v) { $World::Back = %v; updateMove(); }
 function moveLeft(%v) { $World::Left = %v; updateMove(); }
 function moveRight(%v) { $World::Right = %v; updateMove(); }
 function sprint(%v) { $World::Pace = %v ? 1 : $World::WalkPace; updateMove(); }
+// Swimming (the host sets $World::Swimming while the figure swims): Space held swims up and Ctrl held dives; Z does nothing.
 function updateMove()
 {
    $mvForwardAction = $World::Forward * $World::Pace;
    $mvBackwardAction = $World::Back * $World::Pace;
    $mvLeftAction = $World::Left * $World::Pace;
    $mvRightAction = $World::Right * $World::Pace;
+   $mvUpAction = $World::Swimming && $World::Up;
+   $mvDownAction = $World::Swimming && $Pose::CrouchHeld;
 }
 // The count goes up on the press and on the release: odd while held, so a quick tap (both in one frame) jumps once.
-function jump(%v) { if (!poseJumpKey(%v)) $mvTriggerCount2++; }
+function jump(%v)
+{
+   $World::Up = %v != 0;
+   updateMove();
+   if (!poseJumpKey(%v))
+      $mvTriggerCount2++;
+}
+function diveKey(%v)
+{
+   crouchKey(%v);
+   updateMove();
+}
+function swimProneKey(%v)
+{
+   if (!$World::Swimming)
+      proneKey(%v);
+}
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it.
@@ -196,6 +215,8 @@ PlayMap.bind(keyboard, a, moveLeft);
 PlayMap.bind(keyboard, d, moveRight);
 PlayMap.bind(keyboard, lshift, sprint);
 bindPoseKeys(PlayMap);
+PlayMap.bind(keyboard, lcontrol, diveKey);
+PlayMap.bind(keyboard, z, swimProneKey);
 PlayMap.bind(keyboard, space, jump);
 PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
@@ -211,6 +232,7 @@ function onPause()
    PlayMap.pop();
    releasePoseKeys();
    $World::Forward = $World::Back = $World::Left = $World::Right = 0;
+   $World::Up = false;
    $World::Pace = $World::WalkPace;
    updateMove();
 }
@@ -225,10 +247,10 @@ function quitGame() { quit(); }
 addControls(0, "Moving");
 addControl("W A S D", "Walk");
 addControl("Shift", "Sprint");
-addControl("Ctrl", "Crouch while held");
+addControl("Ctrl", "Crouch while held, or dive");
 addControl("C", "Crouch or stand up");
 addControl("Z", "Lie down or get up");
-addControl("Space", "Jump");
+addControl("Space", "Jump, or swim up");
 addControls(1, "Looking");
 addControl("Mouse", "Look around");
 addControl("Tab", "Switch camera");
@@ -245,6 +267,7 @@ function showMenu()
    PlayMap.pop();
    releasePoseKeys();
    $World::Forward = $World::Back = $World::Left = $World::Right = 0;
+   $World::Up = false;
    $World::Pace = $World::WalkPace;
    updateMove();
    MenuMap.push();

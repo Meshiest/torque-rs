@@ -109,7 +109,7 @@ fn rounds_end_with_scores_and_the_next_map_loads_in_place() {
     for g in [&a, &b] {
         assert_eq!(g.global("$Arena::Board"), "Bob\t3\nAnn\t1");
         assert_eq!(g.global("$Arena::RoundShown"), "1", "the scores show");
-        assert!(g.global("$Arena::LastChat").contains("Bob wins the round"));
+        assert!(g.global("$Chat::Last").contains("Bob wins the round"));
     }
     assert_eq!(eval(&mut a, "return $Arena::RoundOver;"), "1");
     // Asked to end again during the pause, the round keeps the next map's timer.
@@ -142,13 +142,13 @@ fn rounds_end_with_scores_and_the_next_map_loads_in_place() {
         );
         assert_eq!(eval(&mut a, "return $Arena::RoundOver;"), "0");
         // Nobody joined again: no "joined the arena" lines, only the round's end and its winner's.
-        assert!(!a.global("$Arena::LastChat").contains("joined"));
+        assert!(!a.global("$Chat::Last").contains("joined"));
         if round == 1 {
             assert!(
                 until(&mut a, &mut b, 400, |a, _| ended(a, 2)),
                 "the second round ends"
             );
-            assert!(a.global("$Arena::LastChat").contains("is over"));
+            assert!(a.global("$Chat::Last").contains("is over"));
         }
     }
 

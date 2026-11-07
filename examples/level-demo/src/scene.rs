@@ -69,7 +69,13 @@ pub struct WorldScene {
 impl Default for WorldScene {
     fn default() -> WorldScene {
         WorldScene {
-            ghosts: GhostScene::with_style(torque_example_common::ghost_options(), LevelStyle),
+            ghosts: GhostScene::with_style(
+                torque::app::ghosts::GhostOptions {
+                    poses: Some(crate::figure_poses()),
+                    ..torque_example_common::ghost_options()
+                },
+                LevelStyle,
+            ),
             shapes: HashMap::new(),
             cubes: BTreeMap::new(),
             interior_files: HashMap::new(),
@@ -163,6 +169,11 @@ fn cube_id(index: u32) -> u32 {
 }
 
 impl WorldScene {
+    /// The map's water, where the other figures are drawn swimming as their server has them swim.
+    pub fn set_water(&mut self, water: &[torque::app::water::Water]) {
+        self.ghosts.options.water = water.iter().map(|w| w.world_box()).collect();
+    }
+
     /// Forgets every ghost's object (a new connection's ghosts are new).
     pub fn clear(&mut self) {
         self.ghosts.clear();

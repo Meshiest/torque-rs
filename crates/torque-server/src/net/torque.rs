@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use torque_ghosts::codec::NetWidths;
+use torque_ghosts::codec::{NetStr, NetWidths};
 use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
 use torque_ghosts::set::GhostCodecSet;
 use torque_ghosts::tge::{TgeClass, TgeGhosts};
@@ -541,6 +541,22 @@ impl GameView<'_> {
 }
 
 impl ObjectView for GameView<'_> {
+    /// A ShapeBase's name (`setShapeName`, its `shape_name`): the tag's text, in the form `packStringHandleU` writes for a
+    /// string the connection has not mapped to a slot (the text itself). Null without a name.
+    fn net_string(&self, field: &str, index: usize) -> NetStr {
+        let _ = index;
+        if field != "shape_name" {
+            return NetStr::Null;
+        }
+        let vm = self.fields.vm;
+        let tag =
+            torque_game::scene::shapebase::state(vm, self.fields.obj).map_or(0, |s| s.shape_name);
+        match vm.tags().lookup(tag) {
+            Some(text) if tag != 0 && !text.is_empty() => NetStr::Text(text.to_vec()),
+            _ => NetStr::Null,
+        }
+    }
+
     /// A simulated Projectile's `source_object`, a SpotLight's `mount_object` and a ShapeBase's `mount`: the object's ghost
     /// on the connection (`NotGhosted` while it has none).
     fn link(&self, field: &str) -> Link {

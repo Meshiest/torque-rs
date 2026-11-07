@@ -3,12 +3,13 @@
 //
 // The host watches the globals the menu sets: $World::AloneAsked (start a game here that nobody else can join and join it),
 // $World::HostAsked (start a server here and join it) and $World::LeaveAsked (the world was left: stop hosting). $World::Port is the UDP port number the games listen on; $World::AloneOnly (set by the host) keeps the menu to playing alone, and with $World::WebRooms (a browser's page not played alone) to the page's own hosting and joining by room code. On foot the keys move the figure (as the level demo's); a click asks
-// the server for a seat (serverCmdGetIn). In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
+// the server for a seat (serverCmdGetIn), which points the figure's arm where it looks when the click meets no free seat. In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
 // $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
 // camera at the figure's eyes or behind it, on foot and in a seat. Esc opens the examples' pause menu (common/pause.cs: Resume,
-// Controls, Leave game, Quit). The host writes the hint line (setHint).
+// Controls, Leave game, Quit) and T the chat (common/chat.cs). The other players' names show over their heads. The host
+// writes the hint line (setHint).
 
 exec("common/client.cs");
 
@@ -262,6 +263,14 @@ function pollJoinLookup()
 new GameTSCtrl(PlayGui)
 {
    position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+   // The other players' names over their heads, on foot and in a seat (common/client.cs), under the rest of the HUD.
+   new GuiShapeNameHud(NamePlates)
+   {
+      profile = NamePlateProfile; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
+      visible = true; showFill = false; showFrame = false; verticalOffset = $Client::NameLift;
+      // Whole near the buggies and along the track, fading from 70 units out to nothing at the hills' 1400.
+      distanceFade = 0.05;
+   };
    new GuiControl(PlayBand)
    {
       profile = WorldBandProfile; position = "0 0"; extent = "800 28"; horizSizing = "width";
@@ -291,6 +300,10 @@ new GameTSCtrl(PlayGui)
       };
    };
 };
+
+// The chat (common/chat.cs): its box at the view's bottom left, over the hint line's height.
+exec("common/chat.cs");
+makeChat(PlayGui, 12, 354, "top");
 
 // The hint line at the bottom of the view (none: hidden).
 function setHint(%text)
@@ -326,7 +339,17 @@ function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it (in a seat: behind the buggy).
 function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
-function getIn(%v) { if (%v && isObject(ServerConnection)) commandToServer('GetIn'); }
+// The left button: a click on a buggy takes a seat in it, one on anything else points where the figure looks while the button
+// is held (the server holds it a second at least).
+function getIn(%v)
+{
+   if (!isObject(ServerConnection))
+      return;
+   if (%v)
+      commandToServer('GetIn');
+   else
+      commandToServer('PointDone');
+}
 // The wheel: the camera behind in (away from you) or out; the client takes the notches each frame.
 function zoomCamera(%v) { $World::Zoom += %v; }
 // ] and [: the day faster or slower, \ back to its own pace (the server's day: only the host may).
@@ -342,6 +365,7 @@ bindPoseKeys(PlayMap);
 PlayMap.bind(keyboard, space, jump);
 PlayMap.bind(keyboard, tab, switchCamera);
 PlayMap.bind(keyboard, r, restart);
+PlayMap.bind(keyboard, t, chatKey);
 PlayMap.bind(keyboard, escape, pauseKey);
 PlayMap.bind(mouse, xaxis, turn);
 PlayMap.bind(mouse, yaxis, look);
@@ -379,6 +403,7 @@ DriveMap.bind(keyboard, space, brake);
 DriveMap.bind(keyboard, e, getOut);
 DriveMap.bind(keyboard, tab, switchCamera);
 DriveMap.bind(keyboard, f, toggleLight);
+DriveMap.bind(keyboard, t, chatKey);
 DriveMap.bind(keyboard, escape, pauseKey);
 DriveMap.bind(mouse, xaxis, orbitYaw);
 DriveMap.bind(mouse, yaxis, orbitPitch);
@@ -391,6 +416,13 @@ DriveMap.bind(keyboard, backslash, dayNormal);
 // Lets go of every key of both maps (a map change leaves no key held).
 function releaseKeys()
 {
+   releaseMoveKeys();
+   releasePoseKeys();
+}
+
+// Lets go of every key of both maps but the poses C and Z chose.
+function releaseMoveKeys()
+{
    $World::Forward = $World::Back = $World::Left = $World::Right = 0;
    $World::Pace = $World::WalkPace;
    updateMove();
@@ -399,7 +431,9 @@ function releaseKeys()
    $Drive::Brake = 0;
    if ($mvTriggerCount2 % 2)
       $mvTriggerCount2++;
-   releasePoseKeys();
+   // A held button's point ends as if it came up.
+   if (isObject(ServerConnection))
+      commandToServer('PointDone');
 }
 
 // ---- in and out
@@ -525,6 +559,7 @@ function showRoomCode()
 
 function leaveWorld()
 {
+   clearChat();
    closePause();
    disconnect();
    releaseKeys();
@@ -592,8 +627,8 @@ function clientCmdSeated(%seat)
    $Drive::Seat = %seat;
    $Drive::OrbitYaw = 0;
    $Drive::OrbitPitch = 0;
-   // While the pause menu is up the keys stay off: closing it brings back the map of the seat or of the feet.
-   if (!$Client::Paused)
+   // While the pause menu or the chat is up the keys stay off: closing it brings back the map of the seat or of the feet.
+   if (!$Client::Paused && !$Chat::Open)
       pushPlayKeys();
 }
 
@@ -622,6 +657,15 @@ function onPause()
    releaseKeys();
 }
 function onResume() { pushPlayKeys(); }
+// The chat's: the keys off the figure or the buggy while it is open (a pose C or Z chose stays).
+function onChatOpen()
+{
+   PlayMap.pop();
+   DriveMap.pop();
+   releaseMoveKeys();
+   releaseHeldPoseKeys();
+}
+function onChatClose() { pushPlayKeys(); }
 function leaveGame()
 {
    closePause();
@@ -655,6 +699,7 @@ addControl("Mouse wheel", "Zoom the camera");
 addControl("[ and ]", "Day slower or faster");
 addControl("\\", "Day at normal speed");
 addControl("R", "Back to the start");
+addControl("T", "Chat");
 addControl("Esc", "This menu");
 
 function clientCmdFell()

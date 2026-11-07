@@ -1,5 +1,7 @@
 //! The camera's motion in the arena, frame by frame: `Tab` out to behind the figure and back standing, walking and mid-turn,
-//! `Tab` pressed again mid-switch, and the camera behind the figure backing into the arena's wall while the view sways.
+//! `Tab` pressed again mid-switch, the camera behind the figure backing into the arena's wall while the view sways, a
+//! knock-out seen in the first person (the view falls with the body) and aiming down the sights from behind the figure (the
+//! camera comes in to the sights and goes back out).
 //!
 //! `cargo run -p torque-example-fps --release --example arena-camera -- <dir> [fps...] [--render] [--case=<name>]` writes, for
 //! each case and frame rate (60 and 144 when none is given), `<dir>/<case>-<fps>.csv` (a line a frame); with `--render`, the
@@ -108,6 +110,44 @@ fn cases() -> Vec<Case> {
                     g.key(Key::S, true);
                     let s = (t - 600) as f32 / 1000.0;
                     turn(g, dt, 1.2 * (s * std::f32::consts::PI * 0.8).sin());
+                }
+                None
+            },
+        },
+        Case {
+            name: "death",
+            place: None,
+            ms: 1600,
+            script: |g, t, dt| {
+                now(t, dt, 300).then(|| {
+                    if let Some(server) = g.server.as_mut() {
+                        let _ = server
+                            .vm_mut()
+                            .eval(b"ArenaFigure.hurt(figureOf(\"Ann\"), 0, 1000, \"\");");
+                    }
+                    "knocked-out"
+                })
+            },
+        },
+        Case {
+            name: "ads-behind",
+            place: None,
+            ms: 2400,
+            script: |g, t, dt| {
+                if t == 0 {
+                    g.key(Key::Tab, true);
+                    g.key(Key::Tab, false);
+                }
+                let aim = |g: &mut ArenaGame, v: &str| {
+                    let _ = g.call("aim", &[v]);
+                };
+                if now(t, dt, 800) {
+                    aim(g, "1");
+                    return Some("aim");
+                }
+                if now(t, dt, 1600) {
+                    aim(g, "0");
+                    return Some("let-go");
                 }
                 None
             },

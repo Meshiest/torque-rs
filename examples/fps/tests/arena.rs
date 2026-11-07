@@ -154,7 +154,7 @@ fn two_players_meet_shoot_and_chat() {
     // A chat line from the host reaches the other client.
     a.call("say", &["hello there"]).unwrap();
     step_both(&mut a, &mut b, 500);
-    assert_eq!(b.global("$Arena::LastChat"), "Ann: hello there");
+    assert_eq!(b.global("$Chat::Last"), "Ann: hello there");
 
     // R reloads a magazine that is not full: the HUD says so while it runs, then the magazine is full again.
     a.call("reloadKey", &["1"]).unwrap();

@@ -19,6 +19,7 @@
 //! - [`camera_boom::CameraBoom`]: a third-person camera's boom, pulled in fast and let out slowly by what is in the way.
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
+//! - [`water::Water`]: a `WaterBlock` as water the Players swim in, on the server and in the client's prediction.
 //! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
 //! - [`page_bridge`]: a web build's page and the game's scripts calling each other (`torque.call`, `callPage`), within caps.
 //! - [`web_page`]: the entry web builds share: the page's calls ([`web_exports!`]), the files it fetches, its settings, and
@@ -49,6 +50,7 @@ pub mod server;
 pub mod shots;
 pub mod terrain;
 pub mod view;
+pub mod water;
 #[cfg(all(feature = "p2p", target_arch = "wasm32"))]
 pub mod web_host;
 #[cfg(all(feature = "p2p", target_arch = "wasm32"))]

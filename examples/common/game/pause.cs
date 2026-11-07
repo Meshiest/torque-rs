@@ -164,7 +164,8 @@ new GuiControl(PauseGui)
 
 function pauseGame()
 {
-   if ($Client::Paused || !pauseAllowed())
+   // Esc in the chat's line closes the chat (common/chat.cs), not the game.
+   if ($Client::Paused || $Chat::Open || !pauseAllowed())
       return;
    $Client::Paused = 1;
    onPause();

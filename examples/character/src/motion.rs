@@ -6,7 +6,8 @@
 //! [`Sequences::crawl_speed`]) and unable to jump. A change between standing and lying down kneels on the way (it goes through
 //! the crouch until that blend is done), and a change of pose blends slower and eased ([`POSE_BLEND`], [`PRONE_BLEND`]), so the
 //! body lowers and rises rather than snapping. Between the crouch and prone it plays the way down or up ([`State::ProneDown`],
-//! [`State::ProneUp`]: `prone_down`, `prone_up`) to its end, standing still meanwhile. The input sets a wished direction (relative to the camera) and whether to run; the ground speed
+//! [`State::ProneUp`]: `prone_down`, `prone_up`; holding a pistol `prone_down_armed`, `prone_up_armed` when the shape has
+//! them) to its end, standing still meanwhile. The input sets a wished direction (relative to the camera) and whether to run; the ground speed
 //! eases toward the wished speed, so a figure starting to move walks before it runs, and one stopping walks before it stands.
 //!
 //! **Threads.** One thread plays the state's sequence. A change of state is a transition (TGE's `transitionToSequence`, as a
@@ -144,9 +145,11 @@ pub struct Sequences {
     pub crawl: usize,
     pub crouch_speed: f32,
     pub crawl_speed: f32,
-    /// The ways down to prone and up from it, when the shape has them.
+    /// The ways down to prone and up from it, when the shape has them; and holding a pistol (the arm reaching ahead).
     pub prone_down: Option<usize>,
     pub prone_up: Option<usize>,
+    pub prone_down_armed: Option<usize>,
+    pub prone_up_armed: Option<usize>,
 }
 
 impl Sequences {
@@ -173,6 +176,8 @@ impl Sequences {
             crawl_speed: ground_speed(shape, crawl),
             prone_down: seq("prone_down"),
             prone_up: seq("prone_up"),
+            prone_down_armed: seq("prone_down_armed"),
+            prone_up_armed: seq("prone_up_armed"),
         };
         (s.walk_speed > 0.0
             && s.run_speed > s.walk_speed
@@ -181,7 +186,11 @@ impl Sequences {
             .then_some(s)
     }
 
-    fn of_state(&self, state: State) -> usize {
+    /// The sequence `state` plays (`holding`: a pistol in the hand, its ways down and up the armed ones).
+    fn of_state(&self, state: State, holding: bool) -> usize {
+        let armed = |held: Option<usize>, plain: Option<usize>| {
+            if holding { held.or(plain) } else { plain }
+        };
         match state {
             State::Idle => self.idle,
             State::Walk => self.walk,
@@ -191,8 +200,8 @@ impl Sequences {
             State::CrouchWalk => self.crouch_walk,
             State::Prone => self.prone,
             State::Crawl => self.crawl,
-            State::ProneDown => self.prone_down.unwrap_or(self.prone),
-            State::ProneUp => self.prone_up.unwrap_or(self.crouch),
+            State::ProneDown => armed(self.prone_down_armed, self.prone_down).unwrap_or(self.prone),
+            State::ProneUp => armed(self.prone_up_armed, self.prone_up).unwrap_or(self.crouch),
         }
     }
 }
@@ -473,7 +482,7 @@ impl Figure {
         } else {
             0.0
         };
-        let seq = self.sequences.of_state(state);
+        let seq = self.sequences.of_state(state, self.holding());
         // A change of pose blends slower and eased: the body lowers and rises.
         let (from, to) = (self.state.lowness(), state.lowness());
         if matches!(state, State::ProneDown | State::ProneUp) {

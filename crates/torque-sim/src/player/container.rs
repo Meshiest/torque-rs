@@ -108,8 +108,14 @@ pub(super) fn update_container(
             st.liquid_height = zone.world_box.max[2];
             st.color = zone.color;
             st.liquid_type = zone.liquid_type;
-            // The vertical extent the coverage is measured over.
+            // The vertical extent the coverage is measured over: for a Player that may swim, the standing box's whatever its
+            // pose, so the coverage (its buoyancy and drag) does not jump when its box changes.
             let (zb, zt) = class.liquid_extent(s);
+            let zt = if db.poses.swim {
+                zb + db.bounding_box[2] * s.scale[2]
+            } else {
+                zt
+            };
             let res = zone_coverage(
                 st.coverage,
                 zb,
@@ -156,7 +162,21 @@ pub(super) fn update_container(
         return;
     }
     s.drag = db.drag * st.viscosity * cov;
-    s.buoyancy = (st.density / db.density) * cov;
+    s.buoyancy = (st.density / body_density(db.density)) * cov;
+}
+
+/// The least density a Player's datablock is taken to have in water.
+pub const MIN_BODY_DENSITY: f32 = 0.01;
+
+/// A datablock's `density` as the buoyancy divides by it (the engine's own guard: TGE divides by any value): at least
+/// [`MIN_BODY_DENSITY`], and the default 1 for a value that is not finite (a datablock is not trusted: a density of 0 or a
+/// tiny one overflows the buoyancy).
+pub fn body_density(d: f32) -> f32 {
+    if !d.is_finite() {
+        1.0
+    } else {
+        d.max(MIN_BODY_DENSITY)
+    }
 }
 
 #[cfg(test)]

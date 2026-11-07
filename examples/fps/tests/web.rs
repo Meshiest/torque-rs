@@ -137,10 +137,7 @@ fn a_browser_and_a_desktop_play_one_game() {
     ann.call("say", &["hello from the desktop"]).unwrap();
     bob.call("say", &["hello from the browser"]).unwrap();
     run(&mut s, &mut [&mut ann, &mut bob], 500);
-    let lines = (
-        ann.global("$Arena::LastChat"),
-        bob.global("$Arena::LastChat"),
-    );
+    let lines = (ann.global("$Chat::Last"), bob.global("$Chat::Last"));
     // Each saw both lines; the last is whichever the server sent last.
     for (who, last) in [("Ann", &lines.0), ("Bob", &lines.1)] {
         assert!(
@@ -151,14 +148,14 @@ fn a_browser_and_a_desktop_play_one_game() {
     bob.call("say", &["over"]).unwrap();
     run(&mut s, &mut [&mut ann, &mut bob], 500);
     assert_eq!(
-        ann.global("$Arena::LastChat"),
+        ann.global("$Chat::Last"),
         "Bob: over",
         "the browser's chat reached the desktop"
     );
     ann.call("say", &["out"]).unwrap();
     run(&mut s, &mut [&mut ann, &mut bob], 500);
     assert_eq!(
-        bob.global("$Arena::LastChat"),
+        bob.global("$Chat::Last"),
         "Ann: out",
         "the desktop's chat reached the browser"
     );

@@ -2553,3 +2553,472 @@ fn full_throttle_into_a_tree_from_rest_or_at_speed_never_drives_the_buggy_into_i
         }
     }
 }
+
+/// The prediction's counts on `game`'s client: (corrections, heads that matched).
+fn corrections(game: &VehicleDemo) -> (u64, u64) {
+    let st = game.client.host.client.borrow();
+    let p = &st.conn.conn.as_ref().expect("the connection").predict;
+    (p.stats.corrections, p.stats.matching)
+}
+
+#[test]
+fn a_drivers_client_predicts_the_buggy_as_the_server_drives_it_never_meeting_the_passenger() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    get_in(&mut [&mut a, &mut b], 1);
+    assert!(a.driving() && b.seat() == Some(1));
+    let id = server(&a).buggy().unwrap();
+    let from = server(&a).buggy_position().unwrap();
+    let (before, _) = corrections(&a);
+    // Forward, a turn each way, a brake: each tick the driver's client runs the buggy with the passenger seated in it.
+    let keys = [
+        (0, Key::W, true),
+        (1500, Key::A, true),
+        (2500, Key::A, false),
+        (2500, Key::D, true),
+        (3500, Key::D, false),
+        (4500, Key::W, false),
+        (4500, Key::Space, true),
+    ];
+    let mut worst = 0.0f32;
+    let mut t = 0;
+    while t < 7000 {
+        for (at, k, down) in keys {
+            if (t..t + 16).contains(&at) {
+                a.key(k, down);
+            }
+        }
+        for g in [&mut a, &mut b] {
+            g.step(16);
+            g.update_scene(0.016);
+        }
+        t += 16;
+        // The driver's prediction runs a tick or two ahead of the server: never further than that at the speed.
+        let v = horizontal(server(&a).buggy_velocity_of(id).unwrap());
+        let at = server(&a).buggy_position_of(id).unwrap();
+        assert!(
+            a.driven().is_some(),
+            "at {t} ms the driver's client runs no buggy"
+        );
+        let drawn = drawn_at(&a, a.buggy_ghost().unwrap()).unwrap();
+        worst = worst.max(apart(at, drawn) - v * 0.1);
+    }
+    a.key(Key::Space, false);
+    let (after, matching) = corrections(&a);
+    let to = server(&a).buggy_position().unwrap();
+    assert!(apart(from, to) > 10.0, "from {from:?} to {to:?}");
+    assert_eq!(
+        after - before,
+        0,
+        "the driver's client predicted the buggy wrong {} times ({matching} heads matched)",
+        after - before
+    );
+    assert!(worst < 0.25, "drawn {worst} m off the server's buggy");
+    assert_eq!(server(&a).seat_of(server(&a).figures()[1]), Some((id, 1)));
+}
+
+/// The seated yaw of figure `id` on `host`'s server (its turn on its seat, and its head's pitch and turn), and of the figure
+/// `game`'s client predicts.
+fn seated_yaws(host: &VehicleDemo, game: &VehicleDemo, id: u32) -> ([f32; 3], Option<f32>) {
+    let s = torque::game::sim::player::state(server(host).vm(), id).expect("the figure");
+    let st = game.client.host.client.borrow();
+    let predicted = st
+        .conn
+        .conn
+        .as_ref()
+        .and_then(|c| c.predict.predicted.as_ref())
+        .map(|p| p.player.s.rot[2]);
+    ([s.rot[2], s.head[0], s.head[2]], predicted)
+}
+
+/// Stands client `k`'s figure `reach` from its buggy at `angle` round it (radians from the buggy's front, to its right),
+/// facing the buggy's middle.
+fn stand_round(games: &mut [&mut VehicleDemo], k: usize, angle: f32, reach: f32) {
+    eval(
+        games[0],
+        &format!(
+            "%c = ClientGroup.getObject({k}); %v = $World::Buggy; %xf = %v.getTransform(); \
+             %d = MatrixMulVector(%xf, mSin({angle}) * {reach} SPC mCos({angle}) * {reach} SPC 0); \
+             %x = getWord(%xf, 0) + getWord(%d, 0); %y = getWord(%xf, 1) + getWord(%d, 1); \
+             %yaw = mAtan(-getWord(%d, 0), -getWord(%d, 1)); \
+             %c.player.setTransform(%x SPC %y SPC groundAt(%x, %y) + 0.1 SPC \"0 0 1\" SPC %yaw); \
+             %c.player.setVelocity(\"0 0 0\");"
+        ),
+    );
+    steps(games, 800);
+}
+
+#[test]
+fn a_figure_sits_facing_the_seats_way_from_any_side_it_came_in_turning_the_mouse() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    let figures = server(&a).figures();
+    // From ahead, beside the seat, behind it and from the back.
+    let angles = [0.5f32, 1.3, 1.9, 2.7];
+    for (n, &angle) in angles.iter().enumerate() {
+        // The driver comes in from the left, the passenger from the right; each turns the mouse as its click lands and after.
+        for (k, side) in [(0usize, -1.0f32), (1, 1.0)] {
+            let reach = 2.3 + 0.9 * angle.cos().abs();
+            stand_round(&mut [&mut a, &mut b], k, side * angle, reach);
+            let games = &mut [&mut a, &mut b];
+            // The look all the way up, then down at the buggy as `get_in` looks.
+            games[k].host.mouse_motion(0.0, -1000.0);
+            steps(games, 100);
+            games[k].host.mouse_motion(0.0, 1.4 / 0.003 + 110.0);
+            steps(games, 300);
+            let turn = if n % 2 == 0 { 120.0 } else { -120.0 };
+            games[k].host.mouse_motion(turn * 0.25, 0.0);
+            click(games[k]);
+            for _ in 0..12 {
+                games[k].host.mouse_motion(turn, 0.0);
+                steps(games, 32);
+            }
+            steps(games, 400);
+        }
+        let buggy = server(&a).buggy().unwrap();
+        assert_eq!(
+            (
+                server(&a).seat_of(figures[0]),
+                server(&a).seat_of(figures[1])
+            ),
+            (Some((buggy, 0)), Some((buggy, 1))),
+            "from {angle}"
+        );
+        // A second seated, the mouse still turning (the seated look turns the view, not the figure).
+        for _ in 0..1000 / 32 {
+            a.host.mouse_motion(150.0, 0.0);
+            b.host.mouse_motion(-150.0, 0.0);
+            steps(&mut [&mut a, &mut b], 32);
+        }
+        for (k, game) in [&a, &b].into_iter().enumerate() {
+            let (on_server, predicted) = seated_yaws(&a, game, figures[k]);
+            assert!(
+                on_server.iter().all(|a| yaw_apart(*a, 0.0).abs() < 1e-3),
+                "from {angle}, seat {k}: the server's figure sits {on_server:?} rad (turn, head pitch, head turn) off                  the seat's way"
+            );
+            if let Some(p) = predicted {
+                assert!(
+                    yaw_apart(p, 0.0).abs() < 1e-3,
+                    "from {angle}, seat {k}: the client's figure sits {p} rad off the seat's way"
+                );
+            }
+        }
+        for game in [&mut a, &mut b] {
+            press(game, Key::E);
+        }
+        steps(&mut [&mut a, &mut b], 800);
+        assert!(!a.seated() && !b.seated(), "from {angle}");
+    }
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}
+
+/// Figure `id`'s speed across the ground on `game`'s server over the next `ms`, and its velocity at the end.
+fn ground_speed(game: &mut VehicleDemo, id: u32, ms: u32) -> (f32, [f32; 3]) {
+    let from = server(game).figure_position_of(id).unwrap();
+    steps(&mut [&mut *game], ms);
+    let to = server(game).figure_position_of(id).unwrap();
+    let v = torque::game::sim::player::state(server(game).vm(), id)
+        .unwrap()
+        .velocity;
+    (
+        (to[0] - from[0]).hypot(to[1] - from[1]) * 1000.0 / ms as f32,
+        v,
+    )
+}
+
+/// Crouched and prone the figure goes half as fast again as it did (the datablock's speeds),
+/// and its crouched walk and its crawl play as fast as it goes: each loop's ground speed times its rate is the figure's speed,
+/// so its feet and hands keep pace with the ground.
+#[test]
+fn crouched_and_prone_the_figure_goes_faster_and_its_feet_keep_pace_with_the_ground() {
+    use torque::client::player_anim::{PlayerAnimation, PlayerMotion};
+    use torque::game::sim::player::poses::Pose;
+    let assets = torque_example_common::KitAssets::new().unwrap();
+    let figure = torque::app::view::SceneShape::load(
+        &assets,
+        &torque_example_common::kit_path("figure.dts"),
+    )
+    .unwrap();
+    for (pose, key, top, sequence) in [
+        (Pose::Crouch, "crouchKey", 1.95f32, "crouch_forward"),
+        (Pose::Prone, "proneKey", 1.125, "prone_forward"),
+    ] {
+        let mut game = host();
+        let id = server(&game).figure().unwrap();
+        // Off on the flat, facing away from the buggy.
+        eval(
+            &mut game,
+            "%p = ClientGroup.getObject(0).player; %t = %p.getTransform();
+             %p.setTransform(getWord(%t, 0) - 30 SPC getWord(%t, 1) SPC getWord(%t, 2) + 4 SPC \"0 0 1 -1.5708\");",
+        );
+        steps(&mut [&mut game], 1500);
+        game.call(key, &["1"]).unwrap();
+        steps(&mut [&mut game], 1500);
+        // The full pace (Shift: the figure walks a share of its speed without it).
+        game.key(Key::ShiftLeft, true);
+        game.key(Key::W, true);
+        steps(&mut [&mut game], 2000);
+        let (speed, velocity) = ground_speed(&mut game, id, 1000);
+        game.key(Key::W, false);
+        assert!(
+            (speed - top).abs() < 0.12 * top,
+            "{pose:?}: {speed} m/s across the ground, not {top}"
+        );
+        // The figure's animation on a client at that velocity.
+        let shape = figure.shape();
+        let mut instance = figure.instance().unwrap();
+        let mut anim = PlayerAnimation::new(shape, &mut instance).unwrap();
+        let s = torque::game::sim::player::state(server(&game).vm(), id).unwrap();
+        let motion = PlayerMotion {
+            velocity,
+            yaw: s.rot[2],
+            pose,
+            ..PlayerMotion::default()
+        };
+        for _ in 0..60 {
+            anim.update(shape, &mut instance, &motion, 1.0 / 60.0);
+        }
+        let (i, forward) = anim.action();
+        let action = &anim.actions()[i];
+        assert_eq!(
+            (String::from_utf8_lossy(&action.name), forward),
+            (sequence.into(), true),
+            "{pose:?}"
+        );
+        let rate = instance.thread(anim.action_thread()).unwrap().time_scale;
+        let along = motion
+            .local_velocity()
+            .iter()
+            .zip(action.motion.dir)
+            .map(|(v, d)| v * d)
+            .sum::<f32>();
+        let paced = rate * action.motion.speed;
+        assert!(
+            (paced - along).abs() < 0.02 * along,
+            "{pose:?}: the loop covers {paced} m/s at rate {rate}, the figure goes {along} m/s"
+        );
+    }
+}
+
+/// Empty-handed (the arm thread on `look`, as the demo's figures are), the figure gets down to prone and back up by the
+/// empty-handed ways, both hands going down to the ground; holding something (`hold`, the arena's pistol) by the armed ways,
+/// its right arm reaching ahead.
+#[test]
+fn an_empty_handed_figure_gets_down_and_up_with_both_hands_and_an_armed_one_keeps_its_arm_ahead() {
+    use torque::client::player_anim::{PlayerAnimation, PlayerMotion};
+    use torque::game::sim::player::poses::Pose;
+    let assets = torque_example_common::KitAssets::new().unwrap();
+    let figure = torque::app::view::SceneShape::load(
+        &assets,
+        &torque_example_common::kit_path("figure.dts"),
+    )
+    .unwrap();
+    let shape = figure.shape();
+    for (arm, down, up) in [
+        (None, "prone_down", "prone_up"),
+        (Some("look"), "prone_down", "prone_up"),
+        (Some("hold"), "prone_down_armed", "prone_up_armed"),
+    ] {
+        let mut instance = figure.instance().unwrap();
+        let mut anim = PlayerAnimation::new(shape, &mut instance).unwrap();
+        let arm_action = arm.map(|name| {
+            anim.actions()
+                .iter()
+                .position(|a| a.name == name.as_bytes())
+                .unwrap() as u32
+        });
+        let mut played = Vec::new();
+        for pose in [Pose::Crouch, Pose::Prone, Pose::Crouch] {
+            let motion = PlayerMotion {
+                pose,
+                arm_action,
+                look: 0.5,
+                ..PlayerMotion::default()
+            };
+            for _ in 0..90 {
+                anim.update(shape, &mut instance, &motion, 1.0 / 60.0);
+                let name =
+                    String::from_utf8_lossy(&anim.actions()[anim.action().0].name).into_owned();
+                if played.last() != Some(&name) {
+                    played.push(name);
+                }
+            }
+        }
+        assert_eq!(
+            played,
+            ["crouch_root", down, "prone_root", up, "crouch_root"],
+            "with the arm on {arm:?}"
+        );
+    }
+}
+
+/// Each client's arm actions for figure `id` on the server and for the other player's figure on `other` (its frame drawn).
+fn arms(a: &mut VehicleDemo, b: &mut VehicleDemo, id: u32) -> (Option<String>, Option<String>) {
+    for g in [&mut *a, &mut *b] {
+        g.update_scene(0.016);
+    }
+    let on_server = server(a).figure_arm_of(id);
+    let seen = b.scene().figure_arms().into_iter().find_map(|(_, arm)| arm);
+    (on_server, seen)
+}
+
+#[test]
+fn a_click_on_nothing_points_the_arm_for_everyone_while_held_or_a_second_and_one_on_the_buggy_seats()
+ {
+    let mut a = host();
+    let mut b = join(&mut a);
+    let id = server(&a).figures()[0];
+    let point = || (Some("point".to_string()), Some("point".to_string()));
+    let empty = || (Some("look".to_string()), Some("look".to_string()));
+    assert_eq!(arms(&mut a, &mut b, id), empty());
+    // Turned away from the buggy, looking a little up: the click meets nothing.
+    a.host.mouse_motion(std::f32::consts::PI / 0.003, -60.0);
+    steps(&mut [&mut a, &mut b], 500);
+    // Held two seconds: it points as long as the button is down, and lowers the arm soon after it comes up.
+    a.host.mouse_button(MouseButton::Left, true, (400, 300));
+    steps(&mut [&mut a, &mut b], 300);
+    assert_eq!(arms(&mut a, &mut b, id), point());
+    steps(&mut [&mut a, &mut b], 1700);
+    assert_eq!(arms(&mut a, &mut b, id), point());
+    a.host.mouse_button(MouseButton::Left, false, (400, 300));
+    steps(&mut [&mut a, &mut b], 400);
+    assert_eq!(arms(&mut a, &mut b, id), empty());
+    // A quick click points for a second.
+    click(&mut a);
+    steps(&mut [&mut a, &mut b], 600);
+    assert_eq!(arms(&mut a, &mut b, id), point());
+    steps(&mut [&mut a, &mut b], 900);
+    assert_eq!(arms(&mut a, &mut b, id), empty());
+    assert!(!a.seated());
+    // Turned back, a click on the buggy seats the figure, its arm empty.
+    a.host.mouse_motion(-std::f32::consts::PI / 0.003, 60.0);
+    steps(&mut [&mut a, &mut b], 300);
+    get_in(&mut [&mut a, &mut b], 0);
+    assert!(a.driving());
+    assert_eq!(server(&a).figure_arm_of(id).as_deref(), Some("look"));
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}
+
+#[test]
+fn chat_goes_round_and_at_the_wheel_t_opens_it_without_driving() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    assert_eq!(a.global("$Chat::Last"), "Bob joined the game.");
+    b.call("say", &["race you <color:ff0000>up the hill"])
+        .unwrap();
+    steps(&mut [&mut a, &mut b], 300);
+    assert_eq!(a.global("$Chat::Last"), "Bob: race you up the hill");
+    assert_eq!(b.global("$Chat::Last"), "Bob: race you up the hill");
+
+    // At the wheel, T opens the chat: the mouse is free, W types and does not drive, Esc closes it and W drives again.
+    get_in(&mut [&mut a, &mut b], 0);
+    assert!(a.driving());
+    press(&mut a, Key::T);
+    steps(&mut [&mut a, &mut b], 64);
+    assert_eq!(a.global("$Chat::Open"), "1");
+    assert!(!a.host.wants_mouse(), "the mouse is free while chatting");
+    a.key(Key::W, true);
+    assert_eq!(
+        a.global("$Drive::Throttle"),
+        "0",
+        "W types, it does not drive"
+    );
+    a.key(Key::W, false);
+    assert_eq!(
+        a.call("eval", &["return ChatEdit.getValue();"]).unwrap(),
+        "w"
+    );
+    press(&mut a, Key::Escape);
+    steps(&mut [&mut a, &mut b], 64);
+    assert_eq!(a.global("$Chat::Open"), "0");
+    assert_ne!(
+        a.global("$Client::Paused"),
+        "1",
+        "Esc closed the chat, not the game"
+    );
+    assert!(a.host.wants_mouse());
+    a.key(Key::W, true);
+    assert_eq!(a.global("$Drive::Throttle"), "1", "W drives again");
+    a.key(Key::W, false);
+    // Enter sends what was typed.
+    press(&mut a, Key::T);
+    steps(&mut [&mut a, &mut b], 64);
+    for key in [Key::G, Key::O] {
+        press(&mut a, key);
+    }
+    press(&mut a, Key::Enter);
+    steps(&mut [&mut a, &mut b], 300);
+    assert_eq!(b.global("$Chat::Last"), "Ann: go");
+    assert!(a.host.input_errors.is_empty(), "{:?}", a.host.input_errors);
+    assert!(errors(&a).is_empty(), "{:?}", errors(&a));
+}
+
+/// The names the view's HUD has this tick: each name, where its label stands and whether something hides it.
+fn names(game: &VehicleDemo) -> Vec<(String, [f32; 3], bool)> {
+    game.host
+        .gui
+        .0
+        .borrow()
+        .hud
+        .names
+        .iter()
+        .map(|n| {
+            (
+                String::from_utf8_lossy(&n.name).into_owned(),
+                n.position,
+                n.hidden,
+            )
+        })
+        .collect()
+}
+
+/// The one name `game`'s view has, which must be `who`'s, showing: where its label stands.
+fn name_of(game: &VehicleDemo, who: &str) -> [f32; 3] {
+    let seen = names(game);
+    match seen.as_slice() {
+        [(name, at, false)] if name == who => *at,
+        _ => panic!("expected only {who}'s name, showing: {seen:?}"),
+    }
+}
+
+#[test]
+fn each_sees_the_others_name_on_foot_and_in_a_seat_never_its_own() {
+    let mut a = host();
+    let mut b = join(&mut a);
+    // On foot: each sees the other's name over the head, never its own.
+    let bob = name_of(&a, "Bob");
+    name_of(&b, "Ann");
+    let feet = server(&a)
+        .figure_position_of(server(&a).figures()[1])
+        .unwrap();
+    assert!(
+        horizontal([bob[0] - feet[0], bob[1] - feet[1], 0.0]) < 0.5 && bob[2] - feet[2] > 1.2,
+        "Bob's label at {bob:?}, his feet at {feet:?}"
+    );
+
+    // Both seated, Ann at the wheel: still each other's name only, over the seats, and it rides along with the buggy.
+    get_in(&mut [&mut a, &mut b], 0);
+    get_in(&mut [&mut a, &mut b], 1);
+    assert!(a.driving() && b.seat() == Some(1));
+    steps(&mut [&mut a, &mut b], 500);
+    let near = |game: &VehicleDemo, who: &str| {
+        let at = name_of(game, who);
+        let buggy = game.buggy_pose().unwrap().column(3);
+        let off = horizontal([at[0] - buggy[0], at[1] - buggy[1], 0.0]);
+        assert!(off < 1.5, "{who}'s label at {at:?}, the buggy at {buggy:?}");
+        assert!(at[2] > buggy[2], "{who}'s label over the buggy");
+        at
+    };
+    let before = near(&a, "Bob");
+    near(&b, "Ann");
+    a.key(Key::W, true);
+    steps(&mut [&mut a, &mut b], 2500);
+    a.key(Key::W, false);
+    a.key(Key::Space, true);
+    steps(&mut [&mut a, &mut b], 2000);
+    a.key(Key::Space, false);
+    let after = near(&a, "Bob");
+    near(&b, "Ann");
+    assert!(after[1] - before[1] > 6.0, "from {before:?} to {after:?}");
+}

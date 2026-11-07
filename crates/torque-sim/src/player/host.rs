@@ -29,6 +29,16 @@ use std::rc::Rc;
 use super::{PlayerClass, PlayerState};
 use crate::Move;
 
+/// The densest and the most viscous a water zone may be: a host holds a map's values to `0..=` these (a map is not trusted:
+/// a density or viscosity near `f32::MAX` overflows the buoyancy and the drag to infinity).
+pub const MAX_LIQUID_DENSITY: f32 = 1_000.0;
+pub const MAX_LIQUID_VISCOSITY: f32 = 1_000.0;
+
+/// A map's liquid value held to `0..=max` (a NaN to 0).
+pub fn liquid_value(v: f32, max: f32) -> f32 {
+    if v > 0.0 { v.min(max) } else { 0.0 }
+}
+
 /// A PhysicalZone that `updateContainer` found (the fields its callback reads).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ZoneView {

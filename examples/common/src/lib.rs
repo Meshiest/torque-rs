@@ -7,6 +7,7 @@
 //!   aim).
 //! - [`ray_box`]: a ray against a box, for a camera behind a figure kept in front of the cubes.
 //! - [`camera_log`]: the camera's motion frame by frame, for the examples' camera clips.
+//! - [`names_camera`]: the camera the names over the other players are placed from, the one the example draws the world from.
 
 pub mod camera_log;
 pub mod prediction;
@@ -82,13 +83,13 @@ pub fn figure_poses() -> torque::game::sim::player::poses::PoseData {
         crouch_box: [1.0, 1.0, 1.6],
         prone_box: [2.0, 2.0, 0.8],
         crouch_speeds: PoseSpeeds {
-            forward: 1.3,
-            backward: 1.1,
-            side: 1.0,
+            forward: 1.95,
+            backward: 1.65,
+            side: 1.5,
         },
         prone_speeds: PoseSpeeds {
-            forward: 0.75,
-            backward: 0.6,
+            forward: 1.125,
+            backward: 0.9,
             side: 0.0,
         },
         crouch_force: 3600.0,
@@ -99,6 +100,31 @@ pub fn figure_poses() -> torque::game::sim::player::poses::PoseData {
             sprint: 5,
         },
         ..PoseData::default()
+    }
+}
+
+/// Places the names over the other players (the view's GuiShapeNameHud, [`torque::gui::hud`]) from `eye`, the eye the example
+/// draws the world from: its own camera (behind the figure or the buggy, easing between places) rather than the connection's
+/// eye, so each name stands over its figure in every camera. The field of view stays the connection's unless `eye` carries one.
+/// The names' tests against walls and behind the camera start from it too, from the next tick on (the client's
+/// `names_eye`). Call it each frame before the canvas is drawn.
+pub fn names_camera(host: &torque::app::Host, eye: &torque_render_scene::source::Eye) {
+    host.client.borrow_mut().names_eye = Some(*eye);
+    let mut state = host.gui.0.borrow_mut();
+    let Some(camera) = state.hud.camera.as_mut() else {
+        return;
+    };
+    camera.position = eye.position;
+    // `EulerF(pitch, 0, yaw)`: Rz * Rx, row-major (column 1 the look).
+    let (sp, cp) = eye.pitch.sin_cos();
+    let (sy, cy) = eye.yaw.sin_cos();
+    camera.rotation = [
+        [cy, sy * cp, sy * sp],
+        [-sy, cy * cp, cy * sp],
+        [0.0, -sp, cp],
+    ];
+    if let Some(fov) = eye.fov {
+        camera.fov = f32::from(fov);
     }
 }
 

@@ -137,3 +137,70 @@ fn a_jumping_figure_never_sinks_into_the_floor() {
     assert!(highest > 0.5, "Ann jumped ({highest})");
     a.key(Key::W, false);
 }
+
+fn apart(p: [f32; 3], q: [f32; 3]) -> f32 {
+    (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f32>().sqrt()
+}
+
+/// Aiming down the sights from behind the figure (`Tab`, then the right button): the camera comes in along its boom to the
+/// eye as the sights come up (eased over the sights' 0.18 s, not cut), and there the view is the first person's at the
+/// sights: the figure hidden, the pistol's sights drawn on the crosshair, and Bob sees Ann's arm raised. Let go, the camera
+/// goes back out behind her and her arm holds the pistol again.
+#[test]
+fn aiming_from_behind_the_figure_brings_the_camera_in_to_the_sights_and_back() {
+    let (mut a, mut b) = two();
+    a.key(Key::Tab, true);
+    a.key(Key::Tab, false);
+    let both = |a: &mut ArenaGame, b: &mut ArenaGame| {
+        frame(a, b, 16);
+        a.drawn_eye()
+    };
+    for _ in 0..60 {
+        both(&mut a, &mut b);
+    }
+    let hidden = |a: &ArenaGame| a.with_world(|w| w.hide_control).unwrap();
+    let back = apart(both(&mut a, &mut b).position, a.eye().position);
+    assert!(a.third_person() && back > 3.0, "behind Ann: {back}");
+    assert!(!hidden(&a));
+
+    a.call("aim", &["1"]).unwrap();
+    let mut ways = Vec::new();
+    for _ in 0..20 {
+        let e = both(&mut a, &mut b);
+        ways.push(apart(e.position, a.eye().position));
+    }
+    // In over a few frames, never further out, and at the eye once the sights are up.
+    assert!(ways[0] > 0.5 && ways[0] < back, "eased in: {ways:?}");
+    assert!(ways.windows(2).all(|w| w[1] <= w[0] + 1e-4), "{ways:?}");
+    assert!(*ways.last().unwrap() < 1e-3, "at the eye: {ways:?}");
+    assert!(a.third_person(), "still the third person when let go");
+    assert!(hidden(&a), "the figure hidden at the sights");
+    assert!(a.scene().aim() > 0.99, "the sights up");
+    assert!(
+        a.scene().own_sights().is_some(),
+        "the first person's pistol drawn"
+    );
+    assert_eq!(
+        b.scene().others_arms(),
+        [(false, Some("aim".to_string()))],
+        "Bob sees Ann's arm raised"
+    );
+
+    a.call("aim", &["0"]).unwrap();
+    let mut out = Vec::new();
+    for _ in 0..40 {
+        let e = both(&mut a, &mut b);
+        out.push(apart(e.position, a.eye().position));
+    }
+    assert!(out[0] < back * 0.5, "eased out: {out:?}");
+    assert!(
+        (out.last().unwrap() - back).abs() < 0.05,
+        "back behind Ann: {out:?}"
+    );
+    assert!(!hidden(&a), "the figure seen again");
+    assert_eq!(
+        b.scene().others_arms(),
+        [(false, Some("hold".to_string()))],
+        "Bob sees Ann's arm hold the pistol"
+    );
+}

@@ -21,7 +21,12 @@
 //! and back, then the same holding a pistol), as `poses-transitions.mp4`; with a number after that, it plays that many times
 //! slower (`poses-transitions-x4.mp4` for 4).
 //!
-//! `cargo run -p torque-example-common --release --example poses-clip -- <dir> [transitions [slower]]` (default `poses-clip`)
+//! With `point` after the folder, the clip is a picture only, `point.png`: the figure pointing (its `point` arm action) looking
+//! up, level and down, standing, then pointing as it walks and crouched, then lying down (`prone_point`), each after the arm's
+//! blend from empty hands; two views a tile as above.
+//!
+//! `cargo run -p torque-example-common --release --example poses-clip -- <dir> [transitions [slower] | point]` (default
+//! `poses-clip`)
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -184,6 +189,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Daylight::default()
         });
     }
+    if std::env::args().nth(2).as_deref() == Some("point") {
+        return point_sheet(&dir, &gpu, &mut views, &assets, &figure);
+    }
     let (w, h) = (2 * VIEW.0, VIEW.1 + BAR);
     let mp4 = dir.join(format!("{name}.mp4"));
     let mut ffmpeg = Command::new("ffmpeg")
@@ -279,57 +287,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         anim.update(shape, &mut instance, &motion, dt);
         anim.script_threads(shape, &mut instance, &plays);
         let _ = instance.animate(shape, detail, None, &mut |_| true);
-        let mut place = Mat::IDENTITY;
-        place.set_column3([at[0], at[1], 0.0]);
         let mut rgb = vec![0u8; (w * h * 3) as usize];
-        // The side view from the figure's right, and the three-quarter view from its front right, both following it.
-        for (v, (side, rise, ahead)) in [(1.0f32, 0.12f32, 0.0f32), (0.7, 0.3, 0.7)]
-            .into_iter()
-            .enumerate()
-        {
-            let view = &mut views[v];
-            let mut objects = vec![view.shape_object(&assets, &figure, &instance, &place, 1)];
-            // Dark tiles every half unit around the figure.
-            let near = [(at[0] / 0.5).round() as i32, (at[1] / 0.5).round() as i32];
-            let mut id = 10;
-            for i in near[1] - 12..=near[1] + 12 {
-                for j in near[0] - 3..=near[0] + 3 {
-                    let mut o = box_object(
-                        id,
-                        [j as f32 * 0.5 + 0.25, i as f32 * 0.5, 0.0],
-                        [0.04, 0.04, 0.004],
-                    );
-                    id += 1;
-                    for vtx in o.draws.iter_mut().flat_map(|d| d.vertices.iter_mut()) {
-                        vtx.color = [60, 62, 66, 255];
-                    }
-                    objects.push(o);
-                }
-            }
-            view.set_objects(objects);
-            let center = [at[0], at[1], 0.8];
-            let distance = 4.2;
-            let flat = (1.0 - rise * rise).sqrt();
-            let along = (1.0 - side * side).sqrt() * ahead.signum();
-            let eye_at = [
-                center[0] + distance * side * flat,
-                center[1] + distance * along * flat,
-                center[2] + distance * rise,
-            ];
-            let mut eye = look_at(eye_at, center);
-            eye.fov = Some(45);
-            if k == 0 {
-                view.reset_history();
-            }
-            let frame = view.render_world(&gpu, VIEW, eye)?;
-            for py in 0..VIEW.1 {
-                for px in 0..VIEW.0 {
-                    let s = 4 * (py * VIEW.0 + px) as usize;
-                    let d = 3 * (py * w + v as u32 * VIEW.0 + px) as usize;
-                    rgb[d..d + 3].copy_from_slice(&frame.rgba[s..s + 3]);
-                }
-            }
-        }
+        draw_views(
+            &gpu,
+            &mut views,
+            &assets,
+            &figure,
+            &instance,
+            at,
+            k == 0,
+            &mut rgb,
+        )?;
         let speed = velocity[0].hypot(velocity[1]);
         let color = if hurt {
             [220, 50, 50]
@@ -338,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Pose::Crouch => [70, 120, 230],
                 Pose::Prone => [150, 80, 200],
                 Pose::Sprint => [235, 140, 40],
+                Pose::Swim => [40, 170, 200],
                 Pose::Stand if anim.action().0 == walk => [70, 190, 90],
                 Pose::Stand => [140, 140, 140],
             }
@@ -369,6 +338,142 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = torque_example_assets::textures::png(w, h * rows, |x, y| {
         let f = &strip[(y / h) as usize];
         let d = 3 * ((y % h) * w + x) as usize;
+        [f[d], f[d + 1], f[d + 2]]
+    })?;
+    std::fs::write(&png, bytes)?;
+    println!("{}", png.display());
+    Ok(())
+}
+
+/// The figure at `at` drawn from its right side and from its front right into the top of `rgb` (two [`VIEW`]s side by side,
+/// rows of `2 * VIEW.0`), over a floor marked every half unit; `first` starts the views' history afresh.
+#[allow(clippy::too_many_arguments)]
+fn draw_views(
+    gpu: &torque_render_core::Gpu,
+    views: &mut [WorldView; 2],
+    assets: &KitAssets,
+    figure: &SceneShape,
+    instance: &torque::shapes::instance::ShapeInstance,
+    at: [f32; 2],
+    first: bool,
+    rgb: &mut [u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let w = 2 * VIEW.0;
+    let mut place = Mat::IDENTITY;
+    place.set_column3([at[0], at[1], 0.0]);
+    // The side view from the figure's right, and the three-quarter view from its front right, both following it.
+    for (v, (side, rise, ahead)) in [(1.0f32, 0.12f32, 0.0f32), (0.7, 0.3, 0.7)]
+        .into_iter()
+        .enumerate()
+    {
+        let view = &mut views[v];
+        let mut objects = vec![view.shape_object(assets, figure, instance, &place, 1)];
+        // Dark tiles every half unit around the figure.
+        let near = [(at[0] / 0.5).round() as i32, (at[1] / 0.5).round() as i32];
+        let mut id = 10;
+        for i in near[1] - 12..=near[1] + 12 {
+            for j in near[0] - 3..=near[0] + 3 {
+                let mut o = box_object(
+                    id,
+                    [j as f32 * 0.5 + 0.25, i as f32 * 0.5, 0.0],
+                    [0.04, 0.04, 0.004],
+                );
+                id += 1;
+                for vtx in o.draws.iter_mut().flat_map(|d| d.vertices.iter_mut()) {
+                    vtx.color = [60, 62, 66, 255];
+                }
+                objects.push(o);
+            }
+        }
+        view.set_objects(objects);
+        let center = [at[0], at[1], 0.8];
+        let distance = 4.2;
+        let flat = (1.0 - rise * rise).sqrt();
+        let along = (1.0 - side * side).sqrt() * ahead.signum();
+        let eye_at = [
+            center[0] + distance * side * flat,
+            center[1] + distance * along * flat,
+            center[2] + distance * rise,
+        ];
+        let mut eye = look_at(eye_at, center);
+        eye.fov = Some(45);
+        if first {
+            view.reset_history();
+        }
+        let frame = view.render_world(gpu, VIEW, eye)?;
+        for py in 0..VIEW.1 {
+            for px in 0..VIEW.0 {
+                let s = 4 * (py * VIEW.0 + px) as usize;
+                let d = 3 * (py * w + v as u32 * VIEW.0 + px) as usize;
+                rgb[d..d + 3].copy_from_slice(&frame.rgba[s..s + 3]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The `point` picture (see the module docs): a tile for each of the figure's pose, look (0 up, 1 down) and speed ahead, each
+/// posed by the client's animation for a second from empty hands, the arm action then `point`, as a ghost's arm switches.
+fn point_sheet(
+    dir: &std::path::Path,
+    gpu: &torque_render_core::Gpu,
+    views: &mut [WorldView; 2],
+    assets: &KitAssets,
+    figure: &SceneShape,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tiles = [
+        (Pose::Stand, 0.2f32, 0.0f32),
+        (Pose::Stand, 0.5, 0.0),
+        (Pose::Stand, 0.8, 0.0),
+        (Pose::Stand, 0.5, 2.1),
+        (Pose::Crouch, 0.5, 0.0),
+        (Pose::Prone, 0.5, 0.0),
+    ];
+    let shape = figure.shape();
+    let detail = figure.detail().ok_or("no detail")?;
+    let w = 2 * VIEW.0;
+    let mut sheet = Vec::new();
+    for (pose, look, speed) in tiles {
+        let mut instance = figure.instance().ok_or("no instance")?;
+        let mut anim = PlayerAnimation::new(shape, &mut instance).ok_or("no threads")?;
+        anim.set_synced(true);
+        let point = anim
+            .actions()
+            .iter()
+            .position(|a| a.name == b"point")
+            .ok_or("the figure has no point")? as u32;
+        let dt = 1.0 / FPS as f32;
+        let mut at = [0.0f32; 2];
+        for k in 0..2 * FPS {
+            at[1] += speed * dt;
+            let motion = PlayerMotion {
+                velocity: [0.0, speed, 0.0],
+                look,
+                pose,
+                position: Some([at[0], at[1], 0.0]),
+                arm_action: (k >= FPS).then_some(point),
+                ..PlayerMotion::default()
+            };
+            anim.update(shape, &mut instance, &motion, dt);
+        }
+        let _ = instance.animate(shape, detail, None, &mut |_| true);
+        let mut rgb = vec![0u8; (w * VIEW.1 * 3) as usize];
+        // The views' history settles over a few frames of the same pose.
+        for f in 0..8 {
+            draw_views(gpu, views, assets, figure, &instance, at, f == 0, &mut rgb)?;
+        }
+        sheet.push(rgb);
+    }
+    // Two tiles a row.
+    let rows = sheet.len().div_ceil(2) as u32;
+    let (sw, sh) = (2 * w, rows * VIEW.1);
+    let png = dir.join("point.png");
+    let bytes = torque_example_assets::textures::png(sw, sh, |x, y| {
+        let tile = (y / VIEW.1) as usize * 2 + (x / w) as usize;
+        let Some(f) = sheet.get(tile) else {
+            return [30, 30, 30];
+        };
+        let d = 3 * ((y % VIEW.1) * w + x % w) as usize;
         [f[d], f[d + 1], f[d + 2]]
     })?;
     std::fs::write(&png, bytes)?;

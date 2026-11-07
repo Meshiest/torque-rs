@@ -4,8 +4,10 @@
 //! - **The control object** (`GameConnection`'s): the predicted Player (its energy over its datablock's `maxEnergy`,
 //!   `getEnergyValue`), the vehicle it drives, or the Camera of a spectator; a camera position of 0 is the first-person camera (the
 //!   prediction's `camera_pos`).
-//! - **The camera** is the client's eye (`ClientWorld::eye`: the predicted Player's eye or the Camera's), its transform
-//!   `EulerF(pitch, 0, yaw)` as the renderer builds it, the fov the connection's.
+//! - **The camera** is the client's eye (`ClientWorld::eye`: the predicted Player's eye or the Camera's), or the game's own
+//!   camera when it draws the world from one ([`ClientState::names_eye`](crate::state::ClientState::names_eye)), its
+//!   transform `EulerF(pitch, 0, yaw)` as the renderer builds it, the fov the connection's unless that camera carries one.
+//!   The names' line-of-sight rays and the in-front test start from it, as the projection does.
 //! - **The named shapes** are the shapes the game's view names ([`HudWorld::named_candidates`]), each with the name block the
 //!   game's view answers ([`HudWorld::shape_name`]: its name, colour and distance). [`NameList`] keeps them in the order they were
 //!   first named across ticks (one whose name goes, or whose ghost is deleted, is taken out and the last moved into its place);
@@ -147,6 +149,7 @@ pub fn feed<G: ConnGame>(client: &Rc<RefCell<ClientState<G>>>) -> HudFeed {
     let mut guard = client.borrow_mut();
     let st = &mut *guard;
     let names = &mut st.names;
+    let view = st.names_eye;
     let Some(conn) = st.conn.conn.as_mut().filter(|c| c.accepted) else {
         names.order.clear();
         return HudFeed::default();
@@ -208,15 +211,17 @@ pub fn feed<G: ConnGame>(client: &Rc<RefCell<ClientState<G>>>) -> HudFeed {
         });
         c.cast_ray(from, to, mask).is_some()
     };
-    feed_of(world, names, control, &mut cast)
+    feed_of(world, names, control, view, &mut cast)
 }
 
-/// The feed of a tick from the client's world: `control` is the control object's part, `cast` the ray from the camera to a label
-/// against the static world (true: something stands in the way), `names` the list as the last tick left it.
+/// The feed of a tick from the client's world: `control` is the control object's part, `view` the game's own camera (none:
+/// the world's eye), `cast` the ray from the camera to a label against the static world (true: something stands in the way),
+/// `names` the list as the last tick left it.
 pub fn feed_of<W: HudWorld>(
     world: &W,
     names: &mut NameList,
     control: Option<HudControl>,
+    view: Option<ghost_world::world::Eye>,
     cast: &mut dyn FnMut([f32; 3], [f32; 3]) -> bool,
 ) -> HudFeed {
     let (visible_distance, fog_distance) = world.view_distances();
@@ -231,10 +236,13 @@ pub fn feed_of<W: HudWorld>(
         names.order.clear();
         return out;
     };
+    let eye = view.unwrap_or(eye);
     let camera = HudCamera {
         position: eye.position,
         rotation: rotation(eye.pitch, eye.yaw),
-        fov: world.fov_deg(),
+        fov: view
+            .and_then(|v| v.fov)
+            .map_or_else(|| world.fov_deg(), f32::from),
     };
     out.camera = Some(camera);
     // The named ghosts this tick, the control object left out.

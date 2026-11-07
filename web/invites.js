@@ -1,9 +1,10 @@
 // Games joined by invite links, on a page with no server of ours (a solo page: `build.mjs --solo`). The host's page runs
 // the game's server in its worker (host.js); the host makes one invite link per player (`<page>#join=<code>`, codes.js),
 // each for one peer connection of its own, and sends it in a chat. The player's page opens it, makes its answer, and shows
-// a reply link (`<page>#reply=<code>`) to send back. The host opens that link in the same browser: that tab hands the reply
-// to the game's tab over a BroadcastChannel and closes (or the host pastes it into the game's panel). The data channel then
-// opens straight between the two browsers, and the joiner's channel goes to the worker's relay like any other link.
+// a reply code (the bare text of codes.js `encodeCode`, not a link) to hand back. The host pastes it into the game's
+// Host with a link panel, under "A reply came back?" (an old reply link, `<page>#reply=<code>`, is read the same way; a page
+// opened on one only shows its code). The data channel then opens straight between the two browsers, and the joiner's
+// channel goes to the worker's relay like any other link.
 //
 // Neither page loads anything from a code but what codes.js reads strictly: the STUN server is a key into the page's own
 // list (codes.js STUN_SERVERS), and each candidate goes through host.js's `candidateAllowed` (canonical IPv4, or a browser's
@@ -31,6 +32,7 @@ import {
   DEFAULT_SERVER,
   KIND_JOIN,
   KIND_REPLY,
+  MAX_CODE_CHARS,
   STUN_SERVERS,
   candidateLine,
   codeFromFragment,
@@ -58,14 +60,14 @@ const GATHER_MS = 5_000;
 const RETRY_MS = 4_000;
 // A time in whole minutes for the player ("15 minutes", "1 minute").
 export const minutes = (ms) => `${Math.round(ms / 60_000)} minute${Math.round(ms / 60_000) === 1 ? '' : 's'}`;
-const HANDOFF_MS = 2_000;
 const MAX_BUFFERED = 256 * 1024;
 const USED_KEY = 'torque-invites-used';
 const MAX_USED = 32;
 const TAKEN = 'The reply is in: connecting to the player.';
 const TRUST = 'Only send this link to people you trust. It contains your IP address.';
+const REPLY_TRUST = 'Only send this to the host. It contains your IP address.';
 const NO_RELAY =
-  'Could not connect. Check that the reply link was opened in the browser that made the invite offer, then try a new ' +
+  'Could not connect. Check that the host pasted your reply code into the page that made the invite offer, then try a new ' +
   "invite offer on the other connection server. Some networks can't connect without a relay server, which this page " +
   'does not use; players on one network can pick Same network only.';
 
@@ -75,7 +77,6 @@ export function privateAllowed(server, search, joining) {
   return server === 'lan' || (!joining && new URLSearchParams(search).has('lan'));
 }
 const lanFor = (server) => privateAllowed(server, location.search, false);
-const channelName = () => `torque-invites ${location.pathname}`;
 const pageLink = () => `${location.origin}${location.pathname}`;
 
 // The code the page's fragment carries ({ kind, code }), with the fragment cleared from the address bar; or null.
@@ -148,7 +149,7 @@ function privacyText(key, who) {
     { class: 'privacy' },
     `To connect, this page asks ${server.name}'s free public STUN server for this computer's public IP address, so ` +
       `${server.name} sees that address and when you connected. ${who} sees it too: it is in ` +
-      `${who === 'The host' ? 'your reply link' : 'the link'}. `,
+      `${who === 'The host' ? 'your reply code' : 'the link'}. `,
     el('a', { href: server.privacy, target: '_blank', rel: 'noopener noreferrer', text: `${server.name}'s privacy policy` }),
   );
 }
@@ -180,6 +181,12 @@ function copyRow(text, label, mark, what) {
 function linkBox(link, label) {
   const { row, said } = copyRow(link, label, 'data-link', 'link');
   return el('div', { class: 'link' }, row, el('p', { class: 'warn', text: TRUST }), said);
+}
+
+// A reply code with its copy button and the warning that only the host gets it.
+function codeBox(code, label) {
+  const { row, said } = copyRow(code, label, 'data-code', 'code');
+  return el('div', { class: 'link' }, row, el('p', { class: 'warn', text: REPLY_TRUST }), said);
 }
 
 // A failed connection's details (`connectionDetails`) with their copy button.
@@ -427,7 +434,7 @@ function showJoinPaste(go) {
 // An invite's states once it is over: its line then has a Dismiss button that takes it off the list.
 const OVER = ['failed', 'expired', 'left', 'closed'];
 
-// The host's invites (one for the page: it listens for reply tabs on a BroadcastChannel): `hosting(h)` is host.js's
+// The host's invites (one for the page): `hosting(h)` is host.js's
 // `onHost` (`h` null once that server stopped), `show()` opens the Host with a link panel, `away(true)` closes every
 // invite still open and the panel and lets no one in (the page is in another player's game) until `away(false)`.
 // `open`: the panel opens once the server runs.
@@ -582,13 +589,13 @@ export function hostInvites({ open = false } = {}) {
     }
   }
 
-  // Takes a reply (a link or a code, pasted or handed over): null when no invite of this page is its, else the text for
+  // Takes a reply (a code, or an old reply link, pasted): null when no invite of this page is its, else the text for
   // the player (TAKEN once the reply is in; the invite's line then says how the connection went).
   async function takeReply(text) {
     const code = codeFromPaste(text, KIND_REPLY);
-    if (code === null) return 'This is not a reply link.';
+    if (code === null) return 'This is not a reply code.';
     const data = await decodeCode(code, KIND_REPLY);
-    if (used.has(data.token)) return 'This reply link was already used. To let this player in again, create a new invite offer.';
+    if (used.has(data.token)) return 'This reply code was already used. To let this player in again, create a new invite offer.';
     if (closed.has(data.token)) return 'That invite offer is no longer open. Create a new one.';
     const inv = invites.get(data.token);
     if (!inv || inv.state !== 'waiting') return null;
@@ -691,7 +698,11 @@ export function hostInvites({ open = false } = {}) {
     });
     countLine = el('p', { class: 'count', 'data-count': '' });
     shown();
-    const paste = el('input', { type: 'text', 'aria-label': "A player's reply link", placeholder: 'Paste a reply link' });
+    const paste = el('input', {
+      type: 'text',
+      'aria-label': "Paste the player's reply code",
+      placeholder: "Paste the player's reply code",
+    });
     const add = el('button', {
       type: 'button',
       text: 'Add',
@@ -713,25 +724,13 @@ export function hostInvites({ open = false } = {}) {
       list,
       el('h3', { text: 'A reply came back?' }),
       el('p', {
-        text: 'Open the reply link in this browser and the game takes it. Or paste it here:',
+        text: 'When a player sends back the reply code from their page, paste it here:',
       }),
       el('div', { class: 'row' }, paste, add),
       said,
       el('button', { type: 'button', class: 'close', text: 'Close', on: { click: closePanel } }),
     );
     p.querySelector('.primary').focus();
-  }
-
-  // Replies handed over by a reply tab in this browser; answered only when the reply is for one of this page's invites
-  // (or is no code at all).
-  if (typeof BroadcastChannel === 'function') {
-    const bc = new BroadcastChannel(channelName());
-    bc.onmessage = async (e) => {
-      const m = e.data;
-      if (typeof m?.reply !== 'string' || typeof m.id !== 'string' || m.id.length > 32) return;
-      const out = await oneReply(m.reply);
-      if (out !== null) bc.postMessage({ answer: m.id, ok: out === TAKEN, text: out });
-    };
   }
 
   // Every invite still open closed: the page is joining another game. (The players in this page's game are ended by its
@@ -763,12 +762,12 @@ export function hostInvites({ open = false } = {}) {
   };
 }
 
-// ---- a reply tab
+// ---- a reply that reached the wrong page
 
-// When the page was opened on a reply link (`fragment` from takeFragment): hands the reply to this browser's game tab and
-// closes, or shows why not. The game does not start in this tab unless the player goes on to its menu: `back()` starts
-// it here.
-export async function replyTab(code, { back = null } = {}) {
+// When the page was opened on a reply link (`code` from takeFragment): a reply goes to the host's panel, not to a page of
+// its own, so the panel says so and shows the code to copy. The game does not start in this tab unless the player goes on
+// to its menu: `back()` starts it here.
+export function replyNote(code, { back = null } = {}) {
   const loading = document.getElementById('loading');
   if (loading) loading.style.display = 'none';
   let gone = false;
@@ -779,49 +778,12 @@ export async function replyTab(code, { back = null } = {}) {
     if (loading) loading.style.display = '';
     back?.();
   };
-  const p = openPanel('A reply link', toMenu);
-  const said = el('p', { 'data-said': '' });
-  p.append(said);
-  const root = document.documentElement;
-  // A reply that was not taken: this tab can still go to the game's menu.
-  const failed = (state) => {
-    p.append(el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: toMenu } }));
-    root.dataset.torqueReply = state;
-  };
-  try {
-    await decodeCode(code, KIND_REPLY);
-  } catch (e) {
-    said.textContent = message(e);
-    return failed('refused');
-  }
-  said.textContent = 'Handing the reply to your game...';
-  const fallback = () => {
-    said.textContent =
-      'No game in this browser made this invite offer. Open the tab that made it, or paste this reply link into its ' +
-      'Host with a link panel:';
-    p.append(linkBox(`${pageLink()}#reply=${code}`, 'The reply link'));
-    failed('unclaimed');
-  };
-  if (typeof BroadcastChannel !== 'function') return fallback();
-  const bc = new BroadcastChannel(channelName());
-  const id = newToken();
-  const answer = await new Promise((ok) => {
-    const t = setTimeout(() => ok(null), HANDOFF_MS);
-    bc.onmessage = (e) => {
-      if (e.data?.answer === id && typeof e.data.text === 'string') {
-        clearTimeout(t);
-        ok({ ok: e.data.ok === true, text: e.data.text });
-      }
-    };
-    bc.postMessage({ reply: code, id });
-  });
-  bc.close();
-  if (!answer) return fallback();
-  said.textContent = answer.ok ? 'Your game took the reply. You can close this tab.' : answer.text;
-  if (answer.ok) root.dataset.torqueReply = 'taken';
-  else failed('refused');
-  // A browser lets a page close its own tab only when the tab has no history before it (a link opened from a chat app).
-  if (answer.ok && history.length <= 1) setTimeout(() => window.close(), 500);
+  const p = openPanel('A reply for a host', toMenu);
+  p.append(el('p', { 'data-said': '', text: "This is a reply for a host. Paste it into the host's panel instead." }));
+  if (code.length <= MAX_CODE_CHARS && /^[A-Za-z0-9_-]+$/.test(code)) p.append(codeBox(code, 'The reply code'));
+  p.append(el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: toMenu } }));
+  p.querySelector('.close').focus();
+  document.documentElement.dataset.torqueReply = 'shown';
 }
 
 // ---- the joiner
@@ -850,7 +812,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     if (state !== 'making' && state !== 'replied') back();
   });
   const said = el('p', { class: 'said', 'data-said': '' });
-  // how the connection goes, once the reply link is made: in the panel, over the game's own status line under it
+  // how the connection goes, once the reply code is made: in the panel, over the game's own status line under it
   const status = el('p', { class: 'status', role: 'status', 'data-status': '' });
   const setStatus = (text) => !disposed && (status.textContent = text);
   const backButton = el('button', { type: 'button', class: 'close', text: 'Back to the menu', on: { click: () => back() } });
@@ -888,13 +850,14 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     const { row, said: pasteSaid } = joinPasteRow(again);
     show(el('p', { text: 'Got a new invite offer link? Paste it here to join with it:' }), row, pasteSaid);
   };
-  // A join that cannot go on: why, the way back and a field for a new link. A reply link shown is taken away (its
+  // A join that cannot go on: why, the way back and a field for a new link. A reply code shown is taken away (its
   // connection is closed).
   const fail = (text, next = 'ended') => {
     if (disposed) return;
     said.textContent = text;
     status.textContent = '';
     p.querySelector('.link')?.remove();
+    p.querySelector('.reply-heading')?.remove();
     if (!p.isConnected) {
       panel?.remove();
       document.body.append(p);
@@ -912,7 +875,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     mark('making');
     said.textContent = 'Making your reply...';
     const lan = privateAllowed(data.server, location.search, true);
-    // One certificate for every connection this join makes: each has the fingerprint the reply link names.
+    // One certificate for every connection this join makes: each has the fingerprint the reply code names.
     const certificates = [await RTCPeerConnection.generateCertificate({ name: 'ECDSA', namedCurve: 'P-256' })];
     if (disposed) return;
     // This page's own mDNS names (every connection's): an invite that names them is not taken at them (a host could point
@@ -999,7 +962,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
         return null;
       }
       const sdp = next.localDescription.sdp;
-      if (details && !sameDetails(fromSdp(sdp), details)) throw new Error("the browser did not keep the reply link's details");
+      if (details && !sameDetails(fromSdp(sdp), details)) throw new Error("the browser did not keep the reply code's details");
       for (const line of sdpLines(sdp)) ownName(line.split(' ')[4]);
       const { lines, kept, dropped } = filterCandidates(data, lan, own);
       Object.assign(facts, { kept, dropped });
@@ -1012,7 +975,7 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
       return sdp;
     }
 
-    // Before the channel opens, the browser may give up on the host's addresses while the reply link is on its way, and
+    // Before the channel opens, the browser may give up on the host's addresses while the reply code is on its way, and
     // then no longer answer the host's checks once the host takes it. Firefox does a few seconds after it answers when no
     // address of the host answers yet, as a Firefox host's mDNS names do not until it has taken the reply. A new
     // connection with the reply's credentials, certificate and setup takes over: once the host has the reply, the host
@@ -1043,9 +1006,10 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
     if (disposed) return;
     markUsed(data.token);
     said.textContent =
-      'Send this reply link back to the host. When they open it in the browser that made the invite offer, you join ' +
-      `their game. This page waits up to ${minutes(JOIN_MS)} for it.`;
-    show(linkBox(`${pageLink()}#reply=${reply}`, 'Your reply link'));
+      'The host pastes it into their Host with a link panel, under "A reply came back?", and you join their game. ' +
+      `This page waits up to ${minutes(JOIN_MS)} for it.`;
+    said.before(el('h3', { class: 'reply-heading', text: 'Send this code back to the host' }));
+    said.after(codeBox(reply, 'Your reply code'));
     const reached = ['connected', 'completed'].includes(pc.iceConnectionState);
     if (!opened) setStatus(reached ? 'Connecting...' : 'Waiting for the host...');
     mark('replied');

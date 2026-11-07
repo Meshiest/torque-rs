@@ -7,6 +7,10 @@
 // whose figure controls the buggy (the client's moves drive it), or the passenger's (node 1, on the right), who rides. Getting
 // out (serverCmdGetOut) puts the figure on its feet beside its seat's side.
 //
+// Pointing: a click that meets no free seat raises the figure's right arm along its look instead (its arm action `point`,
+// which every client draws, over the arm's blend), held while the button is (serverCmdPointDone when it comes up) and for
+// $World::PointMS at least; getting in lowers it.
+//
 // The headlight: each buggy carries a SpotLight on its `mount2` node (between the lamps on its roof), off until its driver
 // presses F (serverCmdToggleLight); while it is on, the buggy plays `lights_on` (the roof lamps' faces lit). The day
 // (TimeOfDay, ScatterSky) and the headlight are the engine's own classes: every client of the demo is the engine's
@@ -63,13 +67,13 @@ datablock PlayerData(WorldFigureData)
    // Crouched and prone (the engine's own poses, after Torque3D's: its fields, by their names): each pose's box and speeds.
    // The kit's figure has the poses' sequences (crouch_root, prone_root and the rest).
    crouchBoundingBox = "1 1 1.6";
-   maxCrouchForwardSpeed = 1.3;
-   maxCrouchBackwardSpeed = 1.1;
-   maxCrouchSideSpeed = 1;
+   maxCrouchForwardSpeed = 1.95;
+   maxCrouchBackwardSpeed = 1.65;
+   maxCrouchSideSpeed = 1.5;
    crouchForce = 3600;
    proneBoundingBox = "2 2 0.8";
-   maxProneForwardSpeed = 0.75;
-   maxProneBackwardSpeed = 0.6;
+   maxProneForwardSpeed = 1.125;
+   maxProneBackwardSpeed = 0.9;
    maxProneSideSpeed = 0;
    proneForce = 2400;
 };
@@ -203,6 +207,8 @@ $Server::EngineClasses = 1;
 
 // How far a click reaches from the figure's eye, and what it looks for (VehicleObjectType).
 $World::Reach = 5.5;
+// The least time a click points for (ms).
+$World::PointMS = 1000;
 $World::MaxBuggies = 16;
 $World::BuggyApart = 8;
 $World::VehicleMask = 65536;
@@ -254,9 +260,11 @@ function giveHeadlight(%vehicle)
 
 // ---- a client's way in
 
+// The name the others see over its figure and in the chat, cleaned (common/server.cs, as the chat's lines are).
 function GameConnection::onClientConnect(%client, %name)
 {
-   echo("Client" SPC %client SPC "connected");
+   %client.name = cleanName(%name, %client);
+   echo("Client" SPC %client SPC "connected as" SPC %client.name);
    // The host: the first client in (the one that started the game).
    if (!isObject($World::Host))
       $World::Host = %client;
@@ -296,6 +304,7 @@ function GameConnection::onClientEnterGame(%client)
 {
    commandToClient(%client, 'WorldStarted', $World::Title);
    giveBuggy(%client);
+   messageAll("info", %client.name SPC "joined the game.");
 }
 
 // The client's own buggy: the map's for the first client, a new one in its place along the row for each later one (none past
@@ -351,6 +360,7 @@ function freeBuggySlot()
 // may have been riding in one).
 function GameConnection::onClientLeaveGame(%client)
 {
+   messageAll("info", %client.name SPC "left the game.");
    if (isObject(%client.buggy))
    {
       %client.buggy.owner = 0;
@@ -467,7 +477,8 @@ function resetBuggy(%vehicle)
 
 // ---- in and out of the buggy
 
-// The client clicked: the free seat of the vehicle the figure looks at within reach, the one nearest the point it looked at.
+// The client clicked: the free seat of the vehicle the figure looks at within reach, the one nearest the point it looked at;
+// with none, the figure points.
 function serverCmdGetIn(%client)
 {
    %player = %client.player;
@@ -478,7 +489,10 @@ function serverCmdGetIn(%client)
    %hit = containerRayCast(%eye, %end, $World::VehicleMask, %player);
    %vehicle = getWord(%hit, 0);
    if (!isObject(%vehicle))
+   {
+      startPoint(%player);
       return;
+   }
    %at = getWords(%hit, 1, 3);
    %xf = %vehicle.getTransform();
    %seat = -1;
@@ -494,7 +508,11 @@ function serverCmdGetIn(%client)
       }
    }
    if (%seat < 0)
+   {
+      startPoint(%player);
       return;
+   }
+   endPoint(%player);
    %vehicle.mountObject(%player, %seat);
    // Seated facing the way the seat faces: a mounted object's transform is its place on the mount.
    %player.setTransform("0 0 0 0 0 1 0");
@@ -506,6 +524,36 @@ function serverCmdGetIn(%client)
       %player.setControlObject(%vehicle);
    }
    commandToClient(%client, 'Seated', %seat);
+}
+
+// %player raises its arm to point where it looks, until the button comes up and $World::PointMS has passed.
+function startPoint(%player)
+{
+   cancel(%player.pointEnd);
+   %player.pointHeld = true;
+   %player.pointUntil = getSimTime() + $World::PointMS;
+   %player.setArmThread("point");
+}
+
+// The client's button came up: its figure lowers its arm once it has pointed $World::PointMS.
+function serverCmdPointDone(%client)
+{
+   %player = %client.player;
+   if (!isObject(%player) || !%player.pointHeld)
+      return;
+   %player.pointHeld = false;
+   cancel(%player.pointEnd);
+   %player.pointEnd = schedule(getMax(0, %player.pointUntil - getSimTime()), %player, "endPoint", %player);
+}
+
+// %player's arm back to its empty hands.
+function endPoint(%player)
+{
+   if (!isObject(%player))
+      return;
+   cancel(%player.pointEnd);
+   %player.pointHeld = false;
+   %player.setArmThread("look");
 }
 
 // The client asked to switch its vehicle's headlight: only the driver may.

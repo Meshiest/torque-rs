@@ -1,6 +1,7 @@
 // Connection codes: what two players trade by hand (a link in a chat) to open a WebRTC data channel between their pages
-// with no server of ours. The host's invite (`#join=<code>`) carries its offer; the joiner's reply (`#reply=<code>`) its
-// answer. No page needed: the tests run it in Node (`node --test web/codes.test.mjs`).
+// with no server of ours. The host's invite (`#join=<code>`) carries its offer; the joiner's reply, a bare code the host pastes
+// back (an old `#reply=<code>` link also works), its answer. No page needed: the tests run it in Node
+// (`node --test web/codes.test.mjs`).
 //
 // A code is base64url (no padding) of: a version byte (CODE_VERSION), a kind byte (KIND_JOIN or KIND_REPLY), the payload
 // deflated (`deflate-raw`), and a CRC-32 of everything before it (big-endian). The payload is the SDP cut to what a data
@@ -285,8 +286,8 @@ export async function decodeCode(text, kind) {
   }
   if (bytes[0] !== CODE_VERSION) throw new CodeError('This code was made by a different version of this page.');
   if (bytes[1] !== kind) {
-    if (bytes[1] === KIND_JOIN) throw new CodeError('This is an invite offer link, not a reply link.');
-    if (bytes[1] === KIND_REPLY) throw new CodeError('This is a reply link, not an invite offer link.');
+    if (bytes[1] === KIND_JOIN) throw new CodeError('This is an invite offer link, not a reply code.');
+    if (bytes[1] === KIND_REPLY) throw new CodeError('This is a reply code, not an invite offer link.');
     throw new CodeError('This code is not an invite offer or a reply.');
   }
   const inflated = await inflate(bytes.subarray(2, end));
@@ -344,7 +345,7 @@ export function fromSdp(sdp) {
 }
 
 // A page's own answer `sdp` with the ICE credentials and DTLS setup of `details` (an earlier answer's `fromSdp`) in place of
-// its own, so a new connection answers as the reply link already said. Only the page's own descriptions go through this.
+// its own, so a new connection answers as the reply code already said. Only the page's own descriptions go through this.
 export function withDetails(sdp, { ufrag, pwd, setup }) {
   return sdp
     .replace(/^a=ice-ufrag:.*$/gm, `a=ice-ufrag:${ufrag}`)

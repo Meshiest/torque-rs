@@ -13,6 +13,8 @@
 //!
 //! The window is the engine's ([`torque::app::window::run`]).
 
+use torque::sim::player::PoseData;
+
 pub mod client;
 pub mod files;
 pub mod ground;
@@ -23,3 +25,19 @@ pub mod shots;
 pub mod showcase;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
+
+/// The figure's `swimBoundingBox` and `swimForce` (`game/server.cs`).
+pub const SWIM_BOX: [f32; 3] = [1.0, 2.3, 1.0];
+pub const SWIM_FORCE: f32 = 2400.0;
+
+/// The figure's poses as the level demo's server gives them: the examples' ([`torque_example_common::figure_poses`]), and
+/// swimming. A client cannot read a datablock's dynamic fields, so the client's prediction and the drawing of the other
+/// figures take them from here; a test holds the two the same.
+pub fn figure_poses() -> PoseData {
+    PoseData {
+        swim: true,
+        swim_box: SWIM_BOX,
+        swim_force: SWIM_FORCE,
+        ..torque_example_common::figure_poses()
+    }
+}
