@@ -25,7 +25,10 @@
 //! crosshair stays on the shots' line far off), on a boom from the eye ([`CameraBoom`]) kept [`CAMERA_CLEARANCE`] in front of
 //! the first cube or interior wall between (their boxes; an interior's walls in the client's container): pulled in fast when
 //! one comes between, let out slowly when it goes. Backed against a wall, with less than [`CAMERA_NEAREST`] left behind the
-//! eye, the view is drawn as the first person's (the figure hidden, the pistol in view) until there is room again.
+//! eye, the view is drawn as the first person's (the figure hidden, the pistol in view) until there is room again. Aiming
+//! down the sights from behind the figure (the right button) brings the camera in along its boom to the eye as the sights
+//! come up, on the sights' own spring ([`crate::scene::AIM_SECONDS`]), so the view there is the first person's at the sights
+//! (the figure's arm raised for the others, as in the first person); let go, it goes back out the same way.
 //! `Tab` moves the camera from one to the other ([`CameraBlend`], each eye of the move kept in front of walls the same way);
 //! the figure is hidden while the camera is close to its eyes ([`CLOSE`]), on the way in and on the way out, and its pistol is
 //! drawn in its hand while it is seen. A new figure (a respawn) or a teleport cuts the camera to it
@@ -511,7 +514,15 @@ impl ArenaGame {
             self.sight_share(a, b)
         });
         self.boom = boom;
-        self.behind = Some(point);
+        self.behind = Some(self.drawn_in(at, point));
+    }
+
+    /// The camera behind the figure at `point`, brought in toward the eye `at` as the sights come up ([`ArenaScene::aim`]: the
+    /// sights' own eased spring): aiming from behind the figure, the boom shortens to nothing and the view is the first
+    /// person's at the sights; let go, it goes back out the same way.
+    fn drawn_in(&self, at: [f32; 3], point: [f32; 3]) -> [f32; 3] {
+        let out = 1.0 - self.scene.aim();
+        [0, 1, 2].map(|k| at[k] + (point[k] - at[k]) * out)
     }
 
     /// The figure's eye and where the camera behind it would be with nothing in the way (module docs).
@@ -562,7 +573,7 @@ impl ArenaGame {
             Some(p) => p,
             None => {
                 let (at, back) = self.behind_line();
-                self.kept_clear(at, back)
+                self.drawn_in(at, self.kept_clear(at, back))
             }
         };
         Eye { position, ..eye }
@@ -626,7 +637,11 @@ impl ArenaGame {
         } else {
             CAMERA_NEAREST
         };
-        self.cramped = self.third_person() && blend.arrived() && room < least;
+        // The boom coming in to the sights or going back out of them is not cramped: it eases through the eye's room.
+        self.cramped = self.third_person()
+            && blend.arrived()
+            && (self.scene.aim() == 0.0 || self.cramped)
+            && room < least;
         let eye = if self.cramped { self.eye() } else { eye };
         self.drawn_at = Some(eye.position);
         self.held = self.scene.own().map(|_| eye);
