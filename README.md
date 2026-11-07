@@ -57,7 +57,7 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-render-hd` | the HD renderer on the GPU: shadows, sky and clouds, water, reflections, AO, TAA, bloom and exposure |
 | `torque-app` | what a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures (needs a GPU) |
 | `torque` | the umbrella crate: the crates above behind features, and headless examples |
-| `torque-example` | an example dedicated server and client over the loopback address (`just examples/min-server`, `just examples/min-client`) |
+| `torque-example-minimal` (`examples/minimal`) | a dedicated server and a client over the loopback address, wired by hand on the lower crates (`just examples/min-server`, `just examples/min-client`) |
 | `torque-example-assets` (`examples/assets`) | the example games' asset kit: a cube, a box figure, a pistol, a buggy, terrains, trees, interiors and their textures, made from code (`just examples/assets`) |
 | `torque-example-common` (`examples/common`) | what the example games share beyond `torque::app`: the kit as files, the shared scripts, the prediction over the kit's cubes and interiors |
 | `torque-example-character` (`examples/character`) | an animated box figure in a window, with an orbit camera |

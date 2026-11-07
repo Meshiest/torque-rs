@@ -157,8 +157,8 @@ the legacy terrain format.
 ## The minimal server and client
 
 A dedicated server of the bundled game and a client that connects to it and prints the ghosts it is sent, both in the
-console. `just examples/min-server` (`cargo run -p torque-example --bin min-server`) and `just examples/min-client`
-(`cargo run -p torque-example --bin min-client`); `just examples/headless` runs the umbrella crate's headless examples.
+console. `just examples/min-server` (`cargo run -p torque-example-minimal --bin min-server`) and `just examples/min-client`
+(`cargo run -p torque-example-minimal --bin min-client`); `just examples/headless` runs the umbrella crate's headless examples.
 
 ## The pictures
 

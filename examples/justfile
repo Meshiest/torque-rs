@@ -15,15 +15,15 @@ headless:
     cargo run -p torque --example shape
     cargo run -p torque --example collide
     cargo run -p torque --example net
-    cargo run -p torque-example --bin min-server -- --port 0 --ticks 64
+    cargo run -p torque-example-minimal --bin min-server -- --port 0 --ticks 64
 
 # The minimal dedicated server: the bundled game on 127.0.0.1:28000 (`--ticks N` stops it after N ticks)
 min-server *args:
-    cargo run -p torque-example --bin min-server -- {{args}}
+    cargo run -p torque-example-minimal --bin min-server -- {{args}}
 
 # The minimal client: connects to the minimal server and prints the ghosts it is sent
 min-client *args:
-    cargo run -p torque-example --bin min-client -- {{args}}
+    cargo run -p torque-example-minimal --bin min-client -- {{args}}
 
 # The example games' asset kit (shapes and textures made from code), written into `dir`
 assets dir="../target/example-assets":

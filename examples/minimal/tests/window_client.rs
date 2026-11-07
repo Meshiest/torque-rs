@@ -2,7 +2,7 @@
 #![cfg(feature = "window")]
 
 use torque::client::platform::window::WindowGame;
-use torque_example::window::ExampleWindow;
+use torque_example_minimal::window::ExampleWindow;
 
 #[test]
 fn the_window_clients_gui_shows_the_ghosts_it_is_sent() {
@@ -14,7 +14,7 @@ fn the_window_clients_gui_shows_the_ghosts_it_is_sent() {
         std::thread::sleep(std::time::Duration::from_millis(4));
     }
     assert!(w.status().starts_with("3 ghosts"), "{}", w.status());
-    let boxes = (0..torque_example::window::MAX_BOXES)
+    let boxes = (0..torque_example_minimal::window::MAX_BOXES)
         .filter_map(|i| w.ghost_box(i))
         .count();
     assert_eq!(boxes, 3, "the crate, the gem and the camera");

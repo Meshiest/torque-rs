@@ -487,6 +487,50 @@ impl Namespaces {
         out
     }
 
+    /// One line per native registered in the base layers, sorted: `namespace::name min..max usage`, the global
+    /// namespace without the `namespace::`, a `max` of `*` for no limit (the counts include the function's own name, as
+    /// in [`Namespaces::native_signatures`]), the usage text with its backslashes and line breaks escaped (a native with
+    /// none ends after the counts). The text of a host's whole native surface, for a snapshot test.
+    pub fn native_listing(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for table in self.tables.values() {
+            for entry in table.base.values() {
+                let entry = entry.borrow();
+                let Callable::Native {
+                    min, max, usage, ..
+                } = &entry.callable
+                else {
+                    continue;
+                };
+                let mut line = String::new();
+                if !table.display.is_empty() {
+                    line.push_str(&String::from_utf8_lossy(&table.display));
+                    line.push_str("::");
+                }
+                line.push_str(&String::from_utf8_lossy(&entry.name));
+                if *max == 0 {
+                    line.push_str(&format!(" {min}..*"));
+                } else {
+                    line.push_str(&format!(" {min}..{max}"));
+                }
+                if !usage.is_empty() {
+                    line.push(' ');
+                    for c in usage.chars() {
+                        match c {
+                            '\\' => line.push_str(r"\\"),
+                            '\n' => line.push_str(r"\n"),
+                            '\r' => line.push_str(r"\r"),
+                            c => line.push(c),
+                        }
+                    }
+                }
+                out.push(line);
+            }
+        }
+        out.sort();
+        out
+    }
+
     /// Replaces the usage text of the native `name` in `namespace`'s base layer; false when there is no such native.
     pub fn set_native_usage(&mut self, namespace: &[u8], name: &[u8], text: &str) -> bool {
         let Some(table) = self.tables.get(fold(namespace).as_slice()) else {

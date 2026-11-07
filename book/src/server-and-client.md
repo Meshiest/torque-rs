@@ -1,9 +1,9 @@
 # Server and client
 
 torque-rs keeps Torque's client/server split: the server runs the scripts and the simulation and ghosts objects to
-its clients; a client reads its ghosts into a world it draws. The `torque-example` crate puts the engine crates
-together into a small dedicated server and a client that connect over the loopback address. It is meant to be read: each
-piece below is a few dozen lines there.
+its clients; a client reads its ghosts into a world it draws. The `torque-example-minimal` crate
+(`examples/minimal`) puts the engine crates together into a small dedicated server and a client that connect over the
+loopback address. It is meant to be read: each piece below is a few dozen lines there.
 
 ```
 just examples/min-server           # the bundled game on 127.0.0.1:28000; --ticks N stops it after N ticks
@@ -27,7 +27,7 @@ GhostingStarted
   ghost 2 Item datablock 4 at (-3.70, 1.53, 1.50), 9 updates
 ```
 
-The test `crates/torque-example/tests/loopback.rs` runs both in one process for about a second and checks that the
+The test `examples/minimal/tests/loopback.rs` runs both in one process for about a second and checks that the
 mission's StaticShape and Item and the client's own Camera arrive, and that the Item's moves do.
 
 ## The server's parts

@@ -16,7 +16,7 @@ pub const MAIN_SCRIPT: &str = "example/main.cs";
 /// The mission the server loads.
 pub const MISSION: &str = "example/missions/tiny.mis";
 
-/// The example's own game folder (`crates/torque-example/game`), which holds [`GAME_FOLDER`].
+/// The example's own game folder (`examples/minimal/game`), which holds [`GAME_FOLDER`].
 pub fn bundled_root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/game"))
 }

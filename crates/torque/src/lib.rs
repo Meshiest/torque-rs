@@ -45,8 +45,8 @@
 //!   `torque-render-scene` and winit; the `torque-app` crate).
 //!
 //! The examples in this crate's `examples/` folder run headless: `cargo run -p torque --example script` (also `shape`,
-//! `collide` and `net`). The `torque-example` crate holds a dedicated server and a client built on this crate, which
-//! connect over the loopback address (see the guide's "Server and client" chapter).
+//! `collide` and `net`). The `torque-example-minimal` crate (`examples/minimal`) holds a dedicated server and a client built
+//! on this crate, which connect over the loopback address (see the guide's "Server and client" chapter).
 
 #[cfg(feature = "script")]
 pub mod script {

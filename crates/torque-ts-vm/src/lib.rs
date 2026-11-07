@@ -22,6 +22,7 @@ pub mod geometry {
 }
 pub mod host;
 pub mod idhash;
+pub mod listing;
 pub mod namehash;
 pub mod ns;
 pub mod policy;

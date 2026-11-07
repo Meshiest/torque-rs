@@ -797,6 +797,17 @@ impl Vm {
             .collect()
     }
 
+    /// Every native registered, one line each, sorted, as text for a snapshot test: see `Namespaces::native_listing`.
+    /// Each line ends with a line break.
+    pub fn native_listing(&self) -> String {
+        let mut out = String::new();
+        for line in self.namespaces.native_listing() {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
     /// Replaces the usage text of the native `namespace::name` (`namespace` empty for a global function), keeping the
     /// function and its argument counts; false when there is no such native.
     pub fn set_native_usage(&mut self, namespace: &str, name: &str, usage: &str) -> bool {

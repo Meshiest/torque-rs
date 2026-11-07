@@ -1,8 +1,8 @@
 //! The example's client in a window: connects to an example server and draws the ghosts it is sent.
 //!
-//! `cargo run -p torque-example --features window --bin example-window -- [--server 127.0.0.1:28000 | --local]`
+//! `cargo run -p torque-example-minimal --features window --bin example-window -- [--server 127.0.0.1:28000 | --local]`
 
-use torque_example::window::{ExampleWindow, run};
+use torque_example_minimal::window::{ExampleWindow, run};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = "127.0.0.1:28000".parse()?;

@@ -3,8 +3,8 @@
 
 use std::time::{Duration, Instant};
 
-use torque_example::client::{ClientNote, ExampleClient};
-use torque_example::server::{DedicatedServer, ServerNote, ServerOptions};
+use torque_example_minimal::client::{ClientNote, ExampleClient};
+use torque_example_minimal::server::{DedicatedServer, ServerNote, ServerOptions};
 
 fn class_count(client: &ExampleClient, class: &str) -> usize {
     client.seen().iter().filter(|g| g.class == class).count()

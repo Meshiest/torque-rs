@@ -1,5 +1,5 @@
 [package]
-name = "torque-example"
+name = "torque-example-minimal"
 description = "A dedicated server and a client built on the torque umbrella crate, which connect over the loopback address"
 version.workspace = true
 edition.workspace = true
@@ -14,9 +14,9 @@ categories = ["game-development", "network-programming"]
 # over the loopback address and keeps the ghosts it is sent in a client world.
 
 [dependencies]
-torque = { path = "../torque", default-features = false, features = ["script", "resource", "game", "server", "ghost-world"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["script", "resource", "game", "server", "ghost-world"] }
 # The window client (feature `window`): the client host and its window driver, the GUI pass, the window.
-torque-render-core = { path = "../torque-render-core", optional = true }
+torque-render-core = { path = "../../crates/torque-render-core", optional = true }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"], optional = true }
 
 [features]

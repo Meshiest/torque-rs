@@ -34,6 +34,10 @@ CI (`.github/workflows/ci.yml`) runs on Linux and Windows and fails on any of:
 - `cargo check` with the MSRV;
 - `cargo deny check`.
 
+The `natives` tests compare the natives each example's and the app layer's script engines have with the snapshot files under
+`tests/natives/`. A change that adds, removes or alters a native fails them; `TORQUE_BLESS=1 cargo test --workspace
+--all-features --test natives` rewrites the snapshot files, and the diff is part of the change.
+
 Run `just ci` before opening a pull request. Keep a pull request to one topic, and add a line to the `Unreleased`
 section of [CHANGELOG.md](CHANGELOG.md) when the change is visible to users of the crates.
 

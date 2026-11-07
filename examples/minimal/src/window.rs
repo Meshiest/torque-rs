@@ -103,6 +103,11 @@ impl ExampleWindow {
         })
     }
 
+    /// The client's script engine (the GUI, the action map and the screen's natives).
+    pub fn vm(&self) -> &Vm {
+        &self.host.server.vm
+    }
+
     /// The status line and the boxes as the client's ghosts are now.
     fn show_ghosts(&mut self) {
         let seen = self.client.seen();
