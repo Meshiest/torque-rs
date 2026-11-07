@@ -17,9 +17,9 @@ use torque::sim::player::{PlayerClass, PlayerHost, PlayerState};
 use torque_example_fps::files::GameFiles;
 use torque_example_fps::server::{ArenaServer, ServerOptions};
 
-/// The triggers every Player holds.
+/// The triggers every Player holds, and how far forward (negative: back) it moves.
 #[derive(Debug, Default)]
-struct Triggers(Cell<[bool; 6]>);
+struct Triggers(Cell<[bool; 6]>, Cell<f32>);
 
 #[derive(Debug)]
 struct Posing(Rc<Triggers>);
@@ -32,6 +32,7 @@ impl PlayerClass for Posing {
     ) -> Option<torque::sim::Move> {
         Some(torque::sim::Move {
             triggers: self.0.0.get(),
+            y: self.0.1.get(),
             ..torque::sim::Move::default()
         })
     }
@@ -338,4 +339,94 @@ fn a_figure_flipping_its_pose_every_tick_keeps_each_for_its_hold_and_never_hides
         );
     }
     assert!(changes.len() >= 3, "it does change: {changes:?}");
+}
+
+/// Crouched and prone, the figure moves at its datablock's speeds, half again what they were (a crouched walk 1.95 forward and
+/// 1.65 back, a crawl 1.125 forward and 0.9 back), and its walk and its crawl keep up with the ground: each plays faster by
+/// the ground it covers (the kit's `crouch_forward` strides 1.2 a second, `prone_forward` 0.75), which stays under the most
+/// a walk is sped up ([`synced::WALK_MAX_TIME_SCALE`]), so no foot or hand slides.
+#[test]
+fn crouched_and_prone_figures_move_half_again_as_fast_and_their_strides_keep_up() {
+    use torque::game::sim::player::synced;
+    use torque_example_assets::poses::{CRAWL_SPEED, CROUCH_SIDE_SPEED, CROUCH_SPEED};
+    let poses = torque_example_common::figure_poses().triggers;
+    for (pose, held, forward, back, side, stride, side_stride) in [
+        (
+            Pose::Crouch,
+            poses.crouch,
+            1.95,
+            1.65,
+            1.5,
+            CROUCH_SPEED,
+            CROUCH_SIDE_SPEED,
+        ),
+        (
+            Pose::Prone,
+            poses.prone,
+            1.125,
+            0.9,
+            0.0,
+            CRAWL_SPEED,
+            CRAWL_SPEED,
+        ),
+    ] {
+        let triggers = Rc::new(Triggers::default());
+        let mut s = server(&triggers);
+        targets(&mut s, &triggers, &[held]);
+        let target = id(&mut s, "Target");
+        let name = if pose == Pose::Crouch {
+            "Crouch"
+        } else {
+            "Prone"
+        };
+        let field = |s: &mut GameServer, f: &str| -> f32 {
+            eval(s, &format!("return ArenaFigure.max{name}{f}Speed;"))
+                .parse()
+                .unwrap()
+        };
+        assert_eq!(
+            [
+                field(&mut s, "Forward"),
+                field(&mut s, "Backward"),
+                field(&mut s, "Side")
+            ],
+            [forward, back, side],
+            "{pose:?}"
+        );
+        for (way, speed) in [(1.0f32, forward), (-1.0, back)] {
+            triggers.1.set(way);
+            for _ in 0..32 {
+                s.tick();
+            }
+            let at = |s: &mut GameServer| {
+                torque::game::sim::player::state(s.vm_mut(), target)
+                    .unwrap()
+                    .position()
+            };
+            let from = at(&mut s);
+            for _ in 0..64 {
+                s.tick();
+            }
+            let to = at(&mut s);
+            let ground = (to[1] - from[1]).abs() / 2.048;
+            assert!(
+                (ground - speed).abs() < 0.08 * speed,
+                "{pose:?} {way}: {ground} a second, want {speed}"
+            );
+            assert_eq!(
+                torque::game::sim::player::state(s.vm_mut(), target)
+                    .unwrap()
+                    .pose,
+                pose
+            );
+        }
+        for (speed, ground) in [(forward, stride), (back, stride), (side, side_stride)] {
+            let scale = speed / ground;
+            assert!(
+                scale <= synced::WALK_MAX_TIME_SCALE,
+                "{pose:?}: the stride plays {scale} times as fast, past {}",
+                synced::WALK_MAX_TIME_SCALE
+            );
+        }
+    }
 }
