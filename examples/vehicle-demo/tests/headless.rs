@@ -2805,3 +2805,56 @@ fn crouched_and_prone_the_figure_goes_faster_and_its_feet_keep_pace_with_the_gro
         );
     }
 }
+
+/// Empty-handed (the arm thread on `look`, as the demo's figures are), the figure gets down to prone and back up by the
+/// empty-handed ways, both hands going down to the ground; holding something (`hold`, the arena's pistol) by the armed ways,
+/// its right arm reaching ahead.
+#[test]
+fn an_empty_handed_figure_gets_down_and_up_with_both_hands_and_an_armed_one_keeps_its_arm_ahead() {
+    use torque::client::player_anim::{PlayerAnimation, PlayerMotion};
+    use torque::game::sim::player::poses::Pose;
+    let assets = torque_example_common::KitAssets::new().unwrap();
+    let figure = torque::app::view::SceneShape::load(
+        &assets,
+        &torque_example_common::kit_path("figure.dts"),
+    )
+    .unwrap();
+    let shape = figure.shape();
+    for (arm, down, up) in [
+        (None, "prone_down", "prone_up"),
+        (Some("look"), "prone_down", "prone_up"),
+        (Some("hold"), "prone_down_armed", "prone_up_armed"),
+    ] {
+        let mut instance = figure.instance().unwrap();
+        let mut anim = PlayerAnimation::new(shape, &mut instance).unwrap();
+        let arm_action = arm.map(|name| {
+            anim.actions()
+                .iter()
+                .position(|a| a.name == name.as_bytes())
+                .unwrap() as u32
+        });
+        let mut played = Vec::new();
+        for pose in [Pose::Crouch, Pose::Prone, Pose::Crouch] {
+            let motion = PlayerMotion {
+                pose,
+                arm_action,
+                look: 0.5,
+                ..PlayerMotion::default()
+            };
+            for _ in 0..90 {
+                anim.update(shape, &mut instance, &motion, 1.0 / 60.0);
+                let name =
+                    String::from_utf8_lossy(&anim.actions()[anim.action().0].name).into_owned();
+                if played.last() != Some(&name) {
+                    played.push(name);
+                }
+            }
+        }
+        assert_eq!(
+            played,
+            ["crouch_root", down, "prone_root", up, "crouch_root"],
+            "with the arm on {arm:?}"
+        );
+    }
+}
+

@@ -15,7 +15,9 @@
 //!   direction best fits the velocity past 0.1 (`side` also backwards), else its root, as TGE picks the standing ones.
 //! - **The way down and up** ([`PoseSets::way`]): a shape with `prone_down` plays it, to its end, when the Player goes prone
 //!   from the crouch (or from standing), and `prone_up` when it gets up from prone: the body lowers to a knee, puts its
-//!   hands down and lies flat, or pushes up to the crouch, in the ticks the step keeps the Player still for it.
+//!   hands down and lies flat, or pushes up to the crouch, in the ticks the step keeps the Player still for it. A shape may
+//!   give a way of its own for a Player whose hands are not empty (`prone_down_armed`, `prone_up_armed`: its arm action is not
+//!   the shape's `look`, a pistol held ahead staying ahead), which then plays in its place.
 //! - **The blend** ([`blend_for`]): an action of another pose blends in over a longer, eased transition, so the body lowers
 //!   and rises rather than snapping: [`CROUCH_BLEND`] seconds between standing and crouching, [`PRONE_BLEND`] to or from prone
 //!   (without a way down or up), [`WAY_BLEND`] into a way down or up from the pose it starts in.
@@ -149,6 +151,9 @@ pub struct PoseActions {
     /// The way into the pose from the crouch (`<pose>_down`), and out of it up to the crouch (`<pose>_up`).
     pub down: Option<usize>,
     pub up: Option<usize>,
+    /// The ways for a Player whose hands are not empty (`<pose>_down_armed`, `<pose>_up_armed`), when the shape has them.
+    pub down_armed: Option<usize>,
+    pub up_armed: Option<usize>,
 }
 
 impl PoseActions {
@@ -160,6 +165,7 @@ impl PoseActions {
     fn contains(&self, action: usize) -> bool {
         self.root == Some(action)
             || self.down == Some(action)
+            || self.down_armed == Some(action)
             || self.moves().contains(&Some(action))
     }
 }
@@ -210,6 +216,8 @@ impl PoseSets {
                     b"side" if moves => set.side = set.side.or(Some(i)),
                     b"down" => set.down = set.down.or(Some(i)),
                     b"up" => set.up = set.up.or(Some(i)),
+                    b"down_armed" => set.down_armed = set.down_armed.or(Some(i)),
+                    b"up_armed" => set.up_armed = set.up_armed.or(Some(i)),
                     _ => {}
                 }
             }
@@ -226,7 +234,11 @@ impl PoseSets {
     /// The pose an action belongs to (standing for the table's and every other; a way down to the pose it lies down in, a way
     /// up to the crouch it rises to).
     pub fn pose_of(&self, action: usize) -> Pose {
-        if self.sets.iter().any(|s| s.up == Some(action)) {
+        if self
+            .sets
+            .iter()
+            .any(|s| s.up == Some(action) || s.up_armed == Some(action))
+        {
             return Pose::Crouch;
         }
         [Pose::Sprint, Pose::Crouch, Pose::Prone]
@@ -244,18 +256,21 @@ impl PoseSets {
     pub fn is_way(&self, action: usize) -> bool {
         self.sets
             .iter()
-            .any(|s| s.down == Some(action) || s.up == Some(action))
+            .any(|s| [s.down, s.up, s.down_armed, s.up_armed].contains(&Some(action)))
     }
 
     /// The way down or up to play before the actions of `pose` (see the module docs), the action playing being `now`: prone's
     /// way down when it is not lying down yet, its way up when it lies down and the pose is not prone; none otherwise, or when
-    /// the shape has no such way.
-    pub fn way(&self, now: usize, pose: Pose) -> Option<usize> {
+    /// the shape has no such way. `armed`: the Player's hands are not empty, so the shape's armed way plays when it has one.
+    pub fn way(&self, now: usize, pose: Pose, armed: bool) -> Option<usize> {
         let prone = self.of_pose(Pose::Prone)?;
         let lying = self.pose_of(now) == Pose::Prone;
+        let pick = |plain: Option<usize>, held: Option<usize>| {
+            if armed { held.or(plain) } else { plain }
+        };
         match (pose == Pose::Prone, lying) {
-            (true, false) => prone.down,
-            (false, true) if Some(now) != prone.down || pose != Pose::Prone => prone.up,
+            (true, false) => pick(prone.down, prone.down_armed),
+            (false, true) => pick(prone.up, prone.up_armed),
             _ => None,
         }
     }
@@ -315,6 +330,12 @@ pub fn blend_for(sets: &PoseSets, from: usize, to: usize) -> Option<f32> {
         (x, y) if x == 2 || y == 2 => Some(PRONE_BLEND),
         _ => Some(CROUCH_BLEND),
     }
+}
+
+/// Whether a Player whose arm action is named `arm` has its hands full (for [`PoseSets::way`]): any arm action but `look`,
+/// the empty hands a Player's arm thread starts on.
+pub fn armed(arm: Option<&[u8]>) -> bool {
+    arm.is_some_and(|a| !a.eq_ignore_ascii_case(b"look"))
 }
 
 /// The pose's own version of an arm action (`<pose>_<arm>`, `prone_hold` for `hold` lying down) in the action list `names`,

@@ -940,12 +940,20 @@ const TOUCH: f32 = 0.004;
 /// The key at share `t` of the way down: the stage's body placed, each foot kept out of the floor, the left hand set on it as much
 /// as it stands there, and the body raised or lowered so a kneeling knee rests on it (a few passes, each placing the limbs
 /// again).
-fn way_key(t: f32) -> Key {
+fn way_key(t: f32, armed: bool) -> Key {
     let s = stage_at(t);
     let root_r = deg(X, s.pitch);
     let mut socket = [0.0, s.socket[0], s.socket[1]];
     let mut ankles = s.ankles;
     let mut grip = s.left_grip;
+    let mirror = |v: Vec3| [-v[0], v[1], v[2]];
+    // Empty hands: the right hand goes down as the left does, on its own side.
+    let mut right_grip = mirror(s.left_grip);
+    let right_pole = if armed {
+        s.right_pole
+    } else {
+        mirror(s.left_pole)
+    };
     let make = |socket: Vec3, ankles: [Vec3; 2], grip: Vec3, right: Vec3| Key {
         root_t: (V3::from(socket) - apply(&root_r, V3::new(0.0, 0.0, PELVIS))).to_array(),
         root_r,
@@ -963,21 +971,31 @@ fn way_key(t: f32) -> Key {
             },
             Arm {
                 grip: right,
-                pole: s.right_pole,
+                pole: right_pole,
             },
         ],
     };
-    let mut right = V3::ZERO;
+    let mut right = if armed { V3::ZERO } else { right_grip.into() };
     for _ in 0..6 {
         let key = make(socket, ankles, grip, right.to_array());
         let f = frames(&key, &solve(&key));
-        right = f.shoulders[1] + V3::from(s.right_reach);
         // A hand still reaching keeps its elbow bent: its grip no further than most of the arm's reach.
-        let to = V3::from(grip) - f.shoulders[0];
-        let d = to.length();
         let most = 0.9 * (UPPER_ARM + GRIP);
-        if s.hand_down < 1.0 && d > most {
-            grip = (f.shoulders[0] + to * (most / d)).to_array();
+        let keep = |g: &mut Vec3, shoulder: V3| {
+            let to = V3::from(*g) - shoulder;
+            let d = to.length();
+            if s.hand_down < 1.0 && d > most {
+                *g = (shoulder + to * (most / d)).to_array();
+            }
+        };
+        keep(&mut grip, f.shoulders[0]);
+        if armed {
+            right = f.shoulders[1] + V3::from(s.right_reach);
+        } else {
+            keep(&mut right_grip, f.shoulders[1]);
+            let hand = lowest(&f.elbows[1], HAND_BOX.0, HAND_BOX.1);
+            right_grip[2] += s.hand_down * (TOUCH - hand);
+            right = right_grip.into();
         }
         for (ankle, frame) in ankles.iter_mut().zip(&f.ankles) {
             ankle[2] += (TOUCH - lowest(frame, FOOT_BOX.0, FOOT_BOX.1)).max(0.0);
@@ -1006,17 +1024,21 @@ fn way_key(t: f32) -> Key {
 }
 
 /// `prone_down` and `prone_up` (see the module docs): the way down from the crouch to prone and the same way back up, each a
-/// key a tick, played once; over every other thread (priority 2), so a held pistol's arm goes down and up with the body.
+/// key a tick, played once; over every other thread (priority 2). Empty-handed, both hands go down to the ground and push up
+/// from it; `prone_down_armed` and `prone_up_armed`, for a figure holding something, keep the right arm reaching ahead, so a
+/// held pistol's arm goes down and up with the body.
 pub(crate) fn ways(b: &mut ShapeBuilder, body: &Body<'_>) {
-    for (name, seconds, up) in [
-        ("prone_down", PRONE_DOWN_SECONDS, false),
-        ("prone_up", PRONE_UP_SECONDS, true),
+    for (name, seconds, up, armed) in [
+        ("prone_down", PRONE_DOWN_SECONDS, false, false),
+        ("prone_up", PRONE_UP_SECONDS, true, false),
+        ("prone_down_armed", PRONE_DOWN_SECONDS, false, true),
+        ("prone_up_armed", PRONE_UP_SECONDS, true, true),
     ] {
         let n = (seconds / 0.032).round() as usize + 1;
         let keys: Vec<Key> = (0..n)
             .map(|k| {
                 let t = k as f32 / (n - 1) as f32;
-                way_key(if up { 1.0 - t } else { t })
+                way_key(if up { 1.0 - t } else { t }, armed)
             })
             .collect();
         let mut def = sequence(name, seconds, tracks(body, &keys), Vec::new());
