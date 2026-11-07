@@ -162,7 +162,21 @@ pub(super) fn update_container(
         return;
     }
     s.drag = db.drag * st.viscosity * cov;
-    s.buoyancy = (st.density / db.density) * cov;
+    s.buoyancy = (st.density / body_density(db.density)) * cov;
+}
+
+/// The least density a Player's datablock is taken to have in water.
+pub const MIN_BODY_DENSITY: f32 = 0.01;
+
+/// A datablock's `density` as the buoyancy divides by it (the engine's own guard: TGE divides by any value): at least
+/// [`MIN_BODY_DENSITY`], and the default 1 for a value that is not finite (a datablock is not trusted: a density of 0 or a
+/// tiny one overflows the buoyancy).
+pub fn body_density(d: f32) -> f32 {
+    if !d.is_finite() {
+        1.0
+    } else {
+        d.max(MIN_BODY_DENSITY)
+    }
 }
 
 #[cfg(test)]
