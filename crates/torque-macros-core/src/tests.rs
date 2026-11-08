@@ -140,6 +140,17 @@ fn the_engine_path_follows_the_dependencies() {
 }
 
 #[test]
+fn an_extension_names_the_sdk() {
+    let path = |sdk| crate::sdk_path(sdk).to_token_stream().to_string();
+    assert_eq!(
+        path(FoundCrate::Name("torque_plugin_sdk".into())),
+        ":: torque_plugin_sdk"
+    );
+    assert_eq!(path(FoundCrate::Name("sdk".into())), ":: sdk");
+    assert_eq!(path(FoundCrate::Itself), ":: torque_plugin_sdk");
+}
+
+#[test]
 fn the_derive_names_the_engine_by_the_path_found() {
     let out = derive_plugin_id(
         quote! { struct Rope; },

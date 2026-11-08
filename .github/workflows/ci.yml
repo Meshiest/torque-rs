@@ -148,6 +148,8 @@ jobs:
           git diff --exit-code book/src/reference
       - name: The guide
         run: mdbook build book
+      - name: The C header of the native extension ABI is up to date
+        run: cargo run --manifest-path crates/torque-plugin-abi/header-gen/Cargo.toml -- --check
 
   server-deps:
     name: the server crate has no drawing, GUI, audio or window crates

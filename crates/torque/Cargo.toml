@@ -27,6 +27,7 @@ torque-mapcore = { path = "../torque-mapcore", optional = true }
 torque-maps = { path = "../torque-maps", optional = true }
 torque-mods = { path = "../torque-mods", optional = true }
 torque-net = { path = "../torque-net", optional = true }
+torque-plugin-loader = { path = "../torque-plugin-loader", optional = true }
 torque-resource = { path = "../torque-resource", optional = true }
 torque-scene = { path = "../torque-scene", optional = true }
 torque-server = { path = "../torque-server", optional = true }
@@ -79,6 +80,10 @@ server = ["dep:torque-server", "net", "game"]
 # The server half of what a game shares (`torque::app_server`): its files, a server, the terrain and water blocks, the dedicated
 # runner and `MinimalPlugins`. No drawing, GUI, audio or window crates.
 app-server = ["dep:torque-app-server", "engine", "server"]
+# Native extensions (`torque::extensions`): libraries loaded at run time from a local `plugins/` folder over the C ABI,
+# approved by hash, off until game.toml or a flag turns them on. Never in a default build: an extension runs with the
+# game's full rights.
+native-extensions = ["dep:torque-plugin-loader", "engine"]
 images = ["dep:torque-images"]
 fonts = ["dep:torque-fonts", "images"]
 gui = ["dep:torque-gui", "fonts", "images", "script"]
@@ -95,7 +100,7 @@ system-fonts = ["fonts", "torque-fonts/system-fonts"]
 # pictures (`torque-app`), with the engine's renderer. Needs a GPU.
 app = ["app-core", "renderer", "gizmos"]
 # `app` without the engine's renderer: a game registers its own on the renderer slot.
-app-core = ["client-window", "system-fonts", "shapes", "engine", "dep:torque-app"]
+app-core = ["client-window", "system-fonts", "shapes", "engine", "dep:torque-app", "torque-plugin-loader?/render"]
 # The engine's renderer and its feature plugins on the renderer slot (`torque::app::renderers`).
 renderer = ["app-core", "torque-app/renderer"]
 # Debug gizmos (`torque::app::gizmos`): lines, boxes, spheres and labels drawn in world space by `GizmosPlugin`. In `app`; a shipped

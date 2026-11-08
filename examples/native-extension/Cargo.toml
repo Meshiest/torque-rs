@@ -1,0 +1,18 @@
+[package]
+name = "native-sample"
+description = "A native extension of the engine, built on its own: a console function, a global and two render passes over the C ABI"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Its own workspace: an extension is built apart from the engine, against torque-plugin-sdk only, and loaded at run time from
+# a game's `plugins/` folder (with `native_sample.toml` beside the library). Build it with
+# `cargo build --manifest-path examples/native-extension/Cargo.toml`.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+torque-plugin-sdk = { path = "../../crates/torque-plugin-sdk" }

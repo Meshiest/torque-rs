@@ -1,0 +1,68 @@
+[package]
+name = "torque-plugin-sdk"
+description = "Write a native extension in Rust: safe wrappers over the engine's C ABI, #[function] natives, render passes, and the export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "plugins", "ffi", "extension", "gamedev"]
+categories = ["game-engines", "external-ffi-bindings"]
+
+# What an extension crate (`crate-type = ["cdylib"]`) depends on, and nothing of the engine: the ABI's types, and the
+# `#[function]` attribute, which finds this crate in the extension's manifest and declares the native through it.
+
+[dependencies]
+torque-plugin-abi = { path = "../torque-plugin-abi" }
+torque-macros = { path = "../torque-macros" }
+
+[lints.rust]
+# `deny`, not the workspace's `forbid`: the `ffi` module allows it, for the calls across the C ABI.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+explicit_outlives_requirements = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+
+[lints.clippy]
+# Left-over debugging and placeholders.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Idioms.
+checked_conversions = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+manual_assert = "warn"
+manual_is_variant_and = "warn"
+manual_ok_or = "warn"
+mut_mut = "warn"
+needless_bitwise_bool = "warn"
+ref_binding_to_reference = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+should_panic_without_expect = "warn"
+stable_sort_primitive = "warn"
+string_add_assign = "warn"
+string_lit_chars_any = "warn"
+unnecessary_join = "warn"
+unnecessary_self_imports = "warn"
+unnested_or_patterns = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
+# Process control belongs to the host, never to a library.
+exit = "warn"
+mem_forget = "warn"

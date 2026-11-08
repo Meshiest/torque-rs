@@ -44,6 +44,8 @@
 //! - `client-window`: the client's window glue (`client::platform`, over winit).
 //! - `shape-builder`: `shape_builder`, a builder of shape models from code (`torque-shape-builder`).
 //! - `full`: everything above.
+//! - `native-extensions`: `extensions`, libraries loaded at run time from a local `plugins/` folder over the engine's C ABI
+//!   (`torque-plugin-loader`); not in `full`, since an extension runs with the game's full rights.
 //!
 //! The crates that draw (the renderer and its back ends) need a GPU and join as features that are off by default:
 //!
@@ -110,6 +112,9 @@ pub use torque_maps as maps;
 pub use torque_mods as mods;
 #[cfg(feature = "net")]
 pub use torque_net as net;
+/// Native extensions: libraries loaded at run time over the C ABI (the `native-extensions` feature).
+#[cfg(feature = "native-extensions")]
+pub use torque_plugin_loader as extensions;
 #[cfg(feature = "resource")]
 pub use torque_resource as resource;
 #[cfg(feature = "scene")]

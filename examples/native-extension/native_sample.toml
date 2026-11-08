@@ -1,0 +1,4 @@
+# The manifest the engine reads before it loads the library: copy it into the game's plugins/ folder with the library.
+id = "example.native-sample"
+version = "0.1.0"
+library = "native_sample"

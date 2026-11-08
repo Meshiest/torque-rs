@@ -940,6 +940,7 @@ Plugins are new, and most of the engine is not plugins yet. The direction:
   closure that unpacks the arguments by hand. A macro could write that from an ordinary Rust function.
 - **Extensions.** A plugin can report its own id at run time (`Plugin::id`) and name other plugins only by id
   (`Requires::id`, `add_before_id`), so that an extension loaded at run time can take part in the same ordering, config and
-  version checks (`Plugin::net_version`) that built-in plugins do.
+  version checks (`Plugin::net_version`) that built-in plugins do. [Native extensions](native-extensions.md) are such
+  plugins: libraries loaded from a `plugins/` folder over a C interface.
 
 None of these has a date. The [roadmap](roadmap.md) lists what is planned.

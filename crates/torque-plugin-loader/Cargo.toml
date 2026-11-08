@@ -1,0 +1,101 @@
+[package]
+name = "torque-plugin-loader"
+description = "Native extensions: libraries loaded at run time from a local plugins/ folder over the engine's C ABI, approved by hash"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "plugins", "ffi", "extension", "gamedev"]
+categories = ["game-engines", "external-ffi-bindings"]
+
+# The host side of the C ABI (`torque-plugin-abi`): `NativeExtensionsPlugin` finds the libraries in `plugins/`, has the player
+# approve each by its SHA-256 hash, loads it and adds what it registers as a plugin of its own id. A game opts in by depending
+# on this crate (or the `torque` crate's `native-extensions` feature); the plugin is added off, and game.toml or a flag turns it
+# on. Loading libraries is native only: in a wasm32 build the plugin loads nothing and says so.
+
+[dependencies]
+torque-plugin-abi = { path = "../torque-plugin-abi" }
+torque-engine = { path = "../torque-engine" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+# The file hash the player approves.
+sha2 = "0.10"
+# A library's exported ABI version, read from its file before it is loaded.
+object = { version = "0.37", default-features = false, features = ["read_core", "coff", "elf", "macho", "pe", "std"] }
+# Each library's manifest (`plugins/<name>.toml`).
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
+# `render`: the extensions' render passes, drawn by the engine's renderer.
+torque-app = { path = "../torque-app", optional = true, default-features = false }
+torque-render-core = { path = "../torque-render-core", optional = true }
+torque-render-hd = { path = "../torque-render-hd", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libloading = "0.8"
+
+[features]
+# The render passes extensions declare, through `engine.render()` (needs the client crates; a dedicated server leaves it out
+# and an extension's passes are skipped with a warning).
+render = ["dep:torque-app", "dep:torque-render-core", "dep:torque-render-hd"]
+
+[dev-dependencies]
+torque-plugin-sdk = { path = "../torque-plugin-sdk" }
+# game.toml turning the plugin on.
+torque-app-server = { path = "../torque-app-server" }
+torque-app = { path = "../torque-app", default-features = false, features = ["renderer"] }
+torque-render-core = { path = "../torque-render-core" }
+torque-render-scene = { path = "../torque-render-scene" }
+
+[lints.rust]
+# `deny`, not the workspace's `forbid`: the `ffi` module allows it, for the calls across the C ABI and the library loading.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+explicit_outlives_requirements = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+
+[lints.clippy]
+# Left-over debugging and placeholders.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Idioms.
+checked_conversions = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+manual_assert = "warn"
+manual_is_variant_and = "warn"
+manual_ok_or = "warn"
+mut_mut = "warn"
+needless_bitwise_bool = "warn"
+ref_binding_to_reference = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+should_panic_without_expect = "warn"
+stable_sort_primitive = "warn"
+string_add_assign = "warn"
+string_lit_chars_any = "warn"
+unnecessary_join = "warn"
+unnecessary_self_imports = "warn"
+unnested_or_patterns = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
+# Process control belongs to the host, never to a library.
+exit = "warn"
+mem_forget = "warn"
+
+[[test]]
+name = "pictures"
+required-features = ["render"]

@@ -246,6 +246,52 @@ impl TypedNative {
         Ok(())
     }
 
+    /// A native over the raw call, for one whose script arguments are known only at run time (a loaded extension's):
+    /// `args` are their kinds, and `f` gets the script engine, the call and the index of its first script argument in
+    /// `call.argv` (after the name, and a method's object). Its result and errors are a typed native's: an `Err` is
+    /// printed with the native's name and usage, and the call returns the empty string. Err when `args` are not
+    /// required first, then optional ones, then one rest last.
+    ///
+    /// ```
+    /// use torque_engine::script::{Callee, TypedNative};
+    /// use torque_engine::EngineBuilder;
+    /// use torque_ts_vm::convert::ArgKind;
+    /// use torque_ts_vm::vm::{Native, Vm};
+    ///
+    /// let native = TypedNative::from_call(&[ArgKind::Required], |_vm, call, first| {
+    ///     Ok(Native::Str(call.argv[first].repeat(2)))
+    /// })?;
+    /// let engine = EngineBuilder::new().build()?;
+    /// let mut vm = Vm::new();
+    /// native.register(&mut vm, &engine, Callee::Function { namespace: "", name: "twice" }, &["text"], "")?;
+    /// assert_eq!(vm.eval(b"return twice(\"ab\");")?, b"abab");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn from_call(
+        args: &[ArgKind],
+        f: impl Fn(&mut Vm, &NativeCall, usize) -> Result<Native, ScriptError> + 'static,
+    ) -> Result<TypedNative, String> {
+        let kinds: Vec<ParamKind> = args.iter().map(|&k| ParamKind::Script(k)).collect();
+        if let Some(error) = native_shape_error(&kinds) {
+            return Err(error.to_string());
+        }
+        let f = Rc::new(f);
+        Ok(TypedNative {
+            kinds,
+            args: args.to_vec(),
+            make: Rc::new(move |_engine: &Engine, info: Rc<NativeInfo>| {
+                let f = Rc::clone(&f);
+                Box::new(move |vm: &mut Vm, call: &NativeCall| -> Native {
+                    if !dev_gate(vm, &info) {
+                        return Native::Str(Vec::new());
+                    }
+                    let outcome = f(vm, call, info.first_arg);
+                    finish(vm, &info, Ok(outcome))
+                })
+            }),
+        })
+    }
+
     fn usage(&self, callee: Callee, names: &[&str], description: &str) -> Result<String, String> {
         if names.len() != self.args.len() {
             return Err(format!(
@@ -681,6 +727,29 @@ impl<'b> ScriptRegistry<'b> {
             self.native(decl.callee(), usage, native, decl.dev, decl.docs);
         }
         self
+    }
+
+    /// Declares a native made at run time ([`TypedNative::from_call`]) as `callee`: what a loaded extension declares
+    /// through. `names` name its script arguments; its usage text is `usage` as written, or else made from `names` and
+    /// `description` ([`usage_text`]). `docs` are its whole docs for the script reference. A development command when
+    /// `dev` ([`dev`](Self::dev)). A name another plugin took, or `names` that do not name each script argument once,
+    /// fail the build as the other declarations do.
+    #[allow(clippy::too_many_arguments)]
+    pub fn native_at_run_time(
+        &mut self,
+        callee: Callee,
+        names: &[&str],
+        description: &str,
+        usage: Option<&str>,
+        dev: bool,
+        docs: &'static str,
+        native: TypedNative,
+    ) -> &mut Self {
+        let usage = match usage {
+            Some(usage) if names.len() == native.args.len() => Ok(usage.to_string()),
+            _ => native.usage(callee, names, description),
+        };
+        self.native(callee, usage, native, dev, docs)
     }
 
     /// Declares the global variable `name` (with its `$`) and sets it to `default`, before scripts run.

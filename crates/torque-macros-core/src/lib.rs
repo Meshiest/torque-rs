@@ -48,12 +48,31 @@ pub fn derive_plugin_id(input: TokenStream, crate_name: &str, engine: &syn::Path
     expand_plugin_id(input, crate_name, engine).unwrap_or_else(syn::Error::into_compile_error)
 }
 
-/// The engine crate's path in the crate being compiled, from its manifest: see [`engine_path`].
+/// The engine crate's path in the crate being compiled, from its manifest: see [`engine_path`]. A crate with neither
+/// `torque-engine` nor `torque` but `torque-plugin-sdk` (a native extension) gets the SDK's path ([`sdk_path`]), whose
+/// `#[function]` declarations go to the engine through its C ABI.
 pub fn find_engine() -> syn::Path {
-    engine_path(
-        proc_macro_crate::crate_name("torque-engine").ok(),
-        proc_macro_crate::crate_name("torque").ok(),
-    )
+    let engine = proc_macro_crate::crate_name("torque-engine").ok();
+    let umbrella = proc_macro_crate::crate_name("torque").ok();
+    if engine.is_none()
+        && umbrella.is_none()
+        && let Ok(sdk) = proc_macro_crate::crate_name("torque-plugin-sdk")
+    {
+        return sdk_path(sdk);
+    }
+    engine_path(engine, umbrella)
+}
+
+/// The extension SDK's path, from where the manifest has `torque-plugin-sdk`: its name (as renamed there), or
+/// `::torque_plugin_sdk` inside the SDK itself.
+pub fn sdk_path(sdk: proc_macro_crate::FoundCrate) -> syn::Path {
+    match sdk {
+        proc_macro_crate::FoundCrate::Name(name) => {
+            let name = syn::Ident::new(&name, proc_macro2::Span::call_site());
+            syn::parse_quote!(::#name)
+        }
+        proc_macro_crate::FoundCrate::Itself => syn::parse_quote!(::torque_plugin_sdk),
+    }
 }
 
 /// The engine crate's path, from where its manifest has `torque-engine` and `torque`: `torque-engine` by its name (as

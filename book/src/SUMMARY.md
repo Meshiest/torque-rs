@@ -12,6 +12,7 @@
 [Camera modes from plugins](camera-modes.md)
 [Assets from plugins](asset-loaders.md)
 [Mods](mods.md)
+[Native extensions](native-extensions.md)
 [Games in a browser](web-pages.md)
 
 # Reference

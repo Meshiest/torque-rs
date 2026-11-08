@@ -1,8 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "examples/*"]
-# The examples' pictures (`examples/README.md`'s), not a crate.
-exclude = ["examples/screenshots"]
+# The examples' pictures (`examples/README.md`'s), not a crate; the native extension sample and the C header's generator,
+# each built on its own (their own workspaces).
+exclude = ["examples/screenshots", "examples/native-extension", "crates/torque-plugin-abi/header-gen"]
 
 [workspace.package]
 version = "0.1.0"

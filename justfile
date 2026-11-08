@@ -105,6 +105,23 @@ shots-diff a b:
 shots-diff-one example a b:
     just shots-diff "{{a}}/{{example}}" "{{b}}/{{example}}"
 
+# Writes the C header of the native extension ABI (crates/torque-plugin-abi/include/torque_plugin.h) with cbindgen
+c-header:
+    cargo run --manifest-path crates/torque-plugin-abi/header-gen/Cargo.toml
+
+# Fails when the checked-in C header is not what the ABI makes (CI runs the same check)
+c-header-check:
+    cargo run --manifest-path crates/torque-plugin-abi/header-gen/Cargo.toml -- --check
+
+# The sample native extension (examples/native-extension), built on its own as a library
+native-ext-sample:
+    cargo build --manifest-path examples/native-extension/Cargo.toml
+
+# The sample extension's picture compiled in (`<dir>/compiled`) and loaded as a library (`<dir>/loaded`), then shots-diff
+native-ext-shots $TORQUE_NATIVE_EXT_SHOTS="target/native-ext-shots":
+    cargo test -p torque-plugin-loader --features render --test pictures
+    just shots-diff "{{TORQUE_NATIVE_EXT_SHOTS}}/compiled" "{{TORQUE_NATIVE_EXT_SHOTS}}/loaded"
+
 # The server crate's dependency tree has no wgpu, winit, naga, cpal, drawing, GUI, audio or client crates (CI runs the same check)
 server-deps:
     $tree = cargo tree -p torque-app-server --all-features --prefix none; if ($LASTEXITCODE -ne 0) { exit 1 }; $bad = $tree | ForEach-Object { ($_ -split ' ')[0] } | Select-String -Pattern '^(wgpu|winit|naga|cpal|raw-window-handle|torque-(render|gui|audio|client|fonts))'; if ($bad) { $bad; exit 1 }

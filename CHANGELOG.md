@@ -149,7 +149,15 @@ different.
   every game shares (its files, a server, a client, a window, the world view and offscreen pictures).
 - Math on `glam`.
 - `torque-script-reference` (`just script-reference`): writes the guide's script reference (every console function, method, class and pref of a default engine, with the opt-in plugins' marked) from the script engines it makes; CI fails when the checked-in pages are stale.
+- Native extensions (`torque-plugin-loader`, the `torque` crate's `native-extensions` feature): libraries loaded at run time
+  from a local `plugins/` folder over a versioned C ABI (`torque-plugin-abi`, the generated header `torque_plugin.h`), off
+  by default, each file approved by its SHA-256 hash (kept per user, never in the plugins folder) and asked about again
+  when it changes, loaded from a private read-only copy of the bytes that were hashed, refused before any of its code runs
+  when its exported ABI version (read from the file) is another, and disabled instead of crashing the game when it
+  panics; `torque-plugin-sdk`
+  writes them in Rust with the engine's `#[function]` and render passes. TGE has none.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
-  and one `unsafe` block in the workspace (the pipeline cache).
+  and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
+  `torque-plugin-sdk` and `torque-plugin-loader`).
 
 [Unreleased]: https://github.com/Meshiest/torque-rs/commits/main

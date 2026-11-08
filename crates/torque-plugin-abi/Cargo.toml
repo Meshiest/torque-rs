@@ -1,0 +1,19 @@
+[package]
+name = "torque-plugin-abi"
+description = "The C ABI between the engine and a native extension: the versioned function table, the declarations and the status codes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "plugins", "ffi", "abi", "gamedev"]
+categories = ["game-engines", "external-ffi-bindings"]
+
+# Types only: `#[repr(C)]` structs, function pointer types and constants, with no code and no dependency. The engine's loader
+# and the extension SDK both build on it, and `include/torque_plugin.h` is generated from it (`just c-header`).
+
+[dependencies]
+
+[lints]
+workspace = true

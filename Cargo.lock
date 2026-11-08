@@ -2208,6 +2208,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "oboe"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3314,6 +3323,7 @@ dependencies = [
  "torque-maps",
  "torque-mods",
  "torque-net",
+ "torque-plugin-loader",
  "torque-resource",
  "torque-scene",
  "torque-server",
@@ -3743,6 +3753,10 @@ name = "torque-net"
 version = "0.1.0"
 
 [[package]]
+name = "torque-plugin-abi"
+version = "0.1.0"
+
+[[package]]
 name = "torque-plugin-gamepad"
 version = "0.1.0"
 dependencies = [
@@ -3754,6 +3768,33 @@ dependencies = [
  "torque-ts-vm",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "torque-plugin-loader"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "object",
+ "sha2",
+ "toml",
+ "torque-app",
+ "torque-app-server",
+ "torque-engine",
+ "torque-plugin-abi",
+ "torque-plugin-sdk",
+ "torque-render-core",
+ "torque-render-hd",
+ "torque-render-scene",
+ "torque-ts-vm",
+]
+
+[[package]]
+name = "torque-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "torque-macros",
+ "torque-plugin-abi",
 ]
 
 [[package]]
