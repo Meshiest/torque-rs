@@ -1,0 +1,5 @@
+[game]
+name = "Fixture"
+
+[plugins]
+enable = ["torque.gizmos"]

@@ -1,0 +1,10 @@
+[bundle]
+name = "fixture"
+package = "bundle-fixture"
+bins = ["bundle-fixture"]
+exclude = ["secret/**"]
+
+[check]
+bin = "bundle-fixture"
+args = ["{work}"]
+expect = ["game says hello", "gizmos on"]

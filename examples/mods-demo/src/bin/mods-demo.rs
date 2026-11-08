@@ -3,7 +3,7 @@
 //! the first client instead of playing on (needs a GPU, offscreen: no window opens).
 //!
 //! Needs the Lua extension: build it with `just lua` (the library lands in `<build folder>/release`), or name it with `--lua
-//! <library>` or `TORQUE_LUA_LIBRARY`.
+//! <library>` or `TORQUE_LUA_LIBRARY`. A packaged game (`just bundle examples/mods-demo`) loads it from its `plugins/` folder.
 
 use std::path::PathBuf;
 
@@ -12,6 +12,7 @@ use torque_example_mods_demo::{Lua, Session, lua_library};
 
 struct Options {
     lua: Option<PathBuf>,
+    lua_given: bool,
     work: PathBuf,
     shots: Option<PathBuf>,
     rounds: u32,
@@ -20,6 +21,7 @@ struct Options {
 fn options() -> Result<Options, String> {
     let mut options = Options {
         lua: lua_library(),
+        lua_given: false,
         work: PathBuf::from("target/mods-demo"),
         shots: None,
         rounds: 2,
@@ -28,7 +30,10 @@ fn options() -> Result<Options, String> {
     while let Some(flag) = args.next() {
         let mut value = |name: &str| args.next().ok_or(format!("{name} needs a value"));
         match flag.as_str() {
-            "--lua" => options.lua = Some(PathBuf::from(value("--lua")?)),
+            "--lua" => {
+                options.lua = Some(PathBuf::from(value("--lua")?));
+                options.lua_given = true;
+            }
             "--work" => options.work = PathBuf::from(value("--work")?),
             "--shots" => options.shots = Some(PathBuf::from(value("--shots")?)),
             "--rounds" => {
@@ -47,7 +52,13 @@ fn main() -> Result<(), String> {
     let library = options
         .lua
         .ok_or("no Lua extension: build it with `just lua`, or pass --lua <library>")?;
-    let lua = Lua::install(&library, &options.work.join("lua")).map_err(|e| e.to_string())?;
+    // A packaged game loads the extension from its own `plugins/` folder; a build copies the one it was given into one.
+    let lua = if cfg!(feature = "bundled") && !options.lua_given {
+        let plugins = library.parent().ok_or("the library has no folder")?;
+        Lua::at(plugins, &options.work.join("user"))
+    } else {
+        Lua::install(&library, &options.work.join("lua")).map_err(|e| e.to_string())?
+    };
     let downloads = options.work.join("downloads");
     let _ = std::fs::remove_dir_all(&downloads);
     let mut session = Session::new(Some(lua), false, downloads)?;

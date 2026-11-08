@@ -1,0 +1,18 @@
+# A game crate for torque-bundle's tests: no dependencies, so it builds in a second. Its own workspace.
+[package]
+name = "bundle-fixture"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[features]
+default = ["dev"]
+# A default feature: a bundle builds without the defaults, so this is never in one.
+dev = []
+# A feature game.toml derives (its `torque.gizmos` plugin is enabled there).
+gizmos = []
+# Puts this crate's folder into the binary, which the leak scan must refuse.
+leak = []

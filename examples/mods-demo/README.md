@@ -33,6 +33,7 @@ mod's scripts are never offered, and a `.lua` file that did arrive would be data
 | Play two rounds | `just examples/mods-demo` | `just lua`, then `cargo run -p torque-example-mods-demo --release --bin mods-demo` |
 | Pictures of a round, from the first client | `just examples/mods-demo-shots` | `... --bin mods-demo -- --shots <dir>` (offscreen, no window) |
 | The tests | `just examples/mods-demo-test` | `cargo test -p torque-example-mods-demo --test demo -- --include-ignored` |
+| Package it for this computer (a folder that runs on its own, with `plugins/`, licenses and a manifest) | `just bundle examples/mods-demo` | `cargo run -p torque-bundle --release -- examples/mods-demo` (`bundle.toml` says what ships; the bundle's check plays a round from its folder) |
 
 The demo needs the extension's library: `just lua` leaves it in the build folder's `release/`, `--lua <library>` or
 `TORQUE_LUA_LIBRARY` names another. The tests build it themselves. They are `#[ignore]`d so that `cargo test` needs no C++

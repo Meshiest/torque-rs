@@ -1,0 +1,176 @@
+//! Which files of a game folder ship: all of them but the [`DEFAULT_EXCLUDES`] and the game's own `exclude` patterns.
+//!
+//! A pattern without `/` matches a file or folder name anywhere (`*.bak`, `tests`); one with `/` matches the path from the game
+//! folder (`dev/**`, `scripts/debug.cs`). `*` and `?` stay within a name, `**` crosses folders. Names compare without regard to
+//! ASCII case, as Windows and macOS file systems do. Links are never followed: a link in a game folder is an error, since it
+//! could pull in a file from anywhere.
+
+use std::path::{Path, PathBuf};
+
+/// Left out of every bundle: hidden files and folders, build and test folders, backups and editor files, logs, debug symbols,
+/// source maps and the operating systems' folder files.
+pub const DEFAULT_EXCLUDES: &[&str] = &[
+    ".*",
+    "target",
+    "tests",
+    "*.bak",
+    "*~",
+    "*.tmp",
+    "*.swp",
+    "*.orig",
+    "*.log",
+    "*.pdb",
+    "*.dSYM",
+    "*.js.map",
+    "*.wasm.map",
+    "Thumbs.db",
+    "desktop.ini",
+];
+
+/// A file to ship: its path in the game folder (`/` between folders) and on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selected {
+    pub path: String,
+    pub source: PathBuf,
+}
+
+/// The files of `dir` to ship, sorted by path, and the paths left out.
+pub fn select(dir: &Path, exclude: &[String]) -> Result<(Vec<Selected>, Vec<String>), String> {
+    let patterns: Vec<&str> = DEFAULT_EXCLUDES
+        .iter()
+        .copied()
+        .chain(exclude.iter().map(String::as_str))
+        .collect();
+    let mut files = Vec::new();
+    let mut skipped = Vec::new();
+    walk(dir, "", &patterns, &mut files, &mut skipped)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    skipped.sort();
+    Ok((files, skipped))
+}
+
+fn walk(
+    dir: &Path,
+    prefix: &str,
+    patterns: &[&str],
+    files: &mut Vec<Selected>,
+    skipped: &mut Vec<String>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| format!("{}: a file name is not UTF-8", dir.display()))?;
+        let path = format!("{prefix}{name}");
+        let kind = entry.file_type().map_err(|e| format!("{path}: {e}"))?;
+        if is_excluded(&path, patterns) {
+            skipped.push(path);
+            continue;
+        }
+        if kind.is_symlink() {
+            return Err(format!(
+                "{path}: a link; a game folder ships only plain files"
+            ));
+        }
+        if kind.is_dir() {
+            walk(&entry.path(), &format!("{path}/"), patterns, files, skipped)?;
+        } else if kind.is_file() {
+            files.push(Selected {
+                path,
+                source: entry.path(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Whether `path` (from the game folder, `/` between folders) is left out by one of `patterns`.
+pub fn is_excluded(path: &str, patterns: &[&str]) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    patterns.iter().any(|pattern| {
+        if pattern.contains('/') {
+            glob(pattern.as_bytes(), path.as_bytes())
+        } else {
+            glob(pattern.as_bytes(), name.as_bytes())
+        }
+    })
+}
+
+/// `*` (within a name), `?` (one character but `/`) and `**` (anything, across folders), ASCII case-insensitive.
+pub fn glob(pattern: &[u8], text: &[u8]) -> bool {
+    match pattern {
+        [] => text.is_empty(),
+        [b'*', b'*', rest @ ..] => match rest.strip_prefix(b"/") {
+            // `**/`: none or whole folders.
+            Some(rest) => (0..=text.len())
+                .filter(|&at| at == 0 || text[at - 1] == b'/')
+                .any(|at| glob(rest, &text[at..])),
+            None => (0..=text.len()).any(|at| glob(rest, &text[at..])),
+        },
+        [b'*', rest @ ..] => {
+            let end = text.iter().position(|&c| c == b'/').unwrap_or(text.len());
+            (0..=end).any(|at| glob(rest, &text[at..]))
+        }
+        [b'?', rest @ ..] => matches!(text, [c, tail @ ..] if *c != b'/' && glob(rest, tail)),
+        [p, rest @ ..] => {
+            matches!(text, [c, tail @ ..] if p.eq_ignore_ascii_case(c) && glob(rest, tail))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn globs_stay_within_names_unless_doubled() {
+        assert!(glob(b"*.bak", b"server.cs.bak"));
+        assert!(!glob(b"*.cs", b"mods/a.cs"));
+        assert!(glob(b"dev/**", b"dev/a/b.cs"));
+        assert!(glob(b"**/x.cs", b"x.cs"));
+        assert!(glob(b"**/x.cs", b"a/b/x.cs"));
+        assert!(!glob(b"**/x.cs", b"a/bx.cs"));
+        assert!(glob(b"a?c", b"abc"));
+        assert!(!glob(b"a?c", b"a/c"));
+        assert!(glob(b"THUMBS.DB", b"thumbs.db"));
+    }
+
+    #[test]
+    fn the_defaults_leave_out_dev_files_and_keep_game_files() {
+        let defaults: Vec<&str> = DEFAULT_EXCLUDES.to_vec();
+        for out in [
+            ".git",
+            "mods/.DS_Store",
+            "tests",
+            "a/target",
+            "server.cs.bak",
+            "notes.txt~",
+            "console.log",
+            "game.pdb",
+            "web/page.js.map",
+            "Thumbs.db",
+        ] {
+            assert!(is_excluded(out, &defaults), "kept {out}");
+        }
+        for kept in [
+            "server.cs",
+            "game.toml",
+            "prefs.cs",
+            "maps/arena.map",
+            "mods/orbs/lib/rules.lua",
+            "shapes/test_cube.dts",
+        ] {
+            assert!(!is_excluded(kept, &defaults), "left out {kept}");
+        }
+    }
+
+    #[test]
+    fn a_games_own_patterns_match_names_or_paths() {
+        let patterns = ["debug.cs", "dev/**"];
+        assert!(is_excluded("scripts/debug.cs", &patterns));
+        assert!(is_excluded("dev/tool.cs", &patterns));
+        assert!(!is_excluded("scripts/dev/tool.cs", &patterns));
+    }
+}

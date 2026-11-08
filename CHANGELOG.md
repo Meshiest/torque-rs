@@ -223,6 +223,10 @@ different.
   extension is a WebAssembly module of its own (`just lua-web`, built with the WASI SDK; it needs WebAssembly exception
   handling), loaded by the page only when its game uses Lua (`build.mjs --lua`, `web/lua.js`) and bridged to the engine's
   `web_lua::WebLuaPlugin`, which makes the C ABI's checks; the same tests run natively and on the web (`just lua-web-check`).
+- `torque-bundle` (`just bundle <game crate>`): packages a game for the computer it runs on: its binaries built in release
+  with only the plugin features its `game.toml` keeps (debug gizmos left out), its game folder without dev files, its native
+  extensions in `plugins/`, the license texts of every crate it links, and a manifest of every file's SHA-256. Local folders
+  are remapped out of the builds and a bundle holding one is refused; the same inputs give the same manifest. TGE has none.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
   `torque-plugin-sdk` and `torque-plugin-loader`).

@@ -1,0 +1,24 @@
+[package]
+name = "torque-bundle"
+description = "Packages a game made on torque-rs: its binaries with the plugins its game.toml keeps, its files, its extensions, the licenses of what it links and a manifest of hashes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "packaging", "bundle", "gamedev"]
+categories = ["game-development", "development-tools::build-utils"]
+
+# A build tool: it runs cargo and rustc, reads the game's folder and writes a bundle folder. It links none of the engine, so it
+# builds in seconds and never needs a GPU. `just bundle <game crate>` runs it.
+
+[dependencies]
+memchr = "2.7"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10"
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
+
+[lints]
+workspace = true

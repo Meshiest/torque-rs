@@ -3713,6 +3713,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-bundle"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
 name = "torque-client"
 version = "0.1.0"
 dependencies = [

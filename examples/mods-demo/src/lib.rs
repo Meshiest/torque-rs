@@ -43,9 +43,29 @@ pub const START: &str = "startGame";
 /// The manifest the Lua extension is loaded with (the one the extension's crate ships).
 const LUA_MANIFEST: &str = include_str!("../../../crates/torque-plugin-lua/torque_lua.toml");
 
-/// The game folder.
+/// The game folder: this crate's `game/`, or in a packaged game (feature `bundled`) the `game/` beside the executable. A
+/// `bundled` build holds no path of the computer it was built on, so run by cargo (tests with every feature on) it finds this
+/// crate's folder from the variable cargo sets.
 fn game_dir() -> PathBuf {
+    #[cfg(feature = "bundled")]
+    {
+        let beside = bundle_dir().join("game");
+        match std::env::var_os("CARGO_MANIFEST_DIR") {
+            Some(dir) if !beside.is_dir() => PathBuf::from(dir).join("game"),
+            _ => beside,
+        }
+    }
+    #[cfg(not(feature = "bundled"))]
     Path::new(env!("CARGO_MANIFEST_DIR")).join("game")
+}
+
+/// The folder of the running executable: a packaged game's root, which holds `game/` and `plugins/`.
+#[cfg(feature = "bundled")]
+pub fn bundle_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_default()
 }
 
 /// The server's files: the game folder (its scripts and its three mods) and the content the mods ship, made from code.
@@ -112,6 +132,14 @@ impl Lua {
         std::fs::copy(library, plugins.join(library_file_name("torque_lua")))?;
         std::fs::write(plugins.join("torque_lua.toml"), LUA_MANIFEST)?;
         Ok(Lua { plugins, user })
+    }
+
+    /// The extension already in a `plugins` folder (a packaged game's), its approvals kept in `user`.
+    pub fn at(plugins: &Path, user: &Path) -> Lua {
+        Lua {
+            plugins: plugins.to_path_buf(),
+            user: user.to_path_buf(),
+        }
     }
 
     /// The loader. A game asks the player before it loads a library the first time; this one holds only the library it was
@@ -187,8 +215,21 @@ pub fn client(engine: &Engine, net: ClientNet) -> Result<GameClient, String> {
 }
 
 /// The built Lua extension's library: the file `TORQUE_LUA_LIBRARY` names, else the one `just lua` leaves in the build
-/// folder (`release/`).
+/// folder (`release/`). In a packaged game (feature `bundled`) only the one in its `plugins/` folder.
 pub fn lua_library() -> Option<PathBuf> {
+    #[cfg(feature = "bundled")]
+    return Some(
+        bundle_dir()
+            .join("plugins")
+            .join(library_file_name("torque_lua")),
+    )
+    .filter(|library| library.is_file());
+    #[cfg(not(feature = "bundled"))]
+    dev_lua_library()
+}
+
+#[cfg(not(feature = "bundled"))]
+fn dev_lua_library() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("TORQUE_LUA_LIBRARY") {
         return Some(PathBuf::from(path));
     }

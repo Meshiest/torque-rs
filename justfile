@@ -158,6 +158,13 @@ server-deps:
 deny:
     cargo deny check
 
+# Packages a game crate (a folder with a bundle.toml, such as examples/mods-demo) for this computer: its binaries built in
+# release with the plugins its game.toml keeps, its game folder, its extensions, the license texts of everything it links and a
+# manifest of hashes, scanned for local paths, then its headless check run from the bundle folder (`--out <dir>`, `--no-check`;
+# `just bundle --verify <bundle folder>` checks a bundle against its manifest)
+bundle *args:
+    cargo run -p torque-bundle --release -- {{args}}
+
 # Builds everything with the oldest supported Rust (install that toolchain with rustup first)
 msrv:
     cargo +{{msrv}} check --workspace --all-targets --all-features
