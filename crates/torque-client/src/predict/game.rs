@@ -116,7 +116,7 @@ pub trait PredictGame<W: PredictWorld>: Debug {
     }
 
     /// The game's static collision world for a connection ([`StaticIndex`]: its own static objects and map objects); none in
-    /// Torque's (the container holds the ghosts' own objects only).
+    /// Torque's (the container holds the ghosts' own objects only, each StaticShape its shape's hulls: [`super::static_shape`]).
     fn static_index(&self) -> Option<Box<dyn StaticIndex<W>>> {
         None
     }

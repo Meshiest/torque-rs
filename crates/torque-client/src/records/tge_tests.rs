@@ -114,6 +114,10 @@ fn the_classes_sort_as_the_prediction_sorts_them() {
         ClassKind::Other
     );
     assert_eq!(TgeClientSet::class_kind(TgeClass::Item), ClassKind::Other);
+    assert_eq!(
+        TgeClientSet::class_kind(TgeClass::StaticShape),
+        ClassKind::StaticShape
+    );
 }
 
 #[test]

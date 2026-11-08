@@ -508,6 +508,42 @@ pub fn forced_corrections(
     Ok(out)
 }
 
+/// What a client's prediction of a control object at rest came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Idle {
+    /// The server's heads that resent the state, of them the ones counted as corrections, and the heads that matched.
+    pub resends: u64,
+    pub corrections: u64,
+    pub matching: u64,
+}
+
+/// `control` standing still on the floor (no keys held) for `ticks` ticks, after `warm` ticks that let it come to rest (the buggy
+/// drops onto its springs): what the client's prediction did over the `ticks`.
+pub fn idle(control: Control, warm: u32, ticks: u32) -> Result<Idle, String> {
+    let mut rig = Rig::new(Baseline, control)?;
+    if !rig.settle(SETTLE_LIMIT) {
+        return Err("the client never predicted its control object".into());
+    }
+    Keys::default().apply(&mut rig, 0);
+    let stats = |rig: &Rig| {
+        let st = rig.client.borrow();
+        st.conn.conn.as_ref().map(|c| c.predict.stats)
+    };
+    for _ in 0..warm {
+        rig.step();
+    }
+    let before = stats(&rig).ok_or("no connection")?;
+    for _ in 0..ticks {
+        rig.step();
+    }
+    let after = stats(&rig).ok_or("no connection")?;
+    Ok(Idle {
+        resends: after.resends - before.resends,
+        corrections: after.corrections - before.corrections,
+        matching: after.matching - before.matching,
+    })
+}
+
 /// The figure on foot with the smoothed predictor (`torque-plugin-smooth-prediction`): the server moves it sideways every 75
 /// ticks, so the client corrects, and four frames a tick are drawn and folded in.
 pub fn figure_smooth() -> Result<Outcome, String> {

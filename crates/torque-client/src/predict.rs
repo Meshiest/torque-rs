@@ -27,9 +27,10 @@
 //! predictor the client's slot gives (a game's plugin may register one); the default, [`TgePrediction`], runs the steps above
 //! ([`Predictor::tge_on_head`], [`Predictor::tge_process`], [`Predictor::tge_update_view`]) and nothing else.
 //!
-//! **Engine limits**: the client's collision world holds the game's static objects, the other Players' boxes and the shapes the
-//! container builds; the Player has no skeleton on the client (the animation does not change the words a walk or a jump sends); a
-//! control object the game does not predict sends checksum 0 (the server then resends every packet).
+//! **Engine limits**: the client's collision world holds the game's static objects (without a game's index, the StaticShapes),
+//! the other Players' boxes and the shapes the container builds (a static shape answers rays from its line-of-sight details at
+//! rest, a vehicle's none); the Player has no skeleton on the client (the animation does not change the words a walk or a jump
+//! sends); a control object the game does not predict sends checksum 0 (the server then resends every packet).
 //!
 //! **The game's part** ([`game::PredictGame`], from [`crate::game::ClientGame::prediction`]; Torque's answers without one):
 //! the Player class and its packet word, the moves' triggers, the type masks and working order, the static collision world
@@ -2481,6 +2482,51 @@ pub struct ClientCollision {
 /// The mount of a Player the server says is mounted before its ghost's update said on what.
 pub const PENDING_MOUNT: ObjectId = ObjectId(u32::MAX);
 
+/// A StaticShape's type bits (`StaticShapeObjectType`, `ShapeBaseObjectType`, `GameBaseObjectType`, `StaticObjectType`), as the
+/// server's container has them.
+pub const STATIC_SHAPE_TYPE_MASK: u32 = collide::types::STATIC
+    | collide::types::GAME_BASE
+    | collide::types::SHAPE_BASE
+    | collide::types::STATIC_SHAPE;
+
+/// A StaticShape ghost as the client's container holds it when the game gives no static index (`ShapeBase::buildConvex`): its
+/// datablock's shape (read through `shapes` the first time, charged to `work` up to `budget`), its collision hulls at the ghost's
+/// pose and scale, a StaticShape's type bits. `None` for a ghost with no shape or no pose yet.
+pub fn static_shape<W: PredictWorld>(
+    world: &W,
+    g: &Ghost<W::Set>,
+    shapes: &mut drive::ShapeCache,
+    reader: Option<&FileReader>,
+    work: &mut u64,
+    budget: u64,
+) -> Option<Object> {
+    let Some(Pose::Affine { xf, scale }) = g.pose() else {
+        return None;
+    };
+    let path = drive::shape_path(world, g.datablock()?)?;
+    let shape = shapes.get(path, reader, work, budget)?;
+    // `readAffineTransform`: w from the unit length, its sign sent.
+    let [x, y, z]: [f32; 3] = xf.quat.map(|v| v.get());
+    let w = (1.0 - (x * x + y * y + z * z)).max(0.0).sqrt();
+    let mut m = quat_matrix([x, y, z, if xf.negative_w { -w } else { w }]);
+    let [px, py, pz]: [f32; 3] = xf.position.map(|v| v.get());
+    (m[3], m[7], m[11]) = (px, py, pz);
+    Some(Object {
+        view: view_of(
+            m,
+            shape.bounds(),
+            scale.unwrap_or([1.0; 3]),
+            STATIC_SHAPE_TYPE_MASK,
+        ),
+        source: Source::Torque(ConvexSource::Shape {
+            has_shape: true,
+            slots: shape.hull_slots(),
+        }),
+        shape: Some(shape),
+        map: None,
+    })
+}
+
 /// Whether the control object `ctrl` is a Player or AIPlayer ghost (a turret the Player rides): the server's driver split reads it
 /// (`Player::processTick`'s `info.player`: the rider's turn goes to the turret, not to the rider).
 fn controls_player<W: PredictWorld>(world: &W, ctrl: Option<ObjectId>) -> bool {
@@ -2681,10 +2727,17 @@ impl ClientCollision {
                     ));
                 }
                 _ => {
-                    if let Some(o) = statics
-                        .as_deref_mut()
-                        .and_then(|s| s.ghost_object(world, index, g, reader.as_ref()))
-                    {
+                    let o = match statics.as_deref_mut() {
+                        Some(s) => s.ghost_object(world, index, g, reader.as_ref()),
+                        // No game index: a StaticShape is in the container as TGE's client holds it.
+                        None if kind == Some(ClassKind::StaticShape) => {
+                            shapes.as_deref_mut().and_then(|c| {
+                                static_shape(world, g, c, reader.as_ref(), &mut work, budget)
+                            })
+                        }
+                        None => None,
+                    };
+                    if let Some(o) = o {
                         objects.push((id, o));
                     }
                 }
@@ -2816,6 +2869,41 @@ impl ClientCollision {
                                 t,
                                 point: torque_scene::geometry::ray_point(start, end, t),
                                 normal: n,
+                                object: *id,
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(Exhausted) => {
+                            self.work = work;
+                            return best;
+                        }
+                    }
+                    continue;
+                }
+                // A static shape (a StaticShape) answers as the bins ask it, `ShapeBase::castRay`: its line-of-sight details
+                // at rest, the segment by `object_point`. A vehicle's shape answers no ray on the client.
+                if let (Source::Torque(_), Some(shape)) = (&o.source, &o.shape)
+                    && o.view.type_mask & collide::types::STATIC != 0
+                {
+                    if pass == 0 {
+                        continue;
+                    }
+                    let w2o = transform::affine_inverse(&o.view.obj_to_world);
+                    let point = torque_scene::library::get().object_point;
+                    let a = point(&w2o, o.view.scale, start);
+                    let b = point(&w2o, o.view.scale, end);
+                    let budget = self.budget;
+                    let hit = shape.cast_los(a, b, &mut |u| {
+                        work = work.saturating_add(u);
+                        work <= budget
+                    });
+                    match hit {
+                        Ok(Some((t, n))) if t < best_t => {
+                            best_t = t;
+                            best = Some(RayHit {
+                                t,
+                                point: torque_scene::geometry::ray_point(start, end, t),
+                                normal: transform::rotate(&o.view.obj_to_world, n),
                                 object: *id,
                             });
                         }

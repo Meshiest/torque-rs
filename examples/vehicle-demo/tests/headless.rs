@@ -2689,6 +2689,43 @@ fn a_drivers_client_predicts_the_buggy_as_the_server_drives_it_never_meeting_the
     assert_eq!(server(&a).seat_of(server(&a).figures()[1]), Some((id, 1)));
 }
 
+/// The server's heads that resent the state `game`'s client predicts.
+fn resends(game: &VehicleDemo) -> u64 {
+    let st = game.client.host.client.borrow();
+    st.conn
+        .conn
+        .as_ref()
+        .expect("the connection")
+        .predict
+        .stats
+        .resends
+}
+
+/// Standing still, the figure on foot and then the buggy at rest with the figure at its wheel are predicted where the server
+/// holds them: 600 ticks each and the server never resends their state.
+#[test]
+fn a_figure_and_a_buggy_standing_still_are_never_corrected() {
+    let mut a = host();
+    for what in ["the figure", "the buggy"] {
+        if what == "the buggy" {
+            get_in(&mut [&mut a], 0);
+            assert!(a.driving());
+            steps(&mut [&mut a], 2000);
+        }
+        let (corrected, matched) = corrections(&a);
+        let resent = resends(&a);
+        steps(&mut [&mut a], 600 * 32);
+        let (after, matching) = corrections(&a);
+        assert_eq!(resends(&a) - resent, 0, "{what} was resent");
+        assert_eq!(after - corrected, 0, "{what} was corrected");
+        assert!(
+            matching - matched > 100,
+            "{what}: {} heads matched",
+            matching - matched
+        );
+    }
+}
+
 /// The seated yaw of figure `id` on `host`'s server (its turn on its seat, and its head's pitch and turn), and of the figure
 /// `game`'s client predicts.
 fn seated_yaws(host: &VehicleDemo, game: &VehicleDemo, id: u32) -> ([f32; 3], Option<f32>) {

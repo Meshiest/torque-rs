@@ -2,9 +2,7 @@
 //! predictor the drawn object and the camera jump with the simulation; with the smoothed predictor the simulation jumps the
 //! same and what is drawn moves only a little each frame, then settles where the simulation is.
 //!
-//! The steps are measured across the floor (x and y), the way the server moves the object: standing still in this world, both
-//! the figure and the buggy are also resent every few ticks with a small height difference (the client's prediction sinks a
-//! little between resends), which both predictors carry the same in the simulation.
+//! The steps are measured across the floor (x and y), the way the server moves the object.
 
 use torque_client::predict::slot::PredictionEntry;
 use torque_plugin_smooth_prediction::SmoothPrediction;

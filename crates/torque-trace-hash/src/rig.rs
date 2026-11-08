@@ -84,7 +84,8 @@ pub fn files() -> MemFiles {
     files
 }
 
-/// The client's game: Torque's answers, and the server's files for the shapes the client reads.
+/// The client's game: Torque's answers (no static index of its own: the client's container holds the floor, a StaticShape, as
+/// TGE's does), and the server's files for the shapes the client reads.
 #[derive(Debug)]
 pub struct TraceClient(pub MemFiles);
 

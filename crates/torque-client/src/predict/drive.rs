@@ -24,18 +24,20 @@
 //! [`GHOST_SNAP`] it is drawn there at once). Values that are not finite are left out or undone ([`GhostVehicle::tick`]).
 //!
 //! Credit: follows TGE's vehicles and Player as Torque3D carries them (MIT: `T3D/vehicles/vehicle.cpp`,
-//! `T3D/vehicles/wheeledVehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC; `T3D/player.cpp`, Copyright (c) 2012 GarageGames,
-//! LLC; Copyright (C) 2015 Faust Logic, Inc.).
+//! `T3D/vehicles/wheeledVehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC; `T3D/player.cpp` and `T3D/shapeBase.cpp` (its
+//! line-of-sight `castRay`), each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.).
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use collide::ObjectId;
 use collide::convex::HullSlot;
 use collide::math::{Box3, F3, Matrix};
 use collide::mesh::{Hull, HullAccel};
+use collide::{Exhausted, ObjectId};
 use ghosts::Value;
 use net::control::ControlData;
+use shapes::collide::Collision;
 use shapes::preload::{Facts, SLOTS, SlotRule};
 use shapes::shape::Shape;
 use vehicle::data::{
@@ -64,6 +66,9 @@ pub struct ClientShape {
     pub shape: Shape,
     pub facts: Facts,
     pub hulls: [Option<Rc<Hull>>; SLOTS],
+    /// The line-of-sight queries ([`shapes::collide::Collision`]), made when the first ray reaches the shape and paid for by it;
+    /// `None` inside for a shape whose details do not build.
+    los: OnceCell<Option<Rc<Collision>>>,
 }
 
 impl ClientShape {
@@ -83,6 +88,54 @@ impl ClientShape {
                 }
             })
             .collect()
+    }
+
+    /// `ShapeBase::castRay` in the object's space, at the rest pose (the client animates no shape): the segment `a` to `b` cast
+    /// against each line-of-sight detail, the nearest hit kept (the earlier detail on a tie): its fraction and its normal in the
+    /// object's space. `Err` when `charge` refuses a unit (a refused build of the queries is not kept).
+    pub fn cast_los(
+        &self,
+        a: F3,
+        b: F3,
+        charge: &mut dyn FnMut(u64) -> bool,
+    ) -> Result<Option<(f32, F3)>, Exhausted> {
+        let slots = &self.facts.slots;
+        if slots.los.iter().all(|&d| d < 0) {
+            return Ok(None);
+        }
+        let refused = std::cell::Cell::new(false);
+        let mut pay = |units: u64| {
+            let ok = charge(units);
+            refused.set(refused.get() || !ok);
+            ok
+        };
+        let los = match self.los.get() {
+            Some(los) => los.clone(),
+            None => {
+                let built = Collision::build(&self.shape, slots, &mut pay);
+                match built {
+                    Ok(c) => {
+                        let c = Some(Rc::new(c));
+                        let _ = self.los.set(c.clone());
+                        c
+                    }
+                    Err(_) if refused.get() => return Err(Exhausted),
+                    Err(_) => {
+                        let _ = self.los.set(None);
+                        None
+                    }
+                }
+            }
+        };
+        let Some(los) = los else {
+            return Ok(None);
+        };
+        let hit = los.cast_ray(slots, a, b, &mut pay);
+        match hit {
+            Ok(hit) => Ok(hit.map(|h| (h.t, h.normal))),
+            Err(_) if refused.get() => Err(Exhausted),
+            Err(_) => Ok(None),
+        }
     }
 
     /// The shape's bounds (`ShapeBase::onNewDataBlock`'s object box).
@@ -228,6 +281,7 @@ impl ShapeLoad {
                 shape,
                 facts,
                 hulls: std::mem::take(&mut self.hulls),
+                los: OnceCell::new(),
             })),
             _ => Step::Bad,
         }
@@ -364,6 +418,7 @@ fn load(bytes: &[u8], slots: SlotRule, work: &mut u64, budget: u64) -> Option<Cl
         shape,
         facts,
         hulls,
+        los: OnceCell::new(),
     })
 }
 

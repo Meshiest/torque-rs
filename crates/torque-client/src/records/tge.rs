@@ -70,6 +70,7 @@ impl EngineSet for TgeClientSet {
             TgeClass::AiPlayer => ClassKind::AiPlayer,
             TgeClass::WheeledVehicle | TgeClass::AiWheeledVehicle => ClassKind::WheeledVehicle,
             TgeClass::FlyingVehicle => ClassKind::FlyingVehicle,
+            TgeClass::StaticShape => ClassKind::StaticShape,
             _ => ClassKind::Other,
         }
     }

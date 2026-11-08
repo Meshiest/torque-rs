@@ -20,6 +20,8 @@ pub enum ClassKind {
     AiPlayer,
     WheeledVehicle,
     FlyingVehicle,
+    /// A StaticShape: without a game's static index, the client's container holds its shape.
+    StaticShape,
     Other,
 }
 
