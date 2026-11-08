@@ -556,6 +556,9 @@ impl Drop for BreakOnUnwind<'_> {
 }
 
 /// The C ABI's code for `side`.
+/// The step of the guest's clocks: 100 microseconds, as coarse as browsers make `performance.now()` for scripts.
+const CLOCK_STEP_NANOS: u64 = 100_000;
+
 fn side_code(side: Side) -> u32 {
     match side {
         Side::Both => TORQUE_SIDE_BOTH,
@@ -716,7 +719,7 @@ fn wasi(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
             if !clock(id) {
                 return Ok(ERRNO_NOTSUP);
             }
-            write_u64(&mut c, out, 1000)?;
+            write_u64(&mut c, out, CLOCK_STEP_NANOS)?;
             Ok(TORQUE_OK as i32)
         },
     )?;
@@ -728,6 +731,8 @@ fn wasi(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
                 return Ok(ERRNO_NOTSUP);
             }
             let nanos = u64::try_from(c.data().started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            // No sharper than a browser's timer, so a guest can't time the host finely.
+            let nanos = nanos - nanos % CLOCK_STEP_NANOS;
             write_u64(&mut c, out, nanos)?;
             Ok(TORQUE_OK as i32)
         },
