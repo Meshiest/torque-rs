@@ -14,6 +14,9 @@ use torque_ts_vm::vm::{Vm, VmError};
 use crate::call_policy::{CallPolicy, DenyCodeAndFiles};
 use crate::extension::ExtensionState;
 
+/// A queued call of a language that is running: its event, its policy, and the next event number when it started.
+type Inherited = (u32, Rc<dyn CallPolicy>, u32);
+
 /// What the engine keeps beside one script engine for its extensions' languages: a `Vm` extension, dropped with it.
 pub(crate) struct VmContext {
     /// Its number ([`TorqueVm`](torque_plugin_abi::TorqueVm)): never 0, never reused.
@@ -29,6 +32,9 @@ pub(crate) struct VmContext {
     policy: RefCell<Rc<dyn CallPolicy>>,
     /// The calls its languages queued (`schedule`), by event, with the policy in force then: checked again as they fire.
     deferred: RefCell<std::collections::HashMap<u32, Rc<dyn CallPolicy>>>,
+    /// The queued calls of languages running now (their event, their policy, and the next event number when they
+    /// started): what they queue in turn is the language's too, under the same policy.
+    inherited: RefCell<Vec<Inherited>>,
 }
 
 impl VmContext {
@@ -45,9 +51,11 @@ impl VmContext {
             languages: RefCell::new(Vec::new()),
             policy: RefCell::new(Rc::new(DenyCodeAndFiles)),
             deferred: RefCell::new(std::collections::HashMap::new()),
+            inherited: RefCell::new(Vec::new()),
         });
         vm.set_extension(Rc::clone(&context));
         vm.set_fire_check(Some(Rc::new(fire_check)));
+        vm.set_fire_done(Some(Rc::new(fire_done)));
         context
     }
 
@@ -119,13 +127,49 @@ fn fire_check(vm: &mut Vm, event: &torque_ts_vm::events::Event) -> bool {
     let name = String::from_utf8_lossy(name);
     let (namespace, short) = name.rsplit_once("::").unwrap_or(("", &name));
     match policy.check(namespace, short, *on_object, args) {
-        Ok(()) => true,
+        Ok(()) => {
+            let next = vm.events().next_seq();
+            context
+                .inherited
+                .borrow_mut()
+                .push((event.seq, policy, next));
+            true
+        }
         Err(why) => {
             vm.warn(format!(
                 "a scheduled call of a script language did not run: {why}"
             ));
             false
         }
+    }
+}
+
+/// After a queued call of a language ran: every call it queued in turn (the events numbered since it started that are
+/// still pending) is the language's, recorded under the same policy, to be checked as it fires.
+fn fire_done(vm: &mut Vm, seq: u32) {
+    let Some(context) = vm.extension::<VmContext>() else {
+        return;
+    };
+    let Some(at) = context
+        .inherited
+        .borrow()
+        .iter()
+        .rposition(|(s, _, _)| *s == seq)
+    else {
+        return;
+    };
+    let (_, policy, start) = context.inherited.borrow_mut().remove(at);
+    let end = vm.events().next_seq();
+    let mut queued = start;
+    while queued != end {
+        if vm.event_pending(queued) {
+            let mut deferred = context.deferred.borrow_mut();
+            if deferred.len() >= MAX_DEFERRED {
+                deferred.retain(|&seq, _| vm.event_pending(seq));
+            }
+            deferred.insert(queued, Rc::clone(&policy));
+        }
+        queued = queued.wrapping_add(1);
     }
 }
 

@@ -101,6 +101,10 @@ pub type CallOverride = std::rc::Rc<dyn Fn(&mut Vm, &[Vec<u8>], &PassRoom) -> Op
 /// A host's check of a scheduled call as it fires ([`Vm::set_fire_check`]): false skips the call (the host says why).
 pub type FireCheck = std::rc::Rc<dyn Fn(&mut Vm, &Event) -> bool>;
 
+/// A host's note that the scheduled call of the event `seq` its fire check let through has run ([`Vm::set_fire_done`]),
+/// whatever came of it: what the call queued in turn has the sequence numbers since the check.
+pub type FireDone = std::rc::Rc<dyn Fn(&mut Vm, u32)>;
+
 /// The handler of the native events and the host's call override (boxed in the `Vm`).
 #[derive(Default)]
 pub(super) struct NativeEvents {
@@ -109,6 +113,8 @@ pub(super) struct NativeEvents {
     call_override: Option<(Vec<u8>, CallOverride)>,
     /// The host's check of each scheduled call as it fires.
     fire_check: Option<FireCheck>,
+    /// The host's note after each scheduled call its check let through.
+    fire_done: Option<FireDone>,
 }
 
 pub(super) fn register(vm: &mut Vm) {
@@ -181,6 +187,12 @@ impl Vm {
     /// holds the call to the rules that applied where it was queued.
     pub fn set_fire_check(&mut self, check: Option<FireCheck>) {
         self.native_events.fire_check = check;
+    }
+
+    /// Sets the host's note after each scheduled call its fire check ([`set_fire_check`](Self::set_fire_check)) let run
+    /// (None removes it).
+    pub fn set_fire_done(&mut self, done: Option<FireDone>) {
+        self.native_events.fire_done = done;
     }
 
     /// The steps the last outermost run used (what `advance_time_counted` bills an event): for a host's override, which makes
@@ -602,9 +614,30 @@ impl Vm {
     /// vectors.
     #[inline(never)]
     fn fire_event(&mut self, event: Event) -> Result<(), VmError> {
-        if matches!(event.kind, EventKind::Call { .. }) && !self.fire_check_passes(&event) {
+        let checked =
+            matches!(event.kind, EventKind::Call { .. }) && self.native_events.fire_check.is_some();
+        if checked && !self.fire_check_passes(&event) {
             return Ok(());
         }
+        let seq = event.seq;
+        let result = self.fire_event_now(event);
+        if checked {
+            self.fire_done(seq);
+        }
+        result
+    }
+
+    /// The host's note that the checked call `seq` ran. Out of line.
+    #[inline(never)]
+    fn fire_done(&mut self, seq: u32) {
+        if let Some(done) = self.native_events.fire_done.clone() {
+            done(self, seq);
+        }
+    }
+
+    /// Runs one event now, its check passed.
+    #[inline(never)]
+    fn fire_event_now(&mut self, event: Event) -> Result<(), VmError> {
         let (argv, on_object) = match event.kind {
             EventKind::Call { argv, on_object } => (argv, on_object),
             EventKind::Native { tag, arg } => {

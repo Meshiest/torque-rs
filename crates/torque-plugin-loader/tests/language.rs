@@ -362,3 +362,52 @@ fn a_queued_call_is_checked_again_as_it_fires() {
     vm.advance_time(1);
     assert_eq!(vm.global("$marked").as_deref(), Some(&b"2"[..]));
 }
+
+#[test]
+fn what_a_queued_call_queues_inherits_its_policy() {
+    use std::rc::Rc;
+    use torque_plugin_loader::call_policy::{CallPolicy, set_call_policy};
+    // Allows `schedule` (nested too), refuses `tsMark`.
+    struct ScheduleButNoMark;
+    impl CallPolicy for ScheduleButNoMark {
+        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+            if name.eq_ignore_ascii_case("tsMark") {
+                return Err("not tsMark".to_string());
+            }
+            Ok(())
+        }
+        fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let engine = engine();
+    let files = MemFiles::new();
+    let mut vm = server(&engine, &files);
+    vm.eval(b"function tsMark() { $marked = $marked + 1; } function tsQueue() { schedule(0, 0, tsMark); }")
+        .unwrap();
+    set_call_policy(&mut vm, Rc::new(ScheduleButNoMark));
+    // A schedule that schedules, and a function that schedules: what they queue is the language's.
+    assert_eq!(
+        run(
+            &mut vm,
+            &files,
+            "call schedule 0 0 schedule 0 0 tsMark\ncall schedule 0 0 tsQueue"
+        ),
+        Ok(true)
+    );
+    for _ in 0..4 {
+        vm.advance_time(1);
+    }
+    assert_eq!(vm.global("$marked"), None, "neither tsMark ran");
+    let refused = vm
+        .log_texts()
+        .iter()
+        .filter(|l| l.contains("did not run: not tsMark"))
+        .count();
+    assert_eq!(refused, 2);
+    // TorqueScript's own queued calls, after those, are its own.
+    vm.eval(b"tsQueue();").unwrap();
+    vm.advance_time(1);
+    vm.advance_time(1);
+    assert_eq!(vm.global("$marked").as_deref(), Some(&b"1"[..]));
+}
