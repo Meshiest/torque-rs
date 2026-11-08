@@ -163,14 +163,11 @@ pub fn gather(builds: &[(&Metadata, &[(String, String)])], toolchain: &Toolchain
 /// for its workspace's texts stays inside one of the builds' workspace `roots`.
 fn texts_of(package: &Package, roots: &[&Path]) -> Option<(String, Group)> {
     let mut files = texts_in(package.dir());
-    if let Some(file) = &package.license_file {
-        let path = package.dir().join(file);
-        let plain = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file());
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && plain
-        {
-            files.insert(name.to_string(), Text::File(path.clone()));
-        }
+    if let Some(file) = &package.license_file
+        && let Some(path) = license_file_in(package.dir(), Path::new(file))
+        && let Some(name) = path.file_name().and_then(|n| n.to_str())
+    {
+        files.insert(name.to_string(), Text::File(path.clone()));
     }
     if !files.is_empty() {
         return Some((format!("{}-{}", package.name, package.version), files));
@@ -317,6 +314,33 @@ fn repository_name(package: &Package) -> String {
         .to_string()
 }
 
+/// A crate's declared `license-file`, only when it is a plain file inside the crate's own folder: a relative path of
+/// normal parts (no `..`, root or drive), no link anywhere along it, and still inside the folder once resolved, so a
+/// manifest can't put a file from elsewhere on the machine into a bundle.
+fn license_file_in(dir: &Path, file: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    if !file.components().all(|c| matches!(c, Component::Normal(_))) {
+        return None;
+    }
+    let mut at = dir.to_path_buf();
+    for part in file.components() {
+        at.push(part);
+        if std::fs::symlink_metadata(&at)
+            .ok()?
+            .file_type()
+            .is_symlink()
+        {
+            return None;
+        }
+    }
+    let inside = at
+        .canonicalize()
+        .ok()?
+        .starts_with(dir.canonicalize().ok()?);
+    let plain = std::fs::symlink_metadata(&at).is_ok_and(|m| m.is_file());
+    (inside && plain).then_some(at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +357,26 @@ mod tests {
             remote: false,
             features: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_license_file_outside_the_crate_folder_is_refused() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("license-file-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let krate = root.join("crate");
+        std::fs::create_dir_all(krate.join("docs")).unwrap();
+        std::fs::write(krate.join("docs").join("LICENSE"), "ok").unwrap();
+        std::fs::write(root.join("secret.txt"), "not a license").unwrap();
+        assert!(license_file_in(&krate, Path::new("docs/LICENSE")).is_some());
+        for bad in ["../secret.txt", "docs/../../secret.txt", "missing", "docs"] {
+            assert!(license_file_in(&krate, Path::new(bad)).is_none(), "{bad}");
+        }
+        let absolute = root.join("secret.txt");
+        assert!(license_file_in(&krate, &absolute).is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
