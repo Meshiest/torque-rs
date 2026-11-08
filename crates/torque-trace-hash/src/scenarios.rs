@@ -20,7 +20,7 @@
 use torque_engine::{EngineBuilder, Plugin, PluginId, PluginType, Plugins};
 
 use crate::hash::TraceHasher;
-use crate::rig::{Control, Rig};
+use crate::rig::{Control, Mode, Rig};
 
 /// The ticks every scenario runs.
 pub const TICKS: u32 = 600;
@@ -29,11 +29,20 @@ const SETTLE_LIMIT: u32 = 400;
 /// Ticks a set of keys is held.
 const STRETCH: u32 = 15;
 
-/// A named scenario: its name for the output and the run that makes its hash.
+/// A named scenario: its name and protocol for the output and the run that makes its hash. A scenario that runs no protocol
+/// (a physics world stepped alone) has no mode and prints the label `none`.
 #[derive(Clone, Copy)]
 pub struct Scenario {
     pub name: &'static str,
+    pub mode: Option<Mode>,
     pub run: fn() -> Result<Outcome, String>,
+}
+
+impl Scenario {
+    /// The word that labels the scenario's line: its protocol, or `none`.
+    pub fn label(&self) -> &'static str {
+        self.mode.map_or("none", Mode::label)
+    }
 }
 
 /// Every scenario of the engine's own plugins, in the order they print. A plugin's scenario is one more entry here.
@@ -41,10 +50,12 @@ pub fn all() -> Vec<Scenario> {
     vec![
         Scenario {
             name: "figure",
+            mode: Some(Mode::Tge),
             run: || figure(Baseline),
         },
         Scenario {
             name: "buggy",
+            mode: Some(Mode::Tge),
             run: || buggy(Baseline),
         },
     ]
@@ -54,6 +65,7 @@ pub fn all() -> Vec<Scenario> {
 pub fn predictors() -> Vec<Scenario> {
     vec![Scenario {
         name: "figure-smooth",
+        mode: Some(Mode::Tge),
         run: figure_smooth,
     }]
 }
@@ -63,6 +75,7 @@ pub fn predictors() -> Vec<Scenario> {
 pub fn physics() -> Vec<Scenario> {
     vec![Scenario {
         name: "rapier-drop",
+        mode: None,
         run: crate::rapier::drop,
     }]
 }
@@ -283,12 +296,13 @@ fn position(rig: &Rig, control: Control) -> Option<[f32; 3]> {
 }
 
 fn run<M>(
+    mode: Mode,
     plugins: impl Plugins<M>,
     control: Control,
     seed: u64,
     keys: fn(&mut Rng) -> Keys,
 ) -> Result<Outcome, String> {
-    run_with(plugins, control, seed, keys, &mut Extras::default())
+    run_with(mode, plugins, control, seed, keys, &mut Extras::default())
 }
 
 /// What a predictor's scenario adds to a run: the client's predictor, corrections forced on the server and the frames drawn.
@@ -381,13 +395,14 @@ pub fn draw_frame(rig: &Rig, back: f32) -> Option<DrawnFrame> {
 }
 
 fn run_with<M>(
+    mode: Mode,
     plugins: impl Plugins<M>,
     control: Control,
     seed: u64,
     keys: fn(&mut Rng) -> Keys,
     extras: &mut Extras,
 ) -> Result<Outcome, String> {
-    let mut rig = Rig::new(plugins, control)?;
+    let mut rig = Rig::in_mode(mode, plugins, control)?;
     if let Some(game) = extras.client_game.take() {
         torque_client::game::set_client_game(&mut rig.client_vm, game);
     }
@@ -453,6 +468,7 @@ fn run_with<M>(
 /// The figure on foot: a server `Player` and the client's prediction of it, run with `plugins` added to the engine.
 pub fn figure<M>(plugins: impl Plugins<M>) -> Result<Outcome, String> {
     run(
+        Mode::Tge,
         plugins,
         Control::Figure,
         0x9e37_79b9_7f4a_7c15,
@@ -505,6 +521,7 @@ pub fn figure_smooth() -> Result<Outcome, String> {
         client_game: None,
     };
     run_with(
+        Mode::Tge,
         Baseline,
         Control::Figure,
         0x9e37_79b9_7f4a_7c15,
@@ -515,7 +532,13 @@ pub fn figure_smooth() -> Result<Outcome, String> {
 
 /// The buggy: a server `WheeledVehicle` its client drives and the client's prediction of it, run with `plugins` added.
 pub fn buggy<M>(plugins: impl Plugins<M>) -> Result<Outcome, String> {
-    run(plugins, Control::Buggy, 0xd1b5_4a32_d192_ed03, Keys::buggy)
+    run(
+        Mode::Tge,
+        plugins,
+        Control::Buggy,
+        0xd1b5_4a32_d192_ed03,
+        Keys::buggy,
+    )
 }
 
 /// [`buggy`] with `game` as the client's game (it reads the shapes from [`crate::rig::files`], as the rig's own does).
@@ -523,6 +546,7 @@ pub fn buggy_with_client_game(
     game: std::rc::Rc<dyn torque_client::game::ClientGame>,
 ) -> Result<Outcome, String> {
     run_with(
+        Mode::Tge,
         Baseline,
         Control::Buggy,
         0xd1b5_4a32_d192_ed03,

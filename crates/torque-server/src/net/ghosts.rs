@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::codecs::NetCodecs;
+use super::peer::PeerKind;
 use torque_ghosts::NetStr;
 use torque_net::bits::BitWriter;
 use torque_net::events::{ConnectionMessage, PackCtx as EventPackCtx};
@@ -663,6 +664,17 @@ impl<G: GhostGame> GhostHub<G> {
         if let Some(c) = self.0.borrow_mut().conns.get_mut(&conn) {
             c.engine_peer = true;
         }
+    }
+
+    /// What the peer of `conn` is ([`PeerKind::of`]) on the server of `vm`.
+    pub fn peer_kind(&self, vm: &Vm, conn: ConnId) -> PeerKind {
+        let marked = self
+            .0
+            .borrow()
+            .conns
+            .get(&conn)
+            .is_some_and(|c| c.engine_peer);
+        PeerKind::of(vm, marked)
     }
 
     /// Whether `conn` reads the feed of new objects.

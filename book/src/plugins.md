@@ -798,6 +798,9 @@ enable = []                                   # plugin ids to turn on
 
 [runner]
 id = "torque.dedicated-runner"   # which runner plugin runs the game
+
+[net]
+protocol = "tge"                 # the network protocol the game speaks
 ```
 
 `GameConfig::load(&files)` reads it from the game's `GameFiles` (a missing file gives the default config), and
@@ -820,6 +823,11 @@ let engine = EngineBuilder::new()
   `client_entry(&engine)` read it. A script is a path inside the game's files (no leading `/`, no `..`).
 - **Runner.** `[runner] id` names one of the runner plugins in the build. The others the engine ships are turned off,
   as the runner slot holds one. Naming a runner the build does not have is a warning, and the one already set stays.
+- **Protocol.** A game speaks one network protocol, and one plugin sets it (`engine.net().protocol(..)`): `DefaultPlugins` and
+  `MinimalPlugins` carry `TgeProtocolPlugin` (`torque.net.tge`), which sets Torque's own. `[net] protocol` is `"tge"` or
+  `"engine"`; it turns the other protocol's plugin off, the same way `[runner]` does. Naming a protocol the build has no plugin
+  for is a warning, and the one already set stays. A second plugin that sets the slot fails the build and names both.
+  `engine.protocol()` reads it. Any other value is an error at its line and column.
 
 The file may come from a game folder someone downloaded, so it is read strictly. It is at most 64 KiB and its lists
 hold at most 256 ids. A key the engine does not know is a warning (`config.warnings`; they reach the engine's warnings

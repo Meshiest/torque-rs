@@ -24,8 +24,9 @@ use crate::plugins::{
     DefaultPlugins, GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, LivePerfPlugin,
     MinimalPlugins, ModsPlugin, NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin,
     RendererPlugin, RendererSlotPlugin, ScreenPlugin, ServerGamePlugin, ServerQueryPlugin,
-    ShadowsPlugin, SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin, TransparencyPlugin,
-    VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin, ZoomPlugin,
+    ShadowsPlugin, SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin, TgeProtocolPlugin,
+    TransparencyPlugin, VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin,
+    ZoomPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -129,6 +130,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ServerGamePlugin::ID,
             TerrainPlugin::ID,
             WaterPlugin::ID,
+            TgeProtocolPlugin::ID,
             NetHostPlugin::ID,
             GuiPlugin::ID,
             ActionMapPlugin::ID,
@@ -175,6 +177,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.server-game",
             "torque.terrain",
             "torque.water",
+            "torque.net.tge",
             "torque.net-host",
             "torque.gui",
             "torque.action-map",

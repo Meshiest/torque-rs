@@ -22,6 +22,7 @@ pub mod host;
 pub mod hostevent;
 pub mod local;
 pub mod payload;
+pub mod peer;
 pub mod pump;
 pub mod query;
 #[cfg(feature = "p2p")]

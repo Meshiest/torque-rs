@@ -93,7 +93,7 @@ pub use builder::{BuildError, EngineBuilder, Warning};
 pub use class::{ClassField, ClassInfo, ClassReadError, FieldDecl, ScriptClass};
 pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
-pub use net::NetRegistry;
+pub use net::{NetRegistry, ProtocolKind};
 pub use net_classes::{DatablockCodec, GhostRecord, Replicate};
 pub use param::{
     Cx, IntoRecipe, Local, Param, ParamError, ParamKind, RecipeReturn, Res, ResMut, ResourceError,

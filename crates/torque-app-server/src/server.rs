@@ -26,6 +26,7 @@ use torque_engine::{Engine, EngineBuilder, ServerStage};
 use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
 use torque_server::net::channels;
+use torque_server::net::peer::ProtocolMode;
 use torque_server::net::torque::TorqueNet;
 use torque_server::net::transport::{MemoryEnd, SharedTransport};
 use torque_server::net::{HostParts, NetShared};
@@ -221,6 +222,9 @@ impl GameServer {
             .ok_or("the engine has no server game (ServerGamePlugin)")?;
         replay(engine, ServerStage::World, &mut vm)?;
         let mut server = Server::with_state(vm, Rc::clone(&state));
+        server
+            .vm
+            .set_extension(Rc::new(ProtocolMode(engine.protocol())));
         replay(engine, ServerStage::Net, &mut server.vm)?;
         let net = wiring
             .take_net()

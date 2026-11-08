@@ -35,6 +35,8 @@ names!(
     Local = "local.only",
     AuthOne = "auth.one",
     AuthTwo = "auth.two",
+    ProtocolOne = "protocol.one",
+    ProtocolTwo = "protocol.two",
     Auth = "auth.test",
 );
 
@@ -263,4 +265,52 @@ fn a_second_auth_provider_fails_the_build() {
         .build()
         .unwrap_err();
     assert!(matches!(error, BuildError::DuplicateSlot { .. }), "{error}");
+}
+
+#[test]
+fn an_engine_speaks_torques_protocol_unless_a_plugin_says_otherwise() {
+    assert_eq!(
+        EngineBuilder::new().build().unwrap().protocol(),
+        ProtocolKind::Tge
+    );
+    let engine = EngineBuilder::new()
+        .add_plugins(plugin::<ProtocolOne>(None, |e| {
+            e.net().protocol(ProtocolKind::Engine);
+        }))
+        .build()
+        .unwrap();
+    assert_eq!(engine.protocol(), ProtocolKind::Engine);
+    // Setting the protocol says nothing on the wire by itself.
+    assert!(!engine.is_networked());
+}
+
+#[test]
+fn a_second_protocol_fails_the_build_and_names_both_plugins() {
+    let error = EngineBuilder::new()
+        .add_plugins(plugin::<ProtocolOne>(None, |e| {
+            e.net().protocol(ProtocolKind::Tge);
+        }))
+        .add_plugins(plugin::<ProtocolTwo>(None, |e| {
+            e.net().protocol(ProtocolKind::Engine);
+        }))
+        .build()
+        .unwrap_err();
+    assert!(matches!(error, BuildError::DuplicateSlot { .. }), "{error}");
+    let text = error.to_string();
+    assert!(
+        text.contains("protocol.one") && text.contains("protocol.two"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_protocols_have_stable_labels() {
+    for kind in [ProtocolKind::Tge, ProtocolKind::Engine] {
+        assert_eq!(ProtocolKind::from_label(kind.label()), Some(kind));
+    }
+    assert_eq!(ProtocolKind::Tge.label(), "tge");
+    assert_eq!(ProtocolKind::Engine.label(), "engine");
+    assert_eq!(ProtocolKind::from_label("udp"), None);
+    assert_eq!(ProtocolKind::from_label("Tge"), None);
+    assert_eq!(ProtocolKind::default(), ProtocolKind::Tge);
 }

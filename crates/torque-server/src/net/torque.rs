@@ -32,6 +32,7 @@ use torque_ts_vm::vm::Vm;
 
 use super::ghosts::{Conns, GhostGame, GhostHub, Registry, SourceEnv};
 use super::hostevent::{GameEvents, ReceiveCx};
+use super::peer::PeerKind;
 use super::{NetGame, NetShared, pump};
 use crate::server::{NetHost, Phase};
 use torque_game::sim::ProcessHandle;
@@ -125,9 +126,10 @@ impl GhostGame for TgeGhostGame {
     ) -> R {
         let mut guard = hub.0.borrow_mut();
         let hub = &mut *guard;
-        let engine_peer = conn
+        let marked = conn
             .and_then(|c| hub.conns.get(&c))
             .is_some_and(|c| c.engine_peer);
+        let peer = PeerKind::of(env.vm, marked);
         let always = ghost_always_of(env.vm, &hub.reg);
         let controlled = hub.conns.values().filter_map(|c| c.control).collect();
         let mut src = TgeSource {
@@ -137,7 +139,7 @@ impl GhostGame for TgeGhostGame {
             ghost_bits: env.ghost_bits,
             always,
             controlled,
-            engine_peer,
+            peer,
             plugins: super::codecs::plugin_classes(env.vm),
             connection: conn.and_then(|c| hub.conns.get(&c)).map(|c| c.obj),
         };
@@ -180,8 +182,8 @@ pub struct TgeSource<'a> {
     always: Vec<ObjId>,
     /// The objects some connection controls (the ShapeBase part's `controlled` flag).
     controlled: Vec<ObjId>,
-    /// The connection's peer is the engine's own client: the engine's own classes are ghosted to it (to no other).
-    engine_peer: bool,
+    /// What the connection's peer is: the engine's own classes are ghosted to the engine's peers (to no other).
+    peer: PeerKind,
     /// The plugins' classes (`torque_ghosts::plugin`), ghosted like the engine's own.
     plugins: Option<Rc<PluginClasses>>,
     /// The `GameConnection` object the source packs for, if it is made for one connection.
@@ -198,20 +200,15 @@ impl TgeSource<'_> {
         })
     }
 
-    /// Whether the connection may know the object's class: TGE's always, the engine's own and the plugins' on an engine
-    /// peer, or on any connection of a server that says all its clients are the engine's ([`ENGINE_CLASSES_GLOBAL`] true).
+    /// Whether the connection may know the object's class: TGE's always, the engine's own and the plugins' only when its peer is
+    /// the engine's ([`PeerKind::sees_engine_classes`]).
     fn known(&self, obj: ObjId) -> bool {
         let engine = self.reg.entries.get(&obj).is_some_and(|e| {
             e.code >= PLUGIN_CODE_BASE
                 || TgeClass::of_code(e.code)
                     .is_some_and(|c| ENGINE_OBJECT_CLASSES.contains(&c.name()))
         });
-        !engine
-            || self.engine_peer
-            || self
-                .vm
-                .global(ENGINE_CLASSES_GLOBAL)
-                .is_some_and(|v| torque_ts_vm::text::atof(&v) != 0.0)
+        !engine || self.peer.sees_engine_classes()
     }
 }
 

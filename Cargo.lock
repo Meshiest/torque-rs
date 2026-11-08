@@ -4110,6 +4110,9 @@ dependencies = [
 [[package]]
 name = "torque-net"
 version = "0.1.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "torque-physics-rapier"
@@ -4326,15 +4329,19 @@ dependencies = [
 name = "torque-trace-hash"
 version = "0.1.0"
 dependencies = [
+ "sha2",
+ "torque",
  "torque-app-server",
  "torque-client",
  "torque-collide",
  "torque-engine",
  "torque-example-assets",
+ "torque-example-minimal-engine",
  "torque-game",
  "torque-gui",
  "torque-maps",
  "torque-physics-rapier",
+ "torque-plugin-rope",
  "torque-plugin-smooth-prediction",
  "torque-shapes",
  "torque-ts-vm",

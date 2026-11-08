@@ -32,9 +32,14 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 # The floor, the figure and the buggy the scenarios run on.
 torque-example-assets = { path = "../../examples/assets" }
 
+# The wire goldens (`tests/wire_golden.rs`) run whole engines against each other: a mods download, a plugin's ghosts, the refusals.
+# The dev-dependencies are for tests only, so the wasm32 build of the binary never sees them.
 [dev-dependencies]
+sha2 = "0.10"
+torque = { path = "../torque", default-features = false, features = ["app", "mods"] }
+torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
+torque-plugin-rope = { path = "../torque-plugin-rope" }
 # A test's body solver: TGE's behind a counter.
-torque-collide = { path = "../torque-collide" }
 torque-vehicle = { path = "../torque-vehicle" }
 
 [[bin]]

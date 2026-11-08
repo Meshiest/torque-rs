@@ -14,6 +14,9 @@
 //! [runner]
 //! id = "torque.dedicated-runner"   # which runner plugin runs the game
 //!
+//! [net]
+//! protocol = "tge"          # the network protocol the game speaks: "tge" or "engine"
+//!
 //! [mods]
 //! enabled = true            # false turns the mods plugin off
 //! folder = "mods"           # the folder of the game's files searched for mods
@@ -49,7 +52,7 @@
 use std::fmt;
 
 use serde::Deserialize;
-use torque_engine::{Engine, EngineBuilder};
+use torque_engine::{Engine, EngineBuilder, ProtocolKind};
 use torque_mods::ModsConfig;
 
 use crate::files::GameFiles;
@@ -80,6 +83,13 @@ pub const RUNNER_IDS: [&str; 4] = [
     "torque.dedicated-runner",
 ];
 
+/// The ids of the plugins that set the network protocol, by protocol: `[net] protocol` turns the others off, as the protocol slot
+/// holds one. The engine's own protocol has no plugin in the groups yet, so naming it is a warning until it does.
+pub const PROTOCOL_IDS: [(ProtocolKind, &str); 2] = [
+    (ProtocolKind::Tge, "torque.net.tge"),
+    (ProtocolKind::Engine, "torque.net.engine"),
+];
+
 /// A game's config (module docs).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GameConfig {
@@ -95,6 +105,8 @@ pub struct GameConfig {
     pub enable: Vec<String>,
     /// `[runner] id`: the runner plugin that runs the game.
     pub runner: Option<String>,
+    /// `[net] protocol`: the network protocol the game speaks (None: the one its plugins set, Torque's by default).
+    pub protocol: Option<ProtocolKind>,
     /// `[mods]`: whether mods load, where they are searched for and which start disabled.
     pub mods: ModsConfig,
     /// What the parse skipped: a key it does not know, an id in both lists. Shown with the engine's warnings.
@@ -110,6 +122,7 @@ impl Default for GameConfig {
             disable: Vec::new(),
             enable: Vec::new(),
             runner: None,
+            protocol: None,
             mods: ModsConfig::default(),
             warnings: Vec::new(),
         }
@@ -152,6 +165,7 @@ struct Raw {
     game: RawGame,
     plugins: RawPlugins,
     runner: RawRunner,
+    net: RawNet,
     mods: RawMods,
     #[serde(flatten)]
     extra: toml::Table,
@@ -182,6 +196,22 @@ struct RawMods {
     enabled: Option<bool>,
     folder: Option<String>,
     disable: Vec<String>,
+    #[serde(flatten)]
+    extra: toml::Table,
+}
+
+/// The protocols `[net] protocol` names, as serde reads them: any other value is an error at the value's own line and column.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum RawProtocol {
+    Tge,
+    Engine,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawNet {
+    protocol: Option<RawProtocol>,
     #[serde(flatten)]
     extra: toml::Table,
 }
@@ -242,6 +272,7 @@ impl GameConfig {
             ("game.", &raw.game.extra),
             ("plugins.", &raw.plugins.extra),
             ("runner.", &raw.runner.extra),
+            ("net.", &raw.net.extra),
             ("mods.", &raw.mods.extra),
         ] {
             for key in extra.keys() {
@@ -276,6 +307,10 @@ impl GameConfig {
             .id
             .map(|id| check_id("runner.id", id))
             .transpose()?;
+        config.protocol = raw.net.protocol.map(|p| match p {
+            RawProtocol::Tge => ProtocolKind::Tge,
+            RawProtocol::Engine => ProtocolKind::Engine,
+        });
         if let Some(enabled) = raw.mods.enabled {
             config.mods.enabled = enabled;
         }
@@ -377,7 +412,7 @@ fn check_script(key: &str, path: &str) -> Result<String, ConfigError> {
 
 /// The engine builder's method for a game's config.
 pub trait EngineConfig {
-    /// Applies `config`: the runner it chose, then its `disable` and `enable` ids ([`EngineBuilder::disable_id`] and
+    /// Applies `config`: the runner it chose, the protocol it chose (the plugin of the others turned off), then its `disable` and `enable` ids ([`EngineBuilder::disable_id`] and
     /// [`EngineBuilder::enable_id`]: an id no plugin has is a warning when the engine is built), and its own warnings go
     /// among the engine's ([`EngineBuilder::warn`]). The config is kept as a resource, which is how a server and a client read
     /// their entry scripts ([`server_entry`], [`client_entry`]).
@@ -405,6 +440,28 @@ impl EngineConfig for EngineBuilder {
             } else {
                 self.warn(format!(
                     "{PATH}: the runner `{id}` is not in this build; the runner already set is kept"
+                ));
+            }
+        }
+        if let Some(kind) = config.protocol {
+            let id = PROTOCOL_IDS
+                .iter()
+                .find_map(|(k, id)| (*k == kind).then_some(*id))
+                .unwrap_or("torque.net.tge");
+            if self.contains(id) {
+                let others: Vec<&str> = PROTOCOL_IDS
+                    .iter()
+                    .map(|(_, other)| *other)
+                    .filter(|other| *other != id && self.contains(other))
+                    .collect();
+                for other in others {
+                    self.disable_id(other);
+                }
+                self.enable_id(id);
+            } else {
+                self.warn(format!(
+                    "{PATH}: the protocol `{}` is not in this build; the protocol already set is kept",
+                    kind.label()
                 ));
             }
         }

@@ -22,8 +22,32 @@ use torque_ts_vm::vm::Vm;
 /// One tick, in milliseconds.
 pub const TICK_MS: u32 = 32;
 
+/// The key of the server's challenge digests, which the rig sets so a run's datagrams repeat.
+pub const CHALLENGE_KEY: [u8; 16] = [7; 16];
+
 const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_000);
 const CLIENT: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_000);
+
+/// The network protocol a run speaks. Each line `trace-hash` prints names it, so a protocol's hashes are pinned apart from the
+/// others'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Mode {
+    /// Torque's own protocol.
+    Tge,
+}
+
+impl Mode {
+    /// Every mode, in the order the lines print.
+    pub const ALL: [Mode; 1] = [Mode::Tge];
+
+    /// The word that labels the mode's lines.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Mode::Tge => "tge",
+        }
+    }
+}
 
 /// What the connection's client controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +100,8 @@ impl ClientGame for TraceClient {
 
 /// A server of `MinimalPlugins` and the plugin under test, a client connected to it, and the link between them.
 pub struct Rig {
+    /// The protocol the server and the client speak.
+    pub mode: Mode,
     pub server: GameServer,
     pub client_vm: Vm,
     pub client: Rc<RefCell<ClientState<TgeConn>>>,
@@ -83,12 +109,24 @@ pub struct Rig {
     incoming: DatagramQueue,
     /// Ticks stepped so far.
     pub ticks: u32,
+    /// Every datagram carried while [`Rig::record_wire`] was on, in the order carried: true when it went to the server.
+    pub wire: Vec<(bool, Vec<u8>)>,
+    recording: bool,
 }
 
 impl Rig {
     /// Starts the server over `MinimalPlugins` and `plugins` with the client controlling `control`, and has the client connect.
     /// The first steps run the handshake and the datablocks: call [`Rig::settle`] before a scripted run.
     pub fn new<M>(plugins: impl Plugins<M>, control: Control) -> Result<Rig, String> {
+        Rig::in_mode(Mode::Tge, plugins, control)
+    }
+
+    /// [`Rig::new`] over the protocol `mode`.
+    pub fn in_mode<M>(
+        mode: Mode,
+        plugins: impl Plugins<M>,
+        control: Control,
+    ) -> Result<Rig, String> {
         let engine = EngineBuilder::new()
             .add_plugins(MinimalPlugins)
             .add_plugins(plugins)
@@ -105,6 +143,8 @@ impl Rig {
                 args: &[],
             },
         )?;
+        // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs too.
+        server.shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
 
         let mut vm = Vm::new();
         torque_game::specs::install(&mut vm);
@@ -135,28 +175,42 @@ impl Rig {
         )
         .map_err(|e| e.to_string())?;
         Ok(Rig {
+            mode,
             server,
             client_vm: vm,
             client,
             sent,
             incoming,
             ticks: 0,
+            wire: Vec::new(),
+            recording: false,
         })
     }
 
+    /// Keeps a copy of every datagram carried from now on in [`Rig::wire`].
+    pub fn record_wire(&mut self) {
+        self.recording = true;
+    }
+
     /// Carries what each side sent to the other.
-    fn carry(&self) {
+    fn carry(&mut self) {
         let Some(end) = self.server.memory_end() else {
             return;
         };
         for (to, data) in self.sent.borrow_mut().drain(..) {
             if SocketAddr::V4(to) == SocketAddr::V4(SERVER) {
+                if self.recording {
+                    self.wire.push((true, data.clone()));
+                }
                 end.inject(SocketAddr::V4(CLIENT), &data);
             }
         }
         let mut incoming = self.incoming.borrow_mut();
         for (to, data) in end.take_sent() {
             if to == SocketAddr::V4(CLIENT) {
+                if self.recording {
+                    self.wire.push((false, data.clone()));
+                }
                 incoming.push_back((SERVER, data));
             }
         }

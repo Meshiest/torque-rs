@@ -13,6 +13,7 @@
 //! | [`ServerGamePlugin`] | `torque.server-game` | server, `Game` | `torque_server::game::install` |
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
+//! | [`TgeProtocolPlugin`] | `torque.net.tge` | both, the engine's protocol slot | sets the protocol to Torque's own (`EngineBuilder::net().protocol`) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, a plugin each, by id ([`transports`](crate::transports)) | `UdpTransport`, `MemoryTransport`, the web and p2p ones |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
@@ -24,7 +25,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use torque_engine::{
-    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires, ServerStage,
+    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, ProtocolKind, Requires,
+    ServerStage,
 };
 use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
@@ -69,6 +71,7 @@ impl PluginGroup for MinimalPlugins {
             .add(ServerGamePlugin)
             .add(TerrainPlugin)
             .add(WaterPlugin)
+            .add(TgeProtocolPlugin)
             .add(NetHostPlugin)
             .add_group(ServerTransportPlugins)
             .add_group(ContentFormatPlugins)
@@ -208,6 +211,19 @@ impl Plugin for WaterPlugin {
             crate::water::install(vm, &game.container);
             Ok(())
         });
+    }
+}
+
+/// The network protocol slot, set to Torque's own protocol. A game speaks one protocol, so this is the only plugin of the groups that
+/// sets the slot: a game that speaks another turns this one off and adds the plugin of that protocol, or names the protocol in
+/// `game.toml` (`[net] protocol`). A second plugin that sets the slot fails the build, naming both.
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.net.tge")]
+pub struct TgeProtocolPlugin;
+
+impl Plugin for TgeProtocolPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.net().protocol(ProtocolKind::Tge);
     }
 }
 

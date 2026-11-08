@@ -17,5 +17,9 @@ categories = ["network-programming", "game-development"]
 
 [dependencies]
 
+[dev-dependencies]
+# The digests of the wire goldens.
+sha2 = "0.10"
+
 [lints]
 workspace = true

@@ -70,6 +70,41 @@ pub type MakeSection = dyn Fn(&Vm) -> Option<ModsSection>;
 /// The auth provider slot's value.
 struct AuthSlot(Arc<dyn AuthProvider>);
 
+/// Which network protocol a game's servers and clients speak. A game speaks one: the exclusive slot ([`NetRegistry::protocol`])
+/// holds it, and an engine whose plugins set none speaks [`ProtocolKind::Tge`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ProtocolKind {
+    /// Torque's own protocol: its handshake, its packet header and its event layer, byte for byte, so a server and a client of
+    /// the engine can also talk to a peer that is not the engine's.
+    #[default]
+    Tge,
+    /// The engine's own protocol, which the engine's peers speak among themselves.
+    Engine,
+}
+
+impl ProtocolKind {
+    /// The word that names the protocol in `game.toml` (`[net] protocol`) and in the trace hashes' lines.
+    pub const fn label(self) -> &'static str {
+        match self {
+            ProtocolKind::Tge => "tge",
+            ProtocolKind::Engine => "engine",
+        }
+    }
+
+    /// The protocol `label` names.
+    pub fn from_label(label: &str) -> Option<ProtocolKind> {
+        match label {
+            "tge" => Some(ProtocolKind::Tge),
+            "engine" => Some(ProtocolKind::Engine),
+            _ => None,
+        }
+    }
+}
+
+/// The protocol slot's value.
+struct ProtocolSlot(ProtocolKind);
+
 /// Which name table a registered name goes in.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NameTable {
@@ -109,6 +144,14 @@ impl NetRegistry<'_> {
     /// fails the build.
     pub fn auth<A: AuthProvider + 'static>(&mut self, provider: A) -> &mut Self {
         self.engine.set_slot(Rc::new(AuthSlot(Arc::new(provider))));
+        self
+    }
+
+    /// Sets the network protocol the game speaks. One plugin sets it (`TgeProtocolPlugin` in the plugin groups); a second fails the
+    /// build, naming both. A game that moves to another protocol swaps that plugin, or names the protocol in `game.toml`
+    /// (`[net] protocol`).
+    pub fn protocol(&mut self, kind: ProtocolKind) -> &mut Self {
+        self.engine.set_slot(Rc::new(ProtocolSlot(kind)));
         self
     }
 
@@ -153,6 +196,12 @@ impl NetRegistry<'_> {
 }
 
 impl Engine {
+    /// The network protocol the engine speaks: the one a plugin set ([`NetRegistry::protocol`]), else Torque's.
+    pub fn protocol(&self) -> ProtocolKind {
+        self.slot::<ProtocolSlot>()
+            .map_or(ProtocolKind::Tge, |slot| slot.0)
+    }
+
     /// The auth provider a plugin set ([`NetRegistry::auth`]).
     pub fn auth(&self) -> Option<Arc<dyn AuthProvider>> {
         self.slot::<AuthSlot>().map(|slot| Arc::clone(&slot.0))

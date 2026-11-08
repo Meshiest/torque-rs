@@ -147,6 +147,11 @@ different.
   changes every two minutes (the current and the previous one verify), so a sniffed connect request stops working for
   anyone after two to four minutes; within that window an on-path attacker who forges the client's address can still replay
   it, which `AuthContext` documents.
+- A network protocol slot: a game speaks one protocol, set by one plugin (`TgeProtocolPlugin`, `torque.net.tge`, in
+  `DefaultPlugins` and `MinimalPlugins`; a second setter fails the build and names both) or by `[net] protocol` in `game.toml`.
+  Torque's own protocol is the only one so far and its bytes are unchanged. `Engine::protocol` reads the slot, and the server
+  decides what each connection's peer is in one place (`PeerKind`) instead of in each feature. The trace-hash lines are labeled
+  with the protocol.
 
 #### Gameplay
 

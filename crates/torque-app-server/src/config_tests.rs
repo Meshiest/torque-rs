@@ -2,7 +2,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 
-use torque_engine::{EngineBuilder, Warning};
+use torque_engine::{BuildError, EngineBuilder, Plugin, PluginId, ProtocolKind, Warning};
 use torque_ts_vm::host::MemFiles;
 
 use crate::config::{
@@ -10,7 +10,7 @@ use crate::config::{
     MAX_IDS, MAX_NAME_LEN, PATH, client_entry, server_entry,
 };
 use crate::files::GameFiles;
-use crate::plugins::{MinimalPlugins, TerrainPlugin, WaterPlugin};
+use crate::plugins::{MinimalPlugins, TerrainPlugin, TgeProtocolPlugin, WaterPlugin};
 use crate::server::{GameServer, Listen, ServerStart};
 
 const SAMPLE: &str = r#"
@@ -268,6 +268,102 @@ fn a_runner_that_is_not_in_the_build_is_a_warning_and_the_set_one_stays() {
         .build()
         .unwrap();
     assert!(engine.warnings().is_empty());
+}
+
+/// What the engine's own protocol's plugin will be: it sets the slot to the engine's protocol.
+#[derive(PluginId)]
+#[plugin(id = "torque.net.engine")]
+struct EngineProtocolStandIn;
+
+impl Plugin for EngineProtocolStandIn {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.net().protocol(ProtocolKind::Engine);
+    }
+}
+
+#[test]
+fn the_net_protocol_reads_engine_and_tge_and_refuses_anything_else() {
+    assert_eq!(parse("").protocol, None);
+    assert_eq!(
+        parse("[net]\nprotocol = \"engine\"\n").protocol,
+        Some(ProtocolKind::Engine)
+    );
+    assert_eq!(
+        parse("[net]\nprotocol = \"tge\"\n").protocol,
+        Some(ProtocolKind::Tge)
+    );
+    // A value that is no protocol is an error at the value's own line and column.
+    let e = error("[game]\nname = \"G\"\n[net]\nprotocol = \"udp\"\n");
+    assert_eq!(e.at, Some((4, 12)), "{e}");
+    assert!(e.message.contains("udp"), "{e}");
+    for text in ["[net]\nprotocol = \"ENGINE\"\n", "[net]\nprotocol = 3\n"] {
+        assert_eq!(line_of(&error(text)), Some(2), "{text:?}");
+    }
+    let config = parse("[net]\nspeed = 3\n");
+    assert_eq!(
+        config.warnings,
+        ["the key `net.speed` is not known; skipped"]
+    );
+}
+
+#[test]
+fn the_net_protocol_picks_the_plugin_that_sets_the_slot() {
+    // Torque's protocol is what the groups give.
+    let engine = EngineBuilder::new()
+        .add_plugins(MinimalPlugins)
+        .build()
+        .unwrap();
+    assert!(engine.is_plugin_added::<TgeProtocolPlugin>());
+    assert_eq!(engine.protocol(), ProtocolKind::Tge);
+    let config = parse("[net]\nprotocol = \"tge\"\n");
+    let engine = EngineBuilder::new()
+        .add_plugins(MinimalPlugins)
+        .config(&config)
+        .build()
+        .unwrap();
+    assert_eq!(engine.protocol(), ProtocolKind::Tge);
+    assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
+    // The engine's own protocol replaces Torque's plugin with its own.
+    let config = parse("[net]\nprotocol = \"engine\"\n");
+    let engine = EngineBuilder::new()
+        .add_plugins(MinimalPlugins)
+        .add_plugins(EngineProtocolStandIn)
+        .disable_id("torque.net.engine")
+        .config(&config)
+        .build()
+        .unwrap();
+    assert_eq!(engine.protocol(), ProtocolKind::Engine);
+    assert!(!engine.is_plugin_added::<TgeProtocolPlugin>());
+    assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
+    // A build without that plugin warns and keeps the protocol it has.
+    let engine = EngineBuilder::new()
+        .add_plugins(MinimalPlugins)
+        .config(&config)
+        .build()
+        .unwrap();
+    assert_eq!(engine.protocol(), ProtocolKind::Tge);
+    assert!(
+        engine.warnings().iter().any(|w| w
+            .to_string()
+            .contains("the protocol `engine` is not in this build")),
+        "{:?}",
+        engine.warnings()
+    );
+}
+
+#[test]
+fn a_second_plugin_that_sets_the_protocol_fails_the_build_naming_both() {
+    let error = EngineBuilder::new()
+        .add_plugins(MinimalPlugins)
+        .add_plugins(EngineProtocolStandIn)
+        .build()
+        .unwrap_err();
+    assert!(matches!(error, BuildError::DuplicateSlot { .. }), "{error}");
+    let text = error.to_string();
+    assert!(
+        text.contains("torque.net.tge") && text.contains("torque.net.engine"),
+        "{text}"
+    );
 }
 
 fn start(engine: &torque_engine::Engine, files: &MemFiles) -> Result<GameServer, String> {

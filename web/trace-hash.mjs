@@ -55,7 +55,7 @@ if (wasm !== native[0]) {
   console.error(`wasm differs from native:\n--- native\n${native[0]}--- wasm\n${wasm}`);
   ok = false;
 }
-if (!/^all [0-9a-f]{16}$/m.test(native[0]) || native[0].split('\n').filter(Boolean).length < 3) {
+if (!/^all [a-z]+ [0-9a-f]{16}$/m.test(native[0]) || native[0].split('\n').filter(Boolean).length < 3) {
   console.error(`no scenarios ran:\n${native[0]}`);
   ok = false;
 }
