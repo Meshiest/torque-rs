@@ -165,10 +165,19 @@ pub struct ServerGamePlugin;
 
 impl Plugin for ServerGamePlugin {
     fn build(&self, engine: &mut EngineBuilder) {
-        engine.server(ServerStage::Game, |vm, _| {
+        engine.server(ServerStage::Game, |vm, engine| {
             let wiring = server_wiring(vm, "the server game")?;
             let game = torque_server::game::install(vm, wiring.state());
             *wiring.game.borrow_mut() = Some(game);
+            // The plugins' collision the container's queries include.
+            let entries = engine.list::<torque_collide::source::PluginCollision>();
+            for warning in torque_game::plugin_collision::install(
+                vm,
+                entries,
+                torque_collide::source::Side::Server,
+            ) {
+                vm.warn(warning);
+            }
             Ok(())
         });
     }

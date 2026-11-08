@@ -21,6 +21,8 @@ torque-macros = { path = "../torque-macros" }
 # The plugin net classes' records and their field types (`net().ghost`, `#[derive(GhostRecord)]`): no client, GUI or
 # renderer behind it.
 torque-ghosts = { path = "../torque-ghosts" }
+# The plugin collision sources the manifest lists (their names are the type bits both sides must agree on). Std only.
+torque-collide = { path = "../torque-collide" }
 
 [dev-dependencies]
 # The resource layer's files, read by an asset loader in a test.

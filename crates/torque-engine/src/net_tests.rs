@@ -314,3 +314,64 @@ fn the_protocols_have_stable_labels() {
     assert_eq!(ProtocolKind::from_label("Tge"), None);
     assert_eq!(ProtocolKind::default(), ProtocolKind::Tge);
 }
+
+#[derive(Debug)]
+struct NoShapes;
+
+impl torque_collide::source::CollisionSource for NoShapes {
+    fn shapes(&self, _out: &mut Vec<torque_collide::source::CollisionShape>) {}
+}
+
+fn with_sources(names: &[&str]) -> crate::Engine {
+    let mut builder = EngineBuilder::new();
+    for name in names {
+        builder.push(PluginCollision::server(*name, Rc::new(NoShapes)));
+        builder.push(PluginCollision::client(*name, Rc::new(NoShapes)));
+    }
+    builder.build().unwrap()
+}
+
+#[test]
+fn the_manifest_lists_the_collision_sources() {
+    let engine = with_sources(&["Wall", "Props", "Wall", "Player", "bad name"]);
+    assert!(engine.is_networked());
+    let manifest = engine.net_manifest(&HandshakeProfile::default());
+    // Each valid name once, sorted: a built-in type's name and an invalid one are not listed.
+    assert_eq!(
+        manifest.datablocks.names().unwrap(),
+        ["collision.Props", "collision.Wall"]
+    );
+    // An engine with none lists nothing new.
+    assert!(
+        with_sources(&[])
+            .net_manifest(&HandshakeProfile::default())
+            .is_bare()
+    );
+}
+
+#[test]
+fn a_client_missing_a_collision_source_is_refused_with_the_reason() {
+    let server = with_sources(&["Props", "Wall"]);
+    let gate = server.connect_gate(&HandshakeProfile::default()).unwrap();
+    let same = with_sources(&["Wall", "Props"]);
+    assert_eq!(
+        gate.check(from(), &cx(), &fields(same.connect_block(&cx()).unwrap())),
+        Ok(None)
+    );
+    let missing = with_sources(&["Wall"]);
+    let refused = gate
+        .check(
+            from(),
+            &cx(),
+            &fields(missing.connect_block(&cx()).unwrap()),
+        )
+        .unwrap_err();
+    let reason = String::from_utf8(refused).unwrap();
+    assert!(reason.contains("collision.Props"), "{reason}");
+    // A client with none at all is refused too.
+    let plain = EngineBuilder::new().build().unwrap();
+    assert!(
+        gate.check(from(), &cx(), &fields(plain.connect_block(&cx()).unwrap()))
+            .is_err()
+    );
+}

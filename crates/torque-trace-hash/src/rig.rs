@@ -169,6 +169,9 @@ impl Rig {
         torque_client::conn::register(&mut vm, &client, &gui);
         // The client reads the shapes of the datablocks it is sent (a vehicle's wheel count, the floor's hulls) from the same files.
         torque_client::game::set_client_game(&mut vm, Rc::new(TraceClient(files)));
+        // What the engine's plugins say in a connect request (their manifest), as a client of the same engine says it: nothing
+        // for an engine that says nothing on the wire.
+        torque_client::conn::tge::ConnectHello::install(&mut vm, &engine);
         vm.set_step_limit(Some(50_000_000));
         vm.advance_time(1_000);
         vm.eval(

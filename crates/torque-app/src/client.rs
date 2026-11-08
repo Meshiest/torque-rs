@@ -175,6 +175,14 @@ impl ClientBuilder {
         if let Some(game) = engine.slot::<dyn ClientGame>() {
             torque_client::game::set_client_game(&mut vm, game);
         }
+        // The plugins' collision the client's prediction world includes.
+        for warning in torque_game::plugin_collision::install(
+            &mut vm,
+            engine.list::<torque_collide::source::PluginCollision>(),
+            torque_collide::source::Side::Client,
+        ) {
+            vm.warn(warning);
+        }
         for stage in [
             ClientStage::Game,
             ClientStage::Gui,

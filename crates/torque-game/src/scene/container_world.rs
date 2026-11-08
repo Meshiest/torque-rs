@@ -14,6 +14,8 @@
 //! - [`World::hull`] is a collision slot's meshes at the current pose: a `ShapeBase`'s after
 //!   `TSShapeInstance::animate(detail)`, a registered class's from its own [`super::classes::SceneClass::hull_shape`]
 //! - [`World::charge`] is the run's budget ([`Vm::charge_work`])
+//! - the plugins' collision sources ([`crate::plugin_collision`]) answer for the ids in their range
+//!   ([`collide::source::is_plugin_id`]): their shapes as they are at the phase's first query, listed after the bins
 //!
 //! # The borrow contract (read this before holding one)
 //!
@@ -35,13 +37,14 @@
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree:
 //! `scene/sceneContainer.cpp` (Copyright (c) 2012 GarageGames, LLC). The code here is this crate's own.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use collide::convex::{ConvexSource, HullSlot, ObjectView};
 use collide::math::Box3;
 use collide::mesh::{Hull, HullAccel};
+use collide::source::{ShapeSet, is_plugin_id};
 use collide::{Exhausted, ObjectId, World};
 use shapes::instance::ShapeInstance;
 use shapes::preload::SLOTS;
@@ -71,6 +74,8 @@ pub struct ContainerWorld<'a> {
     exhausted: Cell<bool>,
     /// The hulls handed out in this phase, by object and slot.
     hulls: RefCell<HullsBySlot>,
+    /// The shapes of the plugins' collision sources as they are at the phase's first query ([`crate::plugin_collision`]).
+    plugin: OnceCell<ShapeSet>,
 }
 
 impl<'a> ContainerWorld<'a> {
@@ -84,6 +89,7 @@ impl<'a> ContainerWorld<'a> {
             shapes,
             exhausted: Cell::new(false),
             hulls: RefCell::new(HashMap::new()),
+            plugin: OnceCell::new(),
         }
     }
 
@@ -100,6 +106,15 @@ impl<'a> ContainerWorld<'a> {
     /// A read of the `Vm` during the phase (no script, no write).
     pub fn with_vm<R>(&self, f: impl FnOnce(&Vm) -> R) -> R {
         f(&self.vm.borrow())
+    }
+
+    /// The plugin shapes of this phase: made at the first query that asks, empty when the `Vm` has no source. Charged to no
+    /// budget, as the client's are not (see [`collide::source`]).
+    fn plugin_shapes(&self) -> &ShapeSet {
+        self.plugin.get_or_init(|| {
+            let vm: &Vm = &self.vm.borrow();
+            crate::plugin_collision::sources_of(vm).map_or_else(ShapeSet::default, |s| s.snapshot())
+        })
     }
 
     fn pay(&self, vm: &Vm, units: u64) -> bool {
@@ -209,6 +224,9 @@ pub fn rest_nodes(
 
 impl World for ContainerWorld<'_> {
     fn object(&self, id: ObjectId) -> Option<ObjectView> {
+        if is_plugin_id(id) {
+            return self.plugin_shapes().object(id);
+        }
         object_view(&self.vm.borrow(), id.0)
     }
 
@@ -262,7 +280,17 @@ impl World for ContainerWorld<'_> {
                 }
                 out.len() < limit
             })
-            .map_err(|_| Exhausted)
+            .map_err(|_| Exhausted)?;
+        if out.len() >= limit {
+            return Ok(());
+        }
+        // The plugins' shapes come last, as the client's world lists them.
+        let plugin = self.plugin_shapes();
+        if plugin.is_empty() {
+            return Ok(());
+        }
+        plugin.find(query, mask, exclude, limit, out);
+        Ok(())
     }
 
     /// The container's candidate order ([`super::container::CandidateOrder`], each compare charged), else the container's own.
@@ -283,6 +311,9 @@ impl World for ContainerWorld<'_> {
     }
 
     fn convex_source(&self, id: ObjectId) -> ConvexSource {
+        if is_plugin_id(id) {
+            return self.plugin_shapes().convex_source(id);
+        }
         let vm: &Vm = &self.vm.borrow();
         let id = id.0;
         if vm.objects().get(id).is_none() {
@@ -322,6 +353,9 @@ impl World for ContainerWorld<'_> {
     }
 
     fn hull(&self, id: ObjectId, slot: u32) -> Option<Rc<Hull>> {
+        if is_plugin_id(id) {
+            return self.plugin_shapes().hull(id, slot);
+        }
         if let Some(h) = self.hulls.borrow().get(&(id.0, slot)) {
             return h.clone();
         }

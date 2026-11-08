@@ -187,6 +187,10 @@ different.
 - `torque-physics-rapier` (optional, in no default plugin set): a deterministic Rapier world stepped at the engine's tick
   against the map's terrain (cut along the engine's own diagonals) and interior hulls, built by region on first use, with
   every input checked and every count capped; native and wasm32 step it to the same bits.
+- `torque-collide`, `torque-game`, `torque-client`: a plugin can add collision (boxes and convex hulls at a pose, each with a
+  type bit of its own taken from the free bits by name) that the server's container and the predicting client's world both
+  answer for, so what a plugin owns blocks Players and vehicles on both sides alike (`engine.push(PluginCollision::server(..))`,
+  `PluginCollision::client(..)`), listed in the handshake manifest so peers with other sources are refused. Capped in sources, shapes, hull size and work per query; an engine with none is unchanged.
 
 #### Content import
 

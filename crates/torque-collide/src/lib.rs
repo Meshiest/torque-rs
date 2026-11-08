@@ -25,6 +25,8 @@
 //! - [`mesh`]: a collision mesh at a pose as plain arrays, its polygon feed (`TSShapeInstance::buildPolyList`) and its hull
 //!   accelerator (`TSShape::computeAccelerator`).
 //! - [`map`]: a Torque map's terrain and interiors, their convexes, polygon lists and rays.
+//! - [`source`]: collision a plugin contributes (boxes and convex hulls at a pose, with a type bit of their own) that a host's
+//!   container and a predicting client's world both answer for.
 //! - [`types`]: the object type bits and the masks the classes query with ([`TypeMasks`]).
 //! - [`gjk`] and [`feature`]: `GjkCollisionState` (distance, closest points, 16-iteration limit), `ConvexFeature`, the state
 //!   list and `getCollisionInfo` (vehicles).
@@ -50,6 +52,7 @@ pub mod math;
 pub mod mesh;
 pub mod poly;
 pub mod sat;
+pub mod source;
 pub mod types;
 
 pub use collision::{Collision, CollisionList, MAX_COLLISIONS};

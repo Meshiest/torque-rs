@@ -1108,6 +1108,8 @@ impl<W: PredictWorld> Predictor<W> {
         {
             self.set_game(game::prediction_for(g.prediction()));
         }
+        self.static_world
+            .set_plugin_sources(torque_game::plugin_collision::sources_of(vm));
         self.free_look = vm
             .global("$mvFreeLook")
             .is_some_and(|v| ts_vm::fields::atob(&v));
@@ -2385,6 +2387,8 @@ pub struct StaticWorld<W: PredictWorld> {
     pub game: game::GameRef<W>,
     pub reader: Option<FileReader>,
     pub index: Option<Box<dyn StaticIndex<W>>>,
+    /// The plugins' collision sources ([`StaticWorld::set_plugin_sources`]).
+    plugin: Option<Rc<collide::source::CollisionSources>>,
 }
 
 impl<W: PredictWorld> Clone for StaticWorld<W> {
@@ -2393,6 +2397,7 @@ impl<W: PredictWorld> Clone for StaticWorld<W> {
             game: self.game.clone(),
             reader: self.reader.clone(),
             index: self.index.clone(),
+            plugin: self.plugin.clone(),
         }
     }
 }
@@ -2403,6 +2408,7 @@ impl<W: PredictWorld> Default for StaticWorld<W> {
             game: game::GameRef::default(),
             reader: None,
             index: None,
+            plugin: None,
         }
     }
 }
@@ -2412,6 +2418,12 @@ impl<W: PredictWorld> StaticWorld<W> {
     fn set_game(&mut self, game: Rc<dyn game::PredictGame<W>>) {
         self.index = game.static_index();
         self.game = game::GameRef(game);
+    }
+
+    /// The plugins' collision sources every later [`ClientCollision::new`] with this world takes its shapes from, as they are
+    /// when it is made (none: no plugin shapes).
+    pub fn set_plugin_sources(&mut self, sources: Option<Rc<collide::source::CollisionSources>>) {
+        self.plugin = sources;
     }
 
     /// A client tick starts.
@@ -2477,6 +2489,8 @@ pub struct ClientCollision {
     budget: u64,
     /// The game's working-list order (none: the container's).
     order: Option<Rc<dyn CandidateOrder>>,
+    /// The plugins' collision shapes as they were when the container was made, listed after every other object.
+    plugin: collide::source::ShapeSet,
 }
 
 /// The mount of a Player the server says is mounted before its ghost's update said on what.
@@ -2584,6 +2598,7 @@ impl ClientCollision {
         let mut objects = Vec::new();
         let mut work = 0u64;
         let mut set = None;
+        let plugin_sources = ctx.as_ref().and_then(|c| c.static_world.plugin.clone());
         let (mut shapes, reader, driven, ghost_vehicles, disabled, player_at, mut statics) =
             match ctx {
                 Some(c) => {
@@ -2604,6 +2619,7 @@ impl ClientCollision {
                 }
                 None => (None, None, None, None, None, None, None),
             };
+        let plugin_sources = plugin_sources.filter(|s| !s.is_empty());
         let index_bits = statics.as_deref().map_or(0, |i| i.type_bits());
         let mut zones = Vec::new();
         if let Some(i) = statics.as_deref() {
@@ -2743,6 +2759,9 @@ impl ClientCollision {
                 }
             }
         }
+        // The plugins' shapes: charged to no budget, so the client and the server hold the same ones (see `collide::source`).
+        let plugin =
+            plugin_sources.map_or_else(collide::source::ShapeSet::default, |s| s.snapshot());
         ClientCollision {
             statics: set,
             index_bits,
@@ -2751,6 +2770,7 @@ impl ClientCollision {
             work,
             budget,
             order: game.candidate_order(),
+            plugin,
         }
     }
 
@@ -2776,6 +2796,9 @@ impl ClientCollision {
 
     /// An object's type mask (0 for one that is not there).
     pub fn type_mask(&self, id: ObjectId) -> u32 {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.object(id).map_or(0, |v| v.type_mask);
+        }
         self.get(id).map_or(0, |o| o.view.type_mask)
     }
 
@@ -2789,6 +2812,7 @@ impl ClientCollision {
             work: 0,
             budget: TICK_WORK,
             order: None,
+            plugin: collide::source::ShapeSet::default(),
         }
     }
 
@@ -2953,6 +2977,9 @@ impl ClientCollision {
 
 impl collide::World for ClientCollision {
     fn object(&self, id: ObjectId) -> Option<ObjectView> {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.object(id);
+        }
         self.get(id).map(|o| o.view)
     }
 
@@ -2991,6 +3018,11 @@ impl collide::World for ClientCollision {
             }
             out.push(*id);
         }
+        if out.len() >= limit || self.plugin.is_empty() {
+            return Ok(());
+        }
+        // The plugins' shapes come after every other object, as the server's container lists them.
+        self.plugin.find(query, type_mask, exclude, limit, out);
         Ok(())
     }
 
@@ -3008,11 +3040,17 @@ impl collide::World for ClientCollision {
     }
 
     fn convex_source(&self, id: ObjectId) -> ConvexSource {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.convex_source(id);
+        }
         self.get(id)
             .map_or(ConvexSource::None, |o| o.source.convex())
     }
 
     fn hull(&self, id: ObjectId, slot: u32) -> Option<Rc<Hull>> {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.hull(id, slot);
+        }
         self.get(id)?
             .shape
             .as_ref()?

@@ -43,6 +43,7 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use torque_collide::source::{PluginCollision, source_names};
 use torque_net::chunk::ChannelLimits;
 use torque_net::chunk::registry::{ChannelEntry, ChannelError, ChannelRegistry, ChunkChannel};
 use torque_net::connect::{AuthContext, AuthProvider, ConnectBlock, ManifestGate};
@@ -220,10 +221,28 @@ impl Engine {
                 .filter(move |n| n.table == table)
                 .map(|n| n.name.as_str())
         };
+        // The plugins' collision sources ride in the datablock table as `collision.<Name>`: a peer with other sources has other
+        // type bits, so its manifest differs and it is refused at connect (no class has a dot in its name).
+        let collision: Vec<String> = self
+            .collision_names()
+            .map(|n| format!("collision.{n}"))
+            .collect();
         manifest
             .with_ghosts(names(NameTable::Ghost))
-            .with_datablocks(names(NameTable::Datablock))
+            .with_datablocks(
+                names(NameTable::Datablock).chain(collision.iter().map(String::as_str)),
+            )
             .with_channels(self.list::<ChannelEntry>().iter().map(ChannelEntry::name))
+    }
+
+    /// The names of the collision sources plugins added ([`PluginCollision`]), each once, the valid ones only.
+    pub fn collision_names(&self) -> impl Iterator<Item = &str> {
+        source_names(
+            self.list::<PluginCollision>()
+                .iter()
+                .map(|c| c.name.as_str()),
+        )
+        .into_iter()
     }
 
     /// The bulk channels plugins added, in id order (sorted by name). Empty for an engine with none, whose packets are then
@@ -237,6 +256,7 @@ impl Engine {
         !self.net_versions().is_empty()
             || !self.list::<NetName>().is_empty()
             || !self.list::<ChannelEntry>().is_empty()
+            || self.collision_names().next().is_some()
             || self.auth().is_some()
     }
 

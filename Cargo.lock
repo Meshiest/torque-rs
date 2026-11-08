@@ -4210,6 +4210,7 @@ dependencies = [
 name = "torque-engine"
 version = "0.1.0"
 dependencies = [
+ "torque-collide",
  "torque-ghosts",
  "torque-macros",
  "torque-net",
