@@ -2,7 +2,9 @@
 //! made the way the engine's hosts make them, and the console.
 //!
 //! The web check (`examples/lua-web-check`, `just lua-web-check`) builds the same cases for a browser, where [`lua`] is the
-//! page's Lua module instead (`WebLuaPlugin`).
+//! page's Lua module instead (`WebLuaPlugin`). With `cfg(torque_lua_module)` (the crate building them sets it, as the
+//! Wasmtime gate's example in `torque-client-script-host` does) they are a native build's cases against a Lua module too:
+//! listed in `CASES`, with [`lua`] the building crate's `crate::lua_module()`.
 #![allow(dead_code)]
 
 use torque_engine::{ClientStage, Engine, EngineBuilder, ServerStage};
@@ -10,8 +12,9 @@ use torque_mods::ModsPlugin;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::{Vm, VmError};
 
-/// Test cases: each a `#[test]` natively; on the web, functions listed in `CASES` by name, for the page to run one by one.
-#[cfg(not(target_arch = "wasm32"))]
+/// Test cases: each a `#[test]` natively; on the web (or against a Lua module), functions listed in `CASES` by name, for
+/// the page (or the gate) to run one by one.
+#[cfg(not(any(target_arch = "wasm32", torque_lua_module)))]
 #[allow(unused_macros)]
 macro_rules! cases {
     ($($(#[$meta:meta])* fn $name:ident() $body:block)*) => {
@@ -19,7 +22,7 @@ macro_rules! cases {
     };
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", torque_lua_module))]
 #[allow(unused_macros)]
 macro_rules! cases {
     ($($(#[$meta:meta])* fn $name:ident() $body:block)*) => {
@@ -30,7 +33,7 @@ macro_rules! cases {
 }
 
 /// The Lua extension, linked in.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", torque_lua_module)))]
 pub fn lua() -> torque_plugin_loader::ExtensionPlugin {
     use torque_plugin_sdk::abi::TORQUE_ABI_VERSION;
     torque_plugin_loader::ExtensionPlugin::from_init(TORQUE_ABI_VERSION, torque_lua::INIT)
@@ -41,6 +44,12 @@ pub fn lua() -> torque_plugin_loader::ExtensionPlugin {
 #[cfg(target_arch = "wasm32")]
 pub fn lua() -> torque_plugin_loader::web_lua::WebLuaPlugin {
     torque_plugin_loader::web_lua::WebLuaPlugin::default()
+}
+
+/// A Lua module the crate building the cases makes (natively, the Wasmtime gate's).
+#[cfg(all(not(target_arch = "wasm32"), torque_lua_module))]
+pub fn lua() -> torque_plugin_loader::web_lua::WebLuaPlugin {
+    crate::lua_module()
 }
 
 /// Time since it was started, in seconds (`std::time` has no clock on the web).

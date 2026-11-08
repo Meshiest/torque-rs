@@ -145,6 +145,13 @@ lua-web-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/lua-check.mjs "{{web_target}}/lua-web/check"
 
+# The Wasmtime gate for client scripts (crates/torque-client-script-host): the Lua module of `lua-web` run natively under
+# Wasmtime against the Lua extension's shared cases, an epoch-interruption check, and the costs (compile, instantiate, host
+# call, Luau step, release binary size; `cold` adds the cold build time, built from nothing). Needs what `lua-web` needs
+realm-gate cold="":
+    node web/lua-build.mjs
+    cargo run --release --jobs 4 -p torque-client-script-host --features wasmtime --example realm-gate -- "{{web_target}}/lua-web/torque_lua.wasm" {{ if cold == "cold" { "--cold" } else { "" } }}
+
 # The sample extension's picture compiled in (`<dir>/compiled`) and loaded as a library (`<dir>/loaded`), then shots-diff
 native-ext-shots $TORQUE_NATIVE_EXT_SHOTS="target/native-ext-shots":
     cargo test -p torque-plugin-loader --features render --test pictures

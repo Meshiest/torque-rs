@@ -7,7 +7,7 @@
 use wasm_bindgen::prelude::*;
 
 // Linted where it lives, with the Lua extension's tests.
-#[allow(clippy::all, clippy::pedantic)]
+#[allow(clippy::all, clippy::pedantic, unexpected_cfgs)]
 #[path = "../../../crates/torque-plugin-lua/tests/lua.rs"]
 mod lua;
 

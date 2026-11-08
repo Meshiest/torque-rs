@@ -46,6 +46,8 @@ unit_bindings = "warn"
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
 unused_macro_rules = "warn"
+# Set by a crate that builds the shared test cases against a Lua module (`tests/common`).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(torque_lua_module)"] }
 
 [lints.clippy]
 dbg_macro = "warn"

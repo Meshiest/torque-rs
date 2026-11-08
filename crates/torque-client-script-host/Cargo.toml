@@ -1,0 +1,99 @@
+[package]
+name = "torque-client-script-host"
+description = "The host of server-sent client scripts: Luau as a WebAssembly guest, run natively under Wasmtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "lua", "wasm", "sandbox", "gamedev"]
+categories = ["game-engines", "wasm"]
+
+# Wasmtime (and Cranelift with it) comes in only with the `wasmtime` feature, off by default and native only: nothing else in
+# the workspace depends on this crate, and without the feature it has no code.
+
+[features]
+# The Wasmtime runner: `WasmtimeLuaModule`, the Lua extension's WebAssembly module (`just lua-web`) as the engine's
+# `web_lua::LuaModule`.
+wasmtime = ["dep:wasmtime"]
+
+[dependencies]
+torque-engine = { path = "../torque-engine" }
+torque-plugin-abi = { path = "../torque-plugin-abi" }
+torque-plugin-loader = { path = "../torque-plugin-loader" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Cranelift compiles the module; `gc` holds the guest's exception objects (`exnref`); nothing else: no cache, no async,
+# no component model, no WASI.
+wasmtime = { version = "50.0.1", optional = true, default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+    "gc",
+    "gc-drc",
+    "parallel-compilation",
+] }
+
+[dev-dependencies]
+torque-mods = { path = "../torque-mods" }
+# The import-free looping module of the epoch check, written as text.
+wat = "1"
+
+# The gate (the `realm-gate` recipe): the Lua extension's shared cases under Wasmtime, the epoch check and the costs.
+[[example]]
+name = "realm-gate"
+required-features = ["wasmtime"]
+
+# What the Wasmtime runner adds to a release binary (`realm-gate` builds it with and without the feature).
+[[example]]
+name = "realm-size-probe"
+
+[lints.rust]
+# `deny`, not the workspace's `forbid`: the Wasmtime runner keeps two pointers for the time a guest call runs (the engine's
+# host and the store's caller), in one module.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+explicit_outlives_requirements = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+checked_conversions = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+manual_assert = "warn"
+manual_is_variant_and = "warn"
+manual_ok_or = "warn"
+mut_mut = "warn"
+needless_bitwise_bool = "warn"
+ref_binding_to_reference = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+should_panic_without_expect = "warn"
+stable_sort_primitive = "warn"
+string_add_assign = "warn"
+string_lit_chars_any = "warn"
+unnecessary_join = "warn"
+unnecessary_self_imports = "warn"
+unnested_or_patterns = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
+exit = "warn"
+mem_forget = "warn"
