@@ -22,8 +22,18 @@ torque-modelcore = { path = "../torque-modelcore" }
 torque-resource = { path = "../torque-resource" }
 # `FileHost`, the files the asset registry reads through (a mount of archives and folders is one).
 torque-ts-vm = { path = "../torque-ts-vm" }
+# The collision set static props make (feature `collide`): the format-neutral map layer, std only.
+torque-mapcore = { path = "../torque-mapcore", optional = true }
 # MP3 sounds: a pure-Rust port of minimp3 (MIT OR Apache-2.0).
 nanomp3 = { version = "0.2", default-features = false, features = ["alloc"] }
+
+[features]
+# Static props' hulls as a `torque_mapcore` convex set a map's collision reads ([`props`]). Off by default.
+collide = ["dep:torque-mapcore"]
+
+[dev-dependencies]
+# The collision a prop set is made for, to check the hulls collide as they should.
+torque-collide = { path = "../torque-collide" }
 
 [lints]
 workspace = true

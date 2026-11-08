@@ -148,6 +148,8 @@ pub struct StaticProp {
     /// Pitch, yaw, roll in degrees.
     pub angles: [f32; 3],
     pub skin: i32,
+    /// How it collides: 0 not at all, 2 its bounding box, 6 its physics model (the engine's solid types).
+    pub solid: u8,
     /// The leaves it is in.
     pub leaves: Vec<u16>,
 }
@@ -586,6 +588,7 @@ impl Bsp {
                 origin: vec3_at(b, p, "a prop")?,
                 angles: vec3_at(b, p + 12, "a prop")?,
                 skin: i32_at(b, p + 32, "a prop")?,
+                solid: crate::read::u8_at(b, p + 30, "a prop")?,
                 leaves: leaf_list
                     .get(first..first + count)
                     .map(<[u16]>::to_vec)

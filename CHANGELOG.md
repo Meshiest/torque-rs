@@ -186,7 +186,9 @@ different.
   (`ValveFormatPlugins`): VTF textures, VMT materials, MDL/VVD/VTX models with their sequences (made into the model layer),
   VBSP maps (brush faces, displacements, static props, entities, the pak lump, lightmaps) and PCF particle systems with an
   approximate simulation; a game's VPK archives and folders mounted as one tree from its `gameinfo.txt`. A headless viewer
-  example draws them from a game folder the player names.
+  example draws them from a game folder the player names. Physics files (`.phy`) read as one convex hull per piece with
+  the solids' settings and ragdoll joints, falling back to the model's hull box and then its mesh's hull; a `collide`
+  feature turns a map's static props into collision hulls.
 - Every reader bounds its counts, offsets, sizes and paths, and font and secret files are checked before they are read.
 
 #### Tooling

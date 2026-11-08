@@ -3681,7 +3681,9 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "nanomp3",
+ "torque-collide",
  "torque-engine",
+ "torque-mapcore",
  "torque-modelcore",
  "torque-resource",
  "torque-ts-vm",

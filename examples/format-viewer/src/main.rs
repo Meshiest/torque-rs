@@ -7,6 +7,7 @@
 //! - `sheet <out.png> <material or texture>...`: the textures of materials (or `.vtf` files) side by side.
 //! - `model <out-dir> <model.mdl> [sequence] [frames]`: a model turned about (or one sequence's frames).
 //! - `map <out-dir> <map.bsp> [shots]`: a map's geometry, displacements and static props from a few cameras.
+//! - `phy <out-dir> <model.mdl>...`: models side by side with their collision hulls drawn over them as wireframes.
 //! - `effect <out-dir> <file.pcf> [system]`: a particle system's frames (or the file's systems listed).
 //! - `sound <out.wav> <entry or wave> [seconds]`: a soundscript entry or a wave mixed offline into a file.
 
@@ -15,6 +16,7 @@ mod draw;
 mod effect;
 mod map;
 mod model;
+mod phy;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -185,6 +187,7 @@ fn main() -> Result<(), String> {
         }
         "model" => model::run(&c, &args[1..]),
         "map" => map::run(&mut c, &args[1..]),
+        "phy" => phy::run(&c, &args[1..]),
         "effect" => effect::run(&c, &args[1..]),
         "sound" => audio::run(&c, &args[1..]),
         "sun-check" => {

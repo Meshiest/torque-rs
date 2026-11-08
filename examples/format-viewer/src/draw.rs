@@ -11,6 +11,7 @@ use torque_modelcore::math;
 use torque_render_core::{Gpu, Offscreen};
 use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
+use torque_render_hd::gizmos::{GizmoFrame, GizmoLines, GizmoSegment};
 use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::hd::scatter::{ScatterLook, ScatterTable};
@@ -320,6 +321,18 @@ impl Renderer {
         frames: usize,
         out: &Path,
     ) -> Result<(), String> {
+        self.shot_lines(eye, target, frames, out, &[])
+    }
+
+    /// [`Renderer::shot`] with `lines` (world-space segments, drawn over the picture, `width` pixels wide) on the last frame.
+    pub fn shot_lines(
+        &mut self,
+        eye: [f32; 3],
+        target: [f32; 3],
+        frames: usize,
+        out: &Path,
+        lines: &[GizmoSegment],
+    ) -> Result<(), String> {
         let e = look_at(eye, target);
         let s = &mut self.scene.frame;
         s.eye = Some(e);
@@ -327,7 +340,8 @@ impl Renderer {
         s.size = self.size;
         let camera = HdCamera::new(e, FOV, s.visible_distance, self.size.0, self.size.1);
         let mut frame = None;
-        for _ in 0..frames.max(1) {
+        let mut gizmos = GizmoLines::new(&self.gpu);
+        for i in 0..frames.max(1) {
             self.scene.frame.generation += 1;
             self.scene.time += 1.0 / 30.0;
             self.world.upload(&self.scene);
@@ -340,6 +354,19 @@ impl Renderer {
                     [0, 0],
                 )),
             )?;
+            if i + 1 == frames.max(1) {
+                gizmos.draw(
+                    &self.gpu,
+                    &GizmoFrame {
+                        target: &self.target.color,
+                        rect: [0, 0, self.size.0, self.size.1],
+                        camera: &camera,
+                        depth: None,
+                        width: 2.0,
+                    },
+                    lines,
+                );
+            }
             frame = Some(
                 self.gpu
                     .read_back(&self.target)

@@ -21,7 +21,7 @@ torque-audio = { path = "../../crates/torque-audio", default-features = false }
 torque-engine = { path = "../../crates/torque-engine" }
 torque-modelcore = { path = "../../crates/torque-modelcore" }
 torque-render-core = { path = "../../crates/torque-render-core" }
-torque-render-hd = { path = "../../crates/torque-render-hd" }
+torque-render-hd = { path = "../../crates/torque-render-hd", features = ["gizmos"] }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 torque-scene = { path = "../../crates/torque-scene" }
 png = "0.18"

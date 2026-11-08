@@ -189,6 +189,7 @@ loads a file itself, and turning a format off does not change what those paths r
 | `MdlFormatPlugin` | `torque.format-mdl` | `mdl`, `vvd`, `vtx`, `ani` | `mdl::Mdl`, `vvd::Vvd`, `vtx::Vtx`, `AniFile` | 64 MiB each |
 | `BspFormatPlugin` | `torque.format-vbsp` | `bsp` | `bsp::Bsp` | 512 MiB |
 | `PcfFormatPlugin` | `torque.format-pcf` | `pcf` | `pcf::Pcf` | 32 MiB |
+| `PhyFormatPlugin` | `torque.format-phy` | `phy` | `phy::Phy` (a convex hull per piece, the solids' mass and ragdoll joints) | 16 MiB |
 
 A model is three files: `load_model` loads them through the registry and makes a `torque-modelcore` model (bones, skinned
 meshes, materials with the paths to try, the sequences as animations, the included models' too). A map's `Bsp` reads each
@@ -206,6 +207,11 @@ let files = SourceFiles::from_gameinfo(Path::new(game_folder))?;
 let assets = Assets::new(&engine);
 let model = load_model(&assets, &files, "models/props/crate.mdl", &Choice::default(), &mut |_| true)?;
 ```
+
+A model's physics file gives its collision: `collision::ModelCollision::load` returns the hulls of its `.phy` in the model's
+space, or, when the file is missing, refused or empty of convex pieces, the model's hull box, then the convex hull of its
+mesh. With the `collide` feature, `props::static_prop_convexes` places a map's static props' hulls as one `ConvexSet` for the
+map collision.
 
 The `format-viewer` example draws textures, models, animated sequences, maps and particle systems from the game folder
 `TORQUE_SOURCE_GAME_DIR` names, offscreen.

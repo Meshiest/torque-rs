@@ -8,6 +8,7 @@
 //! | [`VmtFormatPlugin`] | `torque.format-vmt` | `vmt` | [`vmt::Vmt`] | 1 MiB | yes |
 //! | [`BspFormatPlugin`] | `torque.format-vbsp` | `bsp` | [`bsp::Bsp`] | 512 MiB | yes |
 //! | [`PcfFormatPlugin`] | `torque.format-pcf` | `pcf` | [`pcf::Pcf`] | 32 MiB | yes |
+//! | [`phy::PhyFormatPlugin`] | `torque.format-phy` | `phy` | [`phy::Phy`] | 16 MiB | yes |
 //! | [`MdlFormatPlugin`] | `torque.format-mdl` | `mdl`, `vvd`, `vtx`, `ani` | [`mdl::Mdl`], [`vvd::Vvd`], [`vtx::Vtx`], [`AniFile`] | 64 MiB each | yes |
 //!
 //! Every reader here is the crate's own, written from the formats' public documentation, and is bounds-checked: hostile bytes
@@ -18,11 +19,16 @@
 //! lists them, and a map's pak lump), a [`torque_ts_vm::host::FileHost`] the registry loads from.
 
 pub mod bsp;
+pub mod collision;
 pub mod files;
+pub mod hull;
 pub mod kv;
 pub mod mdl;
 pub mod model;
 pub mod pcf;
+pub mod phy;
+#[cfg(feature = "collide")]
+pub mod props;
 pub mod read;
 pub mod sound;
 pub mod vmt;
@@ -261,6 +267,7 @@ impl PluginGroup for ValveFormatPlugins {
             .add(MdlFormatPlugin)
             .add(BspFormatPlugin)
             .add(PcfFormatPlugin)
+            .add(phy::PhyFormatPlugin)
     }
 }
 
@@ -268,6 +275,8 @@ impl PluginGroup for ValveFormatPlugins {
 mod fuzz;
 #[cfg(test)]
 mod model_tests;
+#[cfg(test)]
+mod phy_tests;
 #[cfg(test)]
 mod synth;
 #[cfg(test)]
