@@ -25,10 +25,11 @@ use torque_ghosts::datablocks::{
     DatablockCodecSet, ScriptField, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks,
 };
 use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
+use torque_ghosts::plugin::{PluginClass, PluginClasses, Record};
 use torque_ghosts::set::GhostCodecSet;
 use torque_ghosts::tails::{PlayerTail, PlayerTailMotion, ShapeTail, TailData, WheeledTail};
 use torque_ghosts::tge::{TGE_DATABLOCK_CLASSES, TgeClass, TgeGhosts, tge_reps};
-use torque_ghosts::{ObjectView, Value};
+use torque_ghosts::{ObjectView, PackCtx, Value};
 use torque_net::bits::BitWriter;
 use torque_net::classes::{Direction, Kind, NetClasses};
 use torque_net::control::{ControlData, ControlObject, ControlState, Damage};
@@ -145,8 +146,14 @@ pub trait NetCodecs: Debug {
     /// The ghostable class of an object of class `name` (none: the object is not ghosted). By default TGE 1.4's classes that
     /// `torque_ghosts`' TGE set has a record codec for (and the engine's own, `torque_ghosts::light`'s, past the table's ids), each numbered by its place in [`TgeClass::ALL`] and with the net flags its
     /// constructor chain sets ([`TgeClass::net_flags`]: a `Camera` is registered but not Ghostable).
+    ///
+    /// A plugin's class ([`plugin_classes`](Self::plugin_classes)) takes its id past those, from
+    /// [`plugin_ghost_base`](Self::plugin_ghost_base) in its set's order, numbered [`PluginClasses::ghost_code`]; one whose id
+    /// does not fit the class id width is not ghosted.
     fn ghost_class(&self, name: &str) -> Option<GhostClassInfo> {
-        let class = TgeGhosts::class_by_name(name)?;
+        let Some(class) = TgeGhosts::class_by_name(name) else {
+            return self.plugin_ghost_class(name);
+        };
         let classes = self.object_classes();
         // The engine's own classes: the ids past the table's, in order (a connection's source shows them to engine peers only).
         let class_id = match ENGINE_OBJECT_CLASSES
@@ -165,6 +172,37 @@ pub trait NetCodecs: Debug {
             flags: class.net_flags(),
             sky: class == TgeClass::Sky,
         })
+    }
+
+    /// The ghostable class of an object of the plugin class `name` ([`ghost_class`](Self::ghost_class)'s plugin half).
+    fn plugin_ghost_class(&self, name: &str) -> Option<GhostClassInfo> {
+        let plugins = self.plugin_classes()?;
+        let class = plugins.ghost(name)?;
+        let class_id = plugins.id_of(Kind::Object, name, self.plugin_ghost_base())?;
+        (u64::from(class_id) < 1u64 << self.ghost_class_bits()).then_some(())?;
+        Some(GhostClassInfo {
+            code: plugins.ghost_code(name)?,
+            class_id,
+            flags: class.net_flags(),
+            sky: false,
+        })
+    }
+
+    /// The plugins' ghost and datablock classes the codecs send (none by default; the engine's own codecs have the engine's,
+    /// [`EngineCodecs`]). A game's own codecs that carry them answer the set its script engine was given
+    /// ([`plugin_classes`](fn@plugin_classes)).
+    fn plugin_classes(&self) -> Option<&PluginClasses> {
+        None
+    }
+
+    /// The first object class id of the plugins' ghost classes: past the class table's objects and the engine's own classes.
+    fn plugin_ghost_base(&self) -> u32 {
+        PluginClasses::ghost_base(self.object_classes().count(Kind::Object))
+    }
+
+    /// The first datablock class id of the plugins' datablock classes: past the class table's datablocks.
+    fn plugin_datablock_base(&self) -> u32 {
+        PluginClasses::datablock_base(self.datablock_classes().len())
     }
 
     /// The dirty bits a class's own `setTransform` marks (0: the base `SceneObject::setTransform`, which marks nothing).
@@ -224,14 +262,18 @@ pub trait NetCodecs: Debug {
     }
 
     /// The networked datablock class of an object of class `name` as the class table names it (none: the object is not sent).
-    /// By default TGE 1.4's classes with a record codec in `torque_ghosts`' [`TgeDatablocks`].
+    /// By default TGE 1.4's classes with a record codec in `torque_ghosts`' [`TgeDatablocks`], then the plugins' datablock
+    /// classes ([`plugin_classes`](Self::plugin_classes)).
     fn datablock_class(&self, name: &str) -> Option<&'static str> {
-        TgeDatablocks::class_by_name(name).map(TgeDatablockClass::name)
+        TgeDatablocks::class_by_name(name)
+            .map(TgeDatablockClass::name)
+            .or_else(|| Some(self.plugin_classes()?.datablock(name)?.name()))
     }
 
     /// The record of datablock `id` of `class` (its `packData`) written from the host's view of it; `values` are the
     /// datablocks' computed values. None: the class has no writer, and the event goes out as the one 0 bit. By default the
-    /// class's record of [`TgeDatablocks`], in the widths of a server's start ([`TgeDbRecord`]).
+    /// class's record of [`TgeDatablocks`], in the widths of a server's start ([`TgeDbRecord`]); a plugin's class's record
+    /// ([`PluginDbRecord`]) with its class id past the table's.
     fn datablock_record(
         &self,
         class: &str,
@@ -240,11 +282,22 @@ pub trait NetCodecs: Debug {
         values: &DbValues,
     ) -> Option<Rc<dyn DatablockRecord>> {
         let _ = (id, values);
-        let class = TgeDatablocks::class_by_name(class)?;
         let widths = NetWidths::new(
             self.ghost_id_bits(self.start_ghost_limit()),
             self.datablock_id_bits(),
         );
+        let Some(class) = TgeDatablocks::class_by_name(class) else {
+            let plugins = self.plugin_classes()?;
+            let plugin = plugins.datablock(class)?;
+            let class_id = plugins.id_of(Kind::DataBlock, class, self.plugin_datablock_base())?;
+            let (record, _) = plugin.pack(&PluginDbView(view), !0, &PackCtx::new(widths));
+            return Some(Rc::new(PluginDbRecord {
+                class: plugin,
+                class_id,
+                record,
+                widths,
+            }));
+        };
         let record = TgeDatablocks::pack(class, &TgeView { class, view }, widths);
         Some(Rc::new(TgeDbRecord { record, widths }))
     }
@@ -403,6 +456,32 @@ pub const DATABLOCKS_DOWNLOAD_DONE: u8 = 7;
 #[derive(Debug, Default)]
 pub struct TorqueCodecs;
 
+/// Torque's codecs with the plugins' ghost and datablock classes ([`NetCodecs::plugin_classes`]): what [`net_codecs`] gives a
+/// script engine whose engine has plugin net classes (the set its extension) and no game's own codecs.
+#[derive(Debug, Default)]
+pub struct EngineCodecs {
+    pub plugins: Rc<PluginClasses>,
+}
+
+impl NetCodecs for EngineCodecs {
+    fn plugin_classes(&self) -> Option<&PluginClasses> {
+        Some(&self.plugins)
+    }
+
+    fn sim_mask(&self, code: u16, bits: u32) -> u32 {
+        TorqueCodecs.sim_mask(code, bits)
+    }
+
+    fn control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
+        TorqueCodecs.control_object(vm, obj, ghost_index)
+    }
+}
+
 /// A record of [`TgeDatablocks`] as the host carries it, with the widths it was packed in. Its render is charged as one entry.
 #[derive(Debug)]
 pub struct TgeDbRecord {
@@ -425,6 +504,58 @@ impl DatablockRecord for TgeDbRecord {
     }
 }
 
+/// A record of a plugin's datablock class as the host carries it: its class id past the table's, and the widths it was
+/// packed in. Its render is charged as one entry per script field.
+#[derive(Debug)]
+pub struct PluginDbRecord {
+    pub class: PluginClass,
+    pub class_id: u32,
+    pub record: Box<dyn Record>,
+    pub widths: NetWidths,
+}
+
+impl DatablockRecord for PluginDbRecord {
+    fn encode(&self, w: &mut BitWriter, table: &Table) -> Result<(), DbPackError> {
+        self.record
+            .encode(w, table, self.widths)
+            .map_err(|_| DbPackError::Malformed("a plugin's datablock record"))
+    }
+
+    fn entries(&self) -> usize {
+        self.record.record_fields().len().max(1)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn class_id(&self) -> Option<u32> {
+        Some(self.class_id)
+    }
+}
+
+/// The host's view of a plugin's datablock: each field by its own name.
+struct PluginDbView<'a>(&'a dyn DatablockView);
+
+impl ObjectView for PluginDbView<'_> {
+    fn get(&self, member: &str, index: usize) -> Value {
+        db_value(self.0.get(member, index))
+    }
+}
+
+/// A host's datablock value as a packer reads it.
+fn db_value(value: DbValue) -> Value {
+    match value {
+        DbValue::Null => Value::Null,
+        DbValue::Bool(b) => Value::Bool(b),
+        DbValue::Int(i) => Value::Int(i),
+        DbValue::F32(f) => Value::F32(f),
+        DbValue::Str(s) => Value::Str(s),
+        DbValue::Id(id) => Value::Id(id),
+        DbValue::Xform(a) => Value::xform(a.as_ref()),
+    }
+}
+
 /// The host's view of a datablock (by script field) as `torque_ghosts`' packers read it (by member,
 /// [`TgeDatablockClass::script_field`]).
 struct TgeView<'a> {
@@ -434,20 +565,11 @@ struct TgeView<'a> {
 
 impl ObjectView for TgeView<'_> {
     fn get(&self, member: &str, index: usize) -> Value {
-        let value = match self.class.script_field(member, index) {
+        db_value(match self.class.script_field(member, index) {
             ScriptField::Own => self.view.get(member, index),
             ScriptField::Field(field, index) => self.view.get(field, index),
             ScriptField::Absent => DbValue::Null,
-        };
-        match value {
-            DbValue::Null => Value::Null,
-            DbValue::Bool(b) => Value::Bool(b),
-            DbValue::Int(i) => Value::Int(i),
-            DbValue::F32(f) => Value::F32(f),
-            DbValue::Str(s) => Value::Str(s),
-            DbValue::Id(id) => Value::Id(id),
-            DbValue::Xform(a) => Value::xform(a.as_ref()),
-        }
+        })
     }
 }
 
@@ -590,12 +712,21 @@ pub fn set_net_codecs(vm: &mut Vm, codecs: Rc<dyn NetCodecs>) {
     vm.set_extension(Rc::new(Installed(codecs)));
 }
 
-/// The codecs `vm`'s game installed, else Torque's.
+/// The codecs `vm`'s game installed, else Torque's: with the plugins' net classes ([`EngineCodecs`]) when the script engine
+/// has a set of them ([`plugin_classes`]).
 pub fn net_codecs(vm: &Vm) -> Rc<dyn NetCodecs> {
-    vm.extension::<Installed>().map_or_else(
-        || Rc::new(TorqueCodecs) as Rc<dyn NetCodecs>,
-        |i| Rc::clone(&i.0),
-    )
+    if let Some(installed) = vm.extension::<Installed>() {
+        return Rc::clone(&installed.0);
+    }
+    match plugin_classes(vm).filter(|p| !p.is_empty()) {
+        Some(plugins) => Rc::new(EngineCodecs { plugins }),
+        None => Rc::new(TorqueCodecs),
+    }
+}
+
+/// The plugins' ghost and datablock classes of `vm` (its extension; an engine's plugins give every script engine theirs).
+pub fn plugin_classes(vm: &Vm) -> Option<Rc<PluginClasses>> {
+    vm.extension::<PluginClasses>()
 }
 
 impl LanRules {

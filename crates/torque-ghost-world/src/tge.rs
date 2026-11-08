@@ -20,6 +20,7 @@ use ghosts::light::{ScatterSky, SpotLight, TimeOfDay};
 use ghosts::markers::{MissionMarker, SpawnSphere, WayPoint};
 use ghosts::parts::GameBase;
 use ghosts::player::{HEAD_BITS, Player, VELOCITY_NORMAL_BITS, YAW_BITS};
+use ghosts::plugin::PluginClasses;
 use ghosts::projectile::Projectile;
 use ghosts::shapebase::{Rare, ShapeBody};
 use ghosts::shapes::{Camera, Item, StaticShape};
@@ -33,6 +34,7 @@ use ghosts::{
 };
 use net::NetError;
 use net::bits::BitReader;
+use net::classes::Kind;
 use net::control::{CameraPacketData, ControlData};
 use net::ghost::{ClassForm, GhostClient, GhostCodec};
 use net::huffman::Table;
@@ -296,6 +298,7 @@ impl ClientRecord<TgeClientSet> for TgeRecord {
             R::FxLight(r) => r.game.datablock,
             R::Lightning(r) => r.game.datablock,
             R::Precipitation(r) => r.game.datablock,
+            R::Plugin(_, r) => r.record_datablock(),
             record => shape_part(record)?.game.datablock,
         }
     }
@@ -363,6 +366,11 @@ impl ClientRecord<TgeClientSet> for TgeRecord {
             },
             R::SpotLight(r) => Pose::Affine {
                 xf: r.transform?,
+                scale: None,
+            },
+            // A plugin's record: its first transform.
+            R::Plugin(_, r) => Pose::Affine {
+                xf: r.record_transform()?,
                 scale: None,
             },
             R::Camera(r) => {
@@ -803,10 +811,15 @@ impl Merge for Precipitation {
 }
 
 impl Merge for TgeRecord {
-    /// A record of another class replaces the kept one; TSStatic and VehicleBlocker send everything every time.
+    /// A record of another class replaces the kept one; TSStatic and VehicleBlocker send everything every time. A plugin's record
+    /// merges as its type does ([`ghosts::plugin::NetRecord::merge`]).
     fn merge(&mut self, sent: &TgeRecord) {
         use TgeRecord as R;
         match (self, sent) {
+            // One class is one record type, so the merge takes it.
+            (R::Plugin(kc, k), R::Plugin(sc, s)) if kc == sc => {
+                k.merge_record(&**s);
+            }
             (R::AiPlayer(k), R::AiPlayer(s)) | (R::Player(k), R::Player(s)) => k.merge(s),
             (R::AiWheeledVehicle(k), R::AiWheeledVehicle(s))
             | (R::WheeledVehicle(k), R::WheeledVehicle(s)) => k.merge(s),
@@ -894,10 +907,16 @@ impl ClientFacts for TgeFacts {
 
 /// The record codec of a client's ghost table over [`TgeGhosts`]: the connection's object class ids (by their names, the net
 /// class table's), its id widths and string table, and the client's facts.
+///
+/// **Ids past the table.** The engine's own classes take the ids right after it ([`GhostCodecSet::class_past_table`]), the
+/// plugins' classes ([`plugins`](Self::plugins)) the ids after those, in their set's order ([`PluginClasses::ghost_base`]); any
+/// other id is refused as an unknown class.
 #[derive(Debug)]
 pub struct TgeCodec {
     /// The set's class of each object class id (`None`: a class with no codec here, refused).
     pub classes: Vec<Option<TgeClass>>,
+    /// The plugins' ghost classes the client reads (the server's set: both sides number them from the names).
+    pub plugins: PluginClasses,
     pub widths: ghosts::NetWidths,
     pub table: Table,
     pub facts: TgeFacts,
@@ -916,12 +935,35 @@ impl TgeCodec {
     ) -> TgeCodec {
         TgeCodec {
             classes: names.into_iter().map(TgeGhosts::class_by_name).collect(),
+            plugins: PluginClasses::default(),
             widths,
             table,
             facts: TgeFacts::default(),
             control: None,
             serial: 0,
         }
+    }
+
+    /// The codec with the plugins' ghost classes `plugins` past the table and the engine's own classes.
+    pub fn with_plugins(mut self, plugins: PluginClasses) -> TgeCodec {
+        self.plugins = plugins;
+        self
+    }
+
+    /// The class an object class id names: the table's, the engine's own past it, then the plugins' (`None`: unknown).
+    pub fn class_of_id(&self, id: u32) -> Option<TgeClass> {
+        let table = self.classes.len();
+        self.classes
+            .get(id as usize)
+            .copied()
+            .flatten()
+            .or_else(|| TgeGhosts::class_past_table(id, table))
+            .or_else(|| {
+                let base = PluginClasses::ghost_base(table);
+                self.plugins
+                    .by_id(Kind::Object, id, base)
+                    .map(TgeClass::Plugin)
+            })
     }
 
     fn read(
@@ -951,13 +993,10 @@ impl GhostCodec for TgeCodec {
         let ClassForm::Id(id) = class else {
             return Err(NetError::Invalid("implied class"));
         };
-        // Past the table: the engine's own classes (a server of the engine's own sends them to its own clients only).
+        // Past the table: the engine's own classes, then the plugins' (a server of the engine's own sends them to its own clients
+        // only).
         let class = self
-            .classes
-            .get(id as usize)
-            .copied()
-            .flatten()
-            .or_else(|| TgeGhosts::class_past_table(id, self.classes.len()))
+            .class_of_id(id)
             .ok_or(NetError::Invalid("object class"))?;
         let record = self.read(class, true, None, r)?;
         self.serial += 1;
@@ -1016,5 +1055,117 @@ mod vehicle_merge_tests {
         let s = kept.vehicle.state.unwrap();
         assert_eq!(s.steering, [300, 2]);
         assert_eq!((s.rigid, s.energy), (Some(rigid), Some(7)));
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use ghosts::codec::{Codec, Layout, R, Xf};
+    use ghosts::plugin::{
+        DatablockRef, FieldSpec, GhostRecord, NetField, NetRecord, PluginClass, Replicate,
+    };
+    use ghosts::{ObjectView, PackCtx};
+
+    /// A plugin's record, written as the derive writes it: a pose, a datablock and a field sent only now and then.
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct Marker {
+        pose: Xf,
+        data: DatablockRef,
+        glow: Option<u32>,
+    }
+
+    impl Layout for Marker {
+        fn layout<C: Codec>(&mut self, c: &mut C) -> R {
+            self.pose.layout(c, "transform", FieldSpec::DEFAULT)?;
+            self.data.layout(c, "dataBlock", FieldSpec::DEFAULT)?;
+            self.glow.layout(c, "glow", FieldSpec::DEFAULT)
+        }
+    }
+
+    impl NetRecord for Marker {
+        fn merge(&mut self, sent: &Marker) {
+            self.pose.merge_from(&sent.pose);
+            self.data.merge_from(&sent.data);
+            self.glow.merge_from(&sent.glow);
+        }
+        fn datablock(&self) -> Option<u32> {
+            self.data.datablock()
+        }
+        fn transform(&self) -> Option<Xf> {
+            Some(self.pose)
+        }
+        fn script_fields(&self) -> Vec<(String, u32, Value)> {
+            Vec::new()
+        }
+    }
+
+    impl GhostRecord for Marker {
+        fn pack(_view: &dyn ObjectView, _mask: u32, _ctx: &PackCtx) -> (Marker, u32) {
+            (Marker::default(), 0)
+        }
+    }
+
+    fn codec_with(plugins: PluginClasses) -> TgeCodec {
+        let names = ghosts::tge::TGE_OBJECT_CLASSES;
+        TgeCodec::new(names, ghosts::NetWidths::engine_default(), Table::torque())
+            .with_plugins(plugins)
+    }
+
+    #[test]
+    fn class_ids_run_through_the_table_the_engines_classes_and_the_plugins_and_no_further() {
+        let marker = PluginClass::ghost::<Marker>("Marker2", Replicate::Interpolated);
+        let beacon = PluginClass::ghost::<Marker>("Beacon", Replicate::Predicted);
+        let codec = codec_with(PluginClasses::new([marker, beacon]).unwrap());
+        assert_eq!(codec.class_of_id(21), Some(TgeClass::Player));
+        assert_eq!(codec.class_of_id(45), Some(TgeClass::SpotLight));
+        assert_eq!(codec.class_of_id(48), Some(TgeClass::Plugin(beacon)));
+        assert_eq!(codec.class_of_id(49), Some(TgeClass::Plugin(marker)));
+        assert_eq!(codec.class_of_id(50), None);
+        assert_eq!(codec.class_of_id(u32::MAX), None);
+        // Without the plugins, their ids are as unknown as any other.
+        assert_eq!(codec_with(PluginClasses::default()).class_of_id(48), None);
+    }
+
+    #[test]
+    fn a_plugin_record_poses_names_its_datablock_and_merges_its_updates() {
+        let class = PluginClass::ghost::<Marker>("Marker2", Replicate::Interpolated);
+        let pose = Xf {
+            position: [F32::new(1.0), F32::new(2.0), F32::new(3.0)],
+            ..Xf::default()
+        };
+        let mut kept = TgeRecord::Plugin(
+            class,
+            Box::new(Marker {
+                pose,
+                data: DatablockRef(Some(9)),
+                glow: Some(4),
+            }),
+        );
+        assert_eq!(ClientRecord::datablock(&kept), Some(9));
+        assert_eq!(
+            kept.pose(None),
+            Some(Pose::Affine {
+                xf: pose,
+                scale: None
+            })
+        );
+        let sent = TgeRecord::Plugin(
+            class,
+            Box::new(Marker {
+                pose: Xf::default(),
+                data: DatablockRef(Some(10)),
+                glow: None,
+            }),
+        );
+        kept.merge_update(&sent);
+        let marker = kept.plugin::<Marker>().unwrap();
+        assert_eq!(
+            (marker.data, marker.glow),
+            (DatablockRef(Some(10)), Some(4))
+        );
+        // A record of another class replaces the kept one.
+        kept.merge_update(&TgeRecord::Sun(ghosts::sky::Sun::default()));
+        assert!(matches!(kept, TgeRecord::Sun(_)));
     }
 }

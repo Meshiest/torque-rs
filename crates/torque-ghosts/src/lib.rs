@@ -15,6 +15,9 @@
 //!   [`audio`] (AudioEmitter); and the engine's own, after Torque3D's: [`light`] (SpotLight, TimeOfDay, ScatterSky).
 //! - [`tails`]: the control objects' packet data and their class-directed reader.
 //! - [`tge`]: [`TgeGhosts`], the engine's default [`GhostCodecSet`], and TGE's networked class list.
+//! - [`plugin`]: the classes a plugin adds ([`PluginClass`], [`PluginClasses`]), their records ([`GhostRecord`],
+//!   [`DatablockCodec`], carried as a [`Record`]) and the field types the derives build them of; the closed sets carry them
+//!   in their `Plugin` arms.
 //! - [`datablocks`]: [`DatablockCodecSet`], a game's registry of datablock classes, and [`TgeDatablocks`], TGE's datablock
 //!   records (each class's `packData`).
 //!
@@ -32,6 +35,7 @@ pub mod markers;
 pub mod motion;
 pub mod parts;
 pub mod player;
+pub mod plugin;
 pub mod projectile;
 pub mod props;
 pub mod set;
@@ -52,6 +56,10 @@ pub use codec::{
     ClientFacts, F32, Layout, NetStr, NetWidths, ObjCtx, ReadCtx, WIRE_WHEELS, Xf, decode, encode,
 };
 pub use datablocks::{DatablockCodecSet, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks};
+pub use plugin::{
+    DatablockCodec, DatablockRef, GhostRecord, NetRecord, PluginClass, PluginClasses, Record,
+    Replicate,
+};
 pub use set::GhostCodecSet;
 pub use shapebase::TgeShapeBase;
 pub use tails::{TailClass, TgePacketData, TgeTails};

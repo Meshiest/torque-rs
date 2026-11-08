@@ -277,9 +277,14 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
     let bytes = w.into_bytes();
     let mut r = BitReader::new(&bytes);
     r.enable_string_buffer();
-    let (read, index, total) = read_datablock(&mut r, &tables.ctx(widths), &tables.classes)
-        .unwrap()
-        .expect("a modified datablock");
+    let (read, index, total) = read_datablock(
+        &mut r,
+        &tables.ctx(widths),
+        &tables.classes,
+        &PluginClasses::default(),
+    )
+    .unwrap()
+    .expect("a modified datablock");
     assert_eq!((read.id, index, total), (40, 2, 5));
     assert_eq!(read.datablock.class, "StaticShapeData");
     assert_eq!(
@@ -299,9 +304,14 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
     let bytes = w.into_bytes();
     let mut r = BitReader::new(&bytes);
     assert!(
-        read_datablock(&mut r, &tables.ctx(widths), &tables.classes)
-            .unwrap()
-            .is_none()
+        read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &PluginClasses::default()
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -360,6 +370,165 @@ fn a_packet_whose_compression_point_is_not_finite_is_refused() {
         r.set_compression_point([0.0, bad, 0.0]);
         assert!(stream_point(&r).is_err(), "{bad}");
     }
+}
+
+/// A plugin's datablock class: one struct as the console class (with a preload) and its record.
+#[derive(
+    Debug, Clone, PartialEq, Default, torque_engine::EngineClass, torque_engine::DatablockCodec,
+)]
+#[class(name = "PropData", parent = "SimDataBlock", preload = PropData::check)]
+struct PropData {
+    mass: f32,
+    #[net(max_len = 32)]
+    model: String,
+    #[field(name = "partCount")]
+    parts: i32,
+}
+
+impl PropData {
+    /// The preload: refuses a prop with no model, and notes the ones it took.
+    fn check(&self, vm: &mut Vm, id: ts_vm::sim::ObjId) -> Result<(), String> {
+        if self.model.is_empty() {
+            return Err("a prop needs a model".to_string());
+        }
+        let seen = vm.global("$preloaded").unwrap_or_default();
+        let seen = String::from_utf8_lossy(&seen);
+        vm.set_global(
+            "$preloaded",
+            &format!("{seen}{id}:{}:{} ", self.model, self.parts),
+        );
+        Ok(())
+    }
+}
+
+#[derive(torque_engine::PluginId)]
+#[plugin(id = "test.props")]
+struct PropsPlugin;
+
+impl torque_engine::Plugin for PropsPlugin {
+    fn build(&self, engine: &mut torque_engine::EngineBuilder) {
+        engine.script().class::<PropData>();
+        engine.net().datablock::<PropData>("PropData");
+    }
+}
+
+/// A PropData as the server's view answers it.
+struct PropView(&'static str);
+
+impl torque_server::net::datablock::DatablockView for PropView {
+    fn get(&self, field: &str, _index: usize) -> torque_server::net::datablock::DbValue {
+        use torque_server::net::datablock::DbValue;
+        match field {
+            "mass" => DbValue::F32(12.5),
+            "model" => DbValue::Str(self.0.as_bytes().to_vec()),
+            "partCount" => DbValue::Int(4),
+            _ => DbValue::Null,
+        }
+    }
+}
+
+#[test]
+fn a_plugins_datablock_goes_out_past_tges_class_ids_and_the_client_makes_and_preloads_it() {
+    use torque_engine::{ClientStage, ServerStage};
+    use torque_server::net::codecs::net_codecs;
+    use torque_server::net::datablock::{DatablockBody, DatablockEvent};
+    let engine = torque_engine::EngineBuilder::new()
+        .add_plugins(PropsPlugin)
+        .build()
+        .expect("the engine builds");
+    // The server: its codecs are the engine's own, with the plugin's class.
+    let mut server = Vm::new();
+    for &stage in ServerStage::ALL {
+        engine.replay(stage, &mut server).unwrap();
+    }
+    let codecs = net_codecs(&server);
+    assert_eq!(codecs.datablock_class("PropData"), Some("PropData"));
+    let tables = TgeTables::tge().unwrap();
+    let widths = NetWidths::engine_default();
+    let event = |id: u32, model: &'static str| {
+        let record = codecs
+            .datablock_record(
+                "PropData",
+                id,
+                &PropView(model),
+                &torque_game::dbvalues::DbValues::default(),
+            )
+            .expect("the plugin's class has a record");
+        // The class id past the TGE table's 35.
+        assert_eq!(
+            record
+                .as_any()
+                .downcast_ref::<torque_server::net::codecs::PluginDbRecord>()
+                .map(|r| r.class_id),
+            Some(35)
+        );
+        let event = DatablockEvent {
+            body: Some(DatablockBody::new(
+                id,
+                "PropData",
+                0,
+                2,
+                widths.datablock_bits,
+                record,
+            )),
+            id_bits: widths.datablock_bits,
+        };
+        let mut w = net::bits::BitWriter::new();
+        w.enable_string_buffer();
+        event.pack(&mut w, &tables.table, &tables.classes).unwrap();
+        w.into_bytes()
+    };
+    // The client: the same plugins.
+    let mut client = Vm::new();
+    for &stage in ClientStage::ALL {
+        engine.replay(stage, &mut client).unwrap();
+    }
+    let plugins = torque_server::net::codecs::plugin_classes(&client).expect("the client's set");
+    for (id, model) in [(40, "props/crate.glb"), (41, "")] {
+        let bytes = event(id, model);
+        let mut r = BitReader::new(&bytes);
+        r.enable_string_buffer();
+        let (read, _, _) = read_datablock(&mut r, &tables.ctx(widths), &tables.classes, &plugins)
+            .unwrap()
+            .expect("a modified datablock");
+        assert_eq!(read.datablock.class, "PropData");
+        assert_eq!(read.datablock.get("partCount", 0), Some(&Value::Int(4)));
+        let unpacked = unpack_datablock(FieldRules::default(), &read);
+        let received = crate::datablocks::receive(&mut client, &unpacked, None).unwrap();
+        if model.is_empty() {
+            assert_eq!(
+                received,
+                crate::datablocks::Received::Refused,
+                "the preload refused it"
+            );
+        } else {
+            assert_eq!(received, crate::datablocks::Received::Added(40));
+        }
+    }
+    assert_eq!(
+        client.global("$preloaded").as_deref(),
+        Some(&b"40:props/crate.glb:4 "[..])
+    );
+    assert_eq!(client.eval(b"return 40.mass;").unwrap(), b"12.5");
+    assert_eq!(
+        client.eval(b"return 40.model;").unwrap(),
+        b"props/crate.glb"
+    );
+
+    // A client without the plugin refuses the class id cleanly.
+    let bytes = event(42, "props/barrel.glb");
+    let mut r = BitReader::new(&bytes);
+    r.enable_string_buffer();
+    assert_eq!(
+        read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &PluginClasses::default()
+        )
+        .unwrap_err(),
+        NetError::Invalid("datablock class id")
+    );
 }
 
 /// A plugin that gives the engine a network version.

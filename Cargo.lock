@@ -3470,6 +3470,7 @@ dependencies = [
 name = "torque-engine"
 version = "0.1.0"
 dependencies = [
+ "torque-ghosts",
  "torque-macros",
  "torque-net",
  "torque-resource",
@@ -3826,7 +3827,9 @@ dependencies = [
  "sha1",
  "str0m",
  "torque-collide",
+ "torque-engine",
  "torque-game",
+ "torque-ghost-world",
  "torque-ghosts",
  "torque-interior-builder",
  "torque-net",

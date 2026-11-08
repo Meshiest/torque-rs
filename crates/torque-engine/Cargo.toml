@@ -18,6 +18,9 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 torque-net = { path = "../torque-net" }
 # `#[derive(PluginId)]`, re-exported.
 torque-macros = { path = "../torque-macros" }
+# The plugin net classes' records and their field types (`net().ghost`, `#[derive(GhostRecord)]`): no client, GUI or
+# renderer behind it.
+torque-ghosts = { path = "../torque-ghosts" }
 
 [dev-dependencies]
 # The resource layer's files, read by an asset loader in a test.

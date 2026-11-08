@@ -74,6 +74,11 @@ pub trait DatablockRecord: fmt::Debug {
     /// The values it holds (the host charges its render by them).
     fn entries(&self) -> usize;
     fn as_any(&self) -> &dyn Any;
+    /// The class id the event carries, when the record's class has none in the class table (a plugin's class, numbered past
+    /// the table: `torque_ghosts::plugin`). `None` by default: the table's id of the body's class.
+    fn class_id(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// The datablock part of a `SimDataBlockEvent`, present when the connection's key is older than the datablock's.
@@ -141,8 +146,12 @@ impl DatablockEvent {
             w.write_flag(false);
             return Ok(());
         };
-        let class_id = classes
-            .id_of(Kind::DataBlock, body.class)
+        let class_bits = classes.id_bits(Kind::DataBlock);
+        let class_id = body
+            .record
+            .class_id()
+            .or_else(|| classes.id_of(Kind::DataBlock, body.class))
+            .filter(|&id| u64::from(id) < 1u64 << class_bits)
             .ok_or(DbPackError::UnknownClass(body.class))?;
         w.write_flag(true);
         w.write_ranged_u32(
@@ -150,7 +159,7 @@ impl DatablockEvent {
             DATABLOCK_ID_FIRST,
             DATABLOCK_ID_FIRST + id_mask(self.id_bits),
         );
-        w.write_bits(class_id, classes.id_bits(Kind::DataBlock));
+        w.write_bits(class_id, class_bits);
         w.write_bits(body.index, self.id_bits);
         w.write_bits(body.total, self.id_bits + 1);
         body.record.encode(w, table)

@@ -99,8 +99,8 @@ fn default_bits(class: TgeClass) -> Option<usize> {
         TgeClass::SpotLight => 194 + 226 + 2 + 2,
         TgeClass::TimeOfDay => 226 + 65,
         TgeClass::ScatterSky => 675,
-        // Its own test pins its forms.
-        TgeClass::AudioEmitter => return None,
+        // Its own test pins its forms; a plugin's are its own (`crate::plugin`'s tests).
+        TgeClass::AudioEmitter | TgeClass::Plugin(_) => return None,
     })
 }
 

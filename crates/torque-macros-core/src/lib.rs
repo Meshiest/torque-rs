@@ -10,11 +10,13 @@ use quote::{ToTokens, quote};
 mod attrs;
 mod class;
 mod native;
+mod net;
 mod prefs;
 
 pub use attrs::pascal_case;
 pub use class::derive_class;
 pub use native::{camel_case, doc_text, first_line, function, methods};
+pub use net::{derive_datablock_codec, derive_ghost_record};
 pub use prefs::derive_prefs;
 
 /// The expansion of `#[passthrough]`: the item exactly as written.

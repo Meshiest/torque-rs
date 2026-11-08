@@ -15,6 +15,10 @@ use crate::datablocks::ScriptField;
 
 /// The fields of `record` as (script field, element, value), in the order the layout meets them.
 pub fn fields(record: &TgeDatablockRecord, widths: NetWidths) -> Vec<(String, u32, Value)> {
+    // A plugin's record names its own fields.
+    if let TgeDatablockRecord::Plugin(_, record) = record {
+        return record.record_fields();
+    }
     let mut log = FieldLog {
         widths,
         values: Vec::new(),

@@ -70,6 +70,7 @@ pub mod class;
 mod engine;
 mod group;
 pub mod net;
+pub mod net_classes;
 pub mod param;
 mod plugin;
 pub mod prefs;
@@ -81,6 +82,8 @@ mod slots;
 #[cfg(test)]
 mod macro_tests;
 #[cfg(test)]
+mod net_classes_tests;
+#[cfg(test)]
 mod script_tests;
 #[cfg(test)]
 mod tests;
@@ -91,6 +94,7 @@ pub use class::{ClassField, ClassInfo, ClassReadError, FieldDecl, ScriptClass};
 pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
 pub use net::NetRegistry;
+pub use net_classes::{DatablockCodec, GhostRecord, Replicate};
 pub use param::{
     Cx, IntoRecipe, Local, Param, ParamError, ParamKind, RecipeReturn, Res, ResMut, ResourceError,
     Slot, This, VmMut, VmRef,
@@ -400,3 +404,108 @@ pub use torque_macros::function;
 /// ```
 pub use torque_macros::methods;
 pub use torque_ts_vm::convert::{Filename, Rest, ScriptError};
+
+/// The record crate, for the code `#[derive(GhostRecord)]` and `#[derive(DatablockCodec)]` write.
+#[doc(hidden)]
+pub use torque_ghosts as __ghosts;
+
+/// Declares a plugin's datablock record as a struct with one typed field for each value it sends, for
+/// [`NetRegistry::datablock`]: the struct then implements [`DatablockCodec`]. The fields and their options are
+/// [`GhostRecord`]'s, without `mask` (a datablock goes out whole). The packer reads each field from the datablock's console
+/// field of its name, so one struct can be both the console class (`#[derive(EngineClass)]`) and its record.
+///
+/// ```
+/// use torque_engine::{DatablockCodec, EngineClass};
+///
+/// #[derive(Debug, Clone, PartialEq, Default, EngineClass, DatablockCodec)]
+/// #[class(name = "PropData", parent = "SimDataBlock")]
+/// struct PropData {
+///     /// The prop's mass.
+///     #[field(range = 0.0..=1000.0, default = 10.0)]
+///     mass: f32,
+///     #[net(max_len = 64)]
+///     model: String,
+/// }
+/// ```
+///
+/// A width on a float:
+///
+/// ```compile_fail,E0080
+/// use torque_engine::DatablockCodec;
+///
+/// #[derive(Debug, Clone, PartialEq, Default, DatablockCodec)]
+/// struct Odd {
+///     #[net(bits = 8)]
+///     mass: f32,
+/// }
+/// ```
+pub use torque_macros::DatablockCodec;
+/// Declares a plugin's ghost record as a struct with one typed field for each value it sends, for
+/// [`NetRegistry::ghost`]: the struct then implements [`GhostRecord`] (and the record crate's `Layout` and `NetRecord`).
+/// The struct must also be `Debug`, `Clone`, `PartialEq` and `Default` (a decoder starts from the default).
+///
+/// The fields go on the wire in the struct's order. Each takes `#[net(...)]`:
+///
+/// - `bits = N`: an integer's width (`u8`, `u16`, `u32`, `i32`; 1 to the type's width, the type's width when left out).
+///   The packer cuts a value to it; an `i32` keeps its sign.
+/// - `max_len = N`: a `String`'s most bytes (up to 255, the default) or a `Vec`'s most elements (up to 1024; 16 when left
+///   out). The packer cuts to it; a decoder refuses more, so a peer cannot make it allocate past the cap.
+/// - `mask = bits`: an `Option` field sent only when one of the object's dirty bits in `bits` is set (every bit is set for
+///   a new ghost); a client keeps the last value it was sent when an update leaves it out. The game marks the bits
+///   (`setMaskBits`).
+/// - `name = ".."`: the object's console field the packer reads (when left out, the one an `#[field(name = "..")]` of
+///   `#[derive(EngineClass)]` on the same struct gives, else the Rust name in camelCase).
+/// - `skip`: not sent (a decoder leaves the default).
+///
+/// The field types are `bool`, `u8`, `u16`, `u32`, `i32`, `f32`, `[f32; N]`, `String`,
+/// [`DatablockRef`](net_classes::DatablockRef) (a datablock pointer: the client takes the first as the ghost's datablock),
+/// [`Xf`](net_classes::Xf) (a transform: the first is the ghost's pose), and `Option` and `Vec` of them
+/// ([`NetField`](net_classes::NetField)). See [`net_classes`] for an example.
+///
+/// A width wider than the field's type:
+///
+/// ```compile_fail,E0080
+/// use torque_engine::GhostRecord;
+///
+/// #[derive(Debug, Clone, PartialEq, Default, GhostRecord)]
+/// struct Odd {
+///     #[net(bits = 12)]
+///     small: u8,
+/// }
+/// ```
+///
+/// A cap on a type that has none:
+///
+/// ```compile_fail,E0080
+/// use torque_engine::GhostRecord;
+///
+/// #[derive(Debug, Clone, PartialEq, Default, GhostRecord)]
+/// struct Odd {
+///     #[net(max_len = 64)]
+///     count: u32,
+/// }
+/// ```
+///
+/// A mask on a field that is always sent:
+///
+/// ```compile_fail,E0080
+/// use torque_engine::GhostRecord;
+///
+/// #[derive(Debug, Clone, PartialEq, Default, GhostRecord)]
+/// struct Odd {
+///     #[net(mask = 0x1)]
+///     count: u32,
+/// }
+/// ```
+///
+/// A field type that does not travel:
+///
+/// ```compile_fail,E0277
+/// use torque_engine::GhostRecord;
+///
+/// #[derive(Debug, Clone, PartialEq, Default, GhostRecord)]
+/// struct Odd {
+///     table: std::collections::HashMap<u32, u32>,
+/// }
+/// ```
+pub use torque_macros::GhostRecord;

@@ -37,6 +37,7 @@ use crate::markers::{
     MissionMarker, SpawnSphere, WayPoint, pack_mission_marker, pack_spawn_sphere, pack_waypoint,
 };
 use crate::player::{Player, pack_player};
+use crate::plugin::{PluginClass, Record};
 use crate::projectile::{Projectile, pack_projectile};
 use crate::props::{TsStatic, VehicleBlocker, pack_ts_static, pack_vehicle_blocker};
 use crate::set::GhostCodecSet;
@@ -51,6 +52,9 @@ use crate::vehicle::{
 use crate::weather::{Lightning, Precipitation, pack_lightning, pack_precipitation};
 use crate::zone::{PhysicalZone, pack_physical_zone};
 use crate::{ChargeFn, ObjectView, PackCtx};
+
+/// What [`TgeClass::code`] answers for a plugin class (its set numbers it: [`crate::plugin::PluginClasses::ghost_code`]).
+pub const PLUGIN_CODE: u16 = u16::MAX;
 
 /// TGE 1.4's networked object classes.
 pub const TGE_OBJECT_CLASSES: [&str; 45] = [
@@ -196,6 +200,8 @@ pub enum TgeClass {
     SpotLight,
     TimeOfDay,
     ScatterSky,
+    /// A plugin's ghost class ([`crate::plugin`]): ghosted to the engine's own clients only, its class id past the engine's own.
+    Plugin(PluginClass),
 }
 
 impl TgeClass {
@@ -261,12 +267,22 @@ impl TgeClass {
             TgeClass::SpotLight => "SpotLight",
             TgeClass::TimeOfDay => "TimeOfDay",
             TgeClass::ScatterSky => "ScatterSky",
+            TgeClass::Plugin(class) => class.name(),
         }
     }
 
-    /// The class's place in [`TgeClass::ALL`] (a ghost registry's number for it).
+    /// The class's place in [`TgeClass::ALL`] (a ghost registry's number for it). A plugin class has no place there: its
+    /// number is its set's ([`crate::plugin::PluginClasses::ghost_code`]), and this answers [`PLUGIN_CODE`] for any.
     pub fn code(self) -> u16 {
+        if let TgeClass::Plugin(_) = self {
+            return PLUGIN_CODE;
+        }
         TgeClass::ALL.iter().position(|&c| c == self).unwrap_or(0) as u16
+    }
+
+    /// Whether the class is a plugin's.
+    pub fn is_plugin(self) -> bool {
+        matches!(self, TgeClass::Plugin(_))
     }
 
     /// The class of a [`code`](Self::code).
@@ -309,6 +325,7 @@ impl TgeClass {
             | TgeClass::SpotLight
             | TgeClass::TimeOfDay
             | TgeClass::ScatterSky => GHOSTABLE | SCOPE_ALWAYS,
+            TgeClass::Plugin(class) => class.net_flags(),
         }
     }
 
@@ -364,11 +381,13 @@ pub enum TgeRecord {
     SpotLight(SpotLight),
     TimeOfDay(TimeOfDay),
     ScatterSky(ScatterSky),
+    /// A plugin class's record ([`crate::plugin`]).
+    Plugin(PluginClass, Box<dyn Record>),
 }
 
-/// Runs `$body` with `$r` bound to the record inside any variant.
+/// Runs `$body` with `$r` bound to the record inside any TGE variant, `$plugin` with `$p` bound to a plugin's record.
 macro_rules! each_record {
-    ($rec:expr, $r:ident => $body:expr) => {
+    ($rec:expr, $r:ident => $body:expr, $p:ident => $plugin:expr) => {
         match $rec {
             TgeRecord::AiPlayer($r) => $body,
             TgeRecord::AiWheeledVehicle($r) => $body,
@@ -398,6 +417,7 @@ macro_rules! each_record {
             TgeRecord::SpotLight($r) => $body,
             TgeRecord::TimeOfDay($r) => $body,
             TgeRecord::ScatterSky($r) => $body,
+            TgeRecord::Plugin(_, $p) => $plugin,
         }
     };
 }
@@ -433,12 +453,21 @@ impl TgeRecord {
             TgeRecord::SpotLight(_) => TgeClass::SpotLight,
             TgeRecord::TimeOfDay(_) => TgeClass::TimeOfDay,
             TgeRecord::ScatterSky(_) => TgeClass::ScatterSky,
+            TgeRecord::Plugin(class, _) => TgeClass::Plugin(*class),
         }
     }
 
     /// Writes the record in the connection's `widths`.
     pub fn encode(&self, w: &mut BitWriter, table: &Table, widths: NetWidths) -> R {
-        each_record!(self, r => encode(r, w, table, widths))
+        each_record!(self, r => encode(r, w, table, widths), p => p.encode(w, table, widths))
+    }
+
+    /// A plugin record as its own type `T` (`None`: another class's, or of another type).
+    pub fn plugin<T: std::any::Any>(&self) -> Option<&T> {
+        match self {
+            TgeRecord::Plugin(_, r) => r.downcast_ref(),
+            _ => None,
+        }
     }
 }
 
@@ -569,6 +598,10 @@ impl GhostCodecSet for TgeGhosts {
             }
             TgeClass::TimeOfDay => (TgeRecord::TimeOfDay(pack_time_of_day(view, mask)), 0),
             TgeClass::ScatterSky => (TgeRecord::ScatterSky(pack_scatter_sky(view, mask)), 0),
+            TgeClass::Plugin(class) => {
+                let (r, m) = class.pack(view, mask, ctx);
+                (TgeRecord::Plugin(class, r), m)
+            }
         }
     }
 
@@ -610,6 +643,9 @@ impl GhostCodecSet for TgeGhosts {
             TgeClass::SpotLight => read(r, table, charge, ctx, TgeRecord::SpotLight),
             TgeClass::TimeOfDay => read(r, table, charge, ctx, TgeRecord::TimeOfDay),
             TgeClass::ScatterSky => read(r, table, charge, ctx, TgeRecord::ScatterSky),
+            TgeClass::Plugin(class) => class
+                .decode(r, table, charge, ctx)
+                .map(|rec| TgeRecord::Plugin(class, rec)),
         }
     }
 

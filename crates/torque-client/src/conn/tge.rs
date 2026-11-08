@@ -14,11 +14,13 @@
 //!
 //! **Datablocks.** A `SimDataBlockEvent` is read as TGE's `SimDataBlockEvent::unpack` reads it: `flag(modified)`, then the id
 //! (`ranged` over the datablock-id range), the class id, the position in the server's datablock group and the group's size,
-//! then the class's `packData` record ([`TgeDatablocks`]). The datablock joins the world under its id (its fields named as
-//! the script fields, [`ghosts::datablocks::fields::fields`]) and the scripts hear `onDataBlockObjectReceived(index, total)`.
-//! The server's `DataBlocksDone` message is answered with `DataBlocksDownloadDone` and its sequence: the client has every
-//! datablock it was sent (the server then runs `onDataBlocksDone`). The client's packet carries its control block and the events it posted (a remote command, the answer to the
-//! server's ghost-always message).
+//! then the class's `packData` record ([`TgeDatablocks`]). A class id past the table's is a plugin's datablock class, read with
+//! its own record; a plugin's ghost classes are read past the engine's own ([`TgeFeed::set_plugins`]: the client's engine's
+//! set). The datablock joins the world under its id (its fields named as the script fields,
+//! [`ghosts::datablocks::fields::fields`]) and the scripts hear `onDataBlockObjectReceived(index, total)`. The server's
+//! `DataBlocksDone` message is answered with `DataBlocksDownloadDone` and its sequence: the client has every datablock it was
+//! sent (the server then runs `onDataBlocksDone`). The client's packet carries its control block and the events it posted (a
+//! remote command, the answer to the server's ghost-always message).
 //!
 //! **The world** ([`TgeWorld`]) poses nothing (every shape stands at its default pose), names a ghost by its ShapeBase name block,
 //! and draws to the Sky's visible distance.
@@ -37,6 +39,7 @@ use std::rc::Rc;
 use ghost_world::tge::{TgeClientSet, TgeCodec, TgeDatablock, shape_part};
 use ghost_world::{ClientWorld, Ghost};
 use ghosts::datablocks::DatablockCodecSet;
+use ghosts::plugin::PluginClasses;
 use ghosts::{NetWidths, TgeClass, TgeDatablocks, TgeRecord, Value, tge_reps};
 use net::NetError;
 use net::bits::BitReader;
@@ -370,13 +373,16 @@ enum Incoming {
 struct Unpacker<'a> {
     ghosts: &'a mut GhostClient<TgeCodec>,
     classes: &'a NetClasses,
+    plugins: &'a PluginClasses,
 }
 
-/// `SimDataBlockEvent::unpack`: the flag, the id, the class id, the position, the group's size and the record.
+/// `SimDataBlockEvent::unpack`: the flag, the id, the class id, the position, the group's size and the record. A class id past
+/// the table's is a plugin's datablock class (`plugins`, numbered from the table's end); any other is refused.
 fn read_datablock(
     r: &mut BitReader,
     ctx: &EventCtx<'_>,
     classes: &NetClasses,
+    plugins: &PluginClasses,
 ) -> Result<Option<(TgeDatablockEvent, u32, u32)>, NetError> {
     if !r.read_flag()? {
         return Ok(None);
@@ -387,6 +393,27 @@ fn read_datablock(
     let class_id = r.read_bits(classes.id_bits(Kind::DataBlock))?;
     let index = r.read_bits(ctx.datablock_bits)?;
     let total = r.read_bits(ctx.datablock_bits + 1)?;
+    let table_len = classes.count(Kind::DataBlock);
+    if class_id as usize >= table_len {
+        let class = plugins
+            .by_id(
+                Kind::DataBlock,
+                class_id,
+                PluginClasses::datablock_base(table_len),
+            )
+            .ok_or(NetError::Invalid("datablock class id"))?;
+        let record = class.decode(
+            r,
+            ctx.table,
+            &mut net::events::free_charge(),
+            &ghosts::ReadCtx::new(widths, true),
+        )?;
+        let datablock = TgeDatablock {
+            class: class.name().to_string(),
+            fields: record.record_fields(),
+        };
+        return Ok(Some((TgeDatablockEvent { id, datablock }, index, total)));
+    }
     let name = classes
         .classes(Kind::DataBlock)
         .get(class_id as usize)
@@ -414,7 +441,7 @@ impl EventUnpacker for Unpacker<'_> {
         if class == ctx.ids.ghost_always_object {
             self.ghosts.read_always_event(r).map(Incoming::Always)
         } else if class == ctx.ids.sim_data_block {
-            read_datablock(r, ctx, self.classes).map(Incoming::DataBlock)
+            read_datablock(r, ctx, self.classes, self.plugins).map(Incoming::DataBlock)
         } else {
             NetEvent::unpack(class, r, ctx).map(Incoming::Net)
         }
@@ -470,6 +497,8 @@ pub struct TgeFeed {
     checked: Option<u32>,
     gone: bool,
     control_set: bool,
+    /// The plugins' ghost and datablock classes the feed reads past the class table's ids.
+    plugins: PluginClasses,
 }
 
 impl TgeFeed {
@@ -519,12 +548,21 @@ impl TgeFeed {
             checked: None,
             gone: false,
             control_set: false,
+            plugins: PluginClasses::default(),
         };
         match local {
             Some((_, bits)) => feed.accepted(bits),
             None => feed.challenge(),
         }
         Ok(feed)
+    }
+
+    /// The plugins' ghost and datablock classes the feed reads (the server's set: the client's engine has the same plugins).
+    pub fn set_plugins(&mut self, plugins: PluginClasses) {
+        if let Some(ghosts) = self.ghosts.as_mut() {
+            ghosts.codec_mut().plugins = plugins.clone();
+        }
+        self.plugins = plugins;
     }
 
     /// Adds `block` (the engine's manifest and ticket) to the connect request, after its arguments.
@@ -589,7 +627,8 @@ impl TgeFeed {
             .classes(Kind::Object)
             .iter()
             .map(|c| c.name.as_str());
-        let codec = TgeCodec::new(names, self.widths, self.tables.table.clone());
+        let codec = TgeCodec::new(names, self.widths, self.tables.table.clone())
+            .with_plugins(self.plugins.clone());
         let class_bits = self.tables.classes.id_bits(Kind::Object);
         let mut ghosts = GhostClient::new(codec, class_bits, ghost_bits);
         ghosts.codec_mut().facts.wheels = self.wheel_counts.clone();
@@ -688,6 +727,7 @@ impl TgeFeed {
             &mut Unpacker {
                 ghosts,
                 classes: &self.tables.classes,
+                plugins: &self.plugins,
             },
             &mut incoming,
             None,
@@ -941,6 +981,9 @@ impl ConnGame for TgeConn {
             feed.set_connect_block(block);
         }
         feed.set_reader(reader.clone());
+        if let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) {
+            feed.set_plugins((*plugins).clone());
+        }
         Ok(Started {
             feed,
             world: TgeWorld::default(),

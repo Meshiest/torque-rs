@@ -830,6 +830,17 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
         };
         c.datablocks.flush(&mut c.queue);
         Self::flush_held(c);
+        // The plugins' datablocks go to the engine's own clients only (the local one, a peer granted the handshake's extension),
+        // or to all when the server says every client is one.
+        let peer = st
+            .hub
+            .as_ref()
+            .is_some_and(|hub| hub.with(|h| h.conns.get(&ctx.conn).is_some_and(|g| g.engine_peer)));
+        let all_engine = ctx
+            .vm
+            .global(super::torque::ENGINE_CLASSES_GLOBAL)
+            .is_some_and(|v| torque_ts_vm::text::atof(&v) != 0.0);
+        c.datablocks.set_plugin_classes(peer || all_engine);
         // The datablock events are rendered from the live datablocks before the section is written (they need the `Vm`, which a
         // pack has not). A game's prepack runs first ([`DbValues::before_pack`]); that needs the `Vm`.
         for id in c

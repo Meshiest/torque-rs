@@ -51,7 +51,8 @@ use super::weather::{
     pack_precipitation_data, pack_weather_lightning_data,
 };
 use crate::codec::{Codec, Layout, NetWidths, R, ReadCtx, decode, encode};
-use crate::{ChargeFn, ObjectView};
+use crate::plugin::{PluginClass, Record};
+use crate::{ChargeFn, ObjectView, PackCtx};
 
 /// Declares the class enum, the record enum and their dispatch from one table: `Variant = "ClassName" (Record, pack)`.
 macro_rules! datablock_classes {
@@ -59,17 +60,20 @@ macro_rules! datablock_classes {
         /// A TGE datablock class.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum TgeDatablockClass {
-            $($variant),+
+            $($variant,)+
+            /// A plugin's datablock class ([`crate::plugin`]): its class id past TGE's table.
+            Plugin(PluginClass),
         }
 
         impl TgeDatablockClass {
-            /// Every class, in the order of TGE's class list.
+            /// Every TGE class, in the order of TGE's class list (a plugin's classes are its set's).
             pub const ALL: &'static [TgeDatablockClass] = &[$(TgeDatablockClass::$variant),+];
 
             /// The engine's class name.
             pub fn name(self) -> &'static str {
                 match self {
-                    $(TgeDatablockClass::$variant => $name),+
+                    $(TgeDatablockClass::$variant => $name,)+
+                    TgeDatablockClass::Plugin(class) => class.name(),
                 }
             }
         }
@@ -77,27 +81,33 @@ macro_rules! datablock_classes {
         /// A record of any TGE datablock class.
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum TgeDatablockRecord {
-            $($variant($rec)),+
+            $($variant($rec),)+
+            /// A plugin class's record ([`crate::plugin`]).
+            Plugin(PluginClass, Box<dyn Record>),
         }
 
         impl TgeDatablockRecord {
             pub fn class(&self) -> TgeDatablockClass {
                 match self {
-                    $(TgeDatablockRecord::$variant(_) => TgeDatablockClass::$variant),+
+                    $(TgeDatablockRecord::$variant(_) => TgeDatablockClass::$variant,)+
+                    TgeDatablockRecord::Plugin(class, _) => TgeDatablockClass::Plugin(*class),
                 }
             }
 
             /// Writes the record in the connection's `widths`.
             pub fn encode(&self, w: &mut BitWriter, table: &Table, widths: NetWidths) -> R {
                 match self {
-                    $(TgeDatablockRecord::$variant(r) => encode(r, w, table, widths)),+
+                    $(TgeDatablockRecord::$variant(r) => encode(r, w, table, widths),)+
+                    TgeDatablockRecord::Plugin(_, r) => r.encode(w, table, widths),
                 }
             }
 
-            /// Runs the record's layout on `c` (on a copy: the layout takes `&mut`).
+            /// Runs the record's layout on `c` (on a copy: the layout takes `&mut`). A plugin's record runs nothing: its
+            /// fields are its own ([`Record::record_fields`]).
             pub fn visit<C: Codec>(&self, c: &mut C) -> R {
                 match self {
-                    $(TgeDatablockRecord::$variant(r) => r.clone().layout(c)),+
+                    $(TgeDatablockRecord::$variant(r) => r.clone().layout(c),)+
+                    TgeDatablockRecord::Plugin(..) => Ok(()),
                 }
             }
         }
@@ -107,7 +117,10 @@ macro_rules! datablock_classes {
                 $(TgeDatablockClass::$variant => {
                     let pack: fn(&dyn ObjectView, NetWidths) -> $rec = $pack;
                     TgeDatablockRecord::$variant(pack(v, w))
-                }),+
+                },)+
+                TgeDatablockClass::Plugin(class) => {
+                    TgeDatablockRecord::Plugin(class, class.pack(v, !0, &PackCtx::new(w)).0)
+                }
             }
         }
 
@@ -119,7 +132,10 @@ macro_rules! datablock_classes {
             ctx: &ReadCtx,
         ) -> Result<TgeDatablockRecord, NetError> {
             match class {
-                $(TgeDatablockClass::$variant => decode::<$rec>(r, table, charge, ctx).map(TgeDatablockRecord::$variant)),+
+                $(TgeDatablockClass::$variant => decode::<$rec>(r, table, charge, ctx).map(TgeDatablockRecord::$variant),)+
+                TgeDatablockClass::Plugin(class) => class
+                    .decode(r, table, charge, ctx)
+                    .map(|rec| TgeDatablockRecord::Plugin(class, rec)),
             }
         }
     };

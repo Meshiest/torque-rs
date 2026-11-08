@@ -70,7 +70,7 @@ impl EngineBuilder {
 
 /// Adds to what an engine being built says about its network surface ([module docs](crate::net)).
 pub struct NetRegistry<'a> {
-    engine: &'a mut EngineBuilder,
+    pub(crate) engine: &'a mut EngineBuilder,
 }
 
 impl NetRegistry<'_> {

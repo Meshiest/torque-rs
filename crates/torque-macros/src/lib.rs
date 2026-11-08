@@ -1,6 +1,6 @@
 //! Attribute and derive macros: Rust functions as TorqueScript natives (`#[function]`, `#[methods]`), plugin ids
-//! (`#[derive(PluginId)]`), preferences (`#[derive(Prefs)]`) and console classes (`#[derive(EngineClass)]`), used
-//! through `torque_engine`, which re-exports them.
+//! (`#[derive(PluginId)]`), preferences (`#[derive(Prefs)]`), console classes (`#[derive(EngineClass)]`) and plugin net
+//! records (`#[derive(GhostRecord)]`, `#[derive(DatablockCodec)]`), used through `torque_engine`, which re-exports them.
 //!
 //! The entry points here only hand their tokens to `torque-macros-core`, where the code generation is tested.
 
@@ -60,6 +60,22 @@ pub fn derive_prefs(input: TokenStream) -> TokenStream {
 pub fn derive_engine_class(input: TokenStream) -> TokenStream {
     let engine = torque_macros_core::find_engine();
     torque_macros_core::derive_class(input.into(), &engine).into()
+}
+
+/// Declares a plugin's ghost record as a struct with one typed field for each value it sends: see
+/// `torque_engine::GhostRecord`, which re-exports it with an example.
+#[proc_macro_derive(GhostRecord, attributes(net))]
+pub fn derive_ghost_record(input: TokenStream) -> TokenStream {
+    let engine = torque_macros_core::find_engine();
+    torque_macros_core::derive_ghost_record(input.into(), &engine).into()
+}
+
+/// Declares a plugin's datablock record as a struct with one typed field for each value it sends: see
+/// `torque_engine::DatablockCodec`, which re-exports it with an example.
+#[proc_macro_derive(DatablockCodec, attributes(net))]
+pub fn derive_datablock_codec(input: TokenStream) -> TokenStream {
+    let engine = torque_macros_core::find_engine();
+    torque_macros_core::derive_datablock_codec(input.into(), &engine).into()
 }
 
 /// Leaves the item it is written on exactly as it is.

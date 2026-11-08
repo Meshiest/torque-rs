@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use torque_ghosts::codec::{NetStr, NetWidths};
 use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
+use torque_ghosts::plugin::{PLUGIN_CODE_BASE, PluginClasses};
 use torque_ghosts::set::GhostCodecSet;
 use torque_ghosts::tge::{TgeClass, TgeGhosts};
 use torque_ghosts::{Link, ObjectView, PackCtx, Value};
@@ -137,6 +138,7 @@ impl GhostGame for TgeGhostGame {
             always,
             controlled,
             engine_peer,
+            plugins: super::codecs::plugin_classes(env.vm),
         };
         f(&mut src, &mut hub.conns)
     }
@@ -162,8 +164,8 @@ fn ghost_always_of(vm: &Vm, reg: &Registry) -> Vec<ObjId> {
     ids
 }
 
-/// The global that makes a server ghost the engine's own classes (`torque_ghosts::light`'s) to every client, not only to the
-/// engine's own (the local connection, a client granted the handshake's extension): set it to 1 when every client is the
+/// The global that makes a server ghost the engine's own classes (`torque_ghosts::light`'s, and the plugins') to every
+/// client, not only to the engine's own (the local connection, a client granted the handshake's extension): set it to 1 when every client is the
 /// engine's (a TGE client cannot read their records).
 pub const ENGINE_CLASSES_GLOBAL: &str = "$Server::EngineClasses";
 
@@ -179,24 +181,28 @@ pub struct TgeSource<'a> {
     controlled: Vec<ObjId>,
     /// The connection's peer is the engine's own client: the engine's own classes are ghosted to it (to no other).
     engine_peer: bool,
+    /// The plugins' classes (`torque_ghosts::plugin`), ghosted like the engine's own.
+    plugins: Option<Rc<PluginClasses>>,
 }
 
 impl TgeSource<'_> {
     fn class(&self, obj: ObjId) -> Option<TgeClass> {
         let objects = self.vm.objects();
-        let name = objects.classes.name(objects.get(obj)?.class());
-        TgeGhosts::class_by_name(std::str::from_utf8(name).ok()?)
+        let name = std::str::from_utf8(objects.classes.name(objects.get(obj)?.class())).ok()?;
+        TgeGhosts::class_by_name(name).or_else(|| {
+            let plugin = self.plugins.as_ref()?.ghost(name)?;
+            Some(TgeClass::Plugin(plugin))
+        })
     }
 
-    /// Whether the connection may know the object's class: TGE's always, the engine's own on an engine peer, or on any
-    /// connection of a server that says all its clients are the engine's ([`ENGINE_CLASSES_GLOBAL`] true).
+    /// Whether the connection may know the object's class: TGE's always, the engine's own and the plugins' on an engine
+    /// peer, or on any connection of a server that says all its clients are the engine's ([`ENGINE_CLASSES_GLOBAL`] true).
     fn known(&self, obj: ObjId) -> bool {
-        let engine = self
-            .reg
-            .entries
-            .get(&obj)
-            .and_then(|e| TgeClass::of_code(e.code))
-            .is_some_and(|c| ENGINE_OBJECT_CLASSES.contains(&c.name()));
+        let engine = self.reg.entries.get(&obj).is_some_and(|e| {
+            e.code >= PLUGIN_CODE_BASE
+                || TgeClass::of_code(e.code)
+                    .is_some_and(|c| ENGINE_OBJECT_CLASSES.contains(&c.name()))
+        });
         !engine
             || self.engine_peer
             || self
