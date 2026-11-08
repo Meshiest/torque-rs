@@ -61,7 +61,7 @@ site-check:
     node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
 # The determinism check: the trace-hash scenarios (the figure on foot and the buggy, each a 600-tick scripted run of a server and a
-# predicting client, hashed tick by tick) run natively twice and as wasm32-wasip1 under Node's WASI (no browser), and every line
+# predicting client, hashed tick by tick; and the Rapier world's drop of bodies onto a terrain and an interior) run natively twice and as wasm32-wasip1 under Node's WASI (no browser), and every line
 # they print must be equal. Needs `rustup target add wasm32-wasip1`; `just trace-hash --release` runs the release profile
 trace-hash *flags:
     node web/trace-hash.mjs {{flags}}

@@ -163,6 +163,9 @@ different.
 - `torque-vehicle`, `torque-game`: a seam under a vehicle's sub-step (`BodySolver`) for whatever resolves the body against
   the world and integrates it, picked per datablock (`SimClasses::body_solver`); TGE's solver stays the default and a
   datablock that picks none runs exactly as before. A criterion bench for the vehicle step (`benches/tick.rs`).
+- `torque-physics-rapier` (optional, in no default plugin set): a deterministic Rapier world stepped at the engine's tick
+  against the map's terrain (cut along the engine's own diagonals) and interior hulls, built by region on first use, with
+  every input checked and every count capped; native and wasm32 step it to the same bits.
 
 #### Content import
 

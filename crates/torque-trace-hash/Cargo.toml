@@ -11,17 +11,22 @@ keywords = ["torque", "determinism", "testing", "wasm"]
 categories = ["game-development", "development-tools::testing"]
 
 # Each scenario runs a server (`MinimalPlugins` and the plugin under test) and a client over an in-memory link for 600 ticks,
-# feeds the client scripted inputs, and hashes the server's and the client's per-tick state. The `trace-hash` binary prints
+# feeds the client scripted inputs, and hashes the server's and the client's per-tick state; the Rapier world's scenario steps
+# that world alone (the core a server's props and a client's prediction share). The `trace-hash` binary prints
 # one line per scenario; CI runs it natively and as wasm32-wasip1 (`web/trace-hash.mjs`) and compares the two outputs.
 # Nothing here draws or opens a window, so the crate builds for both targets.
 
 [dependencies]
 torque-app-server = { path = "../torque-app-server" }
 torque-client = { path = "../torque-client" }
+torque-collide = { path = "../torque-collide" }
 torque-engine = { path = "../torque-engine" }
 torque-plugin-smooth-prediction = { path = "../torque-plugin-smooth-prediction" }
 torque-game = { path = "../torque-game" }
 torque-gui = { path = "../torque-gui" }
+# The hills and the keep read for the Rapier world's scenario, and the world itself.
+torque-maps = { path = "../torque-maps" }
+torque-physics-rapier = { path = "../torque-physics-rapier" }
 torque-shapes = { path = "../torque-shapes" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 # The floor, the figure and the buggy the scenarios run on.

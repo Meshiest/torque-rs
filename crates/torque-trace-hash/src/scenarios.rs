@@ -10,6 +10,9 @@
 //! ([`torque_client::predict::slot`]) and forced corrections, and fold in what is drawn each frame as well; they print after
 //! `all` (which stays the fold of TGE's predictor's scenarios) and fold into `predictors`.
 //!
+//! **The physics scenarios** ([`physics`]) step a physics world alone (no server or client: the Rapier world, [`crate::rapier`]);
+//! they print last and fold into `physics`.
+//!
 //! **Adding a plugin's scenario:** a plugin whose systems run on a predicted path adds a [`Scenario`] to [`all`] that calls
 //! [`figure`] or [`buggy`] with the plugin (or its own function built on [`Rig`]); a plugin that only adds a ghost or a channel
 //! needs only [`trace_hash`], which runs both with the plugin added.
@@ -52,6 +55,15 @@ pub fn predictors() -> Vec<Scenario> {
     vec![Scenario {
         name: "figure-smooth",
         run: figure_smooth,
+    }]
+}
+
+/// The scenarios of the physics worlds a server and a predicting client both step outside TGE's objects, in the order they
+/// print after `predictors`.
+pub fn physics() -> Vec<Scenario> {
+    vec![Scenario {
+        name: "rapier-drop",
+        run: crate::rapier::drop,
     }]
 }
 
