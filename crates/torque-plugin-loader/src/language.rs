@@ -276,6 +276,20 @@ impl ScriptLanguage for LanguageRunner {
     }
 }
 
+/// A console name: ASCII letters, digits and `_`, not starting with a digit.
+pub(crate) fn is_script_name(name: &str) -> bool {
+    name.bytes().next().is_some_and(|b| !b.is_ascii_digit())
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// A global's name: `$` and then letters, digits, `_` and `::` separators.
+pub(crate) fn is_global_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('$') else {
+        return false;
+    };
+    !rest.is_empty() && rest.split("::").all(is_script_name)
+}
+
 /// Whether `path` is a relative path of the game's files with no `..`, `.` or empty part, no drive or backslash.
 pub(crate) fn is_plain_path(path: &str) -> bool {
     !path.is_empty()

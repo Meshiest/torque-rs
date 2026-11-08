@@ -1,19 +1,72 @@
 //! What the Lua tests share: an engine with the Lua extension linked in (and local mods), server and client script engines
 //! made the way the engine's hosts make them, and the console.
+//!
+//! The web check (`examples/lua-web-check`, `just lua-web-check`) builds the same cases for a browser, where [`lua`] is the
+//! page's Lua module instead (`WebLuaPlugin`).
 #![allow(dead_code)]
-
-use std::path::{Path, PathBuf};
 
 use torque_engine::{ClientStage, Engine, EngineBuilder, ServerStage};
 use torque_mods::ModsPlugin;
-use torque_plugin_loader::ExtensionPlugin;
-use torque_plugin_sdk::abi::TORQUE_ABI_VERSION;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::{Vm, VmError};
 
+/// Test cases: each a `#[test]` natively; on the web, functions listed in `CASES` by name, for the page to run one by one.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(unused_macros)]
+macro_rules! cases {
+    ($($(#[$meta:meta])* fn $name:ident() $body:block)*) => {
+        $( $(#[$meta])* #[test] fn $name() $body )*
+    };
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(unused_macros)]
+macro_rules! cases {
+    ($($(#[$meta:meta])* fn $name:ident() $body:block)*) => {
+        $( $(#[$meta])* pub fn $name() $body )*
+        /// Every case, by name.
+        pub const CASES: &[(&str, fn())] = &[$((stringify!($name), $name)),*];
+    };
+}
+
 /// The Lua extension, linked in.
-pub fn lua() -> ExtensionPlugin {
-    ExtensionPlugin::from_init(TORQUE_ABI_VERSION, torque_lua::INIT).expect("the extension starts")
+#[cfg(not(target_arch = "wasm32"))]
+pub fn lua() -> torque_plugin_loader::ExtensionPlugin {
+    use torque_plugin_sdk::abi::TORQUE_ABI_VERSION;
+    torque_plugin_loader::ExtensionPlugin::from_init(TORQUE_ABI_VERSION, torque_lua::INIT)
+        .expect("the extension starts")
+}
+
+/// The page's Lua module, over its bridge.
+#[cfg(target_arch = "wasm32")]
+pub fn lua() -> torque_plugin_loader::web_lua::WebLuaPlugin {
+    torque_plugin_loader::web_lua::WebLuaPlugin::default()
+}
+
+/// Time since it was started, in seconds (`std::time` has no clock on the web).
+pub struct Stopwatch(f64);
+
+impl Stopwatch {
+    pub fn start() -> Stopwatch {
+        Stopwatch(now())
+    }
+
+    pub fn seconds(&self) -> f64 {
+        now() - self.0
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now() -> f64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now() -> f64 {
+    js_sys::Date::now() / 1000.0
 }
 
 /// An engine with local mods and the Lua extension.
@@ -93,14 +146,12 @@ pub fn global(vm: &Vm, name: &str) -> String {
     String::from_utf8_lossy(&vm.global(name).unwrap_or_default()).into_owned()
 }
 
-/// The folder of the shared Lua test scripts (the same files a web build's tests run).
-pub fn scripts() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("scripts")
-}
-
-/// The shared test script `name`.
+/// The shared test script `name` (`tests/scripts`), built in: the web check has no files to read it from.
 pub fn script(name: &str) -> String {
-    std::fs::read_to_string(scripts().join(name)).expect("the test script is there")
+    match name {
+        "basics.lua" => include_str!("../scripts/basics.lua"),
+        "sandbox.lua" => include_str!("../scripts/sandbox.lua"),
+        _ => panic!("no test script {name}"),
+    }
+    .to_string()
 }

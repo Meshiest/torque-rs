@@ -171,11 +171,45 @@ extension's tests do. Its crate is a workspace of its own: `cargo test --manifes
 
 ## In a browser
 
-A page cannot load native extensions, so its Lua will be a second WebAssembly module, the same Luau, loaded by the page
-and bridged through its JavaScript. The engine's side of that bridge is in place: `WebLuaPlugin` (in
-`torque-plugin-loader`'s `web_lua` module) installs the `.lua` language and hands each file to a `LuaModule`, which calls
-the script engine back through a `LuaHost` with the same checks as the native extension's. The module itself is not built
-yet: until it is, a Lua file in a browser build prints that it needs the page's Lua module, and does nothing.
+A page cannot load native extensions, so in a browser build Lua is a WebAssembly module of its own: the same extension,
+built from the same Rust and the same Luau for `wasm32-wasip1` with the WASI SDK's clang, so its sandbox, limits and
+messages are the native library's. The page loads it and bridges it to the engine through its JavaScript (`web/lua.js`).
+The engine's side is `WebLuaPlugin` (`torque-plugin-loader`'s `web_lua` module), which makes every check the C ABI makes
+for a native extension (the names it takes, the call policy, `exec`'s checks for every file, the step budget, the call
+depth) on each request the module sends.
+
+To give a web build Lua:
+
+1. Build the module with `just lua-web`. It needs the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`) and a
+   [WASI SDK](https://github.com/WebAssembly/wasi-sdk/releases) release unpacked anywhere, its folder named by the
+   `WASI_SDK_PATH` environment variable. The module lands in the build folder's `lua-web/torque_lua.wasm` (about
+   1.3 MiB, 420 KiB gzipped).
+2. Add `WebLuaPlugin::default()` to the game's web build, where the native build has the extension.
+3. Build the page with `--lua` (`node web/build.mjs <example> --lua`). The page then loads `lua.js` and the module before
+   the game starts. A page built without it never fetches either, and its Lua files print that they need the page's Lua
+   module.
+
+**Browser requirements.** Luau's errors are C++ exceptions, and the module is built for WebAssembly's exception handling in
+its standard form (`exnref`): Chrome and Edge 137 or later, Firefox 131 or later, Safari 18.4 or later (and Node 24 or
+later). On a browser without it the game still plays, but its Lua files cannot run: the page's console says the module did
+not load.
+
+**What the module can reach.** Only the few functions its C library imports, which `web/lua.js` answers without reaching
+anything: no files (no folder is opened and every file call fails), no environment or arguments, no exit. Its clock is the
+page's monotonic one, for `os.clock`; the time of day is refused. Random bytes, for its hash tables' seeds, come from the
+browser's `crypto.getRandomValues`.
+
+**If the module breaks.** A trap in the module (a bug, not a script error) stops Lua for the rest of the page's life, and
+the console says so; the game goes on.
+
+**Tests.** `just lua-web-check` runs the Lua tests (`crates/torque-plugin-lua/tests/lua.rs` and its shared scripts)
+natively, then builds the same cases for a browser (`examples/lua-web-check`) and runs them under Node and in headless
+Chrome, each with the page's module. Every case, the sandbox's escapes and the step, memory and policy limits among them,
+must pass in all three. CI does not run it: it needs the WASI SDK and builds Luau's C++.
+
+**Building.** mlua 0.12.2 does not build for WASI as released; until a release has upstream's one-line fix (the Luau heap
+dump left empty on WebAssembly), `web/lua-build.mjs` applies it to a copy of mlua's sources in the build folder and builds
+from a copy of the extension's manifest, never changing the repository's own.
 
 ## Limits at a glance
 

@@ -389,7 +389,9 @@ impl Args<'_> {
     /// The whole number at `at`, if there is one.
     fn int(&self, at: usize) -> Option<i64> {
         match self.0.get(at) {
-            Some(Value::Integer(i)) => Some(*i),
+            // `Integer` is 32 bits on wasm32.
+            #[allow(clippy::useless_conversion)]
+            Some(Value::Integer(i)) => Some(i64::from(*i)),
             Some(Value::Number(n)) if n.is_finite() => Some(*n as i64),
             _ => None,
         }

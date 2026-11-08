@@ -3560,6 +3560,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example-lua-web-check"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "torque-engine",
+ "torque-mods",
+ "torque-plugin-loader",
+ "torque-ts-vm",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "torque-example-minimal"
 version = "0.1.0"
 dependencies = [
@@ -3779,6 +3792,7 @@ dependencies = [
 name = "torque-plugin-loader"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "libloading",
  "object",
  "sha2",
@@ -3792,6 +3806,7 @@ dependencies = [
  "torque-render-hd",
  "torque-render-scene",
  "torque-ts-vm",
+ "wasm-bindgen",
 ]
 
 [[package]]

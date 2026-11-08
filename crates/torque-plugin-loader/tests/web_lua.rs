@@ -2,9 +2,18 @@
 //! the stand-in for a page without one says so.
 
 use torque_engine::{ClientStage, Engine, EngineBuilder, ServerStage, Side};
-use torque_plugin_loader::web_lua::{LuaHost, LuaModule, WebLuaPlugin};
+use torque_plugin_loader::web_lua::{HostError, LuaHost, LuaModule, WebLuaPlugin};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::{Vm, VmError};
+
+/// A request's result as the module hands it on: a refusal is the text `refused`, a limit stops the run.
+fn stop(result: Result<Vec<u8>, HostError>) -> Result<Vec<u8>, VmError> {
+    match result {
+        Ok(text) => Ok(text),
+        Err(HostError::Refused) => Ok(b"refused".to_vec()),
+        Err(HostError::Stopped(error)) => Err(error),
+    }
+}
 
 /// One command per line: `call <function> <args...>`, `define <name> <id>`, `read <path>`, `spin`, `realm`; results go
 /// into `$Web::Result`.
@@ -18,13 +27,13 @@ impl LuaModule for Commands {
                 Some("call") => {
                     let name = words.next().unwrap_or_default();
                     let args: Vec<Vec<u8>> = words.map(|w| w.as_bytes().to_vec()).collect();
-                    host.call_function("", name, &args)?
+                    stop(host.call_function("", name, &args))?
                 }
                 Some("define") => {
                     let name = words.next().unwrap_or_default();
                     let id = words.next().and_then(|w| w.parse().ok()).unwrap_or(0);
                     let package = host.package().to_string();
-                    let ok = host.define_function("", name, &package, id);
+                    let ok = host.define_function("", name, &package, "webEcho(...)", id);
                     if ok {
                         b"defined".to_vec()
                     } else {
@@ -43,7 +52,7 @@ impl LuaModule for Commands {
                 }
                 _ => continue,
             };
-            host.set_global("$Web::Result", &result);
+            assert!(host.set_global("$Web::Result", &result));
         }
         Ok(())
     }
@@ -56,7 +65,7 @@ impl LuaModule for Commands {
     ) -> Result<Vec<u8>, VmError> {
         if id == 2 {
             // Down again through TorqueScript.
-            return host.call_function("", "tsDown", args);
+            return stop(host.call_function("", "tsDown", args));
         }
         let args: Vec<String> = args
             .iter()
@@ -147,4 +156,29 @@ fn without_a_module_a_lua_file_says_it_cannot_run() {
         "{log:?}"
     );
     assert_eq!(result(&vm), "");
+}
+
+#[test]
+fn the_host_makes_the_c_abi_s_checks() {
+    let engine = engine(WebLuaPlugin::new(Commands));
+    let files = MemFiles::new();
+    let mut vm = server(&engine, &files);
+    // Refused, not run: a name that is not one, and what the call policy refuses (the console says why).
+    for (line, why) in [
+        ("call bad-name", ""),
+        ("call exec main.cs", "from a script language"),
+    ] {
+        assert_eq!(run(&mut vm, &files, line), Ok(true), "{line}");
+        assert_eq!(result(&vm), "refused", "{line}");
+        let log = vm.log_texts().join(
+            "
+",
+        );
+        assert!(log.contains(why), "{line}: {log}");
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&vm.global("$Pref::Lua::MemoryLimit").unwrap_or_default()),
+        "64",
+        "the memory cap has its default"
+    );
 }

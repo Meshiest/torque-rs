@@ -129,6 +129,22 @@ lua-test:
     cargo fmt --manifest-path crates/torque-plugin-lua/Cargo.toml --check
     cargo deny --manifest-path crates/torque-plugin-lua/Cargo.toml check
 
+# The Lua extension as a browser build's WebAssembly module, <target>/lua-web/torque_lua.wasm (web/lua-build.mjs): the same Rust
+# and Luau as `lua`, compiled with the WASI SDK's clang. Needs `rustup target add wasm32-wasip1` and a WASI SDK release unpacked
+# anywhere, its folder named by WASI_SDK_PATH; a page loads it with web/lua.js (`node web/build.mjs <example> --lua`)
+lua-web:
+    node web/lua-build.mjs
+
+# The Lua tests on the web: the cases of `lua-test` run natively, then built for a browser with the page's Lua module and run
+# under Node and in headless Chrome from the cursor guard (web/lua-check.mjs). Needs what `lua-web` needs and Chrome
+lua-web-check:
+    node web/guard-scan.mjs
+    cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --test lua
+    node web/lua-build.mjs --check
+    node "{{web_target}}/lua-web/check/lua-node.mjs"
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node web/lua-check.mjs "{{web_target}}/lua-web/check"
+
 # The sample extension's picture compiled in (`<dir>/compiled`) and loaded as a library (`<dir>/loaded`), then shots-diff
 native-ext-shots $TORQUE_NATIVE_EXT_SHOTS="target/native-ext-shots":
     cargo test -p torque-plugin-loader --features render --test pictures

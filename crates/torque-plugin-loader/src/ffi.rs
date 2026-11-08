@@ -32,7 +32,7 @@ use torque_ts_vm::ns::Callable;
 use torque_ts_vm::vm::{MAX_CALL_DEPTH, Native, Vm, VmError, WORK_PER_STEP};
 
 use crate::extension::ExtensionState;
-use crate::language::VmContext;
+use crate::language::{VmContext, is_global_name, is_script_name};
 
 /// A pointer the extension handed over to be handed back to it, never read by the engine.
 #[derive(Clone, Copy, Debug)]
@@ -260,20 +260,6 @@ unsafe fn put<T>(out: *mut T, value: T) -> TorqueStatus {
     // SAFETY: not null, aligned, and a valid place by the caller's promise.
     unsafe { out.write(value) };
     TORQUE_OK
-}
-
-/// A console name: ASCII letters, digits and `_`, not starting with a digit.
-fn is_script_name(name: &str) -> bool {
-    name.bytes().next().is_some_and(|b| !b.is_ascii_digit())
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-}
-
-/// A global's name: `$` and then letters, digits, `_` and `::` separators.
-fn is_global_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix('$') else {
-        return false;
-    };
-    !rest.is_empty() && rest.split("::").all(is_script_name)
 }
 
 fn side_of(code: u32) -> Option<Side> {

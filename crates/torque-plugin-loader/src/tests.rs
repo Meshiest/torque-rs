@@ -62,12 +62,33 @@ fn the_lints_are_the_workspaces() {
     assert_eq!(lint_lines(ours, "[lints."), expected);
 }
 
+/// Every `.rs` file under `dir`, in its folders too.
+fn sources(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files.extend(sources(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            files.push(path);
+        }
+    }
+    files
+}
+
 /// `unsafe` is allowed in one module, `ffi`, and every `unsafe` block there has a SAFETY comment.
 #[test]
 fn unsafe_code_is_only_in_ffi() {
     let allow = concat!("allow(", "unsafe_code)");
-    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
-        let path = entry.unwrap().path();
+    let files = sources(std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src"
+    )));
+    assert!(
+        files.iter().any(|f| f.ends_with("web_lua/page.rs")),
+        "the folders are read"
+    );
+    for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         let allows = text.matches(allow).count();

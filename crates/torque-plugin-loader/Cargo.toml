@@ -33,6 +33,11 @@ torque-render-hd = { path = "../torque-render-hd", optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libloading = "0.8"
 
+# The bridge to the page's Lua module (`web_lua::PageLuaModule`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+
 [features]
 # The render passes extensions declare, through `engine.render()` (needs the client crates; a dedicated server leaves it out
 # and an extension's passes are skipped with a warning).

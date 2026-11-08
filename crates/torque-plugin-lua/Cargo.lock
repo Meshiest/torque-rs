@@ -766,6 +766,7 @@ version = "0.1.0"
 name = "torque-plugin-loader"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "libloading",
  "object",
  "sha2",
@@ -773,6 +774,7 @@ dependencies = [
  "torque-engine",
  "torque-plugin-abi",
  "torque-ts-vm",
+ "wasm-bindgen",
 ]
 
 [[package]]

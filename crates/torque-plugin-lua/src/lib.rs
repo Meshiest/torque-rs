@@ -28,6 +28,8 @@ mod api;
 mod realm;
 mod require;
 mod value;
+#[cfg(target_os = "wasi")]
+mod web;
 
 use std::sync::Arc;
 
@@ -77,6 +79,8 @@ impl ScriptLanguage for Language {
     }
 }
 
+// The library a game loads; a browser build's module has the page's entry points instead (`web`).
+#[cfg(not(target_os = "wasi"))]
 torque_plugin_sdk::export!(LuaExtension);
 
 torque_plugin_sdk::init_fn!(linked_init, LuaExtension);

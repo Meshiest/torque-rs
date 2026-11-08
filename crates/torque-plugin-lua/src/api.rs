@@ -18,7 +18,8 @@ impl UserData for Object {
         methods.add_meta_method(MetaMethod::Index, |lua, this, key: mlua::LuaString| {
             let key = key.to_str()?.to_string();
             if key == "id" {
-                return Ok(Value::Integer(i64::from(this.0)));
+                // A number (Luau has no integer type; mlua's `Integer` is 32 bits on wasm32).
+                return Ok(Value::Number(f64::from(this.0)));
             }
             let id = this.0;
             if with_call(lua, |call| call.has_method(id, &key))? {

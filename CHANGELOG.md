@@ -195,8 +195,10 @@ different.
   read and write objects and charge the step budget (`Vm::set_script_language`, `Vm::call_depth`).
 - Lua for mods (`torque-plugin-lua`, a native extension built on its own: Luau): a mod's `.lua` files run at its stages in
   sandboxed server and client realms (`ts.call`, objects, `ts.define`, `require` within the mod), held to the script
-  engine's step limit and call depth and a memory cap, never from a server. TGE has none. The browser build's interface
-  (`web_lua`) is in place; its Luau module is not built yet.
+  engine's step limit and call depth and a memory cap, never from a server. TGE has none. In a browser build the same
+  extension is a WebAssembly module of its own (`just lua-web`, built with the WASI SDK; it needs WebAssembly exception
+  handling), loaded by the page only when its game uses Lua (`build.mjs --lua`, `web/lua.js`) and bridged to the engine's
+  `web_lua::WebLuaPlugin`, which makes the C ABI's checks; the same tests run natively and on the web (`just lua-web-check`).
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
   `torque-plugin-sdk` and `torque-plugin-loader`).

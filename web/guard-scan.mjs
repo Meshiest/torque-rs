@@ -19,7 +19,15 @@ const root = resolve(process.argv[2] ?? join(dirname(fileURLToPath(import.meta.u
 const SKIP = new Set(['node_modules', 'target', '.git', '.scratch', '.claude']);
 const SOURCE = /\.(mjs|js|cjs|ts|mts|cts|jsx|tsx)$/;
 // The scripts that may use `child_process` (by their path under the root).
-const SPAWNERS = new Set(['web/build.mjs', 'web/site.mjs', 'web/fps-check.mjs', 'web/p2p-check.mjs', 'web/trace-hash.mjs']);
+const SPAWNERS = new Set([
+  'web/build.mjs',
+  'web/site.mjs',
+  'web/fps-check.mjs',
+  'web/p2p-check.mjs',
+  'web/trace-hash.mjs',
+  'web/lua-build.mjs',
+  'web/size.mjs',
+]);
 const GUARD = 'web/guard.mjs';
 const SCAN = 'web/guard-scan.mjs';
 
