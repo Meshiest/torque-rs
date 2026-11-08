@@ -44,6 +44,8 @@ fn options(dir: &Path, crate_dir: PathBuf, out: &str) -> Options {
         out: dir.join(out),
         target_dir: dir.join("target"),
         check: true,
+        server: false,
+        archive: false,
     }
 }
 
@@ -209,4 +211,127 @@ fn a_crate_with_no_text_gets_the_standard_texts_of_its_licenses() {
         ]
     );
     assert!(torque_bundle::licenses::generic_texts("LicenseRef-Proprietary", &sysroot).is_empty());
+}
+
+fn archive_options(dir: &Path, crate_dir: PathBuf, out: &str, server: bool) -> Options {
+    Options {
+        check: false,
+        server,
+        archive: true,
+        ..options(dir, crate_dir, out)
+    }
+}
+
+#[test]
+fn archives_from_two_clean_builds_have_the_same_sha256_and_unpack_to_the_bundle() {
+    let dir = tmp("archive");
+    let crate_dir = fixture(&dir, |s| s);
+
+    let first = bundle(&archive_options(&dir, crate_dir.clone(), "one", false)).unwrap();
+    std::fs::remove_dir_all(dir.join("target")).unwrap();
+    let second = bundle(&archive_options(&dir, crate_dir, "two", false)).unwrap();
+    let (a, b) = (first.archive.unwrap(), second.archive.unwrap());
+    println!("archive sha256 {} and {}", a.sha256, b.sha256);
+    assert_eq!(a.sha256, b.sha256);
+    assert_eq!(
+        std::fs::read(&a.path).unwrap(),
+        std::fs::read(&b.path).unwrap()
+    );
+    assert_eq!(a.bytes, std::fs::metadata(&a.path).unwrap().len());
+
+    // Every file of the bundle folder is in the archive, with the same bytes.
+    let name = first.folder.file_name().unwrap().to_str().unwrap();
+    let windows = cfg!(windows);
+    assert_eq!(
+        a.path.file_name().unwrap().to_str().unwrap(),
+        format!("{name}.{}", if windows { "zip" } else { "tar.gz" })
+    );
+    if windows {
+        let file = std::fs::File::open(&a.path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        for path in files_of(&first.folder) {
+            let mut entry = zip.by_name(&format!("{name}/{path}")).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+            assert_eq!(bytes, std::fs::read(first.folder.join(&path)).unwrap());
+        }
+    }
+}
+
+#[test]
+fn the_server_variant_is_its_own_bundle_with_its_own_features_and_check() {
+    let dir = tmp("server");
+    let crate_dir = fixture(&dir, |s| {
+        format!(
+            "{s}\n[server]\npackage = \"bundle-fixture\"\nbins = [\"bundle-fixture\"]\n\
+             [server.check]\nbin = \"bundle-fixture\"\nargs = [\"{{work}}\"]\nexpect = [\"game says hello\"]\n"
+        )
+    });
+    let report = bundle(&Options {
+        check: true,
+        ..archive_options(&dir, crate_dir.clone(), "out", true)
+    })
+    .unwrap();
+    let name = report.folder.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("fixture-server-"), "{name}");
+    // The game.toml of the fixture enables gizmos, which the server variant does not derive.
+    assert!(report.features.is_empty(), "{:?}", report.features);
+    assert!(!report.check.unwrap().contains("gizmos on"));
+    assert_eq!(
+        report.server.map(|s| (s.drawing, s.system_libraries)),
+        Some((0, 0))
+    );
+    // `[server]` has its own exclusions (none here), not the bundle's.
+    assert!(
+        files_of(&report.folder)
+            .iter()
+            .any(|f| f == "game/secret/key.txt")
+    );
+    assert!(report.archive.is_some());
+
+    // A crate without a `[server]` table has no server variant.
+    let plain = fixture(&tmp("server-none"), |s| s);
+    let error = bundle(&archive_options(&dir, plain, "none", true)).unwrap_err();
+    assert!(error.contains("no [server] table"), "{error}");
+}
+
+/// What the dedicated server of the minimal example and the window game of the mods demo link, read from `cargo tree`: the
+/// server none of the renderer, window and audio crates, the game some (so the check that refuses them is not blind).
+#[test]
+fn the_minimal_server_links_no_drawing_crates_and_the_mods_demo_does() {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let host = torque_bundle::cargo::Toolchain::find().unwrap().host;
+    let linked = |example: &str, package: &str| {
+        torque_bundle::cargo::Build {
+            manifest: workspace.join("examples").join(example).join("Cargo.toml"),
+            package: Some(package.to_string()),
+            bins: Vec::new(),
+            features: Some(vec!["bundled".to_string()]),
+            target: host.clone(),
+            target_dir: PathBuf::from("unused"),
+            rustflags: Vec::new(),
+            cflags: Vec::new(),
+        }
+        .linked()
+        .unwrap()
+    };
+    let server = linked("minimal", "torque-example-minimal");
+    let drawing = torque_bundle::server::drawing_crates(&server);
+    println!(
+        "minimal: {} crates linked, {} drawing",
+        server.len(),
+        drawing.len()
+    );
+    assert!(server.len() > 20 && drawing.is_empty(), "{drawing:?}");
+    let game = linked("mods-demo", "torque-example-mods-demo");
+    let drawing = torque_bundle::server::drawing_crates(&game);
+    println!(
+        "mods-demo: {} crates linked, {} drawing",
+        game.len(),
+        drawing.len()
+    );
+    assert!(
+        drawing.iter().any(|c| c.starts_with("wgpu ")),
+        "{drawing:?}"
+    );
 }

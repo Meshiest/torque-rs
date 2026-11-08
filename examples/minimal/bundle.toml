@@ -1,0 +1,27 @@
+# How `torque-bundle` packages this game (`just bundle examples/minimal`, and `--server` for the dedicated server alone).
+# Paths are relative to this file, which never ships. Every key is in crates/torque-bundle/src/spec.rs.
+
+[bundle]
+name = "minimal"
+game = "game"
+package = "torque-example-minimal"
+bins = ["min-server", "min-client"]
+# The game folder is read from beside the executable.
+features = ["bundled"]
+
+[check]
+# The server loads the game from the bundle folder, binds any free port on the loopback address and ticks 64 times.
+bin = "min-server"
+args = ["--port", "0", "--ticks", "64"]
+expect = ["Serving ", "Stopped after 64 ticks"]
+
+[server]
+# The dedicated server alone: it links no drawing, window or audio crate (the bundle is refused if it does).
+package = "torque-example-minimal"
+bins = ["min-server"]
+features = ["bundled"]
+
+[server.check]
+bin = "min-server"
+args = ["--port", "0", "--ticks", "64"]
+expect = ["Serving ", "Stopped after 64 ticks"]

@@ -20,6 +20,9 @@ torque-render-core = { path = "../../crates/torque-render-core", optional = true
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"], optional = true }
 
 [features]
+# A packaged game (`just bundle examples/minimal`): the game folder is read from beside the executable (`game/`) instead of from
+# this crate's folder, so the binaries hold no path of the computer that built them.
+bundled = []
 # `example-window`: the example's client in a window (a GPU and a display). The tests stay headless.
 window = ["torque/client-window", "torque/fonts", "dep:torque-render-core", "dep:winit"]
 

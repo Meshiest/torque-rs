@@ -15,13 +15,19 @@
 //! The builds remap the computer's folders to neutral names and link reproducibly ([`cargo::rustflags`]); every file is then
 //! scanned for those folders ([`scan`]) and one hit fails the bundle. Last, the `[check]` binary runs headless from the bundle
 //! folder with the build's environment removed, and the bundle must still match its manifest after it.
+//!
+//! `--archive` also writes the bundle as one file ([`archive`]); `--server` packages the game's dedicated server ([`server`]).
+//! `--twice` is for a game maker to verify that a game builds reproducibly: it bundles two times from clean build folders and
+//! fails unless the two archives have the same SHA-256, naming the files that differ.
 
+pub mod archive;
 pub mod cargo;
 pub mod features;
 pub mod licenses;
 pub mod manifest;
 pub mod scan;
 pub mod select;
+pub mod server;
 pub mod spec;
 
 use std::collections::BTreeMap;
@@ -48,6 +54,30 @@ pub struct Options {
     pub target_dir: PathBuf,
     /// Run the `[check]` after packaging.
     pub check: bool,
+    /// Package the dedicated-server variant (`[server]` in `bundle.toml`).
+    pub server: bool,
+    /// Also write the bundle as one archive beside its folder: a zip on Windows, a gzipped tar elsewhere ([`archive`]).
+    pub archive: bool,
+}
+
+/// What the server variant's checks counted. A bundle is refused when a count that must be 0 is not, so a report holds zeros.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerReport {
+    /// The crates the binaries link.
+    pub linked: usize,
+    /// Of them, renderer, window, audio, GUI or client crates.
+    pub drawing: usize,
+    /// GPU, window or audio system libraries the binaries import.
+    pub system_libraries: usize,
+}
+
+/// A written archive.
+#[derive(Clone, Debug)]
+pub struct ArchiveReport {
+    pub path: PathBuf,
+    pub bytes: u64,
+    /// The SHA-256 of the archive's bytes, in lowercase hex.
+    pub sha256: String,
 }
 
 /// What a bundle came to.
@@ -64,6 +94,9 @@ pub struct Report {
     pub generic_licenses: Vec<String>,
     /// The check's standard output, when it ran.
     pub check: Option<String>,
+    /// What the server variant's check found, when it was packaged.
+    pub server: Option<ServerReport>,
+    pub archive: Option<ArchiveReport>,
 }
 
 /// The bundle folder's name for `name` on `target`: `name-windows-x86_64`.
@@ -95,7 +128,7 @@ fn absolute(path: &Path) -> Result<PathBuf, String> {
 pub fn bundle(options: &Options) -> Result<Report, String> {
     let crate_dir = absolute(&options.crate_dir)?;
     let target_dir = absolute(&options.target_dir)?;
-    let spec = Spec::load(&crate_dir)?;
+    let spec = Spec::load(&crate_dir)?.variant(options.server)?;
     let toolchain = Toolchain::find()?;
     let target = toolchain.host.clone();
     let game_dir = crate_dir.join(&spec.bundle.game);
@@ -113,7 +146,12 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
             spec.bundle.package
         )
     })?;
-    let features = features::derive(&toggles, &package.features, &spec.bundle.features);
+    // The server variant has no window or sound device to switch plugins for: only the features it names.
+    let features = if options.server {
+        spec.bundle.features.clone()
+    } else {
+        features::derive(&toggles, &package.features, &spec.bundle.features)
+    };
 
     // The computer's folders: remapped in the builds (most specific last) and looked for in every file.
     let home = env_dir("USERPROFILE").or_else(|| env_dir("HOME"));
@@ -171,7 +209,16 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         rustflags: cargo::rustflags(&remaps, &target, &[]),
         cflags: cargo::cflags(&remaps, &target),
     };
+    // The server variant is checked before it is built: a crate that draws is a refusal in seconds, not after the compile.
+    let game_linked = game_build.linked()?;
+    let mut server_linked = game_linked.len();
+    if options.server {
+        refuse_drawing(&game_linked)?;
+    }
     let built = game_build.run()?;
+    if options.server {
+        refuse_system_libraries(&built.bins)?;
+    }
     let mut files: BTreeMap<String, Text> = BTreeMap::new();
     let add = |files: &mut BTreeMap<String, Text>, path: String, source: Text| {
         if files.insert(path.clone(), source).is_some() {
@@ -234,13 +281,14 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
 
     // The licenses of what the builds link.
     let game_meta = Metadata::read(&manifest_path, &target, true)?;
-    let game_linked = game_build.linked()?;
     let mut extension_meta = Vec::new();
     for build in &extension_builds {
-        extension_meta.push((
-            Metadata::read(&build.manifest, &target, true)?,
-            build.linked()?,
-        ));
+        let linked = build.linked()?;
+        if options.server {
+            refuse_drawing(&linked)?;
+            server_linked += linked.len();
+        }
+        extension_meta.push((Metadata::read(&build.manifest, &target, true)?, linked));
     }
     let mut builds: Vec<(&Metadata, &[(String, String)])> = vec![(&game_meta, &game_linked)];
     builds.extend(extension_meta.iter().map(|(m, l)| (m, l.as_slice())));
@@ -342,6 +390,17 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         _ => None,
     };
 
+    let archive = if options.archive {
+        let executable: Vec<String> = built
+            .bins
+            .iter()
+            .filter_map(|(_, exe)| file_name(exe).ok())
+            .collect();
+        Some(write_archive(&out, &name, &target, &written, &executable)?)
+    } else {
+        None
+    };
+
     Ok(Report {
         folder,
         files: written.len(),
@@ -352,6 +411,89 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         missing_licenses: gathered.missing,
         generic_licenses: gathered.generic,
         check,
+        server: options.server.then_some(ServerReport {
+            linked: server_linked,
+            drawing: 0,
+            system_libraries: 0,
+        }),
+        archive,
+    })
+}
+
+/// An error naming the renderer, window or audio crates in `linked`, if there are any (the server variant links none).
+fn refuse_drawing(linked: &[(String, String)]) -> Result<(), String> {
+    let drawing = server::drawing_crates(linked);
+    if drawing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the server variant links {} renderer, window or audio crates:\n  {}",
+        drawing.len(),
+        drawing.join("\n  ")
+    ))
+}
+
+/// An error naming the GPU, window and audio system libraries the server variant's binaries `bins` (name, file) import.
+fn refuse_system_libraries(bins: &[(String, PathBuf)]) -> Result<(), String> {
+    let mut found = Vec::new();
+    for (name, exe) in bins {
+        let bytes = std::fs::read(exe).map_err(|e| format!("{}: {e}", exe.display()))?;
+        for library in server::system_libraries(&bytes) {
+            found.push(format!("{name}: {library}"));
+        }
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the server variant's binaries import {} GPU, window or audio system libraries:\n  {}",
+        found.len(),
+        found.join("\n  ")
+    ))
+}
+
+/// Whether `path` of the bundle gets the executable mode: a binary of the bundle, or a shared library in `plugins/`.
+fn is_executable(path: &str, bins: &[String]) -> bool {
+    let library = path.starts_with("plugins/")
+        && [".dll", ".so", ".dylib"]
+            .iter()
+            .any(|ending| path.ends_with(ending));
+    library || bins.iter().any(|bin| bin == path)
+}
+
+/// Writes the bundle `written` as `<out>/<name>.<zip or tar.gz>` (through a partial file, so one is whole or not there). The
+/// files `executable` get the executable mode, and so does every shared library (`.dll`, `.so`, `.dylib`) in `plugins/`.
+fn write_archive(
+    out: &Path,
+    name: &str,
+    target: &str,
+    written: &[(String, Vec<u8>)],
+    executable: &[String],
+) -> Result<ArchiveReport, String> {
+    use sha2::{Digest, Sha256};
+
+    let items: Vec<archive::Item> = written
+        .iter()
+        .map(|(path, bytes)| archive::Item {
+            path,
+            bytes,
+            executable: is_executable(path, executable),
+        })
+        .collect();
+    let format = archive::Format::for_target(target);
+    let bytes = archive::build(name, &items, format)?;
+    let path = out.join(format!("{name}.{}", format.extension()));
+    let partial = out.join(format!("{name}.{}.partial", format.extension()));
+    std::fs::write(&partial, &bytes).map_err(|e| format!("{}: {e}", partial.display()))?;
+    std::fs::rename(&partial, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let sha256 = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Ok(ArchiveReport {
+        path,
+        bytes: bytes.len() as u64,
+        sha256,
     })
 }
 
@@ -460,6 +602,19 @@ pub fn run_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_binaries_and_shared_libraries_are_executable() {
+        let bins = ["demo.exe".to_string()];
+        assert!(is_executable("demo.exe", &bins));
+        assert!(is_executable("plugins/torque_lua.dll", &bins));
+        assert!(is_executable("plugins/libtorque_lua.so", &bins));
+        assert!(is_executable("plugins/libtorque_lua.dylib", &bins));
+        assert!(!is_executable("plugins/torque_lua.toml", &bins));
+        assert!(!is_executable("plugins/notes.txt", &bins));
+        assert!(!is_executable("licenses/index.txt", &bins));
+        assert!(!is_executable("game/plugins/x.dll", &bins));
+    }
 
     #[test]
     fn bundle_folders_are_named_by_os_and_arch() {

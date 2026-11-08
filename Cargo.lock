@@ -4119,11 +4119,13 @@ dependencies = [
 name = "torque-bundle"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "memchr",
  "serde",
  "serde_json",
  "sha2",
  "toml",
+ "zip",
 ]
 
 [[package]]

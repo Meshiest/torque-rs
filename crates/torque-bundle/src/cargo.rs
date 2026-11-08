@@ -253,6 +253,9 @@ impl Build {
         command
             .env("CARGO_TARGET_DIR", self.build_dir())
             .env("CARGO_ENCODED_RUSTFLAGS", self.rustflags.join("\u{1f}"));
+        for (name, value) in build_env(&self.target) {
+            command.env(name, value);
+        }
         if !self.cflags.is_empty() {
             let flags = self.cflags.join(" ");
             command.env("CFLAGS", &flags).env("CXXFLAGS", &flags);
@@ -338,7 +341,7 @@ fn is_library(path: &Path) -> bool {
 }
 
 /// The flags every bundle build gets: the local folders remapped to neutral names (most specific last, as rustc applies the
-/// last match), and on MSVC the C runtime linked in and a reproducible link (`/Brepro`: no time stamp) with no PDB (`/DEBUG:NONE`: a PDB is never shipped,
+/// last match), on Linux and macOS no build id or UUID and no symbols, and on MSVC the C runtime linked in and a reproducible link (`/Brepro`: no time stamp) with no PDB (`/DEBUG:NONE`: a PDB is never shipped,
 /// and its id in the binary differs from build to build).
 pub fn rustflags(remaps: &[(PathBuf, &str)], target: &str, extra: &[String]) -> Vec<String> {
     let mut flags: Vec<String> = remaps
@@ -351,9 +354,28 @@ pub fn rustflags(remaps: &[(PathBuf, &str)], target: &str, extra: &[String]) -> 
         }
         // The C runtime linked in: a bundle needs no Visual C++ redistributable installed.
         flags.extend(["-C".to_string(), "target-feature=+crt-static".to_string()]);
+    } else if target.contains("linux") {
+        // No build id (the linker would derive one from the link's inputs and their paths) and no symbols or debug info.
+        flags.extend(["-C".to_string(), "link-arg=-Wl,--build-id=none".to_string()]);
+        flags.extend(["-C".to_string(), "strip=symbols".to_string()]);
+    } else if target.contains("apple-darwin") {
+        // No LC_UUID (the linker's is random per link on some versions) and no symbols. The linker's ad-hoc signature is a
+        // hash of the content, with no time.
+        flags.extend(["-C".to_string(), "link-arg=-Wl,-no_uuid".to_string()]);
+        flags.extend(["-C".to_string(), "strip=symbols".to_string()]);
     }
     flags.extend(extra.iter().cloned());
     flags
+}
+
+/// The environment variables every bundle build gets beyond the flags: the time tools that stamp one use ([`crate::archive::EPOCH`]),
+/// and on macOS the zero date for the static archives `ar` and `libtool` make.
+pub fn build_env(target: &str) -> Vec<(&'static str, String)> {
+    let mut env = vec![("SOURCE_DATE_EPOCH", crate::archive::EPOCH.to_string())];
+    if target.contains("apple") {
+        env.push(("ZERO_AR_DATE", "1".to_string()));
+    }
+    env
 }
 
 /// The C and C++ flags that remap the same folders in `__FILE__` (asserts in vendored C and C++ print it): `/pathmap` for
@@ -408,7 +430,18 @@ mod tests {
         assert_eq!(flags[0], "--remap-path-prefix=/w=/workspace");
         assert!(flags.contains(&"link-arg=/Brepro".to_string()));
         let linux = rustflags(&[], "x86_64-unknown-linux-gnu", &["-Cx".to_string()]);
-        assert_eq!(linux, ["-Cx"]);
+        assert_eq!(
+            linux,
+            [
+                "-C",
+                "link-arg=-Wl,--build-id=none",
+                "-C",
+                "strip=symbols",
+                "-Cx"
+            ]
+        );
+        let mac = rustflags(&[], "aarch64-apple-darwin", &[]);
+        assert_eq!(mac, ["-C", "link-arg=-Wl,-no_uuid", "-C", "strip=symbols"]);
         let remaps = [
             (PathBuf::from("/w"), "/workspace"),
             (PathBuf::from("/a b"), "/x"),

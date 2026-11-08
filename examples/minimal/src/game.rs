@@ -16,9 +16,26 @@ pub const MAIN_SCRIPT: &str = "example/main.cs";
 /// The mission the server loads.
 pub const MISSION: &str = "example/missions/tiny.mis";
 
-/// The example's own game folder (`examples/minimal/game`), which holds [`GAME_FOLDER`].
+/// The example's own game folder (`examples/minimal/game`), which holds [`GAME_FOLDER`]. In a packaged game (feature `bundled`)
+/// the `game/` beside the executable; run by cargo it falls back to this crate's folder, from the variable cargo sets.
+#[cfg(not(feature = "bundled"))]
 pub fn bundled_root() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/game"))
+}
+
+#[cfg(feature = "bundled")]
+pub fn bundled_root() -> &'static Path {
+    static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("game")))
+            .unwrap_or_default();
+        match std::env::var_os("CARGO_MANIFEST_DIR") {
+            Some(dir) if !beside.is_dir() => Path::new(&dir).join("game"),
+            _ => beside,
+        }
+    })
 }
 
 /// Why the game's scripts did not load.

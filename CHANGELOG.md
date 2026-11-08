@@ -258,6 +258,10 @@ different.
   with only the plugin features its `game.toml` keeps (debug gizmos left out), its game folder without dev files, its native
   extensions in `plugins/`, the license texts of every crate it links, and a manifest of every file's SHA-256. Local folders
   are remapped out of the builds and a bundle holding one is refused; the same inputs give the same manifest. TGE has none.
+  `--archive` also writes one file, a zip on Windows and a gzipped tar on Linux and macOS, with fixed times, owner, order and
+  modes, so the same inputs give the same SHA-256; a game maker can run `--twice` to verify that for their game (it builds two
+  times from clean folders and fails unless the archives are equal). `--server` packages a game's dedicated server and
+  refuses it if it links a renderer, window, audio or similar crate or imports a GPU, window or audio system library.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
   `torque-plugin-sdk` and `torque-plugin-loader`).

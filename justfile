@@ -168,6 +168,10 @@ deny:
 # Packages a game crate (a folder with a bundle.toml, such as examples/mods-demo) for this computer: its binaries built in
 # release with the plugins its game.toml keeps, its game folder, its extensions, the license texts of everything it links and a
 # manifest of hashes, scanned for local paths, then its headless check run from the bundle folder (`--out <dir>`, `--no-check`;
+# `--server` for the dedicated-server variant, which must link no renderer, window or audio crate and import no GPU, window or
+# audio system library (the `server-deps` recipe is the crate check for torque-app-server); `--archive` also writes a zip (Windows)
+# or a gzipped tar; `--twice` builds two archives from clean folders and compares their SHA-256, to check that a game builds
+# reproducibly;
 # `just bundle --verify <bundle folder>` checks a bundle against its manifest)
 bundle *args:
     cargo run -p torque-bundle --release -- {{args}}

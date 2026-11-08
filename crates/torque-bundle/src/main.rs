@@ -1,15 +1,18 @@
-//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check]`: packages the game for this computer
-//! (the library's docs say what goes in). `torque-bundle --verify <bundle folder>` checks a bundle against its manifest.
+//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice]`:
+//! packages the game for this computer (the library's docs say what goes in). `--server` packages its dedicated-server variant;
+//! `--archive` also writes the bundle as a zip (Windows) or a gzipped tar, the same bytes from the same inputs; `--twice` builds
+//! it two times from clean build folders (`<out>/one`, `<out>/two`) and fails unless the two archives have the same SHA-256.
+//! `torque-bundle --verify <bundle folder>` checks a bundle against its manifest.
 //!
 //! The build folder is `--target-dir`, else `CARGO_TARGET_DIR`, else the workspace's `target`; the bundle goes in `--out`,
 //! else `<build folder>/bundles`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use torque_bundle::{Options, bundle, manifest};
+use torque_bundle::{ArchiveReport, Options, Report, bundle, manifest};
 
-const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check]\n       torque-bundle --verify <bundle folder>";
+const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice]\n       torque-bundle --verify <bundle folder>";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -19,6 +22,9 @@ fn run() -> Result<(), String> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from);
     let mut check = true;
+    let mut server = false;
+    let mut archive = false;
+    let mut twice = false;
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
             args.next()
@@ -38,6 +44,9 @@ fn run() -> Result<(), String> {
             "--out" => out = Some(value("--out")?),
             "--target-dir" => target_dir = Some(value("--target-dir")?),
             "--no-check" => check = false,
+            "--server" => server = true,
+            "--archive" => archive = true,
+            "--twice" => twice = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -54,8 +63,72 @@ fn run() -> Result<(), String> {
         crate_dir,
         target_dir,
         check,
+        server,
+        archive: archive || twice,
     };
-    let report = bundle(&options)?;
+    if twice {
+        return build_twice(&options);
+    }
+    print_report(&bundle(&options)?);
+    Ok(())
+}
+
+/// Two bundles of the same inputs, each from a build folder of its own that is removed after it (so nothing carries over, and a
+/// path of the build folder in a binary shows as a difference). Fails unless the archives' SHA-256 are equal, naming the files
+/// whose hashes differ.
+fn build_twice(options: &Options) -> Result<(), String> {
+    let mut runs: Vec<(Report, ArchiveReport)> = Vec::new();
+    for run in ["one", "two"] {
+        let build = Options {
+            out: options.out.join(run),
+            target_dir: options.target_dir.join(format!("twice-{run}")),
+            ..options.clone()
+        };
+        let report = bundle(&build)?;
+        print_report(&report);
+        let _ = std::fs::remove_dir_all(&build.target_dir);
+        let archive = report.archive.clone().ok_or("no archive was written")?;
+        runs.push((report, archive));
+    }
+    let [(first, a), (second, b)] = &runs[..] else {
+        return Err("two builds were expected".into());
+    };
+    println!("archive sha256 of build one: {}", a.sha256);
+    println!("archive sha256 of build two: {}", b.sha256);
+    if a.sha256 == b.sha256 {
+        println!("the two archives are byte-identical ({} bytes)", a.bytes);
+        return Ok(());
+    }
+    let differing = differing_files(&first.folder, &second.folder);
+    Err(format!(
+        "the two archives differ ({} and {} bytes); files that differ:\n  {}",
+        a.bytes,
+        b.bytes,
+        differing.join("\n  ")
+    ))
+}
+
+/// The paths whose size or hash differs between two bundle folders' manifests, or that only one has.
+fn differing_files(one: &Path, two: &Path) -> Vec<String> {
+    let read = |dir: &Path| {
+        std::fs::read_to_string(dir.join(manifest::FILE))
+            .ok()
+            .and_then(|text| manifest::parse(&text).ok())
+            .unwrap_or_default()
+    };
+    let (a, b) = (read(one), read(two));
+    let mut paths: Vec<&str> = a.iter().chain(&b).map(|e| e.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    let find = |list: &[manifest::Entry], path: &str| list.iter().find(|e| e.path == path).cloned();
+    paths
+        .into_iter()
+        .filter(|path| find(&a, path) != find(&b, path))
+        .map(String::from)
+        .collect()
+}
+
+fn print_report(report: &Report) {
     println!("bundle: {}", report.folder.display());
     println!(
         "  {} files, {} bytes; features [{}]",
@@ -78,6 +151,12 @@ fn run() -> Result<(), String> {
     for name in &report.generic_licenses {
         println!("    standard texts (the crate ships none): {name}");
     }
+    if let Some(server) = &report.server {
+        println!(
+            "  server variant: {} crates linked, {} renderer, window or audio crates, {} GPU, window or audio system libraries imported",
+            server.linked, server.drawing, server.system_libraries
+        );
+    }
     println!("  leak scan: 0 local folders found");
     match &report.check {
         Some(out) => {
@@ -90,7 +169,14 @@ fn run() -> Result<(), String> {
         }
         None => println!("  check: not run"),
     }
-    Ok(())
+    if let Some(archive) = &report.archive {
+        println!(
+            "archive: {}  {} ({} bytes)",
+            archive.sha256,
+            archive.path.display(),
+            archive.bytes
+        );
+    }
 }
 
 fn main() -> ExitCode {
