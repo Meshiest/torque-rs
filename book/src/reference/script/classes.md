@@ -2,7 +2,7 @@
 
 # Classes
 
-Console classes, with the fields each adds to its parent's. 112 classes.
+Console classes, with the fields each adds to its parent's. 114 classes.
 
 | Class | Parent | Fields |
 |---|---|---|
@@ -42,7 +42,9 @@ Console classes, with the fields each adds to its parent's. 112 classes.
 | [GuiCrossHairHud](#guicrosshairhud) | [GuiBitmapCtrl](#guibitmapctrl) | 4 |
 | [GuiCursor](#guicursor) | [SimObject](#simobject) | 3 |
 | [GuiFadeinBitmapCtrl](#guifadeinbitmapctrl) | [GuiBitmapCtrl](#guibitmapctrl) | 0 |
+| [GuiFlexCtrl](#guiflexctrl) | [GuiControl](#guicontrol) | 7 |
 | [GuiGraphCtrl](#guigraphctrl) | [GuiControl](#guicontrol) | 0 |
+| [GuiGridCtrl](#guigridctrl) | [GuiControl](#guicontrol) | 11 |
 | [GuiHealthBarHud](#guihealthbarhud) | [GuiControl](#guicontrol) | 9 |
 | [GuiInputCtrl](#guiinputctrl) | [GuiControl](#guicontrol) | 0 |
 | [GuiMessageVectorCtrl](#guimessagevectorctrl) | [GuiControl](#guicontrol) | 5 |
@@ -626,11 +628,43 @@ No fields of its own.
 
 No fields of its own.
 
+## GuiFlexCtrl
+
+*goes below `GuiControl`; client; needs `torque.gui-layout`*
+
+| Field | Type | Default | Range | What it is for |
+|---|---|---|---|---|
+| `direction` | string | `row` |  | The main axis: `row` (left to right), `column` (top to bottom), `row-reverse` or `column-reverse`. |
+| `wrap` | string | `nowrap` |  | `nowrap` (one line), `wrap` (as many lines as the children need) or `wrap-reverse`. |
+| `justifyContent` | string | `start` |  | Where the children sit along the main axis when they leave room: `start`, `end`, `center`, `space-between`, `space-around` or `space-evenly`. |
+| `alignItems` | string | `stretch` |  | Where the children sit across their line: `stretch` (they fill it), `start`, `end`, `center` or `baseline`. |
+| `alignContent` | string | `start` |  | How the lines of a wrapped container share its cross axis: the words of `justifyContent`, or `stretch`. |
+| `gap` | string | `0` |  | The room between the children: one length, or the room between rows then between columns (`"8 16"`). |
+| `padding` | string | `0` |  | The room inside the edges: one to four lengths, CSS's order (top, right, bottom, left). |
+
 ## GuiGraphCtrl
 
 *goes below `GuiControl`; client*
 
 No fields of its own.
+
+## GuiGridCtrl
+
+*goes below `GuiControl`; client; needs `torque.gui-layout`*
+
+| Field | Type | Default | Range | What it is for |
+|---|---|---|---|---|
+| `columns` | string |  |  | The column tracks, left to right: lengths (`120`), percentages (`25%`), shares of the room left (`1fr`), `auto`, `min-content`, `max-content`, `minmax(80, 1fr)`, `fit-content(200)` and `repeat(3, 1fr)` (or `repeat(auto-fill, 96)`). |
+| `rows` | string |  |  | The row tracks, top to bottom, in the words of `columns`. |
+| `autoColumns` | string | `auto` |  | The size of a column the template does not name (one the auto-flow or a child's `gridColumn` makes). |
+| `autoRows` | string | `auto` |  | The size of a row the template does not name. |
+| `autoFlow` | string | `row` |  | How children without a place fill the grid: `row` (along the rows), `column`, `row dense` or `column dense`. |
+| `justifyItems` | string | `stretch` |  | Where the children sit across their cell's width: `stretch` (they fill it), `start`, `end` or `center`. |
+| `alignItems` | string | `stretch` |  | Where the children sit across their cell's height: `stretch`, `start`, `end`, `center` or `baseline`. |
+| `justifyContent` | string | `start` |  | Where the columns sit when they leave room: `start`, `end`, `center`, `stretch`, `space-between`, `space-around` or `space-evenly`. |
+| `alignContent` | string | `start` |  | Where the rows sit when they leave room, in the words of `justifyContent`. |
+| `gap` | string | `0` |  | The room between the cells: one length, or the room between rows then between columns (`"8 16"`). |
+| `padding` | string | `0` |  | The room inside the edges: one to four lengths, CSS's order (top, right, bottom, left). |
 
 ## GuiHealthBarHud
 

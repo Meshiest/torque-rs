@@ -64,6 +64,7 @@ The script defines what a click does, as for any class: `function GuiTileCtrl::o
 |---|---|---|
 | `draw` | every frame it is drawn, in the clip its parent gave it | the profile's fill and border |
 | `resize` | its position or extent is set, by the layout or a script | `cx.base_resize(position, extent)`: `GuiControl::resize` |
+| `update` | once a frame while it is awake and shown on the canvas (not in a host's overlay), before the frame is drawn, parents before children; an error is printed and the other controls still update | nothing |
 | `wake`, `sleep` | it wakes (after the script's `onWake`) and goes to sleep (before the script's `onSleep`) | nothing |
 | `mouse_down`, `mouse_up`, `mouse_move`, `mouse_dragged`, `mouse_enter`, `mouse_leave` | the left button and the pointer; `PointerEvent` has the pointer on the canvas and from the control's corner | nothing; a move then goes to the parent, as a `GuiControl`'s does |
 | `key_down` | a key while the control has the key focus; true takes it, false passes it to the parent | false |
@@ -74,6 +75,10 @@ The script defines what a click does, as for any class: `function GuiTileCtrl::o
 - The methods get a `ControlCx` with the script engine, the GUI and the control: `cx.call(name, args)` calls the control's
   script method, `cx.lock_mouse()` and `cx.unlock_mouse()` take and give back the pointer (a drag that leaves the control
   still reaches it), `cx.bounds()` and `cx.screen_position()` read where it is.
+- A control that lays out its children places them with `cx.resize_control(child, position, extent, 1)` (the child's own
+  `resize`, so what is inside it follows its sizing flags), `cx.set_bounds_of(id, position, extent)` (the bounds alone) and
+  `cx.parent_resized_control(child, old, new, 1)` (the child's sizing flags); `cx.gui.control_data::<T, _>(id, f)` keeps a
+  value of its own type on any control, dropped with it. The [flex and grid containers](gui-layout.md) are built this way.
 - `draw` runs no script and cannot print: a control whose fields cannot be read is not drawn.
 - While one of a control's methods runs, the control is busy: a call that reaches it again (a script that sends the same
   control another event) is skipped, not run inside the first. The state is moved out for the call and back after it, so a

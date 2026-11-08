@@ -61,7 +61,7 @@
 //! The GUI of a client gets the engine's controls from the GUI plugin (`torque.gui`) as it makes the client; a client made
 //! without it has none.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
@@ -108,6 +108,15 @@ pub trait GuiControlClass: ScriptClass {
     ) {
         let _ = state;
         cx.base_resize(position, extent);
+    }
+
+    /// Once a frame while the control is awake and shown, after the canvas laid its children out and before the frame is
+    /// drawn, parents before their children: a control that keeps something in step with its children or fields checks it
+    /// here. A control in one of the host's overlays ([`Gui::set_overlay`]) is not updated. An error is printed and the
+    /// other controls still update. The default does nothing.
+    fn update(&self, state: &mut Self::State, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
+        let _ = (state, cx);
+        Ok(())
     }
 
     /// The control woke (its parents are awake): after `GuiControl::onWake` and the script's `onWake`.
@@ -274,6 +283,37 @@ impl ControlCx<'_> {
         control::base_resize(self.vm, self.gui, self.id, position, extent, self.depth);
     }
 
+    /// Sets the position and extent of the control `id` (this control or another) and nothing else: its children are not
+    /// told and no `minExtent` applies. A control that lays its children out itself uses it for itself and for the
+    /// controls it places directly.
+    pub fn set_bounds_of(&mut self, id: ObjId, position: (i32, i32), extent: (i32, i32)) {
+        control::set_bounds(self.vm, id, position, extent);
+    }
+
+    /// Runs the `resize` of the control `id` (its class's own: a `GuiControl`'s clamps to `minExtent` and tells its
+    /// children by their sizing flags), as a control `below` levels under this one (the walk's depth cap counts it).
+    pub fn resize_control(
+        &mut self,
+        id: ObjId,
+        position: (i32, i32),
+        extent: (i32, i32),
+        below: usize,
+    ) {
+        control::resize_at(self.vm, self.gui, id, position, extent, self.depth + below);
+    }
+
+    /// Runs the `parentResized` of the control `id` (by its `horizSizing` and `vertSizing`) for a parent whose extent went
+    /// from `old` to `new`, as a control `below` levels under this one.
+    pub fn parent_resized_control(
+        &mut self,
+        id: ObjId,
+        old: (i32, i32),
+        new: (i32, i32),
+        below: usize,
+    ) {
+        control::parent_resized_at(self.vm, self.gui, id, old, new, self.depth + below);
+    }
+
     /// Takes the mouse: every move and release goes to the control until [`unlock_mouse`](Self::unlock_mouse).
     pub fn lock_mouse(&mut self) -> Result<(), VmError> {
         input::mouse_lock(self.vm, self.gui, self.id)
@@ -304,6 +344,7 @@ pub(crate) trait ControlBehavior {
         position: (i32, i32),
         extent: (i32, i32),
     );
+    fn update(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
     fn wake(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
     fn sleep(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
     fn pointer(
@@ -378,6 +419,16 @@ impl<C: GuiControlClass> ControlBehavior for Adapter<C> {
         ) {
             (Some(state), Some(this)) => this.resize(state, cx, position, extent),
             _ => cx.base_resize(position, extent),
+        }
+    }
+
+    fn update(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
+        match (
+            state.downcast_mut::<C::State>(),
+            Self::read(&mut *cx.vm, cx.id),
+        ) {
+            (Some(state), Some(this)) => this.update(state, cx),
+            _ => Ok(()),
         }
     }
 
@@ -521,6 +572,8 @@ pub(crate) struct Custom {
     /// By lower case class name.
     classes: HashMap<String, Rc<dyn ControlBehavior>>,
     objects: HashMap<ObjId, Slot>,
+    /// What plugins keep on any control ([`Gui::control_data`]), by control and type.
+    data: HashMap<ObjId, HashMap<TypeId, Box<dyn Any>>>,
 }
 
 /// A control of a plugin's class. Its state is out of the slot (`None`) while one of the control's methods runs, so that a
@@ -535,6 +588,7 @@ impl fmt::Debug for Custom {
         f.debug_struct("Custom")
             .field("classes", &self.classes.len())
             .field("objects", &self.objects.len())
+            .field("data", &self.data.len())
             .finish()
     }
 }
@@ -551,6 +605,44 @@ impl Gui {
                 .entry(entry.info.name.to_ascii_lowercase())
                 .or_insert_with(|| Rc::clone(&entry.behavior));
         }
+    }
+
+    /// `f` of the value of type `T` a plugin keeps on the control `id` (any control, of any class), made with `Default` the
+    /// first time and dropped with the control. None when `id` is not a control. `f` runs under a borrow of the GUI: it must
+    /// not reach the GUI or run script.
+    pub fn control_data<T: Default + 'static, R>(
+        &self,
+        id: ObjId,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let mut state = self.0.borrow_mut();
+        if !state.controls.contains_key(&id) {
+            return None;
+        }
+        let slot = state
+            .custom
+            .data
+            .entry(id)
+            .or_default()
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::<T>::default());
+        slot.downcast_mut::<T>().map(f)
+    }
+
+    /// `f` of the value of type `T` kept on the control `id`, when there is one ([`control_data`](Self::control_data)).
+    pub fn peek_control_data<T: 'static, R>(
+        &self,
+        id: ObjId,
+        f: impl FnOnce(&T) -> R,
+    ) -> Option<R> {
+        let state = self.0.borrow();
+        state
+            .custom
+            .data
+            .get(&id)
+            .and_then(|kept| kept.get(&TypeId::of::<T>()))
+            .and_then(|slot| slot.downcast_ref::<T>())
+            .map(f)
     }
 
     /// Whether `id` is a control of a class a plugin added.
@@ -593,7 +685,9 @@ pub(crate) fn made(vm: &Vm, gui: &Gui, id: ObjId) -> Option<bool> {
 
 /// The control `id` is removed.
 pub(crate) fn removed(gui: &Gui, id: ObjId) {
-    gui.0.borrow_mut().custom.objects.remove(&id);
+    let mut state = gui.0.borrow_mut();
+    state.custom.objects.remove(&id);
+    state.custom.data.remove(&id);
 }
 
 /// `f` with the behavior and state of the control `id` and the script engine, when the control is a plugin's and not busy;
@@ -628,6 +722,11 @@ pub(crate) fn resize(
         b.resize(state, cx, position, extent);
     })
     .is_some()
+}
+
+/// The control's frame update.
+pub(crate) fn update(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
+    with(vm, gui, id, 0, |b, state, cx| b.update(state, cx)).unwrap_or(Ok(()))
 }
 
 /// The control woke.

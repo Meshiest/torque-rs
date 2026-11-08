@@ -472,6 +472,8 @@ impl Gui {
         // The render pass, as far as it runs scripts: the GuiFadeinBitmapCtrl clocks of the controls drawn (awake, and visible
         // with every parent: `renderChildControls` draws the visible children only), in drawing order.
         let mut calls: Vec<(ObjId, &'static [u8])> = Vec::new();
+        // The plugins' controls shown, parents first: their `update` runs after the walk.
+        let mut updates: Vec<ObjId> = Vec::new();
         let now = vm.sim_time();
         let mut stack: Vec<(ObjId, usize)> = control::children(vm, canvas)
             .into_iter()
@@ -490,6 +492,9 @@ impl Gui {
             {
                 calls.push((id, call));
             }
+            if self.is_custom(id) {
+                updates.push(id);
+            }
             if depth < MAX_TREE_DEPTH {
                 stack.extend(
                     control::children(vm, id)
@@ -500,6 +505,19 @@ impl Gui {
             }
         }
         vm.end_host_budget(saved);
+        // The plugins' controls' `update`, under a budget of their own (one may run script); an error is printed and the
+        // other controls still update.
+        if !updates.is_empty() {
+            let saved = vm.begin_host_budget_with_runs(MAX_FRAME_WORK, input::MAX_EVENT_STEPS);
+            for id in updates {
+                if vm.objects().contains(id)
+                    && let Err(error) = custom::update(vm, self, id)
+                {
+                    vm.error(format!("update of control {id}: {error}"));
+                }
+            }
+            vm.end_host_budget(saved);
+        }
         self.0.borrow_mut().frames += 1;
         // `preRender` (`renderFrame` runs it over the canvas's children after the resize, before drawing): the dirty ML text
         // controls reflow (their `onResize` is a script call), the consoles follow the log, the console texts evaluate, under a

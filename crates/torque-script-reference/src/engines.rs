@@ -8,6 +8,7 @@ use torque_app::hosting::HostingPlugin;
 use torque_app::plugins::{DefaultPlugins, ZoomPlugin};
 use torque_app::server::{GameServer, Listen, ServerStart};
 use torque_engine::{Engine, EngineBuilder, PluginType};
+use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_rope::RopePlugin;
 use torque_ts_vm::host::MemFiles;
 
@@ -23,7 +24,7 @@ struct Optional {
 
 /// The opt-in plugins that add script surface and that need nothing from the game to do it. (`LivePerfPlugin` names its
 /// console function and pref by its arguments, so it has nothing fixed to list.)
-fn optional_plugins() -> [Optional; 4] {
+fn optional_plugins() -> [Optional; 5] {
     [
         Optional {
             id: GizmosPlugin::ID.as_str(),
@@ -51,6 +52,13 @@ fn optional_plugins() -> [Optional; 4] {
             what: "ropes: the RopeData datablock, the console functions that hang, push, reel and take down ropes between points or objects, and a server's ropeNet functions that make ropes every client shows",
             add: |engine| {
                 engine.add_plugins(RopePlugin::default());
+            },
+        },
+        Optional {
+            id: GuiLayoutPlugin::ID.as_str(),
+            what: "flex and grid layout: the GuiFlexCtrl and GuiGridCtrl containers, which lay their children out by CSS's flexbox and grid rules",
+            add: |engine| {
+                engine.add_plugins(GuiLayoutPlugin);
             },
         },
     ]

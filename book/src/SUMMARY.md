@@ -8,6 +8,7 @@
 [Plugins](plugins.md)
 [Script functions from Rust](script-functions.md)
 [GUI controls from plugins](gui-controls.md)
+[Flex and grid layout](gui-layout.md)
 [Input sources from plugins](input-sources.md)
 [Camera modes from plugins](camera-modes.md)
 [Assets from plugins](asset-loaders.md)

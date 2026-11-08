@@ -28,6 +28,9 @@ mlua = { version = "0.12.2", default-features = false, features = ["luau", "vend
 
 [dev-dependencies]
 torque-engine = { path = "../torque-engine" }
+# The layout containers a test drives from Lua, in a client script engine with the GUI.
+torque-gui = { path = "../torque-gui" }
+torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
 torque-mods = { path = "../torque-mods" }
 torque-plugin-loader = { path = "../torque-plugin-loader" }
 torque-ts-vm = { path = "../torque-ts-vm" }

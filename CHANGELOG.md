@@ -53,7 +53,12 @@ different.
   `DefaultPlugins`; the `gizmos` feature), from Rust and as console functions (`drawDebugLine` and kin); TGE has none.
 - `torque-gui`: GUI control classes written in Rust and added by plugins (`GuiControlClass`, `add_gui_control`): their fields
   are console fields, they draw, lay themselves out and take the mouse and keys by their own class, and any number of
-  plugins can each add some; supersedes `GuiExtension::draw_control`, now deprecated.
+  plugins can each add some; supersedes `GuiExtension::draw_control`, now deprecated. A control class can also run once a
+  frame (`update`), place other controls (`ControlCx::set_bounds_of`, `resize_control`) and keep data on any control
+  (`Gui::control_data`).
+- `torque-plugin-gui-layout`: flex and grid layout containers (`GuiFlexCtrl`, `GuiGridCtrl`; taffy) whose children are any
+  controls, read through dynamic layout fields, inside GUIs that keep TGE's absolute positions (`GuiLayoutPlugin`, not in
+  `DefaultPlugins`); TGE has only absolute positions and sizing flags.
 - `torque-client`: input sources (`InputSource`, `add_input_source`): devices a plugin adds that the client polls once per
   drawn frame (once per client pass without a window) and that reach the action maps as TGE's `joystick<N>` buttons, axes and hats (`bind(joystick0, xaxis, f)`); a device
   that goes lets go of what it held. TGE reads only DirectInput devices. A source can stamp events (`InputQueue`, `axis_at`) and the
