@@ -299,6 +299,19 @@ impl Vm {
         self.events.get(seq).map(|event| event.time)
     }
 
+    /// Takes a pending script event out of the queue, as `cancel` does, without its message; false for a number that
+    /// is not pending or is not a script's event.
+    pub fn cancel_script_event(&mut self, seq: u32) -> bool {
+        match self.events.get(seq) {
+            Some(event) if event.from_script() => {
+                self.events.remove(seq);
+                self.alloc_event_gone(seq);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Whether an event with this sequence number is pending (of any kind).
     pub fn event_pending(&self, seq: u32) -> bool {
         self.events.get(seq).is_some()

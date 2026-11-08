@@ -411,3 +411,92 @@ fn what_a_queued_call_queues_inherits_its_policy() {
     vm.advance_time(1);
     assert_eq!(vm.global("$marked").as_deref(), Some(&b"1"[..]));
 }
+
+#[test]
+fn a_later_looser_policy_never_loosens_a_queued_call() {
+    use std::rc::Rc;
+    use torque_plugin_loader::call_policy::{CallPolicy, set_call_policy};
+    struct NoMark;
+    impl CallPolicy for NoMark {
+        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+            if name.eq_ignore_ascii_case("tsMark") {
+                return Err("not tsMark".to_string());
+            }
+            Ok(())
+        }
+        fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Anything;
+    impl CallPolicy for Anything {
+        fn check(&self, _: &str, _: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let engine = engine();
+    let files = MemFiles::new();
+    let mut vm = server(&engine, &files);
+    // `Fake::schedule` answers the number of an event already queued, as if it had queued it.
+    vm.eval(b"function tsMark() { $marked = $marked + 1; } function Fake::schedule(%a, %b, %c) { return $queued; }")
+        .unwrap();
+    set_call_policy(&mut vm, Rc::new(NoMark));
+    assert_eq!(run(&mut vm, &files, "call schedule 50 0 tsMark"), Ok(true));
+    let queued = result(&vm);
+    assert!(queued.parse::<u32>().is_ok_and(|s| s != 0), "{queued}");
+    vm.set_global("$queued", &queued);
+    // Under a looser policy the same event is recorded again: both policies now hold it.
+    set_call_policy(&mut vm, Rc::new(Anything));
+    assert_eq!(run(&mut vm, &files, "call Fake::schedule 0 0 x"), Ok(true));
+    for _ in 0..60 {
+        vm.advance_time(1);
+    }
+    assert_eq!(
+        vm.global("$marked"),
+        None,
+        "the stricter policy still refused it"
+    );
+}
+
+#[test]
+fn queued_calls_past_the_table_are_cancelled_not_left_unchecked() {
+    use std::rc::Rc;
+    use torque_plugin_loader::call_policy::{CallPolicy, set_call_policy};
+    struct ScheduleButNoMark;
+    impl CallPolicy for ScheduleButNoMark {
+        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+            if name.eq_ignore_ascii_case("tsMark") {
+                return Err("not tsMark".to_string());
+            }
+            Ok(())
+        }
+        fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let engine = engine();
+    let files = MemFiles::new();
+    let mut vm = server(&engine, &files);
+    // One queued call of the language queues far more calls than the table of policies holds.
+    vm.eval(
+        b"function tsMark() { $marked = $marked + 1; } \
+          function tsFlood() { for (%i = 0; %i < 5000; %i++) schedule(10, 0, tsMark); }",
+    )
+    .unwrap();
+    set_call_policy(&mut vm, Rc::new(ScheduleButNoMark));
+    assert_eq!(run(&mut vm, &files, "call schedule 0 0 tsFlood"), Ok(true));
+    vm.advance_time(1);
+    assert!(
+        vm.log_texts()
+            .iter()
+            .any(|l| l.contains("were cancelled: more than")),
+        "the calls past the table were cancelled"
+    );
+    for _ in 0..20 {
+        vm.advance_time(1);
+    }
+    assert_eq!(vm.global("$marked"), None, "no tsMark ran unchecked");
+}

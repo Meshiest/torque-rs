@@ -15,7 +15,11 @@ use crate::call_policy::{CallPolicy, DenyCodeAndFiles};
 use crate::extension::ExtensionState;
 
 /// A queued call of a language that is running: its event, its policy, and the next event number when it started.
-type Inherited = (u32, Rc<dyn CallPolicy>, u32);
+/// The policies a queued call is held to: every one recorded for it must allow it (so recording one more can only make
+/// a call stricter, never looser).
+type Policies = Vec<Rc<dyn CallPolicy>>;
+
+type Inherited = (u32, Policies, u32);
 
 /// What the engine keeps beside one script engine for its extensions' languages: a `Vm` extension, dropped with it.
 pub(crate) struct VmContext {
@@ -30,8 +34,8 @@ pub(crate) struct VmContext {
     languages: RefCell<Vec<(Arc<ExtensionState>, usize)>>,
     /// What its languages' code may call.
     policy: RefCell<Rc<dyn CallPolicy>>,
-    /// The calls its languages queued (`schedule`), by event, with the policy in force then: checked again as they fire.
-    deferred: RefCell<std::collections::HashMap<u32, Rc<dyn CallPolicy>>>,
+    /// The calls its languages queued (`schedule`), by event, with the policies in force then: checked again as they fire.
+    deferred: RefCell<std::collections::HashMap<u32, Policies>>,
     /// The queued calls of languages running now (their event, their policy, and the next event number when they
     /// started): what they queue in turn is the language's too, under the same policy.
     inherited: RefCell<Vec<Inherited>>,
@@ -70,13 +74,9 @@ impl VmContext {
     }
 
     /// Keeps the policy in force for the scheduled call `seq` a language queued, to check it again as it fires.
-    pub(crate) fn defer(&self, vm: &Vm, seq: u32) {
-        let mut deferred = self.deferred.borrow_mut();
-        // Calls cancelled or dropped with their object never fire: forgotten once there are many.
-        if deferred.len() >= MAX_DEFERRED {
-            deferred.retain(|&seq, _| vm.event_pending(seq));
-        }
-        deferred.insert(seq, self.policy());
+    pub(crate) fn defer(&self, vm: &mut Vm, seq: u32) {
+        let policies = vec![self.policy()];
+        record_deferred(self, vm, &[seq], &policies);
     }
 
     /// Puts another policy in force.
@@ -109,6 +109,9 @@ impl VmContext {
 /// How many queued calls of languages a script engine keeps before it forgets the ones no longer pending.
 const MAX_DEFERRED: usize = 4096;
 
+/// The most policies one queued call is held to; a call that would need more is cancelled.
+const MAX_POLICIES: usize = 4;
+
 /// The engine's check of a scheduled call as it fires: a call a language queued is held to the policy that was in force
 /// when it was queued, on its actual function and arguments; it is skipped, with a warning, when refused.
 fn fire_check(vm: &mut Vm, event: &torque_ts_vm::events::Event) -> bool {
@@ -118,7 +121,7 @@ fn fire_check(vm: &mut Vm, event: &torque_ts_vm::events::Event) -> bool {
     let Some(context) = vm.extension::<VmContext>() else {
         return true;
     };
-    let Some(policy) = context.deferred.borrow_mut().remove(&event.seq) else {
+    let Some(policies) = context.deferred.borrow_mut().remove(&event.seq) else {
         return true;
     };
     let Some((name, args)) = argv.split_first() else {
@@ -126,13 +129,16 @@ fn fire_check(vm: &mut Vm, event: &torque_ts_vm::events::Event) -> bool {
     };
     let name = String::from_utf8_lossy(name);
     let (namespace, short) = name.rsplit_once("::").unwrap_or(("", &name));
-    match policy.check(namespace, short, *on_object, args) {
+    match policies
+        .iter()
+        .try_for_each(|policy| policy.check(namespace, short, *on_object, args))
+    {
         Ok(()) => {
             let next = vm.events().next_seq();
             context
                 .inherited
                 .borrow_mut()
-                .push((event.seq, policy, next));
+                .push((event.seq, policies, next));
             true
         }
         Err(why) => {
@@ -158,19 +164,64 @@ fn fire_done(vm: &mut Vm, seq: u32) {
     else {
         return;
     };
-    let (_, policy, start) = context.inherited.borrow_mut().remove(at);
+    let (_, policies, start) = context.inherited.borrow_mut().remove(at);
     let end = vm.events().next_seq();
-    let mut queued = start;
-    while queued != end {
-        if vm.event_pending(queued) {
-            let mut deferred = context.deferred.borrow_mut();
-            if deferred.len() >= MAX_DEFERRED {
-                deferred.retain(|&seq, _| vm.event_pending(seq));
-            }
-            // A call queued by a nested queued call already has that call's policy: keep it.
-            deferred.entry(queued).or_insert_with(|| Rc::clone(&policy));
+    let mut queued = Vec::new();
+    let mut seq = start;
+    while seq != end {
+        if vm.event_pending(seq) {
+            queued.push(seq);
         }
-        queued = queued.wrapping_add(1);
+        seq = seq.wrapping_add(1);
+    }
+    record_deferred(&context, vm, &queued, &policies);
+}
+
+/// Adds `policies` to each of a language's queued calls `seqs`, to be checked as they fire: a call keeps every policy
+/// recorded for it and must pass them all. Calls cancelled or dropped with their object never fire, so a full table is
+/// cleared of them once; a call that still finds no room, or would need more than [`MAX_POLICIES`], is cancelled (it
+/// would otherwise fire with fewer checks than it was given).
+fn record_deferred(
+    context: &VmContext,
+    vm: &mut Vm,
+    seqs: &[u32],
+    policies: &[Rc<dyn CallPolicy>],
+) {
+    let mut cancelled = Vec::new();
+    {
+        let mut deferred = context.deferred.borrow_mut();
+        if deferred.len() + seqs.len() > MAX_DEFERRED {
+            deferred.retain(|&seq, _| vm.event_pending(seq));
+        }
+        for &seq in seqs {
+            if !deferred.contains_key(&seq) && deferred.len() >= MAX_DEFERRED {
+                cancelled.push(seq);
+                continue;
+            }
+            let held = deferred.entry(seq).or_default();
+            for policy in policies {
+                if held.iter().any(|h| Rc::ptr_eq(h, policy)) {
+                    continue;
+                }
+                if held.len() >= MAX_POLICIES {
+                    cancelled.push(seq);
+                    break;
+                }
+                held.push(Rc::clone(policy));
+            }
+        }
+        for seq in &cancelled {
+            deferred.remove(seq);
+        }
+    }
+    if !cancelled.is_empty() {
+        for seq in &cancelled {
+            vm.cancel_script_event(*seq);
+        }
+        vm.warn(format!(
+            "{} scheduled calls of a script language were cancelled: more than {MAX_DEFERRED} are waiting",
+            cancelled.len()
+        ));
     }
 }
 
