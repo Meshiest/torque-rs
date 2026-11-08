@@ -44,9 +44,20 @@ lowest free `joystick<N>` and keeps it, and a pad that goes lets go of every but
 |---|---|---|
 | `$Pref::Gamepad::DeadZone` | 0.15 (0 to 0.9) | takes the middle out of each stick and spreads the rest over the full range |
 | `$Pref::Gamepad::InvertY` | 0 | swaps up and down on both sticks |
+| `$Pref::Gamepad::PollRate` | 500 (30 to 2000) | how many times a second the reading thread reads the pads (native) |
+| `$Pref::Gamepad::WebFastPoll` | 0 | in a browser, also read the pads from a timer about every 4 ms |
 
 They are ordinary `$Pref` globals: a game that exports its prefs saves them, and a settings screen sets them. A change takes
 hold at the next poll.
+
+## Reading apart from the frame rate
+
+Natively the pads are read on a thread of their own, 500 times a second, and the client gives each stick as its mean over the
+time since its last poll, so a stick is not sampled once per drawn frame. Buttons keep their order, and a slow frame loses
+nothing. The thread starts at the first poll of a client and is joined when the client goes. `GamepadPlugin::default()
+.without_thread()` reads at each poll instead. In a browser the Gamepad API is available on the page's thread only, so the pads
+are read at each poll; `$Pref::Gamepad::WebFastPoll` adds a timer (about every 4 ms; browsers stretch it, and stop it on a
+hidden page) that reads them between frames.
 
 ## Building
 

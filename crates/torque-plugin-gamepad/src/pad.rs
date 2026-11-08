@@ -1,9 +1,8 @@
 //! What a pad is, whichever backend reads it: a button set, two sticks and two triggers ([`PadState`]), and the scripted pads
 //! tests use ([`FakePads`]).
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// A button of the standard pad, in the order of the joystick numbers the plugin gives them (`button0` to `button10`); the four
 /// directions of the pad's cross are a hat, not buttons.
@@ -71,6 +70,13 @@ impl PadState {
     /// Whether `button` is down.
     pub fn pressed(&self, button: PadButton) -> bool {
         self.buttons & button.bit() != 0
+    }
+
+    /// Whether `other` has the same buttons down and the same triggers in past half way: only its sticks and the depth of its
+    /// triggers differ.
+    pub(crate) fn same_buttons(&self, other: &PadState) -> bool {
+        let pressed = |s: &PadState| (s.triggers.0 >= 0.5, s.triggers.1 >= 0.5);
+        self.buttons == other.buttons && pressed(self) == pressed(other)
     }
 
     /// Presses or lets go of `button`.
@@ -159,7 +165,7 @@ pub trait PadBackend {
     fn poll(&mut self) -> Vec<(u32, PadState)>;
 }
 
-/// Pads a test scripts: whoever holds a copy plugs pads in and out and moves their sticks, and the plugin's next poll sees it.
+/// Pads a test scripts (it is `Send`, so a thread can read it): whoever holds a copy plugs pads in and out and moves their sticks, and the plugin's next poll sees it.
 ///
 /// ```
 /// use torque_plugin_gamepad::{FakePads, PadBackend, PadButton};
@@ -177,23 +183,27 @@ pub trait PadBackend {
 /// ```
 #[derive(Clone, Default)]
 pub struct FakePads {
-    pads: Rc<RefCell<BTreeMap<u32, PadState>>>,
+    pads: Arc<Mutex<BTreeMap<u32, PadState>>>,
 }
 
 impl FakePads {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, PadState>> {
+        self.pads.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Plugs in pad `id`, at rest (a pad already plugged in keeps what it holds).
     pub fn plug_in(&self, id: u32) {
-        self.pads.borrow_mut().entry(id).or_default();
+        self.lock().entry(id).or_default();
     }
 
     /// Unplugs pad `id`.
     pub fn unplug(&self, id: u32) {
-        self.pads.borrow_mut().remove(&id);
+        self.lock().remove(&id);
     }
 
     /// Changes what pad `id` holds (a pad not plugged in is plugged in first).
     pub fn update(&self, id: u32, change: impl FnOnce(&mut PadState)) {
-        change(self.pads.borrow_mut().entry(id).or_default());
+        change(self.lock().entry(id).or_default());
     }
 
     /// Presses or lets go of a button of pad `id`.
@@ -219,7 +229,7 @@ impl FakePads {
 
 impl PadBackend for FakePads {
     fn poll(&mut self) -> Vec<(u32, PadState)> {
-        self.pads.borrow().iter().map(|(id, s)| (*id, *s)).collect()
+        self.lock().iter().map(|(id, s)| (*id, *s)).collect()
     }
 }
 

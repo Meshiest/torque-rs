@@ -1,4 +1,4 @@
-//! Input sources: devices a plugin adds that the client polls (once per drawn frame in a window or page, else once per client pass), and the joystick events they make.
+//! Input sources: devices a plugin adds that the client polls (once per drawn frame in a window or page, else once per client pass), and the joystick events they make. A source can stamp its events with the time they happened; the client then averages its axes over each poll's span.
 //!
 //! A source ([`InputSource`]) is polled with a context ([`InputCx`]) and says what its devices did: a button went down, an axis
 //! moved, a hat turned ([`JoyEvent`]). The registry ([`InputSources`]) turns those into TGE's joystick events and the client host
@@ -49,25 +49,40 @@
 //! # Ok::<(), torque_engine::BuildError>(())
 //! ```
 //!
+//! # Timestamps
+//!
+//! A source that reads its devices faster than the client polls (on a thread of its own, say) stamps what it says with the time
+//! it happened ([`InputCx::push_at`], [`InputCx::axis_at`]; or, from the thread, an [`InputQueue`] the source drains in `poll`).
+//! The client then does not take the last sample of an axis: it gives the scripts the **time-weighted mean** of the axis over
+//! the span since the last poll (a stick that sat at 0 for 5 ms and at 1 for 5 ms of a 10 ms frame reads 0.5). Buttons, hats and
+//! disconnects keep the order they were said in, whatever their stamps. An event with no stamp ([`InputCx::axis`]) is the
+//! device's value at the poll, as before; a source should not mix both for one axis.
+//!
 //! Credit: the joystick events and their names follow TGE's DirectInput devices and `ActionMap` as Torque3D (MIT) keeps them,
 //! `platformWin32/winDInputDevice.cpp` and `sim/actionMap.cpp` (each Copyright (c) 2012 GarageGames, LLC). The code is this
 //! crate's own.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use gui::input::InputEvent;
 use gui::keys::{JOYSTICK_DEVICE, SI_BREAK, SI_BUTTON, SI_MAKE, SI_MOVE, SI_POV};
 use torque_engine::EngineBuilder;
 use ts_vm::vm::Vm;
+pub use web_time::Instant;
 
 use crate::conn::ConnGame;
 use crate::state::ClientState;
 
 /// The most events a source may leave in one poll (the rest are dropped), so a source that runs away cannot stall a pass.
 pub const MAX_POLL_EVENTS: usize = 4_096;
+
+/// The most stamped events one poll takes (and an [`InputQueue`] holds); the rest are dropped.
+pub const MAX_TIMED_EVENTS: usize = 65_536;
 
 /// The most buttons a joystick has (`button0` to `button31`).
 pub const MAX_BUTTONS: u16 = 32;
@@ -135,17 +150,32 @@ pub trait InputSource {
     fn poll(&mut self, cx: &mut InputCx<'_>);
 }
 
+/// An event a source said, and when it happened if the source knows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Said {
+    pub event: JoyEvent,
+    /// When it happened (monotonic); None: at the poll.
+    pub at: Option<Instant>,
+}
+
 /// What a source is given to poll with: the script engine, to read a pref from, and the events to say.
 pub struct InputCx<'a> {
     vm: &'a Vm,
-    events: Vec<JoyEvent>,
+    now: Instant,
+    events: Vec<Said>,
 }
 
 impl<'a> InputCx<'a> {
-    /// A context over `vm`.
+    /// A context over `vm`, polling now.
     pub fn new(vm: &'a Vm) -> InputCx<'a> {
+        InputCx::at(vm, Instant::now())
+    }
+
+    /// A context over `vm`, polling at `now`.
+    pub fn at(vm: &'a Vm, now: Instant) -> InputCx<'a> {
         InputCx {
             vm,
+            now,
             events: Vec::new(),
         }
     }
@@ -155,10 +185,37 @@ impl<'a> InputCx<'a> {
         self.vm
     }
 
+    /// When this poll began, by the clock the client stamps from.
+    pub fn now(&self) -> Instant {
+        self.now
+    }
+
+    fn put(&mut self, event: JoyEvent, at: Option<Instant>) {
+        let cap = if at.is_some() {
+            MAX_TIMED_EVENTS
+        } else {
+            MAX_POLL_EVENTS
+        };
+        if self.events.len() < cap {
+            self.events.push(Said { event, at });
+        }
+    }
+
     /// Says an event.
     pub fn push(&mut self, event: JoyEvent) {
-        if self.events.len() < MAX_POLL_EVENTS {
-            self.events.push(event);
+        self.put(event, None);
+    }
+
+    /// Says an event that happened at `at`. A source keeps each axis's stamps in order (a stamp earlier than the axis's last
+    /// counts as the last).
+    pub fn push_at(&mut self, at: Instant, event: JoyEvent) {
+        self.put(event, Some(at));
+    }
+
+    /// Says everything `queue` holds, in the order it was pushed.
+    pub fn drain(&mut self, queue: &InputQueue) {
+        for said in queue.take() {
+            self.put(said.event, said.at);
         }
     }
 
@@ -171,6 +228,18 @@ impl<'a> InputCx<'a> {
         });
     }
 
+    /// Button `button` of joystick `device` went down or up at `at`.
+    pub fn button_at(&mut self, at: Instant, device: u32, button: u16, down: bool) {
+        self.push_at(
+            at,
+            JoyEvent::Button {
+                device,
+                button,
+                down,
+            },
+        );
+    }
+
     /// An axis of joystick `device` is at `value`.
     pub fn axis(&mut self, device: u32, axis: JoyAxis, value: f32) {
         self.push(JoyEvent::Axis {
@@ -180,9 +249,26 @@ impl<'a> InputCx<'a> {
         });
     }
 
+    /// An axis of joystick `device` moved to `value` at `at`.
+    pub fn axis_at(&mut self, at: Instant, device: u32, axis: JoyAxis, value: f32) {
+        self.push_at(
+            at,
+            JoyEvent::Axis {
+                device,
+                axis,
+                value,
+            },
+        );
+    }
+
     /// Hat `hat` of joystick `device` is at `x`, `y`.
     pub fn pov(&mut self, device: u32, hat: u8, x: i8, y: i8) {
         self.push(JoyEvent::Pov { device, hat, x, y });
+    }
+
+    /// Hat `hat` of joystick `device` turned to `x`, `y` at `at`.
+    pub fn pov_at(&mut self, at: Instant, device: u32, hat: u8, x: i8, y: i8) {
+        self.push_at(at, JoyEvent::Pov { device, hat, x, y });
     }
 
     /// Joystick `device` is gone.
@@ -190,9 +276,96 @@ impl<'a> InputCx<'a> {
         self.push(JoyEvent::Disconnected { device });
     }
 
-    /// The events said so far.
+    /// Joystick `device` went at `at`.
+    pub fn disconnect_at(&mut self, at: Instant, device: u32) {
+        self.push_at(at, JoyEvent::Disconnected { device });
+    }
+
+    /// The events said so far, without their stamps.
     pub fn into_events(self) -> Vec<JoyEvent> {
+        self.events.into_iter().map(|said| said.event).collect()
+    }
+
+    /// The events said so far, with their stamps.
+    pub fn into_said(self) -> Vec<Said> {
         self.events
+    }
+}
+
+/// A queue of stamped events that a thread fills and a source drains in `poll` ([`InputCx::drain`]). Clones share the queue.
+///
+/// Stamp an event with a time read before it is pushed ([`Instant::now`]); the client reads its own clock after the drain, so no
+/// stamp is ahead of it. A full queue ([`MAX_TIMED_EVENTS`]) drops new axis moves and keeps buttons, hats and disconnects.
+#[derive(Clone, Default)]
+pub struct InputQueue {
+    inner: Arc<Mutex<Vec<Said>>>,
+}
+
+impl InputQueue {
+    /// Pushes an event that happened at `at`.
+    pub fn push_at(&self, at: Instant, event: JoyEvent) {
+        let mut queue = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let room = if matches!(event, JoyEvent::Axis { .. }) {
+            MAX_TIMED_EVENTS
+        } else {
+            2 * MAX_TIMED_EVENTS
+        };
+        if queue.len() < room {
+            queue.push(Said {
+                event,
+                at: Some(at),
+            });
+        }
+    }
+
+    /// An axis moved to `value` at `at`.
+    pub fn axis_at(&self, at: Instant, device: u32, axis: JoyAxis, value: f32) {
+        self.push_at(
+            at,
+            JoyEvent::Axis {
+                device,
+                axis,
+                value,
+            },
+        );
+    }
+
+    /// A button went down or up at `at`.
+    pub fn button_at(&self, at: Instant, device: u32, button: u16, down: bool) {
+        self.push_at(
+            at,
+            JoyEvent::Button {
+                device,
+                button,
+                down,
+            },
+        );
+    }
+
+    /// How many events wait.
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    /// Whether nothing waits.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Takes everything that waits, oldest first.
+    pub fn take(&self) -> Vec<Said> {
+        std::mem::take(&mut *self.inner.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+impl fmt::Debug for InputQueue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InputQueue")
+            .field("events", &self.len())
+            .finish()
     }
 }
 
@@ -201,6 +374,49 @@ impl<'a> InputCx<'a> {
 pub struct InputSources {
     sources: Vec<Box<dyn InputSource>>,
     held: HashMap<u32, Held>,
+    /// The axes said with stamps, and what each did since the last poll.
+    averaged: HashMap<(u32, JoyAxis), Averaged>,
+    /// Where polls read the time from (None: [`Instant::now`]).
+    clock: Option<Rc<dyn Fn() -> Instant>>,
+}
+
+/// An axis said with stamps: its value now, and the area under it since `start`, to be given as a mean at the next poll.
+struct Averaged {
+    value: f32,
+    /// The time up to which `area` is summed.
+    cursor: Instant,
+    /// Where the span being averaged began.
+    start: Instant,
+    /// The value times seconds, from `start` to `cursor`.
+    area: f64,
+    /// Whether no span of the axis has been given yet (the first span may be no longer than an instant).
+    fresh: bool,
+}
+
+impl Averaged {
+    /// The axis moved to `value` at `at` (a stamp before the last one counts as the last).
+    fn moved(&mut self, at: Instant, value: f32) {
+        let at = at.max(self.cursor);
+        self.area += f64::from(self.value) * (at - self.cursor).as_secs_f64();
+        self.cursor = at;
+        self.value = value;
+    }
+
+    /// The mean of the axis over the span up to `now`; the next span starts there. A span of no time says nothing new (but for
+    /// the axis's first, which says where it is).
+    fn finish(&mut self, now: Instant) -> Option<f32> {
+        self.moved(now, self.value);
+        let span = (self.cursor - self.start).as_secs_f64();
+        let mean = if span > 0.0 {
+            Some((self.area / span) as f32)
+        } else {
+            self.fresh.then_some(self.value)
+        };
+        self.fresh = false;
+        self.start = self.cursor;
+        self.area = 0.0;
+        mean
+    }
 }
 
 /// What one joystick held.
@@ -243,72 +459,151 @@ impl InputSources {
         self.sources.len()
     }
 
-    /// Polls every source in the order they were added: what they said, as the engine's events (see
-    /// [`InputSources::translate`]).
-    pub fn poll(&mut self, vm: &Vm, modifier: u8) -> Vec<InputEvent> {
-        let mut said = Vec::new();
-        for source in &mut self.sources {
-            let mut cx = InputCx::new(vm);
-            source.poll(&mut cx);
-            said.extend(cx.into_events());
-        }
-        self.translate(&said, modifier)
+    /// Makes polls read the time from `clock` (a test's [`FakeClock`]).
+    pub fn set_clock(&mut self, clock: impl Fn() -> Instant + 'static) {
+        self.clock = Some(Rc::new(clock));
     }
 
-    /// What `said` changed, as the joystick events the action maps take, with the modifier bits `modifier`.
+    fn now(&self) -> Instant {
+        self.clock
+            .as_ref()
+            .map_or_else(Instant::now, |clock| clock())
+    }
+
+    /// Polls every source in the order they were added: what they said, as the engine's events (see
+    /// [`InputSources::translate_said`]).
+    pub fn poll(&mut self, vm: &Vm, modifier: u8) -> Vec<InputEvent> {
+        let began = self.now();
+        let mut said = Vec::new();
+        for source in &mut self.sources {
+            let mut cx = InputCx::at(vm, began);
+            source.poll(&mut cx);
+            said.extend(cx.into_said());
+        }
+        // Read after the sources: a stamp taken before an event was pushed is never ahead of this.
+        let now = self.now().max(began);
+        self.translate_said(&said, now, modifier)
+    }
+
+    /// What `said` changed, as the joystick events the action maps take, with the modifier bits `modifier`. Every event is
+    /// taken as said at the poll (no stamps).
     pub fn translate(&mut self, said: &[JoyEvent], modifier: u8) -> Vec<InputEvent> {
         let mut out = Vec::new();
         for &event in said {
-            match event {
-                JoyEvent::Button {
-                    device,
-                    button,
-                    down,
-                } => {
-                    if button >= MAX_BUTTONS {
-                        continue;
-                    }
-                    let held = self.held.entry(device).or_default();
-                    let bit = 1u32 << button;
-                    if (held.buttons & bit != 0) == down {
-                        continue;
-                    }
-                    held.buttons ^= bit;
-                    out.push(button_event(device, button, down, modifier));
+            self.apply(event, modifier, &mut out);
+        }
+        out
+    }
+
+    /// What `said` changed in the span that ends at `now`: events with no stamp as [`InputSources::translate`] takes them;
+    /// buttons, hats and disconnects in the order said; and each axis that was said with stamps as the mean of its value over
+    /// the span since the last poll (an axis keeps its last value through a span in which it said nothing), after the rest.
+    pub fn translate_said(&mut self, said: &[Said], now: Instant, modifier: u8) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        for &Said { event, at } in said {
+            match (event, at) {
+                (
+                    JoyEvent::Axis {
+                        device,
+                        axis,
+                        value,
+                    },
+                    Some(at),
+                ) => {
+                    let (at, value) = (at.min(now), clean(value));
+                    self.averaged
+                        .entry((device, axis))
+                        .and_modify(|averaged| averaged.moved(at, value))
+                        .or_insert(Averaged {
+                            value,
+                            cursor: at,
+                            start: at,
+                            area: 0.0,
+                            fresh: true,
+                        });
                 }
-                JoyEvent::Axis {
-                    device,
-                    axis,
-                    value,
-                } => {
-                    let value = if value.is_nan() {
-                        0.0
-                    } else {
-                        value.clamp(-1.0, 1.0)
-                    };
-                    let held = self.held.entry(device).or_default();
-                    let last = held.axes.insert(axis, value).unwrap_or(0.0);
-                    if last != value {
-                        out.push(axis_event(device, axis.code(), value, modifier));
-                    }
+                (JoyEvent::Disconnected { device }, _) => {
+                    self.averaged.retain(|(d, _), _| *d != device);
+                    self.apply(event, modifier, &mut out);
                 }
-                JoyEvent::Pov { device, hat, x, y } => {
-                    if hat > 1 {
-                        continue;
-                    }
-                    let (x, y) = (x.clamp(-1, 1), y.clamp(-1, 1));
-                    let held = self.held.entry(device).or_default();
-                    let last = held.hats.insert(hat, (x, y)).unwrap_or((0, 0));
-                    hat_events(device, hat, last, (x, y), modifier, &mut out);
-                }
-                JoyEvent::Disconnected { device } => {
-                    if let Some(held) = self.held.remove(&device) {
-                        release(device, &held, modifier, &mut out);
-                    }
-                }
+                _ => self.apply(event, modifier, &mut out),
+            }
+        }
+        let mut keys: Vec<_> = self.averaged.keys().copied().collect();
+        keys.sort_by_key(|(device, axis)| (*device, axis.code()));
+        for (device, axis) in keys {
+            if let Some(averaged) = self.averaged.get_mut(&(device, axis)) {
+                let Some(value) = averaged.finish(now) else {
+                    continue;
+                };
+                self.apply(
+                    JoyEvent::Axis {
+                        device,
+                        axis,
+                        value,
+                    },
+                    modifier,
+                    &mut out,
+                );
             }
         }
         out
+    }
+
+    fn apply(&mut self, event: JoyEvent, modifier: u8, out: &mut Vec<InputEvent>) {
+        match event {
+            JoyEvent::Button {
+                device,
+                button,
+                down,
+            } => {
+                if button >= MAX_BUTTONS {
+                    return;
+                }
+                let held = self.held.entry(device).or_default();
+                let bit = 1u32 << button;
+                if (held.buttons & bit != 0) == down {
+                    return;
+                }
+                held.buttons ^= bit;
+                out.push(button_event(device, button, down, modifier));
+            }
+            JoyEvent::Axis {
+                device,
+                axis,
+                value,
+            } => {
+                let value = clean(value);
+                let held = self.held.entry(device).or_default();
+                let last = held.axes.insert(axis, value).unwrap_or(0.0);
+                if last != value {
+                    out.push(axis_event(device, axis.code(), value, modifier));
+                }
+            }
+            JoyEvent::Pov { device, hat, x, y } => {
+                if hat > 1 {
+                    return;
+                }
+                let (x, y) = (x.clamp(-1, 1), y.clamp(-1, 1));
+                let held = self.held.entry(device).or_default();
+                let last = held.hats.insert(hat, (x, y)).unwrap_or((0, 0));
+                hat_events(device, hat, last, (x, y), modifier, out);
+            }
+            JoyEvent::Disconnected { device } => {
+                if let Some(held) = self.held.remove(&device) {
+                    release(device, &held, modifier, out);
+                }
+            }
+        }
+    }
+}
+
+/// An axis value in -1..1 (not a number is 0).
+fn clean(value: f32) -> f32 {
+    if value.is_nan() {
+        0.0
+    } else {
+        value.clamp(-1.0, 1.0)
     }
 }
 
@@ -495,13 +790,21 @@ pub fn install<G: ConnGame>(state: &mut ClientState<G>, entries: &[InputSourceEn
 /// ```
 #[derive(Clone, Default)]
 pub struct FakeInput {
-    queue: Rc<RefCell<Vec<JoyEvent>>>,
+    queue: Rc<RefCell<Vec<Said>>>,
 }
 
 impl FakeInput {
     /// Says an event at the next poll.
     pub fn push(&self, event: JoyEvent) {
-        self.queue.borrow_mut().push(event);
+        self.queue.borrow_mut().push(Said { event, at: None });
+    }
+
+    /// Says an event that happened at `at` (see [`FakeClock`]) at the next poll.
+    pub fn push_at(&self, at: Instant, event: JoyEvent) {
+        self.queue.borrow_mut().push(Said {
+            event,
+            at: Some(at),
+        });
     }
 
     /// Button `button` of joystick `device` goes down or up at the next poll.
@@ -522,6 +825,30 @@ impl FakeInput {
         });
     }
 
+    /// An axis of joystick `device` moved to `value` at `at`; the next poll takes it.
+    pub fn axis_at(&self, at: Instant, device: u32, axis: JoyAxis, value: f32) {
+        self.push_at(
+            at,
+            JoyEvent::Axis {
+                device,
+                axis,
+                value,
+            },
+        );
+    }
+
+    /// Button `button` of joystick `device` went down or up at `at`; the next poll takes it.
+    pub fn button_at(&self, at: Instant, device: u32, button: u16, down: bool) {
+        self.push_at(
+            at,
+            JoyEvent::Button {
+                device,
+                button,
+                down,
+            },
+        );
+    }
+
     /// A hat of joystick `device` turns at the next poll.
     pub fn pov(&self, device: u32, hat: u8, x: i8, y: i8) {
         self.push(JoyEvent::Pov { device, hat, x, y });
@@ -535,9 +862,73 @@ impl FakeInput {
 
 impl InputSource for FakeInput {
     fn poll(&mut self, cx: &mut InputCx<'_>) {
-        for event in self.queue.borrow_mut().drain(..) {
-            cx.push(event);
+        for said in self.queue.borrow_mut().drain(..) {
+            cx.put(said.event, said.at);
         }
+    }
+}
+
+/// A clock a test moves by hand: the registry reads its time from it ([`InputSources::set_clock`]) and the test stamps events
+/// with times of it ([`FakeClock::at`]), so a test never waits.
+///
+/// ```
+/// use std::time::Duration;
+/// use torque_client::input_source::{FakeClock, FakeInput, InputSources, JoyAxis};
+///
+/// let (clock, fake) = (FakeClock::default(), FakeInput::default());
+/// let mut sources = InputSources::default();
+/// sources.add(Box::new(fake.clone()));
+/// sources.set_clock(clock.reader());
+/// let vm = ts_vm::vm::Vm::new();
+///
+/// // A stick at 0 for the first 5 ms of a 10 ms frame, and at 1 for the rest.
+/// fake.axis_at(clock.at(0), 0, JoyAxis::X, 0.0);
+/// sources.poll(&vm, 0);
+/// fake.axis_at(clock.at(5), 0, JoyAxis::X, 1.0);
+/// clock.advance(Duration::from_millis(10));
+/// let events = sources.poll(&vm, 0);
+/// assert_eq!(events[0].value, 0.5);
+/// ```
+#[derive(Clone)]
+pub struct FakeClock {
+    origin: Instant,
+    now: Rc<Cell<Duration>>,
+}
+
+impl Default for FakeClock {
+    fn default() -> FakeClock {
+        FakeClock {
+            origin: Instant::now(),
+            now: Rc::default(),
+        }
+    }
+}
+
+impl FakeClock {
+    /// The time now.
+    pub fn now(&self) -> Instant {
+        self.at_duration(self.now.get())
+    }
+
+    /// The time `ms` milliseconds after the clock began.
+    pub fn at(&self, ms: u64) -> Instant {
+        self.at_duration(Duration::from_millis(ms))
+    }
+
+    /// The time `since` after the clock began.
+    pub fn at_duration(&self, since: Duration) -> Instant {
+        self.origin + since
+    }
+
+    /// Moves the clock on.
+    pub fn advance(&self, by: Duration) {
+        self.now.set(self.now.get() + by);
+    }
+
+    /// A reader of this clock, for [`InputSources::set_clock`].
+    pub fn reader(&self) -> impl Fn() -> Instant + 'static {
+        let clock = self.clone();
+        move || clock.now()
     }
 }
 

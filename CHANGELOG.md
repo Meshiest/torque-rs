@@ -43,10 +43,11 @@ different.
   plugins can each add some; supersedes `GuiExtension::draw_control`, now deprecated.
 - `torque-client`: input sources (`InputSource`, `add_input_source`): devices a plugin adds that the client polls once per
   drawn frame (once per client pass without a window) and that reach the action maps as TGE's `joystick<N>` buttons, axes and hats (`bind(joystick0, xaxis, f)`); a device
-  that goes lets go of what it held. TGE reads only DirectInput devices.
+  that goes lets go of what it held. TGE reads only DirectInput devices. A source can stamp events (`InputQueue`, `axis_at`) and the
+  client then gives each axis as its time-weighted mean over the poll's span.
 - `torque-plugin-gamepad`: gamepads as `joystick<N>` (gilrs natively, the browser's Gamepad API on the web; pads plugged in and out
   while the game runs; the sticks, triggers, buttons and cross), with the prefs `$Pref::Gamepad::DeadZone` and
-  `$Pref::Gamepad::InvertY`. Not in `DefaultPlugins`. The vehicle demo plays with it (`--features gamepad`, `--gamepad`).
+  `$Pref::Gamepad::InvertY`; natively the pads are read on a thread of their own (500 Hz, `$Pref::Gamepad::PollRate`). Not in `DefaultPlugins`. The vehicle demo plays with it (`--features gamepad`, `--gamepad`).
 - `torque::app::camera_modes`: camera modes (`CameraMode`, `add_camera_mode`) that plugins add and the client picks by name
   (`setCameraMode`, `getCameraMode`, `getCameraModes`; `CameraModes::set` from Rust), eased from one to the next, with the first
   person, the third person on a boom and the orbit built in; `torque::app::camera_behind` is the helpers of the camera behind a
