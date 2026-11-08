@@ -1,0 +1,37 @@
+[package]
+name = "torque-plugin-gamepad"
+description = "A gamepad plugin for torque-rs: gilrs natively, the browser's Gamepad API on the web, as joystick<N> events a script binds"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "gamepad", "input", "plugin", "gamedev"]
+categories = ["game-development"]
+
+# A client input source ([`torque_client::input_source`]) over the pads connected now, and the plugin that adds it with its prefs
+# (a dead zone, an inverted Y). The pads come from a backend: gilrs natively, the browser's Gamepad API on the web (web-sys),
+# a scripted one in tests.
+
+[dependencies]
+torque-client = { path = "../torque-client" }
+torque-engine = { path = "../torque-engine" }
+
+# Natively: gilrs (Apache-2.0 or MIT). On Linux it reads udev, so building needs libudev's development files.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+gilrs = "0.11.2"
+
+# In a browser: `navigator.getGamepads()`, read once per poll.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Gamepad", "GamepadButton", "Navigator", "Window"] }
+
+[dev-dependencies]
+# A client over the engine's plugins, to bind a script to the fake pads.
+torque-app = { path = "../torque-app" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[lints]
+workspace = true

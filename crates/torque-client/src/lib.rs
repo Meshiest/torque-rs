@@ -5,6 +5,7 @@
 //! |---|---|
 //! | [`actionmap`] | `ActionMap` and its natives (bindings, the key strings, `save`) |
 //! | [`input`] | the platform input layer (window or injected messages into the canvas and the action maps); the keys and buttons ([`Key`], [`MouseButton`]) |
+//! | [`input_source`] | devices a plugin adds ([`input_source::InputSource`]) that the client polls once per pass, as TGE's `joystick<N>` events |
 //! | [`screen`] | the screen mode natives (resolutions, full screen, the display device) |
 //! | [`conn`] | the client's connection to a server (the handshake, the packets, the ticks) |
 //! | [`query`] | the LAN server query (the pings and info requests of the server list) |
@@ -42,6 +43,7 @@ pub mod ghost_objects;
 pub mod host;
 pub mod hud;
 pub mod input;
+pub mod input_source;
 pub mod live_perf;
 pub mod net;
 pub mod perf;

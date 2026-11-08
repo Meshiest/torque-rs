@@ -16,7 +16,7 @@
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register`, and the control classes plugins add ([`torque_gui::custom`]) |
-//! | [`ActionMapPlugin`] | `torque.action-map` | client, `Input` | the `ActionMap` class and its natives |
+//! | [`ActionMapPlugin`] | `torque.action-map` | client, `Input` | the `ActionMap` class and its natives, and the input sources plugins add ([`torque_client::input_source`]) |
 //! | [`ScreenPlugin`] | `torque.screen` | client, `Screen` | `torque_client::screen::register` |
 //! | [`ConnPlugin`] | `torque.conn` | client, `Conn` | `torque_client::conn::register` |
 //! | [`ServerQueryPlugin`] | `torque.server-query` | client, `Query` | `torque_client::query::register` |
@@ -48,6 +48,7 @@ pub use torque_audio::plugin::AudioPlugin;
 use torque_client::conn::tge::TgeConn;
 use torque_client::game::ClientGame;
 use torque_client::host::{ClientPass, EnginePass};
+use torque_client::input_source::InputSourceEntry;
 use torque_client::state::ClientState;
 use torque_engine::{
     ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires,
@@ -199,10 +200,15 @@ pub struct ActionMapPlugin;
 
 impl Plugin for ActionMapPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
-        engine.client(ClientStage::Input, |vm, _| {
+        engine.client(ClientStage::Input, |vm, engine| {
             let wiring = client_wiring(vm, "the action maps")?;
             vm.register_class("ActionMap", "SimObject", &[]);
             torque_client::actionmap::register(vm, wiring.state());
+            // The input sources the plugins added (`add_input_source`): the client polls them for `joystick<N>` events.
+            torque_client::input_source::install(
+                &mut wiring.state().borrow_mut(),
+                engine.list::<InputSourceEntry>(),
+            );
             Ok(())
         });
     }

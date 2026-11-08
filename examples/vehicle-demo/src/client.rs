@@ -82,6 +82,9 @@ pub struct ClientOptions {
     /// A client with no socket of its own and no list of games (a browser's): it plays alone, or joins on a socket it is
     /// given ([`VehicleDemo::set_socket`]).
     pub alone_only: bool,
+    /// Gamepads play the demo (`--gamepad`). Read only by a build with the `gamepad` feature; the default is off, so a game
+    /// reads no device unless asked to.
+    pub gamepad: bool,
 }
 
 impl Default for ClientOptions {
@@ -92,6 +95,7 @@ impl Default for ClientOptions {
             port: DEFAULT_PORT,
             host_address: Ipv4Addr::LOCALHOST,
             alone_only: false,
+            gamepad: false,
         }
     }
 }
@@ -230,6 +234,8 @@ impl Plugin for JoinScreenPlugin {
 pub struct DemoPlugins {
     client: VehicleClientPlugin,
     server_query: bool,
+    #[cfg(feature = "gamepad")]
+    gamepad: Option<torque_plugin_gamepad::GamepadPlugin>,
 }
 
 impl DemoPlugins {
@@ -238,7 +244,19 @@ impl DemoPlugins {
         Ok(DemoPlugins {
             client: VehicleClientPlugin::new(files)?,
             server_query: !options.alone_only,
+            #[cfg(feature = "gamepad")]
+            gamepad: options
+                .gamepad
+                .then(torque_plugin_gamepad::GamepadPlugin::default),
         })
+    }
+
+    /// The gamepad plugin the demo uses (the `gamepad` feature), whether or not [`ClientOptions::gamepad`] asked for one: a test's
+    /// scripted pads.
+    #[cfg(feature = "gamepad")]
+    pub fn gamepad(mut self, plugin: torque_plugin_gamepad::GamepadPlugin) -> DemoPlugins {
+        self.gamepad = Some(plugin);
+        self
     }
 }
 
@@ -247,6 +265,10 @@ impl PluginGroup for DemoPlugins {
         let mut group = DefaultPlugins.set(GuiPlugin { layout_fonts: true });
         if !self.server_query {
             group = group.disable::<ServerQueryPlugin>();
+        }
+        #[cfg(feature = "gamepad")]
+        if let Some(gamepad) = self.gamepad {
+            group = group.add(gamepad);
         }
         group
             .add(SeatsPlugin)

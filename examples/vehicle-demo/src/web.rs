@@ -111,6 +111,8 @@ pub fn start_fetched() -> Result<(), String> {
 fn page_options() -> ClientOptions {
     ClientOptions {
         alone_only: true,
+        // A page with a gamepad plugged in plays with it (the browser tells the page of a pad once a button on it is pressed).
+        gamepad: true,
         ..ClientOptions::default()
     }
 }

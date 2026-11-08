@@ -28,6 +28,8 @@ torque-import = { path = "../torque-import" }
 vehicle = { package = "torque-vehicle", path = "../torque-vehicle" }
 images = { package = "torque-images", path = "../torque-images" }
 gui = { package = "torque-gui", path = "../torque-gui" }
+# `InputBuilderExt`: a plugin adds input sources to the engine being built.
+torque-engine = { path = "../torque-engine" }
 ts-text = { package = "torque-ts-text", path = "../torque-ts-text" }
 ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

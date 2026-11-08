@@ -116,6 +116,7 @@ camera, wheel zooms, F headlight, Tab the driver's eyes, E get out;
 |---|---|---|
 | Native (play alone, host or join from its menu) | `just examples/vehicle-demo` | `cargo run -p torque-example-vehicle-demo --release` |
 | At once | `just examples/vehicle-demo --solo` (or `--host`, `--join <address>`) | `... --release -- --solo` |
+| With a gamepad | | `cargo run -p torque-example-vehicle-demo --release --features gamepad -- --gamepad` |
 | Web (played alone) | `just examples/web-vehicle-demo` (serves it on http://127.0.0.1:8080/) | `node web/build.mjs vehicle-demo` |
 | Web, online (played alone, or with friends by invite link) | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
 | Pictures | `just examples/vehicle-demo-shots`, `vehicle-demo-track-shots`, `vehicle-demo-cloud-shots` | `... --release -- --shots <dir>` |

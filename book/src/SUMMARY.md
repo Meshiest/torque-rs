@@ -8,6 +8,7 @@
 [Plugins](plugins.md)
 [Script functions from Rust](script-functions.md)
 [GUI controls from plugins](gui-controls.md)
+[Input sources from plugins](input-sources.md)
 [Games in a browser](web-pages.md)
 
 # Reference

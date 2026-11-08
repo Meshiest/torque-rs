@@ -3,8 +3,9 @@
 //! `vehicle-demo` opens the window on the menu: play alone, host a game (the others on the network join it), or join one from the
 //! list of games on the network or at a typed address. `--solo` plays alone at once (no socket for the game, nobody on the network
 //! sees it), `--host` hosts at once, `--join <address>` joins at once (one of the three), `--name <name>` sets the player's name,
-//! `--bind <address>` hosts on that address instead of this computer's LAN address. `--shots <dir>` draws its pictures offscreen
-//! into `dir` (two clients over the loopback address, no window); `--lit-particle-shots <dir>` the tires' dust unlit and lit;
+//! `--bind <address>` hosts on that address instead of this computer's LAN address, `--gamepad` plays with gamepads (a build with
+//! the `gamepad` feature: the left stick walks or drives, the right stick looks, A jumps or brakes, X takes a seat, B gets out).
+//! `--shots <dir>` draws its pictures offscreen into `dir` (two clients over the loopback address, no window); `--lit-particle-shots <dir>` the tires' dust unlit and lit;
 //! `--cloud-shots <dir>` the sky's clouds through the day, with the engine's clouds and with the demo's; `--name-shots <dir>` the
 //! other player's name over his head on foot and in a seat (at 1280x720 and at 640x360); `--switch-shots <dir>` the figure on
 //! foot from behind and from its eyes, looking down, level and up. `--web-files <dir>`
@@ -82,6 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--join" => join = Some(args.value(&arg, "an address")?),
             "--name" => options.name = args.value(&arg, "a name")?,
             "--bind" => options.host_address = args.ipv4(&arg)?,
+            "--gamepad" if cfg!(feature = "gamepad") => options.gamepad = true,
+            "--gamepad" => return Err("--gamepad needs a build with the gamepad feature".into()),
             _ => return Err(unknown(&arg).into()),
         }
     }

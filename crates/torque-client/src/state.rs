@@ -36,6 +36,8 @@ pub struct ClientState<G: ConnGame> {
     pub binds: HashMap<ObjId, Vec<actionmap::DeviceMap>>,
     pub breaks: Vec<actionmap::BreakEntry>,
     pub queue: VecDeque<Queued>,
+    /// The input sources the client polls each pass ([`crate::input_source`]): devices a plugin added, as `joystick<N>`.
+    pub input_sources: crate::input_source::InputSources,
     /// Callbacks dropped because the queue was full.
     pub dropped: u64,
     /// What `gotoWebPage` was asked to open (printed; opened only through [`ClientState::web_opener`]).

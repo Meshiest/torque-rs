@@ -92,6 +92,27 @@ pub fn run_queued<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>
     }
 }
 
+/// Polls the client's input sources ([`crate::input_source`]) and routes the joystick events they made, each under an input
+/// event's budget. A script's error is kept in `errors` (at most [`MAX_MISSING_OBJECTS`]).
+fn poll_sources<G: ConnGame>(
+    vm: &mut Vm,
+    gui: &Gui,
+    client: &Rc<RefCell<ClientState<G>>>,
+    modifiers: u8,
+    errors: &mut Vec<VmError>,
+) {
+    for ev in crate::input_source::poll(vm, client, modifiers) {
+        let saved = vm.begin_host_budget_with_runs(input::MAX_EVENT_WORK, input::MAX_EVENT_STEPS);
+        let result = input::route(vm, gui, client, &ev);
+        vm.end_host_budget(saved);
+        if let Err(e) = result
+            && errors.len() < MAX_MISSING_OBJECTS
+        {
+            errors.push(e);
+        }
+    }
+}
+
 /// The client host over the server host `S`, its connection's game half `G`.
 pub struct ClientHost<G: ConnGame, S: GameServer> {
     pub server: S,
@@ -175,7 +196,10 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         let mut cache = std::mem::take(&mut self.cache);
         let mut errors = std::mem::take(&mut self.draw_errors);
         let mut perf = std::mem::take(&mut self.perf);
+        let mut input_errors = std::mem::take(&mut self.input_errors);
+        let modifiers = self.win32.modifiers;
         let end = self.server.run_ticks(limit_ms, |server| {
+            poll_sources(server.vm_mut(), &gui, &client, modifiers, &mut input_errors);
             let t = web_time::Instant::now();
             pass.net(server.vm_mut(), &client);
             let t_net = t.elapsed();
@@ -201,6 +225,7 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         });
         self.cache = cache;
         self.draw_errors = errors;
+        self.input_errors = input_errors;
         self.perf = perf;
         end
     }
@@ -481,6 +506,19 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
                 self.input_errors.push(e);
             }
         }
+    }
+
+    /// Polls the client's input sources now ([`crate::input_source`]) and routes the joystick events they made. [`run`](Self::run)
+    /// does this before every tick; a host that wants a device read more often (once per drawn frame) may call it too: a source
+    /// that has nothing new makes no events.
+    pub fn poll_input_sources(&mut self) {
+        poll_sources(
+            self.server.vm_mut(),
+            &self.gui,
+            &self.client,
+            self.win32.modifiers,
+            &mut self.input_errors,
+        );
     }
 
     /// Whether the game wants the mouse (the canvas's cursor off, or `lockMouse(1)`): the window grabs it then.
