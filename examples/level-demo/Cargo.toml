@@ -24,11 +24,16 @@ torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 # A rope across the plaza (the `rope` feature).
 torque-plugin-rope = { path = "../../crates/torque-plugin-rope", optional = true }
+# The smoothed predictor beside TGE's (the `smooth-prediction` feature).
+torque-plugin-smooth-prediction = { path = "../../crates/torque-plugin-smooth-prediction", optional = true }
 
 [features]
 # A rope the plaza has hung between its front pillars, simulated and drawn by `torque-plugin-rope` (`--rope-shots` draws it; with the
 # feature off, or on a map other than the plaza, the demo is as it was).
 rope = ["dep:torque-plugin-rope"]
+# The smoothed predictor registered beside TGE's (`setPredictor("smooth")` swaps to it; the demo starts with TGE's), and
+# `--correction-shots`, which draws a forced correction with each.
+smooth-prediction = ["dep:torque-plugin-smooth-prediction"]
 # Built for the web: the module carries its files (the pack whose path is in `TORQUE_WEB_PACK` when it is built) instead of
 # fetching them by the list beside the page (`files.json`).
 embed-pack = []

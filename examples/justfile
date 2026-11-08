@@ -242,6 +242,12 @@ level-demo-rope-shots dir="../target/level-demo-rope-shots":
 level-demo-rope-style-shots dir="../target/level-demo-rope-style-shots":
     cargo run -p torque-example-level-demo --release --features rope -- --rope-style-shots {{dir}}
 
+# A correction the server forces on the plaza's figure (moved 1.2 units sideways), frame by frame, with TGE's predictor and with
+# the smoothed one (the `smooth-prediction` feature), from beside the figure and from the game's camera, drawn offscreen into
+# `dir` (`correction-strip.png` has the four sequences in rows)
+level-demo-correction-shots dir="../target/level-demo-correction-shots":
+    cargo run -p torque-example-level-demo --release --features smooth-prediction -- --correction-shots {{dir}}
+
 # The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
 # into `dir`
 level-demo-valley-shots dir="../target/level-demo-valley-shots":

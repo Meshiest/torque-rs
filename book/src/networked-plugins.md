@@ -214,6 +214,66 @@ sent it. A hostile client can send any id it likes, and gets the rope the server
 another client adopt, drop or fade a rope, because no other client is ever told the id (`tests/net_events.rs` has two clients pick
 the same id).
 
+## Choosing a predictor
+
+The client predicts its own control object, as TGE's client does: each tick it runs its new move, and when the server's state
+differs from what it predicted (the checksums do not match), it takes the server's state and runs again every move the server has
+not acknowledged. That correction lands in one frame, so the player sees the figure, the vehicle and the camera jump.
+
+How the client predicts is a slot, like the renderer's: one predictor runs at a time. It sees the three moments of the
+prediction (a server head, a tick, a view), the local moves, the server's acks and states, and the body solver the game picks for
+each vehicle datablock, and it decides what is drawn (`torque_client::predict::slot`). The default is TGE's scheme, unchanged:
+the same moves, checksums and bytes, and the same trace hashes. An engine that registers no other predictor has no slot at all:
+its clients predict as before and gain no console functions.
+
+The engine ships one other predictor, `torque-plugin-smooth-prediction`. Its simulation corrects exactly as TGE's does, so a TGE
+server sees nothing new, but what is drawn eases the jump out: the body, its vehicle, the eye and the camera are drawn offset by
+the correction, the offset shrinking each tick (by default a quarter of it goes each tick, 5% is left after about a third of a
+second) and interpolated between ticks like the body. A jump longer than its snap distance (5 units by default: a teleport, a
+respawn) is drawn at once, and a change of what the client controls (a mount, a death's camera) drops the offset. Only the
+classes listed are smoothed (`Player` and `WheeledVehicle` by default); the rotation is drawn as the simulation has it.
+
+```rust
+use torque_plugin_smooth_prediction::{SmoothPrediction, SmoothPredictionPlugin};
+
+// The game's predictor: every client starts with it.
+engine.add_plugins(SmoothPredictionPlugin::new(SmoothPrediction::default().keep(0.7)));
+// Or registered only, for a script to choose: clients start with TGE's.
+engine.add_plugins(SmoothPredictionPlugin::optional(SmoothPrediction::default()));
+```
+
+A plugin with a predictor of its own calls `engine.net().prediction(P)` (the game's: one plugin may, a second fails the build) or
+`engine.net().add_prediction(P)` (for a swap only), with `torque_client::predict::NetPrediction` in scope. With either, each client
+has `setPredictor(id)` and `getPredictor()` (TGE's is always there as `tge`); a swap takes effect at the next tick.
+
+Which to pick:
+
+| | TGE's (`tge`) | Smoothed (`smooth`) |
+|---|---|---|
+| What a correction looks like | a jump in one frame | an ease over a few ticks |
+| What is drawn right after it | where the server says | where the old prediction was, moving to the new |
+| On the wire | TGE's bytes | TGE's bytes |
+| Servers it joins | any | any |
+
+Smoothing hides small corrections well: a server that moved the player a little, a missed jump, a bump the client did not see.
+It cannot hide a prediction that is wrong all the time (the drawn object then trails the simulation by its share of each
+correction); fix that in the simulation. A predictor that needs more on the wire than TGE sends registers plugin ghost classes or
+bulk channels, which put it in the handshake manifest, so a peer without it is refused before play and TGE peers keep TGE's bytes.
+
+**Predicting more.** Running nearby vehicles and props ahead of the server and rolling them back to its state, instead of
+drawing them between updates, fits the same three moments: a head keeps the server's states of the predicted ghosts, a tick
+restores them and runs the ticks since, and a view draws them. Such a predictor reaches the client's simulation through the step
+(`PredictState::predictor`, the client's `Predictor` for its world type) and the vehicles' solvers through
+`PredictState::body_solver`. It would need per-class snapshots and restores, a work budget per frame for the replays, and a
+determinism test per predicted class on native and wasm32; it is not built yet.
+
+**Testing a predictor.** `torque-trace-hash` runs each predictor's scenarios after TGE's (`figure-smooth`: the figure walking
+while the server moves it every 75 ticks, four frames drawn a tick and folded in) and `just trace-hash` checks native against
+wasm32. Its `forced_corrections` helper moves a standing figure or buggy on the server and gives back every frame drawn after;
+`crates/torque-trace-hash/tests/forced_correction.rs` uses it to check that the smoothed body never moves more than a sixteenth
+of the jump in a frame while the simulation jumps the whole of it. `just examples/level-demo-correction-shots` draws the same
+with both predictors, frame by frame.
+
 ## Limits
 
 | What | Limit |

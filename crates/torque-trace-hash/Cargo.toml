@@ -19,12 +19,18 @@ categories = ["game-development", "development-tools::testing"]
 torque-app-server = { path = "../torque-app-server" }
 torque-client = { path = "../torque-client" }
 torque-engine = { path = "../torque-engine" }
+torque-plugin-smooth-prediction = { path = "../torque-plugin-smooth-prediction" }
 torque-game = { path = "../torque-game" }
 torque-gui = { path = "../torque-gui" }
 torque-shapes = { path = "../torque-shapes" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 # The floor, the figure and the buggy the scenarios run on.
 torque-example-assets = { path = "../../examples/assets" }
+
+[dev-dependencies]
+# A test's body solver: TGE's behind a counter.
+torque-collide = { path = "../torque-collide" }
+torque-vehicle = { path = "../torque-vehicle" }
 
 [[bin]]
 name = "trace-hash"

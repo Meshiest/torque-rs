@@ -146,6 +146,14 @@ pub trait PredictGame<W: PredictWorld>: Debug {
         Wheeling::default()
     }
 
+    /// The solver that resolves the body of a vehicle of datablock `db` as the client runs it ([`vehicle::BodySolver`]), made for
+    /// each of its ticks; none runs TGE's (the vehicle's own). A game that picks another solver on the server
+    /// (`SimClasses::body_solver`) picks the same here, so the client predicts what the server steps.
+    fn body_solver(&self, world: &W, db: u32) -> Option<Box<dyn vehicle::BodySolver>> {
+        let _ = (world, db);
+        None
+    }
+
     /// What the subclass sets on a WheeledVehicle the client makes (nothing by default).
     fn new_wheeled(&self, s: &mut VehicleState) {
         let _ = s;

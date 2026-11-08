@@ -4,7 +4,7 @@ use torque_trace_hash::scenarios::{self, Baseline, TICKS};
 
 #[test]
 fn every_scenario_repeats_itself_and_ran_the_whole_script() {
-    for scenario in scenarios::all() {
+    for scenario in scenarios::all().into_iter().chain(scenarios::predictors()) {
         let first = (scenario.run)().expect(scenario.name);
         let second = (scenario.run)().expect(scenario.name);
         assert_eq!(

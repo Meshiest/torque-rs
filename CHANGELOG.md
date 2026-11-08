@@ -101,6 +101,12 @@ different.
 
 #### Web and networking
 
+- `torque-client`: the client's prediction is a slot (`predict::slot`): one predictor at a time sees the server's heads, the ticks
+  and the views and decides what is drawn; TGE's scheme is the default and is unchanged. Plugins register predictors with
+  `engine.net().prediction` and `add_prediction`, and scripts swap with `setPredictor`. The client's vehicles step with the body
+  solver the game picks per datablock (`PredictGame::body_solver`).
+- `torque-plugin-smooth-prediction`: a predictor that corrects as TGE's does but eases the correction out of what is drawn (body,
+  vehicle, eye and camera), with a snap distance and per-class opt-in, sending TGE's bytes.
 - Web builds on WebAssembly and WebGPU: a game folder packed as one block or fetched from a file list (`files.json`,
   with sizes and SHA-256 hashes, checked on arrival), the page's one thread and the browser's clock and fonts, a render
   scale for the canvas, and a bridge between the page and the game's scripts (`torque::app::page_bridge`). The

@@ -6,6 +6,10 @@
 //! server's control object and the client's predicted one, each by the bits of its position, rotation, velocity and key fields,
 //! and the client's checksum and prediction counters.
 //!
+//! **The predictors' scenarios** ([`predictors`]) run the same paths with another predictor on the client's prediction slot
+//! ([`torque_client::predict::slot`]) and forced corrections, and fold in what is drawn each frame as well; they print after
+//! `all` (which stays the fold of TGE's predictor's scenarios) and fold into `predictors`.
+//!
 //! **Adding a plugin's scenario:** a plugin whose systems run on a predicted path adds a [`Scenario`] to [`all`] that calls
 //! [`figure`] or [`buggy`] with the plugin (or its own function built on [`Rig`]); a plugin that only adds a ghost or a channel
 //! needs only [`trace_hash`], which runs both with the plugin added.
@@ -41,6 +45,14 @@ pub fn all() -> Vec<Scenario> {
             run: || buggy(Baseline),
         },
     ]
+}
+
+/// The scenarios of the predictors other than TGE's, in the order they print after `all`.
+pub fn predictors() -> Vec<Scenario> {
+    vec![Scenario {
+        name: "figure-smooth",
+        run: figure_smooth,
+    }]
 }
 
 /// What a run came to: the hash, and numbers a caller can check the run was not an empty one.
@@ -264,7 +276,112 @@ fn run<M>(
     seed: u64,
     keys: fn(&mut Rng) -> Keys,
 ) -> Result<Outcome, String> {
+    run_with(plugins, control, seed, keys, &mut Extras::default())
+}
+
+/// What a predictor's scenario adds to a run: the client's predictor, corrections forced on the server and the frames drawn.
+#[derive(Default)]
+struct Extras {
+    /// The predictor the client runs (none: TGE's, with no slot).
+    prediction: Option<torque_client::predict::slot::PredictionEntry>,
+    /// Every `kick.0` ticks (at tick `kick.1` of each period) the server moves the control object by `kick.2`.
+    kick: Option<(u32, u32, [f32; 3])>,
+    /// The frames drawn after each tick, each folded in (0: none).
+    frames: u32,
+    /// The client's game in place of the rig's.
+    client_game: Option<std::rc::Rc<dyn torque_client::game::ClientGame>>,
+}
+
+/// Moves the server's control object by `by` (a forced correction: the client predicted it elsewhere).
+pub fn kick(rig: &mut Rig, control: Control, by: [f32; 3]) -> Result<(), String> {
+    let name = match control {
+        Control::Figure => "TraceFigure",
+        Control::Buggy => "TraceBuggy",
+    };
+    let text = format!(
+        "%t = {name}.getTransform(); {name}.setTransform(VectorAdd(getWords(%t, 0, 2), \"{} {} {}\") SPC getWords(%t, 3, 6));",
+        by[0], by[1], by[2]
+    );
+    rig.server
+        .vm_mut()
+        .eval(text.as_bytes())
+        .map(|_| ())
+        .map_err(|e| format!("{e:?}"))
+}
+
+/// Gives the rig's client a prediction slot that runs `entry`'s predictor.
+pub fn install_prediction(rig: &mut Rig, entry: &torque_client::predict::slot::PredictionEntry) {
+    let (slot, _) =
+        torque_client::predict::PredictionSlot::new(std::slice::from_ref(entry), Some(entry.id()));
+    slot.install(&mut rig.client_vm);
+}
+
+/// What one frame drew of the control object and where its simulation stood.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawnFrame {
+    /// The tick it follows (counted from the run's start) and where between the last two ticks it is drawn.
+    pub tick: u32,
+    pub back: f32,
+    /// The drawn body (the vehicle the client drives, else its Player) and the camera.
+    pub drawn: Option<[f32; 3]>,
+    pub view: Option<[f32; 3]>,
+    /// The simulated body at the last tick.
+    pub sim: Option<[f32; 3]>,
+}
+
+/// `frames` frames drawn after the last tick, evenly between it and the one before (as a window at `frames` times the tick
+/// rate draws them).
+pub fn draw_frames(rig: &Rig, frames: u32) -> Vec<DrawnFrame> {
+    (1..=frames)
+        .filter_map(|k| draw_frame(rig, 1.0 - k as f32 / frames as f32))
+        .collect()
+}
+
+/// A frame drawn `back` from the client's last tick (0 at it, 1 at the one before).
+pub fn draw_frame(rig: &Rig, back: f32) -> Option<DrawnFrame> {
+    let mut st = rig.client.borrow_mut();
+    let c = &mut **st.conn.conn.as_mut()?;
+    c.predict.back = back;
+    c.predict.update_view(&mut c.world);
+    // The driven vehicle when there is one, else the Player.
+    let driven = c
+        .predict
+        .predicted
+        .as_ref()
+        .and_then(|p| p.vehicle.as_ref());
+    let pose = match driven {
+        Some(v) => c.world.vehicle_render.get(&v.index),
+        None => c.world.control_render.as_ref(),
+    };
+    let sim = match driven {
+        Some(v) => Some(v.v.s.position()),
+        None => c.predict.predicted.as_ref().map(|p| p.player.s.position()),
+    };
+    let frame = DrawnFrame {
+        tick: rig.ticks,
+        back,
+        drawn: pose.and_then(torque_client::predict::slot::pose_position),
+        view: c.world.view.as_ref().map(|e| e.position),
+        sim,
+    };
+    c.predict.back = 0.0;
+    Some(frame)
+}
+
+fn run_with<M>(
+    plugins: impl Plugins<M>,
+    control: Control,
+    seed: u64,
+    keys: fn(&mut Rng) -> Keys,
+    extras: &mut Extras,
+) -> Result<Outcome, String> {
     let mut rig = Rig::new(plugins, control)?;
+    if let Some(game) = extras.client_game.take() {
+        torque_client::game::set_client_game(&mut rig.client_vm, game);
+    }
+    if let Some(entry) = extras.prediction.take() {
+        install_prediction(&mut rig, &entry);
+    }
     if !rig.settle(SETTLE_LIMIT) {
         return Err(format!(
             "the client never predicted its control object in {SETTLE_LIMIT} ticks: {:?}",
@@ -281,9 +398,23 @@ fn run<M>(
             current = keys(&mut rng);
         }
         current.apply(&mut rig, tick);
+        if let Some((every, at, by)) = extras.kick
+            && tick % every == at
+        {
+            kick(&mut rig, control, by)?;
+        }
         rig.step();
         observe_server(&rig, &mut h, control);
         driven_ticks += u32::from(observe_client(&rig, &mut h));
+        for frame in draw_frames(&rig, extras.frames) {
+            h.floats(&[frame.back]);
+            for p in [frame.drawn, frame.view] {
+                match p {
+                    Some(p) => h.floats(&p),
+                    None => h.u32(0),
+                }
+            }
+        }
     }
     let end = position(&rig, control).ok_or("the server lost its control object")?;
     let distance = (0..3)
@@ -317,9 +448,78 @@ pub fn figure<M>(plugins: impl Plugins<M>) -> Result<Outcome, String> {
     )
 }
 
+/// `control` standing still on the floor (no keys held), the server moving it by `by` every `every` ticks (`kicks` times, the
+/// first after `every` ticks), with `prediction` on the client's slot (none: TGE's): the frames drawn, `frames` a tick, from the
+/// first kick to `every` ticks after the last.
+pub fn forced_corrections(
+    control: Control,
+    prediction: Option<torque_client::predict::slot::PredictionEntry>,
+    by: [f32; 3],
+    every: u32,
+    kicks: u32,
+    frames: u32,
+) -> Result<Vec<DrawnFrame>, String> {
+    let mut rig = Rig::new(Baseline, control)?;
+    if let Some(entry) = prediction {
+        install_prediction(&mut rig, &entry);
+    }
+    if !rig.settle(SETTLE_LIMIT) {
+        return Err("the client never predicted its control object".into());
+    }
+    Keys::default().apply(&mut rig, 0);
+    for _ in 0..every {
+        rig.step();
+    }
+    let mut out = Vec::new();
+    for _ in 0..kicks {
+        kick(&mut rig, control, by)?;
+        for _ in 0..every {
+            rig.step_frames(frames, |rig, back| out.extend(draw_frame(rig, back)));
+        }
+    }
+    Ok(out)
+}
+
+/// The figure on foot with the smoothed predictor (`torque-plugin-smooth-prediction`): the server moves it sideways every 75
+/// ticks, so the client corrects, and four frames a tick are drawn and folded in.
+pub fn figure_smooth() -> Result<Outcome, String> {
+    use torque_plugin_smooth_prediction::SmoothPrediction;
+    let mut extras = Extras {
+        prediction: Some(torque_client::predict::slot::PredictionEntry::new(
+            SmoothPrediction::default(),
+        )),
+        kick: Some((75, 40, [0.8, 0.3, 0.0])),
+        frames: 4,
+        client_game: None,
+    };
+    run_with(
+        Baseline,
+        Control::Figure,
+        0x9e37_79b9_7f4a_7c15,
+        Keys::figure,
+        &mut extras,
+    )
+}
+
 /// The buggy: a server `WheeledVehicle` its client drives and the client's prediction of it, run with `plugins` added.
 pub fn buggy<M>(plugins: impl Plugins<M>) -> Result<Outcome, String> {
     run(plugins, Control::Buggy, 0xd1b5_4a32_d192_ed03, Keys::buggy)
+}
+
+/// [`buggy`] with `game` as the client's game (it reads the shapes from [`crate::rig::files`], as the rig's own does).
+pub fn buggy_with_client_game(
+    game: std::rc::Rc<dyn torque_client::game::ClientGame>,
+) -> Result<Outcome, String> {
+    run_with(
+        Baseline,
+        Control::Buggy,
+        0xd1b5_4a32_d192_ed03,
+        Keys::buggy,
+        &mut Extras {
+            client_game: Some(game),
+            ..Extras::default()
+        },
+    )
 }
 
 /// The 600-tick trace hash of the plugin `P` (made with its `Default`) on every predicted path: the two scenarios' hashes

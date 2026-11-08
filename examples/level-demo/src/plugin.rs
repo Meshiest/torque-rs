@@ -81,5 +81,11 @@ pub fn level_engine(files: GameFiles) -> Result<EngineBuilder, String> {
     engine.add_plugins(
         torque_plugin_rope::RopePlugin::default().with_frame_anchors(crate::ropes::Mounts),
     );
+    #[cfg(feature = "smooth-prediction")]
+    engine.add_plugins(
+        torque_plugin_smooth_prediction::SmoothPredictionPlugin::optional(
+            torque_plugin_smooth_prediction::SmoothPrediction::default(),
+        ),
+    );
     Ok(engine)
 }

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "rope")]
 use torque::app::App;
 use torque::app::shots::{Seat, Shots};
 use torque::app::window::offscreen_gpu;
@@ -832,4 +833,95 @@ pub fn write_switch(
         shots.save(&frame, &format!("switch-{name}-first"))?;
     }
     Ok(shots.paths)
+}
+
+/// The frames drawn of each forced correction (16 ms apart), the first before it.
+#[cfg(feature = "smooth-prediction")]
+const CORRECTION_FRAMES: usize = 12;
+
+/// The plaza's forced corrections at `size` into `dir`: the server moves the standing figure 1.2 units sideways, and the frame
+/// before and the frames after it are drawn one by one (`correction-<eye>-<predictor>-<nn>`, `00` the one before), from beside the figure (`side`) and from the game's
+/// camera behind it (`own`), with TGE's predictor (`tge`) and the smoothed one (`smooth`). `correction-strip` puts the four
+/// sequences in rows (side TGE's, side smoothed, own TGE's, own smoothed), the frames left to right.
+#[cfg(feature = "smooth-prediction")]
+pub fn write_correction(
+    files: GameFiles,
+    dir: &Path,
+    size: (u32, u32),
+) -> Result<Vec<PathBuf>, String> {
+    let size = (size.0 / 4, size.1 / 4);
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let mut seat = Seat::new(LevelDemo::new(files)?, &gpu, size)?;
+    let mut shots = Shots::new(dir)?;
+    seat.run(&gpu, 200)?;
+    let index = seat
+        .game
+        .maps
+        .iter()
+        .position(|m| map_name(&m.path) == "plaza")
+        .ok_or("no plaza map")?;
+    seat.game.start_map(index)?;
+    let mut waited = 0;
+    while !(seat.game.in_world() && seat.game.figure().is_some()) && waited < START_LIMIT_MS {
+        seat.run(&gpu, 100)?;
+        waited += 100;
+    }
+    seat.run(&gpu, 2000)?;
+    let mut rows = Vec::new();
+    for (eye, side) in [("side", true), ("own", false)] {
+        for predictor in ["tge", "smooth"] {
+            seat.game.call("setPredictor", &[predictor])?;
+            seat.run(&gpu, 1500)?;
+            let p = seat.game.figure().ok_or("no figure")?.position;
+            seat.eye = side.then(|| {
+                crate::client::with_fov(look_at(
+                    [p[0] + 0.6, p[1] - 6.0, p[2] + 2.2],
+                    [p[0] + 0.6, p[1], p[2] + 1.0],
+                ))
+            });
+            let mut row = vec![seat.picture(&gpu)?];
+            shots.save(&row[0], &format!("correction-{eye}-{predictor}-00"))?;
+            on_server(
+                &mut seat.game,
+                "%p = ClientGroup.getObject(0).player; %t = %p.getTransform();                  %p.setTransform(VectorAdd(getWords(%t, 0, 2), \"1.2 0 0\") SPC getWords(%t, 3, 6));",
+            )?;
+            for i in 1..CORRECTION_FRAMES {
+                seat.run(&gpu, torque::app::shots::FRAME_MS)?;
+                let frame = seat.picture(&gpu)?;
+                shots.save(&frame, &format!("correction-{eye}-{predictor}-{i:02}"))?;
+                row.push(frame);
+            }
+            seat.eye = None;
+            rows.push(row);
+        }
+    }
+    shots.save(&strip(&rows), "correction-strip")?;
+    Ok(shots.paths)
+}
+
+/// The frames of `rows` side by side, a row each.
+#[cfg(feature = "smooth-prediction")]
+fn strip(rows: &[Vec<Frame>]) -> Frame {
+    let (w, h) = rows
+        .first()
+        .and_then(|r| r.first())
+        .map_or((0, 0), |f| (f.width, f.height));
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0) as u32;
+    let width = w * columns;
+    let mut rgba = vec![0u8; (width * h * rows.len() as u32 * 4) as usize];
+    for (r, row) in rows.iter().enumerate() {
+        for (c, frame) in row.iter().enumerate() {
+            for y in 0..h.min(frame.height) {
+                let from = (y * frame.width * 4) as usize;
+                let to = (((r as u32 * h + y) * width + c as u32 * w) * 4) as usize;
+                let len = (w.min(frame.width) * 4) as usize;
+                rgba[to..to + len].copy_from_slice(&frame.rgba[from..from + len]);
+            }
+        }
+    }
+    Frame {
+        width,
+        height: h * rows.len() as u32,
+        rgba,
+    }
 }

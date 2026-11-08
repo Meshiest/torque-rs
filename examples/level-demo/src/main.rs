@@ -7,7 +7,9 @@
 //! lake; `--swim-eye-shots <dir>` the same from its eyes (its arms, a dive and the waterline); `--switch-shots <dir>` the
 //! figure in the valley from behind and from its eyes, looking down, level and up; `--rope-shots <dir>` (a build with the
 //! `rope` feature) the rope the plaza hangs between its front pillars, still and thrown up and swinging;
-//! `--rope-style-shots <dir>` the same build's ribbon cable and laser line beside it, with the figure crossing them.
+//! `--rope-style-shots <dir>` the same build's ribbon cable and laser line beside it, with the figure crossing them;
+//! `--correction-shots <dir>` (a build with the `smooth-prediction` feature) a correction the server forces on the figure,
+//! frame by frame, with TGE's predictor and with the smoothed one.
 //! `example-level-demo --web-files <dir>` writes the files a
 //! build for the web fetches into `dir`: the pack (`files::web_pack`) as `game.pack`, and the list of files beside the page
 //! (`files.json`, `torque::app::manifest`) naming it.
@@ -59,6 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut switch_dir = None;
     let mut rope_dir = None;
     let mut rope_style_dir = None;
+    let mut correction_dir = None;
     let mut pack_file = None;
     let mut web_dir = None;
     while let Some(arg) = args.next() {
@@ -77,6 +80,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--rope-style-shots" => {
                 return Err("--rope-style-shots needs a build with the rope feature".into());
+            }
+            "--correction-shots" if cfg!(feature = "smooth-prediction") => {
+                correction_dir = Some(args.dir(&arg)?);
+            }
+            "--correction-shots" => {
+                return Err(
+                    "--correction-shots needs a build with the smooth-prediction feature".into(),
+                );
             }
             "--web-pack" => pack_file = Some(args.dir(&arg)?),
             "--web-files" => web_dir = Some(args.dir(&arg)?),
@@ -149,6 +160,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(not(feature = "rope"))]
     let _: (Option<std::path::PathBuf>, Option<std::path::PathBuf>) = (rope_dir, rope_style_dir);
+    #[cfg(feature = "smooth-prediction")]
+    if let Some(dir) = correction_dir {
+        for path in shots::write_correction(files, &dir, SHOT_SIZE)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "smooth-prediction"))]
+    let _: Option<std::path::PathBuf> = correction_dir;
     if let Some(dir) = office_dir {
         for path in shots::write_office(files, &dir, SHOT_SIZE)? {
             println!("{}", path.display());

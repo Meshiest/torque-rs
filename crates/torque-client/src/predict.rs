@@ -23,6 +23,10 @@
 //!   at the camera speed a second ([`crate::conn::ConnGame::camera_speed`]; TGE: 10) (`getControlCameraTransform`: towards 0
 //!   in first person, 1 otherwise).
 //!
+//! **The predictor** ([`slot`]): [`Predictor::on_head`], [`Predictor::process`] and [`Predictor::update_view`] run through the
+//! predictor the client's slot gives (a game's plugin may register one); the default, [`TgePrediction`], runs the steps above
+//! ([`Predictor::tge_on_head`], [`Predictor::tge_process`], [`Predictor::tge_update_view`]) and nothing else.
+//!
 //! **Engine limits**: the client's collision world holds the game's static objects, the other Players' boxes and the shapes the
 //! container builds; the Player has no skeleton on the client (the animation does not change the words a walk or a jump sends); a
 //! control object the game does not predict sends checksum 0 (the server then resends every packet).
@@ -249,6 +253,10 @@ pub struct Predictor<W: PredictWorld> {
     pub sim_ms: u32,
     /// Whether the game's answers were given (else the first `Vm` seen gives its game's).
     game_given: bool,
+    /// The predictor the steps run through ([`slot`]): TGE's unless the client's slot or a caller gives another.
+    prediction: Box<dyn slot::Prediction>,
+    /// The generation of the client's [`slot::PredictionSlot`] the predictor was made at (0: never made from one).
+    prediction_generation: u64,
 }
 
 /// How the client reads a file of the install (a static object's own file, a shape, a map's files; `None`: not found or not to be
@@ -316,7 +324,28 @@ impl<W: PredictWorld> Predictor<W> {
             ghost_players: ghost_players::GhostPlayers::default(),
             sim_ms: 0,
             game_given: false,
+            prediction: Box::new(slot::TgePrediction),
+            prediction_generation: 0,
         }
+    }
+
+    /// The predictor the prediction runs through ([`slot`]).
+    pub fn prediction(&self) -> &dyn slot::Prediction {
+        &*self.prediction
+    }
+
+    /// Runs the prediction through `prediction` from now on (a client with a [`slot::PredictionSlot`] takes the slot's again when
+    /// it swaps).
+    pub fn set_prediction(&mut self, prediction: Box<dyn slot::Prediction>) {
+        self.prediction = prediction;
+    }
+
+    /// Runs `f` with the predictor taken out of the prediction (TGE's stands in meanwhile), then puts it back.
+    fn with_prediction(&mut self, f: impl FnOnce(&mut dyn slot::Prediction, &mut Self)) {
+        let mut prediction: Box<dyn slot::Prediction> =
+            std::mem::replace(&mut self.prediction, Box::new(slot::TgePrediction));
+        f(&mut *prediction, self);
+        self.prediction = prediction;
     }
 
     /// A prediction with `game`'s answers.
@@ -361,11 +390,31 @@ impl<W: PredictWorld> Predictor<W> {
         class
     }
 
-    /// A server head: its ack (the move list already took it: `moves.first_index()`) and control section.
+    /// A server head: its ack (the move list already took it: `moves.first_index()`) and control section, through the
+    /// predictor ([`slot::Prediction::head`]; TGE's: [`Predictor::tge_on_head`]).
+    pub fn on_head(
+        &mut self,
+        ack: u32,
+        control: &ControlSection<Box<dyn ControlData>>,
+        world: &W,
+        moves: &MoveQueue,
+    ) {
+        self.with_prediction(|p, sim| {
+            p.head(&mut slot::HeadCx {
+                sim,
+                ack,
+                control,
+                world,
+                moves,
+            });
+        });
+    }
+
+    /// TGE's handling of a server head.
     ///
     /// A resend that leaves the predicted Player driving no vehicle (or another one) hands the vehicle it drove to the vehicles
     /// the client runs on its own (`Predictor::release_vehicle`).
-    pub fn on_head(
+    pub fn tge_on_head(
         &mut self,
         ack: u32,
         control: &ControlSection<Box<dyn ControlData>>,
@@ -807,8 +856,20 @@ impl<W: PredictWorld> Predictor<W> {
         }
     }
 
-    /// The client's tick: every move from `mLastClientMove` to the end of the list run by the control object.
+    /// The client's tick, through the predictor ([`slot::Prediction::tick`]; TGE's: [`Predictor::tge_process`]).
     pub fn process(&mut self, moves: &MoveQueue, world: &W, vm_globals: &ClientGlobals) {
+        self.with_prediction(|p, sim| {
+            p.tick(&mut slot::TickCx {
+                sim,
+                moves,
+                world,
+                globals: vm_globals,
+            });
+        });
+    }
+
+    /// TGE's tick: every move from `mLastClientMove` to the end of the list run by the control object.
+    pub fn tge_process(&mut self, moves: &MoveQueue, world: &W, vm_globals: &ClientGlobals) {
         let first = moves.first_index();
         let list = moves.moves();
         let end = first.wrapping_add(list.len() as u32);
@@ -1051,6 +1112,13 @@ impl<W: PredictWorld> Predictor<W> {
             .is_some_and(|v| ts_vm::fields::atob(&v));
         self.smooth_aim = self.game().smooth_aim(vm);
         self.prefs = ClientGlobals::of(vm).prefs;
+        // The client's predictor slot: a fresh predictor when it swapped (or at the first tick).
+        if let Some(slot) = slot::PredictionSlot::of(vm)
+            && slot.generation() != self.prediction_generation
+        {
+            self.prediction = slot.make();
+            self.prediction_generation = slot.generation();
+        }
     }
 
     /// A window's frame: the move globals the next move will be made of, for smooth aim to draw ahead by ([`aim`]); `None` with
@@ -1299,9 +1367,15 @@ impl<W: PredictWorld> Predictor<W> {
         ))
     }
 
-    /// The client's view from its control object: the predicted Player's eye when there is one, else the last state the server
-    /// sent (the world's `view`; a Camera's view is the world's own).
+    /// The client's view from its control object, through the predictor ([`slot::Prediction::view`]; TGE's:
+    /// [`Predictor::tge_update_view`]).
     pub fn update_view(&mut self, world: &mut W) {
+        self.with_prediction(|p, sim| p.view(&mut slot::ViewCx { sim, world }));
+    }
+
+    /// TGE's view from its control object: the predicted Player's eye when there is one, else the last state the server
+    /// sent (the world's `view`; a Camera's view is the world's own).
+    pub fn tge_update_view(&mut self, world: &mut W) {
         // the jumps the new moves made, sounded once each.
         let jumps = std::mem::take(&mut self.jumps);
         if let Some(profile) = world
@@ -2971,3 +3045,6 @@ pub mod drive;
 pub mod game;
 pub mod ghost_players;
 pub mod look;
+pub mod slot;
+
+pub use slot::{NetPrediction, Prediction, PredictionSlot, TgePrediction};

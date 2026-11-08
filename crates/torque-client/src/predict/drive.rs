@@ -590,6 +590,8 @@ pub struct DrivenVehicle {
     pub shape: Rc<ClientShape>,
     /// The ticks its ghost had left to run its last move when the drive began, for the ghost it becomes again.
     pub ghost_prediction: i32,
+    /// The body solver the game picks for its datablock ([`PredictGame::body_solver`]; none: TGE's), a copy made for each tick.
+    pub solver: Option<Box<dyn vehicle::BodySolver>>,
 }
 
 /// The object id the client's collision world gives ghost `index`.
@@ -647,6 +649,7 @@ impl DrivenVehicle {
             v,
             shape,
             ghost_prediction: 0,
+            solver: game.body_solver(world, db),
         })
     }
 
@@ -698,6 +701,7 @@ impl DrivenVehicle {
             sim_time: 0,
             class: self.class.clone(),
             masks: self.masks,
+            solver: None,
         };
         let s = &mut *self.v.s;
         s.set_energy_level(p.energy, &self.data.base.shape, &mut host);
@@ -741,6 +745,7 @@ impl DrivenVehicle {
             sim_time: 0,
             class: self.class.clone(),
             masks: self.masks,
+            solver: None,
         };
         let w = wheeled::packet_words(&self.v, &self.data, &mut host);
         S::vehicle_data(&w, self.v.s.position())
@@ -758,6 +763,7 @@ impl DrivenVehicle {
             sim_time,
             class: self.class.clone(),
             masks: self.masks,
+            solver: self.solver.as_deref(),
         };
         vehicle::process_tick(&mut self.v, &self.data, mv, &mut host).is_ok()
     }
@@ -770,9 +776,15 @@ pub struct ClientVehicleHost<'a> {
     /// The vehicle's subclass (the game's), for its step, and the type masks the step uses.
     pub class: Option<Rc<dyn WheeledClass>>,
     pub masks: &'static collide::TypeMasks,
+    /// The body solver for the vehicle's tick (none: TGE's).
+    pub solver: Option<&'a dyn vehicle::BodySolver>,
 }
 
 impl VehicleHost for ClientVehicleHost<'_> {
+    fn body_solver(&mut self) -> Option<Box<dyn vehicle::BodySolver>> {
+        self.solver.map(|s| s.clone_box())
+    }
+
     fn type_masks(&self) -> &collide::TypeMasks {
         self.masks
     }
@@ -1008,6 +1020,7 @@ impl GhostVehicle {
                 sim_time: 0,
                 class: self.body.class.clone(),
                 masks: self.body.masks,
+                solver: None,
             };
             if !pose.warp && added {
                 // Engine addition (module docs): the drawn pose goes on as it was until the next tick, which runs the update's
@@ -1107,6 +1120,7 @@ impl GhostVehicle {
             sim_time,
             class: self.body.class.clone(),
             masks: self.body.masks,
+            solver: None,
         };
         let (p, q) = (s.rigid.lin_pos, s.rigid.ang_pos);
         if finite_state(&[&p, &q]) {
@@ -1122,6 +1136,7 @@ impl GhostVehicle {
             sim_time,
             class: self.body.class.clone(),
             masks: self.body.masks,
+            solver: self.body.solver.as_deref(),
         };
         vehicle::state::shape_base_tick(&mut self.body.v.s, &db.base.shape, None, &mut host);
         // Engine addition (module docs). Through the warp no physics runs (TGE's), but the state coasts on at its velocities

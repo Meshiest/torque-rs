@@ -96,6 +96,12 @@ pub struct NetRegistry<'a> {
 }
 
 impl NetRegistry<'_> {
+    /// The engine being built, for a crate that adds its own calls to the registry (an extension trait on `NetRegistry`, such
+    /// as the client's prediction slot).
+    pub fn builder(&mut self) -> &mut EngineBuilder {
+        self.engine
+    }
+
     /// Sets the auth provider: a client sends the ticket it makes ([`AuthProvider::ticket`]) with its connect request, and a
     /// server refuses a client whose ticket it does not verify ([`AuthProvider::verify`]), after the manifest check and before
     /// `onConnectRequest`. Both get the connection's [`AuthContext`] (the server's address and the challenge), and a provider

@@ -44,7 +44,7 @@ impl Control {
 }
 
 /// The scripts and shapes of the trace world, as the server's files.
-fn files() -> MemFiles {
+pub fn files() -> MemFiles {
     let files = MemFiles::new();
     files.insert("server.cs", include_bytes!("game/server.cs"));
     let shape = |path: &str, model: &torque_shapes::Model| {
@@ -62,7 +62,7 @@ fn files() -> MemFiles {
 
 /// The client's game: Torque's answers, and the server's files for the shapes the client reads.
 #[derive(Debug)]
-struct TraceClient(MemFiles);
+pub struct TraceClient(pub MemFiles);
 
 impl ClientGame for TraceClient {
     fn file_reader(&self) -> Option<FileReader> {
@@ -171,6 +171,41 @@ impl Rig {
         EnginePass.net(&mut self.client_vm, &self.client);
         self.carry();
         self.ticks += 1;
+    }
+
+    /// One tick of the server, then the client's clock moved on a tick in `frames` equal steps with the client's network pass
+    /// after each (it reads what arrived at every step and ticks when a tick is due, as a window's frames do), `frame` called
+    /// after each step with where the frame falls between the client's last two ticks (`back`, as a window sets it: 1 right
+    /// after a tick, nearer 0 as the next one comes).
+    pub fn step_frames(&mut self, frames: u32, mut frame: impl FnMut(&Rig, f32)) {
+        let frames = frames.clamp(1, TICK_MS);
+        self.carry();
+        self.server.tick();
+        self.carry();
+        let mut since = 0;
+        for k in 1..=frames {
+            let to = TICK_MS * k / frames;
+            self.client_vm.advance_time(to - since);
+            since = to;
+            let before = self.client_ticks();
+            EnginePass.net(&mut self.client_vm, &self.client);
+            self.carry();
+            if self.client_ticks() != before {
+                since = 0;
+            }
+            frame(self, 1.0 - since as f32 / TICK_MS as f32);
+        }
+        self.ticks += 1;
+    }
+
+    /// The client's ticks so far (its last tick's time).
+    fn client_ticks(&self) -> Option<u32> {
+        self.client
+            .borrow()
+            .conn
+            .conn
+            .as_ref()
+            .and_then(|c| c.last_tick)
     }
 
     /// Steps until the client is connected and has a predicted control object, at most `limit` ticks; false when it never is.
