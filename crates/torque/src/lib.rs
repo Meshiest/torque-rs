@@ -13,6 +13,7 @@
 //! | `script` | `script` | `torque-ts-*` | TorqueScript: text rules, compiled scripts (DSO), the compiler and the runtime |
 //! | `collide` | `collide` | `torque-collide` | convexes, GJK, polygon lists, working sets, object type masks |
 //! | `engine` | `engine` | `torque-engine` | plugins, plugin groups and the engine builder that replays their recipes into each script engine |
+//! | `content` | `content` | `torque-content` | the content formats as asset loaders: glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer |
 //! | `shapes` | `shapes` | `torque-shapes` | DTS shapes and DSQ sequences, collision meshes, animated poses |
 //! | `sim` | `sim` | `torque-sim` | the process list, players, AI players, items, projectiles, mounted images |
 //! | `vehicle` | `vehicle` | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
@@ -74,6 +75,8 @@ pub use torque_audio as audio;
 pub use torque_client as client;
 #[cfg(feature = "collide")]
 pub use torque_collide as collide;
+#[cfg(feature = "content")]
+pub use torque_content as content;
 #[cfg(feature = "engine")]
 pub use torque_engine as engine;
 /// Rust functions and impl blocks as TorqueScript natives: `#[torque::function(ns = "Pad")]`,

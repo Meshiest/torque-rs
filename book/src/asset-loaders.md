@@ -6,7 +6,8 @@ through the engine's files (the game folder, its mounted zips and the files scri
 and caps), gives each one to its loader once, and keeps the result by path and type. A datablock can name such a file in a
 `Filename` field: its preload loads it, and a file that is missing or too big fails the preload with the reason.
 
-TGE's own shapes, textures, interiors and terrains still load the way they always have; this registry is for what plugins add.
+TGE's own shapes, textures, interiors and terrains still load the way they always have; the engine's content formats are
+loaders on this registry too ([Content formats](#content-formats)), beside those paths.
 
 ## A loader
 
@@ -130,6 +131,51 @@ for path in assets.changed() {
 A holder of an old `Rc` keeps the old asset until it asks again: `changed()` is the cue. A release build does not look unless
 `$Pref::Dev` is true, and a host can turn it on or off whatever the build with `assets.set_hot_reload(Some(on))`. A host with no
 window (a dedicated server, a test) calls `assets.poll_in(&vm)` itself, or `assets.poll(files, now_ms)` with its own clock.
+
+## Content formats
+
+The formats the engine reads are plugins of `torque-content`, each adding its loaders with its cap and trust, and
+`ContentFormatPlugins` is the group of them. `DefaultPlugins` and `MinimalPlugins` have the group.
+
+| Plugin | Id | Extensions | Asset | Largest file | Untrusted files | In the group |
+|---|---|---|---|---|---|---|
+| `GltfFormatPlugin` | `torque.format-gltf` | `glb`, `gltf` | `ImportedShape` | 16 MiB | yes | on |
+| `ObjFormatPlugin` | `torque.format-obj` | `obj` | `ImportedShape` | 64 MiB | no | off |
+| `BlockbenchFormatPlugin` | `torque.format-blockbench` | `bbmodel` | `ImportedShape` | 64 MiB | no | off |
+| `DifFormatPlugin` | `torque.format-dif` | `dif` | `torque_maps::dif::Dif` | 64 MiB | yes | on |
+| `TerFormatPlugin` | `torque.format-ter` | `ter` | `torque_maps::ter::Terrain` | 16 MiB | yes | on |
+| `MapLayerPlugin` | `torque.format-map-layer` | `dif`, `ter`, `dml` | `MapModel`, `Heightfield`, `SkyList` | the importer's | yes | on |
+| `QuakeMapFormatPlugin` | `torque.format-quake-map` | `map` | `BuiltInterior` | 64 MiB | no | off (`map-builder` feature) |
+
+- **Shapes.** An `ImportedShape` is the `.dts` bytes every shape reader takes. A glTF reads exactly as a datablock's glTF
+  shape file does (the same bytes); an OBJ and a Blockbench model read as `torque-convert` reads them. An OBJ's `.mtl` files
+  and a `.gltf`'s side files are not read (a `.gltf` loads when its buffers are `data:` URIs). Each import is paid from a work
+  budget (`MAX_IMPORT_WORK`).
+- **Interiors and terrains.** A `.dif` and a `.ter` are the files as data, read as the server reads them; a `.map` is built
+  into an interior (`BuiltInterior`: the `.dif` bytes, what was built, the mission objects and the reader's warnings) as
+  `torque-convert` builds it.
+- **The map layer.** `MapLayerPlugin` reads a format's files through its `torque_mapcore::Importer` into the format-neutral
+  types drawing and collision read: a model file as `MapModel` (its surfaces, convex hulls and the files it names), a
+  heightfield and a sky list. Its default is Torque's legacy importer; `MapLayerPlugin { importer, extensions }` takes another.
+- **Trust.** Only the readers that are hardened against hostile bytes and fuzzed today take untrusted files: glTF and Torque's
+  `.dif`, `.ter` and `.dml`. OBJ, Blockbench and `.map` take trusted files only.
+
+```rust
+use torque::app::plugins::DefaultPlugins;
+use torque::content::{DifFormatPlugin, ImportedShape, ObjFormatPlugin};
+
+let engine = EngineBuilder::new()
+    .add_plugins(DefaultPlugins.disable::<DifFormatPlugin>().enable::<ObjFormatPlugin>())
+    .build()?;
+let shape = engine.assets(&mut vm).load::<ImportedShape>(vm.file_host(), "shapes/rock.obj")?;
+```
+
+A `game.toml` does the same by id: `[plugins] disable = ["torque.format-dif"]`, `enable = ["torque.format-obj"]`.
+
+The engine's own loading of datablock shapes, `InteriorInstance` and `TerrainBlock` files does not go through these loaders
+yet: it pays each file from the script engine's budget and keeps it in its own cache, and stays as it was. The loaders read the
+same bytes into the same results (the crate's tests compare each with the path it stands beside), for a plugin or a game that
+loads a file itself, and turning a format off does not change what those paths read.
 
 ## Testing
 

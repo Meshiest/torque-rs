@@ -77,6 +77,41 @@ fn added(before: &str, after: &str) -> BTreeSet<String> {
     lines(after).difference(&lines(before)).cloned().collect()
 }
 
+/// The transports and the content formats: listed by their own tests.
+fn is_listed_apart(id: &str) -> bool {
+    id.starts_with("torque.transport-") || id.starts_with("torque.format-")
+}
+
+#[test]
+fn the_group_has_the_content_formats_the_engine_reads_today() {
+    let engine = engine(DefaultPlugins);
+    let formats: Vec<&str> = engine
+        .plugins()
+        .iter()
+        .map(|id| id.as_str())
+        .filter(|id| id.starts_with("torque.format-"))
+        .collect();
+    assert_eq!(
+        formats,
+        [
+            "torque.format-gltf",
+            "torque.format-dif",
+            "torque.format-ter",
+            "torque.format-map-layer",
+        ]
+    );
+    // The others are in the group, off, for a game (or its `game.toml`) to turn on.
+    let on = EngineBuilder::new()
+        .add_plugins(DefaultPlugins)
+        .enable_id("torque.format-obj")
+        .enable_id("torque.format-blockbench")
+        .build()
+        .unwrap();
+    assert!(on.is_plugin_added_id("torque.format-obj"));
+    assert!(on.is_plugin_added_id("torque.format-blockbench"));
+    assert!(on.warnings().is_empty(), "{:?}", on.warnings());
+}
+
 #[test]
 fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
     let engine = engine(DefaultPlugins);
@@ -84,7 +119,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
         .plugins()
         .iter()
         .copied()
-        .filter(|id| !id.as_str().starts_with("torque.transport-"))
+        .filter(|id| !is_listed_apart(id.as_str()))
         .collect();
     assert_eq!(
         wiring,
@@ -129,7 +164,7 @@ fn the_plugin_ids_are_the_stable_names() {
         .plugins()
         .iter()
         .map(|id| id.as_str())
-        .filter(|id| !id.starts_with("torque.transport-"))
+        .filter(|id| !is_listed_apart(id))
         .collect();
     assert_eq!(
         ids,

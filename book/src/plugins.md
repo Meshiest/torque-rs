@@ -65,6 +65,7 @@ client's script engine the way a Torque game expects. Here is what it adds, in o
 | `TerrainPlugin` | `torque.terrain` | `TerrainBlock` and its collision on the server |
 | `WaterPlugin` | `torque.water` | `WaterBlock`, water the players swim in, on the server |
 | `NetHostPlugin` | `torque.net-host` | the server's network host and the passes that drive it from the main loop |
+| `ContentFormatPlugins` | `torque.format-gltf`, ... | the content formats' asset loaders, a plugin each: glTF, `.dif`, `.ter` and the map layer on, OBJ, Blockbench and `.map` off (see [Content formats](asset-loaders.md#content-formats)) |
 | `GuiPlugin` | `torque.gui` | the GUI's classes and natives on the client |
 | `ActionMapPlugin` | `torque.action-map` | the `ActionMap` class and its natives |
 | `ScreenPlugin` | `torque.screen` | resolution, full screen and the canvas's natives |

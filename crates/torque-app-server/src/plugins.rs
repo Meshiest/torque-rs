@@ -14,6 +14,7 @@
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, a plugin each, by id ([`transports`](crate::transports)) | `UdpTransport`, `MemoryTransport`, the web and p2p ones |
+//! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
 //! | [`DedicatedRunnerPlugin`] | `torque.dedicated-runner` | the engine's runner slot | [`run`](crate::run): a dedicated server |
 //!
 //! `SimClassesPlugin` sets the slot of the game's own simulated classes; it is in no group.
@@ -35,10 +36,12 @@ use torque_ts_vm::vm::Vm;
 
 use crate::run::DedicatedRunnerPlugin;
 pub use crate::transports::ServerTransportPlugins;
+pub use torque_content::ContentFormatPlugins;
 
-/// What a dedicated server needs and nothing else: TGE's game classes, the server game, the terrain and water blocks and the
-/// network host, with the runner that runs a [`Dedicated`](crate::run::Dedicated) server. No client, GUI, drawing, audio or
-/// window crates are involved. A server made on `MinimalPlugins` runs the same scripts as one made on `DefaultPlugins`.
+/// What a dedicated server needs and nothing else: TGE's game classes, the server game, the terrain and water blocks, the
+/// network host and the content formats' asset loaders ([`ContentFormatPlugins`]), with the runner that runs a
+/// [`Dedicated`](crate::run::Dedicated) server. No client, GUI, drawing, audio or window crates are involved. A server made
+/// on `MinimalPlugins` runs the same scripts as one made on `DefaultPlugins`.
 /// It carries its own dedicated runner, so it does not go with a window or page runner (the runner slot is exclusive):
 /// torque-app's `DefaultPlugins` swaps its own for this one with `DefaultPlugins.disable::<WindowRunnerPlugin>()` and
 /// `DedicatedRunnerPlugin`.
@@ -65,6 +68,7 @@ impl PluginGroup for MinimalPlugins {
             .add(WaterPlugin)
             .add(NetHostPlugin)
             .add_group(ServerTransportPlugins)
+            .add_group(ContentFormatPlugins)
             .add(DedicatedRunnerPlugin)
     }
 }

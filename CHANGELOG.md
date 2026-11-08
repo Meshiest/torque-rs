@@ -104,6 +104,10 @@ different.
   mission objects. Interior materials can be nearest-sampled or see-through glass.
 - `torque-shape-builder`: shapes built from code and written as `.dts`.
 - `torque-convert`: the converter command for models and `.map` files.
+- `torque-content`: the content formats as asset-loader plugins with caps and trust (`ContentFormatPlugins`, in
+  `DefaultPlugins` and `MinimalPlugins`): glTF, OBJ and Blockbench as shapes, `.dif` and `.ter` as data, the map layer
+  through an importer, and a `.map` built into an interior; OBJ, Blockbench and `.map` are added off and take trusted files
+  only. A game or its `game.toml` turns each on or off by id.
 - Every reader bounds its counts, offsets, sizes and paths, and font and secret files are checked before they are read.
 
 #### Tooling

@@ -45,6 +45,7 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-mapcore` | the format-neutral map layer |
 | `torque-maps` | Torque interior, terrain and material-list files; a `.dif` writer |
 | `torque-interior-builder` | interiors (`.dif`) built from brushes made in code or read from a `.map`, or from glTF, OBJ and Blockbench meshes |
+| `torque-content` | the content formats as asset-loader plugins: glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer, `.map` interiors |
 | `torque-net` | NetConnection, ghosting, events, BitStream, string compression |
 | `torque-ghosts` | ghost record codecs: the layout framework, the class registry, the parent parts and the engine's object layouts |
 | `torque-ghost-world` | the client's world of ghosts: records merged, datablocks, the control object, mounted images, script threads, effects |

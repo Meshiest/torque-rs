@@ -3302,6 +3302,7 @@ dependencies = [
  "torque-audio",
  "torque-client",
  "torque-collide",
+ "torque-content",
  "torque-engine",
  "torque-fonts",
  "torque-game",
@@ -3340,6 +3341,7 @@ dependencies = [
  "torque-audio",
  "torque-client",
  "torque-collide",
+ "torque-content",
  "torque-engine",
  "torque-fonts",
  "torque-game",
@@ -3373,6 +3375,7 @@ dependencies = [
  "sha2",
  "toml",
  "torque-collide",
+ "torque-content",
  "torque-engine",
  "torque-game",
  "torque-mapcore",
@@ -3438,6 +3441,20 @@ version = "0.1.0"
 dependencies = [
  "torque-mapcore",
  "torque-maps",
+]
+
+[[package]]
+name = "torque-content"
+version = "0.1.0"
+dependencies = [
+ "torque-engine",
+ "torque-import",
+ "torque-interior-builder",
+ "torque-mapcore",
+ "torque-maps",
+ "torque-shape-builder",
+ "torque-shapes",
+ "torque-ts-vm",
 ]
 
 [[package]]

@@ -15,6 +15,7 @@ torque-app-server = { path = "../torque-app-server", optional = true }
 torque-audio = { path = "../torque-audio", optional = true }
 torque-client = { path = "../torque-client", optional = true }
 torque-collide = { path = "../torque-collide", optional = true }
+torque-content = { path = "../torque-content", optional = true }
 torque-engine = { path = "../torque-engine", optional = true }
 torque-fonts = { path = "../torque-fonts", optional = true }
 torque-game = { path = "../torque-game", optional = true }
@@ -43,13 +44,15 @@ torque-app = { path = "../torque-app", optional = true, default-features = false
 # Everything that needs no GPU, no window and no system library.
 default = [
     "script", "collide", "shapes", "sim", "vehicle", "maps", "net", "ghosts", "ghost-world", "resource", "scene", "game",
-    "server", "images", "fonts", "gui", "audio", "client", "engine", "app-server",
+    "server", "images", "fonts", "gui", "audio", "client", "engine", "app-server", "content",
 ]
 # TorqueScript: the text rules, compiled scripts, the compiler and the runtime (`torque::script`).
 script = ["dep:torque-ts-text", "dep:torque-ts-bytecode", "dep:torque-ts-compiler", "dep:torque-ts-vm"]
 collide = ["dep:torque-collide", "dep:torque-mapcore"]
 # Plugins, plugin groups and the engine builder that replays their recipes into every server and client script engine.
 engine = ["dep:torque-engine", "script"]
+# The content formats as asset loaders (`torque::content`): glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer.
+content = ["dep:torque-content", "engine"]
 shapes = ["dep:torque-shapes"]
 # Builds shape models from code: nodes, box and prism meshes, details, materials and sequences.
 shape-builder = ["dep:torque-shape-builder", "shapes"]

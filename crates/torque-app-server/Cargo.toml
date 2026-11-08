@@ -17,6 +17,8 @@ categories = ["game-engines", "game-development"]
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
 torque-collide = { path = "../torque-collide" }
+# The content formats' loaders (`ContentFormatPlugins`, in `MinimalPlugins`): glTF shapes, `.dif`, `.ter` and the map layer.
+torque-content = { path = "../torque-content" }
 torque-engine = { path = "../torque-engine" }
 torque-game = { path = "../torque-game" }
 # A TerrainBlock's file and its heightfield.

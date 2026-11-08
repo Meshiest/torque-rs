@@ -21,6 +21,8 @@ web-time = "1.1"
 torque-audio = { path = "../torque-audio", features = ["engine"] }
 torque-client = { path = "../torque-client", features = ["window"] }
 torque-collide = { path = "../torque-collide" }
+# The content formats' loaders in `DefaultPlugins` (`ContentFormatPlugins`).
+torque-content = { path = "../torque-content" }
 torque-fonts = { path = "../torque-fonts", features = ["system-fonts"] }
 # The plugins that wire a server's and a client's script engine.
 torque-engine = { path = "../torque-engine" }
@@ -67,6 +69,9 @@ renderer = []
 # Debug gizmos: `GizmosPlugin`'s lines, boxes, spheres, arrows, crosses and labels, and the pass that draws them. Without it the
 # plugin only registers the console functions as ones that do nothing: leave it out of a shipped build.
 gizmos = ["torque-render-hd/gizmos"]
+# The `.map` loader in `ContentFormatPlugins` (added off): a Quake or Valve 220 `.map` built into an interior by
+# torque-interior-builder, which builds no other way into a client.
+map-builder = ["torque-content/map-builder"]
 # Browsers as players: a server listening on the web (`Listen::Web`) and a client's game socket over WebSocket.
 web = ["torque-app-server/web", "torque-server/web", "torque-client/web-socket"]
 # Browsers on WebRTC data channels beside their game sockets (the server's `WebSetup::rtc`, the client's `web_rtc`).
