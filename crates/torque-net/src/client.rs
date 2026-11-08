@@ -10,6 +10,7 @@
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
 use crate::cap::{self, NET_MAX_CONNECT_ARGS};
+use crate::connect::ConnectBlock;
 use crate::handshake::c_string;
 use crate::handshake::{self, Accept, ConnectFields, GAME_CONNECTION_CLASS};
 use crate::huffman::Table;
@@ -376,7 +377,10 @@ pub struct ParsedRequest {
 }
 
 /// Reads a connect request without judging it (the datagram decoder), as a server of `profile` reads it. More than
-/// [`NET_MAX_CONNECT_ARGS`] arguments is a [`NetError::Cap`], as is a count the bits left could not hold.
+/// [`NET_MAX_CONNECT_ARGS`] arguments is a [`NetError::Cap`], as is a count the bits left could not hold. It also reads the
+/// optional [connect block](crate::connect::ConnectBlock) after the arguments: bytes that do not start with its magic are no
+/// block (and ignored, as a Torque server ignores them), but a tail that starts with the magic and is then garbled, oversize or
+/// unknown is an `Err` ([`NetError::Invalid`]).
 pub fn parse_connect_request(
     table: &Table,
     profile: &HandshakeProfile,
@@ -410,6 +414,9 @@ pub fn parse_connect_request(
     for _ in 0..argc {
         args.push(c_string(table.read(&mut r)?));
     }
+    let block = ConnectBlock::read(&mut r)
+        .map_err(|_| NetError::Invalid("connect block"))?
+        .map(Box::new);
     Ok(ParsedRequest {
         seq,
         digest,
@@ -423,6 +430,7 @@ pub fn parse_connect_request(
             password,
             extra,
             args,
+            block,
         },
     })
 }

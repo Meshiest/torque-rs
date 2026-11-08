@@ -251,13 +251,15 @@ impl Plugin for ConnPlugin {
     }
 
     fn build(&self, engine: &mut EngineBuilder) {
-        engine.client(ClientStage::Conn, |vm, _| {
+        engine.client(ClientStage::Conn, |vm, engine| {
             let wiring = client_wiring(vm, "the connection")?;
             if wiring.net() == ClientNet::None {
                 return Ok(());
             }
             let gui = client_gui(&wiring, "the connection")?;
             torque_client::conn::register(vm, wiring.state(), &gui);
+            // A networked engine sends its manifest (and its auth ticket) with every connect request.
+            torque_client::conn::tge::ConnectHello::install(vm, engine);
             Ok(())
         });
     }

@@ -210,6 +210,12 @@ impl GameServer {
             .take_net()
             .ok_or("the engine has no network host (NetHostPlugin)")?;
         let shared = net.shared;
+        // An engine with networked plugins or an auth provider holds every client to its manifest and tickets, before
+        // `onConnectRequest`; one with neither judges no one and speaks Torque's handshake.
+        let profile = shared.borrow().handshake_profile();
+        if let Some(gate) = engine.connect_gate(&profile) {
+            shared.borrow_mut().set_connect_gate(gate);
+        }
         server
             .attach_net(net.passes)
             .map_err(|e| format!("the network host: {e:?}"))?;

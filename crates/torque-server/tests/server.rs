@@ -5,15 +5,18 @@
 use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use torque_game::scene::container::{Container, ContainerConfig};
 use torque_ghosts::tge::TgeClass;
 use torque_net::bits::BitWriter;
 use torque_net::classes::Kind;
 use torque_net::client::{Client, ClientEvent, ClientState};
+use torque_net::connect::{AuthProvider, ConnectBlock, ManifestGate, SharedSecret};
 use torque_net::ghost::net_flags;
 use torque_net::handshake::ConnectFields;
 use torque_net::huffman::Table;
+use torque_net::manifest::Manifest;
 use torque_scene::BinGeometry;
 use torque_server::net::codecs::net_codecs;
 use torque_server::net::datablock::{DatablockView, DbValue};
@@ -401,5 +404,129 @@ new Camera(TheCamera);",
         layer.queued(conn).map(|(ordered, ..)| ordered),
         Some(0),
         "the client acknowledged the packets that carried the sun's ghost"
+    );
+}
+
+/// Sends a client's connect request and runs the server until the client hears an accept or a reject: the client's final event.
+fn handshake(
+    s: &mut NetServer,
+    end: &MemoryEnd,
+    addr: SocketAddr,
+    fields: ConnectFields,
+) -> ClientEvent {
+    let table = Table::torque();
+    let mut client = Client::new(9, fields);
+    end.inject(addr, &client.challenge_request());
+    let mut last = ClientEvent::Nothing;
+    for _ in 0..6 {
+        s.run(TICK_MS, |_| false);
+        for (_, datagram) in end.take_sent() {
+            match client.on_datagram(&table, &datagram, s.vm.sim_time()) {
+                ClientEvent::Send(bytes) => {
+                    end.inject(addr, &bytes);
+                }
+                event @ (ClientEvent::Rejected(_) | ClientEvent::Accepted(_)) => last = event,
+                _ => {}
+            }
+        }
+        if !matches!(last, ClientEvent::Nothing) {
+            break;
+        }
+    }
+    last
+}
+
+fn rope_manifest(version: u32) -> Manifest {
+    Manifest::new(12, 12)
+        .with_plugin("torque.rope", version)
+        .with_ghosts(["Rope"])
+}
+
+fn with_manifest(manifest: Manifest, ticket: Option<Vec<u8>>) -> ConnectFields {
+    ConnectFields::standard(b"", Vec::new()).with_block(ConnectBlock {
+        manifest: Some(manifest),
+        ticket,
+    })
+}
+
+#[test]
+fn a_mismatched_client_is_refused_before_the_scripts_see_it_and_before_any_ghost() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(
+        b"new SimGroup(ClientGroup);\nfunction GameConnection::onConnectRequest(%c, %a) { echo(\"asked\"); return \"\"; }\nfunction GameConnection::onConnect(%c) { echo(\"connected\"); }",
+    )
+    .unwrap();
+    let gate =
+        ManifestGate::new(rope_manifest(2)).with_auth(Arc::new(SharedSecret::new([4; 16], "")));
+    shared.borrow_mut().set_connect_gate(gate);
+    let addr = SocketAddr::from(([127, 0, 0, 1], 50_001));
+
+    // A client with an older rope: refused with the reason, the script never asked, nothing in the table.
+    let signed = SharedSecret::new([4; 16], "ada").ticket().unwrap();
+    let event = handshake(
+        &mut s,
+        &end,
+        addr,
+        with_manifest(rope_manifest(1), Some(signed.clone())),
+    );
+    let ClientEvent::Rejected(reason) = event else {
+        panic!("not refused: {event:?}")
+    };
+    assert_eq!(reason, b"server needs plugin torque.rope 2, you have 1");
+    // A client with no manifest at all.
+    let addr2 = SocketAddr::from(([127, 0, 0, 1], 50_002));
+    let event = handshake(
+        &mut s,
+        &end,
+        addr2,
+        ConnectFields::standard(b"", Vec::new()),
+    );
+    assert!(
+        matches!(&event, ClientEvent::Rejected(r) if r == b"server needs plugin torque.rope 2, you do not have it"),
+        "{event:?}"
+    );
+    // A matching client with a forged ticket: refused by the auth provider, still before the scripts.
+    let addr3 = SocketAddr::from(([127, 0, 0, 1], 50_003));
+    let forged = SharedSecret::new([5; 16], "ada").ticket().unwrap();
+    let event = handshake(
+        &mut s,
+        &end,
+        addr3,
+        with_manifest(rope_manifest(2), Some(forged)),
+    );
+    assert!(
+        matches!(&event, ClientEvent::Rejected(r) if r == b"your sign-in was not accepted"),
+        "{event:?}"
+    );
+    assert!(!lines(&s).iter().any(|l| l == "asked" || l == "connected"));
+    assert_eq!(
+        shared.borrow().hs.len(),
+        0,
+        "no connection was made for them"
+    );
+    assert_eq!(shared.borrow().counters.accepted, 0);
+
+    // The matching client with a good ticket is accepted, and the script is asked.
+    let addr4 = SocketAddr::from(([127, 0, 0, 1], 50_004));
+    let event = handshake(
+        &mut s,
+        &end,
+        addr4,
+        with_manifest(rope_manifest(2), Some(signed)),
+    );
+    assert!(matches!(event, ClientEvent::Accepted(_)), "{event:?}");
+    assert!(lines(&s).iter().any(|l| l == "asked"));
+    assert_eq!(shared.borrow().counters.accepted, 1);
+    let sh = shared.borrow();
+    let conn = sh
+        .conns
+        .values()
+        .find(|r| r.addr == addr4)
+        .and_then(|r| r.conn)
+        .expect("accepted");
+    assert_eq!(
+        sh.hs.connection(conn).and_then(|c| c.identity.as_deref()),
+        Some(&b"ada"[..]),
+        "the verified identity is kept with the connection"
     );
 }

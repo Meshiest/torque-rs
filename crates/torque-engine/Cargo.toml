@@ -14,6 +14,8 @@ categories = ["game-engines", "game-development"]
 # The script engine the recipes are replayed into. Nothing else: a dedicated server and every plugin crate take this crate
 # without the client, the GUI or the renderer.
 torque-ts-vm = { path = "../torque-ts-vm" }
+# The manifest and the auth trait a plugin's network version and tickets are given in. No dependency of its own.
+torque-net = { path = "../torque-net" }
 # `#[derive(PluginId)]`, re-exported.
 torque-macros = { path = "../torque-macros" }
 

@@ -389,6 +389,18 @@ pub struct NetShared<G: NetGame> {
 }
 
 impl<G: NetGame> NetShared<G> {
+    /// The handshake this server speaks (what its connect gate's manifest is made for).
+    pub fn handshake_profile(&self) -> torque_net::profile::HandshakeProfile {
+        self.hs.config().profile.clone()
+    }
+
+    /// Judges every connect request that passes the standard checks with `gate`, before `onConnectRequest` runs
+    /// ([`ServerConfig::gate`](torque_net::handshake::ServerConfig::gate)): a refused client gets the gate's reason and the
+    /// scripts never see it.
+    pub fn set_connect_gate(&mut self, gate: impl torque_net::connect::ConnectGate + 'static) {
+        self.hs.config_mut().gate = Some(std::sync::Arc::new(gate));
+    }
+
     /// The string coder's table ([`NetGame::string_table`]).
     pub fn string_table(&self) -> Rc<Table> {
         self.game.string_table()

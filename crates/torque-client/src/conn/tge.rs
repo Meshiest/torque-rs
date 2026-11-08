@@ -42,6 +42,7 @@ use net::NetError;
 use net::bits::BitReader;
 use net::classes::{Kind, NetClasses};
 use net::client::{Client, ClientEvent as Handshake};
+use net::connect::ConnectBlock;
 use net::control::{ClientBlock, ControlSection, ServerHead};
 use net::events::{
     ConnectionMessage, EventCtx, EventIds, EventQueue, EventReceiver, EventRegistry, EventUnpacker,
@@ -54,6 +55,7 @@ use net::profile::DEFAULT_DATABLOCK_BITS;
 use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
+use torque_engine::Engine;
 use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
 use ts_vm::fields::{FieldRules, FieldType};
 use ts_vm::vm::Vm;
@@ -419,6 +421,30 @@ impl EventUnpacker for Unpacker<'_> {
     }
 }
 
+/// What a client's engine adds to every connect request it makes: its manifest and a ticket from its auth provider
+/// ([`Engine::connect_block`]). Attached to the client's script engine by [`ConnectHello::install`]; a network connection reads it
+/// when it starts (a local connection needs none). An engine that says nothing on the wire attaches nothing, so its requests are
+/// Torque's.
+pub struct ConnectHello {
+    engine: Engine,
+}
+
+impl ConnectHello {
+    /// Attaches the engine's hello to `vm` when the engine [says anything on the wire](Engine::is_networked).
+    pub fn install(vm: &mut Vm, engine: &Engine) {
+        if engine.is_networked() {
+            vm.set_extension(Rc::new(ConnectHello {
+                engine: engine.clone(),
+            }));
+        }
+    }
+
+    /// The block for one connect: an `Err` is the auth provider's reason it has no ticket.
+    fn block(&self) -> Result<Option<ConnectBlock>, String> {
+        self.engine.connect_block()
+    }
+}
+
 /// TGE's feed: torque-net's client half of the handshake and the packet layer, the ghost table read with TGE's record codecs.
 pub struct TgeFeed {
     link: Box<dyn Link>,
@@ -499,6 +525,11 @@ impl TgeFeed {
             None => feed.challenge(),
         }
         Ok(feed)
+    }
+
+    /// Adds `block` (the engine's manifest and ticket) to the connect request, after its arguments.
+    pub fn set_connect_block(&mut self, block: ConnectBlock) {
+        self.client.fields_mut().block = Some(Box::new(block));
     }
 
     /// The game's files the feed reads a WheeledVehicleData's shape from.
@@ -903,6 +934,12 @@ impl ConnGame for TgeConn {
             local,
             client_rates(vm),
         )?;
+        if local.is_none()
+            && let Some(hello) = vm.extension::<ConnectHello>()
+            && let Some(block) = hello.block()?
+        {
+            feed.set_connect_block(block);
+        }
         feed.set_reader(reader.clone());
         Ok(Started {
             feed,

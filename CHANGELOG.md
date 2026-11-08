@@ -80,6 +80,16 @@ different.
 - Hardening against hostile input across the web stack: caps on requests, headers, frames, messages, bytes and
   connections (in all, per address and per second), timeouts, `Host` and origin checks, ICE checks and candidates
   filtered by source, and peers given stand-in addresses so per-address limits and bans hold.
+- `torque-net::manifest` and `torque-net::connect`: a connection manifest (the plugins that have a network version, the
+  handshake's protocol versions, the sorted ghost class, datablock class and channel names, the mods a server requires)
+  and an auth ticket ride after the connect request's arguments, where a Torque server never reads. A server with a gate
+  (`ServerConfig::gate`, `torque-engine`'s `Engine::connect_gate`) refuses a client whose build differs, with the reason
+  in the reject and before the host's scripts, any ghost or any datablock; a request with no manifest is judged as a peer
+  with nothing. A peer with no plugins sends and reads nothing new, so its handshake is Torque's own. Every list is
+  bounded and the decoder is fuzzed.
+- `torque-engine`: `engine.net().auth(provider)` (`AuthProvider`: the client makes a ticket, the server verifies it, after
+  the manifest check and before `onConnectRequest`; a test provider, `SharedSecret`), and `engine.net()` entries for the
+  names the manifest lists.
 
 #### Gameplay
 

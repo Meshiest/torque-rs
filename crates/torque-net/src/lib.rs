@@ -26,6 +26,9 @@
 //! - [`control`], [`moves`], [`gameevents`]: the server head and the control section (`Camera::writePacketData`, the checksum, the
 //!   compression point), the client's move block and the server's bounded move list, and the small events (audio, path manager,
 //!   lightning).
+//! - [`manifest`] and [`connect`]: the connection manifest (plugin versions, class and channel name tables, required mods), the
+//!   auth ticket and the gate a server judges a connect request with before its scripts see it; both ride after the request's
+//!   arguments, where a Torque server never reads.
 //! - [`classes`]: the net classes' ids and widths derived by the class-sorting rule from the class representatives.
 //! - [`profile`]: what a game sets (the event registry, the handshake's types, strings, versions, form and extension, the server
 //!   query's version fields, the ghost limit, the datablock id width), with TGE 1.4's defaults.
@@ -37,6 +40,7 @@ pub mod bits;
 pub mod cap;
 pub mod classes;
 pub mod client;
+pub mod connect;
 pub mod control;
 pub mod crc;
 pub mod decode;
@@ -47,6 +51,7 @@ pub mod handshake;
 pub mod huffman;
 pub mod idhash;
 pub mod library;
+pub mod manifest;
 pub mod moves;
 pub mod netstring;
 pub mod profile;

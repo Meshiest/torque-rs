@@ -69,6 +69,7 @@ mod builder;
 pub mod class;
 mod engine;
 mod group;
+pub mod net;
 pub mod param;
 mod plugin;
 pub mod prefs;
@@ -89,6 +90,7 @@ pub use builder::{BuildError, EngineBuilder, Warning};
 pub use class::{ClassField, ClassInfo, ClassReadError, FieldDecl, ScriptClass};
 pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
+pub use net::NetRegistry;
 pub use param::{
     Cx, IntoRecipe, Local, Param, ParamError, ParamKind, RecipeReturn, Res, ResMut, ResourceError,
     Slot, This, VmMut, VmRef,

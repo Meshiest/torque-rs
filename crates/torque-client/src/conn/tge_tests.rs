@@ -361,3 +361,119 @@ fn a_packet_whose_compression_point_is_not_finite_is_refused() {
         assert!(stream_point(&r).is_err(), "{bad}");
     }
 }
+
+/// A plugin that gives the engine a network version.
+#[derive(Clone, Copy, Debug)]
+struct RopePlugin(u32);
+
+impl torque_engine::Plugin for RopePlugin {
+    fn net_version(&self) -> Option<u32> {
+        Some(self.0)
+    }
+
+    fn build(&self, _engine: &mut torque_engine::EngineBuilder) {}
+}
+
+impl torque_engine::PluginType for RopePlugin {
+    const ID: torque_engine::PluginId = torque_engine::PluginId::new("torque.rope");
+}
+
+fn rope_engine(version: u32) -> Engine {
+    torque_engine::EngineBuilder::new()
+        .add_plugins(RopePlugin(version))
+        .build()
+        .expect("an engine")
+}
+
+/// A client whose connections send `engine`'s hello, with the socket's two queues.
+fn networked_client(
+    engine: &Engine,
+) -> (
+    Vm,
+    Rc<RefCell<ClientState<TgeConn>>>,
+    DatagramQueue,
+    DatagramQueue,
+) {
+    let mut vm = Vm::new();
+    torque_game::specs::install(&mut vm);
+    let gui = gui::register(&mut vm);
+    let net = Rc::new(RefCell::new(ClientNet {
+        policy: crate::net::NetPolicy::Lan,
+        ..ClientNet::default()
+    }));
+    let mem = MemoryDatagrams::default();
+    let (sent, incoming) = (Rc::clone(&mem.sent), Rc::clone(&mem.incoming));
+    net.borrow_mut().socket = Some(Box::new(mem));
+    let client = Rc::new(RefCell::new(ClientState::<TgeConn> {
+        net,
+        root: ".".into(),
+        ..ClientState::default()
+    }));
+    crate::conn::register(&mut vm, &client, &gui);
+    ConnectHello::install(&mut vm, engine);
+    vm.set_step_limit(Some(50_000_000));
+    vm.advance_time(1_000);
+    (vm, client, sent, incoming)
+}
+
+/// Runs a client of `client_engine` against a bare handshake server of `server_engine`; the reason the client was refused with.
+fn connect_between(client_engine: &Engine, server_engine: &Engine) -> Option<Vec<u8>> {
+    use net::handshake::{Server, ServerConfig};
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    let (mut vm, client, sent, incoming) = networked_client(client_engine);
+    vm.eval(
+        b"function GameConnection::onConnectRequestRejected(%this, %why) { $Why = %why; } \
+          new GameConnection(TgeTest); TgeTest.connect(\"192.168.1.20:28000\");",
+    )
+    .unwrap();
+    let mut config = ServerConfig::new(8);
+    config.gate = server_engine
+        .connect_gate(&config.profile)
+        .map(|gate| std::sync::Arc::new(gate) as _);
+    let mut server = Server::new(config, [3; 16]);
+    let table = net::huffman::Table::torque();
+    let peer = std::net::SocketAddr::from(([192, 168, 1, 5], 5000));
+    let to = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 20), 28_000);
+    for _ in 0..4 {
+        let datagrams: Vec<_> = sent.borrow_mut().drain(..).collect();
+        for (_, bytes) in datagrams {
+            match server.handle_datagram(&table, peer, &bytes, 0) {
+                net::handshake::Handled::Reply(reply) => {
+                    incoming.borrow_mut().push_back((to, reply));
+                }
+                net::handshake::Handled::Request(request) => {
+                    // The host would run `onConnectRequest` here; this one accepts.
+                    if let net::handshake::Finished::Accepted { reply, .. } =
+                        server.finish_request(&table, *request, net::handshake::Decision::Accept, 0)
+                    {
+                        incoming.borrow_mut().push_back((to, reply));
+                    }
+                }
+                _ => {}
+            }
+        }
+        vm.advance_time(32);
+        crate::host::ClientPass::net(&crate::host::EnginePass, &mut vm, &client);
+        crate::host::run_queued(&mut vm, &client);
+    }
+    vm.global("$Why")
+}
+
+#[test]
+fn a_client_shows_the_servers_reason_for_a_manifest_it_refused() {
+    // The client has rope 1, the server wants 2: the script hears why, in the server's words.
+    let reason = connect_between(&rope_engine(1), &rope_engine(2));
+    assert_eq!(
+        reason.as_deref(),
+        Some(&b"server needs plugin torque.rope 2, you have 1"[..])
+    );
+    // Matching engines connect: nothing is refused.
+    assert_eq!(connect_between(&rope_engine(2), &rope_engine(2)), None);
+    // An engine with nothing on the wire sends a plain request, which a plain server accepts, and a gated server refuses.
+    let plain = torque_engine::EngineBuilder::new().build().unwrap();
+    assert_eq!(connect_between(&plain, &plain), None);
+    assert_eq!(
+        connect_between(&plain, &rope_engine(2)).as_deref(),
+        Some(&b"server needs plugin torque.rope 2, you do not have it"[..])
+    );
+}

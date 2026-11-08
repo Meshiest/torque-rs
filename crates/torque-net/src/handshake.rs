@@ -15,7 +15,8 @@
 //! **Order of the reject strings** (the connect request's fields, in the order they are checked; the strings and the versions are
 //! the [`HandshakeProfile`]'s): group and CRC (`CHR_INVALID`), game (`CHR_GAME`), current protocol below the oldest accepted
 //! (`CHR_PROTOCOL_LESS`), minimum protocol above the newest spoken (`CHR_PROTOCOL_GREATER`), password (`CHR_PASSWORD`), more than 16
-//! arguments (`CR_INVALID_ARGS`); then the host's script decides. Everything else (bad digest, unknown class, switched-off
+//! arguments (`CR_INVALID_ARGS`); then the server's gate when it has one ([`crate::connect`]: the build's manifest, then the auth
+//! ticket); then the host's script decides. Everything else (bad digest, unknown class, switched-off
 //! connections, a short datagram) is silence.
 //!
 //! **Deviations from Torque.** A repeated request is answered only if its digest verifies (the accept is not re-sent before the
@@ -28,6 +29,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
@@ -37,6 +39,7 @@ use crate::cap::{
     NET_LIMITER_ENTRIES, NET_MAX_CONNECT_ARGS, NET_MAX_DATAGRAM, NET_MAX_PENDING_CONNECTS,
     NET_PACKETS_PER_CONN_PER_S, NET_PENDING_PER_ADDR, NET_PENDING_TIMEOUT_MS, NET_STRING_BYTES,
 };
+use crate::connect::{ConnectBlock, ConnectGate};
 use crate::huffman::Table;
 use crate::profile::{DEFAULT_GHOST_LIMIT, HandshakeProfile};
 use crate::protocol::{Dropped, Protocol, RateConfig, Received, Role, SendPacing, Timeout};
@@ -170,6 +173,9 @@ pub struct ConnectFields {
     /// What the profile's [`crate::profile::HandshakeForm`] carries after the password (empty in Torque).
     pub extra: Vec<u8>,
     pub args: Vec<Vec<u8>>,
+    /// What follows the arguments: the sender's manifest and auth ticket ([`ConnectBlock`]). `None` for a plain Torque request,
+    /// which is then the request it always was; a server reads it only when it has a [`ServerConfig::gate`].
+    pub block: Option<Box<ConnectBlock>>,
 }
 
 impl ConnectFields {
@@ -185,7 +191,15 @@ impl ConnectFields {
             password: password.to_vec(),
             extra: profile.form.default_request(),
             args,
+            block: None,
         }
+    }
+
+    /// These fields with `block` after the arguments.
+    #[must_use]
+    pub fn with_block(mut self, block: ConnectBlock) -> ConnectFields {
+        self.block = Some(Box::new(block));
+        self
     }
 
     /// [`ConnectFields::new`] for Torque's profile.
@@ -319,6 +333,17 @@ pub fn connect_request(
     for arg in &fields.args {
         table.write(&mut w, arg, NET_STRING_BYTES);
     }
+    if let Some(block) = &fields.block {
+        // A block that cannot be written (a manifest over its limit, a ticket too long) is left off: the server then judges
+        // the request as one with nothing, and says what it needs. Whoever builds a block checks it first
+        // ([`ConnectBlock::validate`]; `Engine::connect_block` does), so this is a bug in the caller: loud in a debug build.
+        let mark = w.mark();
+        let written = block.write(&mut w);
+        debug_assert!(written.is_ok(), "an unwritable connect block: {written:?}");
+        if written.is_err() {
+            w.rewind(mark);
+        }
+    }
     w.into_bytes()
 }
 
@@ -434,6 +459,9 @@ pub struct ServerConfig {
     pub packet_bytes: Option<u32>,
     /// The size the local connection's sections fill a packet to (its packets stay in memory); None is the standard rule.
     pub local_packet_bytes: Option<u32>,
+    /// A judgment of every request that passed the standard checks, before the host's scripts see it ([`ConnectGate`]); `None`
+    /// is Torque's server, which reads nothing after the arguments.
+    pub gate: Option<Arc<dyn ConnectGate>>,
 }
 
 impl ServerConfig {
@@ -456,6 +484,7 @@ impl ServerConfig {
             connect_requests_per_src_per_s: NET_CONNECT_SCRIPT_PER_SRC_PER_S,
             packet_bytes: None,
             local_packet_bytes: None,
+            gate: None,
         }
     }
 
@@ -511,6 +540,15 @@ pub fn read_connect_fields(
     for _ in 0..argc {
         args.push(c_string(table.read(r)?));
     }
+    // Only a server with a gate looks past the arguments.
+    let block = if config.gate.is_some() {
+        match ConnectBlock::read(r) {
+            Ok(block) => block.map(Box::new),
+            Err(error) => return Ok(Fields::Reject(crate::connect::reason(&error.to_string()))),
+        }
+    } else {
+        None
+    };
     Ok(Fields::Ok(ConnectFields {
         group,
         crc,
@@ -520,6 +558,7 @@ pub fn read_connect_fields(
         password,
         extra,
         args,
+        block,
     }))
 }
 
@@ -588,6 +627,8 @@ pub struct Connection {
     pub ghost_bits: u8,
     /// What the profile's form read after the request's password (empty in Torque).
     pub extra: Vec<u8>,
+    /// What the gate's auth provider verified the client as, when there is one.
+    pub identity: Option<Vec<u8>>,
     /// Accepted, but no valid game packet has arrived yet.
     pub pending: bool,
     /// The server half of a local connection (`connectLocal`): never pinged or timed out (TGE's `checkTimeout` acts only
@@ -606,6 +647,8 @@ pub struct PendingRequest {
     pub addr: SocketAddr,
     pub seq: u32,
     pub fields: ConnectFields,
+    /// What the gate's auth provider verified the client as, when there is one.
+    pub identity: Option<Vec<u8>>,
     /// `min(current, profile's current)`.
     pub protocol_version: u32,
     /// An older connection from the same address that this request replaces. It is still in the table: the host removes it once it admits the
@@ -966,6 +1009,17 @@ impl Server {
             return Handled::Reply(profile.types.connect_reject(table, seq, full));
         }
 
+        // The gate (and an auth provider's check in it) runs last: a request the table could not take anyway, or one over a
+        // source's pending limit, never costs the server a verification.
+        let identity = match self.config.gate.as_ref().map(|g| g.check(from, &fields)) {
+            None => None,
+            Some(Ok(identity)) => identity,
+            Some(Err(reason)) => {
+                let types = &self.config.profile.types;
+                return Handled::Reply(types.connect_reject(table, seq, &reason));
+            }
+        };
+
         let protocol_version = fields
             .current_protocol
             .min(self.config.profile.protocol_current);
@@ -974,6 +1028,7 @@ impl Server {
             addr: from,
             seq,
             fields,
+            identity,
             protocol_version,
             replaced,
             extension,
@@ -1028,6 +1083,7 @@ impl Server {
                     protocol_version: request.protocol_version,
                     ghost_bits,
                     extra: request.fields.extra,
+                    identity: request.identity,
                     pending: true,
                     local: false,
                     extension: request.extension,
@@ -1079,6 +1135,7 @@ impl Server {
             protocol_version,
             ghost_bits,
             extra: Vec::new(),
+            identity: None,
             pending: false,
             local: true,
             extension,
