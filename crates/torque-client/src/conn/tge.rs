@@ -59,6 +59,7 @@ use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
 use torque_engine::Engine;
+use torque_server::net::channels::ClientChannels;
 use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
 use ts_vm::fields::{FieldRules, FieldType};
 use ts_vm::vm::Vm;
@@ -497,6 +498,8 @@ pub struct TgeFeed {
     checked: Option<u32>,
     gone: bool,
     control_set: bool,
+    /// The bulk channels of the engine, read from the front of each server packet once they are active.
+    channels: Option<Rc<ClientChannels>>,
     /// The plugins' ghost and datablock classes the feed reads past the class table's ids.
     plugins: PluginClasses,
 }
@@ -548,6 +551,7 @@ impl TgeFeed {
             checked: None,
             gone: false,
             control_set: false,
+            channels: None,
             plugins: PluginClasses::default(),
         };
         match local {
@@ -555,6 +559,15 @@ impl TgeFeed {
             None => feed.challenge(),
         }
         Ok(feed)
+    }
+
+    /// The engine's bulk channels this connection reads. They start over for this connection ([`ClientChannels::reset`]) and
+    /// are turned on when the server's accept says its gate matched the channels this client listed in its manifest.
+    pub fn set_channels(&mut self, channels: Option<Rc<ClientChannels>>) {
+        if let Some(channels) = &channels {
+            channels.reset();
+        }
+        self.channels = channels;
     }
 
     /// The plugins' ghost and datablock classes the feed reads (the server's set: the client's engine has the same plugins).
@@ -649,6 +662,11 @@ impl TgeFeed {
                 self.events.push_back(FeedEvent::ChallengeAnswered);
             }
             Handshake::Accepted(accept) => {
+                if accept.channels
+                    && let Some(channels) = &self.channels
+                {
+                    channels.set_active(true);
+                }
                 let bits = accept.ghost_bits.map_or_else(
                     || {
                         net::ghost::GhostConfig {
@@ -694,14 +712,18 @@ impl TgeFeed {
             let ack = protocol.ack_packet(self.now);
             let _ = self.link.send(&ack);
         }
-        let Some(ghosts) = self.ghosts.as_mut() else {
-            return Ok(());
-        };
         if !received.payload {
             return Ok(());
         }
         let mut r = reader_at(data, payload_bit);
         r.enable_string_buffer();
+        // The bulk channels' chunks come first in the payload when the server writes them.
+        if let Some(channels) = &self.channels {
+            channels.read(&mut r)?;
+        }
+        let Some(ghosts) = self.ghosts.as_mut() else {
+            return Ok(());
+        };
         let mut charge = net::events::free_charge();
         let class_of = |index: u32| {
             let g = ghosts.ghost(index)?;
@@ -981,6 +1003,7 @@ impl ConnGame for TgeConn {
             feed.set_connect_block(block);
         }
         feed.set_reader(reader.clone());
+        feed.set_channels(vm.extension::<ClientChannels>());
         if let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) {
             feed.set_plugins((*plugins).clone());
         }

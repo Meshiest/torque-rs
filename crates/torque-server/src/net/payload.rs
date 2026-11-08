@@ -104,6 +104,11 @@ pub trait PayloadLayer {
     /// handshake).
     fn mark_peer(&mut self, _conn: ConnId) {}
 
+    /// The host marks the connection accepted just now as one whose client sent the bulk channels' names in its manifest, which
+    /// the server's gate then matched against its own: the client reads the channels' section, so a layer that writes one may
+    /// turn it on. Called after [`on_accept`](PayloadLayer::on_accept), before the first data packet.
+    fn mark_channels(&mut self, _conn: ConnId) {}
+
     /// Appends the payload to a data packet whose header and rate prefix are written. An error is a protocol error of the
     /// connection (an event no packet can carry): the packet is not sent and the host drops the peer with `Packet Error.`.
     fn write(&mut self, ctx: &mut ConnCtx<'_>, w: &mut BitWriter) -> Result<(), NetError>;

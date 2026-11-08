@@ -124,6 +124,7 @@ impl Client {
                 protocol,
                 ghost_bits: Some(ghost_bits),
                 extension: false,
+                channels: false,
             }),
         }
     }

@@ -26,6 +26,7 @@
 //! - [`control`], [`moves`], [`gameevents`]: the server head and the control section (`Camera::writePacketData`, the checksum, the
 //!   compression point), the client's move block and the server's bounded move list, and the small events (audio, path manager,
 //!   lightning).
+//! - [`chunk`]: bulk channels, large static data in chunks under a per-packet budget, reliable and ordered, with deltas ([`chunk::patch`]).
 //! - [`manifest`] and [`connect`]: the connection manifest (plugin versions, class and channel name tables, required mods), the
 //!   auth ticket and the gate a server judges a connect request with before its scripts see it; both ride after the request's
 //!   arguments, where a Torque server never reads.
@@ -38,6 +39,7 @@
 
 pub mod bits;
 pub mod cap;
+pub mod chunk;
 pub mod classes;
 pub mod client;
 pub mod connect;

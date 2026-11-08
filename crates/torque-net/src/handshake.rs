@@ -357,11 +357,31 @@ pub fn connect_accept(
     ghost_bits: u8,
     extension: bool,
 ) -> Vec<u8> {
+    connect_accept_with(profile, seq, protocol, ghost_bits, extension, false)
+}
+
+/// The word that ends an accept sent to a client whose manifest listed bulk channels, when the server's gate matched them: from the
+/// next packet on, the server writes the channels' section and the client reads it. Only a request that carried a manifest with
+/// channels is ever answered with it, so a peer without plugins sees Torque's accept.
+pub const CHANNELS_ACCEPT_WORD: u32 = 0x4c4e_4843;
+
+/// [`connect_accept`] that also says `channels` (see [`CHANNELS_ACCEPT_WORD`]), after the extension's word.
+pub fn connect_accept_with(
+    profile: &HandshakeProfile,
+    seq: u32,
+    protocol: u32,
+    ghost_bits: u8,
+    extension: bool,
+    channels: bool,
+) -> Vec<u8> {
     let mut w = header(profile.types.connect_accept, seq);
     w.write_u32(protocol);
     profile.form.write_accept(&mut w, protocol, ghost_bits);
     if let Some(ext) = profile.extension.as_ref().filter(|_| extension) {
         w.write_u32(ext.accept_word);
+    }
+    if channels {
+        w.write_u32(CHANNELS_ACCEPT_WORD);
     }
     w.into_bytes()
 }
@@ -383,6 +403,9 @@ pub struct Accept {
     /// The accept ended with the profile's extension word: the server granted the extension (only a request that named the
     /// extension's argument gets it).
     pub extension: bool,
+    /// The accept ended with [`CHANNELS_ACCEPT_WORD`]: the server's gate matched the bulk channels the client's manifest
+    /// listed, and it writes their section from its first data packet.
+    pub channels: bool,
 }
 
 /// The accept, read as a client of `profile` reads it: the protocol, what the profile's form reads after it (the ghost-id width
@@ -395,15 +418,25 @@ pub fn parse_accept(profile: &HandshakeProfile, data: &[u8]) -> Result<Accept, N
     let seq = r.read_u32()?;
     let protocol = r.read_u32()?;
     let ghost_bits = profile.form.read_accept(&mut r, protocol)?;
-    let extension = profile
-        .extension
-        .as_ref()
-        .is_some_and(|ext| r.read_u32().is_ok_and(|w| w == ext.accept_word));
+    let mut next = None;
+    let mut extension = false;
+    if let Some(ext) = profile.extension.as_ref() {
+        next = r.read_u32().ok();
+        if next == Some(ext.accept_word) {
+            extension = true;
+            next = r.read_u32().ok();
+        }
+    }
+    let channels = match next {
+        Some(word) => word == CHANNELS_ACCEPT_WORD,
+        None => r.read_u32().is_ok_and(|w| w == CHANNELS_ACCEPT_WORD),
+    };
     Ok(Accept {
         seq,
         protocol,
         ghost_bits,
         extension,
+        channels,
     })
 }
 
@@ -462,6 +495,9 @@ pub struct ServerConfig {
     /// A judgment of every request that passed the standard checks, before the host's scripts see it ([`ConnectGate`]); `None`
     /// is Torque's server, which reads nothing after the arguments.
     pub gate: Option<Arc<dyn ConnectGate>>,
+    /// The host has the bulk channels' layer installed: a client the gate says has the same channels
+    /// ([`ConnectGate::matches_channels`]) gets the accept's channels word ([`CHANNELS_ACCEPT_WORD`]). Off, no accept carries it.
+    pub channels: bool,
 }
 
 impl ServerConfig {
@@ -485,6 +521,7 @@ impl ServerConfig {
             packet_bytes: None,
             local_packet_bytes: None,
             gate: None,
+            channels: false,
         }
     }
 
@@ -636,6 +673,9 @@ pub struct Connection {
     pub local: bool,
     /// The connection has the profile's extension: the local connection, or a request that ended with the extension's argument.
     pub extension: bool,
+    /// The client's manifest listed bulk channels and this server's gate accepted it, so the channels are the same on both
+    /// sides: the accept told the client so ([`CHANNELS_ACCEPT_WORD`]) and the server writes the channels' section.
+    pub channels: bool,
     created: u32,
     packets: RateWindow,
     disconnects: RateWindow,
@@ -954,12 +994,14 @@ impl Server {
             && let Some(existing) = self.conns.get_mut(&id)
         {
             if existing.sequence == seq {
-                return Handled::Reply(connect_accept(
+                // The accept again, the same bytes (the first may have been lost): the channels word too.
+                return Handled::Reply(connect_accept_with(
                     &self.config.profile,
                     seq,
                     existing.protocol_version,
                     existing.ghost_bits,
                     existing.extension,
+                    existing.channels,
                 ));
             }
             if existing.sequence > seq {
@@ -1068,6 +1110,13 @@ impl Server {
                 }
                 let id = self.fresh_id();
                 let profile = &self.config.profile;
+                // The host writes channels, and the gate that accepted the request found its channels the same as its own.
+                let channels = self.config.channels
+                    && self
+                        .config
+                        .gate
+                        .as_ref()
+                        .is_some_and(|g| g.matches_channels(&request.fields));
                 let ghost_bits = self.network_ghost_bits(request.extension);
                 let mut protocol = Protocol::new(Role::Server, request.seq, self.config.rates, now);
                 protocol.set_pacing(self.config.pacing.clone());
@@ -1087,6 +1136,7 @@ impl Server {
                     pending: true,
                     local: false,
                     extension: request.extension,
+                    channels,
                     created: now,
                     packets: RateWindow::default(),
                     disconnects: RateWindow::default(),
@@ -1095,12 +1145,13 @@ impl Server {
                 self.conns.insert(id, conn);
                 Finished::Accepted {
                     conn: id,
-                    reply: connect_accept(
+                    reply: connect_accept_with(
                         &self.config.profile,
                         request.seq,
                         request.protocol_version,
                         ghost_bits,
                         request.extension,
+                        channels,
                     ),
                     replaced,
                 }
@@ -1139,7 +1190,7 @@ impl Server {
             pending: false,
             local: true,
             extension,
-
+            channels: false,
             created: now,
             packets: RateWindow::default(),
             disconnects: RateWindow::default(),

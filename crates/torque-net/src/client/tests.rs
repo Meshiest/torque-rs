@@ -76,6 +76,7 @@ fn the_datagram_decoder_takes_every_handshake_datagram_apart() {
             protocol: 12,
             ghost_bits: None,
             extension: false,
+            channels: false,
         }))
     );
     assert_eq!(

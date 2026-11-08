@@ -1,4 +1,4 @@
-//! What an engine says about its network surface: the plugins' network versions, the class and channel names plugins register, and
+//! What an engine says about its network surface: the plugins' network versions, the class names and bulk channels plugins register, and
 //! the auth provider ([`EngineBuilder::net`]). From these the engine builds the [`Manifest`] a client sends when it connects and the
 //! [`ManifestGate`] a server judges clients with ([`Engine::connect_block`], [`Engine::connect_gate`]).
 //!
@@ -38,6 +38,8 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+use torque_net::chunk::ChannelLimits;
+use torque_net::chunk::registry::{ChannelEntry, ChannelError, ChannelRegistry, ChunkChannel};
 use torque_net::connect::{AuthProvider, ConnectBlock, ManifestGate};
 use torque_net::manifest::Manifest;
 use torque_net::profile::HandshakeProfile;
@@ -52,7 +54,6 @@ struct AuthSlot(Arc<dyn AuthProvider>);
 enum NameTable {
     Ghost,
     Datablock,
-    Channel,
 }
 
 /// A name a plugin registered for the manifest.
@@ -93,9 +94,27 @@ impl NetRegistry<'_> {
         self.name(NameTable::Datablock, name.into())
     }
 
-    /// Lists a bulk channel in the manifest.
-    pub fn channel(&mut self, name: impl Into<String>) -> &mut Self {
-        self.name(NameTable::Channel, name.into())
+    /// Adds a bulk channel: large, mostly static data a server sends to each client in chunks (see
+    /// [`torque_net::chunk`]). `C::default()` is the channel's logic on each side, and `budget` the most bytes of each packet
+    /// it takes. The name is listed in the manifest, so a peer with other channels is refused. A name two plugins both use, or
+    /// a budget outside the limits, fails when the server or client is made ([`Engine::net_channels`]).
+    pub fn channel<C: ChunkChannel + Default>(
+        &mut self,
+        name: impl Into<String>,
+        budget: usize,
+    ) -> &mut Self {
+        self.channel_with(name, ChannelLimits::new(budget), C::default)
+    }
+
+    /// Adds the bulk channel `name` with all its limits and a logic made by `make` (once for each side and connection).
+    pub fn channel_with<C: ChunkChannel>(
+        &mut self,
+        name: impl Into<String>,
+        limits: ChannelLimits,
+        make: impl Fn() -> C + 'static,
+    ) -> &mut Self {
+        self.engine.push(ChannelEntry::new(name, limits, make));
+        self
     }
 
     fn name(&mut self, table: NameTable, name: String) -> &mut Self {
@@ -126,13 +145,20 @@ impl Engine {
         manifest
             .with_ghosts(names(NameTable::Ghost))
             .with_datablocks(names(NameTable::Datablock))
-            .with_channels(names(NameTable::Channel))
+            .with_channels(self.list::<ChannelEntry>().iter().map(ChannelEntry::name))
+    }
+
+    /// The bulk channels plugins added, in id order (sorted by name). Empty for an engine with none, whose packets are then
+    /// Torque's own.
+    pub fn net_channels(&self) -> Result<ChannelRegistry, ChannelError> {
+        ChannelRegistry::new(self.list::<ChannelEntry>())
     }
 
     /// Whether this engine says anything on the wire: a networked plugin, a registered name or an auth provider.
     pub fn is_networked(&self) -> bool {
         !self.net_versions().is_empty()
             || !self.list::<NetName>().is_empty()
+            || !self.list::<ChannelEntry>().is_empty()
             || self.auth().is_some()
     }
 

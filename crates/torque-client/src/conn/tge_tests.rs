@@ -587,6 +587,16 @@ fn networked_client(
 
 /// Runs a client of `client_engine` against a bare handshake server of `server_engine`; the reason the client was refused with.
 fn connect_between(client_engine: &Engine, server_engine: &Engine) -> Option<Vec<u8>> {
+    connect_through(client_engine, server_engine, false).0
+}
+
+/// [`connect_between`] that can make the server's gate say a client's channels match even when it listed none (a gate that
+/// lies, or an old one): the reason the client was refused with, and the lines its console printed.
+fn connect_through(
+    client_engine: &Engine,
+    server_engine: &Engine,
+    gate_says_channels: bool,
+) -> (Option<Vec<u8>>, Vec<String>) {
     use net::handshake::{Server, ServerConfig};
     use std::net::{Ipv4Addr, SocketAddrV4};
     let (mut vm, client, sent, incoming) = networked_client(client_engine);
@@ -596,9 +606,14 @@ fn connect_between(client_engine: &Engine, server_engine: &Engine) -> Option<Vec
     )
     .unwrap();
     let mut config = ServerConfig::new(8);
-    config.gate = server_engine
-        .connect_gate(&config.profile)
-        .map(|gate| std::sync::Arc::new(gate) as _);
+    config.channels = gate_says_channels;
+    config.gate = server_engine.connect_gate(&config.profile).map(|gate| {
+        if gate_says_channels {
+            std::sync::Arc::new(AlwaysChannels(gate)) as _
+        } else {
+            std::sync::Arc::new(gate) as _
+        }
+    });
     let mut server = Server::new(config, [3; 16]);
     let table = net::huffman::Table::torque();
     let peer = std::net::SocketAddr::from(([192, 168, 1, 5], 5000));
@@ -625,7 +640,42 @@ fn connect_between(client_engine: &Engine, server_engine: &Engine) -> Option<Vec
         crate::host::ClientPass::net(&crate::host::EnginePass, &mut vm, &client);
         crate::host::run_queued(&mut vm, &client);
     }
-    vm.global("$Why")
+    let lines = vm
+        .log()
+        .iter()
+        .map(|l| String::from_utf8_lossy(&l.text).into_owned())
+        .collect();
+    (vm.global("$Why"), lines)
+}
+
+/// A gate that accepts what the engine's does and says the channels match whatever the client listed.
+#[derive(Debug)]
+struct AlwaysChannels(net::connect::ManifestGate);
+
+impl net::connect::ConnectGate for AlwaysChannels {
+    fn check(
+        &self,
+        from: std::net::SocketAddr,
+        fields: &net::handshake::ConnectFields,
+    ) -> Result<Option<Vec<u8>>, Vec<u8>> {
+        self.0.check(from, fields)
+    }
+
+    fn matches_channels(&self, _: &net::handshake::ConnectFields) -> bool {
+        true
+    }
+}
+
+#[test]
+fn the_channels_word_sent_to_a_client_without_channels_is_ignored() {
+    // The server's accept ends with the word; this client has no channels, and connects as it always did.
+    let engine = rope_engine(2);
+    let (why, lines) = connect_through(&engine, &engine, true);
+    assert_eq!(why, None);
+    assert!(
+        lines.iter().any(|l| l == "Connection established"),
+        "{lines:?}"
+    );
 }
 
 #[test]

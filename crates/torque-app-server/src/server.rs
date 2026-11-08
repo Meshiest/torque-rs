@@ -25,6 +25,7 @@ use web_time::{Duration, Instant};
 use torque_engine::{Engine, EngineBuilder, ServerStage};
 use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
+use torque_server::net::channels;
 use torque_server::net::torque::TorqueNet;
 use torque_server::net::transport::{MemoryEnd, SharedTransport};
 use torque_server::net::{HostParts, NetShared};
@@ -219,6 +220,12 @@ impl GameServer {
         server
             .attach_net(net.passes)
             .map_err(|e| format!("the network host: {e:?}"))?;
+        // The engine's bulk channels go in each connection's packets; the hub a game sends through is an extension of the
+        // server's script engine.
+        let channels = engine.net_channels().map_err(|e| e.to_string())?;
+        if let Some(hub) = channels::install(&shared, channels) {
+            server.vm.set_extension(Rc::new(hub));
+        }
         for (name, value) in start.globals {
             server.vm.set_global(name, value);
         }

@@ -80,6 +80,11 @@ different.
 - Hardening against hostile input across the web stack: caps on requests, headers, frames, messages, bytes and
   connections (in all, per address and per second), timeouts, `Host` and origin checks, ICE checks and candidates
   filtered by source, and peers given stand-in addresses so per-address limits and bans hold.
+- Bulk channels for plugins (`torque::net::chunk`, `torque::server::net::channels`): large, mostly static data (a map's static
+  data, say) goes from the server to each client in chunks under a per-packet byte budget, reliable
+  and ordered per channel, with a snapshot and deltas (`chunk::patch`), what each client gets chosen per client, caps on
+  message size and backlog that refuse cleanly, and a fuzzed reader. They are turned on when the server's gate matches the
+  channels in the client's manifest (the accept says so); TGE's packets are unchanged for a connection without channels.
 - `torque-net::manifest` and `torque-net::connect`: a connection manifest (the plugins that have a network version, the
   handshake's protocol versions, the sorted ghost class, datablock class and channel names, the mods a server requires)
   and an auth ticket ride after the connect request's arguments, where a Torque server never reads. A server with a gate

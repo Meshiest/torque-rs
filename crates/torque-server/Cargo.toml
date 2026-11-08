@@ -19,6 +19,8 @@ web-time = "1.1"
 torque-ts-vm = { path = "../torque-ts-vm" }
 # The packet layer: datagram caps, the server query's request types, the bit streams.
 torque-net = { path = "../torque-net" }
+# The plugin registry the channels are added to.
+torque-engine = { path = "../torque-engine" }
 # The datablocks' computed values a game's record writer reads beside the host's view.
 torque-game = { path = "../torque-game" }
 # TGE's networked class lists, the default class table of a server's codecs; the net strings a ghost record packs.

@@ -28,6 +28,7 @@ use torque_client::net::{Datagrams, NetPolicy};
 use torque_client::state::ClientState;
 use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder, PluginGroup};
 use torque_gui::Gui;
+use torque_server::net::channels::ClientChannels;
 use torque_server::server::{GameServer as _, Server, TICK_MS};
 use torque_ts_text::{atof, atoi};
 use torque_ts_vm::host::MemFiles;
@@ -162,6 +163,11 @@ impl ClientBuilder {
         let link = open_socket(engine, &state, net)?;
         let wiring = Rc::new(ClientWiring::new(Rc::clone(&state), net));
         vm.set_extension(Rc::clone(&wiring));
+        // The engine's bulk channels (read from the front of each server packet once active).
+        let channels = engine.net_channels().map_err(|e| e.to_string())?;
+        if !channels.is_empty() {
+            vm.set_extension(Rc::new(ClientChannels::new(&channels)));
+        }
         replay(engine, ClientStage::Classes, &mut vm)?;
         if let Some(files) = files {
             vm.set_file_host(files);

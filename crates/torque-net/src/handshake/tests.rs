@@ -299,6 +299,7 @@ fn every_handshake_message_round_trips() {
             protocol: 9,
             ghost_bits: Some(18),
             extension: false,
+            channels: false,
         })
     );
     assert_eq!(
@@ -308,6 +309,7 @@ fn every_handshake_message_round_trips() {
             protocol: 7,
             ghost_bits: None,
             extension: false,
+            channels: false,
         })
     );
     // The extension's accept: the same three words and the word, which a reader without the extension never reaches.
@@ -320,6 +322,22 @@ fn every_handshake_message_round_trips() {
         ..prof()
     };
     assert!(!parse_accept(&without, &ext).unwrap().extension);
+    // Channels: the word after the extension's, or in its place, and the reader of a profile without the extension finds it.
+    let both = connect_accept_with(&p, 7, 9, 18, true, true);
+    assert_eq!(both.len(), 1 + 4 + 4 + 4 + 4 + 4);
+    let a = parse_accept(&p, &both).unwrap();
+    assert!(a.extension && a.channels);
+    let a = parse_accept(&p, &connect_accept_with(&p, 7, 9, 18, false, true)).unwrap();
+    assert!(!a.extension && a.channels);
+    let a = parse_accept(
+        &without,
+        &connect_accept_with(&without, 7, 9, 18, false, true),
+    )
+    .unwrap();
+    assert!(!a.extension && a.channels);
+    assert!(!parse_accept(&p, &ext).unwrap().channels);
+    // Torque's accept with no channels asked is what it always was.
+    assert_eq!(connect_accept_with(&p, 7, 9, 18, true, false), ext);
     // The writer always sends the width (13 bytes); the reader takes it only above protocol 7.
     assert_eq!(connect_accept(&p, 7, 7, 18, false).len(), 1 + 4 + 4 + 4);
     // Torque's accept is the protocol alone, whatever is asked.
@@ -333,6 +351,7 @@ fn every_handshake_message_round_trips() {
             protocol: 12,
             ghost_bits: None,
             extension: false,
+            channels: false,
         })
     );
 }

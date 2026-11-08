@@ -2,12 +2,13 @@
 //! packets ([`payload`]), the codecs a game's protocol sets ([`codecs`]), the frame of the datablock events ([`datablock`]),
 //! and the host itself over a game's parts ([`host`]: [`NetShared`], [`NetGame`]): the passes ([`pump`]), the connections
 //! ([`conn`], [`local`]), the ghosting natives and the `NetObject` behaviour ([`ghosting`]), the event layer ([`events`],
-//! [`hostevent`]), the datablock chain ([`datablocks`]), the ghost hub ([`ghosts`]), the command natives ([`commands`]) and the server query's answers ([`query`]); [`torque`] is Torque's
+//! [`hostevent`]), the bulk channels ([`channels`]), the datablock chain ([`datablocks`]), the ghost hub ([`ghosts`]), the command natives ([`commands`]) and the server query's answers ([`query`]); [`torque`] is Torque's
 //! own net game and the network host the main loop drives. With the `web` feature, [`web`] is the transport browsers join
 //! over (WebSocket, with the game's page served on the same port) and the one that takes UDP and the web together. With the
 //! `rooms` feature, [`room`] is the protocol of a room service, by which a player who hosts a game and the players who
 //! join it find each other.
 
+pub mod channels;
 pub mod codecs;
 pub mod commands;
 pub mod conn;

@@ -7,6 +7,12 @@ use torque_net::handshake::ConnectFields;
 use super::*;
 use crate::{BuildError, Plugin, PluginId, PluginType};
 
+/// A channel with nothing to say.
+#[derive(Default)]
+struct Nothing;
+
+impl torque_net::chunk::registry::ChunkChannel for Nothing {}
+
 /// A test plugin's name: each one is a type, as plugins are.
 trait Name: 'static {
     const ID: &'static str;
@@ -97,7 +103,7 @@ fn the_manifest_lists_the_networked_plugins_and_the_names_registered() {
             e.net()
                 .ghost_class("Arena")
                 .ghost_class("Rope")
-                .channel("terrain");
+                .channel::<Nothing>("terrain", 100);
         }))
         .add_plugins(plugin::<Local>(None, nothing))
         .build()
@@ -210,7 +216,7 @@ fn odd_or_large_name_tables_still_make_a_block() {
         .add_plugins(plugin::<Rope>(Some(1), |e| {
             for i in 0..400 {
                 e.net()
-                    .channel(format!("channel-with-a-rather-long-name-{i:04}"));
+                    .channel::<Nothing>(format!("channel-with-a-rather-long-name-{i:04}"), 100);
             }
         }))
         .build()

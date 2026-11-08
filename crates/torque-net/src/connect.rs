@@ -178,6 +178,14 @@ pub trait ConnectGate: fmt::Debug + Send + Sync {
     /// `Ok` accepts the request (the identity an auth provider verified, if any); `Err` refuses it with the reason the client
     /// shows (cut at 255 bytes on the wire).
     fn check(&self, from: SocketAddr, fields: &ConnectFields) -> Result<Option<Vec<u8>>, Vec<u8>>;
+
+    /// Whether the request this gate accepted lists bulk channels and they are this server's own (the same names), so the
+    /// server may write the channels' section for the connection and tell the client so in its accept. The built-in
+    /// [`ManifestGate`] compares the channel names; a gate that does not says `false` (the default), and its connections never
+    /// get channels.
+    fn matches_channels(&self, _fields: &ConnectFields) -> bool {
+        false
+    }
 }
 
 /// Auth tickets: the client's half makes one for the server it connects to, the server's half verifies it. A game supplies one
@@ -233,6 +241,16 @@ pub fn reason(text: &str) -> Vec<u8> {
 }
 
 impl ConnectGate for ManifestGate {
+    fn matches_channels(&self, fields: &ConnectFields) -> bool {
+        let theirs = fields
+            .block
+            .as_ref()
+            .and_then(|b| b.manifest.as_ref())
+            .map(|m| &m.channels);
+        self.manifest.channels.count() > 0
+            && theirs.is_some_and(|t| self.manifest.channels.same_as(t))
+    }
+
     fn check(&self, from: SocketAddr, fields: &ConnectFields) -> Result<Option<Vec<u8>>, Vec<u8>> {
         let block = fields.block.as_ref();
         let bare;

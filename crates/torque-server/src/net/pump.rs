@@ -498,6 +498,10 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
                     |c| c.ghost_bits,
                 );
                 sh.payload.on_accept(conn, obj, bits);
+                // The client's channels matched the gate's: it reads the channels' section from the first data packet.
+                if sh.hs.connection(conn).is_some_and(|c| c.channels) {
+                    sh.payload.mark_channels(conn);
+                }
                 // A client of the engine's own (the handshake's extension): new objects are scoped as they come and its
                 // datablocks go with the codecs' window for it.
                 if request.extension {
