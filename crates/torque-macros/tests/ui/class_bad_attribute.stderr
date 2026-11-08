@@ -1,0 +1,35 @@
+error: expected `name = "..."`, `parent = "..."`, `preload = path` or `crate = path`
+ --> tests/ui/class_bad_attribute.rs:4:9
+  |
+4 | #[class(kind = "datablock")]
+  |         ^^^^
+
+error: a class name is ASCII letters, digits and '_', not starting with a digit
+  --> tests/ui/class_bad_attribute.rs:10:16
+   |
+10 | #[class(name = "9Lives")]
+   |                ^^^^^^^^
+
+error: expected `default = ..`, `range = low..=high`, `name = "..."` or `doc = "..."`
+  --> tests/ui/class_bad_attribute.rs:17:13
+   |
+17 |     #[field(colour = 1)]
+   |             ^^^^^^
+
+error: a default is a literal: a number, `true`/`false` or text (it is kept as text in a table, so it cannot be computed)
+  --> tests/ui/class_bad_attribute.rs:23:23
+   |
+23 |     #[field(default = 1 + 1)]
+   |                       ^^^^^
+
+error: `MAXLENGTH` is also the console field of `max_length` (names compare without case): give one a `name = "..."`
+  --> tests/ui/class_bad_attribute.rs:31:5
+   |
+31 |     other: f32,
+   |     ^^^^^
+
+error: a console class is a struct with named fields
+  --> tests/ui/class_bad_attribute.rs:35:8
+   |
+35 | struct Tuple(i32);
+   |        ^^^^^

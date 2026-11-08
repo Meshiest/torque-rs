@@ -65,10 +65,12 @@
 extern crate self as torque_engine;
 
 mod builder;
+pub mod class;
 mod engine;
 mod group;
 pub mod param;
 mod plugin;
+pub mod prefs;
 mod recipe;
 mod run;
 pub mod script;
@@ -82,6 +84,7 @@ mod script_tests;
 mod tests;
 
 pub use builder::{BuildError, EngineBuilder, Warning};
+pub use class::{ClassField, ClassInfo, ClassReadError, FieldDecl, ScriptClass};
 pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
 pub use param::{
@@ -89,13 +92,165 @@ pub use param::{
     Slot, This, VmMut, VmRef,
 };
 pub use plugin::{Plugin, PluginId, PluginSet, PluginType, Requires};
+pub use prefs::{Pref, PrefDecl, PrefKind, PrefType, Prefs, VmPrefs};
 pub use recipe::{ClientStage, ClientTick, RecipeError, ServerStage, Stage};
 pub use run::{RunError, Runner};
 pub use script::{IntoNative, ScriptRegistry, TypedNative};
+/// Declares a console class as a struct with one typed field for each console field, for
+/// [`ScriptRegistry::class`](ScriptRegistry::class): the struct then implements [`ScriptClass`].
+///
+/// `#[class(name = "RopeData", parent = "SimDataBlock", preload = RopeData::check)]`: `name` is the console class (the
+/// struct's name when left out), `parent` the class it goes below (`SimObject` when left out), `preload` a function
+/// `fn(&Self, &mut Vm, ObjId) -> Result<(), String>` run for each datablock of the class once it is registered, with the
+/// datablock's fields read into the struct: an `Err` prints the preload failure with its text and deletes the datablock.
+/// Only a class below `SimDataBlock` has a preload: the engine runs it for datablocks alone, so on any other class the
+/// hook never runs. Each field takes
+/// `#[field(...)]`:
+///
+/// - `name = ".."`: the console field's name; the Rust name in camelCase when left out (`max_length` is `maxLength`).
+/// - `doc = ".."`: what it is for, when the doc comment is not it. `obj.dump()` lists it under `Field Docs:`.
+/// - `range = low..=high`: a script's write is clamped to it (a warning says so), for `f32`, `i32`, `u8` and `u16`.
+/// - `default = ..`: a literal, what a fresh object reads (the type's zero when left out).
+///
+/// The field types are `i32`, `u8`, `u16`, `f32`, `bool`, `String`, [`Filename`], and the arrays `[f32; 3]`
+/// (`Point3F`), `[f32; 2]` (`Point2F`), `[i32; 2]` (`Point2I`), `[f32; 4]` (`ColorF`) and `[u8; 4]` (`ColorI`)
+/// ([`ClassField`]): a script writes and reads them by the console's rules for the console field type.
+///
+/// ```
+/// use torque_engine::{EngineClass, Filename, ScriptClass};
+///
+/// #[derive(EngineClass)]
+/// #[class(name = "RopeData", parent = "SimDataBlock")]
+/// struct RopeData {
+///     /// How many pieces the rope is cut into.
+///     #[field(range = 2..=64, default = 8)]
+///     segments: i32,
+///     length: f32,
+///     material: Filename,
+/// }
+///
+/// assert_eq!(RopeData::NAME, "RopeData");
+/// let names: Vec<_> = RopeData::FIELDS.iter().map(|f| f.name).collect();
+/// assert_eq!(names, ["segments", "length", "material"]);
+/// assert_eq!(RopeData::FIELDS[0].range_text().as_deref(), Some("2 to 64"));
+/// ```
+///
+/// A field type that is not a console field type:
+///
+/// ```compile_fail,E0277
+/// use torque_engine::EngineClass;
+///
+/// #[derive(EngineClass)]
+/// struct Odd {
+///     ids: Vec<i32>,
+/// }
+/// ```
+///
+/// A range of the wrong type:
+///
+/// ```compile_fail,E0308
+/// use torque_engine::EngineClass;
+///
+/// #[derive(EngineClass)]
+/// struct Odd {
+///     #[field(range = 0.0..=1.0)]
+///     count: i32,
+/// }
+/// ```
+pub use torque_macros::EngineClass;
 /// Implements [`PluginType`] for a plugin type: the id is the package's name and the type's, as a path
 /// (`my_game::ArenaPlugin`), or `#[plugin(id = "...")]`. `#[plugin(crate = path)]` names this crate when it is reached
 /// through another path, such as `torque::engine`. See [`PluginType`].
 pub use torque_macros::PluginId;
+/// Declares a struct of typed preferences kept in `$Pref::...` globals, for
+/// [`ScriptRegistry::prefs`](ScriptRegistry::prefs): the struct then implements [`Prefs`].
+///
+/// `#[prefs(prefix = "$Pref::Pad")]` is the globals' common start. Each field takes `#[pref(...)]`:
+///
+/// - `default = ..` (required): a literal of the field's type (`0.15`, `true`, `"text"`, `-1`); a script engine has the
+///   global set to it before any script runs.
+/// - `range = low..=high`: a read clamps the value to it.
+/// - `name = "DeadZone"`: the global's last part; the field's name in PascalCase when left out (`dead_zone` is
+///   `$Pref::Pad::DeadZone`).
+/// - `doc = ".."`: what it is for, when the doc comment is not it.
+///
+/// The field types are `i32`, `u32`, `f32`, `bool` and `String` ([`PrefType`]). `crate = path` in `#[prefs(..)]` names this
+/// crate when the manifest does not (it is found as `torque-engine`, or as the `torque` crate's `engine`).
+///
+/// ```
+/// use torque_engine::Prefs;
+///
+/// #[derive(Prefs)]
+/// #[prefs(prefix = "$Pref::Pad")]
+/// struct PadPrefs {
+///     /// How far the stick must move before it counts.
+///     #[pref(default = 0.15, range = 0.0..=0.9)]
+///     dead_zone: f32,
+///     #[pref(default = true)]
+///     invert_y: bool,
+///     #[pref(default = "default", name = "Profile")]
+///     active_profile: String,
+/// }
+///
+/// let names: Vec<_> = PadPrefs::PREFS.iter().map(|p| p.name).collect();
+/// assert_eq!(names, ["$Pref::Pad::DeadZone", "$Pref::Pad::InvertY", "$Pref::Pad::Profile"]);
+/// assert_eq!(PadPrefs::PREFS[0].default, "0.15");
+/// assert_eq!(PadPrefs::defaults().dead_zone, 0.15);
+/// ```
+///
+/// A default of the wrong type, a range that does not fit the field, a default outside its range, and a field type that
+/// is not a pref type do not compile. A default of the wrong type:
+///
+/// ```compile_fail,E0308
+/// use torque_engine::Prefs;
+///
+/// #[derive(Prefs)]
+/// #[prefs(prefix = "$Pref::Pad")]
+/// struct PadPrefs {
+///     #[pref(default = "fast")]
+///     speed: f32,
+/// }
+/// ```
+///
+/// A range of the wrong type (whole numbers for a float):
+///
+/// ```compile_fail,E0308
+/// use torque_engine::Prefs;
+///
+/// #[derive(Prefs)]
+/// #[prefs(prefix = "$Pref::Pad")]
+/// struct PadPrefs {
+///     #[pref(default = 0.5, range = 0..=1)]
+///     dead_zone: f32,
+/// }
+/// ```
+///
+/// A default outside the range:
+///
+/// ```compile_fail,E0080
+/// use torque_engine::Prefs;
+///
+/// #[derive(Prefs)]
+/// #[prefs(prefix = "$Pref::Pad")]
+/// struct PadPrefs {
+///     #[pref(default = 2.0, range = 0.0..=0.9)]
+///     dead_zone: f32,
+/// }
+/// ```
+///
+/// A field type that is not a pref type:
+///
+/// ```compile_fail,E0277
+/// use torque_engine::Prefs;
+///
+/// #[derive(Prefs)]
+/// #[prefs(prefix = "$Pref::Pad")]
+/// struct PadPrefs {
+///     #[pref(default = 0)]
+///     buttons: Vec<u8>,
+/// }
+/// ```
+pub use torque_macros::Prefs;
 /// Declares a free function as a TorqueScript native, for [`ScriptRegistry::natives`] (listed with [`natives!`]).
 ///
 /// `#[function(ns = "Pad", name = "setDeadZone")]`: `ns` is the namespace (the global one when left out), `name` the
@@ -222,4 +377,4 @@ pub use torque_macros::function;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub use torque_macros::methods;
-pub use torque_ts_vm::convert::{Rest, ScriptError};
+pub use torque_ts_vm::convert::{Filename, Rest, ScriptError};

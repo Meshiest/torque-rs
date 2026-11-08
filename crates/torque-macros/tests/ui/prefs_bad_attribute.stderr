@@ -1,0 +1,41 @@
+error: give the prefix of the globals: `#[prefs(prefix = "$Pref::Pad")]`
+ --> tests/ui/prefs_bad_attribute.rs:4:8
+  |
+4 | struct NoPrefix {
+  |        ^^^^^^^^
+
+error: a prefix is `$`, then names of letters, digits and '_' joined by `::` (`$Pref::Pad`)
+  --> tests/ui/prefs_bad_attribute.rs:10:18
+   |
+10 | #[prefs(prefix = "Pref::Pad")]
+   |                  ^^^^^^^^^^^
+
+error: expected `default = ..`, `range = low..=high`, `name = "..."` or `doc = "..."`
+  --> tests/ui/prefs_bad_attribute.rs:19:12
+   |
+19 |     #[pref(speed = 2)]
+   |            ^^^^^
+
+error: a pref needs a default: `#[pref(default = ..)]`
+  --> tests/ui/prefs_bad_attribute.rs:27:5
+   |
+27 |     a: i32,
+   |     ^
+
+error: a default is a literal: a number, `true`/`false` or text (it is kept as text in a table, so it cannot be computed)
+  --> tests/ui/prefs_bad_attribute.rs:33:22
+   |
+33 |     #[pref(default = 1 + 2)]
+   |                      ^^^^^
+
+error: a range is `low..=high`, both ends given
+  --> tests/ui/prefs_bad_attribute.rs:40:33
+   |
+40 |     #[pref(default = 1, range = 0..5)]
+   |                                 ^
+
+error: `$Pref::Pad::DEADZONE` is also the global of `dead_zone` (names compare without case): give one a `name = "..."`
+  --> tests/ui/prefs_bad_attribute.rs:50:5
+   |
+50 |     other: i32,
+   |     ^^^^^

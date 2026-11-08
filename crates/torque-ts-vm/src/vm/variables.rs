@@ -60,6 +60,30 @@ pub(super) fn register(vm: &mut Vm) {
     );
 }
 
+/// Which globals an export writes: those whose name matches a pattern, or those named in a list.
+#[derive(Clone, Copy)]
+enum Select<'a> {
+    Pattern(&'a [u8]),
+    Names(&'a [&'a [u8]]),
+}
+
+impl Select<'_> {
+    /// An upper bound of the work deciding on a name of `len` bytes takes, charged before it is decided.
+    fn cost(&self, len: usize) -> u64 {
+        match self {
+            Select::Pattern(pattern) => match_cost(pattern, len),
+            Select::Names(names) => names.iter().map(|n| n.len().min(len) as u64 + 1).sum(),
+        }
+    }
+
+    fn keeps(&self, name: &[u8]) -> bool {
+        match self {
+            Select::Pattern(pattern) => is_match(pattern, name),
+            Select::Names(names) => names.iter().any(|n| n.eq_ignore_ascii_case(name)),
+        }
+    }
+}
+
 /// What `export_lines` found: the lines to print or write, and the names it skipped.
 type ExportLines = (Vec<Vec<u8>>, Vec<Vec<u8>>);
 
@@ -101,7 +125,28 @@ impl Vm {
         file: Option<&[u8]>,
         append: bool,
     ) -> Result<(), VmError> {
-        let (lines, skipped) = self.export_lines(pattern, file.is_some())?;
+        self.export_selected(Select::Pattern(pattern), file, append)
+    }
+
+    /// [`export_variables`](Self::export_variables) for the globals named in `names` (compared ignoring case) instead of
+    /// a pattern: one scan, one sort, the same lines in the same order as `export` of a pattern matching exactly those
+    /// names, and one write (the file is replaced unless `append`).
+    pub fn export_named_variables(
+        &mut self,
+        names: &[&[u8]],
+        file: Option<&[u8]>,
+        append: bool,
+    ) -> Result<(), VmError> {
+        self.export_selected(Select::Names(names), file, append)
+    }
+
+    fn export_selected(
+        &mut self,
+        select: Select,
+        file: Option<&[u8]>,
+        append: bool,
+    ) -> Result<(), VmError> {
+        let (lines, skipped) = self.export_lines(select, file.is_some())?;
         for name in skipped {
             let shown = lossy(name.get(..MAX_LINE).unwrap_or(&name));
             self.warn(format!(
@@ -126,8 +171,8 @@ impl Vm {
     /// out: a name with a byte outside `[A-Za-z0-9_:$]` (`name_is_exportable`). Does not run script code
     /// and holds no borrow of the variables afterwards.
     #[inline(never)]
-    fn export_lines(&self, pattern: &[u8], to_file: bool) -> Result<ExportLines, VmError> {
-        let found = self.matching_globals(pattern)?;
+    fn export_lines(&self, select: Select, to_file: bool) -> Result<ExportLines, VmError> {
+        let found = self.matching_globals(select)?;
         let end: &[u8] = if to_file { b"\r\n" } else { b"" };
         let mut lines = Vec::with_capacity(found.len());
         let mut skipped = Vec::new();
@@ -160,13 +205,13 @@ impl Vm {
     /// costs a unit and the bound of its match ([`match_cost`]), charged before the match, and the sort
     /// costs the bytes of the names it compares (about one pass per level of the merge): a hostile pattern
     /// or a crowd of long names ends the run at its step limit.
-    fn matching_globals(&self, pattern: &[u8]) -> Result<Vec<&Entry>, VmError> {
+    fn matching_globals(&self, select: Select) -> Result<Vec<&Entry>, VmError> {
         let mut found: Vec<&Entry> = Vec::new();
         for entry in self.globals.iter() {
             self.objects
-                .add_work(1u64.saturating_add(match_cost(pattern, entry.name().len())));
+                .add_work(1u64.saturating_add(select.cost(entry.name().len())));
             self.ensure_budget()?;
-            if is_match(pattern, entry.name()) {
+            if select.keeps(entry.name()) {
                 found.push(entry);
             }
         }

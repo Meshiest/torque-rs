@@ -120,6 +120,46 @@ impl<'a> FromScript<'a> for Cow<'a, str> {
     }
 }
 
+/// A file name: text a script means as a path (`./art/rope.png`). It reads and returns as text; as a class field
+/// (`#[derive(EngineClass)]`) it has the `filename` type, whose writes expand `./` and `~/` against the running script.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Filename(pub String);
+
+impl Filename {
+    /// The name as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for Filename {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for Filename {
+    fn from(name: &str) -> Filename {
+        Filename(name.to_string())
+    }
+}
+
+impl FromScript<'_> for Filename {
+    /// As [`String`].
+    fn from_script(arg: &[u8]) -> Result<Self, ConvertError> {
+        Ok(Filename(
+            String::from_utf8_lossy(until_nul(arg)).into_owned(),
+        ))
+    }
+}
+
+impl IntoScript for Filename {
+    fn into_script(self) -> Native {
+        Native::Str(self.0.into_bytes())
+    }
+}
+
 impl IntoScript for () {
     fn into_script(self) -> Native {
         Native::Void
@@ -216,7 +256,7 @@ macro_rules! owned_script_args {
     };
 }
 
-owned_script_args!(i32, u32, f32, bool, String);
+owned_script_args!(i32, u32, f32, bool, String, Filename);
 
 impl ScriptArg for &str {
     type Item<'a> = &'a str;

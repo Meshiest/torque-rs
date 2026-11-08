@@ -231,7 +231,7 @@ fn native_option(meta: &syn::meta::ParseNestedMeta, options: &mut Options) -> sy
     Ok(true)
 }
 
-fn is_script_name(name: &str) -> bool {
+pub(crate) fn is_script_name(name: &str) -> bool {
     name.bytes().next().is_some_and(|b| !b.is_ascii_digit())
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }

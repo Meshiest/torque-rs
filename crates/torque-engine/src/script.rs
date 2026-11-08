@@ -391,10 +391,10 @@ all_arities!(native_fns);
 /// One thing the registry declared.
 pub(crate) struct ScriptEntry {
     side: Side,
-    kind: EntryKind,
+    pub(crate) kind: EntryKind,
 }
 
-enum EntryKind {
+pub(crate) enum EntryKind {
     Native {
         namespace: String,
         name: String,
@@ -407,6 +407,8 @@ enum EntryKind {
         name: String,
         default: String,
     },
+    Pref(&'static crate::PrefDecl),
+    Class(crate::class::ClassInfo),
 }
 
 impl ScriptEntry {
@@ -421,6 +423,8 @@ impl ScriptEntry {
                 dev,
             } => native.install(vm, engine, callee(namespace, name, *method), usage, *dev),
             EntryKind::Global { name, default } => vm.set_global(name, default),
+            EntryKind::Pref(decl) => decl.install(vm),
+            EntryKind::Class(class) => class.install(vm),
         }
     }
 }
@@ -666,7 +670,7 @@ impl<'b> ScriptRegistry<'b> {
         })
     }
 
-    fn declare(
+    pub(crate) fn declare(
         &mut self,
         key: String,
         kind: &'static str,

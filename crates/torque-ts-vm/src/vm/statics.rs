@@ -256,12 +256,7 @@ impl Vm {
     ///
     /// With `inherit`, the slots start from the class's layout (the parent's defaults) instead of the type's zero, so
     /// the list only needs the values the class changes.
-    pub(crate) fn apply_defaults(
-        &mut self,
-        class: ClassId,
-        defaults: &[(&str, &str)],
-        inherit: bool,
-    ) {
+    pub fn apply_defaults(&mut self, class: ClassId, defaults: &[(&str, &str)], inherit: bool) {
         let Some(layout) = self
             .objects
             .classes

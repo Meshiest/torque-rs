@@ -155,6 +155,15 @@ fn dump_lines(vm: &Vm, id: ObjId) -> Result<Vec<Vec<u8>>, VmError> {
         pay(line.len() as u64)?;
         lines.push(line);
     }
+    // Only a class that documents its fields has this section; the console's own classes print what they always did.
+    let documented = documented_fields(vm, object.class());
+    if !documented.is_empty() {
+        lines.push(b"Field Docs:".to_vec());
+        for line in documented {
+            pay(line.len() as u64)?;
+            lines.push(line);
+        }
+    }
     lines.push(b"Tagged Fields:".to_vec());
     pay(object.fields.len() as u64)?;
     for (name, value) in object.fields.iter() {
@@ -172,6 +181,49 @@ fn dump_lines(vm: &Vm, id: ObjId) -> Result<Vec<Vec<u8>>, VmError> {
         lines.push(line);
     }
     Ok(lines)
+}
+
+/// The lines of a dump's `Field Docs:` section: each documented static field of the class (and its ancestors) as
+/// `  name - what it is for (range lo to hi)`, sorted by name ignoring case.
+fn documented_fields(vm: &Vm, class: crate::sim::ClassId) -> Vec<Vec<u8>> {
+    let Some(class) = vm.objects.classes.get(class) else {
+        return Vec::new();
+    };
+    let mut docs: Vec<(Vec<u8>, Vec<u8>)> = class
+        .layout
+        .fields
+        .iter()
+        .filter_map(|(field, _)| {
+            let doc = field.doc?;
+            let mut line = b"  ".to_vec();
+            line.extend_from_slice(field.name.get(..DUMP_PART_BYTES).unwrap_or(&field.name));
+            line.extend_from_slice(b" - ");
+            line.extend_from_slice(
+                doc.as_bytes()
+                    .get(..DUMP_PART_BYTES)
+                    .unwrap_or(doc.as_bytes()),
+            );
+            if let Some(range) = field.validator.map(range_text) {
+                line.extend_from_slice(format!(" ({range})").as_bytes());
+            }
+            Some((crate::text::fold(&field.name), line))
+        })
+        .collect();
+    docs.sort_by(|a, b| a.0.cmp(&b.0));
+    docs.into_iter().map(|(_, line)| line).collect()
+}
+
+/// A validator's range as a dump shows it: `0 to 0.9`.
+fn range_text(validator: crate::classes::Validator) -> String {
+    use crate::classes::Validator;
+    match validator {
+        Validator::FloatRange { min, max } => format!(
+            "{} to {}",
+            crate::text::format_g(crate::text::to_f64(min)),
+            crate::text::format_g(crate::text::to_f64(max))
+        ),
+        Validator::ScaledIntRange { min, max, .. } => format!("{min} to {max}"),
+    }
 }
 
 pub(super) fn register_object_methods(vm: &mut Vm) {

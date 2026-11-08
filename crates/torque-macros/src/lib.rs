@@ -1,5 +1,6 @@
-//! Attribute and derive macros: Rust functions as TorqueScript natives (`#[function]`, `#[methods]`) and plugin ids
-//! (`#[derive(PluginId)]`), used through `torque_engine`, which re-exports them.
+//! Attribute and derive macros: Rust functions as TorqueScript natives (`#[function]`, `#[methods]`), plugin ids
+//! (`#[derive(PluginId)]`), preferences (`#[derive(Prefs)]`) and console classes (`#[derive(EngineClass)]`), used
+//! through `torque_engine`, which re-exports them.
 //!
 //! The entry points here only hand their tokens to `torque-macros-core`, where the code generation is tested.
 
@@ -43,6 +44,22 @@ pub fn function(args: TokenStream, item: TokenStream) -> TokenStream {
 pub fn methods(args: TokenStream, item: TokenStream) -> TokenStream {
     let engine = torque_macros_core::find_engine();
     torque_macros_core::methods(args.into(), item.into(), &engine).into()
+}
+
+/// Declares a struct of typed preferences kept in `$Pref::...` globals: see `torque_engine::Prefs`, which re-exports it
+/// with an example.
+#[proc_macro_derive(Prefs, attributes(prefs, pref))]
+pub fn derive_prefs(input: TokenStream) -> TokenStream {
+    let engine = torque_macros_core::find_engine();
+    torque_macros_core::derive_prefs(input.into(), &engine).into()
+}
+
+/// Declares a console class as a struct with one typed field for each console field: see
+/// `torque_engine::EngineClass`, which re-exports it with an example.
+#[proc_macro_derive(EngineClass, attributes(class, field))]
+pub fn derive_engine_class(input: TokenStream) -> TokenStream {
+    let engine = torque_macros_core::find_engine();
+    torque_macros_core::derive_class(input.into(), &engine).into()
 }
 
 /// Leaves the item it is written on exactly as it is.

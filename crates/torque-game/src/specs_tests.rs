@@ -80,6 +80,7 @@ fn a_class_the_host_registered_first_keeps_its_own_fields() {
         count: 1,
         offset: None,
         validator: None,
+        doc: None,
     }];
     vm.register_class_typed("NetObject", "SimObject", own, true)
         .unwrap();

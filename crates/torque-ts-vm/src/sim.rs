@@ -96,6 +96,9 @@ pub struct StaticField {
     /// The byte offset of element 0 in the C++ object: fields of one class chain at the same offset share storage.
     pub offset: Option<u32>,
     pub validator: Option<Validator>,
+    /// What the field is for, shown by `dump` beside its range: set by Rust classes that document their fields
+    /// (`#[derive(EngineClass)]`); the console's own classes have none.
+    pub doc: Option<&'static str>,
 }
 
 impl StaticField {
@@ -107,6 +110,7 @@ impl StaticField {
             count: 1,
             offset: None,
             validator: None,
+            doc: None,
         }
     }
 }

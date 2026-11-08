@@ -226,6 +226,68 @@ renames it); a method with `&self` or `&mut self` is called on its object's Rust
 block. A signature the engine cannot run (a parameter type it does not know, two `VmMut`s, an `Option` before a required
 argument, `self` in a free function) does not compile.
 
+### Prefs and classes
+
+Two derives declare what a plugin keeps in the script engine, and `engine.script()` registers them in every script
+engine of the side before its scripts run.
+
+**Prefs** are typed `$Pref::...` globals. The struct's fields are the prefs: the prefix is the globals' common start, and
+a field's global is the prefix, `::` and the field's name in PascalCase (`name = "..."` changes the last part). A default
+is required, a literal of the field's type; `range = low..=high` clamps what is read.
+
+```rust,ignore
+#[derive(torque::Prefs)]
+#[prefs(prefix = "$Pref::Pad")]
+struct PadPrefs {
+    /// How far the stick must move before it counts.
+    #[pref(default = 0.15, range = 0.0..=0.9)]
+    dead_zone: f32,
+    #[pref(default = true)]
+    invert_y: bool,
+}
+
+engine.script().prefs::<PadPrefs>();   // $Pref::Pad::DeadZone = 0.15 and $Pref::Pad::InvertY = 1, before any script
+
+let pad = vm.prefs::<PadPrefs>();      // `use torque::engine::VmPrefs`: the current values, DeadZone clamped to 0..0.9
+fn rumble(pad: Pref<PadPrefs>) {}      // or as a parameter of a native or a recipe (never beside a `VmMut`)
+```
+
+The field types are `i32`, `u32`, `f32`, `bool` and `String`, read by the rules of a native's arguments (`"12abc"` is 12).
+Prefs are plain globals, so a game's `export("$Pref::*", "prefs.cs")` saves them, and `engine.export_prefs(&mut vm,
+file)` saves exactly the registered ones. A script that sets a pref out of range keeps what it wrote in the global; the
+clamp applies when Rust reads it. `engine.prefs()` lists the declarations (name, default, range, doc comment).
+
+**Classes** are console classes with typed fields. `#[class(name, parent)]` gives the class and what it goes below
+(`SimObject` when left out); each field is a console field of the Rust type's console type, named in camelCase.
+
+```rust,ignore
+#[derive(torque::EngineClass)]
+#[class(name = "RopeData", parent = "SimDataBlock", preload = RopeData::check)]
+struct RopeData {
+    /// How many pieces the rope is cut into.
+    #[field(range = 2..=64, default = 8)]
+    segments: i32,
+    length: f32,
+    material: Filename,
+}
+
+impl RopeData {
+    // Runs for each RopeData datablock once it is registered, with the fields read; an Err deletes the datablock.
+    // Only datablocks are preloaded, so a class below SimDataBlock is the one that can have this hook.
+    fn check(&self, vm: &mut Vm, id: ObjId) -> Result<(), String> { /* ... */ Ok(()) }
+}
+
+engine.script().class::<RopeData>();
+let rope = RopeData::read(&vm, id)?;   // `use torque::engine::ScriptClass`: the object's fields as the struct
+```
+
+A script writes the fields by the console's rules for the type: `dAtoi` for `i32`, `dAtof` for `f32`, `./` expanded in a
+`Filename`, and a write outside `range` is clamped with a warning. The field types are `i32`, `u8`, `u16`, `f32`, `bool`,
+`String`, `Filename`, and the arrays `[f32; 3]` (a point), `[f32; 2]`, `[i32; 2]`, `[f32; 4]` (a color) and `[u8; 4]`.
+`obj.dump()` prints a `Field Docs:` section for a class whose fields have doc comments: each field's name, its comment and
+its range. The console's own classes are not declared this way and dump as they always did. A wrong attribute, a range or
+default of the wrong type, and a field type that is not a console type do not compile.
+
 ### Recipes by stage
 
 `engine.server(stage, recipe)` and `engine.client(stage, recipe)` record a recipe. A recipe gets the new script engine

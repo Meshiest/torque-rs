@@ -229,6 +229,7 @@ fn install_spec_impl(
         count: f.count,
         offset: f.offset,
         validator: f.validator,
+        doc: None,
     };
     let mut added = false;
     let class = match vm.objects().classes.find(spec.name.as_bytes()) {

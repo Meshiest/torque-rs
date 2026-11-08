@@ -7,9 +7,15 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 
+mod attrs;
+mod class;
 mod native;
+mod prefs;
 
+pub use attrs::pascal_case;
+pub use class::derive_class;
 pub use native::{camel_case, doc_text, first_line, function, methods};
+pub use prefs::derive_prefs;
 
 /// The expansion of `#[passthrough]`: the item exactly as written.
 ///

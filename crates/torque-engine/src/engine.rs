@@ -8,7 +8,7 @@ use torque_ts_vm::vm::Vm;
 
 use crate::param::{Res, ResMut, ResourceError};
 use crate::recipe::Recipe;
-use crate::script::{ScriptEntry, replay_entries};
+use crate::script::{EntryKind, ScriptEntry, replay_entries};
 use crate::slots::{Resources, Store};
 use crate::{EngineBuilder, PluginId, PluginType, RecipeError, Stage, Warning};
 
@@ -186,6 +186,11 @@ impl Engine {
     /// The value of the slot of type `T`, if a plugin set it.
     pub fn slot<T: ?Sized + 'static>(&self) -> Option<Rc<T>> {
         self.0.store.slot()
+    }
+
+    /// What the script registry declared, in order.
+    pub(crate) fn script_entries(&self) -> impl Iterator<Item = &EntryKind> + '_ {
+        self.0.script.iter().map(|entry| &entry.kind)
     }
 
     /// The list of `T`s, in the order the plugins pushed them.
