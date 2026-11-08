@@ -11,6 +11,7 @@
 [Input sources from plugins](input-sources.md)
 [Camera modes from plugins](camera-modes.md)
 [Assets from plugins](asset-loaders.md)
+[Mods](mods.md)
 [Games in a browser](web-pages.md)
 
 # Reference

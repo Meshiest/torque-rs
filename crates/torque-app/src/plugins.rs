@@ -9,6 +9,7 @@
 //!
 //! | Plugin | Id | Role and stage | Wraps |
 //! |--------|----|----------------|-------|
+//! | [`ModsPlugin`] | `torque.mods` | both, server `Prepare` and client `Game` (the files), `Entry` (the scripts) | local mods: folders and zips mounted over the game's files, their scripts run as packages (`torque_mods`) |
 //! | [`GameClassesPlugin`] | `torque.game-classes` | both, `Classes` | `torque_game::specs::install` |
 //! | [`ServerGamePlugin`] | `torque.server-game` | server, `Game` | `torque_server::game::install` |
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
@@ -60,8 +61,9 @@ use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
 
 pub use torque_app_server::plugins::{
-    ContentFormatPlugins, GameClassesPlugin, MinimalPlugins, NetHostPlugin, ServerGamePlugin,
-    ServerTransportPlugins, ServerWiring, SimClassesPlugin, TerrainPlugin, WaterPlugin,
+    ContentFormatPlugins, GameClassesPlugin, MinimalPlugins, ModsPlugin, NetHostPlugin,
+    ServerGamePlugin, ServerTransportPlugins, ServerWiring, SimClassesPlugin, TerrainPlugin,
+    WaterPlugin,
 };
 
 pub use crate::camera_modes::CameraModesPlugin;
@@ -98,6 +100,7 @@ pub struct DefaultPlugins;
 impl PluginGroup for DefaultPlugins {
     fn build(self) -> PluginGroupBuilder {
         let group = PluginGroupBuilder::new()
+            .add(ModsPlugin::default())
             .add(GameClassesPlugin)
             .add(ServerGamePlugin)
             .add(TerrainPlugin)

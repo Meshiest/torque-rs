@@ -980,7 +980,12 @@ impl<'a> Cx<'a> {
         };
         let name = ident(fetch(code, ip)?)?.unwrap_or_default();
         let namespace = ident(fetch(code, ip + 2)?)?.unwrap_or_default();
-        let package = ident(fetch(code, ip + 4)?)?;
+        let package = ident(fetch(code, ip + 4)?)?.or_else(|| {
+            self.vm
+                .namespaces()
+                .declare_package_for(block.name())
+                .map(<[u8]>::to_vec)
+        });
         let has_body = fetch(code, ip + 6)? & 1 != 0;
         let label = if namespace.is_empty() {
             b"(null)".to_vec()

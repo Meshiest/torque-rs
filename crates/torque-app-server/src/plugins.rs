@@ -8,6 +8,7 @@
 //!
 //! | Plugin | Id | Role and stage | Wraps |
 //! |--------|----|----------------|-------|
+//! | [`ModsPlugin`] | `torque.mods` | both, server `Prepare` and client `Game` (the files), `Entry` (the scripts) | local mods: folders and zips mounted over the game's files, their scripts run as packages (`torque_mods`) |
 //! | [`GameClassesPlugin`] | `torque.game-classes` | both, `Classes` | `torque_game::specs::install` |
 //! | [`ServerGamePlugin`] | `torque.server-game` | server, `Game` | `torque_server::game::install` |
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
@@ -37,6 +38,7 @@ use torque_ts_vm::vm::Vm;
 use crate::run::DedicatedRunnerPlugin;
 pub use crate::transports::ServerTransportPlugins;
 pub use torque_content::ContentFormatPlugins;
+pub use torque_mods::ModsPlugin;
 
 /// What a dedicated server needs and nothing else: TGE's game classes, the server game, the terrain and water blocks, the
 /// network host and the content formats' asset loaders ([`ContentFormatPlugins`]), with the runner that runs a
@@ -62,6 +64,7 @@ pub struct MinimalPlugins;
 impl PluginGroup for MinimalPlugins {
     fn build(self) -> PluginGroupBuilder {
         PluginGroupBuilder::new()
+            .add(ModsPlugin::default())
             .add(GameClassesPlugin)
             .add(ServerGamePlugin)
             .add(TerrainPlugin)

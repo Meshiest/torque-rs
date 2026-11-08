@@ -22,6 +22,9 @@ pub enum ServerStage {
     World,
     /// The network host and its passes.
     Net,
+    /// Once the server's entry script has run, before its start function: where mods' scripts run (the engine's
+    /// own hosts replay it; a host that runs no entry script replays it when it would have).
+    Entry,
 }
 
 impl ServerStage {
@@ -32,6 +35,7 @@ impl ServerStage {
         ServerStage::Game,
         ServerStage::World,
         ServerStage::Net,
+        ServerStage::Entry,
     ];
 }
 
@@ -56,6 +60,8 @@ pub enum ClientStage {
     Query,
     /// The game's own natives and globals, just before its client script runs.
     Natives,
+    /// Once the client's entry script has run: where mods' scripts run (`ClientBuilder::exec_entry` replays it).
+    Entry,
     /// The client host that runs the frames.
     Host,
     /// Once the window exists.
@@ -73,6 +79,7 @@ impl ClientStage {
         ClientStage::Conn,
         ClientStage::Query,
         ClientStage::Natives,
+        ClientStage::Entry,
         ClientStage::Host,
         ClientStage::Window,
     ];

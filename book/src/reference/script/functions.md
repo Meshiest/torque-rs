@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-192 entries in 1 namespace.
+201 entries in 1 namespace.
 
 ## Global
 
@@ -159,6 +159,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `detag(taggedText)` - the text after a tag
   *arguments: 1; server and client*
+- `disableMod(id)` - switches a mod off, and the mods that require it (its files unmount and its package is deactivated); false, with the reason on the console, when it cannot
+  *arguments: 1; server and client*
 - `drawDebugArrow(start, end, color [, seconds [, depth]])`
   *arguments: 3 to 5; client; needs `torque.gizmos`*
 - `drawDebugBox(min, max, color [, seconds [, depth]])`
@@ -173,8 +175,12 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 3 to 5; client; needs `torque.gizmos`*
 - `drawDebugText(position, text, color [, seconds [, depth]])`
   *arguments: 3 to 5; client; needs `torque.gizmos`*
+- `dumpMods()` - lists the mods on the console: order, id, version, status and where each came from
+  *arguments: none; server and client*
 - `echo(text...)` - prints a line
   *arguments: at least 1; server and client*
+- `enableMod(id)` - switches a mod on (its files mount again and its scripts run for the stages that ran); false, with the reason on the console, when it cannot
+  *arguments: 1; server and client*
 - `error(text...)` - prints an error line
   *arguments: at least 1; server and client*
 - `eval(code)` - compiles and runs the code, returns what it returned
@@ -227,6 +233,14 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2; server and client*
 - `getMin(a, b)` - the smaller number
   *arguments: 2; server and client*
+- `getModCount()` - how many mods were found, the ones left out too
+  *arguments: none; server and client*
+- `getModField(id, field)` - one fact about a mod: version, name, description, author, category, status (pending, enabled, disabled or skipped), reason, source, package, files, bytes, clientside, or a field the layout kept; empty for a mod or a fact there is not
+  *arguments: 2; server and client*
+- `getModList([all])` - the ids of the loaded mods in load order, separated by spaces (all of them, the ones left out too, with \`true\`)
+  *arguments: 0 to 1; server and client*
+- `getModStages()` - the declared load stages, separated by spaces
+  *arguments: none; server and client*
 - `getRandom([a [, b]])` - a random number: in (0, 1\], from 0 to a, or from a to b
   *arguments: 0 to 2; server and client*
 - `getRandomSeed()` - the random generator's state
@@ -273,6 +287,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: none; client*
 - `isFunction([namespace,] name)` - whether a function of that name exists
   *arguments: 1 to 2; server and client*
+- `isModEnabled(id)` - whether the mod is loaded and switched on
+  *arguments: 1; server and client*
 - `isObject(object)` - whether the object exists
   *arguments: 1; server and client*
 - `isPackage(name)` - whether a package of that name exists
@@ -281,6 +297,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `joinLookupResult()`
   *arguments: none; client; needs `torque.hosting`*
+- `loadMods(stage)` - runs the entry scripts of a load stage of every enabled mod, in load order, and returns how many ran (a stage runs once for a mod)
+  *arguments: 1; server and client*
 - `ltrim(text)` - the text without leading white space
   *arguments: 1; server and client*
 - `mAbs(x)` - the absolute value

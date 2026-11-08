@@ -354,7 +354,10 @@ deactivatePackage 2..2 deactivatePackage(name) - takes the package and the ones 
 deleteDataBlocks 1..1 deleteDataBlocks() - deletes every datablock, as before loading another set of them
 deleteVariables 2..2 deleteVariables(pattern) - deletes the global variables whose names match
 detag 2..2 detag(taggedText) - the text after a tag
+disableMod 2..2 disableMod(id) - switches a mod off, and the mods that require it (its files unmount and its package is deactivated); false, with the reason on the console, when it cannot
+dumpMods 1..1 dumpMods() - lists the mods on the console: order, id, version, status and where each came from
 echo 2..* echo(text...) - prints a line
+enableMod 2..2 enableMod(id) - switches a mod on (its files mount again and its scripts run for the stages that ran); false, with the reason on the console, when it cannot
 error 2..* error(text...) - prints an error line
 eval 2..2 eval(code) - compiles and runs the code, returns what it returned
 exec 2..4 exec(file [, noCalls]) - compiles and runs a script file
@@ -381,6 +384,10 @@ getFileCRC 2..2 getFileCRC(file) - the file's checksum
 getFileCount 2..2 getFileCount(pattern) - how many files match
 getMax 3..3 getMax(a, b) - the larger number
 getMin 3..3 getMin(a, b) - the smaller number
+getModCount 1..1 getModCount() - how many mods were found, the ones left out too
+getModField 3..3 getModField(id, field) - one fact about a mod: version, name, description, author, category, status (pending, enabled, disabled or skipped), reason, source, package, files, bytes, clientside, or a field the layout kept; empty for a mod or a fact there is not
+getModList 1..2 getModList([all]) - the ids of the loaded mods in load order, separated by spaces (all of them, the ones left out too, with `true`)
+getModStages 1..1 getModStages() - the declared load stages, separated by spaces
 getRandom 1..3 getRandom([a [, b]]) - a random number: in (0, 1], from 0 to a, or from a to b
 getRandomSeed 1..1 getRandomSeed() - the random generator's state
 getRealTime 1..1 getRealTime() - a millisecond counter of the computer
@@ -402,10 +409,12 @@ isEventPending 2..2 isEventPending(scheduleId) - whether the scheduled call is s
 isFile 2..2 isFile(file) - whether the file exists
 isFullScreen 1..1 Is the game running full-screen?
 isFunction 2..3 isFunction([namespace,] name) - whether a function of that name exists
+isModEnabled 2..2 isModEnabled(id) - whether the mod is loaded and switched on
 isObject 2..2 isObject(object) - whether the object exists
 isPackage 2..2 isPackage(name) - whether a package of that name exists
 isWriteableFileName 2..2 isWriteableFileName(file) - whether a script may write that file
 joinLookupResult 1..1 joinLookupResult();
+loadMods 2..2 loadMods(stage) - runs the entry scripts of a load stage of every enabled mod, in load order, and returns how many ran (a stage runs once for a mod)
 lockMouse 2..2 (bool isLocked)Lock the mouse (or not, depending on the argument's value) to the window.
 ltrim 2..2 ltrim(text) - the text without leading white space
 mAbs 2..2 mAbs(x) - the absolute value

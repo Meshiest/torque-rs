@@ -262,6 +262,7 @@ impl GameServer {
         {
             return Err(format!("{entry} is not in the game folder"));
         }
+        replay(engine, ServerStage::Entry, &mut server.vm)?;
         let args: Vec<Vec<u8>> = start.args.iter().map(|a| a.as_bytes().to_vec()).collect();
         server
             .vm

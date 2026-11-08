@@ -134,6 +134,13 @@ different.
   `DefaultPlugins` and `MinimalPlugins`): glTF, OBJ and Blockbench as shapes, `.dif` and `.ter` as data, the map layer
   through an importer, and a `.map` built into an interior; OBJ, Blockbench and `.map` are added off and take trusted files
   only. A game or its `game.toml` turns each on or off by id.
+- `torque-mods`: local mods as a plugin (`ModsPlugin`, in `DefaultPlugins` and `MinimalPlugins`): folders and zips with a
+  `mod.toml`, mounted over the game's files within caps on size, count, depth and compression ratio, their scripts run by load
+  stage as TorqueScript packages (disabling a mod deactivates it), `getModList`, `enableMod`, `disableMod` and `loadMods` from
+  script, and files a server sends mounted as content only (never script). How mods are found, named, ordered and enabled are
+  slots a game replaces (`engine.mods().layout(..)`); the `[mods]` section of `game.toml` and `$Pref::Mods::Disabled` are the
+  default settings. Adds a `torque::mods` module, the `Entry` stage of servers and clients, and `Vm::wrap_file_host`,
+  `Namespaces::set_declare_package` and `Vm::exec_policy`.
 - Every reader bounds its counts, offsets, sizes and paths, and font and secret files are checked before they are read.
 
 #### Tooling

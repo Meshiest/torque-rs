@@ -621,6 +621,15 @@ impl Vm {
         self.seed_names();
     }
 
+    /// Replaces the files scripts load with what `wrap` makes of them: a layer over the host that is there, which it must
+    /// keep serving whatever it does not change. The names of the new host's list go into the string table as for
+    /// [`set_file_host`](Self::set_file_host).
+    pub fn wrap_file_host(&mut self, wrap: impl FnOnce(Box<dyn FileHost>) -> Box<dyn FileHost>) {
+        let inner = std::mem::replace(&mut self.files, Box::new(NoFiles));
+        self.files = wrap(inner);
+        self.seed_names();
+    }
+
     /// Sets the clocks scripts read (the default is [`SystemClock`]).
     pub fn set_clock(&mut self, clock: impl Clock + 'static) {
         self.clock = Box::new(clock);

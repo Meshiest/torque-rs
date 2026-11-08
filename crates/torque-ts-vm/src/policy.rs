@@ -312,6 +312,11 @@ impl Vm {
         self.policies_mut().alloc = Some(policy);
     }
 
+    /// The checks `exec` makes before it looks a file up, if a host installed some.
+    pub fn exec_policy(&self) -> Option<Rc<dyn ExecPolicy>> {
+        self.policies().exec.clone()
+    }
+
     /// Installs the checks `exec` makes before it looks a file up.
     pub fn set_exec_policy(&mut self, policy: Rc<dyn ExecPolicy>) {
         self.policies_mut().exec = Some(policy);

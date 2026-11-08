@@ -1013,7 +1013,12 @@ impl<'a> Cx<'a> {
         };
         let name = ident(fetch(code, ip)?)?.unwrap_or_default();
         let namespace = ident(fetch(code, ip + 1)?)?.unwrap_or_default();
-        let package = ident(fetch(code, ip + 2)?)?;
+        let package = ident(fetch(code, ip + 2)?)?.or_else(|| {
+            self.vm
+                .namespaces()
+                .declare_package_for(block.name())
+                .map(<[u8]>::to_vec)
+        });
         let has_body = fetch(code, ip + 3)? != 0;
         let end = fetch(code, ip + 4)? as usize;
         // Under `nocalls` the whole declaration is skipped. Otherwise `Namespace::find(namespace, package)` comes

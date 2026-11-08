@@ -429,3 +429,29 @@ fn check_total(bytes: &[u8], round: usize) {
         }
     }
 }
+
+#[test]
+fn the_mods_section_reads_and_turns_the_plugin_off() {
+    use torque_mods::{ModsConfig, ModsPlugin};
+
+    let config = parse("[mods]\nenabled = false\nfolder = \"addons\"\ndisable = [\"a\", \"b\"]\n");
+    assert!(!config.mods.enabled);
+    assert_eq!(config.mods.folder, "addons");
+    assert_eq!(config.mods.disable, ["a", "b"]);
+    assert!(config.warnings.is_empty(), "{:?}", config.warnings);
+    // The default is mods on, in `mods`.
+    assert_eq!(parse("").mods, ModsConfig::default());
+
+    let engine = EngineBuilder::new()
+        .add_plugins(MinimalPlugins)
+        .config(&config)
+        .build()
+        .unwrap();
+    assert!(!engine.is_plugin_added::<ModsPlugin>());
+    assert_eq!(*engine.resource::<ModsConfig>().unwrap(), config.mods);
+
+    // A folder that climbs out of the game's files is an error, as for the entry scripts.
+    assert!(GameConfig::parse("[mods]\nfolder = \"../x\"\n").is_err());
+    // An unknown key is a warning.
+    assert_eq!(parse("[mods]\nspeed = 1\n").warnings.len(), 1);
+}

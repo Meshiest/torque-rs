@@ -13,6 +13,11 @@
 //!
 //! [runner]
 //! id = "torque.dedicated-runner"   # which runner plugin runs the game
+//!
+//! [mods]
+//! enabled = true            # false turns the mods plugin off
+//! folder = "mods"           # the folder of the game's files searched for mods
+//! disable = ["some-mod"]    # ids of mods that start disabled
 //! ```
 //!
 //! Every key is optional, and a game with no `game.toml` runs as it always did. [`GameConfig::load`] reads the file from the
@@ -45,6 +50,7 @@ use std::fmt;
 
 use serde::Deserialize;
 use torque_engine::{Engine, EngineBuilder};
+use torque_mods::ModsConfig;
 
 use crate::files::GameFiles;
 
@@ -89,6 +95,8 @@ pub struct GameConfig {
     pub enable: Vec<String>,
     /// `[runner] id`: the runner plugin that runs the game.
     pub runner: Option<String>,
+    /// `[mods]`: whether mods load, where they are searched for and which start disabled.
+    pub mods: ModsConfig,
     /// What the parse skipped: a key it does not know, an id in both lists. Shown with the engine's warnings.
     pub warnings: Vec<String>,
 }
@@ -102,6 +110,7 @@ impl Default for GameConfig {
             disable: Vec::new(),
             enable: Vec::new(),
             runner: None,
+            mods: ModsConfig::default(),
             warnings: Vec::new(),
         }
     }
@@ -143,6 +152,7 @@ struct Raw {
     game: RawGame,
     plugins: RawPlugins,
     runner: RawRunner,
+    mods: RawMods,
     #[serde(flatten)]
     extra: toml::Table,
 }
@@ -162,6 +172,16 @@ struct RawGame {
 struct RawPlugins {
     disable: Vec<String>,
     enable: Vec<String>,
+    #[serde(flatten)]
+    extra: toml::Table,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawMods {
+    enabled: Option<bool>,
+    folder: Option<String>,
+    disable: Vec<String>,
     #[serde(flatten)]
     extra: toml::Table,
 }
@@ -222,6 +242,7 @@ impl GameConfig {
             ("game.", &raw.game.extra),
             ("plugins.", &raw.plugins.extra),
             ("runner.", &raw.runner.extra),
+            ("mods.", &raw.mods.extra),
         ] {
             for key in extra.keys() {
                 config.warnings.push(format!(
@@ -255,6 +276,13 @@ impl GameConfig {
             .id
             .map(|id| check_id("runner.id", id))
             .transpose()?;
+        if let Some(enabled) = raw.mods.enabled {
+            config.mods.enabled = enabled;
+        }
+        if let Some(folder) = raw.mods.folder {
+            config.mods.folder = check_script("mods.folder", &folder)?;
+        }
+        config.mods.disable = check_ids("mods.disable", raw.mods.disable)?;
         Ok(config)
     }
 }
@@ -386,6 +414,10 @@ impl EngineConfig for EngineBuilder {
         for id in &config.enable {
             self.enable_id(id);
         }
+        if !config.mods.enabled {
+            self.disable_id("torque.mods");
+        }
+        self.insert_resource(config.mods.clone());
         self.insert_resource(config.clone())
     }
 }

@@ -25,6 +25,7 @@ torque-gui = { path = "../torque-gui", optional = true }
 torque-images = { path = "../torque-images", optional = true }
 torque-mapcore = { path = "../torque-mapcore", optional = true }
 torque-maps = { path = "../torque-maps", optional = true }
+torque-mods = { path = "../torque-mods", optional = true }
 torque-net = { path = "../torque-net", optional = true }
 torque-resource = { path = "../torque-resource", optional = true }
 torque-scene = { path = "../torque-scene", optional = true }
@@ -44,7 +45,7 @@ torque-app = { path = "../torque-app", optional = true, default-features = false
 # Everything that needs no GPU, no window and no system library.
 default = [
     "script", "collide", "shapes", "sim", "vehicle", "maps", "net", "ghosts", "ghost-world", "resource", "scene", "game",
-    "server", "images", "fonts", "gui", "audio", "client", "engine", "app-server", "content",
+    "server", "images", "fonts", "gui", "audio", "client", "engine", "app-server", "content", "mods",
 ]
 # TorqueScript: the text rules, compiled scripts, the compiler and the runtime (`torque::script`).
 script = ["dep:torque-ts-text", "dep:torque-ts-bytecode", "dep:torque-ts-compiler", "dep:torque-ts-vm"]
@@ -53,6 +54,9 @@ collide = ["dep:torque-collide", "dep:torque-mapcore"]
 engine = ["dep:torque-engine", "script"]
 # The content formats as asset loaders (`torque::content`): glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer.
 content = ["dep:torque-content", "engine"]
+# Local mods (`torque::mods`): folders and zips of scripts and assets mounted over a game's files, with replaceable rules for how
+# they are found, ordered and enabled.
+mods = ["dep:torque-mods", "engine", "resource"]
 shapes = ["dep:torque-shapes"]
 # Builds shape models from code: nodes, box and prism meshes, details, materials and sequences.
 shape-builder = ["dep:torque-shape-builder", "shapes"]

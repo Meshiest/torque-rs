@@ -2,6 +2,8 @@
 
 # Prefs
 
-Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 0 prefs.
+Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 1 prefs.
 
-No plugin of `DefaultPlugins` declares a pref yet.
+| Pref | Type | Default | Range | What it is for | Where |
+|---|---|---|---|---|---|
+| `$Pref::Mods::Disabled` | string | `` |  | The ids of the mods that are switched off, separated by spaces. The game's prefs file keeps it. | server and client |

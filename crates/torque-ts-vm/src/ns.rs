@@ -131,6 +131,27 @@ pub enum Activation {
     LimitReached,
 }
 
+/// Whether a file (its code block's name) is one a [`DeclareScope`] applies to.
+type AppliesFn = Rc<dyn Fn(&[u8]) -> bool>;
+
+/// A package that declarations go into without saying so, and the files it applies to
+/// ([`Namespaces::set_declare_package`]).
+#[derive(Clone)]
+pub struct DeclareScope {
+    package: Vec<u8>,
+    applies: AppliesFn,
+}
+
+impl DeclareScope {
+    /// Declarations go into `package` when `applies` says the file (its name as the code block has it) is one of the scope's.
+    pub fn new(package: &[u8], applies: impl Fn(&[u8]) -> bool + 'static) -> DeclareScope {
+        DeclareScope {
+            package: package.to_vec(),
+            applies: Rc::new(applies),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Namespaces {
     /// How many packages can be active at once, when not [`MAX_ACTIVE_PACKAGES`] ([`set_max_active`](Self::set_max_active)).
@@ -144,6 +165,9 @@ pub struct Namespaces {
     package_names: Vec<Vec<u8>>,
     /// Active packages in activation order (the last one is on top).
     active: Vec<PackageId>,
+    /// The package a function declaration with no package of its own goes into, for the files it applies to
+    /// ([`set_declare_package`](Self::set_declare_package)).
+    declare_package: Option<DeclareScope>,
     /// Layers visited and packages scanned by the walks since the last `take_work`.
     work: Cell<u64>,
     /// Counts the changes of the tables ([`generation`](Self::generation)).
@@ -771,6 +795,24 @@ impl Namespaces {
             .and_then(|id| self.package_names.get(*id as usize))
             .cloned()
             .unwrap_or_else(|| package.to_vec())
+    }
+
+    /// Makes a function declaration that names no package of its own go into `scope`'s package (made if it is new), when the
+    /// file the declaration is in is one the scope applies to, until this is called again: how a host runs a file as one
+    /// package without the file saying so. A declaration that names a package keeps it, and one in another file (a file the
+    /// scripts `exec`) is declared as usual. Returns the scope that was set, so a caller that nests puts it back afterwards.
+    pub fn set_declare_package(&mut self, scope: Option<DeclareScope>) -> Option<DeclareScope> {
+        if let Some(scope) = &scope {
+            self.intern_package(&scope.package);
+        }
+        std::mem::replace(&mut self.declare_package, scope)
+    }
+
+    /// The package a function declared in the file `file` (the code block's name) goes into when it names none
+    /// ([`set_declare_package`](Self::set_declare_package)).
+    pub fn declare_package_for(&self, file: Option<&[u8]>) -> Option<&[u8]> {
+        let scope = self.declare_package.as_ref()?;
+        (scope.applies)(file?).then_some(scope.package.as_slice())
     }
 
     /// How many packages can be active at once.

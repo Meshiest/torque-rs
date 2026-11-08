@@ -21,6 +21,8 @@ torque-collide = { path = "../torque-collide" }
 torque-content = { path = "../torque-content" }
 torque-engine = { path = "../torque-engine" }
 torque-game = { path = "../torque-game" }
+# Local mods (`ModsPlugin`, in `MinimalPlugins`): folders and zips mounted over the game's files.
+torque-mods = { path = "../torque-mods" }
 # A TerrainBlock's file and its heightfield.
 torque-mapcore = { path = "../torque-mapcore" }
 torque-maps = { path = "../torque-maps" }

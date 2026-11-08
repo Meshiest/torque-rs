@@ -14,6 +14,7 @@
 //! | `collide` | `collide` | `torque-collide` | convexes, GJK, polygon lists, working sets, object type masks |
 //! | `engine` | `engine` | `torque-engine` | plugins, plugin groups and the engine builder that replays their recipes into each script engine |
 //! | `content` | `content` | `torque-content` | the content formats as asset loaders: glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer |
+//! | `mods` | `mods` | `torque-mods` | local mods: folders and zips of scripts and assets mounted over a game's files, with replaceable rules for finding, ordering and enabling them |
 //! | `shapes` | `shapes` | `torque-shapes` | DTS shapes and DSQ sequences, collision meshes, animated poses |
 //! | `sim` | `sim` | `torque-sim` | the process list, players, AI players, items, projectiles, mounted images |
 //! | `vehicle` | `vehicle` | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
@@ -105,6 +106,8 @@ pub use torque_images as images;
 pub use torque_mapcore as mapcore;
 #[cfg(feature = "maps")]
 pub use torque_maps as maps;
+#[cfg(feature = "mods")]
+pub use torque_mods as mods;
 #[cfg(feature = "net")]
 pub use torque_net as net;
 #[cfg(feature = "resource")]

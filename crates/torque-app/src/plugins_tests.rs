@@ -22,10 +22,10 @@ use crate::plugins::{
     ActionMapPlugin, AmbientOcclusionPlugin, AntiAliasingPlugin, AudioPlugin, BloomPlugin,
     CameraModesPlugin, ClearWaterPlugin, ClientHostPlugin, CloudsPlugin, ConnPlugin,
     DefaultPlugins, GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, LivePerfPlugin,
-    MinimalPlugins, NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin, RendererPlugin,
-    RendererSlotPlugin, ScreenPlugin, ServerGamePlugin, ServerQueryPlugin, ShadowsPlugin,
-    SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin, TransparencyPlugin, VolumetricsPlugin,
-    WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin, ZoomPlugin,
+    MinimalPlugins, ModsPlugin, NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin,
+    RendererPlugin, RendererSlotPlugin, ScreenPlugin, ServerGamePlugin, ServerQueryPlugin,
+    ShadowsPlugin, SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin, TransparencyPlugin,
+    VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin, ZoomPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -124,6 +124,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
     assert_eq!(
         wiring,
         [
+            ModsPlugin::ID,
             GameClassesPlugin::ID,
             ServerGamePlugin::ID,
             TerrainPlugin::ID,
@@ -169,6 +170,7 @@ fn the_plugin_ids_are_the_stable_names() {
     assert_eq!(
         ids,
         [
+            "torque.mods",
             "torque.game-classes",
             "torque.server-game",
             "torque.terrain",
@@ -214,17 +216,18 @@ fn each_stage_replays_its_plugins_in_add_order() {
     };
     let server = |stage| at(Stage::Server(stage));
     assert_eq!(server(ServerStage::Classes), ["torque.game-classes"]);
-    assert!(server(ServerStage::Prepare).is_empty());
+    assert_eq!(server(ServerStage::Prepare), ["torque.mods"]);
     assert_eq!(server(ServerStage::Game), ["torque.server-game"]);
     assert_eq!(
         server(ServerStage::World),
         ["torque.terrain", "torque.water"]
     );
     assert_eq!(server(ServerStage::Net), ["torque.net-host"]);
+    assert_eq!(server(ServerStage::Entry), ["torque.mods"]);
 
     let client = |stage| at(Stage::Client(stage));
     assert_eq!(client(ClientStage::Classes), ["torque.game-classes"]);
-    assert!(client(ClientStage::Game).is_empty());
+    assert_eq!(client(ClientStage::Game), ["torque.mods"]);
     assert_eq!(client(ClientStage::Gui), ["torque.gui"]);
     assert_eq!(client(ClientStage::Input), ["torque.action-map"]);
     assert_eq!(client(ClientStage::Screen), ["torque.screen"]);
@@ -238,6 +241,7 @@ fn each_stage_replays_its_plugins_in_add_order() {
             "torque.renderer-slot"
         ]
     );
+    assert_eq!(client(ClientStage::Entry), ["torque.mods"]);
     assert!(client(ClientStage::Host).is_empty());
     // The page bridge is filed for web builds only, by the web page runner.
     assert_eq!(
@@ -293,7 +297,7 @@ fn a_server_replays_every_server_stage_in_order_and_no_client_stage() {
     };
     assert_eq!(
         trace("$Trace::Server").as_deref(),
-        Some("Classes Prepare Game World Net ")
+        Some("Classes Prepare Game World Net Entry ")
     );
     assert_eq!(trace("$Trace::Client"), None);
 }

@@ -6,7 +6,8 @@ use torque_engine::{Engine, EngineBuilder, PluginGroup, PluginId, PluginType};
 use torque_ts_vm::host::MemFiles;
 
 use crate::plugins::{
-    GameClassesPlugin, MinimalPlugins, NetHostPlugin, ServerGamePlugin, TerrainPlugin, WaterPlugin,
+    GameClassesPlugin, MinimalPlugins, ModsPlugin, NetHostPlugin, ServerGamePlugin, TerrainPlugin,
+    WaterPlugin,
 };
 use crate::run::DedicatedRunnerPlugin;
 use crate::server::{GameServer, Listen, ServerStart};
@@ -80,6 +81,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
     assert_eq!(
         wiring,
         [
+            ModsPlugin::ID,
             GameClassesPlugin::ID,
             ServerGamePlugin::ID,
             TerrainPlugin::ID,
@@ -102,6 +104,7 @@ fn the_plugin_ids_are_the_stable_names() {
     assert_eq!(
         ids,
         [
+            "torque.mods",
             "torque.game-classes",
             "torque.server-game",
             "torque.terrain",

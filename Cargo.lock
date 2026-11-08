@@ -3312,6 +3312,7 @@ dependencies = [
  "torque-images",
  "torque-mapcore",
  "torque-maps",
+ "torque-mods",
  "torque-net",
  "torque-resource",
  "torque-scene",
@@ -3380,6 +3381,7 @@ dependencies = [
  "torque-game",
  "torque-mapcore",
  "torque-maps",
+ "torque-mods",
  "torque-net",
  "torque-server",
  "torque-sim",
@@ -3721,6 +3723,19 @@ name = "torque-modelcore"
 version = "0.1.0"
 dependencies = [
  "glam",
+]
+
+[[package]]
+name = "torque-mods"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+ "torque-engine",
+ "torque-resource",
+ "torque-ts-vm",
+ "zip",
 ]
 
 [[package]]
