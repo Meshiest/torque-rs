@@ -187,6 +187,26 @@ engine.net().channel::<TerrainChannel>("terrain", 100);   // 100 bytes of each p
 manifest, and the server turns the channels on for a connection when it accepts the manifest that lists them. The rope has none:
 its ghost is a few hundred bits. (`examples/minimal-engine/tests/channels.rs` sends 30 KB while the example's ghosts go on.)
 
+### From a client to the server
+
+A channel can also go the other way, for what a client has to hand the server (an upload, a large message from a client-side
+page):
+
+```rust
+engine.net().channel_to_server::<UploadChannel>("uploads", 200);   // 200 bytes of each client packet at most
+// on the client: channels.send("uploads", Kind::Delta, bytes)
+```
+
+`ChunkChannel::receive_from` is the server's logic: it gets each message with the connection it came from, whole and in the order
+that client queued them. The chunks are the same and so is the delivery; they sit at the front of the client's data packets, ahead
+of its moves, and never take more than half of one (every fourth packet carries none), so moves and events keep their room. The
+name goes in the manifest with an `up:` prefix, and the section exists only on a connection whose manifest listed it.
+
+The server treats every byte as hostile (`UpstreamCaps`): what a connection holds for half-received messages (2 MiB by default,
+16 MiB at most) and what all connections hold together (64 MiB), message size, half-received messages, and a rate in bytes and
+messages a second. A connection that passes a cap is dropped with the packet error, and nothing from the packet that passed it is
+delivered. A client queues no more than the server holds for it (`ClientChannels::set_upstream_backlog` follows a raised cap).
+
 ## Auth
 
 An **auth provider** signs a client in: the client's half makes a ticket for the connection it is making, the server's half

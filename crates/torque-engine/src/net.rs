@@ -190,6 +190,32 @@ impl NetRegistry<'_> {
         self
     }
 
+    /// Adds a client-to-server bulk channel: messages each client sends the server in chunks at the front of its data packets,
+    /// reliable and ordered per channel, under the server's caps for what it holds from clients, message size and rate
+    /// ([`torque_net::chunk::upstream`]). `C::default()` is the logic the server runs, which gets each message
+    /// ([`ChunkChannel::receive_from`]), and `budget` the most bytes of a client packet its chunks take. A client sends through
+    /// its channels' `send`. The channel is listed in the manifest (with a prefix, so it never collides with a server-to-client
+    /// name), so a peer without it is refused, and the section exists only on connections whose manifest matched.
+    pub fn channel_to_server<C: ChunkChannel + Default>(
+        &mut self,
+        name: impl Into<String>,
+        budget: usize,
+    ) -> &mut Self {
+        self.channel_to_server_with(name, ChannelLimits::new(budget), C::default)
+    }
+
+    /// Adds the client-to-server channel `name` with all its limits and a logic made by `make`.
+    pub fn channel_to_server_with<C: ChunkChannel>(
+        &mut self,
+        name: impl Into<String>,
+        limits: ChannelLimits,
+        make: impl Fn() -> C + 'static,
+    ) -> &mut Self {
+        self.engine
+            .push(ChannelEntry::to_server(name, limits, make));
+        self
+    }
+
     fn name(&mut self, table: NameTable, name: String) -> &mut Self {
         self.engine.push(NetName { table, name });
         self
@@ -232,7 +258,11 @@ impl Engine {
             .with_datablocks(
                 names(NameTable::Datablock).chain(collision.iter().map(String::as_str)),
             )
-            .with_channels(self.list::<ChannelEntry>().iter().map(ChannelEntry::name))
+            .with_channels(
+                self.list::<ChannelEntry>()
+                    .iter()
+                    .map(ChannelEntry::manifest_name),
+            )
     }
 
     /// The names of the collision sources plugins added ([`PluginCollision`]), each once, the valid ones only.

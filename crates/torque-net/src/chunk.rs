@@ -25,6 +25,9 @@
 //! (the fields from the channel id to the last flag repeat for each chunk). A connection with no channels has no section, so
 //! its packets are the same bits as before channels existed.
 //!
+//! **Both directions.** A client's data packets start with the same section when the engine has client-to-server channels
+//! (the roles swap: the client holds the [`ChunkSender`], the server a [`ChunkReceiver`] under the caps of [`upstream`]).
+//!
 //! **Hostile input.** [`ChunkReceiver::read`] takes bytes from a peer: every length is checked against the channel's limits and
 //! the bits left before anything is allocated, a message is held only inside a small window of sequence numbers, and what a
 //! channel holds is bounded by `max_message * window`. A violation is a [`NetError`] and the connection is dropped with the
@@ -33,8 +36,9 @@
 //! **Limits on the sending side.** [`ChunkSender::enqueue`] refuses a message above the size cap and one that would take the
 //! connection's backlog (the bytes queued and not yet acknowledged) above its cap, with a [`SendError`] and nothing queued.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter, bit_length};
@@ -42,6 +46,7 @@ use crate::cap::NET_EVENT_PACKETS_IN_FLIGHT;
 
 pub mod patch;
 pub mod registry;
+pub mod upstream;
 
 /// The most channels one connection has.
 pub const MAX_CHANNELS: usize = 64;
@@ -516,6 +521,9 @@ pub struct Delivered {
 struct Partial {
     kind: Kind,
     total: usize,
+    /// When the first chunk arrived (the receiver's clock).
+    started: u32,
+    /// Allocated for the whole message when its first chunk arrives, and charged to the caps as such.
     buf: Vec<u8>,
     /// The byte ranges received, sorted, disjoint and not touching.
     ranges: Vec<(usize, usize)>,
@@ -569,6 +577,147 @@ pub struct ChunkReceiver {
     id_bits: u8,
     chans: Vec<RecvChan>,
     hold_cap: usize,
+    /// The most bytes in one message, below the channels' own caps.
+    message_cap: usize,
+    /// The most half-received messages at once, across channels.
+    max_partial: usize,
+    shared: Option<Arc<SharedHold>>,
+    /// This receiver's place in `shared`.
+    holder: u64,
+    /// The receiver's clock, in milliseconds ([`set_now`](ChunkReceiver::set_now)).
+    now: u32,
+    /// A half-received message may take this long (milliseconds) and, per byte of its size, this much more.
+    age: Option<(u32, usize)>,
+    /// Evicted, or a message went stale: nothing is held and every read is an error.
+    dead: bool,
+    /// The chunk bytes read so far (counting those that arrive twice).
+    received: u64,
+}
+
+#[derive(Debug)]
+struct Holder {
+    held: usize,
+    evicted: bool,
+}
+
+#[derive(Debug, Default)]
+struct HoldState {
+    total: usize,
+    next: u64,
+    holders: BTreeMap<u64, Holder>,
+}
+
+/// A byte budget several receivers draw on (the connections of a server): what all of them hold for half-received messages
+/// together stays within it.
+///
+/// A chunk that would take the budget past its cap is never refused for the connection that happens to send it (that would let
+/// connections that fill the budget get honest ones dropped, and a chunk refused after its packet was acknowledged is never sent
+/// again). The holders that hold more than the newcomer would are **evicted** instead, the largest first: their bytes leave the
+/// count at once, and their next read is an error (the host drops them). A newcomer that is itself the largest holder is the one
+/// refused.
+#[derive(Debug)]
+pub struct SharedHold {
+    state: Mutex<HoldState>,
+    cap: usize,
+    evictions: AtomicU64,
+}
+
+impl SharedHold {
+    /// A budget of `cap` bytes.
+    pub fn new(cap: usize) -> Arc<SharedHold> {
+        Arc::new(SharedHold {
+            state: Mutex::new(HoldState::default()),
+            cap,
+            evictions: AtomicU64::new(0),
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HoldState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The bytes held now by the receivers sharing the budget.
+    pub fn held(&self) -> usize {
+        self.lock().total
+    }
+
+    pub fn cap(&self) -> usize {
+        self.cap
+    }
+
+    /// How many receivers have been evicted to make room.
+    pub fn evictions(&self) -> u64 {
+        self.evictions.load(Ordering::Relaxed)
+    }
+
+    fn join(&self) -> u64 {
+        let mut st = self.lock();
+        let id = st.next;
+        st.next += 1;
+        st.holders.insert(
+            id,
+            Holder {
+                held: 0,
+                evicted: false,
+            },
+        );
+        id
+    }
+
+    fn leave(&self, id: u64) {
+        let mut st = self.lock();
+        if let Some(h) = st.holders.remove(&id) {
+            st.total -= h.held;
+        }
+    }
+
+    fn is_evicted(&self, id: u64) -> bool {
+        self.lock().holders.get(&id).is_none_or(|h| h.evicted)
+    }
+
+    /// Records that `id` holds `held` bytes now (an evicted holder holds none).
+    fn set_held(&self, id: u64, held: usize) {
+        let mut st = self.lock();
+        let Some(h) = st.holders.get_mut(&id) else {
+            return;
+        };
+        if h.evicted {
+            return;
+        }
+        let before = std::mem::replace(&mut h.held, held);
+        st.total = st.total - before + held;
+    }
+
+    /// Makes room for `id` to hold `new_held` bytes: evicts the other holders that hold more than that, the largest first,
+    /// while the budget would be past its cap. `false` when it would still be (`id` is the heaviest).
+    fn reserve(&self, id: u64, new_held: usize) -> bool {
+        let mut st = self.lock();
+        let mine = st.holders.get(&id).map_or(0, |h| h.held);
+        let mut others = st.total - mine;
+        if others.saturating_add(new_held) <= self.cap {
+            return true;
+        }
+        let mut heavier: Vec<(usize, u64)> = st
+            .holders
+            .iter()
+            .filter(|(k, h)| **k != id && !h.evicted && h.held > new_held)
+            .map(|(k, h)| (h.held, *k))
+            .collect();
+        heavier.sort_by(|a, b| b.cmp(a));
+        for (held, k) in heavier {
+            if others.saturating_add(new_held) <= self.cap {
+                break;
+            }
+            if let Some(h) = st.holders.get_mut(&k) {
+                h.held = 0;
+                h.evicted = true;
+            }
+            st.total -= held;
+            others -= held;
+            self.evictions.fetch_add(1, Ordering::Relaxed);
+        }
+        others.saturating_add(new_held) <= self.cap
+    }
 }
 
 impl ChunkReceiver {
@@ -579,8 +728,120 @@ impl ChunkReceiver {
             id_bits: id_bits(limits.len()),
             chans: limits.iter().map(|_| RecvChan::default()).collect(),
             hold_cap: default_hold_cap(&limits),
+            message_cap: usize::MAX,
+            max_partial: usize::MAX,
+            shared: None,
+            holder: 0,
+            now: 0,
+            age: None,
+            dead: false,
+            received: 0,
             limits,
         }
+    }
+
+    /// The same receiver that also draws on `shared`: a chunk that would take what all the receivers of the budget hold past
+    /// its cap evicts the larger holders first (see [`SharedHold`]), and what this receiver holds is given back when it is
+    /// dropped.
+    #[must_use]
+    pub fn with_shared_hold(mut self, shared: Arc<SharedHold>) -> ChunkReceiver {
+        self.holder = shared.join();
+        self.shared = Some(shared);
+        self
+    }
+
+    /// The same receiver giving up on a half-received message that is not whole `base_ms` milliseconds after its first chunk
+    /// plus `1000 / min_rate` milliseconds for each of its bytes (a sender that moves at least `min_rate` bytes a second is
+    /// never stale). A message is ordered behind the ones before it, so a stale one ends the connection ([`read`](Self::read) and
+    /// [`sweep`](Self::sweep) fail) and what it held is released.
+    #[must_use]
+    pub fn with_max_age(mut self, base_ms: u32, min_rate: usize) -> ChunkReceiver {
+        self.age = Some((base_ms, min_rate.max(1)));
+        self
+    }
+
+    /// Sets the receiver's clock (milliseconds; only differences matter) for the next reads.
+    pub fn set_now(&mut self, now: u32) {
+        self.now = now;
+    }
+
+    /// Whether the receiver is evicted or ended by a stale message: it holds nothing and reads nothing more.
+    pub fn is_dead(&self) -> bool {
+        self.dead
+            || self
+                .shared
+                .as_ref()
+                .is_some_and(|s| s.is_evicted(self.holder))
+    }
+
+    /// Looks for an eviction and for stale messages at `now`, and releases what a dead receiver held. An error is the reason the
+    /// connection is to be dropped. A host calls this every tick, so a connection that goes quiet does not keep its bytes.
+    pub fn sweep(&mut self, now: u32) -> Result<(), NetError> {
+        self.now = now;
+        self.check_alive()
+    }
+
+    fn check_alive(&mut self) -> Result<(), NetError> {
+        if !self.dead
+            && self
+                .shared
+                .as_ref()
+                .is_some_and(|s| s.is_evicted(self.holder))
+        {
+            self.release();
+            return Err(NetError::Invalid(
+                "evicted to make room for other connections",
+            ));
+        }
+        if self.dead {
+            return Err(NetError::Invalid("a connection that was ended"));
+        }
+        if let Some((base, rate)) = self.age {
+            let now = self.now;
+            let stale = self
+                .chans
+                .iter()
+                .flat_map(|c| c.window.iter().flatten())
+                .any(|p| {
+                    let allowed =
+                        u64::from(base) + (p.total as u64).saturating_mul(1_000) / rate as u64;
+                    u64::from(now.wrapping_sub(p.started)) > allowed
+                });
+            if stale {
+                self.release();
+                return Err(NetError::Invalid("a message was not completed in time"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops everything held and ends the receiver.
+    fn release(&mut self) {
+        self.dead = true;
+        for c in &mut self.chans {
+            c.window.clear();
+        }
+        self.sync_shared();
+    }
+
+    /// The same receiver refusing a message above `bytes` (on top of each channel's own cap), before anything of it is held.
+    #[must_use]
+    pub fn with_message_cap(mut self, bytes: usize) -> ChunkReceiver {
+        self.message_cap = bytes;
+        self
+    }
+
+    /// The same receiver refusing a chunk that would start a message when `count` are already half received (across all
+    /// channels).
+    #[must_use]
+    pub fn with_max_partial(mut self, count: usize) -> ChunkReceiver {
+        self.max_partial = count;
+        self
+    }
+
+    /// The chunk bytes read so far, those that arrived twice included.
+    pub fn received_bytes(&self) -> u64 {
+        self.received
     }
 
     /// The same receiver holding at most `bytes` for half-received messages across all its channels
@@ -592,18 +853,50 @@ impl ChunkReceiver {
         self
     }
 
-    /// The bytes held for half-received messages.
+    /// The bytes held for half-received messages (what is allocated for them, whole messages at a time).
     pub fn held_bytes(&self) -> usize {
+        if self.is_dead() {
+            return 0;
+        }
+        self.buffered()
+    }
+
+    fn buffered(&self) -> usize {
         self.chans
             .iter()
             .flat_map(|c| c.window.iter().flatten())
-            .map(|p| p.buf.len())
+            .map(|p| p.buf.capacity())
             .sum()
     }
 
     /// Reads a packet's section and appends the messages it completed to `out`, in order. On an error what was completed
     /// before it is in `out` and the connection should be dropped.
     pub fn read(
+        &mut self,
+        r: &mut BitReader<'_>,
+        out: &mut Vec<Delivered>,
+    ) -> Result<(), NetError> {
+        self.check_alive()?;
+        let result = self.read_section(r, out);
+        self.sync_shared();
+        result
+    }
+
+    /// What the receiver holds is told to the shared budget, if there is one.
+    fn sync_shared(&mut self) {
+        if let Some(shared) = &self.shared {
+            shared.set_held(self.holder, self.buffered());
+        }
+    }
+
+    fn partial_count(&self) -> usize {
+        self.chans
+            .iter()
+            .map(|c| c.window.iter().flatten().count())
+            .sum()
+    }
+
+    fn read_section(
         &mut self,
         r: &mut BitReader<'_>,
         out: &mut Vec<Delivered>,
@@ -643,17 +936,19 @@ impl ChunkReceiver {
         let total = r.read_bits(size_bits)? as usize;
         let offset = r.read_bits(size_bits)? as usize;
         let len = r.read_bits(CHUNK_LEN_BITS)? as usize;
-        if total == 0 || total > limits.max_message {
+        let message_cap = limits.max_message.min(self.message_cap);
+        if total == 0 || total > message_cap {
             return Err(NetError::Cap {
                 what: "channel message length",
                 count: total as u64,
-                cap: limits.max_message as u64,
+                cap: message_cap as u64,
             });
         }
         if len == 0 || offset + len > total {
             return Err(NetError::Invalid("chunk range"));
         }
         let bytes = r.read_bytes(len)?;
+        self.received = self.received.saturating_add(len as u64);
         let next = self.chans[channel].next;
         let distance = seq.wrapping_sub(next);
         if distance >= 0x8000 {
@@ -668,7 +963,8 @@ impl ChunkReceiver {
                 cap: WINDOW as u64 - 1,
             });
         }
-        // A chunk far into a message makes its buffer that long at once: what the receiver holds stays under its cap.
+        // A message's buffer is allocated whole when its first chunk comes, and charged as such: what the receiver holds stays
+        // under its cap, and what a sender claims is what it pays for.
         let existing = self.chans[channel]
             .window
             .get(distance)
@@ -678,10 +974,16 @@ impl ChunkReceiver {
         {
             return Err(NetError::Invalid("chunk of another message"));
         }
-        let have = existing.map_or(0, |p| p.buf.len());
+        if existing.is_none() && self.partial_count() >= self.max_partial {
+            return Err(NetError::Cap {
+                what: "half-received messages",
+                count: self.partial_count() as u64 + 1,
+                cap: self.max_partial as u64,
+            });
+        }
         let held = self
-            .held_bytes()
-            .saturating_add((offset + len).saturating_sub(have));
+            .buffered()
+            .saturating_add(if existing.is_none() { total } else { 0 });
         if held > self.hold_cap {
             return Err(NetError::Cap {
                 what: "bytes held for half-received messages",
@@ -689,14 +991,26 @@ impl ChunkReceiver {
                 cap: self.hold_cap as u64,
             });
         }
+        if let Some(shared) = &self.shared
+            && !shared.reserve(self.holder, held)
+        {
+            // Every other holder holds less than this one would: it is the heaviest.
+            return Err(NetError::Cap {
+                what: "bytes held for half-received messages across connections",
+                count: held as u64,
+                cap: shared.cap as u64,
+            });
+        }
         let chan = &mut self.chans[channel];
         while chan.window.len() <= distance {
             chan.window.push_back(None);
         }
+        let now = self.now;
         let partial = chan.window[distance].get_or_insert_with(|| Partial {
             kind,
             total,
-            buf: Vec::new(),
+            started: now,
+            buf: Vec::with_capacity(total),
             ranges: Vec::new(),
         });
         partial.insert(offset, &bytes)?;
@@ -715,6 +1029,14 @@ impl ChunkReceiver {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for ChunkReceiver {
+    fn drop(&mut self) {
+        if let Some(shared) = &self.shared {
+            shared.leave(self.holder);
+        }
     }
 }
 

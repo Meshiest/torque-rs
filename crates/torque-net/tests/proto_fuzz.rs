@@ -414,3 +414,172 @@ fn an_in_memory_session_runs_for_a_minute_of_virtual_time_without_a_drop() {
         Ok(Decoded::ChallengeRequest { seq: 1 })
     ));
 }
+
+/// How many hostile client packets the upstream fuzz reads: 20,000 for `just test`, or the number in `TORQUE_FUZZ_UPSTREAM`.
+fn upstream_rounds() -> usize {
+    std::env::var("TORQUE_FUZZ_UPSTREAM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000)
+}
+
+/// Hostile bytes where a client's upstream section goes, read by several connections of one server under small caps: random
+/// bytes, mutants of sections an honest client wrote, and chunks with crafted fields (far offsets, huge totals, lengths past the
+/// message). Nothing panics, no connection holds more than its cap, all of them together never hold more than the server's, the
+/// shared count is exactly what the connections hold, and a connection that is refused is dropped (its bytes go back).
+#[test]
+fn upstream_section_fuzz_never_panics_and_the_caps_hold() {
+    use torque_net::bits::{BitReader, BitWriter, bit_length};
+    use torque_net::chunk::upstream::{UpstreamCaps, UpstreamReader, UpstreamServer};
+    use torque_net::chunk::{CHUNK_LEN_BITS, ChannelLimits, ChunkSender, Kind, id_bits};
+
+    const CONNS: usize = 6;
+    let limits = [
+        ChannelLimits::new(300).with_max_message(1 << 20),
+        ChannelLimits::new(100).with_max_message(40_000),
+        ChannelLimits::new(100).with_max_message(2_000),
+    ];
+    let caps = UpstreamCaps {
+        hold_per_connection: 128 << 10,
+        hold_total: 600 << 10,
+        max_message: 512 << 10,
+        max_partial: Some(5),
+        message_age_ms: 10_000,
+        message_min_rate: 4_096,
+        bytes_per_second: 200_000,
+        byte_burst: 100_000,
+        messages_per_second: 200,
+        message_burst: 50,
+    };
+    let server = UpstreamServer::new(caps);
+    let mut rng = Rng(0x5eed_u64);
+    let mut readers: Vec<UpstreamReader> = (0..CONNS).map(|_| server.connection(&limits)).collect();
+    // An honest client of each connection, which sends a packet now and then among the hostile ones.
+    let mut senders: Vec<ChunkSender> = (0..CONNS).map(|_| ChunkSender::new(&limits)).collect();
+    let (mut ok, mut refused, mut delivered) = (0usize, 0usize, 0usize);
+    let mut now = 0u32;
+
+    // Sections an honest client wrote, to mutate.
+    let mut honest: Vec<Vec<u8>> = Vec::new();
+    let mut tx = ChunkSender::new(&limits);
+    for c in 0..3 {
+        for _ in 0..3 {
+            let n = 1 + rng.below([5_000, 5_000, 1_900][c]);
+            let data: Vec<u8> = (0..n).map(|_| rng.byte()).collect();
+            tx.enqueue(c, Kind::Delta, data).unwrap();
+        }
+    }
+    for seq in 1..=120u32 {
+        let mut w = BitWriter::new();
+        tx.write(&mut w, seq, (50 + rng.below(1_000)) * 8);
+        honest.push(w.into_bytes());
+        tx.on_notify(seq, rng.below(100) < 70);
+    }
+
+    let rounds = upstream_rounds();
+    for round in 0..rounds {
+        now = now.wrapping_add(rng.below(40) as u32);
+        let at = rng.below(CONNS);
+        let bytes = match rng.below(5) {
+            0 => (0..rng.below(300)).map(|_| rng.byte()).collect(),
+            1 | 2 => {
+                let pick = rng.below(honest.len());
+                mutate(&mut rng, &honest[pick])
+            }
+            3 => {
+                let tx = &mut senders[at];
+                if tx.is_idle() {
+                    let channel = 1 + rng.below(2);
+                    let n = 1 + rng.below(if channel == 1 { 30_000 } else { 1_500 });
+                    let data: Vec<u8> = (0..n).map(|_| rng.byte()).collect();
+                    tx.enqueue(channel, Kind::Delta, data).unwrap();
+                }
+                let mut w = BitWriter::new();
+                tx.write(&mut w, round as u32 + 1, (100 + rng.below(900)) * 8);
+                tx.on_notify(round as u32 + 1, true);
+                w.into_bytes()
+            }
+            _ => {
+                // Chunks with crafted fields: every one is well formed to the reader and then judged by its caps.
+                let channel = rng.below(3);
+                let l = limits[channel];
+                let size_bits = bit_length(l.max_message as u32);
+                let mut w = BitWriter::new();
+                w.write_flag(true);
+                for k in 0..1 + rng.below(6) {
+                    let total = match rng.below(4) {
+                        0 => 1 + rng.below(l.max_message),
+                        1 => l.max_message,
+                        2 => 1 + rng.below(2_000),
+                        _ => rng.next() as usize & ((1 << size_bits) - 1),
+                    };
+                    let offset = if rng.below(2) == 0 {
+                        rng.below(total.max(1))
+                    } else {
+                        rng.next() as usize & ((1 << size_bits) - 1)
+                    };
+                    let len = 1 + rng.below(40);
+                    w.write_bits(channel as u32, id_bits(3));
+                    w.write_flag(rng.below(2) == 0);
+                    w.write_bits(rng.below(7) as u32, 16);
+                    w.write_bits(total as u32, size_bits);
+                    w.write_bits(offset as u32, size_bits);
+                    w.write_bits(len as u32, CHUNK_LEN_BITS);
+                    for _ in 0..len {
+                        w.write_u8(rng.byte());
+                    }
+                    w.write_flag(k % 7 != 6 && rng.below(3) != 0);
+                }
+                w.into_bytes()
+            }
+        };
+        let mut out = Vec::new();
+        match readers[at].read(&mut BitReader::new(&bytes), now, &mut out) {
+            Ok(()) => {
+                ok += 1;
+                delivered += out.len();
+            }
+            Err(_) => {
+                refused += 1;
+                assert!(out.is_empty(), "a refused packet delivers nothing");
+                // The host drops a connection that sent a bad packet, and a new one may come.
+                readers[at] = server.connection(&limits);
+                senders[at] = ChunkSender::new(&limits);
+            }
+        }
+        if rng.below(7) == 0 {
+            // The host's tick: a connection that was evicted or sat on a stale message is dropped.
+            let at = rng.below(CONNS);
+            if readers[at].sweep(now).is_err() {
+                readers[at] = server.connection(&limits);
+                senders[at] = ChunkSender::new(&limits);
+            }
+        }
+        if rng.below(500) == 0 {
+            let at = rng.below(CONNS);
+            readers[at] = server.connection(&limits);
+            senders[at] = ChunkSender::new(&limits);
+        }
+        let held: usize = readers.iter().map(UpstreamReader::held_bytes).sum();
+        assert!(
+            readers
+                .iter()
+                .all(|r| r.held_bytes() <= caps.hold_per_connection),
+            "round {round}: a connection holds more than its cap"
+        );
+        assert!(
+            held <= caps.hold_total,
+            "round {round}: {held} bytes held in all"
+        );
+        assert_eq!(
+            held,
+            server.held_total(),
+            "round {round}: the shared count is what the connections hold"
+        );
+    }
+    eprintln!(
+        "upstream fuzz: {rounds} packets, {ok} read, {refused} refused, {delivered} messages delivered"
+    );
+    drop(readers);
+    assert_eq!(server.held_total(), 0);
+}

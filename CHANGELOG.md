@@ -139,6 +139,11 @@ different.
   and ordered per channel, with a snapshot and deltas (`chunk::patch`), what each client gets chosen per client, caps on
   message size and backlog that refuse cleanly, and a fuzzed reader. They are turned on when the server's gate matches the
   channels in the client's manifest (the accept says so); TGE's packets are unchanged for a connection without channels.
+- Client-to-server channels: the same chunks go from a client to the server in a section at the front of its data packets, under a
+  budget that leaves its moves and events their room, on the connections where channels are on and the manifest lists the channel
+  (`up:` names, so a peer without it is refused). The server reads every byte as hostile, with caps on held bytes (per connection
+  and in all), message size, messages in flight and rate, and drops a connection that passes one; `NetRegistry::channel_to_server`
+  adds one and `ClientChannels::send` sends on it. A connection that lists none keeps TGE's packets.
 - `torque-net::manifest` and `torque-net::connect`: a connection manifest (the plugins that have a network version, the
   handshake's protocol versions, the sorted ghost class, datablock class and channel names, the mods a server requires)
   and an auth ticket ride after the connect request's arguments, where a Torque server never reads. A server with a gate

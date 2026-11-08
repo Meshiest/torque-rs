@@ -11,6 +11,7 @@ use std::rc::Rc;
 use torque_game::scene::container::{Container, ContainerConfig};
 use torque_net::bits::BitReader;
 use torque_net::chunk::patch;
+use torque_net::chunk::upstream::UpstreamCaps;
 use torque_net::chunk::{ChannelLimits, Kind, SendError};
 use torque_net::client::{Client, ClientEvent, ClientState};
 use torque_net::control::ClientBlock;
@@ -96,6 +97,28 @@ impl ChunkChannel for ClientLogic {
     }
 }
 
+type Upload = (ConnId, Kind, Vec<u8>);
+
+/// What the server's logic of the client-to-server channel got: each message with the connection it came from, and the
+/// connections it was told ended.
+#[derive(Clone, Default)]
+struct UpLog {
+    got: Rc<RefCell<Vec<Upload>>>,
+    gone: Rc<RefCell<Vec<ConnId>>>,
+}
+
+struct UpLogic(UpLog);
+
+impl ChunkChannel for UpLogic {
+    fn receive_from(&mut self, from: ConnId, kind: Kind, data: &[u8]) {
+        self.0.got.borrow_mut().push((from, kind, data.to_vec()));
+    }
+
+    fn disconnected(&mut self, conn: ConnId) {
+        self.0.gone.borrow_mut().push(conn);
+    }
+}
+
 const BUDGET: usize = 480;
 
 fn limits() -> ChannelLimits {
@@ -108,12 +131,25 @@ struct Quiet;
 impl ChunkChannel for Quiet {}
 
 fn registry_with<C: ChunkChannel>(make: impl Fn() -> C + 'static) -> ChannelRegistry {
-    ChannelRegistry::new(&[
+    registry_up(make, None)
+}
+
+/// [`registry_with`] and, when `up` is given, a client-to-server channel "uploads" whose server logic records into it.
+fn registry_up<C: ChunkChannel>(
+    make: impl Fn() -> C + 'static,
+    up: Option<UpLog>,
+) -> ChannelRegistry {
+    let mut entries = vec![
         ChannelEntry::new("terrain", limits(), make),
         // A second channel that stays quiet: ids come from the sorted names, so "terrain" is channel 1.
         ChannelEntry::new("aaa-unused", ChannelLimits::new(64), || Quiet),
-    ])
-    .unwrap()
+    ];
+    if let Some(log) = up {
+        entries.push(ChannelEntry::to_server("uploads", limits(), move || {
+            UpLogic(log.clone())
+        }));
+    }
+    ChannelRegistry::new(&entries).unwrap()
 }
 
 fn net_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
@@ -170,6 +206,8 @@ struct Link {
     loss: usize,
     reorder: bool,
     rng: Rng,
+    /// The percent of the clients packets the link loses on the way to the server.
+    up_loss: usize,
 }
 
 impl Link {
@@ -178,6 +216,7 @@ impl Link {
             loss: 0,
             reorder: false,
             rng: Rng(1),
+            up_loss: 0,
         }
     }
 }
@@ -189,6 +228,7 @@ struct Rig {
     peers: Vec<Peer>,
     hub: ChannelHub,
     world: World,
+    up: UpLog,
     table: Table,
     sun: torque_ts_vm::sim::ObjId,
     link: Link,
@@ -210,16 +250,25 @@ fn rig(clients: usize) -> Rig {
 }
 
 fn rig_with(clients: usize, packet_bytes: Option<u32>) -> Rig {
+    rig_up(clients, packet_bytes, false)
+}
+
+/// [`rig_with`], and with `upstream` the engine also has the client-to-server channel "uploads".
+fn rig_up(clients: usize, packet_bytes: Option<u32>, upstream: bool) -> Rig {
     let (mut s, shared, end) = net_server();
     s.vm.eval(b"new SimGroup(ClientGroup); $pref::Net::PacketRateToClient = 32;")
         .unwrap();
     let world = World::default();
+    let up = UpLog::default();
     let hub = install(
         &shared,
-        registry_with({
-            let world = world.clone();
-            move || ServerLogic(world.clone())
-        }),
+        registry_up(
+            {
+                let world = world.clone();
+                move || ServerLogic(world.clone())
+            },
+            upstream.then(|| up.clone()),
+        ),
     )
     .expect("channels are registered");
     let table = Table::torque();
@@ -261,11 +310,21 @@ fn rig_with(clients: usize, packet_bytes: Option<u32>) -> Rig {
             .expect("the connection")
             .protocol
             .set_packet_bytes(packet_bytes);
+        if upstream {
+            // The same fuller packets in the other direction: a client packet of the default 200 bytes holds few chunks.
+            client
+                .protocol_mut()
+                .expect("connected")
+                .set_packet_bytes(packet_bytes);
+        }
         let view = View::default();
-        let channels = ClientChannels::new(&registry_with({
-            let view = view.clone();
-            move || ClientLogic(view.clone())
-        }));
+        let channels = ClientChannels::new(&registry_up(
+            {
+                let view = view.clone();
+                move || ClientLogic(view.clone())
+            },
+            upstream.then(|| up.clone()),
+        ));
         // What the engine client's connection does when its accept says the server writes channels.
         channels.set_active(true);
         peers.push(Peer {
@@ -316,6 +375,7 @@ fn rig_with(clients: usize, packet_bytes: Option<u32>) -> Rig {
         peers,
         hub,
         world,
+        up,
         table,
         sun,
         link: Link::clean(),
@@ -358,6 +418,9 @@ impl Rig {
                 else {
                     continue;
                 };
+                for n in &received.notifies {
+                    p.channels.on_notify(n.send_seq, n.delivered);
+                }
                 if !received.payload {
                     continue;
                 }
@@ -371,8 +434,19 @@ impl Rig {
             // The client's own packet each tick (32 a second, like a real client): its rates, and the acknowledgements.
             if let Some(mut w) = p.client.begin_data_packet(now, false) {
                 w.enable_string_buffer();
-                ClientBlock::default().write(&mut w);
                 let protocol = p.client.protocol().expect("connected");
+                // What the engine client does: the upstream chunks first, in the room the moves leave.
+                if p.channels.writes_upstream() {
+                    let mut moves = torque_net::bits::BitWriter::new();
+                    ClientBlock::default().write(&mut moves);
+                    p.channels.write_upstream(
+                        &mut w,
+                        protocol.last_send_seq(),
+                        protocol.packet_limit_bits(),
+                        moves.bits(),
+                    );
+                }
+                ClientBlock::default().write(&mut w);
                 let params = SectionParams {
                     ghosting: false,
                     hold_ordered: false,
@@ -389,7 +463,9 @@ impl Rig {
                 let _ = p
                     .queue
                     .write_section_stalling(&mut w, &ctx, send_seq, params);
-                self.end.inject(p.addr, &w.into_bytes());
+                if !self.link.rng.chance(self.link.up_loss) {
+                    self.end.inject(p.addr, &w.into_bytes());
+                }
             } else if heard && let Some(proto) = p.client.protocol_mut() {
                 self.end.inject(p.addr, &proto.ack_packet(now));
             }
@@ -402,7 +478,7 @@ impl Rig {
         }
     }
 
-    fn run_until(&mut self, max: usize, done: impl Fn(&Rig) -> bool) -> usize {
+    fn run_until(&mut self, max: usize, mut done: impl FnMut(&Rig) -> bool) -> usize {
         for n in 0..max {
             if done(self) {
                 return n;
@@ -556,6 +632,7 @@ fn a_lossy_reordering_link_still_delivers_the_blob_and_the_delta_in_order() {
         loss: 20,
         reorder: true,
         rng: Rng(77),
+        up_loss: 0,
     };
     let base = blob(5, 400_000);
     for p in &rig.peers {
@@ -705,4 +782,213 @@ fn tges_small_packets_carry_the_channel_too() {
         "30 KB in 200-byte packets: {ticks} ticks, widest section {} bits",
         rig.peers[0].widest_section
     );
+}
+
+// ---- client to server
+
+/// Queues `data` on peer `n`s "uploads" channel.
+fn upload(rig: &Rig, n: usize, data: Vec<u8>) {
+    rig.peers[n]
+        .channels
+        .send("uploads", Kind::Snapshot, data)
+        .expect("queued");
+}
+
+#[test]
+fn a_four_megabyte_upload_arrives_whole_over_a_link_losing_five_percent_while_ghosts_keep_updating()
+{
+    let mut rig = rig_up(1, Some(1_000), true);
+    rig.hub.set_upstream_caps(UpstreamCaps {
+        hold_per_connection: 8 << 20,
+        ..UpstreamCaps::default()
+    });
+    rig.peers[0].channels.set_upstream_backlog(8 << 20);
+    // The caps are read when the connection is enabled, and its client starts over with them.
+    rig.enable_all();
+    rig.peers[0].channels.reset();
+    rig.peers[0].channels.set_active(true);
+    rig.link.up_loss = 5;
+    rig.link.loss = 5;
+    // The ghost rate with nothing uploading.
+    for _ in 0..30 {
+        rig.tick();
+    }
+    let r0 = rig.records();
+    for _ in 0..150 {
+        rig.tick();
+    }
+    let quiet = rig.records() - r0;
+
+    let data = blob(9, 4 << 20);
+    upload(&rig, 0, data.clone());
+    let conn = rig.peers[0].conn;
+    let r1 = rig.records();
+    let mut peak = 0;
+    let ticks = rig.run_until(100_000, |r| {
+        peak = peak.max(r.hub.upstream_held(conn));
+        !r.up.got.borrow().is_empty()
+    });
+    let busy = rig.records() - r1;
+    eprintln!(
+        "4 MiB upstream in {ticks} ticks, held at most {peak} bytes; ghost records {quiet} in 150 quiet ticks, {busy} in {ticks} busy"
+    );
+    let got = rig.up.got.borrow();
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].0, got[0].1), (conn, Kind::Snapshot));
+    assert!(got[0].2 == data, "the upload arrived intact");
+    assert!(peak <= 8 << 20);
+    drop(got);
+    assert_eq!(rig.hub.upstream_held_total(), 0);
+    // The connection stayed up, the moves and acknowledgements went on, and the ghosts were not starved.
+    assert_eq!(rig.peers[0].client.state(), &ClientState::Connected);
+    assert_eq!(rig.hub.connected(), vec![conn]);
+    let (rate_quiet, rate_busy) = (quiet as f64 / 150.0, busy as f64 / ticks as f64);
+    assert!(
+        rate_busy >= rate_quiet * 0.9,
+        "ghost updates per tick fell from {rate_quiet:.2} to {rate_busy:.2}"
+    );
+}
+
+#[test]
+fn an_upload_in_small_messages_arrives_in_order_and_a_disconnect_is_told_to_the_logic() {
+    let mut rig = rig_up(2, Some(1_000), true);
+    rig.enable_all();
+    rig.link.up_loss = 15;
+    let messages: Vec<Vec<u8>> = (0..12)
+        .map(|i| blob(20 + i, 1 + 3_000 * i as usize))
+        .collect();
+    for m in &messages {
+        upload(&rig, 0, m.clone());
+        upload(&rig, 1, m.iter().map(|b| !b).collect());
+    }
+    rig.run_until(40_000, |r| r.up.got.borrow().len() == 24);
+    let (a, b) = (rig.peers[0].conn, rig.peers[1].conn);
+    for (who, flip) in [(a, false), (b, true)] {
+        let mine: Vec<Vec<u8>> = rig
+            .up
+            .got
+            .borrow()
+            .iter()
+            .filter(|(c, _, _)| *c == who)
+            .map(|(_, _, d)| d.clone())
+            .collect();
+        let expect: Vec<Vec<u8>> = messages
+            .iter()
+            .map(|m| m.iter().map(|x| if flip { !x } else { *x }).collect())
+            .collect();
+        assert_eq!(mine, expect, "each client's messages, whole and in order");
+    }
+    // A client that disconnects is told to the logic.
+    let proto = rig.peers[1].client.disconnect_datagram(&rig.table, b"bye");
+    rig.end.inject(rig.peers[1].addr, &proto);
+    for _ in 0..40 {
+        rig.tick();
+    }
+    assert_eq!(rig.up.gone.borrow().as_slice(), &[b]);
+    assert_eq!(rig.hub.upstream_held(b), 0);
+}
+
+#[test]
+fn a_client_that_floods_its_upload_past_the_rate_is_dropped_and_the_others_are_not() {
+    let mut rig = rig_up(2, Some(1_000), true);
+    rig.hub.set_upstream_caps(UpstreamCaps {
+        bytes_per_second: 2_000,
+        byte_burst: 8_000,
+        ..UpstreamCaps::default()
+    });
+    rig.enable_all();
+    rig.peers[0].channels.reset();
+    rig.peers[0].channels.set_active(true);
+    rig.peers[1].channels.reset();
+    rig.peers[1].channels.set_active(true);
+    let (flood, quiet) = (rig.peers[0].conn, rig.peers[1].conn);
+    upload(&rig, 0, blob(30, 1 << 20));
+    upload(&rig, 1, blob(31, 3_000));
+    rig.run_until(2_000, |r| !r.hub.connected().contains(&flood));
+    assert_eq!(rig.hub.connected(), vec![quiet], "the flooder was dropped");
+    assert_eq!(rig.hub.upstream_held(flood), 0);
+    assert_eq!(rig.up.gone.borrow().as_slice(), &[flood]);
+    // The other one is untouched and gets its message through.
+    rig.run_until(2_000, |r| {
+        r.up.got
+            .borrow()
+            .iter()
+            .any(|(c, _, d)| *c == quiet && d.len() == 3_000)
+    });
+}
+
+#[test]
+fn a_hostile_upstream_section_drops_the_connection_cleanly() {
+    use torque_net::chunk::{CHUNK_LEN_BITS, id_bits};
+    let mut rig = rig_up(1, Some(1_000), true);
+    rig.enable_all();
+    let conn = rig.peers[0].conn;
+    for _ in 0..5 {
+        rig.tick();
+    }
+    assert_eq!(rig.hub.connected(), vec![conn]);
+    // A chunk of a message far above the channels size cap (the width of its length field is the cap's).
+    let size_bits = torque_net::bits::bit_length(4 << 20);
+    let now = rig.s.vm.sim_time();
+    let p = &mut rig.peers[0];
+    let mut w = p.client.begin_data_packet(now, false).expect("a packet");
+    w.write_flag(true);
+    w.write_bits(0, id_bits(1));
+    w.write_flag(false);
+    w.write_bits(0, 16);
+    w.write_bits((1 << size_bits) - 1, size_bits);
+    w.write_bits(0, size_bits);
+    w.write_bits(1, CHUNK_LEN_BITS);
+    w.write_u8(1);
+    w.write_flag(false);
+    rig.end.inject(p.addr, &w.into_bytes());
+    rig.s.run(TICK_MS, |_| false);
+    assert!(rig.hub.connected().is_empty(), "dropped for the bad packet");
+    assert_eq!(rig.hub.upstream_held_total(), 0);
+    assert_eq!(rig.up.gone.borrow().as_slice(), &[conn]);
+    assert!(rig.up.got.borrow().is_empty());
+}
+
+#[test]
+fn a_connection_whose_channels_are_off_never_reads_an_upstream_section_and_sends_none() {
+    let mut rig = rig_up(1, Some(1_000), true);
+    // Not enabled: the client has nothing to write, the server nothing to read, and a send is refused.
+    rig.peers[0].channels.set_active(false);
+    assert!(!rig.peers[0].channels.writes_upstream());
+    assert_eq!(
+        rig.peers[0]
+            .channels
+            .send("uploads", Kind::Delta, vec![1, 2, 3]),
+        Err(SendError::UnknownChannel)
+    );
+    for _ in 0..30 {
+        rig.tick();
+    }
+    assert_eq!(rig.peers[0].client.state(), &ClientState::Connected);
+    assert!(rig.up.got.borrow().is_empty());
+    assert_eq!(rig.hub.upstream_held_total(), 0);
+}
+
+#[test]
+fn registry_directions_have_ids_of_their_own_and_a_reserved_prefix() {
+    let e = |name: &str| ChannelEntry::new(name, ChannelLimits::new(100), || Quiet);
+    let u = |name: &str| ChannelEntry::to_server(name, ChannelLimits::new(100), || Quiet);
+    let reg = ChannelRegistry::new(&[e("b"), u("b"), u("a"), e("c")]).unwrap();
+    assert_eq!(reg.names(), ["b", "c"]);
+    assert_eq!(reg.up_names(), ["a", "b"]);
+    assert_eq!(
+        (reg.id("b"), reg.up_id("b"), reg.up_id("c")),
+        (Some(0), Some(1), None)
+    );
+    assert!(ChannelRegistry::new(&[u("x"), u("x")]).is_err());
+    assert!(ChannelRegistry::new(&[e("up:x")]).is_err());
+    assert!(ChannelRegistry::new(&[u("up:x")]).is_ok());
+    let big = ChannelEntry::to_server(
+        "big",
+        ChannelLimits::new(100).with_max_message(64 << 20),
+        || Quiet,
+    );
+    assert!(ChannelRegistry::new(&[big]).is_err());
+    assert!(!ChannelRegistry::new(&[u("only")]).unwrap().is_empty());
+    assert_eq!(ChannelRegistry::new(&[u("only")]).unwrap().len(), 0);
 }

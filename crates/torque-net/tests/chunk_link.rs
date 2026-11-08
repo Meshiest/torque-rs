@@ -5,8 +5,10 @@
 
 use std::collections::VecDeque;
 
+use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::chunk::patch;
+use torque_net::chunk::upstream::{UpstreamCaps, UpstreamReader, UpstreamServer};
 use torque_net::chunk::{
     ChannelLimits, ChunkReceiver, ChunkSender, Delivered, Kind, MAX_RANGES, WINDOW,
 };
@@ -64,6 +66,32 @@ fn run(
     run_with(limits(), seed, loss, delay, false_loss, messages).0
 }
 
+/// What reads a section: a plain receiver (a client of a server's channels) or a server's reader of one client's upstream.
+trait Reader {
+    fn read(&mut self, bytes: &[u8], now: u32, out: &mut Vec<Delivered>) -> Result<(), NetError>;
+    fn held(&self) -> usize;
+}
+
+impl Reader for ChunkReceiver {
+    fn read(&mut self, bytes: &[u8], _now: u32, out: &mut Vec<Delivered>) -> Result<(), NetError> {
+        ChunkReceiver::read(self, &mut BitReader::new(bytes), out)
+    }
+
+    fn held(&self) -> usize {
+        self.held_bytes()
+    }
+}
+
+impl Reader for UpstreamReader {
+    fn read(&mut self, bytes: &[u8], now: u32, out: &mut Vec<Delivered>) -> Result<(), NetError> {
+        UpstreamReader::read(self, &mut BitReader::new(bytes), now, out)
+    }
+
+    fn held(&self) -> usize {
+        self.held_bytes()
+    }
+}
+
 /// [`run`] over channels with `l` as their limits: the packets sent, and the most bytes the receiver held at once.
 fn run_with(
     l: Vec<ChannelLimits>,
@@ -73,9 +101,32 @@ fn run_with(
     false_loss: usize,
     messages: &[(usize, Kind, Vec<u8>)],
 ) -> (usize, usize) {
+    let rx = ChunkReceiver::new(&l);
+    run_over(
+        &l,
+        ChunkSender::new(&l),
+        rx,
+        seed,
+        loss,
+        delay,
+        false_loss,
+        messages,
+    )
+}
+
+/// [`run_with`] for a given sender and reader.
+#[allow(clippy::too_many_arguments)]
+fn run_over(
+    l: &[ChannelLimits],
+    mut tx: ChunkSender,
+    mut rx: impl Reader,
+    seed: u64,
+    loss: usize,
+    delay: usize,
+    false_loss: usize,
+    messages: &[(usize, Kind, Vec<u8>)],
+) -> (usize, usize) {
     let mut rng = Rng(seed);
-    let mut tx = ChunkSender::new(&l);
-    let mut rx = ChunkReceiver::new(&l);
     let mut queued: Vec<VecDeque<(Kind, Vec<u8>)>> = vec![VecDeque::new(); l.len()];
     let mut todo: VecDeque<&(usize, Kind, Vec<u8>)> = messages.iter().collect();
     let mut got: Vec<Delivered> = Vec::new();
@@ -117,9 +168,9 @@ fn run_with(
             let f = &fates[i];
             if !f.lost && f.arrives_at <= round && !f.bytes.is_empty() {
                 let bytes = std::mem::take(&mut fates[i].bytes);
-                rx.read(&mut BitReader::new(&bytes), &mut got)
+                rx.read(&bytes, round as u32, &mut got)
                     .expect("a section a sender wrote reads");
-                peak = peak.max(rx.held_bytes());
+                peak = peak.max(rx.held());
                 fates[i].bytes = vec![0]; // delivered: read once
                 fates[i].arrives_at = usize::MAX;
             }
@@ -341,4 +392,267 @@ fn the_default_caps_follow_the_channels_and_a_sender_never_queues_more_than_a_re
     }
     assert_eq!(tx.total_backlog(), hold);
     assert!(tx.enqueue(0, Kind::Delta, vec![1; 1]).is_err());
+}
+
+/// The server's caps for the tests below: the ones a connection holds, with a rate no honest sender over a memory link reaches.
+fn upstream_caps(hold: usize) -> UpstreamCaps {
+    UpstreamCaps {
+        hold_per_connection: hold,
+        hold_total: 4 * hold,
+        bytes_per_second: 1 << 30,
+        byte_burst: 1 << 30,
+        messages_per_second: 1 << 20,
+        message_burst: 1 << 20,
+        ..UpstreamCaps::default()
+    }
+}
+
+#[test]
+fn a_client_to_server_message_of_four_megabytes_arrives_intact_over_a_link_losing_five_percent() {
+    // The roles swapped: the client's sender, the server's capped reader of that client.
+    let l = vec![ChannelLimits::new(1_000).with_max_message(4 << 20)];
+    let server = UpstreamServer::new(upstream_caps(8 << 20));
+    let mut rng = Rng(55);
+    let data = blob(&mut rng, 4 << 20);
+    let tx = ChunkSender::new(&l).with_total_backlog(8 << 20);
+    let (packets, peak) = run_over(
+        &l,
+        tx,
+        server.connection(&l),
+        56,
+        5,
+        8,
+        2,
+        &[(0, Kind::Snapshot, data)],
+    );
+    eprintln!("4 MiB upstream in {packets} packets, the server held {peak} bytes at most");
+    assert!(peak <= 8 << 20);
+    assert_eq!(server.held_total(), 0, "the reader gave its bytes back");
+}
+
+#[test]
+fn upstream_messages_on_several_channels_arrive_once_whole_and_in_order() {
+    let l = limits();
+    let server = UpstreamServer::new(upstream_caps(8 << 20));
+    let mut rng = Rng(77);
+    for (seed, loss, delay, false_loss) in [(1, 5, 4, 0), (2, 20, 12, 5), (3, 40, 20, 10)] {
+        let messages: Vec<(usize, Kind, Vec<u8>)> = (0..12)
+            .map(|i| {
+                let channel = i % 3;
+                let cap = [200_000, 50_000, 2_000][channel];
+                let n = 1 + rng.below(cap);
+                (channel, Kind::Delta, blob(&mut rng, n))
+            })
+            .collect();
+        run_over(
+            &l,
+            ChunkSender::new(&l),
+            server.connection(&l),
+            seed,
+            loss,
+            delay,
+            false_loss,
+            &messages,
+        );
+    }
+}
+
+/// A chunk one byte into a message of `total` bytes on channel 0 of a single channel: the reader allocates and charges the whole
+/// message at once.
+fn first_chunk(total: usize, seq: u16, size_bits: u8) -> Vec<u8> {
+    use torque_net::chunk::{CHUNK_LEN_BITS, id_bits};
+    let mut w = BitWriter::new();
+    w.write_flag(true);
+    w.write_bits(0, id_bits(1));
+    w.write_flag(false);
+    w.write_bits(u32::from(seq), 16);
+    w.write_bits(total as u32, size_bits);
+    w.write_bits(0, size_bits);
+    w.write_bits(1, CHUNK_LEN_BITS);
+    w.write_u8(1);
+    w.write_flag(false);
+    w.into_bytes()
+}
+
+fn read_one(rx: &mut UpstreamReader, bytes: &[u8], now: u32) -> Result<Vec<Delivered>, NetError> {
+    let mut out = Vec::new();
+    rx.read(&mut BitReader::new(bytes), now, &mut out)
+        .map(|()| out)
+}
+
+#[test]
+fn hostile_connections_filling_the_shared_budget_do_not_get_an_honest_one_dropped() {
+    let l = vec![ChannelLimits::new(1_000).with_max_message(200_000)];
+    let size_bits = torque_net::bits::bit_length(200_000);
+    let server = UpstreamServer::new(UpstreamCaps {
+        hold_per_connection: 200_000,
+        hold_total: 800_000,
+        ..upstream_caps(0)
+    });
+    // Five connections each claim a message of 150,000 bytes with a single chunk and send nothing more: 750,000 of 800,000.
+    let mut hostile: Vec<UpstreamReader> = (0..5).map(|_| server.connection(&l)).collect();
+    for h in &mut hostile {
+        read_one(h, &first_chunk(150_000, 0, size_bits), 0).expect("room for it");
+    }
+    assert_eq!(server.held_total(), 750_000);
+    // An honest connection sends 100,000 bytes over a lossy link: its first chunk finds the budget full.
+    let mut rng = Rng(3);
+    let data = blob(&mut rng, 100_000);
+    let mut tx = ChunkSender::new(&l);
+    tx.enqueue(0, Kind::Snapshot, data.clone()).unwrap();
+    let mut honest = server.connection(&l);
+    let mut got = Vec::new();
+    for seq in 1..5_000u32 {
+        if !tx.has_work() {
+            break;
+        }
+        let mut w = BitWriter::new();
+        tx.write(&mut w, seq, 1_000 * 8);
+        let lost = rng.chance(5);
+        if !lost {
+            got.extend(
+                read_one(&mut honest, &w.into_bytes(), seq)
+                    .expect("the honest connection is never refused"),
+            );
+        }
+        tx.on_notify(seq, !lost);
+        assert!(server.held_total() <= 800_000, "the budget holds");
+    }
+    assert_eq!(got.len(), 1);
+    assert!(got[0].data == data, "the honest transfer arrived intact");
+    // The room came from the holders of the most bytes, which are ended: they hold nothing, and their next packet is refused.
+    assert!(server.evictions() >= 1);
+    let dead: Vec<usize> = (0..5).filter(|i| hostile[*i].is_dead()).collect();
+    assert_eq!(dead.len() as u64, server.evictions());
+    for i in &dead {
+        assert_eq!(hostile[*i].held_bytes(), 0);
+        assert!(read_one(&mut hostile[*i], &first_chunk(10, 1, size_bits), 9).is_err());
+        assert!(hostile[*i].sweep(10).is_err());
+    }
+    assert!(server.held_total() <= 800_000);
+    drop(hostile);
+    drop(honest);
+    assert_eq!(server.held_total(), 0);
+}
+
+#[test]
+fn a_connection_that_would_hold_the_most_is_the_one_refused_when_the_budget_is_full() {
+    let l = vec![ChannelLimits::new(1_000).with_max_message(200_000)];
+    let size_bits = torque_net::bits::bit_length(200_000);
+    let server = UpstreamServer::new(UpstreamCaps {
+        hold_per_connection: 200_000,
+        hold_total: 800_000,
+        ..upstream_caps(0)
+    });
+    let mut holders: Vec<UpstreamReader> = (0..4).map(|_| server.connection(&l)).collect();
+    for h in &mut holders {
+        read_one(h, &first_chunk(190_000, 0, size_bits), 0).expect("room");
+    }
+    let mut big = server.connection(&l);
+    // 190,000 more would pass the cap and nobody holds more than that: the newcomer is refused and the others are left alone.
+    assert!(read_one(&mut big, &first_chunk(200_000, 0, size_bits), 0).is_err());
+    assert_eq!(server.evictions(), 0);
+    assert!(
+        holders
+            .iter()
+            .all(|h| !h.is_dead() && h.held_bytes() == 190_000)
+    );
+    // A smaller newcomer does not displace them either when it fits.
+    let mut small = server.connection(&l);
+    read_one(&mut small, &first_chunk(40_000, 0, size_bits), 0).expect("fits");
+    assert_eq!(server.evictions(), 0);
+    assert_eq!(server.held_total(), 4 * 190_000 + 40_000);
+}
+
+#[test]
+fn a_half_received_message_that_goes_stale_ends_its_connection_and_releases_its_bytes() {
+    let l = vec![ChannelLimits::new(1_000).with_max_message(100_000)];
+    let size_bits = torque_net::bits::bit_length(100_000);
+    let server = UpstreamServer::new(UpstreamCaps {
+        message_age_ms: 1_000,
+        message_min_rate: 100_000,
+        ..upstream_caps(1 << 20)
+    });
+    let mut slow = server.connection(&l);
+    read_one(&mut slow, &first_chunk(50_000, 0, size_bits), 100).expect("the first chunk");
+    // The whole message is charged at once (what a sender claims is what it pays for).
+    assert!(slow.held_bytes() >= 50_000);
+    assert_eq!(server.held_total(), slow.held_bytes());
+    // Within its time (1,000 ms and 500 ms for its bytes at the least rate) nothing happens.
+    assert!(slow.sweep(1_500).is_ok());
+    assert!(slow.held_bytes() >= 50_000);
+    // Past it, with no more packets from the connection, the host's tick still finds it.
+    assert!(slow.sweep(1_700).is_err());
+    assert!(slow.is_dead());
+    assert_eq!((slow.held_bytes(), server.held_total()), (0, 0));
+    assert!(read_one(&mut slow, &first_chunk(10, 1, size_bits), 1_800).is_err());
+    // A reader that completes its messages in time is never stale, however long it lives.
+    let mut honest = server.connection(&l);
+    let mut tx = ChunkSender::new(&l);
+    for round in 0..20u32 {
+        tx.enqueue(0, Kind::Delta, vec![round as u8; 600]).unwrap();
+        let mut w = BitWriter::new();
+        tx.write(&mut w, round + 1, 8_000 * 8);
+        tx.on_notify(round + 1, true);
+        let out = read_one(&mut honest, &w.into_bytes(), round * 700).expect("in time");
+        assert_eq!(out.len(), 1);
+        assert!(honest.sweep(round * 700 + 600).is_ok());
+    }
+}
+
+#[test]
+fn an_upstream_flood_past_the_rate_or_the_message_size_is_refused_and_delivers_nothing() {
+    let l = vec![ChannelLimits::new(1_000).with_max_message(100_000)];
+    let server = UpstreamServer::new(UpstreamCaps {
+        bytes_per_second: 10_000,
+        byte_burst: 20_000,
+        messages_per_second: 2,
+        message_burst: 3,
+        ..UpstreamCaps::default()
+    });
+    // Messages of one byte each, a packet for each.
+    let mut tx = ChunkSender::new(&l);
+    let mut rx = server.connection(&l);
+    let mut delivered = 0;
+    let mut refused_at = None;
+    for i in 0..10u32 {
+        tx.enqueue(0, Kind::Delta, vec![i as u8]).unwrap();
+        let mut w = BitWriter::new();
+        tx.write(&mut w, i + 1, 8_000);
+        tx.on_notify(i + 1, true);
+        let mut out = Vec::new();
+        // The same millisecond: no refill between them.
+        match rx.read(&mut BitReader::new(&w.into_bytes()), 5, &mut out) {
+            Ok(()) => delivered += out.len(),
+            Err(_) => {
+                assert!(
+                    out.is_empty(),
+                    "nothing is delivered from the packet that went over"
+                );
+                refused_at = Some(i);
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        (delivered, refused_at),
+        (3, Some(3)),
+        "a burst of 3 messages"
+    );
+    // A message above the cap is refused from its first chunk.
+    let big = vec![ChannelLimits::new(1_000).with_max_message(10 << 20)];
+    let strict = UpstreamServer::new(UpstreamCaps {
+        max_message: 50_000,
+        ..UpstreamCaps::default()
+    });
+    let mut tx = ChunkSender::new(&big);
+    tx.enqueue(0, Kind::Snapshot, vec![7; 60_000]).unwrap();
+    let mut w = BitWriter::new();
+    tx.write(&mut w, 1, 8_000);
+    let mut rx = strict.connection(&big);
+    assert!(
+        rx.read(&mut BitReader::new(&w.into_bytes()), 0, &mut Vec::new())
+            .is_err()
+    );
+    assert_eq!(rx.held_bytes(), 0);
 }

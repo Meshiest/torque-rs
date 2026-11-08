@@ -187,7 +187,7 @@ fn a_shared_message_handle_counts_the_message_until_it_is_acknowledged() {
     .unwrap();
     let hub = ChannelHub::new(registry);
     let conn = ConnId(3);
-    hub.accepted(conn);
+    hub.accepted(conn, 1);
     hub.enable(conn);
     let data: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![5u8; 400]);
     let handle = hub

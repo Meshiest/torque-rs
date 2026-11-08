@@ -42,7 +42,7 @@ use ghosts::datablocks::DatablockCodecSet;
 use ghosts::plugin::PluginClasses;
 use ghosts::{NetWidths, TgeClass, TgeDatablocks, TgeRecord, Value, tge_reps};
 use net::NetError;
-use net::bits::BitReader;
+use net::bits::{BitReader, BitWriter};
 use net::classes::{Kind, NetClasses};
 use net::client::{Client, ClientEvent as Handshake};
 use net::connect::BlockSource;
@@ -726,6 +726,9 @@ impl TgeFeed {
         for notify in &received.notifies {
             self.out
                 .on_notify(notify.send_seq, notify.delivered, &mut settled);
+            if let Some(channels) = &self.channels {
+                channels.on_notify(notify.send_seq, notify.delivered);
+            }
         }
         if received.answer_ping
             && let Some(protocol) = self.client.protocol_mut()
@@ -975,6 +978,14 @@ impl Feed for TgeFeed {
         let send_seq = protocol.last_send_seq();
         let packet_bits = protocol.packet_limit_bits();
         w.enable_string_buffer();
+        // The upstream channels' chunks come first in the payload, in the room the moves leave.
+        if let Some(channels) = &self.channels
+            && channels.writes_upstream()
+        {
+            let mut moves = BitWriter::new();
+            block.write(&mut moves);
+            channels.write_upstream(&mut w, send_seq, packet_bits, moves.bits());
+        }
         block.write(&mut w);
         let params = SectionParams {
             ghosting: false,

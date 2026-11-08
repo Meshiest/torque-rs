@@ -375,3 +375,58 @@ fn a_client_missing_a_collision_source_is_refused_with_the_reason() {
             .is_err()
     );
 }
+
+#[test]
+fn a_client_to_server_channel_is_listed_with_a_prefix_and_both_ends_must_have_it() {
+    fn with_upload(e: &mut EngineBuilder) {
+        e.net().channel::<Nothing>("terrain", 100);
+        e.net().channel_to_server::<Nothing>("terrain", 100);
+        e.net().channel_to_server::<Nothing>("uploads", 100);
+    }
+    fn without_upload(e: &mut EngineBuilder) {
+        e.net().channel::<Nothing>("terrain", 100);
+    }
+    let build = |upstream: bool| {
+        let body: fn(&mut EngineBuilder) = if upstream {
+            with_upload
+        } else {
+            without_upload
+        };
+        EngineBuilder::new()
+            .add_plugins(plugin::<Arena>(Some(1), body))
+            .build()
+            .unwrap()
+    };
+    let server = build(true);
+    let manifest = server.net_manifest(&HandshakeProfile::default());
+    assert_eq!(
+        manifest.channels.names().unwrap(),
+        ["terrain", "up:terrain", "up:uploads"]
+    );
+    let channels = server.net_channels().unwrap();
+    assert_eq!(channels.names(), ["terrain"]);
+    assert_eq!(channels.up_names(), ["terrain", "uploads"]);
+    let gate = server.connect_gate(&HandshakeProfile::default()).unwrap();
+    let block = build(true).connect_block(&cx()).unwrap();
+    assert!(gate.matches_channels(&fields(block.clone())));
+    assert_eq!(gate.check(from(), &cx(), &fields(block)), Ok(None));
+    // A client without the upload channel is refused by the manifest, and a server without it refuses a client that has it.
+    let without = build(false).connect_block(&cx()).unwrap();
+    assert!(gate.check(from(), &cx(), &fields(without)).is_err());
+    let plain_gate = build(false)
+        .connect_gate(&HandshakeProfile::default())
+        .unwrap();
+    let with = build(true).connect_block(&cx()).unwrap();
+    assert!(plain_gate.check(from(), &cx(), &fields(with)).is_err());
+}
+
+#[test]
+fn a_server_to_client_channel_may_not_take_the_prefix_the_manifest_keeps_for_the_other_direction() {
+    let engine = EngineBuilder::new()
+        .add_plugins(plugin::<Arena>(Some(1), |e| {
+            e.net().channel::<Nothing>("up:uploads", 100);
+        }))
+        .build()
+        .unwrap();
+    assert!(engine.net_channels().is_err());
+}
