@@ -167,7 +167,8 @@ fn fire_done(vm: &mut Vm, seq: u32) {
             if deferred.len() >= MAX_DEFERRED {
                 deferred.retain(|&seq, _| vm.event_pending(seq));
             }
-            deferred.insert(queued, Rc::clone(&policy));
+            // A call queued by a nested queued call already has that call's policy: keep it.
+            deferred.entry(queued).or_insert_with(|| Rc::clone(&policy));
         }
         queued = queued.wrapping_add(1);
     }
