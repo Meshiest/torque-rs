@@ -1761,6 +1761,16 @@ impl<S: GhostStyle> GhostScene<S> {
         };
         draws.extend(self.style.effects(&frame, &mut set));
         draws.extend(self.dust.draws(eye.position, right, up, &mut set));
+        // The plugins' emitter kinds beside TGE's emitters.
+        view.emitter_draws(
+            &crate::render::EmitterFrame {
+                eye: eye.position,
+                right,
+                up,
+            },
+            &mut set,
+            &mut draws,
+        );
         let mut decals = self.decals.draws(eye.position, &mut set);
         if let Some(tracks) = &self.tracks {
             decals.extend(tracks.draws(eye.position, &mut set));

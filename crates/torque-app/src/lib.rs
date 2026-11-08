@@ -13,6 +13,8 @@
 //! - [`view::WorldView`]: the per-frame world view, drawn by the renderer slot's renderer under the GUI.
 //! - [`transports`]: the transports a client connects over and a server listens on, registered by plugins under ids (UDP, memory,
 //!   web, rooms, relay) and picked by id.
+//! - [`render`]: passes at the stages of the engine's renderer's frame, static batches and particle emitter kinds, added by
+//!   plugins ([`render::EngineRender::render`]).
 //! - [`renderers`]: the renderer slot: renderers registered by plugins under ids and swapped while the game runs
 //!   (`setRenderer`), the engine's own renderer and its features as plugins.
 //! - [`gizmos`]: debug lines, boxes, spheres, arrows, crosses and labels drawn in world space (`GizmosPlugin`, opt-in; the
@@ -67,6 +69,7 @@ pub mod lights;
 pub mod orbit;
 pub mod page_bridge;
 pub mod plugins;
+pub mod render;
 pub mod renderers;
 pub mod run;
 pub mod shots;

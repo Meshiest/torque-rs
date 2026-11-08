@@ -31,6 +31,7 @@ pub mod ghosting;
 #[cfg(feature = "gizmos")]
 pub mod gizmos;
 pub mod limits;
+pub mod passes;
 pub mod post;
 pub mod shaders;
 pub mod shadows;

@@ -38,6 +38,8 @@ use torque_render_hd::ext::PlainScene;
 use torque_render_scene::hd::{HdCamera, HdMode, ImageSettings, Quality};
 use torque_ts_vm::vm::Vm;
 
+use crate::render::RenderAdds;
+
 /// The id of the engine's own renderer ([`RendererPlugin`]).
 pub const DEFAULT_RENDERER: &str = "default";
 
@@ -263,6 +265,8 @@ pub struct RendererSlot {
     gpu: RefCell<Option<Gpu>>,
     /// The renderers made so far, by entry.
     made: RefCell<Vec<Option<Box<dyn WorldRenderer>>>>,
+    /// The passes, static batches and emitter kinds the engine's plugins added ([`crate::render`]).
+    adds: RenderAdds,
 }
 
 impl fmt::Debug for RendererSlot {
@@ -306,8 +310,21 @@ impl RendererSlot {
             generation: Cell::new(0),
             gpu: RefCell::new(None),
             made,
+            adds: RenderAdds::default(),
         };
         (slot, warnings)
+    }
+
+    /// The slot with what the engine's plugins added to the rendering ([`crate::render`]): the world view attached to it makes
+    /// its own of each.
+    pub fn with_adds(mut self, adds: RenderAdds) -> RendererSlot {
+        self.adds = adds;
+        self
+    }
+
+    /// What the engine's plugins added to the rendering.
+    pub fn adds(&self) -> &RenderAdds {
+        &self.adds
     }
 
     /// The registered renderers' ids, in the engine's order.
@@ -445,6 +462,8 @@ impl Plugin for RendererSlotPlugin {
             for warning in warnings {
                 vm.warn(warning);
             }
+            let adds = RenderAdds::of_engine(engine).kept(|w| vm.warn(w));
+            let slot = slot.with_adds(adds);
             if slot.current().is_none() {
                 vm.warn("the engine has no renderer: the world is not drawn".to_string());
             }

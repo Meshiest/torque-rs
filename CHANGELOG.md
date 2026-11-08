@@ -51,6 +51,11 @@ different.
   (`setCameraMode`, `getCameraMode`, `getCameraModes`; `CameraModes::set` from Rust), eased from one to the next, with the first
   person, the third person on a boom and the orbit built in; `torque::app::camera_behind` is the helpers of the camera behind a
   figure, moved from the examples' shared crate. TGE has one camera at a time and no modes.
+- `torque::app::render`, `torque-render-hd::passes`: rendering from plugins (`engine.render()`): passes at named stages
+  of the HD renderer's frame (`Stage::{Shadows, Prepass, Opaque, Translucent, AfterTaa, Post, Overlay}`, `HdPass` handed a
+  `PassCx` with the device, the encoder, the stage's targets, the camera and the scene), static batches of many copies of a
+  mesh kept on the GPU in chunks and culled there (`StaticBatchSource`, `WorldView::set_static_batch`), and particle
+  emitter kinds drawn with TGE's particles (`EmitterKind`). A stage with no pass costs nothing.
 
 #### Web and networking
 

@@ -577,6 +577,11 @@ pub(crate) struct Shadows {
     pub gather_sampler: wgpu::Sampler,
     cascade_keys: Vec<Option<[f32; 16]>>,
     cascade_dynamic: Vec<bool>,
+    /// Whether passes from outside the renderer draw into the cascades' work maps this frame ([`Shadows::set_drawn_over`]):
+    /// each is copied from its cache every frame.
+    drawn_over: bool,
+    /// The sun's cascades of the last frame encoded: their light's view and projection.
+    cascade_matrices: Vec<[f32; 16]>,
     /// The static cascades whose cells changed too much to patch, waiting for their whole redraw since that frame
     /// ([`Shadows::frames`]): at most one is drawn whole for its cells a frame, the longest waiting first (a load's stream of
     /// cells redrew all four every frame, some 30 ms of the GPU's).
@@ -1255,6 +1260,8 @@ impl Shadows {
             trans_valid: vec![false; MAX_CASCADES],
             cascade_keys: vec![None; MAX_CASCADES],
             cascade_dynamic: vec![false; MAX_CASCADES],
+            drawn_over: false,
+            cascade_matrices: Vec::new(),
             cascade_stale: vec![None; MAX_CASCADES],
             frames: 0,
             slots: vec![Slot::default(); maps.slots()],
@@ -1306,6 +1313,22 @@ impl Shadows {
 
     pub fn csm_view(&self) -> &wgpu::TextureView {
         &self.maps.csm_view
+    }
+
+    /// Whether passes from outside the renderer draw into the cascades after [`Shadows::encode`] (each cascade's work map is then
+    /// copied from its cache every frame, so what they drew the frame before is gone).
+    pub fn set_drawn_over(&mut self, on: bool) {
+        self.drawn_over = on;
+    }
+
+    /// The sun's cascades the last [`Shadows::encode`] drew, finest first: each one's light view and projection, its work map
+    /// (what the frame reads) and its side in texels.
+    pub fn cascades(&self) -> impl Iterator<Item = ([f32; 16], &wgpu::TextureView, u32)> + '_ {
+        let size = self.maps.quality.cascade_size;
+        self.cascade_matrices
+            .iter()
+            .zip(&self.maps.csm_work_layers)
+            .map(move |(m, v)| (*m, v, size))
     }
 
     /// A count that changes whenever the maps are made again.
@@ -1458,6 +1481,7 @@ impl Shadows {
             Vec::new()
         };
         stats.cascades = cs.len();
+        self.cascade_matrices = cs.iter().map(|c| c.view_proj).collect();
         self.range = Some(range);
         let size = q.cascade_size;
         for (i, c) in cs.iter().enumerate() {
@@ -1561,10 +1585,10 @@ impl Shadows {
                 })
                 .map(|(k, _)| k)
                 .collect();
-            if drawn || !objects.is_empty() || self.cascade_dynamic[i] {
+            if drawn || !objects.is_empty() || self.cascade_dynamic[i] || self.drawn_over {
                 jobs.push(Job::CopyCascade { layer: i, to: i });
             }
-            self.cascade_dynamic[i] = !objects.is_empty();
+            self.cascade_dynamic[i] = !objects.is_empty() || self.drawn_over;
             // The first-person images are lit by the nearest cascades with the client's own Player left out: it casts a shadow of
             // the held item's copy at the hand, not onto the image drawn before the eye.
             if i < NO_SELF_CASCADES && input.objects.iter().any(|o| o.own) {

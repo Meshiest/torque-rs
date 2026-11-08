@@ -91,6 +91,9 @@ use torque_render_scene::hd::settings::ImageSettings;
 use crate::ext::{
     ExtCell, ExtSlots, ExtraDrawn, ExtraPrepare, HdExtension, NoExtension, ShadowExtras,
 };
+use crate::passes::{
+    HdPass, HdPasses, PassCx, PassScene, ShadowCascade, Stage as PassStage, frame_copy,
+};
 use crate::post::{
     AO_FORMAT, HISTORY_FORMAT, MOTION_FORMAT, MOTION_STRIDE, NORMAL_FORMAT, PostPipes,
     SHOWN_FORMAT, Temporal,
@@ -1143,6 +1146,9 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     lights_generation: Option<u64>,
     uploaded_glow: bool,
     shadowed_lights: usize,
+    /// The passes from outside the renderer, by stage ([`crate::passes`]), and the copy of the frame [`PassStage::Post`] reads.
+    passes: HdPasses,
+    post_copy: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 /// The shadow maps' lists' bytes at most (a batch of maps culled in one compute pass, each into its own lists), and the fewest and
@@ -2357,6 +2363,8 @@ impl<E: HdExtension> HdWorld<E> {
             lights_generation: None,
             uploaded_glow: true,
             shadowed_lights: 0,
+            passes: HdPasses::default(),
+            post_copy: None,
             marks: device
                 .features()
                 .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
@@ -5092,6 +5100,21 @@ impl<E: HdExtension> HdWorld<E> {
         self.clouds.reset();
     }
 
+    /// Adds `pass` at `stage` of every frame from the next, after the passes already there ([`crate::passes`]).
+    pub fn add_pass(&mut self, stage: PassStage, pass: impl HdPass) {
+        self.passes.add(stage, Box::new(pass));
+    }
+
+    /// The passes from outside the renderer ([`crate::passes`]): to add boxed ones or take them all out.
+    pub fn passes_mut(&mut self) -> &mut HdPasses {
+        &mut self.passes
+    }
+
+    /// The passes from outside the renderer.
+    pub fn passes(&self) -> &HdPasses {
+        &self.passes
+    }
+
     /// The last frame's working depth, reversed (1 at the near plane, 0 far away), at the internal frame's size: what a pass
     /// drawn over the tonemapped picture reads to hide what lies behind the scene. None before the first frame.
     pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
@@ -5102,6 +5125,20 @@ impl<E: HdExtension> HdWorld<E> {
     /// `None` for the world's own image, [`HdWorld::read_ldr`]) at `origin` (the viewport's top left in the target). Submits the work.
     pub fn draw(
         &mut self,
+        scene: &E::Scene,
+        camera: &HdCamera,
+        target: Option<(&wgpu::TextureView, wgpu::TextureFormat, [u32; 2])>,
+    ) -> Result<(), HdError> {
+        let mut passes = std::mem::take(&mut self.passes);
+        let drawn = self.draw_with(&mut passes, scene, camera, target);
+        self.passes = passes;
+        drawn
+    }
+
+    /// [`HdWorld::draw`] with the passes from outside the renderer.
+    fn draw_with(
+        &mut self,
+        passes: &mut HdPasses,
         scene: &E::Scene,
         camera: &HdCamera,
         target: Option<(&wgpu::TextureView, wgpu::TextureFormat, [u32; 2])>,
@@ -5671,6 +5708,43 @@ impl<E: HdExtension> HdWorld<E> {
             };
         }
         mark!("begin");
+        // The passes from outside the renderer at `$stage`, drawing with `$camera` into targets of `$size` (the world in
+        // `$viewport` of the color target), the stage's targets set after the rest are None. Nothing without one.
+        let pass_scene = PassScene {
+            sun: &scene.sun,
+            fog: &scene.fog,
+            lights: &scene.lights,
+            time: E::time(scene),
+            visible_distance: scene.visible_distance,
+        };
+        macro_rules! run_passes {
+            ($stage:expr, $camera:expr, $size:expr, $viewport:expr $(, $field:ident = $value:expr)* $(,)?) => {
+                if passes.has($stage) {
+                    let mut cx = PassCx {
+                        stage: $stage,
+                        device: &self.device,
+                        queue: &self.queue,
+                        encoder: &mut encoder,
+                        size: $size,
+                        frame_size: [iw, ih],
+                        viewport: $viewport,
+                        depth: None,
+                        depth_attachable: false,
+                        normals: None,
+                        motion: None,
+                        hdr: None,
+                        source: None,
+                        ldr: None,
+                        cascades: &[],
+                        camera: $camera,
+                        scene: pass_scene,
+                        ghosts: &scene.objects,
+                    };
+                    $(cx.$field = $value;)*
+                    passes.run(&mut cx);
+                }
+            };
+        }
         let _ = set_pass_kind(PassKind::Cull);
         // The main view's lists, culled on the GPU before anything draws from them.
         if let (Some(slot), Some(c)) = (main_slot, &mut self.cull) {
@@ -5760,6 +5834,7 @@ impl<E: HdExtension> HdWorld<E> {
             self.ground_key = key;
         }
         // The shadow maps: every shape's opaque draws cast (a Player is a translucent object for its draw order, its body opaque).
+        self.shadows.set_drawn_over(passes.has(PassStage::Shadows));
         let objects: Vec<ObjectCaster> = self
             .loose
             .objects
@@ -5839,6 +5914,24 @@ impl<E: HdExtension> HdWorld<E> {
         self.shadow_patched = self.shadow_dirty.len();
         self.shadow_dirty.clear();
         self.shadow_reset = false;
+        if passes.has(PassStage::Shadows) {
+            let cascades: Vec<ShadowCascade> = self
+                .shadows
+                .cascades()
+                .map(|(view_proj, target, size)| ShadowCascade {
+                    view_proj,
+                    target,
+                    size,
+                })
+                .collect();
+            run_passes!(
+                PassStage::Shadows,
+                &jcam,
+                [iw, ih],
+                [0, 0, iw, ih],
+                cascades = &cascades,
+            );
+        }
         mark!("shadows");
         let _ = set_pass_kind(PassKind::Post);
         // The sky: its uniform, and the physical sky's tables.
@@ -6162,6 +6255,16 @@ impl<E: HdExtension> HdWorld<E> {
                 prepass_draws!(pass, &self.lists_second, true, true);
             }
         }
+        run_passes!(
+            PassStage::Prepass,
+            &jcam,
+            [iw, ih],
+            [0, 0, iw, ih],
+            depth = Some(&targets.depth_view),
+            depth_attachable = true,
+            normals = Some(&targets.normal_view),
+            motion = Some(&targets.motion_views[p]),
+        );
         // The prepass's depth kept for the next frame's TAA (the forward passes go on writing the working depth).
         if taa {
             encoder.copy_texture_to_texture(
@@ -6475,6 +6578,16 @@ impl<E: HdExtension> HdWorld<E> {
                 draw_calls += extras.calls;
             }
         }
+        run_passes!(
+            PassStage::Opaque,
+            &jcam,
+            [iw, ih],
+            [0, 0, iw, ih],
+            depth = Some(&targets.depth_view),
+            depth_attachable = true,
+            normals = Some(&targets.normal_view),
+            hdr = Some(&targets.hdr_view),
+        );
         // The multiplied decals over the whole opaque frame (lit, shadowed and fogged), before the volumetric light.
         if decal_start < split {
             let mut pass = begin!("hd decals", false, &targets.depth_view, &frame_group);
@@ -6691,6 +6804,16 @@ impl<E: HdExtension> HdWorld<E> {
                 draw_list(&mut pass, &late, &mut draw_calls);
             }
         }
+        run_passes!(
+            PassStage::Translucent,
+            &jcam,
+            [iw, ih],
+            [0, 0, iw, ih],
+            depth = Some(&targets.depth_view),
+            depth_attachable = true,
+            normals = Some(&targets.normal_view),
+            hdr = Some(&targets.hdr_view),
+        );
         // A TAA frame's late frames (cleared whenever either has draws: the composite reads both): the sprites, and the late
         // objects and dying shapes over (unjittered: they are not in the TAA's history, so its jitter would only shake their edges).
         let over: Vec<(usize, PipelineKey)> = keyed(over_start..items.len());
@@ -6774,8 +6897,11 @@ impl<E: HdExtension> HdWorld<E> {
             pass.draw(0..3, 0..1);
             crate::count_draws(1);
         }
-        // The late sprites added to a copy of the shown colour (the TAA reads the shown colour back next frame).
-        let present = taa && (!late_sprites.is_empty() || !over.is_empty());
+        // The late sprites added to a copy of the shown colour (the TAA reads the shown colour back next frame); the copy also
+        // what the passes after the anti-aliasing draw into.
+        let late_drawn = taa && (!late_sprites.is_empty() || !over.is_empty());
+        let present =
+            late_drawn || (taa && (passes.has(PassStage::AfterTaa) || passes.has(PassStage::Post)));
         if present {
             encoder.copy_texture_to_texture(
                 targets.shown[p].as_image_copy(),
@@ -6786,6 +6912,8 @@ impl<E: HdExtension> HdWorld<E> {
                     depth_or_array_layers: 1,
                 },
             );
+        }
+        if late_drawn {
             crate::count_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hd late sprites composite"),
@@ -6841,6 +6969,44 @@ impl<E: HdExtension> HdWorld<E> {
         } else {
             0.0
         };
+        // The passes after the anti-aliasing into the tonemap's source (the output's size with the TAA, else the internal).
+        if passes.has(PassStage::AfterTaa) || passes.has(PassStage::Post) {
+            let (size, frame_camera) = if taa {
+                ([camera.width, camera.height], camera)
+            } else {
+                ([iw, ih], &icam)
+            };
+            let viewport = [0, 0, size[0], size[1]];
+            let attachable = size == [iw, ih];
+            run_passes!(
+                PassStage::AfterTaa,
+                frame_camera,
+                size,
+                viewport,
+                depth = Some(&targets.depth_view),
+                depth_attachable = attachable,
+                hdr = Some(source),
+            );
+            if passes.has(PassStage::Post) {
+                let texture = match output {
+                    Output::Present(_) => &targets.present,
+                    Output::Shown(p) => &targets.shown[p],
+                    Output::Fxaa => &targets.fxaa,
+                    Output::Hdr => &targets.hdr,
+                };
+                let copy = frame_copy(&self.device, &mut self.post_copy, &mut encoder, texture);
+                run_passes!(
+                    PassStage::Post,
+                    frame_camera,
+                    size,
+                    viewport,
+                    depth = Some(&targets.depth_view),
+                    depth_attachable = attachable,
+                    hdr = Some(source),
+                    source = Some(copy),
+                );
+            }
+        }
         // The automatic exposure and the bloom chain, over the tonemap's source.
         let source_size = if taa {
             (camera.width, camera.height)
@@ -7010,6 +7176,14 @@ impl<E: HdExtension> HdWorld<E> {
             crate::count_draws(1);
         }
         mark!("tonemap");
+        run_passes!(
+            PassStage::Overlay,
+            camera,
+            [camera.width, camera.height],
+            [origin[0], origin[1], camera.width, camera.height],
+            depth = Some(&targets.depth_view),
+            ldr = Some((target.map_or(&targets.ldr_view, |t| t.0), format)),
+        );
         if self.profile_passes
             && let Some(m) = &mut self.marks
         {

@@ -394,6 +394,7 @@ impl<G: App> WindowGame for AppWindow<G> {
         surface.present(frame);
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
         self.game.host().frame_drawn(real_ms);
+        view.report_warnings(self.game.host());
         // The warm-up's pipelines kept now, should the process not reach its close.
         #[cfg(not(target_arch = "wasm32"))]
         if !self.cache_saved && !view.warming() {

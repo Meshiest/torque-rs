@@ -46,6 +46,9 @@ use torque_shapes::shape::Shape;
 
 #[cfg(feature = "gizmos")]
 use crate::gizmos::{GizmoPainter, Gizmos};
+use crate::render::{
+    EmitterFrame, EmitterKind, EmitterKinds, HdPass, Stage, StaticBatch, StaticBatchSource,
+};
 use crate::renderers::{DEFAULT_RENDERER, RenderFeatures, RenderFrame, RendererSlot, SwitchError};
 
 /// What the view draws its world with.
@@ -132,8 +135,36 @@ const MESH_SAMPLER: Sampler = Sampler {
 /// The key of static mesh `index` among the view's static geometry ([`WorldView::set_static_mesh`]): a cell key of its own,
 /// far from any cell of the world's grid.
 pub fn static_mesh_key(index: u32) -> [i32; 3] {
-    const FAR: i32 = -(1 << 28);
-    [(index & 0x0fff_ffff) as i32, FAR, FAR]
+    [(index & 0x0fff_ffff) as i32, FAR_KEY, FAR_KEY]
+}
+
+/// Where the keys of the view's own static geometry lie, far from any cell of the world's grid.
+const FAR_KEY: i32 = -(1 << 28);
+
+/// The most static batches a view holds at once ([`WorldView::set_static_batch`]'s ids are below it).
+pub const MAX_STATIC_BATCHES: u32 = 1 << 20;
+
+/// The key of chunk `chunk` of static batch `batch` among the view's static geometry ([`WorldView::set_static_batch`]): beside
+/// the static meshes' keys, never one of theirs.
+pub fn static_batch_key(batch: u32, chunk: u32) -> [i32; 3] {
+    [
+        (chunk & 0x0fff_ffff) as i32,
+        FAR_KEY,
+        FAR_KEY + 1 + (batch % MAX_STATIC_BATCHES) as i32,
+    ]
+}
+
+/// The most warnings a view keeps for the console between takes ([`WorldView::take_warnings`]).
+pub const MAX_WARNINGS: usize = 16;
+
+/// The first id of the static batches the plugins' sources are laid out as ([`crate::render::StaticBatchSource`]): the ids
+/// below are the game's own.
+pub const PLUGIN_BATCHES: u32 = MAX_STATIC_BATCHES - crate::render::MAX_ADDS as u32;
+
+/// A plugin's static batch source and the generation of it the view laid out last.
+struct BatchSource {
+    source: Box<dyn StaticBatchSource>,
+    seen: Option<u64>,
 }
 
 /// The sun, the ambient light and the fog of a scene. Colors are gamma-space 0 to 1, as a mission's Sun and Sky give them.
@@ -236,6 +267,16 @@ pub struct WorldView {
     /// The client's debug gizmos, drawn over the world.
     #[cfg(feature = "gizmos")]
     gizmos: Option<GizmoPainter>,
+    /// The cells of each static batch the view holds, by its id.
+    batch_keys: HashMap<u32, (Vec<[i32; 3]>, usize)>,
+    /// Warnings for the console of the client the view draws ([`WorldView::take_warnings`]).
+    warnings: Vec<String>,
+    /// The most triangles the static batches lay out together ([`WorldView::set_static_batch_budget`]).
+    batch_budget: usize,
+    /// The plugins' static batch sources (laid out under the ids from [`PLUGIN_BATCHES`]).
+    batch_sources: Vec<BatchSource>,
+    /// The plugins' emitter kinds.
+    kinds: EmitterKinds,
 }
 
 impl WorldView {
@@ -276,6 +317,11 @@ impl WorldView {
             slot: None,
             #[cfg(feature = "gizmos")]
             gizmos: None,
+            batch_keys: HashMap::new(),
+            warnings: Vec::new(),
+            batch_budget: crate::render::MAX_VIEW_BATCH_TRIANGLES,
+            batch_sources: Vec::new(),
+            kinds: EmitterKinds::default(),
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
@@ -397,11 +443,205 @@ impl WorldView {
         self.world.features = self.features.features;
         let lit = self.features.particle_light;
         self.scene.particle_light = self.particle_light.filter(|_| lit);
+        self.take_adds(&slot);
         let made = slot.attach_gpu(&self.gpu).map_err(|e| e.to_string());
         // Any generation but the slot's: the next follow takes its renderer.
         self.slot = Some((Rc::clone(&slot), slot.generation().wrapping_sub(1)));
         self.follow_slot();
         made
+    }
+
+    /// What the slot's plugins added to the rendering, made for this view: its passes, static batch sources and emitter kinds
+    /// in place of any the view held before.
+    fn take_adds(&mut self, slot: &RendererSlot) {
+        let adds = slot.adds();
+        let passes = self.world.passes_mut();
+        passes.clear();
+        for e in &adds.passes {
+            passes.add(e.stage(), e.make());
+        }
+        for i in 0..self.batch_sources.len() {
+            self.remove_static_batch(PLUGIN_BATCHES + i as u32);
+        }
+        self.batch_sources = adds
+            .batches
+            .iter()
+            .map(|e| BatchSource {
+                source: e.make(),
+                seen: None,
+            })
+            .collect();
+        self.kinds.kinds = adds
+            .kinds
+            .iter()
+            .map(|e| (e.name().to_owned(), e.make()))
+            .collect();
+    }
+
+    /// Runs `pass` at `stage` of every frame the engine's renderer draws, after the passes there ([`crate::render`]). A view
+    /// attached to a client starts again from the passes its plugins added.
+    pub fn add_pass(&mut self, stage: Stage, pass: impl HdPass) {
+        self.world.add_pass(stage, pass);
+    }
+
+    /// Lays out `source`'s batch from the next frame, and again whenever it changes ([`StaticBatchSource`]). False: the view
+    /// holds [`crate::render::MAX_ADDS`] sources.
+    pub fn add_static_batch_source(&mut self, source: impl StaticBatchSource) -> bool {
+        if self.batch_sources.len() >= crate::render::MAX_ADDS {
+            return false;
+        }
+        self.batch_sources.push(BatchSource {
+            source: Box::new(source),
+            seen: None,
+        });
+        true
+    }
+
+    /// Draws `kind`'s particles into each frame's particles from the next ([`WorldView::emitter_draws`]); a kind named `name`
+    /// already is replaced.
+    pub fn add_emitter_kind(&mut self, name: &str, kind: impl EmitterKind) {
+        let kind: Box<dyn EmitterKind> = Box::new(kind);
+        match self.kinds.kinds.iter_mut().find(|(n, _)| n == name) {
+            Some(slot) => slot.1 = kind,
+            None => self.kinds.kinds.push((name.to_owned(), kind)),
+        }
+    }
+
+    /// The names of the emitter kinds the view draws, in order.
+    pub fn emitter_kinds(&self) -> impl Iterator<Item = &str> + '_ {
+        self.kinds.kinds.iter().map(|(n, _)| n.as_str())
+    }
+
+    /// Every frame runs the emitter kinds on by `seconds` (None: by the time the clock says passed since the last frame). The
+    /// offscreen runners set it, so a picture does not depend on how long the machine took.
+    pub fn set_effect_frame_seconds(&mut self, seconds: Option<f32>) {
+        self.kinds.fixed = seconds;
+    }
+
+    /// The emitter kinds run on by a frame's step and drawn for `frame` into `draws` (the frame's particles, their textures in
+    /// `textures`): what [`GhostScene::effects`](crate::ghosts::GhostScene::effects) adds beside TGE's emitters. Nothing without
+    /// a kind.
+    pub fn emitter_draws(
+        &mut self,
+        frame: &EmitterFrame,
+        textures: &mut TextureSet<'_>,
+        draws: &mut Vec<(f32, Draw)>,
+    ) {
+        if let Some(warning) = self.kinds.frame(frame, textures, draws) {
+            self.warn(warning);
+        }
+    }
+
+    /// Puts `batch` into the view's static geometry as the static batch `id` (below [`MAX_STATIC_BATCHES`]; the plugins' sources
+    /// take the ids from [`PLUGIN_BATCHES`]), replacing the one there: cut into chunks ([`StaticBatch::layout`]), each a cell kept
+    /// on the GPU and culled there, as [`WorldView::set_static_mesh`] keeps a mesh. An empty batch takes it out. At most
+    /// [`MAX_BATCH_TRIANGLES`](crate::render::MAX_BATCH_TRIANGLES) triangles of it are laid out, and no more than the view's
+    /// other batches leave of [`MAX_VIEW_BATCH_TRIANGLES`](crate::render::MAX_VIEW_BATCH_TRIANGLES): the copies past them are
+    /// left out, in order. Some: copies were left out, the warning (also queued for the console, [`WorldView::take_warnings`]).
+    pub fn set_static_batch(&mut self, id: u32, batch: &StaticBatch) -> Option<String> {
+        let id = id % MAX_STATIC_BATCHES;
+        self.remove_static_batch(id);
+        if batch.draws.is_empty() {
+            return None;
+        }
+        let others: usize = self.batch_keys.values().map(|(_, t)| t).sum();
+        let budget = self.batch_budget.saturating_sub(others);
+        let layout = batch.layout(budget);
+        let warning = (layout.left_out > 0).then(|| {
+            format!(
+                "static batch {id}: {} of its {} copies are left out (a batch lays out at most {} triangles, this view {} over all \
+                 its batches; {} were free)",
+                layout.left_out,
+                batch.transforms.len(),
+                crate::render::MAX_BATCH_TRIANGLES,
+                self.batch_budget,
+                budget,
+            )
+        });
+        if let Some(w) = &warning {
+            self.warn(w.clone());
+        }
+        if layout.chunks.is_empty() {
+            return warning;
+        }
+        let local = self.intern(batch.textures.clone());
+        let mut keys = Vec::with_capacity(layout.chunks.len());
+        for (n, copies) in layout.chunks.iter().enumerate() {
+            let key = static_batch_key(id, n as u32);
+            self.put_static_mesh(key, &local, &batch.chunk_draws(copies));
+            if self.scene.frame.cells.cells.contains_key(&key) {
+                keys.push(key);
+            }
+        }
+        self.batch_keys.insert(id, (keys, layout.triangles));
+        warning
+    }
+
+    /// The most triangles the view's static batches lay out together from the next batch laid out: `triangles`, at most
+    /// [`MAX_VIEW_BATCH_TRIANGLES`](crate::render::MAX_VIEW_BATCH_TRIANGLES) (the default). The batches laid out already stay.
+    pub fn set_static_batch_budget(&mut self, triangles: usize) {
+        self.batch_budget = triangles.min(crate::render::MAX_VIEW_BATCH_TRIANGLES);
+    }
+
+    /// The triangles the view's static batches lay out, all together.
+    pub fn static_batch_triangles(&self) -> usize {
+        self.batch_keys.values().map(|(_, t)| t).sum()
+    }
+
+    /// The warnings for the console since the last take (a static batch's copies left out, an emitter kind's sprites past the
+    /// cap); the window and offscreen runners put them on the client's console each frame ([`WorldView::report_warnings`]).
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
+
+    /// The warnings since the last take on the console of the client `host` runs.
+    pub fn report_warnings(&mut self, host: &mut crate::Host) {
+        if self.warnings.is_empty() {
+            return;
+        }
+        use torque_client::host::GameServer;
+        let vm = host.server.vm_mut();
+        for w in self.take_warnings() {
+            vm.warn(format!("render: {w}"));
+        }
+    }
+
+    /// Queues `warning` for the console (at most [`MAX_WARNINGS`] wait).
+    fn warn(&mut self, warning: String) {
+        if self.warnings.len() < MAX_WARNINGS {
+            self.warnings.push(warning);
+        }
+    }
+
+    /// Takes the static batch `id` out of the view (nothing if there is none).
+    pub fn remove_static_batch(&mut self, id: u32) {
+        let Some((keys, _)) = self.batch_keys.remove(&(id % MAX_STATIC_BATCHES)) else {
+            return;
+        };
+        for key in keys {
+            self.remove_static_mesh(key);
+        }
+    }
+
+    /// The cells the static batch `id` is laid out in (0: the view holds no such batch).
+    pub fn static_batch_cells(&self, id: u32) -> usize {
+        self.batch_keys
+            .get(&(id % MAX_STATIC_BATCHES))
+            .map_or(0, |(keys, _)| keys.len())
+    }
+
+    /// The plugins' static batches that changed, laid out again (a compare a source otherwise).
+    fn follow_batch_sources(&mut self) {
+        for i in 0..self.batch_sources.len() {
+            let b = &mut self.batch_sources[i];
+            let generation = b.source.generation();
+            if b.seen == Some(generation) {
+                continue;
+            }
+            b.seen = Some(generation);
+            let batch = b.source.batch();
+            self.set_static_batch(PLUGIN_BATCHES + i as u32, &batch);
+        }
     }
 
     /// The slot's renderer, when it was swapped since the last frame (one compare otherwise). The engine's own renderer starts
@@ -967,6 +1207,9 @@ impl WorldView {
         self.follow_slot();
         if self.drawing == Drawing::None {
             return Err("no renderer: the build or the engine has none".to_string());
+        }
+        if !self.batch_sources.is_empty() {
+            self.follow_batch_sources();
         }
         let fov = eye.fov.unwrap_or(DEFAULT_FOV);
         let s = &mut self.scene;
