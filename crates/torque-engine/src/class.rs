@@ -55,6 +55,7 @@ pub use torque_ts_vm::sim::ObjId;
 pub use torque_ts_vm::vm::Vm;
 
 use crate::Engine;
+use crate::assets::AssetType;
 use crate::script::{EntryKind, ScriptRegistry};
 
 /// A Rust type that can be a console field: which console field type it is, and how a stored value reads back as it.
@@ -133,6 +134,15 @@ class_field! {
     [u8; 4], &'static str => FieldType::ColorI, Value::ColorI(v) => *v;
 }
 
+/// A field type that can name an asset (`#[field(asset = T)]`): [`Filename`] alone.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot name an asset: `#[field(asset = ..)]` goes on a `Filename` field",
+    label = "not a `Filename`"
+)]
+pub trait AssetField {}
+
+impl AssetField for Filename {}
+
 /// One console field of a class, as `#[derive(EngineClass)]` declares it: a constant.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FieldDecl {
@@ -150,6 +160,9 @@ pub struct FieldDecl {
     pub min: Option<f64>,
     /// The highest value a write keeps, when the field has a range.
     pub max: Option<f64>,
+    /// The asset type a [`Filename`] field names (`#[field(asset = T)]`): each datablock's preload loads the file into
+    /// its script engine's [`Assets`](crate::assets::Assets).
+    pub asset: Option<AssetType>,
 }
 
 impl FieldDecl {
@@ -266,28 +279,45 @@ pub trait ScriptClass: Sized + 'static {
 
     /// The struct of the fields the object `id` holds now.
     fn read(vm: &Vm, id: ObjId) -> Result<Self, ClassReadError> {
-        let objects = vm.objects();
-        let object = objects.get(id).ok_or(ClassReadError::Gone(id))?;
-        let class = object.class();
-        let is_instance = objects
-            .classes
-            .find(Self::NAME.as_bytes())
-            .is_some_and(|me| objects.classes.is_a(class, me));
-        if !is_instance {
-            return Err(ClassReadError::NotAnInstance {
-                id,
-                class: Self::NAME,
-            });
-        }
-        Self::from_values(&mut |decl| {
-            let (_, slots) = objects.classes.static_field(class, decl.name.as_bytes())?;
-            object.slot(*slots.first()?).cloned()
-        })
-        .map_err(|field| ClassReadError::Field {
-            class: Self::NAME,
-            field,
-        })
+        read_fields(vm, id, Self::NAME, &mut |get| Self::from_values(get))
     }
+}
+
+/// What gives a field's stored value for its declaration.
+type FieldGetter<'a> = dyn FnMut(&FieldDecl) -> Option<Value> + 'a;
+
+/// Makes the console class's behavior for an engine (its preload).
+type MakeBehavior = fn(&Engine) -> Rc<dyn ClassBehavior>;
+
+/// What `id`'s fields give `build` (each the value of the class field a declaration names), once `id` is checked to be a
+/// `class`.
+fn read_fields<R>(
+    vm: &Vm,
+    id: ObjId,
+    class_name: &'static str,
+    build: &mut dyn FnMut(&mut FieldGetter<'_>) -> Result<R, &'static str>,
+) -> Result<R, ClassReadError> {
+    let objects = vm.objects();
+    let object = objects.get(id).ok_or(ClassReadError::Gone(id))?;
+    let class = object.class();
+    let is_instance = objects
+        .classes
+        .find(class_name.as_bytes())
+        .is_some_and(|me| objects.classes.is_a(class, me));
+    if !is_instance {
+        return Err(ClassReadError::NotAnInstance {
+            id,
+            class: class_name,
+        });
+    }
+    build(&mut |decl| {
+        let (_, slots) = objects.classes.static_field(class, decl.name.as_bytes())?;
+        object.slot(*slots.first()?).cloned()
+    })
+    .map_err(|field| ClassReadError::Field {
+        class: class_name,
+        field,
+    })
 }
 
 /// What a class registered by [`ScriptRegistry::class`](crate::ScriptRegistry::class) declares: also what a reference
@@ -300,7 +330,7 @@ pub struct ClassInfo {
     pub parent: &'static str,
     /// Its own fields.
     pub fields: &'static [FieldDecl],
-    preload: Option<fn() -> Rc<dyn ClassBehavior>>,
+    preload: Option<MakeBehavior>,
 }
 
 impl ClassInfo {
@@ -310,13 +340,14 @@ impl ClassInfo {
             name: T::NAME,
             parent: T::PARENT,
             fields: T::FIELDS,
-            preload: T::HAS_PRELOAD.then_some(behavior::<T>),
+            preload: (T::HAS_PRELOAD || T::FIELDS.iter().any(|f| f.asset.is_some()))
+                .then_some(behavior::<T>),
         }
     }
 
     /// Registers the class in `vm`: below its parent, with its typed fields and their defaults and, when it has one, its
     /// preload. A name another class has, or a parent that is not there, is a console error and registers nothing.
-    pub(crate) fn install(&self, vm: &mut Vm) {
+    pub(crate) fn install(&self, vm: &mut Vm, engine: &Engine) {
         let fields = self.fields.iter().map(FieldDecl::static_field).collect();
         let Some(class) = vm.register_class_typed(self.name, self.parent, fields, true) else {
             vm.error(format!(
@@ -334,7 +365,7 @@ impl ClassInfo {
             vm.apply_defaults(class, &defaults, true);
         }
         if let Some(make) = self.preload {
-            vm.set_class_behaviour(self.name, make());
+            vm.set_class_behaviour(self.name, make(engine));
         }
     }
 }
@@ -349,18 +380,62 @@ impl fmt::Debug for ClassInfo {
     }
 }
 
-/// The behavior of a class with a preload: reads the object as `T` and runs `T::preload`.
-struct Preload<T>(PhantomData<fn() -> T>);
+/// The behavior of a class with a preload: reads the object as `T`, loads the assets its fields name, and runs
+/// `T::preload`.
+struct Preload<T> {
+    /// The engine whose asset loaders the script engine's cache gets, when it has none yet.
+    engine: Engine,
+    class: PhantomData<fn() -> T>,
+}
 
 impl<T: ScriptClass> ClassBehavior for Preload<T> {
     fn preload(&self, vm: &mut Vm, id: ObjId) -> Result<(), PreloadError> {
         let value = T::read(vm, id).map_err(|error| PreloadError::Failed(error.to_string()))?;
+        load_assets(&self.engine, T::NAME, T::FIELDS, vm, id).map_err(PreloadError::Failed)?;
         value.preload(vm, id).map_err(PreloadError::Failed)
     }
 }
 
-fn behavior<T: ScriptClass>() -> Rc<dyn ClassBehavior> {
-    Rc::new(Preload::<T>(PhantomData))
+/// Loads the file each asset field of `id` names (`field: <the error>` for the first that does not load). An empty name
+/// names nothing.
+fn load_assets(
+    engine: &Engine,
+    class: &'static str,
+    fields: &'static [FieldDecl],
+    vm: &mut Vm,
+    id: ObjId,
+) -> Result<(), String> {
+    let mut named: Vec<(&FieldDecl, AssetType, String)> = Vec::new();
+    for decl in fields {
+        let Some(asset) = decl.asset else {
+            continue;
+        };
+        let path = read_fields(vm, id, class, &mut |get| match get(decl) {
+            Some(Value::Text(text)) => Ok(String::from_utf8_lossy(&text).into_owned()),
+            _ => Err(decl.field),
+        })
+        .map_err(|error| error.to_string())?;
+        if !path.is_empty() {
+            named.push((decl, asset, path));
+        }
+    }
+    if named.is_empty() {
+        return Ok(());
+    }
+    let assets = engine.assets(vm);
+    for (decl, asset, path) in named {
+        asset
+            .check(&assets, vm.file_host(), &path)
+            .map_err(|error| format!("{}: {error}", decl.name))?;
+    }
+    Ok(())
+}
+
+fn behavior<T: ScriptClass>(engine: &Engine) -> Rc<dyn ClassBehavior> {
+    Rc::new(Preload::<T> {
+        engine: engine.clone(),
+        class: PhantomData,
+    })
 }
 
 impl ScriptRegistry<'_> {

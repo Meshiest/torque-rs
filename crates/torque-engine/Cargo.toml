@@ -17,5 +17,9 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 # `#[derive(PluginId)]`, re-exported.
 torque-macros = { path = "../torque-macros" }
 
+[dev-dependencies]
+# The resource layer's files, read by an asset loader in a test.
+torque-resource = { path = "../torque-resource" }
+
 [lints]
 workspace = true

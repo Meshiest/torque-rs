@@ -10,6 +10,7 @@
 [GUI controls from plugins](gui-controls.md)
 [Input sources from plugins](input-sources.md)
 [Camera modes from plugins](camera-modes.md)
+[Assets from plugins](asset-loaders.md)
 [Games in a browser](web-pages.md)
 
 # Reference

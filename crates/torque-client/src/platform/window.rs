@@ -235,7 +235,8 @@ pub trait WindowGame {
 }
 
 /// One pass of the window's clock over `wall_ms` of real time since the last: the client's input sources are polled (once per
-/// frame, as TGE polls its joysticks, so a bound axis follows the frame rate and not the 32 ms tick), then `owed` (the real
+/// frame, as TGE polls its joysticks, so a bound axis follows the frame rate and not the 32 ms tick) and its assets looked at
+/// for hot reload ([`ClientHost::poll_assets`](crate::host::ClientHost::poll_assets)), then `owed` (the real
 /// milliseconds not yet run, in whole milliseconds) is run as one pass of TGE's main loop. The server ticks for every 32 ms
 /// boundary the pass's time crosses (a pass cut into ticks of its own would run no tick for a frame under 32 ms); those ticks
 /// do not poll the sources again.
@@ -243,6 +244,7 @@ fn clock_pass<G: WindowGame>(game: &mut G, owed: &mut f64, wall_ms: f64) {
     *owed += wall_ms;
     let ms = (*owed as u32).min(MAX_FRAME_MS);
     game.host().poll_input_frame();
+    game.host().poll_assets();
     if ms > 0 {
         *owed -= f64::from(ms);
         *owed = owed.min(f64::from(MAX_FRAME_MS));

@@ -57,6 +57,12 @@ different.
   `PassCx` with the device, the encoder, the stage's targets, the camera and the scene), static batches of many copies of a
   mesh kept on the GPU in chunks and culled there (`StaticBatchSource`, `WorldView::set_static_batch`), and particle
   emitter kinds drawn with TGE's particles (`EmitterKind`). A stage with no pass costs nothing.
+- `torque-engine::assets`: asset loaders from plugins (`engine.assets().loader::<T>(extensions, Spec { max_bytes,
+  untrusted_ok }, load)`) and a typed cache by normalized path for each script engine (`Assets`), reading through the
+  resource layer; a missing, refused, over-cap, untrusted or unreadable file is an `AssetError`, never a panic. A class's
+  `Filename` field can name an asset type (`#[field(asset = T)]`) that each datablock's preload loads, failing the preload
+  with the reason. Hot reload in debug builds or with `$Pref::Dev`: changed files load again once per drawn frame,
+  `Assets::changed` lists them and the renderer's caches reset. TGE's own shape and texture loading is unchanged.
 
 #### Web and networking
 

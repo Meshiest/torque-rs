@@ -41,6 +41,7 @@ fn a_struct_becomes_a_class_with_a_declaration_for_each_field() {
                     default: ::core::option::Option::Some("8"),
                     min: ::core::option::Option::Some((2) as f64),
                     max: ::core::option::Option::Some((64) as f64),
+                    asset: ::core::option::Option::None,
                 },
                 ::torque_engine::FieldDecl {
                     name: "maxLength",
@@ -50,6 +51,7 @@ fn a_struct_becomes_a_class_with_a_declaration_for_each_field() {
                     default: ::core::option::Option::None,
                     min: ::core::option::Option::None,
                     max: ::core::option::Option::None,
+                    asset: ::core::option::Option::None,
                 }
             ];
             fn from_values(
@@ -118,6 +120,26 @@ fn field_names_and_docs_can_be_given() {
     assert!(out.contains("name : \"texture\""), "{out}");
     assert!(out.contains("field : \"material\""), "{out}");
     assert!(out.contains("doc : \"the picture\""), "{out}");
+}
+
+#[test]
+fn a_filename_field_can_name_an_asset_type() {
+    let out = class_of(quote! {
+        struct C {
+            #[field(asset = my_game::Words)]
+            list: Filename,
+        }
+    });
+    assert!(
+        out.contains(
+            "asset : :: core :: option :: Option :: Some (:: torque_engine :: assets :: AssetType :: of :: < my_game :: Words > ())"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains("names_an_asset :: < Filename >"),
+        "the field's type is checked to be a Filename: {out}"
+    );
 }
 
 #[test]

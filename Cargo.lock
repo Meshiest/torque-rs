@@ -3454,6 +3454,7 @@ name = "torque-engine"
 version = "0.1.0"
 dependencies = [
  "torque-macros",
+ "torque-resource",
  "torque-ts-vm",
 ]
 

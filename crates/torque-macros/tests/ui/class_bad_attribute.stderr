@@ -10,7 +10,7 @@ error: a class name is ASCII letters, digits and '_', not starting with a digit
 10 | #[class(name = "9Lives")]
    |                ^^^^^^^^
 
-error: expected `default = ..`, `range = low..=high`, `name = "..."` or `doc = "..."`
+error: expected `default = ..`, `range = low..=high`, `name = "..."`, `doc = "..."` or `asset = Type`
   --> tests/ui/class_bad_attribute.rs:17:13
    |
 17 |     #[field(colour = 1)]

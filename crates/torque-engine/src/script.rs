@@ -472,7 +472,7 @@ impl ScriptEntry {
             } => native.install(vm, engine, callee(namespace, name, *method), usage, *dev),
             EntryKind::Global { name, default } => vm.set_global(name, default),
             EntryKind::Pref(decl) => decl.install(vm),
-            EntryKind::Class(class) => class.install(vm),
+            EntryKind::Class(class) => class.install(vm, engine),
         }
     }
 }

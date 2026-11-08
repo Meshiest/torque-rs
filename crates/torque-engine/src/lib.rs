@@ -64,6 +64,7 @@
 // The derive names this crate by its path, which inside the crate (its tests) is this.
 extern crate self as torque_engine;
 
+pub mod assets;
 mod builder;
 pub mod class;
 mod engine;
@@ -83,6 +84,7 @@ mod script_tests;
 #[cfg(test)]
 mod tests;
 
+pub use assets::{AssetError, AssetRegistry, Assets, Origin, Spec};
 pub use builder::{BuildError, EngineBuilder, Warning};
 pub use class::{ClassField, ClassInfo, ClassReadError, FieldDecl, ScriptClass};
 pub use engine::Engine;
@@ -111,6 +113,10 @@ pub use script::{IntoNative, NativeEntry, ScriptRegistry, Side, TypedNative};
 /// - `doc = ".."`: what it is for, when the doc comment is not it. `obj.dump()` lists it under `Field Docs:`.
 /// - `range = low..=high`: a script's write is clamped to it (a warning says so), for `f32`, `i32`, `u8` and `u16`.
 /// - `default = ..`: a literal, what a fresh object reads (the type's zero when left out).
+/// - `asset = Type`: on a [`Filename`] field, the asset type the file is (a loader of it is added with
+///   [`EngineBuilder::assets`]): each datablock's preload loads the file it names into its script engine's
+///   [`Assets`], and a file that is missing, refused, over its loader's cap, untrusted or unreadable fails the
+///   preload with the reason (an empty name names nothing). See [`assets`].
 ///
 /// The field types are `i32`, `u8`, `u16`, `f32`, `bool`, `String`, [`Filename`], and the arrays `[f32; 3]`
 /// (`Point3F`), `[f32; 2]` (`Point2F`), `[i32; 2]` (`Point2I`), `[f32; 4]` (`ColorF`) and `[u8; 4]` (`ColorI`)
@@ -154,6 +160,20 @@ pub use script::{IntoNative, NativeEntry, ScriptRegistry, Side, TypedNative};
 /// #[derive(EngineClass)]
 /// struct Odd {
 ///     #[field(range = 0.0..=1.0)]
+///     count: i32,
+/// }
+/// ```
+///
+/// An asset type on a field that is not a `Filename`:
+///
+/// ```compile_fail,E0277
+/// use torque_engine::EngineClass;
+///
+/// struct Words;
+///
+/// #[derive(EngineClass)]
+/// struct Odd {
+///     #[field(asset = Words)]
 ///     count: i32,
 /// }
 /// ```

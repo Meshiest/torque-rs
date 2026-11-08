@@ -536,6 +536,25 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         self.frame_polled = true;
     }
 
+    /// A drawn frame's look at the assets the plugins' loaders made ([`torque_engine::assets`]): when hot reload is on (a
+    /// debug build, or `$Pref::Dev` true), each cached file that changed on disk is loaded again and listed in
+    /// [`Assets::changed`](torque_engine::assets::Assets::changed) for this frame, and the renderer is told the files changed
+    /// ([`RenderResets::files_replaced`](crate::render::RenderResets::files_replaced)); a file whose new contents do not load
+    /// keeps its old asset, and the reason is printed to the console. A frame always empties the last frame's list, even
+    /// once nothing is cached.
+    pub fn poll_assets(&mut self) {
+        let vm = self.server.vm_mut();
+        let Some(assets) = torque_engine::assets::Assets::of(vm) else {
+            return;
+        };
+        for error in assets.poll_in(vm) {
+            vm.error(format!("Asset reload: {error}"));
+        }
+        if !assets.changed().is_empty() {
+            crate::game::client_game(vm).renderer().files_replaced();
+        }
+    }
+
     /// Ends the frame's input ([`poll_input_frame`](Self::poll_input_frame)): the next tick polls again unless a new frame did.
     pub fn end_input_frame(&mut self) {
         self.frame_polled = false;

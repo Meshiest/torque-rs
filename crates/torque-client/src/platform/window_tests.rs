@@ -176,6 +176,89 @@ mod frame_input {
         assert_eq!(game.0.server.vm().sim_time(), 0);
     }
 
+    /// A renderer that counts what it was told.
+    #[derive(Debug, Default)]
+    struct Resets(Cell<u32>);
+
+    impl crate::render::RenderResets for Resets {
+        fn files_replaced(&self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[derive(Debug)]
+    struct Game(Rc<Resets>);
+
+    impl crate::game::ClientGame for Game {
+        fn renderer(&self) -> Rc<dyn crate::render::RenderResets> {
+            Rc::clone(&self.0) as Rc<dyn crate::render::RenderResets>
+        }
+    }
+
+    fn clock(real_time_ms: u32) -> ts_vm::host::FixedClock {
+        ts_vm::host::FixedClock {
+            real_time_ms,
+            unix_time: 0,
+            utc_offset: 0,
+        }
+    }
+
+    #[test]
+    fn a_frame_reloads_a_changed_asset_and_resets_the_renderer() {
+        use torque_engine::assets::Spec;
+        use torque_engine::{EngineBuilder, Plugin, PluginId};
+        use ts_vm::host::MemFiles;
+
+        #[derive(PluginId)]
+        #[plugin(id = "test.notes")]
+        struct Notes;
+        impl Plugin for Notes {
+            fn build(&self, engine: &mut EngineBuilder) {
+                engine
+                    .assets()
+                    .loader(&["note"], Spec::trusted(64), |bytes, _| Ok(bytes.to_vec()));
+            }
+        }
+        let engine = EngineBuilder::new().add_plugins(Notes).build().unwrap();
+        let (mut host, _) = host();
+        let files = MemFiles::new();
+        files.insert_at("a.note", b"one", 1);
+        let resets = Rc::new(Resets::default());
+        let vm = host.server.vm_mut();
+        vm.set_file_host(files.clone());
+        vm.set_clock(clock(1_000));
+        crate::game::set_client_game(vm, Rc::new(Game(Rc::clone(&resets))));
+        let assets = engine.assets(vm);
+        assets.set_hot_reload(Some(true));
+        assets.load::<Vec<u8>>(vm.file_host(), "a.note").unwrap();
+
+        let mut game = Fake(host);
+        let mut owed = 0.0;
+        clock_pass(&mut game, &mut owed, 16.0);
+        assert!(assets.changed().is_empty());
+        files.insert_at("a.note", b"two", 2);
+        // The next look comes once the interval has passed on the script engine's clock.
+        let vm = game.0.server.vm_mut();
+        vm.set_clock(clock(10_000));
+        clock_pass(&mut game, &mut owed, 16.0);
+        assert_eq!(assets.changed(), ["a.note"]);
+        assert_eq!(*assets.get::<Vec<u8>>("a.note").unwrap(), b"two");
+        assert_eq!(resets.0.get(), 1, "the renderer was told");
+        clock_pass(&mut game, &mut owed, 16.0);
+        assert!(assets.changed().is_empty(), "listed for one frame");
+        assert_eq!(resets.0.get(), 1);
+
+        // A frame empties the list even once the cache is empty.
+        files.insert_at("a.note", b"three", 3);
+        game.0.server.vm_mut().set_clock(clock(20_000));
+        clock_pass(&mut game, &mut owed, 16.0);
+        assert_eq!(assets.changed(), ["a.note"]);
+        assets.clear();
+        clock_pass(&mut game, &mut owed, 16.0);
+        assert!(assets.changed().is_empty());
+        assert_eq!(resets.0.get(), 2);
+    }
+
     #[test]
     fn a_host_that_draws_no_frames_polls_once_per_tick() {
         let (mut host, polls) = host();

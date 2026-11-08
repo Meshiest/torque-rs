@@ -35,7 +35,8 @@ use crate::{camel_case, doc_text};
 /// deletes the datablock), and
 /// `crate = path` the engine crate. Each field takes `#[field(...)]`: `name = ".."` (the console field's name: the Rust
 /// name in camelCase when left out), `doc = ".."` (the doc comment when left out), `range = low..=high` (writes are
-/// clamped to it), and `default = ..` (a literal: what a fresh object reads).
+/// clamped to it), `default = ..` (a literal: what a fresh object reads) and, on a `Filename` field, `asset = Type` (the
+/// asset type the file is: each datablock's preload loads it).
 pub fn derive_class(input: TokenStream, engine: &syn::Path) -> TokenStream {
     expand(input, engine).unwrap_or_else(syn::Error::into_compile_error)
 }
@@ -124,6 +125,18 @@ fn expand(input: TokenStream, engine: &syn::Path) -> syn::Result<TokenStream> {
             options.default.as_ref(),
             options.range.as_ref(),
         )?);
+        let asset = match &options.asset {
+            Some(asset) => {
+                checks.push(quote! {
+                    const _: () = {
+                        fn names_an_asset<T: #krate::class::AssetField>() {}
+                        let _ = names_an_asset::<#ty>;
+                    };
+                });
+                quote! { ::core::option::Option::Some(#krate::assets::AssetType::of::<#asset>()) }
+            }
+            None => quote! { ::core::option::Option::None },
+        };
         let field_name = field_ident.to_string();
         decls.push(quote! {
             #krate::FieldDecl {
@@ -134,6 +147,7 @@ fn expand(input: TokenStream, engine: &syn::Path) -> syn::Result<TokenStream> {
                 default: #default,
                 min: #min,
                 max: #max,
+                asset: #asset,
             }
         });
         reads.push(quote! {
@@ -191,6 +205,7 @@ struct FieldOptions {
     range: Option<syn::Expr>,
     name: Option<LitStr>,
     doc: Option<LitStr>,
+    asset: Option<syn::Type>,
 }
 
 fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
@@ -214,9 +229,11 @@ fn field_options(field: &syn::Field) -> syn::Result<FieldOptions> {
                 options.name = Some(name);
             } else if meta.path.is_ident("doc") {
                 options.doc = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("asset") {
+                options.asset = Some(meta.value()?.parse()?);
             } else {
                 return Err(meta.error(
-                    "expected `default = ..`, `range = low..=high`, `name = \"...\"` or `doc = \"...\"`",
+                    "expected `default = ..`, `range = low..=high`, `name = \"...\"`, `doc = \"...\"` or `asset = Type`",
                 ));
             }
             Ok(())
