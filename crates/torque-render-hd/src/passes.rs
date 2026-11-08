@@ -21,6 +21,16 @@
 //! is drawn with; from [`Stage::AfterTaa`] the plain one. A shadow cascade's map is a plain depth (`LessEqual`, cleared to 1);
 //! clamp a caster's clip `z` to at least 0 so what lies between the sun and the cascade still casts.
 //!
+//! **Sampling the sun's shadows.** At [`Stage::Opaque`] and [`Stage::Translucent`] [`PassCx::sun_shadows`] holds what the renderer's
+//! own lit shaders read (None when the sun casts no shadows this frame): the shadows' uniform (the cascades' view and projection
+//! matrices, their texel sizes and depth ranges, the light's basis, the filter's settings and the shadow's tint), the cascades as
+//! one depth array and the two samplers. [`SunShadows::bind_group_layout`] and [`SunShadows::bind_group`] make the group a
+//! pipeline reads them through (group [`SUN_SHADOW_GROUP`]), and [`SUN_SHADOW_WGSL`] is the WGSL to add to a shader: the same cascade
+//! pick and filter as the forward pass (the file both are made from), as `sun_visibility(p, n, nl, frag, eye)` (1 lit, 0 in
+//! shadow; `n` the face's normal, `nl` its N.L, `frag` the fragment's pixel and `eye` the camera's place), with the shadow's tint
+//! as `sun_shadow_tint()`. Shade a surface as the forward pass does: `through = vis + (1 - vis) * tint` times the sun's diffuse
+//! light. A pass that must draw when the sun casts no shadows makes a [`SunShadowsStandIn`] and binds that (its lookups give 1).
+//!
 //! The depth at [`Stage::AfterTaa`], [`Stage::Post`] and [`Stage::Overlay`] is the frame's working depth at its internal size
 //! ([`PassCx::frame_size`]): a pass attaches it only where [`PassCx::depth_attachable`] says so, else reads it (as the debug
 //! lines do, scaled to the viewport).
@@ -83,6 +93,187 @@ pub struct ShadowCascade<'a> {
     pub size: u32,
 }
 
+/// The group [`SUN_SHADOW_WGSL`] reads the sun's shadows through.
+pub const SUN_SHADOW_GROUP: u32 = 1;
+
+/// The WGSL to sample the sun's shadows from a pass ([`SunShadows`]): the renderer's own cascade lookup (`sunshadow.wgsl`, the file
+/// the forward pass is made from) with its uniform, its structs and the bindings of group [`SUN_SHADOW_GROUP`]; add it to the
+/// pass's shader. It defines `Shadows`, `MAX_CASCADES`, `ign`, `vogel`, `shadows`, `csm`, `shadow_cmp`, `shadow_gather`,
+/// `sun_shadow_at` (the lookup), and the two functions a pass calls:
+///
+/// - `sun_visibility(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>, eye: vec3<f32>) -> f32`: the share of the sun's light
+///   that reaches `p` (face normal `n`, N.L `nl` > 0), taps turned per pixel by `frag` (the TAA averages them);
+/// - `sun_shadow_tint() -> vec3<f32>`: what of the sun's direct light a shadow lets through.
+pub const SUN_SHADOW_WGSL: &str = concat!(
+    include_str!("../shaders/shadowcommon.wgsl"),
+    "\n",
+    include_str!("../shaders/sunshadow.wgsl"),
+    r#"
+@group(1) @binding(0) var<uniform> shadows: Shadows;
+@group(1) @binding(1) var csm: texture_depth_2d_array;
+@group(1) @binding(2) var shadow_cmp: sampler_comparison;
+@group(1) @binding(3) var shadow_gather: sampler;
+
+fn sun_visibility(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>, eye: vec3<f32>) -> f32 {
+    return sun_shadow_at(p, n, nl, frag, eye, false);
+}
+
+fn sun_shadow_tint() -> vec3<f32> {
+    return shadows.tint.rgb;
+}
+"#
+);
+
+/// The sun's shadow maps as a pass at [`Stage::Opaque`] or [`Stage::Translucent`] reads them ([`PassCx::sun_shadows`]).
+#[derive(Clone, Copy)]
+pub struct SunShadows<'a> {
+    /// The shadows' uniform (`Shadows` in [`SUN_SHADOW_WGSL`]): fragment stage only.
+    pub uniform: &'a wgpu::Buffer,
+    /// The cascades, finest first, as a depth array ([`crate::shadows::SHADOW_FORMAT`]).
+    pub map: &'a wgpu::TextureView,
+    /// A comparison sampler (less or equal, linear) for the maps.
+    pub compare: &'a wgpu::Sampler,
+    /// The sampler the filter gathers the maps with (nearest).
+    pub gather: &'a wgpu::Sampler,
+}
+
+impl SunShadows<'_> {
+    /// The layout of the group [`SUN_SHADOW_WGSL`] reads (a pipeline's layout has it as group [`SUN_SHADOW_GROUP`]).
+    pub fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty,
+            count: None,
+        };
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hd sun shadows"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    2,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                ),
+                entry(
+                    3,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                ),
+            ],
+        })
+    }
+
+    /// The group over `layout` ([`SunShadows::bind_group_layout`]). The targets live for this frame: make it each frame.
+    pub fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hd sun shadows"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(self.map),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(self.compare),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(self.gather),
+                },
+            ],
+        })
+    }
+}
+
+/// Resources a pass binds in place of [`SunShadows`] when the sun casts no shadows: an empty uniform (no cascades), a one texel map
+/// and samplers. `sun_visibility` gives 1 with them.
+pub struct SunShadowsStandIn {
+    uniform: wgpu::Buffer,
+    view: wgpu::TextureView,
+    compare: wgpu::Sampler,
+    gather: wgpu::Sampler,
+}
+
+impl SunShadowsStandIn {
+    /// The stand-in for `device`.
+    pub fn new(device: &wgpu::Device) -> SunShadowsStandIn {
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("hd sun shadows stand-in"),
+            size: crate::shadows::SHADOWS_BYTES as u64,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("hd sun shadows stand-in"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::shadows::SHADOW_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..wgpu::TextureViewDescriptor::default()
+        });
+        let compare = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("hd sun shadows stand-in compare"),
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        let gather = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("hd sun shadows stand-in gather"),
+            ..wgpu::SamplerDescriptor::default()
+        });
+        SunShadowsStandIn {
+            uniform,
+            view,
+            compare,
+            gather,
+        }
+    }
+
+    /// The stand-in as the pass binds [`SunShadows`].
+    pub fn shadows(&self) -> SunShadows<'_> {
+        SunShadows {
+            uniform: &self.uniform,
+            map: &self.view,
+            compare: &self.compare,
+            gather: &self.gather,
+        }
+    }
+}
+
 /// What the scene's light is this frame: the sun, the fog, the lights and the effects' time (seconds).
 #[derive(Clone, Copy)]
 pub struct PassScene<'a> {
@@ -129,6 +320,9 @@ pub struct PassCx<'a> {
     pub ldr: Option<(&'a wgpu::TextureView, wgpu::TextureFormat)>,
     /// At [`Stage::Shadows`]: the sun's cascades this frame, finest first (none when the sun casts no shadows).
     pub cascades: &'a [ShadowCascade<'a>],
+    /// At [`Stage::Opaque`] and [`Stage::Translucent`]: the sun's shadow maps to sample ([`SunShadows`]); None where the sun casts no
+    /// shadows (and at the other stages).
+    pub sun_shadows: Option<SunShadows<'a>>,
     /// The camera the stage draws with (its size is [`PassCx::size`]).
     pub camera: &'a HdCamera,
     pub scene: PassScene<'a>,

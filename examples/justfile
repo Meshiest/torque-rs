@@ -231,6 +231,17 @@ web-vehicle-demo-invite-check: web-guard-test
 level-demo-shots dir="../target/level-demo-shots":
     cargo run -p torque-example-level-demo --release -- --shots {{dir}}
 
+# The level demo with the rope plugin (the `rope` feature): the plaza's clothesline hung between its front pillars, from behind the figure,
+# from the front, thrown up and swinging, drawn offscreen into `dir`
+level-demo-rope-shots dir="../target/level-demo-rope-shots":
+    cargo run -p torque-example-level-demo --release --features rope -- --rope-shots {{dir}}
+
+# The level demo's rope styles (the `rope` feature): a ribbon cable and glowing laser lines beside the clothesline, the figure with
+# a laser through and behind it and a ribbon across in front, the camera looking almost along a ribbon, and a thin laser from far
+# away, drawn offscreen into `dir`
+level-demo-rope-style-shots dir="../target/level-demo-rope-style-shots":
+    cargo run -p torque-example-level-demo --release --features rope -- --rope-style-shots {{dir}}
+
 # The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
 # into `dir`
 level-demo-valley-shots dir="../target/level-demo-valley-shots":

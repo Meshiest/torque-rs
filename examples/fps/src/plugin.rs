@@ -84,5 +84,12 @@ pub fn arena_engine(arena: ArenaPlugin) -> EngineBuilder {
         arena,
         JoinScreenPlugin,
     ));
+    // Ropes that follow the held images' muzzles, which each frame of the client puts in the table.
+    #[cfg(feature = "rope")]
+    {
+        let table = torque_plugin_rope::MuzzleTable::new();
+        engine.insert_resource(table.clone());
+        engine.add_plugins(torque_plugin_rope::RopePlugin::default().with_muzzles(table));
+    }
     engine
 }

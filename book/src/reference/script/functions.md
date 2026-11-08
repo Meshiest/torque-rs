@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-201 entries in 1 namespace.
+223 entries in 1 namespace.
 
 ## Global
 
@@ -384,6 +384,88 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2; server and client*
 - `restWords(text)` - the text after its first space
   *arguments: 1; server and client*
+- `ropeAttach(rope, end, object [, node])` - hangs an end of a rope from an object (its name or number); \`end\` is 0 or start, 1 or end
+  *arguments: 3 to 4; client; needs `torque.rope`*
+
+  The end follows the object's `position` (or the first three numbers of its `transform`) as the client reads it every tick, and
+  lets go if the object is gone. `node` names a place on the object for a game that supplies its own anchor reader; the
+  default reader ignores it. True if the rope exists.
+
+- `ropeClear()` - takes every rope away
+  *arguments: none; client; needs `torque.rope`*
+- `ropeClearCurve(rope)` - takes a rope's driven curve away: it is simulated again if its datablock says so, else straight between its ends
+  *arguments: 1; client; needs `torque.rope`*
+
+  True if the rope exists.
+
+- `ropeClearLook(rope)` - puts every value a script set on one rope (its color, texture, texture speed and glow) back to the datablock's
+  *arguments: 1; client; needs `torque.rope`*
+
+  True if the rope exists.
+
+- `ropeCount()` - how many ropes there are
+  *arguments: none; client; needs `torque.rope`*
+- `ropeCreate(start, end, datablock)` - makes a rope of the datablock between two points, both ends pinned, and returns its number
+  *arguments: 3; client; needs `torque.rope`*
+
+  `start` and `end` are points as `"x y z"`; `datablock` is a `RopeData` (its name or number). The rope hangs in a sag between
+  the points as long as the datablock's `length` (or 1.1 times the distance between them); a datablock whose `style` is `line`
+  makes a straight strip between the points that is not simulated. At most 256 ropes and 4096 segments can be made (a line is
+  one segment); past that the call prints an error and returns nothing.
+
+- `ropeDelete(rope)` - takes a rope away; true if there was one
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeFloor(z)` - keeps the free points of every rope above the height \`z\`
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeGetColor(rope)` - the color a rope is drawn with now, as \`"r g b a"\` (empty for no such rope)
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeGetCurveBend(rope)` - the bend of a rope's driven curve (0 for none, or no such rope)
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeGetEmissive(rope)` - whether a rope glows now
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeGetTexture(rope)` - the file of the texture a rope is drawn with now (empty for none, or no such rope)
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeGetTextureScroll(rope)` - how fast a rope's texture runs now, in repeats a second (0 for no such rope)
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeImpulse(rope, velocity)` - gives the free part of a rope a velocity \`"x y z"\`, in units a second (at most 200)
+  *arguments: 2; client; needs `torque.rope`*
+- `ropeNoFloor()` - takes the floor away
+  *arguments: none; client; needs `torque.rope`*
+- `ropePin(rope, end, point)` - pins an end of a rope to a point; \`end\` is 0 or start, 1 or end
+  *arguments: 3; client; needs `torque.rope`*
+
+  The end glides to the point over the next tick. True if the rope exists.
+
+- `ropeRelease(rope, end)` - lets an end of a rope go, so it falls with the rest; \`end\` is 0 or start, 1 or end
+  *arguments: 2; client; needs `torque.rope`*
+- `ropeSetColor(rope, color)` - sets the color one rope is drawn with, \`"r g b a"\` from 0 to 255 (a texture is tinted by it); an empty string puts the datablock's back
+  *arguments: 2; client; needs `torque.rope`*
+
+  A color that is not three or four numbers is an error. True if the rope exists.
+
+- `ropeSetCurve(rope, startDir, endDir, bend)` - gives one rope a driven shape: a curve from its start to its far end, not simulated (a beam from a muzzle)
+  *arguments: 4; client; needs `torque.rope`*
+
+  The curve leaves the start along `startDir` and the far end along `endDir`, each `""` (toward the other end), `"mount"` (the way
+  the end's mount points as the frame draws it, for an end attached to a ghost's muzzle) or a direction `"x y z"`; the handles are
+  `bend` times the distance between the ends long (0 is straight; held to -4 to 4). Both ends and the mounts' directions are
+  followed each frame. A direction that is none of those, or a bend that is not a number, is an error. True if the rope exists.
+
+- `ropeSetEmissive(rope, on)` - sets whether one rope, drawn as a ribbon or a line, glows (drawn with no light or shade)
+  *arguments: 2; client; needs `torque.rope`*
+
+  True if the rope exists.
+
+- `ropeSetTexture(rope, file)` - sets the texture one rope is drawn with (a .png or .jpg); an empty string puts the datablock's back
+  *arguments: 2; client; needs `torque.rope`*
+
+  A file that is missing or does not load warns once and the rope is drawn plain. True if the rope exists.
+
+- `ropeSetTextureScroll(rope, speed)` - sets how fast one rope's texture runs along it, in repeats a second (negative: toward the start)
+  *arguments: 2; client; needs `torque.rope`*
+
+  A speed that is not a number is 0. True if the rope exists.
+
 - `rtrim(text)` - the text without trailing white space
   *arguments: 1; server and client*
 - `schedule(delay, object, function, args...)` - calls the function later; the object bounds the call's life

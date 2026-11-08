@@ -22,8 +22,13 @@ torque-import = { path = "../../crates/torque-import" }
 torque-interior-builder = { path = "../../crates/torque-interior-builder" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
+# A rope across the plaza (the `rope` feature).
+torque-plugin-rope = { path = "../../crates/torque-plugin-rope", optional = true }
 
 [features]
+# A rope the plaza has hung between its front pillars, simulated and drawn by `torque-plugin-rope` (`--rope-shots` draws it; with the
+# feature off, or on a map other than the plaza, the demo is as it was).
+rope = ["dep:torque-plugin-rope"]
 # Built for the web: the module carries its files (the pack whose path is in `TORQUE_WEB_PACK` when it is built) instead of
 # fetching them by the list beside the page (`files.json`).
 embed-pack = []

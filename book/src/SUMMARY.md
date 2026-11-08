@@ -11,6 +11,8 @@
 [Input sources from plugins](input-sources.md)
 [Camera modes from plugins](camera-modes.md)
 [Assets from plugins](asset-loaders.md)
+[Rendering and input from plugins](rendering-and-input.md)
+[Writing a plugin](writing-a-plugin.md)
 [Mods](mods.md)
 [Native extensions](native-extensions.md)
 [Games in a browser](web-pages.md)

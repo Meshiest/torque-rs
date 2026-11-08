@@ -6,9 +6,9 @@ Every console function, method, class and pref of an engine built from `DefaultP
 
 | Page | What it lists | Entries |
 |---|---|---|
-| [Functions](functions.md) | console functions, by namespace | 201 |
+| [Functions](functions.md) | console functions, by namespace | 223 |
 | [Methods](methods.md) | methods called on an object, by class | 284 |
-| [Classes](classes.md) | console classes and the fields they add | 110 classes, 805 fields |
+| [Classes](classes.md) | console classes and the fields they add | 111 classes, 825 fields |
 | [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 1 |
 
 ## Reading an entry
@@ -26,5 +26,6 @@ These plugins are not in `DefaultPlugins`. What each adds is listed with the plu
 - `torque.gizmos`: debug drawing: lines, boxes, spheres, arrows, crosses and labels in world space
 - `torque.zoom`: the zoom: the field of view and how fast it changes
 - `torque.hosting`: joining by address or room code: the lookup natives of a join screen
+- `torque.rope`: ropes: the RopeData datablock and the console functions that hang, push and take down ropes between points or objects
 
 `LivePerfPlugin` also adds a function and a pref, but its two names are the game's choice, so there is nothing fixed to list.

@@ -31,6 +31,8 @@ impl LevelPlugin {
     pub fn new(mut files: GameFiles) -> Result<LevelPlugin, String> {
         crate::levels::add_levels(&mut files)?;
         crate::files::add_valley(&mut files)?;
+        #[cfg(feature = "rope")]
+        crate::ropes::add_textures(&mut files);
         let maps = crate::files::maps(&files);
         let cube = Rc::new(CubeClient::new(files.mem_files()));
         cube.set_poses(crate::figure_poses());
@@ -75,5 +77,9 @@ pub fn level_engine(files: GameFiles) -> Result<EngineBuilder, String> {
             .disable::<ServerQueryPlugin>(),
     );
     engine.add_plugins(LevelPlugin::new(files)?);
+    #[cfg(feature = "rope")]
+    engine.add_plugins(
+        torque_plugin_rope::RopePlugin::default().with_frame_anchors(crate::ropes::Mounts),
+    );
     Ok(engine)
 }

@@ -3536,6 +3536,7 @@ dependencies = [
  "torque",
  "torque-example-assets",
  "torque-example-common",
+ "torque-plugin-rope",
  "torque-render-core",
  "torque-render-scene",
  "wasm-bindgen",
@@ -3552,6 +3553,7 @@ dependencies = [
  "torque-import",
  "torque-interior-builder",
  "torque-maps",
+ "torque-plugin-rope",
  "torque-render-core",
  "torque-render-scene",
  "wasm-bindgen",
@@ -3790,6 +3792,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-plugin-rope"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "torque-app",
+ "torque-engine",
+ "torque-images",
+ "torque-render-core",
+ "torque-render-hd",
+ "torque-render-scene",
+ "torque-server",
+ "torque-ts-text",
+ "torque-ts-vm",
+]
+
+[[package]]
 name = "torque-plugin-sdk"
 version = "0.1.0"
 dependencies = [
@@ -3870,6 +3888,7 @@ version = "0.1.0"
 dependencies = [
  "torque-app",
  "torque-engine",
+ "torque-plugin-rope",
  "torque-ts-vm",
 ]
 

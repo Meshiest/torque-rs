@@ -3,7 +3,7 @@
 //! every permutation with naga (the same front end wgpu compiles them with): the `shaders N of N valid`.
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 28] = [
+pub const FILES: [(&str, &str); 30] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
     ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
@@ -41,6 +41,11 @@ pub const FILES: [(&str, &str); 28] = [
         include_str!("../shaders/cloudshadow.wgsl"),
     ),
     ("cull.wgsl", include_str!("../shaders/cull.wgsl")),
+    (
+        "shadowcommon.wgsl",
+        include_str!("../shaders/shadowcommon.wgsl"),
+    ),
+    ("sunshadow.wgsl", include_str!("../shaders/sunshadow.wgsl")),
 ];
 
 /// An extension's WGSL, composed into the renderer's modules: its uniforms' blocks, its hooks and its own entry points (the
@@ -218,12 +223,18 @@ impl Permutation {
         };
         let ext = extension();
         // common.wgsl's uniforms end in the extension's blocks: composed with it everywhere.
-        let common = &format!("{}\n{}", file("common.wgsl"), ext.common);
+        let common = &format!(
+            "{}\n{}\n{}",
+            file("common.wgsl"),
+            file("shadowcommon.wgsl"),
+            ext.common
+        );
         // The surface helpers and the extension's hooks come before the forward pass's functions.
         let forward = &format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             file("surface.wgsl"),
             ext.forward,
+            file("sunshadow.wgsl"),
             file("forward.wgsl"),
             file("particles.wgsl")
         );

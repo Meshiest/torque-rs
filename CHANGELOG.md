@@ -15,6 +15,8 @@ different.
 
 #### Rendering
 
+- `torque-render-hd`: passes at the opaque and translucent stages can sample the sun's shadows (`PassCx::sun_shadows`,
+  `SUN_SHADOW_WGSL`, a bind group layout and group), with the lookup the forward pass shades with.
 - `torque-render-hd`: the HD renderer, beside the fixed-function one that keeps the original look. Cascaded sun shadows
   and contact shadows; a shadow cube for every point and spot light in view, sized by its importance; a physical sky
   with volumetric clouds (`CloudLook`) that water reflects; water with waves, refraction, reflections and sun glint;
@@ -48,6 +50,22 @@ different.
 - `torque-plugin-gamepad`: gamepads as `joystick<N>` (gilrs natively, the browser's Gamepad API on the web; pads plugged in and out
   while the game runs; the sticks, triggers, buttons and cross), with the prefs `$Pref::Gamepad::DeadZone` and
   `$Pref::Gamepad::InvertY`; natively the pads are read on a thread of their own (500 Hz, `$Pref::Gamepad::PollRate`). Not in `DefaultPlugins`. The vehicle demo plays with it (`--features gamepad`, `--gamepad`).
+- `torque-plugin-rope`: ropes a client script hangs between two points or from an object (`RopeData`, `ropeCreate` and kin), simulated
+  with position-based dynamics in fixed substeps (sagging, swinging, a floor, stiffness, capped, hostile numbers made safe) and drawn as
+  lit, fogged tubes that cast a shadow, by an opaque pass and a shadows pass; a datablock's `style` picks `"ribbon"` instead (a flat
+  strip that always faces the camera along a smooth curve through the simulated points) or `"line"` (a straight, unsimulated strip
+  between the ends, for lasers and tripwires), both depth tested, soft edged, never thinner than two pixels and without a shadow,
+  with an `emissive` flag for a glow. Ropes take a `texture` (`.png` or `.jpg` through the asset loaders; arc-length u, a tile every
+  `textureLength`, `textureScroll`, `textureFilter`; alpha blended on strips, cut out on tubes), and `ropeSetColor`,
+  `ropeSetTexture`, `ropeSetTextureScroll` and `ropeSetEmissive` (and getters) change one rope without a datablock. A rope can be driven
+  (`sim = "none"`, `ropeSetCurve`: a Bezier from the start along the aim or a direction, evenly sampled, following both ends and the mounts'
+  directions each frame) with a taper (`endThickness`), a gradient (`colorEnd`), `additive` blending and an `emissiveIntensity` above 1,
+  for beams; `MuzzleAnchors` and `MuzzleTable` attach an end to a weapon's muzzle as the frame drew it (`GhostScene::muzzles`), the first-person
+  weapon's for the player whose view it is. The arena example has it behind `--features rope` (`--beam-shots`). The rope runs per drawn frame (240 substeps a second, at most eight a frame, shown between
+  its last two states) instead of on the 32 ms tick, and an end that hangs from a ghost follows where the frame draws it
+  (`AnchorResolver::ghost`, `FrameAnchors`, `RopeWorld::step_frame`, `pin_ghost`). Every style can cast (`castShadow`; a ribbon's or line's shadow is a band that faces the sun)
+  and take (`receiveShadow`) the sun's shadows, as the renderer's own surfaces do. Client only; not in `DefaultPlugins`. The level demo hangs one across the plaza
+  (`--features rope`).
 - `torque::app::camera_modes`: camera modes (`CameraMode`, `add_camera_mode`) that plugins add and the client picks by name
   (`setCameraMode`, `getCameraMode`, `getCameraModes`; `CameraModes::set` from Rust), eased from one to the next, with the first
   person, the third person on a boom and the orbit built in; `torque::app::camera_behind` is the helpers of the camera behind a

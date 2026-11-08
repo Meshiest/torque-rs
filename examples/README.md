@@ -48,6 +48,7 @@ jump, mouse look, Tab first or third person (the camera eases between them), R r
 | Web, files inside the module | `just examples/web-level-demo-embedded` | `node web/build.mjs level-demo --embed` |
 | Web, online | [the gallery](https://reheatedcake.io/torque-rs/): the plaza, the office and the valley | `just site` |
 | Pictures | `just examples/level-demo-shots`, `just examples/level-demo-valley-shots` | `cargo run -p torque-example-level-demo --release -- --shots <dir>` |
+| With a rope across the plaza (`torque-plugin-rope`) | `just examples/level-demo-rope-shots` (pictures) | `cargo run -p torque-example-level-demo --release --features rope` |
 
 **Shows:** a server and a client in one process; missions loaded from TorqueScript; the client's prediction against cubes,
 interiors and terrain; interiors built from a Blockbench model (nearest-sampled textures, see-through glass); spot lights

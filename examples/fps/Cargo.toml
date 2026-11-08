@@ -20,12 +20,16 @@ torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
+# The rope plugin, for `--beam-shots` (the `rope` feature): a beam from the pistol's muzzle.
+torque-plugin-rope = { path = "../../crates/torque-plugin-rope", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The host key's random bits.
 getrandom = "0.3"
 
 [features]
+# The rope plugin in the arena: ropes and beams that follow the figures' muzzles as the frame draws them (`--beam-shots`).
+rope = ["dep:torque-plugin-rope"]
 # Built for the web: the module carries its files (the pack whose path is in `TORQUE_WEB_PACK` when it is built) instead of
 # fetching them by the list beside the page (`files.json`).
 embed-pack = []

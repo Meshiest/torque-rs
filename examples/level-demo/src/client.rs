@@ -196,11 +196,15 @@ impl LevelDemo {
         self.client.start_hosting(server);
         self.playing = Some(index);
         self.call("connectTo", &[SERVER_ADDR.to_string().as_str()])?;
+        #[cfg(feature = "rope")]
+        crate::ropes::hang(self, &crate::shots::map_name(&map.path))?;
         Ok(())
     }
 
     /// Stops the server being played, if there is one.
     pub fn leave(&mut self) {
+        #[cfg(feature = "rope")]
+        crate::ropes::take_down(self);
         self.client.stop_hosting();
         self.scene.clear();
         self.playing = None;

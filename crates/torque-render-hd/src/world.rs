@@ -92,7 +92,7 @@ use crate::ext::{
     ExtCell, ExtSlots, ExtraDrawn, ExtraPrepare, HdExtension, NoExtension, ShadowExtras,
 };
 use crate::passes::{
-    HdPass, HdPasses, PassCx, PassScene, ShadowCascade, Stage as PassStage, frame_copy,
+    HdPass, HdPasses, PassCx, PassScene, ShadowCascade, Stage as PassStage, SunShadows, frame_copy,
 };
 use crate::post::{
     AO_FORMAT, HISTORY_FORMAT, MOTION_FORMAT, MOTION_STRIDE, NORMAL_FORMAT, PostPipes,
@@ -5717,6 +5717,21 @@ impl<E: HdExtension> HdWorld<E> {
             time: E::time(scene),
             visible_distance: scene.visible_distance,
         };
+        // What a pass at the opaque or the translucent stage samples the sun's shadows through (none when the sun casts none).
+        macro_rules! sun_shadows {
+            () => {
+                if self.shadows.cascades().next().is_some() {
+                    Some(SunShadows {
+                        uniform: &self.shadows.uniform,
+                        map: self.shadows.csm_view(),
+                        compare: &self.shadows.cmp_sampler,
+                        gather: &self.shadows.gather_sampler,
+                    })
+                } else {
+                    None
+                }
+            };
+        }
         macro_rules! run_passes {
             ($stage:expr, $camera:expr, $size:expr, $viewport:expr $(, $field:ident = $value:expr)* $(,)?) => {
                 if passes.has($stage) {
@@ -5736,6 +5751,7 @@ impl<E: HdExtension> HdWorld<E> {
                         source: None,
                         ldr: None,
                         cascades: &[],
+                        sun_shadows: None,
                         camera: $camera,
                         scene: pass_scene,
                         ghosts: &scene.objects,
@@ -6587,6 +6603,7 @@ impl<E: HdExtension> HdWorld<E> {
             depth_attachable = true,
             normals = Some(&targets.normal_view),
             hdr = Some(&targets.hdr_view),
+            sun_shadows = sun_shadows!(),
         );
         // The multiplied decals over the whole opaque frame (lit, shadowed and fogged), before the volumetric light.
         if decal_start < split {
@@ -6813,6 +6830,7 @@ impl<E: HdExtension> HdWorld<E> {
             depth_attachable = true,
             normals = Some(&targets.normal_view),
             hdr = Some(&targets.hdr_view),
+            sun_shadows = sun_shadows!(),
         );
         // A TAA frame's late frames (cleared whenever either has draws: the composite reads both): the sprites, and the late
         // objects and dying shapes over (unjittered: they are not in the TAA's history, so its jitter would only shake their edges).

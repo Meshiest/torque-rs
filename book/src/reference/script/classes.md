@@ -2,7 +2,7 @@
 
 # Classes
 
-Console classes, with the fields each adds to its parent's. 110 classes.
+Console classes, with the fields each adds to its parent's. 111 classes.
 
 | Class | Parent | Fields |
 |---|---|---|
@@ -84,6 +84,7 @@ Console classes, with the fields each adds to its parent's. 110 classes.
 | [PlayerData](#playerdata) | [ShapeBaseData](#shapebasedata) | 80 |
 | [Projectile](#projectile) | [GameBase](#gamebase) | 4 |
 | [ProjectileData](#projectiledata) | [GameBaseData](#gamebasedata) | 23 |
+| [RopeData](#ropedata) | [SimDataBlock](#simdatablock) | 20 |
 | [ScatterSky](#scattersky) | [SceneObject](#sceneobject) | 11 |
 | [SceneObject](#sceneobject) | [NetObject](#netobject) | 3 |
 | [ScopeAlwaysShape](#scopealwaysshape) | [StaticShape](#staticshape) | 0 |
@@ -1146,6 +1147,33 @@ No fields of its own.
 | `bounceElasticity` | float |  |  |
 | `bounceFriction` | float |  |  |
 | `gravityMod` | float |  |  |
+
+## RopeData
+
+*goes below `SimDataBlock`; client; needs `torque.rope`*
+
+| Field | Type | Default | Range | What it is for |
+|---|---|---|---|---|
+| `segments` | int | `12` | 2 to 64 | The pieces the rope is cut into. More is smoother and dearer to simulate and draw. |
+| `length` | float | `0` | 0 to 10000 | The rope's resting length in world units; 0 is 1.1 times the distance between its ends when it is made. |
+| `style` | string | `tube` |  | How the rope is drawn: `"tube"` (lit, casts a shadow), `"ribbon"` (a flat strip that faces the camera along a smooth curve) or `"line"` (a straight strip between the ends, not simulated). Anything else is a warning and a tube. |
+| `thickness` | float | `0.06` | 0.005 to 2 | The tube's or strip's width in world units. |
+| `stiffness` | float | `0` | 0 to 1 | How much the rope resists bending, 0 (a cord) to 1 (a cable). |
+| `damping` | float | `0.5` | 0 to 20 | How fast it loses speed, per second. |
+| `gravity` | float | `9.81` | 0 to 100 | The pull toward the ground, in units a second squared. |
+| `color` | ColorI | `150 110 70 255` |  | The rope's paint, as `"r g b a"` from 0 to 255. A ribbon or a line is see-through by the alpha; a tube is not. |
+| `castShadow` | int | `-1` | -1 to 1 | Whether it casts a shadow from the sun: 1 or 0, or -1 (the default) for the style's own: a tube does, a ribbon and a line do not. A ribbon's or a line's shadow is a band of its thickness that faces the sun, so it does not change as the camera moves. |
+| `receiveShadow` | int | `-1` | -1 to 1 | Whether the sun's shadows fall on it: 1 or 0, or -1 (the default) for the style's own: a tube and a ribbon do, a line does unless it is emissive (a laser does not darken). |
+| `emissive` | bool | `0` |  | Whether a ribbon or a line glows: drawn in its color with no light or shade (a laser). Fog still covers it. |
+| `sim` | string | `verlet` |  | How the rope's shape comes about: `"verlet"` (the default: simulated, sagging and swinging) or `"none"`: not simulated, its shape is driven: straight between its ends, or the curve `ropeSetCurve` sets (a beam from a muzzle), both ends and the curve's tangents following what is drawn each frame. |
+| `emissiveIntensity` | float | `1` | 0 to 64 | How bright a glowing ribbon or line is: its color is multiplied by this in the HDR frame, so more than 1 is brighter than white and the bloom (where the renderer has it) catches it. |
+| `additive` | bool | `0` |  | Whether a ribbon or a line adds its light to what is behind it (an energy beam) instead of covering it by its alpha. |
+| `endThickness` | float | `-1` | -1 to 2 | The width at the far end, in world units: `thickness` tapers to it along the rope. -1 (the default) is no taper. |
+| `colorEnd` | string |  |  | The color at the far end, `"r g b a"`: the paint blends from `color` to it along the rope. Empty (the default) is no gradient. |
+| `texture` | filename |  |  | A picture to draw the rope with (a `.png` or `.jpg`; empty for none): it runs along the rope (u) and around a tube or across a strip (v). The `color` multiplies it (white keeps its own colors). A ribbon or a line blends by its alpha; a tube cuts out what is under half alpha (and casts no shadow there). A file that is missing or does not load warns once and the rope is drawn plain. |
+| `textureLength` | float | `0` | 0 to 1000 | How far along the rope one repeat of the texture is, in world units; 0 (the default) is the rope's width, a square tile. |
+| `textureScroll` | float | `0` | -1000 to 1000 | How fast the texture runs along the rope, in repeats a second (negative: toward the start): a laser, a conveyor, an energy beam. |
+| `textureFilter` | string | `linear` |  | How the texture is filtered: `"linear"` (the default, with mip levels) or `"nearest"` (hard texels, for pixel art). |
 
 ## ScatterSky
 

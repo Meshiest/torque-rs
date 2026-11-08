@@ -5,6 +5,7 @@
 //! - [`ground`]: a map's terrain and water as the client draws them (the valley's).
 //! - [`levels`]: maps authored as Blockbench models, built into interiors when the example starts.
 //! - [`plugin`]: the game as an engine plugin ([`plugin::LevelPlugin`]) and the engine it runs on.
+//! - `ropes` (the `rope` feature): the plaza's clothesline, made by the rope plugin.
 //! - [`server`]: torque-server's main loop over TGE's game classes, with a network host on an in-memory transport.
 //! - [`client`]: the client host, the server of the map being played, the link between them, and a frame for the world view.
 //! - [`scene`]: the client's ghosts as the world view's objects (the cubes and the figures).
@@ -21,6 +22,8 @@ pub mod files;
 pub mod ground;
 pub mod levels;
 pub mod plugin;
+#[cfg(feature = "rope")]
+pub mod ropes;
 pub mod scene;
 pub mod server;
 pub mod shots;

@@ -336,6 +336,19 @@ impl Flight {
     }
 }
 
+/// The muzzle of one image a ghost holds, as the last frame drew it ([`GhostScene::muzzles`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeldMuzzle {
+    /// The ghost holding the image.
+    pub ghost: u32,
+    /// The mount slot of the image.
+    pub slot: usize,
+    /// The muzzle's place.
+    pub at: [f32; 3],
+    /// The way the barrel points.
+    pub dir: [f32; 3],
+}
+
 /// A held image's muzzle as the frame draws it (its place and the barrel's direction) and the seconds since its last shot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Muzzle {
@@ -933,6 +946,20 @@ impl<S: GhostStyle> GhostScene<S> {
     /// Where the own Player's first image's muzzle was drawn in the last frame.
     pub fn own_muzzle(&self) -> Option<[f32; 3]> {
         self.own_muzzle
+    }
+
+    /// The muzzles of the images held in the world, as the last frame drew them (an image whose shape has no `muzzlePoint` node has
+    /// none): the own Player's, while the view is first person, is the first-person image's, drawn before the eye with the
+    /// predicted aim; the others' are their third-person mounts'.
+    pub fn muzzles(&self) -> impl Iterator<Item = HeldMuzzle> + '_ {
+        self.held.iter().filter_map(|(&(ghost, slot), h)| {
+            h.muzzle.map(|(at, dir)| HeldMuzzle {
+                ghost,
+                slot,
+                at,
+                dir,
+            })
+        })
     }
 
     /// The other Players' feet and yaws as the last frame placed them, in ghost order.

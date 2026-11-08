@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use torque::app::App;
 use torque::app::shots::{Seat, Shots};
 use torque::app::window::offscreen_gpu;
 use torque::client::input::Key;
@@ -157,6 +158,399 @@ pub fn write_office(
         ("office-window", at(21.0, 1.8, 1.6), at(21.4, -10.0, 1.0)),
     ] {
         picture(&mut seat, Some(eye(from, to)), name)?;
+    }
+    Ok(shots.paths)
+}
+
+/// The plaza's rope (the `rope` feature) at `size` into `dir`: the camera behind the figure as it walks up to the stage (`rope-behind`),
+/// the line from the front, close (`rope-front`), and the line thrown up and falling back, six pictures a tenth of a second apart
+/// (`rope-bounce-0` to `rope-bounce-5`, the clock standing still while each settles) and a push from the side (`rope-swing-0` to
+/// `rope-swing-5`).
+#[cfg(feature = "rope")]
+pub fn write_rope(files: GameFiles, dir: &Path, size: (u32, u32)) -> Result<Vec<PathBuf>, String> {
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let mut seat = start_plaza(files, &gpu, size)?;
+    let mut shots = Shots::new(dir)?;
+    let line = crate::ropes::line(&seat.game);
+    if line == 0 {
+        return Err("the plaza hung no rope".into());
+    }
+    let mut picture =
+        |seat: &mut Seat<LevelDemo>, e: Option<Eye>, name: &str| -> Result<(), String> {
+            seat.eye = e;
+            let frame = seat.picture(&gpu);
+            seat.eye = None;
+            shots.save(&frame?, name)
+        };
+    // Up to the stage: the camera behind the figure, the line over it.
+    seat.game.key(Key::W, true);
+    seat.run(&gpu, 2600)?;
+    seat.game.key(Key::W, false);
+    seat.run(&gpu, 600)?;
+    picture(&mut seat, None, "rope-behind")?;
+    let front = Some(crate::client::with_fov(look_at(
+        [-6.5, -9.0, 2.2],
+        [0.0, -2.0, 3.0],
+    )));
+    picture(&mut seat, front, "rope-front")?;
+    let call = |seat: &mut Seat<LevelDemo>, script: String| -> Result<(), String> {
+        seat.game
+            .client
+            .vm_mut()
+            .eval(script.as_bytes())
+            .map(drop)
+            .map_err(|e| format!("{e:?}"))
+    };
+    // Thrown up, then falling back.
+    call(&mut seat, format!("ropeImpulse({line}, \"0 0 12\");"))?;
+    for n in 0..6 {
+        seat.run(&gpu, 100)?;
+        picture(&mut seat, front, &format!("rope-bounce-{n}"))?;
+    }
+    seat.run(&gpu, 6000)?;
+    // Pushed from the side, and let swing.
+    call(&mut seat, format!("ropeImpulse({line}, \"0 14 0\");"))?;
+    for n in 0..6 {
+        seat.run(&gpu, 200)?;
+        picture(&mut seat, front, &format!("rope-swing-{n}"))?;
+    }
+    Ok(shots.paths)
+}
+
+/// The game on the plaza (the `rope` feature), its clothesline hung, the figure standing at the spawn.
+#[cfg(feature = "rope")]
+fn start_plaza(
+    files: GameFiles,
+    gpu: &torque_render_core::Gpu,
+    size: (u32, u32),
+) -> Result<Seat<LevelDemo>, String> {
+    let mut seat = Seat::new(LevelDemo::new(files)?, gpu, size)?;
+    seat.run(gpu, 200)?;
+    let index = seat
+        .game
+        .maps
+        .iter()
+        .position(|m| map_name(&m.path) == crate::ropes::MAP)
+        .ok_or("no plaza map")?;
+    seat.game.start_map(index)?;
+    let mut waited = 0;
+    while !(seat.game.in_world() && seat.game.figure().is_some()) && waited < START_LIMIT_MS {
+        seat.run(gpu, 100)?;
+        waited += 100;
+    }
+    seat.run(gpu, 2800)?;
+    Ok(seat)
+}
+
+/// The rope styles at `size` into `dir` (the `rope` feature): the plaza's red tube clothesline beside a yellow ribbon cable and
+/// glowing red laser lines (`styles-plaza`), the same from above (`styles-above`), the figure with a laser through it and behind
+/// it and a ribbon across in front (`styles-crossing`), the camera low at the end of a long ribbon, looking almost along it
+/// (`styles-along`), and a thin laser seen from far away (`styles-far`).
+#[cfg(feature = "rope")]
+pub fn write_rope_styles(
+    files: GameFiles,
+    dir: &Path,
+    size: (u32, u32),
+) -> Result<Vec<PathBuf>, String> {
+    use crate::ropes::{declare_styles, make};
+    let gpu = offscreen_gpu().map_err(|e| e.to_string())?;
+    let mut seat = start_plaza(files, &gpu, size)?;
+    let mut shots = Shots::new(dir)?;
+    declare_styles(&mut seat.game)?;
+    let mut picture = |seat: &mut Seat<LevelDemo>, eye: Eye, name: &str| -> Result<(), String> {
+        seat.eye = Some(crate::client::with_fov(eye));
+        let frame = seat.picture(&gpu);
+        seat.eye = None;
+        shots.save(&frame?, name)
+    };
+    let clear = |seat: &mut Seat<LevelDemo>| -> Result<(), String> {
+        seat.game
+            .client
+            .vm_mut()
+            .eval(b"ropeClear();")
+            .map(drop)
+            .map_err(|e| format!("{e:?}"))
+    };
+
+    // The clothesline (a tube), a ribbon cable in front of the pillars and three lasers across the way between them.
+    let [x0, y, z] = crate::ropes::START;
+    let x1 = crate::ropes::END[0];
+    make(
+        &mut seat.game,
+        "PlazaRibbon",
+        [x0, y - 0.7, z - 0.4],
+        [x1, y - 0.7, z - 0.4],
+    )?;
+    for height in [0.45, 0.9, 1.35] {
+        make(
+            &mut seat.game,
+            "PlazaLaser",
+            [x0, y - 0.7, height],
+            [x1, y - 0.7, height],
+        )?;
+    }
+    make(
+        &mut seat.game,
+        "PlazaLaser",
+        [x0, y - 0.7, 0.2],
+        [x1, y - 3.5, 1.6],
+    )?;
+    seat.run(&gpu, 6000)?;
+    picture(
+        &mut seat,
+        look_at([-6.5, -10.5, 2.0], [0.0, -2.0, 2.0]),
+        "styles-plaza",
+    )?;
+    picture(
+        &mut seat,
+        look_at([-4.0, -8.0, 9.0], [0.0, -2.5, 1.5]),
+        "styles-above",
+    )?;
+
+    // The figure with a laser through its middle, another behind it (as the camera sees it), and a ribbon in front of it.
+    clear(&mut seat)?;
+    let at = seat.game.figure().ok_or("the figure is gone")?.position;
+    let [fx, fy, fz] = at;
+    make(
+        &mut seat.game,
+        "PlazaLaser",
+        [fx - 3.5, fy, fz + 0.9],
+        [fx + 3.5, fy, fz + 0.9],
+    )?;
+    make(
+        &mut seat.game,
+        "PlazaLaser",
+        [fx - 3.5, fy - 0.8, fz + 1.4],
+        [fx + 3.5, fy - 0.8, fz + 1.4],
+    )?;
+    make(
+        &mut seat.game,
+        "PlazaRibbon",
+        [fx - 3.5, fy + 0.8, fz + 1.6],
+        [fx + 3.5, fy + 0.8, fz + 1.6],
+    )?;
+    seat.run(&gpu, 6000)?;
+    picture(
+        &mut seat,
+        look_at([fx + 2.2, fy + 4.2, fz + 1.5], [fx, fy, fz + 1.0]),
+        "styles-crossing",
+    )?;
+    picture(
+        &mut seat,
+        look_at([fx - 3.0, fy + 2.5, fz + 0.5], [fx, fy, fz + 1.0]),
+        "styles-crossing-low",
+    )?;
+
+    // A long ribbon, the camera low at its end looking almost along it.
+    clear(&mut seat)?;
+    make(
+        &mut seat.game,
+        "PlazaRibbon",
+        [-3.0, -12.0, 3.4],
+        [-3.0, 3.0, 3.4],
+    )?;
+    seat.run(&gpu, 6000)?;
+    picture(
+        &mut seat,
+        look_at([-2.7, -14.5, 3.1], [-3.0, 3.0, 2.4]),
+        "styles-along",
+    )?;
+    picture(
+        &mut seat,
+        look_at([-3.0, -14.5, 3.4], [-3.0, 3.0, 3.0]),
+        "styles-along-exact",
+    )?;
+    picture(
+        &mut seat,
+        look_at([-2.8, -14.5, 4.8], [-3.0, 3.0, 1.8]),
+        "styles-along-high",
+    )?;
+
+    // A thin laser seen from far away keeps its width on the screen.
+    clear(&mut seat)?;
+    make(&mut seat.game, "PlazaLaser", [x0, y, 2.0], [x1, y, 2.0])?;
+    seat.run(&gpu, 1000)?;
+    picture(
+        &mut seat,
+        look_at([0.0, -45.0, 3.0], [0.0, -2.0, 2.0]),
+        "styles-far",
+    )?;
+
+    // Ropes that cast: the shadow bands on the ground, from two places.
+    clear(&mut seat)?;
+    make(
+        &mut seat.game,
+        "ShadowRibbon",
+        [-5.0, -3.0, 3.6],
+        [5.0, -3.0, 3.6],
+    )?;
+    make(
+        &mut seat.game,
+        "ShadowLine",
+        [-5.0, -6.0, 2.8],
+        [5.0, -6.0, 2.8],
+    )?;
+    seat.run(&gpu, 6000)?;
+    picture(
+        &mut seat,
+        look_at([-7.0, -13.0, 6.0], [0.0, -4.5, 0.5]),
+        "shadows-cast",
+    )?;
+    picture(
+        &mut seat,
+        look_at([9.0, -11.0, 5.0], [0.0, -4.5, 0.5]),
+        "shadows-cast-moved",
+    )?;
+
+    // Ropes that take a shadow: four lie across the figure's shadow, a tube and a ribbon that take it, each followed by one that
+    // does not.
+    clear(&mut seat)?;
+    let [fx, fy, fz] = at;
+    for (name, dy) in [
+        ("PlazaTube", 0.3),
+        ("PlazaTubeLit", 1.0),
+        ("PlazaRibbon", 1.7),
+        ("PlazaRibbonLit", 2.4),
+    ] {
+        make(
+            &mut seat.game,
+            name,
+            [fx - 1.5, fy + dy, fz + 0.3],
+            [fx + 6.0, fy + dy, fz + 0.3],
+        )?;
+    }
+    seat.run(&gpu, 6000)?;
+    picture(
+        &mut seat,
+        look_at([fx + 1.5, fy - 3.0, fz + 5.5], [fx + 1.5, fy + 1.4, fz]),
+        "shadows-receive",
+    )?;
+
+    // Textures: a braided tube and a chain ribbon with holes between its links, from the front of the plaza.
+    clear(&mut seat)?;
+    let [x0, y, z] = crate::ropes::START;
+    let x1 = crate::ropes::END[0];
+    make(
+        &mut seat.game,
+        "PlazaBraid",
+        [x0, y - 0.7, z - 0.2],
+        [x1, y - 0.7, z - 0.2],
+    )?;
+    make(
+        &mut seat.game,
+        "PlazaChain",
+        [x0, y - 0.7, z + 0.7],
+        [x1, y - 0.7, z + 0.7],
+    )?;
+    seat.run(&gpu, 6000)?;
+    picture(
+        &mut seat,
+        look_at([-6.5, -10.5, 2.4], [0.0, -2.0, 2.6]),
+        "textures-braid-chain",
+    )?;
+    picture(
+        &mut seat,
+        look_at([-5.0, -5.0, 2.9], [-7.4, -2.8, 3.1]),
+        "textures-braid-chain-close",
+    )?;
+
+    // A scrolling laser line, at two moments.
+    clear(&mut seat)?;
+    make(
+        &mut seat.game,
+        "PlazaBeam",
+        [x0, y - 0.7, 1.4],
+        [x1, y - 0.7, 2.6],
+    )?;
+    seat.run(&gpu, 1000)?;
+    let beam_eye = look_at([-6.0, -9.0, 2.0], [0.0, -2.0, 2.0]);
+    picture(&mut seat, beam_eye, "textures-beam-scroll-a")?;
+    seat.run(&gpu, 200)?;
+    picture(&mut seat, beam_eye, "textures-beam-scroll-b")?;
+
+    // Two ropes of one datablock, with a runtime color and texture of their own each.
+    clear(&mut seat)?;
+    seat.game
+        .client
+        .vm_mut()
+        .eval(
+            br#"$left = ropeCreate("-8 -2.7 3.2", "-1 -2.7 2.4", PlazaTwin);
+            ropeSetColor($left, "255 90 60 255");
+            $right = ropeCreate("1 -2.7 2.4", "8 -2.7 3.2", PlazaTwin);
+            ropeSetColor($right, "90 170 255 255");
+            ropeSetTexture($right, "rope/chain.png");"#,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+    seat.run(&gpu, 6000)?;
+    picture(
+        &mut seat,
+        look_at([0.0, -10.0, 2.4], [0.0, -2.0, 2.6]),
+        "setters-two-ropes",
+    )?;
+
+    // Frames at about 120 a second: a rope from the figure's hand to a point that moves, the figure walking. The ends follow what
+    // is drawn in each frame, not the game's tick.
+    clear(&mut seat)?;
+    {
+        use torque_plugin_rope::{RopeEnd, RopeParams, RopeShared};
+        let ropes = seat
+            .game
+            .engine()
+            .resource::<RopeShared>()
+            .ok_or("no rope plugin")?
+            .clone();
+        let ghost = seat.game.figure().ok_or("the figure is gone")?.ghost;
+        let [fx, fy, fz] = at;
+        let moving = |t: f32| {
+            [
+                fx + 2.6 + 0.9 * (t * 5.0).sin(),
+                fy + 2.2,
+                fz + 1.3 + 0.5 * (t * 5.0).cos(),
+            ]
+        };
+        let id = {
+            let mut world = ropes.lock();
+            let id = world
+                .create(
+                    RopeParams {
+                        segments: 14,
+                        stiffness: 0.3,
+                        thickness: 0.07,
+                        color: [230, 190, 60, 255],
+                        ..RopeParams::default()
+                    },
+                    [fx, fy, fz + 1.0],
+                    moving(0.0),
+                )
+                .map_err(|e| e.to_string())?;
+            world
+                .pin_ghost(id, RopeEnd::Start, ghost, "hand")
+                .map_err(|e| e.to_string())?;
+            id
+        };
+        seat.view.set_effect_frame_seconds(Some(0.008));
+        seat.eye = Some(crate::client::with_fov(look_at(
+            [fx + 3.5, fy - 3.5, fz + 2.4],
+            [fx + 1.3, fy + 1.0, fz + 1.0],
+        )));
+        seat.game.key(Key::D, true);
+        let mut clock = 0.0f32;
+        for frame in 0..(60 + 8) {
+            App::advance(&mut seat.game, 8);
+            clock += 0.008;
+            ropes
+                .lock()
+                .pin_point(id, RopeEnd::End, moving(clock))
+                .map_err(|e| e.to_string())?;
+            seat.frame(&gpu)?;
+            if frame >= 60 {
+                let image = gpu.read_back(&seat.target).map_err(|e| e.to_string())?;
+                shots.save(&image, &format!("frames-hand-{}", frame - 60))?;
+            }
+        }
+        seat.game.key(Key::D, false);
+        seat.eye = None;
+        seat.view.set_effect_frame_seconds(Some(0.016));
     }
     Ok(shots.paths)
 }

@@ -20,6 +20,7 @@ path = "src/main.rs"
 [dependencies]
 torque-app = { path = "../torque-app" }
 torque-engine = { path = "../torque-engine" }
+torque-plugin-rope = { path = "../torque-plugin-rope" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
 [lints]

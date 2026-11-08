@@ -397,6 +397,11 @@ impl ArenaGame {
         self.flag("$Arena::QuitAsked")
     }
 
+    /// The engine the client was made from.
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
+
     /// The scene as the last frame drew it.
     pub fn scene(&self) -> &ArenaScene {
         &self.scene
@@ -577,6 +582,30 @@ impl ArenaGame {
         }
     }
 
+    /// Tells the rope plugin where the frame drew the held images' muzzles: the own figure's, in first person, is the pistol of
+    /// the first-person view (drawn before the eye, with the predicted aim), the others' and the own figure's in third person
+    /// their third-person mounts'.
+    #[cfg(feature = "rope")]
+    fn publish_muzzles(&self) {
+        let Some(table) = self.engine.resource::<torque_plugin_rope::MuzzleTable>() else {
+            return;
+        };
+        let first_person = !self.third_person();
+        let own = self.scene.own().map(|o| o.ghost);
+        table.set(
+            self.scene
+                .muzzles()
+                .map(|m| torque_plugin_rope::DrawnMuzzle {
+                    ghost: m.ghost,
+                    slot: m.slot,
+                    at: m.at,
+                    dir: m.dir,
+                    first_person: first_person && Some(m.ghost) == own,
+                }),
+            first_person,
+        );
+    }
+
     /// Whether the camera is behind the figure (`Tab`: `$Arena::ThirdPerson`).
     pub fn third_person(&self) -> bool {
         self.flag("$Arena::ThirdPerson")
@@ -685,6 +714,8 @@ impl ArenaGame {
             }
         };
         view.set_objects(objects);
+        #[cfg(feature = "rope")]
+        self.publish_muzzles();
         self.apply_sky(view);
         // The example draws the world itself: the GameTSCtrl draws the world whatever the connection's camera is, and the names
         // over the others are placed from its eye.

@@ -1136,3 +1136,105 @@ pub fn write_hitboxes(
     shots.paths.push(path);
     Ok(shots.paths)
 }
+
+/// A beam from the pistol's muzzle to the other figure (the `rope` feature): a ribbon driven along a curve that leaves the muzzle
+/// along the aim and bends toward the target, tapering, glowing and adding its light, its texture running along it. From the first
+/// person's view with the beam leaving the pistol drawn before the eye (`beam-first-person`), from behind the figure
+/// (`beam-third-person`), and six pictures as the aim sweeps (`beam-sweep-0` to `beam-sweep-5`).
+#[cfg(feature = "rope")]
+pub fn write_beam(
+    dir: &Path,
+    size: (u32, u32),
+    make_files: impl Fn() -> io::Result<GameFiles>,
+) -> Result<Vec<PathBuf>, String> {
+    use torque_plugin_rope::{
+        Curve, ImageData, RopeEnd, RopeParams, RopeShared, RopeStyle, Tangent,
+    };
+    let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let (mut a, mut b) = meet(&gpu, size, &make_files)?;
+    let mut shots = Shots::new(dir)?;
+    let mut save = |frame: &Frame, name: &str| shots.save(frame, name);
+    run(&gpu, &mut [&mut a, &mut b], 400)?;
+    let own = a.game.scene().own().ok_or("no own figure")?;
+    let muzzle = a
+        .game
+        .scene()
+        .muzzles()
+        .find(|m| m.ghost == own.ghost)
+        .ok_or("the pistol has no muzzle")?;
+    let (at, aim) = (muzzle.at, muzzle.dir);
+    // The target: ahead of the aim and a little to its right and up, so the beam has a bend to show.
+    let right = [aim[1], -aim[0], 0.0];
+    let target =
+        [0, 1, 2].map(|k| at[k] + aim[k] * 7.0 + right[k] * 3.0 + if k == 2 { 0.6 } else { 0.0 });
+    place(&mut a.game, "Bob", [target[0], target[1], 0.1], 0.0)?;
+    let ropes = a
+        .game
+        .engine()
+        .resource::<RopeShared>()
+        .ok_or("no rope plugin")?
+        .clone();
+    {
+        let mut world = ropes.lock();
+        let texture = world
+            .add_texture("beam", false, std::sync::Arc::new(ImageData::beam()))
+            .map_err(|e| e.to_string())?;
+        let id = world
+            .create(
+                RopeParams {
+                    style: RopeStyle::Ribbon,
+                    driven: true,
+                    segments: 24,
+                    thickness: 0.14,
+                    thickness_end: 0.05,
+                    color_end: Some([255, 150, 60, 255]),
+                    emissive: true,
+                    emissive_intensity: 3.0,
+                    additive: true,
+                    texture,
+                    texture_length: 1.4,
+                    texture_scroll: 1.5,
+                    cast_shadow: false,
+                    receive_shadow: false,
+                    ..RopeParams::default()
+                },
+                at,
+                target,
+            )
+            .map_err(|e| e.to_string())?;
+        world
+            .pin_ghost(id, RopeEnd::Start, own.ghost, "muzzle")
+            .map_err(|e| e.to_string())?;
+        world
+            .pin_point(id, RopeEnd::End, target)
+            .map_err(|e| e.to_string())?;
+        world
+            .set_curve(
+                id,
+                Some(Curve {
+                    start: Tangent::Mount,
+                    end: Tangent::Auto,
+                    bend: 0.45,
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    run(&gpu, &mut [&mut a, &mut b], 600)?;
+    save(&a.picture(&gpu)?, "beam-first-person")?;
+    a.game.set_global("$Arena::ThirdPerson", "1");
+    run(&gpu, &mut [&mut a, &mut b], 1500)?;
+    save(&a.picture(&gpu)?, "beam-third-person")?;
+    // The aim sweeps: the figure turns a little between the pictures, the beam leaves along the new aim and bends to the target.
+    let yaw0 = own.yaw;
+    for k in 0..6 {
+        place(
+            &mut a.game,
+            "Ann",
+            [own.position[0], own.position[1], own.position[2]],
+            yaw0 + 0.22 * (k as f32 - 2.5),
+        )?;
+        run(&gpu, &mut [&mut a, &mut b], 500)?;
+        save(&a.picture(&gpu)?, &format!("beam-sweep-{k}"))?;
+    }
+    Ok(shots.paths)
+}

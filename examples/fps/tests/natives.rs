@@ -19,6 +19,13 @@ fn listing(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// The client's list: the rope plugin's natives are in `client-rope.txt` (the `rope` feature), the default list is `client.txt`.
+const CLIENT: &str = if cfg!(feature = "rope") {
+    "client-rope.txt"
+} else {
+    "client.txt"
+};
+
 #[test]
 fn the_client_has_these_natives() {
     let game = ArenaGame::new(
@@ -30,7 +37,7 @@ fn the_client_has_these_natives() {
         },
     )
     .unwrap();
-    check_listing(&listing("client.txt"), &game.vm().native_listing());
+    check_listing(&listing(CLIENT), &game.vm().native_listing());
 }
 
 #[test]

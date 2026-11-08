@@ -8,6 +8,7 @@ use torque_app::hosting::HostingPlugin;
 use torque_app::plugins::{DefaultPlugins, ZoomPlugin};
 use torque_app::server::{GameServer, Listen, ServerStart};
 use torque_engine::{Engine, EngineBuilder, PluginType};
+use torque_plugin_rope::RopePlugin;
 use torque_ts_vm::host::MemFiles;
 
 use crate::collect::{SideVm, collect};
@@ -22,7 +23,7 @@ struct Optional {
 
 /// The opt-in plugins that add script surface and that need nothing from the game to do it. (`LivePerfPlugin` names its
 /// console function and pref by its arguments, so it has nothing fixed to list.)
-fn optional_plugins() -> [Optional; 3] {
+fn optional_plugins() -> [Optional; 4] {
     [
         Optional {
             id: GizmosPlugin::ID.as_str(),
@@ -43,6 +44,13 @@ fn optional_plugins() -> [Optional; 3] {
             what: "joining by address or room code: the lookup natives of a join screen",
             add: |engine| {
                 engine.add_plugins(HostingPlugin::default());
+            },
+        },
+        Optional {
+            id: RopePlugin::ID.as_str(),
+            what: "ropes: the RopeData datablock and the console functions that hang, push and take down ropes between points or objects",
+            add: |engine| {
+                engine.add_plugins(RopePlugin::default());
             },
         },
     ]
