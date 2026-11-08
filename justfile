@@ -60,9 +60,9 @@ site-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
-# Pictures that differ between two runs of the same build, as `--skip` switches for `shots-diff`:
-# vehicle-demo/hill.png: 2 pixels off by one level among the hills (rounding noise from run to run)
-shots_flapping := "--skip vehicle-demo/hill.png"
+# What `shots-diff` accepts as the same: renders are not bit-stable from run to run, so a picture whose differing pixels are off by
+# at most one level in a channel and number at most 32 passes as "near" (listed apart from the exact matches); anything more fails
+shots_tolerance := "--max-delta 1 --max-pixels 32"
 
 # Every example's offscreen pictures, each recipe's into its own folder below `dir` (the character, level demo, arena and vehicle
 # demo shots, the arena's name and menu shots, the HUD shots and `showcase --examples`), to compare with `shots-diff` after a
@@ -88,11 +88,16 @@ shots-all dir="target/shots":
     just examples/showcase "{{absolute_path(dir)}}/showcase" --examples
 
 # Compares two folders drawn by `shots-all`: per picture whether the sizes match, the differing pixels and the largest channel
-# difference; the exit code is 1 when any picture differs. Left out, by name: the top right corner of every picture (160x40 px),
-# where the corner readout shows the frame rate measured on the clock, which differs from run to run; and the pictures in
-# `shots_flapping`, each with its reason
+# difference; the exit code is 1 when any picture differs. Left out: the top right corner of every picture (160x40 px), where the
+# corner readout shows the frame rate measured on the clock, which differs from run to run. Pictures off by one level on at most 32
+# pixels (`shots_tolerance`) pass as near and are listed apart from the exact matches. Works on the folder of a single example too
 shots-diff a b:
-    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 {{shots_flapping}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
+    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 {{shots_tolerance}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
+
+# `shots-diff` on one example's folder: `example` is the folder name below the `shots-all` dir (for instance `vehicle-demo`), `a`
+# is the dir a run drew into and `b` the baseline dir
+shots-diff-one example a b:
+    just shots-diff "{{a}}/{{example}}" "{{b}}/{{example}}"
 
 # The server crate's dependency tree has no wgpu, winit, naga, cpal, drawing, GUI, audio or client crates (CI runs the same check)
 server-deps:
