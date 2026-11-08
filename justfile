@@ -60,6 +60,12 @@ site-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
+# The determinism check: the trace-hash scenarios (the figure on foot and the buggy, each a 600-tick scripted run of a server and a
+# predicting client, hashed tick by tick) run natively twice and as wasm32-wasip1 under Node's WASI (no browser), and every line
+# they print must be equal. Needs `rustup target add wasm32-wasip1`; `just trace-hash --release` runs the release profile
+trace-hash *flags:
+    node web/trace-hash.mjs {{flags}}
+
 # What `shots-diff` accepts as the same: renders are not bit-stable from run to run, so a picture whose differing pixels are off by
 # at most one level in a channel and number at most 32 passes as "near" (listed apart from the exact matches); anything more fails
 shots_tolerance := "--max-delta 1 --max-pixels 32"

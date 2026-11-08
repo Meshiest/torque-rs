@@ -1,0 +1,34 @@
+[package]
+name = "torque-trace-hash"
+description = "A reusable determinism harness: scripted 600-tick runs of the predicted paths hashed into one value, the same on native and wasm32"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "determinism", "testing", "wasm"]
+categories = ["game-development", "development-tools::testing"]
+
+# Each scenario runs a server (`MinimalPlugins` and the plugin under test) and a client over an in-memory link for 600 ticks,
+# feeds the client scripted inputs, and hashes the server's and the client's per-tick state. The `trace-hash` binary prints
+# one line per scenario; CI runs it natively and as wasm32-wasip1 (`web/trace-hash.mjs`) and compares the two outputs.
+# Nothing here draws or opens a window, so the crate builds for both targets.
+
+[dependencies]
+torque-app-server = { path = "../torque-app-server" }
+torque-client = { path = "../torque-client" }
+torque-engine = { path = "../torque-engine" }
+torque-game = { path = "../torque-game" }
+torque-gui = { path = "../torque-gui" }
+torque-shapes = { path = "../torque-shapes" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+# The floor, the figure and the buggy the scenarios run on.
+torque-example-assets = { path = "../../examples/assets" }
+
+[[bin]]
+name = "trace-hash"
+path = "src/main.rs"
+
+[lints]
+workspace = true

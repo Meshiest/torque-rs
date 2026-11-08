@@ -3859,6 +3859,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-trace-hash"
+version = "0.1.0"
+dependencies = [
+ "torque-app-server",
+ "torque-client",
+ "torque-engine",
+ "torque-example-assets",
+ "torque-game",
+ "torque-gui",
+ "torque-shapes",
+ "torque-ts-vm",
+]
+
+[[package]]
 name = "torque-ts-bytecode"
 version = "0.1.0"
 
