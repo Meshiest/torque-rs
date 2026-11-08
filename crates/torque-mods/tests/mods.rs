@@ -274,6 +274,38 @@ fn a_client_side_mod_is_not_loaded_by_a_server_and_a_duplicate_id_is_refused() {
 }
 
 #[test]
+fn a_package_name_is_a_valid_identifier_made_from_the_id_and_two_ids_may_not_share_one() {
+    assert_eq!(
+        torque_mods::package_name("bigger-bombs"),
+        "Mod_bigger_bombs"
+    );
+    assert_eq!(torque_mods::package_name("a.b_c"), "Mod_a_b_c");
+    let engine = engine();
+    let mut vm = server(
+        &engine,
+        game(&[
+            ("mods/a/mod.toml", &mod_toml("big-bombs", "")),
+            (
+                "mods/a/server.cs",
+                b"function bomb() { return \"hyphen\"; }",
+            ),
+            ("mods/b/mod.toml", &mod_toml("big_bombs", "")),
+            (
+                "mods/b/server.cs",
+                b"function bomb() { return \"underscore\"; }",
+            ),
+        ]),
+        "server.cs",
+    );
+    // The first found (by id) loads; the second maps to the same package and is skipped with the reason.
+    assert_eq!(order_of(&mut vm), "big-bombs");
+    assert_eq!(eval(&mut vm, "return bomb();"), "hyphen");
+    assert!(reason(&mut vm, "big_bombs").contains("Mod_big_bombs"));
+    let log = console(&mut vm);
+    assert!(log.contains("the mod `big_bombs` is skipped"), "{log}");
+}
+
+#[test]
 fn disabling_deactivates_the_package_and_the_override_is_gone() {
     let engine = engine();
     let zip = hello_zip();

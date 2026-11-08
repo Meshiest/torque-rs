@@ -4,6 +4,10 @@ A **mod** is a folder, or a `.zip` file, of scripts and assets that changes a ga
 the game's `mods` folder; the game finds them when it starts, puts their files over its own, and runs their scripts. Disabling a mod
 takes its scripts out again. You do not write any Rust to make one.
 
+For all of it at once, `examples/mods-demo` is a game mode written in Lua and shipped as a mod that its server requires: clients
+download its content, a second mod requires the first, a third is switched off by the prefs, and networked ropes show the round
+(see its README; `just examples/mods-demo` plays it headless).
+
 ## What a mod looks like
 
 ```
@@ -62,7 +66,7 @@ names a bad version skips the mod, and the console says why (`dumpMods()` lists 
 
 A mod's scripts are TorqueScript (or Lua, when the game has the Lua extension: see [Lua](lua.md)), run like the game's own,
 with one difference: every function the script declares goes into a
-**package** named `Mod_<id>` (`Mod_bigger-bombs`), and the package is active while the mod is enabled. Only the mod's own files declare into it: a game script the mod `exec`s declares its functions as it always does. That is how a mod
+**package** named `Mod_<id>` with every character of the id that is not a letter, digit or `_` made `_` (`bigger-bombs` is `Mod_bigger_bombs`; two ids that map to one name cannot both load: the one found later, in folder and zip name order, is skipped), and the package is active while the mod is enabled. Only the mod's own files declare into it: a game script the mod `exec`s declares its functions as it always does. That is how a mod
 replaces a function of the game: it declares one of the same name, and the game's is still there under `Parent::`.
 
 ```

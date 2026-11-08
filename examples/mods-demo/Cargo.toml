@@ -1,0 +1,25 @@
+[package]
+name = "torque-example-mods-demo"
+description = "A game mode written in Lua and shipped as a server-required mod: clients download its content, ropes show who chases what"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "mods", "lua", "example", "gamedev"]
+categories = ["game-development"]
+
+# A server whose game mode is a mod (`game/mods/orbs`: TorqueScript for the datablocks, Lua for the rules) and two clients that
+# download the mod's content when they join. The Lua extension is built apart (`just lua`) and loaded from a `plugins/` folder,
+# as a game loads it; this crate never links it. Run it with `just examples/mods-demo`.
+
+[dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "mods", "native-extensions"] }
+torque-example-assets = { path = "../assets" }
+torque-plugin-rope = { path = "../../crates/torque-plugin-rope" }
+torque-render-core = { path = "../../crates/torque-render-core" }
+torque-render-scene = { path = "../../crates/torque-render-scene" }
+
+[lints]
+workspace = true

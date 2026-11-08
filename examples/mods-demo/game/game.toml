@@ -1,0 +1,10 @@
+# How the engine runs this game; every key is optional. See the book's Plugins chapter.
+
+[game]
+name = "Mods demo"
+server = "server.cs"
+client = "client.cs"
+
+[plugins]
+# Plugins of DefaultPlugins this game never uses: no sound, no water, no terrain, no game-list queries.
+disable = ["torque.audio", "torque.water", "torque.terrain", "torque.server-query"]

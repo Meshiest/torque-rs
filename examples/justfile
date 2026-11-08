@@ -403,3 +403,20 @@ vehicle-demo-track-shots dir="../target/vehicle-demo-track-shots":
 
 vehicle-demo-track-bench:
     cargo run -p torque-example-vehicle-demo --release --example track-shots -- --bench
+
+# The mods demo, headless: a server whose game mode is a Lua mod it requires, and two clients that download the mod's content when
+# they join (`--shots <dir>` also draws pictures of the round from the first client). Builds the Lua extension first (`just lua`,
+# a C++ compiler is needed); `--lua <library>` or TORQUE_LUA_LIBRARY names a built one instead
+mods-demo *args:
+    just --justfile ../justfile --working-directory .. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo -- {{args}}
+
+# The mods demo's pictures of a round in progress, drawn offscreen into `dir`
+mods-demo-shots dir="../target/mods-demo-shots":
+    just --justfile ../justfile --working-directory .. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo -- --shots {{dir}}
+
+# The mods demo's end-to-end tests: download, cache, Lua rounds, ropes and the mods' load rules. They build the Lua extension
+# (Luau's C++), so `cargo test` leaves them out
+mods-demo-test:
+    cargo test -p torque-example-mods-demo --test demo -- --include-ignored

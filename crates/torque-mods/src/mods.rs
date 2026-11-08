@@ -62,7 +62,7 @@ pub struct ModSummary {
     pub files: usize,
     /// The bytes of its files, unpacked.
     pub bytes: u64,
-    /// The name of its TorqueScript package (`Mod_<id>`).
+    /// The name of its TorqueScript package (`Mod_<id>`, see [`package_name`]).
     pub package: String,
 }
 
@@ -143,8 +143,15 @@ fn over_allowance(backlog: usize, offer_pending: usize) -> bool {
     backlog > offer_pending.saturating_add(MAX_OUTSTANDING)
 }
 
-fn package_name(id: &str) -> String {
-    format!("Mod_{id}")
+/// The name of the TorqueScript package of the mod `id`: `Mod_` and the id with every character outside `A-Z`, `a-z`, `0-9` and
+/// `_` made `_` (`bigger-bombs` is `Mod_bigger_bombs`), so the name is always a valid identifier, which a script language that
+/// declares functions into the package needs. Every place that names a mod's package uses this function.
+pub fn package_name(id: &str) -> String {
+    let mapped: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("Mod_{mapped}")
 }
 
 /// The slots' values, or the defaults.
@@ -258,6 +265,9 @@ impl Mods {
             ));
         }
         let mut recognized: Vec<Recognized> = Vec::new();
+        // The package names taken so far, with the id that took each: two different ids can map to one name.
+        let mut packages: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut summaries: Vec<ModSummary> = Vec::new();
         for item in found {
             let package = match &item.package {
@@ -298,6 +308,27 @@ impl Mods {
                         });
                         continue;
                     }
+                    let name = package_name(&info.id).to_ascii_lowercase();
+                    let id = info.id.to_ascii_lowercase();
+                    if let Some(first) = packages.get(&name).filter(|first| **first != id) {
+                        let why = format!(
+                            "its package name {} is the one of the mod `{first}`",
+                            package_name(&info.id)
+                        );
+                        notes
+                            .warnings
+                            .push(format!("the mod `{}` is skipped: {why}", info.id));
+                        summaries.push(ModSummary {
+                            package: package_name(&info.id),
+                            status: ModStatus::Skipped(why),
+                            source,
+                            files: package.len(),
+                            bytes: package.unpacked_bytes(),
+                            info,
+                        });
+                        continue;
+                    }
+                    packages.entry(name).or_insert(id);
                     tidy_scripts(&mut info, &package, &rules.stages);
                     recognized.push(Recognized {
                         info,

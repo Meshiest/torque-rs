@@ -23,7 +23,7 @@ installs wasm-bindgen's command line into the target folder.
 </tr>
 </table>
 
-Also: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts.
+Also: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts; [the mods demo](#the-mods-demo), a Lua game mode shipped as a mod that the server requires.
 
 ## The level demo
 
@@ -161,6 +161,15 @@ the legacy terrain format.
 A dedicated server of the bundled game and a client that connects to it and prints the ghosts it is sent, both in the
 console. `just examples/min-server` (`cargo run -p torque-example-minimal --bin min-server`) and `just examples/min-client`
 (`cargo run -p torque-example-minimal --bin min-client`); `just examples/headless` runs the umbrella crate's headless examples.
+
+## The mods demo
+
+A round of collect-the-orbs written in Lua and shipped as a mod the server requires, run headless: a server and two clients over
+the memory transport. A client that joins downloads the mod's content (shapes, pictures and a sound, made from code) through the
+pull transfer, mounts it and then enters; the mod's Lua runs only on the server and the rope plugin's networked ropes show who
+chases which orb. A second mod requires the first (load order); a third is switched off by the prefs and never mounts.
+`just examples/mods-demo` plays it, `just examples/mods-demo-shots` draws it, `just examples/mods-demo-test` checks it. The
+details are in [`mods-demo/README.md`](mods-demo/README.md).
 
 ## The pictures
 

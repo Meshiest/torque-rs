@@ -396,6 +396,33 @@ cases! {
         );
     }
 
+    fn a_mod_with_a_hyphen_in_its_id_defines_functions_and_loses_them_when_switched_off() {
+        let engine = engine();
+        let files = files(&[
+            ("mods/bigger-bombs/mod.toml", &mod_toml("bigger-bombs", "")),
+            (
+                "mods/bigger-bombs/server.lua",
+                b"ts.define('boom', function() return 'big' end)
+",
+            ),
+        ]);
+        let mut vm = server(&engine, &files);
+        let log = console(&mut vm);
+        assert_eq!(eval(&mut vm, "return boom();").unwrap(), "big", "{log}");
+        assert_eq!(
+            eval(&mut vm, "return getModField(\"bigger-bombs\", \"package\");").unwrap(),
+            "Mod_bigger_bombs"
+        );
+        let mods = Mods::of(&vm).expect("the mods are there");
+        mods.disable(&mut vm, "bigger-bombs").expect("switched off");
+        console(&mut vm);
+        assert_eq!(
+            eval(&mut vm, "return boom();").unwrap(),
+            "",
+            "its function went with it"
+        );
+    }
+
     fn a_mod_s_lua_needs_the_extension() {
         let engine = EngineBuilder::new()
             .add_plugins(ModsPlugin::new())

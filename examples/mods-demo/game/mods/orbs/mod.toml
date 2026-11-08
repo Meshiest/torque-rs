@@ -1,0 +1,9 @@
+id = "orbs"
+version = "1.0.0"
+name = "Orbs"
+description = "A collect-the-orbs round: two runners, five orbs, a clock and a score, with a rope from each runner to the orb it chases."
+author = "torque-rs"
+# The rules are Lua, so the mod needs the Lua extension; without it the mod is skipped.
+requires_plugins = ["torque.lua"]
+# A server that has this mod asks every player for its content (the shapes, pictures and sound) and sends it to a player who lacks it.
+share = "download"

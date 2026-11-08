@@ -60,7 +60,7 @@ pub use layout::{
     PrefsEnableList, PrereqPolicy, Problem, RootPlace, TopologicalOrder,
 };
 pub use manifest::{DEFAULT_FOLDER, MANIFEST, MAX_MANIFEST_BYTES};
-pub use mods::{ModStatus, ModSummary, Mods, RequiredInfo};
+pub use mods::{ModStatus, ModSummary, Mods, RequiredInfo, package_name};
 pub use package::{MAX_PATH_LEN, ModError, ModLimits, ModPackage, RATIO_FLOOR};
 pub use plan::ModSide;
 pub use plugin::{EngineMods, ModsConfig, ModsPlugin, ModsRegistry};
