@@ -116,6 +116,9 @@ different.
   getting down and up, a `walk` action below running pace, and eased transitions between sequences.
 - `torque-client`: other players' vehicles drawn where they are now, coasting from their last update, and steering,
   springs and wheel contacts eased between ticks.
+- `torque-vehicle`, `torque-game`: a seam under a vehicle's sub-step (`BodySolver`) for whatever resolves the body against
+  the world and integrates it, picked per datablock (`SimClasses::body_solver`); TGE's solver stays the default and a
+  datablock that picks none runs exactly as before. A criterion bench for the vehicle step (`benches/tick.rs`).
 
 #### Content import
 

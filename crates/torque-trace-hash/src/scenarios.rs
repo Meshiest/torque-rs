@@ -184,6 +184,9 @@ fn observe_server(rig: &Rig, h: &mut TraceHasher, control: Control) {
             h.floats(&s.rigid.ang_vel);
             h.floats(&s.rigid.lin_pos);
             h.floats(&s.rigid.ang_pos);
+            for w in s.rigid.to_words() {
+                h.u32(w);
+            }
             h.floats(&s.steering);
             h.floats(&[s.throttle, s.damage]);
             h.bool(s.rigid.at_rest);
@@ -232,6 +235,9 @@ fn observe_client(rig: &Rig, h: &mut TraceHasher) -> bool {
         h.floats(&v.rigid.ang_vel);
         h.floats(&v.rigid.lin_pos);
         h.floats(&v.rigid.ang_pos);
+        for w in v.rigid.to_words() {
+            h.u32(w);
+        }
         h.floats(&v.steering);
         for w in &driven.v.k.wheels {
             h.floats(&[w.extension, w.avel, w.apos]);

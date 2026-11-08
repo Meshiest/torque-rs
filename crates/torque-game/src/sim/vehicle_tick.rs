@@ -150,6 +150,8 @@ pub fn tick(
     body.s_mut().mask_bits = 0;
     vm.hold(id);
     let damage_before = body.s().damage;
+    let solver = object_field(vm, id, b"dataBlock")
+        .and_then(|db| crate::sim_classes::sim_classes(vm).body_solver(vm, db));
     let mut host = HostImpl {
         slot: Slot::Vm(vm),
         env,
@@ -160,6 +162,7 @@ pub fn tick(
         moved: false,
         damage_before,
         class: None,
+        solver,
     };
     let _ = match (&mut body, &d) {
         (Body::Wheeled(v), Data::Wheeled(d, c)) => {
@@ -202,6 +205,8 @@ pub struct HostImpl<'a> {
     damage_before: f32,
     /// A WheeledVehicle's subclass (the host's), for its step.
     class: Option<Rc<dyn vehicle::wheeled::WheeledClass>>,
+    /// The datablock's solver for the body, handed to the step once ([`SimClasses::body_solver`](crate::sim_classes::SimClasses::body_solver)).
+    solver: Option<Box<dyn vehicle::BodySolver>>,
 }
 
 impl HostImpl<'_> {
@@ -500,6 +505,10 @@ impl<'a> VehicleHost for HostImpl<'a> {
 
     fn wheeled_class(&self) -> Option<Rc<dyn vehicle::wheeled::WheeledClass>> {
         self.class.clone()
+    }
+
+    fn body_solver(&mut self) -> Option<Box<dyn vehicle::BodySolver>> {
+        self.solver.take()
     }
 
     /// The class's wheel-contact callback, `%db.<name>(%obj, %obj)`, when it names one for these wheels.
