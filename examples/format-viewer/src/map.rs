@@ -33,11 +33,11 @@ use crate::draw::{Look, Renderer, bounds, normal, object};
 const SIZE: (u32, u32) = (1600, 900);
 
 /// A point of the map (inches, x forward, y left) in the world (meters, Torque's axes).
-fn to_world(p: [f32; 3]) -> [f32; 3] {
+pub(crate) fn to_world(p: [f32; 3]) -> [f32; 3] {
     [-p[1] * INCH, p[0] * INCH, p[2] * INCH]
 }
 
-fn to_world_dir(n: [f32; 3]) -> [f32; 3] {
+pub(crate) fn to_world_dir(n: [f32; 3]) -> [f32; 3] {
     [-n[1], n[0], n[2]]
 }
 
@@ -67,7 +67,7 @@ fn placement(origin: [f32; 3], angles: [f32; 3]) -> Mat4 {
     ]
 }
 
-fn flag_f32(args: &[String], name: &str, k: usize) -> Option<f32> {
+pub(crate) fn flag_f32(args: &[String], name: &str, k: usize) -> Option<f32> {
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1 + k))
@@ -77,7 +77,7 @@ fn flag_f32(args: &[String], name: &str, k: usize) -> Option<f32> {
 /// Brush entities that are volumes, not drawn things: triggers and environment volumes, entities set not to render
 /// (`rendermode` 10), and the classes `--hide` lists (comma-separated). Volumes whose faces carry tool materials are left out
 /// with those materials anyway.
-fn invisible(e: &Entity, hide: &[String]) -> bool {
+pub(crate) fn invisible(e: &Entity, hide: &[String]) -> bool {
     let c = value(e, "classname").unwrap_or("").to_ascii_lowercase();
     c.starts_with("trigger")
         || c.starts_with("env_")
@@ -780,7 +780,12 @@ fn prop_lit(d: &mut HdDraw, cube: &LightCube, direct: &[([f32; 3], [f32; 3])], a
 
 /// A surface's draw: its first texture, or (`layer`) its second blended over by the displacement's alpha. With an atlas each
 /// vertex is lit by its place in it (a face whose lightmap is not there by its own sampled light; a face without one fully).
-fn surface_draw(s: &MapSurface, look: &Look, atlas: Option<&Atlas>, layer: bool) -> HdDraw {
+pub(crate) fn surface_draw(
+    s: &MapSurface,
+    look: &Look,
+    atlas: Option<&Atlas>,
+    layer: bool,
+) -> HdDraw {
     let mut d = look.draw(format!("map {}", s.material));
     if s.displacement {
         // Displacements are walked on from either side of their grid in some maps; draw both.

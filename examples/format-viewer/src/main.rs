@@ -10,10 +10,13 @@
 //! - `phy <out-dir> <model.mdl>...`: models side by side with their collision hulls drawn over them as wireframes.
 //! - `effect <out-dir> <file.pcf> [system]`: a particle system's frames (or the file's systems listed).
 //! - `sound <out.wav> <entry or wave> [seconds]`: a soundscript entry or a wave mixed offline into a file.
+//! - `logic <out-dir> <map.bsp> [--script code] [--focus name]`: a map's logic run, its doors drawn as they move, one picture a
+//!   frame.
 
 mod audio;
 mod draw;
 mod effect;
+mod logic;
 mod map;
 mod model;
 mod phy;
@@ -221,6 +224,7 @@ fn main() -> Result<(), String> {
             }
             Ok(())
         }
+        "logic" => logic::run(&mut c, &args[1..]),
         other => Err(format!("unknown command {other}")),
     }
 }

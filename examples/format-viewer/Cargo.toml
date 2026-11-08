@@ -18,6 +18,9 @@ categories = ["game-development", "rendering"]
 torque-format-valve = { path = "../../crates/torque-format-valve" }
 # The engine's mixer, offline (no device feature): the sounds of the clips.
 torque-audio = { path = "../../crates/torque-audio", default-features = false }
+# The map logic (`logic`): a map's entities run, its doors drawn as they move.
+torque-map-logic = { path = "../../crates/torque-map-logic" }
+torque-ts-vm = { path = "../../crates/torque-ts-vm" }
 torque-engine = { path = "../../crates/torque-engine" }
 torque-modelcore = { path = "../../crates/torque-modelcore" }
 torque-render-core = { path = "../../crates/torque-render-core" }

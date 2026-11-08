@@ -3844,11 +3844,13 @@ dependencies = [
  "torque-audio",
  "torque-engine",
  "torque-format-valve",
+ "torque-map-logic",
  "torque-modelcore",
  "torque-render-core",
  "torque-render-hd",
  "torque-render-scene",
  "torque-scene",
+ "torque-ts-vm",
 ]
 
 [[package]]
@@ -4081,6 +4083,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "torque-map-logic"
+version = "0.1.0"
+dependencies = [
+ "torque-collide",
+ "torque-engine",
+ "torque-format-valve",
+ "torque-mapcore",
+ "torque-scene",
+ "torque-ts-vm",
 ]
 
 [[package]]

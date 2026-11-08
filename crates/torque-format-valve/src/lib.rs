@@ -18,6 +18,7 @@
 //! A game's files are mounted as one tree by [`files::SourceFiles`] (its VPK archives and loose folders, as its `gameinfo.txt`
 //! lists them, and a map's pak lump), a [`torque_ts_vm::host::FileHost`] the registry loads from.
 
+pub mod brushes;
 pub mod bsp;
 pub mod collision;
 pub mod files;

@@ -205,6 +205,12 @@ different.
   example draws them from a game folder the player names. Physics files (`.phy`) read as one convex hull per piece with
   the solids' settings and ragdoll joints, falling back to the model's hull box and then its mesh's hull; a `collide`
   feature turns a map's static props into collision hulls.
+- `torque-map-logic` (not in `DefaultPlugins`): the entity input/output logic of Hammer-made maps on the server: a
+  deterministic, capped event queue (one per-tick work budget; the queue keeps its last place for an event cut short)
+  with delays, wildcards and the special target names; logic entities, triggers and
+  filters; doors, buttons and movers as the `MapMover` ghost class; `ambient_generic` as sound events; console functions
+  for scripts. Entity definitions can be read at run time from a player's installed FGD files over coded defaults. A
+  map's brush models read as convex hulls (`torque-format-valve`).
 - Every reader bounds its counts, offsets, sizes and paths, and font and secret files are checked before they are read.
 
 #### Tooling
