@@ -585,9 +585,46 @@ fn networked_client(
     (vm, client, sent, incoming)
 }
 
+/// A plugin whose engine signs in as `name` and checks sign-ins, under `key`.
+#[derive(Clone, Copy, Debug)]
+struct SignInPlugin([u8; 16], &'static str);
+
+impl torque_engine::Plugin for SignInPlugin {
+    fn build(&self, engine: &mut torque_engine::EngineBuilder) {
+        engine
+            .net()
+            .auth(net::connect::SharedSecret::new(self.0, self.1));
+    }
+}
+
+impl torque_engine::PluginType for SignInPlugin {
+    const ID: torque_engine::PluginId = torque_engine::PluginId::new("torque.sign-in");
+}
+
+fn sign_in_engine(key: [u8; 16], name: &'static str) -> Engine {
+    torque_engine::EngineBuilder::new()
+        .add_plugins(SignInPlugin(key, name))
+        .build()
+        .expect("an engine")
+}
+
+/// The address the test client dials.
+fn dialed() -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([192, 168, 1, 20], 28_000))
+}
+
 /// Runs a client of `client_engine` against a bare handshake server of `server_engine`; the reason the client was refused with.
 fn connect_between(client_engine: &Engine, server_engine: &Engine) -> Option<Vec<u8>> {
     connect_through(client_engine, server_engine, false).0
+}
+
+/// [`connect_between`] with a server that says it is at `address` (the client dials [`dialed`]).
+fn connect_between_at(
+    client_engine: &Engine,
+    server_engine: &Engine,
+    address: std::net::SocketAddr,
+) -> Option<Vec<u8>> {
+    connect_with(client_engine, server_engine, false, address).0
 }
 
 /// [`connect_between`] that can make the server's gate say a client's channels match even when it listed none (a gate that
@@ -596,6 +633,15 @@ fn connect_through(
     client_engine: &Engine,
     server_engine: &Engine,
     gate_says_channels: bool,
+) -> (Option<Vec<u8>>, Vec<String>) {
+    connect_with(client_engine, server_engine, gate_says_channels, dialed())
+}
+
+fn connect_with(
+    client_engine: &Engine,
+    server_engine: &Engine,
+    gate_says_channels: bool,
+    address: std::net::SocketAddr,
 ) -> (Option<Vec<u8>>, Vec<String>) {
     use net::handshake::{Server, ServerConfig};
     use std::net::{Ipv4Addr, SocketAddrV4};
@@ -606,6 +652,7 @@ fn connect_through(
     )
     .unwrap();
     let mut config = ServerConfig::new(8);
+    config.address = Some(address);
     config.channels = gate_says_channels;
     config.gate = server_engine.connect_gate(&config.profile).map(|gate| {
         if gate_says_channels {
@@ -656,9 +703,10 @@ impl net::connect::ConnectGate for AlwaysChannels {
     fn check(
         &self,
         from: std::net::SocketAddr,
+        cx: &net::connect::AuthContext,
         fields: &net::handshake::ConnectFields,
     ) -> Result<Option<Vec<u8>>, Vec<u8>> {
-        self.0.check(from, fields)
+        self.0.check(from, cx, fields)
     }
 
     fn matches_channels(&self, _: &net::handshake::ConnectFields) -> bool {
@@ -694,5 +742,28 @@ fn a_client_shows_the_servers_reason_for_a_manifest_it_refused() {
     assert_eq!(
         connect_between(&plain, &rope_engine(2)).as_deref(),
         Some(&b"server needs plugin torque.rope 2, you do not have it"[..])
+    );
+}
+
+#[test]
+fn a_client_signs_in_for_the_server_it_dialed_and_the_challenge_it_was_given() {
+    let key = [7; 16];
+    let server = sign_in_engine(key, "");
+    // The same secret, at the address the client dialed: accepted.
+    assert_eq!(connect_between(&sign_in_engine(key, "ada"), &server), None);
+    // A server that believes it is somewhere else is not the server the ticket was made for.
+    let elsewhere = std::net::SocketAddr::from(([192, 168, 1, 21], 28_000));
+    assert_eq!(
+        connect_between_at(&sign_in_engine(key, "ada"), &server, elsewhere).as_deref(),
+        Some(&b"your sign-in was not accepted"[..])
+    );
+    // Another secret is refused, and a client that is not signed in stops with its own reason.
+    assert_eq!(
+        connect_between(&sign_in_engine([8; 16], "ada"), &server).as_deref(),
+        Some(&b"your sign-in was not accepted"[..])
+    );
+    assert_eq!(
+        connect_between(&sign_in_engine(key, ""), &server).as_deref(),
+        Some(&b"not signed in"[..])
     );
 }

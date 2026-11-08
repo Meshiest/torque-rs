@@ -170,3 +170,69 @@ impl Plugin for DuplicatePlugin {
         engine.add_server_transport("test.link", |_| Err("the second one".to_string()));
     }
 }
+
+/// A plugin that gives the engine a sign-in provider, which binds tickets to the server's address.
+#[derive(torque_engine::PluginId)]
+#[plugin(id = "test.sign-in")]
+struct SignInPlugin;
+
+impl Plugin for SignInPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine
+            .net()
+            .auth(torque_net::connect::SharedSecret::new([3; 16], "host"));
+    }
+}
+
+fn sign_in_engine() -> Engine {
+    EngineBuilder::new()
+        .add_plugins((MinimalPlugins, SignInPlugin, LinkTransportPlugin))
+        .build()
+        .expect("the engine builds")
+}
+
+fn link_at(address: [u8; 4], port: u16) -> Listen {
+    Listen::custom("test.link", LinkRequest(SocketAddr::from((address, port))))
+}
+
+fn warned(server: &GameServer) -> Vec<String> {
+    server
+        .vm()
+        .log_texts()
+        .into_iter()
+        .filter(|line| line.contains("set_public_address"))
+        .collect()
+}
+
+#[test]
+fn a_server_with_sign_in_warns_when_it_cannot_know_the_address_players_join_by() {
+    let engine = sign_in_engine();
+    // Bound to every interface, and the relay's shape (loopback, port 0): the address players dial is not the transport's.
+    for listen in [link_at([0, 0, 0, 0], 28_000), link_at([127, 0, 0, 1], 0)] {
+        let server = start(&engine, listen).expect("link");
+        let lines = warned(&server);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("refuse every sign-in"), "{}", lines[0]);
+    }
+    // A specific address with a real port, and the memory transport, are what clients dial: no warning.
+    assert!(warned(&start(&engine, link_at([192, 168, 1, 5], 28_000)).expect("link")).is_empty());
+    assert!(warned(&start(&engine, udp_loopback()).expect("udp")).is_empty());
+    assert!(warned(&start(&engine, Listen::Memory(LOCAL)).expect("memory")).is_empty());
+    // An engine with no sign-in has nothing to refuse.
+    let plain = EngineBuilder::new()
+        .add_plugins((MinimalPlugins, LinkTransportPlugin))
+        .build()
+        .expect("the engine builds");
+    assert!(warned(&start(&plain, link_at([0, 0, 0, 0], 28_000)).expect("link")).is_empty());
+}
+
+#[test]
+fn an_address_that_is_none_or_port_zero_is_not_one_players_join_by() {
+    use crate::server::sign_in_address_warning as warn;
+    let relay = SocketAddr::from(([127, 0, 0, 1], 0));
+    assert!(warn(None, false).is_some());
+    assert!(warn(Some(relay), false).is_some());
+    assert!(warn(Some(SocketAddr::from(([0, 0, 0, 0], 28_000))), false).is_some());
+    assert!(warn(Some(SocketAddr::from(([192, 168, 1, 5], 28_000))), false).is_none());
+    assert!(warn(Some(LOCAL), true).is_none());
+}

@@ -9,7 +9,7 @@
 //!
 //! ```
 //! use torque_engine::{EngineBuilder, Plugin, PluginId};
-//! use torque_net::connect::SharedSecret;
+//! use torque_net::connect::{AuthContext, SharedSecret};
 //!
 //! #[derive(PluginId)]
 //! #[plugin(id = "example.rope")]
@@ -27,7 +27,12 @@
 //! }
 //!
 //! let engine = EngineBuilder::new().add_plugins(Rope).build()?;
-//! let block = engine.connect_block()?.expect("a networked plugin sends a manifest");
+//! let cx = AuthContext {
+//!     server: "192.0.2.1:28000".parse()?,
+//!     sequence: 1,
+//!     challenge: [1, 2, 3, 4],
+//! };
+//! let block = engine.connect_block(&cx)?.expect("a networked plugin sends a manifest");
 //! let manifest = block.manifest.expect("the manifest");
 //! assert_eq!(manifest.plugins[0].id, "example.rope");
 //! assert_eq!(manifest.plugins[0].version, 2);
@@ -40,7 +45,7 @@ use std::sync::Arc;
 
 use torque_net::chunk::ChannelLimits;
 use torque_net::chunk::registry::{ChannelEntry, ChannelError, ChannelRegistry, ChunkChannel};
-use torque_net::connect::{AuthProvider, ConnectBlock, ManifestGate};
+use torque_net::connect::{AuthContext, AuthProvider, ConnectBlock, ManifestGate};
 use torque_net::manifest::Manifest;
 use torque_net::profile::HandshakeProfile;
 
@@ -77,7 +82,9 @@ pub struct NetRegistry<'a> {
 impl NetRegistry<'_> {
     /// Sets the auth provider: a client sends the ticket it makes ([`AuthProvider::ticket`]) with its connect request, and a
     /// server refuses a client whose ticket it does not verify ([`AuthProvider::verify`]), after the manifest check and before
-    /// `onConnectRequest`. One plugin sets it; a second fails the build.
+    /// `onConnectRequest`. Both get the connection's [`AuthContext`] (the server's address and the challenge), and a provider
+    /// binds its tickets to it so a ticket cannot be replayed on another server or connection. One plugin sets it; a second
+    /// fails the build.
     pub fn auth<A: AuthProvider + 'static>(&mut self, provider: A) -> &mut Self {
         self.engine.set_slot(Rc::new(AuthSlot(Arc::new(provider))));
         self
@@ -163,23 +170,24 @@ impl Engine {
     }
 
     /// What a client of this engine adds to its connect request
-    /// ([`ConnectFields::with_block`](torque_net::handshake::ConnectFields::with_block)): its manifest and a ticket from its auth
-    /// provider. `Ok(None)` for an engine that [says nothing](Engine::is_networked), whose request stays Torque's. An `Err` is
-    /// the auth provider's reason it has no ticket, or why the block cannot be sent (shown to the player; the connect does not
-    /// start).
-    pub fn connect_block(&self) -> Result<Option<ConnectBlock>, String> {
-        self.connect_block_for(&HandshakeProfile::default())
+    /// ([`ConnectFields::with_block`](torque_net::handshake::ConnectFields::with_block)) for the connection `cx` names: its
+    /// manifest and a ticket its auth provider made for that connection. `Ok(None)` for an engine that
+    /// [says nothing](Engine::is_networked), whose request stays Torque's. An `Err` is the auth provider's reason it has no
+    /// ticket, or why the block cannot be sent (shown to the player; the connect ends).
+    pub fn connect_block(&self, cx: &AuthContext) -> Result<Option<ConnectBlock>, String> {
+        self.connect_block_for(&HandshakeProfile::default(), cx)
     }
 
     /// [`Engine::connect_block`] for a game whose handshake is `profile`.
     pub fn connect_block_for(
         &self,
         profile: &HandshakeProfile,
+        cx: &AuthContext,
     ) -> Result<Option<ConnectBlock>, String> {
         if !self.is_networked() {
             return Ok(None);
         }
-        let ticket = self.auth().map(|auth| auth.ticket()).transpose()?;
+        let ticket = self.auth().map(|auth| auth.ticket(cx)).transpose()?;
         let block = ConnectBlock {
             manifest: Some(self.net_manifest(profile)),
             ticket,

@@ -263,6 +263,95 @@ fn the_digest_binds_the_key_the_address_the_port_and_the_sequence() {
     assert!(d.iter().any(|&w| w != 0) && d[0] != d[2]);
 }
 
+#[test]
+fn a_challenge_digest_is_refused_once_it_is_two_periods_old() {
+    use crate::handshake::{CHALLENGE_PERIOD_MS, challenge_digest_at};
+    let t = table();
+    let from = addr(1, 5000);
+    let period = CHALLENGE_PERIOD_MS;
+    // The challenge is answered 1 ms before an epoch ends; the request echoes what the server returned.
+    let issued = period - 1;
+    let outcome = |request_at: u32| {
+        let mut sv = server();
+        let response = reply(send(&mut sv, &t, from, &challenge_request(9), issued));
+        let (_, digest) = parse_challenge_response(&response).expect("a response");
+        let bytes = connect_request(&t, 9, digest, GAME_CONNECTION_CLASS, &standard_fields());
+        send(&mut sv, &t, from, &bytes, request_at)
+    };
+    // An honest, slow handshake (right away, across the epoch change, and in the whole next epoch) goes through.
+    for at in [issued, period + 5, 2 * period - 1] {
+        assert!(matches!(outcome(at), Handled::Request(_)), "at {at}");
+    }
+    // Two epochs on, the same digest is refused, and stays refused.
+    for at in [2 * period, 2 * period + 1, 50 * period] {
+        assert_eq!(ignored(outcome(at)), Ignore::BadDigest, "at {at}");
+    }
+    // The digest of each epoch is its own.
+    let key = KEY;
+    assert_ne!(
+        challenge_digest_at(&key, from, 9, 0),
+        challenge_digest_at(&key, from, 9, 1)
+    );
+}
+
+/// A server's challenge response for `seq` at clock reading `at`, and the connect request that echoes it.
+fn challenged(sv: &mut Server, t: &Table, from: SocketAddr, seq: u32, at: u32) -> Vec<u8> {
+    let response = reply(send(sv, t, from, &challenge_request(seq), at));
+    let (_, digest) = parse_challenge_response(&response).expect("a response");
+    connect_request(t, seq, digest, GAME_CONNECTION_CLASS, &standard_fields())
+}
+
+#[test]
+fn a_challenge_digest_from_a_wrap_of_the_clock_ago_stays_refused() {
+    let (t, from) = (table(), addr(1, 5000));
+    // The clock is 32 bits of milliseconds; the server counts its wraps, so an epoch is never reached twice. The challenge is
+    // made at `issued`, and the clock then runs through one whole wrap (2^32 ms) in steps under half a wrap, back to `issued`.
+    let issued = 5 * CHALLENGE_PERIOD_MS + 7;
+    let mut sv = server();
+    let bytes = challenged(&mut sv, &t, from, 9, issued);
+    let mut now = issued;
+    for _ in 0..4 {
+        now = now.wrapping_add(1 << 30);
+        sv.poll_timeouts(now);
+    }
+    assert_eq!(now, issued, "exactly one wrap later");
+    assert_eq!(
+        ignored(send(&mut sv, &t, from, &bytes, now)),
+        Ignore::BadDigest
+    );
+    // The digest is also refused a wrap and a period later, and a wrap less a period (when its epoch's u32 reading would match).
+    assert_eq!(
+        ignored(send(
+            &mut sv,
+            &t,
+            from,
+            &bytes,
+            now.wrapping_add(CHALLENGE_PERIOD_MS)
+        )),
+        Ignore::BadDigest
+    );
+    // The current and the previous epoch still verify, on a server that has never wrapped.
+    for at in [issued, issued + CHALLENGE_PERIOD_MS] {
+        let mut sv = server();
+        let bytes = challenged(&mut sv, &t, from, 9, issued);
+        assert!(
+            matches!(send(&mut sv, &t, from, &bytes, at), Handled::Request(_)),
+            "at {at}"
+        );
+    }
+}
+
+#[test]
+fn a_handshake_that_straddles_the_clocks_wrap_succeeds() {
+    let (t, from) = (table(), addr(1, 5000));
+    let mut sv = server();
+    let bytes = challenged(&mut sv, &t, from, 9, u32::MAX - 100);
+    assert!(matches!(
+        send(&mut sv, &t, from, &bytes, 50),
+        Handled::Request(_)
+    ));
+}
+
 // ---- codecs ---------------------------------------------------------------------------------------------------------------
 
 #[test]

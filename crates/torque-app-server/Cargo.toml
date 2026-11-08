@@ -44,5 +44,9 @@ webrtc = ["web", "torque-server/webrtc"]
 # `net::web::p2p`).
 p2p = ["webrtc", "torque-server/p2p"]
 
+[dev-dependencies]
+# A sign-in provider for the start-up warning's tests.
+torque-net = { path = "../torque-net" }
+
 [lints]
 workspace = true

@@ -7,10 +7,12 @@
 //! name, group, game string, protocol, argument count) so the hostile and reject cases are driven from here. Nothing here touches a socket or a clock:
 //! the caller passes datagrams and `now`.
 
+use std::net::SocketAddr;
+
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
 use crate::cap::{self, NET_MAX_CONNECT_ARGS};
-use crate::connect::ConnectBlock;
+use crate::connect::{AuthContext, BlockSource, ConnectBlock};
 use crate::handshake::c_string;
 use crate::handshake::{self, Accept, ConnectFields, GAME_CONNECTION_CLASS};
 use crate::huffman::Table;
@@ -81,6 +83,8 @@ pub struct Client {
     digest: Option<[u32; 4]>,
     protocol: Option<Protocol>,
     accept: Option<Accept>,
+    /// The address this client dials and what makes its connect block once the challenge response is in ([`Client::set_block_source`]).
+    block_source: Option<(SocketAddr, BlockSource)>,
 }
 
 impl Client {
@@ -97,6 +101,7 @@ impl Client {
             digest: None,
             protocol: None,
             accept: None,
+            block_source: None,
         }
     }
 
@@ -126,6 +131,7 @@ impl Client {
                 extension: false,
                 channels: false,
             }),
+            block_source: None,
         }
     }
 
@@ -182,6 +188,14 @@ impl Client {
         &mut self.fields
     }
 
+    /// Makes the connect block once the server's challenge response is in, for the connection it names ([`AuthContext`]: `server`,
+    /// the address this client dials, this client's sequence and the response's digest), instead of sending the block in
+    /// [`Client::fields_mut`]. That is how a ticket is bound to one server and one connection. A block the source refuses ends the
+    /// connect with its reason ([`ClientEvent::Rejected`], no request sent); one it makes replaces the fields' block.
+    pub fn set_block_source(&mut self, server: SocketAddr, source: BlockSource) {
+        self.block_source = Some((server, source));
+    }
+
     pub fn protocol(&self) -> Option<&Protocol> {
         self.protocol.as_ref()
     }
@@ -229,6 +243,22 @@ impl Client {
                 match types.parse_challenge_response(data) {
                     Ok((seq, digest)) if seq == self.seq => {
                         self.digest = Some(digest);
+                        if let Some((server, source)) = self.block_source.as_mut() {
+                            let cx = AuthContext {
+                                server: *server,
+                                sequence: seq,
+                                challenge: digest,
+                            };
+                            match source.make(&cx) {
+                                Ok(Some(block)) => self.fields.block = Some(Box::new(block)),
+                                Ok(None) => {}
+                                Err(why) => {
+                                    let why = crate::connect::reason(&why);
+                                    self.state = ClientState::Rejected(why.clone());
+                                    return ClientEvent::Rejected(why);
+                                }
+                            }
+                        }
                         ClientEvent::Send(self.connect_request(table, None))
                     }
                     _ => ClientEvent::Nothing,

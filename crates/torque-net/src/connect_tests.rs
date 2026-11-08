@@ -5,6 +5,14 @@ fn from() -> SocketAddr {
     SocketAddr::from(([10, 0, 0, 7], 4000))
 }
 
+fn cx() -> AuthContext {
+    AuthContext {
+        server: SocketAddr::from(([192, 0, 2, 1], 28_000)),
+        sequence: 5,
+        challenge: [1, 2, 3, 4],
+    }
+}
+
 fn server_manifest() -> Manifest {
     Manifest::new(12, 12)
         .with_plugin("torque.rope", 2)
@@ -183,7 +191,7 @@ fn the_gate_accepts_a_matching_manifest_and_refuses_a_different_one() {
         manifest: Some(server_manifest()),
         ticket: None,
     }));
-    assert_eq!(gate.check(from(), &ok), Ok(None));
+    assert_eq!(gate.check(from(), &cx(), &ok), Ok(None));
     let old = fields(Some(ConnectBlock {
         manifest: Some(
             Manifest::new(12, 12)
@@ -193,7 +201,7 @@ fn the_gate_accepts_a_matching_manifest_and_refuses_a_different_one() {
         ticket: None,
     }));
     assert_eq!(
-        gate.check(from(), &old),
+        gate.check(from(), &cx(), &old),
         Err(b"server needs plugin torque.rope 2, you have 1".to_vec())
     );
 }
@@ -202,19 +210,19 @@ fn the_gate_accepts_a_matching_manifest_and_refuses_a_different_one() {
 fn a_client_with_no_block_is_judged_as_one_with_nothing() {
     let gate = ManifestGate::new(server_manifest());
     assert_eq!(
-        gate.check(from(), &fields(None)),
+        gate.check(from(), &cx(), &fields(None)),
         Err(b"server needs plugin torque.rope 2, you do not have it".to_vec())
     );
     // A server that needs nothing takes a plain client.
     let plain = ManifestGate::new(Manifest::new(12, 12));
-    assert_eq!(plain.check(from(), &fields(None)), Ok(None));
+    assert_eq!(plain.check(from(), &cx(), &fields(None)), Ok(None));
 }
 
 #[test]
 fn the_ticket_is_checked_after_the_manifest() {
     let key = [3; 16];
     let gate = ManifestGate::new(server_manifest()).with_auth(Arc::new(SharedSecret::new(key, "")));
-    let signed = SharedSecret::new(key, "ada").ticket().unwrap();
+    let signed = SharedSecret::new(key, "ada").ticket(&cx()).unwrap();
     let with = |manifest: Manifest, ticket: Option<Vec<u8>>| {
         fields(Some(ConnectBlock {
             manifest: Some(manifest),
@@ -222,22 +230,26 @@ fn the_ticket_is_checked_after_the_manifest() {
         }))
     };
     assert_eq!(
-        gate.check(from(), &with(server_manifest(), Some(signed.clone()))),
+        gate.check(
+            from(),
+            &cx(),
+            &with(server_manifest(), Some(signed.clone()))
+        ),
         Ok(Some(b"ada".to_vec()))
     );
     // A bad build is refused for its build even with a good ticket.
     let reason = gate
-        .check(from(), &with(Manifest::new(12, 12), Some(signed)))
+        .check(from(), &cx(), &with(Manifest::new(12, 12), Some(signed)))
         .unwrap_err();
     assert!(reason.starts_with(b"server needs plugin"));
     // A good build with no ticket, or a forged one.
     assert_eq!(
-        gate.check(from(), &with(server_manifest(), None)),
+        gate.check(from(), &cx(), &with(server_manifest(), None)),
         Err(b"sign in to join this server".to_vec())
     );
-    let forged = SharedSecret::new([4; 16], "ada").ticket().unwrap();
+    let forged = SharedSecret::new([4; 16], "ada").ticket(&cx()).unwrap();
     assert_eq!(
-        gate.check(from(), &with(server_manifest(), Some(forged))),
+        gate.check(from(), &cx(), &with(server_manifest(), Some(forged))),
         Err(b"your sign-in was not accepted".to_vec())
     );
 }
@@ -254,7 +266,69 @@ fn a_reason_is_cut_at_a_character_boundary() {
 #[test]
 fn the_shared_secret_without_a_name_has_no_ticket() {
     assert_eq!(
-        SharedSecret::new([1; 16], "").ticket(),
+        SharedSecret::new([1; 16], "").ticket(&cx()),
         Err("not signed in".to_string())
     );
+}
+
+#[test]
+fn a_ticket_is_good_for_the_server_and_the_connection_it_was_made_for() {
+    let key = [3; 16];
+    let gate = ManifestGate::new(server_manifest()).with_auth(Arc::new(SharedSecret::new(key, "")));
+    let ticket = SharedSecret::new(key, "ada").ticket(&cx()).unwrap();
+    let judged = |at: &AuthContext| {
+        let block = ConnectBlock {
+            manifest: Some(server_manifest()),
+            ticket: Some(ticket.clone()),
+        };
+        gate.check(from(), at, &fields(Some(block)))
+    };
+    assert_eq!(judged(&cx()), Ok(Some(b"ada".to_vec())));
+    let refused = Err(b"your sign-in was not accepted".to_vec());
+    // Another server (another host, or the same host on another socket), another challenge, another sequence.
+    let other = |change: fn(&mut AuthContext)| {
+        let mut other = cx();
+        change(&mut other);
+        other
+    };
+    assert_eq!(
+        judged(&other(
+            |c| c.server = SocketAddr::from(([192, 0, 2, 2], 28_000))
+        )),
+        refused
+    );
+    assert_eq!(
+        judged(&other(
+            |c| c.server = SocketAddr::from(([192, 0, 2, 1], 28_001))
+        )),
+        refused
+    );
+    assert_eq!(judged(&other(|c| c.challenge[3] ^= 1)), refused);
+    assert_eq!(judged(&other(|c| c.sequence += 1)), refused);
+}
+
+#[test]
+fn a_server_that_does_not_know_its_own_address_checks_no_tickets() {
+    let key = [3; 16];
+    let unknown = AuthContext {
+        server: SocketAddr::from(([0, 0, 0, 0], 0)),
+        ..cx()
+    };
+    assert!(unknown.server_unknown());
+    let ticket = SharedSecret::new(key, "ada").ticket(&unknown).unwrap();
+    assert_eq!(
+        SharedSecret::new(key, "").verify(from(), &unknown, &ticket),
+        Err("this server cannot check sign-ins (it does not know its own address)".to_string())
+    );
+}
+
+#[test]
+fn contexts_that_differ_never_encode_alike() {
+    let base = cx();
+    let v6 = AuthContext {
+        server: SocketAddr::from(([0u16, 0, 0, 0, 0, 0xffff, 0xc000, 0x201], 28_000)),
+        ..base
+    };
+    assert_ne!(base.encode(), v6.encode());
+    assert_eq!(base.encode(), cx().encode());
 }

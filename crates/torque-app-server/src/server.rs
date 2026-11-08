@@ -134,6 +134,21 @@ pub struct GameServer {
     status_every: Option<Duration>,
 }
 
+/// The console warning for a server with an auth provider whose address cannot be what players join it by: a provider that binds
+/// tickets to the server's address ([`GameServer::set_public_address`]) refuses every sign-in when the address is unknown (none,
+/// every interface, or port 0: a relay transport reports 127.0.0.1:0). `memory` is a server on the in-memory transport, whose
+/// bound address is the one its clients dial.
+pub(crate) fn sign_in_address_warning(address: Option<SocketAddr>, memory: bool) -> Option<String> {
+    let known = address.is_some_and(|a| memory || (!a.ip().is_unspecified() && a.port() != 0));
+    if known {
+        return None;
+    }
+    let shown = address.map_or_else(|| "no address".to_string(), |a| a.to_string());
+    Some(format!(
+        "this server checks sign-ins but does not know the address players join it by ({shown}), so it will refuse every sign-in until GameServer::set_public_address is given that address (behind a NAT, or on a specific private address, it is the public one)"
+    ))
+}
+
 impl GameServer {
     /// A server over `files`, listening as `start` says, that has run `server.cs` (or the entry script `game.toml` names) and the start function and takes
     /// connections.
@@ -217,6 +232,16 @@ impl GameServer {
         if let Some(gate) = engine.connect_gate(&profile) {
             shared.borrow_mut().set_connect_gate(gate);
         }
+        // The address the socket is bound to is the one clients dial unless the host says otherwise
+        // ([`GameServer::set_public_address`]); a socket bound to every interface leaves it unknown.
+        let bound = transport.borrow().local_addr();
+        shared.borrow_mut().set_public_address(bound);
+        if engine.auth().is_some()
+            && let Some(warning) =
+                sign_in_address_warning(bound, matches!(start.listen, Listen::Memory(_)))
+        {
+            server.vm.warn(warning);
+        }
         server
             .attach_net(net.passes)
             .map_err(|e| format!("the network host: {e:?}"))?;
@@ -256,6 +281,13 @@ impl GameServer {
     /// Where the socket is bound.
     pub fn address(&self) -> Option<SocketAddr> {
         self.transport.borrow().local_addr()
+    }
+
+    /// Tells the server the address clients reach it by (its public address), which its auth provider binds tickets to: a socket
+    /// bound to every interface, a NAT or a relay hides it. A server that is never told one refuses every ticket of a provider
+    /// that binds to the address.
+    pub fn set_public_address(&self, address: Option<SocketAddr>) {
+        self.shared.borrow_mut().set_public_address(address);
     }
 
     /// The in-memory transport's other end (a server started on [`Listen::Memory`]): what a link carries to and from clients.

@@ -12,7 +12,7 @@ use torque_ghosts::tge::TgeClass;
 use torque_net::bits::BitWriter;
 use torque_net::classes::Kind;
 use torque_net::client::{Client, ClientEvent, ClientState};
-use torque_net::connect::{AuthProvider, ConnectBlock, ManifestGate, SharedSecret};
+use torque_net::connect::{AuthProvider, BlockSource, ConnectBlock, ManifestGate, SharedSecret};
 use torque_net::ghost::net_flags;
 use torque_net::handshake::ConnectFields;
 use torque_net::huffman::Table;
@@ -414,8 +414,17 @@ fn handshake(
     addr: SocketAddr,
     fields: ConnectFields,
 ) -> ClientEvent {
+    handshake_as(s, end, addr, Client::new(9, fields))
+}
+
+/// [`handshake`] for a client that is already made.
+fn handshake_as(
+    s: &mut NetServer,
+    end: &MemoryEnd,
+    addr: SocketAddr,
+    mut client: Client,
+) -> ClientEvent {
     let table = Table::torque();
-    let mut client = Client::new(9, fields);
     end.inject(addr, &client.challenge_request());
     let mut last = ClientEvent::Nothing;
     for _ in 0..6 {
@@ -449,6 +458,21 @@ fn with_manifest(manifest: Manifest, ticket: Option<Vec<u8>>) -> ConnectFields {
     })
 }
 
+/// A client that dials `dialed` and signs its ticket for `name` under `key` for the connection it gets the challenge for.
+fn signing_client(key: [u8; 16], name: &'static str, dialed: SocketAddr) -> Client {
+    let mut client = Client::new(9, ConnectFields::standard(b"", Vec::new()));
+    client.set_block_source(
+        dialed,
+        BlockSource::new(move |cx| {
+            Ok(Some(ConnectBlock {
+                manifest: Some(rope_manifest(2)),
+                ticket: Some(SharedSecret::new(key, name).ticket(cx)?),
+            }))
+        }),
+    );
+    client
+}
+
 #[test]
 fn a_mismatched_client_is_refused_before_the_scripts_see_it_and_before_any_ghost() {
     let (mut s, shared, end) = net_server();
@@ -459,15 +483,15 @@ fn a_mismatched_client_is_refused_before_the_scripts_see_it_and_before_any_ghost
     let gate =
         ManifestGate::new(rope_manifest(2)).with_auth(Arc::new(SharedSecret::new([4; 16], "")));
     shared.borrow_mut().set_connect_gate(gate);
+    shared.borrow_mut().set_public_address(Some(SERVER_ADDR));
     let addr = SocketAddr::from(([127, 0, 0, 1], 50_001));
 
     // A client with an older rope: refused with the reason, the script never asked, nothing in the table.
-    let signed = SharedSecret::new([4; 16], "ada").ticket().unwrap();
     let event = handshake(
         &mut s,
         &end,
         addr,
-        with_manifest(rope_manifest(1), Some(signed.clone())),
+        with_manifest(rope_manifest(1), Some(b"unchecked".to_vec())),
     );
     let ClientEvent::Rejected(reason) = event else {
         panic!("not refused: {event:?}")
@@ -487,12 +511,11 @@ fn a_mismatched_client_is_refused_before_the_scripts_see_it_and_before_any_ghost
     );
     // A matching client with a forged ticket: refused by the auth provider, still before the scripts.
     let addr3 = SocketAddr::from(([127, 0, 0, 1], 50_003));
-    let forged = SharedSecret::new([5; 16], "ada").ticket().unwrap();
-    let event = handshake(
+    let event = handshake_as(
         &mut s,
         &end,
         addr3,
-        with_manifest(rope_manifest(2), Some(forged)),
+        signing_client([5; 16], "ada", SERVER_ADDR),
     );
     assert!(
         matches!(&event, ClientEvent::Rejected(r) if r == b"your sign-in was not accepted"),
@@ -506,13 +529,28 @@ fn a_mismatched_client_is_refused_before_the_scripts_see_it_and_before_any_ghost
     );
     assert_eq!(shared.borrow().counters.accepted, 0);
 
+    // A ticket made for another server is refused here, whoever relays it.
+    let addr5 = SocketAddr::from(([127, 0, 0, 2], 50_005));
+    let elsewhere = SocketAddr::from(([203, 0, 113, 9], 28_000));
+    let event = handshake_as(
+        &mut s,
+        &end,
+        addr5,
+        signing_client([4; 16], "ada", elsewhere),
+    );
+    assert!(
+        matches!(&event, ClientEvent::Rejected(r) if r == b"your sign-in was not accepted"),
+        "{event:?}"
+    );
+    assert!(!lines(&s).iter().any(|l| l == "asked" || l == "connected"));
+
     // The matching client with a good ticket is accepted, and the script is asked.
     let addr4 = SocketAddr::from(([127, 0, 0, 1], 50_004));
-    let event = handshake(
+    let event = handshake_as(
         &mut s,
         &end,
         addr4,
-        with_manifest(rope_manifest(2), Some(signed)),
+        signing_client([4; 16], "ada", SERVER_ADDR),
     );
     assert!(matches!(event, ClientEvent::Accepted(_)), "{event:?}");
     assert!(lines(&s).iter().any(|l| l == "asked"));

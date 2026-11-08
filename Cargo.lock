@@ -3380,6 +3380,7 @@ dependencies = [
  "torque-game",
  "torque-mapcore",
  "torque-maps",
+ "torque-net",
  "torque-server",
  "torque-sim",
  "torque-ts-vm",

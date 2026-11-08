@@ -9,7 +9,8 @@ use std::sync::Arc;
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::client::{Client, ClientEvent};
 use torque_net::connect::{
-    AuthProvider, BLOCK_MAGIC, ConnectBlock, MAX_TICKET_BYTES, ManifestGate, SharedSecret,
+    AuthContext, AuthProvider, BLOCK_MAGIC, BlockSource, ConnectBlock, MAX_TICKET_BYTES,
+    ManifestGate, SharedSecret,
 };
 use torque_net::handshake::{
     ConnectFields, Decision, Finished, Handled, Server, ServerConfig, challenge_digest,
@@ -36,6 +37,11 @@ fn from() -> SocketAddr {
     SocketAddr::from(([10, 0, 0, 7], 4000))
 }
 
+/// The address the servers of these tests say they are at, and the address a client dials to reach them.
+fn server_addr() -> SocketAddr {
+    SocketAddr::from(([192, 0, 2, 1], 28_000))
+}
+
 fn manifest() -> Manifest {
     Manifest::new(12, 12)
         .with_plugin("torque.rope", 2)
@@ -48,6 +54,7 @@ fn server_with(gate: Option<ManifestGate>) -> Server {
     let mut config = ServerConfig::new(8);
     config.connect_requests_per_src_per_s = 100_000;
     config.gate = gate.map(|g| Arc::new(g) as _);
+    config.address = Some(server_addr());
     Server::new(config, KEY)
 }
 
@@ -74,8 +81,12 @@ enum Outcome {
 
 /// Drives a handshake of `client_fields` against `server`; `finish` is the host's decision on a request that reaches it.
 fn join(server: &mut Server, client_fields: ConnectFields, seq: u32) -> Outcome {
+    join_client(server, Client::new(seq, client_fields))
+}
+
+/// [`join`] for a client that is already made (one that makes its ticket from the challenge, say).
+fn join_client(server: &mut Server, mut client: Client) -> Outcome {
     let t = table();
-    let mut client = Client::new(seq, client_fields);
     let challenge = client.challenge_request();
     let Handled::Reply(response) = server.handle_datagram(&t, from(), &challenge, 0) else {
         panic!("no challenge response")
@@ -342,18 +353,35 @@ fn a_garbled_or_oversize_block_is_refused_with_a_reason_not_dropped() {
     assert!(server.is_empty());
 }
 
-#[test]
-fn the_ticket_is_verified_before_the_host_sees_the_request() {
-    let secret = [9; 16];
-    let gate = ManifestGate::new(manifest()).with_auth(Arc::new(SharedSecret::new(secret, "")));
-    let mut server = server_with(Some(gate));
-    let signed = |name: &str, key: [u8; 16]| ConnectBlock {
-        manifest: Some(manifest()),
-        ticket: Some(SharedSecret::new(key, name).ticket().unwrap()),
-    };
-    // A good ticket reaches the host, with the identity attached.
+/// A client that dials `dialed` and makes a block with a ticket for `name` under `key` from the challenge it is given.
+fn signing_client(seq: u32, key: [u8; 16], name: &'static str, dialed: SocketAddr) -> Client {
+    let mut client = Client::new(seq, fields(None));
+    client.set_block_source(
+        dialed,
+        BlockSource::new(move |cx| {
+            Ok(Some(ConnectBlock {
+                manifest: Some(manifest()),
+                ticket: Some(SharedSecret::new(key, name).ticket(cx)?),
+            }))
+        }),
+    );
+    client
+}
+
+/// A server that holds clients to `manifest()` and verifies tickets under `key`, says it is at `address` and draws its challenges
+/// with `server_key`.
+fn secret_server(key: [u8; 16], address: SocketAddr, server_key: [u8; 16]) -> Server {
+    let gate = ManifestGate::new(manifest()).with_auth(Arc::new(SharedSecret::new(key, "")));
+    let mut config = ServerConfig::new(8);
+    config.connect_requests_per_src_per_s = 100_000;
+    config.gate = Some(Arc::new(gate));
+    config.address = Some(address);
+    Server::new(config, server_key)
+}
+
+/// The connect request `client` sends `server` once it has the challenge response.
+fn connect_datagram(server: &mut Server, client: &mut Client) -> Vec<u8> {
     let t = table();
-    let mut client = Client::new(5, fields(Some(signed("ada", secret))));
     let challenge = client.challenge_request();
     let Handled::Reply(response) = server.handle_datagram(&t, from(), &challenge, 0) else {
         panic!("challenge")
@@ -361,6 +389,17 @@ fn the_ticket_is_verified_before_the_host_sees_the_request() {
     let ClientEvent::Send(connect) = client.on_datagram(&t, &response, 0) else {
         panic!("connect")
     };
+    connect
+}
+
+#[test]
+fn the_ticket_is_verified_before_the_host_sees_the_request() {
+    let secret = [9; 16];
+    let mut server = secret_server(secret, server_addr(), KEY);
+    // A good ticket reaches the host, with the identity attached.
+    let t = table();
+    let mut client = signing_client(5, secret, "ada", server_addr());
+    let connect = connect_datagram(&mut server, &mut client);
     let Handled::Request(request) = server.handle_datagram(&t, from(), &connect, 0) else {
         panic!("a verified request reaches the host")
     };
@@ -374,10 +413,122 @@ fn the_ticket_is_verified_before_the_host_sees_the_request() {
         Some(&b"ada"[..])
     );
     // A forged ticket, and no ticket, are refused with the provider's reason.
-    let forged = refused(join(&mut server, fields(Some(signed("ada", [1; 16]))), 6));
+    let forged = refused(join_client(
+        &mut server,
+        signing_client(6, [1; 16], "ada", server_addr()),
+    ));
     assert_eq!(forged, "your sign-in was not accepted");
     let none = refused(join(&mut server, fields(Some(block(manifest()))), 7));
     assert_eq!(none, "sign in to join this server");
+}
+
+#[test]
+fn a_ticket_for_another_server_is_refused_even_when_a_server_relays_it() {
+    let secret = [9; 16];
+    let (a, b) = (
+        SocketAddr::from(([198, 51, 100, 1], 28_000)),
+        SocketAddr::from(([198, 51, 100, 2], 28_000)),
+    );
+    let t = table();
+    // The client dials A. A is hostile: it asks B for the challenge and hands B's answer to the client, then passes the client's
+    // request on to B, which shares the secret. The challenge is B's own, so only the address tells the ticket is not for B.
+    let mut server_b = secret_server(secret, b, KEY);
+    let mut client = signing_client(5, secret, "ada", a);
+    let connect = connect_datagram(&mut server_b, &mut client);
+    let reason = refused(answer(&mut server_b, client, &connect));
+    assert_eq!(reason, "your sign-in was not accepted");
+    assert!(server_b.is_empty());
+
+    // A relay that did not get B's challenge sends B a digest B never made: silence.
+    let mut server_a = secret_server(secret, a, [8; 16]);
+    let mut client = signing_client(5, secret, "ada", a);
+    let connect = connect_datagram(&mut server_a, &mut client);
+    assert!(matches!(
+        server_b.handle_datagram(&t, from(), &connect, 0),
+        Handled::Ignored(_)
+    ));
+    // And the server it was made for takes it.
+    assert!(matches!(
+        server_a.handle_datagram(&t, from(), &connect, 0),
+        Handled::Request(_)
+    ));
+}
+
+#[test]
+fn a_ticket_replayed_on_another_connection_is_refused() {
+    let secret = [9; 16];
+    let t = table();
+    let mut server = secret_server(secret, server_addr(), KEY);
+    // The first connection's request, as a sniffer sees it.
+    let mut client = signing_client(5, secret, "ada", server_addr());
+    let connect = connect_datagram(&mut server, &mut client);
+    let sniffed = torque_net::client::parse_connect_request(
+        &t,
+        &torque_net::profile::HandshakeProfile::default(),
+        &connect,
+    )
+    .expect("a request")
+    .fields
+    .block
+    .expect("a block");
+    assert!(matches!(
+        server.handle_datagram(&t, from(), &connect, 0),
+        Handled::Request(_)
+    ));
+
+    // A new connection from the same address (another sequence) carrying that ticket: refused.
+    let replay = Client::new(6, fields(Some((*sniffed).clone())));
+    let again = refused(join_client(&mut server, replay));
+    assert_eq!(again, "your sign-in was not accepted");
+
+    // The same sequence from another source address has another challenge: refused too.
+    let other = SocketAddr::from(([10, 0, 0, 8], 4000));
+    let mut replay = Client::new(5, fields(Some((*sniffed).clone())));
+    let challenge = replay.challenge_request();
+    let Handled::Reply(response) = server.handle_datagram(&t, other, &challenge, 0) else {
+        panic!("challenge")
+    };
+    let ClientEvent::Send(connect) = replay.on_datagram(&t, &response, 0) else {
+        panic!("connect")
+    };
+    let Handled::Reply(reject) = server.handle_datagram(&t, other, &connect, 0) else {
+        panic!("a reject")
+    };
+    let (_, reason) = torque_net::handshake::HandshakeTypes::TORQUE
+        .parse_reject(&t, &reject)
+        .expect("a reject");
+    assert_eq!(reason, b"your sign-in was not accepted");
+}
+
+#[test]
+fn a_provider_that_cannot_make_a_ticket_ends_the_connect_with_its_reason() {
+    let t = table();
+    let mut server = secret_server([9; 16], server_addr(), KEY);
+    let mut client = signing_client(5, [9; 16], "", server_addr());
+    let challenge = client.challenge_request();
+    let Handled::Reply(response) = server.handle_datagram(&t, from(), &challenge, 0) else {
+        panic!("challenge")
+    };
+    let ClientEvent::Rejected(reason) = client.on_datagram(&t, &response, 0) else {
+        panic!("the client refuses to connect without a ticket")
+    };
+    assert_eq!(reason, b"not signed in");
+    assert!(server.is_empty());
+}
+
+#[test]
+fn a_server_never_told_its_address_checks_no_tickets() {
+    let secret = [9; 16];
+    let mut server = secret_server(secret, server_addr(), KEY);
+    server.config_mut().address = None;
+    let reason = refused(join_client(
+        &mut server,
+        signing_client(5, secret, "ada", server_addr()),
+    ));
+    assert_eq!(
+        reason,
+        "this server cannot check sign-ins (it does not know its own address)"
+    );
 }
 
 /// A provider that counts its verifications and accepts everyone.
@@ -385,11 +536,16 @@ fn the_ticket_is_verified_before_the_host_sees_the_request() {
 struct Counting(std::sync::atomic::AtomicUsize);
 
 impl AuthProvider for Counting {
-    fn ticket(&self) -> Result<Vec<u8>, String> {
+    fn ticket(&self, _cx: &AuthContext) -> Result<Vec<u8>, String> {
         Ok(b"t".to_vec())
     }
 
-    fn verify(&self, _from: SocketAddr, _ticket: &[u8]) -> Result<Vec<u8>, String> {
+    fn verify(
+        &self,
+        _from: SocketAddr,
+        _cx: &AuthContext,
+        _ticket: &[u8],
+    ) -> Result<Vec<u8>, String> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(b"who".to_vec())
     }
@@ -399,12 +555,12 @@ impl AuthProvider for Counting {
 struct Shared(Arc<Counting>);
 
 impl AuthProvider for Shared {
-    fn ticket(&self) -> Result<Vec<u8>, String> {
-        self.0.ticket()
+    fn ticket(&self, cx: &AuthContext) -> Result<Vec<u8>, String> {
+        self.0.ticket(cx)
     }
 
-    fn verify(&self, from: SocketAddr, ticket: &[u8]) -> Result<Vec<u8>, String> {
-        self.0.verify(from, ticket)
+    fn verify(&self, from: SocketAddr, cx: &AuthContext, ticket: &[u8]) -> Result<Vec<u8>, String> {
+        self.0.verify(from, cx, ticket)
     }
 }
 
@@ -455,11 +611,16 @@ fn a_request_the_server_would_drop_anyway_costs_no_verification() {
 struct Wordy;
 
 impl AuthProvider for Wordy {
-    fn ticket(&self) -> Result<Vec<u8>, String> {
+    fn ticket(&self, _cx: &AuthContext) -> Result<Vec<u8>, String> {
         Ok(Vec::new())
     }
 
-    fn verify(&self, _from: SocketAddr, _ticket: &[u8]) -> Result<Vec<u8>, String> {
+    fn verify(
+        &self,
+        _from: SocketAddr,
+        _cx: &AuthContext,
+        _ticket: &[u8],
+    ) -> Result<Vec<u8>, String> {
         Err("no ".repeat(300))
     }
 }

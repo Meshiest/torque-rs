@@ -8,7 +8,8 @@
 //! 32-bit words, strings are the Huffman form without the packet string buffer (at most 255 bytes).
 //!
 //! **No state before the digest returns.** A challenge request stores nothing: the reply carries a keyed hash (SipHash-2-4 under a
-//! 128-bit key the caller draws from the OS, two runs for 128 bits) of the source address, port and the client's sequence. A connect
+//! 128-bit key the caller draws from the OS, two runs for 128 bits) of the source address, port, the client's sequence and a time epoch
+//! ([`CHALLENGE_PERIOD_MS`]; a digest verifies in its epoch and the next, so it lives one to two periods). A connect
 //! request is looked at only after its digest verifies. The per-address and global challenge counters are bounded
 //! ([`NET_LIMITER_ENTRIES`]) and forget old entries. The challenge digest of a standard server is opaque to the client and is not copied.
 //!
@@ -28,7 +29,7 @@
 //! Logic, Inc.); the code here is this crate's own.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use crate::NetError;
@@ -39,7 +40,7 @@ use crate::cap::{
     NET_LIMITER_ENTRIES, NET_MAX_CONNECT_ARGS, NET_MAX_DATAGRAM, NET_MAX_PENDING_CONNECTS,
     NET_PACKETS_PER_CONN_PER_S, NET_PENDING_PER_ADDR, NET_PENDING_TIMEOUT_MS, NET_STRING_BYTES,
 };
-use crate::connect::{ConnectBlock, ConnectGate};
+use crate::connect::{AuthContext, ConnectBlock, ConnectGate};
 use crate::huffman::Table;
 use crate::profile::{DEFAULT_GHOST_LIMIT, HandshakeProfile};
 use crate::protocol::{Dropped, Protocol, RateConfig, Received, Role, SendPacing, Timeout};
@@ -137,8 +138,20 @@ pub fn siphash24(key: &[u8; 16], data: &[u8]) -> u64 {
     v[0] ^ v[1] ^ v[2] ^ v[3]
 }
 
-/// The challenge digest: four words, the keyed hash of the source address, port and the client's sequence.
+/// How long a challenge digest stays in one epoch (milliseconds on the caller's clock, which wraps every 2^32 ms: the server
+/// counts the wraps itself, so an epoch never comes round again). A digest made in one epoch verifies in it and in the next, so a
+/// digest lives between one and two periods and one older than that is refused, whatever the source. The clients only echo the
+/// digest, so the period is the server's own business.
+pub const CHALLENGE_PERIOD_MS: u32 = 120_000;
+
+/// The challenge digest of epoch 0 ([`challenge_digest_at`]).
 pub fn challenge_digest(key: &[u8; 16], from: SocketAddr, seq: u32) -> [u32; 4] {
+    challenge_digest_at(key, from, seq, 0)
+}
+
+/// The challenge digest: four words, the keyed hash of the source address, port, the client's sequence and the epoch (the
+/// caller's clock over [`CHALLENGE_PERIOD_MS`]).
+pub fn challenge_digest_at(key: &[u8; 16], from: SocketAddr, seq: u32, epoch: u64) -> [u32; 4] {
     let mut data = Vec::with_capacity(32);
     data.push(0);
     match from.ip() {
@@ -153,6 +166,7 @@ pub fn challenge_digest(key: &[u8; 16], from: SocketAddr, seq: u32) -> [u32; 4] 
     }
     data.extend_from_slice(&from.port().to_le_bytes());
     data.extend_from_slice(&seq.to_le_bytes());
+    data.extend_from_slice(&epoch.to_le_bytes());
     let a = siphash24(key, &data);
     data[0] = 1;
     let b = siphash24(key, &data);
@@ -495,6 +509,10 @@ pub struct ServerConfig {
     /// A judgment of every request that passed the standard checks, before the host's scripts see it ([`ConnectGate`]); `None`
     /// is Torque's server, which reads nothing after the arguments.
     pub gate: Option<Arc<dyn ConnectGate>>,
+    /// The address clients reach this server by (its public address: a socket bound to every interface, a NAT or a relay hides it),
+    /// which the gate's auth provider binds tickets to ([`AuthContext::server`]). `None` when the host was never told one: a
+    /// provider that binds to the address then refuses every ticket.
+    pub address: Option<SocketAddr>,
     /// The host has the bulk channels' layer installed: a client the gate says has the same channels
     /// ([`ConnectGate::matches_channels`]) gets the accept's channels word ([`CHANNELS_ACCEPT_WORD`]). Off, no accept carries it.
     pub channels: bool,
@@ -521,6 +539,7 @@ impl ServerConfig {
             packet_bytes: None,
             local_packet_bytes: None,
             gate: None,
+            address: None,
             channels: false,
         }
     }
@@ -803,6 +822,10 @@ pub struct Server {
     per_addr: SourceLimiter,
     replies: RateWindow,
     verified: SourceLimiter,
+    /// The caller's clock counted past the 32-bit clock's wraps, starting at the first time the server was given (see
+    /// [`Server::epoch`]).
+    clock: u64,
+    last_now: Option<u32>,
 }
 
 impl Server {
@@ -817,7 +840,30 @@ impl Server {
             per_addr: SourceLimiter::default(),
             replies: RateWindow::default(),
             verified: SourceLimiter::default(),
+            clock: 0,
+            last_now: None,
         }
+    }
+
+    /// The challenge epoch at `now`: the caller's 32-bit clock is unwrapped into a 64-bit one that only goes forward (a step
+    /// back of under half a wrap is a clock that is not quite monotonic and is ignored; a step forward of under half a wrap is
+    /// time passing), so an epoch is never reached twice and a digest from before a wrap stays refused. Every datagram and
+    /// every [`Server::poll_timeouts`] pass moves it, so a host that calls at least once in 24 days never loses a wrap.
+    fn epoch(&mut self, now: u32) -> u64 {
+        match self.last_now {
+            None => {
+                self.clock = u64::from(now);
+                self.last_now = Some(now);
+            }
+            Some(last) => {
+                let step = now.wrapping_sub(last);
+                if step < 1 << 31 {
+                    self.clock += u64::from(step);
+                    self.last_now = Some(now);
+                }
+            }
+        }
+        self.clock / u64::from(CHALLENGE_PERIOD_MS)
     }
 
     pub fn config(&self) -> &ServerConfig {
@@ -949,7 +995,8 @@ impl Server {
         {
             return Handled::Ignored(Ignore::RateLimited);
         }
-        let digest = challenge_digest(&self.key, from, seq);
+        let epoch = self.epoch(now);
+        let digest = challenge_digest_at(&self.key, from, seq, epoch);
         Handled::Reply(self.config.profile.types.challenge_response(seq, digest))
     }
 
@@ -974,12 +1021,17 @@ impl Server {
                 Err(_) => return Handled::Ignored(Ignore::Malformed),
             }
         }
-        let expect = challenge_digest(&self.key, from, seq);
-        let diff = digest
-            .iter()
-            .zip(&expect)
-            .fold(0u32, |acc, (a, b)| acc | (a ^ b));
-        if diff != 0 {
+        // The current epoch's digest or the last one's (a handshake that straddles a change still succeeds); both are compared in full.
+        let epoch = self.epoch(now);
+        let differs = |epoch| {
+            let expect = challenge_digest_at(&self.key, from, seq, epoch);
+            digest
+                .iter()
+                .zip(&expect)
+                .fold(0u32, |acc, (a, b)| acc | (a ^ b))
+        };
+        let (now_diff, last_diff) = (differs(epoch), differs(epoch.wrapping_sub(1)));
+        if now_diff != 0 && last_diff != 0 {
             return Handled::Ignored(Ignore::BadDigest);
         }
         if !self
@@ -1053,7 +1105,20 @@ impl Server {
 
         // The gate (and an auth provider's check in it) runs last: a request the table could not take anyway, or one over a
         // source's pending limit, never costs the server a verification.
-        let identity = match self.config.gate.as_ref().map(|g| g.check(from, &fields)) {
+        let cx = AuthContext {
+            server: self
+                .config
+                .address
+                .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))),
+            sequence: seq,
+            challenge: digest,
+        };
+        let identity = match self
+            .config
+            .gate
+            .as_ref()
+            .map(|g| g.check(from, &cx, &fields))
+        {
             None => None,
             Some(Ok(identity)) => identity,
             Some(Err(reason)) => {
@@ -1276,6 +1341,7 @@ impl Server {
 
     /// The time pass: pings for idle connections, and the connections that timed out or never spoke, which leave the table.
     pub fn poll_timeouts(&mut self, now: u32) -> Vec<TimeoutEvent> {
+        self.epoch(now);
         let mut events = Vec::new();
         let mut gone = Vec::new();
         for conn in self.conns.values_mut() {

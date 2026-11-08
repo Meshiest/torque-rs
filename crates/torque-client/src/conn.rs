@@ -295,6 +295,8 @@ pub struct Connect {
     pub password: Vec<u8>,
     /// The connect sequence (0 for a local connection).
     pub seq: u32,
+    /// The address dialed ([`LOCAL_ADDR`] for a local connection), which a ticket is made for.
+    pub server: SocketAddrV4,
     /// The connection object (a game keeps its own settings of it).
     pub obj: ObjId,
     /// Where the connection's record of its datagrams goes, when the host keeps one.
@@ -1619,6 +1621,7 @@ pub fn connect<G: ConnGame>(
         args: connect_args,
         password: args.password.clone(),
         seq: connect_seq(vm, obj),
+        server,
         obj,
         relay,
         local: None,
@@ -1750,11 +1753,16 @@ fn connect_local<G: ConnGame>(
     };
     let relay = relay_file(client);
     let render = client_game(vm).renderer();
+    let server = match LOCAL_ADDR {
+        SocketAddr::V4(v4) => v4,
+        SocketAddr::V6(_) => SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
+    };
     let start = Connect {
         link: Box::new(link),
         args: connect_args,
         password: args.password.clone(),
         seq: 0,
+        server,
         obj,
         relay,
         local: Some(accept),
@@ -1765,10 +1773,6 @@ fn connect_local<G: ConnGame>(
         Err(e) => return engine_failure::<G>(vm, obj, &e),
     };
     net.borrow_mut().local_inbox = Some(Rc::clone(&inbox));
-    let server = match LOCAL_ADDR {
-        SocketAddr::V4(v4) => v4,
-        SocketAddr::V6(_) => SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
-    };
     {
         let mut st = client.borrow_mut();
         install_conn(

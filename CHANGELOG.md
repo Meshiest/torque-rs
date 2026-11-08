@@ -94,7 +94,15 @@ different.
   bounded and the decoder is fuzzed.
 - `torque-engine`: `engine.net().auth(provider)` (`AuthProvider`: the client makes a ticket, the server verifies it, after
   the manifest check and before `onConnectRequest`; a test provider, `SharedSecret`), and `engine.net()` entries for the
-  names the manifest lists.
+  names the manifest lists. A ticket is made after the server's challenge response arrives and is bound to one server and
+  one connection (`AuthContext`: the address the client dialed and the challenge), so a server that relays it, or anyone
+  who sniffs it, cannot use it elsewhere. A server tells its provider its own address with
+  `GameServer::set_public_address` (by default the address it is bound to): behind a NAT, or bound to a private address
+  players do not dial, the public address must be set, and a server that can tell it does not know one (bound to every
+  interface, port 0, a relay) warns at start-up that it will refuse every sign-in. The handshake's challenge digest now
+  changes every two minutes (the current and the previous one verify), so a sniffed connect request stops working for
+  anyone after two to four minutes; within that window an on-path attacker who forges the client's address can still replay
+  it, which `AuthContext` documents.
 
 #### Gameplay
 

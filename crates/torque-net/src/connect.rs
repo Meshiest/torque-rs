@@ -16,9 +16,16 @@
 //!
 //! **Order of the checks** (a gate's, [`ManifestGate::check`]): the manifest first, then the ticket. The server never runs an
 //! auth provider for a client whose build it already refuses.
+//!
+//! **A ticket is for one server and one connection.** The client makes its ticket after the server's challenge response arrives
+//! (a server-chosen value comes back before the connect request goes out, so the request's bytes up to the block are Torque's own),
+//! and hands its provider an [`AuthContext`]: the address it dialed and the challenge. The server rebuilds the same context from
+//! the request and its own address ([`crate::handshake::ServerConfig::address`]) and hands it to the provider's check. A provider
+//! that binds its tickets to the context cannot be replayed: a server that relays a client's ticket to another server fails there
+//! (another address, another challenge), and a sniffed ticket fails on any other connection.
 
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use crate::NetError;
@@ -173,11 +180,101 @@ impl ConnectBlock {
     }
 }
 
+/// What a ticket is made for: the server a client dials and the connection it makes. The client builds it from the address it
+/// dialed and the server's challenge response, the server from its own address and the request's digest, so both sides hold the
+/// same value exactly when the ticket was made for this server and this connection.
+///
+/// - `server` is the address clients reach the server by. On the client it is the address it dialed. On the server it is
+///   [`ServerConfig::address`](crate::handshake::ServerConfig::address), which a host sets to its public address (a socket bound
+///   to every interface, a NAT or a relay hides the address clients dial, so a server cannot always read it off its socket). A
+///   server that was never told one passes the unspecified address with port 0, and a provider that binds to `server` must then
+///   refuse ([`SharedSecret`] does): a ticket that names no server could be taken to any.
+/// - `sequence` and `challenge` are the connect's sequence and the keyed challenge digest the server returned for it. The digest
+///   is the server's own keyed hash of the client's source address, the sequence and a time epoch, so another server's digest
+///   differs, and a connection from another source address or with another sequence gets another one. The client never sees
+///   the key, so it cannot make the digest of a connection it does not have.
+///
+///   What this does not stop: the digest is not a one-time value. A connect request that is sniffed on the path can be sent
+///   again with the client's source address forged, by anyone who can forge it, for as long as its digest verifies (between
+///   [`CHALLENGE_PERIOD_MS`](crate::handshake::CHALLENGE_PERIOD_MS) and twice that) and a server holding the same sequence is
+///   not already serving that address. It opens a connection nobody can use (the replies go to the address that was forged), as the identity of that client. After
+///   the window the digest is refused. A provider that needs more (a ticket that works once) must keep that state itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthContext {
+    /// The address clients reach the server by.
+    pub server: SocketAddr,
+    /// The connect request's sequence.
+    pub sequence: u32,
+    /// The challenge digest the server returned for that sequence.
+    pub challenge: [u32; 4],
+}
+
+impl AuthContext {
+    /// The context as bytes, for a provider that signs it: the same bytes on both sides for the same context, and no two different
+    /// contexts share them.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(40);
+        match self.server.ip() {
+            IpAddr::V4(ip) => {
+                out.push(4);
+                out.extend_from_slice(&ip.octets());
+            }
+            IpAddr::V6(ip) => {
+                out.push(6);
+                out.extend_from_slice(&ip.octets());
+            }
+        }
+        out.extend_from_slice(&self.server.port().to_le_bytes());
+        out.extend_from_slice(&self.sequence.to_le_bytes());
+        for word in self.challenge {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out
+    }
+
+    /// Whether the server's address is unknown (it was never told one).
+    pub fn server_unknown(&self) -> bool {
+        self.server.ip().is_unspecified()
+    }
+}
+
+/// Makes a client's connect block once the server's challenge response is in, when the block holds a ticket for the connection
+/// ([`crate::client::Client::set_block_source`]). `Ok(None)` sends no block; an `Err` is the reason the connect ends (shown to the
+/// player).
+pub struct BlockSource(Box<MakeBlock>);
+
+type MakeBlock = dyn FnMut(&AuthContext) -> Result<Option<ConnectBlock>, String>;
+
+impl BlockSource {
+    /// A source that calls `make` for each connection.
+    pub fn new(
+        make: impl FnMut(&AuthContext) -> Result<Option<ConnectBlock>, String> + 'static,
+    ) -> BlockSource {
+        BlockSource(Box::new(make))
+    }
+
+    /// The block for the connection `cx` names.
+    pub fn make(&mut self, cx: &AuthContext) -> Result<Option<ConnectBlock>, String> {
+        (self.0)(cx)
+    }
+}
+
+impl fmt::Debug for BlockSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("BlockSource")
+    }
+}
+
 /// A server's judgment of a connect request, made before its scripts see the request.
 pub trait ConnectGate: fmt::Debug + Send + Sync {
     /// `Ok` accepts the request (the identity an auth provider verified, if any); `Err` refuses it with the reason the client
-    /// shows (cut at 255 bytes on the wire).
-    fn check(&self, from: SocketAddr, fields: &ConnectFields) -> Result<Option<Vec<u8>>, Vec<u8>>;
+    /// shows (cut at 255 bytes on the wire). `cx` is the connection the request belongs to ([`AuthContext`]).
+    fn check(
+        &self,
+        from: SocketAddr,
+        cx: &AuthContext,
+        fields: &ConnectFields,
+    ) -> Result<Option<Vec<u8>>, Vec<u8>>;
 
     /// Whether the request this gate accepted lists bulk channels and they are this server's own (the same names), so the
     /// server may write the channels' section for the connection and tell the client so in its accept. The built-in
@@ -191,15 +288,21 @@ pub trait ConnectGate: fmt::Debug + Send + Sync {
 /// Auth tickets: the client's half makes one for the server it connects to, the server's half verifies it. A game supplies one
 /// provider type used on both sides (a Steam session ticket, a signed token, a shared secret); the engine's
 /// `net().auth(provider)` registers it.
+///
+/// **The contract.** A ticket must be good for one server and one connection and nothing else: a provider binds it to the
+/// [`AuthContext`] (sign `cx.encode()`, or put `cx`'s address and challenge in the token), or uses its platform's own audience or
+/// identity field for the server (a Steam ticket names the server it was made for) and checks it. `verify` must then refuse a
+/// ticket whose binding is not the `cx` it is given. A provider that ignores `cx` lets any server a client joins replay the
+/// client's ticket to any other server that accepts the same credentials.
 pub trait AuthProvider: fmt::Debug + Send + Sync {
-    /// The client's ticket for a new connection (at most [`MAX_TICKET_BYTES`]). An `Err` is why there is none (not signed in),
-    /// shown to the player; the connect does not start.
-    fn ticket(&self) -> Result<Vec<u8>, String>;
+    /// The client's ticket for the connection `cx` names (at most [`MAX_TICKET_BYTES`]). An `Err` is why there is none (not
+    /// signed in), shown to the player; the connect ends there.
+    fn ticket(&self, cx: &AuthContext) -> Result<Vec<u8>, String>;
 
-    /// The server's check of a ticket from `from` (an empty one when the client sent none): the identity it stands for, or the
-    /// reason it is refused (cut at 255 bytes on the wire). A slow check belongs to a provider that answers from a cache; this
-    /// runs inside the handshake.
-    fn verify(&self, from: SocketAddr, ticket: &[u8]) -> Result<Vec<u8>, String>;
+    /// The server's check of a ticket from `from` for the connection `cx` names (an empty ticket when the client sent none): the
+    /// identity it stands for, or the reason it is refused (cut at 255 bytes on the wire). A slow check belongs to a provider
+    /// that answers from a cache; this runs inside the handshake.
+    fn verify(&self, from: SocketAddr, cx: &AuthContext, ticket: &[u8]) -> Result<Vec<u8>, String>;
 }
 
 /// The standard gate: the server's manifest the client's must satisfy, then the auth provider's verdict.
@@ -251,7 +354,12 @@ impl ConnectGate for ManifestGate {
             && theirs.is_some_and(|t| self.manifest.channels.same_as(t))
     }
 
-    fn check(&self, from: SocketAddr, fields: &ConnectFields) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    fn check(
+        &self,
+        from: SocketAddr,
+        cx: &AuthContext,
+        fields: &ConnectFields,
+    ) -> Result<Option<Vec<u8>>, Vec<u8>> {
         let block = fields.block.as_ref();
         let bare;
         let theirs = match block.and_then(|b| b.manifest.as_ref()) {
@@ -268,7 +376,7 @@ impl ConnectGate for ManifestGate {
             None => Ok(None),
             Some(auth) => {
                 let ticket = block.and_then(|b| b.ticket.as_deref()).unwrap_or_default();
-                auth.verify(from, ticket)
+                auth.verify(from, cx, ticket)
                     .map(Some)
                     .map_err(|why| reason(&why))
             }
@@ -276,11 +384,16 @@ impl ConnectGate for ManifestGate {
     }
 }
 
-/// A provider for tests and private games only: the ticket is a name and a keyed hash of it under a shared 128-bit secret, so a
-/// server holding the secret accepts a name it signed and nothing else. The identity is the name.
+/// A provider for tests and private games only: the ticket is a name and a keyed hash of the name and the connection it is for
+/// ([`AuthContext`]: the server's address and the challenge) under a shared 128-bit secret, so a server holding the secret accepts
+/// a name it signed for this server and this connection and nothing else. The identity is the name.
 ///
-/// It is not for a public server. The ticket is not bound to the server or to the client's address, so anyone who sniffs one can
-/// replay it (as that name) to any server with the same secret, and every server and client holds the secret itself.
+/// A ticket made for one server is refused by another (its address differs), and a ticket made for one connection is refused on
+/// another (its challenge differs), so a server that relays what a client sent it, or anyone who sniffs a ticket, gets nothing
+/// that works elsewhere. A server that was never told its own address ([`AuthContext::server_unknown`]) refuses every ticket.
+///
+/// It is still not for a public server: every server and client holds the secret itself, so anyone with a copy can make a ticket
+/// for any name.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SharedSecret {
     key: [u8; 16],
@@ -303,25 +416,44 @@ impl SharedSecret {
             name: name.into(),
         }
     }
+
+    /// The keyed hash of `name` for the connection `cx` names (the length first, so a name and a context cannot trade bytes).
+    fn mac(&self, name: &[u8], cx: &AuthContext) -> [u8; 8] {
+        let mut data = Vec::with_capacity(name.len() + 48);
+        data.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        data.extend_from_slice(name);
+        data.extend_from_slice(&cx.encode());
+        siphash24(&self.key, &data).to_le_bytes()
+    }
 }
 
 impl AuthProvider for SharedSecret {
-    fn ticket(&self) -> Result<Vec<u8>, String> {
+    fn ticket(&self, cx: &AuthContext) -> Result<Vec<u8>, String> {
         if self.name.is_empty() {
             return Err("not signed in".to_string());
         }
         let mut ticket = self.name.clone();
-        ticket.extend_from_slice(&siphash24(&self.key, &self.name).to_le_bytes());
+        ticket.extend_from_slice(&self.mac(&self.name, cx));
         Ok(ticket)
     }
 
-    fn verify(&self, _from: SocketAddr, ticket: &[u8]) -> Result<Vec<u8>, String> {
+    fn verify(
+        &self,
+        _from: SocketAddr,
+        cx: &AuthContext,
+        ticket: &[u8],
+    ) -> Result<Vec<u8>, String> {
         let Some(split) = ticket.len().checked_sub(8) else {
             return Err("sign in to join this server".to_string());
         };
+        if cx.server_unknown() {
+            return Err(
+                "this server cannot check sign-ins (it does not know its own address)".to_string(),
+            );
+        }
         let (name, mac) = ticket.split_at(split);
         // Every byte is compared, whatever the first difference: the check takes the same time for a near miss as for a wild one.
-        let want = siphash24(&self.key, name).to_le_bytes();
+        let want = self.mac(name, cx);
         let diff = mac.iter().zip(&want).fold(0u8, |acc, (a, b)| acc | (a ^ b));
         if name.is_empty() || diff != 0 {
             return Err("your sign-in was not accepted".to_string());

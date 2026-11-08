@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use torque_net::client::{Client, ClientEvent};
-use torque_net::connect::{ConnectBlock, ConnectGate, ManifestGate};
+use torque_net::connect::{AuthContext, ConnectBlock, ConnectGate, ManifestGate};
 use torque_net::handshake::{
     CHANNELS_ACCEPT_WORD, ConnectFields, Decision, Finished, Handled, Server, ServerConfig,
     parse_accept,
@@ -44,8 +44,13 @@ fn without_channels() -> Manifest {
 struct Blind(ManifestGate);
 
 impl ConnectGate for Blind {
-    fn check(&self, from: SocketAddr, fields: &ConnectFields) -> Result<Option<Vec<u8>>, Vec<u8>> {
-        self.0.check(from, fields)
+    fn check(
+        &self,
+        from: SocketAddr,
+        cx: &AuthContext,
+        fields: &ConnectFields,
+    ) -> Result<Option<Vec<u8>>, Vec<u8>> {
+        self.0.check(from, cx, fields)
     }
 }
 

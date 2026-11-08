@@ -45,7 +45,7 @@ use net::NetError;
 use net::bits::BitReader;
 use net::classes::{Kind, NetClasses};
 use net::client::{Client, ClientEvent as Handshake};
-use net::connect::ConnectBlock;
+use net::connect::BlockSource;
 use net::control::{ClientBlock, ControlSection, ServerHead};
 use net::events::{
     ConnectionMessage, EventCtx, EventIds, EventQueue, EventReceiver, EventRegistry, EventUnpacker,
@@ -450,8 +450,9 @@ impl EventUnpacker for Unpacker<'_> {
 }
 
 /// What a client's engine adds to every connect request it makes: its manifest and a ticket from its auth provider
-/// ([`Engine::connect_block`]). Attached to the client's script engine by [`ConnectHello::install`]; a network connection reads it
-/// when it starts (a local connection needs none). An engine that says nothing on the wire attaches nothing, so its requests are
+/// ([`Engine::connect_block`]). Attached to the client's script engine by [`ConnectHello::install`]; a network connection takes
+/// its [`BlockSource`] when it starts and the block is made once the server's challenge response is in, for that server and that
+/// connection (a local connection needs none). An engine that says nothing on the wire attaches nothing, so its requests are
 /// Torque's.
 pub struct ConnectHello {
     engine: Engine,
@@ -467,9 +468,10 @@ impl ConnectHello {
         }
     }
 
-    /// The block for one connect: an `Err` is the auth provider's reason it has no ticket.
-    fn block(&self) -> Result<Option<ConnectBlock>, String> {
-        self.engine.connect_block()
+    /// What makes the block of one connect: an `Err` it returns is the auth provider's reason it has no ticket.
+    fn source(&self) -> BlockSource {
+        let engine = self.engine.clone();
+        BlockSource::new(move |cx| engine.connect_block(cx))
     }
 }
 
@@ -578,9 +580,10 @@ impl TgeFeed {
         self.plugins = plugins;
     }
 
-    /// Adds `block` (the engine's manifest and ticket) to the connect request, after its arguments.
-    pub fn set_connect_block(&mut self, block: ConnectBlock) {
-        self.client.fields_mut().block = Some(Box::new(block));
+    /// Adds the block `source` makes (the engine's manifest and a ticket for `server`, the address dialed, and the challenge) to the
+    /// connect request, after its arguments.
+    pub fn set_connect_source(&mut self, server: std::net::SocketAddr, source: BlockSource) {
+        self.client.set_block_source(server, source);
     }
 
     /// The game's files the feed reads a WheeledVehicleData's shape from.
@@ -998,9 +1001,8 @@ impl ConnGame for TgeConn {
         )?;
         if local.is_none()
             && let Some(hello) = vm.extension::<ConnectHello>()
-            && let Some(block) = hello.block()?
         {
-            feed.set_connect_block(block);
+            feed.set_connect_source(connect.server.into(), hello.source());
         }
         feed.set_reader(reader.clone());
         feed.set_channels(vm.extension::<ClientChannels>());

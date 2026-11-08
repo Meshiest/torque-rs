@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 
-use torque_net::connect::{ConnectGate, SharedSecret};
+use torque_net::connect::{AuthContext, ConnectGate, SharedSecret};
 use torque_net::handshake::ConnectFields;
 
 use super::*;
@@ -73,6 +73,14 @@ fn from() -> SocketAddr {
     SocketAddr::from(([10, 0, 0, 1], 4000))
 }
 
+fn cx() -> AuthContext {
+    AuthContext {
+        server: SocketAddr::from(([192, 0, 2, 1], 28_000)),
+        sequence: 3,
+        challenge: [9, 8, 7, 6],
+    }
+}
+
 fn fields(block: Option<ConnectBlock>) -> ConnectFields {
     let mut f = ConnectFields::standard(b"", Vec::new());
     f.block = block.map(Box::new);
@@ -87,7 +95,7 @@ fn an_engine_that_says_nothing_sends_no_block_and_judges_no_one() {
         .unwrap();
     let profile = HandshakeProfile::default();
     assert!(!engine.is_networked());
-    assert_eq!(engine.connect_block(), Ok(None));
+    assert_eq!(engine.connect_block(&cx()), Ok(None));
     assert!(engine.connect_gate(&profile).is_none());
     assert!(engine.auth().is_none());
     assert!(engine.net_manifest(&profile).is_bare());
@@ -134,8 +142,8 @@ fn a_server_and_a_client_of_the_same_engine_agree() {
     };
     let profile = HandshakeProfile::default();
     let gate = build().connect_gate(&profile).expect("a gate");
-    let block = build().connect_block().unwrap();
-    assert_eq!(gate.check(from(), &fields(block)), Ok(None));
+    let block = build().connect_block(&cx()).unwrap();
+    assert_eq!(gate.check(from(), &cx(), &fields(block)), Ok(None));
 }
 
 #[test]
@@ -150,13 +158,13 @@ fn a_server_refuses_a_client_built_with_another_plugin_version_or_none() {
         .build()
         .unwrap();
     assert_eq!(
-        gate.check(from(), &fields(older.connect_block().unwrap())),
+        gate.check(from(), &cx(), &fields(older.connect_block(&cx()).unwrap())),
         Err(b"server needs plugin torque.rope 2, you have 1".to_vec())
     );
     let plain = EngineBuilder::new().build().unwrap();
-    assert_eq!(plain.connect_block(), Ok(None));
+    assert_eq!(plain.connect_block(&cx()), Ok(None));
     assert_eq!(
-        gate.check(from(), &fields(None)),
+        gate.check(from(), &cx(), &fields(None)),
         Err(b"server needs plugin torque.rope 2, you do not have it".to_vec())
     );
 }
@@ -173,22 +181,34 @@ fn the_auth_provider_gives_tickets_and_verifies_them() {
         engine.is_networked(),
         "an auth provider alone says something"
     );
-    let block = engine.connect_block().unwrap().expect("a block");
+    let block = engine.connect_block(&cx()).unwrap().expect("a block");
     assert!(block.ticket.is_some());
     let gate = engine.connect_gate(&HandshakeProfile::default()).unwrap();
     assert_eq!(
-        gate.check(from(), &fields(Some(block))),
+        gate.check(from(), &cx(), &fields(Some(block.clone()))),
         Ok(Some(b"ada".to_vec()))
     );
+    // The same block on another server or another connection is refused.
+    let refused = Err(b"your sign-in was not accepted".to_vec());
+    let elsewhere = AuthContext {
+        server: SocketAddr::from(([192, 0, 2, 2], 28_000)),
+        ..cx()
+    };
+    assert_eq!(
+        gate.check(from(), &elsewhere, &fields(Some(block.clone()))),
+        refused
+    );
+    let later = AuthContext {
+        challenge: [9, 8, 7, 5],
+        ..cx()
+    };
+    assert_eq!(gate.check(from(), &later, &fields(Some(block))), refused);
     // A ticket signed with another secret.
     let forged = ConnectBlock {
         manifest: Some(engine.net_manifest(&HandshakeProfile::default())),
-        ticket: Some(SharedSecret::new([6; 16], "ada").ticket().unwrap()),
+        ticket: Some(SharedSecret::new([6; 16], "ada").ticket(&cx()).unwrap()),
     };
-    assert_eq!(
-        gate.check(from(), &fields(Some(forged))),
-        Err(b"your sign-in was not accepted".to_vec())
-    );
+    assert_eq!(gate.check(from(), &cx(), &fields(Some(forged))), refused);
 }
 
 #[test]
@@ -199,7 +219,10 @@ fn an_auth_provider_that_has_no_ticket_stops_the_connect_with_its_reason() {
         }))
         .build()
         .unwrap();
-    assert_eq!(engine.connect_block(), Err("not signed in".to_string()));
+    assert_eq!(
+        engine.connect_block(&cx()),
+        Err("not signed in".to_string())
+    );
 }
 
 #[test]
@@ -211,7 +234,7 @@ fn odd_or_large_name_tables_still_make_a_block() {
         .build()
         .unwrap();
     // A name with invisible characters is counted in its table's digest but never listed, so the block still writes.
-    assert!(engine.connect_block().unwrap().is_some());
+    assert!(engine.connect_block(&cx()).unwrap().is_some());
     let engine = EngineBuilder::new()
         .add_plugins(plugin::<Rope>(Some(1), |e| {
             for i in 0..400 {
@@ -222,7 +245,7 @@ fn odd_or_large_name_tables_still_make_a_block() {
         .build()
         .unwrap();
     assert!(
-        engine.connect_block().unwrap().is_some(),
+        engine.connect_block(&cx()).unwrap().is_some(),
         "a big table goes as a count and digest"
     );
 }

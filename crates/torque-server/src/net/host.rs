@@ -401,6 +401,14 @@ impl<G: NetGame> NetShared<G> {
         self.hs.config_mut().gate = Some(std::sync::Arc::new(gate));
     }
 
+    /// Tells the server the address clients reach it by, which its auth provider binds tickets to
+    /// ([`ServerConfig::address`](torque_net::handshake::ServerConfig::address)). A server behind a NAT, a relay or a socket
+    /// bound to every interface needs its public address here; without one, a provider that binds to the address refuses every
+    /// ticket.
+    pub fn set_public_address(&mut self, address: Option<std::net::SocketAddr>) {
+        self.hs.config_mut().address = address;
+    }
+
     /// The string coder's table ([`NetGame::string_table`]).
     pub fn string_table(&self) -> Rc<Table> {
         self.game.string_table()
