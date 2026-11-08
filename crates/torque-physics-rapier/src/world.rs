@@ -407,7 +407,9 @@ impl World {
             let rapier = &mut self.rapier;
             let made = shape::caught(|| maps.build_cell(cell, rapier, &limits, charge));
             match made {
-                Err(e) => {
+                // A panic caught inside the build (inserting a collider) may have left Rapier half changed, as one caught
+                // here may: either stops the world.
+                Err(e) | Ok(Err(e @ Error::Panicked)) => {
                     self.poisoned = true;
                     return Err(e);
                 }
