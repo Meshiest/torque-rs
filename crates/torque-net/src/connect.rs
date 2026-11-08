@@ -14,7 +14,8 @@
 //! ticket at most [`MAX_TICKET_BYTES`]. The magic is above the 16 arguments Torque allows, so a reader that took it for a count would
 //! refuse it.
 //!
-//! **Order of the checks** (a gate's, [`ManifestGate::check`]): the manifest first, then the ticket. The server never runs an
+//! **Order of the checks** (a gate's, [`ManifestGate::check`]): the manifest first, then that a client can take the mods a server
+//! requires ([`crate::modsync`]), then the ticket. The server never runs an
 //! auth provider for a client whose build it already refuses.
 //!
 //! **A ticket is for one server and one connection.** The client makes its ticket after the server's challenge response arrives
@@ -33,6 +34,7 @@ use crate::bits::{BitReader, BitWriter};
 use crate::cap::NET_STRING_BYTES;
 use crate::handshake::{ConnectFields, siphash24};
 use crate::manifest::{MAX_MANIFEST_BYTES, Manifest, ManifestError};
+use crate::modsync::{MAX_SECTION_BYTES, ModsSection, RequiredMods};
 
 /// The word that starts a connect block.
 pub const BLOCK_MAGIC: u32 = 0x4d46_5431;
@@ -45,6 +47,7 @@ pub const MAX_TICKET_BYTES: usize = 256;
 
 const TAG_MANIFEST: u8 = 1;
 const TAG_TICKET: u8 = 2;
+const TAG_MODS: u8 = 3;
 
 /// Why a connect block could not be written or read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,13 +92,17 @@ impl From<ManifestError> for BlockError {
     }
 }
 
-/// What a connect request carries after its arguments: the sender's manifest and the ticket its auth provider made.
+/// What a connect request carries after its arguments: the sender's manifest, the ticket its auth provider made and what it
+/// says about taking mod content ([`ModsSection`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConnectBlock {
     /// The sender's manifest, when it sends one.
     pub manifest: Option<Manifest>,
     /// The auth ticket, when the sender has an auth provider.
     pub ticket: Option<Vec<u8>>,
+    /// That the sender can take a server's mod content, and the most it will take (bytes and files), when its engine shares mods.
+    /// It never lists the mods the sender has installed or cached.
+    pub mods: Option<ModsSection>,
 }
 
 impl ConnectBlock {
@@ -108,6 +115,7 @@ impl ConnectBlock {
     /// Writes the block into `w`. A manifest that cannot be encoded or a ticket over its limit is an `Err` and writes nothing.
     pub fn write(&self, w: &mut BitWriter) -> Result<(), BlockError> {
         let manifest = self.manifest.as_ref().map(Manifest::encode).transpose()?;
+        let mods = self.mods.as_ref().map(ModsSection::encode);
         if let Some(ticket) = &self.ticket
             && ticket.len() > MAX_TICKET_BYTES
         {
@@ -115,11 +123,14 @@ impl ConnectBlock {
         }
         w.write_u32(BLOCK_MAGIC);
         w.write_u8(
-            usize::from(manifest.is_some()) as u8 + usize::from(self.ticket.is_some()) as u8,
+            usize::from(manifest.is_some()) as u8
+                + usize::from(self.ticket.is_some()) as u8
+                + usize::from(mods.is_some()) as u8,
         );
         for (tag, bytes) in [
             (TAG_MANIFEST, manifest.as_deref()),
             (TAG_TICKET, self.ticket.as_deref()),
+            (TAG_MODS, mods.as_deref()),
         ] {
             if let Some(bytes) = bytes {
                 w.write_u8(tag);
@@ -153,6 +164,7 @@ impl ConnectBlock {
             let bound = match tag {
                 TAG_MANIFEST => MAX_MANIFEST_BYTES,
                 TAG_TICKET => MAX_TICKET_BYTES,
+                TAG_MODS => MAX_SECTION_BYTES,
                 _ => usize::MAX,
             };
             if len > bound {
@@ -173,6 +185,7 @@ impl ConnectBlock {
             match tag {
                 TAG_MANIFEST => block.manifest = Some(Manifest::decode(&bytes)?),
                 TAG_TICKET => block.ticket = Some(bytes),
+                TAG_MODS => block.mods = Some(ModsSection::decode(&bytes)?),
                 _ => {}
             }
         }
@@ -283,6 +296,12 @@ pub trait ConnectGate: fmt::Debug + Send + Sync {
     fn matches_channels(&self, _fields: &ConnectFields) -> bool {
         false
     }
+
+    /// What the request this gate accepted says about taking content from the server (its mods section), for the server to send
+    /// its required mods to a client that can take them. `None` (the default): the client cannot.
+    fn mods_support(&self, _fields: &ConnectFields) -> Option<ModsSection> {
+        None
+    }
 }
 
 /// Auth tickets: the client's half makes one for the server it connects to, the server's half verifies it. A game supplies one
@@ -310,6 +329,7 @@ pub trait AuthProvider: fmt::Debug + Send + Sync {
 pub struct ManifestGate {
     manifest: Manifest,
     auth: Option<Arc<dyn AuthProvider>>,
+    required: RequiredMods,
 }
 
 impl ManifestGate {
@@ -318,7 +338,15 @@ impl ManifestGate {
         ManifestGate {
             manifest,
             auth: None,
+            required: RequiredMods::default(),
         }
+    }
+
+    /// The same gate that holds clients to the mods in `required` (the list may be set later, through a clone of the handle).
+    #[must_use]
+    pub fn with_required(mut self, required: RequiredMods) -> ManifestGate {
+        self.required = required;
+        self
     }
 
     /// The same gate that also verifies tickets with `auth`.
@@ -332,6 +360,11 @@ impl ManifestGate {
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
+
+    /// The mods clients must hold, shared with the gate: setting the list changes what the gate judges from then on.
+    pub fn required(&self) -> &RequiredMods {
+        &self.required
+    }
 }
 
 /// `text` as a reason: at most [`NET_STRING_BYTES`] bytes, cut at a character boundary.
@@ -344,6 +377,10 @@ pub fn reason(text: &str) -> Vec<u8> {
 }
 
 impl ConnectGate for ManifestGate {
+    fn mods_support(&self, fields: &ConnectFields) -> Option<ModsSection> {
+        fields.block.as_ref().and_then(|b| b.mods.clone())
+    }
+
     fn matches_channels(&self, fields: &ConnectFields) -> bool {
         let theirs = fields
             .block
@@ -371,6 +408,13 @@ impl ConnectGate for ManifestGate {
         };
         if let Some(difference) = self.manifest.mismatch(theirs) {
             return Err(reason(&difference.to_string()));
+        }
+        // The server's mods are sent to the client after the accept and the client picks what to fetch: the gate only turns away
+        // a client that cannot take content at all.
+        if !self.required.is_empty() && block.and_then(|b| b.mods.as_ref()).is_none() {
+            return Err(reason(
+                "server requires mods, and your client cannot download them",
+            ));
         }
         match &self.auth {
             None => Ok(None),

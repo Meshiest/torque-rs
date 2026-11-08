@@ -21,6 +21,19 @@ pub trait ChunkChannel: 'static {
 
     /// Client: a message arrived whole, in the order the server queued them.
     fn receive(&mut self, _kind: Kind, _data: &[u8]) {}
+
+    /// Client: a new connection is starting (its message numbers and half-received messages are new), so state kept for the last
+    /// one is stale.
+    fn reset(&mut self) {}
+
+    /// Client: the connection ended.
+    fn closed(&mut self) {}
+
+    /// Lets the code that owns the client's script engine reach the logic by its own type
+    /// (`ClientChannels::with_channel`): `Some(self)` in a channel that wants it.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// Why a channel could not be registered.

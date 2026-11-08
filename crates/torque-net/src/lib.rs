@@ -27,9 +27,11 @@
 //!   compression point), the client's move block and the server's bounded move list, and the small events (audio, path manager,
 //!   lightning).
 //! - [`chunk`]: bulk channels, large static data in chunks under a per-packet budget, reliable and ordered, with deltas ([`chunk::patch`]).
-//! - [`manifest`] and [`connect`]: the connection manifest (plugin versions, class and channel name tables, required mods), the
+//! - [`manifest`] and [`connect`]: the connection manifest (plugin versions, class and channel name tables), the
 //!   auth ticket and the gate a server judges a connect request with before its scripts see it; both ride after the request's
 //!   arguments, where a Torque server never reads.
+//! - [`modsync`]: the mods a server requires, and the section of a client's connect block that says it takes mod content and its
+//!   caps (it never lists the mods a client has); the gate turns away only a client that cannot take them.
 //! - [`classes`]: the net classes' ids and widths derived by the class-sorting rule from the class representatives.
 //! - [`profile`]: what a game sets (the event registry, the handshake's types, strings, versions, form and extension, the server
 //!   query's version fields, the ghost limit, the datablock id width), with TGE 1.4's defaults.
@@ -54,6 +56,7 @@ pub mod huffman;
 pub mod idhash;
 pub mod library;
 pub mod manifest;
+pub mod modsync;
 pub mod moves;
 pub mod netstring;
 pub mod profile;

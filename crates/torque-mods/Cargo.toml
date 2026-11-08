@@ -16,11 +16,16 @@ categories = ["game-development", "filesystem"]
 
 [dependencies]
 torque-engine = { path = "../torque-engine" }
+# The wire: the required-mods section of the handshake, the bulk channel and the server's hold on a joining client.
+torque-net = { path = "../torque-net" }
+torque-server = { path = "../torque-server" }
 # The hardened zip reader and its path rules.
 torque-resource = { path = "../torque-resource" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 # `mod.toml`, read strictly.
 serde = { version = "1.0.219", features = ["derive"] }
+# The content hash.
+sha2 = "0.10"
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 
 [dev-dependencies]

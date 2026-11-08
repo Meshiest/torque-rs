@@ -68,6 +68,7 @@ fn block(manifest: Manifest) -> ConnectBlock {
     ConnectBlock {
         manifest: Some(manifest),
         ticket: None,
+        ..Default::default()
     }
 }
 
@@ -362,6 +363,7 @@ fn signing_client(seq: u32, key: [u8; 16], name: &'static str, dialed: SocketAdd
             Ok(Some(ConnectBlock {
                 manifest: Some(manifest()),
                 ticket: Some(SharedSecret::new(key, name).ticket(cx)?),
+                ..Default::default()
             }))
         }),
     );
@@ -735,6 +737,7 @@ fn the_block_decoder_survives_a_hostile_stream() {
         let block = ConnectBlock {
             manifest: Some(random_manifest(&mut rng)),
             ticket: (rng.below(2) == 0).then(|| (0..rng.below(40)).map(|_| rng.byte()).collect()),
+            ..Default::default()
         };
         let mut w = BitWriter::new();
         if block.write(&mut w).is_err() {

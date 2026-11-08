@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-223 entries in 1 namespace.
+231 entries in 1 namespace.
 
 ## Global
 
@@ -103,6 +103,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; client; needs `torque.hosting`*
 - `clearDebug()`
   *arguments: none; client; needs `torque.gizmos`*
+- `clearModDownloadCache()` - deletes the mod content kept from servers; returns the bytes freed
+  *arguments: none; server and client*
 - `collapseEscape(text)` - the text with its escape sequences turned into the bytes they stand for
   *arguments: 1; server and client*
 - `commandToClient`
@@ -235,6 +237,10 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2; server and client*
 - `getModCount()` - how many mods were found, the ones left out too
   *arguments: none; server and client*
+- `getModDownloadProgress()` - the download under way as four numbers separated by spaces: bytes received, bytes in all, mods mounted, mods sent
+  *arguments: none; server and client*
+- `getModDownloadState()` - where a client's download of the server's mod content stands: idle, waiting (accepted, nothing announced yet), downloading, done or failed
+  *arguments: none; server and client*
 - `getModField(id, field)` - one fact about a mod: version, name, description, author, category, status (pending, enabled, disabled or skipped), reason, source, package, files, bytes, clientside, or a field the layout kept; empty for a mod or a fact there is not
   *arguments: 2; server and client*
 - `getModList([all])` - the ids of the loaded mods in load order, separated by spaces (all of them, the ones left out too, with \`true\`)
@@ -255,6 +261,12 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2 to 3; server and client*
 - `getRenderer()`
   *arguments: none; client*
+- `getRequiredModCount()` - how many mods the server requires of its clients (on a client, how many its server announced)
+  *arguments: none; server and client*
+- `getRequiredModField(id, field)` - one fact about a required mod: version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
+  *arguments: 2; server and client*
+- `getRequiredModList()` - the ids of the mods the server requires of its clients, separated by spaces (on a client, the ones its server announced)
+  *arguments: none; server and client*
 - `getServerCount()`
   *arguments: none; client*
 - `getSimTime()` - the simulation time in milliseconds
@@ -470,6 +482,10 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `schedule(delay, object, function, args...)` - calls the function later; the object bounds the call's life
   *arguments: at least 3; server and client*
+- `serverCmdTorqueModsGet(client, modIndex, file, start, count)` - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
+  *arguments: 5; server and client*
+- `serverCmdTorqueModsReady(client)` - a client says it has every mod the server requires, mounted (the server then lets its join go on)
+  *arguments: 1; server and client*
 - `setCameraMode(name)` - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
   *arguments: 1; client*
 - `setDefaultFov(defaultFov)` - Set the default FOV for a camera.

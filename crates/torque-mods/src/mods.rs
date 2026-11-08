@@ -2,14 +2,24 @@
 //! run by stage as TorqueScript packages, and enabled and disabled while it runs.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
+
+use std::sync::Arc;
+
+use torque_net::chunk::Kind;
+use torque_net::handshake::ConnId;
+use torque_net::manifest::is_name;
+use torque_net::modsync::{MAX_REQUIRED, ModsSection, RequiredMod, RequiredMods, is_version};
+use torque_server::net::channels::ChannelHub;
+use torque_ts_vm::sim::ObjId;
 
 use torque_engine::{Assets, Engine, Origin};
 use torque_ts_vm::ns::DeclareScope;
 use torque_ts_vm::policy::ExecPolicy;
 use torque_ts_vm::vm::{Vm, VmError};
 
+use crate::content::{ContentSummary, Hash, content_names, summarize, summarize_files};
 use crate::discover::{Budget, Found, Notes, scan};
 use crate::files::{ALIAS_FOLDER, ModFiles, Mount, MountKind, Table, is_script_path};
 use crate::info::{ModInfo, check_id};
@@ -17,8 +27,13 @@ use crate::layout::{
     Candidate, ModEnableList, ModLayout, ModNames, ModOrder, ModPrereqs, ModStages, PlainNames,
     PrefsEnableList, PrereqPolicy, TopologicalOrder,
 };
+use crate::offer::{
+    FileOffer, MAX_OFFER_BYTES, ModOffer, Request, encode_data, encode_offer, run_bytes,
+};
 use crate::package::{ModError, ModLimits, ModPackage};
 use crate::plan::{Inputs, ModSide, plan};
+use crate::share::{ModShare, ModShareDefault, Share};
+use crate::transfer::{CHANNEL, Caps, Downloads, LocalSource, NetOptions};
 
 /// Whether a mod is loaded, switched off, or was left out.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -65,6 +80,12 @@ struct State {
     entries: Vec<Entry>,
     /// The stages that have run, in the order they did.
     loaded: Vec<String>,
+    /// The content of each mod, by lower-case id, once computed (a mod's files do not change).
+    contents: HashMap<String, Option<ContentSummary>>,
+    /// The mods a server requires of clients now (a server's, with sharing on).
+    required: Vec<RequiredMod>,
+    /// What the server serves for that list.
+    served: Option<Rc<Served>>,
 }
 
 /// The mods of a script engine. `Mods::of(&vm)` finds them.
@@ -75,8 +96,44 @@ pub struct Mods {
     stages: ModStages,
     limits: ModLimits,
     enable_list: Rc<dyn ModEnableList>,
+    share: Rc<dyn ModShare>,
+    net: Option<NetOptions>,
+    /// A client's downloads, when the engine shares mods over the network.
+    downloads: RefCell<Option<Rc<Downloads>>>,
+    /// The clients a server holds while they fetch what it requires.
+    serving: RefCell<HashMap<ObjId, Serving>>,
     state: RefCell<State>,
 }
+
+/// What a server holds of the content it serves: the offer and the bytes behind it, built when the required list is made.
+struct Served {
+    offers: Vec<ModOffer>,
+    /// The content files of each mod the server serves (the others have none).
+    files: Vec<Vec<(String, Vec<u8>)>>,
+    /// The offer message, built once and shared by every connection.
+    message: Arc<[u8]>,
+    /// The blocks of all the served files: what an honest client asks for at most once each.
+    blocks: u64,
+}
+
+/// A client being held: what it has asked for.
+struct Serving {
+    conn: ConnId,
+    /// How many times each run (mod, file, first block) was asked for: an honest client asks once.
+    asked: HashMap<(u32, u32, u32), u8>,
+    requests: u64,
+    max_requests: u64,
+    ready: bool,
+    progress: u64,
+}
+
+/// The bytes a client may have queued and unacknowledged: it asks for one run at a time, so this is a few runs' worth.
+/// How many times a client may ask for the same run (a repeat is for a run that was lost to a refusal, which does not happen on a
+/// reliable channel: a small allowance, not a loop).
+const MAX_ASKS: u8 = 2;
+
+const MAX_OUTSTANDING: usize =
+    3 * crate::offer::BLOCK_BYTES * crate::offer::MAX_REQUEST_BLOCKS as usize;
 
 fn package_name(id: &str) -> String {
     format!("Mod_{id}")
@@ -89,6 +146,7 @@ struct Rules {
     order: Rc<dyn ModOrder>,
     prereqs: Rc<dyn ModPrereqs>,
     enable_list: Rc<dyn ModEnableList>,
+    share: Rc<dyn ModShare>,
     stages: ModStages,
 }
 
@@ -115,6 +173,9 @@ impl Rules {
             enable_list: engine
                 .slot::<dyn ModEnableList>()
                 .unwrap_or_else(|| Rc::new(PrefsEnableList)),
+            share: engine
+                .slot::<dyn ModShare>()
+                .unwrap_or_else(|| Rc::new(ModShareDefault)),
             stages: engine
                 .slot::<ModStages>()
                 .map_or_else(ModStages::default, |s| (*s).clone()),
@@ -352,9 +413,18 @@ impl Mods {
             stages: rules.stages,
             limits,
             enable_list: rules.enable_list,
+            share: rules.share,
+            net: engine
+                .resource::<crate::plugin::ModsOptions>()
+                .and_then(|o| o.net.clone()),
+            downloads: RefCell::new(None),
+            serving: RefCell::new(HashMap::new()),
             state: RefCell::new(State {
                 entries,
                 loaded: Vec::new(),
+                contents: HashMap::new(),
+                required: Vec::new(),
+                served: None,
             }),
         });
         let layer = Rc::clone(&table);
@@ -583,6 +653,7 @@ impl Mods {
         for note in notes {
             vm.warn(note);
         }
+        self.refresh_required(vm);
     }
 
     /// Runs the stages this side runs by itself (a server's `server`, a client's `client`, by default).
@@ -680,6 +751,7 @@ impl Mods {
             }
         }
         self.table.bump();
+        self.refresh_required(vm);
         if save {
             self.save(vm);
         }
@@ -771,6 +843,7 @@ impl Mods {
         for package in &later {
             activate(vm, package);
         }
+        self.refresh_required(vm);
         if save {
             self.save(vm);
         }
@@ -811,20 +884,7 @@ impl Mods {
             .collect();
         // What is mounted already counts: every mod's bytes and every other server mount's bytes and files (a mount under
         // this name is being replaced, so it does not), so many mounts together stay within the limits.
-        let (held, files) = self.table.held_except(name);
-        let mut limits = self.limits;
-        limits.total_bytes = limits.total_bytes.saturating_sub(held);
-        limits.files = limits.files.saturating_sub(files);
-        let package = ModPackage::from_files(kept, &limits)?;
-        let count = package.len();
-        self.table.remove_server(name);
-        self.table.push(Rc::new(Mount::new(
-            name.to_string(),
-            MountKind::Server,
-            package,
-            [],
-        )));
-        Ok(count)
+        mount_content(&self.table, &self.limits, name, kept)
     }
 
     /// Unmounts what [`mount_server_files`](Self::mount_server_files) mounted under `name`.
@@ -836,6 +896,613 @@ impl Mods {
     pub fn is_server_file(&self, path: &str) -> bool {
         self.table.is_server_file(path.as_bytes())
     }
+
+    /// Whether `path` is untrusted: it came from a server (the same files [`Origin::Untrusted`](torque_engine::Origin) marks for
+    /// the asset cache). Whatever runs files, `exec` or a loader of another scripting language, must refuse a path for which
+    /// this is true; only a sandboxed realm made for such files may opt in. `.lua` files a server sent are kept as data and
+    /// answer true here.
+    pub fn is_untrusted(&self, path: &str) -> bool {
+        self.is_server_file(path)
+    }
+}
+
+/// A mod a server requires, or one a client was told of, as a script lists it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RequiredInfo {
+    /// The mod's id.
+    pub id: String,
+    /// Its version.
+    pub version: String,
+    /// The hash of its content, as 64 hexadecimal digits.
+    pub hash: String,
+    /// The bytes of its content.
+    pub bytes: u64,
+    /// How many files it has.
+    pub files: u32,
+    /// Whether the server sends it to a client that lacks it.
+    pub download: bool,
+}
+
+impl Mods {
+    /// The content of mod `id` (the files that are not scripts: see [`crate::content`]): its hash, file count and bytes. `None`
+    /// when the mod is not loaded or a file of it does not read.
+    pub fn content_of(&self, id: &str) -> Option<ContentSummary> {
+        let key = id.to_ascii_lowercase();
+        if let Some(known) = self.state.borrow().contents.get(&key) {
+            return *known;
+        }
+        let computed = {
+            let state = self.state.borrow();
+            let entry = state
+                .entries
+                .iter()
+                .find(|e| e.summary.info.id.eq_ignore_ascii_case(id))?;
+            let mount = entry.mount.as_ref()?;
+            summarize(&mount.package, &hidden_of(&entry.summary.info))
+        };
+        self.state.borrow_mut().contents.insert(key, computed);
+        computed
+    }
+
+    /// The mods a server requires of clients now: the enabled mods its [`ModShare`] rule asks for, each with its content hash.
+    /// Empty on a client, and on a server whose plugin does not share mods
+    /// ([`ModsPlugin::required_mods`](crate::ModsPlugin::required_mods)).
+    pub fn required(&self) -> Vec<RequiredMod> {
+        self.state.borrow().required.clone()
+    }
+
+    /// What scripts see of the required mods: a server's own list, or on a client the list its server announced.
+    pub(crate) fn required_info(&self) -> Vec<RequiredInfo> {
+        let info = |m: &RequiredMod| RequiredInfo {
+            id: m.id.clone(),
+            version: m.version.clone(),
+            hash: crate::content::hex(&m.hash),
+            bytes: m.bytes,
+            files: m.files,
+            download: m.download,
+        };
+        if self.side == ModSide::Server {
+            return self.state.borrow().required.iter().map(info).collect();
+        }
+        self.downloads
+            .borrow()
+            .as_ref()
+            .map(|d| {
+                d.offer()
+                    .iter()
+                    .map(|o| RequiredInfo {
+                        id: o.id.clone(),
+                        version: o.version.clone(),
+                        hash: crate::content::hex(&o.hash),
+                        bytes: o.bytes(),
+                        files: u32::try_from(o.files.len()).unwrap_or(u32::MAX),
+                        download: o.download,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Works out the list a server requires from the enabled mods and gives it to the gate. Called when the mods start and when
+    /// one is switched on or off; clients already connected keep the list they joined under.
+    pub(crate) fn refresh_required(&self, vm: &Vm) {
+        let Some(net) = &self.net else { return };
+        if self.side != ModSide::Server {
+            return;
+        }
+        let candidates: Vec<ModInfo> = self
+            .state
+            .borrow()
+            .entries
+            .iter()
+            .filter(|e| e.summary.status == ModStatus::Enabled)
+            .map(|e| e.summary.info.clone())
+            .collect();
+        let limits = net.limits;
+        let mut list: Vec<RequiredMod> = Vec::new();
+        let mut sendable: u64 = 0;
+        for info in candidates {
+            let Some(content) = self.content_of(&info.id) else {
+                continue;
+            };
+            let share = self.share.share(&info, &content);
+            let version = info.version.to_string();
+            if share == Share::None
+                || !is_name(&info.id)
+                || !is_version(&version)
+                || list.len() >= MAX_REQUIRED
+            {
+                continue;
+            }
+            let largest = self.largest_file(&info.id);
+            let fits = content.files > 0
+                && content.bytes <= limits.mod_bytes as u64
+                && content.files as usize <= limits.files
+                && largest <= limits.file_bytes
+                && sendable.saturating_add(content.bytes) <= limits.total_bytes;
+            let download = share == Share::Download && net.allow_downloads && fits;
+            if download {
+                sendable = sendable.saturating_add(content.bytes);
+            }
+            list.push(RequiredMod {
+                id: info.id.clone(),
+                version,
+                hash: content.hash,
+                bytes: content.bytes,
+                files: content.files,
+                download,
+            });
+        }
+        let served = self.serve(&mut list);
+        let mut state = self.state.borrow_mut();
+        state.required = list.clone();
+        state.served = served.map(Rc::new);
+        drop(state);
+        if let Some(handle) = vm.extension::<RequiredMods>() {
+            handle.set(list);
+        }
+    }
+
+    /// The offer and the content of `list`'s served mods. A mod whose offer would take the message past its cap is no longer
+    /// served (largest first) and the list says so.
+    fn serve(&self, list: &mut [RequiredMod]) -> Option<Served> {
+        let mut offers: Vec<ModOffer> = Vec::with_capacity(list.len());
+        let mut files: Vec<Vec<(String, Vec<u8>)>> = Vec::with_capacity(list.len());
+        for need in list.iter() {
+            let mut offer = ModOffer {
+                id: need.id.clone(),
+                version: need.version.clone(),
+                hash: need.hash,
+                download: false,
+                files: Vec::new(),
+            };
+            let mut data = Vec::new();
+            if need.download
+                && let Some(read) = self.read_content(&need.id)
+            {
+                let offered: Option<Vec<FileOffer>> =
+                    read.iter().map(|(p, d)| FileOffer::of(p, d)).collect();
+                if let Some(offered) = offered
+                    && summarize_files(&read).hash == need.hash
+                {
+                    offer.download = true;
+                    offer.files = offered;
+                    data = read;
+                }
+            }
+            offers.push(offer);
+            files.push(data);
+        }
+        loop {
+            let message = encode_offer(&offers);
+            if message.len() <= MAX_OFFER_BYTES {
+                let blocks = offers
+                    .iter()
+                    .flat_map(|o| &o.files)
+                    .map(|f| f.blocks.len() as u64)
+                    .sum();
+                for (need, offer) in list.iter_mut().zip(&offers) {
+                    need.download = offer.download;
+                }
+                return Some(Served {
+                    offers,
+                    files,
+                    message: Arc::from(message),
+                    blocks,
+                });
+            }
+            // Over the cap: stop serving the biggest served mod and try again.
+            let biggest = offers
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| o.download)
+                .max_by_key(|(_, o)| o.files.len())
+                .map(|(at, _)| at)?;
+            offers[biggest].download = false;
+            offers[biggest].files.clear();
+            files[biggest].clear();
+        }
+    }
+
+    /// The content files of the enabled mod `id`, sorted as the package hash takes them.
+    fn read_content(&self, id: &str) -> Option<Vec<(String, Vec<u8>)>> {
+        let state = self.state.borrow();
+        let entry = state.entries.iter().find(|e| {
+            e.summary.status == ModStatus::Enabled && e.summary.info.id.eq_ignore_ascii_case(id)
+        })?;
+        let mount = entry.mount.as_ref()?;
+        let mut files = Vec::new();
+        for name in content_names(&mount.package, &hidden_of(&entry.summary.info)) {
+            let data = mount.package.read(&name)?;
+            files.push((name, data));
+        }
+        Some(files)
+    }
+
+    /// A client was accepted and can take content: holds it and queues the offer, shared with every other connection.
+    pub(crate) fn begin_serving(
+        &self,
+        hub: &ChannelHub,
+        obj: ObjId,
+        conn: ConnId,
+        _section: &ModsSection,
+    ) -> Result<bool, String> {
+        let served = self.state.borrow().served.clone();
+        let (message, blocks): (Arc<[u8]>, u64) = match &served {
+            Some(s) => (Arc::clone(&s.message), s.blocks),
+            None => (Arc::from(encode_offer(&[])), 0),
+        };
+        hub.send_shared(conn, CHANNEL, Kind::Snapshot, message)
+            .map_err(|e| format!("The server could not queue its mods for you ({e:?})."))?;
+        // With nothing required the client has its (empty) list and nothing holds its join.
+        if self.state.borrow().required.is_empty() {
+            return Ok(false);
+        }
+        self.serving.borrow_mut().insert(
+            obj,
+            Serving {
+                conn,
+                requests: 0,
+                asked: HashMap::new(),
+                max_requests: blocks.saturating_add(8),
+                ready: false,
+                progress: 0,
+            },
+        );
+        Ok(true)
+    }
+
+    /// A held client asks for a run of blocks. Only what the offer lists is served, a bounded number of times, and never faster
+    /// than the client takes it. An `Err` is the reason the client is dropped.
+    pub(crate) fn serve_request(
+        &self,
+        hub: &ChannelHub,
+        obj: ObjId,
+        request: Request,
+    ) -> Result<(), &'static str> {
+        let conn = {
+            let mut serving = self.serving.borrow_mut();
+            let held = serving.get_mut(&obj).ok_or("Unexpected mod request.")?;
+            held.requests += 1;
+            held.progress += 1;
+            if held.requests > held.max_requests {
+                return Err("Too many mod requests.");
+            }
+            let again = held
+                .asked
+                .entry((request.mod_index, request.file, request.start))
+                .or_insert(0);
+            *again = again.saturating_add(1);
+            if *again > MAX_ASKS {
+                return Err("Too many mod requests.");
+            }
+            held.conn
+        };
+        let served = self
+            .state
+            .borrow()
+            .served
+            .clone()
+            .ok_or("Unexpected mod request.")?;
+        let offer = served
+            .offers
+            .get(request.mod_index as usize)
+            .filter(|o| o.download)
+            .ok_or("Mod request out of range.")?;
+        let file = offer
+            .files
+            .get(request.file as usize)
+            .ok_or("Mod request out of range.")?;
+        let end = request
+            .start
+            .checked_add(request.count)
+            .ok_or("Mod request out of range.")?;
+        if request.count == 0
+            || request.count > crate::offer::MAX_REQUEST_BLOCKS
+            || end as usize > file.blocks.len()
+        {
+            return Err("Mod request out of range.");
+        }
+        // What it may have unacknowledged: the offer, which goes first and may be large, and a few runs.
+        if hub.backlog_total(conn) > served.message.len() + MAX_OUTSTANDING {
+            return Err("Mod requests too fast.");
+        }
+        let (from, to) = run_bytes(
+            u64::from(file.size),
+            u64::from(request.start),
+            u64::from(request.count),
+        );
+        let data = served
+            .files
+            .get(request.mod_index as usize)
+            .and_then(|f| f.get(request.file as usize))
+            .and_then(|(_, d)| d.get(from as usize..to as usize))
+            .ok_or("Mod request out of range.")?;
+        hub.send_to(conn, CHANNEL, Kind::Snapshot, encode_data(&request, data))
+            .map_err(|_| "Mod requests too fast.")
+    }
+
+    /// A held client says it has what the server requires.
+    pub(crate) fn mark_ready(&self, obj: ObjId) {
+        if let Some(held) = self.serving.borrow_mut().get_mut(&obj) {
+            held.ready = true;
+            held.progress += 1;
+        }
+    }
+
+    pub(crate) fn serving_ready(&self, obj: ObjId) -> bool {
+        self.serving.borrow().get(&obj).is_none_or(|s| s.ready)
+    }
+
+    pub(crate) fn serving_progress(&self, obj: ObjId) -> u64 {
+        self.serving.borrow().get(&obj).map_or(0, |s| s.progress)
+    }
+
+    pub(crate) fn end_serving(&self, obj: ObjId) {
+        self.serving.borrow_mut().remove(&obj);
+    }
+
+    /// The size of the largest content file of mod `id`.
+    fn largest_file(&self, id: &str) -> u64 {
+        let state = self.state.borrow();
+        let Some(entry) = state
+            .entries
+            .iter()
+            .find(|e| e.summary.info.id.eq_ignore_ascii_case(id))
+        else {
+            return 0;
+        };
+        let Some(mount) = &entry.mount else { return 0 };
+        content_names(&mount.package, &hidden_of(&entry.summary.info))
+            .iter()
+            .filter_map(|name| mount.package.size_of(name))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The caps this client holds itself to now: the game's, held to the player's prefs.
+    fn caps(&self, vm: &Vm) -> Option<Caps> {
+        use torque_engine::VmPrefs;
+        let net = self.net.as_ref()?;
+        let prefs = vm.prefs::<crate::plugin::ModPrefs>();
+        let mut limits = net.limits;
+        if prefs.download_megabytes > 0 {
+            limits.total_bytes = limits
+                .total_bytes
+                .min(u64::from(prefs.download_megabytes.unsigned_abs()) << 20);
+        }
+        if prefs.cache_megabytes > 0 {
+            limits.cache_bytes = limits
+                .cache_bytes
+                .min(u64::from(prefs.cache_megabytes.unsigned_abs()) << 20);
+        }
+        Some(Caps {
+            downloads: prefs.download,
+            limits,
+        })
+    }
+
+    /// What a client's connect block says: that it takes content, and the most. Nothing about the mods it has.
+    pub(crate) fn connect_section(&self, vm: &Vm) -> Option<ModsSection> {
+        let downloads = self.downloads.borrow().clone()?;
+        let caps = self.caps(vm)?;
+        Some(downloads.begin_connect(caps))
+    }
+
+    /// Makes a client's downloads and hands them to the mods channel and the connect block. A no-op for an engine that does not
+    /// share mods.
+    pub(crate) fn attach_client(self: &Rc<Self>, vm: &mut Vm) {
+        use torque_server::net::channels::ClientChannels;
+        let Some(net) = &self.net else { return };
+        let Some(channels) = vm.extension::<ClientChannels>() else {
+            return;
+        };
+        let caps = Caps {
+            downloads: true,
+            limits: net.limits,
+        };
+        let cache = net.cache.open(net.limits.cache_bytes);
+        let downloads = Rc::new(Downloads::new(
+            Rc::clone(&self.table),
+            self.limits,
+            caps,
+            cache,
+        ));
+        let local: Rc<dyn LocalSource> = Rc::clone(self) as Rc<dyn LocalSource>;
+        downloads.set_local(Rc::downgrade(&local));
+        let bound = channels
+            .with_channel::<crate::transfer::ModsChannel, _>(crate::transfer::CHANNEL, |channel| {
+                channel.bind(Rc::clone(&downloads))
+            });
+        if bound.is_none() {
+            return;
+        }
+        *self.downloads.borrow_mut() = Some(downloads);
+        vm.set_extension(Rc::new(torque_engine::net::ConnectExtras(Rc::new(
+            |vm: &Vm| Mods::of(vm).and_then(|mods| mods.connect_section(vm)),
+        ))));
+    }
+
+    /// Makes the server's half: the content server the host asks when it accepts a client that takes content.
+    pub(crate) fn attach_server(&self, vm: &mut Vm) {
+        use torque_server::net::content::ContentServerSlot;
+        let Some(net) = &self.net else { return };
+        vm.set_extension(Rc::new(ContentServerSlot(Rc::new(
+            crate::transfer::ModsContentServer {
+                limits: net.limits.content(),
+            },
+        ))));
+    }
+
+    /// The state of this client's download as a word, for scripts.
+    pub(crate) fn download_state(&self) -> &'static str {
+        use crate::transfer::Phase;
+        match self.downloads.borrow().as_ref().map(|d| d.phase()) {
+            None | Some(Phase::Idle) => "idle",
+            Some(Phase::Waiting) => "waiting",
+            Some(Phase::Downloading) => "downloading",
+            Some(Phase::Done) => "done",
+            Some(Phase::Failed) => "failed",
+        }
+    }
+
+    /// `(bytes received, bytes in all, mods mounted, mods sent)` of this client's download.
+    pub(crate) fn download_progress(&self) -> (u64, u64, usize, usize) {
+        self.downloads
+            .borrow()
+            .as_ref()
+            .map_or((0, 0, 0, 0), |d| d.progress())
+    }
+
+    /// Deletes every entry of this client's download cache; the number of bytes it held.
+    pub fn clear_download_cache(&self) -> u64 {
+        self.downloads
+            .borrow()
+            .as_ref()
+            .map_or(0, |d| d.clear_cache())
+    }
+
+    /// A client's per-tick work: the download's time limit, what scripts hear of it (`onModDownloadStarted`,
+    /// `onModDownloadProgress`, `onModDownloadDone`, `onModDownloadFailed`), and the next request or the ready word to the server. A
+    /// download that fails ends the connection.
+    pub(crate) fn client_tick(vm: &mut Vm) {
+        use crate::transfer::{Command, Event, Phase};
+        use torque_server::net::channels::ClientChannels;
+        let Some(mods) = Mods::of(vm) else { return };
+        let Some(downloads) = mods.downloads.borrow().clone() else {
+            return;
+        };
+        let accepted = vm
+            .extension::<ClientChannels>()
+            .is_some_and(|c| c.is_active());
+        let phase = downloads.phase();
+        if phase == Phase::Downloading || (phase == Phase::Waiting && accepted) {
+            let now = vm.sim_time();
+            match downloads.started() {
+                None => downloads.set_started(now),
+                Some(at) if now.wrapping_sub(at) > downloads.seconds().saturating_mul(1_000) => {
+                    downloads.fail(if phase == Phase::Waiting {
+                        "The server never said which mods it needs.".to_string()
+                    } else {
+                        "The mod download took too long.".to_string()
+                    });
+                }
+                Some(_) => {}
+            }
+        }
+        for event in downloads.take_events() {
+            match event {
+                Event::Started { mods, bytes } => {
+                    hook(
+                        vm,
+                        "onModDownloadStarted",
+                        &[mods.to_string(), bytes.to_string()],
+                    );
+                }
+                Event::Mounted { id } => {
+                    let (done, total, index, count) = downloads.progress();
+                    hook(
+                        vm,
+                        "onModDownloadProgress",
+                        &[
+                            id,
+                            done.to_string(),
+                            total.to_string(),
+                            index.to_string(),
+                            count.to_string(),
+                        ],
+                    );
+                }
+                Event::Done => hook(vm, "onModDownloadDone", &[]),
+                Event::Failed(reason) => {
+                    hook(vm, "onModDownloadFailed", std::slice::from_ref(&reason));
+                    vm.set_global("$Mods::DownloadError", &reason);
+                    let _ = vm.eval(
+                        b"if (isObject(ServerConnection)) ServerConnection.delete($Mods::DownloadError);",
+                    );
+                }
+            }
+        }
+        if downloads.phase() == Phase::Downloading
+            && let Some(id) = downloads.current()
+        {
+            let (done, total, index, count) = downloads.progress();
+            if downloads.note_reported(done) {
+                hook(
+                    vm,
+                    "onModDownloadProgress",
+                    &[
+                        id,
+                        done.to_string(),
+                        total.to_string(),
+                        index.to_string(),
+                        count.to_string(),
+                    ],
+                );
+            }
+        }
+        // What the server is waiting for: the next run of blocks, or word that everything is mounted. The numbers are the
+        // downloads' own, so the script is fixed text.
+        match downloads.next_command() {
+            Some(Command::Get(r)) => {
+                let _ = vm.eval(
+                    format!(
+                        "commandToServer('TorqueModsGet', {}, {}, {}, {});",
+                        r.mod_index, r.file, r.start, r.count
+                    )
+                    .as_bytes(),
+                );
+            }
+            Some(Command::Ready) => {
+                let _ = vm.eval(b"commandToServer('TorqueModsReady');");
+            }
+            None => {}
+        }
+    }
+}
+
+/// Calls the script function `name` with `args` when the game defines it.
+fn hook(vm: &mut Vm, name: &str, args: &[String]) {
+    if !vm.has_own_function("", name) {
+        return;
+    }
+    let argv: Vec<Vec<u8>> = args.iter().map(|a| a.as_bytes().to_vec()).collect();
+    let _ = vm.invoke(None, name.as_bytes(), &argv);
+}
+
+/// Mounts `files` as a server's files under `name`, replacing a mount of that name. What is mounted already counts against
+/// `limits` (every mod's bytes, and the bytes and files of the other server mounts).
+pub(crate) fn mount_content(
+    table: &Table,
+    limits: &ModLimits,
+    name: &str,
+    files: Vec<(String, Vec<u8>)>,
+) -> Result<usize, ModError> {
+    let (held, count) = table.held_except(name);
+    let mut limits = *limits;
+    limits.total_bytes = limits.total_bytes.saturating_sub(held);
+    limits.files = limits.files.saturating_sub(count);
+    let package = ModPackage::from_files(files, &limits)?;
+    let count = package.len();
+    table.remove_server(name);
+    table.push(Rc::new(Mount::new(
+        name.to_string(),
+        MountKind::Server,
+        package,
+        [],
+    )));
+    Ok(count)
+}
+
+/// The files a layout keeps out of the game's files for `info`: its entry scripts and what it hid (the manifest).
+fn hidden_of(info: &ModInfo) -> Vec<String> {
+    let mut hidden: Vec<String> = info
+        .scripts
+        .iter()
+        .flat_map(|(_, paths)| paths.iter().cloned())
+        .collect();
+    hidden.extend(info.hidden.iter().cloned());
+    hidden
 }
 
 /// Activates the package; false when the engine's limit of active packages is reached.
@@ -921,5 +1588,21 @@ impl ExecPolicy for ContentOnly {
             Some(previous) => previous.check(vm, path),
             None => Ok(true),
         }
+    }
+}
+
+impl LocalSource for Mods {
+    fn hash_of(&self, id: &str) -> Option<Hash> {
+        let enabled = self.state.borrow().entries.iter().any(|e| {
+            e.summary.status == ModStatus::Enabled && e.summary.info.id.eq_ignore_ascii_case(id)
+        });
+        if !enabled {
+            return None;
+        }
+        self.content_of(id).map(|c| c.hash)
+    }
+
+    fn files_of(&self, id: &str) -> Option<Vec<(String, Vec<u8>)>> {
+        self.read_content(id)
     }
 }

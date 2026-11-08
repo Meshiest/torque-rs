@@ -40,6 +40,7 @@ fn a_block_reads_back_as_it_was_written() {
     let block = ConnectBlock {
         manifest: Some(server_manifest()),
         ticket: Some(b"ticket".to_vec()),
+        ..Default::default()
     };
     assert_eq!(read(&bytes(&block)).unwrap(), Some(block));
     let empty = ConnectBlock::default();
@@ -81,6 +82,7 @@ fn a_garbled_block_is_an_error_not_a_panic() {
     let good = bytes(&ConnectBlock {
         manifest: Some(server_manifest()),
         ticket: Some(b"abc".to_vec()),
+        ..Default::default()
     });
     for len in 4..good.len() {
         assert!(read(&good[..len]).is_err(), "cut at {len}");
@@ -153,6 +155,7 @@ fn a_block_that_cannot_be_written_fails_validation() {
     let long = ConnectBlock {
         manifest: None,
         ticket: Some(vec![0; MAX_TICKET_BYTES + 1]),
+        ..Default::default()
     };
     assert_eq!(
         long.validate(),
@@ -161,11 +164,13 @@ fn a_block_that_cannot_be_written_fails_validation() {
     let bad = ConnectBlock {
         manifest: Some(Manifest::new(1, 1).with_plugin("a\u{202e}b", 1)),
         ticket: None,
+        ..Default::default()
     };
     assert!(matches!(bad.validate(), Err(BlockError::Manifest(_))));
     let fine = ConnectBlock {
         manifest: Some(server_manifest()),
         ticket: Some(b"x".to_vec()),
+        ..Default::default()
     };
     assert_eq!(fine.validate(), Ok(()));
 }
@@ -175,6 +180,7 @@ fn a_ticket_over_the_limit_is_not_written() {
     let block = ConnectBlock {
         manifest: None,
         ticket: Some(vec![0; MAX_TICKET_BYTES + 1]),
+        ..Default::default()
     };
     let mut w = BitWriter::new();
     assert_eq!(
@@ -190,6 +196,7 @@ fn the_gate_accepts_a_matching_manifest_and_refuses_a_different_one() {
     let ok = fields(Some(ConnectBlock {
         manifest: Some(server_manifest()),
         ticket: None,
+        ..Default::default()
     }));
     assert_eq!(gate.check(from(), &cx(), &ok), Ok(None));
     let old = fields(Some(ConnectBlock {
@@ -199,6 +206,7 @@ fn the_gate_accepts_a_matching_manifest_and_refuses_a_different_one() {
                 .with_ghosts(["Rope"]),
         ),
         ticket: None,
+        ..Default::default()
     }));
     assert_eq!(
         gate.check(from(), &cx(), &old),
@@ -227,6 +235,7 @@ fn the_ticket_is_checked_after_the_manifest() {
         fields(Some(ConnectBlock {
             manifest: Some(manifest),
             ticket,
+            ..Default::default()
         }))
     };
     assert_eq!(
@@ -280,6 +289,7 @@ fn a_ticket_is_good_for_the_server_and_the_connection_it_was_made_for() {
         let block = ConnectBlock {
             manifest: Some(server_manifest()),
             ticket: Some(ticket.clone()),
+            ..Default::default()
         };
         gate.check(from(), at, &fields(Some(block)))
     };
@@ -331,4 +341,96 @@ fn contexts_that_differ_never_encode_alike() {
     };
     assert_ne!(base.encode(), v6.encode());
     assert_eq!(base.encode(), cx().encode());
+}
+
+#[test]
+fn a_block_with_a_mods_section_reads_back() {
+    use crate::modsync::ModsSection;
+    let with = ConnectBlock {
+        manifest: Some(server_manifest()),
+        ticket: None,
+        mods: Some(ModsSection {
+            max_bytes: 1 << 20,
+            max_files: 50,
+        }),
+    };
+    assert_eq!(read(&bytes(&with)).unwrap(), Some(with));
+}
+
+#[test]
+fn a_block_without_a_mods_section_is_the_bytes_it_always_was() {
+    // Golden bytes: the magic, the section count, then each section as a tag, a 16-bit length and its bytes. A client of an engine
+    // that shares no mods writes exactly this, so a server that never heard of the mods section reads it as before.
+    let ticket_only = ConnectBlock {
+        manifest: None,
+        ticket: Some(b"abc".to_vec()),
+        mods: None,
+    };
+    assert_eq!(
+        bytes(&ticket_only),
+        [0x31, 0x54, 0x46, 0x4d, 1, 2, 3, 0, b'a', b'b', b'c']
+    );
+    assert_eq!(bytes(&ConnectBlock::default()), [0x31, 0x54, 0x46, 0x4d, 0]);
+    let manifest = server_manifest().encode().unwrap();
+    let both = ConnectBlock {
+        manifest: Some(server_manifest()),
+        ticket: Some(b"t".to_vec()),
+        mods: None,
+    };
+    let mut want = vec![0x31, 0x54, 0x46, 0x4d, 2, 1];
+    want.extend_from_slice(&(manifest.len() as u16).to_le_bytes());
+    want.extend_from_slice(&manifest);
+    want.extend_from_slice(&[2, 1, 0, b't']);
+    assert_eq!(bytes(&both), want);
+    // With the section it is those bytes and one more section after them.
+    let with = ConnectBlock {
+        mods: Some(crate::modsync::ModsSection::default()),
+        ..both
+    };
+    let written = bytes(&with);
+    assert_eq!(written[4], 3);
+    assert_eq!(&written[5..want.len()], &want[5..]);
+}
+
+#[test]
+fn the_gate_asks_only_that_a_client_can_take_the_mods_a_server_requires() {
+    use crate::modsync::{ModsSection, RequiredMod, RequiredMods};
+    let required = RequiredMods::default();
+    let gate = ManifestGate::new(server_manifest()).with_required(required.clone());
+    let client = |mods: Option<ModsSection>| {
+        fields(Some(ConnectBlock {
+            manifest: Some(server_manifest()),
+            ticket: None,
+            mods,
+        }))
+    };
+    // No mods required: every client of this build passes, as before.
+    assert_eq!(gate.check(from(), &cx(), &client(None)), Ok(None));
+    required.set(vec![RequiredMod {
+        id: "props".into(),
+        version: "1.2".into(),
+        hash: [9; 32],
+        bytes: 4_096,
+        files: 2,
+        download: true,
+    }]);
+    // The server no longer asks what the client holds: a client with the section is accepted whatever it has.
+    let can = client(Some(ModsSection {
+        max_bytes: 0,
+        max_files: 0,
+    }));
+    assert_eq!(gate.check(from(), &cx(), &can), Ok(None));
+    assert_eq!(
+        gate.mods_support(&can),
+        Some(ModsSection {
+            max_bytes: 0,
+            max_files: 0
+        })
+    );
+    // One that cannot take mods at all is told so.
+    assert_eq!(
+        gate.check(from(), &cx(), &client(None)),
+        Err(b"server requires mods, and your client cannot download them".to_vec())
+    );
+    assert_eq!(gate.mods_support(&client(None)), None);
 }

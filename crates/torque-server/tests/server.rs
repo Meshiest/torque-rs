@@ -455,6 +455,7 @@ fn with_manifest(manifest: Manifest, ticket: Option<Vec<u8>>) -> ConnectFields {
     ConnectFields::standard(b"", Vec::new()).with_block(ConnectBlock {
         manifest: Some(manifest),
         ticket,
+        ..Default::default()
     })
 }
 
@@ -467,6 +468,7 @@ fn signing_client(key: [u8; 16], name: &'static str, dialed: SocketAddr) -> Clie
             Ok(Some(ConnectBlock {
                 manifest: Some(rope_manifest(2)),
                 ticket: Some(SharedSecret::new(key, name).ticket(cx)?),
+                ..Default::default()
             }))
         }),
     );

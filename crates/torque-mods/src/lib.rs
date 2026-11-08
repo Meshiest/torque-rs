@@ -18,9 +18,17 @@
 //! traits. The limits and the path rules are applied below the layout, so no layout can load what they refuse.
 //!
 //! Scripts a server sends never run on a client: [`Mods::mount_server_files`] mounts them as content only.
+//!
+//! **Servers that require mods.** A game that opts in ([`ModsPlugin::required_mods`]) lets a server list mods its clients must
+//! have: the handshake carries each required mod's id, version and a SHA-256 of its content, a client with another version or
+//! hash is refused with the reason, and a server may send the content of a mod to a client that lacks it, over a bulk channel
+//! into a per-user cache, checked against the hash before it is mounted. Only content is sent: no script, in any spelling,
+//! is ever written, mounted or run from a server. See the guide's Mods chapter for the flow and [`content`] for the hash.
 
 #![warn(missing_docs)]
 
+mod cache;
+pub mod content;
 mod discover;
 #[cfg(not(target_family = "wasm"))]
 mod disk;
@@ -30,10 +38,19 @@ mod layout;
 mod manifest;
 mod mods;
 mod natives;
+pub mod offer;
 mod package;
 mod plan;
 mod plugin;
+mod share;
+mod transfer;
 
+#[cfg(not(target_family = "wasm"))]
+pub use cache::DiskStore;
+pub use cache::{
+    CacheStore, ContentCache, ENTRY_SUFFIX, IndexEntry, Listed, MAX_ENTRIES, MemoryStore,
+    default_cache_dir, index_of,
+};
 pub use info::{
     Compare, MAX_LIST, MAX_NAME_LEN, MAX_TEXT_LEN, ModInfo, Requirement, Version, check_id,
 };
@@ -43,7 +60,9 @@ pub use layout::{
     PrefsEnableList, PrereqPolicy, Problem, RootPlace, TopologicalOrder,
 };
 pub use manifest::{DEFAULT_FOLDER, MANIFEST, MAX_MANIFEST_BYTES};
-pub use mods::{ModStatus, ModSummary, Mods};
+pub use mods::{ModStatus, ModSummary, Mods, RequiredInfo};
 pub use package::{MAX_PATH_LEN, ModError, ModLimits, ModPackage, RATIO_FLOOR};
 pub use plan::ModSide;
 pub use plugin::{EngineMods, ModsConfig, ModsPlugin, ModsRegistry};
+pub use share::{ModShare, ModShareDefault, Share};
+pub use transfer::{CHANNEL, CacheChoice, DownloadLimits, ModsChannel};

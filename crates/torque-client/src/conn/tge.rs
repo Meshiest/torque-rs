@@ -469,9 +469,18 @@ impl ConnectHello {
     }
 
     /// What makes the block of one connect: an `Err` it returns is the auth provider's reason it has no ticket.
-    fn source(&self) -> BlockSource {
+    fn source(&self, vm: &Vm) -> BlockSource {
         let engine = self.engine.clone();
-        BlockSource::new(move |cx| engine.connect_block(cx))
+        // What the client holds of mods is read once, as the connection starts.
+        let mods = vm
+            .extension::<torque_engine::net::ConnectExtras>()
+            .and_then(|extras| (extras.0)(vm));
+        BlockSource::new(move |cx| {
+            Ok(engine.connect_block(cx)?.map(|mut block| {
+                block.mods.clone_from(&mods);
+                block
+            }))
+        })
     }
 }
 
@@ -654,6 +663,9 @@ impl TgeFeed {
 
     fn end(&mut self, event: FeedEvent<()>) {
         self.gone = true;
+        if let Some(channels) = &self.channels {
+            channels.closed();
+        }
         self.events.push_back(event);
     }
 
@@ -907,6 +919,9 @@ impl Feed for TgeFeed {
             let _ = self.link.send(&bye);
         }
         self.gone = true;
+        if let Some(channels) = &self.channels {
+            channels.closed();
+        }
     }
 
     fn take_events(&mut self, max: usize) -> Vec<FeedEvent<()>> {
@@ -1002,7 +1017,7 @@ impl ConnGame for TgeConn {
         if local.is_none()
             && let Some(hello) = vm.extension::<ConnectHello>()
         {
-            feed.set_connect_source(connect.server.into(), hello.source());
+            feed.set_connect_source(connect.server.into(), hello.source(vm));
         }
         feed.set_reader(reader.clone());
         feed.set_channels(vm.extension::<ClientChannels>());

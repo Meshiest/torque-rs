@@ -207,6 +207,7 @@ fn the_auth_provider_gives_tickets_and_verifies_them() {
     let forged = ConnectBlock {
         manifest: Some(engine.net_manifest(&HandshakeProfile::default())),
         ticket: Some(SharedSecret::new([6; 16], "ada").ticket(&cx()).unwrap()),
+        ..Default::default()
     };
     assert_eq!(gate.check(from(), &cx(), &fields(Some(forged))), refused);
 }

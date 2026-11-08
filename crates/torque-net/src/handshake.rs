@@ -695,6 +695,9 @@ pub struct Connection {
     /// The client's manifest listed bulk channels and this server's gate accepted it, so the channels are the same on both
     /// sides: the accept told the client so ([`CHANNELS_ACCEPT_WORD`]) and the server writes the channels' section.
     pub channels: bool,
+    /// What the client said about taking content from the server ([`ConnectGate::mods_support`]); `None` unless the connection has
+    /// channels.
+    pub mods: Option<crate::modsync::ModsSection>,
     created: u32,
     packets: RateWindow,
     disconnects: RateWindow,
@@ -1182,6 +1185,14 @@ impl Server {
                         .gate
                         .as_ref()
                         .is_some_and(|g| g.matches_channels(&request.fields));
+                let mods = if channels {
+                    self.config
+                        .gate
+                        .as_ref()
+                        .and_then(|g| g.mods_support(&request.fields))
+                } else {
+                    None
+                };
                 let ghost_bits = self.network_ghost_bits(request.extension);
                 let mut protocol = Protocol::new(Role::Server, request.seq, self.config.rates, now);
                 protocol.set_pacing(self.config.pacing.clone());
@@ -1202,6 +1213,7 @@ impl Server {
                     local: false,
                     extension: request.extension,
                     channels,
+                    mods,
                     created: now,
                     packets: RateWindow::default(),
                     disconnects: RateWindow::default(),
@@ -1256,6 +1268,7 @@ impl Server {
             local: true,
             extension,
             channels: false,
+            mods: None,
             created: now,
             packets: RateWindow::default(),
             disconnects: RateWindow::default(),

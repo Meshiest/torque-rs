@@ -34,6 +34,7 @@
 //! connection's backlog (the bytes queued and not yet acknowledged) above its cap, with a [`SendError`] and nothing queued.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter, bit_length};
@@ -176,7 +177,7 @@ fn header_bits(id_bits: u8, limits: &ChannelLimits) -> usize {
 struct Msg {
     seq: u16,
     kind: Kind,
-    data: Vec<u8>,
+    data: Arc<[u8]>,
     /// The first byte never sent.
     fresh: usize,
     /// Ranges sent and lost, to go again.
@@ -251,6 +252,16 @@ impl ChunkSender {
 
     /// Queues `data` on `channel`. Nothing is queued on an error.
     pub fn enqueue(&mut self, channel: usize, kind: Kind, data: Vec<u8>) -> Result<(), SendError> {
+        self.enqueue_shared(channel, kind, Arc::from(data))
+    }
+
+    /// Queues a message that other connections queue too: the bytes are held once and shared. Nothing is queued on an error.
+    pub fn enqueue_shared(
+        &mut self,
+        channel: usize,
+        kind: Kind,
+        data: Arc<[u8]>,
+    ) -> Result<(), SendError> {
         let (Some(limits), Some(chan)) = (self.limits.get(channel), self.chans.get(channel)) else {
             return Err(SendError::UnknownChannel);
         };

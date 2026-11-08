@@ -333,6 +333,22 @@ pub struct ConnRec<C> {
     pub game: C,
 }
 
+/// A connection held in a downloading state: its `onConnect` waits until its content is delivered.
+#[derive(Debug, Clone)]
+pub struct Awaiting {
+    pub conn: ConnId,
+    pub obj: ObjId,
+    /// The connect arguments `onConnect` is called with.
+    pub args: Vec<Vec<u8>>,
+    /// The network time of the accept.
+    pub since: u32,
+    /// What the host holds the client to.
+    pub limits: super::content::ContentLimits,
+    /// The game's progress count when last looked at, and the network time it last changed.
+    pub seen: u64,
+    pub moved: u32,
+}
+
 /// The state the passes and the natives share (`Rc<RefCell<..>>`: never borrowed across script).
 pub struct NetShared<G: NetGame> {
     pub transport: SharedTransport,
@@ -386,6 +402,8 @@ pub struct NetShared<G: NetGame> {
     pub work_used: u32,
     pub last_sweep: u32,
     pub cursor: u32,
+    /// Connections accepted with content to send, whose `onConnect` waits for it ([`content`](super::content)).
+    pub awaiting: Vec<Awaiting>,
 }
 
 impl<G: NetGame> NetShared<G> {
@@ -602,6 +620,7 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         requests: RateWindow::default(),
         work_used: 0,
         last_sweep: 0,
+        awaiting: Vec::new(),
         cursor: 0,
     }));
     conn::install(vm, &shared);

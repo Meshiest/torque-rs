@@ -21,8 +21,15 @@ use crate::package::ModPackage;
 /// The folder under which every mod's files are also visible, by the mod's id.
 pub const ALIAS_FOLDER: &str = "mods";
 
-/// The extensions of files a server may not send as script: TorqueScript and what runs like it. Compared without case.
-pub const SCRIPT_EXTENSIONS: [&str; 5] = ["cs", "dso", "gui", "mis", "ed"];
+/// The extensions of files a server may not send: TorqueScript, which the engine runs by itself, and code a loader takes
+/// (WebAssembly, native libraries). They are dropped when the files arrive. Compared without case.
+///
+/// Lua (`.lua`) is not in the list: a server may send it. It is kept and verified like any content and mounted as untrusted
+/// ([`Mods::is_untrusted`](crate::Mods::is_untrusted)); no path the engine runs files by (`exec`, a loader of another language)
+/// takes a file that came from a server, so it is data until a sandboxed realm made for it opts in.
+pub const SCRIPT_EXTENSIONS: [&str; 10] = [
+    "cs", "dso", "gui", "mis", "ed", "wasm", "wat", "dll", "so", "dylib",
+];
 
 /// Whether `path` could be run as script: a script extension, or one under another (`.cs.dso`, `.ed.cs`).
 pub fn is_script_path(path: &str) -> bool {

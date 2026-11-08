@@ -8,7 +8,7 @@ use torque_engine::{
     AssetError, Assets, ClientStage, Engine, EngineBuilder, Plugin, PluginId, Spec,
 };
 use torque_mods::{ModError, Mods, ModsPlugin};
-use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::host::{FileRead, MemFiles};
 use torque_ts_vm::vm::Vm;
 
 struct Words(Vec<String>);
@@ -233,4 +233,54 @@ fn all_server_mounts_together_stay_within_the_limits() {
         mods.mount_server_files("c", two),
         Err(ModError::TooManyFiles { .. })
     ));
+}
+
+#[test]
+fn a_lua_file_a_server_sent_is_data_that_nothing_runs() {
+    let engine = engine();
+    let mem = files(&[("main.cs", b"// the game")]);
+    let mut vm = client(&engine, mem);
+    let mods = Mods::of(&vm).expect("mods");
+    let lua: &[u8] = b"$pwned = 1; os.execute('x')";
+    let mounted = mods
+        .mount_server_files(
+            "server:1",
+            vec![
+                ("ui/panel.lua".to_string(), lua.to_vec()),
+                ("ui/PANEL2.LUA".to_string(), lua.to_vec()),
+                ("ui/readme.lua.txt".to_string(), lua.to_vec()),
+                ("ui/panel.wasm".to_string(), vec![0, 97, 115, 109]),
+            ],
+        )
+        .expect("the files mount");
+    assert_eq!(mounted, 3, "the Lua files stay; the module is dropped");
+
+    // Present, and readable as data.
+    for name in ["ui/panel.lua", "ui/PANEL2.LUA", "ui/readme.lua.txt"] {
+        assert_eq!(
+            eval(&mut vm, &format!("return isFile(\"{name}\");")),
+            "1",
+            "{name}"
+        );
+        assert!(
+            matches!(vm.file_host().read(name.as_bytes()), FileRead::Found(bytes) if bytes == lua),
+            "{name}"
+        );
+        // Untrusted, whatever asks.
+        assert!(mods.is_untrusted(name), "{name}");
+        // And never run by the paths the engine runs files by.
+        assert_eq!(
+            eval(&mut vm, &format!("return exec(\"{name}\");")),
+            "0",
+            "{name}"
+        );
+    }
+    assert!(
+        !mods.is_untrusted("main.cs"),
+        "the game's own file is trusted"
+    );
+    assert!(!mods.is_untrusted("ui/not-there.lua"));
+    assert_eq!(eval(&mut vm, "return $pwned;"), "", "nothing ran");
+    assert!(console(&mut vm).contains("came from a server"));
+    assert_eq!(eval(&mut vm, "return isFile(\"ui/panel.wasm\");"), "0");
 }

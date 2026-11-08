@@ -73,6 +73,7 @@ fn fields(manifest: Option<Manifest>) -> ConnectFields {
         Box::new(ConnectBlock {
             manifest: Some(m),
             ticket: None,
+            ..Default::default()
         })
     });
     f

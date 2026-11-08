@@ -3,7 +3,8 @@
 //!
 //! A manifest lists the plugins that have a network version (id and version, sorted by id), the handshake's protocol versions, the
 //! sorted names of the ghost classes, the datablock classes and the bulk channels (each table as a count and a 64-bit digest, and the
-//! names themselves when they fit), and the mods a server requires with their content hashes. The server compares the client's
+//! names themselves when they fit), and a short list of mods by name and content hash ([`Manifest::mods`]; the full list a server
+//! requires, with versions, sizes and downloads, is [`crate::modsync`]). The server compares the client's
 //! manifest with its own ([`Manifest::mismatch`]) and refuses a client that differs with one line of reason, for the client to show
 //! ([`Mismatch`]'s `Display`): `server needs plugin torque.rope 2, you have 1`.
 //!
@@ -163,9 +164,9 @@ fn is_invisible(c: char) -> bool {
         )
 }
 
-/// Whether `text` is something a manifest may carry as an id or a name: 1 to [`MAX_NAME_BYTES`] bytes, no [invisible
-/// characters](is_invisible), so a name shown in a refusal reason cannot be reordered or hidden.
-fn is_name(text: &str) -> bool {
+/// Whether `text` is something a manifest may carry as an id or a name: 1 to [`MAX_NAME_BYTES`] bytes, no invisible
+/// characters (control, bidirectional and zero-width ones), so a name shown in a refusal reason cannot be reordered or hidden.
+pub fn is_name(text: &str) -> bool {
     !text.is_empty() && text.len() <= MAX_NAME_BYTES && !text.chars().any(is_invisible)
 }
 
@@ -232,7 +233,9 @@ pub struct Manifest {
     pub datablocks: NameTable,
     /// The bulk channels.
     pub channels: NameTable,
-    /// The mods a server requires (a client lists the ones it has), sorted by name.
+    /// Mods by name and content hash, sorted by name, checked by [`Manifest::mismatch`] (a server lists the ones it needs, a client
+    /// the ones it has). The engine leaves it empty and uses [`crate::modsync`] instead, which also carries versions, sizes and
+    /// downloads.
     pub mods: Vec<ModEntry>,
 }
 

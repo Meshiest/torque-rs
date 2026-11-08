@@ -11,6 +11,7 @@
 //! load_before = ["cosmetics"]
 //! requires_plugins = ["torque.audio"]     # plugin ids the engine must have
 //! client_side = false                     # true: only clients load it
+//! share = "download"                      # what a server asks of clients: none, required or download
 //!
 //! [scripts]                        # entry scripts per stage; a name or a list
 //! server = "server.cs"
@@ -30,6 +31,7 @@ use torque_engine::Engine;
 
 use crate::info::{ModInfo, Requirement, Version, clean};
 use crate::layout::{Candidate, ModLayout, ModRoot, ModStages};
+use crate::share::Share;
 
 /// The manifest's file name.
 pub const MANIFEST: &str = "mod.toml";
@@ -91,6 +93,7 @@ struct Raw {
     load_before: Vec<String>,
     requires_plugins: Vec<String>,
     client_side: bool,
+    share: Option<String>,
     scripts: Option<BTreeMap<String, OneOrMany>>,
     extra: BTreeMap<String, toml::Value>,
     #[serde(flatten)]
@@ -136,6 +139,15 @@ fn parse(bytes: &[u8], candidate: &Candidate<'_>, stages: &ModStages) -> Result<
     info.author = raw.author.unwrap_or_default();
     info.category = candidate.name.category.clone();
     info.client_side = raw.client_side;
+    if let Some(text) = &raw.share {
+        match Share::parse(text) {
+            Some(share) => info.share = Some(share),
+            None => info.warnings.push(format!(
+                "`share` is `{}`; it must be none, required or download; the default applies",
+                clean(text)
+            )),
+        }
+    }
     for text in &raw.requires {
         info.requires.push(text.parse::<Requirement>()?);
     }

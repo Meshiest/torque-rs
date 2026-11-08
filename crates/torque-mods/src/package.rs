@@ -180,7 +180,7 @@ fn shown(path: &[u8]) -> String {
 }
 
 /// One check of a path a mod's file has, shared by folders and zips.
-fn check_path(name: &str, limits: &ModLimits) -> Result<(), ModError> {
+pub(crate) fn check_path(name: &str, limits: &ModLimits) -> Result<(), ModError> {
     let bad = |why| {
         Err(ModError::BadPath {
             path: shown(name.as_bytes()),

@@ -55,14 +55,16 @@ use torque_ts_vm::text::{atoi, until_nul};
 use torque_ts_vm::vm::{Vm, VmError};
 
 use super::NetGame;
+use super::channels::ChannelHub;
 use super::conn::{DeleteMode, delete_connection, join_client_group, register_candidate};
+use super::content::ContentServerSlot;
 use super::events::EventLayer;
 use super::ghosts::GhostHub;
 use super::payload::{ConnCtx, Followup, PacketOutcome};
 use super::reserve_for;
 use super::transport::{RECV_BUFFER_BYTES, Recv};
 use super::{
-    Burst, ConnRec, NET_DATAGRAMS_PER_PASS, NET_REQUESTS_PER_S, NET_TIMEOUT_SWEEP_MS,
+    Awaiting, Burst, ConnRec, NET_DATAGRAMS_PER_PASS, NET_REQUESTS_PER_S, NET_TIMEOUT_SWEEP_MS,
     NET_TRIGGER_CALLS_PER_TICK, NET_WORK_PER_SOURCE, NET_WORK_PER_TICK, NetShared, SourceKey,
 };
 use torque_game::scene::camera_tick::{TriggerCalls, call_on_trigger};
@@ -467,6 +469,12 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
     if !vm.objects().contains(obj) {
         return;
     }
+    // A client that would be held while the server already holds as many as it allows is turned away in the reject.
+    let decision = if matches!(decision, Decision::Accept) && content_busy(vm, shared, &request) {
+        Decision::Reject(b"Server busy, try again.".to_vec())
+    } else {
+        decision
+    };
     let finished = {
         let mut sh = shared.borrow_mut();
         let table = sh.string_table();
@@ -515,21 +523,56 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
             if let Some(old) = replaced {
                 drop_conn(vm, shared, old, None, DeleteMode::Immediate);
             }
-            join_client_group(vm, obj);
-            let connected = run(vm, shared, false, |vm| {
-                vm.call_method(obj, b"onConnect", &request.fields.args)
-            });
-            if !matches!(connected, Some(Ok(_))) {
-                // The client is in `ClientGroup` already: a proper drop (the Disconnect datagram, then `onDrop`), not a silent
-                // delete.
-                delete_running(
-                    vm,
-                    shared,
-                    obj,
-                    Some(ON_CONNECT_LIMIT_REASON),
-                    DeleteMode::Immediate,
-                    false,
-                );
+            let mods = shared
+                .borrow()
+                .hs
+                .connection(conn)
+                .and_then(|c| c.mods.clone());
+            if let Some(section) = mods
+                && let (Some(server), Some(hub)) = (
+                    vm.extension::<ContentServerSlot>(),
+                    vm.extension::<ChannelHub>(),
+                )
+            {
+                // The accept goes out now and `onConnect` waits for the client to have what the server requires.
+                match server.0.begin(vm, &hub, obj, conn, &section) {
+                    // Nothing to require: the client got its (empty) list and nothing holds the join.
+                    Ok(false) => {}
+                    Ok(true) => {
+                        let limits = server.0.limits(vm);
+                        {
+                            let mut sh = shared.borrow_mut();
+                            if let Some(c) = sh.hs.connection_mut(conn) {
+                                c.protocol.set_burst(true);
+                            }
+                            sh.awaiting.push(Awaiting {
+                                conn,
+                                obj,
+                                args: request.fields.args.clone(),
+                                since: now,
+                                limits,
+                                seen: 0,
+                                moved: now,
+                            });
+                        }
+                        send(shared, request.addr, &reply);
+                        return;
+                    }
+                    Err(reason) => {
+                        server.0.end(vm, obj);
+                        delete_running(
+                            vm,
+                            shared,
+                            obj,
+                            Some(reason.as_bytes()),
+                            DeleteMode::Immediate,
+                            false,
+                        );
+                        return;
+                    }
+                }
+            }
+            if !run_on_connect(vm, shared, obj, &request.fields.args) {
                 return;
             }
             // `onConnect` may have kicked the client already.
@@ -538,6 +581,122 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
             }
         }
     }
+}
+
+/// Calls `onConnect` of `obj` with the connect arguments; false when it hit a limit and the client was dropped for it.
+fn run_on_connect<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Shared<G>,
+    obj: ObjId,
+    args: &[Vec<u8>],
+) -> bool {
+    // A connection is a member of `ClientGroup` from its `onConnect` on: while it is held it is in nothing a script walks.
+    join_client_group(vm, obj);
+    let connected = run(vm, shared, false, |vm| {
+        vm.call_method(obj, b"onConnect", args)
+    });
+    if !matches!(connected, Some(Ok(_))) {
+        // The client is in `ClientGroup` already: a proper drop (the Disconnect datagram, then `onDrop`), not a silent
+        // delete.
+        delete_running(
+            vm,
+            shared,
+            obj,
+            Some(ON_CONNECT_LIMIT_REASON),
+            DeleteMode::Immediate,
+            false,
+        );
+        return false;
+    }
+    true
+}
+
+/// Whether `obj` is held and `name` is not a command the content server takes from a held client.
+fn held_command_refused<G: NetGame>(vm: &Vm, shared: &Shared<G>, obj: ObjId, name: &[u8]) -> bool {
+    if !shared.borrow().awaiting.iter().any(|a| a.obj == obj) {
+        return false;
+    }
+    vm.extension::<ContentServerSlot>()
+        .is_none_or(|server| !server.0.allows_command(name))
+}
+
+/// Whether a request that would be held cannot be taken now: the server already holds as many clients as it allows.
+fn content_busy<G: NetGame>(vm: &Vm, shared: &Shared<G>, request: &PendingRequest) -> bool {
+    let Some(server) = vm.extension::<ContentServerSlot>() else {
+        return false;
+    };
+    let (held, wants) = {
+        let sh = shared.borrow();
+        let wants = sh.hs.config().gate.as_ref().is_some_and(|gate| {
+            gate.matches_channels(&request.fields) && gate.mods_support(&request.fields).is_some()
+        });
+        (sh.awaiting.len(), wants)
+    };
+    wants && server.0.holds(vm) && !server.0.admit(vm, held)
+}
+
+/// Runs `onConnect` of the connections whose client says it has what the server requires, and drops the ones that took too long,
+/// stood still, or are gone.
+fn poll_content<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
+    if shared.borrow().awaiting.is_empty() {
+        return;
+    }
+    let Some(server) = vm.extension::<ContentServerSlot>() else {
+        // The game took its content server away: nobody waits for it.
+        let waiting = std::mem::take(&mut shared.borrow_mut().awaiting);
+        for entry in waiting {
+            if let Some(c) = shared.borrow_mut().hs.connection_mut(entry.conn) {
+                c.protocol.set_burst(false);
+            }
+            if vm.objects().contains(entry.obj) {
+                run_on_connect(vm, shared, entry.obj, &entry.args);
+            }
+        }
+        return;
+    };
+    let waiting = std::mem::take(&mut shared.borrow_mut().awaiting);
+    let mut still = Vec::new();
+    for mut entry in waiting {
+        if !vm.objects().contains(entry.obj) {
+            server.0.end(vm, entry.obj);
+            continue;
+        }
+        if server.0.is_ready(vm, entry.obj) {
+            server.0.end(vm, entry.obj);
+            if let Some(c) = shared.borrow_mut().hs.connection_mut(entry.conn) {
+                c.protocol.set_burst(false);
+            }
+            run_on_connect(vm, shared, entry.obj, &entry.args);
+            continue;
+        }
+        let seen = server.0.progress(vm, entry.obj);
+        if seen != entry.seen {
+            entry.seen = seen;
+            entry.moved = now;
+        }
+        let reason: Option<&[u8]> = if now.wrapping_sub(entry.moved) > entry.limits.idle() {
+            Some(b"Mod download stalled.")
+        } else if now.wrapping_sub(entry.since) > entry.limits.total() {
+            Some(b"Mod download took too long.")
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => {
+                server.0.end(vm, entry.obj);
+                delete_running(
+                    vm,
+                    shared,
+                    entry.obj,
+                    Some(reason),
+                    DeleteMode::Immediate,
+                    false,
+                );
+            }
+            None => still.push(entry),
+        }
+    }
+    shared.borrow_mut().awaiting.extend(still);
 }
 
 /// Deletes the object of handshake connection `conn`, if the host has one; else just forgets the connection.
@@ -688,6 +847,12 @@ fn run_followups<G: NetGame>(
             }
             Followup::ServerCmd { obj, name, args } => {
                 if !command_allowed(vm, shared, obj) {
+                    continue;
+                }
+                // A connection that is held (its `onConnect` has not run) may speak only to the content server: any other
+                // command is dropped, as if it had not been sent.
+                if held_command_refused(vm, shared, obj, &name) {
+                    shared.borrow_mut().counters.commands_dropped += 1;
                     continue;
                 }
                 let within_rate = {
@@ -1062,6 +1227,8 @@ fn build_packet<G: NetGame>(
 
 /// The timeout sweep at network time `now`.
 pub fn timeouts<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
+    shared.borrow_mut().set_now(now);
+    poll_content(vm, shared, now);
     let events = {
         let mut sh = shared.borrow_mut();
         sh.set_now(now);

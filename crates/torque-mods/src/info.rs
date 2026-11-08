@@ -222,6 +222,8 @@ pub struct ModInfo {
     pub requires_plugins: Vec<String>,
     /// A mod for clients only: a dedicated server does not load it, and a server never asks clients to have it.
     pub client_side: bool,
+    /// What a server asks of clients for this mod (`None`: the engine's default, required when the mod has content).
+    pub share: Option<crate::share::Share>,
     /// Entry scripts per load stage, in the order they run: `(stage, paths)`. A stage must be one the game declared
     /// ([`ModStages`](crate::ModStages)); a path is relative to the mod's own files.
     pub scripts: Vec<(String, Vec<String>)>,
@@ -249,6 +251,7 @@ impl ModInfo {
             load_before: Vec::new(),
             requires_plugins: Vec::new(),
             client_side: false,
+            share: None,
             scripts: Vec::new(),
             hidden: Vec::new(),
             extra: BTreeMap::new(),

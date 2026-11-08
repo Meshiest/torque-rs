@@ -230,6 +230,9 @@ impl GameServer {
         // `onConnectRequest`; one with neither judges no one and speaks Torque's handshake.
         let profile = shared.borrow().handshake_profile();
         if let Some(gate) = engine.connect_gate(&profile) {
+            // The mods a server requires are known once its mods are loaded, after the gate is set; the script engine holds the
+            // list the gate judges with.
+            server.vm.set_extension(Rc::new(gate.required().clone()));
             shared.borrow_mut().set_connect_gate(gate);
         }
         // The address the socket is bound to is the one clients dial unless the host says otherwise

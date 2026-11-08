@@ -47,9 +47,20 @@ use torque_net::chunk::ChannelLimits;
 use torque_net::chunk::registry::{ChannelEntry, ChannelError, ChannelRegistry, ChunkChannel};
 use torque_net::connect::{AuthContext, AuthProvider, ConnectBlock, ManifestGate};
 use torque_net::manifest::Manifest;
+use torque_net::modsync::ModsSection;
 use torque_net::profile::HandshakeProfile;
 
+use torque_ts_vm::vm::Vm;
+
 use crate::{Engine, EngineBuilder};
+
+/// What a client's script engine adds to the connect block its connections send: that it takes a server's mod content and the most
+/// it will take ([`ModsSection`]; nothing about the mods it has). A plugin makes it an extension of the client's script engine
+/// (`vm.set_extension(Rc::new(ConnectExtras(..)))`) and each connection asks it when it starts.
+pub struct ConnectExtras(pub Rc<MakeSection>);
+
+/// What makes the section ([`ConnectExtras`]).
+pub type MakeSection = dyn Fn(&Vm) -> Option<ModsSection>;
 
 /// The auth provider slot's value.
 struct AuthSlot(Arc<dyn AuthProvider>);
@@ -137,7 +148,7 @@ impl Engine {
     }
 
     /// The manifest of this engine for peers speaking `profile`'s protocol: every plugin with a network version, the names plugins
-    /// registered, no required mods.
+    /// registered. The mods a server requires are not in it: they ride in the connect block ([`torque_net::modsync`]).
     pub fn net_manifest(&self, profile: &HandshakeProfile) -> Manifest {
         let mut manifest = Manifest::new(profile.protocol_min, profile.protocol_current);
         for (id, version) in self.net_versions() {
@@ -191,6 +202,7 @@ impl Engine {
         let block = ConnectBlock {
             manifest: Some(self.net_manifest(profile)),
             ticket,
+            ..Default::default()
         };
         // A block the request could not carry (a manifest over its limit, a name with invisible characters) stops the connect with
         // the reason, rather than going out as a request with nothing in it.

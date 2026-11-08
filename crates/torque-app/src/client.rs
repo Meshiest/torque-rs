@@ -389,6 +389,14 @@ impl<S> Connect for GameClient<S> {
     }
 }
 
+/// Carries the datagrams between `server` (a [`GameServer`] ticked by hand, on [`super::server::Listen::Memory`]) and several
+/// clients made with [`ClientNet::Memory`] that have no server of their own: what each sent goes in, and what the server sent goes
+/// to the client it is addressed to. Call it around each tick of the server and each step of the clients.
+pub fn carry_between<S>(server: &GameServer, clients: &[&GameClient<S>]) {
+    let links: Vec<&MemoryLink> = clients.iter().filter_map(|c| c.link.as_ref()).collect();
+    MemoryLink::carry_all(&links, server);
+}
+
 impl<S> GameClient<S> {
     /// Connects the client over the transport registered under `id`, to `target` (of the type that transport takes; see
     /// [`transports`](crate::transports)), closing any other socket it had: a browser's client opens a new link to join

@@ -308,6 +308,31 @@ impl MemoryLink {
         }
     }
 
+    /// Carries the datagrams of several clients that share `server`: each client's go in, and what the server sent goes to the client
+    /// it is addressed to (`carry` of one link would take and drop the datagrams of the others).
+    pub(crate) fn carry_all(links: &[&MemoryLink], server: &GameServer) {
+        let Some(end) = server.memory_end() else {
+            return;
+        };
+        for link in links {
+            let client = SocketAddr::V4(link.client);
+            for (to, data) in link.sent.borrow_mut().drain(..) {
+                if SocketAddr::V4(to) == link.server {
+                    end.inject(client, &data);
+                }
+            }
+        }
+        for (to, data) in end.take_sent() {
+            for link in links {
+                if to == SocketAddr::V4(link.client)
+                    && let SocketAddr::V4(from) = link.server
+                {
+                    link.incoming.borrow_mut().push_back((from, data.clone()));
+                }
+            }
+        }
+    }
+
     pub(crate) fn clear(&self) {
         self.sent.borrow_mut().clear();
         self.incoming.borrow_mut().clear();

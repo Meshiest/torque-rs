@@ -200,6 +200,33 @@ impl ChannelHub {
         }
     }
 
+    /// Queues a message that other clients are sent too (`data` is held once and shared) for `client` on `channel`.
+    pub fn send_shared(
+        &self,
+        client: ConnId,
+        channel: &str,
+        kind: Kind,
+        data: std::sync::Arc<[u8]>,
+    ) -> Result<(), SendError> {
+        let mut st = self.state.borrow_mut();
+        let Some(id) = st.registry.id(channel) else {
+            return Err(SendError::UnknownChannel);
+        };
+        match st.conns.get_mut(&client) {
+            Some(c) => c.sender.enqueue_shared(id, kind, data),
+            None => Err(SendError::UnknownChannel),
+        }
+    }
+
+    /// The bytes queued for `client` on every channel and not yet acknowledged.
+    pub fn backlog_total(&self, client: ConnId) -> usize {
+        self.state
+            .borrow()
+            .conns
+            .get(&client)
+            .map_or(0, |c| c.sender.total_backlog())
+    }
+
     /// Queues for each enabled client the bytes `pick` returns for it (`None`: that client does not get this message).
     /// Returns the clients that were refused, which a game answers with [`resync`](Self::resync) or by dropping them.
     pub fn send_each(
@@ -339,10 +366,14 @@ impl PayloadLayer for ChannelLayer {
             if let Some(c) = st.conns.get_mut(&ctx.conn) {
                 let limit = ctx.protocol.packet_limit_bits();
                 let share = limit / 100 * self.share_percent.min(100);
+                // A connection in a burst (it has bulk data to move and no events or ghosts yet) gives the channels the whole packet.
+                let burst = ctx.protocol.is_burst();
+                let share = if burst { limit } else { share };
                 let room = share
                     .min(limit.saturating_sub(w.bits()))
                     .min(w.remaining_bits());
-                let yielding = self.yield_every > 0 && c.since_yield + 1 >= self.yield_every;
+                let yielding =
+                    !burst && self.yield_every > 0 && c.since_yield + 1 >= self.yield_every;
                 let room = if yielding { room.min(1) } else { room };
                 let written = c.sender.write(w, ctx.protocol.last_send_seq(), room.max(1));
                 c.since_yield = if yielding || written == 0 {
@@ -436,10 +467,51 @@ impl ClientChannels {
     }
 
     /// Starts over for a new connection: off, and no message numbers or half-received messages left from the last one. The
-    /// channels' logic keeps its state (the next snapshot replaces it).
+    /// channels' logic keeps its state (the next snapshot replaces it) unless it overrides [`ChunkChannel::reset`].
     pub fn reset(&self) {
         *self.receiver.borrow_mut() = ChunkReceiver::new(&self.registry.limits());
         self.active.set(false);
+        self.each_logic(ChunkChannel::reset);
+    }
+
+    /// The connection ended: off, and every channel's logic is told ([`ChunkChannel::closed`]).
+    pub fn closed(&self) {
+        self.active.set(false);
+        self.each_logic(ChunkChannel::closed);
+    }
+
+    /// Runs `f` on each channel's logic, with nothing borrowed while it runs.
+    fn each_logic(&self, f: fn(&mut dyn ChunkChannel)) {
+        let count = self.logic.borrow().len();
+        for at in 0..count {
+            let taken = self.logic.borrow_mut().get_mut(at).and_then(Option::take);
+            if let Some(mut logic) = taken {
+                f(logic.as_mut());
+                if let Some(slot) = self.logic.borrow_mut().get_mut(at) {
+                    *slot = Some(logic);
+                }
+            }
+        }
+    }
+
+    /// Runs `f` on the logic of channel `name` when it is a `T` (the channel returns itself from
+    /// [`ChunkChannel::as_any_mut`]); `None` when there is no such channel, it is of another type, or it is running right now.
+    /// Nothing is borrowed while `f` runs.
+    pub fn with_channel<T: 'static, R>(
+        &self,
+        name: &str,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let at = self.registry.id(name)?;
+        let mut logic = self.logic.borrow_mut().get_mut(at).and_then(Option::take)?;
+        let out = logic
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<T>())
+            .map(f);
+        if let Some(slot) = self.logic.borrow_mut().get_mut(at) {
+            *slot = Some(logic);
+        }
+        out
     }
 
     /// Reads a packet's section when active, and gives each message that arrived whole to its channel. An error means the
