@@ -1,9 +1,15 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "examples/*"]
-# The examples' pictures (`examples/README.md`'s), not a crate; the native extension sample and the C header's generator,
-# each built on its own (their own workspaces).
-exclude = ["examples/screenshots", "examples/native-extension", "crates/torque-plugin-abi/header-gen"]
+# The examples' pictures (`examples/README.md`'s), not a crate; the native extension sample, the C header's generator and the
+# Lua extension, each built on its own (their own workspaces). The Lua extension builds Luau's C++ sources, so it stays out
+# of this workspace: `cargo build` here, with any features, needs no C++ compiler.
+exclude = [
+    "examples/screenshots",
+    "examples/native-extension",
+    "crates/torque-plugin-abi/header-gen",
+    "crates/torque-plugin-lua",
+]
 
 [workspace.package]
 version = "0.1.0"

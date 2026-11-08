@@ -223,6 +223,31 @@ on the thread already inside it. So an extension's own state needs no lock again
 `Send + Sync` natives and `Send` passes, since the thread may change between calls), but it may not count on one thread,
 or on thread-local storage, staying the same from call to call.
 
+The one re-entry the engine allows is a call back: during one of its calls an extension may run the script engine's
+functions and methods (`Call::call_function`, `Call::call_method`), and a script run that way may call the extension again
+on the same thread. The extension must hold no lock of its own across such a call. The nesting counts against the script
+engine's call depth (the stack the extension used is charged as script levels), and at most 64 calls back nest.
+
+### Script languages
+
+An extension can run another language's files: `Registrar::script_language(side, "lua", language)` declares a
+`ScriptLanguage`, and from then on `exec` hands every file with that extension to it, after the checks a script's file
+gets (so a file a server sent is never handed over). During its calls a language can:
+
+- run console functions and methods (`call_function`, `call_method`, `has_method`), find objects (`find_object`) and read
+  and write their fields (`field`, `set_field`), and globals (`global`, `set_global`);
+- define console functions and methods that call it back (`define_function`, with an id the engine hands back to
+  `ScriptLanguage::call_defined`), in the package of the file it is running (`script_package`: a mod's), so that switching
+  the mod off hides them;
+- (the functions and methods a language's code runs are checked against the script engine's call policy, which by
+  default refuses those that run code from text or write files, under any namespace);
+- charge its work to the step budget (`charge`): `Err(Limit)` once it is spent, which the language hands back so that the
+  script that started it stops too;
+- read its own files (`read_script`: a relative path, no `..`, its extension) through the checks `exec` makes;
+- learn which script engine it is in (`vm_info`: a number and a side) and hear when one goes (`ScriptLanguage::vm_dropped`).
+
+The [Lua](lua.md) extension is built on this.
+
 ### The same plugin compiled in
 
 An extension's functions have the same names, argument counts and usage texts as the same functions in a compiled
@@ -312,6 +337,10 @@ The rules of the interface:
   (`TORQUE_MAX_*`), text that is not UTF-8 or a name with the wrong characters is an error status, not a crash.
 - The table (`TorqueApi`) stays valid while the extension is loaded. Keep the pointer.
 - Calls come from any of the engine's threads, one at a time (see Threads above).
+- A text result the table hands back (`get_global`, `call_function`, `get_field`, `read_script`) is valid until the next
+  function of the table called with the same call handle, or the call's end: copy it.
+- `TORQUE_ERR_LIMIT` means a limit stopped the run (the step budget, the call depth). Return it from your own function, so
+  the script that called you stops too.
 
 ## ABI versioning
 

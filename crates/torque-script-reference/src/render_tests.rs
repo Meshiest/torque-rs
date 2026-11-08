@@ -153,6 +153,20 @@ fn the_index_counts_and_lists_the_opt_in_plugins() {
 }
 
 #[test]
+fn the_lua_page_shows_the_calls_as_lua_writes_them() {
+    let text = page("lua.md");
+    assert!(
+        text.contains("- `ts.call(\"Alpha\", a, b...)` *at least 1; client*"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- `ts.call(\"Pad::setDeadZone\", zone)`"),
+        "{text}"
+    );
+    assert!(text.contains("- `obj:dump(string a)`"), "{text}");
+}
+
+#[test]
 fn rendering_twice_gives_the_same_text() {
     assert_eq!(pages(&reference()), pages(&reference()));
 }

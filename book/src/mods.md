@@ -60,7 +60,8 @@ names a bad version skips the mod, and the console says why (`dumpMods()` lists 
 
 ## What a mod's scripts can do
 
-A mod's scripts are TorqueScript, run like the game's own, with one difference: every function the script declares goes into a
+A mod's scripts are TorqueScript (or Lua, when the game has the Lua extension: see [Lua](lua.md)), run like the game's own,
+with one difference: every function the script declares goes into a
 **package** named `Mod_<id>` (`Mod_bigger-bombs`), and the package is active while the mod is enabled. Only the mod's own files declare into it: a game script the mod `exec`s declares its functions as it always does. That is how a mod
 replaces a function of the game: it declares one of the same name, and the game's is still there under `Parent::`.
 
@@ -129,7 +130,8 @@ A server may tell a client which files to have, and send them. What it sends is 
 
 - Anything that could be script (`.cs`, `.dso`, `.gui`, `.mis`, and the names that contain one of them, such as `.ed.cs`) is
   dropped when the files arrive. It cannot be read, listed or run.
-- No matter what the files are called, `exec` refuses a file that came from a server.
+- No matter what the files are called, `exec` refuses a file that came from a server. A `.lua` file may arrive as content,
+  but it never runs, and Lua's `require` cannot load it either.
 - Its pictures, models, sounds and other content are mounted like a mod's files, but marked **untrusted**: a loader that was not
   written for hostile files (its author did not mark it so) is never given them.
 - Paths and sizes are held to the same limits as mods (below).

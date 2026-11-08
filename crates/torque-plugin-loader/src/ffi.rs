@@ -10,20 +10,29 @@
 //! its length says: an extension that lies there is as broken as one that writes over the game's memory, which a
 //! native extension can always do.
 //!
-//! **Re-entrancy.** The table offers nothing that runs scripts, so a native of an extension cannot call another of its
-//! natives back; the engine still makes one call into an extension at a time (`ExtensionState`'s lock).
+//! **Re-entrancy.** The engine makes one call into an extension at a time (`ExtensionState`'s lock). The table's script
+//! functions (`call_function`, `call_method`) run scripts, which may call the extension again: such a nested call is let
+//! in on the same thread while every live call into it is calling back (`ExtensionState::call_out`), at most
+//! `TORQUE_MAX_NESTING` deep. No borrow of this thread's frames is held while a script runs, so the nested call's frames
+//! stack on top.
 
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use torque_engine::Side;
 use torque_plugin_abi::*;
 use torque_ts_vm::convert::{ArgKind, FromScript};
-use torque_ts_vm::vm::{Native, Vm};
+use torque_ts_vm::ns::Callable;
+use torque_ts_vm::vm::{MAX_CALL_DEPTH, Native, Vm, VmError, WORK_PER_STEP};
+
+use crate::extension::ExtensionState;
+use crate::language::VmContext;
 
 /// A pointer the extension handed over to be handed back to it, never read by the engine.
 #[derive(Clone, Copy, Debug)]
@@ -44,6 +53,13 @@ type CreateFn = unsafe extern "C" fn(*mut c_void, TorqueDraw, *mut *mut c_void) 
 type DrawFn = unsafe extern "C" fn(*mut c_void, *const TorquePassFrame, TorqueDraw) -> TorqueStatus;
 /// `TorquePassDecl::drop`.
 type DropFn = unsafe extern "C" fn(*mut c_void);
+/// `TorqueLanguageDecl::run_file`.
+type RunFileFn =
+    unsafe extern "C" fn(*mut c_void, TorqueCall, TorqueStr, TorqueStr) -> TorqueStatus;
+/// `TorqueLanguageDecl::call_defined`.
+type CallDefinedFn = unsafe extern "C" fn(*mut c_void, TorqueCall, u64) -> TorqueStatus;
+/// `TorqueLanguageDecl::vm_dropped`.
+type VmDroppedFn = unsafe extern "C" fn(*mut c_void, TorqueVm);
 
 /// A console function or method an extension declared, checked and copied.
 pub(crate) struct NativeSpec {
@@ -78,6 +94,17 @@ pub(crate) struct PassSpec {
     user: UserPtr,
 }
 
+/// A script language an extension declared.
+pub(crate) struct LanguageSpec {
+    pub(crate) side: Side,
+    /// The file extension, without the dot, lower case.
+    pub(crate) extension: String,
+    run_file: RunFileFn,
+    call_defined: Option<CallDefinedFn>,
+    vm_dropped: Option<VmDroppedFn>,
+    user: UserPtr,
+}
+
 /// What an extension's init registered, checked.
 pub(crate) struct Registered {
     pub(crate) id: String,
@@ -86,6 +113,7 @@ pub(crate) struct Registered {
     pub(crate) natives: Vec<NativeSpec>,
     pub(crate) globals: Vec<GlobalSpec>,
     pub(crate) passes: Vec<PassSpec>,
+    pub(crate) languages: Vec<LanguageSpec>,
     pub(crate) log: Vec<String>,
 }
 
@@ -101,13 +129,14 @@ struct InitFrame {
     natives: Vec<NativeSpec>,
     globals: Vec<GlobalSpec>,
     passes: Vec<PassSpec>,
+    languages: Vec<LanguageSpec>,
     refused: Vec<String>,
     log: Vec<String>,
 }
 
 impl InitFrame {
     fn count(&self) -> usize {
-        self.natives.len() + self.globals.len() + self.passes.len()
+        self.natives.len() + self.globals.len() + self.passes.len() + self.languages.len()
     }
 }
 
@@ -120,8 +149,17 @@ struct CallFrame {
     this: Option<u32>,
     result: Option<Native>,
     error: Option<String>,
-    /// The last `get_global`'s value, which its pointer points into.
+    /// The last text result handed out (`get_global`, `call_function`, ...), which its pointer points into.
     scratch: Vec<u8>,
+    /// The extension called.
+    ext: Arc<ExtensionState>,
+    /// Its language, for a language's call (`run_file`, `call_defined`).
+    lang: Option<usize>,
+    /// The package a `run_file`'s definitions go into (empty for none).
+    package: Vec<u8>,
+    /// What stopped a run the extension started (`call_function`, a charge): handed on when the extension reports a
+    /// limit.
+    vm_error: Option<VmError>,
 }
 
 /// One draw of a pass running on this thread.
@@ -740,6 +778,562 @@ unsafe extern "C" fn log(handle: u64, level: u32, message: TorqueStr) -> TorqueS
     })
 }
 
+/// The live call frame `call`'s script engine and extension, copied out so that no borrow of the frames is held while a
+/// script runs (a nested call pushes frames of its own).
+fn frame_parts(call: TorqueCall) -> Result<(*mut Vm, Arc<ExtensionState>), TorqueStatus> {
+    CALLS.with(|calls| {
+        calls
+            .borrow()
+            .iter()
+            .rev()
+            .find(|c| c.handle == call)
+            .map(|c| (c.vm, Arc::clone(&c.ext)))
+            .ok_or(TORQUE_ERR_HANDLE)
+    })
+}
+
+/// Hands `value` out through the frame `call`'s scratch to `out`.
+///
+/// # Safety
+///
+/// `out` is null, misaligned, or the extension's place for a text, valid during the call.
+unsafe fn hand_out(call: TorqueCall, value: Vec<u8>, out: *mut TorqueStr) -> TorqueStatus {
+    with_call(call, |frame| {
+        frame.scratch = value;
+        let text = TorqueStr {
+            ptr: frame.scratch.as_ptr(),
+            len: frame.scratch.len(),
+        };
+        // SAFETY: the caller's promise; the text points into the frame until the next hand-out or the call's end.
+        unsafe { put(out, text) }
+    })
+}
+
+/// The `count` texts at `args`, copied.
+///
+/// # Safety
+///
+/// `args` is null with `count` 0, or `count` texts that keep the ABI's promise for the call.
+unsafe fn read_args(args: *const TorqueStr, count: usize) -> Result<Vec<Vec<u8>>, TorqueStatus> {
+    if count > TORQUE_MAX_ARGS {
+        return Err(TORQUE_ERR_RANGE);
+    }
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if args.is_null() || !args.is_aligned() {
+        return Err(TORQUE_ERR_INVALID);
+    }
+    // SAFETY: not null, aligned, at most TORQUE_MAX_ARGS long, valid during the call by the ABI's promise.
+    let given = unsafe { std::slice::from_raw_parts(args, count) };
+    given
+        .iter()
+        // SAFETY: each text keeps the ABI's promise for the call; it is copied.
+        .map(|a| unsafe { bytes(*a, TORQUE_MAX_VALUE) }.map(<[u8]>::to_vec))
+        .collect()
+}
+
+/// Whether the script engine's call policy refuses the live call `call` (a language's) running `namespace::name`: the
+/// reason is printed, and the call gets [`TORQUE_ERR_FAILED`]. A native extension's own natives are not held to it.
+fn refused(
+    call: TorqueCall,
+    namespace: &str,
+    name: &str,
+    method: bool,
+    args: &[Vec<u8>],
+) -> Option<TorqueStatus> {
+    let (vm, lang) = CALLS.with(|calls| {
+        calls
+            .borrow()
+            .iter()
+            .rev()
+            .find(|c| c.handle == call)
+            .map(|c| (c.vm, c.lang))
+    })?;
+    lang?;
+    // SAFETY: as in `run_back`: the frame is live, the script engine is the call's alone, and no borrow of the frames is
+    // held (printing may run the console's hooks).
+    let vm = unsafe { &mut *vm };
+    let reason = crate::call_policy::check(vm, namespace, name, method, args).err()?;
+    vm.error(reason);
+    Some(TORQUE_ERR_FAILED)
+}
+
+/// Runs `run` on the script engine of the live call `call`, as a call back from its extension, and hands its result out
+/// to `out`; a run that stopped is [`TORQUE_ERR_LIMIT`], its error kept for the frame's outcome.
+///
+/// # Safety
+///
+/// `out` as [`hand_out`]'s.
+unsafe fn run_back(
+    call: TorqueCall,
+    out: *mut TorqueStr,
+    run: impl FnOnce(&mut Vm) -> Result<Vec<u8>, VmError>,
+) -> TorqueStatus {
+    let (vm, ext) = match frame_parts(call) {
+        Ok(parts) => parts,
+        Err(status) => return status,
+    };
+    // SAFETY: the frame is live, so the host's native that made it holds the script engine exclusively and is blocked in
+    // the extension, which is blocked in this call: nothing else touches it. No borrow of the frames is held.
+    let vm = unsafe { &mut *vm };
+    // The extension's frames since the call came in count as script levels, so recursion through it stops at the call
+    // depth limit before the end of the stack.
+    let depth = ext.call_back_depth();
+    let result = if vm.call_depth().saturating_add(depth) > MAX_CALL_DEPTH {
+        Err(VmError::CallDepth)
+    } else {
+        ext.call_out(|| vm.with_extra_depth(depth, run))
+    };
+    match result {
+        // SAFETY: the caller's promise.
+        Ok(result) => unsafe { hand_out(call, result, out) },
+        Err(error) => {
+            let _ = with_call(call, |frame| {
+                frame.vm_error = Some(error);
+                TORQUE_OK
+            });
+            TORQUE_ERR_LIMIT
+        }
+    }
+}
+
+unsafe extern "C" fn call_function(
+    call: TorqueCall,
+    ns: TorqueStr,
+    name: TorqueStr,
+    args: *const TorqueStr,
+    count: usize,
+    out: *mut TorqueStr,
+) -> TorqueStatus {
+    guard(|| {
+        // SAFETY: the texts and the arguments keep the ABI's promise for the call; they are copied.
+        let read = unsafe {
+            (
+                utf8(ns, TORQUE_MAX_NAME),
+                utf8(name, TORQUE_MAX_NAME),
+                read_args(args, count),
+            )
+        };
+        let (ns, name, args) = match read {
+            (Ok(ns), Ok(name), Ok(args)) => (ns, name, args),
+            (Err(status), _, _) | (_, Err(status), _) | (_, _, Err(status)) => return status,
+        };
+        if !is_script_name(&name) || !(ns.is_empty() || is_script_name(&ns)) {
+            return TORQUE_ERR_INVALID;
+        }
+        if let Some(status) = refused(call, &ns, &name, false, &args) {
+            return status;
+        }
+        let namespace = (!ns.is_empty()).then_some(ns.as_bytes());
+        // SAFETY: `out` is the extension's place for the result.
+        unsafe {
+            run_back(call, out, |vm| {
+                let result = vm.invoke(namespace, name.as_bytes(), &args)?;
+                crate::call_policy::note_deferred(vm, &name, &result);
+                Ok(result)
+            })
+        }
+    })
+}
+
+unsafe extern "C" fn call_method(
+    call: TorqueCall,
+    object: u32,
+    name: TorqueStr,
+    args: *const TorqueStr,
+    count: usize,
+    out: *mut TorqueStr,
+) -> TorqueStatus {
+    guard(|| {
+        // SAFETY: as in `call_function`.
+        let read = unsafe { (utf8(name, TORQUE_MAX_NAME), read_args(args, count)) };
+        let (name, args) = match read {
+            (Ok(name), Ok(args)) => (name, args),
+            (Err(status), _) | (_, Err(status)) => return status,
+        };
+        if !is_script_name(&name) {
+            return TORQUE_ERR_INVALID;
+        }
+        if let Some(status) = refused(call, "", &name, true, &args) {
+            return status;
+        }
+        // SAFETY: `out` is the extension's place for the result.
+        unsafe {
+            run_back(call, out, |vm| {
+                let result = vm.call_method(object, name.as_bytes(), &args)?;
+                crate::call_policy::note_deferred(vm, &name, &result);
+                Ok(result)
+            })
+        }
+    })
+}
+
+unsafe extern "C" fn has_method(
+    call: TorqueCall,
+    object: u32,
+    name: TorqueStr,
+    out: *mut u32,
+) -> TorqueStatus {
+    guard(|| {
+        // SAFETY: the text keeps the ABI's promise for the call.
+        let name = match unsafe { bytes(name, TORQUE_MAX_NAME) } {
+            Ok(name) => name.to_vec(),
+            Err(status) => return status,
+        };
+        with_call(call, |frame| {
+            // SAFETY: as in `get_global`: the frame is live, so the script engine is the call's alone.
+            let vm = unsafe { &*frame.vm };
+            let has =
+                vm.objects().get(object).is_some() && vm.method_origin(object, &name).is_some();
+            // SAFETY: the extension's place for the answer.
+            unsafe { put(out, u32::from(has)) }
+        })
+    })
+}
+
+unsafe extern "C" fn find_object(call: TorqueCall, name: TorqueStr, out: *mut u32) -> TorqueStatus {
+    guard(|| {
+        // SAFETY: the text keeps the ABI's promise for the call.
+        let name = match unsafe { bytes(name, TORQUE_MAX_NAME) } {
+            Ok(name) => name.to_vec(),
+            Err(status) => return status,
+        };
+        with_call(call, |frame| {
+            // SAFETY: as in `get_global`.
+            let vm = unsafe { &*frame.vm };
+            match vm.objects().find(&name) {
+                // SAFETY: the extension's place for the id.
+                Some(id) => unsafe { put(out, id) },
+                None => TORQUE_ERR_FAILED,
+            }
+        })
+    })
+}
+
+unsafe extern "C" fn get_field(
+    call: TorqueCall,
+    object: u32,
+    name: TorqueStr,
+    index: TorqueStr,
+    out: *mut TorqueStr,
+) -> TorqueStatus {
+    guard(|| {
+        // SAFETY: the texts keep the ABI's promise for the call.
+        let read = unsafe { (bytes(name, TORQUE_MAX_NAME), bytes(index, TORQUE_MAX_NAME)) };
+        let (name, index) = match read {
+            (Ok(name), Ok(index)) => (name.to_vec(), index.to_vec()),
+            (Err(status), _) | (_, Err(status)) => return status,
+        };
+        let value = with_call(call, |frame| {
+            // SAFETY: as in `get_global`.
+            let vm = unsafe { &*frame.vm };
+            if vm.objects().get(object).is_none() {
+                return TORQUE_ERR_FAILED;
+            }
+            frame.scratch = vm.script_field(object, &name, &index);
+            TORQUE_OK
+        });
+        if value != TORQUE_OK {
+            return value;
+        }
+        with_call(call, |frame| {
+            let text = TorqueStr {
+                ptr: frame.scratch.as_ptr(),
+                len: frame.scratch.len(),
+            };
+            // SAFETY: the extension's place for the text, which points into the frame as the ABI says.
+            unsafe { put(out, text) }
+        })
+    })
+}
+
+unsafe extern "C" fn set_field(
+    call: TorqueCall,
+    object: u32,
+    name: TorqueStr,
+    index: TorqueStr,
+    value: TorqueStr,
+) -> TorqueStatus {
+    guard(|| {
+        // SAFETY: the texts keep the ABI's promise for the call; they are copied.
+        let read = unsafe {
+            (
+                bytes(name, TORQUE_MAX_NAME),
+                bytes(index, TORQUE_MAX_NAME),
+                bytes(value, TORQUE_MAX_VALUE),
+            )
+        };
+        let (name, index, value) = match read {
+            (Ok(n), Ok(i), Ok(v)) => (n.to_vec(), i.to_vec(), v.to_vec()),
+            (Err(status), _, _) | (_, Err(status), _) | (_, _, Err(status)) => return status,
+        };
+        if name.is_empty() {
+            return TORQUE_ERR_INVALID;
+        }
+        let (vm, ext) = match frame_parts(call) {
+            Ok(parts) => parts,
+            Err(status) => return status,
+        };
+        // SAFETY: as in `run_back`: the script engine is the call's alone, and no borrow of the frames is held (a field's
+        // write may run script: a validator, an observer).
+        let vm = unsafe { &mut *vm };
+        if vm.objects().get(object).is_none() {
+            return TORQUE_ERR_FAILED;
+        }
+        let language = CALLS.with(|calls| {
+            calls
+                .borrow()
+                .iter()
+                .rev()
+                .find(|c| c.handle == call)
+                .is_some_and(|c| c.lang.is_some())
+        });
+        if language && let Err(reason) = crate::call_policy::check_field(vm, &name, &index, &value)
+        {
+            vm.error(reason);
+            return TORQUE_ERR_FAILED;
+        }
+        ext.call_out(|| vm.script_set_field(object, &name, &index, &value));
+        TORQUE_OK
+    })
+}
+
+unsafe extern "C" fn define_function(
+    call: TorqueCall,
+    decl: *const TorqueDefineDecl,
+) -> TorqueStatus {
+    guard(|| {
+        if decl.is_null() || !decl.is_aligned() {
+            return TORQUE_ERR_INVALID;
+        }
+        // SAFETY: not null and aligned; valid during the call by the ABI's promise.
+        let d = unsafe { *decl };
+        // SAFETY: the declaration's texts keep the ABI's promise for the call; they are copied.
+        let read = unsafe {
+            (
+                utf8(d.ns, TORQUE_MAX_NAME),
+                utf8(d.name, TORQUE_MAX_NAME),
+                utf8(d.package, TORQUE_MAX_NAME),
+                utf8(d.usage, TORQUE_MAX_TEXT),
+            )
+        };
+        let (ns, name, package, usage) = match read {
+            (Ok(ns), Ok(name), Ok(package), Ok(usage)) => (ns, name, package, usage),
+            _ => return TORQUE_ERR_INVALID,
+        };
+        if !is_script_name(&name)
+            || !(ns.is_empty() || is_script_name(&ns))
+            || !(package.is_empty() || is_script_name(&package))
+        {
+            return TORQUE_ERR_INVALID;
+        }
+        with_call(call, |frame| {
+            let Some(lang) = frame.lang else {
+                return TORQUE_ERR_FAILED;
+            };
+            let ext = Arc::clone(&frame.ext);
+            // SAFETY: as in `get_global`; declaring runs no script.
+            let vm = unsafe { &mut *frame.vm };
+            if !package.is_empty() && !VmContext::of(vm).package_allowed(package.as_bytes()) {
+                return TORQUE_ERR_FAILED;
+            }
+            let id = d.id;
+            let f: torque_ts_vm::vm::NativeFn =
+                Rc::new(move |vm, call| ext.call_defined(lang, id, vm, call));
+            let package = (!package.is_empty()).then_some(package.as_bytes());
+            vm.namespaces_mut().declare(
+                ns.as_bytes(),
+                package,
+                name.as_bytes(),
+                Callable::Native {
+                    min: 0,
+                    max: 0,
+                    usage: Rc::from(usage.as_str()),
+                    f,
+                },
+            );
+            TORQUE_OK
+        })
+    })
+}
+
+unsafe extern "C" fn charge(call: TorqueCall, steps: u64) -> TorqueStatus {
+    guard(|| {
+        with_call(call, |frame| {
+            // SAFETY: as in `get_global`.
+            let vm = unsafe { &*frame.vm };
+            let paid = if vm.step_limit().is_none() {
+                let used = frame
+                    .ext
+                    .fallback_steps
+                    .fetch_add(steps, Ordering::SeqCst)
+                    .saturating_add(steps);
+                used <= TORQUE_DEFAULT_STEPS
+            } else {
+                vm.charge_work(steps.saturating_mul(WORK_PER_STEP))
+            };
+            if paid {
+                TORQUE_OK
+            } else {
+                frame.vm_error = Some(VmError::StepLimit);
+                TORQUE_ERR_LIMIT
+            }
+        })
+    })
+}
+
+unsafe extern "C" fn vm_info(call: TorqueCall, out: *mut TorqueVmInfo) -> TorqueStatus {
+    guard(|| {
+        with_call(call, |frame| {
+            // SAFETY: as in `get_global`; making the context runs no script.
+            let vm = unsafe { &mut *frame.vm };
+            let context = VmContext::of(vm);
+            let side = match context.side() {
+                Side::Both => TORQUE_SIDE_BOTH,
+                Side::Server => TORQUE_SIDE_SERVER,
+                Side::Client => TORQUE_SIDE_CLIENT,
+            };
+            let info = TorqueVmInfo {
+                vm: context.id,
+                side,
+                step_limit: vm.step_limit().unwrap_or(0),
+            };
+            // SAFETY: the extension's place for the info.
+            unsafe { put(out, info) }
+        })
+    })
+}
+
+unsafe extern "C" fn script_package(call: TorqueCall, out: *mut TorqueStr) -> TorqueStatus {
+    guard(|| {
+        let package = with_call(call, |frame| {
+            frame.scratch = frame.package.clone();
+            TORQUE_OK
+        });
+        if package != TORQUE_OK {
+            return package;
+        }
+        with_call(call, |frame| {
+            let text = TorqueStr {
+                ptr: frame.scratch.as_ptr(),
+                len: frame.scratch.len(),
+            };
+            // SAFETY: the extension's place for the text, which points into the frame as the ABI says.
+            unsafe { put(out, text) }
+        })
+    })
+}
+
+unsafe extern "C" fn read_script(
+    call: TorqueCall,
+    path: TorqueStr,
+    out: *mut TorqueStr,
+) -> TorqueStatus {
+    guard(|| {
+        // SAFETY: the text keeps the ABI's promise for the call.
+        let path = match unsafe { utf8(path, TORQUE_MAX_TEXT) } {
+            Ok(path) => path,
+            Err(status) => return status,
+        };
+        let (vm, ext) = match frame_parts(call) {
+            Ok(parts) => parts,
+            Err(status) => return status,
+        };
+        let extension = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+        let ours = extension
+            .as_deref()
+            .is_some_and(|e| ext.languages.iter().any(|l| l.extension == e));
+        if !crate::language::is_plain_path(&path) || !ours {
+            return TORQUE_ERR_INVALID;
+        }
+        // SAFETY: as in `run_back`: the script engine is the call's alone, and no borrow of the frames is held (a policy's
+        // refusal may print a BackTrace, which may run script).
+        let vm = unsafe { &mut *vm };
+        let found = ext.call_out(|| crate::language::read_checked(vm, &path));
+        match found {
+            Ok(Some(source)) if source.len() <= TORQUE_MAX_SCRIPT => {
+                // SAFETY: `out` is the extension's place for the text.
+                unsafe { hand_out(call, source, out) }
+            }
+            Ok(Some(_)) => TORQUE_ERR_RANGE,
+            Ok(None) => TORQUE_ERR_FAILED,
+            Err(error) => {
+                let _ = with_call(call, |frame| {
+                    frame.vm_error = Some(error);
+                    TORQUE_OK
+                });
+                TORQUE_ERR_LIMIT
+            }
+        }
+    })
+}
+
+unsafe extern "C" fn register_script_language(
+    init: TorqueInit,
+    decl: *const TorqueLanguageDecl,
+) -> TorqueStatus {
+    guard(|| {
+        with_init(init, |frame| {
+            if decl.is_null() || !decl.is_aligned() {
+                frame
+                    .refused
+                    .push("a null or misaligned language declaration".to_string());
+                return TORQUE_ERR_INVALID;
+            }
+            // SAFETY: not null and aligned; valid during the call by the ABI's promise.
+            let d = unsafe { *decl };
+            // SAFETY: the text keeps the ABI's promise for the call; it is copied.
+            let extension = match unsafe { utf8(d.extension, 16) } {
+                Ok(extension) => extension.to_ascii_lowercase(),
+                Err(status) => {
+                    frame
+                        .refused
+                        .push("a language whose extension is not UTF-8 or too long".to_string());
+                    return status;
+                }
+            };
+            let taken = matches!(extension.as_str(), "cs" | "dso" | "gui" | "mis" | "ed");
+            if extension.is_empty()
+                || !extension.bytes().all(|b| b.is_ascii_alphanumeric())
+                || taken
+            {
+                frame.refused.push(format!(
+                    "{extension:?} cannot be a script language's extension"
+                ));
+                return TORQUE_ERR_INVALID;
+            }
+            let (Some(side), Some(run_file)) = (side_of(d.side), d.run_file) else {
+                frame
+                    .refused
+                    .push("a language with an unknown side or no run_file".to_string());
+                return TORQUE_ERR_INVALID;
+            };
+            if frame.languages.iter().any(|l| l.extension == extension) {
+                frame
+                    .refused
+                    .push(format!("the language of `.{extension}` is declared twice"));
+                return TORQUE_ERR_FAILED;
+            }
+            if frame.count() >= TORQUE_MAX_REGISTRATIONS {
+                frame
+                    .refused
+                    .push(format!("more than {TORQUE_MAX_REGISTRATIONS} declarations"));
+                return TORQUE_ERR_RANGE;
+            }
+            frame.languages.push(LanguageSpec {
+                side,
+                extension,
+                run_file,
+                call_defined: d.call_defined,
+                vm_dropped: d.vm_dropped,
+                user: UserPtr(d.user),
+            });
+            TORQUE_OK
+        })
+    })
+}
+
 /// The function table for one init.
 fn table(init: TorqueInit) -> TorqueApi {
     TorqueApi {
@@ -765,6 +1359,18 @@ fn table(init: TorqueInit) -> TorqueApi {
         set_global,
         draw_triangles,
         log,
+        call_function,
+        call_method,
+        has_method,
+        find_object,
+        get_field,
+        set_field,
+        define_function,
+        charge,
+        vm_info,
+        script_package,
+        read_script,
+        register_script_language,
     }
 }
 
@@ -801,6 +1407,7 @@ pub(crate) fn run_init(init: TorquePluginInitFn) -> Result<Registered, String> {
             natives: Vec::new(),
             globals: Vec::new(),
             passes: Vec::new(),
+            languages: Vec::new(),
             refused: Vec::new(),
             log: Vec::new(),
         })
@@ -870,6 +1477,7 @@ pub(crate) fn run_init(init: TorquePluginInitFn) -> Result<Registered, String> {
         natives: frame.natives,
         globals: frame.globals,
         passes: frame.passes,
+        languages: frame.languages,
         log: frame.log,
     })
 }
@@ -941,46 +1549,148 @@ pub(crate) enum CallOutcome {
     Done(Native),
     /// It failed the call with this message (`return_error`, or a status).
     Failed(String),
+    /// A limit stopped it ([`TORQUE_ERR_LIMIT`]): the error that ends the script that called it.
+    Limit(VmError),
     /// It reported a panic of its own.
     Panicked,
 }
 
-/// Calls the native `spec` with the script arguments `args` (and a method's object `this`) on `vm`.
-pub(crate) fn call_native(
-    spec: &NativeSpec,
-    vm: &mut Vm,
-    args: &[Vec<u8>],
+/// What one call frame starts with.
+struct FrameStart<'a> {
+    ext: &'a Arc<ExtensionState>,
+    vm: &'a mut Vm,
+    args: &'a [Vec<u8>],
     this: Option<u32>,
-) -> CallOutcome {
+    lang: Option<usize>,
+    package: Vec<u8>,
+}
+
+/// Runs `call` with a call frame live on this thread, and turns its status into an outcome.
+fn in_frame(start: FrameStart<'_>, call: impl FnOnce(TorqueCall) -> TorqueStatus) -> CallOutcome {
     let handle = next_handle();
     CALLS.with(|calls| {
         calls.borrow_mut().push(CallFrame {
             handle,
-            vm: vm as *mut Vm,
-            args: args.to_vec(),
-            this,
+            vm: start.vm as *mut Vm,
+            args: start.args.to_vec(),
+            this: start.this,
             result: None,
             error: None,
             scratch: Vec::new(),
+            ext: Arc::clone(start.ext),
+            lang: start.lang,
+            package: start.package,
+            vm_error: None,
         })
     });
-    // SAFETY: the extension's own function and pointer, as it declared them; the call's handle is live in this
-    // thread's frames until it returns, and `vm` is not touched here until then.
-    let status = unsafe { (spec.call)(spec.user.0, handle) };
+    let status = call(handle);
+    // Its own frame, found by its handle: a nested call's frames were pushed and popped above it meanwhile.
     let frame = CALLS
-        .with(|calls| calls.borrow_mut().pop())
-        .expect("the call's frame is the last one pushed");
+        .with(|calls| {
+            let mut calls = calls.borrow_mut();
+            let at = calls.iter().rposition(|c| c.handle == handle)?;
+            Some(calls.remove(at))
+        })
+        .expect("the call's frame is still live");
     match status {
         TORQUE_OK => match frame.error {
             Some(message) => CallOutcome::Failed(message),
             None => CallOutcome::Done(frame.result.unwrap_or(Native::Void)),
         },
         TORQUE_ERR_PANIC => CallOutcome::Panicked,
+        TORQUE_ERR_LIMIT => CallOutcome::Limit(frame.vm_error.unwrap_or(VmError::StepLimit)),
         other => CallOutcome::Failed(
             frame
                 .error
                 .unwrap_or_else(|| format!("the extension's function failed with status {other}")),
         ),
+    }
+}
+
+/// Calls the native `spec` of `ext` with the script arguments `args` (and a method's object `this`) on `vm`.
+pub(crate) fn call_native(
+    ext: &Arc<ExtensionState>,
+    spec: &NativeSpec,
+    vm: &mut Vm,
+    args: &[Vec<u8>],
+    this: Option<u32>,
+) -> CallOutcome {
+    let start = FrameStart {
+        ext,
+        vm,
+        args,
+        this,
+        lang: None,
+        package: Vec::new(),
+    };
+    // SAFETY: the extension's own function and pointer, as it declared them; the call's handle is live in this
+    // thread's frames until it returns, and `vm` is not touched here until then.
+    in_frame(start, |handle| unsafe { (spec.call)(spec.user.0, handle) })
+}
+
+/// Runs the file `path` (its text `source`) with the language `lang` of `ext` on `vm`; `package` is what its definitions
+/// go into.
+pub(crate) fn run_file(
+    ext: &Arc<ExtensionState>,
+    lang: usize,
+    vm: &mut Vm,
+    path: &[u8],
+    source: &[u8],
+    package: Vec<u8>,
+) -> CallOutcome {
+    let spec = &ext.languages[lang];
+    let start = FrameStart {
+        ext,
+        vm,
+        args: &[],
+        this: None,
+        lang: Some(lang),
+        package,
+    };
+    let text = |b: &[u8]| TorqueStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    };
+    // SAFETY: the extension's own function and pointer; the texts are valid until it returns, and the handle is live in
+    // this thread's frames until then.
+    in_frame(start, |handle| unsafe {
+        (spec.run_file)(spec.user.0, handle, text(path), text(source))
+    })
+}
+
+/// Calls the function the language `lang` of `ext` defined with `id`, with the script arguments `args`.
+pub(crate) fn call_defined(
+    ext: &Arc<ExtensionState>,
+    lang: usize,
+    id: u64,
+    vm: &mut Vm,
+    args: &[Vec<u8>],
+    this: Option<u32>,
+) -> CallOutcome {
+    let spec = &ext.languages[lang];
+    let Some(call) = spec.call_defined else {
+        return CallOutcome::Failed(format!(
+            "the native extension {}: its `.{}` language defines no functions",
+            ext.id, spec.extension
+        ));
+    };
+    let start = FrameStart {
+        ext,
+        vm,
+        args,
+        this,
+        lang: Some(lang),
+        package: Vec::new(),
+    };
+    // SAFETY: the extension's own function and pointer; the handle is live in this thread's frames until it returns.
+    in_frame(start, |handle| unsafe { call(spec.user.0, handle, id) })
+}
+
+/// Tells the language `spec` that the script engine `vm` is gone.
+pub(crate) fn vm_dropped(spec: &LanguageSpec, vm: TorqueVm) {
+    if let Some(dropped) = spec.vm_dropped {
+        // SAFETY: the extension's own function and pointer, as it declared them.
+        unsafe { dropped(spec.user.0, vm) };
     }
 }
 

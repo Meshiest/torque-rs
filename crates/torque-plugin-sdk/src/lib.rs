@@ -50,6 +50,12 @@
 //! re-enter it on the thread already inside it: natives are `Send + Sync` and passes `Send`, and thread-local storage
 //! does not carry from one call to the next.
 //!
+//! **Script languages.** An extension can run files of another language: [`Registrar::script_language`] declares a
+//! [`ScriptLanguage`] for a file extension, and the engine's `exec` hands it those files (a mod's, the game's; never one a
+//! server sent). During its calls it runs the script engine's functions and methods ([`Call::call_function`],
+//! [`Call::call_method`]), reads and writes objects' fields, defines console functions that call it back
+//! ([`Call::define_function`]) and charges its work to the step budget ([`Call::charge`]).
+//!
 //! **Panics** are caught at every entry from the engine: the panic's message goes to the engine, which disables the
 //! extension (its functions then print an error and return the empty string; its passes stop drawing). Build the
 //! extension with the default `panic = "unwind"`: with `panic = "abort"` a panic ends the game.
@@ -60,10 +66,12 @@
 extern crate self as torque_plugin_sdk;
 
 mod ffi;
+pub mod language;
 pub mod param;
 pub mod render;
 pub mod script;
 
+pub use language::{CallError, Definition, Limit, ScriptLanguage, VmInfo};
 pub use param::{ArgKind, IntoReturn, Param, ParamKind, Rest, This};
 pub use render::{Pass, PassFrame, RenderRegistry, Space, Stage, Triangles, Vertex};
 pub use script::{IntoNative, NativeDecl, Natives, ScriptRegistry, TypedNative};
@@ -156,6 +164,12 @@ impl<'a> Registrar<'a> {
         RenderRegistry { registrar: self }
     }
 
+    /// Declares `language` for the files whose extension is `extension` (without the dot: `lua`), in the script engines
+    /// of `side`: the engine's `exec` hands them to it.
+    pub fn script_language(&mut self, side: Side, extension: &str, language: impl ScriptLanguage) {
+        self.language(side, extension, Box::new(language));
+    }
+
     /// Writes `message` to the engine's log.
     pub fn log(&mut self, message: &str) {
         ffi::log(self.api, self.api.init, TORQUE_LOG_INFO, message);
@@ -172,11 +186,22 @@ impl<'a> Registrar<'a> {
 /// parameter; it is valid for the call only.
 #[derive(Clone, Copy)]
 pub struct Call<'a> {
-    pub(crate) api: &'a TorqueApi,
+    pub(crate) api: &'static TorqueApi,
     pub(crate) handle: TorqueCall,
+    pub(crate) _life: std::marker::PhantomData<&'a ()>,
 }
 
-impl Call<'_> {
+impl<'a> Call<'a> {
+    /// The call's handle: what the engine's table names it by.
+    pub fn handle(&self) -> TorqueCall {
+        self.handle
+    }
+
+    /// The engine's function table.
+    pub fn api(&self) -> &'static TorqueApi {
+        self.api
+    }
+
     /// Prints `message` on the console of the script engine that made the call.
     pub fn print(&self, message: &str) {
         ffi::log(self.api, self.handle, TORQUE_LOG_INFO, message);

@@ -21,7 +21,8 @@
 //! priority = 10
 //! ```
 //!
-//! Without `[scripts]`, each declared stage runs the script named after it (`server.cs`, `client.cs`) when the mod has one.
+//! Without `[scripts]`, each declared stage runs the script named after it (`server.cs`, `client.cs`) when the mod has one,
+//! and then its Lua file of that name (`server.lua`, `client.lua`), which runs when a Lua extension is loaded.
 //! The file is read strictly: at most [`MAX_MANIFEST_BYTES`], UTF-8, and a key it does not know is a warning.
 
 use std::collections::BTreeMap;
@@ -188,9 +189,13 @@ fn parse(bytes: &[u8], candidate: &Candidate<'_>, stages: &ModStages) -> Result<
         }
         None => {
             for stage in stages.names() {
-                let path = format!("{}.cs", stage.to_ascii_lowercase());
-                if candidate.package.contains(&path) {
-                    info.scripts.push((stage.clone(), vec![path]));
+                let paths: Vec<String> = ["cs", "lua"]
+                    .iter()
+                    .map(|ext| format!("{}.{ext}", stage.to_ascii_lowercase()))
+                    .filter(|path| candidate.package.contains(path))
+                    .collect();
+                if !paths.is_empty() {
+                    info.scripts.push((stage.clone(), paths));
                 }
             }
         }

@@ -4,3 +4,4 @@
 # The build folders of the crates built on their own (their own workspaces).
 /examples/native-extension/target
 /crates/torque-plugin-abi/header-gen/target
+/crates/torque-plugin-lua/target

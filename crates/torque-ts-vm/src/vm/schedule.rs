@@ -98,12 +98,17 @@ pub struct OverrideRun {
 /// called as any event is). It is called outside any run; the runs it makes are outermost runs of their own.
 pub type CallOverride = std::rc::Rc<dyn Fn(&mut Vm, &[Vec<u8>], &PassRoom) -> Option<OverrideRun>>;
 
+/// A host's check of a scheduled call as it fires ([`Vm::set_fire_check`]): false skips the call (the host says why).
+pub type FireCheck = std::rc::Rc<dyn Fn(&mut Vm, &Event) -> bool>;
+
 /// The handler of the native events and the host's call override (boxed in the `Vm`).
 #[derive(Default)]
 pub(super) struct NativeEvents {
     handler: Option<NativeEventHandler>,
     /// The folded name of the global function whose scheduled calls the override sees, and the override.
     call_override: Option<(Vec<u8>, CallOverride)>,
+    /// The host's check of each scheduled call as it fires.
+    fire_check: Option<FireCheck>,
 }
 
 pub(super) fn register(vm: &mut Vm) {
@@ -169,6 +174,13 @@ impl Vm {
     /// ([`CallOverride`]). A call made any other way (`invoke`, bytecode, `call()`) is not overridden.
     pub fn set_call_override(&mut self, name: &[u8], call: Option<CallOverride>) {
         self.native_events.call_override = call.map(|f| (crate::text::fold(name), f));
+    }
+
+    /// Sets the host's check of every scheduled call (`schedule`, both forms) as it fires, before the function or method
+    /// runs (None removes it): a call it refuses is skipped. A host that lets other code queue calls (a script language)
+    /// holds the call to the rules that applied where it was queued.
+    pub fn set_fire_check(&mut self, check: Option<FireCheck>) {
+        self.native_events.fire_check = check;
     }
 
     /// The steps the last outermost run used (what `advance_time_counted` bills an event): for a host's override, which makes
@@ -576,11 +588,23 @@ impl Vm {
         self.in_run(|vm| handler(vm, event))
     }
 
+    /// Whether the host's fire check lets the scheduled call `event` run (true without one). Out of line.
+    #[inline(never)]
+    fn fire_check_passes(&mut self, event: &Event) -> bool {
+        match self.native_events.fire_check.clone() {
+            Some(check) => check(self, event),
+            None => true,
+        }
+    }
+
     /// Runs one event as an outermost run (or nothing: a delete event, an object that is gone, a missing
     /// function or method). Out of line: `advance_time` holds the loop's state, this holds the argument
     /// vectors.
     #[inline(never)]
     fn fire_event(&mut self, event: Event) -> Result<(), VmError> {
+        if matches!(event.kind, EventKind::Call { .. }) && !self.fire_check_passes(&event) {
+            return Ok(());
+        }
         let (argv, on_object) = match event.kind {
             EventKind::Call { argv, on_object } => (argv, on_object),
             EventKind::Native { tag, arg } => {

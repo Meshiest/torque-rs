@@ -16,6 +16,7 @@
 [Networked plugins](networked-plugins.md)
 [Mods](mods.md)
 [Native extensions](native-extensions.md)
+[Lua](lua.md)
 [Games in a browser](web-pages.md)
 
 # Reference
@@ -25,3 +26,4 @@
   - [Methods](reference/script/methods.md)
   - [Classes](reference/script/classes.md)
   - [Prefs](reference/script/prefs.md)
+  - [From Lua](reference/script/lua.md)

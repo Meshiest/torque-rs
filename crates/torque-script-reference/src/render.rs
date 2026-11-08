@@ -19,6 +19,7 @@ pub fn pages(reference: &Reference) -> Vec<(&'static str, String)> {
         ("methods.md", methods(reference)),
         ("classes.md", classes(reference)),
         ("prefs.md", prefs(reference)),
+        ("lua.md", lua(reference)),
     ]
 }
 
@@ -43,9 +44,11 @@ fn index(reference: &Reference) -> String {
          | [Functions](functions.md) | console functions, by namespace | {functions} |\n\
          | [Methods](methods.md) | methods called on an object, by class | {methods} |\n\
          | [Classes](classes.md) | console classes and the fields they add | {} classes, {fields} fields |\n\
-         | [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | {} |\n",
+         | [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | {} |\n\
+         | [From Lua](lua.md) | the functions and methods as a Lua script calls them | {} |\n",
         reference.classes.len(),
         reference.prefs.len(),
+        reference.natives.len(),
     );
     out.push_str(
         "## Reading an entry\n\n\
@@ -348,6 +351,62 @@ fn functions(reference: &Reference) -> String {
 
 fn methods(reference: &Reference) -> String {
     natives_page(reference, true)
+}
+
+/// A native as a Lua script calls it: `ts.call("name", args)` or `obj:name(args)`.
+fn lua_call(n: &Native) -> String {
+    let (signature, _) = signature(n);
+    let args = signature
+        .find('(')
+        .and_then(|open| {
+            let close = closing_paren(&signature[open..])?;
+            Some(signature[open + 1..open + close].trim().to_string())
+        })
+        .unwrap_or_default();
+    if n.method {
+        return format!("obj:{}({args})", n.name);
+    }
+    let name = if n.namespace.is_empty() {
+        n.name.clone()
+    } else {
+        format!("{}::{}", n.namespace, n.name)
+    };
+    if args.is_empty() {
+        format!("ts.call(\"{name}\")")
+    } else {
+        format!("ts.call(\"{name}\", {args})")
+    }
+}
+
+/// The functions and methods as a Lua script of the Lua extension calls them.
+fn lua(reference: &Reference) -> String {
+    let mut out = format!(
+        "{GENERATED}\n\n# From Lua\n\n\
+         The same functions and methods as the other pages, as a script of the Lua extension calls them (see the \
+         [Lua](../../lua.md) chapter): a console function with `ts.call`, a method on an object `ts.object` found. Arguments \
+         and results are text. A script reaches only its own realm's: an entry marked server is not there for a client's \
+         Lua. The functions that run text or touch files are refused (the chapter lists them).\n\n"
+    );
+    for method in [false, true] {
+        let groups = grouped(reference, method);
+        let _ = writeln!(out, "## {}\n", if method { "Methods" } else { "Functions" });
+        for (name, natives) in groups.values() {
+            if method || groups.len() > 1 {
+                let _ = writeln!(out, "### {}\n", heading_name(name));
+            }
+            for n in natives {
+                let _ = writeln!(
+                    out,
+                    "- {} *{}; {}*",
+                    code(&lua_call(n)),
+                    n.arity.text(),
+                    tags(&n.sides, &n.plugins)
+                );
+            }
+            out.push('\n');
+        }
+    }
+    trim_end(out)
 }
 
 fn field_row(out: &mut String, f: &Field, show_default: bool, show_sides: bool) {

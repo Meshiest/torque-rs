@@ -1,0 +1,88 @@
+[package]
+name = "torque-plugin-lua"
+description = "Lua scripting for torque-rs mods: Luau in sandboxed server and client realms, as a native extension"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/Meshiest/torque-rs"
+publish = false
+keywords = ["torque", "lua", "luau", "mods", "gamedev"]
+categories = ["game-engines"]
+
+# Its own workspace, like examples/native-extension: Luau is C++, built by `mlua`'s vendored sources, and the engine's own
+# workspace builds with no C++ compiler. Build the library a game loads from its `plugins/` folder with
+# `cargo build --release --manifest-path crates/torque-plugin-lua/Cargo.toml` (`just lua`), and put `torque_lua.toml` beside
+# it. The tests link the same code into the engine (`torque_plugin_lua::INIT`) and load the built library too.
+[workspace]
+
+[lib]
+name = "torque_lua"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+torque-plugin-sdk = { path = "../torque-plugin-sdk" }
+# Luau (MIT), built from its sources: `send` because the engine may call an extension from any of its threads (one at a
+# time).
+mlua = { version = "0.12.2", default-features = false, features = ["luau", "vendored", "send"] }
+
+[dev-dependencies]
+torque-engine = { path = "../torque-engine" }
+torque-mods = { path = "../torque-mods" }
+torque-plugin-loader = { path = "../torque-plugin-loader" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+torque-ts-compiler = { path = "../torque-ts-compiler" }
+
+[lints.rust]
+# `deny`, not `forbid`: `realm` reconstructs the call it runs in from its handle (`Call::from_handle`), once, in one place.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+explicit_outlives_requirements = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+checked_conversions = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+manual_assert = "warn"
+manual_is_variant_and = "warn"
+manual_ok_or = "warn"
+mut_mut = "warn"
+needless_bitwise_bool = "warn"
+ref_binding_to_reference = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+should_panic_without_expect = "warn"
+stable_sort_primitive = "warn"
+string_add_assign = "warn"
+string_lit_chars_any = "warn"
+unnecessary_join = "warn"
+unnecessary_self_imports = "warn"
+unnested_or_patterns = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
+exit = "warn"
+mem_forget = "warn"
+
+# Luau and its bindings optimized in test builds too: an unoptimized interpreter makes the fuel tests slow.
+[profile.dev.package.mlua-sys]
+opt-level = 2
+
+[profile.dev.package.mlua]
+opt-level = 2

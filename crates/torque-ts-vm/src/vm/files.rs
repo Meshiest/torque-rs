@@ -144,6 +144,16 @@ enum Prepared {
     Run(Rc<CodeBlock>, Mode),
     /// The step budget was spent before a compile (see `compile_source`): the run ends with `StepLimit`.
     OutOfBudget,
+    /// A file of another language ([`ScriptLanguage`](crate::policy::ScriptLanguage)): boxed, so this stays as small
+    /// as the frames on the recursion path need.
+    Foreign(Box<Foreign>),
+}
+
+/// A file of another language `exec` runs: the language, the path and the source.
+struct Foreign {
+    language: Rc<dyn crate::policy::ScriptLanguage>,
+    path: Vec<u8>,
+    source: Vec<u8>,
 }
 
 /// How one compile ended. A byte, not a `Result`: the helpers that hold it have frames on the recursion path
@@ -471,7 +481,45 @@ impl Vm {
                 self.run_here(block, mode)?;
                 Ok(true)
             }
+            Prepared::Foreign(foreign) => {
+                self.run_foreign(*foreign)?;
+                Ok(true)
+            }
         }
+    }
+
+    /// Runs a file of another language inside a run, as `run_here` runs a block.
+    #[inline(never)]
+    fn run_foreign(&mut self, foreign: Foreign) -> Result<(), VmError> {
+        let Foreign {
+            language,
+            path,
+            source,
+        } = foreign;
+        self.objects.add_work(source.len() as u64);
+        let saved = self.enter_run();
+        let result = language.run(self, &path, &source);
+        self.leave_run(saved, result)
+    }
+
+    /// `exec`'s lookup of a file another language runs: the source, its messages, or nothing to run.
+    #[inline(never)]
+    fn prepare_foreign(
+        &mut self,
+        path: &[u8],
+        language: Rc<dyn crate::policy::ScriptLanguage>,
+    ) -> Result<Prepared, VmError> {
+        let name = self.file_name(path);
+        let Some(source) = self.find_file(path)? else {
+            self.warn(format!("Missing file: {}!", lossy(&name)));
+            return Ok(Prepared::Done(false));
+        };
+        self.print(format!("Executing {}.", lossy(&name)).as_bytes());
+        Ok(Prepared::Foreign(Box::new(Foreign {
+            language,
+            path: name,
+            source,
+        })))
     }
 
     /// Everything `exec` does before running the file: the checks, the lookups, the messages, the
@@ -489,6 +537,9 @@ impl Vm {
             && !policy.check(self, &path)?
         {
             return Ok(Prepared::Done(false));
+        }
+        if let Some(language) = self.script_language_of(&path) {
+            return self.prepare_foreign(&path, language);
         }
         // The source, then the compiled file. (A loop: one call site, one set of temporaries in this frame.)
         let mut found: [Option<Vec<u8>>; 2] = [None, None];

@@ -653,6 +653,13 @@ impl Vm {
         self.peak_depth
     }
 
+    /// The call depth now, in the units of `MAX_CALL_DEPTH` (see [`peak_depth`](Self::peak_depth)): a host that runs
+    /// script from Rust through frames of its own checks it against `MAX_CALL_DEPTH` first (a native's call into script
+    /// that calls the native again is otherwise checked only when a script function is entered).
+    pub fn call_depth(&self) -> usize {
+        self.depth
+    }
+
     /// Runs `f` (a host's call into script) with `units` more call-depth units charged while it runs: for a host whose
     /// Rust frames between two script levels are larger than the [`REENTRY_COST`] a re-entry is charged (a state
     /// machine that calls script from Rust), so that recursion through it stops at `CallDepth` before the end of the

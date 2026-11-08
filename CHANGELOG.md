@@ -190,7 +190,13 @@ different.
   when it changes, loaded from a private read-only copy of the bytes that were hashed, refused before any of its code runs
   when its exported ABI version (read from the file) is another, and disabled instead of crashing the game when it
   panics; `torque-plugin-sdk`
-  writes them in Rust with the engine's `#[function]` and render passes. TGE has none.
+  writes them in Rust with the engine's `#[function]` and render passes. TGE has none. Extensions can also run script
+  languages: `exec` hands them the files of their extension, and they call scripts back (nested), define console functions,
+  read and write objects and charge the step budget (`Vm::set_script_language`, `Vm::call_depth`).
+- Lua for mods (`torque-plugin-lua`, a native extension built on its own: Luau): a mod's `.lua` files run at its stages in
+  sandboxed server and client realms (`ts.call`, objects, `ts.define`, `require` within the mod), held to the script
+  engine's step limit and call depth and a memory cap, never from a server. TGE has none. The browser build's interface
+  (`web_lua`) is in place; its Luau module is not built yet.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
   `torque-plugin-sdk` and `torque-plugin-loader`).

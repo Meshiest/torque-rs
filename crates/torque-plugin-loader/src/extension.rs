@@ -2,15 +2,17 @@
 //! handle hosts and tests read it through.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use torque_engine::script::{Callee, TypedNative};
-use torque_engine::{EngineBuilder, Plugin, PluginId, PluginType, Side};
-use torque_plugin_abi::TorquePluginInitFn;
+use torque_engine::{ClientStage, EngineBuilder, Plugin, PluginId, PluginType, ServerStage, Side};
+use torque_plugin_abi::{TORQUE_MAX_NESTING, TorquePluginInitFn};
 use torque_ts_vm::convert::ScriptError;
-use torque_ts_vm::vm::{Native, NativeCall, Vm};
+use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 use crate::ffi::{self, CallOutcome, Registered};
+use crate::language::{LanguageRunner, VmContext};
 use crate::manifest::Manifest;
 
 /// The most log lines an extension's state keeps (the oldest go).
@@ -27,13 +29,48 @@ pub(crate) struct ExtensionState {
     pub(crate) natives: Vec<ffi::NativeSpec>,
     pub(crate) globals: Vec<ffi::GlobalSpec>,
     pub(crate) passes: Vec<ffi::PassSpec>,
+    pub(crate) languages: Vec<ffi::LanguageSpec>,
     /// Why it is disabled, once it is.
     disabled: Mutex<Option<String>>,
     /// Held for each call into it: one at a time.
     calls: Mutex<()>,
     /// The thread holding `calls`.
     owner: Mutex<Option<std::thread::ThreadId>>,
+    /// How many calls into it are live on the owner's thread (nested ones too).
+    nesting: AtomicUsize,
+    /// How many of those are calling the engine back ([`call_out`](Self::call_out)): a nested call is allowed only while
+    /// every live one is.
+    calling_out: AtomicUsize,
+    /// Where the stack was at each live call into it, outermost first (`stack_mark`): what a call back is charged by.
+    marks: Mutex<Vec<usize>>,
+    /// The steps the outermost call charged when its script engine has no step limit ([`TORQUE_DEFAULT_STEPS`]).
+    ///
+    /// [`TORQUE_DEFAULT_STEPS`]: torque_plugin_abi::TORQUE_DEFAULT_STEPS
+    pub(crate) fallback_steps: AtomicU64,
     log: Mutex<Vec<String>>,
+}
+
+/// About the stack one script level takes (measured: 2.5 KiB in a debug build, 0.65 KiB in a release one): the rate the
+/// stack an extension uses between a call into it and its call back is charged to the script engine's call depth at.
+const DEPTH_UNIT_BYTES: usize = if cfg!(debug_assertions) { 2560 } else { 640 };
+
+/// The call-depth units the engine's own frames around a call into an extension and its call back cost, on top of what
+/// the extension used (the native's dispatch, the call's frame, the call back's run).
+const CALL_BACK_COST: usize = 4;
+
+/// Where this thread's stack is now: the address of a local (the stack grows down on every platform the engine runs on).
+#[inline(never)]
+fn stack_mark() -> usize {
+    let here = 0u8;
+    std::hint::black_box(&here) as *const u8 as usize
+}
+
+/// Why a call could not go into an extension.
+pub(crate) enum Refused {
+    /// The thread is already inside the extension, which is not calling the engine back.
+    Reentered,
+    /// The calls back nest deeper than [`TORQUE_MAX_NESTING`].
+    TooDeep,
 }
 
 impl ExtensionState {
@@ -53,9 +90,14 @@ impl ExtensionState {
             natives: registered.natives,
             globals: registered.globals,
             passes: registered.passes,
+            languages: registered.languages,
             disabled: Mutex::new(None),
             calls: Mutex::new(()),
             owner: Mutex::new(None),
+            nesting: AtomicUsize::new(0),
+            calling_out: AtomicUsize::new(0),
+            marks: Mutex::new(Vec::new()),
+            fallback_steps: AtomicU64::new(0),
             log: Mutex::new(registered.log),
         }
     }
@@ -93,17 +135,217 @@ impl ExtensionState {
         if *self.owner.lock().unwrap_or_else(PoisonError::into_inner) == Some(me) {
             return None;
         }
+        Some(self.enter_outer(me))
+    }
+
+    /// The lock held for a script's call into it: one call at a time, from any thread, as [`enter`](Self::enter); and on
+    /// the thread already inside it, a nested call when every live call is calling the engine back (a script it ran
+    /// calls it again), at most [`TORQUE_MAX_NESTING`] deep.
+    pub(crate) fn enter_call(&self) -> Result<Entered<'_>, Refused> {
+        let me = std::thread::current().id();
+        if *self.owner.lock().unwrap_or_else(PoisonError::into_inner) != Some(me) {
+            return Ok(self.enter_outer(me));
+        }
+        let live = self.nesting.load(Ordering::SeqCst);
+        if self.calling_out.load(Ordering::SeqCst) < live {
+            return Err(Refused::Reentered);
+        }
+        if live >= TORQUE_MAX_NESTING {
+            return Err(Refused::TooDeep);
+        }
+        self.nesting.fetch_add(1, Ordering::SeqCst);
+        self.lock_marks().push(stack_mark());
+        Ok(Entered {
+            state: self,
+            lock: None,
+        })
+    }
+
+    fn lock_marks(&self) -> MutexGuard<'_, Vec<usize>> {
+        self.marks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The call-depth units a call back from the innermost live call costs: the stack the extension used since that
+    /// call came in, in script levels' worth ([`DEPTH_UNIT_BYTES`]), so that recursion through the extension stops with
+    /// `CallDepth` before the end of the stack as a script's does.
+    pub(crate) fn call_back_depth(&self) -> usize {
+        let entry = self.lock_marks().last().copied().unwrap_or(0);
+        entry
+            .saturating_sub(stack_mark())
+            .div_ceil(DEPTH_UNIT_BYTES)
+            .saturating_add(CALL_BACK_COST)
+    }
+
+    fn enter_outer(&self, me: std::thread::ThreadId) -> Entered<'_> {
         let lock = self.calls.lock().unwrap_or_else(PoisonError::into_inner);
         *self.owner.lock().unwrap_or_else(PoisonError::into_inner) = Some(me);
-        Some(Entered {
+        self.nesting.store(1, Ordering::SeqCst);
+        self.calling_out.store(0, Ordering::SeqCst);
+        self.fallback_steps.store(0, Ordering::SeqCst);
+        *self.lock_marks() = vec![stack_mark()];
+        Entered {
             state: self,
-            _lock: lock,
-        })
+            lock: Some(lock),
+        }
+    }
+
+    /// Runs `f`, the engine's work for a call the extension made back into it (a script function it runs): a call into
+    /// the extension that `f` makes is a nested one ([`enter_call`](Self::enter_call)).
+    pub(crate) fn call_out<T>(&self, f: impl FnOnce() -> T) -> T {
+        struct Back<'a>(&'a AtomicUsize);
+        impl Drop for Back<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        self.calling_out.fetch_add(1, Ordering::SeqCst);
+        let _back = Back(&self.calling_out);
+        f()
+    }
+
+    /// The error of a call refused by [`enter_call`](Self::enter_call).
+    fn refusal(&self, refused: Refused) -> ScriptError {
+        match refused {
+            Refused::Reentered => ScriptError::new(format!(
+                "the native extension {} was called again from inside one of its own calls",
+                self.id
+            )),
+            Refused::TooDeep => ScriptError::new(format!(
+                "the native extension {}: calls back into it nest deeper than {TORQUE_MAX_NESTING}",
+                self.id
+            )),
+        }
+    }
+
+    /// Runs the file `path` of its language `lang` in `vm` (`exec` found it): what the language's
+    /// [`ScriptLanguage`](torque_ts_vm::policy::ScriptLanguage) does.
+    pub(crate) fn run_file(
+        self: &Arc<Self>,
+        lang: usize,
+        vm: &mut Vm,
+        path: &[u8],
+        source: &[u8],
+    ) -> Result<(), VmError> {
+        if let Some(reason) = self.disabled() {
+            vm.error(format!(
+                "the native extension {} is disabled ({reason}): {} did not run",
+                self.id,
+                torque_ts_vm::vm::lossy(path)
+            ));
+            return Ok(());
+        }
+        let package = vm
+            .namespaces()
+            .declare_package_for(Some(path))
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default();
+        if !package.is_empty() {
+            VmContext::of(vm).allow_package(&package);
+        }
+        let outcome = {
+            let entered = match self.enter_call() {
+                Ok(entered) => entered,
+                Err(Refused::TooDeep) => return Err(VmError::CallDepth),
+                Err(refused) => {
+                    vm.error(self.refusal(refused).to_string());
+                    return Ok(());
+                }
+            };
+            if self.disabled().is_some() {
+                return Ok(());
+            }
+            let outcome = ffi::run_file(self, lang, vm, path, source, package);
+            drop(entered);
+            outcome
+        };
+        match outcome {
+            CallOutcome::Done(_) => Ok(()),
+            CallOutcome::Failed(message) => {
+                vm.error(message);
+                Ok(())
+            }
+            CallOutcome::Limit(error) => Err(error),
+            CallOutcome::Panicked => {
+                self.disable(format!(
+                    "it panicked running {}",
+                    torque_ts_vm::vm::lossy(path)
+                ));
+                vm.error(format!(
+                    "the native extension {} panicked and is disabled",
+                    self.id
+                ));
+                Ok(())
+            }
+        }
+    }
+
+    /// Calls the function its language `lang` defined with `id`, from the script engine `vm`.
+    pub(crate) fn call_defined(
+        self: &Arc<Self>,
+        lang: usize,
+        id: u64,
+        vm: &mut Vm,
+        call: &NativeCall,
+    ) -> Native {
+        if let Some(reason) = self.disabled() {
+            vm.error(format!(
+                "the native extension {} is disabled ({reason})",
+                self.id
+            ));
+            return Native::Void;
+        }
+        let args = call.argv.get(1..).unwrap_or(&[]);
+        let outcome = {
+            let entered = match self.enter_call() {
+                Ok(entered) => entered,
+                Err(Refused::TooDeep) => return Native::Fail(VmError::CallDepth),
+                Err(refused) => {
+                    vm.error(self.refusal(refused).to_string());
+                    return Native::Void;
+                }
+            };
+            if self.disabled().is_some() {
+                return Native::Void;
+            }
+            let outcome = ffi::call_defined(self, lang, id, vm, args, call.this_object);
+            drop(entered);
+            outcome
+        };
+        match outcome {
+            CallOutcome::Done(native) => native,
+            CallOutcome::Failed(message) => {
+                vm.error(message);
+                Native::Void
+            }
+            CallOutcome::Limit(error) => Native::Fail(error),
+            CallOutcome::Panicked => {
+                self.disable(format!(
+                    "it panicked in a function its language defined ({id})"
+                ));
+                vm.error(format!(
+                    "the native extension {} panicked and is disabled",
+                    self.id
+                ));
+                Native::Void
+            }
+        }
+    }
+
+    /// Tells its language `lang` that the script engine `vm` is gone.
+    pub(crate) fn vm_dropped(&self, lang: usize, vm: u64) {
+        if self.disabled().is_some() {
+            return;
+        }
+        // From the engine's own work, never inside a call of the extension's on this thread (a script engine is dropped
+        // by its host); a nested drop is skipped rather than re-entering.
+        if let Some(_one_at_a_time) = self.enter() {
+            ffi::vm_dropped(&self.languages[lang], vm);
+        }
     }
 
     /// Calls its native `index` from the script engine `vm`.
     fn call_native(
-        &self,
+        self: &Arc<Self>,
         index: usize,
         vm: &mut Vm,
         call: &NativeCall,
@@ -120,11 +362,10 @@ impl ExtensionState {
         let this = if spec.method { call.this_object } else { None };
         let args = call.argv.get(first..).unwrap_or(&[]);
         let outcome = {
-            let Some(_one_at_a_time) = self.enter() else {
-                return Err(ScriptError::new(format!(
-                    "the native extension {} was called again from inside one of its own calls",
-                    self.id
-                )));
+            let entered = match self.enter_call() {
+                Ok(entered) => entered,
+                Err(Refused::TooDeep) => return Ok(Native::Fail(VmError::CallDepth)),
+                Err(refused) => return Err(self.refusal(refused)),
             };
             // Disabled by another thread's call while this one waited for the lock: not called again.
             if let Some(reason) = self.disabled() {
@@ -133,11 +374,14 @@ impl ExtensionState {
                     self.id
                 )));
             }
-            ffi::call_native(spec, vm, args, this)
+            let outcome = ffi::call_native(self, spec, vm, args, this);
+            drop(entered);
+            outcome
         };
         match outcome {
             CallOutcome::Done(native) => Ok(native),
             CallOutcome::Failed(message) => Err(ScriptError::new(message)),
+            CallOutcome::Limit(error) => Ok(Native::Fail(error)),
             CallOutcome::Panicked => {
                 let label = if spec.namespace.is_empty() {
                     spec.name.clone()
@@ -154,14 +398,21 @@ impl ExtensionState {
     }
 }
 
-/// A call into an extension in progress: [`ExtensionState::enter`]'s lock.
+/// A call into an extension in progress: [`ExtensionState::enter`]'s lock, or a nested call's place under it.
 pub(crate) struct Entered<'a> {
     state: &'a ExtensionState,
-    _lock: MutexGuard<'a, ()>,
+    /// The lock, for the outermost call; none for a nested one.
+    lock: Option<MutexGuard<'a, ()>>,
 }
 
 impl Drop for Entered<'_> {
     fn drop(&mut self) {
+        self.state.lock_marks().pop();
+        if self.lock.is_none() {
+            self.state.nesting.fetch_sub(1, Ordering::SeqCst);
+            return;
+        }
+        self.state.nesting.store(0, Ordering::SeqCst);
         // Before the lock is let go (fields drop after this).
         *self
             .state
@@ -364,6 +615,9 @@ impl Plugin for ExtensionPlugin {
         for global in &state.globals {
             registry(engine, global.side).global(&global.name, &global.default);
         }
+        for (lang, spec) in state.languages.iter().enumerate() {
+            add_language(engine, state, lang, spec.side);
+        }
         if !state.passes.is_empty() {
             #[cfg(feature = "render")]
             crate::render::add_passes(engine, state);
@@ -375,6 +629,26 @@ impl Plugin for ExtensionPlugin {
             ));
         }
         engine.push(Extension(Arc::clone(state)));
+    }
+}
+
+/// Installs the extension's language `lang` in every script engine of `side`, as early as each is made (its classes'
+/// stage, then again at the next stage for a host that skips it).
+fn add_language(engine: &mut EngineBuilder, state: &Arc<ExtensionState>, lang: usize, side: Side) {
+    let install = |state: &Arc<ExtensionState>, side: Side| {
+        let state = Arc::clone(state);
+        move |vm: &mut Vm, _: &torque_engine::Engine| {
+            LanguageRunner::install(vm, &state, lang, side);
+            Ok(())
+        }
+    };
+    if matches!(side, Side::Both | Side::Server) {
+        engine.server(ServerStage::Classes, install(state, Side::Server));
+        engine.server(ServerStage::Prepare, install(state, Side::Server));
+    }
+    if matches!(side, Side::Both | Side::Client) {
+        engine.client(ClientStage::Classes, install(state, Side::Client));
+        engine.client(ClientStage::Game, install(state, Side::Client));
     }
 }
 

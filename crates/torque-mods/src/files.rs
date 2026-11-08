@@ -8,6 +8,8 @@
 //!
 //! The files a server sent are a mount of a kind of their own: content only. Anything that could be script (`.cs`, `.dso`,
 //! `.gui`, `.mis`) is left out of it when it is mounted, so it cannot be read, listed or run, whatever path a script names.
+//! Another language's files (`.lua`) may be mounted, as content: the exec policy refuses to run or load any file a server
+//! sent, whatever its language.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -31,7 +33,11 @@ pub const SCRIPT_EXTENSIONS: [&str; 10] = [
     "cs", "dso", "gui", "mis", "ed", "wasm", "wat", "dll", "so", "dylib",
 ];
 
-/// Whether `path` could be run as script: a script extension, or one under another (`.cs.dso`, `.ed.cs`).
+/// The extensions of the other script languages a game may run (a Lua extension's). Compared without case. A server's
+/// files with them are content: they never run, as the exec policy refuses every file a server sent.
+pub const OTHER_SCRIPT_EXTENSIONS: [&str; 2] = ["lua", "luau"];
+
+/// Whether `path` could be run as TorqueScript: a script extension, or one under another (`.cs.dso`, `.ed.cs`).
 pub fn is_script_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower

@@ -1067,9 +1067,27 @@ impl fields::FieldEnv for PlainEnv {
     }
 }
 
-/// The dynamic field name for `name[array]`. TGE copies name and index into a 255-byte buffer, so a
-/// name with an index is cut at [`MAX_FIELD_NAME`] bytes; a name without one is used as it is.
-fn dynamic_name(name: &[u8], array: &[u8]) -> Vec<u8> {
+/// A field spec as a script names a field in one string (`"name[index]"`, what Torque3D's `setFieldValue` takes): the
+/// name up to the first `[`, and the index after it up to the first `]` (to the end when there is none); the whole spec
+/// is the name when it has no `[`. Each part is cut at its first NUL, as a field write cuts them. Join the parts with
+/// [`dynamic_name`] for the field's name.
+pub fn split_field_spec(spec: &[u8]) -> (&[u8], &[u8]) {
+    let spec = until_nul(spec);
+    match spec.iter().position(|&b| b == b'[') {
+        None => (spec, &[]),
+        Some(open) => {
+            let rest = &spec[open + 1..];
+            let close = rest.iter().position(|&b| b == b']').unwrap_or(rest.len());
+            (&spec[..open], &rest[..close])
+        }
+    }
+}
+
+/// The dynamic field name for `name[array]`, as every field read and write builds it: each part up to its first NUL, the
+/// index appended to the name. TGE copies name and index into a 255-byte buffer, so a name with an index is cut at
+/// [`MAX_FIELD_NAME`] bytes; a name without one is used as it is. A host that checks field names (a policy on what a
+/// script language may write) builds them with this, so it sees the name the write will use.
+pub fn dynamic_name(name: &[u8], array: &[u8]) -> Vec<u8> {
     let mut full = until_nul(name).to_vec();
     let array = until_nul(array);
     if !array.is_empty() {

@@ -58,12 +58,15 @@
 #![warn(missing_docs)]
 
 mod approve;
+pub mod call_policy;
 mod extension;
 mod ffi;
+mod language;
 mod manifest;
 #[cfg(feature = "render")]
 pub mod render;
 mod stage;
+pub mod web_lua;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

@@ -35,6 +35,17 @@
 // The most vertices one pass draws in one frame (the rest are refused with [`TORQUE_ERR_RANGE`]).
 #define TORQUE_MAX_PASS_VERTICES (1 << 20)
 
+// How deep calls back into one extension may nest on one thread ([`TorqueApi::call_function`] running a script that
+// calls the extension again); the call past it fails with [`TORQUE_ERR_LIMIT`].
+#define TORQUE_MAX_NESTING 64
+
+// The steps an outermost call into an extension may [`charge`](TorqueApi::charge) when its script engine has no step
+// limit of its own.
+#define TORQUE_DEFAULT_STEPS 50000000
+
+// The longest script file [`TorqueApi::read_script`] reads (bytes).
+#define TORQUE_MAX_SCRIPT ((16 * 1024) * 1024)
+
 // Which script engines a registration goes into: every server's and every client's.
 #define TORQUE_SIDE_BOTH 0
 
@@ -231,6 +242,91 @@ typedef TorqueStatus (*TorqueDrawTrianglesFn)(TorqueDraw draw, uint32_t space, c
 // `log`.
 typedef TorqueStatus (*TorqueLogFn)(uint64_t handle, uint32_t level, struct TorqueStr message);
 
+// `call_function`.
+typedef TorqueStatus (*TorqueCallFunctionFn)(TorqueCall call, struct TorqueStr ns, struct TorqueStr name, const struct TorqueStr *args, size_t count, struct TorqueStr *out);
+
+// `call_method`.
+typedef TorqueStatus (*TorqueCallMethodFn)(TorqueCall call, uint32_t object, struct TorqueStr name, const struct TorqueStr *args, size_t count, struct TorqueStr *out);
+
+// `has_method`.
+typedef TorqueStatus (*TorqueHasMethodFn)(TorqueCall call, uint32_t object, struct TorqueStr name, uint32_t *out);
+
+// `find_object`.
+typedef TorqueStatus (*TorqueFindObjectFn)(TorqueCall call, struct TorqueStr name, uint32_t *out);
+
+// `get_field`.
+typedef TorqueStatus (*TorqueGetFieldFn)(TorqueCall call, uint32_t object, struct TorqueStr name, struct TorqueStr index, struct TorqueStr *out);
+
+// `set_field`.
+typedef TorqueStatus (*TorqueSetFieldFn)(TorqueCall call, uint32_t object, struct TorqueStr name, struct TorqueStr index, struct TorqueStr value);
+
+// A console function a script language defines at run time, in the call's script engine only (`define_function`).
+// Calls of it go to the language's `call_defined` with `id`.
+typedef struct TorqueDefineDecl {
+    // The namespace (empty for the global one) or class: `Player` makes `Player::name`, which a method call on a player
+    // finds, with the object first among the arguments.
+    struct TorqueStr ns;
+    // The name scripts call.
+    struct TorqueStr name;
+    // The package it goes into, so that deactivating the package hides it again: empty for none, else one
+    // [`TorqueApi::script_package`] gave the language in this script engine.
+    struct TorqueStr package;
+    // Its usage text (empty for none).
+    struct TorqueStr usage;
+    // Handed back to `call_defined`.
+    uint64_t id;
+} TorqueDefineDecl;
+
+// `define_function`.
+typedef TorqueStatus (*TorqueDefineFunctionFn)(TorqueCall call, const struct TorqueDefineDecl *decl);
+
+// `charge`.
+typedef TorqueStatus (*TorqueChargeFn)(TorqueCall call, uint64_t steps);
+
+// A script engine (one server's or one client's): the same number for its whole life, never reused for another.
+typedef uint64_t TorqueVm;
+
+// What [`TorqueApi::vm_info`] tells about the script engine of a call.
+typedef struct TorqueVmInfo {
+    // The script engine.
+    TorqueVm vm;
+    // [`TORQUE_SIDE_SERVER`] or [`TORQUE_SIDE_CLIENT`]; [`TORQUE_SIDE_BOTH`] for one the engine made outside a server or a
+    // client (a tool's).
+    uint32_t side;
+    // Its step limit for one outermost run, or 0 when it has none ([`TORQUE_DEFAULT_STEPS`] then bounds an outermost
+    // call into the extension).
+    uint64_t step_limit;
+} TorqueVmInfo;
+
+// `vm_info`.
+typedef TorqueStatus (*TorqueVmInfoFn)(TorqueCall call, struct TorqueVmInfo *out);
+
+// `script_package`.
+typedef TorqueStatus (*TorqueScriptPackageFn)(TorqueCall call, struct TorqueStr *out);
+
+// `read_script`.
+typedef TorqueStatus (*TorqueReadScriptFn)(TorqueCall call, struct TorqueStr path, struct TorqueStr *out);
+
+// A script language the extension runs (`register_script_language`).
+typedef struct TorqueLanguageDecl {
+    // [`TORQUE_SIDE_BOTH`], [`TORQUE_SIDE_SERVER`] or [`TORQUE_SIDE_CLIENT`]: which script engines run its files.
+    uint32_t side;
+    // The file extension it runs, without the dot (`lua`): ASCII letters and digits, not one of TorqueScript's (`cs`,
+    // `dso`, `gui`, `mis`).
+    struct TorqueStr extension;
+    // Runs a file (a [`TorqueRunFileFn`]).
+    TorqueStatus (*run_file)(void *user, TorqueCall call, struct TorqueStr path, struct TorqueStr source);
+    // Calls a function it defined (a [`TorqueCallDefinedFn`]; may be null when it defines none).
+    TorqueStatus (*call_defined)(void *user, TorqueCall call, uint64_t id);
+    // Told when a script engine goes (a [`TorqueVmDroppedFn`]; may be null).
+    void (*vm_dropped)(void *user, TorqueVm vm);
+    // Handed to the functions as it is; never read by the engine.
+    void *user;
+} TorqueLanguageDecl;
+
+// `register_script_language`.
+typedef TorqueStatus (*TorqueRegisterLanguageFn)(TorqueInit init, const struct TorqueLanguageDecl *decl);
+
 // The engine's function table, handed to `torque_plugin_init`. It stays valid while the extension is loaded, which is
 // until the process ends: keep the pointer.
 //
@@ -289,6 +385,44 @@ typedef struct TorqueApi {
     // A message (`TORQUE_LOG_`): to the running script engine's console during a call, to the engine's log otherwise.
     // `handle` is the live init, call or draw handle, or 0.
     TorqueLogFn log;
+    // Runs the console function `ns::name` (`ns` empty for a global one) with `count` arguments (at most
+    // [`TORQUE_MAX_ARGS`]) and writes its result to `out`, valid until the next function of this table the extension
+    // calls with this call handle, or the call's end. A function that does not exist gives the empty string (a global one
+    // warns, as a script's call does). The run shares the call's budgets: [`TORQUE_ERR_LIMIT`] when it stopped at one.
+    TorqueCallFunctionFn call_function;
+    // Runs the method `name` of `object` (its `%this` first, then the arguments), as
+    // [`call_function`](Self::call_function) does; the empty string when the object or the method does not exist.
+    TorqueCallMethodFn call_method;
+    // Whether `object` has a method `name` (its class's or its namespace's, script or native): 1 or 0 to `out`.
+    TorqueHasMethodFn has_method;
+    // The object `name` names (a name, an id, or a `/` path, as a script's `nameToID`) to `out`; [`TORQUE_ERR_FAILED`]
+    // when there is none.
+    TorqueFindObjectFn find_object;
+    // The field `name[index]` of `object` (`index` empty for a plain field), as a script reads it, to `out` (valid as
+    // [`call_function`](Self::call_function)'s result); [`TORQUE_ERR_FAILED`] when the object does not exist.
+    TorqueGetFieldFn get_field;
+    // Sets the field `name[index]` of `object`, as a script's assignment does; [`TORQUE_ERR_FAILED`] when the object
+    // does not exist.
+    TorqueSetFieldFn set_field;
+    // Defines a console function in the call's script engine whose calls go to the call's script language
+    // ([`TorqueLanguageDecl::call_defined`]): only during a call of a language's `run_file` or `call_defined`. Defining
+    // a name again replaces it.
+    TorqueDefineFunctionFn define_function;
+    // Charges `steps` of work to the run's step budget: [`TORQUE_OK`] while it can pay, [`TORQUE_ERR_LIMIT`] once it is
+    // spent (stop, and hand it back). A script language calls it as its code runs (at its interrupts, say).
+    TorqueChargeFn charge;
+    // What the call's script engine is.
+    TorqueVmInfoFn vm_info;
+    // During a language's `run_file`: the package the file's definitions go into (a mod's, so that switching the mod
+    // off hides them), or the empty string. Valid as [`call_function`](Self::call_function)'s result.
+    TorqueScriptPackageFn script_package;
+    // Reads the script file `path` (a relative path in the game's files, with no `..`, ending in the extension of one of
+    // the extension's languages) after the checks `exec` makes: a file a server sent is refused ([`TORQUE_ERR_FAILED`]),
+    // and so is a missing one. Valid as [`call_function`](Self::call_function)'s result, at most [`TORQUE_MAX_SCRIPT`]
+    // bytes.
+    TorqueReadScriptFn read_script;
+    // Declares a script language (only during init).
+    TorqueRegisterLanguageFn register_script_language;
 } TorqueApi;
 
 // What an extension says about itself, filled in by `torque_plugin_init`.
@@ -329,6 +463,10 @@ typedef TorqueStatus (*TorquePluginInitFn)(const struct TorqueApi *api, struct T
 
 // An index past the end, or more than a limit allows (the arguments of a call, the vertices of a frame).
 #define TORQUE_ERR_RANGE 6
+
+// The run stopped at a limit: the script engine's step budget or call depth, or [`TORQUE_MAX_NESTING`]. Hand it back from
+// the extension's own call, so the script that called it stops too.
+#define TORQUE_ERR_LIMIT 7
 
 #ifdef __cplusplus
 extern "C" {

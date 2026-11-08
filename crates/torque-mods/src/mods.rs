@@ -566,6 +566,18 @@ impl Mods {
         let previous = vm.namespaces_mut().set_declare_package(Some(scope));
         for script in scripts {
             let path = format!("{ALIAS_FOLDER}/{id}/{script}");
+            // Another language's file runs only when the game has that language (a Lua extension); TorqueScript would
+            // only fail to compile it.
+            let lower = path.to_ascii_lowercase();
+            let other = crate::files::OTHER_SCRIPT_EXTENSIONS
+                .iter()
+                .any(|ext| lower.rsplit_once('.').is_some_and(|(_, e)| e == *ext));
+            if other && vm.script_language_of(path.as_bytes()).is_none() {
+                vm.warn(format!(
+                    "the mod `{id}`: `{script}` did not run: this game has no script language for it"
+                ));
+                continue;
+            }
             match vm.exec_file(path.as_bytes(), false) {
                 Ok(true) => ran += 1,
                 Ok(false) => vm.warn(format!("the mod `{id}`: the script `{script}` did not run")),

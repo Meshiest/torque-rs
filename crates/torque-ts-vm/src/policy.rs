@@ -99,6 +99,17 @@ pub trait ExecPolicy {
     }
 }
 
+/// A language other than TorqueScript that `exec` runs: a file whose extension the language was installed for
+/// ([`Vm::set_script_language`]) is read through the file host, after the [`ExecPolicy`] has checked it, and handed to
+/// [`run`](Self::run) instead of the compiler. `exec` prints `Executing <name>.` first, as for a script, and a missing file
+/// warns `Missing file: <name>!`.
+pub trait ScriptLanguage {
+    /// Runs `source`, the file `path` (as `exec` expanded it), inside a run of `vm`: the run's step budget and call depth
+    /// apply to what the language does through the `Vm` ([`Vm::charge_work`], calls into script), as they do to a script.
+    /// `Err` ends the `exec` with that error, as a script's would (`StepLimit`, `CallDepth`).
+    fn run(&self, vm: &mut Vm, path: &[u8], source: &[u8]) -> Result<(), crate::vm::VmError>;
+}
+
 /// The runtime's numeric limits a game may set differently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
@@ -283,6 +294,8 @@ pub(crate) struct Policies {
     pub(crate) messages: Rc<dyn Messages>,
     pub(crate) build: BuildInfo,
     pub(crate) extensions: Extensions,
+    /// The other languages `exec` runs, by their extension (folded, without the dot).
+    pub(crate) languages: Vec<(Vec<u8>, Rc<dyn ScriptLanguage>)>,
 }
 
 impl Default for Policies {
@@ -297,6 +310,7 @@ impl Default for Policies {
             messages: Rc::new(OwnWords),
             build: BuildInfo::default(),
             extensions: Extensions::default(),
+            languages: Vec::new(),
         }
     }
 }
@@ -379,6 +393,49 @@ impl Vm {
     /// What the version natives answer.
     pub fn build_info(&self) -> &BuildInfo {
         &self.policies().build
+    }
+
+    /// Installs `language` for the files whose extension is `extension` (without the dot, any case): `exec` runs them
+    /// with it instead of compiling them as TorqueScript ([`ScriptLanguage`]). Installing for an extension again replaces
+    /// the language. A compiled script's extensions (`cs`, `dso`, `gui`, `mis`) are refused: false.
+    pub fn set_script_language(
+        &mut self,
+        extension: &str,
+        language: Rc<dyn ScriptLanguage>,
+    ) -> bool {
+        let key = crate::text::fold(extension.trim_start_matches('.').as_bytes());
+        if key.is_empty() || matches!(key.as_slice(), b"cs" | b"dso" | b"gui" | b"mis") {
+            return false;
+        }
+        let languages = &mut self.policies_mut().languages;
+        languages.retain(|(k, _)| *k != key);
+        languages.push((key, language));
+        true
+    }
+
+    /// The language installed for files with `extension` (without the dot, any case).
+    pub fn script_language(&self, extension: &str) -> Option<Rc<dyn ScriptLanguage>> {
+        let key = crate::text::fold(extension.trim_start_matches('.').as_bytes());
+        self.language_by_key(&key)
+    }
+
+    /// The language installed for the file `path` (by the extension after its last dot).
+    pub fn script_language_of(&self, path: &[u8]) -> Option<Rc<dyn ScriptLanguage>> {
+        let languages = &self.policies().languages;
+        if languages.is_empty() {
+            return None;
+        }
+        let name = path.rsplit(|&b| b == b'/').next().unwrap_or(path);
+        let dot = name.iter().rposition(|&b| b == b'.')?;
+        self.language_by_key(&crate::text::fold(&name[dot + 1..]))
+    }
+
+    fn language_by_key(&self, key: &[u8]) -> Option<Rc<dyn ScriptLanguage>> {
+        self.policies()
+            .languages
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, language)| Rc::clone(language))
     }
 
     /// The extension of type `T` a game attached (see [`set_extension`](Self::set_extension)).
