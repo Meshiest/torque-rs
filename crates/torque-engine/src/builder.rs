@@ -443,6 +443,34 @@ impl EngineBuilder {
         self
     }
 
+    /// Fails the build for the plugin whose `build` or `finish` is running ([`BuildError::Rejected`]): for a registry in
+    /// another crate to refuse what a plugin declared, naming the plugin. The first error of a build is the one returned.
+    ///
+    /// ```
+    /// use torque_engine::{BuildError, EngineBuilder, Plugin, PluginId};
+    ///
+    /// #[derive(PluginId)]
+    /// #[plugin(id = "example.picky")]
+    /// struct Picky;
+    /// impl Plugin for Picky {
+    ///     fn build(&self, engine: &mut EngineBuilder) {
+    ///         engine.reject("`Player` is a class of the engine's");
+    ///     }
+    /// }
+    ///
+    /// let error = EngineBuilder::new().add_plugins(Picky).build().unwrap_err();
+    /// assert!(matches!(error, BuildError::Rejected { .. }));
+    /// assert_eq!(error.to_string(), "the plugin `example.picky`: `Player` is a class of the engine's");
+    /// ```
+    pub fn reject(&mut self, message: impl Into<String>) -> &mut EngineBuilder {
+        let plugin = self.current;
+        self.fail(BuildError::Rejected {
+            plugin,
+            message: message.into(),
+        });
+        self
+    }
+
     pub(crate) fn fail(&mut self, err: BuildError) {
         self.error.get_or_insert(err);
     }
@@ -690,6 +718,14 @@ pub enum BuildError {
         /// What does not match.
         message: String,
     },
+    /// A plugin's registration was refused ([`EngineBuilder::reject`]): what it declared breaks a rule of the registry it
+    /// went to.
+    Rejected {
+        /// The plugin that declared it.
+        plugin: PluginId,
+        /// What is wrong.
+        message: String,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -719,7 +755,8 @@ impl fmt::Display for BuildError {
                 f,
                 "the script {kind} `{name}` is declared by both `{first}` and `{second}`; only one plugin may declare it"
             ),
-            BuildError::ScriptSignature { plugin, message } => {
+            BuildError::ScriptSignature { plugin, message }
+            | BuildError::Rejected { plugin, message } => {
                 write!(f, "the plugin `{plugin}`: {message}")
             }
         }

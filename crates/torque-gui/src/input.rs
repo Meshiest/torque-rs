@@ -896,6 +896,9 @@ pub(crate) fn mouse_down_on(
 }
 
 fn on_mouse_down(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Down, ev) {
+        return done;
+    }
     if crate::popup::part_of(gui, id).is_some() {
         return crate::popup::part_mouse_down(vm, gui, id, ev.point, ev.clicks);
     }
@@ -948,6 +951,9 @@ fn on_mouse_down(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), 
 }
 
 fn on_mouse_up(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Up, ev) {
+        return done;
+    }
     if is_a(vm, id, "GuiScrollCtrl") {
         return crate::scroll::mouse_up(vm, gui, id);
     }
@@ -991,6 +997,10 @@ fn on_mouse_up(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), Vm
 }
 
 fn on_mouse_move(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    // A plugin's control sees the move, then (as `GuiControl::onMouseMove`) its parent does.
+    if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Move, ev) {
+        done?;
+    }
     if is_a(vm, id, "GuiMouseEventCtrl") {
         return mouse_event(vm, id, b"onMouseMove", ev);
     }
@@ -1014,6 +1024,9 @@ fn on_mouse_move(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), 
 }
 
 fn on_mouse_dragged(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Dragged, ev) {
+        return done;
+    }
     if is_a(vm, id, "GuiTextEditCtrl") {
         return text_edit::mouse_dragged(vm, gui, id, ev);
     }
@@ -1039,6 +1052,9 @@ fn on_mouse_dragged(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(
 }
 
 fn on_mouse_enter(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Enter, ev) {
+        return done;
+    }
     if is_a(vm, id, "GuiArrayCtrl") {
         crate::textlist::mouse_enter(vm, gui, id, ev.point);
         return Ok(());
@@ -1061,6 +1077,9 @@ fn on_mouse_enter(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(),
 }
 
 fn on_mouse_leave(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+    if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Leave, ev) {
+        return done;
+    }
     if is_a(vm, id, "GuiArrayCtrl") {
         crate::textlist::mouse_leave(gui, id);
         return Ok(());
@@ -1265,6 +1284,13 @@ fn on_key_down_at(
 ) -> Result<bool, VmError> {
     if depth > MAX_TREE_DEPTH || !vm.charge_work(32) || !alive(vm, id) {
         return Ok(false);
+    }
+    if let Some(taken) = crate::custom::key_down(vm, gui, id, ev) {
+        return if taken? {
+            Ok(true)
+        } else {
+            parent_key_down(vm, gui, id, ev, depth)
+        };
     }
     if is_a(vm, id, "GuiTextEditCtrl") {
         return text_edit::key_down(vm, gui, id, ev, depth);

@@ -117,7 +117,9 @@ pub(crate) fn resize_at(
     if depth > MAX_TREE_DEPTH || !vm.charge_work(VISIT_WORK) {
         return;
     }
-    if classes::resize(vm, gui, id, position, extent, depth) {
+    if classes::resize(vm, gui, id, position, extent, depth)
+        || crate::custom::resize(vm, gui, id, position, extent, depth)
+    {
         return;
     }
     base_resize(vm, gui, id, position, extent, depth);
@@ -322,6 +324,7 @@ fn on_wake(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
     // What a class's `onWake` does after `GuiControl::onWake` returned (the script's `onWake` ran inside it).
     if vm.objects().contains(id) && gui.is_control(id) {
         classes::after_wake(vm, gui, id);
+        crate::custom::wake(vm, gui, id)?;
     }
     Ok(())
 }
@@ -355,6 +358,7 @@ fn sleep_at(vm: &mut Vm, gui: &Gui, id: ObjId, depth: usize) -> Result<(), VmErr
     crate::msgvector::on_sleep(gui, id);
     // The first responder cleared and the mouse unlocked before the script's `onSleep`.
     crate::input::on_sleep(vm, gui, id)?;
+    crate::custom::sleep(vm, gui, id)?;
     let result = vm.call_method(id, b"onSleep", &[]).map(|_| ());
     if let Some(control) = gui.0.borrow_mut().controls.get_mut(&id) {
         control.awake = false;
@@ -423,8 +427,11 @@ impl EngineClass for ControlClass {
         if classes::has_text_state(vm, id) {
             control.text = Some(classes::initial_text(vm, id));
         }
-        control.active =
-            ACTIVE_CLASSES.iter().any(|c| is_a(vm, id, c)) || self.0.ext().starts_active(vm, id);
+        // A plugin control's state is made here whatever the other checks say.
+        let made = crate::custom::made(vm, &self.0, id).unwrap_or(false);
+        control.active = made
+            || ACTIVE_CLASSES.iter().any(|c| is_a(vm, id, c))
+            || self.0.ext().starts_active(vm, id);
         if is_a(vm, id, "GuiTextEditCtrl") {
             control.edit = Some(Box::new(crate::input::EditState::new()));
         }
@@ -460,6 +467,7 @@ impl EngineClass for ControlClass {
         };
         crate::input::forget(&self.0, id);
         self.0.ext().removed(id);
+        crate::custom::removed(&self.0, id);
         let mut state = self.0.0.borrow_mut();
         state.controls.remove(&id);
         if state.canvas == Some(id) {

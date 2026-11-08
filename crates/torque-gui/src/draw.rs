@@ -868,6 +868,9 @@ impl Walk<'_> {
             })
             .unwrap_or_default();
         match class.as_str() {
+            _ if self.custom_control(id, offset, update, depth) => {}
+            // The deprecated seam, for a class no plugin control handles.
+            #[allow(deprecated)]
             _ if ext.draw_control(&mut DrawCtx(self), &class, id, offset, update, depth) => {}
             // GameTSCtrl::onRender: nothing at all (not its children, not the script's `onRender`) while `processCameraQuery`
             // fails, as it does with no connection to a server.
@@ -948,6 +951,38 @@ impl Walk<'_> {
         self.children(id, update, offset, depth);
     }
 
+    /// A control of a class a plugin declared ([`crate::custom`]): the script's first `onRender`, the class's draw, then the
+    /// children. False for any other class.
+    fn custom_control(
+        &mut self,
+        id: ObjId,
+        offset: (i32, i32),
+        update: [i32; 4],
+        depth: usize,
+    ) -> bool {
+        let Some((behavior, mut state)) = self.gui.take_custom(id) else {
+            return false;
+        };
+        let first = self
+            .gui
+            .with_mut(id, |c| !std::mem::replace(&mut c.has_rendered, true))
+            .unwrap_or(false);
+        if first {
+            self.out.callbacks.push(Callback::OnRender(id));
+        }
+        let place = crate::custom::Place {
+            id,
+            offset,
+            extent: point(self.vm, id, b"extent"),
+            update,
+            depth,
+        };
+        behavior.draw(&mut *state, &mut DrawCtx(self), &place);
+        self.gui.put_custom(id, state);
+        self.children(id, update, offset, depth);
+        true
+    }
+
     fn gui_control(&mut self, id: ObjId, offset: (i32, i32), update: [i32; 4], depth: usize) {
         let first = self
             .gui
@@ -956,6 +991,12 @@ impl Walk<'_> {
         if first {
             self.out.callbacks.push(Callback::OnRender(id));
         }
+        self.control_box(id, offset);
+        self.children(id, update, offset, depth);
+    }
+
+    /// `GuiControl::onRender` without the children: the profile's fill when `opaque`, then its border.
+    fn control_box(&mut self, id: ObjId, offset: (i32, i32)) {
         let ext = point(self.vm, id, b"extent");
         let rect = [offset.0, offset.1, ext.0, ext.1];
         if let Some(p) = profile_of(self.vm, id) {
@@ -965,7 +1006,6 @@ impl Walk<'_> {
             }
             self.render_border(p, rect);
         }
-        self.children(id, update, offset, depth);
     }
 
     /// The rectangle a bitmap control that keeps its bitmap's aspect ([`crate::GuiExtension::bitmap_fit`]) draws a `bw` x
@@ -1580,7 +1620,7 @@ pub fn run_callbacks(vm: &mut Vm, callbacks: &[Callback]) -> Result<(), VmError>
     Ok(())
 }
 
-/// What an extension's draw ([`crate::GuiExtension::draw_control`], [`crate::GuiExtension::before_control`]) reaches of the
+/// What a plugin control's draw ([`crate::custom::GuiControlClass::draw`]) and an extension's ([`crate::GuiExtension::before_control`]) reach of the
 /// walk: the engine's primitives, at the walk's clip and opacity.
 pub struct DrawCtx<'w, 'a>(&'w mut Walk<'a>);
 
@@ -1659,6 +1699,12 @@ impl<'a> DrawCtx<'_, 'a> {
     /// GuiBitmapCtrl's `onRender` with the control's own `bitmap`.
     pub fn bitmap(&mut self, id: ObjId, offset: (i32, i32), update: [i32; 4], depth: usize) {
         self.0.bitmap(id, offset, update, depth);
+    }
+
+    /// `GuiControl::onRender` without its children: the profile's fill when it is `opaque`, then its border, for the control
+    /// `id` drawn at `offset`.
+    pub fn control_box(&mut self, id: ObjId, offset: (i32, i32)) {
+        self.0.control_box(id, offset);
     }
 
     /// The control's children (`renderChildControls`).

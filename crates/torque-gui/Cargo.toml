@@ -11,6 +11,8 @@ keywords = ["torque", "gui", "torquescript", "gamedev"]
 categories = ["gui", "game-development"]
 
 [dependencies]
+# `ScriptClass`: a control class declared in Rust has its fields as a class does, and `EngineBuilder` takes the controls.
+torque-engine = { path = "../torque-engine" }
 torque-fonts = { path = "../torque-fonts" }
 torque-images = { path = "../torque-images" }
 torque-ts-vm = { path = "../torque-ts-vm" }

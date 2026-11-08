@@ -56,6 +56,7 @@ pub mod canvas;
 mod classes;
 pub mod console;
 mod control;
+pub mod custom;
 pub mod draw;
 pub mod ext;
 pub mod hud;
@@ -253,6 +254,8 @@ pub struct GuiState {
     pub hud: hud::HudFeed,
     /// The host's extension ([`GuiExtension`]).
     pub ext: Extension,
+    /// The control classes plugins added and their controls ([`custom`]).
+    pub(crate) custom: custom::Custom,
     /// The host's overlays ([`Gui::set_overlay`]): controls drawn over the canvas's children, never members of the canvas, so a
     /// script's `Canvas.getCount()` and `Canvas.getObject(%i)` count only what the scripts put there.
     pub overlays: Vec<ObjId>,
@@ -282,6 +285,7 @@ impl Default for GuiState {
             world_camera: false,
             hud: hud::HudFeed::default(),
             ext: Extension::default(),
+            custom: custom::Custom::default(),
             overlays: Vec::new(),
         }
     }

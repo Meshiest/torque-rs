@@ -1,7 +1,7 @@
-//! The GUI's seams for a host: where its fonts come from ([`FontSource`]) and an extension ([`GuiExtension`]) that adds
-//! control classes of its own (their state, their drawing) and extra looks to the engine's controls (profile fields read by
-//! the draw, a pass before each control draws, a displacement of the children drawn, key and focus rules). Without one the
-//! GUI is TGE's: [`NoExtension`] and the `torque-fonts` cache.
+//! The GUI's seams for a host: where its fonts come from ([`FontSource`]) and an extension ([`GuiExtension`]) that adds extra
+//! looks to the engine's controls (profile fields read by the draw, a pass before each control draws, a displacement of the
+//! children drawn, key and focus rules). Without one the GUI is TGE's: [`NoExtension`] and the `torque-fonts` cache. Control
+//! classes of a plugin's own are not an extension's: any number of plugins add them ([`crate::custom`]).
 
 use std::any::Any;
 use std::rc::Rc;
@@ -149,15 +149,19 @@ pub trait GuiExtension: Any {
     /// Before a draw cache draws a frame: what the extension keeps for its fonts is given to them.
     fn begin_draw(&self, _gui: &Gui, _fonts: &mut dyn FontSource) {}
 
-    /// Whether a new control of one of the extension's classes starts active (the engine's own classes are decided before).
+    /// Whether a new control of a class the engine does not know starts active (the engine's own classes and the plugins'
+    /// ([`crate::custom::GuiControlClass::ACTIVE`]) are decided before).
     fn starts_active(&self, _vm: &Vm, _id: ObjId) -> bool {
         false
     }
 
-    /// The control `id` was removed: anything the extension kept for it goes.
-    fn removed(&self, _id: ObjId) {}
-
     /// Draws the control `id` of a class the engine does not draw (`class`, its own class name); true when it did.
+    ///
+    /// Deprecated: a class the extension draws becomes a control class a plugin adds
+    /// ([`GuiControlClass`](crate::custom::GuiControlClass), `add_gui_control`): its fields are the class's fields, its `draw`
+    /// replaces this method, and its state, layout and input are the class's own. This is still called, for a class no plugin
+    /// control handles, so an extension written before keeps drawing.
+    #[deprecated(note = "add a GuiControlClass through add_gui_control")]
     fn draw_control(
         &self,
         _d: &mut DrawCtx<'_, '_>,
@@ -169,6 +173,9 @@ pub trait GuiExtension: Any {
     ) -> bool {
         false
     }
+
+    /// The control `id` was removed: anything the extension kept for it goes.
+    fn removed(&self, _id: ObjId) {}
 
     /// Before any control draws: the extension's pass under it (offset: its place on the canvas; update: its clip).
     fn before_control(

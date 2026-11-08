@@ -3539,6 +3539,7 @@ name = "torque-gui"
 version = "0.1.0"
 dependencies = [
  "png",
+ "torque-engine",
  "torque-fonts",
  "torque-images",
  "torque-ts-vm",

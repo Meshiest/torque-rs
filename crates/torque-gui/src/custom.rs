@@ -1,0 +1,676 @@
+//! GUI control classes written in Rust, added by plugins.
+//!
+//! A control class is a Rust type that implements [`GuiControlClass`]: its console fields are the type's fields (declared with
+//! `#[derive(EngineClass)]`, so a script writes them, `dump()` lists them and they are read back as the struct), and its
+//! behavior is the trait's methods: how it draws, how it lays itself out, what it does with the mouse and the keys it is given.
+//! What a control keeps between frames that is not a field is its [`State`](GuiControlClass::State).
+//!
+//! A plugin adds the class while the engine is built ([`GuiBuilderExt::add_gui_control`]); any number of plugins can each add
+//! controls. A name two plugins both declare, a name of the engine's own GUI classes and a parent that is not a control class
+//! are build errors that name the plugin. The engine's controls (`GuiButtonCtrl` and the rest) are drawn and handled as they
+//! always were; a control of a plugin's class is drawn and handled by its class alone, and its children are drawn after it,
+//! as a `GuiControl`'s are. An extension's `GuiExtension::draw_control` (deprecated) is still asked for a class no plugin
+//! control handles.
+//!
+//! ```
+//! use torque_gui::custom::{GuiBuilderExt, GuiControlClass, Place, PointerEvent, ControlCx};
+//! use torque_gui::draw::DrawCtx;
+//! use torque_engine::{EngineBuilder, EngineClass, Plugin, PluginId};
+//! use torque_ts_vm::vm::VmError;
+//!
+//! /// A block of one color that tells the script when it is clicked.
+//! #[derive(EngineClass)]
+//! #[class(name = "GuiTileCtrl", parent = "GuiControl")]
+//! struct Tile {
+//!     /// The fill.
+//!     #[field(default = "255 128 0 255")]
+//!     color: [u8; 4],
+//! }
+//!
+//! #[derive(Default)]
+//! struct Clicks(u32);
+//!
+//! impl GuiControlClass for Tile {
+//!     type State = Clicks;
+//!
+//!     fn draw(&self, _clicks: &mut Clicks, d: &mut DrawCtx<'_, '_>, at: &Place) {
+//!         d.fill(at.rect(), self.color);
+//!     }
+//!
+//!     fn mouse_down(&self, clicks: &mut Clicks, cx: &mut ControlCx<'_>, _ev: &PointerEvent) -> Result<(), VmError> {
+//!         clicks.0 += 1;
+//!         cx.call("onClick", &[clicks.0.to_string().into_bytes()])?;
+//!         Ok(())
+//!     }
+//! }
+//!
+//! #[derive(PluginId)]
+//! #[plugin(id = "example.tile")]
+//! struct TilePlugin;
+//! impl Plugin for TilePlugin {
+//!     fn build(&self, engine: &mut EngineBuilder) {
+//!         engine.add_gui_control::<Tile>();
+//!     }
+//! }
+//!
+//! let engine = EngineBuilder::new().add_plugins(TilePlugin).build()?;
+//! assert_eq!(engine.classes().map(|c| c.name).collect::<Vec<_>>(), ["GuiTileCtrl"]);
+//! # Ok::<(), torque_engine::BuildError>(())
+//! ```
+//!
+//! The GUI of a client gets the engine's controls from the GUI plugin (`torque.gui`) as it makes the client; a client made
+//! without it has none.
+
+use std::any::Any;
+use std::collections::HashMap;
+use std::fmt;
+use std::marker::PhantomData;
+use std::rc::Rc;
+
+use torque_engine::{ClassInfo, EngineBuilder, ScriptClass};
+use torque_ts_vm::sim::ObjId;
+use torque_ts_vm::vm::{Vm, VmError};
+
+use crate::control::{self, screen_position};
+use crate::draw::DrawCtx;
+use crate::input::{self, GuiEvent};
+use crate::{Gui, specs};
+
+/// A Rust type that is a GUI control class: its fields ([`ScriptClass`], from `#[derive(EngineClass)]`, below
+/// `GuiControl` or another plugin's control class) and what its controls do. Every method has `GuiControl`'s behavior as its
+/// default.
+///
+/// The methods get the control's fields as the struct, read when the method is called (a field a script wrote an instant
+/// ago is in it), and the control's [`State`](Self::State). A method that can run script returns the script's error, which
+/// stops the run as any other would.
+pub trait GuiControlClass: ScriptClass {
+    /// What a control keeps beside its fields: made with `Default` when the control is made, gone with it.
+    type State: Default + 'static;
+
+    /// Whether a new control is active, so it takes the mouse (`GuiControl`'s own is not; a button's is).
+    const ACTIVE: bool = true;
+
+    /// Draws the control at `at`, in the walk's clip. The default is `GuiControl`'s: the profile's fill and border. The
+    /// control's script `onRender` runs once, before this, and its children are drawn after it.
+    fn draw(&self, state: &mut Self::State, d: &mut DrawCtx<'_, '_>, at: &Place) {
+        let _ = state;
+        d.control_box(at.id, at.offset);
+    }
+
+    /// Sets the control's position and extent (the layout of the children included): the default is
+    /// [`ControlCx::base_resize`], `GuiControl::resize`. A control that lays its children out itself calls it first.
+    fn resize(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        position: (i32, i32),
+        extent: (i32, i32),
+    ) {
+        let _ = state;
+        cx.base_resize(position, extent);
+    }
+
+    /// The control woke (its parents are awake): after `GuiControl::onWake` and the script's `onWake`.
+    fn wake(&self, state: &mut Self::State, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
+        let _ = (state, cx);
+        Ok(())
+    }
+
+    /// The control goes to sleep: before the script's `onSleep`.
+    fn sleep(&self, state: &mut Self::State, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
+        let _ = (state, cx);
+        Ok(())
+    }
+
+    /// The left button went down on the control (or on it as the control that holds the mouse).
+    fn mouse_down(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError> {
+        let _ = (state, cx, ev);
+        Ok(())
+    }
+
+    /// The left button went up, on the control or after [`ControlCx::lock_mouse`].
+    fn mouse_up(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError> {
+        let _ = (state, cx, ev);
+        Ok(())
+    }
+
+    /// The mouse moved over the control. After it the control's parent gets the move, as a `GuiControl`'s does.
+    fn mouse_move(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError> {
+        let _ = (state, cx, ev);
+        Ok(())
+    }
+
+    /// The mouse moved with the left button down, over the control or after [`ControlCx::lock_mouse`].
+    fn mouse_dragged(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError> {
+        let _ = (state, cx, ev);
+        Ok(())
+    }
+
+    /// The mouse came onto the control.
+    fn mouse_enter(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError> {
+        let _ = (state, cx, ev);
+        Ok(())
+    }
+
+    /// The mouse left the control.
+    fn mouse_leave(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError> {
+        let _ = (state, cx, ev);
+        Ok(())
+    }
+
+    /// A key went down while the control has the key focus. True: the control took it; false: it goes to the parent, as a
+    /// `GuiControl`'s does.
+    fn key_down(
+        &self,
+        state: &mut Self::State,
+        cx: &mut ControlCx<'_>,
+        ev: &KeyEvent,
+    ) -> Result<bool, VmError> {
+        let _ = (state, cx, ev);
+        Ok(false)
+    }
+}
+
+/// Where a control is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    /// The control.
+    pub id: ObjId,
+    /// Its top left corner on the canvas.
+    pub offset: (i32, i32),
+    /// Its width and height.
+    pub extent: (i32, i32),
+    /// The clip its parent gave it (x, y, width, height).
+    pub update: [i32; 4],
+    /// How deep in the tree it is.
+    pub depth: usize,
+}
+
+impl Place {
+    /// The control's rectangle on the canvas: x, y, width, height.
+    pub fn rect(&self) -> [i32; 4] {
+        [self.offset.0, self.offset.1, self.extent.0, self.extent.1]
+    }
+}
+
+/// A mouse event a control is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PointerEvent {
+    /// The pointer on the canvas.
+    pub point: (i32, i32),
+    /// The pointer from the control's top left corner.
+    pub local: (i32, i32),
+    /// The modifier keys held (`SI_SHIFT`, `SI_CTRL`, `SI_ALT` of [`keys`](crate::keys)).
+    pub modifier: u8,
+    /// How many clicks in a row this press is (1 for a single click).
+    pub clicks: u8,
+}
+
+/// A key event a control is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyEvent {
+    /// The key's code (a `KEY_*` of [`keys`](crate::keys)).
+    pub key_code: u8,
+    /// The character the key made, when it made one (0: none).
+    pub ascii: u16,
+    /// The modifier keys held.
+    pub modifier: u8,
+}
+
+/// What a control's method reaches: the script engine, the GUI and the control itself.
+pub struct ControlCx<'a> {
+    /// The script engine.
+    pub vm: &'a mut Vm,
+    /// The GUI.
+    pub gui: &'a Gui,
+    /// The control.
+    pub id: ObjId,
+    depth: usize,
+}
+
+impl ControlCx<'_> {
+    /// The control's position and extent.
+    pub fn bounds(&self) -> ((i32, i32), (i32, i32)) {
+        control::bounds(self.vm, self.id)
+    }
+
+    /// The control's top left corner on the canvas.
+    pub fn screen_position(&self) -> (i32, i32) {
+        screen_position(self.vm, self.id)
+    }
+
+    /// `GuiControl::resize`: the extent clamped to `minExtent`, the children told, then the bounds set.
+    pub fn base_resize(&mut self, position: (i32, i32), extent: (i32, i32)) {
+        control::base_resize(self.vm, self.gui, self.id, position, extent, self.depth);
+    }
+
+    /// Takes the mouse: every move and release goes to the control until [`unlock_mouse`](Self::unlock_mouse).
+    pub fn lock_mouse(&mut self) -> Result<(), VmError> {
+        input::mouse_lock(self.vm, self.gui, self.id)
+    }
+
+    /// Gives the mouse back.
+    pub fn unlock_mouse(&mut self) -> Result<(), VmError> {
+        input::mouse_unlock(self.vm, self.gui, self.id)
+    }
+
+    /// Calls the script method `name` of the control with `args` (nothing happens when it has none), and returns what it
+    /// returned.
+    pub fn call(&mut self, name: &str, args: &[Vec<u8>]) -> Result<Vec<u8>, VmError> {
+        self.vm.call_method(self.id, name.as_bytes(), args)
+    }
+}
+
+/// The behavior of one control class, with its state type erased: what the GUI calls. [`Adapter`] makes it of a
+/// [`GuiControlClass`].
+pub(crate) trait ControlBehavior {
+    fn active(&self) -> bool;
+    fn new_state(&self) -> Box<dyn Any>;
+    fn draw(&self, state: &mut dyn Any, d: &mut DrawCtx<'_, '_>, at: &Place);
+    fn resize(
+        &self,
+        state: &mut dyn Any,
+        cx: &mut ControlCx<'_>,
+        position: (i32, i32),
+        extent: (i32, i32),
+    );
+    fn wake(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
+    fn sleep(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
+    fn pointer(
+        &self,
+        which: Pointer,
+        state: &mut dyn Any,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError>;
+    fn key_down(
+        &self,
+        state: &mut dyn Any,
+        cx: &mut ControlCx<'_>,
+        ev: &KeyEvent,
+    ) -> Result<bool, VmError>;
+}
+
+/// The mouse events a control is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pointer {
+    Down,
+    Up,
+    Move,
+    Dragged,
+    Enter,
+    Leave,
+}
+
+struct Adapter<C>(PhantomData<fn() -> C>);
+
+impl<C: GuiControlClass> Adapter<C> {
+    /// The control's fields, or the failure printed to the console.
+    fn read(vm: &mut Vm, id: ObjId) -> Option<C> {
+        match C::read(vm, id) {
+            Ok(this) => Some(this),
+            Err(error) => {
+                vm.error(format!("{}: {error}", C::NAME));
+                None
+            }
+        }
+    }
+}
+
+impl<C: GuiControlClass> ControlBehavior for Adapter<C> {
+    fn active(&self) -> bool {
+        C::ACTIVE
+    }
+
+    fn new_state(&self) -> Box<dyn Any> {
+        Box::<C::State>::default()
+    }
+
+    fn draw(&self, state: &mut dyn Any, d: &mut DrawCtx<'_, '_>, at: &Place) {
+        // A draw runs no script and cannot print: a control whose fields cannot be read is not drawn.
+        if let Some(state) = state.downcast_mut::<C::State>()
+            && let Ok(this) = C::read(d.vm(), at.id)
+        {
+            this.draw(state, d, at);
+        }
+    }
+
+    fn resize(
+        &self,
+        state: &mut dyn Any,
+        cx: &mut ControlCx<'_>,
+        position: (i32, i32),
+        extent: (i32, i32),
+    ) {
+        match (
+            state.downcast_mut::<C::State>(),
+            Self::read(&mut *cx.vm, cx.id),
+        ) {
+            (Some(state), Some(this)) => this.resize(state, cx, position, extent),
+            _ => cx.base_resize(position, extent),
+        }
+    }
+
+    fn wake(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
+        match (
+            state.downcast_mut::<C::State>(),
+            Self::read(&mut *cx.vm, cx.id),
+        ) {
+            (Some(state), Some(this)) => this.wake(state, cx),
+            _ => Ok(()),
+        }
+    }
+
+    fn sleep(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
+        match (
+            state.downcast_mut::<C::State>(),
+            Self::read(&mut *cx.vm, cx.id),
+        ) {
+            (Some(state), Some(this)) => this.sleep(state, cx),
+            _ => Ok(()),
+        }
+    }
+
+    fn pointer(
+        &self,
+        which: Pointer,
+        state: &mut dyn Any,
+        cx: &mut ControlCx<'_>,
+        ev: &PointerEvent,
+    ) -> Result<(), VmError> {
+        let (Some(state), Some(this)) = (
+            state.downcast_mut::<C::State>(),
+            Self::read(&mut *cx.vm, cx.id),
+        ) else {
+            return Ok(());
+        };
+        match which {
+            Pointer::Down => this.mouse_down(state, cx, ev),
+            Pointer::Up => this.mouse_up(state, cx, ev),
+            Pointer::Move => this.mouse_move(state, cx, ev),
+            Pointer::Dragged => this.mouse_dragged(state, cx, ev),
+            Pointer::Enter => this.mouse_enter(state, cx, ev),
+            Pointer::Leave => this.mouse_leave(state, cx, ev),
+        }
+    }
+
+    fn key_down(
+        &self,
+        state: &mut dyn Any,
+        cx: &mut ControlCx<'_>,
+        ev: &KeyEvent,
+    ) -> Result<bool, VmError> {
+        match (
+            state.downcast_mut::<C::State>(),
+            Self::read(&mut *cx.vm, cx.id),
+        ) {
+            (Some(state), Some(this)) => this.key_down(state, cx, ev),
+            _ => Ok(false),
+        }
+    }
+}
+
+/// A control class a plugin added: its declaration and its behavior. The list of them the engine holds is what the GUI plugin
+/// gives each client's GUI ([`Gui::add_controls`]).
+#[derive(Clone)]
+pub struct ControlEntry {
+    /// The class: its name, parent and fields.
+    pub info: ClassInfo,
+    behavior: Rc<dyn ControlBehavior>,
+}
+
+impl ControlEntry {
+    /// The entry of the control class `C`.
+    pub fn of<C: GuiControlClass>() -> ControlEntry {
+        ControlEntry {
+            info: ClassInfo::of::<C>(),
+            behavior: Rc::new(Adapter::<C>(PhantomData)),
+        }
+    }
+}
+
+impl fmt::Debug for ControlEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ControlEntry")
+            .field("class", &self.info.name)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Adds control classes to an engine being built.
+pub trait GuiBuilderExt {
+    /// Adds the control class `C`: registered in every client's script engine below its parent, with its fields, and handled
+    /// by its [`GuiControlClass`] methods. Build errors ([`BuildError::Rejected`](torque_engine::BuildError::Rejected), or
+    /// [`DuplicateScriptName`](torque_engine::BuildError::DuplicateScriptName) when another plugin added a class of the
+    /// name, both naming the plugins):
+    ///
+    /// - the name is one of the engine's own GUI classes (a plugin cannot take over `GuiButtonCtrl`);
+    /// - the parent is neither `GuiControl` nor a control class added before (the engine's other GUI classes draw and
+    ///   handle input by their own names, so a class below one would lose that).
+    fn add_gui_control<C: GuiControlClass>(&mut self) -> &mut Self;
+}
+
+impl GuiBuilderExt for EngineBuilder {
+    fn add_gui_control<C: GuiControlClass>(&mut self) -> &mut Self {
+        if is_engine_class(C::NAME) {
+            self.reject(format!(
+                "`{}` is one of the engine's own GUI classes: a control class needs a name of its own",
+                C::NAME
+            ));
+            return self;
+        }
+        let parent_is_control = C::PARENT.eq_ignore_ascii_case("GuiControl")
+            || self
+                .list::<ControlEntry>()
+                .iter()
+                .any(|entry| entry.info.name.eq_ignore_ascii_case(C::PARENT));
+        if !parent_is_control {
+            self.reject(format!(
+                "`{}` goes below `{}`, which is neither GuiControl nor a control class added before it",
+                C::NAME,
+                C::PARENT
+            ));
+            return self;
+        }
+        self.client_script().class::<C>();
+        self.push(ControlEntry::of::<C>());
+        self
+    }
+}
+
+/// Whether `name` is a class this crate declares ([`specs::CLASSES`]), without case.
+fn is_engine_class(name: &str) -> bool {
+    specs::CLASSES
+        .iter()
+        .any(|class| class.name.eq_ignore_ascii_case(name))
+}
+
+/// The control classes of a GUI, and the controls of them that exist.
+#[derive(Default)]
+pub(crate) struct Custom {
+    /// By lower case class name.
+    classes: HashMap<String, Rc<dyn ControlBehavior>>,
+    objects: HashMap<ObjId, Slot>,
+}
+
+/// A control of a plugin's class. Its state is out of the slot (`None`) while one of the control's methods runs, so that a
+/// call that reaches the same control again finds it busy.
+struct Slot {
+    behavior: Rc<dyn ControlBehavior>,
+    state: Option<Box<dyn Any>>,
+}
+
+impl fmt::Debug for Custom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Custom")
+            .field("classes", &self.classes.len())
+            .field("objects", &self.objects.len())
+            .finish()
+    }
+}
+
+impl Gui {
+    /// Gives the GUI the control classes `entries` (a class the GUI already has is kept as it was). Their classes are
+    /// registered by the script registry, which the engine's client recipes run.
+    pub fn add_controls(&self, entries: &[ControlEntry]) {
+        let mut state = self.0.borrow_mut();
+        for entry in entries {
+            state
+                .custom
+                .classes
+                .entry(entry.info.name.to_ascii_lowercase())
+                .or_insert_with(|| Rc::clone(&entry.behavior));
+        }
+    }
+
+    /// Whether `id` is a control of a class a plugin added.
+    pub fn is_custom(&self, id: ObjId) -> bool {
+        self.0.borrow().custom.objects.contains_key(&id)
+    }
+
+    /// The behavior and state of the control `id` if it is a plugin's, the state taken out until
+    /// [`put_custom`](Self::put_custom) (None while a method of the control is running).
+    pub(crate) fn take_custom(&self, id: ObjId) -> Option<(Rc<dyn ControlBehavior>, Box<dyn Any>)> {
+        let mut state = self.0.borrow_mut();
+        let slot = state.custom.objects.get_mut(&id)?;
+        let taken = slot.state.take()?;
+        Some((Rc::clone(&slot.behavior), taken))
+    }
+
+    /// Gives the control its state back (the control may be gone by now).
+    pub(crate) fn put_custom(&self, id: ObjId, state: Box<dyn Any>) {
+        if let Some(slot) = self.0.borrow_mut().custom.objects.get_mut(&id) {
+            slot.state = Some(state);
+        }
+    }
+}
+
+/// A new control `id`: when its class is a plugin's, its slot is made. Whether it starts active.
+pub(crate) fn made(vm: &Vm, gui: &Gui, id: ObjId) -> Option<bool> {
+    let objects = vm.objects();
+    let class = objects.get(id).map(|o| objects.classes.name(o.class()))?;
+    let name = String::from_utf8_lossy(class).to_ascii_lowercase();
+    let mut state = gui.0.borrow_mut();
+    let behavior = Rc::clone(state.custom.classes.get(&name)?);
+    let active = behavior.active();
+    let slot = Slot {
+        state: Some(behavior.new_state()),
+        behavior,
+    };
+    state.custom.objects.insert(id, slot);
+    Some(active)
+}
+
+/// The control `id` is removed.
+pub(crate) fn removed(gui: &Gui, id: ObjId) {
+    gui.0.borrow_mut().custom.objects.remove(&id);
+}
+
+/// `f` with the behavior and state of the control `id` and the script engine, when the control is a plugin's and not busy;
+/// None otherwise.
+fn with<R>(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    depth: usize,
+    f: impl FnOnce(&dyn ControlBehavior, &mut dyn Any, &mut ControlCx<'_>) -> R,
+) -> Option<R> {
+    let (behavior, mut state) = gui.take_custom(id)?;
+    let result = f(
+        &*behavior,
+        &mut *state,
+        &mut ControlCx { vm, gui, id, depth },
+    );
+    gui.put_custom(id, state);
+    Some(result)
+}
+
+/// The control's own `resize`; false when it is not a plugin's.
+pub(crate) fn resize(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    position: (i32, i32),
+    extent: (i32, i32),
+    depth: usize,
+) -> bool {
+    with(vm, gui, id, depth, |b, state, cx| {
+        b.resize(state, cx, position, extent);
+    })
+    .is_some()
+}
+
+/// The control woke.
+pub(crate) fn wake(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
+    with(vm, gui, id, 0, |b, state, cx| b.wake(state, cx)).unwrap_or(Ok(()))
+}
+
+/// The control goes to sleep.
+pub(crate) fn sleep(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
+    with(vm, gui, id, 0, |b, state, cx| b.sleep(state, cx)).unwrap_or(Ok(()))
+}
+
+/// A mouse event for the control; None when it is not a plugin's.
+pub(crate) fn pointer(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    which: Pointer,
+    ev: GuiEvent,
+) -> Option<Result<(), VmError>> {
+    let at = screen_position(vm, id);
+    let ev = PointerEvent {
+        point: ev.point,
+        local: (ev.point.0.wrapping_sub(at.0), ev.point.1.wrapping_sub(at.1)),
+        modifier: ev.modifier,
+        clicks: ev.clicks,
+    };
+    with(vm, gui, id, 0, |b, state, cx| {
+        b.pointer(which, state, cx, &ev)
+    })
+}
+
+/// A key for the control; None when it is not a plugin's.
+pub(crate) fn key_down(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    ev: GuiEvent,
+) -> Option<Result<bool, VmError>> {
+    let ev = KeyEvent {
+        key_code: ev.key_code,
+        ascii: ev.ascii,
+        modifier: ev.modifier,
+    };
+    with(vm, gui, id, 0, |b, state, cx| b.key_down(state, cx, &ev))
+}

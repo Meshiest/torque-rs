@@ -15,7 +15,7 @@
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
-//! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register` |
+//! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register`, and the control classes plugins add ([`torque_gui::custom`]) |
 //! | [`ActionMapPlugin`] | `torque.action-map` | client, `Input` | the `ActionMap` class and its natives |
 //! | [`ScreenPlugin`] | `torque.screen` | client, `Screen` | `torque_client::screen::register` |
 //! | [`ConnPlugin`] | `torque.conn` | client, `Conn` | `torque_client::conn::register` |
@@ -52,6 +52,7 @@ use torque_client::state::ClientState;
 use torque_engine::{
     ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires,
 };
+use torque_gui::custom::ControlEntry;
 use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
 
@@ -175,9 +176,11 @@ pub struct GuiPlugin {
 impl Plugin for GuiPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         let layout_fonts = self.layout_fonts;
-        engine.client(ClientStage::Gui, move |vm, _| {
+        engine.client(ClientStage::Gui, move |vm, engine| {
             let wiring = client_wiring(vm, "the GUI")?;
             let gui = torque_gui::register(vm);
+            // The control classes the plugins added (`add_gui_control`): their classes come with the script registry's, after.
+            gui.add_controls(engine.list::<ControlEntry>());
             if layout_fonts {
                 // The controls that measure text as they lay out (a list of games) find their fonts where the drawing does.
                 gui.0.borrow_mut().fonts =
