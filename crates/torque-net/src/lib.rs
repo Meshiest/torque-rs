@@ -33,6 +33,9 @@
 //! - [`modsync`]: the mods a server requires, and the section of a client's connect block that says it takes mod content and its
 //!   caps (it never lists the mods a client has); the gate turns away only a client that cannot take them.
 //! - [`classes`]: the net classes' ids and widths derived by the class-sorting rule from the class representatives.
+//! - [`engine`]: engine mode's own framing, which owes TGE nothing: the link contract, the connect messages (with a stateless
+//!   cookie only on plain links), packets with prioritized lanes and budgets, and the sessions of both sides. Not used by the
+//!   TGE path.
 //! - [`profile`]: what a game sets (the event registry, the handshake's types, strings, versions, form and extension, the server
 //!   query's version fields, the ghost limit, the datablock id width), with TGE 1.4's defaults.
 //!
@@ -48,6 +51,7 @@ pub mod connect;
 pub mod control;
 pub mod crc;
 pub mod decode;
+pub mod engine;
 pub mod events;
 pub mod gameevents;
 pub mod ghost;
