@@ -874,7 +874,6 @@ fn key_bytes(k: &KeyDef) -> usize {
 
 /// A class being flattened: its entries (shared with the classes they come from) with an index of each by lowercase name
 /// (borrowed from those classes), so a merge is one lookup and copies nothing but a pointer.
-#[derive(Default)]
 struct Builder<'a> {
     flat: Flat,
     key_at: HashMap<&'a str, usize>,
@@ -884,9 +883,49 @@ struct Builder<'a> {
     choice_at: HashMap<usize, HashMap<u64, usize>>,
     /// Bytes copied (flags keys a merge changed, and their new choices).
     copied: usize,
+    /// The table's work counter, charged before each copy and each hashing.
+    work: &'a Cell<usize>,
+    /// The bytes the flattened classes held when this one began.
+    bytes_before: usize,
+    /// Why the merge stopped, when a cap stopped it.
+    stopped: Option<&'static str>,
 }
 
 impl<'a> Builder<'a> {
+    fn new(work: &'a Cell<usize>, bytes_before: usize) -> Builder<'a> {
+        Builder {
+            flat: Flat::default(),
+            key_at: HashMap::new(),
+            input_at: HashMap::new(),
+            output_at: HashMap::new(),
+            choice_at: HashMap::new(),
+            copied: 0,
+            work,
+            bytes_before,
+            stopped: None,
+        }
+    }
+
+    /// Charges `units` of work and `bytes` of copies before they are done; false (and the merge stops) past either cap.
+    fn charge(&mut self, units: usize, bytes: usize) -> bool {
+        let w = self.work.get().saturating_add(units);
+        self.work.set(w);
+        if w > MAX_FLATTEN_WORK {
+            self.stopped = Some("work");
+            return false;
+        }
+        let b = self
+            .bytes_before
+            .saturating_add(self.copied)
+            .saturating_add(bytes);
+        if b > MAX_FLAT_BYTES {
+            self.stopped = Some("bytes");
+            return false;
+        }
+        self.copied += bytes;
+        true
+    }
+
     fn io(list: &mut Vec<Rc<IoDef>>, at: &mut HashMap<&'a str, usize>, from: &'a [Rc<IoDef>]) {
         for d in from {
             match at.get(d.lower.as_str()) {
@@ -900,22 +939,34 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn key(&mut self, d: &'a Rc<KeyDef>) {
+    /// Merges `d` into the class; false when a cap stopped it (the class is then not kept).
+    fn key(&mut self, d: &'a Rc<KeyDef>) -> bool {
         let Some(&i) = self.key_at.get(d.lower.as_str()) else {
             if self.flat.keys.len() < MAX_ENTRIES {
                 self.key_at.insert(d.lower.as_str(), self.flat.keys.len());
                 self.flat.keys.push(d.clone());
             }
-            return;
+            return true;
         };
         if self.flat.keys[i].ty != KeyType::Flags || d.ty != KeyType::Flags {
             self.flat.keys[i] = d.clone();
             self.choice_at.remove(&i);
-            return;
+            return true;
         }
-        // Flags merge bit by bit: this key becomes the class's own copy.
+        // Flags merge bit by bit: this key becomes the class's own copy, paid for before it is made.
         if Rc::strong_count(&self.flat.keys[i]) > 1 {
-            self.copied += key_bytes(&self.flat.keys[i]);
+            let bytes = key_bytes(&self.flat.keys[i]);
+            if !self.charge(1 + bytes / 64, bytes) {
+                return false;
+            }
+        }
+        if !self.choice_at.contains_key(&i) {
+            let k = &self.flat.keys[i];
+            let hashing =
+                k.choices.len() + k.choices.iter().map(|c| c.value.len()).sum::<usize>() / 64;
+            if !self.charge(hashing, 0) {
+                return false;
+            }
         }
         let x = Rc::make_mut(&mut self.flat.keys[i]);
         let at = self.choice_at.entry(i).or_insert_with(|| {
@@ -926,6 +977,13 @@ impl<'a> Builder<'a> {
                 .collect()
         });
         for c in &d.choices {
+            // Charged inline (not through `charge`, which needs `self` while `x` and `at` borrow it).
+            let w = self.work.get().saturating_add(1 + c.value.len() / 64);
+            self.work.set(w);
+            if w > MAX_FLATTEN_WORK {
+                self.stopped = Some("work");
+                return false;
+            }
             let found = match at.get(&hash_of(&c.value)) {
                 Some(&j) if x.choices[j].value == c.value => Some(j),
                 Some(_) => x.choices.iter().position(|y| y.value == c.value),
@@ -934,13 +992,19 @@ impl<'a> Builder<'a> {
             match found {
                 Some(j) => x.choices[j] = c.clone(),
                 None if x.choices.len() < MAX_CHOICES => {
+                    let bytes = c.value.len() + 8;
+                    if self.bytes_before.saturating_add(self.copied + bytes) > MAX_FLAT_BYTES {
+                        self.stopped = Some("bytes");
+                        return false;
+                    }
+                    self.copied += bytes;
                     at.insert(hash_of(&c.value), x.choices.len());
-                    self.copied += c.value.len() + 8;
                     x.choices.push(c.clone());
                 }
                 None => {}
             }
         }
+        true
     }
 }
 
@@ -948,8 +1012,9 @@ impl<'a> Builder<'a> {
 /// from. Each class is flattened once and kept, its entries shared with the classes they come from (a flags key a merge
 /// changes is the class's own copy); the flattened classes together hold at most [`MAX_FLAT_ENTRIES`] entries and
 /// [`MAX_FLAT_BYTES`] bytes, and
-/// flattening makes at most [`MAX_FLATTEN_WORK`] merges, after which a class not yet flattened reads as unknown (the coded
-/// defaults then apply) and one warning is kept.
+/// flattening does at most [`MAX_FLATTEN_WORK`] units of work, each copy and hashing paid for before it is done. Once a cap
+/// is reached a class not yet flattened reads as unknown without being flattened (the coded defaults then apply) and one
+/// warning is kept.
 #[derive(Debug, Default)]
 pub struct EntityDefs {
     classes: HashMap<String, ClassDef>,
@@ -957,6 +1022,8 @@ pub struct EntityDefs {
     cache: RefCell<HashMap<String, Option<Rc<Flat>>>>,
     entries: Cell<usize>,
     bytes: Cell<usize>,
+    /// Set once the entries or the bytes passed their caps: later classes are refused without being flattened.
+    full: Cell<bool>,
     work: Cell<usize>,
     warnings: RefCell<Vec<String>>,
 }
@@ -1037,7 +1104,13 @@ impl EntityDefs {
             return false;
         }
         for k in &c.keys {
-            b.key(k);
+            if !b.key(k) {
+                self.warn(format!(
+                    "flattening passed its {} cap; classes not yet read are unknown",
+                    b.stopped.unwrap_or("work")
+                ));
+                return false;
+            }
         }
         Builder::io(&mut b.flat.inputs, &mut b.input_at, &c.inputs);
         Builder::io(&mut b.flat.outputs, &mut b.output_at, &c.outputs);
@@ -1075,9 +1148,15 @@ impl EntityDefs {
         if c.kind == "baseclass" || self.work.get() > MAX_FLATTEN_WORK {
             return None;
         }
-        let mut b = Builder::default();
+        if self.full.get() {
+            return None;
+        }
+        let mut b = Builder::new(&self.work, self.bytes.get());
         b.flat.kind = c.kind.clone();
         if !self.flatten(key, &mut b, &mut Vec::new(), &mut HashSet::new()) {
+            if b.stopped == Some("bytes") {
+                self.full.set(true);
+            }
             return None;
         }
         let copied = b.copied;
@@ -1092,6 +1171,7 @@ impl EntityDefs {
             self.warn(format!(
                 "the flattened classes passed {MAX_FLAT_ENTRIES} entries or {MAX_FLAT_BYTES} bytes; classes not yet read are unknown"
             ));
+            self.full.set(true);
             return None;
         }
         self.entries.set(total);
@@ -1107,6 +1187,11 @@ impl EntityDefs {
     /// The bytes the flattened classes hold together (a pointer for each shared entry, and what merges copied).
     pub fn flat_bytes(&self) -> usize {
         self.bytes.get()
+    }
+
+    /// The work flattening has done.
+    pub fn flatten_work(&self) -> usize {
+        self.work.get()
     }
 
     /// How many entity classes there are.

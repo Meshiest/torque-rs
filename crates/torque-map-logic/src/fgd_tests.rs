@@ -364,3 +364,41 @@ fn flags_merges_copy_within_the_byte_cap() {
     assert!(defs.flat_bytes() <= MAX_FLAT_BYTES);
     assert!(defs.warnings().iter().any(|w| w.contains("bytes")));
 }
+
+#[test]
+fn classes_changing_a_large_shared_flags_key_pay_before_copying_and_stop_at_the_caps() {
+    use crate::fgd::{MAX_CHOICES, MAX_FLAT_BYTES, MAX_FLATTEN_WORK};
+    // A shared flags key of about 3 MB; each of 2,000 classes adds a flag, so flattening it copies the key.
+    let mut text = String::from("@BaseClass = Flagged [ spawnflags(flags) = [\n");
+    for k in 0..MAX_CHOICES - 1 {
+        text.push_str(&format!("{}{k} : \"\" : 0\n", "3".repeat(3_000)));
+    }
+    text.push_str("] ]\n");
+    for i in 0..2_000 {
+        text.push_str(&format!(
+            "@PointClass base(Flagged) = g{i} [ spawnflags(flags) = [ {} : \"\" : 1 ] ]\n",
+            i + 1
+        ));
+    }
+    assert!(text.len() < MAX_FILE_BYTES);
+    let defs = EntityDefs::new(Fgd::parse(text.as_bytes()));
+    let mut known = 0;
+    let mut work_when_full = None;
+    for i in 0..2_000 {
+        if defs.class(&format!("g{i}")).is_some() {
+            known += 1;
+        } else if work_when_full.is_none() {
+            work_when_full = Some(defs.flatten_work());
+        }
+    }
+    let bytes_per_copy = 3_000 * (MAX_CHOICES - 1);
+    assert!(
+        known > 0 && known <= MAX_FLAT_BYTES / bytes_per_copy,
+        "{known}"
+    );
+    assert!(defs.flat_bytes() <= MAX_FLAT_BYTES);
+    assert!(defs.flatten_work() <= MAX_FLATTEN_WORK + MAX_CHOICES);
+    // Once full, the later classes are refused without being flattened: no more work.
+    assert_eq!(Some(defs.flatten_work()), work_when_full);
+    assert!(defs.warnings().iter().any(|w| w.contains("bytes")));
+}
