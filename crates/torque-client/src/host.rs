@@ -136,6 +136,9 @@ pub struct ClientHost<G: ConnGame, S: GameServer> {
     pub draw_each_tick: bool,
     /// The wall time of the client's own work in [`run`](Self::run)'s passes; `take` it.
     pub perf: ClientPerf,
+    /// Whether the host polled the input sources for the frame in progress ([`poll_input_frame`](Self::poll_input_frame)): the
+    /// ticks that frame runs do not poll them again.
+    pub frame_polled: bool,
 }
 
 /// The wall time of the client's work before each pass of [`ClientHost::run`], summed.
@@ -183,6 +186,7 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
             cache,
             draw_each_tick: true,
             perf: ClientPerf::default(),
+            frame_polled: false,
         }
     }
 
@@ -198,8 +202,11 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         let mut perf = std::mem::take(&mut self.perf);
         let mut input_errors = std::mem::take(&mut self.input_errors);
         let modifiers = self.win32.modifiers;
+        let frame_polled = self.frame_polled;
         let end = self.server.run_ticks(limit_ms, |server| {
-            poll_sources(server.vm_mut(), &gui, &client, modifiers, &mut input_errors);
+            if !frame_polled {
+                poll_sources(server.vm_mut(), &gui, &client, modifiers, &mut input_errors);
+            }
             let t = web_time::Instant::now();
             pass.net(server.vm_mut(), &client);
             let t_net = t.elapsed();
@@ -508,9 +515,8 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         }
     }
 
-    /// Polls the client's input sources now ([`crate::input_source`]) and routes the joystick events they made. [`run`](Self::run)
-    /// does this before every tick; a host that wants a device read more often (once per drawn frame) may call it too: a source
-    /// that has nothing new makes no events.
+    /// Polls the client's input sources now ([`crate::input_source`]) and routes the joystick events they made. A source that has
+    /// nothing new makes no events.
     pub fn poll_input_sources(&mut self) {
         poll_sources(
             self.server.vm_mut(),
@@ -519,6 +525,20 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
             self.win32.modifiers,
             &mut self.input_errors,
         );
+    }
+
+    /// Starts a drawn frame's input: polls the sources once ([`poll_input_sources`](Self::poll_input_sources)), so a bound axis
+    /// follows the frame rate (as TGE polls its joysticks once per frame), and has [`run`](Self::run) leave them alone until
+    /// [`end_input_frame`](Self::end_input_frame). [`run`](Self::run) polls them before every tick on its own: that stays the
+    /// poll of a host that draws no frames (headless, a dedicated host, an offscreen run).
+    pub fn poll_input_frame(&mut self) {
+        self.poll_input_sources();
+        self.frame_polled = true;
+    }
+
+    /// Ends the frame's input ([`poll_input_frame`](Self::poll_input_frame)): the next tick polls again unless a new frame did.
+    pub fn end_input_frame(&mut self) {
+        self.frame_polled = false;
     }
 
     /// Whether the game wants the mouse (the canvas's cursor off, or `lockMouse(1)`): the window grabs it then.

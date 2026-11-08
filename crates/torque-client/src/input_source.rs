@@ -1,4 +1,4 @@
-//! Input sources: devices a plugin adds that the client polls once per client pass, and the joystick events they make.
+//! Input sources: devices a plugin adds that the client polls (once per drawn frame in a window or page, else once per client pass), and the joystick events they make.
 //!
 //! A source ([`InputSource`]) is polled with a context ([`InputCx`]) and says what its devices did: a button went down, an axis
 //! moved, a hat turned ([`JoyEvent`]). The registry ([`InputSources`]) turns those into TGE's joystick events and the client host
@@ -128,7 +128,7 @@ pub enum JoyEvent {
     Disconnected { device: u32 },
 }
 
-/// A device source the client polls once per client pass.
+/// A device source the client polls once per drawn frame (once per client pass where nothing is drawn).
 pub trait InputSource {
     /// One poll: say what the devices did since the last one ([`InputCx::button`], [`InputCx::axis`], [`InputCx::pov`],
     /// [`InputCx::disconnect`]). Should not block.
@@ -442,8 +442,8 @@ impl fmt::Debug for InputSourceEntry {
 
 /// Adds input sources to an engine being built.
 pub trait InputBuilderExt {
-    /// Adds a source: each client the engine makes polls its own copy of `source` once per client pass, in the order the sources
-    /// were added.
+    /// Adds a source: each client the engine makes polls its own copy of `source` once per drawn frame (once per client pass where nothing is
+    /// drawn), in the order the sources were added.
     fn add_input_source<S: InputSource + Clone + 'static>(&mut self, source: S) -> &mut Self;
 
     /// Adds a source made by `make`, called once for each client: for a source that cannot be copied, or that opens its

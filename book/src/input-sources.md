@@ -1,7 +1,7 @@
 # Input sources from plugins
 
 A plugin can bring a device the engine does not read: a gamepad, a wheel, a motion sensor, a network controller. The plugin adds an
-**input source** while the engine is built; the client polls it once per client pass; and what it says arrives in the scripts as
+**input source** while the engine is built; the client polls it once per drawn frame; and what it says arrives in the scripts as
 TGE's `joystick<N>` events. A game's scripts bind them in an action map as they would bind a DirectInput joystick:
 
 ```
@@ -15,6 +15,12 @@ first, with its own maps.
 
 A function binds to one key of a map: `bind(joystick0, button0, jump)` after `bind(keyboard, space, jump)` moves `jump` to the
 pad's button (this is TGE's `ActionMap`). A pad's binds call functions of their own (`function padJump(%v) { jump(%v); }`).
+
+Polling follows the frame rate, as TGE polls its joysticks once per frame: a bound axis that moves the look or the walk speed
+changes at the rate the window draws (144 times a second on a 144 Hz display), not at the 32 ms tick. The moves still go to the
+server at the tick, from the `$mv*` variables the binds set, and the look is drawn between the ticks from the same variables
+as the mouse's is. A host that draws no frames (a dedicated server, a headless run, an offscreen picture) polls once per client
+pass instead; a frame never polls twice.
 
 ## A source
 
@@ -78,7 +84,7 @@ use torque::client::input_source::{FakeInput, JoyAxis};
 let pad = FakeInput::default();
 // engine.add_input_source(pad.clone()), then build the client and bind joystick0 in a script ...
 pad.axis(0, JoyAxis::X, 0.5);
-// ... the next client pass polls it: the bound function gets 0.5.
+// ... the next poll (a frame's, or a client pass's where nothing is drawn): the bound function gets 0.5.
 ```
 
 Never read a real device in a test. A test that opens a real gamepad depends on what is plugged in.
