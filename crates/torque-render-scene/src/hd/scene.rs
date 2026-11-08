@@ -221,6 +221,10 @@ pub struct HdScene<G> {
     /// Control syncs keep each moving shape's vertices in its meshes' own space and the GPU places them
     /// ([`NodePlace`](crate::hd::NodePlace)); off: the CPU places every vertex (the reference the checks compare with).
     pub gpu_nodes: bool,
+    /// The lightmap the planes marked [`material::LIGHTMAP`] are lit by (none: a 1 x 1 texel of light 1). Uploaded again when
+    /// `lightmap_generation` changes.
+    pub lightmap: Option<super::Lightmap>,
+    pub lightmap_generation: u64,
 }
 
 impl<G> HdScene<G> {
@@ -274,6 +278,8 @@ impl<G> HdScene<G> {
             particles_generation: 0,
             particle_light: None,
             textures_pending: false,
+            lightmap: None,
+            lightmap_generation: 0,
             lights: Vec::new(),
             spots: Vec::new(),
             glow_lights: 0,

@@ -9,7 +9,16 @@ fn every_shader_permutation_is_valid_wgsl() {
 
 #[test]
 fn the_shaders_material_numbers_are_the_scenes() {
-    let common = FILES[0].1;
+    // The forward pass's own constants (kept out of common.wgsl, which other modules take) are looked up there too.
+    let forward = FILES
+        .iter()
+        .find(|f| f.0 == "forward.wgsl")
+        .map_or("", |f| f.1);
+    let common = format!(
+        "{}
+{forward}",
+        FILES[0].1
+    );
     for (name, value) in [
         ("MAT_GLOW", material::GLOW),
         ("MAT_UNLIT", material::UNLIT),
@@ -30,6 +39,8 @@ fn the_shaders_material_numbers_are_the_scenes() {
         ("MAT_SKY_EYE", material::SKY_EYE),
         ("MAT_NODE", material::NODE),
         ("MAT_LAYER", material::LAYER),
+        ("MAT_LIGHTMAP", material::LIGHTMAP),
+        ("MAT_CUTOUT", material::CUTOUT),
     ] {
         let line = common
             .lines()

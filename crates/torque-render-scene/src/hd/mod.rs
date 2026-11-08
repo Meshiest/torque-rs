@@ -178,7 +178,9 @@ impl Quality {
 }
 
 /// The material word of an [`HdVertex`]: what the shader does with the surface. The renderer never reads bits 0-9 and 19-21,
-/// nor bits 27-30 of kind 0 (bits 29 and 30 of the others are [`material::DECAL`] and [`material::LIT`]): they are an extension's (kind 0 is the extension's static geometry).
+/// nor bits 27-30 of kind 0 (bits 29 and 30 of the others are [`material::DECAL`] and [`material::LIT`], or a shape's or plane's
+/// [`material::CUTOUT`], and a plane's [`material::LAYER`]; bit 27 a plane's [`material::LIGHTMAP`]): they are an extension's
+/// (kind 0 is the extension's static geometry).
 pub mod material {
     /// Emissive: drawn unlit at its colour (times the settings' emissive gain).
     pub const GLOW: u32 = 1 << 10;
@@ -248,6 +250,24 @@ pub mod material {
     pub fn layer(word: u32) -> bool {
         (word >> KIND_SHIFT) & 0x3 == KIND_PLANE && word & LAYER != 0
     }
+    /// Bit 27 of a plane's vertex: lit by the scene's lightmap ([`super::HdScene::lightmap`]) instead of the sun, the sky and the
+    /// lights: its color times the lightmap's light at its `extra` word ([`super::lightmap_uv`]: the place in the lightmap,
+    /// interpolated across the triangle). A light map of light 1 leaves the texture as it is; past 1 is brighter.
+    pub const LIGHTMAP: u32 = 1 << 27;
+
+    /// Whether a vertex's word is a plane's lit by the lightmap.
+    pub fn lightmapped(word: u32) -> bool {
+        (word >> KIND_SHIFT) & 0x3 == KIND_PLANE && word & LIGHTMAP != 0
+    }
+    /// Bit 29 of a shape's or a plane's vertex: cut out where its texture's alpha (times its color's) is under one half, drawn
+    /// as opaque elsewhere (leaves, fences). Its draw is left out of the depth prepass and casts no shadow (neither reads
+    /// the texture), and is drawn opaque in the main pass.
+    pub const CUTOUT: u32 = 1 << 29;
+
+    /// Whether a vertex's word is a shape's or a plane's cut out by its texture's alpha.
+    pub fn cutout(word: u32) -> bool {
+        matches!((word >> KIND_SHIFT) & 0x3, KIND_SHAPE | KIND_PLANE) && word & CUTOUT != 0
+    }
     /// A shape's vertex in its mesh's own space ([`super::NodePlace`]): its `extra` word is its mesh's place in its object's
     /// [`super::DynamicObject::nodes`] (the renderer adds the object's first place in the frame's table); the vertex shaders
     /// place it, and its normal, there.
@@ -262,6 +282,43 @@ pub mod material {
         };
         e << TEX_ENV_SHIFT
     }
+}
+
+/// A lightmap place as a vertex's `extra` word ([`material::LIGHTMAP`]): `u` and `v` (0..1 over the lightmap) as 16-bit fractions,
+/// `u` in the low half.
+pub fn lightmap_uv(uv: [f32; 2]) -> u32 {
+    let q = |x: f32| (x.clamp(0.0, 1.0) * 65535.0).round() as u32;
+    q(uv[0]) | (q(uv[1]) << 16)
+}
+
+/// A half float's bits of `v` (rounded to nearest, overflow to infinity, small values flushed to zero).
+pub fn half(v: f32) -> u16 {
+    let b = v.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32 - 127 + 15;
+    let man = b & 0x7f_ffff;
+    if v.is_nan() {
+        return sign | 0x7e00;
+    }
+    if exp >= 31 {
+        return sign | 0x7c00;
+    }
+    if exp <= 0 {
+        return sign;
+    }
+    let rounded = (exp as u32) << 10 | (man >> 13);
+    let rounded =
+        rounded + u32::from(man & 0x1fff > 0x1000 || (man & 0x1fff == 0x1000 && rounded & 1 == 1));
+    sign | rounded.min(0x7c00) as u16
+}
+
+/// A scene's lightmap ([`HdScene::lightmap`]): `width` x `height` texels of linear light (RGBA half floats, [`half`]; 1 = the
+/// texture as it is), rows top down, sampled bilinearly and clamped. Each surface's place in it is its vertices' `extra` word.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lightmap {
+    pub width: u32,
+    pub height: u32,
+    pub texels: std::sync::Arc<Vec<[u16; 4]>>,
 }
 
 /// A vertex of the enhanced renderer (36 bytes on the GPU): world position, octahedral normal (two snorm16), UV, RGBA8 colour (the
@@ -489,6 +546,33 @@ pub fn bounding_sphere(draws: &[HdDraw]) -> ([f32; 3], f32) {
         })
         .fold(0.0f32, f32::max);
     (c, r)
+}
+
+#[cfg(test)]
+#[test]
+fn lightmap_words_and_halves() {
+    assert_eq!(lightmap_uv([0.0, 0.0]), 0);
+    assert_eq!(lightmap_uv([1.0, 1.0]), 0xffff_ffff);
+    assert_eq!(lightmap_uv([0.5, 2.0]) & 0xffff, 32768);
+    assert_eq!(lightmap_uv([-1.0, f32::NAN]), 0);
+    assert_eq!(half(1.0), 0x3c00);
+    assert_eq!(half(4.0), 0x4400);
+    assert_eq!(half(-2.0), 0xc000);
+    assert_eq!(half(0.0), 0);
+    assert_eq!(half(1e9), 0x7c00);
+    assert_eq!(half(65504.0), 0x7bff);
+    assert!(material::lightmapped(
+        (material::KIND_PLANE << material::KIND_SHIFT) | material::LIGHTMAP
+    ));
+    assert!(!material::lightmapped(
+        (material::KIND_SHAPE << material::KIND_SHIFT) | material::LIGHTMAP
+    ));
+    assert!(material::cutout(
+        (material::KIND_SHAPE << material::KIND_SHIFT) | material::CUTOUT
+    ));
+    assert!(!material::cutout(
+        (material::KIND_SKY << material::KIND_SHIFT) | material::CUTOUT
+    ));
 }
 
 #[cfg(test)]

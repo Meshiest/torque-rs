@@ -92,6 +92,13 @@
 @group(0) @binding(16) var<storage, read> nodes: array<vec4<f32>>;
 @group(0) @binding(17) var point_maps_half: texture_depth_cube_array;
 @group(0) @binding(18) var point_maps_quarter: texture_depth_cube_array;
+// A plane lit by the scene's lightmap at its extra word's place instead of the sun, sky and lights (material::LIGHTMAP), and a
+// shape or plane cut out where its texture's alpha is under one half (material::CUTOUT). Here rather than in common.wgsl: the
+// other modules that take common.wgsl stay as they were.
+const MAT_LIGHTMAP: u32 = 0x08000000u;
+const MAT_CUTOUT: u32 = 0x20000000u;
+// The scene's lightmap (MAT_LIGHTMAP planes), sampled with trans_samp (linear, clamped).
+@group(0) @binding(19) var lightmap_tex: texture_2d<f32>;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 // The prepass's motion slots: the matrix taking a shape's current world point to where it was (the identity for everything else, and
@@ -122,11 +129,17 @@ struct VertexOut {
     @location(3) color: vec4<f32>,
     @location(4) @interpolate(flat) material: u32,
     @location(5) @interpolate(flat) extra: u32,
-    // The vertex before its shape fx moved it (where the shadow maps hold it).
+    // The vertex before its shape fx moved it (where the shadow maps hold it); a MAT_LIGHTMAP plane's place in the lightmap
+    // instead (its extra word's two 16-bit fractions in x and y: such a plane takes no shadow, so its rest is never read).
     @location(6) rest: vec3<f32>,
     // How far a draw that fades with distance has faded out (0 whole, 1 gone; 0 for everything else; an extension's).
     @location(7) lod: f32,
 };
+
+// Whether a material word is a plane's lit by the lightmap.
+fn lightmapped(material: u32) -> bool {
+    return ((material >> MAT_KIND_SHIFT) & 3u) == KIND_PLANE && (material & MAT_LIGHTMAP) != 0u;
+}
 
 // Rows `row` to `row + 2` of place `i` times `p`.
 fn node_rows(i: u32, row: u32, p: vec4<f32>) -> vec3<f32> {
@@ -227,6 +240,9 @@ fn vs_main(v: VertexIn) -> VertexOut {
     out.color = color;
     out.material = v.material;
     out.extra = select(v.extra, 0u, (v.material & MAT_NODE) != 0u);
+    if lightmapped(v.material) {
+        out.rest = vec3<f32>(vec2<f32>(f32(v.extra & 0xffffu), f32(v.extra >> 16u)) / 65535.0, 0.0);
+    }
     return out;
 }
 
@@ -885,9 +901,14 @@ fn shaded(in: VertexOut, d: Derivs, t: vec4<f32>, spec_kernel: f32) -> Shaded {
         let occlusion = ambient_occlusion(in.clip.xy, in.clip.z);
         // A terrain layer is shaded as the opaque ground under it is.
         let layer = kind == KIND_PLANE && (material & MAT_LAYER) != 0u;
-        let l = shade_surf(in.clip.xy, in.world, in.rest, r.s, material, r.alpha >= 0.999 || layer, occlusion, spec_kernel);
-        out.diffuse = l.diffuse;
-        out.spec = l.spec;
+        if lightmapped(material) {
+            // Baked light: the surface's color times the lightmap's linear light (no sun, sky, lights or highlights).
+            out.diffuse = r.s.albedo * textureSampleLevel(lightmap_tex, trans_samp, in.rest.xy, 0.0).rgb;
+        } else {
+            let l = shade_surf(in.clip.xy, in.world, in.rest, r.s, material, r.alpha >= 0.999 || layer, occlusion, spec_kernel);
+            out.diffuse = l.diffuse;
+            out.spec = l.spec;
+        }
         if shadows.config.w == 3u {
             debug_out = vec4<f32>(occlusion, occlusion, occlusion, 1.0);
         }
@@ -1014,6 +1035,9 @@ fn forward_color(in: VertexOut) -> vec4<f32> {
         discard;
     }
     if lod_drops(in.clip.xy, in.lod) {
+        discard;
+    }
+    if (kind == KIND_PLANE || kind == KIND_SHAPE) && (material & MAT_CUTOUT) != 0u && t.a * in.color.a < 0.5 {
         discard;
     }
     let s = shaded(in, d, t, spec_kernel);

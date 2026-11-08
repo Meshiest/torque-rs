@@ -1,0 +1,30 @@
+[package]
+name = "torque-example-format-viewer"
+description = "Pictures of Source content read by torque-format-valve: textures, models, animated models and maps drawn offscreen by the HD renderer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "viewer", "example", "gamedev"]
+categories = ["game-development", "rendering"]
+
+# A headless viewer: it mounts a Source game's files read-only (the folders `TORQUE_SOURCE_GAME_DIR` names, each holding a
+# `gameinfo.txt`), loads a texture, model or map through the format plugins' loaders, and draws pictures and frame sequences
+# offscreen (no window, no input). No game file is in the repository; nothing is written beside the game.
+
+[dependencies]
+torque-format-valve = { path = "../../crates/torque-format-valve" }
+# The engine's mixer, offline (no device feature): the sounds of the clips.
+torque-audio = { path = "../../crates/torque-audio", default-features = false }
+torque-engine = { path = "../../crates/torque-engine" }
+torque-modelcore = { path = "../../crates/torque-modelcore" }
+torque-render-core = { path = "../../crates/torque-render-core" }
+torque-render-hd = { path = "../../crates/torque-render-hd" }
+torque-render-scene = { path = "../../crates/torque-render-scene" }
+torque-scene = { path = "../../crates/torque-scene" }
+png = "0.18"
+
+[lints]
+workspace = true

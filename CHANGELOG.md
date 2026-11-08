@@ -182,6 +182,11 @@ different.
   slots a game replaces (`engine.mods().layout(..)`); the `[mods]` section of `game.toml` and `$Pref::Mods::Disabled` are the
   default settings. Adds a `torque::mods` module, the `Entry` stage of servers and clients, and `Vm::wrap_file_host`,
   `Namespaces::set_declare_package` and `Vm::exec_policy`.
+- `torque-format-valve` (not in `DefaultPlugins`): Valve's Source formats as asset-loader plugins that take untrusted files
+  (`ValveFormatPlugins`): VTF textures, VMT materials, MDL/VVD/VTX models with their sequences (made into the model layer),
+  VBSP maps (brush faces, displacements, static props, entities, the pak lump, lightmaps) and PCF particle systems with an
+  approximate simulation; a game's VPK archives and folders mounted as one tree from its `gameinfo.txt`. A headless viewer
+  example draws them from a game folder the player names.
 - Every reader bounds its counts, offsets, sizes and paths, and font and secret files are checked before they are read.
 
 #### Tooling

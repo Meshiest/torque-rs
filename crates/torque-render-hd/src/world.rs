@@ -299,6 +299,9 @@ pub(crate) struct DrawRef {
     shadow_only: bool,
     /// Cast into no shadow map (`torque_render_scene::hd::material::VIEW_ONLY`: a first-person image drawn before the eye).
     view_only: bool,
+    /// Cut out by its texture's alpha (`torque_render_scene::hd::material::CUTOUT`): left out of the depth prepass and of the
+    /// shadow casters (neither reads the texture), drawn opaque in the main pass.
+    cutout: bool,
 }
 
 /// The frame's particles on the GPU (uploaded again whenever the scene's set changes: every frame they move).
@@ -1120,6 +1123,9 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     user_lut: Option<CubeLut>,
     user_lut_generation: u64,
     dummy_depth: wgpu::TextureView,
+    /// The scene's lightmap (a texel of light 1 until a scene brings one) and the generation it was made for.
+    lightmap: (wgpu::Texture, wgpu::TextureView),
+    lightmap_generation: Option<u64>,
     /// The extension's buffers in the renderer's groups.
     ext_slots: ExtSlots,
     /// The extension: what the world's static geometry brings beside the engine's frame.
@@ -1778,6 +1784,52 @@ fn texture_entry(
     }
 }
 
+/// A lightmap texture of `width` x `height` half-float RGBA texels (`texels` exactly that many), and its view.
+fn lightmap_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    texels: &[[u16; 4]],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hd lightmap"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let bytes: Vec<u8> = texels
+        .iter()
+        .flat_map(|t| t.iter().flat_map(|c| c.to_le_bytes()))
+        .collect();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 8),
+            rows_per_image: Some(height),
+        },
+        size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 /// The number of clusters.
 fn cluster_count() -> u32 {
     CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]
@@ -1860,6 +1912,12 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             18,
             wgpu::TextureSampleType::Depth,
             wgpu::TextureViewDimension::CubeArray,
+        ),
+        // The scene's lightmap (HdScene::lightmap; sampled with binding 13's linear clamped sampler).
+        texture_entry(
+            19,
+            wgpu::TextureSampleType::Float { filterable: true },
+            wgpu::TextureViewDimension::D2,
         ),
     ]
 }
@@ -2323,6 +2381,7 @@ impl<E: HdExtension> HdWorld<E> {
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let lightmap = lightmap_texture(&device, &queue, 1, 1, &[[0x3c00; 4]]);
         let arena = arena::Arena::new(&device);
         let cell_table = cull::CellTable::new(&device);
         let cull = cull::Cull::new(&device, cache);
@@ -2350,6 +2409,8 @@ impl<E: HdExtension> HdWorld<E> {
             user_lut: None,
             user_lut_generation: 0,
             dummy_depth,
+            lightmap,
+            lightmap_generation: None,
             ext_slots,
             ext: E::new(&device),
             profile_passes: false,
@@ -2850,6 +2911,7 @@ impl<E: HdExtension> HdWorld<E> {
                     binding: 18,
                     resource: wgpu::BindingResource::TextureView(self.shadows.point_view(2)),
                 },
+                tv(19, &self.lightmap.1),
             ],
         })
     }
@@ -3188,6 +3250,22 @@ impl<E: HdExtension> HdWorld<E> {
         while self.textures.len() < scene.textures.textures.len() {
             let view = self.upload_texture(&scene.textures.textures[self.textures.len()]);
             self.textures.push(view);
+        }
+        if self.lightmap_generation != Some(scene.lightmap_generation) {
+            self.lightmap_generation = Some(scene.lightmap_generation);
+            let max = self.device.limits().max_texture_dimension_2d;
+            self.lightmap = match &scene.lightmap {
+                Some(l)
+                    if l.width >= 1
+                        && l.height >= 1
+                        && l.width <= max
+                        && l.height <= max
+                        && l.texels.len() as u64 == u64::from(l.width) * u64::from(l.height) =>
+                {
+                    lightmap_texture(&self.device, &self.queue, l.width, l.height, &l.texels)
+                }
+                _ => lightmap_texture(&self.device, &self.queue, 1, 1, &[[0x3c00; 4]]),
+            };
         }
         // When every sync since the last upload was a control sync (a window's every frame: the control object and the
         // late objects moved, nothing else), the cells and lights are as they were: only the draws go up again.
@@ -4098,6 +4176,7 @@ impl<E: HdExtension> HdWorld<E> {
                     }),
                     shadow_only: false,
                     view_only: false,
+                    cutout: false,
                 },
             ));
             vcount += d.vertices.len() as u32;
@@ -4215,6 +4294,10 @@ impl<E: HdExtension> HdWorld<E> {
                     .vertices
                     .first()
                     .is_some_and(|v| torque_render_scene::hd::material::view_only(v.material)),
+                cutout: d
+                    .vertices
+                    .first()
+                    .is_some_and(|v| torque_render_scene::hd::material::cutout(v.material)),
             }
         };
         let draw_at = |d: &HdDraw, base: usize, indices: &mut Vec<u32>| -> DrawRef {
@@ -5640,6 +5723,7 @@ impl<E: HdExtension> HdWorld<E> {
                         && d.depth_test
                         && d.depth_write
                         && !d.particle
+                        && !d.cutout
                         && n < over_start
                 }
                 Item::Cell(..) | Item::Group(_) => n < split,
@@ -5863,7 +5947,9 @@ impl<E: HdExtension> HdWorld<E> {
                 draws: o
                     .draws
                     .iter()
-                    .filter(|d| d.blend == Blend::Opaque && d.depth_write && !d.view_only)
+                    .filter(|d| {
+                        d.blend == Blend::Opaque && d.depth_write && !d.view_only && !d.cutout
+                    })
                     .map(|d| (d.first, d.count, d.base_vertex))
                     .collect(),
             })

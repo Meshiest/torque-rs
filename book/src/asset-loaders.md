@@ -177,6 +177,39 @@ yet: it pays each file from the script engine's budget and keeps it in its own c
 same bytes into the same results (the crate's tests compare each with the path it stands beside), for a plugin or a game that
 loads a file itself, and turning a format off does not change what those paths read.
 
+### Source formats
+
+`torque-format-valve` is a separate crate, in no default group: a game that reads Valve's Source content adds
+`ValveFormatPlugins` (or one of its plugins) itself. Every reader is hardened and fuzzed, so each takes untrusted files.
+
+| Plugin | Id | Extensions | Asset | Largest file |
+|---|---|---|---|---|
+| `VtfFormatPlugin` | `torque.format-vtf` | `vtf` | `Texture` (RGBA8 levels, the sprite sheet) | 128 MiB |
+| `VmtFormatPlugin` | `torque.format-vmt` | `vmt` | `vmt::Vmt` | 1 MiB |
+| `MdlFormatPlugin` | `torque.format-mdl` | `mdl`, `vvd`, `vtx`, `ani` | `mdl::Mdl`, `vvd::Vvd`, `vtx::Vtx`, `AniFile` | 64 MiB each |
+| `BspFormatPlugin` | `torque.format-vbsp` | `bsp` | `bsp::Bsp` | 512 MiB |
+| `PcfFormatPlugin` | `torque.format-pcf` | `pcf` | `pcf::Pcf` | 32 MiB |
+
+A model is three files: `load_model` loads them through the registry and makes a `torque-modelcore` model (bones, skinned
+meshes, materials with the paths to try, the sequences as animations, the included models' too). A map's `Bsp` reads each
+lump when asked; `Bsp::build` makes its drawn surfaces (brush faces, displacement grids). The files come from
+`files::SourceFiles`, a file host over a game's VPK archives and folders as its `gameinfo.txt` lists them, with a map's pak
+lump mounted first:
+
+```rust
+use torque::engine::assets::Assets;
+use torque_format_valve::files::SourceFiles;
+use torque_format_valve::{ValveFormatPlugins, load_model, model::Choice};
+
+let engine = EngineBuilder::new().add_plugins(ValveFormatPlugins).build()?;
+let files = SourceFiles::from_gameinfo(Path::new(game_folder))?;
+let assets = Assets::new(&engine);
+let model = load_model(&assets, &files, "models/props/crate.mdl", &Choice::default(), &mut |_| true)?;
+```
+
+The `format-viewer` example draws textures, models, animated sequences, maps and particle systems from the game folder
+`TORQUE_SOURCE_GAME_DIR` names, offscreen.
+
 ## Testing
 
 A loader needs no window and no game folder: an `EngineBuilder` with the plugin, `Assets::new(&engine)`, and `MemFiles` holding
