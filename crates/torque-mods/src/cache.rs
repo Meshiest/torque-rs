@@ -1,7 +1,11 @@
 //! The cache of content downloaded from servers: one entry per content hash, in a per-user folder outside the game's.
 //!
-//! An entry is the content message a server sent ([`crate::content::encode_content`]) under the file name `<hash>.mod`, the hash in
-//! lower case hexadecimal. Nothing in the cache is trusted when it is read back: [`ContentCache::load`] reads the entry as it
+//! An entry is the content message a server sent ([`crate::content::encode_content`]) under the file name
+//! `<hash>.<server>.mod`, the hash and the server's key in lower case hexadecimal. The cache is partitioned by the server the
+//! entry came from ([`CacheOwner`]): an entry counts for a connection only when the same server sent it, so a server that offers
+//! another server's content learns nothing of what the player fetched there (it would see which blocks the client skips). A
+//! player may turn that off ([`CacheScope::share`]) and let every server match every entry. An entry named `<hash>.mod`, from
+//! before the partition, has no server and counts as another server's. Nothing in the cache is trusted when it is read back: [`ContentCache::load`] reads the entry as it
 //! read the download (the same caps, no script paths) and hashes its files, and an entry whose files do not hash to the name it
 //! has is deleted. A folder listing is read the same way ([`index_of`]): names that are not entries are ignored, so a cache
 //! folder full of junk or hand-made names does no harm.
@@ -14,6 +18,9 @@
 //! only through the content rules above.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+
+use sha2::{Digest, Sha256};
 
 use crate::content::{ContentCaps, Hash, decode_content, from_hex, hex, summarize_files};
 
@@ -50,41 +57,98 @@ pub trait CacheStore {
     fn touch(&mut self, name: &str, stamp: u64);
 }
 
+/// The server an entry was downloaded from: a short key of its address, which an entry is named by.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct CacheOwner([u8; 8]);
+
+impl CacheOwner {
+    /// The key of the server dialed at `addr` (an IPv4 address in IPv6 form is the IPv4 address).
+    pub fn of_server(addr: SocketAddr) -> CacheOwner {
+        let ip = match addr.ip() {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
+            ip => ip,
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(b"mod cache server\0");
+        hasher.update(format!("{ip}:{}", addr.port()).as_bytes());
+        let digest = hasher.finalize();
+        let mut key = [0u8; 8];
+        key.copy_from_slice(&digest[..8]);
+        CacheOwner(key)
+    }
+
+    fn hex(self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn from_hex(text: &str) -> Option<CacheOwner> {
+        if text.len() != 16 || !text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        let mut key = [0u8; 8];
+        for (slot, pair) in key.iter_mut().zip(text.as_bytes().chunks(2)) {
+            *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+        }
+        Some(CacheOwner(key))
+    }
+}
+
+/// Whose entries a connection may use, and under whose name it stores.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CacheScope {
+    /// The server the connection is to. `None` (a cache used with no server named) keeps and matches only entries with no
+    /// server.
+    pub owner: Option<CacheOwner>,
+    /// Whether entries from any server count (a player's choice: a server can then tell what the player has from other servers).
+    pub share: bool,
+}
+
 /// An entry of the index: a hash in the cache.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct IndexEntry {
     /// The content hash.
     pub hash: Hash,
+    /// The server it came from (`None`: an entry from before entries were kept by server).
+    pub owner: Option<CacheOwner>,
     /// The entry's size.
     pub size: u64,
     /// When it was last used.
     pub stamp: u64,
 }
 
-/// The entries among `listed`: files named `<64 hex digits>.mod` and nothing else, each hash once, the first `MAX_ENTRIES`.
+/// The entries among `listed`: files named `<64 hex digits>.mod` or `<64 hex digits>.<16 hex digits>.mod` and nothing else, each
+/// hash and server once, the first `MAX_ENTRIES`.
 pub fn index_of(listed: &[Listed]) -> Vec<IndexEntry> {
-    let mut seen: HashMap<Hash, usize> = HashMap::new();
+    let mut seen: HashMap<(Hash, Option<CacheOwner>), usize> = HashMap::new();
     let mut entries: Vec<IndexEntry> = Vec::new();
     for item in listed.iter().take(MAX_ENTRIES.saturating_mul(2)) {
         let Some(stem) = item.name.strip_suffix(ENTRY_SUFFIX) else {
             continue;
+        };
+        let (stem, owner) = match stem.split_once('.') {
+            Some((stem, owner)) => match CacheOwner::from_hex(owner) {
+                Some(owner) => (stem, Some(owner)),
+                None => continue,
+            },
+            None => (stem, None),
         };
         let Some(hash) = from_hex(stem) else {
             continue;
         };
         let entry = IndexEntry {
             hash,
+            owner,
             size: item.size,
             stamp: item.stamp,
         };
-        match seen.get(&hash) {
+        match seen.get(&(hash, owner)) {
             Some(&at) => {
                 if let Some(slot) = entries.get_mut(at) {
                     *slot = entry;
                 }
             }
             None if entries.len() < MAX_ENTRIES => {
-                seen.insert(hash, entries.len());
+                seen.insert((hash, owner), entries.len());
                 entries.push(entry);
             }
             None => {}
@@ -93,8 +157,11 @@ pub fn index_of(listed: &[Listed]) -> Vec<IndexEntry> {
     entries
 }
 
-fn entry_name(hash: &Hash) -> String {
-    format!("{}{ENTRY_SUFFIX}", hex(hash))
+fn entry_name(hash: &Hash, owner: Option<CacheOwner>) -> String {
+    match owner {
+        Some(owner) => format!("{}.{}{ENTRY_SUFFIX}", hex(hash), owner.hex()),
+        None => format!("{}{ENTRY_SUFFIX}", hex(hash)),
+    }
 }
 
 /// A cache of downloaded content.
@@ -102,6 +169,7 @@ pub struct ContentCache {
     store: Box<dyn CacheStore>,
     max_bytes: u64,
     clock: u64,
+    scope: CacheScope,
 }
 
 impl ContentCache {
@@ -112,7 +180,34 @@ impl ContentCache {
             store,
             max_bytes,
             clock,
+            scope: CacheScope::default(),
         }
+    }
+
+    /// Sets whose entries the next lookups use and whose name the next stores go under.
+    pub fn set_scope(&mut self, scope: CacheScope) {
+        self.scope = scope;
+    }
+
+    /// The entries the current scope may use: the server's own, or all of them when sharing is on.
+    fn visible(&self) -> Vec<IndexEntry> {
+        let mut entries = self.index();
+        if !self.scope.share {
+            entries.retain(|e| e.owner == self.scope.owner);
+        }
+        entries
+    }
+
+    /// The entry for `hash` the scope may use: the server's own, else (sharing on) any.
+    fn entry_for(&self, hash: &Hash) -> Option<IndexEntry> {
+        let mut found: Option<IndexEntry> = None;
+        for e in self.visible().into_iter().filter(|e| &e.hash == hash) {
+            if e.owner == self.scope.owner {
+                return Some(e);
+            }
+            found.get_or_insert(e);
+        }
+        found
     }
 
     /// A cache in memory.
@@ -135,7 +230,7 @@ impl ContentCache {
         self.clock
     }
 
-    /// The entries now.
+    /// Every entry now, whichever server it came from.
     pub fn index(&self) -> Vec<IndexEntry> {
         index_of(&self.store.list())
     }
@@ -145,33 +240,39 @@ impl ContentCache {
         self.index().iter().map(|e| e.size).sum()
     }
 
-    /// What the entries are: the id, version and hash each one's start says, most recently used first, at most `max` of them. A
-    /// start that does not read as a content message is skipped (and the entry left for a load to delete).
+    /// What the entries the scope may use are: the id, version and hash each one's start says, most recently used first, at most
+    /// `max` of them. A start that does not read as a content message is skipped (and the entry left for a load to delete).
     pub fn heads(&self, max: usize) -> Vec<(String, String, Hash)> {
-        let mut entries = self.index();
+        let mut entries = self.visible();
         entries.sort_by_key(|e| std::cmp::Reverse(e.stamp));
+        let mut seen: Vec<Hash> = Vec::new();
         entries
             .iter()
             .filter_map(|e| {
                 let head = self
                     .store
-                    .read_head(&entry_name(&e.hash), crate::content::HEAD_BYTES)?;
+                    .read_head(&entry_name(&e.hash, e.owner), crate::content::HEAD_BYTES)?;
                 let (id, version, hash) = crate::content::peek_head(&head)?;
-                (hash == e.hash).then_some((id, version, hash))
+                if hash != e.hash || seen.contains(&hash) {
+                    return None;
+                }
+                seen.push(hash);
+                Some((id, version, hash))
             })
             .take(max)
             .collect()
     }
 
-    /// Whether the cache has an entry for `hash` (not verified).
+    /// Whether the scope may use an entry for `hash` (not verified).
     pub fn has(&self, hash: &Hash) -> bool {
-        self.index().iter().any(|e| &e.hash == hash)
+        self.entry_for(hash).is_some()
     }
 
     /// The files of the entry for `hash`, read under `caps` and checked: they must hash to `hash`. An entry that does not read or
     /// does not hash right is deleted. A hit counts as a use.
     pub fn load(&mut self, hash: &Hash, caps: &ContentCaps) -> Option<Vec<(String, Vec<u8>)>> {
-        let name = entry_name(hash);
+        let entry = self.entry_for(hash)?;
+        let name = entry_name(hash, entry.owner);
         let limit = caps
             .total_bytes
             .saturating_add(caps.files as u64 * 300 + 4_096);
@@ -198,7 +299,7 @@ impl ContentCache {
         if message.len() as u64 > self.max_bytes {
             return false;
         }
-        let name = entry_name(hash);
+        let name = entry_name(hash, self.scope.owner);
         if !self.store.write(&name, message) {
             return false;
         }
@@ -220,7 +321,7 @@ impl ContentCache {
             if keep == Some(&entry.hash) {
                 continue;
             }
-            self.store.remove(&entry_name(&entry.hash));
+            self.store.remove(&entry_name(&entry.hash, entry.owner));
             total = total.saturating_sub(entry.size);
         }
     }
@@ -228,7 +329,7 @@ impl ContentCache {
     /// Deletes every entry.
     pub fn clear(&mut self) {
         for entry in self.index() {
-            self.store.remove(&entry_name(&entry.hash));
+            self.store.remove(&entry_name(&entry.hash, entry.owner));
         }
     }
 }
@@ -315,7 +416,7 @@ impl DiskStore {
 
     fn path(&self, name: &str) -> Option<std::path::PathBuf> {
         // Names the cache makes: no separators, no dots beyond the suffix.
-        let ok = name.len() <= 80 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.');
+        let ok = name.len() <= 96 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.');
         ok.then(|| self.dir.join(name))
     }
 }

@@ -178,3 +178,26 @@ fn a_new_connection_starts_the_channels_over() {
         "after a reset it is a new connection's first message"
     );
 }
+
+#[test]
+fn a_shared_message_handle_counts_the_message_until_it_is_acknowledged() {
+    let registry = ChannelRegistry::new(&[ChannelEntry::new("mods", ChannelLimits::new(200), {
+        || Nothing
+    })])
+    .unwrap();
+    let hub = ChannelHub::new(registry);
+    let conn = ConnId(3);
+    hub.accepted(conn);
+    hub.enable(conn);
+    let data: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![5u8; 400]);
+    let handle = hub
+        .send_shared_with_handle(conn, "mods", Kind::Snapshot, data)
+        .unwrap();
+    assert_eq!(hub.queued_message_len(conn, handle), 400);
+    assert_eq!(hub.backlog_total(conn), 400);
+    assert_eq!(
+        hub.queued_message_len(ConnId(4), handle),
+        0,
+        "another connection"
+    );
+}

@@ -9,7 +9,7 @@ Every console function, method, class and pref of an engine built from `DefaultP
 | [Functions](functions.md) | console functions, by namespace | 254 |
 | [Methods](methods.md) | methods called on an object, by class | 284 |
 | [Classes](classes.md) | console classes and the fields they add | 112 classes, 850 fields |
-| [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 4 |
+| [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 5 |
 
 ## Reading an entry
 

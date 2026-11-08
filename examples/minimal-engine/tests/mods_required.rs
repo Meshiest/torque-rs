@@ -493,7 +493,14 @@ fn downloads_fetch_verify_cache_mount_and_join_and_a_second_join_uses_the_cache(
         .unwrap()
         .call("getRequiredModField", &["props", "hash"])
         .unwrap();
-    assert_eq!(name.to_string_lossy(), format!("{hash}.mod"));
+    // The entry is named for the hash and a key of the server it came from.
+    let name = name.to_string_lossy().into_owned();
+    assert!(
+        name.starts_with(&format!("{hash}."))
+            && name.ends_with(".mod")
+            && name.len() == hash.len() + 1 + 16 + 4,
+        "{name}"
+    );
 
     // Leave: the mounted content goes with the connection, the cache stays.
     p.client.call("disconnect", &[]).unwrap();

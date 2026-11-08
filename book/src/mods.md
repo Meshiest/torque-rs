@@ -146,12 +146,13 @@ nobody sees. It is off until the game turns it on (see "For game makers" below),
 ### The short version
 
 1. You connect. Your connect block says only that you can take content and the most you will take. It says nothing about the mods
-   you have installed or have downloaded before.
+   you have installed or have downloaded before. (A server can still learn something from how you answer its offer: see "For
+   players".)
 2. The server accepts you into a **downloading** state and sends its list of required mods. For each: the id, the version and a
    hash of the content, and, for a mod it serves, every file's path, size and hash and the hash of every 64 KiB block of it.
-3. You compare. A mod you have installed or downloaded before with the same hash needs nothing. For the rest you build the new
-   version from files and blocks of an older copy of the same mod, installed or in your cache, that match, and ask the server for
-   only the blocks you still lack, a few at a time.
+3. You compare. A mod you have installed, or downloaded from this same server before, with the same hash needs nothing. For the
+   rest you build the new version from files and blocks of an older copy of the same mod, installed or in your cache from this
+   server, that match, and ask the server for only the blocks you still lack, a few at a time.
 4. You check every block, every file and the whole mod against the hashes, mount it, keep it in your cache and tell the server you are
    ready. Only then does the server run its `onConnect`, so the datablocks and ghosts it sends never reach you before the content
    they use.
@@ -216,14 +217,28 @@ The client sends its requests as the remote command `TorqueModsGet`, so its conn
 
 A mod a server sends is saved in a cache folder of your own (`%LOCALAPPDATA%\torque-rs\mod-content`,
 `~/Library/Caches/torque-rs/mod-content` or `~/.cache/torque-rs/mod-content`; on the web it lasts the session). It is outside the
-game's folder and outside `plugins/`, and it holds only content. Each entry is named for its hash, and is checked again when it is
-used: an entry that does not match is deleted. The server learns nothing of what is in it.
+game's folder and outside `plugins/`, and it holds only content. Each entry is named for its hash and for the server it came from
+(the address you dialed), and is checked again when it is used: an entry that does not match is deleted.
+
+What a server can learn from you. The client sends no list of its mods, but the blocks it asks for, and the blocks it does not ask
+for, show what it already has. So:
+
+- **Downloaded mods are kept per server.** A server can use a cached entry, or build an update from one, only when the same server
+  sent it. A server that offers another server's mod gets a full download from you and learns nothing of where you have been. The
+  same mod from two servers is downloaded twice; that is the cost.
+- **Installed mods match for every server.** A mod you have installed (a folder or zip in your `mods` folder) is compared against
+  every offer, so a server can find out whether you have a given mod installed, and which version, by offering it and seeing that you
+  ask for nothing.
+- **Entries from an older cache** have no server recorded and count as another server's.
+- `$Pref::Mods::ShareCache` (off by default) lets every server use every cached entry. You then download less, and a server can
+  tell which mods you have from any server by offering them. Leave it off if that matters to you.
 
 | Pref | Meaning |
 |---|---|
 | `$Pref::Mods::Download` | `0` turns downloads off: a server that needs a mod you lack ends your join with a line naming the mod, its version and size and saying that downloads are turned off. A mod you have installed or cached still needs nothing. Default 1. |
 | `$Pref::Mods::DownloadMegabytes` | The most to take from one server (0: the game's limit). It never raises the game's limit. |
 | `$Pref::Mods::CacheMegabytes` | The most downloaded content to keep (0: the game's limit). The oldest entries go first. |
+| `$Pref::Mods::ShareCache` | `1` lets a server use mods you downloaded from other servers, so they are not downloaded again. A server can then tell, by what you skip, which mods you have from any server, and so which servers you have joined. Default 0. |
 
 `clearModDownloadCache()` deletes the cache. A download ends, and the connection with it, with the reason, when a block, a file or
 the mod does not match its hash (nothing is kept), when the server lists a script, when something is over a limit, or when it takes

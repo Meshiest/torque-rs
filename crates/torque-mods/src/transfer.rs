@@ -2,11 +2,13 @@
 //! and mounts it) and the server's adapter (the host's seam into the mods).
 //!
 //! **The flow.** A client of a game that shares mods says in its connect block only that it can take content and the most it will
-//! (bytes and files); it says nothing of the mods it has installed or cached. The server accepts it into a *held* state: its
-//! `onConnect` waits, so no datablock or ghost is sent. The server sends the **offer** on the mods channel: the mods it requires,
+//! (bytes and files); it lists none of the mods it has installed or cached (what it asks for and what it skips still shows a
+//! server what it has installed, and with the cache shared across servers, what it has downloaded). The server accepts it into a
+//! *held* state: its `onConnect` waits, so no datablock or ghost is sent. The server sends the **offer** on the mods channel: the mods it requires,
 //! each with its package hash and, for a mod it serves, every file's path, size and hash and every block's hash ([`crate::offer`]).
 //!
-//! The client matches the offer against what it has: a mod it has installed or cached with the same package hash needs nothing;
+//! The client matches the offer against what it has: a mod it has installed, or cached from this same server (or from any, when
+//! the player shares the cache; see [`crate::cache`]), with the same package hash needs nothing;
 //! else a served mod is assembled from files and blocks of an older copy of it (installed or cached) that match by file hash or by
 //! block hash at the same path, and the rest is requested, a few blocks at a time (`TorqueModsGet`, a remote command), from the
 //! server's content. The client verifies every block, every file and the package hash, mounts the mod and then keeps it in the
@@ -29,7 +31,7 @@ use torque_server::net::content::{ContentLimits, ContentServer};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
-use crate::cache::{ContentCache, default_cache_dir};
+use crate::cache::{CacheScope, ContentCache, default_cache_dir};
 use crate::content::{ContentCaps, Hash, encode_content, summarize_files};
 use crate::files::Table;
 use crate::mods::{Mods, mount_content};
@@ -294,9 +296,17 @@ impl Downloads {
 
     /// The caps for the connection that is starting, and the section its connect block carries: that the client takes content, and
     /// the most it takes. Nothing about the mods it has.
+    #[cfg(test)]
     pub(crate) fn begin_connect(&self, caps: Caps) -> ModsSection {
+        self.begin_connect_to(caps, CacheScope::default())
+    }
+
+    /// [`begin_connect`](Self::begin_connect) for a connection whose cache entries are `scope`'s: the server it dials, and whether
+    /// entries from other servers count.
+    pub(crate) fn begin_connect_to(&self, caps: Caps, scope: CacheScope) -> ModsSection {
         let mut inner = self.inner.borrow_mut();
         inner.caps = caps;
+        inner.cache.set_scope(scope);
         inner.cache.set_max_bytes(caps.limits.cache_bytes);
         ModsSection {
             max_bytes: if caps.downloads {

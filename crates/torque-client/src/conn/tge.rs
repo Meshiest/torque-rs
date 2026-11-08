@@ -1020,6 +1020,9 @@ impl ConnGame for TgeConn {
         if local.is_none()
             && let Some(hello) = vm.extension::<ConnectHello>()
         {
+            vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
+                connect.server.into(),
+            )));
             feed.set_connect_source(connect.server.into(), hello.source(vm));
         }
         feed.set_reader(reader.clone());

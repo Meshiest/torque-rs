@@ -142,3 +142,39 @@ fn heads_skip_entries_that_do_not_start_like_a_message() {
     assert_eq!(heads.len(), 1);
     assert_eq!(heads[0].0, "good");
 }
+
+#[test]
+fn entries_are_named_for_their_server_and_listed_apart() {
+    let (hash, message) = entry("a", 10, 1);
+    let a = CacheOwner::of_server(std::net::SocketAddr::from(([203, 0, 113, 7], 28000)));
+    let b = CacheOwner::of_server(std::net::SocketAddr::from(([203, 0, 113, 7], 28001)));
+    assert_ne!(a, b);
+    let mapped = std::net::SocketAddr::from((
+        std::net::Ipv4Addr::new(203, 0, 113, 7).to_ipv6_mapped(),
+        28000,
+    ));
+    assert_eq!(
+        CacheOwner::of_server(mapped),
+        a,
+        "an IPv4 address by any name"
+    );
+    let mut cache = ContentCache::in_memory(1 << 20);
+    cache.set_scope(CacheScope {
+        owner: Some(a),
+        share: false,
+    });
+    assert!(cache.store(&hash, &message));
+    assert!(cache.has(&hash));
+    cache.set_scope(CacheScope {
+        owner: Some(b),
+        share: false,
+    });
+    assert!(!cache.has(&hash));
+    cache.set_scope(CacheScope {
+        owner: Some(b),
+        share: true,
+    });
+    assert!(cache.has(&hash));
+    assert_eq!(cache.index().len(), 1);
+    assert_eq!(cache.index()[0].owner, Some(a));
+}

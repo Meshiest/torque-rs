@@ -2,7 +2,7 @@
 
 # Prefs
 
-Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 4 prefs.
+Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 5 prefs.
 
 | Pref | Type | Default | Range | What it is for | Where |
 |---|---|---|---|---|---|
@@ -10,3 +10,4 @@ Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[
 | `$Pref::Mods::Disabled` | string | `` |  | The ids of the mods that are switched off, separated by spaces. The game's prefs file keeps it. | server and client |
 | `$Pref::Mods::Download` | bool | `1` |  | Whether to download the content of mods a server requires when you do not have it. Off, a server that needs a mod you lack refuses you with the reason instead. | server and client |
 | `$Pref::Mods::DownloadMegabytes` | int | `0` | 0 to 4096 | The most megabytes to take from one server (0: the game's limit). It never raises the game's limit. | server and client |
+| `$Pref::Mods::ShareCache` | bool | `0` |  | Whether a server may match mods you downloaded from other servers. Off, each server matches only what it sent you, so it cannot learn which other servers you have joined; on, a mod you already have from anywhere is not downloaded again, and a server can tell which mods you have by which blocks you skip. | server and client |

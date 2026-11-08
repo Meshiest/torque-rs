@@ -176,6 +176,8 @@ fn header_bits(id_bits: u8, limits: &ChannelLimits) -> usize {
 #[derive(Debug)]
 struct Msg {
     seq: u16,
+    /// Never reused on this sender, unlike `seq`, which wraps.
+    id: u64,
     kind: Kind,
     data: Arc<[u8]>,
     /// The first byte never sent.
@@ -190,6 +192,13 @@ impl Msg {
     fn done(&self) -> bool {
         self.acked >= self.data.len()
     }
+}
+
+/// A queued message, to ask whether it is still waiting for acknowledgement ([`ChunkSender::queued_len`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageHandle {
+    channel: usize,
+    id: u64,
 }
 
 #[derive(Debug, Default)]
@@ -217,6 +226,7 @@ pub struct ChunkSender {
     in_flight: VecDeque<(u32, Vec<Sent>)>,
     rotate: usize,
     total_cap: usize,
+    next_id: u64,
 }
 
 impl ChunkSender {
@@ -229,6 +239,7 @@ impl ChunkSender {
             in_flight: VecDeque::new(),
             rotate: 0,
             total_cap: default_hold_cap(&limits),
+            next_id: 0,
             limits,
         }
     }
@@ -262,6 +273,17 @@ impl ChunkSender {
         kind: Kind,
         data: Arc<[u8]>,
     ) -> Result<(), SendError> {
+        self.enqueue_shared_with_handle(channel, kind, data)
+            .map(|_| ())
+    }
+
+    /// [`enqueue_shared`](Self::enqueue_shared) that returns a handle to the queued message.
+    pub fn enqueue_shared_with_handle(
+        &mut self,
+        channel: usize,
+        kind: Kind,
+        data: Arc<[u8]>,
+    ) -> Result<MessageHandle, SendError> {
         let (Some(limits), Some(chan)) = (self.limits.get(channel), self.chans.get(channel)) else {
             return Err(SendError::UnknownChannel);
         };
@@ -281,19 +303,31 @@ impl ChunkSender {
         if over_channel || self.total_backlog().saturating_add(data.len()) > self.total_cap {
             return Err(SendError::Backlog);
         }
+        let id = self.next_id;
+        self.next_id += 1;
         let chan = &mut self.chans[channel];
         let seq = chan.next_seq;
         chan.next_seq = chan.next_seq.wrapping_add(1);
         chan.queued_bytes += data.len();
         chan.queue.push_back(Msg {
             seq,
+            id,
             kind,
             data,
             fresh: 0,
             retry: VecDeque::new(),
             acked: 0,
         });
-        Ok(())
+        Ok(MessageHandle { channel, id })
+    }
+
+    /// The length of the message `handle` names while it is still queued (not yet fully acknowledged, so its whole length is
+    /// in [`backlog`](Self::backlog)), and 0 once it is acknowledged or dropped.
+    pub fn queued_len(&self, handle: MessageHandle) -> usize {
+        self.chans
+            .get(handle.channel)
+            .and_then(|c| c.queue.iter().find(|m| m.id == handle.id))
+            .map_or(0, |m| m.data.len())
     }
 
     /// Drops the messages of `channel` that have not started going out (the newest ones: a message starts only after the one

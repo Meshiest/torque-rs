@@ -302,3 +302,40 @@ fn the_sender_caps_the_bytes_queued_across_all_channels() {
         Err(SendError::Backlog)
     );
 }
+
+#[test]
+fn a_handle_says_whether_its_message_is_still_waiting_for_acknowledgement() {
+    let (mut tx, mut rx) = (ChunkSender::new(&limits()), ChunkReceiver::new(&limits()));
+    let first = tx
+        .enqueue_shared_with_handle(0, Kind::Snapshot, Arc::from(vec![1u8; 900]))
+        .unwrap();
+    let second = tx
+        .enqueue_shared_with_handle(0, Kind::Delta, Arc::from(vec![2u8; 300]))
+        .unwrap();
+    assert_ne!(first, second);
+    assert_eq!((tx.queued_len(first), tx.queued_len(second)), (900, 300));
+    // Part of it acknowledged: it still counts whole, as the backlog does.
+    hop(&mut tx, &mut rx, 1, 8_000);
+    assert_eq!(tx.queued_len(first), 900);
+    assert_eq!(tx.queued_len(first) + tx.queued_len(second), tx.backlog(0));
+    let mut seq = 1;
+    while tx.queued_len(first) > 0 {
+        seq += 1;
+        hop(&mut tx, &mut rx, seq, 8_000);
+    }
+    assert_eq!(tx.queued_len(first), 0);
+    // Sequence numbers wrap; a handle never names a later message.
+    for _ in 0..70_000 {
+        let h = tx
+            .enqueue_shared_with_handle(1, Kind::Delta, Arc::from(vec![3u8]))
+            .unwrap();
+        assert_eq!(tx.queued_len(h), 1);
+        tx.drop_unstarted(1);
+        assert_eq!(tx.queued_len(h), 0);
+    }
+    assert_eq!(tx.queued_len(first), 0);
+    // `enqueue_shared` still queues without a handle.
+    tx.enqueue_shared(1, Kind::Delta, Arc::from(vec![4u8; 10]))
+        .unwrap();
+    assert_eq!(tx.backlog(1), 10);
+}

@@ -61,6 +61,11 @@ pub(crate) struct ModPrefs {
     /// The most megabytes of downloaded mod content to keep (0: the game's limit).
     #[pref(default = 0, range = 0..=65536)]
     pub(crate) cache_megabytes: i32,
+    /// Whether a server may match mods you downloaded from other servers. Off, each server matches only what it sent you, so it
+    /// cannot learn which other servers you have joined; on, a mod you already have from anywhere is not downloaded again, and a
+    /// server can tell which mods you have by which blocks you skip.
+    #[pref(default = false)]
+    pub(crate) share_cache: bool,
 }
 
 /// Local mods: folders and zips of scripts and assets that are found and ordered when a server or a client starts and mounted over

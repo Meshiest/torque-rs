@@ -48,8 +48,8 @@ mod transfer;
 #[cfg(not(target_family = "wasm"))]
 pub use cache::DiskStore;
 pub use cache::{
-    CacheStore, ContentCache, ENTRY_SUFFIX, IndexEntry, Listed, MAX_ENTRIES, MemoryStore,
-    default_cache_dir, index_of,
+    CacheOwner, CacheScope, CacheStore, ContentCache, ENTRY_SUFFIX, IndexEntry, Listed,
+    MAX_ENTRIES, MemoryStore, default_cache_dir, index_of,
 };
 pub use info::{
     Compare, MAX_LIST, MAX_NAME_LEN, MAX_TEXT_LEN, ModInfo, Requirement, Version, check_id,

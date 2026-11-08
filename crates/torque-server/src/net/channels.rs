@@ -37,7 +37,7 @@ use torque_net::bits::{BitReader, BitWriter};
 pub use torque_net::chunk::registry::{
     ChannelEntry, ChannelError, ChannelRegistry, ChunkChannel, MAX_BUDGET, MIN_BUDGET,
 };
-use torque_net::chunk::{ChunkReceiver, ChunkSender, Kind, SendError};
+use torque_net::chunk::{ChunkReceiver, ChunkSender, Kind, MessageHandle, SendError};
 use torque_net::handshake::ConnId;
 use torque_net::protocol::{Notify, Received};
 use torque_ts_vm::sim::ObjId;
@@ -208,14 +208,36 @@ impl ChannelHub {
         kind: Kind,
         data: std::sync::Arc<[u8]>,
     ) -> Result<(), SendError> {
+        self.send_shared_with_handle(client, channel, kind, data)
+            .map(|_| ())
+    }
+
+    /// [`send_shared`](Self::send_shared) that returns a handle to the queued message, for
+    /// [`queued_message_len`](Self::queued_message_len).
+    pub fn send_shared_with_handle(
+        &self,
+        client: ConnId,
+        channel: &str,
+        kind: Kind,
+        data: std::sync::Arc<[u8]>,
+    ) -> Result<MessageHandle, SendError> {
         let mut st = self.state.borrow_mut();
         let Some(id) = st.registry.id(channel) else {
             return Err(SendError::UnknownChannel);
         };
         match st.conns.get_mut(&client) {
-            Some(c) => c.sender.enqueue_shared(id, kind, data),
+            Some(c) => c.sender.enqueue_shared_with_handle(id, kind, data),
             None => Err(SendError::UnknownChannel),
         }
+    }
+
+    /// The length of the message `handle` names while it is still queued for `client` and not fully acknowledged, else 0.
+    pub fn queued_message_len(&self, client: ConnId, handle: MessageHandle) -> usize {
+        self.state
+            .borrow()
+            .conns
+            .get(&client)
+            .map_or(0, |c| c.sender.queued_len(handle))
     }
 
     /// The bytes queued for `client` on every channel and not yet acknowledged.

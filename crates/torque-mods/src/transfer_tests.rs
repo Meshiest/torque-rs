@@ -1,4 +1,5 @@
 use super::*;
+use crate::cache::CacheOwner;
 use crate::content::encode_content;
 use crate::offer::{FileOffer, encode_data, encode_offer};
 
@@ -477,4 +478,111 @@ fn the_cap_admits_up_to_the_maximum_and_a_held_client_may_say_only_two_things() 
         (zero.total(), zero.idle(), zero.max_clients),
         (300_000, 20_000, 1)
     );
+}
+
+fn server_at(port: u16) -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([203, 0, 113, 7], port))
+}
+
+impl Rig {
+    /// Starts a connection to the server at `port`, with other servers' cache entries counting or not.
+    fn connect_to(&self, port: u16, share: bool) {
+        self.d.begin_connect_to(
+            caps(true),
+            CacheScope {
+                owner: Some(CacheOwner::of_server(server_at(port))),
+                share,
+            },
+        );
+    }
+}
+
+#[test]
+fn another_servers_offer_of_a_cached_mod_is_a_full_download() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &files(1), true);
+    r.connect_to(1, false);
+    r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    r.d.closed();
+    // The same content offered by a second server: nothing is skipped, so the second server learns nothing of the first.
+    r.connect_to(2, false);
+    let sent = r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    assert_eq!(sent, offer.bytes(), "no block was skipped");
+    assert_eq!(r.d.phase(), Phase::Done);
+    r.d.closed();
+    // An updated version is not built from the first server's copy either.
+    let mut updated = files(1);
+    updated[1].1[0] ^= 1;
+    let (v2, c2) = offered("props", "1.1", &updated, true);
+    r.connect_to(3, false);
+    let sent = r.join(std::slice::from_ref(&v2), &[c2]);
+    assert_eq!(
+        sent,
+        v2.bytes(),
+        "no older copy of another server was a base"
+    );
+}
+
+#[test]
+fn a_server_reuses_what_it_sent_before() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &files(1), true);
+    r.connect_to(1, false);
+    r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    r.d.closed();
+    r.connect_to(1, false);
+    assert_eq!(
+        r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content)),
+        0
+    );
+    assert_eq!(r.d.phase(), Phase::Done);
+    r.d.closed();
+    let mut updated = files(1);
+    for b in &mut updated[0].1[BLOCK_BYTES + 5..BLOCK_BYTES + 9] {
+        *b ^= 0xff;
+    }
+    let (v2, c2) = offered("props", "1.1", &updated, true);
+    r.connect_to(1, false);
+    assert_eq!(
+        r.join(&[v2], &[c2]),
+        BLOCK_BYTES as u64,
+        "its own copy is a base"
+    );
+}
+
+#[test]
+fn sharing_the_cache_lets_every_server_match_every_entry() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &files(1), true);
+    r.connect_to(1, false);
+    r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    r.d.closed();
+    r.connect_to(2, true);
+    assert_eq!(
+        r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content)),
+        0
+    );
+    assert_eq!(r.d.phase(), Phase::Done);
+    r.d.closed();
+    let mut updated = files(1);
+    updated[1].1[0] ^= 1;
+    let (v2, c2) = offered("props", "1.1", &updated, true);
+    r.connect_to(3, true);
+    assert_eq!(r.join(&[v2], &[c2]), 1_000, "a base from another server");
+}
+
+#[test]
+fn entries_with_no_server_are_another_servers() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &files(1), true);
+    // A cache with no server named stores entries with none, as an older version did.
+    r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    r.d.closed();
+    r.connect_to(1, false);
+    let sent = r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    assert_eq!(sent, offer.bytes());
+    r.d.closed();
+    r.connect_to(2, true);
+    let sent = r.join(&[offer], &[content]);
+    assert_eq!(sent, 0, "sharing still reads them");
 }

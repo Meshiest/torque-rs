@@ -59,6 +59,11 @@ use crate::{Engine, EngineBuilder};
 /// (`vm.set_extension(Rc::new(ConnectExtras(..)))`) and each connection asks it when it starts.
 pub struct ConnectExtras(pub Rc<MakeSection>);
 
+/// The address a client's next network connection dials, which a plugin may read when it makes the section ([`ConnectExtras`]):
+/// the client sets it on its script engine as each connection starts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ConnectTarget(pub std::net::SocketAddr);
+
 /// What makes the section ([`ConnectExtras`]).
 pub type MakeSection = dyn Fn(&Vm) -> Option<ModsSection>;
 

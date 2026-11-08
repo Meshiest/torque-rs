@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use std::sync::Arc;
 
-use torque_net::chunk::Kind;
+use torque_net::chunk::{Kind, MessageHandle};
 use torque_net::handshake::ConnId;
 use torque_net::manifest::is_name;
 use torque_net::modsync::{MAX_REQUIRED, ModsSection, RequiredMod, RequiredMods, is_version};
@@ -119,6 +119,8 @@ struct Served {
 /// A client being held: what it has asked for.
 struct Serving {
     conn: ConnId,
+    /// The offer queued for this client: its length is allowed on top of the runs until it is acknowledged.
+    offer: Option<MessageHandle>,
     /// How many times each run (mod, file, first block) was asked for: an honest client asks once.
     asked: HashMap<(u32, u32, u32), u8>,
     requests: u64,
@@ -134,6 +136,12 @@ const MAX_ASKS: u8 = 2;
 
 const MAX_OUTSTANDING: usize =
     3 * crate::offer::BLOCK_BYTES * crate::offer::MAX_REQUEST_BLOCKS as usize;
+
+/// Whether `backlog` bytes queued for a client are more than it may have: a few runs, and the offer while it is still queued
+/// (`offer_pending` bytes; 0 once it is acknowledged).
+fn over_allowance(backlog: usize, offer_pending: usize) -> bool {
+    backlog > offer_pending.saturating_add(MAX_OUTSTANDING)
+}
 
 fn package_name(id: &str) -> String {
     format!("Mod_{id}")
@@ -1132,7 +1140,8 @@ impl Mods {
             Some(s) => (Arc::clone(&s.message), s.blocks),
             None => (Arc::from(encode_offer(&[])), 0),
         };
-        hub.send_shared(conn, CHANNEL, Kind::Snapshot, message)
+        let offer = hub
+            .send_shared_with_handle(conn, CHANNEL, Kind::Snapshot, message)
             .map_err(|e| format!("The server could not queue its mods for you ({e:?})."))?;
         // With nothing required the client has its (empty) list and nothing holds its join.
         if self.state.borrow().required.is_empty() {
@@ -1142,6 +1151,7 @@ impl Mods {
             obj,
             Serving {
                 conn,
+                offer: Some(offer),
                 requests: 0,
                 asked: HashMap::new(),
                 max_requests: blocks.saturating_add(8),
@@ -1160,7 +1170,7 @@ impl Mods {
         obj: ObjId,
         request: Request,
     ) -> Result<(), &'static str> {
-        let conn = {
+        let (conn, offer_handle) = {
             let mut serving = self.serving.borrow_mut();
             let held = serving.get_mut(&obj).ok_or("Unexpected mod request.")?;
             held.requests += 1;
@@ -1176,7 +1186,7 @@ impl Mods {
             if *again > MAX_ASKS {
                 return Err("Too many mod requests.");
             }
-            held.conn
+            (held.conn, held.offer)
         };
         let served = self
             .state
@@ -1203,8 +1213,10 @@ impl Mods {
         {
             return Err("Mod request out of range.");
         }
-        // What it may have unacknowledged: the offer, which goes first and may be large, and a few runs.
-        if hub.backlog_total(conn) > served.message.len() + MAX_OUTSTANDING {
+        // What it may have unacknowledged: the offer while it is still unacknowledged (it goes first and may be large), and a few
+        // runs.
+        let offer_len = offer_handle.map_or(0, |h| hub.queued_message_len(conn, h));
+        if over_allowance(hub.backlog_total(conn), offer_len) {
             return Err("Mod requests too fast.");
         }
         let (from, to) = run_bytes(
@@ -1286,7 +1298,14 @@ impl Mods {
     pub(crate) fn connect_section(&self, vm: &Vm) -> Option<ModsSection> {
         let downloads = self.downloads.borrow().clone()?;
         let caps = self.caps(vm)?;
-        Some(downloads.begin_connect(caps))
+        let share = {
+            use torque_engine::VmPrefs;
+            vm.prefs::<crate::plugin::ModPrefs>().share_cache
+        };
+        let owner = vm
+            .extension::<torque_engine::net::ConnectTarget>()
+            .map(|target| crate::cache::CacheOwner::of_server(target.0));
+        Some(downloads.begin_connect_to(caps, crate::cache::CacheScope { owner, share }))
     }
 
     /// Makes a client's downloads and hands them to the mods channel and the connect block. A no-op for an engine that does not
@@ -1604,5 +1623,38 @@ impl LocalSource for Mods {
 
     fn files_of(&self, id: &str) -> Option<Vec<(String, Vec<u8>)>> {
         self.read_content(id)
+    }
+}
+
+#[cfg(test)]
+mod allowance_tests {
+    use super::*;
+
+    #[test]
+    fn the_offer_is_in_the_allowance_only_while_it_is_unacknowledged() {
+        let offer = crate::offer::MAX_OFFER_BYTES;
+        // Offer still queued: it and a few runs are allowed.
+        assert!(!over_allowance(offer + MAX_OUTSTANDING, offer));
+        assert!(over_allowance(offer + MAX_OUTSTANDING + 1, offer));
+        // Acknowledged: only the runs count, however large the offer was.
+        assert!(!over_allowance(MAX_OUTSTANDING, 0));
+        assert!(over_allowance(MAX_OUTSTANDING + 1, 0));
+        assert!(over_allowance(offer, 0));
+    }
+
+    #[test]
+    fn an_honest_client_with_a_large_offer_stays_within_it() {
+        // It asks for a run only after it has the whole offer; each run is at most 4 blocks and it holds at most
+        // `MAX_OUTSTANDING` of them unacknowledged, with the offer still unacknowledged at worst.
+        let offer = 650_000;
+        let run = crate::offer::BLOCK_BYTES * crate::offer::MAX_REQUEST_BLOCKS as usize;
+        let mut backlog = offer;
+        for _ in 0..3 {
+            assert!(!over_allowance(backlog, offer), "backlog {backlog}");
+            backlog += run;
+        }
+        // The offer acknowledged, three runs outstanding are still within bounds.
+        assert!(!over_allowance(3 * run, 0));
+        assert_eq!(3 * run, MAX_OUTSTANDING);
     }
 }
