@@ -22,6 +22,7 @@
 //! | [`ServerQueryPlugin`] | `torque.server-query` | client, `Query` | `torque_client::query::register` |
 //! | [`ClientTransportPlugins`] | `torque.transport-udp-client`, ... | the transports a client connects over, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`AudioPlugin`] | `torque.audio` | client, `Natives` | the `alx` natives, the audio datablocks and the mixer |
+//! | [`CameraModesPlugin`] | `torque.camera-modes` | client, `Natives` | the camera modes plugins add, the one in use, and `setCameraMode`, `getCameraMode`, `getCameraModes` ([`camera_modes`](crate::camera_modes)) |
 //! | [`ClientHostPlugin`] | `torque.frame-host` | client, `Host` | what [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the host of |
 //! | [`RendererSlotPlugin`] | `torque.renderer-slot` | client, `Natives` | the renderer slot and `setRenderer`/`getRenderer` ([`renderers`](crate::renderers)) |
 //! | [`RendererPlugin`] | `torque.renderer` | the engine's renderer on the slot, `default` (`renderer` feature) | the view's renderer |
@@ -62,6 +63,7 @@ pub use torque_app_server::plugins::{
     ServerWiring, SimClassesPlugin, TerrainPlugin, WaterPlugin,
 };
 
+pub use crate::camera_modes::CameraModesPlugin;
 use crate::client::ClientNet;
 pub use crate::gizmos::GizmosPlugin;
 pub use crate::renderers::RendererSlotPlugin;
@@ -108,6 +110,7 @@ impl PluginGroup for DefaultPlugins {
             .add(ServerQueryPlugin)
             .add_group(ClientTransportPlugins)
             .add(AudioPlugin)
+            .add(CameraModesPlugin)
             .add(ClientHostPlugin)
             .add(RendererSlotPlugin);
         #[cfg(feature = "renderer")]

@@ -223,6 +223,8 @@ findNextFile 2..2 findNextFile(pattern) - the next file of the search findFirstF
 firstWord 2..2 firstWord(text) - the text up to its first space
 getBoxCenter 2..2 getBoxCenter(box) - the middle of a box given by its two corners
 getBuildString 1..1 getBuildString() - the kind of build
+getCameraMode 1..1 () - The name of the camera mode in use.
+getCameraModes 1..1 () - The names of the camera modes, separated by spaces.
 getCompileTimeString 1..1 getCompileTimeString() - when the build was made
 getField 3..3 getField(text, index) - one tab- or newline-separated field
 getFieldCount 2..2 getFieldCount(text) - how many fields the text has
@@ -283,6 +285,7 @@ removeWord 3..3 removeWord(text, index) - the text without that word
 restWords 2..2 restWords(text) - the text after its first space
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
+setCameraMode 2..2 (name) - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
 setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
 setRecord 4..4 setRecord(text, index, value) - the text with that record replaced

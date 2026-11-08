@@ -207,7 +207,11 @@ function swimProneKey(%v)
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it.
-function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
+function switchCamera(%v)
+{
+   if (%v)
+      setCameraMode(getCameraMode() $= "first-person" ? "third-person" : "first-person");
+}
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);

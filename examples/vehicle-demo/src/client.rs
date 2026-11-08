@@ -22,11 +22,11 @@
 //!
 //! **A frame** ([`VehicleDemo::frame`]): the own figure where the client predicts it, the buggy where the client runs it, the
 //! canvas drawn, the hint line, and the eye: on foot behind the figure (or at its eyes, `Tab`), both looking where the figure
-//! looks ([`behind`]: `Tab` on foot moves the camera, never turns it); in a seat behind and above the
+//! looks ([`torque::app::camera_behind`]: `Tab` on foot moves the camera, never turns it); in a seat behind and above the
 //! buggy, turned round it by the mouse, kept above the ground, or (`Tab`) at the seated figure's eyes, looking along the buggy
 //! turned by the mouse as far as a head turns ([`VehicleDemo::seated_eye_point`]: just ahead of the face, so the head does not
 //! fill the view while the body, the hands on the wheel and the buggy are drawn). `Tab` moves the camera from one to the other
-//! ([`CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden while the camera is
+//! ([`torque::app::camera_blend::CameraBlend`], kept above the ground as the camera behind is); the own figure on foot is hidden while the camera is
 //! close to its eyes ([`CLOSE`]), on the way in and on the way out. Getting in or out cuts, and so does a new figure or a
 //! teleport (R, a fall: [`OwnView::cut`]); while the next figure is on its way the view stays where it was. The wheel moves
 //! each camera behind (on foot, behind the buggy) in or out within its own limits ([`FOOT_ZOOM`], [`DRIVE_ZOOM`]), eased
@@ -34,10 +34,14 @@
 
 use std::ops::{Deref, DerefMut};
 
+use std::cell::Cell;
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 
-use torque::app::camera_blend::{CLOSE, CameraBlend};
+use torque::app::camera_blend::CLOSE;
+use torque::app::camera_modes::{
+    CameraCx, CameraMode, CameraModes, CameraWorld, FIRST_PERSON, THIRD_PERSON,
+};
 use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::hosting::{join_address, lan_bind_address, register_join_natives};
 use torque::app::lights::WorldLights;
@@ -66,7 +70,7 @@ use crate::seats::{SeatedPlayerKind, SeatsPlugin};
 use crate::server::{ALONE_ADDR, DEFAULT_PORT, ServerOptions, WorldServer};
 use torque::app::ghosts::OwnView;
 pub use torque::app::hosting::NetMode;
-use torque_example_common::behind::{boom_line, looking, moved_only};
+use torque_example_common::behind::{boom_line, looking};
 use torque_example_common::prediction::CubeClient;
 
 /// How a client is made.
@@ -297,21 +301,20 @@ pub struct VehicleDemo {
     scene: WorldScene,
     /// The daylight the view was last given (the map's Sky over the default).
     daylight: Daylight,
-    /// The yaw the camera in a seat looks along (it follows the buggy's heading).
-    drive_yaw: Option<f32>,
     /// The hint line last written.
     hint: String,
     /// The seated figure's `eye` node in the buggy's space, by seat.
     seat_eyes: [[f32; 3]; 2],
     /// The headlights and the day of the world ([`WorldLights`]).
     lights: WorldLights,
-    /// The camera's ease between first and third person, and the mode it last eased to: (first person, seated).
-    blend: CameraBlend,
+    /// The camera modes (first and third person, each on foot or in a seat), the one in use and the ease between them.
+    modes: Rc<CameraModes>,
+    /// Whether the figure was in a seat the last frame.
+    seated_seen: Option<bool>,
     /// Where the camera was drawn last frame.
     drawn_at: Option<[f32; 3]>,
     /// The eye last drawn from the figure or the buggy, held while the server's next figure is on its way (R, a fall).
     held: Option<Eye>,
-    camera_mode: Option<(bool, bool)>,
     /// The wheel's distances of the camera on foot and the one behind the buggy, each its own.
     foot_zoom: Zoom,
     drive_zoom: Zoom,
@@ -366,22 +369,38 @@ impl VehicleDemo {
         }
         b.vm.set_global("$Pref::Player::Name", &options.name);
         b.exec("client.cs")?;
+        let client = b.build();
+        let modes = client
+            .camera_modes()
+            .ok_or("the engine has no camera modes (CameraModesPlugin)")?;
+        // The camera behind the figure or the buggy is the one in use until `Tab`.
+        // The yaw the camera in a seat looks along (it follows the buggy's heading), shared by the two views.
+        let drive_yaw = Rc::new(Cell::new(None));
+        for (name, first) in [(FIRST_PERSON, true), (THIRD_PERSON, false)] {
+            modes.register(
+                name,
+                VehicleView {
+                    first,
+                    drive_yaw: Rc::clone(&drive_yaw),
+                },
+            );
+        }
+        modes.set_now(THIRD_PERSON);
         Ok(VehicleDemo {
-            client: b.build(),
+            client,
             engine: engine.clone(),
             files,
             options,
             terrain,
             scene: WorldScene::default(),
             daylight: Daylight::default(),
-            drive_yaw: None,
             hint: String::new(),
             seat_eyes: [0, 1].map(torque_example_assets::buggy::seated_eye),
             lights: WorldLights::default(),
-            blend: CameraBlend::default(),
+            modes,
+            seated_seen: None,
             drawn_at: None,
             held: None,
-            camera_mode: None,
             foot_zoom: Zoom::new(CAMERA_DISTANCE, FOOT_ZOOM.0, FOOT_ZOOM.1),
             drive_zoom: Zoom::new(DRIVE_DISTANCE, DRIVE_ZOOM.0, DRIVE_ZOOM.1),
         })
@@ -443,8 +462,8 @@ impl VehicleDemo {
     pub fn stop_hosting(&mut self) {
         self.client.stop_hosting();
         self.scene.clear();
-        self.blend.reset();
-        self.camera_mode = None;
+        self.modes.cut();
+        self.seated_seen = None;
         self.held = None;
     }
 
@@ -483,14 +502,14 @@ impl VehicleDemo {
 
     /// Whether the camera on foot is at the figure's eyes (`Tab`).
     pub fn first_person(&self) -> bool {
-        self.flag("$World::FirstPerson")
+        self.modes.is_active(FIRST_PERSON)
     }
 
     /// Puts the camera there at once, without easing (the shots).
     pub fn set_first_person(&mut self, on: bool) {
-        self.set_global("$World::FirstPerson", if on { "1" } else { "0" });
-        self.camera_mode = Some((on, self.seated()));
-        self.blend.reset();
+        self.modes
+            .set_now(if on { FIRST_PERSON } else { THIRD_PERSON });
+        self.seated_seen = Some(self.seated());
     }
 
     /// The scene of the client's ghosts as the last frame left it (the buggy's dust and tracks).
@@ -763,23 +782,36 @@ impl VehicleDemo {
         }
     }
 
+    /// Runs `f` on the camera modes with this frame's context: the figure as the last frame placed it, `dt` seconds on.
+    fn with_camera<R>(&self, dt: f32, f: impl FnOnce(&CameraModes, &CameraCx<'_>) -> R) -> R {
+        let figure = self.figure();
+        f(
+            &self.modes,
+            &CameraCx::new(self, dt).with_control(figure.as_ref()),
+        )
+    }
+
     /// The eye this frame (module docs), `dt` seconds after the last.
-    pub fn eye(&mut self, dt: f32) -> Eye {
+    pub fn eye(&self, dt: f32) -> Eye {
+        self.with_camera(dt, |modes, cx| modes.target(cx, fixed_eye()))
+    }
+
+    /// The eye the camera of the mode (`first`: at the eyes, else behind) gives, `dt` seconds after the last: in a seat the
+    /// seat's eyes or the orbit behind the buggy, on foot the figure's eyes or the boom behind it. None: no figure to follow.
+    fn camera_eye(&self, first: bool, drive_yaw: &Cell<Option<f32>>, dt: f32) -> Option<Eye> {
         if self.seated()
             && let Some(m) = self.buggy_pose()
         {
-            if self.first_person()
-                && let Some(e) = self.seated_eye(&m)
-            {
-                return with_fov(e);
+            if first && let Some(e) = self.seated_eye(&m) {
+                return Some(with_fov(e));
             }
-            return with_fov(self.drive_eye(&m, dt));
+            return Some(with_fov(self.drive_eye(&m, dt, drive_yaw)));
         }
-        self.drive_yaw = None;
+        drive_yaw.set(None);
         match self.figure() {
-            Some(f) if self.first_person() => looking(f.eye, f.yaw, f.pitch),
-            Some(f) => self.foot_eye(&f),
-            None => with_fov(look_at([-12.0, -14.0, 28.0], [0.0, 0.0, 20.0])),
+            Some(f) if first => Some(looking(f.eye, f.yaw, f.pitch)),
+            Some(f) => Some(self.foot_eye(&f)),
+            None => None,
         }
     }
 
@@ -794,20 +826,7 @@ impl VehicleDemo {
         {
             return eye;
         }
-        let target = self.eye(dt);
-        let terrain = &self.terrain;
-        let eye = self.blend.eye(target, |mut p| {
-            if let Some(ground) = terrain.height(p[0], p[1]) {
-                p[2] = p[2].max(ground + DRIVE_CLEARANCE);
-            }
-            p
-        });
-        // On foot both modes look where the figure looks: the ease moves the camera only.
-        let eye = if !self.seated() && self.figure().is_some() {
-            moved_only(eye, target)
-        } else {
-            eye
-        };
+        let eye = self.with_camera(dt, |modes, cx| modes.drawn(cx, fixed_eye()));
         self.drawn_at = Some(eye.position);
         self.held = followed.then_some(eye);
         eye
@@ -843,7 +862,7 @@ impl VehicleDemo {
 
     /// Whether the camera is easing between modes.
     pub fn camera_blending(&self) -> bool {
-        !self.blend.arrived()
+        self.modes.blending()
     }
 
     /// The range the mouse turns the look in a seat (`$Drive::OrbitYaw`, `$Drive::OrbitPitch`) for the camera there: at the
@@ -947,12 +966,17 @@ impl VehicleDemo {
         looking(at, f.yaw, f.pitch)
     }
 
-    fn drive_eye(&mut self, m: &torque_render_scene::math::Mat, dt: f32) -> Eye {
+    fn drive_eye(
+        &self,
+        m: &torque_render_scene::math::Mat,
+        dt: f32,
+        drive_yaw: &Cell<Option<f32>>,
+    ) -> Eye {
         let p = m.column(3);
         let forward = m.column(1);
         let heading = forward[0].atan2(forward[1]);
         // The camera swings round behind the buggy as it turns, along the shorter way.
-        let yaw = match self.drive_yaw {
+        let yaw = match drive_yaw.get() {
             Some(y) => {
                 let mut d = heading - y;
                 d -= std::f32::consts::TAU * (d / std::f32::consts::TAU).round();
@@ -960,7 +984,7 @@ impl VehicleDemo {
             }
             None => heading,
         };
-        self.drive_yaw = Some(yaw);
+        drive_yaw.set(Some(yaw));
         let target = [p[0], p[1], p[2] + DRIVE_TARGET_HEIGHT];
         let orbit_yaw = self.number("$Drive::OrbitYaw");
         let pitch = (DRIVE_PITCH + self.number("$Drive::OrbitPitch"))
@@ -1029,13 +1053,16 @@ impl VehicleDemo {
     pub fn update_scene(&mut self, dt: f32) {
         self.client.predict_frame();
         let mode = (self.first_person(), self.seated());
-        match self.camera_mode.replace(mode) {
-            Some(last) if last.1 != mode.1 => self.blend.reset(),
-            Some(last) if last.0 != mode.0 => self.blend.switch(),
-            _ => {}
+        // Getting in or out cuts; `Tab` eases.
+        if self
+            .seated_seen
+            .replace(mode.1)
+            .is_some_and(|seated| seated != mode.1)
+        {
+            self.modes.cut();
         }
         self.keep_look_in_range();
-        self.blend.advance(dt);
+        self.with_camera(dt, |modes, cx| modes.begin(cx));
         self.zoom(dt);
         // On foot the figure is hidden while the camera is close to its eyes (module docs).
         let hide = !mode.1
@@ -1068,8 +1095,7 @@ impl VehicleDemo {
         drop(st);
         // A new figure (a restart) or a teleport (a fall, the buggy put back with its riders) cuts the camera to it.
         if self.figure().is_some_and(|f| f.cut) {
-            self.blend.reset();
-            self.drive_yaw = None;
+            self.modes.cut();
         }
     }
 
@@ -1171,6 +1197,50 @@ impl App for VehicleDemo {
 
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
         VehicleDemo::frame(self, view)
+    }
+}
+
+/// The fixed view of the middle of the map, before there is a figure.
+fn fixed_eye() -> Eye {
+    with_fov(look_at([-12.0, -14.0, 28.0], [0.0, 0.0, 20.0]))
+}
+
+/// The ground under the camera, for the ease to keep it above.
+impl CameraWorld for VehicleDemo {
+    fn ground(&self, x: f32, y: f32) -> Option<f32> {
+        self.terrain.height(x, y)
+    }
+}
+
+/// The first or the third person of the demo: on foot the figure's eyes or the boom behind it, in a seat the seat's eyes or the
+/// orbit behind the buggy ([`VehicleDemo::camera_eye`]).
+struct VehicleView {
+    first: bool,
+    /// The yaw the camera behind the buggy looks along, shared by both views and the demo.
+    drive_yaw: Rc<Cell<Option<f32>>>,
+}
+
+impl CameraMode for VehicleView {
+    fn eye(&self, cx: &CameraCx<'_>) -> Option<Eye> {
+        cx.world_as::<VehicleDemo>()?
+            .camera_eye(self.first, &self.drive_yaw, cx.dt)
+    }
+
+    fn keep(&self, cx: &CameraCx<'_>, mut point: [f32; 3]) -> [f32; 3] {
+        if let Some(ground) = cx.world.ground(point[0], point[1]) {
+            point[2] = point[2].max(ground + DRIVE_CLEARANCE);
+        }
+        point
+    }
+
+    fn keeps_look(&self, cx: &CameraCx<'_>) -> bool {
+        // On foot both views look where the figure looks: the ease moves the camera only.
+        cx.world_as::<VehicleDemo>()
+            .is_some_and(|d| !d.seated() && cx.control.is_some())
+    }
+
+    fn reset(&mut self) {
+        self.drive_yaw.set(None);
     }
 }
 

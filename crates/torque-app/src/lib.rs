@@ -26,6 +26,9 @@
 //! - [`orbit::Orbit`]: a third-person camera that circles a point; [`orbit::Zoom`]: a camera distance the wheel moves.
 //! - [`camera_blend::CameraBlend`]: a camera that eases from one mode's eye to another's on a switch.
 //! - [`camera_boom::CameraBoom`]: a third-person camera's boom, pulled in fast and let out slowly by what is in the way.
+//! - [`camera_behind`]: the camera behind a figure, looking where the figure looks.
+//! - [`camera_modes`]: named camera modes plugins add (first person, third person, orbit, a plugin's own), the one in use and the
+//!   eased switch between them, and the console functions `setCameraMode` and `getCameraMode`.
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server and in the client's prediction,
 //!   and its ground drawn.
 //! - [`water::Water`]: a `WaterBlock` as water the Players swim in, on the server and in the client's prediction.
@@ -51,8 +54,10 @@
 pub use torque_app_server::serve;
 pub use torque_app_server::{cli, config, files, manifest, server, water};
 
+pub mod camera_behind;
 pub mod camera_blend;
 pub mod camera_boom;
+pub mod camera_modes;
 pub mod client;
 pub mod ghosts;
 pub mod gizmos;

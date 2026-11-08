@@ -47,6 +47,10 @@ different.
 - `torque-plugin-gamepad`: gamepads as `joystick<N>` (gilrs natively, the browser's Gamepad API on the web; pads plugged in and out
   while the game runs; the sticks, triggers, buttons and cross), with the prefs `$Pref::Gamepad::DeadZone` and
   `$Pref::Gamepad::InvertY`. Not in `DefaultPlugins`. The vehicle demo plays with it (`--features gamepad`, `--gamepad`).
+- `torque::app::camera_modes`: camera modes (`CameraMode`, `add_camera_mode`) that plugins add and the client picks by name
+  (`setCameraMode`, `getCameraMode`, `getCameraModes`; `CameraModes::set` from Rust), eased from one to the next, with the first
+  person, the third person on a boom and the orbit built in; `torque::app::camera_behind` is the helpers of the camera behind a
+  figure, moved from the examples' shared crate. TGE has one camera at a time and no modes.
 
 #### Web and networking
 

@@ -6,7 +6,7 @@
 // the server for a seat (serverCmdGetIn), which points the figure's arm where it looks when the click meets no free seat. In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
-// $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
+// $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab (setCameraMode) puts the
 // camera at the figure's eyes or behind it, on foot and in a seat. Esc opens the examples' pause menu (common/pause.cs: Resume,
 // Controls, Leave game, Quit) and T the chat (common/chat.cs). The other players' names show over their heads. The host
 // writes the hint line (setHint).
@@ -337,7 +337,11 @@ function jump(%v) { if (!poseJumpKey(%v)) $mvTriggerCount2++; }
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it (in a seat: behind the buggy).
-function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
+function switchCamera(%v)
+{
+   if (%v)
+      setCameraMode(getCameraMode() $= "first-person" ? "third-person" : "first-person");
+}
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
 // The left button: a click on a buggy takes a seat in it, one on anything else points where the figure looks while the button
 // is held (the server holds it a second at least).

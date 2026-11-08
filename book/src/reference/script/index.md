@@ -6,7 +6,7 @@ Every console function, method, class and pref of an engine built from `DefaultP
 
 | Page | What it lists | Entries |
 |---|---|---|
-| [Functions](functions.md) | console functions, by namespace | 189 |
+| [Functions](functions.md) | console functions, by namespace | 192 |
 | [Methods](methods.md) | methods called on an object, by class | 284 |
 | [Classes](classes.md) | console classes and the fields they add | 110 classes, 805 fields |
 | [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 0 |

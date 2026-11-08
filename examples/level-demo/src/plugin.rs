@@ -2,6 +2,9 @@
 
 use std::rc::Rc;
 
+use torque::app::camera_modes::{
+    CameraBuilderExt as _, FIRST_PERSON, FirstPerson, THIRD_PERSON, ThirdPerson,
+};
 use torque::app::plugins::{ClientGamePlugin, DefaultPlugins, GuiPlugin, ServerQueryPlugin};
 use torque::engine::{ClientStage, EngineBuilder, Plugin, PluginGroup as _, PluginId};
 use torque_example_common::prediction::CubeClient;
@@ -53,6 +56,10 @@ impl Plugin for LevelPlugin {
             }
             Ok(())
         });
+        // The numbers of the camera behind the figure are the example's.
+        let rig = crate::client::camera_rig();
+        engine.add_camera_mode(FIRST_PERSON, move || FirstPerson::new(rig));
+        engine.add_camera_mode(THIRD_PERSON, move || ThirdPerson::new(rig));
         engine.insert_resource(Rc::clone(&self.level));
     }
 }

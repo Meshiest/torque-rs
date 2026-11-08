@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-189 entries in 1 namespace.
+192 entries in 1 namespace.
 
 ## Global
 
@@ -207,6 +207,10 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `getBuildString()` - the kind of build
   *arguments: none; server and client*
+- `getCameraMode()` - The name of the camera mode in use.
+  *arguments: none; client*
+- `getCameraModes()` - The names of the camera modes, separated by spaces.
+  *arguments: none; client*
 - `getCompileTimeString()` - when the build was made
   *arguments: none; server and client*
 - `getField(text, index)` - one tab- or newline-separated field
@@ -366,6 +370,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `schedule(delay, object, function, args...)` - calls the function later; the object bounds the call's life
   *arguments: at least 3; server and client*
+- `setCameraMode(name)` - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
+  *arguments: 1; client*
 - `setDefaultFov(defaultFov)` - Set the default FOV for a camera.
   *arguments: 1; client; needs `torque.zoom`*
 - `setField(text, index, value)` - the text with that field replaced

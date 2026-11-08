@@ -20,12 +20,12 @@ use torque_ts_vm::vm::Vm;
 use crate::client::{ClientBuilder, ClientNet, ClientSetup};
 use crate::plugins::{
     ActionMapPlugin, AmbientOcclusionPlugin, AntiAliasingPlugin, AudioPlugin, BloomPlugin,
-    ClearWaterPlugin, ClientHostPlugin, CloudsPlugin, ConnPlugin, DefaultPlugins,
-    GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, LivePerfPlugin, MinimalPlugins,
-    NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin, RendererPlugin, RendererSlotPlugin,
-    ScreenPlugin, ServerGamePlugin, ServerQueryPlugin, ShadowsPlugin, SimClassesPlugin,
-    SurfaceDetailPlugin, TerrainPlugin, TransparencyPlugin, VolumetricsPlugin, WaterPlugin,
-    WebPageRunnerPlugin, WindowRunnerPlugin, ZoomPlugin,
+    CameraModesPlugin, ClearWaterPlugin, ClientHostPlugin, CloudsPlugin, ConnPlugin,
+    DefaultPlugins, GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, LivePerfPlugin,
+    MinimalPlugins, NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin, RendererPlugin,
+    RendererSlotPlugin, ScreenPlugin, ServerGamePlugin, ServerQueryPlugin, ShadowsPlugin,
+    SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin, TransparencyPlugin, VolumetricsPlugin,
+    WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin, ZoomPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -100,6 +100,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ConnPlugin::ID,
             ServerQueryPlugin::ID,
             AudioPlugin::ID,
+            CameraModesPlugin::ID,
             ClientHostPlugin::ID,
             RendererSlotPlugin::ID,
             RendererPlugin::ID,
@@ -144,6 +145,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.conn",
             "torque.server-query",
             "torque.audio",
+            "torque.camera-modes",
             "torque.frame-host",
             "torque.renderer-slot",
             "torque.renderer",
@@ -195,7 +197,11 @@ fn each_stage_replays_its_plugins_in_add_order() {
     assert_eq!(client(ClientStage::Query), ["torque.server-query"]);
     assert_eq!(
         client(ClientStage::Natives),
-        ["torque.audio", "torque.renderer-slot"]
+        [
+            "torque.audio",
+            "torque.camera-modes",
+            "torque.renderer-slot"
+        ]
     );
     assert!(client(ClientStage::Host).is_empty());
     // The page bridge is filed for web builds only, by the web page runner.

@@ -398,6 +398,11 @@ impl<S> GameClient<S> {
         self.host.server.vm_mut()
     }
 
+    /// The client's camera modes (None: its engine has no [`CameraModesPlugin`](crate::camera_modes::CameraModesPlugin)).
+    pub fn camera_modes(&self) -> Option<Rc<crate::camera_modes::CameraModes>> {
+        crate::camera_modes::CameraModes::of(self.vm())
+    }
+
     /// The client's debug gizmos (None: its engine has no [`GizmosPlugin`](crate::gizmos::GizmosPlugin)).
     #[cfg(feature = "gizmos")]
     pub fn gizmos(&self) -> Option<Rc<crate::gizmos::Gizmos>> {
