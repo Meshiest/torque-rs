@@ -19,6 +19,7 @@
 //! Like the engine's own classes ([`crate::light`]), plugin classes are ghosted to the engine's own clients only: a TGE client
 //! cannot read their records.
 
+pub mod draw;
 pub mod field;
 
 use std::any::{Any, TypeId};
@@ -37,6 +38,7 @@ use crate::light::ENGINE_OBJECT_CLASSES;
 use crate::tge::{TGE_DATABLOCK_CLASSES, TGE_OBJECT_CLASSES};
 use crate::{ChargeFn, ObjectView, PackCtx, Value};
 
+pub use draw::{DatablockFields, DrawnShapes, ShapeDraw, ShapeFn};
 pub use field::{DatablockRef, FieldSpec, NetField};
 
 /// How a client shows a plugin ghost between the server's updates.
@@ -294,6 +296,11 @@ impl PluginClass {
     /// The record type's name (for messages).
     pub fn record_type(self) -> &'static str {
         self.0.record_name
+    }
+
+    /// Whether the class's records are of type `G`.
+    pub fn is_record<G: NetRecord>(self) -> bool {
+        TypeId::of::<G>() == self.0.record
     }
 
     /// Whether `record` is a record of this class's type.

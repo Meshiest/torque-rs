@@ -576,3 +576,92 @@ fn fields_read_numbers_from_text_and_keep_signs_in_their_widths() {
     [1.5f32, 2.0, -3.0].values(&mut values);
     assert_eq!(values, [Value::str("1.5 2 -3")]);
 }
+
+/// No datablocks: a draw function that reads none.
+struct NoDatablocks;
+
+impl DatablockFields for NoDatablocks {
+    fn field(&self, _: u32, _: &str, _: u32) -> Option<&Value> {
+        None
+    }
+}
+
+/// One datablock whose `model` is a text.
+struct OneDatablock(Value);
+
+impl DatablockFields for OneDatablock {
+    fn field(&self, id: u32, name: &str, index: u32) -> Option<&Value> {
+        (id == 7 && name == "model" && index == 0).then_some(&self.0)
+    }
+}
+
+#[test]
+fn a_drawn_class_turns_its_records_into_shapes_and_leaves_out_what_cannot_be_drawn() {
+    let class = PluginClass::ghost::<Rope>("Rope", Replicate::Interpolated);
+    let other = PluginClass::ghost::<Rope>("Cable", Replicate::Predicted);
+    let mut drawn = DrawnShapes::default();
+    assert!(drawn.is_empty());
+    drawn.insert(
+        class,
+        ShapeFn::new::<Rope>(|rope, datablocks| {
+            let model = datablocks.text(rope.data.datablock()?, "model")?;
+            Some(ShapeDraw::new(model).scaled([1.0, 2.0, rope.length]))
+        }),
+    );
+    assert!(drawn.contains(class) && !drawn.contains(other));
+    assert!(drawn.interpolates(class));
+    let rope = |length: f32, data: Option<u32>| Rope {
+        length,
+        data: DatablockRef(data),
+        ..Rope::default()
+    };
+    let blocks = OneDatablock(Value::Str(b"art/crate.dts".to_vec()));
+    let draw = drawn.draw(class, &rope(3.0, Some(7)), &blocks).unwrap();
+    assert_eq!(
+        draw,
+        ShapeDraw::new("art/crate.dts").scaled([1.0, 2.0, 3.0])
+    );
+    // No datablock, an unknown one, a class that is not drawn: no shape.
+    assert_eq!(drawn.draw(class, &rope(3.0, None), &blocks), None);
+    assert_eq!(drawn.draw(class, &rope(3.0, Some(8)), &blocks), None);
+    assert_eq!(drawn.draw(other, &rope(3.0, Some(7)), &blocks), None);
+    // A hostile scale is not drawn: not finite, or past the cap.
+    for scale in [
+        f32::NAN,
+        f32::INFINITY,
+        -f32::INFINITY,
+        draw::MAX_SCALE * 2.0,
+    ] {
+        assert_eq!(drawn.draw(class, &rope(scale, Some(7)), &blocks), None);
+    }
+    // A record of another type is no shape either.
+    let marker = PropData::default();
+    assert_eq!(drawn.draw(class, &marker, &NoDatablocks), None);
+}
+
+#[test]
+fn a_class_is_drawn_once_and_only_interpolated_classes_are_blended() {
+    let class = PluginClass::ghost::<Rope>("Rope", Replicate::Predicted);
+    let mut drawn = DrawnShapes::default();
+    drawn.insert(
+        class,
+        ShapeFn::new::<Rope>(|_, _| Some(ShapeDraw::new("a.dts"))),
+    );
+    drawn.insert(
+        class,
+        ShapeFn::new::<Rope>(|_, _| Some(ShapeDraw::new("b.dts"))),
+    );
+    assert_eq!(drawn.classes().count(), 1);
+    let shape = drawn.draw(class, &Rope::default(), &NoDatablocks).unwrap();
+    assert_eq!(shape.shape, "a.dts");
+    assert!(!drawn.interpolates(class));
+    assert!(class.is_record::<Rope>() && !class.is_record::<PropData>());
+}
+
+#[test]
+fn an_empty_shape_name_is_not_drawn_and_a_skin_rides_along() {
+    assert!(!ShapeDraw::new("").is_drawable());
+    let draw = ShapeDraw::new("a.dts").skinned("skin.png");
+    assert!(draw.is_drawable());
+    assert_eq!(draw.skin.as_deref(), Some("skin.png"));
+}

@@ -83,6 +83,9 @@ different.
   reels a rope over a time and a rope held farther apart than it is long is drawn straight (visual only); temporary ropes fade out
   (`ropeSetLifetime`); `ropeNetFx` sends a one-shot rope as a remote command with no ghost; `ropePredict` shows a client's own rope at once
   and the server's ghost adopts it by a bounded per-client id (or it fades out unconfirmed). The book's "Networked plugins" chapter.
+- `engine.net().drawn_shape`: a plugin ghost class drawn as a shape (a shape file, scale and skin from its record and datablock) by the
+  engine's renderer, lit, shadowed and culled as a StaticShape is and in the frame's list of ghosts that ropes and passes anchor to;
+  a class marked `Replicate::Interpolated` is shown between the server's updates (a warp of one to three ticks, as a vehicle's).
 - `torque::app::camera_modes`: camera modes (`CameraMode`, `add_camera_mode`) that plugins add and the client picks by name
   (`setCameraMode`, `getCameraMode`, `getCameraModes`; `CameraModes::set` from Rust), eased from one to the next, with the first
   person, the third person on a boom and the orbit built in; `torque::app::camera_behind` is the helpers of the camera behind a

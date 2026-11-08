@@ -67,7 +67,13 @@ pub fn render_pose<W: ShapeWorld + ?Sized>(w: &W, index: u32) -> Option<Pose> {
     }
     match &world.control_render {
         Some(p) if world.control.object == Some(index) => Some(*p),
-        _ => g.pose(),
+        // A ghost the client shows between its server's updates (a plugin's): where its warp has it.
+        _ => match g.pose() {
+            Some(pose) if g.class.is_some_and(|c| w.interpolated_class(c)) => {
+                Some(world.warped_pose(index, pose))
+            }
+            pose => pose,
+        },
     }
 }
 

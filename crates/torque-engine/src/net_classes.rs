@@ -18,6 +18,11 @@
 //! class that appeared, that an update changed (with the whole record, the updates merged) and that went ([`GhostEvent`]).
 //! [`ClientGhosts`] answers where a ghost is.
 //!
+//! **Drawn as shapes.** A ghost class a client shows as a shape names its draw function ([`NetRegistry::drawn_shape`]): from the
+//! record (and the datablock it names) it says which shape file, scale and skin the ghost is drawn as. The client's renderer then
+//! draws the ghost as it draws TGE's: lit, shadowed, culled, at the transform the record's first [`Xf`] gives it (blended between the
+//! server's updates for a class marked [`Replicate::Interpolated`]), in the frame's list of ghosts that ropes and passes anchor to.
+//!
 //! **Where they go.** Every server and client script engine the engine makes gets the set as its extension at the first
 //! stage ([`ServerStage::Classes`], [`ClientStage::Classes`]): the network host and the client's connection read it from
 //! there ([`Engine::net_classes`] gives it too).
@@ -67,8 +72,8 @@ use torque_ts_vm::vm::Vm;
 
 pub use torque_ghosts::codec::Xf;
 pub use torque_ghosts::plugin::{
-    DatablockCodec, DatablockRef, FieldSpec, GhostRecord, NetField, NetRecord, PluginClass,
-    PluginClasses, Record, Replicate,
+    DatablockCodec, DatablockFields, DatablockRef, DrawnShapes, FieldSpec, GhostRecord, NetField,
+    NetRecord, PluginClass, PluginClasses, Record, Replicate, ShapeDraw, ShapeFn,
 };
 
 use torque_net::classes::Kind;
@@ -86,6 +91,16 @@ struct Installs;
 
 /// The marker that the recipe installing the ghost handlers into each client is recorded.
 struct SinkInstalls;
+
+/// The draw function a plugin named for the ghosts of one class ([`NetRegistry::drawn_shape`]).
+struct DrawnEntry {
+    plugin: PluginId,
+    class: PluginClass,
+    draw: ShapeFn,
+}
+
+/// The marker that the recipe installing the drawn classes into each client is recorded.
+struct DrawInstalls;
 
 /// What happened to one ghost of a plugin class on a client, as a handler hears it ([`NetRegistry::on_ghost`]).
 #[derive(Debug)]
@@ -240,6 +255,59 @@ impl NetRegistry<'_> {
         self
     }
 
+    /// Has the engine's clients draw the ghosts of the class `name` as shapes ([module docs](crate::net_classes)): `draw` turns a
+    /// ghost's record (and the datablocks, to read the one it names) into the shape file, scale and skin it is drawn as, or none when it
+    /// is not drawn. The ghost stands where the record's first transform puts it. The class must be added ([`NetRegistry::ghost`])
+    /// before, by this plugin or another, with `G` as its record type, and a class has one draw function: anything else fails the
+    /// build.
+    pub fn drawn_shape<G: GhostRecord>(
+        &mut self,
+        name: &str,
+        draw: impl Fn(&G, &dyn DatablockFields) -> Option<ShapeDraw> + Send + Sync + 'static,
+    ) -> &mut Self {
+        let kept = self.engine.list::<NetClassEntry>();
+        let Some(class) = kept
+            .iter()
+            .map(|e| e.class)
+            .find(|c| c.kind() == Kind::Object && c.name() == name)
+        else {
+            self.engine
+                .reject(format!("drawn_shape: no ghost class {name} was added"));
+            return self;
+        };
+        if !class.is_record::<G>() {
+            self.engine.reject(format!(
+                "drawn_shape: the ghost class {name} is not made of {}",
+                std::any::type_name::<G>()
+            ));
+            return self;
+        }
+        if let Some(first) = self
+            .engine
+            .list::<DrawnEntry>()
+            .iter()
+            .find(|e| e.class == class)
+        {
+            let message = format!("`{}` already draws the ghost class {name}", first.plugin);
+            self.engine.reject(message);
+            return self;
+        }
+        let plugin = self.engine.current_plugin();
+        self.engine.push(DrawnEntry {
+            plugin,
+            class,
+            draw: ShapeFn::new(draw),
+        });
+        if self.engine.resource::<DrawInstalls>().is_none() {
+            self.engine.insert_resource(DrawInstalls);
+            self.engine.client(ClientStage::Classes, |vm, engine| {
+                vm.set_extension(Rc::new(engine.drawn_shapes()));
+                Ok(())
+            });
+        }
+        self
+    }
+
     /// Adds the datablock class `name`: every datablock of the console class `name` goes to the engine's own clients as a
     /// `D` record.
     pub fn datablock<D: DatablockCodec>(&mut self, name: &str) -> &mut Self {
@@ -293,6 +361,16 @@ impl Engine {
     pub fn net_classes(&self) -> PluginClasses {
         // The registry refused every set that would not make one.
         PluginClasses::new(self.list::<NetClassEntry>().iter().map(|e| e.class)).unwrap_or_default()
+    }
+
+    /// The ghost classes the plugins draw as shapes, each with its draw function ([`NetRegistry::drawn_shape`]); a client's script
+    /// engine has it as its extension, and its connection gives it to the world it draws.
+    pub fn drawn_shapes(&self) -> DrawnShapes {
+        let mut drawn = DrawnShapes::default();
+        for entry in self.list::<DrawnEntry>().iter() {
+            drawn.insert(entry.class, entry.draw.clone());
+        }
+        drawn
     }
 
     /// The plugin that added each net class, in the order they were added.

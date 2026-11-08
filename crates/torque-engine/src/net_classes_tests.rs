@@ -340,3 +340,98 @@ fn a_name_taken_twice_or_by_tge_and_more_classes_than_ids_fail_the_build() {
         "the plugin `test.many`: 17 plugin ghost classes, and the class table has ids for 16"
     );
 }
+
+#[test]
+fn a_ghost_class_a_plugin_draws_as_a_shape_reaches_every_client_script_engine() {
+    use crate::net_classes::{DrawnShapes, ShapeDraw};
+    let engine = build(vec![
+        Adds("test.ropes", |e| {
+            e.net()
+                .ghost::<RopeGhost>("Rope", Replicate::Interpolated)
+                .ghost::<RopeGhost>("Anchor", Replicate::Predicted);
+            e.net()
+                .drawn_shape::<RopeGhost>("Rope", |rope, _| Some(ShapeDraw::new(&rope.label)));
+        }),
+        Adds("test.props", |e| {
+            e.net().datablock::<PropData>("PropData");
+        }),
+    ])
+    .unwrap();
+    let set = engine.net_classes();
+    let rope = set.ghost("Rope").unwrap();
+    let drawn = engine.drawn_shapes();
+    assert!(drawn.contains(rope) && !drawn.contains(set.ghost("Anchor").unwrap()));
+    assert!(drawn.interpolates(rope));
+    let record = RopeGhost {
+        label: "crate.dts".to_string(),
+        ..RopeGhost::default()
+    };
+    struct NoBlocks;
+    impl crate::net_classes::DatablockFields for NoBlocks {
+        fn field(&self, _: u32, _: &str, _: u32) -> Option<&Value> {
+            None
+        }
+    }
+    assert_eq!(
+        drawn.draw(rope, &record, &NoBlocks),
+        Some(ShapeDraw::new("crate.dts"))
+    );
+    // A client's script engine has it; a server's does not need it.
+    let mut client = Vm::new();
+    engine.replay(ClientStage::Classes, &mut client).unwrap();
+    assert_eq!(client.extension::<DrawnShapes>().as_deref(), Some(&drawn));
+    let mut server = Vm::new();
+    engine.replay(ServerStage::Classes, &mut server).unwrap();
+    assert!(server.extension::<DrawnShapes>().is_none());
+    // An engine whose plugins draw nothing installs nothing.
+    let plain = build(vec![Adds("test.ropes", |e| {
+        e.net().ghost::<RopeGhost>("Rope", Replicate::Interpolated);
+    })])
+    .unwrap();
+    let mut vm = Vm::new();
+    plain.replay(ClientStage::Classes, &mut vm).unwrap();
+    assert!(vm.extension::<DrawnShapes>().is_none() && plain.drawn_shapes().is_empty());
+}
+
+#[test]
+fn drawing_a_class_that_was_not_added_of_another_record_type_or_twice_fails_the_build() {
+    use crate::net_classes::ShapeDraw;
+    /// Another record type.
+    #[derive(Debug, Clone, PartialEq, Default, GhostRecord)]
+    struct Other {
+        #[net(name = "transform")]
+        pose: Xf,
+    }
+    assert_eq!(
+        refusal(vec![Adds("test.a", |e| {
+            e.net()
+                .drawn_shape::<RopeGhost>("Rope", |_, _| Some(ShapeDraw::new("a.dts")));
+        })]),
+        "the plugin `test.a`: drawn_shape: no ghost class Rope was added"
+    );
+    assert_eq!(
+        refusal(vec![Adds("test.a", |e| {
+            e.net().ghost::<RopeGhost>("Rope", Replicate::Interpolated);
+            e.net()
+                .drawn_shape::<Other>("Rope", |_, _| Some(ShapeDraw::new("a.dts")));
+        })]),
+        format!(
+            "the plugin `test.a`: drawn_shape: the ghost class Rope is not made of {}",
+            std::any::type_name::<Other>()
+        )
+    );
+    assert_eq!(
+        refusal(vec![
+            Adds("test.a", |e| {
+                e.net().ghost::<RopeGhost>("Rope", Replicate::Interpolated);
+                e.net()
+                    .drawn_shape::<RopeGhost>("Rope", |_, _| Some(ShapeDraw::new("a.dts")));
+            }),
+            Adds("test.b", |e| {
+                e.net()
+                    .drawn_shape::<RopeGhost>("Rope", |_, _| Some(ShapeDraw::new("b.dts")));
+            }),
+        ]),
+        "the plugin `test.b`: `test.a` already draws the ghost class Rope"
+    );
+}

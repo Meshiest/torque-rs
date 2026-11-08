@@ -563,6 +563,13 @@ pub struct ClientWorld<S: ClientSet> {
     /// The view distance's cap: the scene's visible distance is the Sky's or this, whichever is less, the fog distance scaled with
     /// it. The client host sets it each frame by its game's rule. None: no cap.
     pub max_view_distance: Option<f32>,
+
+    /// The plugin ghost classes the client draws as shapes, each with the function that turns a record into one (the client host
+    /// sets it from its engine's plugins; empty for a world fed only by records).
+    pub plugin_shapes: ghosts::plugin::DrawnShapes,
+
+    /// Where the plugin ghosts that are shown between their updates were drawn last ([`ClientWorld::warped_pose`]).
+    pub warps: super::warp::PoseWarps,
 }
 
 // The derive would ask the set's classes and records for defaults they need not have.
@@ -615,6 +622,8 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             exploded: Default::default(),
             hide_own_items: Default::default(),
             max_view_distance: Default::default(),
+            plugin_shapes: Default::default(),
+            warps: Default::default(),
         }
     }
 }
@@ -668,6 +677,25 @@ impl<S: ClientSet> ClientWorld<S> {
     /// A datablock's string field (its first value).
     pub fn datablock_text(&self, id: u32, field: &str) -> Option<&[u8]> {
         self.datablocks.get(&id)?.text(field)
+    }
+
+    /// Where ghost `index` is drawn when its record puts it at `pose` and the client shows it between the server's updates
+    /// ([`super::warp`]): the pose it is warping through at the client's clock ([`ClientWorld::anim_ms`]), `pose` itself once the warp
+    /// is over, and always `pose` while the world does not animate (a world fed only by records draws every ghost where its record
+    /// puts it).
+    pub fn warped_pose(&self, index: u32, pose: Pose) -> Pose {
+        if !self.animate {
+            return pose;
+        }
+        let Some(ghost) = self.ghosts.get(&index) else {
+            return pose;
+        };
+        if self.warps.len() > self.ghosts.len() {
+            self.warps.retain(|i| self.ghosts.contains_key(&i));
+        }
+        let birth = self.birth_order.get(&index).copied().unwrap_or(0);
+        self.warps
+            .pose(index, birth, ghost.updates, pose, self.anim_ms)
     }
 
     /// The ghosts of one class.

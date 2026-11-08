@@ -767,3 +767,66 @@ fn a_client_signs_in_for_the_server_it_dialed_and_the_challenge_it_was_given() {
         Some(&b"not signed in"[..])
     );
 }
+
+#[test]
+fn a_mission_ending_keeps_the_plugin_classes_the_world_draws_as_shapes() {
+    use ghosts::codec::{Codec, Layout, R, Xf};
+    use ghosts::plugin::{
+        DatablockRef, DrawnShapes, FieldSpec, GhostRecord, NetField, NetRecord, PluginClass,
+        Replicate, ShapeDraw, ShapeFn,
+    };
+    use ghosts::{ObjectView, PackCtx};
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct Marker {
+        pose: Xf,
+        data: DatablockRef,
+    }
+
+    impl Layout for Marker {
+        fn layout<C: Codec>(&mut self, c: &mut C) -> R {
+            self.pose.layout(c, "transform", FieldSpec::DEFAULT)?;
+            self.data.layout(c, "dataBlock", FieldSpec::DEFAULT)
+        }
+    }
+
+    impl NetRecord for Marker {
+        fn merge(&mut self, sent: &Marker) {
+            *self = sent.clone();
+        }
+        fn datablock(&self) -> Option<u32> {
+            self.data.datablock()
+        }
+        fn transform(&self) -> Option<Xf> {
+            Some(self.pose)
+        }
+        fn script_fields(&self) -> Vec<(String, u32, Value)> {
+            Vec::new()
+        }
+    }
+
+    impl GhostRecord for Marker {
+        fn pack(_: &dyn ObjectView, _: u32, _: &PackCtx) -> (Marker, u32) {
+            (Marker::default(), 0)
+        }
+    }
+
+    let class = PluginClass::ghost::<Marker>("Marker", Replicate::Interpolated);
+    let mut world = ClientWorld::<TgeClientSet>::default();
+    world.plugin_shapes.insert(
+        class,
+        ShapeFn::new::<Marker>(|_, _| Some(ShapeDraw::new("a.dts"))),
+    );
+    world.ghosts.insert(
+        1,
+        ghost(
+            TgeClass::Plugin(class),
+            TgeRecord::Plugin(class, Box::new(Marker::default())),
+        ),
+    );
+    let kept = world.plugin_shapes.clone();
+    end_ghosting(&mut world);
+    assert!(world.ghosts.is_empty());
+    assert_eq!(world.plugin_shapes, kept);
+    assert_ne!(world.plugin_shapes, DrawnShapes::default());
+}

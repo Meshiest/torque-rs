@@ -102,6 +102,31 @@ end hung from a ghost follows where the client draws that ghost each frame, and,
 connection's `ClientGhosts` says the ghost is. An end whose ghost goes lets go. All of this is client-local: a client's frame does
 not wait for the server.
 
+### A ghost drawn as a shape
+
+A ghost class whose objects are things to look at can leave the drawing to the engine. `engine.net().drawn_shape::<G>(class, draw)`
+names a function from the record (and the datablocks, to read the one it names) to the shape file, scale and skin the ghost is drawn
+as:
+
+```rust
+engine
+    .net()
+    .ghost::<PropGhost>("Prop", Replicate::Interpolated)
+    .drawn_shape::<PropGhost>("Prop", |prop, datablocks| {
+        let model = datablocks.text(prop.data_block.0?, "model")?;
+        Some(ShapeDraw::new(model).scaled([2.0; 3]).skinned("art/prop_red"))
+    });
+```
+
+The client's renderer then draws the ghost as it draws a StaticShape: lit, shadowed, culled and in the frame's list of ghosts, so a
+rope or a pass of your own can hang from it (the rope plugin's default anchors find its origin and meshes as they do a TGE shape's). It stands
+where the record's first transform puts it. A class marked `Replicate::Interpolated` is shown between the server's updates: from
+where the last frame drew it to where the update put it, over the time the updates are apart (one to three ticks), and held there
+until the next. A server that sends nothing for a while leaves it where it is. The function runs every frame the ghost is in view,
+so it only reads; a scale that is not a number, or past 1024 on an axis, draws nothing (the server is not trusted). A class's own
+ghost is marked dirty by the plugin that moves it (`torque_game::scene::ghost::mark`): a script's `setTransform` marks only the
+classes the engine itself knows.
+
 ## Datablocks
 
 A datablock class is a record of the numbers a kind of thing is made from, sent once with the mission's datablocks. The client

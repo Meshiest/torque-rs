@@ -9,6 +9,7 @@ pub mod images;
 pub mod set;
 pub mod tge;
 pub mod threads;
+pub mod warp;
 pub mod world;
 
 pub use set::{

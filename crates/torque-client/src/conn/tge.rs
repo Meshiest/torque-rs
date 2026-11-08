@@ -59,7 +59,9 @@ use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
 use torque_engine::Engine;
-use torque_engine::net_classes::{ClientGhostLookup, ClientGhosts, GhostSinks, RawGhostEvent};
+use torque_engine::net_classes::{
+    ClientGhostLookup, ClientGhosts, DrawnShapes, GhostSinks, RawGhostEvent,
+};
 use torque_server::net::channels::ClientChannels;
 use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
 use ts_vm::fields::{FieldRules, FieldType};
@@ -255,6 +257,7 @@ fn end_ghosting(world: &mut ClientWorld<TgeClientSet>) {
     world.first_person_nodes = old.first_person_nodes;
     world.first_person_clear = old.first_person_clear;
     world.max_view_distance = old.max_view_distance;
+    world.plugin_shapes = old.plugin_shapes;
     world.effect_seq = old.effect_seq;
     world.effects_dropped = old.effects_dropped;
     world.player_move_seq = old.player_move_seq;
@@ -1030,9 +1033,14 @@ impl ConnGame for TgeConn {
         if let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) {
             feed.set_plugins((*plugins).clone());
         }
+        // The plugin ghost classes the renderer draws as shapes.
+        let mut world = TgeWorld::default();
+        if let Some(drawn) = vm.extension::<DrawnShapes>() {
+            world.records.plugin_shapes = (*drawn).clone();
+        }
         Ok(Started {
             feed,
-            world: TgeWorld::default(),
+            world,
             part: Box::new(super::NoPart),
             reader,
         })

@@ -304,10 +304,13 @@ fn dynamic_in<W: ShapeWorld + ?Sized>(world: &W, index: u32, animate: bool) -> b
                 | ShapeKind::Vehicle
                 | ShapeKind::Item
                 | ShapeKind::Projectile => true,
-                // A static shape playing a script thread (a clock's hands, a blinking sign).
-                ShapeKind::Static => r.threads.get(&index).is_some_and(|slots| {
-                    slots.iter().flatten().any(|t| t.state == ThreadState::Play)
-                }),
+                // A static shape playing a script thread (a clock's hands, a blinking sign), or one a plugin draws (it moves with
+                // its updates).
+                ShapeKind::Static => {
+                    r.threads.get(&index).is_some_and(|slots| {
+                        slots.iter().flatten().any(|t| t.state == ThreadState::Play)
+                    }) || g.class.is_some_and(|c| world.drawn_class(c))
+                }
                 ShapeKind::None => false,
             })
 }
@@ -441,10 +444,27 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
     // The client's own object in its first-person view is not drawn (its ghost stays where the server last ghosted it); its
     // images are.
     let first_person = records.hide_control && records.control.object == Some(index);
-    let db = ghost.datablock()?;
-    let (path, placed) = if world.kind(class) == ShapeKind::Projectile {
+    // A plugin's ghost is drawn as its class says, with no datablock of the TGE kind: its record gives the shape, the scale and the
+    // skin, and the place its record puts it (shown between updates when its class is).
+    let drawn = world.drawn_shape(ghost);
+    if drawn.is_none() && world.drawn_class(class) {
+        return None;
+    }
+    let db = match (ghost.datablock(), &drawn) {
+        (Some(db), _) => db,
+        (None, Some(_)) => 0,
+        (None, None) => return None,
+    };
+    let (path, placed, skin) = if let Some(draw) = drawn {
+        // (The scale is the draw's: a transform record's own is TGE's, which a plugin's does not carry.)
+        let placed = pose
+            .as_ref()
+            .and_then(|p| pose_matrix(p, None))
+            .map(|(m, _)| (m, draw.scale));
+        (draw.shape.replace('\\', "/"), placed, draw.skin)
+    } else if world.kind(class) == ShapeKind::Projectile {
         let (m, scale, path) = projectile_placement(world, index, ghost, eye)?;
-        (path, Some((m, scale)))
+        (path, Some((m, scale)), None)
     } else {
         let file = records.datablock_text(db, "shapeFile")?;
         let path = String::from_utf8_lossy(file).replace('\\', "/");
@@ -452,7 +472,7 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
             Some(m) => Some((m, ghost.scale().unwrap_or([1.0; 3]))),
             None => pose.as_ref().and_then(|p| pose_matrix(p, ghost.scale())),
         };
-        (path, placed)
+        (path, placed, None)
     };
     let (xform, scale) = placed?;
     out.transforms.insert(index, xform);
@@ -487,6 +507,7 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
         ghost,
         db,
         path,
+        skin,
         loaded,
         xform,
         scale,
@@ -969,6 +990,8 @@ struct Job<'w, S: ClientSet, L> {
     ghost: &'w Ghost<S>,
     db: u32,
     path: String,
+    /// A texture shown in place of the first material's ([`ShapeDraw::skin`]).
+    skin: Option<String>,
     loaded: Arc<Loaded>,
     xform: Mat,
     scale: [f32; 3],
@@ -1206,7 +1229,7 @@ fn pose<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
                 colors: world.mesh_colors(job.ghost),
                 ifl_frames: &ifl,
                 hidden_objects: vis_hidden.as_deref(),
-                skin: None,
+                skin: job.skin.as_deref(),
                 color_all: None,
             },
             &mat3_scale(&job.xform, job.scale),
@@ -1529,7 +1552,7 @@ fn build_body<W: ShapeWorld + ?Sized, L>(
                 colors: b.world.mesh_colors(job.ghost),
                 ifl_frames: &body.ifl_frames,
                 hidden_objects: body.vis_hidden.as_deref(),
-                skin: None,
+                skin: job.skin.as_deref(),
                 color_all: None,
             },
             &mat3_scale(&job.xform, job.scale),
