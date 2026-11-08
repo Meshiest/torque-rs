@@ -790,6 +790,10 @@ impl<G: NetGame> NetHost for NetPasses<G> {
         self.0.borrow_mut().push_phase(phase);
     }
 
+    fn set_tick(&self, tick: u64) {
+        self.0.borrow_mut().tick = tick;
+    }
+
     fn receive(&self, vm: &mut Vm, now: u32, new_tick: bool) {
         pump::receive(vm, &self.0, now, new_tick);
     }

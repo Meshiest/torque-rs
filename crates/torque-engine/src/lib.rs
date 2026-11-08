@@ -67,6 +67,7 @@ extern crate self as torque_engine;
 pub mod assets;
 mod builder;
 pub mod class;
+pub mod command;
 mod engine;
 mod group;
 pub mod net;
@@ -79,6 +80,8 @@ mod run;
 pub mod script;
 mod slots;
 
+#[cfg(test)]
+mod command_tests;
 #[cfg(test)]
 mod macro_tests;
 #[cfg(test)]
@@ -96,12 +99,14 @@ pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
 pub use net::{NetRegistry, ProtocolKind};
 pub use net_classes::{DatablockCodec, GhostRecord, Replicate};
 pub use param::{
-    Cx, IntoRecipe, Local, Param, ParamError, ParamKind, RecipeReturn, Res, ResMut, ResourceError,
-    Slot, This, VmMut, VmRef,
+    Cx, IntoRecipe, IntoServerTick, Local, Param, ParamError, ParamKind, RecipeReturn, Res, ResMut,
+    ResourceError, Slot, This, VmMut, VmRef,
 };
 pub use plugin::{Plugin, PluginId, PluginSet, PluginType, Requires};
 pub use prefs::{Pref, PrefDecl, PrefKind, PrefType, Prefs, VmPrefs};
-pub use recipe::{ClientStage, ClientTick, RecipeError, ServerStage, Stage};
+pub use recipe::{
+    ClientStage, ClientTick, RecipeError, ServerStage, ServerTick, Stage, TickInfo, TickPhase,
+};
 pub use run::{RunError, Runner};
 pub use script::{IntoNative, NativeEntry, ScriptRegistry, Side, TypedNative};
 /// Declares a console class as a struct with one typed field for each console field, for

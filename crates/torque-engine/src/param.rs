@@ -105,7 +105,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{NativeCall, Vm};
 
 use crate::Engine;
-use crate::recipe::RecipeFn;
+use crate::recipe::{RecipeFn, TickFn, TickInfo};
 
 /// What a [`Param`] takes from its [`Cx`]: decides the argument counts and the checks on a signature.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -131,6 +131,8 @@ pub struct Cx<'a> {
     args: Cell<&'a [Vec<u8>]>,
     /// The 1-based number of the next script argument, for errors.
     arg_number: Cell<usize>,
+    /// The server tick a [`ServerTick`](crate::ServerTick) hook runs in.
+    tick: Option<TickInfo>,
 }
 
 impl<'a> Cx<'a> {
@@ -143,6 +145,15 @@ impl<'a> Cx<'a> {
             call: None,
             args: Cell::new(&[]),
             arg_number: Cell::new(1),
+            tick: None,
+        }
+    }
+
+    /// The context of a [`ServerTick`](crate::ServerTick) hook run on `vm` for the tick `tick`.
+    pub fn server_tick(vm: &'a mut Vm, engine: &'a Engine, tick: TickInfo) -> Cx<'a> {
+        Cx {
+            tick: Some(tick),
+            ..Cx::recipe(vm, engine)
         }
     }
 
@@ -161,12 +172,18 @@ impl<'a> Cx<'a> {
             call: Some(call),
             args: Cell::new(call.argv.get(first_arg..).unwrap_or(&[])),
             arg_number: Cell::new(1),
+            tick: None,
         }
     }
 
     /// The engine.
     pub fn engine(&self) -> &'a Engine {
         self.engine
+    }
+
+    /// The server tick, when this is a [`ServerTick`](crate::ServerTick) hook's run.
+    pub fn tick(&self) -> Option<TickInfo> {
+        self.tick
     }
 
     /// The native call, when this is one.
@@ -253,6 +270,11 @@ pub enum ParamError {
         /// Why.
         error: ConvertError,
     },
+    /// A parameter only a server tick hook has ([`TickInfo`]) in a recipe or a native.
+    NotInTick {
+        /// The parameter.
+        param: &'static str,
+    },
 }
 
 impl fmt::Display for ParamError {
@@ -269,6 +291,9 @@ impl fmt::Display for ParamError {
             ),
             ParamError::NotInCall { param } => write!(f, "`{param}` is only known in a native's call"),
             ParamError::Argument { number, error } => write!(f, "argument {number}: {error}"),
+            ParamError::NotInTick { param } => {
+                write!(f, "`{param}` is only known in a server tick hook's run")
+            }
         }
     }
 }
@@ -767,3 +792,68 @@ macro_rules! all_arities {
 pub(crate) use all_arities;
 
 all_arities!(recipe_fns);
+
+impl Param for TickInfo {
+    type Item<'a> = TickInfo;
+    type State = ();
+    fn fetch<'a>(cx: &'a Cx<'a>, _: &'a ()) -> Result<TickInfo, ParamError> {
+        cx.tick().ok_or(ParamError::NotInTick { param: "TickInfo" })
+    }
+}
+
+/// A function [`ServerTick::before`](crate::ServerTick::before) and [`ServerTick::after`](crate::ServerTick::after) take:
+/// one whose parameters are all [`Param`]s (up to 12, no script arguments, one [`VmMut`] or any number of [`VmRef`]; a
+/// [`TickInfo`] among them is the tick) returning a [`RecipeReturn`], or the closure form
+/// `Fn(&mut Vm, &Engine, TickInfo) -> Result<(), String>`.
+///
+/// `M` tells the forms apart; it is inferred.
+pub trait IntoServerTick<M> {
+    /// The hook as the engine stores it.
+    #[doc(hidden)]
+    fn into_tick(self) -> TickFn;
+}
+
+impl<F> IntoServerTick<RawRecipe> for F
+where
+    F: Fn(&mut Vm, &Engine, TickInfo) -> Result<(), String> + 'static,
+{
+    fn into_tick(self) -> TickFn {
+        Rc::new(self)
+    }
+}
+
+macro_rules! tick_fns {
+    ($($P:ident),*) => {
+        impl<F, R, $($P,)*> IntoServerTick<fn($($P,)*) -> R> for F
+        where
+            F: Fn($($P),*) -> R + Fn($(<$P as Param>::Item<'_>),*) -> R + 'static,
+            R: RecipeReturn + 'static,
+            $($P: Param + 'static,)*
+        {
+            #[allow(non_snake_case, unused_variables)]
+            fn into_tick(self) -> TickFn {
+                const {
+                    let shape = shape(&[$(<$P as Param>::KIND),*]);
+                    assert!(shape.vms <= 1, "a tick hook takes at most one `VmMut`");
+                    assert!(
+                        shape.vms == 0 || shape.vm_reads == 0,
+                        "a tick hook takes either one `VmMut` or any number of `VmRef`, never both"
+                    );
+                    assert!(
+                        shape.required == 0 && shape.optional == 0 && !shape.rest,
+                        "a tick hook takes no script arguments: only `Param`s such as `VmMut`, `Res<T>`, `Local<T>` or `TickInfo`"
+                    );
+                }
+                let state: ($(<$P as Param>::State,)*) = Default::default();
+                Rc::new(move |vm: &mut Vm, engine: &Engine, tick: TickInfo| -> Result<(), String> {
+                    let cx = Cx::server_tick(vm, engine, tick);
+                    let ($($P,)*) = &state;
+                    $(let $P = <$P as Param>::fetch(&cx, $P).map_err(|e| e.to_string())?;)*
+                    (self)($($P),*).into_result()
+                })
+            }
+        }
+    };
+}
+
+all_arities!(tick_fns);

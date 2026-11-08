@@ -711,6 +711,15 @@ pub enum BuildError {
         /// The plugin that declared it again.
         second: PluginId,
     },
+    /// Two plugins declared one server command ([`EngineBuilder::server_command`]; names compare without case).
+    DuplicateCommand {
+        /// The command's function (`serverCmd` and its name), as the second plugin spelled it.
+        name: String,
+        /// The plugin that declared it first (and keeps it).
+        first: PluginId,
+        /// The plugin that declared it again.
+        second: PluginId,
+    },
     /// A script function's argument names do not match its function's script arguments.
     ScriptSignature {
         /// The plugin that declared it.
@@ -754,6 +763,14 @@ impl fmt::Display for BuildError {
             } => write!(
                 f,
                 "the script {kind} `{name}` is declared by both `{first}` and `{second}`; only one plugin may declare it"
+            ),
+            BuildError::DuplicateCommand {
+                name,
+                first,
+                second,
+            } => write!(
+                f,
+                "the server command `{name}` is declared by both `{first}` and `{second}`; only one plugin may declare it"
             ),
             BuildError::ScriptSignature { plugin, message }
             | BuildError::Rejected { plugin, message } => {

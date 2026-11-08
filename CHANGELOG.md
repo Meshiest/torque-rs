@@ -157,6 +157,12 @@ different.
   Torque's own protocol is the only one so far and its bytes are unchanged. `Engine::protocol` reads the slot, and the server
   decides what each connection's peer is in one place (`PeerKind`) instead of in each feature. The trace-hash lines are labeled
   with the protocol.
+- Server tick hooks and server commands for plugins. `engine.push(ServerTick::before(..))` and `ServerTick::after(..)` run a
+  function of injected parameters once per 32 ms server tick around the process list's pass, in the order pushed, with the tick's
+  number and time (`TickInfo`); a server with none ticks as before. `engine.server_command(name, CommandSpec, handler)` declares a
+  `serverCmd*` with typed arguments, a per-client token bucket counted in ticks, and an argument size cap: a call past the limit or
+  with a wrong argument is refused before the function runs, counted (`commandDrops(%client, name)`) and reported once a
+  second; `server_command_limits` holds a command a script defines. TGE's commands and bytes are unchanged.
 
 #### Gameplay
 

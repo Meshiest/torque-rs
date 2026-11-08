@@ -56,6 +56,7 @@ use torque_ts_vm::vm::{Vm, VmError};
 
 use super::NetGame;
 use super::channels::ChannelHub;
+use super::cmdlimit::Admission;
 use super::conn::{DeleteMode, delete_connection, join_client_group, register_candidate};
 use super::content::ContentServerSlot;
 use super::events::EventLayer;
@@ -384,6 +385,7 @@ pub fn blank_record<C: Default>(addr: SocketAddr, sequence: u32) -> ConnRec<C> {
         silent: false,
         dropping: false,
         cmd_rate: RateWindow::default(),
+        plugin_cmds: Default::default(),
         share_window: 0,
         share_used: 0,
         delete_pending: false,
@@ -853,6 +855,26 @@ fn run_followups<G: NetGame>(
                 // command is dropped, as if it had not been sent.
                 if held_command_refused(vm, shared, obj, &name) {
                     shared.borrow_mut().counters.commands_dropped += 1;
+                    continue;
+                }
+                // A command a plugin declared is held to its spec (the connection's bucket, the count, size and types of its
+                // arguments) before its function runs; any other runs as TGE's do.
+                let admission = {
+                    let mut sh = shared.borrow_mut();
+                    let table = sh.commands.clone();
+                    let tick = sh.tick;
+                    match (table, sh.conns.get_mut(&obj)) {
+                        (Some(table), Some(rec)) => {
+                            rec.plugin_cmds.admit(&table, obj, &name, &args, tick)
+                        }
+                        _ => Admission::Unlimited,
+                    }
+                };
+                if let Admission::Refused { report, .. } = admission {
+                    shared.borrow_mut().counters.commands_dropped += 1;
+                    if let Some(line) = report {
+                        vm.print(line.as_bytes());
+                    }
                     continue;
                 }
                 let within_rate = {

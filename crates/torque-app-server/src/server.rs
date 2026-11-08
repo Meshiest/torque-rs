@@ -22,15 +22,17 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 use web_time::{Duration, Instant};
 
-use torque_engine::{Engine, EngineBuilder, ServerStage};
+use torque_engine::command::ServerCommand;
+use torque_engine::{Engine, EngineBuilder, ServerStage, ServerTick, TickInfo, TickPhase};
 use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
 use torque_server::net::channels;
+use torque_server::net::cmdlimit::{CommandTable, register_command_drops};
 use torque_server::net::peer::ProtocolMode;
 use torque_server::net::torque::TorqueNet;
 use torque_server::net::transport::{MemoryEnd, SharedTransport};
 use torque_server::net::{HostParts, NetShared};
-use torque_server::server::{Server, TICK_MS};
+use torque_server::server::{Server, TICK_MS, TickHooks};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
@@ -263,6 +265,19 @@ impl GameServer {
         if let Some(hub) = channels::install(&shared, channels) {
             server.vm.set_extension(Rc::new(hub));
         }
+        // The server commands plugins declared are held to their limits, and scripts can read the refusals.
+        let commands = CommandTable::new(engine.list::<ServerCommand>());
+        if !commands.is_empty() {
+            shared.borrow_mut().set_commands(commands);
+            register_command_drops(&mut server.vm, &shared);
+        }
+        // The plugins' tick hooks run around the process list's pass; a server whose engine has none ticks as it always did.
+        if !engine.list::<ServerTick>().is_empty() {
+            server.set_tick_hooks(Some(Rc::new(EngineTicks {
+                engine: engine.clone(),
+                printed: RefCell::default(),
+            })));
+        }
         for (name, value) in start.globals {
             server.vm.set_global(name, value);
         }
@@ -427,4 +442,48 @@ impl GameServer {
 /// Replays `stage` of `engine`'s server recipes on `vm`.
 fn replay(engine: &Engine, stage: ServerStage, vm: &mut Vm) -> Result<(), String> {
     engine.replay(stage, vm).map_err(|e| e.to_string())
+}
+
+/// The engine's [`ServerTick`] hooks as the main loop runs them: each phase's hooks in the order they were pushed. A hook
+/// that fails prints its error on the server's console (again only when the error changes, not every tick) and the rest run.
+struct EngineTicks {
+    engine: Engine,
+    /// The last error each failing hook printed, by its place in the list.
+    printed: RefCell<std::collections::BTreeMap<usize, String>>,
+}
+
+impl EngineTicks {
+    fn run(&self, phase: TickPhase, vm: &mut Vm, tick: TickInfo) {
+        let hooks = self.engine.list::<ServerTick>();
+        for (index, hook) in hooks.iter().enumerate() {
+            if hook.phase() != phase {
+                continue;
+            }
+            match hook.run(vm, &self.engine, tick) {
+                Ok(()) => {
+                    self.printed.borrow_mut().remove(&index);
+                }
+                Err(message) => {
+                    let new = self.printed.borrow().get(&index) != Some(&message);
+                    if new {
+                        vm.warn(format!(
+                            "server tick hook {index} failed at tick {}: {message}",
+                            tick.number
+                        ));
+                        self.printed.borrow_mut().insert(index, message);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl TickHooks for EngineTicks {
+    fn before(&self, vm: &mut Vm, tick: TickInfo) {
+        self.run(TickPhase::Before, vm, tick);
+    }
+
+    fn after(&self, vm: &mut Vm, tick: TickInfo) {
+        self.run(TickPhase::After, vm, tick);
+    }
 }

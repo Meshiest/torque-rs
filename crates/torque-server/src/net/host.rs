@@ -317,6 +317,8 @@ pub struct ConnRec<C> {
     pub dropping: bool,
     /// The remote commands of the current second ([`NetShared::commands_per_conn_per_s`]).
     pub cmd_rate: RateWindow,
+    /// The standing with the server commands plugins declared ([`NetShared::commands`]).
+    pub plugin_cmds: super::cmdlimit::ConnCommands,
     /// The script window ([`NetShared::window_start`]) `share_used` counts in.
     pub share_window: u32,
     /// The steps this connection's scripts took in that window ([`NET_CONN_SCRIPT_SHARE_STEPS`]).
@@ -386,6 +388,12 @@ pub struct NetShared<G: NetGame> {
     /// bounded by its share of the script window ([`NET_CONN_SCRIPT_SHARE_STEPS`]) and the tick's network work
     /// ([`NET_WORK_PER_SOURCE`]).
     pub commands_per_conn_per_s: Option<u32>,
+    /// The server commands plugins declared, whose calls a client sends are held to their limits
+    /// ([`set_commands`](Self::set_commands)); none by default.
+    pub commands: Option<Rc<super::cmdlimit::CommandTable>>,
+    /// The server ticks run so far: what the commands' token buckets count in (the host that runs the passes sets it before each
+    /// receive, [`NetHost::set_tick`](crate::server::NetHost::set_tick)).
+    pub tick: u64,
     /// The steps the scripts the network starts may take together in a window of [`NET_SCRIPT_WINDOW_MS`]
     /// ([`NET_SCRIPT_WINDOW_STEPS`]). These are not the run's lifetime budget (`Server::run`'s): a stranger's datagrams cannot
     /// spend that.
@@ -407,6 +415,12 @@ pub struct NetShared<G: NetGame> {
 }
 
 impl<G: NetGame> NetShared<G> {
+    /// Holds the calls clients send to the declared server commands to their limits (none declared: nothing is held, and the
+    /// commands run as TGE's do).
+    pub fn set_commands(&mut self, table: super::cmdlimit::CommandTable) {
+        self.commands = (!table.is_empty()).then(|| Rc::new(table));
+    }
+
     /// The handshake this server speaks (what its connect gate's manifest is made for).
     pub fn handshake_profile(&self) -> torque_net::profile::HandshakeProfile {
         self.hs.config().profile.clone()
@@ -610,6 +624,8 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         step_limit,
         run_limit: NET_SCRIPT_RUN_STEPS,
         commands_per_conn_per_s: None,
+        commands: None,
+        tick: 0,
         window_budget: NET_SCRIPT_WINDOW_STEPS,
         game,
         clock,

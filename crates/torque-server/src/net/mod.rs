@@ -9,6 +9,7 @@
 //! join it find each other.
 
 pub mod channels;
+pub mod cmdlimit;
 pub mod codecs;
 pub mod commands;
 pub mod conn;

@@ -40,6 +40,8 @@ mod plugins_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]
+mod tick_tests;
+#[cfg(test)]
 mod transports_tests;
 
 pub use files::GameFiles;
