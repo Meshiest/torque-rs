@@ -8,6 +8,7 @@
 //! | `i32` | `int(bits)` of the two's complement, sign-extended back | 1 to 32 | - |
 //! | `f32` | the raw 32 bits | - | - |
 //! | `[f32; N]` | `N` raw floats | - | - |
+//! | `[u8; N]` | `N` bytes | - | - |
 //! | `String` | `string(255)` through the packet's string context, cut to `max_len` bytes | - | 1 to 255 (255) |
 //! | [`DatablockRef`] | `flag(non-null)`, then the id `ranged` over the connection's datablock-id range | - | - |
 //! | [`Xf`] | a transform, 193 bits | - | - |
@@ -69,6 +70,10 @@ pub trait NetField: Clone + Default + Debug + PartialEq + Send + Sync + 'static 
     const OPTIONAL: bool = false;
     /// How many elements of the view one value takes (a `[f32; 3]` takes 3: its components).
     const ELEMENTS: usize = 1;
+    /// Whether the type reads console fields of its own, named after the field (`start` reads `startMode` and `startPoint`)
+    /// and not the field `start` itself: an `Option` of it is present whenever it is packed, as the field it is named for need not
+    /// exist.
+    const COMPOUND: bool = false;
     /// The fewest bits one value takes on the wire (what a `Vec`'s count is checked against).
     const MIN_BITS: usize = 1;
 
@@ -86,6 +91,12 @@ pub trait NetField: Clone + Default + Debug + PartialEq + Send + Sync + 'static 
 
     /// The script field values of the value, one per element (none for an `Option` that was not sent).
     fn values(&self, out: &mut Vec<Value>);
+
+    /// Whether the value waits for something the packer could not give yet (a link to an object the connection has not ghosted):
+    /// a `mask` field that is pending keeps its mask bits, so the next update sends it again.
+    fn pending(&self) -> bool {
+        false
+    }
 
     /// The datablock id a [`DatablockRef`] names (the record's datablock is its first such field).
     fn datablock(&self) -> Option<u32> {
@@ -265,6 +276,42 @@ where
     }
 }
 
+impl<const N: usize> NetField for [u8; N]
+where
+    [u8; N]: Default,
+{
+    const ELEMENTS: usize = N;
+    const MIN_BITS: usize = 8 * N;
+
+    fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
+        for byte in self.iter_mut() {
+            let mut v = u32::from(*byte);
+            c.int(name, &mut v, 8)?;
+            *byte = low_bits(v, 8) as u8;
+        }
+        Ok(())
+    }
+
+    fn from_view(view: &dyn ObjectView, name: &str, index: usize, _spec: FieldSpec) -> [u8; N] {
+        // A color the view holds as one text ("1 2 3 4") reads by its words; else each component is an element.
+        if let Value::Str(s) = view.get(name, index) {
+            let mut out = [0u8; N];
+            let text = String::from_utf8_lossy(&s);
+            for (slot, word) in out.iter_mut().zip(text.split_whitespace()) {
+                *slot = word.parse::<f64>().map_or(0, |x| x.clamp(0.0, 255.0) as u8);
+            }
+            return out;
+        }
+        std::array::from_fn(|k| integer(view, name, index + k).clamp(0, 255) as u8)
+    }
+
+    /// One value: the components as the console prints a color, "r g b a".
+    fn values(&self, out: &mut Vec<Value>) {
+        let words: Vec<String> = self.iter().map(|x| x.to_string()).collect();
+        out.push(Value::Str(words.join(" ").into_bytes()));
+    }
+}
+
 /// The longest prefix of `s` of at most `max` bytes that ends on a character.
 fn cut(s: &str, max: usize) -> &str {
     let mut end = s.len().min(max);
@@ -358,6 +405,7 @@ impl<T: NetField> NetField for Option<T> {
     const MAX_LEN: usize = T::MAX_LEN;
     const OPTIONAL: bool = true;
     const ELEMENTS: usize = T::ELEMENTS;
+    const COMPOUND: bool = T::COMPOUND;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, spec: FieldSpec) -> R {
         opt(c, name, self, |c, inner| inner.layout(c, name, spec))
@@ -365,7 +413,11 @@ impl<T: NetField> NetField for Option<T> {
 
     /// The value when the view has one (a null field is none).
     fn from_view(view: &dyn ObjectView, name: &str, index: usize, spec: FieldSpec) -> Option<T> {
-        present(view, name, index).then(|| T::from_view(view, name, index, spec))
+        (T::COMPOUND || present(view, name, index)).then(|| T::from_view(view, name, index, spec))
+    }
+
+    fn pending(&self) -> bool {
+        self.as_ref().is_some_and(NetField::pending)
     }
 
     fn merge_from(&mut self, sent: &Option<T>) {
@@ -424,6 +476,10 @@ impl<T: NetField> NetField for Vec<T> {
             .take_while(|&at| present(view, name, at))
             .map(|at| T::from_view(view, name, at, each))
             .collect()
+    }
+
+    fn pending(&self) -> bool {
+        self.iter().any(NetField::pending)
     }
 
     fn values(&self, out: &mut Vec<Value>) {

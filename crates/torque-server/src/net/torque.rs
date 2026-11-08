@@ -139,6 +139,7 @@ impl GhostGame for TgeGhostGame {
             controlled,
             engine_peer,
             plugins: super::codecs::plugin_classes(env.vm),
+            connection: conn.and_then(|c| hub.conns.get(&c)).map(|c| c.obj),
         };
         f(&mut src, &mut hub.conns)
     }
@@ -183,6 +184,8 @@ pub struct TgeSource<'a> {
     engine_peer: bool,
     /// The plugins' classes (`torque_ghosts::plugin`), ghosted like the engine's own.
     plugins: Option<Rc<PluginClasses>>,
+    /// The `GameConnection` object the source packs for, if it is made for one connection.
+    connection: Option<ObjId>,
 }
 
 impl TgeSource<'_> {
@@ -286,6 +289,11 @@ impl ObjectView for FieldView<'_> {
 ///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`; the
 ///   link `source_object` (its source object's ghost on the connection, [`GameView::ghost_of`]).
 ///
+/// - for a plugin's ghost class: the names `@now` (the server's simulation time, ms) and `@connection` (the id of the
+///   connection object the record is packed for, so a record can say one thing to its owner and another to everyone else; they
+///   are not console field names), and the link of any other field name that holds an object's id (`startObject = 12`): the
+///   object's ghost on the connection, [`Link::NotGhosted`] while it has none.
+///
 /// The record is never left out for the controlling client (`controlled_here` false): the client draws the control object from
 /// it like any ghost.
 pub struct GameView<'a> {
@@ -294,6 +302,8 @@ pub struct GameView<'a> {
     pub controlled: bool,
     /// The connection's ghost index of an object (`getGhostIndex`; none: no links are resolved).
     pub ghost_of: Option<&'a dyn Fn(ObjId) -> Option<u32>>,
+    /// The `GameConnection` object the record is packed for (none when the view is not of one connection).
+    pub connection: Option<ObjId>,
 }
 
 /// `QuatF::set(MatrixF)` of a row-major matrix's rotation part.
@@ -573,7 +583,13 @@ impl ObjectView for GameView<'_> {
             }
             "mount_object" => torque_game::scene::lights::spot_mount(vm, obj).map(|m| m.0),
             "mount" => torque_game::sim::mount::mount_of(vm, obj),
-            _ => None,
+            // Any other field that holds an object's id (a plugin's pointer): the object, if it is there.
+            other => match self.fields.get(other, 0) {
+                Value::Id(Some(id)) => Some(id),
+                Value::Int(n) if n > 0 => u32::try_from(n).ok(),
+                _ => None,
+            }
+            .filter(|&id| vm.objects().contains(id)),
         };
         let (Some(linked), Some(ghost_of)) = (linked, self.ghost_of) else {
             return Link::Null;
@@ -585,6 +601,11 @@ impl ObjectView for GameView<'_> {
     }
 
     fn get(&self, field: &str, index: usize) -> Value {
+        match field {
+            "@now" => return Value::Int(i64::from(self.fields.vm.sim_time())),
+            "@connection" => return Value::Id(self.connection),
+            _ => {}
+        }
         if let Some(v) = self.player(field, index) {
             return v;
         }
@@ -708,6 +729,7 @@ impl ObjectSource for TgeSource<'_> {
             fields: FieldView { vm: self.vm, obj },
             controlled: self.controlled.contains(&obj),
             ghost_of: Some(ghost_of),
+            connection: self.connection,
         };
         let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
         // The packers cut every count to its width first, so a record cannot fail to encode.

@@ -3800,12 +3800,18 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "torque-app",
+ "torque-client",
  "torque-engine",
+ "torque-game",
+ "torque-ghost-world",
+ "torque-ghosts",
  "torque-images",
+ "torque-net",
  "torque-render-core",
  "torque-render-hd",
  "torque-render-scene",
  "torque-server",
+ "torque-trace-hash",
  "torque-ts-text",
  "torque-ts-vm",
 ]

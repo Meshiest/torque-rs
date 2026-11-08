@@ -5,7 +5,8 @@ simulated on the client (position-based dynamics in substeps of 1/240 s, run for
 drawn as a lit, fogged tube that casts a shadow from the sun, or, by the datablock's `style`, as a ribbon or a line.
 
 It is not part of the default plugins: a game adds it. It needs the engine's renderer to be seen (the `renderer` feature of
-`torque-app`, on by default); a game that draws with another renderer, or a dedicated server, runs no rope.
+`torque-app`, on by default); a game that draws with another renderer sees no rope. A dedicated server with the plugin makes the
+ropes of the `ropeNet*` functions and sends them; it simulates none.
 
 ```rust
 use torque::app::plugins::DefaultPlugins;
@@ -59,6 +60,8 @@ ropeDelete(%rope);
 | `ropeImpulse(rope, velocity)` | gives the free part of a rope a velocity |
 | `ropeDelete(rope)`, `ropeClear()`, `ropeCount()` | take a rope or every rope away; count them |
 | `ropeFloor(z)`, `ropeNoFloor()` | keep the free points above a height, or not |
+| `ropeSetLength(rope, length [, seconds])`, `ropeGetLength(rope)`, `ropeIsTaut(rope)` | reel a rope in or out over `seconds`; read its length; whether it is drawn taut |
+| `ropeSetLifetime(rope, seconds [, fade])` | make a rope temporary: gone after `seconds`, fading over the last `fade` |
 
 An object is read every client tick through the plugin's `AnchorResolver`: by default its `position` field (or the first three
 numbers of its `transform`), so a script object that moves itself carries a rope; `RopePlugin::with_anchors` takes a game's own
@@ -114,6 +117,37 @@ first-person weapon's for the player whose view it is, with the predicted aim; t
 person); a shape with no muzzle node ties the end to its origin pointing along its forward. The arena example has it
 (`cargo run -p torque-example-fps --features rope --bin fps-client -- --beam-shots <dir>`).
 
+## Length, taut ropes and temporary ropes
+
+`ropeSetLength(rope, length, seconds)` reels a rope evenly from the length it has to `length` over `seconds` (0: at once). Both ends
+held farther apart than the rope is long: it is drawn straight between them, the pieces evenly spaced, not stretched. That is
+visual only: a rope pulls nothing (pulling is for a physics joint a rope can follow). `ropeSetLifetime(rope, seconds, fade)` takes a
+rope away after `seconds`; over the last `fade` a tube thins and a ribbon or a line grows fainter.
+
+## Over the network
+
+The plugin is networked: a server and a client must both have it (the handshake refuses a client without it, with the reason,
+before any ghost). Every `ropeNet*` function runs on the server and changes a `Rope` object that is ghosted to every client:
+
+| Function | Does |
+|---|---|
+| `ropeNetCreate(start, end, datablock [, predictId, owner])` | makes a rope between two points; returns its object id |
+| `ropeNetPin(rope, end, point)`, `ropeNetAttach(rope, end, object [, node])`, `ropeNetRelease(rope, end)` | what holds an end (a point, an object's ghost, or nothing) |
+| `ropeNetSetLength(rope, length [, seconds])` | the length every client reels to, sent once as a target and a time |
+| `ropeNetSetColor`, `ropeNetSetTexture`, `ropeNetSetTextureScroll`, `ropeNetSetEmissive`, `ropeNetClearLook` | the rope's own look |
+| `ropeNetSetCurve(rope, startDir, endDir, bend)`, `ropeNetClearCurve(rope)` | a beam's driven curve |
+| `ropeNetSetLifetime(rope, seconds [, fade])` | a temporary rope: the server deletes it at the end, each client fades it |
+| `ropeNetDelete(rope)` | takes it away from every client |
+| `ropeNetFx(client, start, end, datablock, seconds [, bend])` | a short-lived rope sent as an event, with no ghost (a grapple shot, an arc) to one client or, for `""`, all |
+
+Each change marks one group of the ghost (start, end, length, look, curve, lifetime), so an update carries only what changed. The
+points of a rope never cross the network: each client makes a rope from the ghost and simulates it. `RopeData` goes to the clients
+with the mission's datablocks, and an end hung from an object follows the object's ghost as the client draws it. A client tells
+the server about a rope it made at once with `ropePredict(rope)`, which returns an id (1 to 255, at most 16 waiting): the server's
+`ropeNetCreate` is given that id and the client's connection, and the ghost that comes back carries the id for that client alone,
+which then keeps its rope instead of making a second; a rope nobody confirms within two seconds fades out. `clientCmdRopeFx` checks
+every value it is sent (points inside the world, a `RopeData` the client has, a time of at most 30 seconds, at most 32 at once). The server sends each client at most 32 a second. The values of a rope's ghost are held to what the local calls allow: a bend of -4 to 4, a direction that is not all zeros, a speed of at most 1,000 repeats a second.
+
 ## What it does and does not do
 
 - **Caps.** At most 256 ropes and 4,096 segments over all of them, 64 segments to a rope. A call past a cap prints a console error
@@ -122,8 +156,7 @@ person); a shape with no muzzle node ties the end to its origin pointing along i
 - **Hostile input.** A point, a velocity or a time step that is not finite is made finite on the way in; a coordinate past 100,000 is
   held there; a speed past 200 units a second is held to it; an end follows its anchor at most 60 units a second, so an object that
   jumps across the map is followed over a few ticks; a rope whose points still go bad is laid out again between its ends.
-- **Clients.** The ropes belong to the engine, not to a client, and each drawn frame runs them: one client per engine. Ropes are
-  not sent over the network yet; each client makes its own.
+- **Clients.** The ropes belong to the engine, not to a client, and each drawn frame runs them: one client per engine.
 - **Drawing.** Eight sides to a tube, lit as the frame lights its surfaces (the sun's diffuse and ambient light) and fogged. The tube
   casts a shadow into the sun's cascades and takes the sun's shadows (both can be turned off), and has no motion vector, so a fast rope smears a little under the
   anti-aliasing. Ribbons and lines are drawn after the translucent surfaces, alpha blended over the frame's depth, their triangles
@@ -135,8 +168,10 @@ person); a shape with no muzzle node ties the end to its origin pointing along i
 
 `cargo test -p torque-plugin-rope`: the simulation's stability over ten thousand steps, its caps and hostile numbers, lines and ribbons (`tests/sim.rs`); the strips'
 geometry, in `src/strip.rs` and `tests/strip.rs`;
-the console functions and the client's ticks (`tests/script.rs`); and pictures drawn offscreen of a rope between two posts, lit and
-casting a shadow, swinging and bouncing, and of a ribbon and a line hidden by a post in front of them (`tests/picture.rs`; `TORQUE_ROPE_PICTURES=<folder>` writes them as PNGs). The tests that
+the console functions and the client's ticks (`tests/script.rs`); a real server and two engine clients over the memory transport
+(`tests/net.rs`, `tests/net_events.rs`), and a client that speaks only Torque's protocol (`tests/tge_client.rs`); the ghost record's wire
+form and hostile bytes, in `src/net/records_tests.rs`; a hash of a run of a server and two clients, twice (`tests/net_hash.rs`); and pictures drawn offscreen of a rope between two posts, lit and
+casting a shadow, swinging and bouncing, and of a ribbon and a line hidden by a post in front of them (`tests/picture.rs`), and of a networked rope seen by two clients, taut, and fading out (`tests/net_pictures.rs`; `TORQUE_ROPE_PICTURES=<folder>` writes them as PNGs). The tests that
 draw skip themselves when the machine has no GPU.
 
 The book's "Writing a plugin" chapter builds a smaller version of this plugin step by step; its code is `examples/walkthrough`.

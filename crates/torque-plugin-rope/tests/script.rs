@@ -531,3 +531,42 @@ fn a_bad_direction_or_bend_is_a_script_error_and_changes_nothing() {
     assert_eq!(eval(&client, "$bend"), "0");
     assert!(ropes(&engine).lock().rope(1).unwrap().curve().is_none());
 }
+
+#[test]
+fn a_script_reels_a_rope_and_makes_a_temporary_one() {
+    let (mut client, engine) = client(
+        r#"datablock RopeData(Cord) { segments = 8; length = 6; };
+        $a = ropeCreate("0 0 2", "4 0 2", Cord);
+        $b = ropeCreate("0 1 2", "4 1 2", Cord);
+        $first = ropeGetLength($a);
+        $ok = ropeSetLength($a, 9, 2) @ "|" @ ropeSetLength(99, 1, 1);
+        ropeSetLength($b, 3, 0);
+        $quick = ropeGetLength($b);
+        $taut = ropeIsTaut($b);
+        $lives = ropeSetLifetime($a, 1, 0.5) @ "|" @ ropeSetLifetime(99, 1, 1);"#,
+    );
+    assert_eq!(eval(&client, "$first"), "6");
+    assert_eq!(eval(&client, "$ok"), "1|0");
+    assert_eq!(eval(&client, "$quick"), "3");
+    assert_eq!(eval(&client, "$lives"), "1|0");
+    // Run on by its own clock: the client's ticks, with no frame drawn, reel it and then take it away.
+    for _ in 0..20 {
+        client.step(32);
+    }
+    let half = client
+        .call("ropeGetLength", &["1"])
+        .unwrap()
+        .parse::<f32>()
+        .unwrap();
+    assert!(half > 6.2 && half < 8.9, "{half}");
+    assert_eq!(
+        client.call("ropeIsTaut", &["2"]).unwrap(),
+        "1",
+        "its ends are farther apart than 3"
+    );
+    for _ in 0..30 {
+        client.step(32);
+    }
+    assert_eq!(ropes(&engine).lock().len(), 1, "the temporary rope is gone");
+    assert_eq!(client.call("ropeGetLength", &["1"]).unwrap(), "0");
+}

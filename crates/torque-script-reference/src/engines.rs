@@ -48,7 +48,7 @@ fn optional_plugins() -> [Optional; 4] {
         },
         Optional {
             id: RopePlugin::ID.as_str(),
-            what: "ropes: the RopeData datablock and the console functions that hang, push and take down ropes between points or objects",
+            what: "ropes: the RopeData datablock, the console functions that hang, push, reel and take down ropes between points or objects, and a server's ropeNet functions that make ropes every client shows",
             add: |engine| {
                 engine.add_plugins(RopePlugin::default());
             },

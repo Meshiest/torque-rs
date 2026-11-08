@@ -2,7 +2,7 @@
 
 # Classes
 
-Console classes, with the fields each adds to its parent's. 111 classes.
+Console classes, with the fields each adds to its parent's. 112 classes.
 
 | Class | Parent | Fields |
 |---|---|---|
@@ -84,6 +84,7 @@ Console classes, with the fields each adds to its parent's. 111 classes.
 | [PlayerData](#playerdata) | [ShapeBaseData](#shapebasedata) | 80 |
 | [Projectile](#projectile) | [GameBase](#gamebase) | 4 |
 | [ProjectileData](#projectiledata) | [GameBaseData](#gamebasedata) | 23 |
+| [Rope](#rope) | [SceneObject](#sceneobject) | 25 |
 | [RopeData](#ropedata) | [SimDataBlock](#simdatablock) | 20 |
 | [ScatterSky](#scattersky) | [SceneObject](#sceneobject) | 11 |
 | [SceneObject](#sceneobject) | [NetObject](#netobject) | 3 |
@@ -1148,9 +1149,41 @@ No fields of its own.
 | `bounceFriction` | float |  |  |
 | `gravityMod` | float |  |  |
 
+## Rope
+
+*goes below `SceneObject`; server and client; needs `torque.rope`*
+
+| Field | Type | Default | Range | What it is for |
+|---|---|---|---|---|
+| `dataBlock` | int | `0` |  | The `RopeData` datablock's object id. |
+| `startMode` | int | `0` |  | What holds the start: 0 nothing, 1 a point, 2 an object. |
+| `startPoint` | Point3F | `0 0 0` |  |  |
+| `startObject` | int | `0` |  | The object the start hangs from (its id). |
+| `startNode` | string |  |  |  |
+| `endMode` | int | `0` |  | What holds the far end: as `startMode`. |
+| `endPoint` | Point3F | `0 0 0` |  |  |
+| `endObject` | int | `0` |  |  |
+| `endNode` | string |  |  |  |
+| `length` | float | `0` |  | The length the rope goes to (0: its datablock's), the seconds it was given to get there and the server time it was set. |
+| `lengthReel` | float | `0` |  |  |
+| `lengthAt` | int | `0` |  |  |
+| `lookColor` | string |  |  | The rope's own look: `"r g b a"` (empty: the datablock's), a file (empty: the datablock's), a number (empty: the datablock's) and 1 or 0 (-1: the datablock's). |
+| `lookTexture` | string |  |  |  |
+| `lookScroll` | string |  |  |  |
+| `lookEmissive` | int | `-1` |  |  |
+| `curveMode` | int | `0` |  | 1 when the rope has a driven curve, and how its ends leave. |
+| `curveStart` | string |  |  |  |
+| `curveEnd` | string |  |  |  |
+| `curveBend` | float | `0` |  |  |
+| `lifeEnd` | int | `0` |  | The server time the rope ends (0: it lasts), and the seconds it fades over before. |
+| `lifeFade` | float | `0` |  |  |
+| `lifeEvent` | int | `0` |  | The scheduled call that deletes the rope at its end (0: none): a new lifetime takes the place of it. |
+| `predict` | int | `0` |  | The id the owner's client gave its predicted rope (0: none), and the owner's connection object. |
+| `predictOwner` | int | `0` |  |  |
+
 ## RopeData
 
-*goes below `SimDataBlock`; client; needs `torque.rope`*
+*goes below `SimDataBlock`; server and client; needs `torque.rope`*
 
 | Field | Type | Default | Range | What it is for |
 |---|---|---|---|---|

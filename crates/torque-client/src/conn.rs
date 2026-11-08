@@ -576,6 +576,17 @@ pub trait ConnGame: Default + 'static {
         let _ = st;
     }
 
+    /// A connection's world is about to be dropped (it ended, or a new connection replaces it): what the game has told its
+    /// plugins about that world is kept, to be taken back at the next tick ([`ConnGame::tick`], [`ConnGame::tick_detached`]).
+    fn world_left(st: &mut ClientState<Self>, world: &mut WorldOf<Self>) {
+        let _ = (st, world);
+    }
+
+    /// The game's work at the start of a tick that has no connection.
+    fn tick_detached(vm: &mut Vm, client: &Rc<RefCell<ClientState<Self>>>) {
+        let _ = (vm, client);
+    }
+
     /// The game's work at the start of a tick's events.
     fn tick(vm: &mut Vm, client: &Rc<RefCell<ClientState<Self>>>) {
         let _ = (vm, client);
@@ -712,9 +723,10 @@ pub fn tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
     let now = vm.sim_time();
     run_doomed(vm, client, now);
     sync_door(&client.borrow());
-    let obj = match client.borrow().conn.conn.as_ref() {
-        Some(c) => c.obj,
-        None => return,
+    let obj = client.borrow().conn.conn.as_ref().map(|c| c.obj);
+    let Some(obj) = obj else {
+        G::tick_detached(vm, client);
+        return;
     };
     // A connection whose object a script deleted is over: hang up (TGE's `onRemove` sends the disconnect).
     if !vm.objects().contains(obj) {
@@ -874,6 +886,9 @@ pub fn install_conn<G: ConnGame>(st: &mut ClientState<G>, conn: Box<ClientConn<G
     crate::eye::clear();
     conn.render.connection_reset();
     G::world_gone(st);
+    if let Some(mut old) = st.conn.conn.take() {
+        G::world_left(st, &mut old.world);
+    }
     st.conn.conn = Some(conn);
 }
 
@@ -885,6 +900,7 @@ pub fn drop_conn<G: ConnGame>(client: &Rc<RefCell<ClientState<G>>>, reason: Opti
         return;
     };
     G::world_gone(&mut st);
+    G::world_left(&mut st, &mut conn.world);
     if conn.local.is_some() {
         st.net.borrow_mut().local_inbox = None;
         return;

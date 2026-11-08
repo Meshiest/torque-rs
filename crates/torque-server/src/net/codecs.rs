@@ -672,6 +672,7 @@ impl ControlObject for PlayerControl<'_> {
                 },
                 controlled: true,
                 ghost_of: None,
+                connection: None,
             };
             Box::new(TgePacketData::new(TailData::Wheeled(WheeledTail::pack(
                 &view,

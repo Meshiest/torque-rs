@@ -22,6 +22,13 @@ const CLIENT: &str = if cfg!(feature = "rope") {
     "client.txt"
 };
 
+/// The server's list: the rope plugin's networked functions are in `server-rope.txt` (the `rope` feature), the default list is `server.txt`.
+const SERVER: &str = if cfg!(feature = "rope") {
+    "server-rope.txt"
+} else {
+    "server.txt"
+};
+
 #[test]
 fn the_client_has_these_natives() {
     let game = LevelDemo::new(GameFiles::bundled().unwrap()).unwrap();
@@ -34,5 +41,5 @@ fn the_server_has_these_natives() {
     let map = maps(&game.files).into_iter().next().expect("a map");
     let server =
         WorldServer::start(game.engine(), &game.files, &map.path).expect("the server starts");
-    check_listing(&listing("server.txt"), &server.vm().native_listing());
+    check_listing(&listing(SERVER), &server.vm().native_listing());
 }

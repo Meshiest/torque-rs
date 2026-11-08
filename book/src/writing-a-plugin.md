@@ -165,6 +165,11 @@ and nothing above the posts changed). Look at the pictures too: `TORQUE_ROPE_PIC
   tripwire). Strips are alpha blended at `Stage::Translucent` over the frame's depth, so they are hidden by what is in front of
   them, and their triangles are made on the CPU each frame from the camera, which keeps them flat to the screen, at least two
   pixels wide and soft at the edges.
+- **Length, taut ropes and temporary ropes.** `ropeSetLength` reels a rope over a time and a rope held farther apart than it
+  is long is drawn straight, not stretched; `ropeSetLifetime` makes a rope fade out and go.
+- **The network.** A server makes ropes that every client shows, with a datablock, mask bits for each group of a rope, a
+  one-shot rope sent as an event and a rope a client makes at once that the server's ghost adopts: the
+  [Networked plugins](networked-plugins.md) chapter is built on it.
 - **Caps** on ropes, segments and coordinates, **tests** for each, a README and crate docs with a usage example.
 
 Its source is a good second read once the walkthrough makes sense: `sim.rs` (the simulation and its caps), `mesh.rs` (the tube),

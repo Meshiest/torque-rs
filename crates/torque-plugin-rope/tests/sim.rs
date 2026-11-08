@@ -877,3 +877,209 @@ fn a_world_warns_about_only_so_many_files() {
         "past the cap nothing is recorded"
     );
 }
+
+/// How far the points of a rope are from the straight line between its ends.
+fn off_the_line(world: &RopeWorld, id: RopeId, drawn: bool) -> f32 {
+    let rope = world.rope(id).unwrap();
+    let p: Vec<[f32; 3]> = if drawn {
+        rope.drawn_points().iter().map(|v| v.to_array()).collect()
+    } else {
+        rope.points().collect()
+    };
+    let (a, b) = (p[0], p[p.len() - 1]);
+    let d: Vec<f32> = (0..3).map(|k| b[k] - a[k]).collect();
+    let len = d.iter().map(|x| x * x).sum::<f32>().sqrt();
+    p.iter()
+        .map(|q| {
+            let r: Vec<f32> = (0..3).map(|k| q[k] - a[k]).collect();
+            let along = r.iter().zip(&d).map(|(x, y)| x * y).sum::<f32>() / len;
+            (0..3)
+                .map(|k| (r[k] - d[k] / len * along).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        })
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn a_rope_with_its_ends_farther_apart_than_it_is_long_is_drawn_straight_and_even() {
+    let mut world = RopeWorld::new();
+    let id = world
+        .create(params(10, 4.0), [0.0, 0.0, 3.0], [10.0, 0.0, 3.0])
+        .unwrap();
+    for _ in 0..40 {
+        world.advance(TICK);
+        assert!(world.rope(id).unwrap().taut());
+        // Straight, with the pieces all the same length, whatever the simulation was doing.
+        assert!(off_the_line(&world, id, true) < 1e-3);
+        assert!(off_the_line(&world, id, false) < 1e-3);
+    }
+    let points: Vec<[f32; 3]> = world
+        .rope(id)
+        .unwrap()
+        .drawn_points()
+        .iter()
+        .map(|v| v.to_array())
+        .collect();
+    let pieces: Vec<f32> = points.windows(2).map(|w| w[1][0] - w[0][0]).collect();
+    assert!(pieces.iter().all(|p| (p - 1.0).abs() < 1e-3), "{pieces:?}");
+    // It pulls nothing and the ends have not moved.
+    assert_eq!(points[0], [0.0, 0.0, 3.0]);
+    assert_eq!(points[10], [10.0, 0.0, 3.0]);
+    // Slack again: the rope hangs, and is no longer taut.
+    world.pin_point(id, RopeEnd::End, [3.0, 0.0, 3.0]).unwrap();
+    for _ in 0..200 {
+        world.advance(TICK);
+    }
+    let rope = world.rope(id).unwrap();
+    assert!(!rope.taut());
+    assert!(off_the_line(&world, id, true) > 0.3);
+}
+
+#[test]
+fn a_rope_reels_to_its_new_length_over_the_time_it_was_given() {
+    let mut world = RopeWorld::new();
+    let id = world
+        .create(params(10, 6.0), [0.0, 0.0, 3.0], [4.0, 0.0, 3.0])
+        .unwrap();
+    assert_eq!(world.rope(id).unwrap().length(), 6.0);
+    world.set_length(id, 10.0, 2.0).unwrap();
+    assert!(world.rope(id).unwrap().reeling());
+    let mut seen = Vec::new();
+    for tick in 1..=80 {
+        world.advance(TICK);
+        if tick % 20 == 0 {
+            seen.push(world.rope(id).unwrap().length());
+        }
+    }
+    // Evenly: 0.64 s, 1.28 s, 1.92 s and 2.56 s in.
+    assert!((seen[0] - (6.0 + 4.0 * 0.32)).abs() < 0.1, "{seen:?}");
+    assert!((seen[1] - (6.0 + 4.0 * 0.64)).abs() < 0.1, "{seen:?}");
+    assert!((seen[2] - (6.0 + 4.0 * 0.96)).abs() < 0.1, "{seen:?}");
+    assert_eq!(seen[3], 10.0);
+    assert!(!world.rope(id).unwrap().reeling());
+    // Reeling in, and at once; a bad length changes nothing, a short one is held to the least.
+    world.set_length(id, 5.0, 0.0).unwrap();
+    assert_eq!(world.rope(id).unwrap().length(), 5.0);
+    world.set_length(id, f32::NAN, 1.0).unwrap();
+    assert_eq!(world.rope(id).unwrap().length(), 5.0);
+    world.set_length(id, 0.0, f32::NAN).unwrap();
+    assert_eq!(
+        world.rope(id).unwrap().length(),
+        torque_plugin_rope::sim::MIN_LENGTH
+    );
+    assert!(world.set_length(99, 1.0, 1.0).is_err());
+}
+
+#[test]
+fn a_reel_that_pulls_the_ends_taut_straightens_the_rope() {
+    let mut world = RopeWorld::new();
+    let id = world
+        .create(params(10, 8.0), [0.0, 0.0, 3.0], [6.0, 0.0, 3.0])
+        .unwrap();
+    for _ in 0..100 {
+        world.advance(TICK);
+    }
+    assert!(!world.rope(id).unwrap().taut());
+    world.set_length(id, 3.0, 1.0).unwrap();
+    let mut was_taut = false;
+    for _ in 0..60 {
+        world.advance(TICK);
+        was_taut |= world.rope(id).unwrap().taut();
+    }
+    assert!(was_taut);
+    assert!(off_the_line(&world, id, true) < 1e-3);
+}
+
+#[test]
+fn a_temporary_rope_fades_over_its_last_seconds_and_is_taken_away() {
+    let mut world = RopeWorld::new();
+    let id = world
+        .create(params(8, 5.0), [0.0, 0.0, 3.0], [4.0, 0.0, 3.0])
+        .unwrap();
+    let lasting = world
+        .create(params(8, 5.0), [0.0, 1.0, 3.0], [4.0, 1.0, 3.0])
+        .unwrap();
+    world.set_lifetime(id, 2.0, 1.0).unwrap();
+    assert_eq!(world.rope(id).unwrap().fade(), 1.0);
+    let mut fades = Vec::new();
+    // 1 s in: still whole. 1.5 s: half. Past 2 s: gone, and the other rope is not.
+    for tick in 1..=70 {
+        world.advance(TICK);
+        if tick == 31 || tick == 47 {
+            fades.push(world.rope(id).unwrap().fade());
+        }
+    }
+    assert_eq!(fades[0], 1.0);
+    assert!((fades[1] - 0.5).abs() < 0.1, "{fades:?}");
+    assert!(world.rope(id).is_none());
+    assert!(world.rope(lasting).is_some());
+    // A lifetime of 0 makes a rope last again; a fade longer than the life is the life.
+    let again = world
+        .create(params(8, 5.0), [0.0, 2.0, 3.0], [4.0, 2.0, 3.0])
+        .unwrap();
+    world.set_lifetime(again, 1.0, 9.0).unwrap();
+    world.advance(TICK);
+    assert!(world.rope(again).unwrap().fade() < 1.0);
+    world.set_lifetime(again, 0.0, 0.0).unwrap();
+    assert_eq!(world.rope(again).unwrap().life_left(), None);
+    assert_eq!(world.rope(again).unwrap().fade(), 1.0);
+}
+
+#[test]
+fn a_fading_tube_thins_and_a_fading_ribbon_grows_faint() {
+    let mut world = RopeWorld::new();
+    let tube = world
+        .create(
+            RopeParams {
+                style: RopeStyle::Tube,
+                color: [200, 100, 50, 255],
+                ..params(8, 5.0)
+            },
+            [0.0, 0.0, 3.0],
+            [4.0, 0.0, 3.0],
+        )
+        .unwrap();
+    let ribbon = world
+        .create(
+            RopeParams {
+                style: RopeStyle::Ribbon,
+                color: [200, 100, 50, 200],
+                ..params(8, 5.0)
+            },
+            [0.0, 1.0, 3.0],
+            [4.0, 1.0, 3.0],
+        )
+        .unwrap();
+    let width = |world: &mut RopeWorld| {
+        let mesh = world.mesh();
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        for v in &mesh.vertices {
+            low = low.min(v.position[1]);
+            high = high.max(v.position[1]);
+        }
+        high - low
+    };
+    let alpha = |world: &mut RopeWorld| {
+        world
+            .strips()
+            .strips
+            .iter()
+            .map(|s| s.color[3])
+            .max()
+            .unwrap_or(0)
+    };
+    world.advance(TICK);
+    let (w0, a0) = (width(&mut world), alpha(&mut world));
+    world.set_lifetime(tube, 1.0, 1.0).unwrap();
+    world.set_lifetime(ribbon, 1.0, 1.0).unwrap();
+    for _ in 0..16 {
+        world.advance(TICK);
+    }
+    let (w1, a1) = (width(&mut world), alpha(&mut world));
+    assert!(w1 < w0 * 0.8, "the tube thinned: {w0} then {w1}");
+    assert!(
+        a1 < a0 / 2 + 20 && a1 > 0,
+        "the ribbon faded: {a0} then {a1}"
+    );
+}

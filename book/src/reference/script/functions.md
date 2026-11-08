@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-231 entries in 1 namespace.
+254 entries in 1 namespace.
 
 ## Global
 
@@ -105,6 +105,13 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: none; client; needs `torque.gizmos`*
 - `clearModDownloadCache()` - deletes the mod content kept from servers; returns the bytes freed
   *arguments: none; server and client*
+- `clientCmdRopeFx(start, end, datablock, seconds, bend)` - the server's \`ropeNetFx\`: shows a rope of the datablock between two points for a few seconds (the remote command \`RopeFx\`)
+  *arguments: 5; client; needs `torque.rope`*
+
+  Everything is checked: a point that is not three finite numbers inside the world, a datablock that is not a `RopeData` the
+  client has, seconds that are not a positive number (held to 30) are refused with no error; a bend that is not a number is
+  straight, and at most 32 such ropes live at once. Returns true when it showed one.
+
 - `collapseEscape(text)` - the text with its escape sequences turned into the bytes they stand for
   *arguments: 1; server and client*
 - `commandToClient`
@@ -435,18 +442,96 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; client; needs `torque.rope`*
 - `ropeGetEmissive(rope)` - whether a rope glows now
   *arguments: 1; client; needs `torque.rope`*
+- `ropeGetLength(rope)` - the length of a rope now, in world units (0 for no such rope)
+  *arguments: 1; client; needs `torque.rope`*
 - `ropeGetTexture(rope)` - the file of the texture a rope is drawn with now (empty for none, or no such rope)
   *arguments: 1; client; needs `torque.rope`*
 - `ropeGetTextureScroll(rope)` - how fast a rope's texture runs now, in repeats a second (0 for no such rope)
   *arguments: 1; client; needs `torque.rope`*
 - `ropeImpulse(rope, velocity)` - gives the free part of a rope a velocity \`"x y z"\`, in units a second (at most 200)
   *arguments: 2; client; needs `torque.rope`*
+- `ropeIsTaut(rope)` - whether a rope is drawn taut and straight now: both ends held and as far apart as the rope is long
+  *arguments: 1; client; needs `torque.rope`*
+- `ropeNetAttach(rope, end, object [, node])` - hangs an end of a networked rope from an object (name or id), that every client follows as it draws it
+  *arguments: 3 to 4; server; needs `torque.rope`*
+
+  `node` is a number (the middle of that mesh of the shape), `muzzle` (or `muzzle1`) for the muzzle of the object's weapon, or
+  empty for its origin; at most 24 bytes. The object is followed by its ghost, so a client that does not have it yet is sent
+  the end again once it does; a client with no ghost of it sees the end loose.
+
+- `ropeNetClearCurve(rope)` - takes a networked rope's driven curve away
+  *arguments: 1; server; needs `torque.rope`*
+- `ropeNetClearLook(rope)` - puts everything one networked rope was given of its own (color, texture, speed, glow) back to the datablock's
+  *arguments: 1; server; needs `torque.rope`*
+- `ropeNetCount()` - how many ropes the server ghosts that this client shows
+  *arguments: none; client; needs `torque.rope`*
+- `ropeNetCreate(start, end, datablock [, predictId [, owner]])` - makes a networked rope of the datablock between two points, and returns its object id
+  *arguments: 3 to 5; server; needs `torque.rope`*
+
+  Every client of the engine sees the rope (the clients simulate and draw it). `start` and `end` are points `"x y z"` the two ends
+  are pinned to; `datablock` is a `RopeData` (name or id). `predictId` and `owner` tie the rope to a rope the client `owner` (a
+  connection) already made and gave that id with `ropePredict`: that client keeps its own rope instead of making a second one. At
+  most 256 networked ropes exist; past that the call prints an error and returns 0. The rope is an object like any other: put it
+  in a group the mission cleans up, and delete it with `ropeNetDelete` or `delete`.
+
+- `ropeNetDelete(rope)` - takes a networked rope away from every client; true if there was one
+  *arguments: 1; server; needs `torque.rope`*
+- `ropeNetExpire(rope)` - deletes a networked rope whose lifetime has run out (the call \`ropeNetSetLifetime\` schedules)
+  *arguments: 1; server; needs `torque.rope`*
+- `ropeNetFx(client, start, end, datablock, seconds [, bend])` - sends a rope that lasts \`seconds\` (at most 30) between two points to a client, or to every client when \`client\` is empty or 0,
+  *arguments: 5 to 6; server; needs `torque.rope`*
+
+  with no object to hold it: a grapple shot, an arc of lightning
+
+  It goes as a remote command (`clientCmdRopeFx` on the client), once, and is never a ghost; a client that runs the rope plugin
+  draws it as a temporary rope of the datablock, curved by `bend` (-4 to 4, 0 straight) when it is not 0, and fading out over its
+  last quarter second. A client holds at most 32 at a time, and is sent at most 32 a second: past that the call drops the rope for
+  that client (the console says so once for it). The function returns the number of clients it was sent to.
+
+- `ropeNetPin(rope, end, point)` - pins an end of a networked rope to a point; \`end\` is 0 or start, 1 or end
+  *arguments: 3; server; needs `torque.rope`*
+- `ropeNetRelease(rope, end)` - lets an end of a networked rope go, so it falls with the rest on every client
+  *arguments: 2; server; needs `torque.rope`*
+- `ropeNetSetColor(rope, color)` - sets the color one networked rope is drawn with, \`"r g b a"\` from 0 to 255; an empty string puts the datablock's back
+  *arguments: 2; server; needs `torque.rope`*
+- `ropeNetSetCurve(rope, startDir, endDir, bend)` - gives a networked rope a driven curve (see \`ropeSetCurve\`): each of \`startDir\` and \`endDir\` is empty, \`"mount"\` or \`"x y z"\`
+  *arguments: 4; server; needs `torque.rope`*
+- `ropeNetSetEmissive(rope, on)` - sets whether one networked rope glows; -1 puts the datablock's back
+  *arguments: 2; server; needs `torque.rope`*
+- `ropeNetSetLength(rope, length [, seconds])` - sets the length of a networked rope; clients reel it from its length now to \`length\` evenly over \`seconds\`
+  *arguments: 2 to 3; server; needs `torque.rope`*
+
+  Only the target and the time cross the network, once; each client makes the rope longer or shorter itself. A rope whose ends
+  are farther apart than its length is drawn taut and straight between them (it pulls nothing). `seconds` of 0 is at once; the most
+  is an hour.
+
+- `ropeNetSetLifetime(rope, seconds [, fade])` - makes a networked rope a temporary one: it is deleted \`seconds\` from now, and every client shows less of it over its last
+  *arguments: 2 to 3; server; needs `torque.rope`*
+
+  `fade` seconds (a tube thins, a ribbon or a line grows fainter); `seconds` of 0 makes it last again
+
+- `ropeNetSetTexture(rope, file)` - sets the texture one networked rope is drawn with (a .png or .jpg, at most 96 bytes of name); an empty string puts the
+  *arguments: 2; server; needs `torque.rope`*
+
+  datablock's back
+
+- `ropeNetSetTextureScroll(rope, speed)` - sets how fast one networked rope's texture runs along it, in repeats a second; an empty string puts the datablock's back
+  *arguments: 2; server; needs `torque.rope`*
 - `ropeNoFloor()` - takes the floor away
   *arguments: none; client; needs `torque.rope`*
 - `ropePin(rope, end, point)` - pins an end of a rope to a point; \`end\` is 0 or start, 1 or end
   *arguments: 3; client; needs `torque.rope`*
 
   The end glides to the point over the next tick. True if the rope exists.
+
+- `ropePredict(rope)` - tags a rope this client made as a prediction of one the server is about to make, and returns the id the server's ghost must carry
+  *arguments: 1; client; needs `torque.rope`*
+
+  A client-side action (firing a beam) makes its rope at once with `ropeCreate` and kin, calls this, and tells the server the id
+  (a command argument). The server's `ropeNetCreate` is given the id and the client's connection; the ghost that comes back
+  carries the id for that client alone, and the client then keeps the rope it made instead of making another. A rope the server
+  never confirms within two seconds fades out and goes. At most 16 wait at once: past that, or for a rope that is not there, the
+  result is 0.
 
 - `ropeRelease(rope, end)` - lets an end of a rope go, so it falls with the rest; \`end\` is 0 or start, 1 or end
   *arguments: 2; client; needs `torque.rope`*
@@ -467,6 +552,19 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2; client; needs `torque.rope`*
 
   True if the rope exists.
+
+- `ropeSetLength(rope, length [, seconds])` - sets the length of a rope; it is reeled in or out evenly over \`seconds\` from the length it has (0 or none: at once)
+  *arguments: 2 to 3; client; needs `torque.rope`*
+
+  The length is held between 0.02 and 10,000. A rope whose ends are farther apart than its length is drawn taut and straight
+  between them, not stretched; it pulls nothing. A line's length is the distance between its ends. A length that is not a
+  number changes nothing. True if the rope exists.
+
+- `ropeSetLifetime(rope, seconds [, fade])` - makes a rope a temporary one: it is taken away \`seconds\` from now, and shows less of itself over its last \`fade\` seconds
+  *arguments: 2 to 3; client; needs `torque.rope`*
+
+  A tube thins and a ribbon or a line grows fainter. `seconds` of 0 makes the rope last until it is taken away; a `fade` past the
+  time is the time. True if the rope exists.
 
 - `ropeSetTexture(rope, file)` - sets the texture one rope is drawn with (a .png or .jpg); an empty string puts the datablock's back
   *arguments: 2; client; needs `torque.rope`*

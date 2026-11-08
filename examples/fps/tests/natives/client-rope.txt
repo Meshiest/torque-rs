@@ -346,6 +346,8 @@ cancel 2..2 cancel(scheduleId) - drops a scheduled call
 cancelJoinLookup 1..1 cancelJoinLookup();
 cancelServerQuery 1..1 cancelServerQuery()
 checkJoinAddress 2..2 checkJoinAddress(text);
+clearModDownloadCache 1..1 clearModDownloadCache() - deletes the mod content kept from servers; returns the bytes freed
+clientCmdRopeFx 6..6 clientCmdRopeFx(start, end, datablock, seconds, bend) - the server's `ropeNetFx`: shows a rope of the datablock between two points for a few seconds (the remote command `RopeFx`)
 collapseEscape 2..2 collapseEscape(text) - the text with its escape sequences turned into the bytes they stand for
 commandToServer 2..21
 compile 2..2 compile(file) - compiles a script without running it
@@ -385,6 +387,8 @@ getFileCount 2..2 getFileCount(pattern) - how many files match
 getMax 3..3 getMax(a, b) - the larger number
 getMin 3..3 getMin(a, b) - the smaller number
 getModCount 1..1 getModCount() - how many mods were found, the ones left out too
+getModDownloadProgress 1..1 getModDownloadProgress() - the download under way as four numbers separated by spaces: bytes received, bytes in all, mods mounted, mods sent
+getModDownloadState 1..1 getModDownloadState() - where a client's download of the server's mod content stands: idle, waiting (accepted, nothing announced yet), downloading, done or failed
 getModField 3..3 getModField(id, field) - one fact about a mod: version, name, description, author, category, status (pending, enabled, disabled or skipped), reason, source, package, files, bytes, clientside, or a field the layout kept; empty for a mod or a fact there is not
 getModList 1..2 getModList([all]) - the ids of the loaded mods in load order, separated by spaces (all of them, the ones left out too, with `true`)
 getModStages 1..1 getModStages() - the declared load stages, separated by spaces
@@ -395,6 +399,9 @@ getRecord 3..3 getRecord(text, index) - one newline-separated record
 getRecordCount 2..2 getRecordCount(text) - how many records the text has
 getRecords 3..4 getRecords(text, first [, last]) - the records from first to last
 getRenderer 1..1 getRenderer();
+getRequiredModCount 1..1 getRequiredModCount() - how many mods the server requires of its clients (on a client, how many its server announced)
+getRequiredModField 3..3 getRequiredModField(id, field) - one fact about a required mod: version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
+getRequiredModList 1..1 getRequiredModList() - the ids of the mods the server requires of its clients, separated by spaces (on a client, the ones its server announced)
 getServerCount 1..1 getServerCount();
 getSimTime 1..1 getSimTime() - the simulation time in milliseconds
 getSubStr 4..4 getSubStr(text, start, count) - count bytes of the text from start
@@ -457,19 +464,27 @@ ropeFloor 2..2 ropeFloor(z) - keeps the free points of every rope above the heig
 ropeGetColor 2..2 ropeGetColor(rope) - the color a rope is drawn with now, as `"r g b a"` (empty for no such rope)
 ropeGetCurveBend 2..2 ropeGetCurveBend(rope) - the bend of a rope's driven curve (0 for none, or no such rope)
 ropeGetEmissive 2..2 ropeGetEmissive(rope) - whether a rope glows now
+ropeGetLength 2..2 ropeGetLength(rope) - the length of a rope now, in world units (0 for no such rope)
 ropeGetTexture 2..2 ropeGetTexture(rope) - the file of the texture a rope is drawn with now (empty for none, or no such rope)
 ropeGetTextureScroll 2..2 ropeGetTextureScroll(rope) - how fast a rope's texture runs now, in repeats a second (0 for no such rope)
 ropeImpulse 3..3 ropeImpulse(rope, velocity) - gives the free part of a rope a velocity `"x y z"`, in units a second (at most 200)
+ropeIsTaut 2..2 ropeIsTaut(rope) - whether a rope is drawn taut and straight now: both ends held and as far apart as the rope is long
+ropeNetCount 1..1 ropeNetCount() - how many ropes the server ghosts that this client shows
 ropeNoFloor 1..1 ropeNoFloor() - takes the floor away
 ropePin 4..4 ropePin(rope, end, point) - pins an end of a rope to a point; `end` is 0 or start, 1 or end
+ropePredict 2..2 ropePredict(rope) - tags a rope this client made as a prediction of one the server is about to make, and returns the id the server's ghost must carry
 ropeRelease 3..3 ropeRelease(rope, end) - lets an end of a rope go, so it falls with the rest; `end` is 0 or start, 1 or end
 ropeSetColor 3..3 ropeSetColor(rope, color) - sets the color one rope is drawn with, `"r g b a"` from 0 to 255 (a texture is tinted by it); an empty string puts the datablock's back
 ropeSetCurve 5..5 ropeSetCurve(rope, startDir, endDir, bend) - gives one rope a driven shape: a curve from its start to its far end, not simulated (a beam from a muzzle)
 ropeSetEmissive 3..3 ropeSetEmissive(rope, on) - sets whether one rope, drawn as a ribbon or a line, glows (drawn with no light or shade)
+ropeSetLength 3..4 ropeSetLength(rope, length [, seconds]) - sets the length of a rope; it is reeled in or out evenly over `seconds` from the length it has (0 or none: at once)
+ropeSetLifetime 3..4 ropeSetLifetime(rope, seconds [, fade]) - makes a rope a temporary one: it is taken away `seconds` from now, and shows less of itself over its last `fade` seconds
 ropeSetTexture 3..3 ropeSetTexture(rope, file) - sets the texture one rope is drawn with (a .png or .jpg); an empty string puts the datablock's back
 ropeSetTextureScroll 3..3 ropeSetTextureScroll(rope, speed) - sets how fast one rope's texture runs along it, in repeats a second (negative: toward the start)
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
+serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
+serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on)
 setCameraMode 2..2 (name) - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
 setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)

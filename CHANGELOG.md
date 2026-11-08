@@ -74,8 +74,14 @@ different.
   weapon's for the player whose view it is. The arena example has it behind `--features rope` (`--beam-shots`). The rope runs per drawn frame (240 substeps a second, at most eight a frame, shown between
   its last two states) instead of on the 32 ms tick, and an end that hangs from a ghost follows where the frame draws it
   (`AnchorResolver::ghost`, `FrameAnchors`, `RopeWorld::step_frame`, `pin_ghost`). Every style can cast (`castShadow`; a ribbon's or line's shadow is a band that faces the sun)
-  and take (`receiveShadow`) the sun's shadows, as the renderer's own surfaces do. Client only; not in `DefaultPlugins`. The level demo hangs one across the plaza
+  and take (`receiveShadow`) the sun's shadows, as the renderer's own surfaces do. Not in `DefaultPlugins`. The level demo hangs one across the plaza
   (`--features rope`).
+- `torque-plugin-rope` over the network, and `engine.net().on_ghost` (a client's handler for each ghost of a plugin class that appeared,
+  changed or went): a server makes ropes every engine client shows (`ropeNetCreate` and kin, a ghost class with a mask bit for each group
+  so an update sends only what changed, and `RopeData` as a networked datablock), the points stay on each client; `ropeSetLength`
+  reels a rope over a time and a rope held farther apart than it is long is drawn straight (visual only); temporary ropes fade out
+  (`ropeSetLifetime`); `ropeNetFx` sends a one-shot rope as a remote command with no ghost; `ropePredict` shows a client's own rope at once
+  and the server's ghost adopts it by a bounded per-client id (or it fades out unconfirmed). The book's "Networked plugins" chapter.
 - `torque::app::camera_modes`: camera modes (`CameraMode`, `add_camera_mode`) that plugins add and the client picks by name
   (`setCameraMode`, `getCameraMode`, `getCameraModes`; `CameraModes::set` from Rust), eased from one to the next, with the first
   person, the third person on a boom and the orbit built in; `torque::app::camera_behind` is the helpers of the camera behind a

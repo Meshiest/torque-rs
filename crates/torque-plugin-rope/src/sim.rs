@@ -11,7 +11,7 @@
 //! under a substep waits for the next call. The result depends on the sequence of substeps only, never on how the time was cut
 //! into calls.
 //!
-//! **Caps.** At most [`MAX_ROPES`] ropes, [`MAX_TOTAL_SEGMENTS`] segments over all of them, [`MAX_SEGMENTS_PER_ROPE`] in one.
+//! **Caps.** At most [`MAX_ROPES`] ropes, [`MAX_TOTAL_SEGMENTS`] segments over all of them, [`crate::MAX_SEGMENTS_PER_ROPE`] in one.
 //!
 //! **Hostile numbers.** A point, a speed or a floor that is not a finite number is made one on the way in; a coordinate past
 //! [`MAX_COORD`] is held to it. Should a rope's points leave the finite range anyway, the rope is laid out again between its ends.
@@ -59,6 +59,9 @@ pub const ANCHOR_SMOOTHING: f32 = 0.03;
 pub const DEFAULT_SLACK: f32 = 1.1;
 /// The shortest rope.
 pub const MIN_LENGTH: f32 = 0.02;
+
+/// The longest a rope's lifetime or reel may be (seconds).
+pub const MAX_SECONDS: f32 = 3600.0;
 
 /// A rope's number in a world (never 0).
 pub type RopeId = u32;
@@ -177,6 +180,36 @@ pub enum Tangent {
     Mount,
 }
 
+/// The largest bend a curve has either way.
+pub const MAX_BEND: f32 = 4.0;
+
+/// The most a texture runs along a rope, repeats a second either way.
+pub const MAX_SCROLL: f32 = 1000.0;
+
+/// A texture's speed as a rope keeps it: held to [`MAX_SCROLL`] either way, 0 for a number that is not one. Every way a speed gets
+/// to a rope (a script's call, a server's ghost) goes through it.
+pub fn clean_scroll(speed: f32) -> f32 {
+    if speed.is_finite() {
+        speed.clamp(-MAX_SCROLL, MAX_SCROLL)
+    } else {
+        0.0
+    }
+}
+
+impl Tangent {
+    /// The tangent as a rope keeps it: a fixed direction must be three finite numbers, not all 0 (held to [`MAX_COORD`]), else the
+    /// end leaves toward the other end.
+    pub fn sanitized(self) -> Tangent {
+        match self {
+            Tangent::Fixed(d) if d.iter().all(|c| c.is_finite()) && d.iter().any(|c| *c != 0.0) => {
+                Tangent::Fixed(d.map(|c| c.clamp(-MAX_COORD, MAX_COORD)))
+            }
+            Tangent::Fixed(_) => Tangent::Auto,
+            other => other,
+        }
+    }
+}
+
 /// The shape a driven rope has: a cubic Bezier from the start end to the far end. The start leaves along `start`, the far end
 /// leaves (back toward the start) along `end`; each handle is `bend` times the distance between the ends long, so a `bend` of 0 is a
 /// straight line.
@@ -191,6 +224,20 @@ pub struct Curve {
 }
 
 impl Curve {
+    /// The curve as a rope keeps it: the bend held to [`MAX_BEND`] either way (0 for a number that is not one) and the tangents
+    /// [sanitized](Tangent::sanitized). Every way a curve gets to a rope (a script's call, a server's ghost) goes through it.
+    pub fn sanitized(self) -> Curve {
+        Curve {
+            start: self.start.sanitized(),
+            end: self.end.sanitized(),
+            bend: if self.bend.is_finite() {
+                self.bend.clamp(-MAX_BEND, MAX_BEND)
+            } else {
+                0.0
+            },
+        }
+    }
+
     /// The point of the curve at `t` (0 to 1) from `a` to `b`, given the unit directions the ends leave along (`da` from `a`, `db`
     /// from `b`).
     pub fn at(a: Vec3, b: Vec3, da: Vec3, db: Vec3, bend: f32, t: f32) -> Vec3 {
@@ -296,6 +343,24 @@ struct Pin {
     drawn: Option<Vec3>,
     /// The way the ghost's mount points this frame, if it says.
     aim: Option<Vec3>,
+    /// Whether the client has seen the ghost an end pinned to it (`pin_ghost`) follows.
+    ghost_seen: bool,
+}
+
+/// A change of length in progress ([`RopeWorld::set_length`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Reel {
+    from: f32,
+    to: f32,
+    left: f32,
+    seconds: f32,
+}
+
+/// What is left of a temporary rope's life ([`RopeWorld::set_lifetime`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Life {
+    left: f32,
+    fade: f32,
 }
 
 /// One rope: its points and what holds its ends.
@@ -316,6 +381,10 @@ pub struct Rope {
     curve: Option<Curve>,
     /// Where the ends were last time the points were all finite, to lay the rope out again from.
     good: [Vec3; 2],
+    /// A reel in progress: the length goes from one value to another over a time.
+    reel: Option<Reel>,
+    /// A temporary rope's time left.
+    life: Option<Life>,
 }
 
 impl Rope {
@@ -347,6 +416,7 @@ impl Rope {
                     ghost: None,
                     drawn: None,
                     aim: None,
+                    ghost_seen: false,
                 }),
                 Some(Pin {
                     object: None,
@@ -355,11 +425,14 @@ impl Rope {
                     ghost: None,
                     drawn: None,
                     aim: None,
+                    ghost_seen: false,
                 }),
             ],
             look: RopeLook::default(),
             curve: None,
             good: [a, b],
+            reel: None,
+            life: None,
         };
         rope.layout(a, b);
         rope
@@ -463,6 +536,77 @@ impl Rope {
         moved
     }
 
+    /// How much of itself a temporary rope still shows: 1 until the last `fade` seconds of its life, then falling to 0 (a rope with no
+    /// lifetime, or no fade, is 1). A tube draws thinner by it, a ribbon or a line fainter.
+    pub fn fade(&self) -> f32 {
+        match self.life {
+            Some(Life { left, fade }) if fade > 0.0 => (left / fade).clamp(0.0, 1.0),
+            _ => 1.0,
+        }
+    }
+
+    /// The seconds a temporary rope has left (None: it lives until it is taken away).
+    pub fn life_left(&self) -> Option<f32> {
+        self.life.map(|l| l.left)
+    }
+
+    /// Whether the rope's length is changing ([`RopeWorld::set_length`]).
+    pub fn reeling(&self) -> bool {
+        self.reel.is_some()
+    }
+
+    /// Whether both ends are held and `a` and `b` (where they are) are as far apart as the rope is long: it is then drawn straight
+    /// between them instead of stretching.
+    fn taut_between(&self, a: Vec3, b: Vec3) -> bool {
+        self.pins[0].is_some()
+            && self.pins[1].is_some()
+            && !self.driven()
+            && a.distance(b) >= self.length()
+    }
+
+    /// Whether the rope is drawn taut now: both ends held, and as far apart as it is long.
+    pub fn taut(&self) -> bool {
+        let shown = self.drawn_points();
+        match (shown.first(), shown.last()) {
+            (Some(&a), Some(&b)) => self.taut_between(a, b),
+            _ => false,
+        }
+    }
+
+    /// Spaces `points` evenly on the line from the first to the last.
+    fn straighten(points: &mut [Vec3]) {
+        let n = points.len();
+        if n < 2 {
+            return;
+        }
+        let (a, b) = (points[0], points[n - 1]);
+        for (i, p) in points.iter_mut().enumerate() {
+            *p = a.lerp(b, i as f32 / (n - 1) as f32);
+        }
+    }
+
+    /// Runs a reel on by `dt` seconds.
+    fn reel_by(&mut self, dt: f32) {
+        let Some(reel) = &mut self.reel else {
+            return;
+        };
+        reel.left -= dt;
+        let done = reel.left <= 0.0;
+        let share = if done {
+            1.0
+        } else {
+            1.0 - (reel.left / reel.seconds).clamp(0.0, 1.0)
+        };
+        let length = (reel.from + (reel.to - reel.from) * share).clamp(MIN_LENGTH, MAX_LENGTH);
+        let pieces = self.params.pieces() as f32;
+        if self.params.style != RopeStyle::Line {
+            self.rest = length / pieces;
+        }
+        if done {
+            self.reel = None;
+        }
+    }
+
     /// The rope's parameters.
     pub fn params(&self) -> &RopeParams {
         &self.params
@@ -560,6 +704,9 @@ impl Rope {
                 self.shown[index] = at;
             }
         }
+        if self.taut_between(self.shown[0], self.shown[n - 1]) {
+            Rope::straighten(&mut self.shown);
+        }
     }
 
     /// The most a segment is longer or shorter than its resting length, as a share of it (0 for a rope exactly at rest).
@@ -605,6 +752,7 @@ impl Rope {
             pin.at += wanted.clamp_length_max(reach);
         }
         if self.driven() {
+            self.reel_by(steps as f32 * SUBSTEP_SECONDS);
             // A line, and a rope whose shape is driven, are not simulated: its ends are where the pins are, and a free end stays where it was.
             for (end, index) in [0, last].into_iter().enumerate() {
                 if let Some(pin) = &self.pins[end] {
@@ -617,6 +765,7 @@ impl Rope {
             return;
         }
         for k in 1..=steps {
+            self.reel_by(SUBSTEP_SECONDS);
             if k == steps {
                 self.before.clone_from(&self.pos);
             }
@@ -629,6 +778,11 @@ impl Rope {
                 }
             }
             self.substep(SUBSTEP_SECONDS, floor);
+        }
+        // Ends held farther apart than the rope is long: it lies straight between them, not stretched.
+        if self.taut_between(self.pos[0], self.pos[last]) {
+            Rope::straighten(&mut self.pos);
+            self.prev.clone_from(&self.pos);
         }
         self.check();
     }
@@ -804,6 +958,7 @@ impl RopeWorld {
             ghost: None,
             drawn: None,
             aim: None,
+            ghost_seen: false,
         });
         self.revision += 1;
         Ok(())
@@ -831,6 +986,7 @@ impl RopeWorld {
             ghost: None,
             drawn: None,
             aim: None,
+            ghost_seen: false,
         });
         self.revision += 1;
         Ok(())
@@ -858,6 +1014,7 @@ impl RopeWorld {
             ghost: Some((ghost, node.to_owned())),
             drawn: None,
             aim: None,
+            ghost_seen: false,
         });
         self.revision += 1;
         Ok(())
@@ -877,6 +1034,90 @@ impl RopeWorld {
                 }
             }
         }
+    }
+
+    /// Reads where the ghosts that ends pinned with [`RopeWorld::pin_ghost`] follow are, for a client that draws no frame
+    /// (`read(ghost, node)`: None when the client has no such ghost). An end whose ghost was read once and is gone lets go, as an end
+    /// hung from a deleted object does; the ends that did are returned. Ends whose ghost the frame draws follow that instead
+    /// ([`RopeWorld::step_frame`]).
+    pub fn follow_ghosts(
+        &mut self,
+        mut read: impl FnMut(u32, &str) -> Option<[f32; 3]>,
+    ) -> Vec<(RopeId, RopeEnd)> {
+        let mut lost = Vec::new();
+        for (&id, rope) in &mut self.ropes {
+            for (k, end) in [RopeEnd::Start, RopeEnd::End].into_iter().enumerate() {
+                let Some(held) = &mut rope.pins[k] else {
+                    continue;
+                };
+                if held.object.is_some() {
+                    continue;
+                }
+                let Some((ghost, node)) = &held.ghost else {
+                    continue;
+                };
+                match read(*ghost, node) {
+                    Some(at) => {
+                        held.ghost_seen = true;
+                        if held.drawn.is_none() {
+                            held.target = point(at);
+                        }
+                    }
+                    None if held.ghost_seen => {
+                        rope.pins[k] = None;
+                        lost.push((id, end));
+                    }
+                    None => {}
+                }
+            }
+        }
+        if !lost.is_empty() {
+            self.revision += 1;
+        }
+        lost
+    }
+
+    /// Sets rope `id`'s length to `length` (held inside [`MIN_LENGTH`] and [`MAX_LENGTH`]): at once when `seconds` is not a
+    /// positive number, else reeled in or out evenly over `seconds` (at most [`MAX_SECONDS`]) from the length it has now. A line's
+    /// length is the distance between its ends and is not changed. A `length` that is not a number does nothing.
+    pub fn set_length(&mut self, id: RopeId, length: f32, seconds: f32) -> Result<(), RopeError> {
+        let rope = self.rope_mut(id)?;
+        if !length.is_finite() || rope.params.style == RopeStyle::Line {
+            return Ok(());
+        }
+        let to = length.clamp(MIN_LENGTH, MAX_LENGTH);
+        if seconds.is_finite() && seconds > 0.0 {
+            let seconds = seconds.min(MAX_SECONDS);
+            rope.reel = Some(Reel {
+                from: rope.length(),
+                to,
+                left: seconds,
+                seconds,
+            });
+        } else {
+            rope.reel = None;
+            rope.rest = to / rope.params.pieces() as f32;
+        }
+        self.revision += 1;
+        Ok(())
+    }
+
+    /// Makes rope `id` a temporary one: it is taken away `seconds` (at most [`MAX_SECONDS`]) from now, and shows less of itself
+    /// ([`Rope::fade`]) over its last `fade` seconds (held to `0..=seconds`). `seconds` that is not a positive number makes it last
+    /// until it is taken away.
+    pub fn set_lifetime(&mut self, id: RopeId, seconds: f32, fade: f32) -> Result<(), RopeError> {
+        let rope = self.rope_mut(id)?;
+        rope.life = (seconds.is_finite() && seconds > 0.0).then(|| {
+            let left = seconds.min(MAX_SECONDS);
+            let fade = if fade.is_finite() {
+                fade.clamp(0.0, left)
+            } else {
+                0.0
+            };
+            Life { left, fade }
+        });
+        self.revision += 1;
+        Ok(())
     }
 
     /// Lets an end go: it falls with the rest.
@@ -989,7 +1230,7 @@ impl RopeWorld {
 
     /// Gives rope `id` the shape `curve` (None: straight): it is driven from then on, not simulated.
     pub fn set_curve(&mut self, id: RopeId, curve: Option<Curve>) -> Result<(), RopeError> {
-        self.rope_mut(id)?.curve = curve;
+        self.rope_mut(id)?.curve = curve.map(Curve::sanitized);
         self.revision += 1;
         Ok(())
     }
@@ -1026,8 +1267,26 @@ impl RopeWorld {
             rope.run(steps, floor, alpha);
         }
         self.substeps += steps as u64;
+        self.age(ran);
         self.refresh_shown();
         if !self.ropes.is_empty() {
+            self.revision += 1;
+        }
+    }
+
+    /// Ages the temporary ropes by `seconds`; the ones whose time is up are taken away.
+    fn age(&mut self, seconds: f32) {
+        let mut over = Vec::new();
+        for (&id, rope) in &mut self.ropes {
+            if let Some(life) = &mut rope.life {
+                life.left -= seconds;
+                if life.left <= 0.0 {
+                    over.push(id);
+                }
+            }
+        }
+        for id in over {
+            self.ropes.remove(&id);
             self.revision += 1;
         }
     }
@@ -1135,7 +1394,7 @@ impl RopeWorld {
         if let Some(path) = set.texture {
             look.texture = Some(path);
         }
-        look.scroll = set.scroll.or(look.scroll);
+        look.scroll = set.scroll.map(clean_scroll).or(look.scroll);
         look.emissive = set.emissive.or(look.emissive);
         self.revision += 1;
         Ok(())
@@ -1191,16 +1450,18 @@ impl RopeWorld {
                 .filter(|rope| rope.params.style == RopeStyle::Tube)
                 .map(|rope| {
                     let look = rope.appearance(&textures);
+                    // A tube about to go thins out (it is not see-through).
+                    let thin = rope.fade().max(0.02);
                     TubeSource {
                         points: rope.drawn_points(),
-                        thickness: rope.params.thickness,
+                        thickness: rope.params.thickness * thin,
                         color: look.color,
                         cast_shadow: rope.params.cast_shadow,
                         receive_shadow: rope.params.receive_shadow,
                         texture: look.texture,
                         texture_length: rope.params.texture_length,
                         scroll: look.scroll,
-                        thickness_end: rope.params.end_thickness(),
+                        thickness_end: rope.params.end_thickness() * thin,
                         color_end: rope.params.color_end,
                     }
                 }),
@@ -1217,18 +1478,30 @@ impl RopeWorld {
             return Arc::clone(strips);
         }
         let textures = Arc::clone(&self.textures);
+        // A strip about to go grows fainter: its colors' alpha by the rope's fade.
+        let faded = |alpha: u8, fade: f32| (f32::from(alpha) * fade).round() as u8;
+        let items: Vec<(&[Vec3], RopeParams, Appearance)> = self
+            .ropes
+            .values()
+            .filter(|rope| rope.params.style != RopeStyle::Tube)
+            .map(|rope| {
+                let fade = rope.fade();
+                let mut params = rope.params;
+                let mut look = rope.appearance(&textures);
+                if fade < 1.0 {
+                    look.color[3] = faded(look.color[3], fade);
+                    if let Some(end) = &mut params.color_end {
+                        end[3] = faded(end[3], fade);
+                    }
+                }
+                (rope.drawn_points(), params, look)
+            })
+            .collect();
         let strips = Arc::new(StripSet::build(
             self.revision,
-            self.ropes
-                .values()
-                .filter(|rope| rope.params.style != RopeStyle::Tube)
-                .map(|rope| {
-                    (
-                        rope.drawn_points(),
-                        &rope.params,
-                        rope.appearance(&textures),
-                    )
-                }),
+            items
+                .iter()
+                .map(|(points, params, look)| (*points, params, *look)),
         ));
         self.strips = Some(Arc::clone(&strips));
         strips

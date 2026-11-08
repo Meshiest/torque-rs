@@ -171,6 +171,7 @@ fn expand(input: TokenStream, engine: &syn::Path, kind: Kind) -> syn::Result<Tok
     let mut transforms = Vec::new();
     let mut values = Vec::new();
     let mut packs = Vec::new();
+    let mut pendings = Vec::new();
     let mut checks = Vec::new();
     let mut taken: Vec<(String, &syn::Ident)> = Vec::new();
     for field in &fields.named {
@@ -239,6 +240,11 @@ fn expand(input: TokenStream, engine: &syn::Path, kind: Kind) -> syn::Result<Tok
                         ::core::default::Default::default()
                     }
                 });
+                pendings.push(quote! {
+                    if #field_trait::pending(&record.#field_ident) {
+                        kept |= (#mask) as u32;
+                    }
+                });
             }
             None => packs.push(quote! { #field_ident: #read }),
         }
@@ -252,7 +258,10 @@ fn expand(input: TokenStream, engine: &syn::Path, kind: Kind) -> syn::Result<Tok
                     ctx: &#g::PackCtx,
                 ) -> (Self, u32) {
                     let _ = (mask, ctx);
-                    (Self { #(#packs),* }, 0)
+                    let record = Self { #(#packs),* };
+                    let mut kept = 0u32;
+                    #(#pendings)*
+                    (record, kept)
                 }
             }
         },

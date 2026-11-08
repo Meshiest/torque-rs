@@ -13,6 +13,7 @@
 [Assets from plugins](asset-loaders.md)
 [Rendering and input from plugins](rendering-and-input.md)
 [Writing a plugin](writing-a-plugin.md)
+[Networked plugins](networked-plugins.md)
 [Mods](mods.md)
 [Native extensions](native-extensions.md)
 [Games in a browser](web-pages.md)

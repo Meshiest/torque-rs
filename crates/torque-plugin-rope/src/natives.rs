@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use torque_engine::assets::Assets;
 use torque_engine::{Engine, Res, ScriptClass, ScriptError, VmMut, VmRef, function};
 use torque_ts_text::atof;
 use torque_ts_vm::vm::Vm;
@@ -52,6 +53,12 @@ fn refused(error: RopeError) -> ScriptError {
 /// The number of the world's texture of the file `path` (0: none): the one the world holds, else the file loaded through the
 /// engine's asset loaders and added. A file that is missing, too big or not an image warns once and is 0 (the rope is drawn plain).
 fn texture_for(engine: &Engine, vm: &mut Vm, ropes: &RopeShared, path: &str, nearest: bool) -> u32 {
+    let _ = engine.assets(vm);
+    texture_loaded(vm, ropes, path, nearest)
+}
+
+/// [`texture_for`] for a script engine whose asset cache is attached already (the plugin attaches it when a client is made).
+pub(crate) fn texture_loaded(vm: &mut Vm, ropes: &RopeShared, path: &str, nearest: bool) -> u32 {
     let path = path.trim();
     if path.is_empty() {
         return 0;
@@ -60,11 +67,14 @@ fn texture_for(engine: &Engine, vm: &mut Vm, ropes: &RopeShared, path: &str, nea
     if held != 0 {
         return held;
     }
-    let loaded = engine
-        .assets(vm)
-        .load::<SharedImage>(vm.file_host(), path)
-        .map(|image| Arc::clone(&image.0))
-        .map_err(|e| e.to_string())
+    let loaded = Assets::of(vm)
+        .ok_or_else(|| "the client has no asset cache".to_string())
+        .and_then(|assets| {
+            assets
+                .load::<SharedImage>(vm.file_host(), path)
+                .map(|image| Arc::clone(&image.0))
+                .map_err(|e| e.to_string())
+        })
         .and_then(|image| {
             ropes
                 .lock()
@@ -306,13 +316,8 @@ fn rope_get_texture(ropes: Res<RopeShared>, rope: i32) -> String {
 /// A speed that is not a number is 0. True if the rope exists.
 #[function(name = "ropeSetTextureScroll")]
 fn rope_set_texture_scroll(ropes: Res<RopeShared>, rope: i32, speed: f32) -> bool {
-    let speed = if speed.is_finite() {
-        speed.clamp(-1000.0, 1000.0)
-    } else {
-        0.0
-    };
     let set = RopeLook {
-        scroll: Some(speed),
+        scroll: Some(crate::sim::clean_scroll(speed)),
         ..RopeLook::default()
     };
     ropes
@@ -403,7 +408,7 @@ fn rope_set_curve(
     let curve = Curve {
         start,
         end,
-        bend: bend.clamp(-4.0, 4.0),
+        bend: bend.clamp(-crate::sim::MAX_BEND, crate::sim::MAX_BEND),
     };
     Ok(ropes.lock().set_curve(rope_id(rope), Some(curve)).is_ok())
 }
@@ -424,6 +429,43 @@ fn rope_get_curve_bend(ropes: Res<RopeShared>, rope: i32) -> f32 {
         .rope(rope_id(rope))
         .and_then(|r| r.curve())
         .map_or(0.0, |c| c.bend)
+}
+
+/// sets the length of a rope; it is reeled in or out evenly over `seconds` from the length it has (0 or none: at once)
+///
+/// The length is held between 0.02 and 10,000. A rope whose ends are farther apart than its length is drawn taut and straight
+/// between them, not stretched; it pulls nothing. A line's length is the distance between its ends. A length that is not a
+/// number changes nothing. True if the rope exists.
+#[function(name = "ropeSetLength")]
+fn rope_set_length(ropes: Res<RopeShared>, rope: i32, length: f32, seconds: Option<f32>) -> bool {
+    ropes
+        .lock()
+        .set_length(rope_id(rope), length, seconds.unwrap_or(0.0))
+        .is_ok()
+}
+
+/// the length of a rope now, in world units (0 for no such rope)
+#[function(name = "ropeGetLength")]
+fn rope_get_length(ropes: Res<RopeShared>, rope: i32) -> f32 {
+    ropes.lock().rope(rope_id(rope)).map_or(0.0, |r| r.length())
+}
+
+/// whether a rope is drawn taut and straight now: both ends held and as far apart as the rope is long
+#[function(name = "ropeIsTaut")]
+fn rope_is_taut(ropes: Res<RopeShared>, rope: i32) -> bool {
+    ropes.lock().rope(rope_id(rope)).is_some_and(|r| r.taut())
+}
+
+/// makes a rope a temporary one: it is taken away `seconds` from now, and shows less of itself over its last `fade` seconds
+///
+/// A tube thins and a ribbon or a line grows fainter. `seconds` of 0 makes the rope last until it is taken away; a `fade` past the
+/// time is the time. True if the rope exists.
+#[function(name = "ropeSetLifetime")]
+fn rope_set_lifetime(ropes: Res<RopeShared>, rope: i32, seconds: f32, fade: Option<f32>) -> bool {
+    ropes
+        .lock()
+        .set_lifetime(rope_id(rope), seconds, fade.unwrap_or(0.0))
+        .is_ok()
 }
 
 /// The natives, as the plugin registers them.
@@ -450,6 +492,10 @@ pub(crate) fn declared() -> Vec<torque_engine::script::NativeDecl> {
         rope_clear_look,
         rope_set_curve,
         rope_clear_curve,
-        rope_get_curve_bend
+        rope_get_curve_bend,
+        rope_set_length,
+        rope_get_length,
+        rope_is_taut,
+        rope_set_lifetime
     ]
 }

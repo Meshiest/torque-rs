@@ -72,7 +72,7 @@ fn a_ghost_record_becomes_its_layout_its_record_and_its_packer() {
                 ctx: &::torque_engine::__ghosts::PackCtx,
             ) -> (Self, u32) {
                 let _ = (mask, ctx);
-                (Self {
+                let record = Self {
                     segment_count: <u32 as ::torque_engine::__ghosts::plugin::NetField>::from_view(view, "segmentCount", 0,
                         ::torque_engine::__ghosts::plugin::FieldSpec { bits: 6u8, max_len: 0usize }),
                     color: if mask & ((0x2) as u32) != 0 {
@@ -82,7 +82,12 @@ fn a_ghost_record_becomes_its_layout_its_record_and_its_packer() {
                         ::core::default::Default::default()
                     },
                     local: ::core::default::Default::default()
-                }, 0)
+                };
+                let mut kept = 0u32;
+                if ::torque_engine::__ghosts::plugin::NetField::pending(&record.color) {
+                    kept |= (0x2) as u32;
+                }
+                (record, kept)
             }
         }
         const _: () = {

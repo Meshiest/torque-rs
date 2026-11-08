@@ -234,6 +234,11 @@ impl GameServer {
             // list the gate judges with.
             server.vm.set_extension(Rc::new(gate.required().clone()));
             shared.borrow_mut().set_connect_gate(gate);
+            // Every client the gate lets in has the plugins the manifest names, so it is the engine's own: the plugins' ghost
+            // classes go to all of them (a game that also takes TGE clients leaves the engine without networked plugins).
+            server
+                .vm
+                .set_global(torque_server::net::torque::ENGINE_CLASSES_GLOBAL, "1");
         }
         // The address the socket is bound to is the one clients dial unless the host says otherwise
         // ([`GameServer::set_public_address`]); a socket bound to every interface leaves it unknown.

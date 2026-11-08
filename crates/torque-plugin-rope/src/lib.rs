@@ -4,7 +4,8 @@
 //!
 //! - the datablock class `RopeData` ([`RopeData`]): how it is drawn, how many segments, how long, how thick, how stiff, what color;
 //! - the console functions `ropeCreate`, `ropeAttach`, `ropePin`, `ropeRelease`, `ropeImpulse`, `ropeDelete`, `ropeClear`,
-//!   `ropeCount`, `ropeFloor` and `ropeNoFloor`;
+//!   `ropeCount`, `ropeFloor`, `ropeNoFloor`, `ropeSetLength` and `ropeSetLifetime` (for a client's own ropes), and a server's
+//!   `ropeNet*` functions that make ropes every client shows ([`net`]);
 //! - a simulation ([`RopeWorld`]) that runs once for each frame the ropes are drawn;
 //! - three render passes ([`RopePass`]): the lit, fogged tubes into the opaque frame, their shadows into the sun's cascades, and
 //!   the ribbons and lines over the frame's depth after the translucent surfaces.
@@ -67,8 +68,25 @@
 //! ranges (a NaN reads as the default). A call past a cap prints a console error and makes nothing.
 //!
 //! The ropes are the engine's, not each client's: every client of one engine shares them, and each client's frames run the
-//! simulation, so a game with several clients in one process should make one engine for each. Ropes are not sent over the
-//! network; each client makes its own.
+//! simulation, so a game with several clients in one process should make one engine for each. A rope a client makes with
+//! `ropeCreate` is its own; a rope a server makes with `ropeNetCreate` is every client's ([`net`]).
+//!
+//! # Length, taut ropes and temporary ropes
+//!
+//! `ropeSetLength(rope, length, seconds)` reels a rope in or out evenly over `seconds` (0: at once). When both ends are held
+//! farther apart than the rope is long, it is drawn straight between them with its pieces evenly spaced, not stretched; it pulls
+//! on nothing (pulling is for a physics joint a rope can follow), and it hangs again once the ends come closer or the length grows
+//! ([`Rope::taut`]). `ropeSetLifetime(rope, seconds, fade)` makes a rope a temporary one: it is taken away after `seconds`, and over
+//! its last `fade` seconds a tube thins and a ribbon or a line grows fainter ([`Rope::fade`]).
+//!
+//! # Over the network
+//!
+//! The plugin is networked ([`Plugin::net_version`]): a server with it refuses a client without
+//! it at the connection, before any ghost is sent. A server script makes a rope with `ropeNetCreate(start, end, datablock)` and
+//! changes it with `ropeNetPin`, `ropeNetAttach`, `ropeNetRelease`, `ropeNetSetLength`, `ropeNetSetColor` and the other `ropeNet*`
+//! functions (each marks only the group it changed); every client of the engine then shows the rope, simulating its points itself.
+//! `ropeNetFx` sends a short-lived rope as a remote command with no ghost; `ropePredict` lets a client show its own rope at once and
+//! have the server's ghost adopt it. The book's "Networked plugins" chapter walks through this plugin.
 //!
 //! # Styles
 //!
@@ -154,6 +172,7 @@ mod data;
 mod image;
 mod mesh;
 mod natives;
+pub mod net;
 mod pass;
 pub mod sim;
 pub mod strip;
@@ -163,7 +182,8 @@ use std::sync::Arc;
 
 use torque_app::render::{EngineRender as _, Stage};
 use torque_engine::assets::{Assets, Spec};
-use torque_engine::{ClientTick, EngineBuilder, Plugin, PluginId};
+use torque_engine::net_classes::ClientGhostLookup;
+use torque_engine::{ClientStage, ClientTick, EngineBuilder, Plugin, PluginId};
 use torque_ts_text::atof;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
@@ -174,6 +194,7 @@ pub use image::{
 };
 pub use mesh::{SIDES, TubeMesh, TubeVertex, VERTEX_BYTES};
 pub use natives::RopeShared;
+pub use net::{NetRopes, RopeGhost, RopeNet};
 pub use pass::{RopePass, SharedWorld};
 pub use sim::{
     Anchor, Appearance, Curve, MAX_ROPES, MAX_TEXTURES, MAX_TOTAL_SEGMENTS, Mount, Rope, RopeEnd,
@@ -183,6 +204,9 @@ use torque_render_scene::hd::DynamicObject;
 
 /// The seconds one client tick advances the ropes by (the server's tick, 32 ms).
 pub const TICK_SECONDS: f32 = 0.032;
+
+/// The most seconds one pass of the client's loop advances the ropes by (a stalled client does not run them on in one jump).
+const MAX_TICK_SECONDS: f32 = 0.25;
 
 /// Where an object a rope hangs from is: the game's answer for [`Anchor::Object`].
 pub trait AnchorResolver: 'static {
@@ -410,9 +434,23 @@ impl RopePlugin {
 
 // ANCHOR: build
 impl Plugin for RopePlugin {
+    // ANCHOR: net_version
+    fn net_version(&self) -> Option<u32> {
+        Some(net::NET_VERSION)
+    }
+    // ANCHOR_END: net_version
+
     fn build(&self, engine: &mut EngineBuilder) {
         let ropes = RopeShared::new();
+        let book = RopeNet::new();
         engine.insert_resource(ropes.clone());
+        engine.insert_resource(book.clone());
+        // The ropes a server sends are textured through the client's asset cache, which is there before the first one arrives.
+        engine.client(ClientStage::Natives, |vm, engine| {
+            let _ = engine.assets(vm);
+            Ok(())
+        });
+        net::register(engine, &ropes, &book);
         // The images a rope is textured with: `.png` and `.jpg` files through the engine's asset loaders (their caps, their trust, their
         // hot reload).
         engine.assets().loader(
@@ -426,10 +464,20 @@ impl Plugin for RopePlugin {
             .natives(natives::declared());
         let anchors = Rc::clone(&self.anchors);
         let world = ropes.clone();
+        // The seconds between two ticks are the script engine's own clock's: a host runs this hook once for each pass of its main
+        // loop, which is not once for each 32 ms.
+        let last = std::cell::Cell::new(None::<u32>);
         engine.push(ClientTick::new(move |vm| {
+            let now = vm.sim_time();
+            let seconds = last
+                .replace(Some(now))
+                .map_or(0.0, |was| now.wrapping_sub(was) as f32 / 1000.0)
+                .min(MAX_TICK_SECONDS);
             let mut world = world.lock();
             world.resolve(|object, node| anchors.position(vm, object, node));
             world.resolve_ghosts(|object| anchors.ghost(vm, object));
+            let lookup = ClientGhostLookup::of(vm);
+            net::client::tick(&mut world, &mut book.lock(), lookup.as_deref(), seconds);
             // A texture file that changed on disk: the cache loaded it again, and the ropes that use it take the new image.
             if let Some(assets) = Assets::of(vm) {
                 for path in assets.changed() {
@@ -442,7 +490,7 @@ impl Plugin for RopePlugin {
                     }
                 }
             }
-            world.tick(TICK_SECONDS);
+            world.tick(seconds);
         }));
         let (shadows, opaque, translucent) = (ropes.0.clone(), ropes.0.clone(), ropes.0);
         let (a, b, c) = (

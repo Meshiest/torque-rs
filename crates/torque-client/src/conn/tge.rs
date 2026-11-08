@@ -32,7 +32,7 @@
 //! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code is this crate's own.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
@@ -59,6 +59,7 @@ use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
 use torque_engine::Engine;
+use torque_engine::net_classes::{ClientGhostLookup, ClientGhosts, GhostSinks, RawGhostEvent};
 use torque_server::net::channels::ClientChannels;
 use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
 use ts_vm::fields::{FieldRules, FieldType};
@@ -96,6 +97,8 @@ pub struct TgeWorld {
     pub records: ClientWorld<TgeClientSet>,
     /// The control Player's state as the client predicts it.
     pub control_state: Option<ControlState>,
+    /// The plugin ghosts the plugins' handlers have heard of, for each handler: the ghost's index, its birth and its updates.
+    pub plugin_seen: Vec<HashMap<u32, (u64, u32)>>,
 }
 
 impl Deref for TgeWorld {
@@ -993,7 +996,7 @@ pub struct TgeConn;
 
 impl ConnGame for TgeConn {
     type Feed = TgeFeed;
-    type Parts = ();
+    type Parts = TgeParts;
 
     const HANDSHAKE_WAIT_MS: u32 = TGE_HANDSHAKE_WAIT_MS;
     const HANDSHAKE_TRIES: u32 = TGE_HANDSHAKE_TRIES;
@@ -1036,6 +1039,34 @@ impl ConnGame for TgeConn {
         let _ = (game, world);
     }
 
+    fn register_natives(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>, gui: &gui::Gui) {
+        let _ = gui;
+        vm.set_extension(Rc::new(ClientGhostLookup(Rc::new(GhostPlaces(Rc::clone(
+            client,
+        ))))));
+    }
+
+    fn world_left(st: &mut ClientState<TgeConn>, world: &mut TgeWorld) {
+        // The plugin ghosts the handlers were told of go with the world: they hear it at the next tick.
+        let seen = std::mem::take(&mut world.plugin_seen);
+        let gone = &mut st.parts.gone;
+        if gone.len() < seen.len() {
+            gone.resize_with(seen.len(), Vec::new);
+        }
+        for (k, seen) in seen.into_iter().enumerate() {
+            gone[k].extend(seen.into_keys());
+        }
+    }
+
+    fn tick_detached(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        flush_gone_plugin_ghosts(vm, client);
+    }
+
+    fn tick(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        flush_gone_plugin_ghosts(vm, client);
+        deliver_plugin_ghosts(vm, client);
+    }
+
     /// The first Sun's colour (its `update` block's colour).
     fn sun_color(world: &TgeWorld) -> Option<[f32; 3]> {
         world.ghosts.values().find_map(|g| match &g.record {
@@ -1045,6 +1076,131 @@ impl ConnGame for TgeConn {
             }),
             _ => None,
         })
+    }
+}
+
+/// Where the connection's ghosts are, for the plugins ([`ClientGhosts`]).
+struct GhostPlaces(Rc<RefCell<ClientState<TgeConn>>>);
+
+impl ClientGhosts for GhostPlaces {
+    fn position(&self, index: u32) -> Option<[f32; 3]> {
+        use ghost_world::world::Pose;
+        let st = self.0.try_borrow().ok()?;
+        let ghost = st.conn.conn.as_ref()?.world.records.ghosts.get(&index)?;
+        ghost.position.or_else(|| {
+            Some(match ghost.pose()? {
+                Pose::Affine { xf, .. } => xf.position.map(|f| f.get()),
+                Pose::Matrix { m, .. } => [m[3], m[7], m[11]],
+                Pose::Euler { position, .. }
+                | Pose::Quat { position, .. }
+                | Pose::Item { position, .. } => position,
+            })
+        })
+    }
+}
+
+/// What the client keeps of the plugin ghosts of a connection that is over, until its handlers have heard that they are gone.
+#[derive(Debug, Default)]
+pub struct TgeParts {
+    /// For each handler, the indexes of the ghosts it was told of.
+    pub gone: Vec<Vec<u32>>,
+}
+
+/// Tells each handler that the ghosts of a connection that ended are gone.
+fn flush_gone_plugin_ghosts(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+    if client.borrow().parts.gone.iter().all(Vec::is_empty) {
+        return;
+    }
+    let gone = std::mem::take(&mut client.borrow_mut().parts.gone);
+    let Some(sinks) = vm.extension::<GhostSinks>() else {
+        return;
+    };
+    for (sink, indexes) in sinks.0.iter().zip(gone) {
+        for index in indexes {
+            sink.run(vm, RawGhostEvent::Removed { index });
+        }
+    }
+}
+
+/// One thing that happened to a plugin ghost, with its record when it has one.
+enum Heard {
+    Added(u32, Box<dyn ghosts::plugin::Record>),
+    Changed(u32, Box<dyn ghosts::plugin::Record>),
+    Removed(u32),
+}
+
+/// Tells each plugin handler of a ghost class ([`torque_engine::net_classes::GhostSinks`]) which ghosts of its class appeared,
+/// changed (an update reached them) or went since the last tick. The handlers run with no borrow of the client held.
+fn deliver_plugin_ghosts(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+    let Some(sinks) = vm.extension::<GhostSinks>() else {
+        return;
+    };
+    let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) else {
+        return;
+    };
+    let mut heard: Vec<(usize, Heard)> = Vec::new();
+    {
+        let mut st = client.borrow_mut();
+        let Some(conn) = st.conn.conn.as_mut() else {
+            return;
+        };
+        let world = &mut conn.world;
+        world.plugin_seen.resize_with(sinks.0.len(), HashMap::new);
+        for (k, sink) in sinks.0.iter().enumerate() {
+            let Some(class) = plugins.ghost(sink.class()) else {
+                continue;
+            };
+            let seen = &mut world.plugin_seen[k];
+            let mut present = HashSet::new();
+            for (index, ghost) in world.records.of_class(TgeClass::Plugin(class)) {
+                let Some(TgeRecord::Plugin(_, record)) = &ghost.record else {
+                    continue;
+                };
+                let birth = world.records.birth_order.get(&index).copied().unwrap_or(0);
+                present.insert(index);
+                match seen.get(&index) {
+                    None => heard.push((k, Heard::Added(index, record.clone()))),
+                    Some(&(was, _)) if was != birth => {
+                        heard.push((k, Heard::Removed(index)));
+                        heard.push((k, Heard::Added(index, record.clone())));
+                    }
+                    Some(&(_, updates)) if updates != ghost.updates => {
+                        heard.push((k, Heard::Changed(index, record.clone())));
+                    }
+                    Some(_) => continue,
+                }
+                seen.insert(index, (birth, ghost.updates));
+            }
+            let gone: Vec<u32> = seen
+                .keys()
+                .copied()
+                .filter(|index| !present.contains(index))
+                .collect();
+            for index in gone {
+                seen.remove(&index);
+                heard.push((k, Heard::Removed(index)));
+            }
+        }
+    }
+    for (k, event) in heard {
+        let sink = &sinks.0[k];
+        match &event {
+            Heard::Added(index, record) => sink.run(
+                vm,
+                RawGhostEvent::Added {
+                    index: *index,
+                    record: &**record,
+                },
+            ),
+            Heard::Changed(index, record) => sink.run(
+                vm,
+                RawGhostEvent::Changed {
+                    index: *index,
+                    record: &**record,
+                },
+            ),
+            Heard::Removed(index) => sink.run(vm, RawGhostEvent::Removed { index: *index }),
+        }
     }
 }
 

@@ -156,6 +156,7 @@ new Projectile(Shot) { dataBlock = Bolt; initialPosition = \"0 0 1\"; initialVel
             fields: FieldView { vm, obj },
             controlled: false,
             ghost_of: None,
+            connection: None,
         }
     }
     // The table's eight actions, then the shape's sequences that are not among them: `look` (the arm thread's first action),
@@ -227,6 +228,7 @@ fn the_ghost_view_gives_a_shapes_name_as_its_text() {
             fields: FieldView { vm, obj },
             controlled: false,
             ghost_of: None,
+            connection: None,
         }
         .net_string("shape_name", 0)
     };

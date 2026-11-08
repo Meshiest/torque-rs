@@ -26,6 +26,13 @@ const CLIENT: &str = if cfg!(feature = "rope") {
     "client.txt"
 };
 
+/// The server's list: the rope plugin's networked functions are in `server-rope.txt` (the `rope` feature), the default list is `server.txt`.
+const SERVER: &str = if cfg!(feature = "rope") {
+    "server-rope.txt"
+} else {
+    "server.txt"
+};
+
 #[test]
 fn the_client_has_these_natives() {
     let game = ArenaGame::new(
@@ -60,5 +67,5 @@ fn the_server_has_these_natives() {
         server.address(),
         Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 28_000)))
     );
-    check_listing(&listing("server.txt"), &server.vm().native_listing());
+    check_listing(&listing(SERVER), &server.vm().native_listing());
 }
