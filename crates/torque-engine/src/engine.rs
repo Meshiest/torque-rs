@@ -193,6 +193,11 @@ impl Engine {
         self.0.script.iter().map(|entry| &entry.kind)
     }
 
+    /// Every registry entry, in order.
+    pub(crate) fn script_table(&self) -> impl Iterator<Item = &ScriptEntry> + '_ {
+        self.0.script.iter()
+    }
+
     /// The list of `T`s, in the order the plugins pushed them.
     pub fn list<T: Any>(&self) -> &[T] {
         self.0.store.list()

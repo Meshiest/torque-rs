@@ -1,0 +1,26 @@
+[package]
+name = "torque-script-reference"
+description = "Writes the guide's script reference (book/src/reference/script) from the script engines a DefaultPlugins engine makes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "torquescript", "documentation"]
+categories = ["development-tools"]
+
+# A tool: `just script-reference` builds the server and client script engines of an engine of `DefaultPlugins` (and of each opt-in
+# plugin on top of it), reads their natives, console classes and prefs, and writes the reference pages.
+
+[[bin]]
+name = "script-reference"
+path = "src/main.rs"
+
+[dependencies]
+torque-app = { path = "../torque-app" }
+torque-engine = { path = "../torque-engine" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[lints]
+workspace = true

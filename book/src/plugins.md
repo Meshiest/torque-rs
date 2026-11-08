@@ -226,6 +226,9 @@ renames it); a method with `&self` or `&mut self` is called on its object's Rust
 block. A signature the engine cannot run (a parameter type it does not know, two `VmMut`s, an `Option` before a required
 argument, `self` in a free function) does not compile.
 
+[Script functions from Rust](script-functions.md) goes through the attributes, the parameters, the conversions, errors, prefs and
+classes in full; the [script reference](reference/script/index.md) lists what the engine's own scripts already have.
+
 ### Prefs and classes
 
 Two derives declare what a plugin keeps in the script engine, and `engine.script()` registers them in every script

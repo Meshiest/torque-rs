@@ -1,4 +1,4 @@
-# Continuous integration: formatting, lints, tests, examples, API docs, the guide, the MSRV and the dependency policy.
+# Continuous integration: formatting, lints, tests, examples, API docs, the script reference, the guide, the MSRV and the dependency policy.
 #
 # Every third-party action is pinned to a full commit SHA (the tag it was taken from is in the comment); update them
 # together.
@@ -121,7 +121,7 @@ jobs:
           done
 
   docs:
-    name: rustdoc and the guide
+    name: rustdoc, the script reference and the guide
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -138,6 +138,11 @@ jobs:
       - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: mdbook@0.5.2
+      - name: The script reference is up to date
+        run: |
+          cargo run -p torque-script-reference
+          git add --intent-to-add book/src/reference
+          git diff --exit-code book/src/reference
       - name: The guide
         run: mdbook build book
 

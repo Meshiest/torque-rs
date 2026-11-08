@@ -95,7 +95,7 @@ pub use plugin::{Plugin, PluginId, PluginSet, PluginType, Requires};
 pub use prefs::{Pref, PrefDecl, PrefKind, PrefType, Prefs, VmPrefs};
 pub use recipe::{ClientStage, ClientTick, RecipeError, ServerStage, Stage};
 pub use run::{RunError, Runner};
-pub use script::{IntoNative, ScriptRegistry, TypedNative};
+pub use script::{IntoNative, NativeEntry, ScriptRegistry, Side, TypedNative};
 /// Declares a console class as a struct with one typed field for each console field, for
 /// [`ScriptRegistry::class`](ScriptRegistry::class): the struct then implements [`ScriptClass`].
 ///

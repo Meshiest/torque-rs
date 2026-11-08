@@ -3690,6 +3690,15 @@ name = "torque-scene"
 version = "0.1.0"
 
 [[package]]
+name = "torque-script-reference"
+version = "0.1.0"
+dependencies = [
+ "torque-app",
+ "torque-engine",
+ "torque-ts-vm",
+]
+
+[[package]]
 name = "torque-server"
 version = "0.1.0"
 dependencies = [

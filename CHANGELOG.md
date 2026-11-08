@@ -86,6 +86,7 @@ different.
 - `torque`: the umbrella crate, re-exporting the engine crates behind features; `torque-app` (`torque::app`) holds what
   every game shares (its files, a server, a client, a window, the world view and offscreen pictures).
 - Math on `glam`.
+- `torque-script-reference` (`just script-reference`): writes the guide's script reference (every console function, method, class and pref of a default engine, with the opt-in plugins' marked) from the script engines it makes; CI fails when the checked-in pages are stale.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and one `unsafe` block in the workspace (the pipeline cache).
 

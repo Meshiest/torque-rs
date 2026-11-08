@@ -390,8 +390,54 @@ all_arities!(native_fns);
 
 /// One thing the registry declared.
 pub(crate) struct ScriptEntry {
-    side: Side,
+    pub(crate) side: Side,
     pub(crate) kind: EntryKind,
+}
+
+/// A native the registry declared, as a reference page lists it ([`Engine::natives`]).
+#[derive(Clone, Copy, Debug)]
+pub struct NativeEntry<'a> {
+    /// Which script engines it goes into.
+    pub side: Side,
+    /// A function's namespace (empty for the global one), or a method's class.
+    pub namespace: &'a str,
+    /// The name scripts call it by.
+    pub name: &'a str,
+    /// A method (`%obj.name(..)`), not a function.
+    pub method: bool,
+    /// A development command ([`ScriptRegistry::dev`]).
+    pub dev: bool,
+    /// The usage text.
+    pub usage: &'a str,
+    /// The whole doc comment of a native the attributes declared; empty for one declared by hand.
+    pub docs: &'a str,
+}
+
+impl Engine {
+    /// Every native the registry declared, in order: what a reference page lists with the docs of its declaration. (The
+    /// natives a host registers straight into a script engine are not here; its [`Vm::native_listing`] has them all.)
+    pub fn natives(&self) -> impl Iterator<Item = NativeEntry<'_>> + '_ {
+        self.script_table().filter_map(|entry| match &entry.kind {
+            EntryKind::Native {
+                namespace,
+                name,
+                method,
+                usage,
+                dev,
+                docs,
+                ..
+            } => Some(NativeEntry {
+                side: entry.side,
+                namespace,
+                name,
+                method: *method,
+                dev: *dev,
+                usage,
+                docs,
+            }),
+            _ => None,
+        })
+    }
 }
 
 pub(crate) enum EntryKind {
@@ -402,6 +448,7 @@ pub(crate) enum EntryKind {
         usage: String,
         native: TypedNative,
         dev: bool,
+        docs: &'static str,
     },
     Global {
         name: String,
@@ -421,6 +468,7 @@ impl ScriptEntry {
                 usage,
                 native,
                 dev,
+                ..
             } => native.install(vm, engine, callee(namespace, name, *method), usage, *dev),
             EntryKind::Global { name, default } => vm.set_global(name, default),
             EntryKind::Pref(decl) => decl.install(vm),
@@ -543,7 +591,13 @@ impl<'b> ScriptRegistry<'b> {
     ) -> &mut Self {
         let native = f.into_native();
         let usage = native.usage(Callee::Function { namespace, name }, args, usage);
-        self.native(namespace, name, false, usage, native, false)
+        self.native(
+            Callee::Function { namespace, name },
+            usage,
+            native,
+            false,
+            "",
+        )
     }
 
     /// Declares the method `name` of `class`: called on an object (`%obj.name(..)`), which `f` gets as
@@ -558,7 +612,7 @@ impl<'b> ScriptRegistry<'b> {
     ) -> &mut Self {
         let native = f.into_native();
         let usage = native.usage(Callee::Method { class, name }, args, usage);
-        self.native(class, name, true, usage, native, false)
+        self.native(Callee::Method { class, name }, usage, native, false, "")
     }
 
     /// Declares a development command: a [`function`](Self::function) that runs in a debug build, or in a release build
@@ -574,7 +628,13 @@ impl<'b> ScriptRegistry<'b> {
     ) -> &mut Self {
         let native = f.into_native();
         let usage = native.usage(Callee::Function { namespace, name }, args, usage);
-        self.native(namespace, name, false, usage, native, true)
+        self.native(
+            Callee::Function { namespace, name },
+            usage,
+            native,
+            true,
+            "",
+        )
     }
 
     /// Declares the natives the [`function`](crate::function) and [`methods`](crate::methods) attributes made, as
@@ -618,14 +678,7 @@ impl<'b> ScriptRegistry<'b> {
         for decl in natives {
             let native = (decl.native)();
             let usage = decl.usage_text(&native);
-            self.native(
-                decl.namespace,
-                decl.name,
-                decl.method,
-                usage,
-                native,
-                decl.dev,
-            );
+            self.native(decl.callee(), usage, native, decl.dev, decl.docs);
         }
         self
     }
@@ -641,14 +694,14 @@ impl<'b> ScriptRegistry<'b> {
 
     fn native(
         &mut self,
-        namespace: &str,
-        name: &str,
-        method: bool,
+        callee: Callee,
         usage: Result<String, String>,
         native: TypedNative,
         dev: bool,
+        docs: &'static str,
     ) -> &mut Self {
-        let callee = callee(namespace, name, method);
+        let (namespace, name) = (callee.namespace(), callee.name());
+        let method = matches!(callee, Callee::Method { .. });
         let usage = match usage {
             Ok(usage) => usage,
             Err(message) => {
@@ -667,6 +720,7 @@ impl<'b> ScriptRegistry<'b> {
             usage,
             native,
             dev,
+            docs,
         })
     }
 

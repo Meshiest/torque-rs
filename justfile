@@ -27,6 +27,16 @@ doc:
 book:
     mdbook build book
 
+# The script reference (book/src/reference/script): every console function, method, class and pref of an engine of
+# `DefaultPlugins` (and of the opt-in plugins it covers), read from the script engines it makes. Commit what it writes
+script-reference:
+    cargo run -p torque-script-reference
+
+# Writes the script reference again and fails when that changed a page or added one (CI's check that the pages are current)
+script-reference-check: script-reference
+    git add --intent-to-add book/src/reference
+    git diff --exit-code book/src/reference
+
 # Serve the guide with live reload
 book-serve:
     mdbook serve book --open
