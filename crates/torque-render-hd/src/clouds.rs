@@ -133,6 +133,9 @@ pub struct Clouds {
     pub drawn: bool,
     /// In a browser: whether the last frame wanted clouds while their noise was still being made (`noise_made`).
     pub waiting: bool,
+    /// In a browser: how long a frame that wants clouds spends making their noise ([`WEB_NOISE_BUDGET`] unless the renderer is
+    /// unbudgeted: [`crate::HdWorld::set_unbudgeted`]).
+    pub noise_budget: web_time::Duration,
     /// The image's mip chain.
     down: crate::capture::DownPipe,
     /// The march from the eye wherever it is (the renderer's choice); off: from no higher than [`CLAMPED_UNDER`] under the
@@ -520,6 +523,7 @@ impl Clouds {
             bound: false,
             drawn: false,
             waiting: false,
+            noise_budget: WEB_NOISE_BUDGET,
         }
     }
 
@@ -589,7 +593,7 @@ impl Clouds {
         if !cfg!(target_arch = "wasm32") || self.noise.is_some() {
             return true;
         }
-        self.waiting = !cl::make_noise_for(WEB_NOISE_BUDGET);
+        self.waiting = !cl::make_noise_for(self.noise_budget);
         !self.waiting
     }
 

@@ -62,6 +62,11 @@
 //! shape's origin and a number at the middle of that mesh of the shape as animated; any other node is the origin as well, so a name
 //! the game's [`FrameAnchors`] does not know ties the rope to the origin.
 //!
+//! **Offsets.** An end can hang from a point in a ghost's own frame: [`RopeWorld::pin_ghost_at`] (and `ropeNetAttachAt` from a server
+//! script) holds the point `offset` from the node, turned with the ghost's transform as the frame draws it
+//! ([`FrameAnchors::mount_at`]), so the end rotates with the ghost and is at the drawn point every frame, interpolated as the ghost
+//! is. A client that draws no frame adds the offset to the ghost's position unrotated.
+//!
 //! # Limits
 //!
 //! At most [`MAX_ROPES`] ropes and [`MAX_TOTAL_SEGMENTS`] segments over all of them; a datablock's numbers are clamped to their
@@ -79,11 +84,21 @@
 //! ([`Rope::taut`]). `ropeSetLifetime(rope, seconds, fade)` makes a rope a temporary one: it is taken away after `seconds`, and over
 //! its last `fade` seconds a tube thins and a ribbon or a line grows fainter ([`Rope::fade`]).
 //!
+//! # Drivers
+//!
+//! A rope normally follows what a script told it. Another plugin can instead *drive* it from Rust: [`RopeWorld::drive`] sets the two
+//! ends ([`DriveEnd`]: a point, a place on a ghost at an offset, or free), the length, whether the rope is at its limit (drawn
+//! straight and evenly spaced between its ends) and its curve, each frame or tick, and a [`RopeDriver`] registered under a name
+//! ([`RopePlugin::with_driver`], [`RopeDrivers`]) is asked each client tick for every rope bound to it. A server binds a networked
+//! rope with `ropeNetDrive(rope, name, object)`; each client then asks its driver about its own ghost of `object` (a joint, say), so
+//! only the name and the object cross the network. A rope stays a visual: a driver says where it is drawn, and it never pushes
+//! back. See [`driver`].
+//!
 //! # Over the network
 //!
 //! The plugin is networked ([`Plugin::net_version`]): a server with it refuses a client without
 //! it at the connection, before any ghost is sent. A server script makes a rope with `ropeNetCreate(start, end, datablock)` and
-//! changes it with `ropeNetPin`, `ropeNetAttach`, `ropeNetRelease`, `ropeNetSetLength`, `ropeNetSetColor` and the other `ropeNet*`
+//! changes it with `ropeNetPin`, `ropeNetAttach`, `ropeNetAttachAt`, `ropeNetRelease`, `ropeNetSetLength`, `ropeNetSetColor`, `ropeNetDrive` and the other `ropeNet*`
 //! functions (each marks only the group it changed); every client of the engine then shows the rope, simulating its points itself.
 //! `ropeNetFx` sends a short-lived rope as a remote command with no ghost; `ropePredict` lets a client show its own rope at once and
 //! have the server's ghost adopt it. The book's "Networked plugins" chapter walks through this plugin.
@@ -169,6 +184,7 @@
 //! rope has no motion vector, so a fast one smears a little under the anti-aliasing.
 
 mod data;
+pub mod driver;
 mod image;
 mod mesh;
 mod natives;
@@ -189,6 +205,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
 pub use data::{MAX_LENGTH, MAX_SEGMENTS_PER_ROPE, RopeData, RopeLook, RopeParams, RopeStyle};
+pub use driver::{Drive, DriveEnd, MAX_DRIVER_NAME_BYTES, RopeDriver, RopeDrivers};
 pub use image::{
     ImageData, MAX_IMAGE_BYTES, MAX_IMAGE_SIDE, SharedImage, encode_png, scroll_offset,
 };
@@ -232,6 +249,21 @@ pub trait FrameAnchors: Send + Sync + 'static {
     /// `"mount"`: a beam from a muzzle along the aim). The default is [`FrameAnchors::place`] with no direction.
     fn mount(&self, shape: &DynamicObject, node: &str) -> Option<Mount> {
         self.place(shape, node).map(|at| Mount { at, dir: None })
+    }
+
+    /// [`FrameAnchors::mount`] of the point `offset` from `node` in the shape's own frame (a rope end hung from a ghost at an
+    /// offset, [`RopeWorld::pin_ghost_at`]): the offset turns with the shape's transform of this frame, so the point rotates with
+    /// the shape and is drawn at the same interpolated pose the shape is. The default adds the turned offset to the mount; its
+    /// direction is the mount's.
+    fn mount_at(&self, shape: &DynamicObject, node: &str, offset: [f32; 3]) -> Option<Mount> {
+        let mut mount = self.mount(shape, node)?;
+        if offset != [0.0; 3] {
+            let turned = shape.transform.mul_v(offset);
+            for (at, d) in mount.at.iter_mut().zip(turned) {
+                *at += d;
+            }
+        }
+        Some(mount)
     }
 
     /// The place of `node` on ghost `ghost` when the frame draws no shape for it (the controlled player's own figure is not drawn
@@ -401,6 +433,7 @@ impl FrameAnchors for MuzzleAnchors {
 pub struct RopePlugin {
     anchors: Rc<dyn AnchorResolver>,
     frame_anchors: Arc<dyn FrameAnchors>,
+    drivers: Vec<(String, Rc<dyn RopeDriver>)>,
 }
 
 impl Default for RopePlugin {
@@ -416,12 +449,21 @@ impl RopePlugin {
         RopePlugin {
             anchors: Rc::new(anchors),
             frame_anchors: Arc::new(DrawnShapes),
+            drivers: Vec::new(),
         }
     }
 
     /// The plugin whose ropes follow the muzzles in `table` ([`MuzzleAnchors`]).
     pub fn with_muzzles(self, table: MuzzleTable) -> RopePlugin {
         self.with_frame_anchors(MuzzleAnchors::new(table))
+    }
+
+    /// The plugin with the rope driver `driver` registered under `name` ([`RopeDrivers::register`]; a name that is not valid, or that
+    /// two drivers want, is left out and the engine warns when it is built). Ropes bound to the driver follow what it says
+    /// ([`driver`]).
+    pub fn with_driver(mut self, name: &str, driver: impl RopeDriver) -> RopePlugin {
+        self.drivers.push((name.to_owned(), Rc::new(driver)));
+        self
     }
 
     /// The plugin reading where the frame draws a ghost its ropes follow with `frame_anchors` (a game's mounts, say) instead of
@@ -445,12 +487,21 @@ impl Plugin for RopePlugin {
         let book = RopeNet::new();
         engine.insert_resource(ropes.clone());
         engine.insert_resource(book.clone());
+        let drivers = RopeDrivers::new();
+        for (name, driver) in &self.drivers {
+            if !drivers.register_shared(name, Rc::clone(driver)) {
+                engine.warn(format!(
+                    "the rope driver name {name:?} is not valid (1 to {MAX_DRIVER_NAME_BYTES} bytes, no spaces) or is taken twice; it is left out"
+                ));
+            }
+        }
+        engine.insert_resource(drivers.clone());
         // The ropes a server sends are textured through the client's asset cache, which is there before the first one arrives.
         engine.client(ClientStage::Natives, |vm, engine| {
             let _ = engine.assets(vm);
             Ok(())
         });
-        net::register(engine, &ropes, &book);
+        net::register(engine, &ropes, &book, &drivers);
         // The images a rope is textured with: `.png` and `.jpg` files through the engine's asset loaders (their caps, their trust, their
         // hot reload).
         engine.assets().loader(
@@ -478,6 +529,7 @@ impl Plugin for RopePlugin {
             world.resolve_ghosts(|object| anchors.ghost(vm, object));
             let lookup = ClientGhostLookup::of(vm);
             net::client::tick(&mut world, &mut book.lock(), lookup.as_deref(), seconds);
+            drivers.run(vm, &mut world);
             // A texture file that changed on disk: the cache loaded it again, and the ropes that use it take the new image.
             if let Some(assets) = Assets::of(vm) {
                 for path in assets.changed() {

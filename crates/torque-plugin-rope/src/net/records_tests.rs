@@ -104,7 +104,8 @@ fn a_new_ghost_carries_every_group_as_the_server_has_it() {
         record.end,
         Some(AnchorWire::Ghost {
             ghost: 5,
-            node: "muzzle".to_string()
+            node: "muzzle".to_string(),
+            offset: [0.0; 3]
         })
     );
     // The reel has 2 s from 9 s and it is 10 s: one second left.
@@ -352,4 +353,62 @@ fn a_server_that_has_run_past_what_an_i32_holds_still_gets_its_times_right() {
     let (record, _) = pack(&view, u32::MAX);
     assert_eq!(record.length.map(|l| l.seconds), Some(1.0));
     assert_eq!(record.life.map(|l| l.left), Some(3.0));
+}
+
+#[test]
+fn an_offset_end_and_a_driver_round_trip_and_are_cut_to_what_the_world_holds() {
+    let view = rope()
+        .point("endOffset", [0.5, -2.0, 1.25])
+        .with("driverName", Value::str("joint"))
+        .link("driverObject", Link::Ghost(12));
+    let (record, kept) = pack(&view, u32::MAX);
+    assert_eq!(kept, 0);
+    assert_eq!(
+        record.end,
+        Some(AnchorWire::Ghost {
+            ghost: 5,
+            node: "muzzle".to_string(),
+            offset: [0.5, -2.0, 1.25]
+        })
+    );
+    assert_eq!(
+        record.driver,
+        Some(DriverWire::On {
+            name: "joint".to_string(),
+            ghost: 12
+        })
+    );
+    assert_eq!(round(&record), record);
+    // An offset that is not a number is the node itself, and one past the world is held to it.
+    let hostile = rope()
+        .point("endOffset", [f32::NAN, f32::INFINITY, 1.0e30])
+        .with("driverName", Value::str(""));
+    let (record, _) = pack(&hostile, u32::MAX);
+    let Some(AnchorWire::Ghost { offset, .. }) = record.end else {
+        panic!("a ghost end");
+    };
+    assert_eq!(offset, [0.0, 0.0, crate::sim::MAX_COORD]);
+    assert_eq!(record.driver, Some(DriverWire::Off));
+    // The driver group alone, by its own bit; an offset-free end is the short form on the wire.
+    let (alone, _) = pack(&view, MASK_DRIVER);
+    assert!(alone.driver.is_some() && alone.end.is_none() && alone.look.is_none());
+    let with = pack(&rope().point("endOffset", [1.0, 2.0, 3.0]), MASK_END).0;
+    let without = pack(&rope(), MASK_END).0;
+    assert!(bits(&without) < bits(&with));
+}
+
+#[test]
+fn a_driver_for_an_object_with_no_ghost_yet_is_sent_again() {
+    let waiting = rope()
+        .with("driverName", Value::str("joint"))
+        .link("driverObject", Link::NotGhosted);
+    let (record, kept) = pack(&waiting, u32::MAX);
+    assert_eq!(record.driver, Some(DriverWire::Waiting));
+    assert_eq!(kept, MASK_DRIVER);
+    assert_eq!(round(&record).driver, Some(DriverWire::Off));
+    // An object that is gone is no driver, and not waited for.
+    let gone = rope()
+        .with("driverName", Value::str("joint"))
+        .link("driverObject", Link::Null);
+    assert_eq!(pack(&gone, u32::MAX).0.driver, Some(DriverWire::Off));
 }

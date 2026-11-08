@@ -281,10 +281,12 @@ removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString
 removeWord 3..3 removeWord(text, index) - the text without that word
 restWords 2..2 restWords(text) - the text after its first space
 ropeNetAttach 4..5 ropeNetAttach(rope, end, object [, node]) - hangs an end of a networked rope from an object (name or id), that every client follows as it draws it
+ropeNetAttachAt 6..6 ropeNetAttachAt(rope, end, object, node, offset) - hangs an end of a networked rope from an object at a point in the object's own frame
 ropeNetClearCurve 2..2 ropeNetClearCurve(rope) - takes a networked rope's driven curve away
 ropeNetClearLook 2..2 ropeNetClearLook(rope) - puts everything one networked rope was given of its own (color, texture, speed, glow) back to the datablock's
 ropeNetCreate 4..6 ropeNetCreate(start, end, datablock [, predictId [, owner]]) - makes a networked rope of the datablock between two points, and returns its object id
 ropeNetDelete 2..2 ropeNetDelete(rope) - takes a networked rope away from every client; true if there was one
+ropeNetDrive 4..4 ropeNetDrive(rope, name, object) - makes a networked rope follow a rope driver (a plugin's) on every client
 ropeNetExpire 2..2 ropeNetExpire(rope) - deletes a networked rope whose lifetime has run out (the call `ropeNetSetLifetime` schedules)
 ropeNetFx 6..7 ropeNetFx(client, start, end, datablock, seconds [, bend]) - sends a rope that lasts `seconds` (at most 30) between two points to a client, or to every client when `client` is empty or 0,
 ropeNetPin 4..4 ropeNetPin(rope, end, point) - pins an end of a networked rope to a point; `end` is 0 or start, 1 or end
@@ -296,6 +298,7 @@ ropeNetSetLength 3..4 ropeNetSetLength(rope, length [, seconds]) - sets the leng
 ropeNetSetLifetime 3..4 ropeNetSetLifetime(rope, seconds [, fade]) - makes a networked rope a temporary one: it is deleted `seconds` from now, and every client shows less of it over its last
 ropeNetSetTexture 3..3 ropeNetSetTexture(rope, file) - sets the texture one networked rope is drawn with (a .png or .jpg, at most 96 bytes of name); an empty string puts the
 ropeNetSetTextureScroll 3..3 ropeNetSetTextureScroll(rope, speed) - sets how fast one networked rope's texture runs along it, in repeats a second; an empty string puts the datablock's back
+ropeNetUndrive 2..2 ropeNetUndrive(rope) - lets a networked rope go of its driver on every client
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)

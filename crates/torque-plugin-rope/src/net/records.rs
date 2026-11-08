@@ -8,6 +8,7 @@ use torque_ghosts::{Link, Value};
 use torque_net::NetError;
 
 use crate::data::{RopeLook, parse_color};
+use crate::driver::MAX_DRIVER_NAME_BYTES;
 use crate::sim::{Curve, Tangent};
 
 /// The mask bit of the first end's anchor.
@@ -24,6 +25,8 @@ pub const MASK_CURVE: u32 = 1 << 4;
 pub const MASK_LIFE: u32 = 1 << 5;
 /// The mask bit of what a new ghost is told once: the predict id.
 pub const MASK_INIT: u32 = 1 << 6;
+/// The mask bit of the driver the rope follows.
+pub const MASK_DRIVER: u32 = 1 << 7;
 
 /// The longest node name an anchor carries.
 pub const MAX_NODE_BYTES: usize = 24;
@@ -99,6 +102,8 @@ pub enum AnchorWire {
         ghost: u32,
         /// The node (or `"muzzle"`); empty for the origin.
         node: String,
+        /// The point held, as an offset from the node in the ghost's own frame (zero: the node itself).
+        offset: [f32; 3],
     },
     /// A ghost the server has not made for this client yet: sent as free, and sent again once it has.
     Waiting,
@@ -126,9 +131,13 @@ impl NetField for AnchorWire {
                 *self = AnchorWire::Point(at.map(F32::get));
             }
             2 => {
-                let (mut ghost, mut node) = match self {
-                    AnchorWire::Ghost { ghost, node } => (*ghost, node.clone().into_bytes()),
-                    _ => (0, Vec::new()),
+                let (mut ghost, mut node, offset) = match self {
+                    AnchorWire::Ghost {
+                        ghost,
+                        node,
+                        offset,
+                    } => (*ghost, node.clone().into_bytes(), *offset),
+                    _ => (0, Vec::new(), [0.0; 3]),
                 };
                 node.truncate(MAX_NODE_BYTES);
                 let bits = c.ghost_bits();
@@ -137,9 +146,18 @@ impl NetField for AnchorWire {
                 if node.len() > MAX_NODE_BYTES {
                     return Err(NetError::Invalid("an anchor's node is too long"));
                 }
+                let mut offset = offset.map(F32::new);
+                let mut held = offset.iter().any(|v| v.get() != 0.0);
+                c.flag(name, &mut held)?;
+                if held {
+                    c.floats(name, &mut offset)?;
+                } else {
+                    offset = [F32::default(); 3];
+                }
                 *self = AnchorWire::Ghost {
                     ghost,
                     node: text_of(&node, MAX_NODE_BYTES),
+                    offset: offset.map(|v| crate::sim::coord(v.get())),
                 };
             }
             _ => return Err(NetError::Invalid("an anchor's kind")),
@@ -147,8 +165,8 @@ impl NetField for AnchorWire {
         Ok(())
     }
 
-    /// The server rope's console fields `<name>Mode` (0 free, 1 point, 2 object), `<name>Point`, `<name>Object` (an object's id)
-    /// and `<name>Node`.
+    /// The server rope's console fields `<name>Mode` (0 free, 1 point, 2 object), `<name>Point`, `<name>Object` (an object's id),
+    /// `<name>Node` and `<name>Offset`.
     fn from_view(view: &dyn ObjectView, name: &str, _index: usize, _spec: FieldSpec) -> AnchorWire {
         let mode = torque_ghosts::int(view, &format!("{name}Mode"), 0);
         match mode {
@@ -161,6 +179,9 @@ impl NetField for AnchorWire {
                     AnchorWire::Ghost {
                         ghost,
                         node: text_of(&node, MAX_NODE_BYTES),
+                        offset: std::array::from_fn(|k| {
+                            crate::sim::coord(torque_ghosts::fld(view, &format!("{name}Offset"), k))
+                        }),
                     }
                 }
                 Link::NotGhosted => AnchorWire::Waiting,
@@ -179,7 +200,14 @@ impl NetField for AnchorWire {
             match self {
                 AnchorWire::Free | AnchorWire::Waiting => "free".to_string(),
                 AnchorWire::Point([x, y, z]) => format!("{x} {y} {z}"),
-                AnchorWire::Ghost { ghost, node } => format!("ghost {ghost} {node}"),
+                AnchorWire::Ghost {
+                    ghost,
+                    node,
+                    offset: [x, y, z],
+                } if [x, y, z].iter().any(|v| **v != 0.0) => {
+                    format!("ghost {ghost} {node} {x} {y} {z}")
+                }
+                AnchorWire::Ghost { ghost, node, .. } => format!("ghost {ghost} {node}"),
             }
             .into_bytes(),
         ));
@@ -491,6 +519,85 @@ impl NetField for PredictWire {
     }
 }
 
+/// The driver a networked rope follows ([`crate::driver`]): its name, and the client's ghost of the object the server named (the key
+/// the driver is asked with).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum DriverWire {
+    /// None: the rope follows what it was told.
+    #[default]
+    Off,
+    /// The driver registered under `name`, asked about the ghost.
+    On {
+        /// The driver's name.
+        name: String,
+        /// The ghost's index.
+        ghost: u32,
+    },
+    /// A ghost the server has not made for this client yet: sent as off, and sent again once it has.
+    Waiting,
+}
+
+impl NetField for DriverWire {
+    const MIN_BITS: usize = 1;
+    const COMPOUND: bool = true;
+
+    fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
+        let mut on = matches!(self, DriverWire::On { .. });
+        c.flag(name, &mut on)?;
+        if !on {
+            *self = DriverWire::Off;
+            return Ok(());
+        }
+        let (mut ghost, mut driver) = match self {
+            DriverWire::On { name, ghost } => (*ghost, name.clone().into_bytes()),
+            _ => (0, Vec::new()),
+        };
+        driver.truncate(MAX_DRIVER_NAME_BYTES);
+        let bits = c.ghost_bits();
+        c.int(name, &mut ghost, bits)?;
+        c.string(name, &mut driver)?;
+        if driver.len() > MAX_DRIVER_NAME_BYTES {
+            return Err(NetError::Invalid("a driver's name is too long"));
+        }
+        *self = DriverWire::On {
+            name: text_of(&driver, MAX_DRIVER_NAME_BYTES),
+            ghost,
+        };
+        Ok(())
+    }
+
+    /// The server rope's console fields `<name>Name` (empty for none) and `<name>Object` (an object's id).
+    fn from_view(view: &dyn ObjectView, name: &str, _index: usize, _spec: FieldSpec) -> DriverWire {
+        let driver = torque_ghosts::text(view, &format!("{name}Name"), 0);
+        let driver = text_of(&driver, MAX_DRIVER_NAME_BYTES);
+        if driver.is_empty() {
+            return DriverWire::Off;
+        }
+        match view.link(&format!("{name}Object")) {
+            Link::Ghost(ghost) => DriverWire::On {
+                name: driver,
+                ghost,
+            },
+            Link::NotGhosted => DriverWire::Waiting,
+            Link::Null => DriverWire::Off,
+        }
+    }
+
+    fn pending(&self) -> bool {
+        *self == DriverWire::Waiting
+    }
+
+    fn values(&self, out: &mut Vec<Value>) {
+        out.push(Value::Str(
+            match self {
+                DriverWire::Off | DriverWire::Waiting => "off".to_string(),
+                DriverWire::On { name, ghost } => format!("{name} {ghost}"),
+            }
+            .into_bytes(),
+        ));
+    }
+}
+
 // ANCHOR: ghost
 /// What a client knows of a networked rope. A group is `None` until the server sends it (an update sends only the groups whose
 /// mask bit is set; a new ghost has them all).
@@ -519,6 +626,9 @@ pub struct RopeGhost {
     /// The lifetime.
     #[net(mask = MASK_LIFE)]
     pub life: Option<LifeWire>,
+    /// The driver the rope follows.
+    #[net(mask = MASK_DRIVER)]
+    pub driver: Option<DriverWire>,
 }
 // ANCHOR_END: ghost
 

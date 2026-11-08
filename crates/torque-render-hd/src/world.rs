@@ -3073,6 +3073,16 @@ impl<E: HdExtension> HdWorld<E> {
         self.warming.is_some() || !self.warm_queue.is_empty()
     }
 
+    /// Takes the renderer's wall-clock budgets off: every changed cell is put in at once whatever the time ([`HdWorld::upload_budget`],
+    /// [`HdWorld::upload_time`]) and, in a browser, the clouds' noise is made whole by the first frame that wants it
+    /// ([`crate::clouds::WEB_NOISE_BUDGET`]). What a frame draws then depends on the scene alone, not on how busy the machine is:
+    /// for pictures taken offscreen.
+    pub fn set_unbudgeted(&mut self) {
+        self.upload_budget = None;
+        self.upload_time = std::time::Duration::MAX;
+        self.clouds.noise_budget = web_time::Duration::MAX;
+    }
+
     /// In a browser: whether the last frame wanted clouds while their noise was still being made (a share of it each such frame:
     /// [`crate::clouds::WEB_NOISE_BUDGET`]); they are drawn once it is all made. Never natively.
     pub fn clouds_waiting(&self) -> bool {

@@ -192,11 +192,13 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("ropeImpulse", rope, velocity)` *2; client; needs `torque.rope`*
 - `ts.call("ropeIsTaut", rope)` *1; client; needs `torque.rope`*
 - `ts.call("ropeNetAttach", rope, end, object [, node])` *3 to 4; server; needs `torque.rope`*
+- `ts.call("ropeNetAttachAt", rope, end, object, node, offset)` *5; server; needs `torque.rope`*
 - `ts.call("ropeNetClearCurve", rope)` *1; server; needs `torque.rope`*
 - `ts.call("ropeNetClearLook", rope)` *1; server; needs `torque.rope`*
 - `ts.call("ropeNetCount")` *none; client; needs `torque.rope`*
 - `ts.call("ropeNetCreate", start, end, datablock [, predictId [, owner]])` *3 to 5; server; needs `torque.rope`*
 - `ts.call("ropeNetDelete", rope)` *1; server; needs `torque.rope`*
+- `ts.call("ropeNetDrive", rope, name, object)` *3; server; needs `torque.rope`*
 - `ts.call("ropeNetExpire", rope)` *1; server; needs `torque.rope`*
 - `ts.call("ropeNetFx", client, start, end, datablock, seconds [, bend])` *5 to 6; server; needs `torque.rope`*
 - `ts.call("ropeNetPin", rope, end, point)` *3; server; needs `torque.rope`*
@@ -208,6 +210,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("ropeNetSetLifetime", rope, seconds [, fade])` *2 to 3; server; needs `torque.rope`*
 - `ts.call("ropeNetSetTexture", rope, file)` *2; server; needs `torque.rope`*
 - `ts.call("ropeNetSetTextureScroll", rope, speed)` *2; server; needs `torque.rope`*
+- `ts.call("ropeNetUndrive", rope)` *1; server; needs `torque.rope`*
 - `ts.call("ropeNoFloor")` *none; client; needs `torque.rope`*
 - `ts.call("ropePin", rope, end, point)` *3; client; needs `torque.rope`*
 - `ts.call("ropePredict", rope)` *1; client; needs `torque.rope`*

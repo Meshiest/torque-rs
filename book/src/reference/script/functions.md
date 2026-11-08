@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-254 entries in 1 namespace.
+257 entries in 1 namespace.
 
 ## Global
 
@@ -459,6 +459,13 @@ Console functions, by namespace. Functions of the global namespace are called as
   empty for its origin; at most 24 bytes. The object is followed by its ghost, so a client that does not have it yet is sent
   the end again once it does; a client with no ghost of it sees the end loose.
 
+- `ropeNetAttachAt(rope, end, object, node, offset)` - hangs an end of a networked rope from an object at a point in the object's own frame
+  *arguments: 5; server; needs `torque.rope`*
+
+  As `ropeNetAttach`, and the end is `offset` (`"x y z"`) from the node, turned with the object: it rotates with the object and
+  every client draws it where it draws the object that frame (a point on a held prop, a hinge, a hitch). The offset is held
+  inside the world.
+
 - `ropeNetClearCurve(rope)` - takes a networked rope's driven curve away
   *arguments: 1; server; needs `torque.rope`*
 - `ropeNetClearLook(rope)` - puts everything one networked rope was given of its own (color, texture, speed, glow) back to the datablock's
@@ -476,6 +483,14 @@ Console functions, by namespace. Functions of the global namespace are called as
 
 - `ropeNetDelete(rope)` - takes a networked rope away from every client; true if there was one
   *arguments: 1; server; needs `torque.rope`*
+- `ropeNetDrive(rope, name, object)` - makes a networked rope follow a rope driver (a plugin's) on every client
+  *arguments: 3; server; needs `torque.rope`*
+
+  `name` is the driver's name (1 to 24 bytes, no spaces) and `object` the server object it is asked about, which has a ghost
+  (a joint, say): each client gives the driver its own ghost number of it. The driver says where the rope's ends are, how long
+  it is and whether it is at its limit, each tick; the rope still pulls on nothing. A client without a driver of that name shows
+  the rope as it was told, and says so once.
+
 - `ropeNetExpire(rope)` - deletes a networked rope whose lifetime has run out (the call \`ropeNetSetLifetime\` schedules)
   *arguments: 1; server; needs `torque.rope`*
 - `ropeNetFx(client, start, end, datablock, seconds [, bend])` - sends a rope that lasts \`seconds\` (at most 30) between two points to a client, or to every client when \`client\` is empty or 0,
@@ -517,6 +532,12 @@ Console functions, by namespace. Functions of the global namespace are called as
 
 - `ropeNetSetTextureScroll(rope, speed)` - sets how fast one networked rope's texture runs along it, in repeats a second; an empty string puts the datablock's back
   *arguments: 2; server; needs `torque.rope`*
+- `ropeNetUndrive(rope)` - lets a networked rope go of its driver on every client
+  *arguments: 1; server; needs `torque.rope`*
+
+  The rope is no longer at its limit; its ends (a point where it last was, a ghost end still following its ghost), length and
+  curve stay as the driver last put them until the server changes them.
+
 - `ropeNoFloor()` - takes the floor away
   *arguments: none; client; needs `torque.rope`*
 - `ropePin(rope, end, point)` - pins an end of a rope to a point; \`end\` is 0 or start, 1 or end

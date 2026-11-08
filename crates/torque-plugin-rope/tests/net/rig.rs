@@ -50,6 +50,15 @@ pub fn engine(files: &GameFiles, rope: bool) -> Engine {
     builder.build().expect("the engine builds")
 }
 
+/// An engine of the default plugins (the game's `game.toml` applied) and the rope plugin `plugin`.
+pub fn engine_with(files: &GameFiles, plugin: impl torque_engine::PluginType) -> Engine {
+    let config = GameConfig::load(files).expect("game.toml");
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(DefaultPlugins).config(&config);
+    builder.add_plugins(plugin);
+    builder.build().expect("the engine builds")
+}
+
 pub struct Peer {
     pub client: GameClient,
     pub engine: Engine,

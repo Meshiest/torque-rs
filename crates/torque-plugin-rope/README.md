@@ -70,6 +70,21 @@ each frame, exactly (`FrameAnchors`; the default `DrawnShapes` puts an empty nod
 of that mesh as animated, and any other node at the origin; a game supplies its own mounts). A rope hung from an object that goes
 lets go of it.
 
+An end can hang from a point in a ghost's own frame (`RopeWorld::pin_ghost_at`; `ropeNetAttachAt` from a server): the point is the
+node moved by an offset turned with the ghost's transform as the frame draws it, so it rotates with the ghost and is at the drawn
+point every frame.
+
+## Drivers
+
+Another plugin can steer a rope from Rust instead of from script. `RopeWorld::drive(rope, &Drive)` sets the two ends (`DriveEnd`: a
+point, a place on a ghost at an offset, or free), the length (with the seconds to reach a changed one), whether the rope is at its
+limit (drawn straight and evenly spaced between its ends, as a taut joint is) and its curve; it may be called every frame or every
+tick and does nothing for what is already so. A point end is exactly where it is said in the next frame; a ghost end follows its
+ghost every frame without more calls. A `RopeDriver` registered under a name (`RopePlugin::with_driver`, or `RopeDrivers::register`
+from another plugin's build) is asked once each client tick for every rope bound to it (`RopeDrivers::bind`). A server binds a
+networked rope with `ropeNetDrive(rope, name, object)`: each client asks its driver about its own ghost of `object`, so only the
+name and the object cross the network. A rope stays a visual: a driver says where it is drawn and nothing a rope does pushes back.
+
 ## Styles
 
 | `style` | Drawn as | Simulated | Casts a shadow | Takes a shadow |
@@ -132,7 +147,8 @@ before any ghost). Every `ropeNet*` function runs on the server and changes a `R
 | Function | Does |
 |---|---|
 | `ropeNetCreate(start, end, datablock [, predictId, owner])` | makes a rope between two points; returns its object id |
-| `ropeNetPin(rope, end, point)`, `ropeNetAttach(rope, end, object [, node])`, `ropeNetRelease(rope, end)` | what holds an end (a point, an object's ghost, or nothing) |
+| `ropeNetPin(rope, end, point)`, `ropeNetAttach(rope, end, object [, node])`, `ropeNetAttachAt(rope, end, object, node, offset)`, `ropeNetRelease(rope, end)` | what holds an end (a point, an object's ghost, a point in its own frame, or nothing) |
+| `ropeNetDrive(rope, name, object)`, `ropeNetUndrive(rope)` | make the rope follow a plugin's rope driver on every client, asked about `object`'s ghost; let it go |
 | `ropeNetSetLength(rope, length [, seconds])` | the length every client reels to, sent once as a target and a time |
 | `ropeNetSetColor`, `ropeNetSetTexture`, `ropeNetSetTextureScroll`, `ropeNetSetEmissive`, `ropeNetClearLook` | the rope's own look |
 | `ropeNetSetCurve(rope, startDir, endDir, bend)`, `ropeNetClearCurve(rope)` | a beam's driven curve |
@@ -140,7 +156,7 @@ before any ghost). Every `ropeNet*` function runs on the server and changes a `R
 | `ropeNetDelete(rope)` | takes it away from every client |
 | `ropeNetFx(client, start, end, datablock, seconds [, bend])` | a short-lived rope sent as an event, with no ghost (a grapple shot, an arc) to one client or, for `""`, all |
 
-Each change marks one group of the ghost (start, end, length, look, curve, lifetime), so an update carries only what changed. The
+Each change marks one group of the ghost (start, end, length, look, curve, lifetime, driver), so an update carries only what changed. The
 points of a rope never cross the network: each client makes a rope from the ghost and simulates it. `RopeData` goes to the clients
 with the mission's datablocks, and an end hung from an object follows the object's ghost as the client draws it. A client tells
 the server about a rope it made at once with `ropePredict(rope)`, which returns an id (1 to 255, at most 16 waiting): the server's

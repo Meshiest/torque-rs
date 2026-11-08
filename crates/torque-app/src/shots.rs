@@ -37,6 +37,8 @@ impl<G: App> Seat<G> {
         view.attach_to(game.host());
         // The emitter kinds run by the frame's step, not by how long the machine took to draw it.
         view.set_effect_frame_seconds(Some(FRAME_MS as f32 / 1000.0));
+        // Nor does what the renderer draws wait on the clock: its uploads and the clouds' noise are not held to a time.
+        view.renderer().set_unbudgeted();
         Ok(Seat {
             view,
             target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,

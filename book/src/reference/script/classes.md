@@ -84,7 +84,7 @@ Console classes, with the fields each adds to its parent's. 112 classes.
 | [PlayerData](#playerdata) | [ShapeBaseData](#shapebasedata) | 80 |
 | [Projectile](#projectile) | [GameBase](#gamebase) | 4 |
 | [ProjectileData](#projectiledata) | [GameBaseData](#gamebasedata) | 23 |
-| [Rope](#rope) | [SceneObject](#sceneobject) | 25 |
+| [Rope](#rope) | [SceneObject](#sceneobject) | 29 |
 | [RopeData](#ropedata) | [SimDataBlock](#simdatablock) | 20 |
 | [ScatterSky](#scattersky) | [SceneObject](#sceneobject) | 11 |
 | [SceneObject](#sceneobject) | [NetObject](#netobject) | 3 |
@@ -1160,10 +1160,12 @@ No fields of its own.
 | `startPoint` | Point3F | `0 0 0` |  |  |
 | `startObject` | int | `0` |  | The object the start hangs from (its id). |
 | `startNode` | string |  |  |  |
+| `startOffset` | Point3F | `0 0 0` |  | The point held on the object, in its own frame (`"0 0 0"`: the node itself). |
 | `endMode` | int | `0` |  | What holds the far end: as `startMode`. |
 | `endPoint` | Point3F | `0 0 0` |  |  |
 | `endObject` | int | `0` |  |  |
 | `endNode` | string |  |  |  |
+| `endOffset` | Point3F | `0 0 0` |  |  |
 | `length` | float | `0` |  | The length the rope goes to (0: its datablock's), the seconds it was given to get there and the server time it was set. |
 | `lengthReel` | float | `0` |  |  |
 | `lengthAt` | int | `0` |  |  |
@@ -1178,6 +1180,8 @@ No fields of its own.
 | `lifeEnd` | int | `0` |  | The server time the rope ends (0: it lasts), and the seconds it fades over before. |
 | `lifeFade` | float | `0` |  |  |
 | `lifeEvent` | int | `0` |  | The scheduled call that deletes the rope at its end (0: none): a new lifetime takes the place of it. |
+| `driverName` | string |  |  | The driver the rope follows (empty: none) and the object the clients ask it about (the object's id). |
+| `driverObject` | int | `0` |  |  |
 | `predict` | int | `0` |  | The id the owner's client gave its predicted rope (0: none), and the owner's connection object. |
 | `predictOwner` | int | `0` |  |  |
 

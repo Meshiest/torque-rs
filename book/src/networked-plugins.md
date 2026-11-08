@@ -50,11 +50,12 @@ set (a new ghost has them all set). The rope has one bit for each group, so a ch
 
 | Bit | Group | Marked by |
 |---|---|---|
-| `MASK_START`, `MASK_END` | what holds an end | `ropeNetPin`, `ropeNetAttach`, `ropeNetRelease` |
+| `MASK_START`, `MASK_END` | what holds an end (a point, a ghost and a place in its own frame) | `ropeNetPin`, `ropeNetAttach`, `ropeNetAttachAt`, `ropeNetRelease` |
 | `MASK_LENGTH` | the length to reel to, and the time left | `ropeNetSetLength` |
 | `MASK_LOOK` | color, texture, scroll, glow | `ropeNetSetColor` and kin |
 | `MASK_CURVE` | a beam's driven curve | `ropeNetSetCurve` |
 | `MASK_LIFE` | the time left and the fade | `ropeNetSetLifetime` |
+| `MASK_DRIVER` | the name of a driver and the ghost it is asked about | `ropeNetDrive`, `ropeNetUndrive` |
 | `MASK_INIT` | what a new ghost is told once: the predict id | never again |
 
 The server's function sets the console field and marks the group (`torque_game::scene::ghost::mark(vm, object, MASK_LOOK)`).

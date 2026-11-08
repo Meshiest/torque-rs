@@ -24,6 +24,7 @@ use glam::Vec3;
 use torque_ts_vm::sim::ObjId;
 
 use crate::data::{MAX_LENGTH, RopeLook, RopeParams, RopeStyle};
+use crate::driver::{Drive, DriveEnd};
 use crate::image::ImageData;
 use crate::mesh::{TubeMesh, TubeSource};
 use crate::strip::StripSet;
@@ -113,6 +114,8 @@ pub enum Anchor {
         ghost: u32,
         /// The place on its shape; empty for its origin.
         node: String,
+        /// The place held, as an offset from the node in the ghost's own frame (zero: the node itself).
+        offset: [f32; 3],
     },
 }
 
@@ -149,15 +152,18 @@ impl fmt::Display for RopeError {
 
 impl std::error::Error for RopeError {}
 
-/// `p` as a point the simulation can hold: a coordinate that is not a number becomes 0, the rest is kept within [`MAX_COORD`].
-fn point(p: [f32; 3]) -> Vec3 {
-    Vec3::from(p.map(|c| {
-        if c.is_finite() {
-            c.clamp(-MAX_COORD, MAX_COORD)
-        } else {
-            0.0
-        }
-    }))
+/// `c` as a coordinate the simulation can hold: a number that is not finite becomes 0, the rest is kept within [`MAX_COORD`].
+pub(crate) fn coord(c: f32) -> f32 {
+    if c.is_finite() {
+        c.clamp(-MAX_COORD, MAX_COORD)
+    } else {
+        0.0
+    }
+}
+
+/// `p` as a point the simulation can hold ([`coord`] for each coordinate).
+pub(crate) fn point(p: [f32; 3]) -> Vec3 {
+    Vec3::from(p.map(coord))
 }
 
 /// Where a ghost's mount is drawn this frame: its place, and the way it points (the barrel of a muzzle, the aim).
@@ -345,6 +351,8 @@ struct Pin {
     aim: Option<Vec3>,
     /// Whether the client has seen the ghost an end pinned to it (`pin_ghost`) follows.
     ghost_seen: bool,
+    /// The place held, as an offset from the node in the ghost's own frame (zero: the node itself).
+    offset: Vec3,
 }
 
 /// A change of length in progress ([`RopeWorld::set_length`]).
@@ -385,6 +393,10 @@ pub struct Rope {
     reel: Option<Reel>,
     /// A temporary rope's time left.
     life: Option<Life>,
+    /// Whether a driver says the rope is at its limit: it is drawn straight between its ends whatever their distance.
+    at_limit: bool,
+    /// The length a driver last gave ([`RopeWorld::drive`]); None when none does.
+    driven_length: Option<f32>,
 }
 
 impl Rope {
@@ -417,6 +429,7 @@ impl Rope {
                     drawn: None,
                     aim: None,
                     ghost_seen: false,
+                    offset: Vec3::ZERO,
                 }),
                 Some(Pin {
                     object: None,
@@ -426,6 +439,7 @@ impl Rope {
                     drawn: None,
                     aim: None,
                     ghost_seen: false,
+                    offset: Vec3::ZERO,
                 }),
             ],
             look: RopeLook::default(),
@@ -433,6 +447,8 @@ impl Rope {
             good: [a, b],
             reel: None,
             life: None,
+            at_limit: false,
+            driven_length: None,
         };
         rope.layout(a, b);
         rope
@@ -526,7 +542,7 @@ impl Rope {
         };
         let laid = Curve::sample(a, b, da, db, bend, n);
         let mut moved = false;
-        for (i, at) in laid.into_iter().enumerate() {
+        for (i, at) in laid.into_iter().map(|p| point(p.to_array())).enumerate() {
             moved |= self.pos[i] != at;
             self.pos[i] = at;
         }
@@ -534,6 +550,64 @@ impl Rope {
         self.before.clone_from(&self.pos);
         self.shown.clone_from(&self.pos);
         moved
+    }
+
+    /// Puts what holds the end `end` as a driver says; true if that changed anything.
+    fn drive_end(&mut self, end: RopeEnd, want: &DriveEnd) -> bool {
+        let k = end.index();
+        let here = self.pos[if k == 0 { 0 } else { self.pos.len() - 1 }];
+        match want {
+            DriveEnd::Free => self.pins[k].take().is_some(),
+            DriveEnd::Point(at) => {
+                let at = point(*at);
+                match &mut self.pins[k] {
+                    Some(pin) if pin.object.is_none() && pin.ghost.is_none() => {
+                        let same = pin.drawn == Some(at);
+                        pin.drawn = Some(at);
+                        pin.target = at;
+                        !same
+                    }
+                    pin => {
+                        *pin = Some(Pin {
+                            object: None,
+                            at: here,
+                            target: at,
+                            ghost: None,
+                            drawn: Some(at),
+                            aim: None,
+                            ghost_seen: false,
+                            offset: Vec3::ZERO,
+                        });
+                        true
+                    }
+                }
+            }
+            DriveEnd::Ghost {
+                ghost,
+                node,
+                offset,
+            } => {
+                let offset = point(*offset);
+                let same = matches!(
+                    &self.pins[k],
+                    Some(Pin { object: None, ghost: Some((g, n)), offset: o, .. })
+                        if g == ghost && n == node && *o == offset
+                );
+                if !same {
+                    self.pins[k] = Some(Pin {
+                        object: None,
+                        at: here,
+                        target: here,
+                        ghost: Some((*ghost, node.clone())),
+                        drawn: None,
+                        aim: None,
+                        ghost_seen: false,
+                        offset,
+                    });
+                }
+                !same
+            }
+        }
     }
 
     /// How much of itself a temporary rope still shows: 1 until the last `fade` seconds of its life, then falling to 0 (a rope with no
@@ -550,21 +624,47 @@ impl Rope {
         self.life.map(|l| l.left)
     }
 
+    /// Sets the length (see [`RopeWorld::set_length`]).
+    fn reel_to(&mut self, length: f32, seconds: f32) {
+        if !length.is_finite() || self.params.style == RopeStyle::Line {
+            return;
+        }
+        let to = length.clamp(MIN_LENGTH, MAX_LENGTH);
+        if seconds.is_finite() && seconds > 0.0 {
+            let seconds = seconds.min(MAX_SECONDS);
+            self.reel = Some(Reel {
+                from: self.length(),
+                to,
+                left: seconds,
+                seconds,
+            });
+        } else {
+            self.reel = None;
+            self.rest = to / self.params.pieces() as f32;
+        }
+    }
+
+    /// Whether a driver says the rope is at its limit ([`Drive::at_limit`]): it is then drawn straight and evenly spaced between
+    /// its ends even when they are nearer than its length.
+    pub fn at_limit(&self) -> bool {
+        self.at_limit
+    }
+
     /// Whether the rope's length is changing ([`RopeWorld::set_length`]).
     pub fn reeling(&self) -> bool {
         self.reel.is_some()
     }
 
-    /// Whether both ends are held and `a` and `b` (where they are) are as far apart as the rope is long: it is then drawn straight
-    /// between them instead of stretching.
+    /// Whether both ends are held and `a` and `b` (where they are) are as far apart as the rope is long, or a driver says the rope is
+    /// at its limit: it is then drawn straight between them instead of stretching.
     fn taut_between(&self, a: Vec3, b: Vec3) -> bool {
         self.pins[0].is_some()
             && self.pins[1].is_some()
             && !self.driven()
-            && a.distance(b) >= self.length()
+            && (self.at_limit || a.distance(b) >= self.length())
     }
 
-    /// Whether the rope is drawn taut now: both ends held, and as far apart as it is long.
+    /// Whether the rope is drawn taut now: both ends held, and as far apart as it is long (or at its limit, for a driven rope).
     pub fn taut(&self) -> bool {
         let shown = self.drawn_points();
         match (shown.first(), shown.last()) {
@@ -663,10 +763,12 @@ impl Rope {
             },
             Some(Pin {
                 ghost: Some((ghost, node)),
+                offset,
                 ..
             }) => Anchor::Ghost {
                 ghost: *ghost,
                 node: node.clone(),
+                offset: offset.to_array(),
             },
             Some(pin) => Anchor::Point(pin.target.to_array()),
         }
@@ -959,6 +1061,7 @@ impl RopeWorld {
             drawn: None,
             aim: None,
             ghost_seen: false,
+            offset: Vec3::ZERO,
         });
         self.revision += 1;
         Ok(())
@@ -972,6 +1075,20 @@ impl RopeWorld {
         end: RopeEnd,
         object: ObjId,
         node: &str,
+    ) -> Result<(), RopeError> {
+        self.pin_object_at(id, end, object, node, [0.0; 3])
+    }
+
+    /// [`RopeWorld::pin_object`] holding the point `offset` from the node, in the object's own frame: the end follows the object
+    /// through the ghost the frame draws for it (see [`RopeWorld::pin_ghost_at`]) and so rotates with it; an object the frame
+    /// draws no ghost for is followed by the script's reading, and the offset is then added to it unrotated.
+    pub fn pin_object_at(
+        &mut self,
+        id: RopeId,
+        end: RopeEnd,
+        object: ObjId,
+        node: &str,
+        offset: [f32; 3],
     ) -> Result<(), RopeError> {
         let rope = self.rope_mut(id)?;
         let here = rope.pos[if end == RopeEnd::Start {
@@ -987,6 +1104,7 @@ impl RopeWorld {
             drawn: None,
             aim: None,
             ghost_seen: false,
+            offset: point(offset),
         });
         self.revision += 1;
         Ok(())
@@ -1000,6 +1118,21 @@ impl RopeWorld {
         end: RopeEnd,
         ghost: u32,
         node: &str,
+    ) -> Result<(), RopeError> {
+        self.pin_ghost_at(id, end, ghost, node, [0.0; 3])
+    }
+
+    /// [`RopeWorld::pin_ghost`] holding the point `offset` from the node, in the ghost's own frame: the end is where the frame draws
+    /// that point of the ghost (the node's place moved by the offset turned with the ghost's drawn transform), each frame, so it
+    /// rotates with the ghost and moves with its interpolation. A client that draws no frame ([`RopeWorld::follow_ghosts`]) adds
+    /// the offset to the ghost's position unrotated.
+    pub fn pin_ghost_at(
+        &mut self,
+        id: RopeId,
+        end: RopeEnd,
+        ghost: u32,
+        node: &str,
+        offset: [f32; 3],
     ) -> Result<(), RopeError> {
         let rope = self.rope_mut(id)?;
         let here = rope.pos[if end == RopeEnd::Start {
@@ -1015,6 +1148,7 @@ impl RopeWorld {
             drawn: None,
             aim: None,
             ghost_seen: false,
+            offset: point(offset),
         });
         self.revision += 1;
         Ok(())
@@ -1060,7 +1194,7 @@ impl RopeWorld {
                     Some(at) => {
                         held.ghost_seen = true;
                         if held.drawn.is_none() {
-                            held.target = point(at);
+                            held.target = point((Vec3::from(at) + held.offset).to_array());
                         }
                     }
                     None if held.ghost_seen => {
@@ -1081,23 +1215,7 @@ impl RopeWorld {
     /// positive number, else reeled in or out evenly over `seconds` (at most [`MAX_SECONDS`]) from the length it has now. A line's
     /// length is the distance between its ends and is not changed. A `length` that is not a number does nothing.
     pub fn set_length(&mut self, id: RopeId, length: f32, seconds: f32) -> Result<(), RopeError> {
-        let rope = self.rope_mut(id)?;
-        if !length.is_finite() || rope.params.style == RopeStyle::Line {
-            return Ok(());
-        }
-        let to = length.clamp(MIN_LENGTH, MAX_LENGTH);
-        if seconds.is_finite() && seconds > 0.0 {
-            let seconds = seconds.min(MAX_SECONDS);
-            rope.reel = Some(Reel {
-                from: rope.length(),
-                to,
-                left: seconds,
-                seconds,
-            });
-        } else {
-            rope.reel = None;
-            rope.rest = to / rope.params.pieces() as f32;
-        }
+        self.rope_mut(id)?.reel_to(length, seconds);
         self.revision += 1;
         Ok(())
     }
@@ -1152,7 +1270,7 @@ impl RopeWorld {
                     continue;
                 };
                 match read(*id, node) {
-                    Some(at) => held.target = point(at),
+                    Some(at) => held.target = point((Vec3::from(at) + held.offset).to_array()),
                     None => {
                         *pin = None;
                         released = true;
@@ -1181,6 +1299,17 @@ impl RopeWorld {
     /// since the last frame in substeps ([`SUBSTEP_SECONDS`], at most [`MAX_SUBSTEPS`]) and are shown between their last two
     /// states ([`Rope::drawn_points`]).
     pub fn step_frame(&mut self, time: f32, mut drawn: impl FnMut(u32, &str) -> Option<Mount>) {
+        self.step_frame_at(time, |ghost, node, _| drawn(ghost, node));
+    }
+
+    /// [`RopeWorld::step_frame`] for a drawer that places the offsets of the ends too: `drawn(ghost, node, offset)` is where the
+    /// frame draws the point `offset` from `node` in the ghost's own frame ([`RopeWorld::pin_ghost_at`]; `[0.0; 3]` for an end
+    /// pinned without one), with the way the mount points.
+    pub fn step_frame_at(
+        &mut self,
+        time: f32,
+        mut drawn: impl FnMut(u32, &str, [f32; 3]) -> Option<Mount>,
+    ) {
         self.idle_ticks = 0;
         let seconds = match self.clock {
             Some(last) if time.is_finite() && time > last => time - last,
@@ -1194,7 +1323,7 @@ impl RopeWorld {
                 let Some((ghost, node)) = &held.ghost else {
                     continue;
                 };
-                let mount = drawn(*ghost, node);
+                let mount = drawn(*ghost, node, held.offset.to_array());
                 held.drawn = mount.map(|m| point(m.at));
                 held.aim = mount.and_then(|m| m.dir).map(Vec3::from);
                 if let Some(at) = held.drawn {
@@ -1232,6 +1361,60 @@ impl RopeWorld {
     pub fn set_curve(&mut self, id: RopeId, curve: Option<Curve>) -> Result<(), RopeError> {
         self.rope_mut(id)?.curve = curve.map(Curve::sanitized);
         self.revision += 1;
+        Ok(())
+    }
+
+    /// Takes a rope's driver's hold off it: it is no longer at its limit, and a length a driver gives next is set at once. The ends,
+    /// the length and the curve stay as they were.
+    pub fn release_drive(&mut self, id: RopeId) {
+        if let Some(rope) = self.ropes.get_mut(&id) {
+            rope.at_limit = false;
+            rope.driven_length = None;
+            self.revision += 1;
+        }
+    }
+
+    /// Steers rope `id` as a driver says ([`Drive`]): the two ends, the length when the drive has one, whether the rope is at its
+    /// limit and its curve. Nothing is done for what is already so (a driver may call this every frame). A point end is where the
+    /// frame draws it exactly; a ghost end follows its ghost every frame with no more calls. The rope stays a visual: this moves
+    /// what is drawn and pulls on nothing.
+    pub fn drive(&mut self, id: RopeId, drive: &Drive) -> Result<(), RopeError> {
+        let rope = self.rope_mut(id)?;
+        let mut changed = rope.drive_end(RopeEnd::Start, &drive.start);
+        changed |= rope.drive_end(RopeEnd::End, &drive.end);
+        match drive.length.filter(|l| l.is_finite()) {
+            Some(length) => {
+                let to = length.clamp(MIN_LENGTH, MAX_LENGTH);
+                // What the rope is going to have: a script or a ghost record that changed it since is put back.
+                let target = rope.reel.map_or_else(|| rope.length(), |reel| reel.to);
+                if rope.params.style != RopeStyle::Line
+                    && (rope.driven_length.is_none()
+                        || (target - to).abs() > (to * 1.0e-6).max(1.0e-4))
+                {
+                    let seconds = if rope.driven_length.is_some() {
+                        drive.settle
+                    } else {
+                        0.0
+                    };
+                    rope.reel_to(to, seconds);
+                    changed = true;
+                }
+                rope.driven_length = Some(to);
+            }
+            None => rope.driven_length = None,
+        }
+        let curve = drive.curve.map(Curve::sanitized);
+        if rope.curve != curve {
+            rope.curve = curve;
+            changed = true;
+        }
+        if rope.at_limit != drive.at_limit {
+            rope.at_limit = drive.at_limit;
+            changed = true;
+        }
+        if changed {
+            self.revision += 1;
+        }
         Ok(())
     }
 

@@ -619,11 +619,11 @@ impl RopePass {
         self.world
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .step_frame(cx.scene.time, |ghost, node| {
+            .step_frame_at(cx.scene.time, |ghost, node, offset| {
                 ghosts
                     .iter()
                     .find(|o| o.ghost == ghost)
-                    .and_then(|o| anchors.mount(o, node))
+                    .and_then(|o| anchors.mount_at(o, node, offset))
                     .or_else(|| anchors.ghost_mount(ghost, node))
             });
     }

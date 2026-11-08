@@ -11,9 +11,10 @@ use torque_engine::{Res, ScriptClass, VmMut, function};
 use torque_ts_text::atof;
 use torque_ts_vm::vm::Vm;
 
-use super::records::{AnchorWire, RopeGhost};
+use super::records::{AnchorWire, DriverWire, RopeGhost};
 use super::server::MAX_FX_SECONDS;
 use crate::data::{RopeData, RopeLook, RopeParams};
+use crate::driver::RopeDrivers;
 use crate::natives::{RopeShared, texture_loaded};
 use crate::sim::{Curve, MAX_COORD, RopeEnd, RopeError, RopeId, RopeWorld, Tangent};
 
@@ -115,9 +116,11 @@ impl NetRopes {
 fn anchor_point(anchor: &AnchorWire, lookup: Option<&ClientGhostLookup>) -> [f32; 3] {
     match anchor {
         AnchorWire::Point(at) => *at,
-        AnchorWire::Ghost { ghost, .. } => lookup
+        AnchorWire::Ghost { ghost, offset, .. } => lookup
             .and_then(|l| l.0.position(*ghost))
-            .unwrap_or_default(),
+            .map_or([0.0; 3], |at| {
+                crate::sim::point(std::array::from_fn(|k| at[k] + offset[k])).to_array()
+            }),
         _ => [0.0; 3],
     }
 }
@@ -126,7 +129,11 @@ fn pin(world: &mut RopeWorld, rope: RopeId, end: RopeEnd, anchor: &AnchorWire) {
     let _ = match anchor {
         AnchorWire::Free | AnchorWire::Waiting => world.release(rope, end),
         AnchorWire::Point(at) => world.pin_point(rope, end, *at),
-        AnchorWire::Ghost { ghost, node } => world.pin_ghost(rope, end, *ghost, node),
+        AnchorWire::Ghost {
+            ghost,
+            node,
+            offset,
+        } => world.pin_ghost_at(rope, end, *ghost, node, *offset),
     };
 }
 
@@ -166,6 +173,26 @@ pub(crate) fn apply(world: &mut RopeWorld, rope: RopeId, old: &RopeGhost, new: &
     }
 }
 
+/// Binds the rope to the driver the record names, or lets it go of one (each time the group differs from what was applied).
+fn bind_driver(
+    drivers: &RopeDrivers,
+    world: &mut RopeWorld,
+    rope: RopeId,
+    old: &RopeGhost,
+    new: &RopeGhost,
+) {
+    if let Some(driver) = &new.driver
+        && old.driver.as_ref() != Some(driver)
+    {
+        match driver {
+            DriverWire::On { name, ghost } => drivers.bind(rope, name, *ghost),
+            DriverWire::Off | DriverWire::Waiting => {
+                drivers.unbind(world, rope);
+            }
+        }
+    }
+}
+
 /// Loads the picture of the texture a ghost's look names, so the rope can draw with it (the loader's caps and trust rules apply; a
 /// file that does not load warns once and the rope is drawn plain).
 fn load_look(vm: &mut Vm, ropes: &RopeShared, record: &RopeGhost, nearest: bool) {
@@ -186,7 +213,14 @@ fn params_of(vm: &mut Vm, ropes: &RopeShared, db: u32) -> Option<RopeParams> {
 }
 
 /// A ghost of the server's appeared: it becomes the client's rope, or is the rope the client predicted.
-fn added(vm: &mut Vm, ropes: &RopeShared, net: &RopeNet, index: u32, record: &RopeGhost) {
+fn added(
+    vm: &mut Vm,
+    ropes: &RopeShared,
+    net: &RopeNet,
+    drivers: &RopeDrivers,
+    index: u32,
+    record: &RopeGhost,
+) {
     let Some(db) = record.data_block.0 else {
         return;
     };
@@ -203,6 +237,7 @@ fn added(vm: &mut Vm, ropes: &RopeShared, net: &RopeNet, index: u32, record: &Ro
     // A ghost index that a ghost of a connection before this one held: its rope goes with it.
     if let Some(stale) = book.by_ghost.remove(&index) {
         world.remove(stale.rope);
+        drivers.forget(stale.rope);
     }
     let predicted = record
         .predict
@@ -235,6 +270,7 @@ fn added(vm: &mut Vm, ropes: &RopeShared, net: &RopeNet, index: u32, record: &Ro
         }
     };
     apply(&mut world, rope, &old, record);
+    bind_driver(drivers, &mut world, rope, &old, record);
     book.by_ghost.insert(
         index,
         Held {
@@ -245,7 +281,14 @@ fn added(vm: &mut Vm, ropes: &RopeShared, net: &RopeNet, index: u32, record: &Ro
 }
 
 /// An update reached a ghost: the groups that changed go on the rope.
-fn changed(vm: &mut Vm, ropes: &RopeShared, net: &RopeNet, index: u32, record: &RopeGhost) {
+fn changed(
+    vm: &mut Vm,
+    ropes: &RopeShared,
+    net: &RopeNet,
+    drivers: &RopeDrivers,
+    index: u32,
+    record: &RopeGhost,
+) {
     let nearest = net.lock().by_ghost.get(&index).and_then(|held| {
         ropes
             .lock()
@@ -262,15 +305,17 @@ fn changed(vm: &mut Vm, ropes: &RopeShared, net: &RopeNet, index: u32, record: &
     };
     if world.rope(held.rope).is_some() {
         apply(&mut world, held.rope, &held.applied, record);
+        bind_driver(drivers, &mut world, held.rope, &held.applied, record);
     }
     held.applied = record.clone();
 }
 
 /// The server deleted a ghost: its rope goes.
-fn removed(ropes: &RopeShared, net: &RopeNet, index: u32) {
+fn removed(ropes: &RopeShared, net: &RopeNet, drivers: &RopeDrivers, index: u32) {
     let mut book = net.lock();
     if let Some(held) = book.by_ghost.remove(&index) {
         ropes.lock().remove(held.rope);
+        drivers.forget(held.rope);
     }
 }
 
@@ -280,12 +325,13 @@ pub(crate) fn heard(
     vm: &mut Vm,
     ropes: &RopeShared,
     net: &RopeNet,
+    drivers: &RopeDrivers,
     event: GhostEvent<'_, RopeGhost>,
 ) {
     match event {
-        GhostEvent::Added { index, record } => added(vm, ropes, net, index, record),
-        GhostEvent::Changed { index, record } => changed(vm, ropes, net, index, record),
-        GhostEvent::Removed { index } => removed(ropes, net, index),
+        GhostEvent::Added { index, record } => added(vm, ropes, net, drivers, index, record),
+        GhostEvent::Changed { index, record } => changed(vm, ropes, net, drivers, index, record),
+        GhostEvent::Removed { index } => removed(ropes, net, drivers, index),
     }
 }
 // ANCHOR_END: heard

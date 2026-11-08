@@ -11,11 +11,12 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
 use super::records::{
-    MASK_CURVE, MASK_END, MASK_LENGTH, MASK_LIFE, MASK_LOOK, MASK_START, MAX_NODE_BYTES,
-    MAX_TEXTURE_BYTES, parse_tangent,
+    MASK_CURVE, MASK_DRIVER, MASK_END, MASK_LENGTH, MASK_LIFE, MASK_LOOK, MASK_START,
+    MAX_NODE_BYTES, MAX_TEXTURE_BYTES, parse_tangent,
 };
 use crate::data::{RopeData, RopeStyle, parse_color};
-use crate::sim::{MAX_COORD, MAX_SECONDS, MIN_LENGTH, RopeEnd};
+use crate::driver::valid_name;
+use crate::sim::{MAX_SECONDS, MIN_LENGTH, RopeEnd};
 
 /// The most networked ropes a server holds at once.
 pub const MAX_NET_ROPES: usize = 256;
@@ -84,11 +85,14 @@ pub struct NetRope {
     /// The object the start hangs from (its id).
     start_object: i32,
     start_node: String,
+    /// The point held on the object, in its own frame (`"0 0 0"`: the node itself).
+    start_offset: [f32; 3],
     /// What holds the far end: as `startMode`.
     end_mode: i32,
     end_point: [f32; 3],
     end_object: i32,
     end_node: String,
+    end_offset: [f32; 3],
     /// The length the rope goes to (0: its datablock's), the seconds it was given to get there and the server time it was set.
     length: f32,
     length_reel: f32,
@@ -110,6 +114,9 @@ pub struct NetRope {
     life_fade: f32,
     /// The scheduled call that deletes the rope at its end (0: none): a new lifetime takes the place of it.
     life_event: i32,
+    /// The driver the rope follows (empty: none) and the object the clients ask it about (the object's id).
+    driver_name: String,
+    driver_object: i32,
     /// The id the owner's client gave its predicted rope (0: none), and the owner's connection object.
     predict: i32,
     predict_owner: i32,
@@ -123,13 +130,7 @@ fn parse_point(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
     let mut words = text.split_ascii_whitespace();
     let mut next = || words.next().map(|w| atof(w.as_bytes()) as f32);
     match (next(), next(), next()) {
-        (Some(x), Some(y), Some(z)) => Ok([x, y, z].map(|c| {
-            if c.is_finite() {
-                c.clamp(-MAX_COORD, MAX_COORD)
-            } else {
-                0.0
-            }
-        })),
+        (Some(x), Some(y), Some(z)) => Ok(crate::sim::point([x, y, z]).to_array()),
         _ => Err(ScriptError::new(format!("{what} must be \"x y z\""))),
     }
 }
@@ -259,6 +260,37 @@ fn net_pin(mut vm: VmMut, rope: i32, end: &str, point: &str) -> Result<(), Scrip
     Ok(())
 }
 
+/// Hangs an end of the networked rope `obj` from `target`, at `offset` in the object's own frame.
+fn attach_end(
+    vm: &mut Vm,
+    obj: ObjId,
+    end: &str,
+    target: ObjId,
+    node: &str,
+    offset: [f32; 3],
+) -> Result<(), ScriptError> {
+    let (p, bit) = end_names(end)?;
+    let mut node = node.trim();
+    if node.len() > MAX_NODE_BYTES {
+        let mut cut = MAX_NODE_BYTES;
+        while !node.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        node = &node[..cut];
+    }
+    put(vm, obj, &format!("{p}Mode"), "2");
+    put(vm, obj, &format!("{p}Object"), &target.to_string());
+    put(vm, obj, &format!("{p}Node"), node);
+    put(
+        vm,
+        obj,
+        &format!("{p}Offset"),
+        &format!("{} {} {}", offset[0], offset[1], offset[2]),
+    );
+    mark(vm, obj, bit);
+    Ok(())
+}
+
 /// hangs an end of a networked rope from an object (name or id), that every client follows as it draws it
 ///
 /// `node` is a number (the middle of that mesh of the shape), `muzzle` (or `muzzle1`) for the muzzle of the object's weapon, or
@@ -273,23 +305,88 @@ fn net_attach(
     node: Option<&str>,
 ) -> Result<(), ScriptError> {
     let obj = rope_of(&vm, rope)?;
-    let (p, bit) = end_names(end)?;
     let target = vm
         .objects()
         .find(object.as_bytes())
         .ok_or_else(|| ScriptError::new(format!("there is no object {object:?}")))?;
-    let mut node = node.unwrap_or_default().trim();
-    if node.len() > MAX_NODE_BYTES {
-        let mut cut = MAX_NODE_BYTES;
-        while !node.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        node = &node[..cut];
+    attach_end(
+        &mut vm,
+        obj,
+        end,
+        target,
+        node.unwrap_or_default(),
+        [0.0; 3],
+    )
+}
+
+/// hangs an end of a networked rope from an object at a point in the object's own frame
+///
+/// As `ropeNetAttach`, and the end is `offset` (`"x y z"`) from the node, turned with the object: it rotates with the object and
+/// every client draws it where it draws the object that frame (a point on a held prop, a hinge, a hitch). The offset is held
+/// inside the world.
+#[function(name = "ropeNetAttachAt")]
+fn net_attach_at(
+    mut vm: VmMut,
+    rope: i32,
+    end: &str,
+    object: &str,
+    node: &str,
+    offset: &str,
+) -> Result<(), ScriptError> {
+    let obj = rope_of(&vm, rope)?;
+    let offset = parse_point(offset, "the offset")?;
+    let target = vm
+        .objects()
+        .find(object.as_bytes())
+        .ok_or_else(|| ScriptError::new(format!("there is no object {object:?}")))?;
+    attach_end(&mut vm, obj, end, target, node, offset)
+}
+
+/// Makes the networked rope `rope` (an object id) follow the rope driver `name` on every client, asked about `object` (a server
+/// object with a ghost: a joint, say; each client keys the driver with its own ghost of it). The driver is a plugin's
+/// ([`RopeDriver`](crate::RopeDriver)); a client that has no driver of the name says so once and shows the rope as it was told.
+/// The name is 1 to 24 bytes without spaces. A rope has one driver: this replaces an earlier one.
+pub fn set_driver(vm: &mut Vm, rope: ObjId, name: &str, object: ObjId) -> Result<(), ScriptError> {
+    let rope = rope_of(vm, i32::try_from(rope).unwrap_or(0))?;
+    if !valid_name(name) {
+        return Err(ScriptError::new(
+            "a driver's name is 1 to 24 bytes with no spaces",
+        ));
     }
-    put(&mut vm, obj, &format!("{p}Mode"), "2");
-    put(&mut vm, obj, &format!("{p}Object"), &target.to_string());
-    put(&mut vm, obj, &format!("{p}Node"), node);
-    mark(&vm, obj, bit);
+    if !vm.objects().contains(object) {
+        return Err(ScriptError::new(format!("there is no object {object}")));
+    }
+    put(vm, rope, "driverName", name);
+    put(vm, rope, "driverObject", &object.to_string());
+    mark(vm, rope, MASK_DRIVER);
+    Ok(())
+}
+
+/// makes a networked rope follow a rope driver (a plugin's) on every client
+///
+/// `name` is the driver's name (1 to 24 bytes, no spaces) and `object` the server object it is asked about, which has a ghost
+/// (a joint, say): each client gives the driver its own ghost number of it. The driver says where the rope's ends are, how long
+/// it is and whether it is at its limit, each tick; the rope still pulls on nothing. A client without a driver of that name shows
+/// the rope as it was told, and says so once.
+#[function(name = "ropeNetDrive")]
+fn net_drive(mut vm: VmMut, rope: i32, name: &str, object: &str) -> Result<(), ScriptError> {
+    let obj = rope_of(&vm, rope)?;
+    let target = vm
+        .objects()
+        .find(object.as_bytes())
+        .ok_or_else(|| ScriptError::new(format!("there is no object {object:?}")))?;
+    set_driver(&mut vm, obj, name, target)
+}
+
+/// lets a networked rope go of its driver on every client
+///
+/// The rope is no longer at its limit; its ends (a point where it last was, a ghost end still following its ghost), length and
+/// curve stay as the driver last put them until the server changes them.
+#[function(name = "ropeNetUndrive")]
+fn net_undrive(mut vm: VmMut, rope: i32) -> Result<(), ScriptError> {
+    let obj = rope_of(&vm, rope)?;
+    put(&mut vm, obj, "driverName", "");
+    mark(&vm, obj, MASK_DRIVER);
     Ok(())
 }
 
@@ -586,6 +683,9 @@ pub(crate) fn declared() -> Vec<torque_engine::script::NativeDecl> {
         net_delete,
         net_pin,
         net_attach,
+        net_attach_at,
+        net_drive,
+        net_undrive,
         net_release,
         net_set_length,
         net_set_color,

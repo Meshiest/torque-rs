@@ -14,16 +14,18 @@ pub mod server;
 
 pub use client::{NetRopes, RopeNet};
 pub use records::{
-    AnchorWire, CurveWire, LengthWire, LifeWire, LookWire, PredictWire, RopeDataRecord, RopeGhost,
+    AnchorWire, CurveWire, DriverWire, LengthWire, LifeWire, LookWire, PredictWire, RopeDataRecord,
+    RopeGhost,
 };
 
 use torque_engine::{EngineBuilder, Replicate};
 
 use crate::data::RopeData;
+use crate::driver::RopeDrivers;
 use crate::natives::RopeShared;
 
 /// The network version of the rope plugin: a client and a server must run the same.
-pub const NET_VERSION: u32 = 1;
+pub const NET_VERSION: u32 = 2;
 
 /// The name of the ghost class a networked rope is.
 pub const GHOST_CLASS: &str = "Rope";
@@ -31,17 +33,22 @@ pub const GHOST_CLASS: &str = "Rope";
 // ANCHOR: register
 /// Adds the rope's network surface to an engine being built: its ghost class and datablock class (so the manifest lists them),
 /// the ghost handler of the clients, and the functions of both sides.
-pub(crate) fn register(engine: &mut EngineBuilder, ropes: &RopeShared, net: &RopeNet) {
+pub(crate) fn register(
+    engine: &mut EngineBuilder,
+    ropes: &RopeShared,
+    net: &RopeNet,
+    drivers: &RopeDrivers,
+) {
     engine
         .net()
         .ghost::<RopeGhost>(GHOST_CLASS, Replicate::Interpolated)
         .datablock::<RopeDataRecord>(<RopeData as torque_engine::ScriptClass>::NAME);
     engine.insert_resource(server::FxBudget::default());
-    let (shared, book) = (ropes.clone(), net.clone());
+    let (shared, book, drivers) = (ropes.clone(), net.clone(), drivers.clone());
     engine
         .net()
         .on_ghost::<RopeGhost>(GHOST_CLASS, move |vm, event| {
-            client::heard(vm, &shared, &book, event);
+            client::heard(vm, &shared, &book, &drivers, event);
         });
     engine
         .server_script()
