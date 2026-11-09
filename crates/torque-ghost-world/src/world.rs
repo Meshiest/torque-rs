@@ -655,6 +655,12 @@ impl TickPoses {
         self.stopped
     }
 
+    /// Lets later calls work again after a refused charge, for a caller whose allowance is new: the ghosts already worked
+    /// out stay known, so none of them is charged again; one whose chain the refusal cut is charged when asked for again.
+    pub fn resume(&mut self) {
+        self.stopped = false;
+    }
+
     /// How many ghosts were worked out.
     #[must_use]
     pub fn worked(&self) -> usize {

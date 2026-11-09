@@ -1005,3 +1005,70 @@ fn a_held_prop_shoves_a_free_one_into_no_players_box() {
         "the free crate went {deepest} into a player"
     );
 }
+
+/// A hold made with the holder's box flush against a wall: its point lies in the wall, between the two there is no room for the
+/// crate, and the holder's own box is as solid to the crate as the wall (the physics world has no pass-through).
+#[test]
+fn a_hold_made_against_a_wall_neither_explodes_nor_jitters_nor_pushes_the_holder() {
+    use torque_physics_rapier::BodyId;
+    // `start` is where the crate is when the hold is made: beside the holder, and inside the holder's box.
+    for start in [[1.6, 0.0, 0.5], [0.3, 0.2, 0.5]] {
+        let mut w = world();
+        let me = PlayerAt::at([0.0, 0.0, 0.0]);
+        let holder = standing(7, [0.0; 3]);
+        // The wall's face is the holder box's.
+        w.sync_statics(vec![
+            (
+                1,
+                StaticPiece::Box {
+                    position: [0.0, 0.0, -1.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    half: [500.0, 500.0, 1.0],
+                },
+            ),
+            (
+                2,
+                StaticPiece::Box {
+                    position: [0.0, 5.5, 2.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    half: [5.0, 5.0, 2.0],
+                },
+            ),
+        ]);
+        spawn(&mut w, 100, start, 12.0);
+        w.add_joint(500, hold_of(7, 100, [0.0, 1.5, 1.0])).unwrap();
+        let box_at = |w: &PropWorld| w.physics().body(BodyId(7)).map(|b| b.position);
+        let (mut last, mut steps) = (position(&w, 100), Vec::new());
+        let mut fastest = 0.0f32;
+        for _ in 0..240 {
+            w.set_players([(7, me)].into());
+            w.tick(&[holder], &near);
+            let now = position(&w, 100);
+            assert!(
+                now.iter().all(|c| c.is_finite() && c.abs() < 50.0),
+                "{now:?}"
+            );
+            steps.push(distance(now, last));
+            last = now;
+            let v = w.get(100).unwrap().q.state().linvel;
+            fastest = fastest.max(distance(v, [0.0; 3]));
+            // The holder's box is never moved by the crate.
+            assert_eq!(box_at(&w), Some([0.0, 0.0, 1.0]), "the holder's box moved");
+        }
+        // Never faster than the hold's drive.
+        assert!(
+            fastest <= torque_plugin_props::joints::HOLD_SPEED + 1.0,
+            "{fastest}"
+        );
+        // Whether the hold stood (the crate wedged) or broke (it was stuck behind the wall), it ends at rest, with no jitter:
+        // its last second moves no more than a hair a tick.
+        let still = steps[steps.len() - 60..]
+            .iter()
+            .copied()
+            .fold(0.0, f32::max);
+        assert!(still < 0.01, "start {start:?}: still moving {still} a tick");
+        // Nowhere inside the wall or deep into the holder's box.
+        assert!(last[1] < 5.0, "{last:?}");
+        assert!(depth_in(&w, 100, &holder) < 0.05, "{last:?}");
+    }
+}

@@ -16,6 +16,7 @@
 //! asleep or woke. Everything runs in id order over `BTreeMap`s, with no clock and no hash map, so a run repeats bit for bit on
 //! every target.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
@@ -41,6 +42,9 @@ const WAKE_STEPS: u32 = 2;
 pub const MAX_PROPS: u32 = 1024;
 /// The smallest half-extent of a pusher's kinematic box (units).
 const MIN_HALF: f32 = 0.01;
+/// The largest half-extent of a pusher's kinematic box (units): a box past it is no player or vehicle (a record is not trusted) and
+/// is left out, counted in [`PropWorld::box_rejected`].
+pub const MAX_PUSHER_HALF: f32 = 64.0;
 /// The most map pieces and static shapes the world takes.
 pub const MAX_STATICS: usize = 512;
 /// How far past a pusher's box a prop is touched (units).
@@ -400,6 +404,8 @@ pub struct PropWorld {
     /// Each pusher's kinematic box in the physics world, by its id: its middle and half-extents as last placed
     /// ([`PropWorld::place_pushers`]).
     pusher_boxes: BTreeMap<u32, ([f32; 3], [f32; 3])>,
+    /// The boxes that block without pushing ([`PropWorld::set_bystanders`]), kept until set again.
+    bystanders: Vec<Pusher>,
     /// Sleepers a joint woke since the last tick (reported by the next).
     roused: Vec<u32>,
     pub joint_limits: JointLimits,
@@ -409,6 +415,12 @@ pub struct PropWorld {
     pub limits: PropLimits,
     /// Ticks the budget refused.
     pub over_budget: u64,
+    /// Pusher and bystander boxes the physics world refused to make (its caps; each is tried again at the next tick).
+    pub box_refused: u64,
+    /// Boxes left out for not being a body's: not finite, or a half-extent past [`MAX_PUSHER_HALF`].
+    pub box_rejected: u64,
+    /// Boxes the physics world could not take because it had stopped (it is made again at the next tick).
+    pub box_stopped: u64,
     /// Physics worlds made again after a caught panic.
     pub rebuilds: u64,
     /// Physics calls that failed where nothing was there to tell, for the tick to print ([`PropWorld::note`]).
@@ -443,6 +455,16 @@ pub fn config(substeps: u8) -> Config {
         },
         ..Config::default()
     }
+}
+
+/// A pusher's box as a kinematic body takes it: its middle and half-extents. `None` when it is not a body's: not finite, or a
+/// half-extent past [`MAX_PUSHER_HALF`].
+fn pusher_box(p: &Pusher) -> Option<([f32; 3], [f32; 3])> {
+    let middle: [f32; 3] = std::array::from_fn(|k| (p.min[k] + p.max[k]) * 0.5);
+    let half: [f32; 3] = std::array::from_fn(|k| ((p.max[k] - p.min[k]) * 0.5).max(MIN_HALF));
+    let sane = middle.iter().chain(&half).all(|v| v.is_finite())
+        && half.iter().all(|h| *h <= MAX_PUSHER_HALF);
+    sane.then_some((middle, half))
 }
 
 /// Adds a static piece to `world`; false when the world refused it.
@@ -512,12 +534,16 @@ impl PropWorld {
             broken_holds: Vec::new(),
             bodies: Vec::new(),
             pusher_boxes: BTreeMap::new(),
+            bystanders: Vec::new(),
             roused: Vec::new(),
             joint_limits: JointLimits::default(),
             config: config(substeps),
             cut: None,
             limits: limits.held(),
             over_budget: 0,
+            box_refused: 0,
+            box_rejected: 0,
+            box_stopped: 0,
             rebuilds: 0,
             problems: Vec::new(),
             revision: next_revision(),
@@ -1139,8 +1165,16 @@ impl PropWorld {
             lost: rebuilt.unwrap_or_default(),
             ..TickReport::default()
         };
-        self.bodies = pushers.iter().map(|p| (p.id, p.min, p.max)).collect();
-        self.place_pushers(pushers);
+        let boxes: Cow<'_, [Pusher]> = if self.bystanders.is_empty() {
+            Cow::Borrowed(pushers)
+        } else {
+            let mut all: Vec<Pusher> = pushers.iter().chain(&self.bystanders).copied().collect();
+            all.sort_by_key(|p| p.id);
+            all.dedup_by_key(|p| p.id);
+            Cow::Owned(all)
+        };
+        self.bodies = boxes.iter().map(|p| (p.id, p.min, p.max)).collect();
+        self.place_pushers(&boxes);
         self.push(pushers);
         self.joints_before_step(&mut report);
         report.dirty.append(&mut self.changed);
@@ -1254,16 +1288,31 @@ impl PropWorld {
         best
     }
 
+    /// Boxes that block props and keep a held prop out like a pusher's, but push nothing: the other players and vehicles a
+    /// client's prediction knows only by their records. Kept, in place of the last, until set again; each is a pusher's box in
+    /// every other way ([`PropWorld::place_pushers`]). Boxes are made in ascending id order (the physics world's rule), a
+    /// second with an id taken is dropped.
+    pub fn set_bystanders(&mut self, mut boxes: Vec<Pusher>) {
+        boxes.sort_by_key(|p| p.id);
+        boxes.dedup_by_key(|p| p.id);
+        self.bystanders = boxes;
+    }
+
     /// Each pusher's box as a kinematic body of the physics world (frictionless, so a player walking on a prop does not drag
     /// it), placed where its box is now and moved only when the box moves: no prop can be pushed into a player or a vehicle
     /// (a held prop's shove, another prop's fall), and one that is there already is pushed out by the solver, walls and other
     /// props in its way. A box goes when its pusher does. Pushes stay [`Pusher`]'s impulses: a box is placed, never given a
     /// speed, so it flings nothing (a teleported figure included).
     fn place_pushers(&mut self, pushers: &[Pusher]) {
+        // A pusher whose box is no longer a body's (not finite, or huge) is gone as well: its old body does not stay where it was.
         let gone: Vec<u32> = self
             .pusher_boxes
             .keys()
-            .filter(|id| !pushers.iter().any(|p| p.id == **id))
+            .filter(|id| {
+                !pushers
+                    .iter()
+                    .any(|p| p.id == **id && pusher_box(p).is_some())
+            })
             .copied()
             .collect();
         for id in gone {
@@ -1279,12 +1328,10 @@ impl PropWorld {
             {
                 continue;
             }
-            let middle: [f32; 3] = std::array::from_fn(|k| (p.min[k] + p.max[k]) * 0.5);
-            let half: [f32; 3] =
-                std::array::from_fn(|k| ((p.max[k] - p.min[k]) * 0.5).max(MIN_HALF));
-            if !middle.iter().chain(&half).all(|v| v.is_finite()) {
+            let Some((middle, half)) = pusher_box(p) else {
+                self.box_rejected += 1;
                 continue;
-            }
+            };
             match self.pusher_boxes.get(&p.id) {
                 Some(&(m, h)) if m == middle && h == half => {}
                 Some(&(_, h)) if h == half => {
@@ -1314,11 +1361,17 @@ impl PropWorld {
                         ..BodyDesc::default()
                     };
                     let mut free = |_: u64| true;
-                    if self.world.add_body(BodyId(p.id), &desc, &mut free).is_ok() {
+                    let made = self.world.add_body(BodyId(p.id), &desc, &mut free);
+                    if made.is_ok() {
                         self.pusher_boxes.insert(p.id, (middle, half));
                     } else {
                         self.pusher_boxes.remove(&p.id);
+                        match made {
+                            Err(Error::Poisoned) => self.box_stopped += 1,
+                            _ => self.box_refused += 1,
+                        }
                     }
+                    self.note(&format!("pusher {}'s box", p.id), made);
                 }
             }
         }

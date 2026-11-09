@@ -556,3 +556,122 @@ fn the_revision_moves_with_every_change_of_a_props_slot_or_pose_and_only_then() 
     // A world made again never answers an old revision.
     assert!(!seen.contains(&PropWorld::new(4, PropLimits::default()).revision()));
 }
+
+/// A player's box of `id` standing with its feet at `at`.
+fn standing(id: u32, at: [f32; 3]) -> Pusher {
+    Pusher {
+        id,
+        min: [at[0] - 0.5, at[1] - 0.5, at[2]],
+        max: [at[0] + 0.5, at[1] + 0.5, at[2] + 2.0],
+        velocity: [0.0; 3],
+        mass: 90.0,
+    }
+}
+
+#[test]
+fn a_box_the_physics_world_refuses_is_counted_noted_and_tried_again() {
+    let mut w = world(PropLimits::default());
+    // A world made again with room for the floor alone: no box fits.
+    w.config_mut().limits.max_bodies = 1;
+    w.physics_mut().poison();
+    let (a, b) = (standing(7, [0.0; 3]), standing(8, [3.0, 0.0, 0.0]));
+    w.set_bystanders(vec![b]);
+    w.tick(&[a], &far);
+    assert_eq!(w.box_refused, 2);
+    let problems = w.take_problems();
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].contains("pusher 7's box"), "{problems:?}");
+    // Each tick the refused boxes are tried again, and counted again.
+    w.tick(&[a], &far);
+    assert_eq!(w.box_refused, 4);
+    assert_eq!(w.take_problems().len(), 2);
+    // Room again: both boxes are made, and nothing more is counted.
+    w.config_mut().limits.max_bodies = 8;
+    w.physics_mut().poison();
+    w.tick(&[a], &far);
+    assert_eq!(w.box_refused, 4);
+    assert!(w.physics().body(BodyId(7)).is_some() && w.physics().body(BodyId(8)).is_some());
+    assert!(w.take_problems().is_empty());
+}
+
+#[test]
+fn a_bystander_blocks_a_prop_and_pushes_nothing_and_goes_when_set_again() {
+    let mut w = world(PropLimits::default());
+    w.spawn(100, 9, crate_params(), at(0.0, 0.0, 0.5), None, 0)
+        .expect("a crate");
+    // A box beside it that stands still (no velocity, as a record gives): the crate it overlaps is shoved out, none pushed.
+    w.set_bystanders(vec![standing(8, [0.6, 0.0, 0.0])]);
+    for _ in 0..30 {
+        w.tick(&[], &far);
+    }
+    let crate_at = w.get(100).expect("the crate").q.position();
+    assert!(crate_at[0] < 0.0, "pushed out of the box: {crate_at:?}");
+    assert!(w.physics().body(BodyId(8)).is_some());
+    // Set again without it: the box goes.
+    w.set_bystanders(Vec::new());
+    w.tick(&[], &far);
+    assert!(w.physics().body(BodyId(8)).is_none());
+}
+
+#[test]
+fn a_hostile_box_is_left_out_and_counted_and_a_stopped_world_is_counted_apart() {
+    let mut w = world(PropLimits::default());
+    let wide = |id: u32, half: f32| Pusher {
+        min: [-half; 3],
+        max: [half; 3],
+        ..standing(id, [0.0; 3])
+    };
+    let nan = Pusher {
+        min: [f32::NAN; 3],
+        ..standing(9, [0.0; 3])
+    };
+    // A box of a hundred thousand units, one that is not a number, and the widest a body may be.
+    w.set_bystanders(vec![wide(8, 1.0e5), nan, wide(10, MAX_PUSHER_HALF)]);
+    w.tick(&[standing(7, [20.0, 0.0, 0.0])], &far);
+    assert_eq!((w.box_rejected, w.box_refused, w.box_stopped), (2, 0, 0));
+    assert!(w.physics().body(BodyId(7)).is_some() && w.physics().body(BodyId(10)).is_some());
+    assert!(w.physics().body(BodyId(8)).is_none() && w.physics().body(BodyId(9)).is_none());
+    // A world that stopped under the call is no refusal of the world's caps.
+    w.physics_mut().poison();
+    w.place_pushers(&[standing(11, [40.0, 0.0, 0.0])]);
+    assert_eq!((w.box_rejected, w.box_refused, w.box_stopped), (2, 0, 1));
+}
+
+#[test]
+fn bystanders_are_made_in_ascending_id_order_among_the_pushers() {
+    let mut w = world(PropLimits::default());
+    let at = |id: u32| standing(id, [id as f32 * 3.0, 0.0, 0.0]);
+    w.set_bystanders(vec![at(9), at(3), at(5), at(3)]);
+    w.tick(&[at(4)], &far);
+    let ids: Vec<u32> = w.bodies.iter().map(|b| b.0).collect();
+    assert_eq!(ids, [3, 4, 5, 9]);
+}
+
+#[test]
+fn a_bystander_whose_box_turns_hostile_loses_its_body() {
+    let mut w = world(PropLimits::default());
+    w.set_bystanders(vec![standing(8, [5.0, 0.0, 0.0])]);
+    w.tick(&[], &far);
+    assert!(w.physics().body(BodyId(8)).is_some());
+    // The next record says a box of a hundred thousand units, then one that is not a number: no body stays at the old place.
+    for hostile in [
+        Pusher {
+            min: [-1.0e5; 3],
+            max: [1.0e5; 3],
+            ..standing(8, [5.0, 0.0, 0.0])
+        },
+        Pusher {
+            min: [f32::NAN; 3],
+            ..standing(8, [5.0, 0.0, 0.0])
+        },
+    ] {
+        w.set_bystanders(vec![standing(8, [5.0, 0.0, 0.0])]);
+        w.tick(&[], &far);
+        assert!(w.physics().body(BodyId(8)).is_some());
+        let before = w.box_rejected;
+        w.set_bystanders(vec![hostile]);
+        w.tick(&[], &far);
+        assert!(w.physics().body(BodyId(8)).is_none(), "{hostile:?}");
+        assert_eq!(w.box_rejected, before + 1);
+    }
+}

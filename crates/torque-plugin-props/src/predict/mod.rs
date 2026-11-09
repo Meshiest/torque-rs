@@ -9,7 +9,8 @@
 //!   ([`crate::JointBook::connected`], counted), at most [`PredictConfig::max_predicted`] (8 by default, at most
 //!   [`MAX_PREDICTED`]);
 //! - keeps them in its own [`PropWorld`] with the map pieces near them ([`torque_client::predict::slot::TickStep::statics_near`])
-//!   and the props around them as fixed boxes, and the joints between them as the server's joints (a hinge is held as it lies);
+//!   and the props around them as fixed boxes, the other players and vehicles near them as boxes at their ghosts' latest
+//!   records ([`torque_client::predict::slot::TickStep::around`]), and the joints between them as the server's joints (a hinge is held as it lies);
 //! - steps them with the client's Player, move by move, inside the slot's move loop: for each move, the Player's push
 //!   ([`crate::world::Pusher`]) as the move left it, the held prop's pull the Player's step just made, the predicted impulses
 //!   tagged with that move, and one step. When the server sent new states, or the Player's moves run again after a correction,
@@ -94,6 +95,9 @@ pub struct PredictConfig {
     /// The most physics work the part does in one tick (work units), within the slot's own budget for parts; past it the
     /// tick draws the props as interpolated.
     pub max_work: u64,
+    /// Whether the other players and vehicles near the predicted props are boxes in the client's world, as they are on the
+    /// server (on by default; off, a prop pushed toward one runs on through it).
+    pub bystanders: bool,
 }
 
 impl Default for PredictConfig {
@@ -109,6 +113,7 @@ impl Default for PredictConfig {
             substeps: 4,
             shot: ShotPush::default(),
             max_work: torque_client::predict::slot::PART_TICK_WORK,
+            bystanders: true,
         }
     }
 }
@@ -135,6 +140,7 @@ impl PredictConfig {
                 Some(self.shot.radius),
             ),
             max_work: self.max_work,
+            bystanders: self.bystanders,
         }
     }
 }

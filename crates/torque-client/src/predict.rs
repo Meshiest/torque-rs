@@ -119,6 +119,9 @@ pub struct PredictStats {
     pub predicted_packets: u64,
     /// Ticks whose prediction ran out of [`TICK_WORK`] (the replay stopped there).
     pub budget_stops: u64,
+    /// Ticks whose collision world was made without the ghosts past the walk's cap (half of [`TICK_WORK`]): too many ghosts to
+    /// look at in one tick ([`ClientCollision::walk_stopped`]).
+    pub walk_stops: u64,
     /// Ticks a Player hung on a parent ran no move: the client could not place the parent (it holds no ghost of it, or the
     /// tick's budget ran out first).
     pub unplaced: u64,
@@ -407,15 +410,14 @@ impl<W: PredictWorld> Predictor<W> {
         self.parts.push(part);
     }
 
-    /// The map pieces whose boxes meet `min..max` in the client's collision world ([`slot::TickStep::statics_near`]).
-    pub fn statics_near(&mut self, world: &W, min: F3, max: F3) -> Vec<slot::StaticView> {
-        use collide::World as _;
+    /// The client's collision world around the box `min..max`, with the predicted Player left out, made on `budget`.
+    fn collision_near(&mut self, world: &W, min: F3, max: F3, budget: u64) -> ClientCollision {
         let near = [0, 1, 2].map(|k| (min[k] + max[k]) * 0.5);
         let me = self.predicted.as_ref().map_or(u32::MAX, |p| p.index);
-        let mut collision = ClientCollision::new(
+        ClientCollision::new(
             world,
             me,
-            TICK_WORK,
+            budget,
             Some(Ctx {
                 near,
                 static_world: &mut self.static_world,
@@ -425,25 +427,46 @@ impl<W: PredictWorld> Predictor<W> {
                 disabled: None,
                 player_at: None,
             }),
-        );
-        let mask = collide::types::TERRAIN
-            | collide::types::INTERIOR
-            | collide::types::STATIC_SHAPE
-            | collide::types::STATIC_TS;
-        let mut ids = Vec::new();
-        let limit = slot::MAX_STATIC_VIEWS * 4;
-        let _ = collision.find_objects(&Box3::new(min, max), mask, None, limit, &mut ids);
-        ids.into_iter()
-            .filter(|id| !collide::source::is_plugin_id(*id))
-            .filter_map(|id| {
-                Some(slot::StaticView {
-                    id: id.0,
-                    view: collision.object(id)?,
-                    map: collision.map_shape(id),
-                })
-            })
-            .take(slot::MAX_STATIC_VIEWS)
-            .collect()
+        )
+    }
+
+    /// The map pieces whose boxes meet `min..max` in the client's collision world ([`slot::TickStep::statics_near`]).
+    pub fn statics_near(&mut self, world: &W, min: F3, max: F3) -> Vec<slot::StaticView> {
+        self.around(world, Some((min, max)), None).statics
+    }
+
+    /// One construction of the client's collision world for what [`slot::TickStep::around`] gives. It is made on what is left of
+    /// the tick's budget for parts ([`slot::PART_TICK_WORK`], at most [`TICK_WORK`]) and its work is charged to it, so a world of
+    /// any size costs a tick no more than that budget: with none left nothing is looked at ([`slot::Around::built`] false).
+    pub fn around(
+        &mut self,
+        world: &W,
+        statics: Option<(F3, F3)>,
+        bodies: Option<(F3, F3)>,
+    ) -> slot::Around {
+        let boxes = [statics, bodies].into_iter().flatten();
+        let lo = boxes.clone().fold([f32::INFINITY; 3], |m, (a, _)| {
+            [0, 1, 2].map(|k| m[k].min(a[k]))
+        });
+        let hi = boxes.fold([f32::NEG_INFINITY; 3], |m, (_, b)| {
+            [0, 1, 2].map(|k| m[k].max(b[k]))
+        });
+        if lo[0] > hi[0] {
+            // Nothing was asked for.
+            return slot::Around {
+                built: true,
+                ..slot::Around::default()
+            };
+        }
+        let budget = TICK_WORK.min(slot::PART_TICK_WORK.saturating_sub(self.part_work));
+        if budget == 0 {
+            return slot::Around::default();
+        }
+        let mut collision = self.collision_near(world, lo, hi, budget);
+        let around = look(&mut collision, statics, bodies);
+        // The queries' work counts too.
+        self.part_work = self.part_work.saturating_add(collision.work());
+        around
     }
 
     /// A prediction with `game`'s answers.
@@ -1117,6 +1140,7 @@ impl<W: PredictWorld> Predictor<W> {
                 player_at: None,
             }),
         );
+        self.stats.walk_stops += u64::from(collision.walk_stopped());
         // A Player hung on a parent moves in the parent's frame: the parent's pose for this tick, charged to its budget.
         let at = pr.frame.as_ref().and_then(|frame| {
             let mut linked = Linked {
@@ -1127,8 +1151,7 @@ impl<W: PredictWorld> Predictor<W> {
                 player_at: None,
                 me: pr.index,
             };
-            let c = &mut collision;
-            linked.attach(world, frame, &mut c.tick_poses, &mut c.work, c.budget)
+            collision.attach_frame(world, &mut linked, frame)
         });
         if pr.frame.is_some() && at.is_none() {
             // Nowhere to place it (the parent not held, or the budget spent): the moves wait unrun, and a later tick that
@@ -2798,8 +2821,12 @@ pub struct ClientCollision {
     /// The scene-hierarchy children of the predicted object, in its frame ([`ClientCollision::carry_children`]).
     carried: Vec<CarriedChild>,
     /// The tick poses the placement of children worked out, kept for the predicted object's own frame
-    /// (`Linked::attach`), so no ghost is worked out or charged twice a tick.
+    /// ([`ClientCollision::attach_frame`]), so a ghost a chain reached is not charged again.
     tick_poses: ghost_world::world::TickPoses,
+    /// What is left of the work the children may still take ([`ClientCollision::child_cap`]), for carrying them.
+    child_room: u64,
+    /// The ghost walk stopped at its cap ([`ClientCollision::new`]): the ghosts past it are not in this container.
+    walk_stopped: bool,
     /// `objects`' ids with their places, sorted: a lookup is a binary search (every convex's transform asks).
     by_id: Vec<(ObjectId, u32)>,
     /// The static index's water ([`StaticIndex::zones`]).
@@ -3145,11 +3172,91 @@ fn damage_state<W: PredictWorld>(world: &W, index: u32) -> Option<u32> {
     g.record.as_ref()?.player_state()?.damage
 }
 
+/// What a part asked of `collision` ([`slot::TickStep::around`]). A query that ran out of the collision's budget is no look: what
+/// it found is dropped and the answer is not [`slot::Around::built`], so the part keeps what it had.
+fn look(
+    collision: &mut ClientCollision,
+    statics: Option<(F3, F3)>,
+    bodies: Option<(F3, F3)>,
+) -> slot::Around {
+    let statics = statics.map(|(a, b)| static_views(collision, a, b));
+    let bodies = bodies.map(|(a, b)| body_boxes(collision, a, b));
+    slot::Around {
+        built: statics.as_ref().is_none_or(Result::is_ok)
+            && bodies.as_ref().is_none_or(Result::is_ok),
+        statics: statics.and_then(Result::ok).unwrap_or_default(),
+        bodies: bodies.and_then(Result::ok).unwrap_or_default(),
+    }
+}
+
+/// The map pieces of `collision` whose boxes meet `min..max`.
+fn static_views(
+    collision: &mut ClientCollision,
+    min: F3,
+    max: F3,
+) -> Result<Vec<slot::StaticView>, Exhausted> {
+    use collide::World as _;
+    let mask = collide::types::TERRAIN
+        | collide::types::INTERIOR
+        | collide::types::STATIC_SHAPE
+        | collide::types::STATIC_TS;
+    let mut ids = Vec::new();
+    let limit = slot::MAX_STATIC_VIEWS * 4;
+    collision.find_objects(&Box3::new(min, max), mask, None, limit, &mut ids)?;
+    Ok(ids
+        .into_iter()
+        .filter(|id| !collide::source::is_plugin_id(*id))
+        .filter_map(|id| {
+            Some(slot::StaticView {
+                id: id.0,
+                view: collision.object(id)?,
+                map: collision.map_shape(id),
+            })
+        })
+        .take(slot::MAX_STATIC_VIEWS)
+        .collect())
+}
+
+/// The Players (living or dead) and vehicles of `collision` whose boxes meet `min..max`, in ghost order; `Exhausted` when the
+/// query ran out of the collision's budget (the boxes found are then not all there are).
+fn body_boxes(
+    collision: &mut ClientCollision,
+    min: F3,
+    max: F3,
+) -> Result<Vec<slot::BodyBox>, Exhausted> {
+    use collide::World as _;
+    let mask = collide::types::PLAYER | collide::types::CORPSE | collide::types::VEHICLE;
+    let mut ids = Vec::new();
+    collision.find_objects(
+        &Box3::new(min, max),
+        mask,
+        None,
+        slot::MAX_STATIC_VIEWS,
+        &mut ids,
+    )?;
+    let mut boxes: Vec<slot::BodyBox> = ids
+        .into_iter()
+        .filter(|id| !collide::source::is_plugin_id(*id))
+        .filter_map(|id| {
+            let view = collision.object(id)?;
+            Some(slot::BodyBox {
+                ghost: id.0.checked_sub(1)?,
+                min: view.world_box.min,
+                max: view.world_box.max,
+            })
+        })
+        .collect();
+    boxes.sort_unstable_by_key(|b| b.ghost);
+    Ok(boxes)
+}
+
 impl ClientCollision {
     /// The world of `world` for the predicted Player whose ghost is `me` (left out: the predicted Player is the mover, its ghost is
     /// the same object).
     ///
-    /// The construction is charged to `budget` (every ghost looked at, every datablock read): what is left is the tick's.
+    /// The construction is charged to `budget` (every ghost looked at, every datablock read), but stops with half of it left
+    /// whole: the ghost walk ends at [`ClientCollision::walk_stopped`] (the ghosts past it are not in the container this tick), so
+    /// a world of any size leaves the moves half of the budget (see [`ClientCollision::moves_reserve`]).
     /// With `ctx`, the game's static index's objects near the point are in it too (before every other object, as the server's
     /// container asks its indexes before its bins), and the ghosts it makes objects of.
     pub fn new<W: PredictWorld>(
@@ -3165,6 +3272,8 @@ impl ClientCollision {
         let mut objects = Vec::new();
         let mut work = 0u64;
         let mut set = None;
+        let walk_cap = Self::walk_cap(budget);
+        let mut walk_stopped = false;
         let plugin_sources = ctx.as_ref().and_then(|c| c.static_world.plugin.clone());
         let (mut shapes, reader, driven, ghost_vehicles, disabled, player_at, mut statics) =
             match ctx {
@@ -3172,7 +3281,7 @@ impl ClientCollision {
                     let reader = c.static_world.reader.clone();
                     let mut index = c.static_world.index.as_deref_mut();
                     if let Some(i) = index.as_deref_mut() {
-                        set = i.set_near(world, reader.as_ref(), c.near, &mut work, budget);
+                        set = i.set_near(world, reader.as_ref(), c.near, &mut work, walk_cap);
                     }
                     (
                         Some(c.shapes),
@@ -3205,7 +3314,8 @@ impl ClientCollision {
         ghosts.sort_by_key(|(_, g)| std::cmp::Reverse(g.serial));
         for (index, g) in ghosts {
             work = work.saturating_add(GHOST_WORK);
-            if work > budget {
+            if work > walk_cap {
+                walk_stopped = true;
                 break;
             }
             if index == me {
@@ -3275,7 +3385,7 @@ impl ClientCollision {
                     else {
                         continue;
                     };
-                    let Some(shape) = shapes.get(path, reader.as_ref(), &mut work, budget) else {
+                    let Some(shape) = shapes.get(path, reader.as_ref(), &mut work, walk_cap) else {
                         continue;
                     };
                     let ghost = ghost_vehicles.and_then(|m| m.get(&index));
@@ -3315,7 +3425,7 @@ impl ClientCollision {
                         // No game index: a StaticShape is in the container as TGE's client holds it.
                         None if kind == Some(ClassKind::StaticShape) => {
                             shapes.as_deref_mut().and_then(|c| {
-                                static_shape(world, g, c, reader.as_ref(), &mut work, budget)
+                                static_shape(world, g, c, reader.as_ref(), &mut work, walk_cap)
                             })
                         }
                         None => None,
@@ -3326,10 +3436,25 @@ impl ClientCollision {
                 }
             }
         }
-        let mut tick_poses = ghost_world::world::TickPoses::default();
-        let carried = place_linked(
+        // The plugins' shapes: charged to no budget, so the client and the server hold the same ones (see `collide::source`).
+        let plugin = plugin_sources.map_or_else(collide::source::ShapeSet::none, |s| s.snapshot());
+        let mut collision = ClientCollision {
+            statics: set,
+            index_bits,
+            by_id: index_of(&objects),
+            objects,
+            carried: Vec::new(),
+            tick_poses: ghost_world::world::TickPoses::default(),
+            child_room: 0,
+            walk_stopped,
+            zones,
+            work,
+            budget,
+            order: game.candidate_order(),
+            plugin,
+        };
+        collision.place_children(
             world,
-            &mut objects,
             Linked {
                 shapes,
                 reader: reader.as_ref(),
@@ -3338,25 +3463,77 @@ impl ClientCollision {
                 player_at,
                 me,
             },
-            &mut tick_poses,
-            &mut work,
-            budget,
         );
-        // The plugins' shapes: charged to no budget, so the client and the server hold the same ones (see `collide::source`).
-        let plugin = plugin_sources.map_or_else(collide::source::ShapeSet::none, |s| s.snapshot());
-        ClientCollision {
-            statics: set,
-            index_bits,
-            by_id: index_of(&objects),
-            objects,
-            carried,
-            tick_poses,
-            zones,
-            work,
-            budget,
-            order: game.candidate_order(),
-            plugin,
+        collision
+    }
+
+    /// The work the moves always have: half of the budget. Everything else that draws on it (the ghost walk with its shape and
+    /// datablock reads, the placing and carrying of children, the predicted object's own frame) is held together to
+    /// `budget - moves_reserve()` at most, whatever the world or the tree is: the walk stops at its cap, the children's cap is
+    /// below the reserve and what the walk left of it is all the carrying may use, and the frame stops short of it.
+    pub fn moves_reserve(&self) -> u64 {
+        self.budget / 2
+    }
+
+    /// Where the ghost walk stops (counted from the tick's start): half of the budget less what one ghost's last step may
+    /// overshoot it by (its datablock read and the next ghost's charge).
+    fn walk_cap(budget: u64) -> u64 {
+        (budget / 2).saturating_sub(DATABLOCK_WORK + GHOST_WORK)
+    }
+
+    /// Whether the ghost walk stopped at its cap: the ghosts past it are not in this container.
+    pub fn walk_stopped(&self) -> bool {
+        self.walk_stopped
+    }
+
+    /// The most the tick's total work (the construction's too, counted from the tick's start) may stand at when the placement
+    /// and carrying of scene-hierarchy children are done: three eighths of the budget.
+    fn child_cap(&self) -> u64 {
+        self.budget / 8 * 3
+    }
+
+    /// The most the predicted object's own frame may take of the tick's work ([`Self::attach_frame`]).
+    fn frame_share(&self) -> u64 {
+        self.budget / 8
+    }
+
+    /// [`place_linked`] up to the children's cap; with none left of it (the construction took it) nothing is placed or charged.
+    fn place_children<W: PredictWorld>(&mut self, world: &W, linked: Linked<'_>) {
+        let cap = self.child_cap();
+        let before = self.work;
+        if before >= cap {
+            return;
         }
+        self.carried = place_linked(
+            world,
+            &mut self.objects,
+            linked,
+            &mut self.tick_poses,
+            &mut self.work,
+            cap,
+        );
+        self.child_room = cap.saturating_sub(self.work);
+    }
+
+    /// Where the predicted object's frame hangs ([`Linked::attach`]), on a slice of its own ([`Self::frame_share`]) beside the
+    /// children's: the poses the placement worked out are kept (so no ghost of them is charged again) and a stop of theirs is
+    /// lifted for the new slice.
+    fn attach_frame<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        linked: &mut Linked<'_>,
+        frame: &framed::ChildFrame,
+    ) -> Option<framed::Attach> {
+        let cap = self
+            .budget
+            .saturating_sub(self.moves_reserve() + LINK_WORK)
+            .min(self.work.saturating_add(self.frame_share()));
+        // A charge past the cap by one link is the most a refusal costs: with the work at it already, nothing is placed.
+        if self.work >= cap {
+            return None;
+        }
+        self.tick_poses.resume();
+        linked.attach(world, frame, &mut self.tick_poses, &mut self.work, cap)
     }
 
     /// Whether the budget is spent.
@@ -3400,6 +3577,8 @@ impl ClientCollision {
             objects: Vec::new(),
             carried: Vec::new(),
             tick_poses: ghost_world::world::TickPoses::default(),
+            child_room: TICK_WORK / 8 * 3,
+            walk_stopped: false,
             by_id: Vec::new(),
             zones: Vec::new(),
             work: 0,
@@ -3411,9 +3590,14 @@ impl ClientCollision {
 
     /// Places the scene-hierarchy children of the predicted object at `at`, its pose before a move: the server resolves a
     /// parent's children before each object's turn, so the object's next move meets them there. Each child is charged
-    /// [`GHOST_WORK`]; nothing is done without such children.
+    /// [`GHOST_WORK`], within the children's share of the budget (the rest stay where they were); nothing is done without such
+    /// children.
     pub fn carry_children(&mut self, at: &Matrix) {
         for child in &self.carried {
+            if self.child_room < GHOST_WORK {
+                break;
+            }
+            self.child_room -= GHOST_WORK;
             self.work = self.work.saturating_add(GHOST_WORK);
             let Some((_, o)) =
                 place_in(&self.by_id, child.id).and_then(|at| self.objects.get_mut(at))

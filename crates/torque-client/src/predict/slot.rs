@@ -271,6 +271,27 @@ pub struct StaticView {
     pub map: Option<Rc<MapShape>>,
 }
 
+/// The world around a box ([`TickStep::around`]).
+#[derive(Debug, Clone, Default)]
+pub struct Around {
+    pub statics: Vec<StaticView>,
+    pub bodies: Vec<BodyBox>,
+    /// Whether the world was looked at whole: false when the tick's budget for parts had no room left, or a query ran out of
+    /// it (the lists are then empty or short for want of looking, not because nothing more is there).
+    pub built: bool,
+}
+
+/// Another Player's or a vehicle's world box ([`TickStep::around`]). A Player's is its datablock's standing box: the
+/// client's Player data carries no crouch, prone or swim box, so a Player in one of those poses is boxed standing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyBox {
+    /// Its ghost index.
+    pub ghost: u32,
+    /// Its world box.
+    pub min: F3,
+    pub max: F3,
+}
+
 /// A Projectile ghost as its records left it ([`PredictState::shots`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shot {
@@ -371,6 +392,18 @@ pub trait TickStep: PredictState {
     /// The map pieces (terrains, interiors, static shapes) whose boxes meet `min..max` in the client's collision world, in its
     /// order, at most [`MAX_STATIC_VIEWS`]; the work is charged to the client's tick budget.
     fn statics_near(&mut self, min: F3, max: F3) -> Vec<StaticView>;
+    /// The map pieces whose boxes meet `statics` (when asked for) and the other Players and vehicles whose boxes meet
+    /// `bodies` (when asked for), from one construction of the client's collision world. Each Player is at its ghost's latest record; a
+    /// vehicle where the client runs it, else at its record. The same as [`TickStep::statics_near`] for the pieces; no bodies
+    /// by default.
+    fn around(&mut self, statics: Option<(F3, F3)>, bodies: Option<(F3, F3)>) -> Around {
+        let _ = bodies;
+        Around {
+            statics: statics.map_or_else(Vec::new, |(min, max)| self.statics_near(min, max)),
+            bodies: Vec::new(),
+            built: true,
+        }
+    }
     /// Charges `units` of a part's work to the tick's budget for parts ([`PART_TICK_WORK`], shared by every part): false once
     /// it is spent, and the part leaves the rest of its work for a later tick.
     fn charge(&mut self, units: u64) -> bool;
@@ -665,6 +698,10 @@ impl<W: PredictWorld> TickStep for TickCx<'_, W> {
 
     fn statics_near(&mut self, min: F3, max: F3) -> Vec<StaticView> {
         self.sim.statics_near(self.world, min, max)
+    }
+
+    fn around(&mut self, statics: Option<(F3, F3)>, bodies: Option<(F3, F3)>) -> Around {
+        self.sim.around(self.world, statics, bodies)
     }
 
     fn charge(&mut self, units: u64) -> bool {

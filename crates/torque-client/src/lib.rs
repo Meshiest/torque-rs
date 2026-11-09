@@ -38,6 +38,9 @@
 //! - A tick's prediction spends at most [`predict::TICK_WORK`], about 8 ms of the reference machine (measured with
 //!   `torque-sim`'s `work_units_cost`; the trace-hash scenarios' lines must not change), and a predicted Player's box is held to
 //!   [`predict::MAX_PREDICTED_BOX`] (`a_predicted_players_box_is_held_to_the_largest_side_prediction_takes`).
+//!   A part's look at the world (`TickStep::around`: the map pieces and the players and vehicles near its objects) is made on what
+//!   is left of the tick's budget for parts and charged to it, with none left it looks at nothing
+//!   (`what_a_part_asks_of_the_world_is_made_on_the_budget_for_parts_and_charged_to_it`).
 //! - A connection keeps at most [`ghost_objects::MAX_MIRRORS`] ghost objects, whatever its ghost table
 //!   (`a_wide_ghost_table_is_mirrored_up_to_the_live_cap`).
 //! - A shape prediction collides with loads once, on a budget of its own that a tick's loads share
@@ -58,9 +61,19 @@
 //! - The prediction's collision world places a scene-hierarchy child for each tick where the server's latest poses of its
 //!   parents and its last local pose put it (`ClientWorld::tick_pose_in`, through `predict::ClientCollision::new`), never at
 //!   its record's stale pose or a frame's blended one, and the predicted object's own children where it is before each move
-//!   (`ClientCollision::carry_children`). Each ghost a chain reaches is worked out once a container and every link walked
-//!   is charged [`predict::LINK_WORK`] to the tick's budget, so the largest tree a server can send stops at the budget
-//!   (`predict::linked_tests`); it costs nothing without links. The game's static set (`StaticIndex::set_near`) is not
+//!   (`ClientCollision::carry_children`). Each ghost a chain reaches is worked out once a container (one whose chain a refused
+//!   charge cut is charged again when asked for again) and every link walked is charged [`predict::LINK_WORK`] to the tick's
+//!   budget. What the moves always have is half of the budget (`ClientCollision::moves_reserve`): the ghost walk stops once the
+//!   tick's work passes half of it less one ghost's step (`walk_stopped`, counted in `PredictStats::walk_stops`; the ghosts past
+//!   it are not in the container that tick), the placing of children stops at three eighths of the tick's total work, the
+//!   carrying of children takes only what the placement left of that (`child_cap`), and the predicted object's own frame stops
+//!   short of the half, on a slice of one eighth (`frame_share`; the placement's poses are kept, so no ghost of them is charged
+//!   again): everything but the moves' own work stays within `budget - moves_reserve` for a world and a tree of any size
+//!   (`the_moves_keep_half_the_budget_under_a_huge_walk_a_hostile_tree_and_a_deep_frame_chain`,
+//!   `children_stop_at_their_cap_of_the_whole_ticks_work_after_a_real_ghost_walk`,
+//!   `a_ghost_walk_that_took_the_childrens_cap_leaves_them_nothing`,
+//!   `the_frame_is_placed_past_the_childrens_cap_on_a_slice_of_its_own_and_no_ghost_is_charged_twice`). It costs nothing
+//!   without links. The game's static set (`StaticIndex::set_near`) is not
 //!   re-placed. torque-plugin-hierarchy's `tests/ride.rs`: a rider on a hung deck is corrected no more than on the same
 //!   deck moved as a root, and not at all on one that never moves.
 //! - A control Player hung on a parent is predicted in the parent's frame ([`predict::framed`]): the server's packet data

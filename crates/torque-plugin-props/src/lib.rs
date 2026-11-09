@@ -243,6 +243,19 @@
 //!   as that move made them; what is drawn never jumps by more than the server's own prop moves:
 //!   `a_held_prop_on_a_long_walk_is_drawn_smoothly_where_it_belongs`,
 //!   `riding_a_sliding_prop_and_pushing_a_row_is_predicted_no_worse_than_not_predicting`.
+//! - A client's world holds the other players' and the vehicles' boxes as the server places them (frictionless kinematic bodies at
+//!   their ghosts' latest records, in ascending id order, [`PropWorld::set_bystanders`]; they push nothing: a body's own speed is
+//!   the server's alone, and a player in a crouch, prone or swim pose is boxed standing, the client's player data carrying no pose
+//!   box), so a prop pushed toward one stops at it: `a_prop_pushed_toward_another_player_stops_at_it_as_on_the_server` (which
+//!   also fails without the boxes, [`predict::PredictConfig::bystanders`] off). A box is left out and counted when it is not a body's
+//!   (not finite, or a half-extent past [`world::MAX_PUSHER_HALF`]: [`PropWorld::box_rejected`]); one the physics world refuses
+//!   is counted ([`PropWorld::box_refused`]) and noted, and tried again at the next tick; a stopped world is counted apart
+//!   ([`PropWorld::box_stopped`]): `a_box_the_physics_world_refuses_is_counted_noted_and_tried_again`,
+//!   `a_hostile_box_is_left_out_and_counted_and_a_stopped_world_is_counted_apart`,
+//!   `bystanders_are_made_in_ascending_id_order_among_the_pushers`; a box that turns hostile loses its old body:
+//!   `a_bystander_whose_box_turns_hostile_loses_its_body`. A hold made against a wall, the holder's own box solid to
+//!   its prop, neither throws the prop, jitters it nor moves the holder:
+//!   `a_hold_made_against_a_wall_neither_explodes_nor_jitters_nor_pushes_the_holder` (`--test joints`).
 //! - Predicted impulses touch only predicted props, are capped a tick and in size, are never sent, and one the server does not
 //!   make eases out: `predicted_impulses_are_capped_and_never_sent`,
 //!   `a_predicted_impulse_the_server_never_makes_eases_out_with_no_pop`,

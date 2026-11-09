@@ -630,3 +630,80 @@ fn a_replay_past_the_ticks_work_draws_the_props_interpolated() {
 fn predicted_at(rig: &Rig, ghost: u32) -> Option<[f32; 3]> {
     book(rig).with(|b| b.get(ghost)?.predicted.map(|q| q.position()))?
 }
+
+/// What a run of the client's Player pushing a crate toward another player came to.
+#[derive(Debug)]
+struct Toward {
+    /// The farthest the drawn crate was from the server's over the last 100 ticks, and the mean correction of the run.
+    apart: f32,
+    mean: f64,
+    /// The server's crate at the end.
+    server: [f32; 3],
+    restored: u64,
+}
+
+/// The client's Player walks into a crate and pushes it toward another player, who stands in its way; the server's crate stops
+/// at that player's box. `bystanders`: whether the client's world holds the other player's box.
+fn push_toward_a_player(bystanders: bool) -> Toward {
+    let config = PredictConfig {
+        bystanders,
+        ..PredictConfig::default()
+    };
+    let (mut rig, player) = setup_with(Some(config));
+    // The other player: not controlled by the client, standing 6 units ahead of it.
+    let other: u32 = rig
+        .eval("return new Player() { dataBlock = FigureData; position = \"0 -2 0.5\"; };")
+        .parse()
+        .expect("a player");
+    assert!(other > 0 && other != player);
+    rig.eval(&format!("{player}.setTransform(\"0 -8 0.5\");"));
+    let id = number(&mut rig, "return propSpawn(Crate, \"0 -6.9 0.5\");");
+    assert!(id > 0, "{:?}", rig.server.drain_log());
+    assert!(rig.run_until(400, |r| r.peers[0].ghosts() >= 4
+        && ghost_of(r, id).is_some()));
+    let ghost = ghost_of(&rig, id).expect("its ghost");
+    let p = prediction(&rig);
+    let start = p.stats();
+    let mut apart = 0.0f32;
+    for t in 0..300u32 {
+        let forward = if t < 20 { 0.0 } else { 1.0 };
+        rig.peers[0]
+            .client
+            .vm_mut()
+            .set_global("$mvForwardAction", &forward.to_string());
+        rig.step();
+        if t >= 200
+            && let (Some(drawn), Some(server)) = (drawn_at(&p, ghost), server_at(&rig, id))
+        {
+            apart = apart.max(len(sub(drawn, server)));
+        }
+    }
+    let end = p.stats();
+    let toward = Toward {
+        apart,
+        mean: mean_between(&start, &end),
+        server: server_at(&rig, id).expect("the crate"),
+        restored: end.restores - start.restores,
+    };
+    println!("toward a player (bystanders {bystanders}): {toward:?}");
+    toward
+}
+
+/// The other player's box starts at y = -2.5: the crate (half a unit) stops short of it on the server. With the box in the
+/// client's world the predicted crate stops there too (Torque's protocol: apart 0.03, mean correction 0.003; the engine's: 0.26
+/// and 0.003); without it the predicted crate runs on through the player (apart 1.46 and mean 0.40; 5.4 and 0.145), which must
+/// fail the same thresholds.
+#[test]
+fn a_prop_pushed_toward_another_player_stops_at_it_as_on_the_server() {
+    // Squeezed between the walker and the other player the crate shivers a few centimeters.
+    let holds = |t: &Toward| t.apart <= 0.4 && t.mean <= 0.03;
+    let with = push_toward_a_player(true);
+    assert!(with.server[1] > -4.0 && with.server[1] <= -2.9, "{with:?}");
+    assert!(with.restored > 0, "{with:?}");
+    assert!(holds(&with), "{with:?}");
+    let without = push_toward_a_player(false);
+    assert!(
+        !holds(&without),
+        "the thresholds do not tell the boxes apart: {without:?}"
+    );
+}

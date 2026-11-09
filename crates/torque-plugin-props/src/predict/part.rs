@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use torque_client::predict::slot::{
-    BodyMotion, HeadStep, MoveStep, PredictionPart, Shot, StaticView, TickStep, ViewStep,
+    BodyBox, BodyMotion, HeadStep, MoveStep, PredictionPart, Shot, StaticView, TickStep, ViewStep,
 };
 use torque_collide::math::{
     Box3, QUAT_IDENTITY, affine_inverse, interpolate, mul_p, plain_quat_normalize,
@@ -433,7 +433,7 @@ impl Cx<'_> {
         };
         let joined = self.join_and_leave(&wanted);
         if !self.s.members.is_empty() {
-            self.refresh_statics(step);
+            self.refresh_around(step);
         }
         let ack = self.s.ack;
         if joined && !over {
@@ -717,24 +717,32 @@ impl Cx<'_> {
     }
 
     /// The map pieces and the props around the members, given to the client's world as fixed pieces when the members moved
-    /// far enough (or a prop around them moved): the map's first, then the nearest [`MAX_NEIGHBORS`] props.
-    fn refresh_statics(&mut self, step: &mut dyn TickStep) {
+    /// far enough (or a prop around them moved): the map's first, then the nearest [`MAX_NEIGHBORS`] props. The other players
+    /// and vehicles around them come each tick from the same construction of the client's collision world.
+    fn refresh_around(&mut self, step: &mut dyn TickStep) {
         let (lo, hi) = self.region();
         let center: [f32; 3] = std::array::from_fn(|k| (lo[k] + hi[k]) * 0.5);
         let refetch = self
             .s
             .statics_at
             .is_none_or(|at| length(sub(center, at)) > REFETCH);
+        let pad = REACH + REFETCH;
+        let statics = refetch.then(|| (lo.map(|v| v - pad), hi.map(|v| v + pad)));
+        let bodies = self
+            .config
+            .bystanders
+            .then(|| (lo.map(|v| v - REACH), hi.map(|v| v + REACH)));
+        let around = step.around(statics, bodies);
+        if !around.built {
+            // No room left in the tick's budget for parts to look: the pieces and boxes of the last look stay, and the pieces
+            // are fetched again at the next.
+            return;
+        }
         if refetch {
-            let pad = REACH + REFETCH;
-            let (a, b) = (lo.map(|v| v - pad), hi.map(|v| v + pad));
-            self.s.statics = step
-                .statics_near(a, b)
-                .iter()
-                .filter_map(piece_of)
-                .collect();
+            self.s.statics = around.statics.iter().filter_map(piece_of).collect();
             self.s.statics_at = Some(center);
         }
+        self.set_bystanders(&around.bodies);
         let mut near: Vec<(f32, u32, Quantized)> = self
             .book
             .props()
@@ -771,6 +779,24 @@ impl Cx<'_> {
         let all = self.pieces(&near);
         self.s.world.sync_statics(all);
         self.s.neighbors = near;
+    }
+
+    /// The other players and vehicles around the members, as the server places them: their boxes at their latest records
+    /// (frictionless kinematic bodies that push nothing, [`PropWorld::set_bystanders`]), so a prop meets one it is pushed
+    /// toward, in ascending ghost order. A body's push (the speed it moves at) is the server's alone, and a player in a crouch,
+    /// prone or swim pose is boxed standing: the client's player data carries no pose box.
+    fn set_bystanders(&mut self, bodies: &[BodyBox]) {
+        let boxes = bodies
+            .iter()
+            .map(|b| Pusher {
+                id: b.ghost,
+                min: b.min,
+                max: b.max,
+                velocity: [0.0; 3],
+                mass: 0.0,
+            })
+            .collect();
+        self.s.world.set_bystanders(boxes);
     }
 
     /// The fixed pieces of the client's world: the map's and the props around the members.
