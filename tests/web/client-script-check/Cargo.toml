@@ -1,5 +1,5 @@
 [package]
-name = "torque-example-client-script-web-check"
+name = "torque-test-client-script-web-check"
 description = "The client-script host's cases in a browser build: the realm's guest in Workers, run by web/client-script-check.mjs"
 version.workspace = true
 edition.workspace = true
@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
-torque-client-script-host = { path = "../../crates/torque-client-script-host", features = ["web", "cases"] }
+torque-client-script-host = { path = "../../../crates/torque-client-script-host", features = ["web", "cases"] }
 wasm-bindgen = "0.2"
 wat = "1"
 

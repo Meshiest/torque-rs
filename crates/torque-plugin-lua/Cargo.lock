@@ -891,6 +891,7 @@ dependencies = [
  "gltf",
  "serde_json",
  "torque-modelcore",
+ "torque-resource",
  "torque-shape-builder",
  "torque-shapes",
 ]
@@ -1012,6 +1013,7 @@ dependencies = [
 name = "torque-resource"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "torque-ts-vm",
  "zip",
 ]

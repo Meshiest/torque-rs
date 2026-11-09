@@ -32,7 +32,7 @@ net = []
 # `GrantSet::unreviewed`: tiers granted before their review, for tests and for working on a tier.
 unreviewed-tiers = []
 # The cases every runner passes (`cases`), run natively by `tests/cases.rs` and on the web by
-# examples/client-script-web-check.
+# tests/web/client-script-check.
 cases = ["unreviewed-tiers", "ui", "net", "dep:wat"]
 
 [dependencies]

@@ -1,5 +1,5 @@
 //! The cases every runner passes: the same list natively under Wasmtime (`tests/cases.rs`) and on the web under Node and
-//! headless Chrome (examples/client-script-web-check, the justfile's `client-script-web-check`). A case is a list of [`Action`]s
+//! headless Chrome (tests/web/client-script-check, the justfile's `client-script-web-check`). A case is a list of [`Action`]s
 //! over realms in numbered slots, run by a [`CaseRun`] that never blocks: while a web runner's entry is in flight,
 //! [`CaseRun::step`] returns [`Step::Waiting`] and its caller waits for the runner before stepping again.
 //!

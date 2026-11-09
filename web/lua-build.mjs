@@ -8,9 +8,9 @@
 // With `--client` it builds the client-script guest instead, <target>/lua-web/torque_lua_client.wasm: the same crate with its
 // `client-script` feature, whose module has the realm's entry points (`torque_realm_*`, crates/torque-client-script-format)
 // and none of the extension's.
-// With `--check` it also builds the Lua tests for the web (examples/lua-web-check, the engine with the page's Lua module) and
+// With `--check` it also builds the Lua tests for the web (tests/web/lua-check, the engine with the page's Lua module) and
 // puts them, wasm-bindgen's glue, web/lua.js and the module into <target>/lua-web/check/, for web/lua-check.mjs to run. With
-// both, it builds the client-script host's cases instead (examples/client-script-web-check) and puts them, the glue,
+// both, it builds the client-script host's cases instead (tests/web/client-script-check) and puts them, the glue,
 // web/client-script*.js and the guest into <target>/lua-web/client-check/, for web/client-script-check.mjs.
 // wasm-bindgen's command line, at the version Cargo.lock names, is installed into <target>/web-tools at first.
 // Needs the wasm32-wasip1 target (`rustup target add wasm32-wasip1`) and the WASI SDK, unpacked anywhere, named by WASI_SDK_PATH
@@ -185,7 +185,7 @@ console.log(`${out}: ${kib(statSync(out).size)} (${kib(gzipSync(bytes, { level: 
 if (check) {
   // The cases, optimized (the step-limit cases run millions of steps), and wasm-bindgen's glue for a page. The client
   // cases grant unreviewed tiers, which only a build with debug assertions may: their profile keeps them on.
-  const example = client ? 'torque-example-client-script-web-check' : 'torque-example-lua-web-check';
+  const example = client ? 'torque-test-client-script-web-check' : 'torque-test-lua-web-check';
   const casesProfile = client ? 'client-script-check' : 'release';
   run(
     'cargo',

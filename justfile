@@ -179,9 +179,9 @@ client-script-host-test:
     $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-client-script-host --features wasmtime,cases -- --nocapture
     cargo clippy -p torque-client-script-host --features wasmtime,cases --all-targets -- -D warnings
     cargo clippy -p torque-client-script-host --all-targets -- -D warnings
-    cargo fmt -p torque-client-script-host -p torque-example-client-script-web-check --check
+    cargo fmt -p torque-client-script-host -p torque-test-client-script-web-check --check
 
-# The client-script host's cases on the web: built for a browser (examples/client-script-web-check), each realm's guest
+# The client-script host's cases on the web: built for a browser (tests/web/client-script-check), each realm's guest
 # in a Worker of web/client-script.js, run under Node and in headless Chrome from the cursor guard
 # (web/client-script-check.mjs). Needs what `lua-web` needs and Chrome
 client-script-web-check:

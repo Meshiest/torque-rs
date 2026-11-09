@@ -214,7 +214,7 @@ browser's `crypto.getRandomValues`.
 the console says so; the game goes on.
 
 **Tests.** `just lua-web-check` runs the Lua tests (`crates/torque-plugin-lua/tests/lua.rs` and its shared scripts)
-natively, then builds the same cases for a browser (`examples/lua-web-check`) and runs them under Node and in headless
+natively, then builds the same cases for a browser (`tests/web/lua-check`) and runs them under Node and in headless
 Chrome, each with the page's module. Every case, the sandbox's escapes and the step, memory and policy limits among them,
 must pass in all three. CI does not run it: it needs the WASI SDK and builds Luau's C++.
 

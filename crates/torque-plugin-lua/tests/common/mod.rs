@@ -1,7 +1,7 @@
 //! What the Lua tests share: an engine with the Lua extension linked in (and local mods), server and client script engines
 //! made the way the engine's hosts make them, and the console.
 //!
-//! The web check (`examples/lua-web-check`, `just lua-web-check`) builds the same cases for a browser, where [`lua`] is the
+//! The web check (`tests/web/lua-check`, `just lua-web-check`) builds the same cases for a browser, where [`lua`] is the
 //! page's Lua module instead (`WebLuaPlugin`). With `cfg(torque_lua_module)` (the crate building them sets it, as the
 //! Wasmtime gate's example in `torque-client-script-host` does) they are a native build's cases against a Lua module too:
 //! listed in `CASES`, with [`lua`] the building crate's `crate::lua_module()`.

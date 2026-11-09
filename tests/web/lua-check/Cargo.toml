@@ -1,5 +1,5 @@
 [package]
-name = "torque-example-lua-web-check"
+name = "torque-test-lua-web-check"
 description = "The Lua extension's tests in a browser build: the engine with the page's Lua module, run by web/lua-check.mjs"
 version.workspace = true
 edition.workspace = true
@@ -17,10 +17,10 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
 js-sys = "0.3"
-torque-engine = { path = "../../crates/torque-engine" }
-torque-mods = { path = "../../crates/torque-mods" }
-torque-plugin-loader = { path = "../../crates/torque-plugin-loader" }
-torque-ts-vm = { path = "../../crates/torque-ts-vm" }
+torque-engine = { path = "../../../crates/torque-engine" }
+torque-mods = { path = "../../../crates/torque-mods" }
+torque-plugin-loader = { path = "../../../crates/torque-plugin-loader" }
+torque-ts-vm = { path = "../../../crates/torque-ts-vm" }
 wasm-bindgen = "0.2"
 
 [lints]

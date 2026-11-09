@@ -4258,16 +4258,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "torque-example-client-script-web-check"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "torque-client-script-host",
- "wasm-bindgen",
- "wat",
-]
-
-[[package]]
 name = "torque-example-common"
 version = "0.1.0"
 dependencies = [
@@ -4327,19 +4317,6 @@ dependencies = [
  "torque-plugin-smooth-prediction",
  "torque-render-core",
  "torque-render-scene",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "torque-example-lua-web-check"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "js-sys",
- "torque-engine",
- "torque-mods",
- "torque-plugin-loader",
- "torque-ts-vm",
  "wasm-bindgen",
 ]
 
@@ -4851,6 +4828,29 @@ name = "torque-sim"
 version = "0.1.0"
 dependencies = [
  "torque-collide",
+]
+
+[[package]]
+name = "torque-test-client-script-web-check"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "torque-client-script-host",
+ "wasm-bindgen",
+ "wat",
+]
+
+[[package]]
+name = "torque-test-lua-web-check"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "js-sys",
+ "torque-engine",
+ "torque-mods",
+ "torque-plugin-loader",
+ "torque-ts-vm",
+ "wasm-bindgen",
 ]
 
 [[package]]

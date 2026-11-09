@@ -1,4 +1,4 @@
-// Runs the Lua extension's test cases built for the web (examples/lua-web-check, the same cases as
+// Runs the Lua extension's test cases built for the web (tests/web/lua-check, the same cases as
 // crates/torque-plugin-lua/tests/lua.rs), in the folder `node web/lua-build.mjs --check` makes: under Node (lua-node.mjs) and
 // in a page (lua-check.html, which web/lua-check.mjs loads in headless Chrome).
 //

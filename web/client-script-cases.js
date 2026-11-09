@@ -1,4 +1,4 @@
-// Runs the client-script host's cases built for the web (examples/client-script-web-check, the cases tests/cases.rs runs
+// Runs the client-script host's cases built for the web (tests/web/client-script-check, the cases tests/cases.rs runs
 // under Wasmtime) in the folder `node web/lua-build.mjs --client --check` makes: under Node (client-script-node.mjs) and
 // in a page (client-script-check.html, which web/client-script-check.mjs loads in headless Chrome). Each realm's guest runs
 // in a Worker of client-script.js; a case waits for its Workers between steps. A failed case may trap the cases' module
