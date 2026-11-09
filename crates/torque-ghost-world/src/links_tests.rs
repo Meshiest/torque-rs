@@ -199,3 +199,24 @@ fn a_link_waiting_for_a_ghost_that_went_does_not_take_the_next_ghost_at_its_inde
     assert_eq!(links.parent(2), None);
     links.audit().expect("the tree's rules hold");
 }
+
+#[test]
+fn an_items_rotation_block_turns_about_minus_z_when_its_flag_is_set() {
+    let item = |rotation| {
+        record_matrix(&RecordPose::Item {
+            position: [1.0, 2.0, 3.0],
+            rotation,
+        })
+    };
+    let up = item(Some((false, 1.0)));
+    let down = item(Some((true, 1.0)));
+    // A turn of 1 radian about z, either way: the matrices are mirror images across the x axis' y component.
+    assert!(
+        (up[1] + down[1]).abs() < 1e-6 && up[1].abs() > 0.5,
+        "{up:?} {down:?}"
+    );
+    assert!((up[0] - down[0]).abs() < 1e-6);
+    assert_eq!(down, item(Some((false, -1.0))));
+    assert_eq!(item(None)[0], 1.0);
+    assert_eq!([up[3], up[7], up[11]], [1.0, 2.0, 3.0]);
+}

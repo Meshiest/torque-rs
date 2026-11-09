@@ -38,8 +38,7 @@ pub fn pose_matrix(pose: &Pose, scale: Option<[f32; 3]>) -> Option<(Mat, [f32; 3
             Some((m, scale.unwrap_or([1.0; 3])))
         }
         Pose::Item { position, rotation } => {
-            let angle = rotation.map_or(0.0, |r| r.1);
-            let mut m = Mat::from_axis_angle([0.0, 0.0, 1.0], angle);
+            let mut m = Mat::from_axis_angle([0.0, 0.0, 1.0], Pose::item_angle(*rotation));
             m.set_column3(*position);
             Some((m, scale.unwrap_or([1.0; 3])))
         }

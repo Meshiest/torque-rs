@@ -8,8 +8,10 @@
 //! `game/player.h`, `game/item.h`, `game/camera.h` and `game/staticShape.h` (each Copyright (C) GarageGames.com, Inc.);
 //! Torque3D's enums differ. A Player control object's packet data ([`player_packet_data`]) follows TGE 1.4's
 //! `Player::writePacketData` in `game/player.cc` (Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
-//! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is
-//! this crate's own.
+//! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The StaticShape
+//! mark of [`TorqueCodecs::transform_mask`] follows `StaticShape::setTransform` in TGE 1.4's `game/staticShape.cc` (Copyright (C)
+//! GarageGames.com, Inc.) and Torque3D's `T3D/staticShape.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust
+//! Logic, Inc.). The code here is this crate's own.
 
 use std::any::Any;
 use std::fmt::Debug;
@@ -454,6 +456,10 @@ pub const DATABLOCKS_DONE: u8 = 6;
 /// Torque's `DataBlocksDownloadDone`.
 pub const DATABLOCKS_DOWNLOAD_DONE: u8 = 7;
 
+/// StaticShape's `PositionMask` as the simulation numbers it (the first bit past ShapeBase's, which [`NetCodecs::sim_mask`]
+/// moves up with the rest).
+const STATIC_POSITION: u32 = 0x0100_0000;
+
 /// Torque's codecs.
 #[derive(Debug, Default)]
 pub struct TorqueCodecs;
@@ -576,6 +582,14 @@ impl ObjectView for TgeView<'_> {
 }
 
 impl NetCodecs for TorqueCodecs {
+    /// `StaticShape::setTransform` marks `PositionMask`; the other classes' own `setTransform` is handled where it runs.
+    fn transform_mask(&self, code: u16) -> u32 {
+        match TgeClass::of_code(code) {
+            Some(TgeClass::StaticShape | TgeClass::ScopeAlwaysShape) => STATIC_POSITION,
+            _ => 0,
+        }
+    }
+
     /// The game classes number a ShapeBase's bits from bit 4 (`setShapeName` marks 0x10, the damage 0x20, a mount 0x80,
     /// the fade 0x100, the sounds, threads and images from 0x1000, 0x10000 and 0x10_0000; a Player's, an Item's and a
     /// Camera's own bits from 24). TGE 1.4's records put each one bit higher, past GameBase's `ControlMask` (bit 4):

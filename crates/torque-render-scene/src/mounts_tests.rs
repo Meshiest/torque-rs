@@ -240,3 +240,20 @@ fn a_loop_of_mounts_places_each_ghost_as_alone_whichever_is_asked_first() {
     let (first, second) = (shared(1), shared(2));
     assert_eq!((first, second), (alone(1), alone(2)));
 }
+
+#[test]
+fn an_items_rotation_block_turns_about_minus_z_when_its_flag_is_set() {
+    let item = |rotation| {
+        let pose = Pose::Item {
+            position: [1.0, 2.0, 3.0],
+            rotation,
+        };
+        pose_matrix(&pose, None).expect("an Item's matrix").0
+    };
+    let up = item(Some((false, 1.0)));
+    let down = item(Some((true, 1.0)));
+    assert!(up.column(0)[1].abs() > 0.5);
+    assert!((up.column(0)[1] + down.column(0)[1]).abs() < 1e-6);
+    assert!((up.column(0)[0] - down.column(0)[0]).abs() < 1e-6);
+    assert_eq!(down.column(0), item(Some((false, -1.0))).column(0));
+}

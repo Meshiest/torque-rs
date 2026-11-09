@@ -124,9 +124,9 @@ pub fn set_transform(vm: &mut Vm, id: ObjId, matrix: Matrix) {
         return;
     }
     if camera::is_camera(vm, id) {
-        // `Camera::setTransform` rebuilds the matrix from a pitch and a yaw and keeps those.
+        // `Camera::setTransform` rebuilds the matrix from a pitch and a yaw and keeps those; it marks nothing (only a tick
+        // with a move marks `MoveMask`).
         camera::set_transform(vm, id, &matrix);
-        ghosts::mark(vm, id, camera::MOVE_MASK);
     } else if crate::sim::item::is_item(vm, id) {
         crate::sim::item::set_transform(vm, id, &matrix);
     } else if crate::sim::vehicle::is_vehicle(vm, id) {

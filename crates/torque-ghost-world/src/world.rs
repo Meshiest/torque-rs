@@ -103,6 +103,18 @@ pub enum Pose {
     },
 }
 
+impl Pose {
+    /// The angle about +z of an Item's rotation block (`Item::unpackUpdate`: the axis is (0, 0, -1) when the flag is set, (0, 0, 1)
+    /// otherwise), 0 for no block.
+    #[must_use]
+    pub fn item_angle(rotation: Option<(bool, f32)>) -> f32 {
+        rotation.map_or(
+            0.0,
+            |(negative, angle)| if negative { -angle } else { angle },
+        )
+    }
+}
+
 /// The most wheels a vehicle look holds (`WheeledVehicleData::MaxWheels`).
 pub const LOOK_WHEELS: usize = 8;
 

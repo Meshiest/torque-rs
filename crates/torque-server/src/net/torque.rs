@@ -7,7 +7,10 @@
 //! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`, and the
 //! views of a player's arm and look action, a projectile and a shape's images follow `T3D/player.cpp`, `T3D/projectile.cpp` and
 //! `T3D/shapeBase.cpp` (each `Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of` follows
-//! `QuatF::set(MatrixF)` in `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record
+//! `QuatF::set(MatrixF)` in `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the views of an Item's rotation, rest flag
+//! and velocity (`item_field`) follow `Item::packUpdate` in `T3D/item.cpp` and the angle about an axis `AngAxisF::set` in
+//! `math/mAngAxis.cpp`, and a Camera's rotation (`camera_field`) follows `Camera::packUpdate` in `T3D/camera.cpp` (each
+//! `Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record
 //! (`sky_field`) are those of TGE 1.4's `terrain/sky.cc` (`Copyright (C) GarageGames.com, Inc.`; Torque3D has no Sky class).
 
 use std::borrow::Cow;
@@ -473,6 +476,41 @@ impl GameView<'_> {
 }
 
 impl GameView<'_> {
+    /// A Camera's `rotation` (`mRot`: pitch, 0, yaw).
+    fn camera_field(&self, field: &str, index: usize) -> Option<Value> {
+        if field != "rotation" {
+            return None;
+        }
+        let camera = torque_game::scene::camera::state(self.fields.vm, self.fields.obj)?;
+        Some(Value::F32(*[camera.pitch, 0.0, camera.yaw].get(index)?))
+    }
+
+    /// An Item's `axis_z` and `angle` (`AngAxisF(mObjToWorld)`: the axis' z and the angle), `at_rest` and `velocity`.
+    fn item_field(&self, field: &str, index: usize) -> Option<Value> {
+        if !matches!(field, "axis_z" | "angle" | "at_rest" | "velocity") {
+            return None;
+        }
+        let item = torque_game::sim::item::state(self.fields.vm, self.fields.obj)?;
+        match field {
+            "at_rest" => return Some(Value::Bool(item.at_rest)),
+            "velocity" => return Some(Value::F32(*item.velocity.get(index)?)),
+            _ => {}
+        }
+        let q = quat_of(&self.matrix()?);
+        // The clamp keeps rounding past 1 from making the angle NaN.
+        let w = q[3].clamp(-1.0, 1.0);
+        if field == "angle" {
+            return Some(Value::F32(w.acos() * 2.0));
+        }
+        // `AngAxisF::set(QuatF)`: no rotation leaves the axis (1, 0, 0), whose z is 0.
+        let sin_half = (1.0 - w * w).sqrt();
+        Some(Value::F32(if sin_half != 0.0 {
+            q[2] / sin_half
+        } else {
+            0.0
+        }))
+    }
+
     /// A simulated vehicle's field from its state, if the object is one (the record's and the packet data's view fields,
     /// `torque_ghosts::vehicle` and `torque_ghosts::tails`).
     fn vehicle(&self, field: &str, index: usize) -> Option<Value> {
@@ -663,6 +701,12 @@ impl ObjectView for GameView<'_> {
             return v;
         }
         if let Some(v) = self.projectile(field, index) {
+            return v;
+        }
+        if let Some(v) = self.camera_field(field, index) {
+            return v;
+        }
+        if let Some(v) = self.item_field(field, index) {
             return v;
         }
         match field {

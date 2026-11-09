@@ -509,8 +509,7 @@ pub fn record_matrix(pose: &RecordPose) -> Matrix {
         RecordPose::Euler { position, yaw, .. } => placed(turn_z(*yaw), *position),
         RecordPose::Quat { position, rotation } => placed(quat_matrix(*rotation), *position),
         RecordPose::Item { position, rotation } => {
-            let angle = rotation.map_or(0.0, |r| r.1);
-            let (s, c) = (angle * 0.5).sin_cos();
+            let (s, c) = (RecordPose::item_angle(*rotation) * 0.5).sin_cos();
             placed(quat_matrix([0.0, 0.0, s, c]), *position)
         }
     }
