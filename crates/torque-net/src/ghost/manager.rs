@@ -25,6 +25,9 @@ pub const KILL_PRIORITY: f32 = 10_000.0;
 /// the section after its events.
 pub const SECTION_MIN_BITS: usize = 7;
 
+/// How many emptied lists of refs a manager keeps for its next packets.
+const REF_POOL: usize = 64;
+
 /// A `GhostRef` flag: the record carried the class form (a NewGhost).
 const REF_NEW_GHOST: u8 = 0x10;
 /// A `GhostRef` flag: the record was a kill.
@@ -422,6 +425,32 @@ pub struct GhostManager<P: GhostPolicy = TorqueGhosts> {
     drop_at: usize,
     /// A scan is under way: the objects it scopes are the walks' (the policy's admission holds for them), not a native's.
     walking: bool,
+    /// What the last full query that ran to its end left true: every object it could ghost has a ghost.
+    settled: Option<Settled>,
+    /// What the full query under way started with ([`Settled`] when it ends), and whether it met something a later one could
+    /// not skip (a ghost it could not make).
+    walk: Option<Walk>,
+    /// The priority pass's buffers, kept between packets.
+    items: Vec<(f32, u32)>,
+    ids: Vec<u32>,
+    /// Emptied lists of refs, kept for the next packet's.
+    ref_pool: Vec<Vec<GhostRef>>,
+}
+
+/// What a full query that ran to its end under a [`GhostPolicy::plain_query`] policy and a source with a
+/// [`ObjectSource::scope_stamp`] found: the stamp and scope object it ran with and the table's count of links let go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Settled {
+    stamp: u64,
+    scope: ObjId,
+    links_let_go: u64,
+}
+
+/// A full query under way: how it started, and whether it left an object without the ghost it could have.
+#[derive(Debug, Clone, Copy)]
+struct Walk {
+    start: Settled,
+    complete: bool,
 }
 
 impl GhostManager {
@@ -458,6 +487,11 @@ impl<P: GhostPolicy> GhostManager<P> {
             drops: Vec::new(),
             drop_at: 0,
             walking: false,
+            settled: None,
+            walk: None,
+            items: Vec::new(),
+            ids: Vec::new(),
+            ref_pool: Vec::new(),
         })
     }
 
@@ -714,6 +748,7 @@ impl<P: GhostPolicy> GhostManager<P> {
         self.activated = true;
         self.scoped_pending = true;
         self.scoping = true;
+        self.settled = None;
         let mut free = |_| true;
         let mut b = Budget {
             charge: &mut free,
@@ -780,6 +815,8 @@ impl<P: GhostPolicy> GhostManager<P> {
         self.recent_cursor = 0;
         self.drops = Vec::new();
         self.drop_at = 0;
+        self.settled = None;
+        self.walk = None;
         self.policy.reset();
         GhostEvent::Message(ConnectionMessage {
             seq: old,
@@ -872,10 +909,12 @@ impl<P: GhostPolicy> GhostManager<P> {
     where
         P: ObjectPolicy<S>,
     {
-        if !self.scoping || !src.exists(obj) {
+        if !self.scoping {
             return Scoped::Refused;
         }
-        let nf = src.net_flags(obj);
+        let Some(nf) = src.scope_flags(obj) else {
+            return Scoped::Refused;
+        };
         if nf & net_flags::SCOPE_LOCAL != 0 && !self.cfg.local {
             return Scoped::Refused;
         }
@@ -889,6 +928,7 @@ impl<P: GhostPolicy> GhostManager<P> {
         if self.walking {
             let counts = self.table_counts();
             if !self.policy.admit(src, self.scope_object, obj, &counts) {
+                self.walk_incomplete();
                 return Scoped::Refused;
             }
         }
@@ -901,8 +941,44 @@ impl<P: GhostPolicy> GhostManager<P> {
                 self.policy.ghost_made(src, obj, id);
                 Scoped::New
             }
-            None => Scoped::Refused,
+            None => {
+                self.walk_incomplete();
+                Scoped::Refused
+            }
         }
+    }
+
+    /// The full query under way met an object it could not make a ghost of: it will not count as complete.
+    fn walk_incomplete(&mut self) {
+        if let Some(walk) = &mut self.walk {
+            walk.complete = false;
+        }
+    }
+
+    /// What a full query that has just run to its end settled: its start's stamp when nothing it did or met since keeps a later
+    /// query from skipping the scoping (no ghost refused, no object let go of, no dependents left, the same stamp).
+    fn settled_by<S: ObjectSource>(&mut self, src: &S, scope: ObjId) -> Option<Settled>
+    where
+        P: ObjectPolicy<S>,
+    {
+        let walk = self.walk.take()?;
+        let now = self.stamp_of(src, scope)?;
+        (walk.complete && self.pending_scope.is_empty() && now == walk.start).then_some(walk.start)
+    }
+
+    /// The stamp a full query started now would be settled under, for a policy and source that allow settling at all.
+    fn stamp_of<S: ObjectSource>(&self, src: &S, scope: ObjId) -> Option<Settled>
+    where
+        P: ObjectPolicy<S>,
+    {
+        if !self.policy.plain_query() {
+            return None;
+        }
+        Some(Settled {
+            stamp: src.scope_stamp()?,
+            scope,
+            links_let_go: self.table.links_let_go(),
+        })
     }
 
     /// The policy's drop pass (resumable, a unit a ghost): every ghost the policy names whose object it says to drop is dropped,
@@ -1004,7 +1080,17 @@ impl<P: GhostPolicy> GhostManager<P> {
         }
         let resuming = self.query_resume;
         if self.policy.full_query_due(now, resuming) || resuming {
+            // A query whose last run left every object it could ghost with a ghost, over the same objects, finds nothing to
+            // scope: it still visits and counts them (the budget and the resume cursor see no difference), but scopes none.
+            let mut quiet = false;
             if !resuming {
+                let stamp = self.stamp_of(src, scope);
+                quiet = stamp.is_some() && stamp == self.settled;
+                self.walk = stamp.map(|start| Walk {
+                    start,
+                    complete: true,
+                });
+                self.settled = None;
                 self.query_cursor = 0;
                 let n = self.table.nonzero_ids_by_position().len();
                 budget.spend(1 + (n / 64) as u64);
@@ -1028,6 +1114,11 @@ impl<P: GhostPolicy> GhostManager<P> {
                     refused = true;
                     return false;
                 }
+                if quiet {
+                    // Scoping an object that has its ghost only marks the ghost seen; nothing else of it can differ.
+                    self.table.mark_in_scope(o);
+                    return true;
+                }
                 // The policy's scope rule: an object it leaves out is not scoped this time.
                 if !self.policy.query_visit(src, scope, o) {
                     return true;
@@ -1046,6 +1137,7 @@ impl<P: GhostPolicy> GhostManager<P> {
             } else {
                 self.query_cursor = 0;
                 self.end_query(radius, now);
+                self.settled = self.settled_by(src, scope);
             }
             true
         } else {
@@ -1167,7 +1259,9 @@ impl<P: GhostPolicy> GhostManager<P> {
         if order == PendingOrder::Priority {
             let zero = self.table.zero();
             budget.spend(zero as u64);
-            let mut items: Vec<(f32, u32)> = Vec::with_capacity(zero);
+            let mut items = std::mem::take(&mut self.items);
+            items.clear();
+            items.reserve(zero);
             for &id in self.table.nonzero_ids_by_position() {
                 let Some(g) = self.table.get(id) else {
                     continue;
@@ -1191,8 +1285,12 @@ impl<P: GhostPolicy> GhostManager<P> {
                 items.push((p, id));
             }
             src.sort_pending(&mut items);
-            let ids: Vec<u32> = items.iter().map(|&(_, id)| id).collect();
+            let mut ids = std::mem::take(&mut self.ids);
+            ids.clear();
+            ids.extend(items.iter().map(|&(_, id)| id));
             self.table.set_prefix_order(&ids);
+            self.items = items;
+            self.ids = ids;
         } else if order == (PendingOrder::Array { scope_first: true })
             && self.table.zero() > 1
             && let Some(id) = scope.and_then(|s| self.table.id_of(s))
@@ -1316,12 +1414,16 @@ impl<P: GhostPolicy> GhostManager<P> {
         };
         g.chain.push_back((send_seq, mask));
         let generation = g.generation;
-        self.refs.entry(send_seq).or_default().push(GhostRef {
-            ghost: id,
-            generation,
-            mask,
-            flags: rflags,
-        });
+        let pool = &mut self.ref_pool;
+        self.refs
+            .entry(send_seq)
+            .or_insert_with(|| pool.pop().unwrap_or_default())
+            .push(GhostRef {
+                ghost: id,
+                generation,
+                mask,
+                flags: rflags,
+            });
         self.ref_total += 1;
     }
 
@@ -1332,12 +1434,10 @@ impl<P: GhostPolicy> GhostManager<P> {
         let old = g.mask;
         g.mask = ret;
         g.skip = 0;
-        let f = if notyet {
-            (g.flags & !flags::NOT_YET_GHOSTED) | flags::GHOSTING
-        } else {
-            g.flags
-        };
-        self.table.set_flags(id, f);
+        if notyet {
+            let f = (g.flags & !flags::NOT_YET_GHOSTED) | flags::GHOSTING;
+            self.table.set_flags(id, f);
+        }
         self.push_ref(
             id,
             send_seq,
@@ -1365,7 +1465,7 @@ impl<P: GhostPolicy> GhostManager<P> {
     /// The fate of the data packet sent as `send_seq` (the packet layer's notify): the ack or drop routine over
     /// the packet's refs, newest record first. Notifies must come oldest packet first. An unknown or repeated `send_seq` does nothing.
     pub fn on_notify(&mut self, send_seq: u32, delivered: bool) {
-        let Some(refs) = self.refs.remove(&send_seq) else {
+        let Some(mut refs) = self.refs.remove(&send_seq) else {
             return;
         };
         self.ref_total = self.ref_total.saturating_sub(refs.len());
@@ -1392,7 +1492,7 @@ impl<P: GhostPolicy> GhostManager<P> {
                 }
             } else {
                 let lost = r.mask & !newer;
-                let mut f = g.flags;
+                let (before, mut f) = (g.flags, g.flags);
                 let was_zero = g.mask == 0;
                 if lost != 0 {
                     g.mask = if was_zero { lost } else { g.mask | lost };
@@ -1403,11 +1503,17 @@ impl<P: GhostPolicy> GhostManager<P> {
                 if r.flags & REF_KILLING != 0 {
                     f = (f | flags::KILL_GHOST) & !flags::KILLING_GHOST;
                 }
-                self.table.set_flags(r.ghost, f);
+                if f != before {
+                    self.table.set_flags(r.ghost, f);
+                }
                 if lost != 0 && was_zero {
                     self.table.push_nonzero(r.ghost);
                 }
             }
+        }
+        refs.clear();
+        if self.ref_pool.len() < REF_POOL {
+            self.ref_pool.push(refs);
         }
     }
 

@@ -62,10 +62,16 @@ pub struct World {
     pub fresh_base: u64,
     /// The objects the full scope query would take whatever their centre's distance (`ObjectSource::reaches_scope`).
     pub reach: Vec<ObjId>,
+    /// The stamp of the scope query ([`ObjectSource::scope_stamp`]); a test that sets it bumps it whenever the objects the query
+    /// takes change.
+    pub stamp: Option<u64>,
+    /// How many times a scope walk asked whether an object exists.
+    pub existence_asked: std::cell::Cell<usize>,
 }
 
 impl World {
     pub fn add(&mut self, id: ObjId, obj: Obj) {
+        self.stamp = self.stamp.map(|s| s + 1);
         self.objs.insert(id, obj);
         if self.objs[&id].nflags & net_flags::GHOSTABLE != 0 {
             self.container.push(id);
@@ -73,6 +79,7 @@ impl World {
     }
 
     pub fn remove(&mut self, id: ObjId) {
+        self.stamp = self.stamp.map(|s| s + 1);
         self.objs.remove(&id);
         self.container.retain(|&c| c != id);
         self.recent.retain(|&c| c != id);
@@ -82,6 +89,7 @@ impl World {
 
 impl ObjectSource for World {
     fn exists(&self, obj: ObjId) -> bool {
+        self.existence_asked.set(self.existence_asked.get() + 1);
         self.objs.contains_key(&obj)
     }
 
@@ -91,6 +99,10 @@ impl ObjectSource for World {
 
     fn net_flags(&self, obj: ObjId) -> u32 {
         self.objs.get(&obj).map_or(0, |o| o.nflags)
+    }
+
+    fn scope_stamp(&self) -> Option<u64> {
+        self.stamp
     }
 
     fn pack_update(

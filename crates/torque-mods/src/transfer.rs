@@ -101,6 +101,11 @@ pub(crate) fn get_rpc_ready(vm: &torque_ts_vm::vm::Vm) -> Option<bool> {
     Some(rpc.is_ready())
 }
 
+/// How many runs of blocks a client keeps asked for at once. The server queues each answer behind the one before it and holds a
+/// client to a backlog on the mods channel of the window and one more run (`mods::MAX_OUTSTANDING`), so the window leaves a run
+/// of room for an acknowledgement that comes late: a run is answered once the ones before it were, whatever the link's round trip.
+pub(crate) const DOWNLOAD_WINDOW: usize = 3;
+
 /// The most bytes of one message of the channel: an offer, or the data of a request.
 pub const MAX_MESSAGE: usize = 2 << 20;
 
@@ -288,7 +293,8 @@ struct Inner {
     /// A job for each mod of the offer that needs fetching.
     jobs: Vec<Option<Job>>,
     todo: VecDeque<Request>,
-    pending: Option<Request>,
+    /// The runs asked for and not answered yet, oldest first (at most [`DOWNLOAD_WINDOW`]): the server answers them in order.
+    pending: VecDeque<Request>,
     fetched_bytes: u64,
     total_bytes: u64,
     fetching: usize,
@@ -340,7 +346,7 @@ impl Downloads {
                 offer: Vec::new(),
                 jobs: Vec::new(),
                 todo: VecDeque::new(),
-                pending: None,
+                pending: VecDeque::new(),
                 fetched_bytes: 0,
                 total_bytes: 0,
                 fetching: 0,
@@ -395,7 +401,7 @@ impl Downloads {
         inner.offer.clear();
         inner.jobs.clear();
         inner.todo.clear();
-        inner.pending = None;
+        inner.pending.clear();
         inner.fetched_bytes = 0;
         inner.total_bytes = 0;
         inner.fetching = 0;
@@ -414,7 +420,7 @@ impl Downloads {
             inner.phase = Phase::Idle;
         }
         inner.todo.clear();
-        inner.pending = None;
+        inner.pending.clear();
         inner.jobs.clear();
     }
 
@@ -470,6 +476,7 @@ impl Downloads {
         let inner = self.inner.borrow();
         let at = inner
             .pending
+            .front()
             .map(|r| r.mod_index)
             .or_else(|| inner.todo.front().map(|r| r.mod_index))?;
         inner.offer.get(at as usize).map(|o| o.id.clone())
@@ -487,14 +494,14 @@ impl Downloads {
         self.inner.borrow().caps.limits.time_seconds()
     }
 
-    /// What to send the server next, if anything: the next request (one is outstanding at a time), or the ready word once
-    /// everything is mounted.
+    /// What to send the server next, if anything: the next request (up to [`DOWNLOAD_WINDOW`] are outstanding at a time), or the
+    /// ready word once everything is mounted.
     pub(crate) fn next_command(&self) -> Option<Command> {
         let mut inner = self.inner.borrow_mut();
         match inner.phase {
-            Phase::Downloading if inner.pending.is_none() => {
+            Phase::Downloading if inner.pending.len() < DOWNLOAD_WINDOW => {
                 let request = inner.todo.pop_front()?;
-                inner.pending = Some(request);
+                inner.pending.push_back(request);
                 Some(Command::Get(request))
             }
             Phase::Done if !inner.ready_sent => {
@@ -511,7 +518,7 @@ impl Downloads {
         let mut inner = self.inner.borrow_mut();
         inner.phase = Phase::Failed;
         inner.todo.clear();
-        inner.pending = None;
+        inner.pending.clear();
         inner.jobs.clear();
         inner.events.push_back(Event::Failed(reason));
     }
@@ -744,7 +751,7 @@ impl Downloads {
             return;
         }
         let waiting = inner.jobs.iter().flatten().any(|j| !j.done);
-        if waiting || !inner.todo.is_empty() || inner.pending.is_some() {
+        if waiting || !inner.todo.is_empty() || !inner.pending.is_empty() {
             inner.phase = Phase::Downloading;
         } else {
             inner.phase = Phase::Done;
@@ -804,7 +811,7 @@ impl Downloads {
         let at;
         {
             let mut inner = self.inner.borrow_mut();
-            if inner.pending != Some(request) {
+            if inner.pending.front() != Some(&request) {
                 return Err("The server sent data nobody asked for.".to_string());
             }
             at = request.mod_index as usize;
@@ -852,7 +859,7 @@ impl Downloads {
             }
             let done = job.missing.iter().all(|m| m.iter().all(|n| !n));
             inner.fetched_bytes = inner.fetched_bytes.saturating_add(bytes.len() as u64);
-            inner.pending = None;
+            inner.pending.pop_front();
             if !done {
                 return Ok(());
             }
@@ -998,7 +1005,8 @@ impl ContentServer for ModsContentServer {
     }
 
     fn progress(&self, vm: &Vm, obj: ObjId) -> u64 {
-        Mods::of(vm).map_or(0, |mods| mods.serving_progress(obj))
+        let hub = vm.extension::<ChannelHub>();
+        Mods::of(vm).map_or(0, |mods| mods.serving_progress(hub.as_deref(), obj))
     }
 
     fn end(&self, vm: &Vm, obj: ObjId) {

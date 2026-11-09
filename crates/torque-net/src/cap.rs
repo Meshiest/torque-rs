@@ -165,9 +165,9 @@ pub const NET_INFO_REPLIES_PER_SRC_PER_S: u32 = 16;
 /// Info replies one source network is sent per second.
 pub const NET_INFO_REPLIES_PER_NETWORK_PER_S: u32 = 32;
 
-/// How many times its request's size a reply to a source with no connection may be: the server query's answers amplify
-/// nothing past it. This engine's clients pad their requests ([`crate::profile::QueryProfile::request_bytes`]) so a full answer
-/// fits.
+/// How many times its request's size a reply may be, to any source (a connected player's address included): the server
+/// query's answers amplify nothing past it. This engine's clients pad their requests
+/// ([`crate::profile::QueryProfile::request_bytes`]) so a full answer fits.
 pub const NET_INFO_REPLY_FACTOR: usize = 3;
 
 /// The bytes a second of replies past [`NET_INFO_REPLY_FACTOR`] the whole server sends (a stock client's short requests),

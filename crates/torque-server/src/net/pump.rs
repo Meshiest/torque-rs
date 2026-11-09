@@ -1240,6 +1240,8 @@ pub fn send_pass<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
     let mut work = 0u32;
     let mut lagging: Vec<ConnId> = Vec::new();
     let mut failed: Vec<(ConnId, NetError)> = Vec::new();
+    // The preference the engine connections' byte rate is held under, read once a pass and only when one is sent to.
+    let mut byte_rate = None;
     let emit = |packet: Option<(SocketAddr, Vec<u8>)>, work: &mut u32| match packet {
         Some((to, bytes)) => {
             *work = work.saturating_add(cost(bytes.len()));
@@ -1257,7 +1259,15 @@ pub fn send_pass<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
         }
         shared.borrow_mut().cursor = id.0.wrapping_add(1);
         if shared.borrow().hs.connection(id).is_some_and(|c| c.engine) {
-            work = work.saturating_add(super::engine::send_conn(vm, shared, id, now, &mut failed));
+            let cap = *byte_rate.get_or_insert_with(|| super::engine::byte_rate_pref(vm));
+            work = work.saturating_add(super::engine::send_conn(
+                vm,
+                shared,
+                id,
+                now,
+                cap,
+                &mut failed,
+            ));
             work = work.saturating_add(take_payload_work(shared, id));
             run_payload_calls(vm, shared, id);
             continue;

@@ -704,3 +704,51 @@ fn entries_with_no_server_are_another_servers() {
     let sent = r.join(&[offer], &[content]);
     assert_eq!(sent, 0, "sharing still reads them");
 }
+
+impl Rig {
+    /// Like [`Rig::join`], counting the round trips: a round is every request the client has ready to send, then the server's
+    /// answers to all of them, so a client that waits for each answer before asking for the next takes one round a request.
+    fn join_in_rounds(&self, mods: &[ModOffer], content: &[Files]) -> usize {
+        self.d.reset();
+        self.d.receive(&encode_offer(mods));
+        let mut rounds = 0;
+        for _ in 0..10_000 {
+            let mut asked = Vec::new();
+            while let Some(Command::Get(r)) = self.d.next_command() {
+                asked.push(r);
+            }
+            if asked.is_empty() {
+                break;
+            }
+            rounds += 1;
+            for r in asked {
+                let file = &content[r.mod_index as usize][r.file as usize].1;
+                let (from, to) =
+                    run_bytes(file.len() as u64, u64::from(r.start), u64::from(r.count));
+                self.d
+                    .receive(&encode_data(&r, &file[from as usize..to as usize]));
+            }
+        }
+        rounds
+    }
+}
+
+#[test]
+fn a_download_takes_a_fraction_of_the_round_trips_a_request_at_a_time_would() {
+    let big = vec![
+        ("art/a.bin".to_string(), pattern(7 << 20, 1)),
+        ("art/b.bin".to_string(), pattern(7 << 20, 2)),
+    ];
+    let (offer, content) = offered("big", "1.0", &big, true);
+    let runs = offer
+        .bytes()
+        .div_ceil((BLOCK_BYTES * MAX_REQUEST_BLOCKS as usize) as u64) as usize;
+    let r = rig(caps(true));
+    let rounds = r.join_in_rounds(std::slice::from_ref(&offer), &[content]);
+    println!("mod download: {runs} runs in {rounds} round trips");
+    assert_eq!(r.d.phase(), Phase::Done);
+    assert!(
+        rounds <= runs.div_ceil(DOWNLOAD_WINDOW),
+        "{runs} runs took {rounds} rounds"
+    );
+}

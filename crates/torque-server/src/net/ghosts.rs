@@ -25,6 +25,9 @@ use std::rc::Rc;
 use super::codecs::NetCodecs;
 use super::peer::PeerKind;
 use torque_ghosts::NetStr;
+use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
+use torque_ghosts::plugin::PLUGIN_CODE_BASE;
+use torque_ghosts::tge::TgeClass;
 use torque_net::bits::BitWriter;
 use torque_net::events::{ConnectionMessage, PackCtx as EventPackCtx};
 use torque_net::ghost::{
@@ -70,6 +73,82 @@ pub struct Entry {
     pub class_id: u32,
     /// `mNetFlags`: Ghostable, and ScopeAlways for the classes whose constructor sets it.
     pub flags: u32,
+    /// The class is the engine's own or a plugin's, which a connection knows only when its peer is the engine's.
+    pub engine_only: bool,
+}
+
+/// The registry's entries by object. Every change of what a connection's scope walk would meet (an object added or removed, an
+/// entry's flags edited) moves [`Entries::generation`], and the ids in order are kept for each generation, so a walk that
+/// visits every object does not sort them again for every connection and packet.
+#[derive(Debug, Default)]
+pub struct Entries {
+    map: torque_ts_vm::idhash::IdMap<ObjId, Entry>,
+    generation: u64,
+    sorted: RefCell<Option<(u64, Rc<[ObjId]>)>>,
+}
+
+impl Entries {
+    pub fn get(&self, obj: &ObjId) -> Option<&Entry> {
+        self.map.get(obj)
+    }
+
+    pub fn contains_key(&self, obj: &ObjId) -> bool {
+        self.map.contains_key(obj)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&ObjId, &Entry)> {
+        self.map.iter()
+    }
+
+    pub fn insert(&mut self, obj: ObjId, entry: Entry) -> Option<Entry> {
+        self.generation += 1;
+        self.map.insert(obj, entry)
+    }
+
+    pub fn remove(&mut self, obj: &ObjId) -> Option<Entry> {
+        let gone = self.map.remove(obj);
+        if gone.is_some() {
+            self.generation += 1;
+        }
+        gone
+    }
+
+    /// An entry to edit; what the edit changes counts as a change of the registry.
+    pub fn get_mut(&mut self, obj: &ObjId) -> Option<&mut Entry> {
+        let entry = self.map.get_mut(obj);
+        if entry.is_some() {
+            self.generation += 1;
+        }
+        entry
+    }
+
+    /// A number that is the same for two moments only if no object was added or removed and no entry edited between them.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The objects in id order.
+    pub fn sorted_ids(&self) -> Rc<[ObjId]> {
+        let mut held = self.sorted.borrow_mut();
+        if let Some((generation, ids)) = held.as_ref()
+            && *generation == self.generation
+        {
+            return Rc::clone(ids);
+        }
+        let mut ids: Vec<ObjId> = self.map.keys().copied().collect();
+        ids.sort_unstable();
+        let ids: Rc<[ObjId]> = ids.into();
+        *held = Some((self.generation, Rc::clone(&ids)));
+        ids
+    }
 }
 
 /// How many records with unsent bits [`Registry::unsent_log`] keeps.
@@ -79,14 +158,14 @@ pub const UNSENT_LOG_CAP: usize = 4_096;
 /// one connection.
 #[derive(Debug, Default)]
 pub struct Registry {
-    pub entries: torque_ts_vm::idhash::IdMap<ObjId, Entry>,
+    pub entries: Entries,
     /// The Sky, if there is one (the engine's one sky).
     pub sky: Option<ObjId>,
     /// A diagnostic log: each record whose `packUpdate` left bits unsent (object, the mask it was asked for, the bits it kept),
     /// the first [`UNSENT_LOG_CAP`] of them. Tests read it; nothing depends on it.
     pub unsent_log: std::cell::RefCell<Vec<(ObjId, u32, u32)>>,
     /// object -> (the sequence it was first marked at, its accumulated bits).
-    dirty: HashMap<ObjId, (u64, u32)>,
+    dirty: torque_ts_vm::idhash::IdMap<ObjId, (u64, u32)>,
     dirty_seq: u64,
     /// The feed of the connections whose peer is the engine's own client (`GhostManager::set_fresh`): the ghostable objects
     /// added while one of them exists, in order, the first numbered `fresh_base`. At most [`FRESH_CAP`]; the oldest go first (a
@@ -540,6 +619,9 @@ impl<G: GhostGame> GhostHub<G> {
                     code: info.code,
                     class_id: info.class_id,
                     flags,
+                    engine_only: info.code >= PLUGIN_CODE_BASE
+                        || TgeClass::of_code(info.code)
+                            .is_some_and(|c| ENGINE_OBJECT_CLASSES.contains(&c.name())),
                 },
             );
             if info.sky {

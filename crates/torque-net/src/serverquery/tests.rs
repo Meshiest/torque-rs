@@ -278,18 +278,17 @@ fn a_reply_is_cut_at_1500_bytes() {
     );
 }
 
-fn ask(ip: IpAddr, request_len: usize, source: Source) -> InfoAsk {
+fn ask(ip: IpAddr, request_len: usize) -> InfoAsk {
     InfoAsk {
         ip,
         request_len,
         max_reply: NET_MAX_DATAGRAM,
-        source,
     }
 }
 
 #[test]
 fn the_limiter_counts_per_source_and_per_network() {
-    let padded = |ip| ask(ip, PADDED_REQUEST_BYTES, Source::Unproven);
+    let padded = |ip| ask(ip, PADDED_REQUEST_BYTES);
     let a = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
     let mut l = InfoLimiter::default();
     for _ in 0..NET_INFO_REPLIES_PER_SRC_PER_S {
@@ -337,7 +336,6 @@ fn spoofed_short_info_requests_reflect_at_most_three_times_their_bytes_and_padde
         let spoofed = ask(
             IpAddr::V4(Ipv4Addr::from(0xc612_0000 + (i % 1_000) * 61)),
             REQUEST_BYTES,
-            Source::Unproven,
         );
         let now = i / 10;
         asked += REQUEST_BYTES;
@@ -352,13 +350,11 @@ fn spoofed_short_info_requests_reflect_at_most_three_times_their_bytes_and_padde
     );
     let honest = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
     let now = 999;
-    let padded = ask(honest, PADDED_REQUEST_BYTES, Source::Unproven);
+    let padded = ask(honest, PADDED_REQUEST_BYTES);
     assert_eq!(l.allow(&padded, now), Ok(()));
     assert_eq!(l.allow_reply(&padded, NET_MAX_DATAGRAM, now), Ok(()));
-    // A connected source is never held to the factor, and a reply within it costs the budget nothing.
-    let connected = ask(honest, REQUEST_BYTES, Source::Connected);
-    assert_eq!(l.allow_reply(&connected, NET_MAX_DATAGRAM, now), Ok(()));
-    let small = ask(honest, REQUEST_BYTES, Source::Unproven);
+    // A reply within the factor costs the budget nothing.
+    let small = ask(honest, REQUEST_BYTES);
     assert_eq!(l.allow_reply(&small, 18, now), Ok(()));
 }
 

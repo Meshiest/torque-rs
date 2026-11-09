@@ -49,6 +49,9 @@
 //!   transform asks), shares its plugin shapes while their sources' revisions hold, and hands out a shape's slots as one
 //!   `Rc`; the bench is torque-trace-hash's `client` (a predicting client's tick with replays over a link with latency). The
 //!   trace-hash lines must not move.
+//! - A tick tells the plugin handlers of the ghosts that changed, not of every ghost of their class: the world lists what the
+//!   applied sections created, updated and deleted (`ghost_world::world::TouchedGhosts`) and the walk of the whole class is for a
+//!   list that overflowed (a reset, or more than `MAX_TOUCHED_GHOSTS`); the bench is `ghost_read`.
 //! - Nothing a server or an off-path sender can predict or flood is trusted: the TGE connect sequence mixes in the system's
 //!   randomness but under a fixed key (the trace hashes) (`conn::tests::the_connect_sequence_is_random_outside_a_run_that_must_repeat`);
 //!   a received datagram's decoders spend at most its work budget (`torque_ghosts::datagram_budget`); a profile with the

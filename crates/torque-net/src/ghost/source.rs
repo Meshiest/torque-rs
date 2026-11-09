@@ -89,6 +89,21 @@ pub trait ObjectSource {
     /// `NetObject::mNetFlags`, see [`net_flags`].
     fn net_flags(&self, obj: ObjId) -> u32;
 
+    /// The net flags of an object that exists, `None` for one that does not: [`ObjectSource::exists`] and
+    /// [`ObjectSource::net_flags`] in one call, which a scope walk makes for every object it meets (a host whose look-ups are
+    /// not free answers it with one).
+    fn scope_flags(&self, obj: ObjId) -> Option<u32> {
+        self.exists(obj).then(|| self.net_flags(obj))
+    }
+
+    /// A stamp of everything a full scope query reads from this source to decide which objects it scopes, when that is nothing
+    /// but the set of objects (no distance, no view): equal stamps mean the same objects are scoped, in the same order. A source
+    /// that answers one lets the manager skip scoping the objects of a query it has run to its end already with the stamp (see
+    /// [`crate::ghost::GhostPolicy::plain_query`]). `None` (the default): the query depends on more than the stamp can say. A settled query makes no ghost, so it never asks for [`ObjectSource::dependents`] (they are walked only for an object that has just got its ghost); a ghost that only a dependents walk made is left to the query's detach as it is without the skip (`ghost::tests::a_query_that_only_counts_...`).
+    fn scope_stamp(&self) -> Option<u64> {
+        None
+    }
+
     /// `packUpdate(conn, mask, stream)`: writes the object's state for the dirty bits `mask` and returns the bits it could not send
     /// (`retMask`; 0 for all sent). **It must be repeatable**: the manager rolls a record back, and measures nothing twice,
     /// when it overflows the 12,000-bit stream, so a call may be repeated with the same arguments. Strings go through the

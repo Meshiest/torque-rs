@@ -256,6 +256,38 @@ impl GhostLog {
     }
 }
 
+/// The most indices [`TouchedGhosts`] keeps between takes.
+pub const MAX_TOUCHED_GHOSTS: usize = 8_192;
+
+/// The ghosts the sections applied since the last [`ClientWorld::take_touched`] created, updated or deleted, for a reader that
+/// looks only at what changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TouchedGhosts {
+    /// Exactly these changed (an index may be there more than once).
+    Listed(Vec<u32>),
+    /// Any may have: a reset, or more than [`MAX_TOUCHED_GHOSTS`] changes.
+    All,
+}
+
+impl Default for TouchedGhosts {
+    fn default() -> TouchedGhosts {
+        TouchedGhosts::Listed(Vec::new())
+    }
+}
+
+impl TouchedGhosts {
+    pub fn push(&mut self, index: u32) {
+        let TouchedGhosts::Listed(indices) = self else {
+            return;
+        };
+        if indices.len() >= MAX_TOUCHED_GHOSTS {
+            *self = TouchedGhosts::All;
+            return;
+        }
+        indices.push(index);
+    }
+}
+
 /// The most sequence fields of one `TSShapeConstructor` read (the client's import of its sequences).
 pub const MAX_CONSTRUCTOR_SEQUENCES: usize = 128;
 
@@ -436,6 +468,9 @@ pub struct ClientWorld<S: ClientSet> {
     /// without walking the table), and the updates that changed a ghost's datablock; any other update logs nothing.
     pub ghost_log: GhostLog,
 
+    /// The ghosts the applied sections changed since the last [`ClientWorld::take_touched`].
+    pub touched: TouchedGhosts,
+
     /// The last server-to-client remote command of each name the world keeps ([`ClientSet::KEPT_COMMANDS`], lower case): its
     /// arguments as the client's script receives them (a tag through the string table), each at most [`MAX_KEPT_ARG_BYTES`], at most
     /// [`MAX_KEPT_ARGS`]: the client's state that only a command sets. Only the names the set keeps, so a server naming a new
@@ -595,6 +630,7 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             births: Default::default(),
             ghost_index: Default::default(),
             ghost_log: Default::default(),
+            touched: Default::default(),
             commands: Default::default(),
             view: Default::default(),
             control_eye: Default::default(),
@@ -667,6 +703,11 @@ pub struct VehicleUpdate<S: ClientSet> {
 }
 
 impl<S: ClientSet> ClientWorld<S> {
+    /// The ghosts changed since the last take ([`TouchedGhosts`]), emptied.
+    pub fn take_touched(&mut self) -> TouchedGhosts {
+        std::mem::take(&mut self.touched)
+    }
+
     /// The ghost log since the last take (see [`ClientWorld::ghost_log`]), emptied.
     pub fn take_ghost_log(&mut self) -> GhostLog {
         std::mem::take(&mut self.ghost_log)
@@ -964,6 +1005,7 @@ impl<S: ClientSet> ClientWorld<S> {
         for change in changes {
             match *change {
                 GhostChange::Cleared => {
+                    self.touched = TouchedGhosts::All;
                     let gone: Vec<u32> = self.ghosts.keys().copied().collect();
                     for ghost in gone {
                         self.push_effect(Effect::GhostGone { ghost });
@@ -982,6 +1024,7 @@ impl<S: ClientSet> ClientWorld<S> {
                     hooks.cleared(self);
                 }
                 GhostChange::Deleted(index) => {
+                    self.touched.push(index);
                     let gone = self.ghosts.remove(&index);
                     if let Some(gone) = &gone {
                         self.ghost_index.remove(index, gone);
@@ -997,6 +1040,7 @@ impl<S: ClientSet> ClientWorld<S> {
                     hooks.deleted(self, index, gone.as_ref());
                 }
                 GhostChange::Created(index) => {
+                    self.touched.push(index);
                     let Some(o) = table.ghost(index) else {
                         self.skipped_changes += 1;
                         continue;
@@ -1051,6 +1095,7 @@ impl<S: ClientSet> ClientWorld<S> {
                     hooks.created(self, index, o, old.as_ref());
                 }
                 GhostChange::Updated(index) => {
+                    self.touched.push(index);
                     let sent = table.ghost(index).and_then(SentGhost::record);
                     let held = self.ghosts.contains_key(&index);
                     if held && let Some(images) = sent.and_then(ClientRecord::images) {
@@ -1313,5 +1358,29 @@ impl<S: ClientSet> ClientWorld<S> {
         for (ghost, slot, event) in taken {
             self.push_effect(Effect::Image { ghost, slot, event });
         }
+    }
+}
+
+#[cfg(test)]
+mod touched_tests {
+    use super::*;
+
+    #[test]
+    fn the_touched_list_keeps_what_changed_until_taken_and_overflows_past_its_cap() {
+        let mut touched = TouchedGhosts::default();
+        touched.push(7);
+        touched.push(7);
+        touched.push(2);
+        assert_eq!(touched, TouchedGhosts::Listed(vec![7, 7, 2]));
+        for i in 0..MAX_TOUCHED_GHOSTS as u32 + 1 {
+            touched.push(i);
+        }
+        assert_eq!(touched, TouchedGhosts::All);
+        touched.push(1);
+        assert_eq!(
+            touched,
+            TouchedGhosts::All,
+            "an overflowed list keeps nothing"
+        );
     }
 }

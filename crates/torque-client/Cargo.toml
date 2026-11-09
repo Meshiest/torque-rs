@@ -111,5 +111,9 @@ p2p = [
 name = "client"
 harness = false
 
+[[bench]]
+name = "ghost_read"
+harness = false
+
 [lints]
 workspace = true

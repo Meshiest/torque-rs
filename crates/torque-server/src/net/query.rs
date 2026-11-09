@@ -12,9 +12,9 @@
 //!
 //! **Limits.** The CPU field is the codecs' unknown speed
 //! ([`NetCodecs::unknown_cpu_mhz`](super::codecs::NetCodecs::unknown_cpu_mhz)). A request shorter than 6 bytes is silence.
-//! Every answer passes [`torque_net::serverquery::InfoLimiter`] (per source address and network, and for a source with no
-//! connection the bound on what is reflected: an answer more than three times its request's size goes only within a small
-//! budget in all, counted in [`Counters::info_limited`](super::Counters::info_limited) past it). The script's output is kept
+//! Every answer passes [`torque_net::serverquery::InfoLimiter`] (per source address and network, and for every source, a connected
+//! player's address included, the bound on what is reflected: an answer more than three times its request's size goes only
+//! within a small budget in all, counted in [`Counters::info_limited`](super::Counters::info_limited) past it). The script's output is kept
 //! for a second ([`InfoCache`](torque_net::serverquery::InfoCache)) and the answers in that time are made from it with no script run, so spoofed sources can
 //! neither spend the script budget nor hide the server from browsers; when it does run,
 //! `onServerInfoQuery()` runs as a stranger's script does: an outermost run under the network's step limits
@@ -31,7 +31,7 @@ use std::rc::Rc;
 use torque_net::cap::NET_MAX_DATAGRAM;
 use torque_net::serverquery::{
     self, InfoAsk, InfoFields, Kind, PING_REPLY_MAX_BYTES, Parsed, Request, STATUS_DEDICATED,
-    STATUS_PASSWORDED, Source,
+    STATUS_PASSWORDED,
 };
 
 use super::codecs::net_codecs;
@@ -128,7 +128,6 @@ pub fn handle<G: NetGame>(
             Query::Torque(r) if r.kind == Kind::Ping => PING_REPLY_MAX_BYTES,
             _ => NET_MAX_DATAGRAM,
         },
-        source: source_of(&shared.borrow(), from),
     };
     let limited = shared.borrow_mut().info.allow(&ask, now).is_err();
     if limited {
@@ -154,15 +153,6 @@ pub fn handle<G: NetGame>(
         extra.saturating_add(SCRIPT_WORK)
     } else {
         extra
-    }
-}
-
-/// Whether `from` has a connection the host accepted (its address is proven) or is anyone else.
-fn source_of<G: NetGame>(sh: &NetShared<G>, from: SocketAddr) -> Source {
-    if sh.hs.lookup(from).is_some() {
-        Source::Connected
-    } else {
-        Source::Unproven
     }
 }
 

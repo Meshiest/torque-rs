@@ -23,9 +23,14 @@
 //! `core/bitStream.cc` (Copyright (C) GarageGames.com, Inc.; the Torque engine is MIT-licensed as Torque3D). The code here
 //! is this crate's own.
 
+use std::sync::Arc;
+
 use crate::NetError;
 use crate::cap::{self, NET_MAX_STREAM_BITS, NET_STRING_BUFFER};
 use crate::library;
+
+/// The bytes a writer reserves when made: a packet's worth, whatever its limit.
+const PREALLOCATED_BYTES: usize = 2_048;
 
 /// The number of bits of `n` (0 for 0): `ranged`'s width for a range of `n`.
 pub fn bit_length(n: u32) -> u8 {
@@ -71,7 +76,7 @@ pub struct Affine {
 pub struct Mark {
     bits: usize,
     overflowed: bool,
-    string_buffer: Option<Box<[u8; NET_STRING_BUFFER]>>,
+    string_buffer: Option<Arc<[u8; NET_STRING_BUFFER]>>,
     compression_point: [f32; 3],
 }
 
@@ -82,7 +87,9 @@ pub struct BitWriter {
     bits: usize,
     limit: usize,
     overflowed: bool,
-    string_buffer: Option<Box<[u8; NET_STRING_BUFFER]>>,
+    /// Shared with the [`Mark`]s taken of the writer: a write to it copies it only while one still holds it, so a mark costs a
+    /// reference count, not 256 bytes.
+    string_buffer: Option<Arc<[u8; NET_STRING_BUFFER]>>,
     compression_point: [f32; 3],
 }
 
@@ -102,7 +109,8 @@ impl BitWriter {
     /// writer is marked overflowed.
     pub fn with_limit(limit_bits: usize) -> BitWriter {
         BitWriter {
-            bytes: Vec::new(),
+            // A packet's worth up front; a stream with a larger limit grows as it is written.
+            bytes: Vec::with_capacity((limit_bits / 8).min(PREALLOCATED_BYTES)),
             bits: 0,
             limit: limit_bits.min(NET_MAX_STREAM_BITS),
             overflowed: false,
@@ -151,12 +159,17 @@ impl BitWriter {
 
     /// Gives the stream a cleared 256-byte string buffer, as a game packet has (`GameConnection::writePacket`).
     pub fn enable_string_buffer(&mut self) {
-        self.string_buffer = Some(Box::new([0; NET_STRING_BUFFER]));
+        self.string_buffer = Some(Arc::new([0; NET_STRING_BUFFER]));
     }
 
-    /// The string buffer, when the stream has one.
+    /// The string buffer to write, when the stream has one (copied first if a [`Mark`] still shares it).
     pub fn string_buffer(&mut self) -> Option<&mut [u8; NET_STRING_BUFFER]> {
-        self.string_buffer.as_deref_mut()
+        self.string_buffer.as_mut().map(Arc::make_mut)
+    }
+
+    /// The string buffer to read, when the stream has one; never copies.
+    pub fn string_buffer_ref(&self) -> Option<&[u8; NET_STRING_BUFFER]> {
+        self.string_buffer.as_deref()
     }
 
     /// The point compressed points are written against (the zero point at the start of a packet).
@@ -207,22 +220,23 @@ impl BitWriter {
             self.overflowed = true;
             return;
         }
-        let mut value = u64::from(value) & ((1u64 << n) - 1);
-        let mut left = n;
-        while left > 0 {
-            let used = self.bits & 7;
-            if used == 0 {
-                self.bytes.push(0);
-            }
-            let take = (8 - used).min(left);
-            let chunk = (value & ((1u64 << take) - 1)) as u8;
+        // The value shifted to its place in the last, part-filled byte: at most 7 + 32 bits, five bytes.
+        let used = self.bits & 7;
+        let mut word = (u64::from(value) & ((1u64 << n) - 1)) << used;
+        let mut left = used + n;
+        if used != 0 {
             if let Some(last) = self.bytes.last_mut() {
-                *last |= chunk << used;
+                *last |= word as u8;
             }
-            value >>= take;
-            left -= take;
-            self.bits += take;
+            word >>= 8;
+            left = left.saturating_sub(8);
         }
+        while left > 0 {
+            self.bytes.push(word as u8);
+            word >>= 8;
+            left = left.saturating_sub(8);
+        }
+        self.bits += n;
     }
 
     pub fn write_flag(&mut self, flag: bool) {
@@ -246,8 +260,23 @@ impl BitWriter {
 
     /// Bytes, 8 bits each.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u8(b);
+        // The bytes that fit are written; the first that does not marks the stream overflowed and is dropped, with the rest.
+        let fit = bytes.len().min(self.remaining_bits() / 8);
+        let used = self.bits & 7;
+        if used == 0 {
+            self.bytes.extend_from_slice(&bytes[..fit]);
+        } else {
+            self.bytes.reserve(fit);
+            for &b in &bytes[..fit] {
+                if let Some(last) = self.bytes.last_mut() {
+                    *last |= b << used;
+                }
+                self.bytes.push(b >> (8 - used));
+            }
+        }
+        self.bits += fit * 8;
+        if fit < bytes.len() {
+            self.overflowed = true;
         }
     }
 
@@ -403,20 +432,15 @@ impl<'a> BitReader<'a> {
         if n > self.bits_left() {
             return Err(NetError::Overrun);
         }
-        let mut value = 0u64;
-        let mut got = 0usize;
-        let mut at = self.at;
-        while got < n {
-            let byte = u64::from(*self.bytes.get(at >> 3).ok_or(NetError::Overrun)?);
-            let used = at & 7;
-            let take = (8 - used).min(n - got);
-            let chunk = (byte >> used) & ((1u64 << take) - 1);
-            value |= chunk << got;
-            got += take;
-            at += take;
+        let (first, used) = (self.at >> 3, self.at & 7);
+        let span = (used + n).div_ceil(8);
+        let mut word = 0u64;
+        for k in 0..span {
+            let byte = *self.bytes.get(first + k).ok_or(NetError::Overrun)?;
+            word |= u64::from(byte) << (8 * k);
         }
-        self.at = at;
-        Ok(value as u32)
+        self.at += n;
+        Ok(((word >> used) & ((1u64 << n) - 1)) as u32)
     }
 
     pub fn read_flag(&mut self) -> Result<bool, NetError> {
@@ -438,9 +462,29 @@ impl<'a> BitReader<'a> {
     /// `len` bytes, 8 bits each; the length is checked against the bits left before anything is reserved.
     pub fn read_bytes(&mut self, len: usize) -> Result<Vec<u8>, NetError> {
         let mut out = cap::vec_for("bytes", len as u64, usize::MAX, self.bits_left(), 8)?;
-        for _ in 0..len {
-            out.push(self.read_u8()?);
+        let (first, used) = (self.at >> 3, self.at & 7);
+        if len == 0 {
+            return Ok(out);
         }
+        if used == 0 {
+            out.extend_from_slice(
+                self.bytes
+                    .get(first..first + len)
+                    .ok_or(NetError::Overrun)?,
+            );
+        } else {
+            // Each byte is the high bits of one source byte and the low bits of the next.
+            let source = self
+                .bytes
+                .get(first..=first + len)
+                .ok_or(NetError::Overrun)?;
+            out.extend(
+                source
+                    .windows(2)
+                    .map(|w| (w[0] >> used) | (w[1] << (8 - used))),
+            );
+        }
+        self.at += len * 8;
         Ok(out)
     }
 

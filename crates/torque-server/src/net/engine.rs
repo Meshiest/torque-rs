@@ -514,7 +514,7 @@ fn conn_of<G: NetGame>(sh: &NetShared<G>, addr: SocketAddr) -> Option<ConnId> {
 }
 
 /// The byte rate's ceiling from the preference, never under [`MIN_BYTE_RATE`].
-fn byte_rate_pref(vm: &Vm) -> u32 {
+pub(super) fn byte_rate_pref(vm: &Vm) -> u32 {
     pump::global_text(vm, BYTE_RATE_PREF)
         .and_then(|v| String::from_utf8_lossy(&v).trim().parse::<u32>().ok())
         .unwrap_or(DEFAULT_BYTE_RATE)
@@ -1155,16 +1155,17 @@ struct Sent {
     work: u32,
 }
 
-/// The send pass for engine connection `id`: one poll of its session, whose ghost lane the payload layer writes, then its
+/// The send pass for engine connection `id` (`cap`: the byte rate's ceiling, [`byte_rate_pref`], read once a pass): one poll of its session, whose ghost lane the payload layer writes, then its
 /// events. Returns the work of the bytes sent; a payload error is pushed to `failed`.
 pub(super) fn send_conn<G: NetGame>(
     vm: &mut Vm,
     shared: &Shared<G>,
     id: ConnId,
     now: u32,
+    cap: u32,
     failed: &mut Vec<(ConnId, NetError)>,
 ) -> u32 {
-    let Some(sent) = poll_conn(vm, shared, id, now, failed) else {
+    let Some(sent) = poll_conn(vm, shared, id, now, cap, failed) else {
         return 0;
     };
     events(vm, shared, sent.addr, now);
@@ -1177,10 +1178,10 @@ fn poll_conn<G: NetGame>(
     shared: &Shared<G>,
     id: ConnId,
     now: u32,
+    cap: u32,
     failed: &mut Vec<(ConnId, NetError)>,
 ) -> Option<Sent> {
     let transport = Rc::clone(&shared.borrow().transport);
-    let cap = byte_rate_pref(vm);
     let lanes = vm.extension::<RpcLanes>();
     let mut sh = shared.borrow_mut();
     let sh = &mut *sh;

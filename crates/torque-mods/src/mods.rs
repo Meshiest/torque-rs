@@ -128,19 +128,26 @@ struct Serving {
     requests: u64,
     max_requests: u64,
     ready: bool,
+    /// The progress units that are not runs: one for the ready word.
     progress: u64,
+    /// The bytes of the runs queued for the client.
+    served: u64,
 }
 
-/// The bytes a client may have queued and unacknowledged: it asks for one run at a time, so this is a few runs' worth.
 /// How many times a client may ask for the same run (a repeat is for a run that was lost to a refusal, which does not happen on a
 /// reliable channel: a small allowance, not a loop).
 const MAX_ASKS: u8 = 2;
 
-const MAX_OUTSTANDING: usize =
-    3 * crate::offer::BLOCK_BYTES * crate::offer::MAX_REQUEST_BLOCKS as usize;
+/// The bytes of the mods channel a client may have queued and unacknowledged: the runs its window keeps asked for
+/// ([`crate::transfer::DOWNLOAD_WINDOW`]) and one more, since a run it has already received can still be unacknowledged when
+/// the request that refills the window arrives. Only the mods channel counts: what another channel has queued for the client
+/// is not the client's doing and must not refuse it.
+const MAX_OUTSTANDING: usize = (crate::transfer::DOWNLOAD_WINDOW + 1)
+    * crate::offer::BLOCK_BYTES
+    * crate::offer::MAX_REQUEST_BLOCKS as usize;
 
-/// Whether `backlog` bytes queued for a client are more than it may have: a few runs, and the offer while it is still queued
-/// (`offer_pending` bytes; 0 once it is acknowledged).
+/// Whether `backlog` bytes of the mods channel queued for a client are more than it may have: the window and one run, and the
+/// offer while it is still queued (`offer_pending` bytes; 0 once it is acknowledged).
 fn over_allowance(backlog: usize, offer_pending: usize) -> bool {
     backlog > offer_pending.saturating_add(MAX_OUTSTANDING)
 }
@@ -1206,6 +1213,7 @@ impl Mods {
                 max_requests: blocks.saturating_add(8),
                 ready: false,
                 progress: 0,
+                served: 0,
             },
         );
         Ok(true)
@@ -1264,7 +1272,7 @@ impl Mods {
         // What it may have unacknowledged: the offer while it is still unacknowledged (it goes first and may be large), and a few
         // runs.
         let offer_len = offer_handle.map_or(0, |h| hub.queued_message_len(conn, h));
-        if over_allowance(hub.backlog_total(conn), offer_len) {
+        if over_allowance(hub.backlog(conn, CHANNEL), offer_len) {
             return Err("Mod requests too fast.");
         }
         let (from, to) = run_bytes(
@@ -1281,8 +1289,8 @@ impl Mods {
         hub.send_to(conn, CHANNEL, Kind::Snapshot, encode_data(&request, data))
             .map_err(|_| "Mod requests too fast.")?;
         if let Some(held) = self.serving.borrow_mut().get_mut(&obj) {
-            held.progress = held
-                .progress
+            held.served = held
+                .served
                 .saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
         }
         Ok(())
@@ -1300,8 +1308,24 @@ impl Mods {
         self.serving.borrow().get(&obj).is_none_or(|s| s.ready)
     }
 
-    pub(crate) fn serving_progress(&self, obj: ObjId) -> u64 {
-        self.serving.borrow().get(&obj).map_or(0, |s| s.progress)
+    /// What the client has taken of what it asked for: the bytes of its runs the link has acknowledged (those queued less what
+    /// the mods channel still holds besides the offer), and one for the ready word. A client with several runs asked for at once
+    /// is measured by what reaches it, not by what it asked, so a slow link is not stalled by the time its last runs take.
+    pub(crate) fn serving_progress(&self, hub: Option<&ChannelHub>, obj: ObjId) -> u64 {
+        let serving = self.serving.borrow();
+        let Some(held) = serving.get(&obj) else {
+            return 0;
+        };
+        let unacked = hub.map_or(0, |hub| {
+            let offer = held
+                .offer
+                .map_or(0, |h| hub.queued_message_len(held.conn, h));
+            hub.backlog(held.conn, CHANNEL).saturating_sub(offer)
+        });
+        let unacked = u64::try_from(unacked).unwrap_or(u64::MAX);
+        held.served
+            .saturating_sub(unacked)
+            .saturating_add(held.progress)
     }
 
     pub(crate) fn end_serving(&self, obj: ObjId) {
@@ -1521,31 +1545,30 @@ impl Mods {
         if rpc == Some(false) {
             return;
         }
-        match downloads.next_command() {
-            Some(Command::Get(r)) => {
-                let call = if rpc.is_some() {
-                    format!(
-                        "rpcToServer(\"{}\", {}, {}, {}, {});",
-                        crate::transfer::GET_RPC,
-                        r.mod_index,
-                        r.file,
-                        r.start,
-                        r.count
-                    )
-                } else {
-                    format!(
-                        "commandToServer('TorqueModsGet', {}, {}, {}, {});",
-                        r.mod_index, r.file, r.start, r.count
-                    )
-                };
-                if let Err(e) = vm.eval(call.as_bytes()) {
-                    vm.warn(format!("mods: the request for blocks did not go: {e}"));
-                }
-            }
-            Some(Command::Ready) => {
+        // Every run the window has room for goes out now, so a link's round trip is paid once for all of them.
+        while let Some(command) = downloads.next_command() {
+            let Command::Get(r) = command else {
                 let _ = vm.eval(b"commandToServer('TorqueModsReady');");
+                break;
+            };
+            let call = if rpc.is_some() {
+                format!(
+                    "rpcToServer(\"{}\", {}, {}, {}, {});",
+                    crate::transfer::GET_RPC,
+                    r.mod_index,
+                    r.file,
+                    r.start,
+                    r.count
+                )
+            } else {
+                format!(
+                    "commandToServer('TorqueModsGet', {}, {}, {}, {});",
+                    r.mod_index, r.file, r.start, r.count
+                )
+            };
+            if let Err(e) = vm.eval(call.as_bytes()) {
+                vm.warn(format!("mods: the request for blocks did not go: {e}"));
             }
-            None => {}
         }
     }
 }
@@ -1713,22 +1736,32 @@ mod allowance_tests {
         // Acknowledged: only the runs count, however large the offer was.
         assert!(!over_allowance(MAX_OUTSTANDING, 0));
         assert!(over_allowance(MAX_OUTSTANDING + 1, 0));
-        assert!(over_allowance(offer, 0));
+        assert!(over_allowance(offer + MAX_OUTSTANDING, 0));
     }
 
     #[test]
     fn an_honest_client_with_a_large_offer_stays_within_it() {
         // It asks for a run only after it has the whole offer; each run is at most 4 blocks and it holds at most
-        // `MAX_OUTSTANDING` of them unacknowledged, with the offer still unacknowledged at worst.
+        // the window and one run of them unacknowledged, with the offer still unacknowledged at worst.
         let offer = 650_000;
         let run = crate::offer::BLOCK_BYTES * crate::offer::MAX_REQUEST_BLOCKS as usize;
         let mut backlog = offer;
-        for _ in 0..3 {
+        for _ in 0..=crate::transfer::DOWNLOAD_WINDOW {
             assert!(!over_allowance(backlog, offer), "backlog {backlog}");
             backlog += run;
         }
-        // The offer acknowledged, three runs outstanding are still within bounds.
-        assert!(!over_allowance(3 * run, 0));
-        assert_eq!(3 * run, MAX_OUTSTANDING);
+        // The offer acknowledged, a full window and the run it is refilled for are still within bounds.
+        assert!(!over_allowance(
+            (crate::transfer::DOWNLOAD_WINDOW + 1) * run,
+            0
+        ));
+        assert!(over_allowance(
+            (crate::transfer::DOWNLOAD_WINDOW + 2) * run,
+            0
+        ));
+        assert_eq!(
+            (crate::transfer::DOWNLOAD_WINDOW + 1) * run,
+            MAX_OUTSTANDING
+        );
     }
 }

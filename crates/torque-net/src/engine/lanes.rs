@@ -291,12 +291,20 @@ impl ReliableRecv {
         };
         let start = f.offset as usize;
         m.data[start..start + f.bytes.len()].copy_from_slice(f.bytes);
-        for i in start..start + f.bytes.len() {
-            let (word, bit) = (i / 64, 1u64 << (i % 64));
-            if m.got[word] & bit == 0 {
-                m.got[word] |= bit;
-                m.have += 1;
-            }
+        // The bytes' bits set a word at a time; only those not set before are new.
+        let end = start + f.bytes.len();
+        for word in start / 64..end.div_ceil(64) {
+            let (from, to) = (
+                start.max(word * 64) - word * 64,
+                end.min(word * 64 + 64) - word * 64,
+            );
+            let span = if to - from == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << (to - from)) - 1) << from
+            };
+            m.have += (span & !m.got[word]).count_ones() as usize;
+            m.got[word] |= span;
         }
         Ok(())
     }

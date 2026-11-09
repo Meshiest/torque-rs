@@ -127,6 +127,8 @@ lane's writer. The client mirrors it: `EngineWire` events become the feed's.
   `over_plain_udp_a_captured_ticket_fails_and_a_replay_is_refused`; `sources_that_never_answer_their_challenge_keep_the_waiting_connects_bounded`; `net::engine::tests::a_flood_of_valid_tickets_from_one_network_locks_out_only_that_network`).
 - TGE mode's bytes do not move (`cargo test -p torque-net --test tge_golden`, `cargo test -p torque-trace-hash --test wire_golden`).
 
+- Speed is measured, not guessed: `cargo bench -p torque-net --bench ghost_section|bits|engine_session`, `-p torque-server --bench ghost_tick`, `-p torque-client --bench ghost_read` (what each guards is in the crates' Maintaining sections); the speed-ups change no byte, so the goldens and `just trace-hash` stay as they are.
+
 **Extension points.** A transport says what its links are with `Transport::link_kind` (server) and `Datagrams::link_kind`
 (client); both ends must agree. A new link (QUIC) is a transport and a `LinkKind`. A new lane is a framing version.
 

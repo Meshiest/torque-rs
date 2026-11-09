@@ -835,3 +835,44 @@ fn a_flood_of_info_queries_runs_the_info_script_once_a_second_and_every_one_is_a
     s.run(TICK_MS, |_| false);
     assert_eq!(runs(&s).as_deref(), Some("2"));
 }
+
+#[test]
+fn a_query_spoofed_with_a_connected_players_address_reflects_no_more_than_any_stranger_gets() {
+    use torque_net::cap::{
+        NET_INFO_AMPLIFIED_BYTES_PER_S, NET_INFO_REPLY_FACTOR, NET_NETWORK_SHARE,
+    };
+    use torque_net::serverquery::{GAME_INFO_REQUEST, GAME_INFO_RESPONSE, REQUEST_BYTES};
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(format!("$Pref::Server::Info = \"{}\";", "x".repeat(1_000)).as_bytes())
+        .unwrap();
+    let player = SocketAddr::from(([127, 0, 0, 1], 50_010));
+    let (_client, _conn) = join(&mut s, &shared, &end, player);
+    end.take_sent();
+    // The player's address names a datagram anyone can send: bare info requests from it get the answers a stranger's get, each
+    // within three times its request, or the little the amplified budget lets a network's requests reflect in all.
+    let bare = torque_net::profile::QueryProfile::default().request(GAME_INFO_REQUEST, 0, 1, 2);
+    assert_eq!(bare.len(), REQUEST_BYTES);
+    const ASKED: usize = 40;
+    for _ in 0..ASKED {
+        end.inject(player, &bare);
+    }
+    s.run(TICK_MS, |_| false);
+    let answers: Vec<usize> = end
+        .take_sent()
+        .into_iter()
+        .filter(|(to, d)| *to == player && d.first() == Some(&GAME_INFO_RESPONSE))
+        .map(|(_, d)| d.len())
+        .collect();
+    assert!(!answers.is_empty(), "the player is still answered");
+    let reflected: usize = answers.iter().sum();
+    let share = (NET_INFO_AMPLIFIED_BYTES_PER_S / NET_NETWORK_SHARE) as usize;
+    assert!(
+        reflected <= ASKED * REQUEST_BYTES * NET_INFO_REPLY_FACTOR + share,
+        "{reflected} bytes reflected at the player by {ASKED} requests of {REQUEST_BYTES} bytes ({answers:?})"
+    );
+    assert!(
+        answers.len() < 16,
+        "a connected address is not exempt from the factor: {} answers",
+        answers.len()
+    );
+}

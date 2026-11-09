@@ -24,7 +24,7 @@
 //! **Additions.** A request shorter than 6 bytes is silence. The replies are rate limited ([`InfoLimiter`]: per source
 //! address and per source network), and the info answer's `onServerInfoQuery()` output is answered from for a second
 //! ([`InfoCache`]); a standard server answers every request. A reply
-//! to a source with no connection is at most [`NET_INFO_REPLY_FACTOR`] times its request's size, but for a small budget in all
+//! to any source, a connected player's address included, is at most [`NET_INFO_REPLY_FACTOR`] times its request's size, but for a small budget in all
 //! ([`NET_INFO_AMPLIFIED_BYTES_PER_S`], shared out per network), so the server reflects almost nothing at a spoofed source
 //! while a stock client still gets its answers, more slowly under a flood. This engine's clients pad their requests with
 //! zeros to [`PADDED_REQUEST_BYTES`] ([`crate::profile::QueryProfile::request_bytes`], set for a profile with the handshake
@@ -367,18 +367,9 @@ pub enum Refused {
     /// The source address had [`NET_INFO_REPLIES_PER_SRC_PER_S`] this second, or its network
     /// [`NET_INFO_REPLIES_PER_NETWORK_PER_S`].
     Source,
-    /// The reply is more than [`NET_INFO_REPLY_FACTOR`] times its request for a source with no connection, and the budget of
+    /// The reply is more than [`NET_INFO_REPLY_FACTOR`] times its request, and the budget of
     /// such replies ([`NET_INFO_AMPLIFIED_BYTES_PER_S`]) has no room for it this second.
     Amplified,
-}
-
-/// Whom a reply goes to, as the amplification rule sees it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    /// The source has a connection to the server: its address is proven.
-    Connected,
-    /// Anyone else: the address may be spoofed.
-    Unproven,
 }
 
 /// One request as the limiter weighs it.
@@ -390,12 +381,13 @@ pub struct InfoAsk {
     pub request_len: usize,
     /// The most its reply can take ([`PING_REPLY_MAX_BYTES`] for a ping, else [`NET_MAX_DATAGRAM`]).
     pub max_reply: usize,
-    pub source: Source,
 }
 
 /// The rate limits of the info replies: per source address and network ([`FairLimiter`]; there is no total, since no reply
 /// is larger than its request allows but within the amplified budget), and the bytes of replies larger than
-/// [`NET_INFO_REPLY_FACTOR`] times their request to sources with no connection (in all, a network a share). The script the
+/// [`NET_INFO_REPLY_FACTOR`] times their request, whoever the source claims to be (in all, a network a share): a connection's
+/// address proves nothing for a datagram that names it, so a connected client that wants a full answer pads its request or asks
+/// over its connection. The script the
 /// info answer carries runs at most once a [`NET_INFO_CACHE_MS`]: the host answers from what it last returned
 /// ([`InfoCache`]), so a flood of requests runs no script.
 #[derive(Debug)]
@@ -432,8 +424,7 @@ impl InfoLimiter {
     /// [`InfoLimiter::allow_reply`] once it is built.
     pub fn allow(&mut self, ask: &InfoAsk, now: u32) -> Result<(), Refused> {
         let most = u32::try_from(ask.max_reply).unwrap_or(u32::MAX);
-        if ask.source == Source::Unproven
-            && !within_factor(ask.request_len, ask.max_reply)
+        if !within_factor(ask.request_len, ask.max_reply)
             && self.amplified.check(ask.ip, most, now).is_err()
         {
             return Err(Refused::Amplified);
@@ -441,7 +432,7 @@ impl InfoLimiter {
         self.replies.allow(ask.ip, now).map_err(|_| Refused::Source)
     }
 
-    /// Whether the built reply of `reply_len` bytes to `ask` may go: always to a connected source or within
+    /// Whether the built reply of `reply_len` bytes to `ask` may go: within
     /// [`NET_INFO_REPLY_FACTOR`], else when the budget of amplifying replies has room for its bytes (charged then).
     pub fn allow_reply(
         &mut self,
@@ -449,7 +440,7 @@ impl InfoLimiter {
         reply_len: usize,
         now: u32,
     ) -> Result<(), Refused> {
-        if ask.source == Source::Connected || within_factor(ask.request_len, reply_len) {
+        if within_factor(ask.request_len, reply_len) {
             return Ok(());
         }
         let bytes = u32::try_from(reply_len).unwrap_or(u32::MAX);

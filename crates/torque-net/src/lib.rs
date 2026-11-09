@@ -77,6 +77,20 @@
 //!
 //! **Seeded tests and fuzz loops draw from [`testrng::TestRng`]**, never from a source of their own.
 //!
+//! **A ghost pass costs what changed, not what exists** (benches `ghost_section`, and `ghost_tick` in torque-server). A full
+//! query over a source that answers [`ghost::ObjectSource::scope_stamp`], under a policy with [`ghost::GhostPolicy::plain_query`],
+//! only counts the objects of a world it found whole the last time: the visits, the budget and the resume cursor are those of
+//! scoping each, nothing else is skipped (`ghost::tests::a_query_that_only_counts_the_objects_it_found_before_gives_the_packets_of_one_that_scopes_them_again`).
+//! A stamp moves whenever anything its query reads changes, and a policy that overrides a question of the walk
+//! (`query_visit`, `admit`, `ghost_made`, `query_started`, `query_ended`) keeps `plain_query` false. The priority sort stays a
+//! stable sort of the whole pending list (the tie order is the next packet's), whatever it costs.
+//!
+//! **The bit layer is fast by words, never by changing a byte**: fields and byte runs are written and read a word or a run at a
+//! time and equal the bit-by-bit forms (`bits::tests::bytes_and_fields_written_and_read_in_bulk_equal_the_same_written_bit_by_bit`;
+//! bench `bits`), and a mark shares the string buffer with its writer until a string is written
+//! (`bits::tests::a_mark_keeps_the_strings_the_stream_had_whatever_is_written_after_it`; bench `bits`' `mark_rewind_*`). Engine
+//! sessions are measured by bench `engine_session` (time and allocations a pair-tick).
+//!
 //! **A Ready runs the script once a sequence only by the policy's rule** (`ghost::tests::
 //! a_repeated_ready_runs_the_script_once_when_the_policy_says_so`).
 

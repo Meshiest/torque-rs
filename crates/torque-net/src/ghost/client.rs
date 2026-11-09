@@ -228,10 +228,8 @@ impl<C: GhostCodec> GhostClient<C> {
                 }
                 self.note(GhostChange::Deleted(index));
                 report.deleted += 1;
-            } else if let Some(mut object) = self.ghosts.remove(&index) {
-                let result = self.codec.update(&mut object, r);
-                self.ghosts.insert(index, object);
-                result?;
+            } else if let Some(object) = self.ghosts.get_mut(&index) {
+                self.codec.update(object, r)?;
                 self.note(GhostChange::Updated(index));
                 report.updated += 1;
             } else {

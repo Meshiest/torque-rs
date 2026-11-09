@@ -37,6 +37,7 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use ghost_world::tge::{TgeClientSet, TgeCodec, TgeDatablock, shape_part};
+use ghost_world::world::TouchedGhosts;
 use ghost_world::{ClientWorld, Ghost};
 use ghosts::datablocks::DatablockCodecSet;
 use ghosts::plugin::PluginClasses;
@@ -1375,6 +1376,54 @@ enum Heard {
     Removed(u32),
 }
 
+/// Whether a ghost is one of a plugin class's with a record of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presence {
+    Present,
+    Absent,
+}
+
+/// What the handler `k` of a plugin class has heard of its ghosts (`seen`), against the world's.
+struct PluginHearing<'a> {
+    seen: &'a mut HashMap<u32, (u64, u32)>,
+    records: &'a ClientWorld<TgeClientSet>,
+    class: TgeClass,
+    k: usize,
+}
+
+impl PluginHearing<'_> {
+    /// What the handler is to hear of the ghost `index`, if it is a ghost of the class: it is added, replaced (made again on its
+    /// index) or changed (an update reached it), or there is nothing new.
+    fn hear(&mut self, index: u32, heard: &mut Vec<(usize, Heard)>) -> Presence {
+        let k = self.k;
+        let Some(ghost) = self
+            .records
+            .ghosts
+            .get(&index)
+            .filter(|g| g.class == Some(self.class))
+        else {
+            return Presence::Absent;
+        };
+        let Some(TgeRecord::Plugin(_, record)) = &ghost.record else {
+            return Presence::Absent;
+        };
+        let birth = self.records.birth_order.get(&index).copied().unwrap_or(0);
+        match self.seen.get(&index) {
+            None => heard.push((k, Heard::Added(index, record.clone()))),
+            Some(&(was, _)) if was != birth => {
+                heard.push((k, Heard::Removed(index)));
+                heard.push((k, Heard::Added(index, record.clone())));
+            }
+            Some(&(_, updates)) if updates != ghost.updates => {
+                heard.push((k, Heard::Changed(index, record.clone())));
+            }
+            Some(_) => return Presence::Present,
+        }
+        self.seen.insert(index, (birth, ghost.updates));
+        Presence::Present
+    }
+}
+
 /// Tells each plugin handler of a ghost class ([`torque_engine::net_classes::GhostSinks`]) which ghosts of its class appeared,
 /// changed (an update reached them) or went since the last tick. The handlers run with no borrow of the client held.
 fn deliver_plugin_ghosts(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
@@ -1392,39 +1441,54 @@ fn deliver_plugin_ghosts(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>
         };
         let world = &mut conn.world;
         world.plugin_seen.resize_with(sinks.0.len(), HashMap::new);
+        // Only the ghosts the applied sections changed can have news, unless the changes were too many to list.
+        let touched = match world.records.take_touched() {
+            TouchedGhosts::Listed(mut changed) => {
+                changed.sort_unstable();
+                changed.dedup();
+                Some(changed)
+            }
+            TouchedGhosts::All => None,
+        };
         for (k, sink) in sinks.0.iter().enumerate() {
             let Some(class) = plugins.ghost(sink.class()) else {
                 continue;
             };
-            let seen = &mut world.plugin_seen[k];
-            let mut present = HashSet::new();
-            for (index, ghost) in world.records.of_class(TgeClass::Plugin(class)) {
-                let Some(TgeRecord::Plugin(_, record)) = &ghost.record else {
-                    continue;
-                };
-                let birth = world.records.birth_order.get(&index).copied().unwrap_or(0);
-                present.insert(index);
-                match seen.get(&index) {
-                    None => heard.push((k, Heard::Added(index, record.clone()))),
-                    Some(&(was, _)) if was != birth => {
+            let class = TgeClass::Plugin(class);
+            let mut hearing = PluginHearing {
+                seen: &mut world.plugin_seen[k],
+                records: &world.records,
+                class,
+                k,
+            };
+            match &touched {
+                None => {
+                    let mut present = HashSet::new();
+                    for (index, _) in world.records.of_class(class) {
+                        if hearing.hear(index, &mut heard) == Presence::Present {
+                            present.insert(index);
+                        }
+                    }
+                    let gone: Vec<u32> = hearing
+                        .seen
+                        .keys()
+                        .copied()
+                        .filter(|index| !present.contains(index))
+                        .collect();
+                    for index in gone {
+                        hearing.seen.remove(&index);
                         heard.push((k, Heard::Removed(index)));
-                        heard.push((k, Heard::Added(index, record.clone())));
                     }
-                    Some(&(_, updates)) if updates != ghost.updates => {
-                        heard.push((k, Heard::Changed(index, record.clone())));
-                    }
-                    Some(_) => continue,
                 }
-                seen.insert(index, (birth, ghost.updates));
-            }
-            let gone: Vec<u32> = seen
-                .keys()
-                .copied()
-                .filter(|index| !present.contains(index))
-                .collect();
-            for index in gone {
-                seen.remove(&index);
-                heard.push((k, Heard::Removed(index)));
+                Some(changed) => {
+                    for &index in changed {
+                        if hearing.hear(index, &mut heard) == Presence::Absent
+                            && hearing.seen.remove(&index).is_some()
+                        {
+                            heard.push((k, Heard::Removed(index)));
+                        }
+                    }
+                }
             }
         }
     }

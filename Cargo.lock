@@ -4585,7 +4585,9 @@ dependencies = [
 name = "torque-net"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "sha2",
+ "stats_alloc",
 ]
 
 [[package]]
@@ -4825,6 +4827,7 @@ dependencies = [
 name = "torque-server"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "httparse",
  "rcgen 0.13.2",
  "ring",

@@ -2917,3 +2917,174 @@ fn the_default_pending_sort_keeps_equal_priorities_in_array_order() {
     world.sort_pending(&mut odd);
     assert_eq!(odd.len(), 4);
 }
+
+/// One manager over a world that does, or does not, give its scope query a stamp.
+struct Twin {
+    mgr: GhostManager,
+    world: World,
+    seq: u32,
+}
+
+impl Twin {
+    fn new(stamped: bool, max: u32) -> Twin {
+        let cfg = GhostConfig {
+            max_ghosts: max,
+            local: false,
+            class_bits: 6,
+        };
+        let world = World {
+            stamp: stamped.then_some(0),
+            ..World::default()
+        };
+        Twin {
+            mgr: GhostManager::new(cfg).unwrap(),
+            world,
+            seq: 0,
+        }
+    }
+
+    fn go(&mut self) {
+        self.mgr.activate(&self.world).unwrap();
+        let seq = self.mgr.sequence();
+        self.mgr
+            .on_connection_message(
+                &ConnectionMessage {
+                    seq,
+                    message: 1,
+                    count: 0,
+                },
+                &mut Rec::default(),
+            )
+            .unwrap();
+    }
+
+    /// Every ghost as the table has it, but for its in-scope flag: a query cut by the budget leaves it cleared on the ghosts it has
+    /// not met yet where a query that only counts leaves it set, and the next complete query makes them the same (nothing reads it
+    /// before: the packets are compared as well).
+    fn state(&self) -> Vec<(u32, Option<ObjId>, u32, u16, usize, u8)> {
+        self.mgr
+            .array_ids()
+            .into_iter()
+            .filter_map(|id| self.mgr.view(id))
+            .map(|v| {
+                (
+                    v.index,
+                    v.obj,
+                    v.mask,
+                    v.flags & !flags::IN_SCOPE,
+                    v.pos,
+                    v.skip,
+                )
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_query_that_only_counts_the_objects_it_found_before_gives_the_packets_of_one_that_scopes_them_again()
+ {
+    use crate::testrng::TestRng;
+    let mut quiet_walks = 0;
+    for seed in 1..=8u64 {
+        let mut rng = TestRng::new(seed * 0x9e37_79b9);
+        // A table that can run out of ghosts, and one that cannot.
+        let max = if seed % 2 == 0 { 40 } else { 4_096 };
+        let mut plain = Twin::new(false, max);
+        let mut fast = Twin::new(true, max);
+        let scope = 1;
+        for t in [&mut plain, &mut fast] {
+            t.world.add(scope, Obj::new(1));
+            t.mgr.set_scope_object(Some(scope));
+            t.go();
+        }
+        let mut next = 2;
+        for step in 0..400 {
+            for _ in 0..rng.below(4) {
+                match rng.below(10) {
+                    0..=3 => {
+                        // A third of the new objects bring another into scope with them: an older one, or a satellite no
+                        // query walk visits (so it is in scope only with its object).
+                        let with = (next > 2 && rng.below(3) == 0).then(|| {
+                            if rng.below(2) == 0 {
+                                2 + rng.below(u64::from(next) - 2) as u32
+                            } else {
+                                next
+                            }
+                        });
+                        if with == Some(next) {
+                            for t in [&mut plain, &mut fast] {
+                                let satellite = Obj {
+                                    nflags: 0,
+                                    ..Obj::new(1)
+                                };
+                                t.world.add(next, satellite);
+                            }
+                            next += 1;
+                        }
+                        for t in [&mut plain, &mut fast] {
+                            let mut obj = Obj::new(1);
+                            obj.deps.extend(with);
+                            t.world.add(next, obj);
+                        }
+                        next += 1;
+                    }
+                    4 if next > 3 => {
+                        let id = 2 + rng.below(u64::from(next) - 2) as u32;
+                        for t in [&mut plain, &mut fast] {
+                            t.world.remove(id);
+                            t.mgr.detach_object(id);
+                        }
+                    }
+                    5 if step % 97 == 96 => {
+                        for t in [&mut plain, &mut fast] {
+                            t.mgr.reset();
+                            t.go();
+                        }
+                    }
+                    _ => {
+                        let id = 2 + rng.below(u64::from(next).saturating_sub(2).max(1)) as u32;
+                        for t in [&mut plain, &mut fast] {
+                            t.mgr.set_mask(id, 0x0f);
+                        }
+                    }
+                }
+            }
+            // A spent scan budget now and then cuts the query, which then resumes with the next packet.
+            let scan_units = (rng.below(5) == 0).then(|| 20 + rng.below(300));
+            let mut packets = Vec::new();
+            for t in [&mut plain, &mut fast] {
+                t.seq += 1;
+                let mut left = scan_units.map_or(i64::MAX, |u| u as i64);
+                let mut scan = |n: u64| {
+                    left = left.saturating_sub(n as i64);
+                    left >= 0
+                };
+                let mut w = BitWriter::with_limit(12_000);
+                let stats = t.mgr.write_section(
+                    &mut w,
+                    8 * 400,
+                    t.seq,
+                    step * 32,
+                    &mut t.world,
+                    SectionBudget {
+                        scan: &mut scan,
+                        records: &mut |_| true,
+                    },
+                );
+                packets.push((w.bytes().to_vec(), stats));
+            }
+            assert_eq!(packets[0], packets[1], "seed {seed} step {step}");
+            assert_eq!(plain.state(), fast.state(), "seed {seed} step {step}");
+            let delivered = rng.below(100) < 85;
+            for t in [&mut plain, &mut fast] {
+                t.mgr.on_notify(t.seq, delivered);
+                t.mgr.check_invariants().unwrap();
+            }
+        }
+        quiet_walks += plain.world.existence_asked.get() - fast.world.existence_asked.get();
+    }
+    assert!(
+        quiet_walks > 1_000,
+        "the stamped world scoped as many objects: {quiet_walks} fewer asks"
+    );
+}

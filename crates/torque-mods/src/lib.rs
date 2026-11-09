@@ -41,6 +41,11 @@
 //! - One server cannot flush the others' cache (`one_server_storing_new_content_cannot_flush_another_servers_entries`), the
 //!   disk cache opens nothing through a link (`a_link_in_the_cache_folder_is_never_read_or_touched_through`), and a server's
 //!   file is never copied to a script's name (`server_sent_script_never_executes_on_a_client`).
+//! - A download asks for `DOWNLOAD_WINDOW` (three) runs at once. The server limits what a client has queued on the mods channel
+//!   alone (not the other channels') to the window and one run (`mods::MAX_OUTSTANDING`), and the client takes the answers in
+//!   the order it asked; a run answered out of turn ends the download
+//!   (`a_download_takes_a_fraction_of_the_round_trips_a_request_at_a_time_would`,
+//!   `a_download_of_many_runs_completes_with_another_channels_backlog_beside_it` in minimal-engine's tests).
 //! - A scan of the mods folder visits a bounded number of entries of every kind and keeps at most 64 warnings
 //!   (`a_mod_of_many_empty_folders_is_skipped_quickly_with_one_warning`, `the_warnings_of_a_scan_are_capped`); download
 //!   places are shared out per network (`one_network_holds_at_most_two_download_places` in minimal-engine's tests).

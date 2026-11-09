@@ -18,13 +18,20 @@
 //! `a_flood_past_a_passs_old_read_cap_still_lets_a_players_packets_through_in_a_tick_or_two`,
 //! `game_flagged_datagrams_from_no_connection_share_their_ips_work_whatever_the_port`).
 //!
+//! **The ghost pass reads each object once and sorts nothing a packet**: a registry entry carries its class code and whether the
+//! class is the engine's own, `TgeSource` finds a class, a share and a peer's sight from it (no name is compared per object), the
+//! ids of a walk are kept sorted per generation of the registry (`Entries::generation`, which every add, remove and edit of an
+//! entry moves, and with it the source's `scope_stamp`), and the controlled objects are searched in order. Ghosts of objects
+//! added or removed after a pass settled still reach every connection, and a settled pass spends the scan units of an unsettled
+//! one (`tests/ghost_pass.rs`); the bench is `ghost_tick` (64 connections, 1,024 objects: static, 100 and all marked).
+//!
 //! **A flood of info queries runs no script**: the info answer is made from the last second's script output
 //! (`a_flood_of_info_queries_runs_the_info_script_once_a_second_and_every_one_is_answered`).
 //!
 //! **Nothing a client sends runs free**: a remote command that names no function is charged to its connection's share, and
 //! its warning is the script engine's, limited per connection (`Vm::invoke_from` with the connection as its source; one
 //! limiter, not a second here) (`unknown_commands_cost_the_connections_share_and_their_warnings_are_limited` in
-//! torque-app's `tests/server_commands.rs`); a held download progresses only at `ContentLimits::min_bytes_per_s`
+//! torque-app's `tests/server_commands.rs`); a held download progresses only at `ContentLimits::min_bytes_per_s`, counting the bytes of the runs it asked for that the link acknowledged
 //! (`progress_is_bytes_served_at_the_least_rate`). The whole receive path is fuzzed with a real client's mutated packets
 //! (`hostile_packets_of_an_established_connection_never_panic_the_server`, `TORQUE_FUZZ_SERVER`).
 

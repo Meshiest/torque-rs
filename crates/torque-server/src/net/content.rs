@@ -93,7 +93,7 @@ pub trait ContentServer {
     /// Whether the client has what the server requires (the host then runs `onConnect`).
     fn is_ready(&self, vm: &Vm, obj: ObjId) -> bool;
 
-    /// A count that grows as the client takes what the server serves (the bytes of what it asked for, one for the ready word):
+    /// A count that grows as the client takes what the server serves (the bytes of what it asked for that the link has acknowledged, one for the ready word):
     /// the host drops a client whose count grows slower than [`ContentLimits::min_bytes_per_s`] for
     /// [`ContentLimits::idle_ms`].
     fn progress(&self, vm: &Vm, obj: ObjId) -> u64;

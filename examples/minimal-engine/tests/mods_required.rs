@@ -13,11 +13,13 @@ use torque::app::config::{EngineConfig, GameConfig};
 use torque::app::files::GameFiles;
 use torque::app::plugins::{DefaultPlugins, ModsPlugin};
 use torque::app::server::{GameServer, Listen};
-use torque::engine::{Engine, EngineBuilder, PluginGroup};
+use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
 use torque::mods::offer::BLOCK_BYTES;
 use torque::mods::{CacheChoice, DownloadLimits, Mods};
+use torque::net::chunk::{ChannelLimits, Kind};
 use torque::net::connect::{AuthContext, ConnectBlock};
 use torque::net::profile::HandshakeProfile;
+use torque::server::net::channels::{ChannelHub, ChunkChannel};
 use torque_example_minimal_engine::{ExamplePlugin, client, files, server};
 
 const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
@@ -123,12 +125,39 @@ fn game(pack: Option<&Pack>) -> GameFiles {
     files
 }
 
+/// A channel that carries nothing of the mods: a test fills its backlog to hold bytes unacknowledged beside the download.
+#[derive(Default)]
+struct Noise;
+
+impl ChunkChannel for Noise {}
+
+#[derive(PluginId)]
+#[plugin(crate = torque::engine)]
+struct NoisePlugin;
+
+impl Plugin for NoisePlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.net().channel_with(
+            "noise",
+            ChannelLimits::new(100).with_max_message(1 << 20),
+            || Noise,
+        );
+    }
+}
+
 fn engine(files: &GameFiles, mods: ModsPlugin) -> Engine {
+    engine_with(files, mods, false)
+}
+
+fn engine_with(files: &GameFiles, mods: ModsPlugin, noise: bool) -> Engine {
     let config = GameConfig::load(files).unwrap();
     let mut builder = EngineBuilder::new();
     builder
         .add_plugins((DefaultPlugins.set(mods), ExamplePlugin(files.clone())))
         .config(&config);
+    if noise {
+        builder.add_plugins(NoisePlugin);
+    }
     builder.build().expect("the engine builds")
 }
 
@@ -157,11 +186,22 @@ fn pair(
     client_pack: Option<&Pack>,
     client_mods: ModsPlugin,
 ) -> Pair {
+    pair_with(server_pack, server_mods, client_pack, client_mods, false)
+}
+
+/// `pair`, with a `noise` channel on both ends when asked.
+fn pair_with(
+    server_pack: Option<&Pack>,
+    server_mods: ModsPlugin,
+    client_pack: Option<&Pack>,
+    client_mods: ModsPlugin,
+    noise: bool,
+) -> Pair {
     let server_files = game(server_pack);
-    let server_engine = engine(&server_files, server_mods);
+    let server_engine = engine_with(&server_files, server_mods, noise);
     let server = server(&server_engine, Listen::Memory(SERVER)).expect("the server starts");
     let client_files = game(client_pack);
-    let client_engine = engine(&client_files, client_mods);
+    let client_engine = engine_with(&client_files, client_mods, noise);
     let mut client = client(
         &client_engine,
         ClientNet::Memory {
@@ -524,6 +564,44 @@ fn downloads_fetch_verify_cache_mount_and_join_and_a_second_join_uses_the_cache(
             > 4_500
     );
     assert_eq!(cached(&dir), 0);
+}
+
+#[test]
+fn a_download_of_many_runs_completes_with_another_channels_backlog_beside_it() {
+    // Six runs of blocks, so the window refills while earlier runs are still unacknowledged; seven hundred kilobytes of another channel
+    // stay queued all the while. The mods channel's own backlog is what the server limits, so the client is never refused.
+    let pack = Pack::new("1.2").art(pattern(BLOCK_BYTES * 24, 3));
+    let mut p = pair_with(
+        Some(&pack),
+        server_plugin(),
+        None,
+        client_plugin("noise"),
+        true,
+    );
+    p.connect();
+    let noise = vec![7u8; 700_000];
+    let deepest = std::cell::Cell::new(0);
+    p.run_until(6_000, true, |p| {
+        let server = p.client.server.as_ref().expect("a hosted server");
+        if let Some(hub) = server.vm().extension::<ChannelHub>() {
+            for conn in hub.clients() {
+                deepest.set(deepest.get().max(hub.backlog(conn, "noise")));
+                if hub.backlog(conn, "noise") < 700_000 {
+                    let _ = hub.send_to(conn, "noise", Kind::Snapshot, noise.clone());
+                }
+            }
+        }
+        joined(p)
+    });
+    assert!(
+        deepest.get() >= 700_000,
+        "the other channel held {} bytes",
+        deepest.get()
+    );
+    assert_eq!(p.state(), "done");
+    assert_eq!(p.connected(), 1);
+    assert!(p.client.global("$Failed").is_empty());
+    assert!(!p.lost());
 }
 
 #[test]

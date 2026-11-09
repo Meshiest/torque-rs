@@ -346,10 +346,13 @@ fn bytes_are_checked_against_the_bits_left_before_they_are_reserved() {
 #[test]
 fn the_string_buffer_is_per_stream_and_cleared() {
     let mut w = BitWriter::new();
-    assert!(w.string_buffer().is_none());
+    assert!(w.string_buffer_ref().is_none());
     w.enable_string_buffer();
-    assert_eq!(w.string_buffer().map(|b| b.len()), Some(256));
-    assert!(w.string_buffer().is_some_and(|b| b.iter().all(|&x| x == 0)));
+    assert_eq!(w.string_buffer_ref().map(|b| b.len()), Some(256));
+    assert!(
+        w.string_buffer_ref()
+            .is_some_and(|b| b.iter().all(|&x| x == 0))
+    );
 }
 
 #[test]
@@ -430,4 +433,52 @@ fn colour_channels_keep_the_low_byte_of_the_converted_integer() {
             a: 254
         }
     );
+}
+
+#[test]
+fn bytes_and_fields_written_and_read_in_bulk_equal_the_same_written_bit_by_bit() {
+    let blob: Vec<u8> = (0..40u32).map(|i| (i * 37 + 11) as u8).collect();
+    for offset in 0..9u8 {
+        for limit in [0usize, 7, 8, 100, 8 * 20 + 3, 400, 4_000] {
+            for len in [0usize, 1, 2, 17, 40] {
+                let mut bulk = BitWriter::with_limit(limit);
+                let mut slow = BitWriter::with_limit(limit);
+                bulk.write_bits(0x1ff, offset);
+                slow.write_bits(0x1ff, offset);
+                bulk.write_bytes(&blob[..len]);
+                for &b in &blob[..len] {
+                    slow.write_u8(b);
+                }
+                assert_eq!(bulk.bits(), slow.bits(), "{offset} {limit} {len}");
+                assert_eq!(bulk.is_overflowed(), slow.is_overflowed());
+                assert_eq!(bulk.bytes(), slow.bytes());
+                let bytes = bulk.bytes().to_vec();
+                let mut r = BitReader::with_bit_len(&bytes, bulk.bits());
+                if r.read_bits(offset).is_ok() && r.bits_left() >= len * 8 {
+                    let got = r.read_bytes(len).unwrap();
+                    assert_eq!(got, &blob[..len]);
+                    assert_eq!(r.position(), usize::from(offset) + len * 8);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_mark_keeps_the_strings_the_stream_had_whatever_is_written_after_it() {
+    let mut w = BitWriter::new();
+    w.enable_string_buffer();
+    w.string_buffer().unwrap()[0] = 7;
+    let mark = w.mark();
+    w.string_buffer().unwrap()[0] = 9;
+    assert_eq!(w.string_buffer().unwrap()[0], 9);
+    w.rewind(mark);
+    assert_eq!(w.string_buffer_ref().unwrap()[0], 7);
+    // Reading never copies: a mark taken now still shares the buffer after a read.
+    let mark = w.mark();
+    assert_eq!(w.string_buffer_ref().unwrap()[0], 7);
+    assert!(Arc::ptr_eq(
+        w.string_buffer.as_ref().unwrap(),
+        mark.string_buffer.as_ref().unwrap()
+    ));
 }

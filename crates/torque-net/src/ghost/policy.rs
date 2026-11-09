@@ -97,6 +97,15 @@ pub trait GhostPolicy {
         true
     }
 
+    /// Whether a full query has no effect of the policy's own: it scopes every object its walk meets, whatever it is, makes every
+    /// ghost the table has room for ([`ObjectPolicy::admit`], [`ObjectPolicy::query_visit`] always true), asks for no drop pass and
+    /// keeps no state of the walk. A query of such a policy over a source with a [`ObjectSource::scope_stamp`] that has run to
+    /// its end with every ghost made and the stamp unchanged since only has to count its objects the next time, not scope them
+    /// again. Torque's does; a policy that overrides any of those questions leaves this false (the default).
+    fn plain_query(&self) -> bool {
+        false
+    }
+
     /// Whether a complete full query detaches the ghosts with updates pending that it did not find (`detachObject`).
     fn detach_out_of_scope(&self) -> bool {
         true
@@ -207,6 +216,10 @@ pub trait ObjectPolicy<S: ObjectSource>: GhostPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TorqueGhosts;
 
-impl GhostPolicy for TorqueGhosts {}
+impl GhostPolicy for TorqueGhosts {
+    fn plain_query(&self) -> bool {
+        true
+    }
+}
 
 impl<S: ObjectSource> ObjectPolicy<S> for TorqueGhosts {}
