@@ -33,6 +33,10 @@ torque-render-hd = { path = "../torque-render-hd", optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libloading = "0.8"
 
+# The effective user id the per-user folder must belong to (`private::check`).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
+
 # The bridge to the page's Lua module (`web_lua::PageLuaModule`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
@@ -50,6 +54,10 @@ torque-app-server = { path = "../torque-app-server" }
 torque-app = { path = "../torque-app", default-features = false, features = ["renderer"] }
 torque-render-core = { path = "../torque-render-core" }
 torque-render-scene = { path = "../torque-render-scene" }
+# Every native a full engine registers, for the call policy's test (`tests/native_effects.rs`).
+torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
+torque-plugin-props = { path = "../torque-plugin-props" }
+torque-plugin-rope = { path = "../torque-plugin-rope" }
 
 [lints.rust]
 # `deny`, not the workspace's `forbid`: the `ffi` module allows it, for the calls across the C ABI and the library loading.

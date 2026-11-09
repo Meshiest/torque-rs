@@ -20,6 +20,15 @@ const OK = 0;
 const HANDLE = 3;
 const PANIC = 4;
 const FAILED = 5;
+const RANGE = 6;
+
+// The C ABI's caps on what a request names (torque-plugin-abi's `TORQUE_MAX_NAME`, `TORQUE_MAX_TEXT`, `TORQUE_MAX_VALUE`),
+// and on an argument list (the Wasmtime host's): a text past its cap is refused with `RANGE` before it is copied.
+export const MAX_NAME = 256;
+export const MAX_TEXT = 64 * 1024;
+export const MAX_VALUE = 1024 * 1024;
+export const MAX_TEXTS = 1024;
+export const MAX_TEXT_BYTES = 4 << 20;
 
 // The game's requests (`web_lua/page.rs`'s `op`).
 const OP = {
@@ -39,6 +48,7 @@ const OP = {
 
 // WASI's error numbers the shim answers with.
 const ERRNO_BADF = 8;
+const ERRNO_INVAL = 28;
 const ERRNO_NOTSUP = 58;
 const ERRNO_NOTCAPABLE = 76;
 // WASI's clocks: the monotonic one and the process's and thread's CPU time (C's `clock()`).
@@ -78,17 +88,39 @@ export async function createLua(module) {
   const memory = () => exports.memory.buffer;
   const view = () => new DataView(memory());
   const read = (ptr, len) => new Uint8Array(memory(), ptr, len).slice();
-  // The `count` texts (a pointer and a length each) at `ptr`.
+  // A text of the module's past its cap: thrown by `capped` and the lists, answered with `RANGE` by `refusing`.
+  class TooLong extends Error {}
+  // The `len` bytes at `ptr` when `len` is at most `max`: checked before anything is copied.
+  const capped = (ptr, len, max) => {
+    if (len >>> 0 > max) throw new TooLong();
+    return read(ptr, len);
+  };
+  // The `count` texts (a pointer and a length each) at `ptr`, at most `MAX_TEXTS` of them and `MAX_TEXT_BYTES` in all.
   const readTexts = (ptr, count) => {
-    const texts = [];
+    if (count >>> 0 > MAX_TEXTS) throw new TooLong();
     const v = view();
+    let total = 0;
+    for (let i = 0; i < count; i++) total += v.getUint32(ptr + 8 * i + 4, true);
+    if (total > MAX_TEXT_BYTES) throw new TooLong();
+    const texts = [];
     for (let i = 0; i < count; i++) texts.push(read(v.getUint32(ptr + 8 * i, true), v.getUint32(ptr + 8 * i + 4, true)));
     return texts;
   };
-  const text = (ptr) => {
+  const text = (ptr, max) => {
     const v = view();
-    return read(v.getUint32(ptr, true), v.getUint32(ptr + 4, true));
+    return capped(v.getUint32(ptr, true), v.getUint32(ptr + 4, true), max);
   };
+  // The import `f`, answering `RANGE` (or `refused`) for a text past its cap; anything else it throws traps the module.
+  const refusing =
+    (f, refused = RANGE) =>
+    (...args) => {
+      try {
+        return f(...args);
+      } catch (error) {
+        if (error instanceof TooLong) return refused;
+        throw error;
+      }
+    };
   // A request of the module's for the call `call`, answered by the game: a text becomes the pending answer.
   const request = (call, op, args) => {
     const host = hosts.get(call);
@@ -129,7 +161,14 @@ export async function createLua(module) {
     fd_write: (fd, iovs, count, written) => {
       if (fd !== 1 && fd !== 2) return ERRNO_BADF;
       let n = 0;
-      for (const chunk of readTexts(iovs, count)) {
+      let chunks;
+      try {
+        chunks = readTexts(iovs, count);
+      } catch (error) {
+        if (error instanceof TooLong) return ERRNO_INVAL;
+        throw error;
+      }
+      for (const chunk of chunks) {
         lines += decoder.decode(chunk);
         n += chunk.length;
       }
@@ -167,40 +206,62 @@ export async function createLua(module) {
   };
 
   const torque = {
-    log: (call, level, ptr, len) => {
+    log: refusing((call, level, ptr, len) => {
+      const message = capped(ptr, len, MAX_TEXT);
       if (call === 0) {
-        (level === 2 ? console.error : level === 1 ? console.warn : console.log)(`torque_lua.wasm: ${decoder.decode(read(ptr, len))}`);
+        (level === 2 ? console.error : level === 1 ? console.warn : console.log)(`torque_lua.wasm: ${decoder.decode(message)}`);
         return OK;
       }
-      return request(call, OP.log, [level, read(ptr, len)]);
-    },
-    get_global: (call, ptr, len) => request(call, OP.getGlobal, [read(ptr, len)]),
-    set_global: (call, name, nameLen, value, valueLen) => request(call, OP.setGlobal, [read(name, nameLen), read(value, valueLen)]),
-    call_function: (call, ns, nsLen, name, nameLen, args, count) =>
-      request(call, OP.callFunction, [read(ns, nsLen), read(name, nameLen), readTexts(args, count)]),
-    call_method: (call, object, name, nameLen, args, count) =>
-      request(call, OP.callMethod, [object >>> 0, read(name, nameLen), readTexts(args, count)]),
-    has_method: (call, object, name, len) => {
+      return request(call, OP.log, [level, message]);
+    }),
+    get_global: refusing((call, ptr, len) => request(call, OP.getGlobal, [capped(ptr, len, MAX_NAME)])),
+    set_global: refusing((call, name, nameLen, value, valueLen) =>
+      request(call, OP.setGlobal, [capped(name, nameLen, MAX_NAME), capped(value, valueLen, MAX_VALUE)]),
+    ),
+    call_function: refusing((call, ns, nsLen, name, nameLen, args, count) =>
+      request(call, OP.callFunction, [capped(ns, nsLen, MAX_NAME), capped(name, nameLen, MAX_NAME), readTexts(args, count)]),
+    ),
+    call_method: refusing((call, object, name, nameLen, args, count) =>
+      request(call, OP.callMethod, [object >>> 0, capped(name, nameLen, MAX_NAME), readTexts(args, count)]),
+    ),
+    has_method: refusing((call, object, name, len) => {
       const host = hosts.get(call);
-      return host && host(OP.hasMethod, [object >>> 0, read(name, len)]) === 1 ? 1 : 0;
-    },
-    find_object: (call, name, len, out) => {
+      const named = capped(name, len, MAX_NAME);
+      return host && host(OP.hasMethod, [object >>> 0, named]) === 1 ? 1 : 0;
+    }, 0),
+    find_object: refusing((call, name, len, out) => {
+      const named = capped(name, len, MAX_NAME);
       const host = hosts.get(call);
       if (!host) return HANDLE;
-      const id = host(OP.findObject, [read(name, len)]);
+      const id = host(OP.findObject, [named]);
       if (typeof id !== 'number') return FAILED;
       view().setUint32(out, id, true);
       return OK;
-    },
-    get_field: (call, object, name, nameLen, index, indexLen) =>
-      request(call, OP.getField, [object >>> 0, read(name, nameLen), read(index, indexLen)]),
-    set_field: (call, object, name, nameLen, index, indexLen, value, valueLen) =>
-      request(call, OP.setField, [object >>> 0, read(name, nameLen), read(index, indexLen), read(value, valueLen)]),
-    // A `TorqueDefineDecl`: four texts, then the id (a u64 at 32).
-    define_function: (call, decl) =>
-      request(call, OP.defineFunction, [text(decl), text(decl + 8), text(decl + 16), text(decl + 24), Number(view().getBigUint64(decl + 32, true))]),
+    }),
+    get_field: refusing((call, object, name, nameLen, index, indexLen) =>
+      request(call, OP.getField, [object >>> 0, capped(name, nameLen, MAX_NAME), capped(index, indexLen, MAX_NAME)]),
+    ),
+    set_field: refusing((call, object, name, nameLen, index, indexLen, value, valueLen) =>
+      request(call, OP.setField, [
+        object >>> 0,
+        capped(name, nameLen, MAX_NAME),
+        capped(index, indexLen, MAX_NAME),
+        capped(value, valueLen, MAX_VALUE),
+      ]),
+    ),
+    // A `TorqueDefineDecl`: four texts (the namespace, the name and the package are names; the usage is a text), then the
+    // id (a u64 at 32).
+    define_function: refusing((call, decl) =>
+      request(call, OP.defineFunction, [
+        text(decl, MAX_NAME),
+        text(decl + 8, MAX_NAME),
+        text(decl + 16, MAX_NAME),
+        text(decl + 24, MAX_TEXT),
+        Number(view().getBigUint64(decl + 32, true)),
+      ]),
+    ),
     charge: (call, steps) => request(call, OP.charge, [Number(steps)]),
-    read_script: (call, ptr, len) => request(call, OP.readScript, [read(ptr, len)]),
+    read_script: refusing((call, ptr, len) => request(call, OP.readScript, [capped(ptr, len, MAX_TEXT)])),
     result_len: () => pending.length,
     result_copy: (ptr) => {
       new Uint8Array(memory(), ptr, pending.length).set(pending);

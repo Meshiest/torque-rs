@@ -129,10 +129,11 @@ fn fire_check(vm: &mut Vm, event: &torque_ts_vm::events::Event) -> bool {
     };
     let name = String::from_utf8_lossy(name);
     let (namespace, short) = name.rsplit_once("::").unwrap_or(("", &name));
-    match policies
-        .iter()
-        .try_for_each(|policy| policy.check(namespace, short, *on_object, args))
-    {
+    let kind = crate::call_policy::CallKind::of(*on_object);
+    let call = crate::call_policy::PolicyCall::new(vm, namespace, short, kind, args);
+    let checked = crate::call_policy::refuse_nul_names(&call)
+        .and_then(|()| policies.iter().try_for_each(|policy| policy.check(&call)));
+    match checked {
         Ok(()) => {
             let next = vm.events().next_seq();
             context
@@ -263,7 +264,7 @@ impl LanguageRunner {
         });
         if !vm.set_script_language(&spec.extension, runner) {
             vm.warn(format!(
-                "native extension {}: `.{}` files cannot be its language's",
+                "native extension {}: `.{}` files cannot be its language's: TorqueScript's or another language's",
                 state.id, spec.extension
             ));
         }

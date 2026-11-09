@@ -92,6 +92,7 @@ fn a_function_is_kept_with_its_declaration_and_check_beside_it() {
                 description: "sets the zone",
                 usage: ::core::option::Option::None,
                 docs: "sets the zone",
+                effects: ::torque_engine::Effects::NONE,
                 native: {
                     fn __torque_native() -> ::torque_engine::script::TypedNative {
                         ::torque_engine::IntoNative::into_native(set_dead_zone)

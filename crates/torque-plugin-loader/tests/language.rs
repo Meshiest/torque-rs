@@ -17,6 +17,9 @@ use torque_ts_vm::vm::{Vm, VmError};
 /// How many script engines the toy language heard go.
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 
+/// The numbers of the script engines the toy language heard go.
+static DROPPED_IDS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
 /// A language of one command per line: `call <function> <args...>` (the result into `$Toy::Result`), `define <name>
 /// <id>`, `read <path>` (the text or `refused`), `info`, `spin` (charges until the budget is spent), `defineIn
 /// <package> <name> <id>`.
@@ -66,6 +69,10 @@ impl Toy {
                 Err(CallError::Limit) => return Err(Limit),
                 Err(CallError::Refused(_)) => set(b"refused"),
             },
+            Some("id") => {
+                let info = call.vm_info().expect("a live call");
+                set(info.vm.to_string().as_bytes());
+            }
             Some("info") => {
                 let info = call.vm_info().expect("a live call");
                 set(format!("{:?} {}", info.side, info.vm != 0).as_bytes());
@@ -106,8 +113,9 @@ impl ScriptLanguage for Toy {
         }
     }
 
-    fn vm_dropped(&self, _vm: u64) {
+    fn vm_dropped(&self, vm: u64) {
         DROPPED.fetch_add(1, Ordering::SeqCst);
+        DROPPED_IDS.lock().unwrap().push(vm);
     }
 }
 
@@ -271,6 +279,38 @@ fn the_language_hears_when_a_script_engine_goes() {
 }
 
 #[test]
+fn a_script_engine_dropped_inside_a_call_is_heard_when_the_call_returns() {
+    use std::cell::RefCell;
+    thread_local! {
+        static OTHER: RefCell<Option<Vm>> = const { RefCell::new(None) };
+    }
+    let engine = engine();
+    let files = MemFiles::new();
+    let mut other = server(&engine, &files);
+    assert_eq!(run(&mut other, &files, "id"), Ok(true));
+    let id: u64 = result(&other).parse().unwrap();
+    OTHER.with(|o| *o.borrow_mut() = Some(other));
+    let mut vm = server(&engine, &files);
+    // A native that drops the other script engine, while the toy language's call is running.
+    vm.register("dropOther", 1, 1, "", move |vm, _| {
+        OTHER.with(|o| o.borrow_mut().take());
+        let heard = DROPPED_IDS.lock().unwrap().contains(&id);
+        vm.set_global("$Test::HeardInside", if heard { "1" } else { "0" });
+        torque_ts_vm::vm::Native::Void
+    });
+    assert_eq!(run(&mut vm, &files, "call dropOther"), Ok(true));
+    assert_eq!(
+        vm.global("$Test::HeardInside").as_deref(),
+        Some(&b"0"[..]),
+        "not re-entered"
+    );
+    assert!(
+        DROPPED_IDS.lock().unwrap().contains(&id),
+        "its realm went once the call returned"
+    );
+}
+
+#[test]
 fn the_call_policy_is_the_host_s_whatever_the_namespace() {
     let engine = engine();
     let files = MemFiles::new();
@@ -294,7 +334,11 @@ fn the_call_policy_is_the_host_s_whatever_the_namespace() {
     // A realm with other rights puts its own policy in: here an allowlist.
     struct Only(&'static str);
     impl torque_plugin_loader::call_policy::CallPolicy for Only {
-        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+        fn check(
+            &self,
+            call: &torque_plugin_loader::call_policy::PolicyCall<'_>,
+        ) -> Result<(), String> {
+            let name = call.name;
             if name.eq_ignore_ascii_case(self.0) {
                 Ok(())
             } else {
@@ -304,6 +348,12 @@ fn the_call_policy_is_the_host_s_whatever_the_namespace() {
 
         fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
             Err("no field writes here".to_string())
+        }
+        fn check_global(
+            &self,
+            _: &torque_plugin_loader::call_policy::GlobalWrite<'_>,
+        ) -> Result<(), String> {
+            Ok(())
         }
     }
     torque_plugin_loader::call_policy::set_call_policy(&mut vm, std::rc::Rc::new(Only("strupr")));
@@ -321,7 +371,11 @@ fn a_queued_call_is_checked_again_as_it_fires() {
     // Refuses `tsMark` itself, and lets `schedule` through: only the check as the call fires sees `tsMark`.
     struct NoMark(Cell<u32>);
     impl CallPolicy for NoMark {
-        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+        fn check(
+            &self,
+            call: &torque_plugin_loader::call_policy::PolicyCall<'_>,
+        ) -> Result<(), String> {
+            let name = call.name;
             if name.eq_ignore_ascii_case("tsMark") {
                 self.0.set(self.0.get() + 1);
                 return Err("not tsMark".to_string());
@@ -329,6 +383,12 @@ fn a_queued_call_is_checked_again_as_it_fires() {
             Ok(())
         }
         fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_global(
+            &self,
+            _: &torque_plugin_loader::call_policy::GlobalWrite<'_>,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -370,13 +430,23 @@ fn what_a_queued_call_queues_inherits_its_policy() {
     // Allows `schedule` (nested too), refuses `tsMark`.
     struct ScheduleButNoMark;
     impl CallPolicy for ScheduleButNoMark {
-        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+        fn check(
+            &self,
+            call: &torque_plugin_loader::call_policy::PolicyCall<'_>,
+        ) -> Result<(), String> {
+            let name = call.name;
             if name.eq_ignore_ascii_case("tsMark") {
                 return Err("not tsMark".to_string());
             }
             Ok(())
         }
         fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_global(
+            &self,
+            _: &torque_plugin_loader::call_policy::GlobalWrite<'_>,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -418,7 +488,11 @@ fn a_later_looser_policy_never_loosens_a_queued_call() {
     use torque_plugin_loader::call_policy::{CallPolicy, set_call_policy};
     struct NoMark;
     impl CallPolicy for NoMark {
-        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+        fn check(
+            &self,
+            call: &torque_plugin_loader::call_policy::PolicyCall<'_>,
+        ) -> Result<(), String> {
+            let name = call.name;
             if name.eq_ignore_ascii_case("tsMark") {
                 return Err("not tsMark".to_string());
             }
@@ -427,13 +501,28 @@ fn a_later_looser_policy_never_loosens_a_queued_call() {
         fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
             Ok(())
         }
+        fn check_global(
+            &self,
+            _: &torque_plugin_loader::call_policy::GlobalWrite<'_>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
     }
     struct Anything;
     impl CallPolicy for Anything {
-        fn check(&self, _: &str, _: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+        fn check(
+            &self,
+            _: &torque_plugin_loader::call_policy::PolicyCall<'_>,
+        ) -> Result<(), String> {
             Ok(())
         }
         fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_global(
+            &self,
+            _: &torque_plugin_loader::call_policy::GlobalWrite<'_>,
+        ) -> Result<(), String> {
             Ok(())
         }
     }
@@ -467,13 +556,23 @@ fn queued_calls_past_the_table_are_cancelled_not_left_unchecked() {
     use torque_plugin_loader::call_policy::{CallPolicy, set_call_policy};
     struct ScheduleButNoMark;
     impl CallPolicy for ScheduleButNoMark {
-        fn check(&self, _: &str, name: &str, _: bool, _: &[Vec<u8>]) -> Result<(), String> {
+        fn check(
+            &self,
+            call: &torque_plugin_loader::call_policy::PolicyCall<'_>,
+        ) -> Result<(), String> {
+            let name = call.name;
             if name.eq_ignore_ascii_case("tsMark") {
                 return Err("not tsMark".to_string());
             }
             Ok(())
         }
         fn check_field(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_global(
+            &self,
+            _: &torque_plugin_loader::call_policy::GlobalWrite<'_>,
+        ) -> Result<(), String> {
             Ok(())
         }
     }

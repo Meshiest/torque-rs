@@ -477,6 +477,10 @@ fn file_object(vm: &Vm, c: &NativeCall, class: ClassId) -> Option<ObjId> {
 /// made the class and put stubs where these go): the natives replace the stubs in place, and the class gets
 /// its behaviour if it has none.
 pub(crate) fn register(vm: &mut Vm) {
+    // Reading opens a file by a name the caller gives: as much a file effect as writing.
+    for method in ["openForRead", "openForWrite", "openForAppend", "writeLine"] {
+        vm.add_native_effects("FileObject", method, crate::effects::Effects::FILES);
+    }
     let Some(class) = vm.objects().classes.find(b"FileObject") else {
         return;
     };

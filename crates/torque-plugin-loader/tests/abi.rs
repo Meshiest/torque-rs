@@ -267,3 +267,120 @@ fn what_an_extension_hands_over_is_checked() {
         assert_eq!((api.log)(0, 9, text("x")), TORQUE_ERR_INVALID);
     }
 }
+
+static OUTER: AtomicU64 = AtomicU64::new(0);
+static NESTED: Mutex<Vec<(&'static str, TorqueStatus)>> = Mutex::new(Vec::new());
+
+/// `nestOuter()`: runs the script function `tsNested`, which calls `nestInner`.
+unsafe extern "C" fn nest_outer(_user: *mut c_void, call: TorqueCall) -> TorqueStatus {
+    let api = api();
+    OUTER.store(call, Ordering::SeqCst);
+    let mut out = text("");
+    // SAFETY: the table's functions take any values and check them.
+    unsafe {
+        (api.call_function)(
+            call,
+            text(""),
+            text("tsNested"),
+            std::ptr::null(),
+            0,
+            &mut out,
+        );
+        (api.return_int)(call, 1)
+    }
+}
+
+/// `nestInner()`: reaches the script engine with the outer call's handle, then with its own.
+unsafe extern "C" fn nest_inner(_user: *mut c_void, call: TorqueCall) -> TorqueStatus {
+    let api = api();
+    let outer = OUTER.load(Ordering::SeqCst);
+    let mut seen = NESTED.lock().unwrap();
+    let mut out = text("");
+    let mut n = 0;
+    // SAFETY: the table's functions take any values and check them.
+    unsafe {
+        seen.push((
+            "outer get",
+            (api.get_global)(outer, text("$Nest::A"), &mut out),
+        ));
+        seen.push((
+            "outer set",
+            (api.set_global)(outer, text("$Nest::A"), text("outer")),
+        ));
+        seen.push((
+            "outer log",
+            (api.log)(outer, TORQUE_LOG_INFO, text("from outer")),
+        ));
+        seen.push(("outer args", (api.arg_count)(outer, &mut n)));
+        seen.push((
+            "inner set",
+            (api.set_global)(call, text("$Nest::A"), text("inner")),
+        ));
+        seen.push((
+            "inner get",
+            (api.get_global)(call, text("$Nest::A"), &mut out),
+        ));
+        (api.return_int)(call, 2)
+    }
+}
+
+unsafe extern "C" fn nest_init(api: *const TorqueApi, out: *mut TorquePluginInfo) -> TorqueStatus {
+    API.store(api as *mut TorqueApi, Ordering::SeqCst);
+    let api = self::api();
+    let outer = TorqueNativeDecl {
+        call: Some(nest_outer),
+        ..decl("nestOuter", &[], "")
+    };
+    let inner = TorqueNativeDecl {
+        call: Some(nest_inner),
+        ..decl("nestInner", &[], "")
+    };
+    let effects = TorqueNativeDecl {
+        flags: TORQUE_NATIVE_FILES | TORQUE_NATIVE_NETWORK,
+        ..decl("nestWritesFiles", &[], "")
+    };
+    // SAFETY: the engine's table and a valid place for the info.
+    unsafe {
+        *out = TorquePluginInfo {
+            abi_version: TORQUE_ABI_VERSION,
+            id: text("test.nest"),
+            version: text("1"),
+            net_version: 0,
+            has_net_version: 0,
+        };
+        for d in [&outer, &inner, &effects] {
+            let status = (api.register_function)(api.init, d);
+            if status != TORQUE_OK {
+                return status;
+            }
+        }
+        TORQUE_OK
+    }
+}
+
+#[test]
+fn an_outer_call_handle_cannot_reach_the_script_engine_in_a_nested_call() {
+    let plugin = ExtensionPlugin::from_init(TORQUE_ABI_VERSION, nest_init).unwrap();
+    let engine = EngineBuilder::new().add_plugins(plugin).build().unwrap();
+    let mut vm = server_vm(&engine);
+    vm.eval(b"function tsNested() { return nestInner(); }")
+        .unwrap();
+    assert_eq!(vm.eval(b"return nestOuter();").unwrap(), b"1");
+    assert_eq!(
+        NESTED.lock().unwrap().clone(),
+        [
+            ("outer get", TORQUE_ERR_HANDLE),
+            ("outer set", TORQUE_ERR_HANDLE),
+            ("outer log", TORQUE_ERR_HANDLE),
+            ("outer args", TORQUE_OK),
+            ("inner set", TORQUE_OK),
+            ("inner get", TORQUE_OK),
+        ]
+    );
+    assert_eq!(vm.global("$Nest::A").as_deref(), Some(&b"inner"[..]));
+    // The effects an extension's native declares are the script engine's, as a compiled plugin's are.
+    assert_eq!(
+        vm.native_effects("", "nestWritesFiles"),
+        torque_engine::Effects::FILES | torque_engine::Effects::NETWORK
+    );
+}

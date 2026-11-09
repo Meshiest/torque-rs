@@ -272,9 +272,12 @@ impl Plugin for PropsPlugin {
             .class::<PropData>()
             .class::<server::NetProp>()
             .class::<joints::server::NetJoint>()
-            .prefs::<PropPrefs>()
             .natives(natives::declared())
-            .natives(joints::natives::declared());
+            .natives(joints::natives::declared())
+            // Its prefs are the props' and joints' limits.
+            .with_effects(torque_engine::Effects::ENGINE, |r| {
+                r.prefs::<PropPrefs>();
+            });
         engine
             .client_script()
             .class::<PropData>()

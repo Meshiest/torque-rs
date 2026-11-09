@@ -8,7 +8,7 @@
 //! |---|---|
 //! | `<bin>` (`.exe` on Windows) | the game's binaries, built in release with the plugins its `game.toml` keeps ([`features`]) |
 //! | `game/` | the game folder, less the dev files ([`select`]) |
-//! | `plugins/` | each extension's library and the manifest the engine loads it with |
+//! | `plugins/` | each extension's library and the manifest the engine loads it with; the libraries are built first, and their hashes are given to the game's build ([`PLUGINS_ENV`]) |
 //! | `licenses/` | the license texts of every crate linked, and an index ([`licenses`]) |
 //! | `manifest.toml` | every file's size and SHA-256 ([`manifest`]) |
 //!
@@ -19,6 +19,11 @@
 //! `--archive` also writes the bundle as one file ([`archive`]); `--server` packages the game's dedicated server ([`server`]).
 //! `--twice` is for a game maker to verify that a game builds reproducibly: it bundles two times from clean build folders and
 //! fails unless the two archives have the same SHA-256, naming the files that differ.
+
+/// The variable the game's build is given: the SHA-256 (lower-case hex) of each extension library the bundle ships in
+/// `plugins/`, separated by spaces. A game reads it at compile time (`option_env!`) to approve those libraries without
+/// asking, and nothing put beside them later.
+pub const PLUGINS_ENV: &str = "TORQUE_BUNDLE_PLUGINS";
 
 pub mod archive;
 pub mod cargo;
@@ -199,7 +204,7 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         .collect();
 
     // The game's binaries.
-    let game_build = Build {
+    let mut game_build = Build {
         manifest: manifest_path.clone(),
         package: Some(spec.bundle.package.clone()),
         bins: spec.bundle.bins.clone(),
@@ -208,6 +213,7 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         target_dir: target_dir.join("bundle"),
         rustflags: cargo::rustflags(&remaps, &target, &[]),
         cflags: cargo::cflags(&remaps, &target),
+        env: Vec::new(),
     };
     // The server variant is checked before it is built: a crate that draws is a refusal in seconds, not after the compile.
     let game_linked = game_build.linked()?;
@@ -215,23 +221,11 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
     if options.server {
         refuse_drawing(&game_linked)?;
     }
-    let built = game_build.run()?;
-    if options.server {
-        refuse_system_libraries(&built.bins)?;
-    }
-    let mut files: BTreeMap<String, Text> = BTreeMap::new();
-    let add = |files: &mut BTreeMap<String, Text>, path: String, source: Text| {
-        if files.insert(path.clone(), source).is_some() {
-            return Err(format!("two files would be {path} in the bundle"));
-        }
-        Ok(())
-    };
-    for (_, exe) in &built.bins {
-        add(&mut files, file_name(exe)?, Text::File(exe.clone()))?;
-    }
-
-    // The extensions, each from its own workspace and build folder.
+    // The extensions, each from its own workspace and build folder: built before the game, whose build is told their
+    // libraries' hashes ([`PLUGINS_ENV`]), so a game can approve the libraries it shipped without reading anything beside
+    // them.
     let mut extension_builds = Vec::new();
+    let mut shipped = Vec::new();
     for (extension, root) in spec.extensions.iter().zip(&extension_roots) {
         let name = root
             .file_name()
@@ -247,6 +241,7 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
             target_dir: target_dir.join("bundle-extensions").join(&name),
             rustflags: cargo::rustflags(&remaps, &target, &extension.rustflags),
             cflags: cargo::cflags(&remaps, &target),
+            env: Vec::new(),
         };
         let made = build.run()?;
         let [library] = made.libraries.as_slice() else {
@@ -255,18 +250,43 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
                 made.libraries.len()
             ));
         };
+        let bytes = std::fs::read(library).map_err(|e| format!("{}: {e}", library.display()))?;
+        shipped.push((
+            library.clone(),
+            crate_dir.join(&extension.config),
+            manifest::Entry::of("", &bytes).sha256,
+        ));
+        extension_builds.push(build);
+    }
+    let hashes: Vec<&str> = shipped.iter().map(|(_, _, sha)| sha.as_str()).collect();
+    game_build
+        .env
+        .push((PLUGINS_ENV.to_string(), hashes.join(" ")));
+    let built = game_build.run()?;
+    if options.server {
+        refuse_system_libraries(&built.bins)?;
+    }
+    let mut files: BTreeMap<String, Text> = BTreeMap::new();
+    let add = |files: &mut BTreeMap<String, Text>, path: String, source: Text| {
+        if files.insert(path.clone(), source).is_some() {
+            return Err(format!("two files would be {path} in the bundle"));
+        }
+        Ok(())
+    };
+    for (_, exe) in &built.bins {
+        add(&mut files, file_name(exe)?, Text::File(exe.clone()))?;
+    }
+    for (library, config, _) in &shipped {
         add(
             &mut files,
             format!("plugins/{}", file_name(library)?),
             Text::File(library.clone()),
         )?;
-        let config = crate_dir.join(&extension.config);
         add(
             &mut files,
-            format!("plugins/{}", file_name(&config)?),
-            Text::File(config),
+            format!("plugins/{}", file_name(config)?),
+            Text::File(config.clone()),
         )?;
-        extension_builds.push(build);
     }
 
     // The game folder.

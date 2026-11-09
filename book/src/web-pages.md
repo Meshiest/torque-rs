@@ -100,7 +100,7 @@ candidates as type, address and port), deflated, in base64url, with a version by
 characters with three candidates. The page refuses a code longer than 1024 characters, one that inflates past 2 KiB, a
 line out of its form or order, and a STUN server key not in its own fixed list; a code never names a server by address.
 The host takes a joiner's candidates by the same rules as a room's joiners (canonical IPv4, no `.local` names, private
-addresses only on the same-network server or with `?lan=1`, never its own). On any server, a host candidate may also be a
+addresses only on the same-network server, or with `?lan=1` on a page whose code allows it, never its own). On any server, a host candidate may also be a
 browser's mDNS name, strictly a lowercase version 4 UUID and `.local`, handed to the browser's own ICE unresolved: only
 the browser resolves it, and only on its own network. So pressing Connect (or adding a reply) also makes the browser
 ask its local network, by multicast, for the other player's `.local` name; only a device that registered that random

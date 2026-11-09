@@ -198,6 +198,40 @@ fn argument_lists_are_capped_by_count_and_total() {
     );
 }
 
+const GET_GLOBAL: &str = r#"(module
+    (import "torque" "get_global" (func $get_global (param i32 i32 i32) (result i32)))
+    (import "torque" "set_field" (func $set_field (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
+    (memory (export "memory") 128)
+    (func (export "go") (param i32 i32 i32 i32) (result i32)
+      (if (result i32) (local.get 3)
+        (then (call $set_field (local.get 0) (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 0) (i32.const 0)
+          (local.get 1) (local.get 2)))
+        (else (call $get_global (local.get 0) (local.get 1) (local.get 2))))))"#;
+
+#[test]
+fn texts_past_the_abi_s_caps_are_refused_before_they_are_copied() {
+    let (mut store, instance) = hostile(GET_GLOBAL);
+    let counters = Rc::clone(&store.data().counters);
+    // A name longer than the module's whole memory: refused by its length, not trapped reading it.
+    let status = go(&mut store, &instance, (1, 0, 1 << 24, 0)).expect("no trap");
+    assert_eq!(status, TORQUE_ERR_RANGE as i32);
+    // One past the name cap, and a value one past the value cap: refused too.
+    let status = go(&mut store, &instance, (1, 0, TORQUE_MAX_NAME as i32 + 1, 0)).expect("no trap");
+    assert_eq!(status, TORQUE_ERR_RANGE as i32);
+    let status = go(
+        &mut store,
+        &instance,
+        (1, 0, TORQUE_MAX_VALUE as i32 + 1, 1),
+    )
+    .expect("no trap");
+    assert_eq!(status, TORQUE_ERR_RANGE as i32);
+    assert_eq!(counters.requests(), 0, "no request reached the host");
+    // Within the caps, the request goes on to be served (here: no call is running, so the handle is refused).
+    let status = go(&mut store, &instance, (1, 0, 8, 0)).expect("no trap");
+    assert_eq!(status, TORQUE_ERR_HANDLE as i32);
+    assert_eq!(counters.requests(), 1);
+}
+
 /// A Lua module that, asked to run a file, keeps the call's handle and calls a console function (the engine's host
 /// decides what that does), then marks that it went on (the word at 4). Its `vm_dropped` makes a request with the kept
 /// handle and stores the status at 0; its `call_defined` traps.

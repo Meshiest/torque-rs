@@ -8,8 +8,14 @@ use super::{Native, NativeCall, Vm, VmError, lossy};
 use crate::text::{atof, expand_escape, fold, is_match, match_cost, to_f32};
 use crate::vars::Entry;
 
-/// TGE's line buffer (`char buffer[1024]` with `dSprintf`): longer lines are cut.
+/// TGE's line buffer (`char buffer[1024]` with `dSprintf`). TGE cuts a longer line, which leaves an unterminated string
+/// that swallows the next line and can put a later value in code position; here a string too long for one line is
+/// written in pieces of at most this many bytes, each a whole statement (`$x = "..."; $x = $x @ "...";`), so every value
+/// reads back as it was.
 const MAX_LINE: usize = 1023;
+
+/// The most bytes one byte of a string becomes once escaped (`\xNN`).
+const MAX_ESCAPED: usize = 4;
 
 fn arg(c: &NativeCall, i: usize) -> &[u8] {
     c.argv.get(i).map_or(&b""[..], Vec::as_slice)
@@ -29,6 +35,8 @@ fn cmp_ignoring_case(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
 }
 
 pub(super) fn register(vm: &mut Vm) {
+    vm.add_native_effects("", "export", crate::effects::Effects::FILES);
+    vm.add_native_effects("", "deleteVariables", crate::effects::Effects::ENGINE);
     vm.register(
         "export",
         2,
@@ -84,8 +92,65 @@ impl Select<'_> {
     }
 }
 
-/// What `export_lines` found: the lines to print or write, and the names it skipped.
-type ExportLines = (Vec<Vec<u8>>, Vec<Vec<u8>>);
+/// What `export_lines` found: the lines to print or write, and the names it skipped, with why.
+type ExportLines = (Vec<Vec<u8>>, Vec<(Vec<u8>, Skipped)>);
+
+/// Why `export` leaves a variable out.
+#[derive(Clone, Copy)]
+enum Skipped {
+    /// A byte outside `[A-Za-z0-9_:$]` in its name ([`name_is_exportable`]).
+    Name,
+    /// A name so long that no whole statement setting it fits a line.
+    Long,
+}
+
+/// The lines that set the string `value` to `name`, each ending with `end` and at most [`MAX_LINE`] bytes: the first
+/// `name = "...";`, the rest `name = name @ "...";`, each piece escaped whole (an escape is never split). `None` when the
+/// name leaves no room for a piece.
+fn string_lines(name: &[u8], value: &[u8], end: &[u8]) -> Option<Vec<Vec<u8>>> {
+    // `name = name @ "` and `";` and the line's end around each later piece.
+    let room = MAX_LINE.checked_sub(2 * name.len() + 7 + 2 + end.len())?;
+    if room < MAX_ESCAPED {
+        return None;
+    }
+    let escaped = expand_escape(value);
+    let mut lines = Vec::new();
+    let mut piece: Vec<u8> = Vec::new();
+    let flush = |piece: &mut Vec<u8>, lines: &mut Vec<Vec<u8>>| {
+        let mut line = name.to_vec();
+        if lines.is_empty() {
+            line.extend_from_slice(b" = \"");
+        } else {
+            line.extend_from_slice(b" = ");
+            line.extend_from_slice(name);
+            line.extend_from_slice(b" @ \"");
+        }
+        line.append(piece);
+        line.extend_from_slice(b"\";");
+        line.extend_from_slice(end);
+        lines.push(line);
+    };
+    let mut at = 0;
+    while at < escaped.len() {
+        // One byte of the value: a plain byte, or a whole escape (`\x01` four bytes, `\c0` three, `\n` two).
+        let width = match (escaped[at], escaped.get(at + 1)) {
+            (b'\\', Some(b'x')) => 4,
+            (b'\\', Some(b'c')) => 3,
+            (b'\\', _) => 2,
+            _ => 1,
+        };
+        let one = escaped.get(at..at + width).unwrap_or(&escaped[at..]);
+        if piece.len() + one.len() > room {
+            flush(&mut piece, &mut lines);
+        }
+        piece.extend_from_slice(one);
+        at += width;
+    }
+    if !piece.is_empty() || lines.is_empty() {
+        flush(&mut piece, &mut lines);
+    }
+    Some(lines)
+}
 
 /// Whether `export` writes a variable of this name: letters, digits, `_`, `:` and `$` only. TGE
 /// writes the name raw (the VALUE is escaped, the name is not), and a name is script-controlled text (`$x[%s]`
@@ -147,11 +212,16 @@ impl Vm {
         append: bool,
     ) -> Result<(), VmError> {
         let (lines, skipped) = self.export_lines(select, file.is_some())?;
-        for name in skipped {
+        for (name, why) in skipped {
             let shown = lossy(name.get(..MAX_LINE).unwrap_or(&name));
-            self.warn(format!(
-                "export: skipping variable \"{shown}\": its name holds a character other than letters, digits, '_', ':' and '$'"
-            ));
+            self.warn(match why {
+                Skipped::Name => format!(
+                    "export: skipping variable \"{shown}\": its name holds a character other than letters, digits, '_', ':' and '$'"
+                ),
+                Skipped::Long => format!(
+                    "export: skipping variable \"{shown}\": its name is too long for a line"
+                ),
+            });
         }
         if lines.is_empty() {
             return Ok(());
@@ -179,22 +249,33 @@ impl Vm {
         for entry in found {
             let name = entry.name();
             if !name_is_exportable(name) {
-                skipped.push(name.to_vec());
+                skipped.push((name.to_vec(), Skipped::Name));
                 continue;
             }
-            let mut line = name.get(..MAX_LINE).unwrap_or(name).to_vec();
-            line.extend_from_slice(b" = ");
             if entry.is_string() {
-                line.push(b'"');
-                // Only the first 1023 bytes can survive the cut, and escaping never shortens a byte.
-                line.extend_from_slice(&expand_escape(&entry.string_head(MAX_LINE)));
-                line.push(b'"');
-            } else {
-                line.extend_from_slice(&entry.get_string());
+                let value = entry.string_head(usize::MAX);
+                self.objects.add_work(value.len() as u64);
+                self.ensure_budget()?;
+                let Some(pieces) = string_lines(name, &value, end) else {
+                    skipped.push((name.to_vec(), Skipped::Long));
+                    continue;
+                };
+                for line in pieces {
+                    self.objects.add_work(line.len() as u64);
+                    lines.push(line);
+                }
+                continue;
             }
+            // A number: its text has no quote or line break to escape.
+            let mut line = name.to_vec();
+            line.extend_from_slice(b" = ");
+            line.extend_from_slice(&entry.get_string());
             line.push(b';');
             line.extend_from_slice(end);
-            line.truncate(MAX_LINE);
+            if line.len() > MAX_LINE {
+                skipped.push((name.to_vec(), Skipped::Long));
+                continue;
+            }
             self.objects.add_work(line.len() as u64);
             lines.push(line);
         }

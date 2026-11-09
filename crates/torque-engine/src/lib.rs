@@ -58,6 +58,13 @@
 //! assert_eq!(vm.eval(b"return hello(\"world\");")?, b"Hello, world!");
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! # Maintaining
+//!
+//! A native, global or pref that writes or deletes files, runs code from text, changes the engine as a whole (mods, limits,
+//! quitting) or connects out declares it where it is registered ([`ScriptRegistry::with_effects`], `effects = "..."` on
+//! [`function`]): the extensions' call policy reads it, and torque-plugin-loader's
+//! `every_native_that_writes_or_evaluates_is_denied_to_languages` lists every native with its effects.
 
 #![warn(missing_docs)]
 
@@ -413,6 +420,7 @@ pub use torque_macros::function;
 /// ```
 pub use torque_macros::methods;
 pub use torque_ts_vm::convert::{Filename, Rest, ScriptError};
+pub use torque_ts_vm::effects::Effects;
 
 /// The record crate, for the code `#[derive(GhostRecord)]` and `#[derive(DatablockCodec)]` write.
 #[doc(hidden)]

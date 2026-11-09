@@ -64,6 +64,10 @@ fn the_fixture_bundles_runs_from_its_folder_and_bundles_the_same_twice() {
     let out = first.check.as_deref().unwrap();
     assert!(out.contains("game says hello") && out.contains("gizmos on"));
     assert!(!out.contains("dev build"), "the default features were on");
+    assert!(
+        out.contains("shipped plugins: []"),
+        "the game's build is told what it ships in plugins/: {out}"
+    );
     assert_eq!(first.features, ["gizmos"]);
     assert!(
         first.missing_licenses.is_empty(),
@@ -311,6 +315,7 @@ fn the_minimal_server_links_no_drawing_crates_and_the_mods_demo_does() {
             target_dir: PathBuf::from("unused"),
             rustflags: Vec::new(),
             cflags: Vec::new(),
+            env: Vec::new(),
         }
         .linked()
         .unwrap()

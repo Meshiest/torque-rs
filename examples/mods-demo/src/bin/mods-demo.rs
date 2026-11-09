@@ -55,7 +55,7 @@ fn main() -> Result<(), String> {
     // A packaged game loads the extension from its own `plugins/` folder; a build copies the one it was given into one.
     let lua = if cfg!(feature = "bundled") && !options.lua_given {
         let plugins = library.parent().ok_or("the library has no folder")?;
-        Lua::at(plugins, &options.work.join("user"))
+        Lua::bundled(plugins.parent().ok_or("the plugins folder has no folder")?)?
     } else {
         Lua::install(&library, &options.work.join("lua")).map_err(|e| e.to_string())?
     };

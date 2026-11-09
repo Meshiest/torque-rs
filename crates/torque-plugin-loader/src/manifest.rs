@@ -72,10 +72,11 @@ impl Manifest {
         let version = field("version")?.ok_or("no `version`")?;
         if version.is_empty()
             || version.len() > TORQUE_MAX_NAME
-            || !version.bytes().all(|b| b.is_ascii_graphic())
+            || !version.bytes().all(|b| b.is_ascii_graphic() && b != b'#')
         {
+            // `#` starts a comment in the allowlist, which would record a shorter version than the one approved.
             return Err(format!(
-                "the version {version:?} is not printable ASCII without spaces"
+                "the version {version:?} is not printable ASCII without spaces or '#'"
             ));
         }
         let library = field("library")?.unwrap_or_else(|| stem.to_string());

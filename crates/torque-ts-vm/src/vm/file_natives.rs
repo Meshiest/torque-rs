@@ -451,6 +451,7 @@ fn found(result: Result<Vec<u8>, VmError>) -> Native {
 }
 
 pub(super) fn register(vm: &mut Vm) {
+    vm.add_native_effects("", "fileDelete", crate::effects::Effects::FILES);
     vm.register(
         "isFile",
         2,

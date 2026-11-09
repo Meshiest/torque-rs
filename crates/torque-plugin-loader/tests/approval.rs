@@ -296,3 +296,49 @@ fn a_library_built_for_another_abi_is_refused_before_it_is_loaded() {
     let cache = user_of(&folder).join("cache");
     assert_eq!(std::fs::read_dir(&cache).map(|d| d.count()).unwrap_or(0), 0);
 }
+
+#[test]
+fn an_extension_whose_id_an_engine_plugin_has_is_refused_and_the_engine_builds() {
+    let folder = sample_folder("approval-taken-id", &[]);
+    // A second manifest of the same id in the folder: refused too, however it is named.
+    std::fs::write(folder.join("zz_again.toml"), sample_manifest()).unwrap();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let seen = Rc::clone(&asked);
+    let engine = EngineBuilder::new()
+        .add_plugins(common::CompiledSample)
+        .add_plugins(NativeExtensions(common::plugin(&folder).approver(
+            move |request: &ApprovalRequest| {
+                seen.borrow_mut().push(request.id.clone());
+                true
+            },
+        )))
+        .enable_id("torque.native-extensions")
+        .build()
+        .expect("one wrong file does not stop the engine");
+    let report = engine.resource::<LoadReport>().unwrap();
+    assert_eq!(report.entries.len(), 2);
+    for entry in &report.entries {
+        let Outcome::Refused(reason) = &entry.outcome else {
+            panic!("{} is refused", entry.manifest.display());
+        };
+        assert!(reason.contains("already has a plugin"), "{reason}");
+    }
+    assert!(
+        asked.borrow().is_empty(),
+        "nobody was asked, and none of its code ran"
+    );
+    assert!(engine.list::<torque_plugin_loader::Extension>().is_empty());
+}
+
+#[test]
+fn of_two_manifests_with_one_id_only_the_first_loads() {
+    let folder = sample_folder("approval-two-ids", &[]);
+    std::fs::write(folder.join("zz_again.toml"), sample_manifest()).unwrap();
+    let engine = engine(common::plugin(&folder).approver(|_: &ApprovalRequest| true));
+    let report = engine.resource::<LoadReport>().unwrap();
+    assert_eq!(report.entries[0].outcome, Outcome::Loaded);
+    let Outcome::Refused(reason) = &report.entries[1].outcome else {
+        panic!("the second is refused");
+    };
+    assert!(reason.contains("already has a plugin"), "{reason}");
+}

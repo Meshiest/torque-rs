@@ -298,6 +298,7 @@ fn a_declaration_whose_names_do_not_match_fails_the_build() {
         description: "",
         usage: None,
         docs: "",
+        effects: torque_engine::Effects::NONE,
         native: two,
     };
     let err = EngineBuilder::new()

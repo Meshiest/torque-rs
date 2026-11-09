@@ -296,7 +296,8 @@ impl VmHost<'_> {
 
     /// Whether the call policy lets the module run `namespace::name` with `args`: the reason is printed when it does not.
     fn allowed(&mut self, namespace: &str, name: &str, method: bool, args: &[Vec<u8>]) -> bool {
-        match crate::call_policy::check(self.vm, namespace, name, method, args) {
+        let kind = crate::call_policy::CallKind::of(method);
+        match crate::call_policy::check(self.vm, namespace, name, kind, args) {
             Ok(()) => true,
             Err(reason) => {
                 self.vm.error(reason);
@@ -402,6 +403,10 @@ impl LuaHost for VmHost<'_> {
 
     fn set_global(&mut self, name: &str, value: &[u8]) -> bool {
         if name.len() > TORQUE_MAX_NAME || !is_global_name(name) || value.len() > TORQUE_MAX_VALUE {
+            return false;
+        }
+        if let Err(reason) = crate::call_policy::check_global(self.vm, name, value) {
+            self.vm.error(reason);
             return false;
         }
         self.vm.set_global_text(name.as_bytes(), value);

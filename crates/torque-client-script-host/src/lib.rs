@@ -62,6 +62,9 @@
 //!   Budgets: `a_realm_over_budget_too_often_runs_every_other_frame`, `applying_past_the_web_budget_waits_for_the_next_frame`.
 //! - Scripts come only from the server's list; batches always decode: `scripts_come_only_from_the_servers_list_within_the_caps`,
 //!   `events_keep_the_newest_state_and_drop_input_before_messages`. `unreviewed-tiers` needs debug assertions (`compile_error!`).
+//! - The Lua module's runner (`guest`) checks a text a request names against the C ABI's cap for it before it copies it
+//!   out of the module; one past it is `TORQUE_ERR_RANGE` and reaches no host:
+//!   `texts_past_the_abi_s_caps_are_refused_before_they_are_copied` (`web/lua.js` keeps the same caps: `web/lua.test.mjs`).
 //! - Before the host is wired into a game, the guest must be checked against the build's list of accepted guest hashes
 //!   (`ACCEPTED_CLIENT_GUESTS`): an unlisted guest makes server scripts unavailable.
 //!

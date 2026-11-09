@@ -318,3 +318,32 @@ fn pictures_of_a_round_are_drawn_from_a_client() {
         "pictures with something in them: {sizes:?}"
     );
 }
+
+#[test]
+#[ignore = "builds the Lua extension (Luau's C++)"]
+fn a_library_added_to_the_plugins_folder_is_not_approved_while_the_shipped_one_loads() {
+    use torque::extensions::{LoadReport, Outcome};
+    use torque_example_mods_demo::{Role, engine, server_files};
+    let dir = work("extra-library");
+    let _ = std::fs::remove_dir_all(&dir);
+    let lua = Lua::install(library(), &dir.join("lua")).expect("the extension installs");
+    // Another library beside it: any bytes, refused by its hash before it is loaded.
+    let plugins = dir.join("lua").join("plugins");
+    std::fs::write(plugins.join(library_file_name("extra")), b"not shipped").unwrap();
+    std::fs::write(
+        plugins.join("extra.toml"),
+        "id = \"someone.extra\"\nversion = \"1.0.0\"\nlibrary = \"extra\"\n",
+    )
+    .unwrap();
+    let files = server_files().unwrap();
+    let engine = engine(&files, Role::Server, Some(&lua)).expect("the engine builds");
+    let report = engine.resource::<LoadReport>().expect("the loader ran");
+    assert_eq!(
+        report.get("torque.lua").map(|e| &e.outcome),
+        Some(&Outcome::Loaded)
+    );
+    assert_eq!(
+        report.get("someone.extra").map(|e| &e.outcome),
+        Some(&Outcome::NotApproved)
+    );
+}

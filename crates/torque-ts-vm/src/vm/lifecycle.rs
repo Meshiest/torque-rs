@@ -18,6 +18,8 @@ pub const DELETE_DATABLOCKS_USAGE: &str =
     "deleteDataBlocks() - deletes every datablock, as before loading another set of them";
 
 pub(super) fn register(vm: &mut Vm) {
+    vm.add_native_effects("", "quit", crate::effects::Effects::ENGINE);
+    vm.add_native_effects("", "deleteDataBlocks", crate::effects::Effects::ENGINE);
     // TGE's `ConsoleFunction(quit, void, 1, 1, ...)`: asks the main loop to stop; returns at once and the script goes
     // on (an event scheduled after it never fires because the host's loop ends; `onExit` runs). The host's loop asks
     // `quit_requested`. A host may replace this native to print its shutdown lines first (and call `request_quit`).

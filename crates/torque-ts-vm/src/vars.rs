@@ -214,7 +214,8 @@ pub fn string_views(value: &[u8]) -> (u32, f32) {
     }
 }
 
-/// A set of variables. Names are case-insensitive.
+/// A set of variables. Names are case-insensitive, and a name is taken up to its first NUL byte (as TGE's C strings end
+/// there), so `$a\0b` is `$a`: the key and the spelling an entry keeps (what `export` writes) are the same name.
 ///
 /// Each entry sits in a slot that keeps its place while the dictionary holds the entry, so an executor can remember its
 /// current variable by slot ([`slot_folded`](Self::slot_folded)) and reach it again ([`at_mut`](Self::at_mut)) without
@@ -333,7 +334,7 @@ impl Dictionary {
     /// The slot of the entry of an already folded name.
     #[inline]
     pub fn slot_folded(&self, key: &[u8]) -> Option<usize> {
-        self.index.get(key).copied()
+        self.index.get(until_nul(key)).copied()
     }
 
     /// The entry in `slot` (see the type's documentation).
@@ -365,7 +366,7 @@ impl Dictionary {
             return slot;
         }
         let slot = self.new_slot(name);
-        self.index.insert(Key::new(key), slot);
+        self.index.insert(Key::new(until_nul(key)), slot);
         slot
     }
 
@@ -393,7 +394,7 @@ impl Dictionary {
     /// The entry for `name`, created empty when missing (with `name` as its spelling: the string
     /// table keeps the first spelling of a name, and so does an entry until it is removed).
     pub fn add(&mut self, name: &[u8]) -> &mut Entry {
-        let key = fold(name);
+        let key = fold(until_nul(name));
         let slot = match self.slot_folded(&key) {
             Some(slot) => slot,
             None => {
@@ -416,7 +417,7 @@ impl Dictionary {
 
     /// Removes a variable; true when it existed.
     pub fn remove(&mut self, name: &[u8]) -> bool {
-        let Some(slot) = self.index.remove(fold(name).as_slice()) else {
+        let Some(slot) = self.index.remove(fold(until_nul(name)).as_slice()) else {
             return false;
         };
         if let Some(place) = self.slots.get_mut(slot) {
@@ -547,6 +548,25 @@ mod engine_tests {
         d.clear();
         assert!(d.stamp() != before && d.is_empty() && d.iter().next().is_none());
         assert_ne!(Dictionary::default().stamp(), Dictionary::default().stamp());
+    }
+
+    #[test]
+    fn a_name_is_the_same_variable_up_to_its_nul() {
+        let mut d = Dictionary::default();
+        d.add(b"$Pref::Dev\0x").set_string(b"1");
+        assert_eq!(
+            d.get(b"$pref::dev").map(Entry::get_string).as_deref(),
+            Some(&b"1"[..])
+        );
+        assert_eq!(
+            d.get(b"$Pref::Dev").map(Entry::name),
+            Some(&b"$Pref::Dev"[..])
+        );
+        let slot = d.add_slot_folded(b"$pref::dev\0y", b"$Pref::Dev\0y");
+        assert_eq!(d.slot_folded(b"$pref::dev"), Some(slot));
+        assert_eq!(d.len(), 1);
+        assert!(d.remove(b"$PREF::DEV\0z"));
+        assert!(d.get(b"$Pref::Dev").is_none());
     }
 
     /// After a clear, the entries kept for reuse come back as new ones: the new spelling, no value, no host type; a long

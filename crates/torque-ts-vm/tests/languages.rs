@@ -100,17 +100,21 @@ fn the_run_s_step_limit_stops_the_language() {
 }
 
 #[test]
-fn torque_script_extensions_cannot_be_taken() {
+fn torque_script_s_extensions_are_never_taken_and_others_only_once() {
     let mut vm = Vm::new();
-    for ext in ["cs", ".CS", "dso", "gui", "mis", ""] {
+    for ext in ["cs", ".CS", "dso", "gui", "mis", "ed", ""] {
         assert!(
             !vm.set_script_language(ext, Rc::new(Recorder::default())),
             "{ext}"
         );
     }
     assert!(vm.script_language("lua").is_none());
-    assert!(vm.set_script_language(".Lua", Rc::new(Recorder::default())));
+    let first: Rc<dyn ScriptLanguage> = Rc::new(Recorder::default());
+    assert!(vm.set_script_language(".Lua", Rc::clone(&first)));
     assert!(vm.script_language("LUA").is_some());
+    // A second language for the same files is refused: the first keeps them.
+    assert!(!vm.set_script_language("lua", Rc::new(Recorder::default())));
+    assert!(Rc::ptr_eq(&vm.script_language("lua").unwrap(), &first));
     assert!(vm.script_language_of(b"a/b.c/x.lua").is_some());
     assert!(vm.script_language_of(b"a/b.lua/x").is_none());
 }

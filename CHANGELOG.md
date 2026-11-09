@@ -295,6 +295,15 @@ different.
   writes them in Rust with the engine's `#[function]` and render passes. TGE has none. Extensions can also run script
   languages: `exec` hands them the files of their extension, and they call scripts back (nested), define console functions,
   read and write objects and charge the step budget (`Vm::set_script_language`, `Vm::call_depth`).
+- Natives, globals and prefs declare their effects where they are registered (`Effects`: files, code, the engine as a whole,
+  the network, permissions, a variable an argument names; `ScriptRegistry::with_effects`, `effects = "..."` on
+  `#[function]`, the ABI's `TORQUE_NATIVE_FILES` and siblings): the default call policy refuses a script language every
+  native and every global write with a files, code, engine or permissions effect, and a test lists every native a full
+  engine registers against a reviewed list. TGE has no such policy.
+- A variable's name ends at its first NUL byte, as TGE's C strings do: `$a` and `$a` followed by a NUL and more are one
+  variable, under one spelling.
+- `export` writes a string too long for one line as whole statements (`$x = "..."; $x = $x @ "...";`) where TGE cuts the
+  line and leaves its string open.
 - Lua for mods (`torque-plugin-lua`, a native extension built on its own: Luau): a mod's `.lua` files run at its stages in
   sandboxed server and client realms (`ts.call`, objects, `ts.define`, `require` within the mod), held to the script
   engine's step limit and call depth and a memory cap, never from a server. TGE has none. In a browser build the same

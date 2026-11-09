@@ -18,7 +18,8 @@ use syn::{Attribute, FnArg, ImplItem, Item, LitStr, Pat, Signature, Type, Visibi
 /// The attribute takes `ns = "Pad"` (the namespace; the global one when left out), `name = "setDeadZone"` (the name
 /// scripts call; the function's name in camelCase when left out), `usage = "..."` (a usage text kept exactly, in
 /// place of the generated one), `description = "..."` (in place of the doc comment's first line; empty for none),
-/// `dev` (a development command) and `crate = path` (the engine crate's path).
+/// `dev` (a development command), `effects = "files+code"` (what it does beyond its result: `files`, `code`, `engine`,
+/// `network`, `permissions`, `variables`, joined with `+`; see the engine's `Effects`) and `crate = path` (the engine crate's path).
 ///
 /// The function is kept as written, without the `#[arg(...)]` attributes on its parameters. Beside it come a hidden
 /// type of the same name (types and functions have separate names, so `natives![set_dead_zone]` finds it) that
@@ -101,6 +102,8 @@ struct Options {
     description: Option<LitStr>,
     dev: bool,
     skip: bool,
+    /// The `Effects` constants `effects = "..."` names.
+    effects: Vec<syn::Ident>,
 }
 
 /// What `#[methods]` says.
@@ -125,7 +128,7 @@ fn expand_function(
             krate = Some(meta.value()?.parse()?);
         } else if !native_option(&meta, &mut options)? {
             return Err(meta.error(
-                "expected `ns = \"...\"`, `name = \"...\"`, `usage = \"...\"`, `description = \"...\"`, `dev` or `crate = path`",
+                "expected `ns = \"...\"`, `name = \"...\"`, `usage = \"...\"`, `description = \"...\"`, `dev`, `effects = \"...\"` or `crate = path`",
             ));
         }
         Ok(())
@@ -182,6 +185,7 @@ fn expand_function(
             name: &name,
             method: false,
             dev: options.dev,
+            effects: &options.effects,
             params: &params,
             description: &description,
             usage: options.usage.as_ref().map(LitStr::value),
@@ -225,10 +229,29 @@ fn native_option(meta: &syn::meta::ParseNestedMeta, options: &mut Options) -> sy
         options.description = Some(meta.value()?.parse()?);
     } else if meta.path.is_ident("dev") {
         options.dev = true;
+    } else if meta.path.is_ident("effects") {
+        let text: LitStr = meta.value()?.parse()?;
+        options.effects = effect_names(&text)?;
     } else {
         return Ok(false);
     }
     Ok(true)
+}
+
+/// The effects named in `text`, joined with `+`, as the `Effects` constants' idents.
+fn effect_names(text: &LitStr) -> syn::Result<Vec<syn::Ident>> {
+    text.value()
+        .split('+')
+        .map(|name| match name {
+            "files" | "code" | "engine" | "network" | "permissions" | "variables" => {
+                Ok(syn::Ident::new(&name.to_ascii_uppercase(), text.span()))
+            }
+            _ => Err(syn::Error::new_spanned(
+                text,
+                "the effects are `files`, `code`, `engine`, `network`, `permissions` and `variables`, joined with `+`",
+            )),
+        })
+        .collect()
 }
 
 pub(crate) fn is_script_name(name: &str) -> bool {
@@ -408,6 +431,7 @@ struct Declared<'a> {
     name: &'a str,
     method: bool,
     dev: bool,
+    effects: &'a [syn::Ident],
     params: &'a [String],
     description: &'a str,
     usage: Option<String>,
@@ -421,6 +445,7 @@ fn declaration(engine: &syn::Path, d: &Declared, make: &TokenStream) -> TokenStr
         name,
         method,
         dev,
+        effects,
         params,
         description,
         docs,
@@ -440,6 +465,7 @@ fn declaration(engine: &syn::Path, d: &Declared, make: &TokenStream) -> TokenStr
             description: #description,
             usage: #usage,
             docs: #docs,
+            effects: #engine::Effects::NONE #(.union(#engine::Effects::#effects))*,
             native: {
                 fn __torque_native() -> #engine::script::TypedNative {
                     #make
@@ -594,6 +620,7 @@ fn expand_methods(
                 name: &name,
                 method: true,
                 dev: false,
+                effects: &options.effects,
                 params: &params,
                 description: &description,
                 usage: options.usage.as_ref().map(LitStr::value),
@@ -651,7 +678,7 @@ fn take_torque_options(attrs: &mut Vec<Attribute>) -> syn::Result<Option<(Option
                 Ok(())
             } else {
                 Err(meta.error(
-                    "expected `skip`, `name = \"...\"`, `usage = \"...\"` or `description = \"...\"`",
+                    "expected `skip`, `name = \"...\"`, `usage = \"...\"`, `description = \"...\"` or `effects = \"...\"`",
                 ))
             }
         });

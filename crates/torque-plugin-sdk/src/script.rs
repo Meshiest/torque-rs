@@ -106,6 +106,8 @@ pub struct NativeDecl {
     pub usage: Option<&'static str>,
     /// The whole doc comment, for the script reference.
     pub docs: &'static str,
+    /// What it does beyond its result (the attribute's `effects = "files+code"`): see [`ScriptRegistry::with_effects`].
+    pub effects: Effects,
     /// Makes the native.
     pub native: fn() -> TypedNative,
 }
@@ -175,7 +177,50 @@ pub(crate) struct NativeReg {
     pub(crate) usage: Option<String>,
     pub(crate) docs: String,
     pub(crate) dev: bool,
+    pub(crate) effects: Effects,
     pub(crate) native: TypedNative,
+}
+
+/// What a native does beyond its result, declared with it ([`ScriptRegistry::with_effects`], or the `#[function]`
+/// attribute's `effects = "files+code"`): the engine's default call policy keeps script languages away from natives with
+/// [`FILES`](Self::FILES), [`CODE`](Self::CODE) or [`ENGINE`](Self::ENGINE).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Effects(u32);
+
+impl Effects {
+    /// No effect beyond its result and the objects and variables it changes.
+    pub const NONE: Effects = Effects(0);
+    /// It opens, writes, deletes or exports files.
+    pub const FILES: Effects = Effects(torque_plugin_abi::TORQUE_NATIVE_FILES);
+    /// It runs code from text, or a function or method it names.
+    pub const CODE: Effects = Effects(torque_plugin_abi::TORQUE_NATIVE_CODE);
+    /// It switches or loads mods, deletes every datablock or variable, or quits.
+    pub const ENGINE: Effects = Effects(torque_plugin_abi::TORQUE_NATIVE_ENGINE);
+    /// It connects to, or sends to, an address its caller names.
+    pub const NETWORK: Effects = Effects(torque_plugin_abi::TORQUE_NATIVE_NETWORK);
+    /// It grants, revokes or defines permissions or roles.
+    pub const PERMISSIONS: Effects = Effects(torque_plugin_abi::TORQUE_NATIVE_PERMISSIONS);
+    /// It writes a variable whose name one of its arguments gives.
+    pub const VARIABLES: Effects = Effects(torque_plugin_abi::TORQUE_NATIVE_VARIABLES);
+
+    /// Both sets.
+    #[must_use]
+    pub const fn union(self, other: Effects) -> Effects {
+        Effects(self.0 | other.0)
+    }
+
+    /// The declaration's flags for them.
+    pub(crate) const fn flags(self) -> u32 {
+        self.0
+    }
+}
+
+impl std::ops::BitOr for Effects {
+    type Output = Effects;
+
+    fn bitor(self, other: Effects) -> Effects {
+        self.union(other)
+    }
 }
 
 /// The console functions, methods and globals an extension declares, from [`Registrar::script`](crate::Registrar::script)
@@ -185,9 +230,22 @@ pub(crate) struct NativeReg {
 pub struct ScriptRegistry<'r, 'a> {
     pub(crate) registrar: &'r mut crate::Registrar<'a>,
     pub(crate) side: Side,
+    pub(crate) effects: Effects,
 }
 
 impl ScriptRegistry<'_, '_> {
+    /// Declares what `declare` declares in this registry with `effects` (on top of what each declaration says itself): a
+    /// native that writes or deletes files, runs code from text, switches mods or quits, changes permissions, or connects to
+    /// an address it is given must say so, so the engine's call policy can keep script languages away from it. Only what
+    /// `declare` declares gets them; the registry is as it was before once it returns.
+    pub fn with_effects(&mut self, effects: Effects, declare: impl FnOnce(&mut Self)) -> &mut Self {
+        let kept = self.effects;
+        self.effects = kept | effects;
+        declare(self);
+        self.effects = kept;
+        self
+    }
+
     /// Declares the function `namespace::name` (`namespace` empty for a global function): `f`, with `args` naming its
     /// script arguments and `description` after the signature in its usage text.
     pub fn function<M>(
@@ -274,6 +332,7 @@ impl ScriptRegistry<'_, '_> {
                 usage: decl.usage.map(str::to_string),
                 docs: decl.docs.to_string(),
                 dev: decl.dev,
+                effects: self.effects | decl.effects,
                 native,
             });
         }
@@ -316,6 +375,7 @@ impl ScriptRegistry<'_, '_> {
             usage: None,
             docs: String::new(),
             dev,
+            effects: self.effects,
             native,
         });
         self

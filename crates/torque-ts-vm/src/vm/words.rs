@@ -292,6 +292,8 @@ pub(super) fn register(vm: &mut Vm) {
         "nextToken(text, tokenVariable, delimiters) - stores the first token, returns the rest",
         |vm, c| Native::Str(vm.next_token(arg(c, 1), arg(c, 2), arg(c, 3))),
     );
+    // It stores its token in the variable its second argument names.
+    vm.add_native_effects("", "nextToken", crate::effects::Effects::VARIABLES);
 }
 
 impl Vm {

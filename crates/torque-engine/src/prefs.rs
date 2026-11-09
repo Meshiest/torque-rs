@@ -299,7 +299,10 @@ impl ScriptRegistry<'_> {
     /// Declares one pref by hand (see [`prefs`](Self::prefs)).
     pub fn pref(&mut self, decl: &'static PrefDecl) -> &mut Self {
         let key = decl.name.to_ascii_lowercase();
-        self.declare(key, "pref", decl.name.to_string(), || EntryKind::Pref(decl))
+        let effects = self.effects;
+        self.declare(key, "pref", decl.name.to_string(), || {
+            EntryKind::Pref(decl, effects)
+        })
     }
 }
 
@@ -307,7 +310,7 @@ impl Engine {
     /// Every pref a plugin declared, in the order they were declared: what a reference page lists.
     pub fn prefs(&self) -> impl Iterator<Item = &'static PrefDecl> + '_ {
         self.script_entries().filter_map(|entry| match entry {
-            EntryKind::Pref(decl) => Some(*decl),
+            EntryKind::Pref(decl, _) => Some(*decl),
             _ => None,
         })
     }

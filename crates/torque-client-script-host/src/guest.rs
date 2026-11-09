@@ -16,13 +16,14 @@ use std::time::Duration;
 use torque_engine::Side;
 use torque_plugin_abi::{
     TORQUE_ERR_FAILED, TORQUE_ERR_HANDLE, TORQUE_ERR_INVALID, TORQUE_ERR_LIMIT, TORQUE_ERR_PANIC,
-    TORQUE_ERR_RANGE, TORQUE_LOG_ERROR, TORQUE_LOG_WARN, TORQUE_OK, TORQUE_SIDE_BOTH,
-    TORQUE_SIDE_CLIENT, TORQUE_SIDE_SERVER, TorqueStatus,
+    TORQUE_ERR_RANGE, TORQUE_LOG_ERROR, TORQUE_LOG_WARN, TORQUE_MAX_NAME, TORQUE_MAX_TEXT,
+    TORQUE_MAX_VALUE, TORQUE_OK, TORQUE_SIDE_BOTH, TORQUE_SIDE_CLIENT, TORQUE_SIDE_SERVER,
+    TorqueStatus,
 };
 use torque_plugin_loader::web_lua::{HostError, LuaHost, LuaModule};
 use torque_ts_vm::vm::{Level, VmError};
 use wasmtime::{
-    AsContextMut, Caller, Collector, Config, Engine, InstancePre, Linker, Module, Store,
+    AsContext, AsContextMut, Caller, Collector, Config, Engine, InstancePre, Linker, Module, Store,
     StoreContextMut, StoreLimits, StoreLimitsBuilder, Trap, TypedFunc, format_err,
 };
 
@@ -561,6 +562,25 @@ fn side_code(side: Side) -> u32 {
     }
 }
 
+/// The `len` bytes at `ptr`, as [`read`], when `len` is at most `max` (the C ABI's cap for that argument); `None` past it,
+/// before anything is copied, as the C ABI's host refuses an argument past its cap.
+fn read_capped(
+    store: &impl AsContext<Data = Data>,
+    ptr: i32,
+    len: i32,
+    max: usize,
+) -> wasmtime::Result<Option<Vec<u8>>> {
+    if len as u32 as usize > max {
+        return Ok(None);
+    }
+    read(store, ptr, len).map(Some)
+}
+
+/// The status of a text past its cap ([`read_capped`]).
+fn too_long() -> i32 {
+    TORQUE_ERR_RANGE as i32
+}
+
 /// Copies `bytes` into the module: its pointer and length, freed with the module's `torque_lua_free`.
 fn put(
     store: &mut StoreContextMut<'_, Data>,
@@ -678,7 +698,10 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
         T,
         "log",
         move |mut c: Caller<'_, Data>, call: i32, level: i32, ptr: i32, len: i32| {
-            let text = String::from_utf8_lossy(&read(&c, ptr, len)?).into_owned();
+            let Some(text) = read_capped(&c, ptr, len, TORQUE_MAX_TEXT)? else {
+                return Ok(too_long());
+            };
+            let text = String::from_utf8_lossy(&text).into_owned();
             let level = match level as u32 {
                 TORQUE_LOG_WARN => Level::Warning,
                 TORQUE_LOG_ERROR => Level::Error,
@@ -699,7 +722,10 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
         T,
         "get_global",
         move |mut c: Caller<'_, Data>, call: i32, ptr: i32, len: i32| {
-            let Some(name) = utf8(read(&c, ptr, len)?) else {
+            let Some(name) = read_capped(&c, ptr, len, TORQUE_MAX_NAME)? else {
+                return Ok(too_long());
+            };
+            let Some(name) = utf8(name) else {
                 return Ok(invalid());
             };
             Ok(serve(&mut c, call, |host| Answer::Text(host.global(&name)))? as i32)
@@ -714,9 +740,13 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
               name_len: i32,
               value: i32,
               value_len: i32| {
-            let (Some(name), value) =
-                (utf8(read(&c, name, name_len)?), read(&c, value, value_len)?)
-            else {
+            let (Some(name), Some(value)) = (
+                read_capped(&c, name, name_len, TORQUE_MAX_NAME)?,
+                read_capped(&c, value, value_len, TORQUE_MAX_VALUE)?,
+            ) else {
+                return Ok(too_long());
+            };
+            let Some(name) = utf8(name) else {
                 return Ok(invalid());
             };
             Ok(serve(&mut c, call, |host| {
@@ -735,8 +765,13 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
               name_len: i32,
               args: i32,
               count: i32| {
-            let namespace = utf8(read(&c, ns, ns_len)?);
-            let name = utf8(read(&c, name, name_len)?);
+            let (Some(namespace), Some(name)) = (
+                read_capped(&c, ns, ns_len, TORQUE_MAX_NAME)?,
+                read_capped(&c, name, name_len, TORQUE_MAX_NAME)?,
+            ) else {
+                return Ok(too_long());
+            };
+            let (namespace, name) = (utf8(namespace), utf8(name));
             let Some(args) = read_texts(&c, args, count)? else {
                 return Ok(TORQUE_ERR_RANGE as i32);
             };
@@ -758,7 +793,10 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
               name_len: i32,
               args: i32,
               count: i32| {
-            let name = utf8(read(&c, name, name_len)?);
+            let Some(name) = read_capped(&c, name, name_len, TORQUE_MAX_NAME)? else {
+                return Ok(too_long());
+            };
+            let name = utf8(name);
             let Some(args) = read_texts(&c, args, count)? else {
                 return Ok(TORQUE_ERR_RANGE as i32);
             };
@@ -774,7 +812,7 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
         T,
         "has_method",
         |mut c: Caller<'_, Data>, call: i32, object: i32, name: i32, len: i32| {
-            let Some(name) = utf8(read(&c, name, len)?) else {
+            let Some(name) = read_capped(&c, name, len, TORQUE_MAX_NAME)?.and_then(utf8) else {
                 return Ok(0);
             };
             let status = serve(&mut c, call, |host| {
@@ -787,7 +825,9 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
         T,
         "find_object",
         |mut c: Caller<'_, Data>, call: i32, name: i32, len: i32, out: i32| {
-            let name = read(&c, name, len)?;
+            let Some(name) = read_capped(&c, name, len, TORQUE_MAX_NAME)? else {
+                return Ok(too_long());
+            };
             let mut found = None;
             let status = serve(&mut c, call, |host| {
                 found = host.find_object(&name);
@@ -809,8 +849,12 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
          name_len: i32,
          index: i32,
          index_len: i32| {
-            let name = read(&c, name, name_len)?;
-            let index = read(&c, index, index_len)?;
+            let (Some(name), Some(index)) = (
+                read_capped(&c, name, name_len, TORQUE_MAX_NAME)?,
+                read_capped(&c, index, index_len, TORQUE_MAX_NAME)?,
+            ) else {
+                return Ok(too_long());
+            };
             Ok(serve(&mut c, call, |host| {
                 match host.field(object as u32, &name, &index) {
                     Some(value) => Answer::Text(value),
@@ -831,9 +875,13 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
          index_len: i32,
          value: i32,
          value_len: i32| {
-            let name = read(&c, name, name_len)?;
-            let index = read(&c, index, index_len)?;
-            let value = read(&c, value, value_len)?;
+            let (Some(name), Some(index), Some(value)) = (
+                read_capped(&c, name, name_len, TORQUE_MAX_NAME)?,
+                read_capped(&c, index, index_len, TORQUE_MAX_NAME)?,
+                read_capped(&c, value, value_len, TORQUE_MAX_VALUE)?,
+            ) else {
+                return Ok(too_long());
+            };
             Ok(serve(&mut c, call, |host| {
                 Answer::ok_or(
                     host.set_field(object as u32, &name, &index, &value),
@@ -849,7 +897,13 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
             // A `TorqueDefineDecl`: four texts (namespace, name, package, usage), then the id (a u64 at 32).
             let bytes = read(&c, decl, 40)?;
             let mut texts = Vec::with_capacity(4);
-            for at in (0..32).step_by(8) {
+            // The namespace, the name and the package are names; the usage is a text.
+            for (at, max) in (0..32).step_by(8).zip([
+                TORQUE_MAX_NAME,
+                TORQUE_MAX_NAME,
+                TORQUE_MAX_NAME,
+                TORQUE_MAX_TEXT,
+            ]) {
                 let ptr =
                     i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
                 let len = i32::from_le_bytes([
@@ -858,7 +912,10 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
                     bytes[at + 6],
                     bytes[at + 7],
                 ]);
-                texts.push(utf8(read(&c, ptr, len)?));
+                let Some(text) = read_capped(&c, ptr, len, max)? else {
+                    return Ok(too_long());
+                };
+                texts.push(utf8(text));
             }
             let mut id = [0u8; 8];
             id.copy_from_slice(&bytes[32..40]);
@@ -896,7 +953,10 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
         T,
         "read_script",
         move |mut c: Caller<'_, Data>, call: i32, ptr: i32, len: i32| {
-            let Some(path) = utf8(read(&c, ptr, len)?) else {
+            let Some(path) = read_capped(&c, ptr, len, TORQUE_MAX_TEXT)? else {
+                return Ok(too_long());
+            };
+            let Some(path) = utf8(path) else {
                 return Ok(invalid());
             };
             Ok(serve(&mut c, call, |host| match host.read_script(&path) {

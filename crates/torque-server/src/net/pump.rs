@@ -150,6 +150,18 @@ pub fn global_text(vm: &Vm, name: &str) -> Option<Vec<u8>> {
     vm.global(name).map(|v| until_nul(&v).to_vec())
 }
 
+/// The most players a server takes, whatever `$Pref::Server::MaxPlayers` says: a pref is script's to write (and a
+/// prefs file's to hold), so the limit it sets is held under a cap of the engine's own.
+pub const MAX_PLAYERS: usize = 1024;
+
+/// The players `$Pref::Server::MaxPlayers` (`text`, `None` or empty when unset) lets in: `default` when unset, never
+/// more than [`MAX_PLAYERS`].
+fn max_players(text: Option<&[u8]>, default: usize) -> usize {
+    text.filter(|t| !t.is_empty())
+        .map_or(default, |t| usize::try_from(atoi(t)).unwrap_or(0))
+        .min(MAX_PLAYERS)
+}
+
 /// Copies what the handshake checks a request against from the scripts' variables and the engine natives' state (read for each
 /// datagram: a script that runs in the middle of a pass may change them).
 pub fn refresh_config<G: NetGame>(vm: &Vm, sh: &mut NetShared<G>) {
@@ -157,11 +169,10 @@ pub fn refresh_config<G: NetGame>(vm: &Vm, sh: &mut NetShared<G>) {
         let engine = sh.engine.borrow();
         (engine.allow_connections, engine.ghost_size)
     };
-    let max_players = global_text(vm, "$Pref::Server::MaxPlayers")
-        .filter(|t| !t.is_empty())
-        .map_or(G::DEFAULT_MAX_PLAYERS, |t| {
-            usize::try_from(atoi(&t)).unwrap_or(0)
-        });
+    let max_players = max_players(
+        global_text(vm, "$Pref::Server::MaxPlayers").as_deref(),
+        G::DEFAULT_MAX_PLAYERS,
+    );
     let password = global_text(vm, "$Pref::Server::Password").unwrap_or_default();
     let lan = global_text(vm, "$Server::LAN").is_some_and(|t| atob(&t));
     let codecs = Rc::clone(&sh.codecs);
@@ -1289,5 +1300,19 @@ pub fn timeouts<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
                 drop_conn(vm, shared, conn, Some(b"TimedOut"), DeleteMode::Immediate);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_players_is_held_under_the_engines_cap() {
+        assert_eq!(max_players(None, 64), 64);
+        assert_eq!(max_players(Some(b""), 64), 64);
+        assert_eq!(max_players(Some(b"12"), 64), 12);
+        assert_eq!(max_players(Some(b"-5"), 64), 0);
+        assert_eq!(max_players(Some(b"99999999"), 64), MAX_PLAYERS);
     }
 }

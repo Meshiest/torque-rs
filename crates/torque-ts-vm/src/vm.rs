@@ -515,6 +515,15 @@ impl Vm {
         vm.id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
         vm.binding_epoch = vm.id;
         console::register(&mut vm);
+        // `call` runs the function it names: a policy checking the call sees only `call`.
+        vm.add_native_effects("", "call", crate::effects::Effects::CODE);
+        // Switching packages switches the functions every script sees, as switching a mod does. `$instantGroup` says where
+        // every new object goes, and the `$Con::` globals are the console's own settings.
+        for name in ["activatePackage", "deactivatePackage"] {
+            vm.add_native_effects("", name, crate::effects::Effects::ENGINE);
+        }
+        vm.add_global_effects("$instantGroup", crate::effects::Effects::ENGINE);
+        vm.add_global_effects("$Con::*", crate::effects::Effects::ENGINE);
         vm.register(
             "call",
             2,

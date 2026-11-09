@@ -119,10 +119,13 @@ Lua runs inside the same limits as a script, and less is allowed:
   an error in the script that made it (`not enough memory`), and the game goes on.
 - **The call depth.** Lua and TorqueScript can call each other, but the nesting counts against the script engine's call
   depth, so recursion through both stops with an error long before it could crash the game.
-- **A few console functions are refused.** The engine will not let Lua run `exec`, `eval`, `call`, `compile`, `export`,
-  `fileDelete`, `deleteVariables`, `deleteDataBlocks`, `quit`, `enableMod`, `disableMod`, `loadMods` or `setModPaths`, nor
-  the methods that write files or bind text to run later (`save`, `openForWrite`, `writeLine`, `bindCmd`, ...), under any
-  namespace (`SimObject::save` too), nor a `schedule` that names one of them. Nor may Lua write a field whose text the
+- **A few console functions are refused.** Every native declares what it does beyond its result when it is registered:
+  files (opens, writes, deletes or exports them), code (runs text as script, or a function it names), the engine (switches
+  or loads mods, deletes every datablock or variable, quits) or the network. The engine will not let Lua run a native that
+  declared files, code or the engine: `exec`, `eval`, `call`, `compile`, `export`, `fileDelete`, `clearModDownloadCache`,
+  `deleteVariables`, `deleteDataBlocks`, `quit`, `enableMod`, `disableMod`, `loadMods` and `setModPaths`, and the methods
+  that open or write files or bind text to run later (`save`, `openForRead`, `openForWrite`, `writeLine`, `bindCmd`, ...),
+  under any namespace (`SimObject::save` too), nor a `schedule` or bind that names one of them. Nor may Lua write a field whose text the
   engine runs as script (`command`, `altCommand`, `closeCommand`, `escapeCommand`, `expression`, `validate`), directly
   or with `setFieldValue` (its `"name[index]"` read as the engine reads a field spec): the check is on the name the
   engine builds from the name and the index, so any field that

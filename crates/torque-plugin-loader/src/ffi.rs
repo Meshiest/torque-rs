@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use torque_engine::Side;
 use torque_plugin_abi::*;
 use torque_ts_vm::convert::{ArgKind, FromScript};
+use torque_ts_vm::effects::Effects;
 use torque_ts_vm::ns::Callable;
 use torque_ts_vm::vm::{MAX_CALL_DEPTH, Native, Vm, VmError, WORK_PER_STEP};
 
@@ -72,6 +73,7 @@ pub(crate) struct NativeSpec {
     pub(crate) usage: Option<String>,
     pub(crate) docs: String,
     pub(crate) dev: bool,
+    pub(crate) effects: Effects,
     call: NativeFn,
     user: UserPtr,
 }
@@ -192,6 +194,23 @@ fn with_call(handle: TorqueCall, f: impl FnOnce(&mut CallFrame) -> TorqueStatus)
     CALLS.with(|calls| {
         let mut calls = calls.borrow_mut();
         match calls.iter_mut().rev().find(|c| c.handle == handle) {
+            Some(frame) => f(frame),
+            None => TORQUE_ERR_HANDLE,
+        }
+    })
+}
+
+/// Runs `f` on the call frame `handle` when it is the innermost one of this thread; [`TORQUE_ERR_HANDLE`] otherwise. A
+/// table function that reaches the frame's script engine takes this: an outer frame's engine is lent down the stack to
+/// the call running now, so it must not be reached through the outer handle (the Wasmtime host serves only its innermost
+/// call too).
+fn with_innermost_call(
+    handle: TorqueCall,
+    f: impl FnOnce(&mut CallFrame) -> TorqueStatus,
+) -> TorqueStatus {
+    CALLS.with(|calls| {
+        let mut calls = calls.borrow_mut();
+        match calls.last_mut().filter(|c| c.handle == handle) {
             Some(frame) => f(frame),
             None => TORQUE_ERR_HANDLE,
         }
@@ -354,7 +373,7 @@ unsafe fn read_native(
     };
     let description = text(d.description, "description")?;
     let docs = text(d.docs, "docs")?;
-    if d.flags & !(TORQUE_NATIVE_DEV | TORQUE_NATIVE_EXACT_USAGE) != 0 {
+    if d.flags & !(TORQUE_NATIVE_DEV | TORQUE_NATIVE_EXACT_USAGE | EFFECT_FLAGS) != 0 {
         return Err(bad("unknown flags"));
     }
     let usage = if d.flags & TORQUE_NATIVE_EXACT_USAGE != 0 {
@@ -375,9 +394,35 @@ unsafe fn read_native(
         usage,
         docs,
         dev: d.flags & TORQUE_NATIVE_DEV != 0,
+        effects: effects_of_flags(d.flags),
         call,
         user: UserPtr(d.user),
     })
+}
+
+/// The effect flags of a native's declaration, each with the effect it declares.
+const EFFECTS: [(u32, Effects); 6] = [
+    (TORQUE_NATIVE_FILES, Effects::FILES),
+    (TORQUE_NATIVE_CODE, Effects::CODE),
+    (TORQUE_NATIVE_ENGINE, Effects::ENGINE),
+    (TORQUE_NATIVE_NETWORK, Effects::NETWORK),
+    (TORQUE_NATIVE_PERMISSIONS, Effects::PERMISSIONS),
+    (TORQUE_NATIVE_VARIABLES, Effects::VARIABLES),
+];
+
+const EFFECT_FLAGS: u32 = TORQUE_NATIVE_FILES
+    | TORQUE_NATIVE_CODE
+    | TORQUE_NATIVE_ENGINE
+    | TORQUE_NATIVE_NETWORK
+    | TORQUE_NATIVE_PERMISSIONS
+    | TORQUE_NATIVE_VARIABLES;
+
+/// The effects a declaration's `flags` declare.
+fn effects_of_flags(flags: u32) -> Effects {
+    EFFECTS
+        .iter()
+        .filter(|(flag, _)| flags & flag != 0)
+        .fold(Effects::NONE, |set, &(_, effect)| set | effect)
 }
 
 fn register(init: TorqueInit, decl: *const TorqueNativeDecl, method: bool) -> TorqueStatus {
@@ -645,9 +690,10 @@ unsafe extern "C" fn get_global(
             Ok(_) => return TORQUE_ERR_INVALID,
             Err(status) => return status,
         };
-        with_call(call, |frame| {
-            // SAFETY: the frame is live, so the host's native that made it still holds the script engine exclusively
-            // and is blocked in this call: nothing else touches it.
+        with_innermost_call(call, |frame| {
+            // SAFETY: the frame is the innermost live one, so the host's native that made it still holds the script
+            // engine exclusively and is blocked in this call, with no nested call it lent the engine to: nothing else
+            // touches it.
             let vm = unsafe { &*frame.vm };
             frame.scratch = vm.global(&name).unwrap_or_default();
             let text = TorqueStr {
@@ -674,12 +720,20 @@ unsafe extern "C" fn set_global(
                 (Err(status), _) | (_, Err(status)) => return status,
                 _ => return TORQUE_ERR_INVALID,
             };
-        with_call(call, |frame| {
-            // SAFETY: as in `get_global`: the frame is live, so the script engine is the call's alone.
-            let vm = unsafe { &mut *frame.vm };
-            vm.set_global_text(name.as_bytes(), &value);
-            TORQUE_OK
-        })
+        let (vm, language) = match with_innermost_parts(call) {
+            Ok(parts) => parts,
+            Err(status) => return status,
+        };
+        // SAFETY: as in `get_global`: the frame is the innermost live one, so the script engine is the call's alone; no
+        // borrow of the frames is held (printing the refusal may run the console's hooks).
+        let vm = unsafe { &mut *vm };
+        // A language's write is held to the policy; a native extension's own natives are trusted.
+        if language && let Err(reason) = crate::call_policy::check_global(vm, &name, &value) {
+            vm.error(reason);
+            return TORQUE_ERR_FAILED;
+        }
+        vm.set_global_text(name.as_bytes(), &value);
+        TORQUE_OK
     })
 }
 
@@ -729,14 +783,13 @@ unsafe extern "C" fn log(handle: u64, level: u32, message: TorqueStr) -> TorqueS
             Ok(text) => String::from_utf8_lossy(text).into_owned(),
             Err(status) => return status,
         };
-        // The call's script engine, taken out of the frame first: printing may run the console's own hooks, which must
-        // find this thread's frames free.
+        // The call's script engine (the innermost call's only, as in `with_innermost_call`), taken out of the frame
+        // first: printing may run the console's own hooks, which must find this thread's frames free.
         let vm = CALLS.with(|calls| {
             calls
                 .borrow()
-                .iter()
-                .rev()
-                .find(|c| c.handle == handle)
+                .last()
+                .filter(|c| c.handle == handle)
                 .map(|c| c.vm)
         });
         if let Some(vm) = vm {
@@ -764,15 +817,14 @@ unsafe extern "C" fn log(handle: u64, level: u32, message: TorqueStr) -> TorqueS
     })
 }
 
-/// The live call frame `call`'s script engine and extension, copied out so that no borrow of the frames is held while a
-/// script runs (a nested call pushes frames of its own).
+/// The innermost call frame `call`'s script engine and extension ([`with_innermost_call`]), copied out so that no borrow
+/// of the frames is held while a script runs (a nested call pushes frames of its own).
 fn frame_parts(call: TorqueCall) -> Result<(*mut Vm, Arc<ExtensionState>), TorqueStatus> {
     CALLS.with(|calls| {
         calls
             .borrow()
-            .iter()
-            .rev()
-            .find(|c| c.handle == call)
+            .last()
+            .filter(|c| c.handle == call)
             .map(|c| (c.vm, Arc::clone(&c.ext)))
             .ok_or(TORQUE_ERR_HANDLE)
     })
@@ -819,6 +871,19 @@ unsafe fn read_args(args: *const TorqueStr, count: usize) -> Result<Vec<Vec<u8>>
         .collect()
 }
 
+/// The innermost call frame `call`'s script engine, and whether the call is a language's, copied out as [`frame_parts`]
+/// does.
+fn with_innermost_parts(call: TorqueCall) -> Result<(*mut Vm, bool), TorqueStatus> {
+    CALLS.with(|calls| {
+        calls
+            .borrow()
+            .last()
+            .filter(|c| c.handle == call)
+            .map(|c| (c.vm, c.lang.is_some()))
+            .ok_or(TORQUE_ERR_HANDLE)
+    })
+}
+
 /// Whether the script engine's call policy refuses the live call `call` (a language's) running `namespace::name`: the
 /// reason is printed, and the call gets [`TORQUE_ERR_FAILED`]. A native extension's own natives are not held to it.
 fn refused(
@@ -831,16 +896,16 @@ fn refused(
     let (vm, lang) = CALLS.with(|calls| {
         calls
             .borrow()
-            .iter()
-            .rev()
-            .find(|c| c.handle == call)
+            .last()
+            .filter(|c| c.handle == call)
             .map(|c| (c.vm, c.lang))
     })?;
     lang?;
     // SAFETY: as in `run_back`: the frame is live, the script engine is the call's alone, and no borrow of the frames is
     // held (printing may run the console's hooks).
     let vm = unsafe { &mut *vm };
-    let reason = crate::call_policy::check(vm, namespace, name, method, args).err()?;
+    let kind = crate::call_policy::CallKind::of(method);
+    let reason = crate::call_policy::check(vm, namespace, name, kind, args).err()?;
     vm.error(reason);
     Some(TORQUE_ERR_FAILED)
 }
@@ -860,8 +925,9 @@ unsafe fn run_back(
         Ok(parts) => parts,
         Err(status) => return status,
     };
-    // SAFETY: the frame is live, so the host's native that made it holds the script engine exclusively and is blocked in
-    // the extension, which is blocked in this call: nothing else touches it. No borrow of the frames is held.
+    // SAFETY: the frame is the innermost live one (`frame_parts`), so the host's native that made it holds the script
+    // engine exclusively and is blocked in the extension, which is blocked in this call, with no nested call it lent the
+    // engine to: nothing else touches it. No borrow of the frames is held.
     let vm = unsafe { &mut *vm };
     // The extension's frames since the call came in count as script levels, so recursion through it stops at the call
     // depth limit before the end of the stack.
@@ -967,7 +1033,7 @@ unsafe extern "C" fn has_method(
             Ok(name) => name.to_vec(),
             Err(status) => return status,
         };
-        with_call(call, |frame| {
+        with_innermost_call(call, |frame| {
             // SAFETY: as in `get_global`: the frame is live, so the script engine is the call's alone.
             let vm = unsafe { &*frame.vm };
             let has =
@@ -985,7 +1051,7 @@ unsafe extern "C" fn find_object(call: TorqueCall, name: TorqueStr, out: *mut u3
             Ok(name) => name.to_vec(),
             Err(status) => return status,
         };
-        with_call(call, |frame| {
+        with_innermost_call(call, |frame| {
             // SAFETY: as in `get_global`.
             let vm = unsafe { &*frame.vm };
             match vm.objects().find(&name) {
@@ -1011,7 +1077,7 @@ unsafe extern "C" fn get_field(
             (Ok(name), Ok(index)) => (name.to_vec(), index.to_vec()),
             (Err(status), _) | (_, Err(status)) => return status,
         };
-        let value = with_call(call, |frame| {
+        let value = with_innermost_call(call, |frame| {
             // SAFETY: as in `get_global`.
             let vm = unsafe { &*frame.vm };
             if vm.objects().get(object).is_none() {
@@ -1114,7 +1180,7 @@ unsafe extern "C" fn define_function(
         {
             return TORQUE_ERR_INVALID;
         }
-        with_call(call, |frame| {
+        with_innermost_call(call, |frame| {
             let Some(lang) = frame.lang else {
                 return TORQUE_ERR_FAILED;
             };
@@ -1146,7 +1212,7 @@ unsafe extern "C" fn define_function(
 
 unsafe extern "C" fn charge(call: TorqueCall, steps: u64) -> TorqueStatus {
     guard(|| {
-        with_call(call, |frame| {
+        with_innermost_call(call, |frame| {
             // SAFETY: as in `get_global`.
             let vm = unsafe { &*frame.vm };
             let paid = if vm.step_limit().is_none() {
@@ -1171,7 +1237,7 @@ unsafe extern "C" fn charge(call: TorqueCall, steps: u64) -> TorqueStatus {
 
 unsafe extern "C" fn vm_info(call: TorqueCall, out: *mut TorqueVmInfo) -> TorqueStatus {
     guard(|| {
-        with_call(call, |frame| {
+        with_innermost_call(call, |frame| {
             // SAFETY: as in `get_global`; making the context runs no script.
             let vm = unsafe { &mut *frame.vm };
             let context = VmContext::of(vm);
@@ -1279,7 +1345,7 @@ unsafe extern "C" fn register_script_language(
                     return status;
                 }
             };
-            let taken = matches!(extension.as_str(), "cs" | "dso" | "gui" | "mis" | "ed");
+            let taken = torque_ts_vm::policy::is_reserved_extension(extension.as_bytes());
             if extension.is_empty()
                 || !extension.bytes().all(|b| b.is_ascii_alphanumeric())
                 || taken
@@ -1472,11 +1538,20 @@ pub(crate) fn run_init(init: TorquePluginInitFn) -> Result<Registered, String> {
 /// again, and runs its init. The library stays
 /// loaded for the rest of the process (an extension's threads or callbacks may outlive any engine).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn load_library(path: &std::path::Path) -> Result<Registered, String> {
+pub(crate) fn load_library(
+    path: &std::path::Path,
+    still_same: &dyn Fn() -> bool,
+) -> Result<Registered, String> {
     if !path.is_absolute() {
         return Err(format!("{} is not an absolute path", path.display()));
     }
     let library = open_library(path).map_err(|e| format!("it could not be loaded: {e}"))?;
+    // Opened by its path where the platform has no other way: the file may have been swapped while it was opened, and then
+    // its init never runs. Its load-time initializers have run by now, swapped or not: only the private folder's rule keeps
+    // anyone else from swapping it.
+    if !still_same() {
+        return Err("its private copy was replaced while it was loaded".to_string());
+    }
     let version = {
         // SAFETY: the symbol, when present, is the `uint32_t` the ABI says; reading it runs none of the library's code.
         let symbol =

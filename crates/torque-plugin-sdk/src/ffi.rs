@@ -558,6 +558,7 @@ impl Registrar<'_> {
         if reg.usage.is_some() {
             flags |= TORQUE_NATIVE_EXACT_USAGE;
         }
+        flags |= reg.effects.flags();
         let usage = reg.usage.clone().unwrap_or_default();
         let user = Box::into_raw(Box::new(NativeUser {
             api: self.api,

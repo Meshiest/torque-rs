@@ -149,6 +149,7 @@ lua-client-test:
 # under Node and in headless Chrome from the cursor guard (web/lua-check.mjs). Needs what `lua-web` needs and Chrome
 lua-web-check:
     node web/guard-scan.mjs
+    node --test web/lua.test.mjs
     cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --test lua
     node web/lua-build.mjs --check
     node "{{web_target}}/lua-web/check/lua-node.mjs"

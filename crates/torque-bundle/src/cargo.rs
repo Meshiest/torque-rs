@@ -199,6 +199,8 @@ pub struct Build {
     pub rustflags: Vec<String>,
     /// `CFLAGS` and `CXXFLAGS`, for the C and C++ that build scripts compile (the `cc` crate reads them).
     pub cflags: Vec<String>,
+    /// More variables for the build (the game's [`PLUGINS_ENV`](crate::PLUGINS_ENV)).
+    pub env: Vec<(String, String)>,
 }
 
 /// What a build made: each binary's path by name, and the libraries' files.
@@ -260,6 +262,7 @@ impl Build {
             let flags = self.cflags.join(" ");
             command.env("CFLAGS", &flags).env("CXXFLAGS", &flags);
         }
+        command.envs(self.env.iter().map(|(name, value)| (name, value)));
         let text = output(command, "cargo build")?;
         let mut built = Built::default();
         for line in text.lines() {

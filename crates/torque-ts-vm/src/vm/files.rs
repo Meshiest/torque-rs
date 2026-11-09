@@ -52,6 +52,14 @@ fn arg(c: &NativeCall, i: usize) -> &[u8] {
 }
 
 pub(super) fn register(vm: &mut Vm) {
+    // Running a file or a text is code; `compile` writes the compiled file beside the script.
+    vm.add_native_effects("", "exec", crate::effects::Effects::CODE);
+    vm.add_native_effects("", "eval", crate::effects::Effects::CODE);
+    vm.add_native_effects(
+        "",
+        "compile",
+        crate::effects::Effects::CODE | crate::effects::Effects::FILES,
+    );
     vm.register(
         "exec",
         2,

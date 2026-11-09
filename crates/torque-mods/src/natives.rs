@@ -74,7 +74,7 @@ pub(crate) fn is_mod_enabled(vm: VmMut, id: &str) -> bool {
 }
 
 /// switches a mod on (its files mount again and its scripts run for the stages that ran); false, with the reason on the console, when it cannot
-#[function(name = "enableMod")]
+#[function(name = "enableMod", effects = "engine")]
 pub(crate) fn enable_mod(mut vm: VmMut, id: &str) -> bool {
     let Some(mods) = Mods::of(&vm) else {
         vm.error("enableMod: this script engine has no mods".to_string());
@@ -90,7 +90,7 @@ pub(crate) fn enable_mod(mut vm: VmMut, id: &str) -> bool {
 }
 
 /// switches a mod off, and the mods that require it (its files unmount and its package is deactivated); false, with the reason on the console, when it cannot
-#[function(name = "disableMod")]
+#[function(name = "disableMod", effects = "engine")]
 pub(crate) fn disable_mod(mut vm: VmMut, id: &str) -> bool {
     let Some(mods) = Mods::of(&vm) else {
         vm.error("disableMod: this script engine has no mods".to_string());
@@ -111,7 +111,7 @@ pub(crate) fn disable_mod(mut vm: VmMut, id: &str) -> bool {
 }
 
 /// runs the entry scripts of a load stage of every enabled mod, in load order, and returns how many ran (a stage runs once for a mod)
-#[function(name = "loadMods")]
+#[function(name = "loadMods", effects = "engine")]
 pub(crate) fn load_mods(mut vm: VmMut, stage: &str) -> i32 {
     let Some(mods) = Mods::of(&vm) else {
         vm.error("loadMods: this script engine has no mods".to_string());
@@ -218,7 +218,7 @@ pub(crate) fn get_mod_download_progress(vm: VmMut) -> String {
 }
 
 /// deletes the mod content kept from servers; returns the bytes freed
-#[function(name = "clearModDownloadCache")]
+#[function(name = "clearModDownloadCache", effects = "files")]
 pub(crate) fn clear_mod_download_cache(vm: VmMut) -> String {
     Mods::of(&vm)
         .map_or(0, |mods| mods.clear_download_cache())

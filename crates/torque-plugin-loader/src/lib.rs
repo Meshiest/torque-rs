@@ -14,15 +14,35 @@
 //!   file changes ([`Approve`], [`Allowlist`]); the approvals are kept per user ([`user_folder`]), never in the plugins
 //!   folder, so a download cannot approve itself (an `approved.txt` found there is ignored, with a warning);
 //! - loads exactly the bytes that were hashed: the file is read once into a private read-only copy (`<sha256>.<ext>` in
-//!   the per-user folder's `cache`), checked again, and that copy is loaded by its absolute path, finding its own
-//!   dependencies only among the system's libraries;
+//!   the per-user folder's `cache`), checked again through a handle held open until it has loaded, and that copy is
+//!   loaded (see **Each platform** below);
+//! - refuses a library that names folders of its own to find its dependencies in (an ELF rpath or runpath, a Mach-O
+//!   `LC_RPATH`);
+//! - on Unix, loads nothing unless the per-user folder, its cache and its allowlist belong to the process's effective user
+//!   and nobody else can write them (the engine makes its folders `0700`), and every folder above it belongs to that user
+//!   or root and nobody else can write it, unless it is sticky;
 //! - refuses a library built for another ABI version before it runs any of its code (the version is read from the
 //!   file's export table, not by loading it);
 //! - catches a panic at every entry into the extension and disables the extension instead of crashing the game.
 //!
 //! **What an approval covers**: the one library file with that hash, under that id and version. Nothing else it reads or
-//! loads is checked, so an extension must be linked statically: a library it needs that is not one of the system's
-//! (Windows' System32, the system library paths elsewhere) is not found from the private copy, and it does not load.
+//! loads is checked, so an extension must be linked statically: a library it needs that is not the system's may not be
+//! found from the private copy, and then it does not load.
+//!
+//! **Each platform.**
+//! - Windows: the copy is opened by its absolute path, shared only with readers until it has loaded (nothing can replace
+//!   it), and its dependencies are looked for beside it (the private cache) and in System32, never in the working
+//!   directory or on `PATH`.
+//! - Linux: the copy is opened through the held handle (`/proc/self/fd/<n>`), so the file that loads is the one hashed
+//!   whatever its path names by then. Its dependencies are found as the system finds any library's: the folders in the
+//!   game's own `LD_LIBRARY_PATH`, the loader's cache and the system folders.
+//! - macOS and other Unix systems: the copy is opened by its path, which is checked to name the hashed file right before
+//!   and right after it is opened, and a copy replaced in between is refused before its `torque_plugin_init` runs. That
+//!   check comes too late for the library's own load-time initializers (C++ static constructors, `__attribute__
+//!   ((constructor))` functions, Rust's `.init_array` entries): the system runs them while it opens the file, so a file
+//!   swapped in at that moment runs its initializers before the engine can stop it. What keeps anyone from swapping it is
+//!   the folder rule above: only this user can write the private cache. Its dependencies are found by their install names
+//!   (`@loader_path` is the private cache) and the game's own `DYLD_` variables.
 //!
 //! A server may require an extension by id and version, as any networked plugin (an extension with a network version
 //! is in the handshake manifest), but it can never send one.
@@ -54,6 +74,30 @@
 //! assert!(report.entries.is_empty(), "no folder, nothing loaded");
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - Every native a full engine registers is in the reviewed list `tests/natives/effects.txt` with the effects it declares,
+//!   and every one with a files, code, engine or permissions effect is refused to a script language
+//!   (`every_native_that_writes_or_evaluates_is_denied_to_languages`). A new native fails it until it is decided.
+//! - A name with a NUL byte on the policy path (a call's namespace and name, a global's name, the names a `schedule`, a
+//!   bind or a variable-writing native takes) is refused whatever the policy, as the engine keeps a name only up to its NUL
+//!   (`lua_cannot_write_engine_globals` in torque-plugin-lua).
+//! - The C ABI's functions that reach a call's script engine take only the innermost call's handle, as the Wasmtime host
+//!   serves only its innermost call (`an_outer_call_handle_cannot_reach_the_script_engine_in_a_nested_call`).
+//! - A manifest whose id an engine plugin or an earlier manifest has is refused before any of its code runs, and the engine
+//!   builds (`an_extension_whose_id_an_engine_plugin_has_is_refused_and_the_engine_builds`,
+//!   `of_two_manifests_with_one_id_only_the_first_loads`).
+//! - A library with an rpath or runpath is refused (`a_library_that_names_its_own_dependency_folders_is_refused`); on Unix a
+//!   per-user folder (or any folder above it) others own or can write loads nothing, judged by the effective uid
+//!   (`a_folder_another_user_owns_or_can_write_is_not_private`, `a_user_folder_others_can_write_loads_nothing`), and a
+//!   copy replaced after its check never runs its init
+//!   (`a_copy_replaced_after_its_check_is_never_the_one_opened`; the Unix tests run in CI).
+//! - The allowlist is replaced whole and never over a file it cannot read, and a manifest's version holds no `#`
+//!   (`the_allowlist_is_replaced_whole_and_never_over_a_file_it_cannot_read`, `a_version_with_a_comment_mark_is_refused`).
+//! - A script engine dropped inside a call into an extension is told to its languages when the outermost call returns
+//!   (`a_script_engine_dropped_inside_a_call_is_heard_when_the_call_returns`).
 
 #![warn(missing_docs)]
 
@@ -63,6 +107,7 @@ mod extension;
 mod ffi;
 mod language;
 mod manifest;
+mod private;
 #[cfg(feature = "render")]
 pub mod render;
 mod stage;
@@ -184,7 +229,7 @@ impl NativeExtensionsPlugin {
             .user
             .clone()
             .ok_or("there is no per-user folder to keep approvals and loaded copies in")?;
-        std::fs::create_dir_all(&user).map_err(|e| format!("{}: {e}", user.display()))?;
+        stage::make_private_dir(&user).map_err(|e| format!("{}: {e}", user.display()))?;
         let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
         if canonical(&user).starts_with(canonical(&self.folder)) {
             return Err(format!(
@@ -192,6 +237,7 @@ impl NativeExtensionsPlugin {
                 user.display()
             ));
         }
+        private::check(&user)?;
         Ok(user)
     }
 }
@@ -237,7 +283,9 @@ impl Plugin for NativeExtensionsPlugin {
             Decider::Custom(approver) => Rc::clone(approver),
         };
         let cache = user.join(stage::CACHE_FOLDER);
-        let report = load_folder(&self.folder, &cache, &*approver);
+        let report = load_folder(&self.folder, &cache, &*approver, &|id| {
+            engine.is_plugin_added_id(id)
+        });
         let used: HashSet<String> = report
             .iter()
             .filter(|(_, plugin)| plugin.is_some())
@@ -362,11 +410,14 @@ pub enum Outcome {
     Refused(String),
 }
 
-/// Reads every manifest in `folder` and loads what `approver` approves, from private copies in `cache`.
+/// Reads every manifest in `folder` and loads what `approver` approves, from private copies in `cache`. A manifest whose
+/// id `taken` says an engine plugin already has, or an earlier manifest of the folder took, is refused before its
+/// library is read: adding it would fail the engine's build.
 fn load_folder(
     folder: &Path,
     cache: &Path,
     approver: &dyn Approve,
+    taken: &dyn Fn(&str) -> bool,
 ) -> Vec<(ReportEntry, Option<ExtensionPlugin>)> {
     let Ok(read) = std::fs::read_dir(folder) else {
         return Vec::new();
@@ -378,6 +429,7 @@ fn load_folder(
         .collect();
     manifests.sort();
     let mut out = Vec::new();
+    let mut ids: HashSet<String> = HashSet::new();
     for (i, path) in manifests.iter().enumerate() {
         let mut entry = ReportEntry::new(path);
         if i >= MAX_EXTENSIONS {
@@ -387,7 +439,13 @@ fn load_folder(
             out.push((entry, None));
             continue;
         }
-        let plugin = load_one(folder, cache, path, approver, &mut entry);
+        let held = |id: &str| taken(id) || ids.contains(id);
+        let plugin = load_one(folder, cache, path, approver, &held, &mut entry);
+        if plugin.is_some()
+            && let Some(id) = &entry.id
+        {
+            ids.insert(id.clone());
+        }
         out.push((entry, plugin));
     }
     out
@@ -399,6 +457,7 @@ fn load_one(
     cache: &Path,
     path: &Path,
     approver: &dyn Approve,
+    taken: &dyn Fn(&str) -> bool,
     entry: &mut ReportEntry,
 ) -> Option<ExtensionPlugin> {
     let refuse = |entry: &mut ReportEntry, reason: String| {
@@ -411,6 +470,16 @@ fn load_one(
     };
     entry.id = Some(manifest.id.clone());
     entry.version = Some(manifest.version.clone());
+    // The library reports the manifest's id or is refused, so the id is known before any of its code runs.
+    if taken(&manifest.id) {
+        return refuse(
+            entry,
+            format!(
+                "the engine already has a plugin with the id {}",
+                manifest.id
+            ),
+        );
+    }
     let library = match manifest.library_path(folder) {
         Ok(library) => library,
         Err(reason) => return refuse(entry, reason),
@@ -443,6 +512,9 @@ fn load_one(
     if let Err(reason) = ffi::check_abi(version) {
         return refuse(entry, reason);
     }
+    if let Err(reason) = stage::check_search_paths(&read.bytes) {
+        return refuse(entry, reason);
+    }
     // Held open until the library has loaded, so the copy cannot be replaced in between.
     let held = match stage::cache_copy(&read, cache) {
         Ok(held) => held,
@@ -454,7 +526,7 @@ fn load_one(
             "its private copy was replaced before it was loaded".to_string(),
         );
     }
-    let loaded = ExtensionPlugin::load_library(&held.path, &library, &manifest, &read.sha256);
+    let loaded = ExtensionPlugin::load_library(&held, &library, &manifest, &read.sha256);
     drop(held);
     match loaded {
         Ok(plugin) => Some(plugin),

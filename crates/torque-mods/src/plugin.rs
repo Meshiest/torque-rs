@@ -208,7 +208,12 @@ impl Plugin for ModsPlugin {
             }
             Ok(())
         });
-        engine.script().prefs::<ModPrefs>();
+        // Its prefs say which mods load and how much a download may take.
+        engine
+            .script()
+            .with_effects(torque_engine::Effects::ENGINE, |r| {
+                r.prefs::<ModPrefs>();
+            });
         engine.script().natives(torque_engine::natives![
             crate::natives::get_mod_count,
             crate::natives::get_mod_list,

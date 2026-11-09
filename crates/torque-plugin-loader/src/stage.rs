@@ -8,7 +8,9 @@ use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use object::{Object, ObjectSection, SectionKind};
+use object::read::elf::{Dyn as _, ElfFile, FileHeader, ProgramHeader as _};
+use object::read::macho::{MachHeader, MachOFile};
+use object::{Endianness, Object, ObjectSection, ReadRef, SectionKind};
 use sha2::{Digest, Sha256};
 
 /// The largest library read (bytes); a larger one is refused.
@@ -98,6 +100,74 @@ pub fn abi_version_at(bytes: &[u8]) -> Result<(usize, u32), String> {
     Ok((offset, version))
 }
 
+/// Refuses a library that names folders of its own to find its dependencies in: an ELF `DT_RPATH` or `DT_RUNPATH` (read
+/// from its dynamic segment, which the loader reads, and its dynamic section), or a Mach-O `LC_RPATH`. Such a folder
+/// (`$ORIGIN` is the private cache, an absolute one may be a downloads folder) would let files nobody approved load with
+/// it. A PE file has none: Windows' search is set when the library is loaded.
+pub(crate) fn check_search_paths(bytes: &[u8]) -> Result<(), String> {
+    let file = object::File::parse(bytes)
+        .map_err(|_| "it is not a library this engine can read".to_string())?;
+    let found = match &file {
+        object::File::Elf32(elf) => elf_search_paths(elf),
+        object::File::Elf64(elf) => elf_search_paths(elf),
+        object::File::MachO32(macho) => macho_search_paths(macho),
+        object::File::MachO64(macho) => macho_search_paths(macho),
+        _ => Ok(false),
+    };
+    match found {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(
+            "it names folders of its own to load its dependencies from (an rpath or runpath): link it statically"
+                .to_string(),
+        ),
+        Err(()) => Err("its dynamic linking table cannot be read".to_string()),
+    }
+}
+
+/// Whether an ELF file has a `DT_RPATH` or `DT_RUNPATH`, in a dynamic segment or a dynamic section.
+fn elf_search_paths<'data, Elf, R>(elf: &ElfFile<'data, Elf, R>) -> Result<bool, ()>
+where
+    Elf: FileHeader<Endian = Endianness>,
+    R: ReadRef<'data>,
+{
+    let endian = elf.endian();
+    let names_paths = |entries: &[Elf::Dyn]| {
+        entries.iter().any(|entry| {
+            matches!(
+                entry.tag32(endian),
+                Some(object::elf::DT_RPATH | object::elf::DT_RUNPATH)
+            )
+        })
+    };
+    for header in elf.elf_program_headers() {
+        if let Some(entries) = header.dynamic(endian, elf.data()).map_err(|_| ())?
+            && names_paths(entries)
+        {
+            return Ok(true);
+        }
+    }
+    let sections = elf.elf_section_table();
+    Ok(sections
+        .dynamic(endian, elf.data())
+        .map_err(|_| ())?
+        .is_some_and(|(entries, _)| names_paths(entries)))
+}
+
+/// Whether a Mach-O file has an `LC_RPATH`.
+fn macho_search_paths<'data, Mach, R>(macho: &MachOFile<'data, Mach, R>) -> Result<bool, ()>
+where
+    Mach: MachHeader<Endian = Endianness>,
+    R: ReadRef<'data>,
+{
+    let mut commands = macho.macho_load_commands().map_err(|_| ())?;
+    while let Some(command) = commands.next().map_err(|_| ())? {
+        if command.cmd() == object::macho::LC_RPATH {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The platform's file extension of a library.
 fn library_extension() -> &'static str {
     if cfg!(target_os = "windows") {
@@ -129,7 +199,7 @@ fn sha256_of_file(path: &Path) -> std::io::Result<String> {
 /// and checks the copy's hash again: the copy's absolute path.
 pub(crate) fn cache_copy(read: &Read1, cache: &Path) -> Result<Held, String> {
     let fail = |what: &str, e: std::io::Error| format!("its private copy could not be {what}: {e}");
-    std::fs::create_dir_all(cache).map_err(|e| fail("made", e))?;
+    make_private_dir(cache).map_err(|e| fail("made", e))?;
     let path = std::path::absolute(cache.join(format!("{}.{}", read.sha256, library_extension())))
         .map_err(|e| fail("named", e))?;
     let kept = path.is_file() && sha256_of_file(&path).is_ok_and(|h| h == read.sha256);
@@ -169,15 +239,44 @@ pub(crate) fn cache_copy(read: &Read1, cache: &Path) -> Result<Held, String> {
     Ok(Held { path, file })
 }
 
+/// Makes the folder `path` (and the folders above it that are missing), on Unix readable and writable by this user only.
+pub(crate) fn make_private_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
+}
+
 /// A private copy, checked through an open handle that is kept until the library has loaded: on Windows the handle
-/// lets others only read the file, so nothing replaces it in between; elsewhere [`Held::still_same`] checks that the
-/// path still names the file the handle read.
+/// lets others only read the file, so nothing replaces it in between. On Linux the library is loaded through the held
+/// handle itself ([`Held::open_path`]), so it is the file that was hashed; elsewhere on Unix [`Held::still_same`] checks,
+/// right before and right after the library is opened, that the path still names the file the handle read. That second
+/// check stops a swapped file's `torque_plugin_init`, not its load-time initializers, which the system runs while it
+/// opens the file: there only the private folder's rule (`private::check`) keeps others from swapping it.
 pub(crate) struct Held {
     pub(crate) path: PathBuf,
     file: std::fs::File,
 }
 
 impl Held {
+    /// The path to open the library by: on Linux the held handle's own (`/proc/self/fd/<n>`, the file that was hashed
+    /// whatever the cache's path names now), elsewhere the copy's path.
+    pub(crate) fn open_path(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let fds = Path::new("/proc/self/fd");
+            if fds.is_dir() {
+                return fds.join(self.file.as_raw_fd().to_string());
+            }
+        }
+        self.path.clone()
+    }
+
     /// Whether the path still names the file that was hashed (on Windows the share mode already makes it so).
     pub(crate) fn still_same(&self) -> bool {
         #[cfg(unix)]

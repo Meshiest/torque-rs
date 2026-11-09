@@ -18,9 +18,19 @@
 //! call and loop), so a runaway loop stops with an error as a runaway TorqueScript loop does, and each realm's memory is
 //! capped (`$Pref::Lua::MemoryLimit`, in MiB). The builtins that work through a whole string, table or buffer at once
 //! (`string.rep`, `table.concat`, `buffer.fill`, ...) are charged by the bytes they handle. The engine refuses the console
-//! functions and methods that run code from text or touch files (`exec`, `eval`, `call`, `save`, ..., under any namespace;
+//! functions and methods that declared they touch files, run code from text or change the engine as a whole (`exec`,
+//! `eval`, `call`, `save`, `clearModDownloadCache`, `activatePackage`, ..., under any namespace), and the globals whose
+//! writes change limits or what loads (`$Pref::Lua::*`, `$instantGroup`, `$Con::*`, the mods' and a server's prefs, ...;
 //! its call policy, `torque_plugin_loader::call_policy`). Lua files come only from local mods and the game: a file a server
 //! sent never runs, exactly as for TorqueScript.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test in `tests/lua.rs` (run natively and on the web):
+//! - A native with a files, code or engine effect is refused to Lua even when a script stands in for it
+//!   (`lua_cannot_clear_the_mod_download_cache`), and so is switching packages (`lua_cannot_switch_packages`).
+//! - `setGlobal`, and any native that writes a variable an argument names (`nextToken`'s token), never write a global
+//!   whose write has an effect the policy refuses, and a name with a NUL byte is refused (`lua_cannot_write_engine_globals`).
 
 #![warn(missing_docs)]
 

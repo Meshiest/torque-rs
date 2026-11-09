@@ -15,6 +15,7 @@ use std::rc::Rc;
 
 use torque_engine::permissions::{Permissions, SubjectKey};
 use torque_net::handshake::ConnId;
+use torque_ts_vm::effects::Effects;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm};
 
@@ -110,6 +111,11 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
             f(vm, &perms, &key, &text(call, 2))
         });
     }
+    // What changes who may do what is a permissions effect: a script language is kept from it by default.
+    for name in ["addRole", "removeRole", "grant", "revoke"] {
+        vm.add_native_effects("GameConnection", name, Effects::PERMISSIONS);
+    }
+    vm.add_native_effects("", "definePermissionRole", Effects::PERMISSIONS);
     {
         let shared = Rc::clone(shared);
         vm.register_in(

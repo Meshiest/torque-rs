@@ -4,7 +4,10 @@
 // link; the worker's relay transport holds every cap on what joiners send (rates and sizes in wire bytes, links in all,
 // per address and a second), and the page closes whatever link it refuses or closes.
 //
-// The room service is `?rooms=<ws or wss URL>`, else the page's own host at `/ws`. Its protocol is torque-server's
+// The room service is the page's own host at `/ws`. A link's `?rooms=<ws or wss URL>` may name another only when it is on
+// the page's own host or is one of the services the page's code lists (`hostGame`'s `rooms`): a service supplies the ICE
+// servers, the joiners and their addresses, so a link must not choose it. `?lan` (private addresses allowed) counts only
+// when the page's code allows it (`hostGame`'s `lan`). Its protocol is torque-server's
 // `net::room` (text in binary WebSocket messages); joiners' signaling is the data channels' (`net::web::rtc::signal`:
 // `offer`, `answer`, `candidate`). The page's root element carries `data-torque-room` (the code, `ABCD-EFGH`) and
 // `data-torque-server` (`worker` once the server runs there).
@@ -20,7 +23,7 @@
 // MAX_MESSAGES_PER_S in a second is ended before the message is posted to the worker. A joiner's
 // candidates, in its offer or trickled, go through `candidateAllowed` (the desktop host's rules): IPv4 UDP only, no `.local`
 // names, never loopback, link-local, multicast, broadcast, reserved ranges or this page's own addresses, and private ones
-// only with `?lan=1` (players on the host's network). A joiner reaches the host without them: its own checks to the
+// only with `?lan=1` on a page that allows it (players on the host's network). A joiner reaches the host without them: its own checks to the
 // host's candidates are answered.
 //
 // ICE runs in the browser, so this page never sees a check: unlike the desktop host, it cannot rate a joiner's checks per
@@ -194,6 +197,35 @@ export function iceServersFrom(body) {
   return servers;
 }
 
+// The room service `search` (the page's query) has the host page use, on a page at `location` (its `protocol` and
+// `host`), and whether private addresses are allowed: the page's own `/ws`, or `?rooms=` when it names a ws:// or wss://
+// service on the page's own host or one of `rooms` (the page's own list); `?lan` only when `lan` (the page's choice).
+// Throws, naming the address, for any other `?rooms=`.
+export function roomService(search, { protocol, host }, { rooms = [], lan = false } = {}) {
+  const params = new URLSearchParams(search);
+  const lanAsked = lan && params.has('lan');
+  const asked = params.get('rooms');
+  if (asked === null) return { url: `${protocol === 'https:' ? 'wss' : 'ws'}://${host}/ws`, lan: lanAsked };
+  let url;
+  try {
+    url = new URL(asked);
+  } catch {
+    throw new Error(`?rooms= takes a ws:// or wss:// address, not ${asked}`);
+  }
+  if (url.protocol !== 'ws:' && url.protocol !== 'wss:') throw new Error(`?rooms= takes a ws:// or wss:// address, not ${asked}`);
+  const listed = rooms.some((r) => {
+    try {
+      return new URL(r).href === url.href;
+    } catch {
+      return false;
+    }
+  });
+  if (url.host !== host && !listed) {
+    throw new Error(`?rooms= names ${url.host}, which is neither this page's host nor a room service it lists: not used`);
+  }
+  return { url: url.href, lan: lanAsked };
+}
+
 // Hosts the game: `game` is the module (its files fetched), `say(text)` shows the page's status line; `solo`: played alone,
 // no room. The host player's client is `client`'s: `solo` (`startSoloClient`, played alone only), `host`
 // (`startHostClient`), or null for a game already running that joins the server itself (a page switching to hosting in
@@ -201,14 +233,21 @@ export function iceServersFrom(body) {
 // `onHost({ adopt })`, called on a solo page once the server runs: `adopt(pc, channel, ip, onEnd)` takes an invited
 // joiner's peer connection and its channel (open, or opening) from `ip` and returns null, or why it was refused; `onEnd()`
 // is called when that joiner is ended. `wasm`: the module compiled already (the worker then does not compile it again).
+// `rooms`: room services besides the page's own host that a link's `?rooms=` may name; `lan`: whether a link's `?lan` may
+// allow joiners' private addresses (both the page's code's choice, never a link's; see `roomService`).
 // Returns `{ endPeers(), stop() }`: every joiner ended; and that, with the worker, the room and its code on the page ended
 // too (its game is over).
-export async function hostGame(game, say, { solo = false, client = 'solo', onHost = null, wasm = null } = {}) {
+export async function hostGame(
+  game,
+  say,
+  { solo = false, client = 'solo', onHost = null, wasm = null, rooms = [], lan: lanAllowed = false } = {},
+) {
   const root = document.documentElement;
   const params = new URLSearchParams(location.search);
-  const lan = params.has('lan');
-  const roomsUrl = params.get('rooms') ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
-  if (!solo && !/^wss?:\/\//.test(roomsUrl)) throw new Error(`?rooms= takes a ws:// or wss:// address, not ${roomsUrl}`);
+  // Checked before anything starts: a refused service opens no worker and no socket.
+  const service = solo ? { url: null, lan: false } : roomService(location.search, location, { rooms, lan: lanAllowed });
+  const lan = solo ? lanAllowed && params.has('lan') : service.lan;
+  const roomsUrl = service.url;
   const workerUrl = new URL('./host-worker.js', import.meta.url);
   if (params.get('map')) workerUrl.searchParams.set('map', params.get('map'));
   const worker = new Worker(workerUrl, { type: 'module' });

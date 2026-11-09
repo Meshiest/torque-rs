@@ -12,6 +12,10 @@ fn main() {
     if cfg!(feature = "dev") {
         println!("dev build");
     }
+    // What the bundle told the build it ships in `plugins/` (none here).
+    if let Some(plugins) = option_env!("TORQUE_BUNDLE_PLUGINS") {
+        println!("shipped plugins: [{plugins}]");
+    }
     #[cfg(feature = "leak")]
     println!("built in {}", env!("CARGO_MANIFEST_DIR"));
 }

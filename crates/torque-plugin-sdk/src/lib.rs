@@ -74,7 +74,7 @@ pub mod script;
 pub use language::{CallError, Definition, Limit, ScriptLanguage, VmInfo};
 pub use param::{ArgKind, IntoReturn, Param, ParamKind, Rest, This};
 pub use render::{Pass, PassFrame, RenderRegistry, Space, Stage, Triangles, Vertex};
-pub use script::{IntoNative, NativeDecl, Natives, ScriptRegistry, TypedNative};
+pub use script::{Effects, IntoNative, NativeDecl, Natives, ScriptRegistry, TypedNative};
 /// Declares a free function as a console function of the extension, for [`ScriptRegistry::natives`] (listed with
 /// [`natives!`]): the engine's `#[function]` attribute, with the same options (`ns`, `name`, `usage`, `description`,
 /// `dev`), found through this crate. `crate = torque_plugin_sdk` names this crate in a crate that also depends on the
@@ -140,6 +140,7 @@ impl<'a> Registrar<'a> {
         ScriptRegistry {
             registrar: self,
             side: Side::Both,
+            effects: Effects::NONE,
         }
     }
 
@@ -148,6 +149,7 @@ impl<'a> Registrar<'a> {
         ScriptRegistry {
             registrar: self,
             side: Side::Server,
+            effects: Effects::NONE,
         }
     }
 
@@ -156,6 +158,7 @@ impl<'a> Registrar<'a> {
         ScriptRegistry {
             registrar: self,
             side: Side::Client,
+            effects: Effects::NONE,
         }
     }
 

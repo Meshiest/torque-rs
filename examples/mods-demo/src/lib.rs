@@ -13,6 +13,14 @@
 //! The Lua extension is not linked in: it is built apart (`just lua`) and loaded from a `plugins/` folder, as a game loads it
 //! ([`Lua`]). A [`Session`] is one server and its clients over the memory transport, stepped by hand; [`viewer`] draws a client
 //! of one offscreen. `cargo run -p torque-example-mods-demo --bin mods-demo` plays a few rounds headless.
+//!
+//! # Maintaining
+//!
+//! The demo approves only the libraries it put in `plugins/` itself, by hash (a packaged game's are the hashes
+//! `torque-bundle` built into the executable, `TORQUE_BUNDLE_PLUGINS`), and asks about any other on the terminal; a
+//! packaged game keeps its approvals in the per-user folder (`a_bundle_ships_the_hashes_it_built_in`,
+//! `only_a_shipped_library_is_approved_without_asking`, and with the built extension
+//! `a_library_added_to_the_plugins_folder_is_not_approved_while_the_shipped_one_loads`).
 
 pub mod assets;
 pub mod session;
@@ -28,7 +36,9 @@ use torque::app::files::GameFiles;
 use torque::app::plugins::{DefaultPlugins, ModsPlugin};
 use torque::app::server::{GameServer, Listen, ServerStart};
 use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
-use torque::extensions::{ApprovalRequest, NativeExtensions, NativeExtensionsPlugin};
+use torque::extensions::{
+    ApprovalRequest, Approve, NativeExtensions, NativeExtensionsPlugin, TerminalPrompt, sha256_hex,
+};
 use torque::mods::CacheChoice;
 use torque_plugin_rope::RopePlugin;
 
@@ -103,11 +113,13 @@ impl Plugin for ExamplePlugin {
     }
 }
 
-/// The Lua extension on disk, ready to load: its library and manifest in a `plugins/` folder of its own.
+/// The Lua extension on disk, ready to load: its library and manifest in a `plugins/` folder of its own, and the hashes of
+/// the libraries this build put there itself, which it approves without asking.
 #[derive(Clone, Debug)]
 pub struct Lua {
     plugins: PathBuf,
     user: PathBuf,
+    shipped: Vec<String>,
 }
 
 /// The file name of the platform's library `name`.
@@ -125,32 +137,67 @@ impl Lua {
     /// Puts the built extension `library` (`just lua` makes it) and its manifest in a `plugins` folder under `dir` (emptied
     /// first), and keeps the extension's approvals in a `user` folder beside it.
     pub fn install(library: &Path, dir: &Path) -> io::Result<Lua> {
+        let dir = std::path::absolute(dir)?;
         let plugins = dir.join("plugins");
         let user = dir.join("user");
-        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&plugins)?;
-        std::fs::copy(library, plugins.join(library_file_name("torque_lua")))?;
+        let bytes = std::fs::read(library)?;
+        std::fs::write(plugins.join(library_file_name("torque_lua")), &bytes)?;
         std::fs::write(plugins.join("torque_lua.toml"), LUA_MANIFEST)?;
-        Ok(Lua { plugins, user })
+        Ok(Lua {
+            plugins,
+            user,
+            shipped: vec![sha256_hex(&bytes)],
+        })
     }
 
-    /// The extension already in a `plugins` folder (a packaged game's), its approvals kept in `user`.
-    pub fn at(plugins: &Path, user: &Path) -> Lua {
-        Lua {
-            plugins: plugins.to_path_buf(),
-            user: user.to_path_buf(),
-        }
+    /// The extension a packaged game ships in the `plugins/` folder of `bundle` (the folder of its executable), its
+    /// approvals kept in the per-user folder ([`torque::extensions::user_folder`]). The libraries it approves without
+    /// asking are the ones whose hashes the bundler built into this executable ([`SHIPPED_PLUGINS`]): nothing beside it
+    /// is read for them, so a library or a file put in the folder later is not among them.
+    pub fn bundled(bundle: &Path) -> Result<Lua, String> {
+        let user = torque::extensions::user_folder()
+            .ok_or("there is no per-user folder to keep the extension's approvals in")?;
+        Ok(Lua {
+            plugins: bundle.join("plugins"),
+            user,
+            shipped: shipped_hashes(SHIPPED_PLUGINS),
+        })
     }
 
-    /// The loader. A game asks the player before it loads a library the first time; this one holds only the library it was
-    /// just handed, so it approves it.
+    /// Whether this build put the library of `request` in its `plugins/` folder itself (by its hash).
+    pub fn ships(&self, request: &ApprovalRequest) -> bool {
+        self.shipped.contains(&request.sha256)
+    }
+
+    /// The loader. A game asks the player before it loads a library the first time; this one approves the libraries it
+    /// shipped (by hash) and asks about any other on the terminal (refused when there is none).
     fn plugin(&self) -> NativeExtensions {
+        let lua = self.clone();
         NativeExtensions(
             NativeExtensionsPlugin::new(&self.plugins)
                 .user_folder(&self.user)
-                .approver(|_: &ApprovalRequest| true),
+                .approver(move |request: &ApprovalRequest| {
+                    lua.ships(request) || TerminalPrompt.approve(request)
+                }),
         )
     }
+}
+
+/// The hashes `torque-bundle` gave this build (`TORQUE_BUNDLE_PLUGINS`, read when it was compiled): the libraries it put
+/// in the bundle's `plugins/`. Empty in a build the bundler did not make.
+pub const SHIPPED_PLUGINS: &str = match option_env!("TORQUE_BUNDLE_PLUGINS") {
+    Some(hashes) => hashes,
+    None => "",
+};
+
+/// The hashes in `list` (separated by spaces, as [`SHIPPED_PLUGINS`] holds them), lower-case: only 64 hex digits count.
+fn shipped_hashes(list: &str) -> Vec<String> {
+    list.split_whitespace()
+        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 /// What an engine is for.
@@ -239,4 +286,41 @@ fn dev_lua_library() -> Option<PathBuf> {
     );
     let library = target.join("release").join(library_file_name("torque_lua"));
     library.is_file().then_some(library)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bundle_ships_the_hashes_it_built_in() {
+        let (a, b) = ("A".repeat(64), "b".repeat(64));
+        assert_eq!(
+            shipped_hashes(&format!(" {a}  {b} short {}", "z".repeat(64))),
+            ["a".repeat(64), b]
+        );
+        assert!(shipped_hashes("").is_empty());
+        // A build `torque-bundle` did not make has none.
+        if option_env!("TORQUE_BUNDLE_PLUGINS").is_none() {
+            assert!(shipped_hashes(SHIPPED_PLUGINS).is_empty());
+        }
+    }
+
+    #[test]
+    fn only_a_shipped_library_is_approved_without_asking() {
+        let lua = Lua {
+            plugins: PathBuf::from("plugins"),
+            user: PathBuf::from("user"),
+            shipped: vec!["a".repeat(64)],
+        };
+        let request = |sha256: String| ApprovalRequest {
+            id: "torque.lua".to_string(),
+            version: "1".to_string(),
+            library: PathBuf::from("plugins/x"),
+            sha256,
+            approved_before: None,
+        };
+        assert!(lua.ships(&request("a".repeat(64))));
+        assert!(!lua.ships(&request("b".repeat(64))));
+    }
 }

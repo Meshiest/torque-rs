@@ -622,6 +622,102 @@ cases! {
         assert!(files.get("out.cs").is_none(), "nothing was written");
     }
 
+    fn lua_cannot_clear_the_mod_download_cache() {
+        let engine = engine();
+        let files = files(&[]);
+        for mut vm in [server(&engine, &files), client(&engine, &files)] {
+            // The mods' native declared that it deletes files, so the policy refuses it by name: even after a script
+            // stands in for it here, so that a call getting through would show.
+            assert!(eval(&mut vm, "return clearModDownloadCache();").is_ok());
+            eval(&mut vm, "function clearModDownloadCache() { $Test::Cleared = 1; return 1; }").unwrap();
+            let source = "local ok = pcall(function() ts.call('clearModDownloadCache') end)                           ts.setGlobal('$Test::Allowed', tostring(ok))";
+            assert_eq!(run(&mut vm, &files, "cache.lua", source), Ok(true));
+            let log = console(&mut vm);
+            assert_eq!(global(&vm, "$Test::Allowed"), "false", "{log}");
+            assert!(log.contains("from a script language"), "{log}");
+            assert_eq!(global(&vm, "$Test::Cleared"), "", "the cache is still there");
+        }
+    }
+
+    fn lua_cannot_write_engine_globals() {
+        let engine = engine();
+        let files = files(&[]);
+        let mut vm = server(&engine, &files);
+        for name in [
+            "$Pref::Lua::MemoryLimit",
+            "$instantGroup",
+            "$Con::printLevel",
+            "$Pref::Mods::Disabled",
+            "$Pref::Dev",
+            "$Pref::Server::MaxPlayers",
+            "$pref::Net::PacketSize",
+            "$Server::LAN",
+        ] {
+            let before = global(&vm, name);
+            let source = format!(
+                "local ok = pcall(function() ts.setGlobal('{name}', '4096') end) ts.setGlobal('$Test::Allowed', tostring(ok))"
+            );
+            assert_eq!(run(&mut vm, &files, "globals.lua", &source), Ok(true), "{name}");
+            let log = console(&mut vm);
+            assert_eq!(global(&vm, "$Test::Allowed"), "false", "{name}: {log}");
+            assert!(log.contains("from a script language"), "{name}: {log}");
+            assert_eq!(global(&vm, name), before, "{name} is unchanged");
+        }
+        // `nextToken` from Lua stores its token in a global: one with effects is refused the same way.
+        let source = "local ok = pcall(function() ts.call('nextToken', '1 2', '$Pref::Dev', ' ') end) \
+                      ts.setGlobal('$Test::Allowed', tostring(ok))";
+        assert_eq!(run(&mut vm, &files, "token.lua", source), Ok(true));
+        assert_eq!(global(&vm, "$Test::Allowed"), "false", "{}", console(&mut vm));
+        assert_eq!(global(&vm, "$Pref::Dev"), "");
+        // A name with a NUL is the name up to it to the engine: refused, as is any argument of `nextToken` that would write
+        // a denied global, and `$Pref::Dev` is never written (nor exported).
+        for call in [
+            "ts.call('nextToken', '1 2', '$Pref::Dev\\0x', ' ')",
+            "ts.call('nextToken', '1 2', 'Pref::Dev\\0x', ' ')",
+            "ts.call('nextToken', '1 2', 'Pref::Dev', ' ')",
+            "ts.setGlobal('$Pref::Dev\\0x', '1')",
+        ] {
+            let source = format!(
+                "local ok = pcall(function() {call} end) ts.setGlobal('$Test::Allowed', tostring(ok))"
+            );
+            assert_eq!(run(&mut vm, &files, "nul.lua", &source), Ok(true), "{call}");
+            assert_eq!(global(&vm, "$Test::Allowed"), "false", "{call}: {}", console(&mut vm));
+            assert_eq!(global(&vm, "$Pref::Dev"), "", "{call}");
+        }
+        // `nextToken` into a global of the game's own still works.
+        assert_eq!(
+            run(&mut vm, &files, "token.lua", "ts.setGlobal('$Test::Rest', ts.call('nextToken', 'a b', 'Test::Tok', ' '))"),
+            Ok(true)
+        );
+        assert_eq!((global(&vm, "$Test::Tok"), global(&vm, "$Test::Rest")), ("a".into(), "b".into()));
+        // A global of the game's own is the language's to write.
+        assert_eq!(
+            run(&mut vm, &files, "fine.lua", "ts.setGlobal('$Test::Mine', 'yes')"),
+            Ok(true)
+        );
+        assert_eq!(global(&vm, "$Test::Mine"), "yes");
+    }
+
+    fn lua_cannot_switch_packages() {
+        let engine = engine();
+        let files = files(&[]);
+        let mut vm = server(&engine, &files);
+        eval(
+            &mut vm,
+            "package Theirs { function tsWho() { return \"theirs\"; } }; function tsWho() { return \"base\"; } activatePackage(Theirs);",
+        )
+        .unwrap();
+        for function in ["deactivatePackage", "activatePackage"] {
+            let source = format!(
+                "local ok = pcall(function() ts.call('{function}', 'Theirs') end) ts.setGlobal('$Test::Allowed', tostring(ok))"
+            );
+            assert_eq!(run(&mut vm, &files, "packages.lua", &source), Ok(true));
+            let log = console(&mut vm);
+            assert_eq!(global(&vm, "$Test::Allowed"), "false", "{function}: {log}");
+            assert_eq!(eval(&mut vm, "return tsWho();").unwrap(), "theirs", "{function}");
+        }
+    }
+
     fn bulk_builtins_are_charged_by_the_bytes_they_handle() {
         let engine = engine();
         let files = files(&[]);

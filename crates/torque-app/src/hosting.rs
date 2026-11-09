@@ -443,6 +443,10 @@ pub fn register_join_natives_with(
     timeout: Duration,
 ) {
     let lookups = Rc::new(RefCell::new(JoinLookups::new(resolver, timeout)));
+    // Both reach out to an address the script gives: a name looked up, a public address the connect may reach.
+    for name in ["checkJoinAddress", "armPublicJoin"] {
+        vm.add_native_effects("", name, torque_ts_vm::effects::Effects::NETWORK);
+    }
     let (st, running) = (Rc::clone(state), Rc::clone(&lookups));
     vm.register(
         "checkJoinAddress",

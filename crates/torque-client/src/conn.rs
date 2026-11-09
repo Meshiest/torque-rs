@@ -1278,6 +1278,12 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
         }
         Native::Void
     });
+    // It connects to the address the script gives.
+    vm.add_native_effects(
+        "GameConnection",
+        "connect",
+        ts_vm::effects::Effects::NETWORK,
+    );
     let st = Rc::clone(client);
     method(vm, "connect", move |vm, c, _| {
         let Some(obj) = c.this_object else {

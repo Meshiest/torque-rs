@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use torque_ts_vm::convert::{ArgKind, ScriptError, ScriptReturn};
+use torque_ts_vm::effects::Effects;
 use torque_ts_vm::vm::{Native, NativeCall, Vm};
 
 use crate::param::{Cx, Param, ParamError, ParamKind, all_arities, native_shape_error};
@@ -457,6 +458,8 @@ pub struct NativeEntry<'a> {
     pub usage: &'a str,
     /// The whole doc comment of a native the attributes declared; empty for one declared by hand.
     pub docs: &'a str,
+    /// What it declared it does beyond its result ([`ScriptRegistry::with_effects`]).
+    pub effects: Effects,
 }
 
 impl Engine {
@@ -471,6 +474,7 @@ impl Engine {
                 usage,
                 dev,
                 docs,
+                effects,
                 ..
             } => Some(NativeEntry {
                 side: entry.side,
@@ -480,6 +484,7 @@ impl Engine {
                 dev: *dev,
                 usage,
                 docs,
+                effects: *effects,
             }),
             _ => None,
         })
@@ -495,12 +500,14 @@ pub(crate) enum EntryKind {
         native: TypedNative,
         dev: bool,
         docs: &'static str,
+        effects: Effects,
     },
     Global {
         name: String,
         default: String,
+        effects: Effects,
     },
-    Pref(&'static crate::PrefDecl),
+    Pref(&'static crate::PrefDecl, Effects),
     Class(crate::class::ClassInfo),
 }
 
@@ -514,10 +521,24 @@ impl ScriptEntry {
                 usage,
                 native,
                 dev,
+                effects,
                 ..
-            } => native.install(vm, engine, callee(namespace, name, *method), usage, *dev),
-            EntryKind::Global { name, default } => vm.set_global(name, default),
-            EntryKind::Pref(decl) => decl.install(vm),
+            } => {
+                native.install(vm, engine, callee(namespace, name, *method), usage, *dev);
+                vm.add_native_effects(namespace, name, *effects);
+            }
+            EntryKind::Global {
+                name,
+                default,
+                effects,
+            } => {
+                vm.set_global(name, default);
+                vm.add_global_effects(name, *effects);
+            }
+            EntryKind::Pref(decl, effects) => {
+                decl.install(vm);
+                vm.add_global_effects(decl.name, *effects);
+            }
             EntryKind::Class(class) => class.install(vm, engine),
         }
     }
@@ -618,11 +639,62 @@ pub(crate) fn replay_entries(entries: &[ScriptEntry], stage: Stage, vm: &mut Vm,
 pub struct ScriptRegistry<'b> {
     engine: &'b mut EngineBuilder,
     side: Side,
+    /// The effects of what is being declared inside [`with_effects`](Self::with_effects); none outside it.
+    pub(crate) effects: Effects,
 }
 
 impl<'b> ScriptRegistry<'b> {
     pub(crate) fn new(engine: &'b mut EngineBuilder, side: Side) -> ScriptRegistry<'b> {
-        ScriptRegistry { engine, side }
+        ScriptRegistry {
+            engine,
+            side,
+            effects: Effects::NONE,
+        }
+    }
+
+    /// Declares what `declare` declares in this registry with `effects` (on top of what each declaration says itself):
+    /// a native that writes or deletes files, runs code from text, switches mods or quits, changes permissions, or
+    /// connects to an address it is given. A host's call policy reads them ([`Vm::effects_of_name`]) to keep code it does
+    /// not trust (an extension's script language) away from them, so a native with such an effect must say so. Only what
+    /// `declare` declares gets them; the registry is as it was before once it returns.
+    ///
+    /// The globals and prefs `declare` declares get them too, as the effects of writing them ([`Vm::global_effects`]): a
+    /// pref that sets a limit, a folder or which mods load is [`Effects::ENGINE`].
+    ///
+    /// ```
+    /// use torque_engine::{Effects, EngineBuilder, Plugin, PluginId, ServerStage};
+    /// use torque_ts_vm::vm::Vm;
+    ///
+    /// #[derive(PluginId)]
+    /// struct NotesPlugin;
+    /// impl Plugin for NotesPlugin {
+    ///     fn build(&self, engine: &mut EngineBuilder) {
+    ///         engine
+    ///             .script()
+    ///             .function("Notes", "count", &[], "how many notes there are", || 0)
+    ///             .with_effects(Effects::FILES, |r| {
+    ///                 r.function("Notes", "clear", &[], "deletes the notes file", || true);
+    ///             })
+    ///             .function("Notes", "first", &[], "the first note", || "");
+    ///     }
+    /// }
+    ///
+    /// let engine = EngineBuilder::new().add_plugins(NotesPlugin).build()?;
+    /// let mut vm = Vm::new();
+    /// for &stage in ServerStage::ALL {
+    ///     engine.replay(stage, &mut vm)?;
+    /// }
+    /// assert_eq!(vm.native_effects("Notes", "clear"), Effects::FILES);
+    /// assert_eq!(vm.native_effects("Notes", "count"), Effects::NONE);
+    /// assert_eq!(vm.native_effects("Notes", "first"), Effects::NONE);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn with_effects(&mut self, effects: Effects, declare: impl FnOnce(&mut Self)) -> &mut Self {
+        let kept = self.effects;
+        self.effects = kept | effects;
+        declare(self);
+        self.effects = kept;
+        self
     }
 
     /// Declares the function `namespace::name` (`namespace` empty for a global function): `f`, with `args` naming its
@@ -724,7 +796,10 @@ impl<'b> ScriptRegistry<'b> {
         for decl in natives {
             let native = (decl.native)();
             let usage = decl.usage_text(&native);
+            let kept = self.effects;
+            self.effects = kept | decl.effects;
             self.native(decl.callee(), usage, native, decl.dev, decl.docs);
+            self.effects = kept;
         }
         self
     }
@@ -755,9 +830,11 @@ impl<'b> ScriptRegistry<'b> {
     /// Declares the global variable `name` (with its `$`) and sets it to `default`, before scripts run.
     pub fn global(&mut self, name: &str, default: &str) -> &mut Self {
         let key = name.to_ascii_lowercase();
+        let effects = self.effects;
         self.declare(key, "global", name.to_string(), || EntryKind::Global {
             name: name.to_string(),
             default: default.to_string(),
+            effects,
         })
     }
 
@@ -782,6 +859,7 @@ impl<'b> ScriptRegistry<'b> {
         };
         let key = format!("{}::{}", namespace, name).to_ascii_lowercase();
         let kind = if method { "method" } else { "function" };
+        let effects = self.effects;
         self.declare(key, kind, callee.label(), || EntryKind::Native {
             namespace: namespace.to_string(),
             name: name.to_string(),
@@ -790,6 +868,7 @@ impl<'b> ScriptRegistry<'b> {
             native,
             dev,
             docs,
+            effects,
         })
     }
 
@@ -841,6 +920,8 @@ pub struct NativeDecl {
     pub usage: Option<&'static str>,
     /// The whole doc comment, for the script reference.
     pub docs: &'static str,
+    /// What it does beyond its result (the attribute's `effects = "files+code"`): see [`ScriptRegistry::with_effects`].
+    pub effects: Effects,
     /// Makes the native.
     pub native: fn() -> TypedNative,
 }
@@ -868,6 +949,7 @@ impl NativeDecl {
         let native = (self.native)();
         let usage = self.usage_text(&native)?;
         native.install(vm, engine, self.callee(), &usage, self.dev);
+        vm.add_native_effects(self.namespace, self.name, self.effects);
         Ok(())
     }
 }

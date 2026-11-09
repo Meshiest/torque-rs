@@ -283,6 +283,17 @@ struct RealLengths;
 
 impl FileRules for RealLengths {}
 
+/// The file extensions TorqueScript's own files have (sources, compiled scripts, GUIs, missions and editor files), which
+/// no other language may take ([`Vm::set_script_language`]).
+pub const RESERVED_EXTENSIONS: &[&str] = &["cs", "dso", "gui", "mis", "ed"];
+
+/// Whether `extension` (without the dot) is one of [`RESERVED_EXTENSIONS`], without case.
+pub fn is_reserved_extension(extension: &[u8]) -> bool {
+    RESERVED_EXTENSIONS
+        .iter()
+        .any(|r| r.as_bytes().eq_ignore_ascii_case(extension))
+}
+
 /// The installed rules (boxed in the `Vm`).
 pub(crate) struct Policies {
     pub(crate) declare: Rc<dyn DeclarePolicy>,
@@ -296,6 +307,8 @@ pub(crate) struct Policies {
     pub(crate) extensions: Extensions,
     /// The other languages `exec` runs, by their extension (folded, without the dot).
     pub(crate) languages: Vec<(Vec<u8>, Rc<dyn ScriptLanguage>)>,
+    /// What the natives declared they do ([`crate::effects`]).
+    pub(crate) effects: crate::effects::EffectTable,
 }
 
 impl Default for Policies {
@@ -311,6 +324,7 @@ impl Default for Policies {
             build: BuildInfo::default(),
             extensions: Extensions::default(),
             languages: Vec::new(),
+            effects: Default::default(),
         }
     }
 }
@@ -396,19 +410,22 @@ impl Vm {
     }
 
     /// Installs `language` for the files whose extension is `extension` (without the dot, any case): `exec` runs them
-    /// with it instead of compiling them as TorqueScript ([`ScriptLanguage`]). Installing for an extension again replaces
-    /// the language. A compiled script's extensions (`cs`, `dso`, `gui`, `mis`) are refused: false.
+    /// with it instead of compiling them as TorqueScript ([`ScriptLanguage`]). False, and nothing changes, for TorqueScript's
+    /// own extensions ([`RESERVED_EXTENSIONS`]) and for an extension another language already has: the first keeps its
+    /// files, so a second extension declaring them cannot take them over.
     pub fn set_script_language(
         &mut self,
         extension: &str,
         language: Rc<dyn ScriptLanguage>,
     ) -> bool {
         let key = crate::text::fold(extension.trim_start_matches('.').as_bytes());
-        if key.is_empty() || matches!(key.as_slice(), b"cs" | b"dso" | b"gui" | b"mis") {
+        if key.is_empty() || is_reserved_extension(&key) {
             return false;
         }
         let languages = &mut self.policies_mut().languages;
-        languages.retain(|(k, _)| *k != key);
+        if languages.iter().any(|(k, _)| *k == key) {
+            return false;
+        }
         languages.push((key, language));
         true
     }

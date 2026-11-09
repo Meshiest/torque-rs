@@ -48,7 +48,13 @@ pub(crate) struct ExtensionState {
     /// [`TORQUE_DEFAULT_STEPS`]: torque_plugin_abi::TORQUE_DEFAULT_STEPS
     pub(crate) fallback_steps: AtomicU64,
     log: Mutex<Vec<String>>,
+    /// The script engines dropped while this thread was inside a call into it, by language: told when the outermost
+    /// call returns ([`Entered`]'s drop), so their realms go too.
+    dropped: Mutex<Vec<(usize, u64)>>,
 }
+
+/// How many times the script engines dropped during a call are told in a row: telling one may drop more.
+const MAX_DROP_ROUNDS: usize = 64;
 
 /// About the stack one script level takes (measured: 2.5 KiB in a debug build, 0.65 KiB in a release one): the rate the
 /// stack an extension uses between a call into it and its call back is charged to the script engine's call depth at.
@@ -99,6 +105,7 @@ impl ExtensionState {
             marks: Mutex::new(Vec::new()),
             fallback_steps: AtomicU64::new(0),
             log: Mutex::new(registered.log),
+            dropped: Mutex::new(Vec::new()),
         }
     }
 
@@ -337,9 +344,29 @@ impl ExtensionState {
             return;
         }
         // From the engine's own work, never inside a call of the extension's on this thread (a script engine is dropped
-        // by its host); a nested drop is skipped rather than re-entering.
-        if let Some(_one_at_a_time) = self.enter() {
-            ffi::vm_dropped(&self.languages[lang], vm);
+        // by its host). A drop inside a call (a script the call ran dropped another script engine) waits for the
+        // outermost call to return rather than re-entering.
+        match self.enter() {
+            Some(_one_at_a_time) => ffi::vm_dropped(&self.languages[lang], vm),
+            None => self
+                .dropped
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((lang, vm)),
+        }
+    }
+
+    /// Tells the languages about the script engines dropped during the call that is returning, under its lock.
+    fn tell_dropped(&self) {
+        for _ in 0..MAX_DROP_ROUNDS {
+            let dropped =
+                std::mem::take(&mut *self.dropped.lock().unwrap_or_else(PoisonError::into_inner));
+            if dropped.is_empty() || self.disabled().is_some() {
+                return;
+            }
+            for (lang, vm) in dropped {
+                ffi::vm_dropped(&self.languages[lang], vm);
+            }
         }
     }
 
@@ -411,6 +438,11 @@ impl Drop for Entered<'_> {
         if self.lock.is_none() {
             self.state.nesting.fetch_sub(1, Ordering::SeqCst);
             return;
+        }
+        // The outermost call has returned: the script engines dropped meanwhile are told now, still one call at a time
+        // (not while a panic unwinds: they wait for the next call).
+        if !std::thread::panicking() {
+            self.state.tell_dropped();
         }
         self.state.nesting.store(0, Ordering::SeqCst);
         // Before the lock is let go (fields drop after this).
@@ -521,12 +553,13 @@ impl ExtensionPlugin {
     /// loaded from its private copy `copy` (an absolute path).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn load_library(
-        copy: &Path,
+        held: &crate::stage::Held,
         original: &Path,
         manifest: &Manifest,
         sha256: &str,
     ) -> Result<ExtensionPlugin, String> {
-        let registered = ffi::load_library(copy)?;
+        let copy = held.path.as_path();
+        let registered = ffi::load_library(&held.open_path(), &|| held.still_same())?;
         if registered.id != manifest.id || registered.version != manifest.version {
             return Err(format!(
                 "it reports {} {}, and its manifest says {} {}",
@@ -544,7 +577,7 @@ impl ExtensionPlugin {
     /// In a browser build no library loads.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn load_library(
-        _copy: &Path,
+        _held: &crate::stage::Held,
         _original: &Path,
         _manifest: &Manifest,
         _sha256: &str,
@@ -602,15 +635,17 @@ impl Plugin for ExtensionPlugin {
             } else {
                 Box::leak(spec.docs.clone().into_boxed_str())
             };
-            registry(engine, spec.side).native_at_run_time(
-                callee,
-                &names,
-                &spec.description,
-                spec.usage.as_deref(),
-                spec.dev,
-                docs,
-                native,
-            );
+            registry(engine, spec.side).with_effects(spec.effects, |r| {
+                r.native_at_run_time(
+                    callee,
+                    &names,
+                    &spec.description,
+                    spec.usage.as_deref(),
+                    spec.dev,
+                    docs,
+                    native,
+                );
+            });
         }
         for global in &state.globals {
             registry(engine, global.side).global(&global.name, &global.default);

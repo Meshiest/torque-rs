@@ -220,7 +220,9 @@ pub(crate) fn ts_table(lua: &Lua, package: &str) -> mlua::Result<Table> {
         charged_function(lua, charge_bytes, |lua, (name, value): (String, Value)| {
             let value = to_text(&value)?;
             if !with_call(lua, |call| call.set_global(&global_name(&name), &value))? {
-                return Err(Error::runtime(format!("`{name}` is not a global's name")));
+                return Err(Error::runtime(format!(
+                    "`{name}` cannot be set: it is not a global's name, or the engine refused it"
+                )));
             }
             Ok(())
         })?,

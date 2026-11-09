@@ -8,8 +8,10 @@ test("a joining page ignores ?lan: only the invite's server allows private addre
   assert.equal(privateAllowed('lan', '', true), true);
   assert.equal(privateAllowed('cloudflare', '?lan=1', true), false, 'a link the host sent with ?lan=1');
   assert.equal(privateAllowed('google', '?nolock=1&lan', true), false);
-  // the host's own page may choose it
-  assert.equal(privateAllowed('cloudflare', '?lan=1', false), true);
+  // On the host's page a `?lan` link counts only when the page's code allows it.
+  assert.equal(privateAllowed('cloudflare', '?lan=1', false), false, 'a link alone');
+  assert.equal(privateAllowed('cloudflare', '?lan=1', false, true), true);
+  assert.equal(privateAllowed('cloudflare', '', false, true), false);
   assert.equal(privateAllowed('cloudflare', '', false), false);
   assert.equal(privateAllowed('lan', '', false), true);
 });

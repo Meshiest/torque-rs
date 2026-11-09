@@ -725,6 +725,8 @@ pub fn parse_address(text: &[u8]) -> Option<SocketAddrV4> {
 
 /// Registers the query's natives.
 pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
+    // It broadcasts on the LAN (the master and single queries do nothing here).
+    vm.add_native_effects("", "queryLanServers", ts_vm::effects::Effects::NETWORK);
     let state = Rc::clone(client);
     vm.register(
         "queryLanServers",

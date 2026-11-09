@@ -126,6 +126,22 @@ pub const TORQUE_ARG_REST: u32 = 2;
 pub const TORQUE_NATIVE_DEV: u32 = 1;
 /// [`TorqueNativeDecl::usage`] is the whole usage text, kept as written (none is made from the arguments).
 pub const TORQUE_NATIVE_EXACT_USAGE: u32 = 2;
+/// The native opens, writes, deletes or exports files. The engine's default call policy keeps script languages from
+/// calling a native with this flag or [`TORQUE_NATIVE_CODE`], [`TORQUE_NATIVE_ENGINE`] or [`TORQUE_NATIVE_PERMISSIONS`],
+/// so a native with one of these effects must declare it.
+pub const TORQUE_NATIVE_FILES: u32 = 4;
+/// The native runs code from text, or a function or method it names.
+pub const TORQUE_NATIVE_CODE: u32 = 8;
+/// The native changes what the engine runs as a whole: switches or loads mods, deletes every datablock or variable,
+/// quits.
+pub const TORQUE_NATIVE_ENGINE: u32 = 16;
+/// The native connects to, or sends to, an address its caller names.
+pub const TORQUE_NATIVE_NETWORK: u32 = 32;
+/// The native grants, revokes or defines permissions or roles.
+pub const TORQUE_NATIVE_PERMISSIONS: u32 = 64;
+/// The native writes a variable whose name one of its arguments gives: the call policy checks that write as a write of
+/// the variable, taking any argument for the name.
+pub const TORQUE_NATIVE_VARIABLES: u32 = 128;
 
 /// A message for the console or the engine's log.
 pub const TORQUE_LOG_INFO: u32 = 0;
@@ -171,7 +187,9 @@ pub struct TorqueNativeDecl {
     pub usage: TorqueStr,
     /// The whole doc comment, for the script reference (empty for none).
     pub docs: TorqueStr,
-    /// [`TORQUE_NATIVE_DEV`] and [`TORQUE_NATIVE_EXACT_USAGE`], or 0.
+    /// [`TORQUE_NATIVE_DEV`], [`TORQUE_NATIVE_EXACT_USAGE`] and its effects ([`TORQUE_NATIVE_FILES`],
+    /// [`TORQUE_NATIVE_CODE`], [`TORQUE_NATIVE_ENGINE`], [`TORQUE_NATIVE_NETWORK`], [`TORQUE_NATIVE_PERMISSIONS`],
+    /// [`TORQUE_NATIVE_VARIABLES`]), or 0.
     pub flags: u32,
     /// The function the engine calls (a [`TorqueNativeFn`]).
     pub call: Option<unsafe extern "C" fn(user: *mut c_void, call: TorqueCall) -> TorqueStatus>,
