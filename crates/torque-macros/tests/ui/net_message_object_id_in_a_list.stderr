@@ -1,0 +1,5 @@
+error: a raw object id is not a message field: the id means nothing to the peer and a peer could make one up; name an object with `GhostRef`, which the server checks against the ghosts it sent the caller
+ --> tests/ui/net_message_object_id_in_a_list.rs:7:14
+  |
+7 |     targets: Vec<Option<ObjId>>,
+  |              ^^^^^^^^^^^^^^^^^^

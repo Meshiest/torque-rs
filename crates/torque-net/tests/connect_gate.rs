@@ -284,7 +284,7 @@ fn a_garbled_or_oversize_block_is_refused_with_a_reason_not_dropped() {
                 },
                 1,
             ),
-            "manifest format 9 is not supported (this side speaks 1)",
+            "manifest format 9 is not supported (this side speaks 1 and 2)",
         ),
         (
             "truncated",

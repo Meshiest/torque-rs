@@ -25,4 +25,22 @@ fn ui() {
     ] {
         cases.compile_fail(format!("tests/ui/{case}.rs"));
     }
+    // Plugin RPCs: a message the peer chooses the bytes of must say its caps, and an RPC has one direction.
+    cases.pass("tests/ui/net_message_rpc.rs");
+    for case in [
+        "net_message_unbounded_string",
+        "net_message_unbounded_vec",
+        "net_message_raw_object_id",
+        "net_message_object_id_in_a_list",
+        "net_message_float_without_finite",
+        "net_message_finite_on_integer",
+        "net_message_bad_attribute",
+        "net_message_unknown_type",
+        "rpc_reply_bearing_to_client",
+        "rpc_server_handler_on_client_rpc",
+        "rpc_handler_wrong_message",
+        "rpc_no_direction",
+    ] {
+        cases.compile_fail(format!("tests/ui/{case}.rs"));
+    }
 }

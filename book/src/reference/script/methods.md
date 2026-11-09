@@ -4,7 +4,7 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-284 entries in 34 classes.
+291 entries in 34 classes.
 
 | Class | Entries |
 |---|---|
@@ -12,7 +12,7 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 | [Camera](#camera) | 3 |
 | [FlyingVehicle](#flyingvehicle) | 1 |
 | [GameBase](#gamebase) | 1 |
-| [GameConnection](#gameconnection) | 7 |
+| [GameConnection](#gameconnection) | 14 |
 | [GuiBitmapButtonCtrl](#guibitmapbuttonctrl) | 3 |
 | [GuiBitmapCtrl](#guibitmapctrl) | 4 |
 | [GuiButtonBaseCtrl](#guibuttonbasectrl) | 3 |
@@ -93,14 +93,28 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 
 - `obj.activateGhosting()`
   *arguments: none; server and client*
+- `%client.addRole(name)` - gives the player a role the game defined; 1 when it was new, 0 when held or refused
+  *arguments: 1; server*
 - `obj.delete(string reason=NULL)`
   *arguments: 0 to 1; server and client*
 - `obj.getControlObject()`
   *arguments: none; server and client*
+- `%client.getRoles()` - the roles the player holds, as a word list
+  *arguments: none; server*
+- `%client.grant(grant)` - gives the player a permission or a trailing-wildcard grant (props.\*); 1 when it was new, 0 when held or refused
+  *arguments: 1; server*
+- `%client.hasPermission(permission)` - whether any grant of the player or of their roles covers the permission
+  *arguments: 1; server*
+- `%client.hasRole(name)` - whether the player holds the role
+  *arguments: 1; server*
 - `obj.isAIControlled()`
   *arguments: none; server and client*
+- `%client.removeRole(name)` - takes a role from the player; 1 when they held it
+  *arguments: 1; server*
 - `obj.resetGhosting()`
   *arguments: none; server and client*
+- `%client.revoke(grant)` - takes a direct grant from the player; 1 when they held it
+  *arguments: 1; server*
 - `obj.setControlObject(ShapeBase object)`
   *arguments: 1; server and client*
 - `obj.transmitDataBlocks(S32 sequence)`

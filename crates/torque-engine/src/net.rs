@@ -53,6 +53,7 @@ use torque_net::profile::HandshakeProfile;
 
 use torque_ts_vm::vm::Vm;
 
+use crate::rpc::{self, RpcEntry};
 use crate::{Engine, EngineBuilder};
 
 /// What a client's script engine adds to the connect block its connections send: that it takes a server's mod content and the most
@@ -259,10 +260,21 @@ impl Engine {
                 names(NameTable::Datablock).chain(collision.iter().map(String::as_str)),
             )
             .with_channels(
-                self.list::<ChannelEntry>()
+                self.channel_entries()
                     .iter()
                     .map(ChannelEntry::manifest_name),
             )
+            .with_rpcs(self.list::<RpcEntry>().iter().map(RpcEntry::manifest_entry))
+    }
+
+    /// The channel entries of this engine: the plugins', and the reserved RPC channel in each direction when plugins registered
+    /// RPCs.
+    fn channel_entries(&self) -> Vec<ChannelEntry> {
+        let mut entries = self.list::<ChannelEntry>().to_vec();
+        if !self.list::<RpcEntry>().is_empty() {
+            entries.extend(rpc::channel_entries());
+        }
+        entries
     }
 
     /// The names of the collision sources plugins added ([`PluginCollision`]), each once, the valid ones only.
@@ -278,7 +290,7 @@ impl Engine {
     /// The bulk channels plugins added, in id order (sorted by name). Empty for an engine with none, whose packets are then
     /// Torque's own.
     pub fn net_channels(&self) -> Result<ChannelRegistry, ChannelError> {
-        ChannelRegistry::new(self.list::<ChannelEntry>())
+        ChannelRegistry::new(&self.channel_entries())
     }
 
     /// Whether this engine says anything on the wire: a networked plugin, a registered name or an auth provider.
@@ -286,6 +298,7 @@ impl Engine {
         !self.net_versions().is_empty()
             || !self.list::<NetName>().is_empty()
             || !self.list::<ChannelEntry>().is_empty()
+            || !self.list::<RpcEntry>().is_empty()
             || self.collision_names().next().is_some()
             || self.auth().is_some()
     }

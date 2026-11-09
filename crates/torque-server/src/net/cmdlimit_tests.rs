@@ -232,3 +232,59 @@ fn a_flood_prints_one_line_a_second_with_the_count_since_the_last() {
         lines[1].1
     );
 }
+
+/// What a test caller holds.
+struct Holds(&'static [&'static str]);
+
+impl torque_engine::permissions::PermissionView for Holds {
+    fn has_permission(&self, permission: &str) -> bool {
+        self.0.contains(&permission)
+    }
+}
+
+#[test]
+fn a_command_with_a_permission_runs_only_for_a_caller_who_holds_it() {
+    let table = table(&[(
+        "Mute",
+        CommandSpec::new()
+            .arg("n", ArgType::Int)
+            .requires("chat.mute")
+            .rate(4, 8),
+    )]);
+    let mut conn = ConnCommands::default();
+    let call = |conn: &mut ConnCommands, held: &Holds| {
+        conn.admit_for(&table, 5, b"serverCmdMute", &args(&["1"]), 0, held)
+    };
+    for held in [Holds(&[]), Holds(&["chat.kick"])] {
+        assert!(
+            matches!(
+                call(&mut conn, &held),
+                Admission::Refused {
+                    reason: CommandRefusal::NotPermitted,
+                    ..
+                }
+            ),
+            "a caller without it is refused"
+        );
+    }
+    assert!(runs(&call(&mut conn, &Holds(&["chat.mute"]))));
+    // Without a permission to hold, the plain entry point refuses too, and a command that asks for none is unaffected.
+    assert!(matches!(
+        conn.admit(&table, 5, b"serverCmdMute", &args(&["1"]), 0),
+        Admission::Refused {
+            reason: CommandRefusal::NotPermitted,
+            ..
+        }
+    ));
+    let open = self::table(&[("Ping", CommandSpec::new().arg("n", ArgType::Int))]);
+    assert!(runs(&conn.admit_for(
+        &open,
+        5,
+        b"serverCmdPing",
+        &args(&["1"]),
+        0,
+        &Holds(&[])
+    )));
+    // The refusal is counted like any other.
+    assert_eq!(conn.drops("Mute"), 3);
+}

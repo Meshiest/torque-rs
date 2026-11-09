@@ -29,6 +29,7 @@ use torque_server::game::GameParts;
 use torque_server::net::channels;
 use torque_server::net::cmdlimit::{CommandTable, register_command_drops};
 use torque_server::net::peer::ProtocolMode;
+use torque_server::net::rpc::{ServerRpc, SharedHost, register_server_natives};
 use torque_server::net::torque::TorqueNet;
 use torque_server::net::transport::{MemoryEnd, SharedTransport};
 use torque_server::net::{HostParts, NetShared};
@@ -262,7 +263,25 @@ impl GameServer {
         // The engine's bulk channels go in each connection's packets; the hub a game sends through is an extension of the
         // server's script engine.
         let channels = engine.net_channels().map_err(|e| e.to_string())?;
-        if let Some(hub) = channels::install(&shared, channels) {
+        let hub = channels::install(&shared, channels);
+        // Who may do what: the roles and permissions the plugins declared, scripts may add to, and the provider keeps.
+        let permissions = torque_engine::permissions::Permissions::new(engine)
+            .map_err(|e| format!("the permissions: {e}"))?;
+        server.vm.set_extension(Rc::new(permissions));
+        // The plugins' RPCs ride the reserved channel; the server's pump runs them once a tick.
+        let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
+        let has_rpcs = !rpcs.is_empty();
+        if has_rpcs && let Some(hub) = &hub {
+            let host = Rc::new(SharedHost(Rc::downgrade(&shared)));
+            let perms = server
+                .vm
+                .extension::<torque_engine::permissions::Permissions>()
+                .ok_or("the server has no permissions")?;
+            let rpc = Rc::new(ServerRpc::new(rpcs, hub.clone(), host, perms));
+            register_server_natives(&mut server.vm, &rpc);
+            server.vm.set_extension(rpc);
+        }
+        if let Some(hub) = hub {
             server.vm.set_extension(Rc::new(hub));
         }
         // The server commands plugins declared are held to their limits, and scripts can read the refusals.
@@ -272,7 +291,7 @@ impl GameServer {
             register_command_drops(&mut server.vm, &shared);
         }
         // The plugins' tick hooks run around the process list's pass; a server whose engine has none ticks as it always did.
-        if !engine.list::<ServerTick>().is_empty() {
+        if has_rpcs || !engine.list::<ServerTick>().is_empty() {
             server.set_tick_hooks(Some(Rc::new(EngineTicks {
                 engine: engine.clone(),
                 printed: RefCell::default(),
@@ -480,6 +499,9 @@ impl EngineTicks {
 
 impl TickHooks for EngineTicks {
     fn before(&self, vm: &mut Vm, tick: TickInfo) {
+        if let Some(rpc) = vm.extension::<ServerRpc>() {
+            rpc.pump(vm, tick.number);
+        }
         self.run(TickPhase::Before, vm, tick);
     }
 

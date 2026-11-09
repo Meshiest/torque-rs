@@ -21,6 +21,7 @@
 
 pub mod draw;
 pub mod field;
+pub mod message;
 
 use std::any::{Any, TypeId};
 use std::fmt;
@@ -39,7 +40,8 @@ use crate::tge::{TGE_DATABLOCK_CLASSES, TGE_OBJECT_CLASSES};
 use crate::{ChargeFn, ObjectView, PackCtx, Value};
 
 pub use draw::{DatablockFields, DrawnShapes, ShapeDraw, ShapeFn};
-pub use field::{DatablockRef, FieldSpec, NetField};
+pub use field::{DatablockRef, FieldSpec, GhostRef, NetField};
+pub use message::{NetMessage, ScriptArgs};
 
 /// How a client shows a plugin ghost between the server's updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

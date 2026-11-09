@@ -57,8 +57,8 @@ pub use codec::{
 };
 pub use datablocks::{DatablockCodecSet, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks};
 pub use plugin::{
-    DatablockCodec, DatablockRef, GhostRecord, NetRecord, PluginClass, PluginClasses, Record,
-    Replicate,
+    DatablockCodec, DatablockRef, GhostRecord, GhostRef, NetMessage, NetRecord, PluginClass,
+    PluginClasses, Record, Replicate,
 };
 pub use set::GhostCodecSet;
 pub use shapebase::TgeShapeBase;

@@ -88,6 +88,47 @@ impl TokenBucket {
     }
 }
 
+/// Ticks between two console lines about one connection's dropped calls (a second, rounded to whole ticks).
+pub const REPORT_TICKS: u64 = 31;
+
+/// The calls of one kind a connection had dropped or refused, and when the console is next told: at most one line a second
+/// however many were dropped (what the server commands and the RPCs both report with).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DropCounter {
+    total: u64,
+    unreported: u64,
+    last_report: Option<u64>,
+}
+
+impl DropCounter {
+    /// Counts one more dropped call.
+    pub fn note(&mut self) {
+        self.total = self.total.saturating_add(1);
+        self.unreported = self.unreported.saturating_add(1);
+    }
+
+    /// How many were dropped in all.
+    pub fn total(&self) -> u64 {
+        self.total
+    }
+
+    /// The count a console line is due for at `tick` (those dropped since the last line), or `None` when nothing was dropped or
+    /// a line went out less than [`REPORT_TICKS`] ago. Asking again after a `Some` gives `None` until more are dropped.
+    pub fn report(&mut self, tick: u64) -> Option<u64> {
+        if self.unreported == 0 {
+            return None;
+        }
+        let due = self
+            .last_report
+            .is_none_or(|last| tick.saturating_sub(last) >= REPORT_TICKS);
+        if !due {
+            return None;
+        }
+        self.last_report = Some(tick);
+        Some(std::mem::take(&mut self.unreported))
+    }
+}
+
 /// What an argument of a server command must be, checked before the command runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -175,6 +216,9 @@ pub struct CommandSpec {
     pub burst: u32,
     /// What the command does, for its usage text.
     pub description: String,
+    /// The permission a caller must hold (a dotted name such as `chat.mute`; a wildcard grant of the caller covers it), if the
+    /// command is not for everyone. Checked by the network host before the arguments are.
+    pub permission: Option<String>,
 }
 
 impl Default for CommandSpec {
@@ -185,6 +229,7 @@ impl Default for CommandSpec {
             rate: 32,
             burst: 64,
             description: String::new(),
+            permission: None,
         }
     }
 }
@@ -229,6 +274,14 @@ impl CommandSpec {
     #[must_use]
     pub fn max_arg_bytes(mut self, bytes: usize) -> CommandSpec {
         self.max_arg_bytes = bytes;
+        self
+    }
+
+    /// Asks for `permission` of a caller ([`CommandSpec::permission`]). The name is checked when the command is declared, and
+    /// declared for the plugin when it is not already.
+    #[must_use]
+    pub fn requires(mut self, permission: &str) -> CommandSpec {
+        self.permission = Some(permission.to_string());
         self
     }
 
@@ -290,6 +343,8 @@ impl CommandSpec {
 pub enum CommandRefusal {
     /// The connection's bucket for the command was empty.
     RateLimited,
+    /// The caller does not hold the command's permission.
+    NotPermitted,
     /// Fewer arguments than the command's required ones.
     TooFewArguments {
         /// How many the call had.
@@ -326,6 +381,7 @@ impl fmt::Display for CommandRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CommandRefusal::RateLimited => f.write_str("too many calls"),
+            CommandRefusal::NotPermitted => f.write_str("not permitted"),
             CommandRefusal::TooFewArguments { given, needed } => {
                 write!(f, "{given} argument(s), at least {needed} needed")
             }
@@ -479,6 +535,26 @@ impl EngineBuilder {
                 ),
             });
             return false;
+        }
+        if let Some(permission) = &spec.permission {
+            if let Err(error) = torque_permissions::Permission::parse(permission) {
+                self.fail(BuildError::Rejected {
+                    plugin,
+                    message: format!("`{function}` asks for a permission that is not one: {error}"),
+                });
+                return false;
+            }
+            if !self
+                .list::<crate::permissions::DeclaredPermission>()
+                .iter()
+                .any(|d| d.name == *permission)
+            {
+                self.push(crate::permissions::DeclaredPermission {
+                    plugin,
+                    name: permission.clone(),
+                    description: format!("Use the {function} command"),
+                });
+            }
         }
         let optional_first = spec
             .args

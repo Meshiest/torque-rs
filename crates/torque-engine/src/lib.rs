@@ -74,9 +74,11 @@ mod group;
 pub mod net;
 pub mod net_classes;
 pub mod param;
+pub mod permissions;
 mod plugin;
 pub mod prefs;
 mod recipe;
+pub mod rpc;
 mod run;
 pub mod script;
 mod slots;
@@ -110,6 +112,7 @@ pub use recipe::{
 };
 pub use run::{RunError, Runner};
 pub use script::{IntoNative, NativeEntry, ScriptRegistry, Side, TypedNative};
+pub use torque_ghosts::plugin::NetMessage;
 /// Declares a console class as a struct with one typed field for each console field, for
 /// [`ScriptRegistry::class`](ScriptRegistry::class): the struct then implements [`ScriptClass`].
 ///
@@ -515,3 +518,46 @@ pub use torque_macros::DatablockCodec;
 /// }
 /// ```
 pub use torque_macros::GhostRecord;
+
+/// Declares the request or reply of a plugin RPC as a struct with one typed field for each value, for
+/// [`NetRegistry::rpc`]: the struct then implements [`NetMessage`] (and the record crate's `Layout`). The struct must also be
+/// `Debug`, `Clone`, `PartialEq` and `Default`. The fields go on the wire in the struct's order and take `#[net(...)]`:
+///
+/// - `bits = N`: an integer's width (`u8`, `u16`, `u32`, `i32`).
+/// - `max_len = N`: a `String`'s most bytes or a `Vec`'s most elements. **Required** for those types: a message has no default
+///   cap, so a peer cannot make a handler allocate what the author did not choose.
+/// - `finite`: a float field's decoder refuses a NaN or an infinity. **Required** for `f32`, `[f32; N]` and
+///   [`Xf`](net_classes::Xf) fields.
+///
+/// The field types are those of a ghost record (`bool`, `u8`, `u16`, `u32`, `i32`, `f32`, `[f32; N]`, `String`,
+/// [`DatablockRef`](net_classes::DatablockRef), [`Xf`](net_classes::Xf), `Option` and `Vec` of them) and
+/// [`GhostRef`](net_classes::GhostRef): the index of a ghost the caller can see. A raw object id has no form on the wire and does
+/// not compile.
+///
+/// ```
+/// use torque_engine::NetMessage;
+/// use torque_engine::net_classes::{GhostRef, Xf};
+///
+/// #[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+/// struct SpawnProp {
+///     #[net(max_len = 64)]
+///     data: String,
+///     #[net(finite)]
+///     at: Xf,
+///     #[net(bits = 8)]
+///     predict_id: u8,
+///     target: GhostRef,
+/// }
+/// ```
+///
+/// A string with no cap:
+///
+/// ```compile_fail,E0080
+/// use torque_engine::NetMessage;
+///
+/// #[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+/// struct Open {
+///     data: String,
+/// }
+/// ```
+pub use torque_macros::NetMessage;

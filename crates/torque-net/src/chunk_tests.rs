@@ -339,3 +339,83 @@ fn a_handle_says_whether_its_message_is_still_waiting_for_acknowledgement() {
         .unwrap();
     assert_eq!(tx.backlog(1), 10);
 }
+
+#[test]
+fn a_priority_channel_is_written_first_whatever_channel_has_the_turn() {
+    let limits = vec![
+        ChannelLimits::new(200).with_max_message(10_000),
+        ChannelLimits::new(100)
+            .with_max_message(1_000)
+            .with_priority(),
+        ChannelLimits::new(200).with_max_message(10_000),
+    ];
+    let (mut tx, mut rx) = (ChunkSender::new(&limits), ChunkReceiver::new(&limits));
+    // The bulk channels have more than a packet's room; the priority one has a small message.
+    tx.enqueue(0, Kind::Snapshot, vec![1; 9_000]).unwrap();
+    tx.enqueue(2, Kind::Snapshot, vec![2; 9_000]).unwrap();
+    for round in 0..6 {
+        tx.enqueue(1, Kind::Delta, vec![9; 40]).unwrap();
+        let mut w = BitWriter::new();
+        // A packet with room for one bulk channel's chunk and a little more.
+        tx.write(&mut w, round + 1, 240 * 8);
+        let bytes = w.into_bytes();
+        let mut out = Vec::new();
+        rx.read(&mut BitReader::new(&bytes), &mut out).unwrap();
+        assert!(
+            out.iter().any(|d| d.channel == 1 && d.data.len() == 40),
+            "the priority message was in packet {round}"
+        );
+        tx.on_notify(round + 1, true);
+    }
+}
+
+#[test]
+fn a_priority_channel_is_not_held_up_by_the_budget_the_bulk_channels_share() {
+    let limits = vec![
+        ChannelLimits::new(100).with_max_message(1_000),
+        ChannelLimits::new(100)
+            .with_max_message(1_000)
+            .with_max_backlog(1_000)
+            .with_priority(),
+    ];
+    let mut tx = ChunkSender::new(&limits).with_total_backlog(2_000);
+    tx.enqueue(0, Kind::Snapshot, vec![1; 1_000]).unwrap();
+    tx.enqueue(0, Kind::Snapshot, vec![1; 1_000]).unwrap();
+    assert_eq!(
+        tx.enqueue(0, Kind::Snapshot, vec![1; 10]),
+        Err(SendError::Backlog)
+    );
+    // The shared budget is full, and the priority channel still takes its message, up to its own backlog.
+    assert_eq!(tx.enqueue(1, Kind::Delta, vec![2; 500]), Ok(()));
+    assert_eq!(tx.enqueue(1, Kind::Delta, vec![2; 500]), Ok(()));
+    assert_eq!(
+        tx.enqueue(1, Kind::Delta, vec![2; 500]),
+        Err(SendError::Backlog)
+    );
+}
+
+#[test]
+fn a_receiver_holds_what_an_honest_sender_can_queue_priority_channels_included() {
+    let limits = vec![
+        ChannelLimits::new(100).with_max_message(1_000_000),
+        ChannelLimits::new(100).with_max_message(1_000_000),
+        ChannelLimits::new(100)
+            .with_max_message(16_000)
+            .with_max_backlog(65_536)
+            .with_priority(),
+    ];
+    assert_eq!(priority_allowance(&limits), 65_536);
+    let mut tx = ChunkSender::new(&limits);
+    // Fill every channel as far as it goes.
+    for (channel, size) in [(0, 1_000_000), (1, 1_000_000), (2, 16_000)] {
+        while tx.enqueue(channel, Kind::Snapshot, vec![1; size]).is_ok() {}
+    }
+    let rx = ChunkReceiver::new(&limits);
+    assert!(
+        tx.total_backlog() <= rx.hold_cap,
+        "an honest sender queued {} bytes against a hold cap of {}",
+        tx.total_backlog(),
+        rx.hold_cap
+    );
+    assert_eq!(rx.hold_cap, shared_hold_cap(&limits) + 65_536);
+}

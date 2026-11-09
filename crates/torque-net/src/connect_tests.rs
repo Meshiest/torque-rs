@@ -146,7 +146,7 @@ fn a_manifest_of_a_format_this_build_does_not_read_says_so() {
     let err = read(&w.into_bytes()).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "manifest format 9 is not supported (this side speaks 1)"
+        "manifest format 9 is not supported (this side speaks 1 and 2)"
     );
 }
 

@@ -364,3 +364,54 @@ fn the_checks_run_protocol_then_plugins_then_tables_then_mods() {
         Some(Mismatch::PluginMissing { .. })
     ));
 }
+
+#[test]
+fn a_manifest_with_rpcs_is_format_two_and_one_without_stays_format_one() {
+    let plain = server();
+    assert_eq!(plain.encode().unwrap()[0], MANIFEST_FORMAT);
+    let with = server().with_rpcs([
+        rpc_entry("props.spawn", true, 0xAB),
+        rpc_entry("props.spawned", false, 0xCD),
+    ]);
+    let bytes = with.encode().unwrap();
+    assert_eq!(bytes[0], MANIFEST_FORMAT_RPC);
+    assert_eq!(Manifest::decode(&bytes).unwrap(), with);
+    assert!(!with.is_bare());
+    // The RPC table follows the mods: everything before it is what the peer wrote before RPCs existed (but for the format byte and
+    // the padding of the last byte).
+    let plain_bytes = plain.encode().unwrap();
+    let shared = plain_bytes.len() - 1;
+    assert_eq!(&bytes[1..shared], &plain_bytes[1..shared]);
+}
+
+#[test]
+fn a_format_two_manifest_with_no_rpcs_is_refused() {
+    let mut bytes = server().encode().unwrap();
+    bytes[0] = MANIFEST_FORMAT_RPC;
+    // The table that format 2 promises is missing.
+    assert!(Manifest::decode(&bytes).is_err());
+}
+
+#[test]
+fn a_differing_rpc_is_named_without_its_digest() {
+    let ours = server().with_rpcs([rpc_entry("props.spawn", true, 1)]);
+    let theirs = server().with_rpcs([rpc_entry("props.spawn", true, 2)]);
+    assert_eq!(
+        reason(&ours, &theirs),
+        "server and client disagree on RPC props.spawn"
+    );
+    // A client with no RPCs at all, and one with an extra.
+    assert_eq!(
+        reason(&ours, &server()),
+        "server and client disagree on RPC props.spawn"
+    );
+    let more = server().with_rpcs([
+        rpc_entry("props.spawn", true, 1),
+        rpc_entry("props.extra", false, 3),
+    ]);
+    assert_eq!(
+        reason(&ours, &more),
+        "server and client disagree on RPC props.extra"
+    );
+    assert!(ours.mismatch(&ours).is_none());
+}

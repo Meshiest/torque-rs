@@ -146,6 +146,29 @@ different.
   (`up:` names, so a peer without it is refused). The server reads every byte as hostile, with caps on held bytes (per connection
   and in all), message size, messages in flight and rate, and drops a connection that passes one; `NetRegistry::channel_to_server`
   adds one and `ClientChannels::send` sends on it. A connection that lists none keeps TGE's packets.
+- Plugin RPCs (`torque-engine`'s `rpc`, `NetRegistry::rpc`): typed requests a client makes of the server, with a reply or as
+  a notification, and notifications the server sends a client, declared with a `#[derive(NetMessage)]` message (a `String` or
+  `Vec` must say its `max_len`, a float its `finite` check, a ghost is named by `GhostRef` and checked against what the server sent
+  that client), a direction (a server-to-client RPC has no reply), `Delivery`, a per-connection token bucket counted in ticks, a
+  size cap, `Allow` (anyone, a permission, a check) and the script's `onRpcCheck`, and a send queue whose cap fails a call
+  with `Busy`. Each is listed by name, direction and layout digest in the manifest (format 2, only when RPCs exist). In TGE mode
+  they ride a reserved priority channel in each direction, so the packets of a game with none are unchanged. A client reaches
+  them through `ClientRpc`, the server through `ServerRpc`, and scripts through `rpcToServer`, `rpcToClient`, `rpcDrops` and
+  handlers named `rpcServer_<name>` and `rpcClient_<name>`.
+  A client resolves and checks the ghosts a server notification names against its own world, a malformed batch from the server
+  ends the connection with a reason, the server holds received batches per connection and drops only a client that goes over its
+  share, `onRpcCheck` must answer true and a call with no caller object is refused, and a server command may ask for a permission
+  (`CommandSpec::requires`).
+  A script handler gets objects and a script call names them (the ghost indexes stay on the wire), a message a peer must refuse
+  (a float that is not finite) is never sent, a reply that comes after its call timed out is ignored, what a side sends is held
+  to the same rates the other side applies, frames a carrier refuses stay queued, and two RPCs may not share a script handler.
+- Permissions (`torque-permissions`, `torque-engine`'s `permissions`): dotted permission names (`props.spawn`), wildcard grants
+  (`props.*`, `*`), and flat roles a game defines (the engine defines none); a connection holds roles and direct grants, with caps on
+  each, and a check is true when any grant matches. Plugins declare the permissions they check, with a line of description
+  (`engine.permissions().declare`), so tools can list them. A `PermissionProvider` slot keeps what players hold, by auth identity or
+  else connection (in memory by default; connection-keyed grants end with the connection), server-side only. Scripts use
+  `%client.addRole`, `removeRole`, `hasRole`, `getRoles`, `grant`, `revoke`, `hasPermission`, `definePermissionRole` and
+  `declarePermission`.
 - `torque-net::manifest` and `torque-net::connect`: a connection manifest (the plugins that have a network version, the
   handshake's protocol versions, the sorted ghost class, datablock class and channel names, the mods a server requires)
   and an auth ticket ride after the connect request's arguments, where a Torque server never reads. A server with a gate

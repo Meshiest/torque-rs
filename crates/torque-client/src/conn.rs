@@ -744,7 +744,15 @@ pub fn tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
         c.feed.tick_start(vm, now);
         // The collision shapes' share of this tick (`predict::SHAPE_TICK_WORK`) starts again.
         c.predict.static_world.start_tick();
-        let mut failed = None;
+        let mut failed = st.drop_request.take().map(|reason| {
+            c.feed.disconnect(&reason);
+            (
+                format!(
+                    "ERROR: this server sent what the game cannot use ({reason}); disconnecting"
+                ),
+                format!("The server sent data the game could not use ({reason})."),
+            )
+        });
         let t_decode = web_time::Instant::now();
         let pumped = c.feed.pump(&mut c.world);
         let decode = t_decode.elapsed();

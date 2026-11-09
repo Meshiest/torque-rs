@@ -62,21 +62,40 @@ pub const WINDOW: usize = 4;
 pub const MAX_QUEUED_MESSAGES: usize = 64;
 /// The most separate byte ranges a half-received message may be in (a hostile peer cannot make the receiver track more).
 pub const MAX_RANGES: usize = 1_024;
-/// The least the default for the bytes a receiver holds for half-received messages ([`default_hold_cap`]) is.
+/// The least the default for the bytes a receiver holds for half-received messages ([`shared_hold_cap`]) is.
 pub const DEFAULT_HOLD_CAP: usize = 8 << 20;
 /// The most that default is.
 pub const MAX_HOLD_CAP: usize = 64 << 20;
 
-/// What a receiver of channels with these `limits` holds for half-received messages, unless it is told another cap: a window of
-/// messages of the largest size ([`WINDOW`] times it), between [`DEFAULT_HOLD_CAP`] and [`MAX_HOLD_CAP`]. A sender of the same
-/// channels queues at most this much across them (its total backlog), so what an honest sender leaves half-received, which is
-/// never more than it has queued, is never more than the receiver holds.
-pub fn default_hold_cap(limits: &[ChannelLimits]) -> usize {
+/// What the channels that share a sender's total cap may queue across them (and what a receiver of them holds before the priority
+/// channels' room is added): a window of messages of the largest size ([`WINDOW`] times it), between [`DEFAULT_HOLD_CAP`] and
+/// [`MAX_HOLD_CAP`]. A sender holds its shared channels to this, so what an honest sender leaves half-received is never more
+/// than the receiver allows.
+pub fn shared_hold_cap(limits: &[ChannelLimits]) -> usize {
     let largest = limits.iter().map(|l| l.max_message).max().unwrap_or(0);
     largest
         .saturating_mul(WINDOW)
         .clamp(DEFAULT_HOLD_CAP, MAX_HOLD_CAP)
 }
+
+/// The backlog the priority channels of `limits` may have queued beyond the shared cap (each is held to its own `max_backlog`
+/// and not to [`shared_hold_cap`]).
+pub fn priority_allowance(limits: &[ChannelLimits]) -> usize {
+    limits
+        .iter()
+        .filter(|l| l.priority)
+        .map(|l| l.max_backlog)
+        .fold(0, usize::saturating_add)
+}
+
+/// What a receiver of channels with these `limits` holds for half-received messages, unless it is told another cap: the shared
+/// cap ([`shared_hold_cap`]) and the room of the priority channels ([`priority_allowance`]). A sender of the same channels
+/// queues at most that much (its shared channels up to the first, its priority channels up to the second), so an honest sender
+/// is never dropped for what it left half-received.
+pub fn default_hold_cap(limits: &[ChannelLimits]) -> usize {
+    shared_hold_cap(limits).saturating_add(priority_allowance(limits))
+}
+
 /// The size limit no channel may be configured above: the width of a length field.
 pub const MAX_MESSAGE_LIMIT: usize = 1 << 30;
 
@@ -98,6 +117,9 @@ pub struct ChannelLimits {
     pub max_message: usize,
     /// The most bytes a connection may have queued in the channel and not yet acknowledged.
     pub max_backlog: usize,
+    /// Whether the channel's chunks are written before the other channels' in every packet (still within its own budget), so
+    /// a bulk transfer on another channel never delays it.
+    pub priority: bool,
 }
 
 impl ChannelLimits {
@@ -107,6 +129,15 @@ impl ChannelLimits {
             budget,
             max_message: 4 << 20,
             max_backlog: 8 << 20,
+            priority: false,
+        }
+    }
+
+    /// The same, written before the other channels in each packet.
+    pub fn with_priority(self) -> ChannelLimits {
+        ChannelLimits {
+            priority: true,
+            ..self
         }
     }
 
@@ -243,13 +274,13 @@ impl ChunkSender {
             chans: limits.iter().map(|_| SendChan::default()).collect(),
             in_flight: VecDeque::new(),
             rotate: 0,
-            total_cap: default_hold_cap(&limits),
+            total_cap: shared_hold_cap(&limits),
             next_id: 0,
             limits,
         }
     }
 
-    /// The same sender with at most `bytes` queued across all its channels ([`default_hold_cap`] otherwise; keep it at or below what the receiver holds).
+    /// The same sender with at most `bytes` queued across the channels that share the total cap ([`shared_hold_cap`] otherwise; keep it at or below what the receiver holds, less the room of the priority channels).
     #[must_use]
     pub fn with_total_backlog(mut self, bytes: usize) -> ChunkSender {
         self.total_cap = bytes;
@@ -259,6 +290,16 @@ impl ChunkSender {
     /// The bytes queued across all channels and not yet acknowledged.
     pub fn total_backlog(&self) -> usize {
         self.chans.iter().map(|c| c.queued_bytes).sum()
+    }
+
+    /// The bytes the channels that share the total cap have queued (every channel but the priority ones).
+    fn shared_backlog(&self) -> usize {
+        self.chans
+            .iter()
+            .zip(&self.limits)
+            .filter(|(_, limits)| !limits.priority)
+            .map(|(c, _)| c.queued_bytes)
+            .sum()
     }
 
     /// How many channels there are.
@@ -305,7 +346,11 @@ impl ChunkSender {
         }
         let over_channel = chan.queue.len() >= MAX_QUEUED_MESSAGES
             || chan.queued_bytes.saturating_add(data.len()) > limits.max_backlog;
-        if over_channel || self.total_backlog().saturating_add(data.len()) > self.total_cap {
+        // A priority channel is held to its own backlog and not to the budget the bulk channels share: a transfer that fills that
+        // budget must not make a call's frames wait for it.
+        let over_shared =
+            !limits.priority && self.shared_backlog().saturating_add(data.len()) > self.total_cap;
+        if over_channel || over_shared {
             return Err(SendError::Backlog);
         }
         let id = self.next_id;
@@ -434,8 +479,16 @@ impl ChunkSender {
         let mut plan = Vec::new();
         let n = self.chans.len();
         let mut left = room_bits;
-        for k in 0..n {
-            let c = (self.rotate + k) % n;
+        // Priority channels go first, in id order; the others take turns at the front.
+        let order: Vec<usize> = (0..n)
+            .filter(|&c| self.limits[c].priority)
+            .chain(
+                (0..n)
+                    .map(|k| (self.rotate + k) % n)
+                    .filter(|&c| !self.limits[c].priority),
+            )
+            .collect();
+        for c in order {
             let overhead = header_bits(self.id_bits, &self.limits[c]);
             let mut channel_left = (self.limits[c].budget.saturating_mul(8)).min(left);
             while plan.len() < MAX_CHUNKS_PER_PACKET {

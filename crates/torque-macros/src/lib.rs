@@ -78,6 +78,14 @@ pub fn derive_datablock_codec(input: TokenStream) -> TokenStream {
     torque_macros_core::derive_datablock_codec(input.into(), &engine).into()
 }
 
+/// Declares the request or reply of a plugin RPC as a struct with one typed field for each value: see
+/// `torque_engine::NetMessage`, which re-exports it with an example.
+#[proc_macro_derive(NetMessage, attributes(net))]
+pub fn derive_net_message(input: TokenStream) -> TokenStream {
+    let engine = torque_macros_core::find_engine();
+    torque_macros_core::derive_net_message(input.into(), &engine).into()
+}
+
 /// Leaves the item it is written on exactly as it is.
 ///
 /// ```

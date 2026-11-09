@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `items` needs a `max_len`: a message has no default cap on a string or a list
+ --> tests/ui/net_message_unbounded_vec.rs:3:44
+  |
+3 | #[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+  |                                            ^^^^^^^^^^ evaluation of `_` failed here

@@ -40,6 +40,9 @@ pub struct ClientState<G: ConnGame> {
     pub input_sources: crate::input_source::InputSources,
     /// Callbacks dropped because the queue was full.
     pub dropped: u64,
+    /// A reason a host layer above the feed asks the connection to end with, because the server sent what no server of this
+    /// engine sends (a malformed RPC batch): the next tick hangs up with it and the game hears the drop.
+    pub drop_request: Option<String>,
     /// What `gotoWebPage` was asked to open (printed; opened only through [`ClientState::web_opener`]).
     pub web_pages: Vec<Vec<u8>>,
     /// The display device the client reports (`getDisplayDeviceList`, `getResolutionList`, `setDisplayDevice`): empty for

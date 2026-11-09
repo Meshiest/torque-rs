@@ -406,6 +406,31 @@ impl ChannelHub {
         }
     }
 
+    /// Runs `f` on the logic of the client-to-server channel `name` when it is a `T` (the channel returns itself from
+    /// [`ChunkChannel::as_any_mut`]); `None` when there is no such channel or it is of another type. Nothing is borrowed
+    /// while `f` runs.
+    pub fn with_up_channel<T: 'static, R>(
+        &self,
+        name: &str,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let at = self.state.borrow().registry.up_id(name)?;
+        let mut logic = self
+            .state
+            .borrow_mut()
+            .up_logic
+            .get_mut(at)
+            .and_then(Option::take)?;
+        let out = logic
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<T>())
+            .map(f);
+        if let Some(slot) = self.state.borrow_mut().up_logic.get_mut(at) {
+            *slot = Some(logic);
+        }
+        out
+    }
+
     /// Runs `f` on each client-to-server channel's logic, with nothing borrowed while it runs.
     fn each_up_logic(&self, mut f: impl FnMut(&mut dyn ChunkChannel)) {
         let count = self.state.borrow().up_logic.len();
@@ -619,6 +644,10 @@ pub struct ClientChannels {
     up: RefCell<Option<UpSend>>,
     /// The backlog the upstream sender may queue, for a connection's next start.
     up_backlog: Cell<usize>,
+    /// The ghost-index width the accept gave.
+    ghost_bits: Cell<Option<u8>>,
+    /// Connections started over so far.
+    epoch: Cell<u64>,
 }
 
 /// A client's send side of the client-to-server channels.
@@ -643,6 +672,8 @@ impl ClientChannels {
             active: Cell::new(false),
             up: RefCell::new(None),
             up_backlog: Cell::new(torque_net::chunk::upstream::DEFAULT_UPSTREAM_HOLD),
+            ghost_bits: Cell::new(None),
+            epoch: Cell::new(0),
         };
         channels.start_upstream();
         channels
@@ -691,6 +722,34 @@ impl ClientChannels {
             .borrow()
             .as_ref()
             .map_or(0, |u| u.sender.total_backlog())
+    }
+
+    /// The bytes queued on the client-to-server channel `name` and not yet acknowledged.
+    pub fn upstream_backlog_of(&self, name: &str) -> usize {
+        let Some(id) = self.registry.up_id(name) else {
+            return 0;
+        };
+        self.up
+            .borrow()
+            .as_ref()
+            .map_or(0, |u| u.sender.backlog(id))
+    }
+
+    /// The ghost-index width of the connection, as its accept said (what a message that names a ghost is as wide as);
+    /// `None` before the accept.
+    pub fn ghost_bits(&self) -> Option<u8> {
+        self.ghost_bits.get()
+    }
+
+    /// Records the ghost-index width of the connection the accept gave.
+    pub fn set_ghost_bits(&self, bits: u8) {
+        self.ghost_bits.set(Some(bits));
+    }
+
+    /// Counts the connections that started over ([`reset`](Self::reset)): a holder of per-connection state tells a new
+    /// connection from the old one by it.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.get()
     }
 
     /// Whether nothing is queued upstream and nothing is in a packet that might yet be lost.
@@ -761,6 +820,8 @@ impl ClientChannels {
     /// channels' logic keeps its state (the next snapshot replaces it) unless it overrides [`ChunkChannel::reset`].
     pub fn reset(&self) {
         *self.receiver.borrow_mut() = ChunkReceiver::new(&self.registry.limits());
+        self.epoch.set(self.epoch.get().wrapping_add(1));
+        self.ghost_bits.set(None);
         self.start_upstream();
         self.active.set(false);
         self.each_logic(ChunkChannel::reset);

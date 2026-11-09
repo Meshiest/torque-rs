@@ -29,6 +29,7 @@ use torque_client::state::ClientState;
 use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder, PluginGroup};
 use torque_gui::Gui;
 use torque_server::net::channels::ClientChannels;
+use torque_server::net::rpc::{ClientRpc, ClientRpcHost, register_client_natives};
 use torque_server::server::{GameServer as _, Server, TICK_MS};
 use torque_ts_text::{atof, atoi};
 use torque_ts_vm::host::MemFiles;
@@ -168,6 +169,16 @@ impl ClientBuilder {
         if !channels.is_empty() {
             vm.set_extension(Rc::new(ClientChannels::new(&channels)));
         }
+        // The plugins' RPCs ride the reserved channel; the client's tick pumps them.
+        let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
+        if !rpcs.is_empty()
+            && let Some(channels) = vm.extension::<ClientChannels>()
+        {
+            let rpc = Rc::new(ClientRpc::new(rpcs, channels));
+            rpc.set_host(Rc::new(RpcHost(Rc::clone(&state))));
+            register_client_natives(&mut vm, &rpc);
+            vm.set_extension(rpc);
+        }
         replay(engine, ClientStage::Classes, &mut vm)?;
         if let Some(files) = files {
             vm.set_file_host(files);
@@ -261,13 +272,24 @@ impl ClientBuilder {
         if let Err(e) = self.engine.replay(ClientStage::Host, &mut self.vm) {
             self.vm.warn(e.to_string());
         }
-        let ticks = self.engine.list::<ClientTick>();
+        let mut ticks = self.engine.list::<ClientTick>().to_vec();
+        if self.vm.extension::<ClientRpc>().is_some() {
+            ticks.insert(
+                0,
+                ClientTick::new(|vm| {
+                    if let Some(rpc) = vm.extension::<ClientRpc>() {
+                        let tick = u64::from(vm.sim_time()) / 32;
+                        rpc.pump(vm, tick);
+                    }
+                }),
+            );
+        }
         let pass = if ticks.is_empty() {
             self.pass
         } else {
             Rc::new(TickedPass {
                 pass: self.pass,
-                ticks: ticks.to_vec(),
+                ticks,
             })
         };
         let mut host = ClientHost::new(
@@ -302,6 +324,23 @@ impl Connect for ClientBuilder {
         self.set_socket(socket, policy);
         self.link = link;
         Ok(info)
+    }
+}
+
+/// What the client's RPCs ask of the client: the mirrors of its ghosts, and the way to hang up on a server that sent a malformed batch.
+struct RpcHost(Rc<RefCell<ClientState<TgeConn>>>);
+
+impl ClientRpcHost for RpcHost {
+    fn ghost_object(&self, index: u32) -> Option<torque_ts_vm::sim::ObjId> {
+        torque_client::ghost_objects::object_of(&self.0, index)
+    }
+
+    fn ghost_index(&self, object: torque_ts_vm::sim::ObjId) -> Option<u32> {
+        torque_client::ghost_objects::index_of(&self.0, object)
+    }
+
+    fn drop_malformed(&self, reason: &str) {
+        self.0.borrow_mut().drop_request = Some(reason.to_string());
     }
 }
 

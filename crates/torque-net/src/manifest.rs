@@ -28,6 +28,10 @@ use crate::handshake::siphash24;
 /// The manifest format this build writes and reads.
 pub const MANIFEST_FORMAT: u8 = 1;
 
+/// The format a manifest with an RPC table is written in (format 1, then the RPC table after the mods). A manifest with no RPCs
+/// stays in format 1, so peers that register none keep the bytes they always had.
+pub const MANIFEST_FORMAT_RPC: u8 = 2;
+
 /// The largest encoded manifest a peer sends or a server reads.
 pub const MAX_MANIFEST_BYTES: usize = 768;
 
@@ -68,7 +72,7 @@ impl fmt::Display for ManifestError {
             ManifestError::Invalid(what) => write!(f, "invalid manifest ({what})"),
             ManifestError::Format(v) => write!(
                 f,
-                "manifest format {v} is not supported (this side speaks {MANIFEST_FORMAT})"
+                "manifest format {v} is not supported (this side speaks {MANIFEST_FORMAT} and {MANIFEST_FORMAT_RPC})"
             ),
             ManifestError::TooLarge(n) => {
                 write!(
@@ -99,6 +103,17 @@ pub struct PluginEntry {
     pub id: String,
     /// Its network version (a plugin raises it when its wire form changes).
     pub version: u32,
+}
+
+/// The manifest entry of an RPC: its name, its direction (`s` for a call a client makes, `c` for one the server makes) and a digest
+/// of the layouts of its request and reply, so a peer whose RPC differs in any of the three has another entry.
+pub fn rpc_entry(name: &str, to_server: bool, digest: u64) -> String {
+    format!("{name}:{}:{digest:016x}", if to_server { 's' } else { 'c' })
+}
+
+/// The RPC name of a manifest entry ([`rpc_entry`]).
+fn rpc_entry_name(entry: &str) -> &str {
+    entry.split(':').next().unwrap_or(entry)
 }
 
 /// A required mod: its name and the hash of its content.
@@ -233,6 +248,8 @@ pub struct Manifest {
     pub datablocks: NameTable,
     /// The bulk channels.
     pub channels: NameTable,
+    /// The RPCs plugins registered, each as an [`rpc_entry`]; a manifest that lists any is written in [`MANIFEST_FORMAT_RPC`].
+    pub rpcs: NameTable,
     /// Mods by name and content hash, sorted by name, checked by [`Manifest::mismatch`] (a server lists the ones it needs, a client
     /// the ones it has). The engine leaves it empty and uses [`crate::modsync`] instead, which also carries versions, sizes and
     /// downloads.
@@ -249,6 +266,7 @@ impl Manifest {
             ghosts: NameTable::default(),
             datablocks: NameTable::default(),
             channels: NameTable::default(),
+            rpcs: NameTable::default(),
             mods: Vec::new(),
         }
     }
@@ -296,6 +314,17 @@ impl Manifest {
         self
     }
 
+    /// Sets the RPC table: one [`rpc_entry`] for each RPC.
+    #[must_use]
+    pub fn with_rpcs<I>(mut self, entries: I) -> Manifest
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        self.rpcs = NameTable::new(entries);
+        self
+    }
+
     /// Adds a required mod (a second entry for a name replaces the first).
     #[must_use]
     pub fn with_mod(mut self, name: impl Into<String>, hash: [u8; 32]) -> Manifest {
@@ -313,6 +342,7 @@ impl Manifest {
             && self.ghosts.count == 0
             && self.datablocks.count == 0
             && self.channels.count == 0
+            && self.rpcs.count == 0
     }
 
     /// What a peer that sent no manifest says: this one's protocol versions and nothing else.
@@ -328,12 +358,13 @@ impl Manifest {
             self.ghosts.without_names(),
             self.datablocks.without_names(),
             self.channels.without_names(),
+            self.rpcs.without_names(),
         ];
         let mut best = self.write(&tables);
         if best.len() > MAX_MANIFEST_BYTES {
             return Err(ManifestError::TooLarge(best.len()));
         }
-        for (i, full) in [&self.ghosts, &self.datablocks, &self.channels]
+        for (i, full) in [&self.ghosts, &self.datablocks, &self.channels, &self.rpcs]
             .into_iter()
             .enumerate()
         {
@@ -374,9 +405,14 @@ impl Manifest {
         Ok(())
     }
 
-    fn write(&self, tables: &[NameTable; 3]) -> Vec<u8> {
+    fn write(&self, tables: &[NameTable; 4]) -> Vec<u8> {
         let mut w = BitWriter::new();
-        w.write_u8(MANIFEST_FORMAT);
+        let with_rpcs = self.rpcs.count > 0;
+        w.write_u8(if with_rpcs {
+            MANIFEST_FORMAT_RPC
+        } else {
+            MANIFEST_FORMAT
+        });
         w.write_u32(self.protocol_min);
         w.write_u32(self.protocol_current);
         w.write_u8(self.plugins.len() as u8);
@@ -384,25 +420,16 @@ impl Manifest {
             write_text(&mut w, &plugin.id);
             w.write_u32(plugin.version);
         }
-        for table in tables {
-            w.write_u32(table.count);
-            w.write_u32(table.digest as u32);
-            w.write_u32((table.digest >> 32) as u32);
-            match &table.names {
-                Some(names) => {
-                    w.write_flag(true);
-                    w.write_bits(names.len() as u32, 16);
-                    for name in names {
-                        write_text(&mut w, name);
-                    }
-                }
-                None => w.write_flag(false),
-            }
+        for table in &tables[..3] {
+            write_table(&mut w, table);
         }
         w.write_u8(self.mods.len() as u8);
         for entry in &self.mods {
             write_text(&mut w, &entry.name);
             w.write_bytes(&entry.hash);
+        }
+        if with_rpcs {
+            write_table(&mut w, &tables[3]);
         }
         w.into_bytes()
     }
@@ -416,7 +443,7 @@ impl Manifest {
         }
         let mut r = BitReader::new(bytes);
         let format = r.read_u8()?;
-        if format != MANIFEST_FORMAT {
+        if format != MANIFEST_FORMAT && format != MANIFEST_FORMAT_RPC {
             return Err(ManifestError::Format(format));
         }
         let protocol_min = r.read_u32()?;
@@ -460,6 +487,16 @@ impl Manifest {
         if !mods.windows(2).all(|w| w[0].name < w[1].name) {
             return Err(ManifestError::Invalid("mod order"));
         }
+        let rpcs = if format == MANIFEST_FORMAT_RPC {
+            let table = read_table(&mut r)?;
+            // Format 2 exists to carry an RPC table: one without any is not the one encoding of its manifest.
+            if table.count == 0 {
+                return Err(ManifestError::Invalid("empty rpc table"));
+            }
+            table
+        } else {
+            NameTable::default()
+        };
         if r.bits_left() >= 8 {
             return Err(ManifestError::Invalid("trailing bytes"));
         }
@@ -470,6 +507,7 @@ impl Manifest {
             ghosts,
             datablocks,
             channels,
+            rpcs,
             mods,
         })
     }
@@ -518,6 +556,7 @@ impl Manifest {
             (TableKind::Ghost, &self.ghosts, &client.ghosts),
             (TableKind::Datablock, &self.datablocks, &client.datablocks),
             (TableKind::Channel, &self.channels, &client.channels),
+            (TableKind::Rpc, &self.rpcs, &client.rpcs),
         ] {
             if server.same_as(theirs) {
                 continue;
@@ -540,6 +579,22 @@ impl Manifest {
             }
         }
         None
+    }
+}
+
+fn write_table(w: &mut BitWriter, table: &NameTable) {
+    w.write_u32(table.count);
+    w.write_u32(table.digest as u32);
+    w.write_u32((table.digest >> 32) as u32);
+    match &table.names {
+        Some(names) => {
+            w.write_flag(true);
+            w.write_bits(names.len() as u32, 16);
+            for name in names {
+                write_text(w, name);
+            }
+        }
+        None => w.write_flag(false),
     }
 }
 
@@ -618,6 +673,8 @@ pub enum TableKind {
     Datablock,
     /// Bulk channels.
     Channel,
+    /// RPCs (each entry is a name, a direction and a layout digest).
+    Rpc,
 }
 
 impl TableKind {
@@ -626,6 +683,7 @@ impl TableKind {
             TableKind::Ghost => "ghost class",
             TableKind::Datablock => "datablock class",
             TableKind::Channel => "channel",
+            TableKind::Rpc => "RPC",
         }
     }
 }
@@ -740,6 +798,18 @@ impl fmt::Display for Mismatch {
                     "you have plugin {id} {version}, which this server does not"
                 )
             }
+            Mismatch::NameMissing {
+                kind: TableKind::Rpc,
+                name,
+            }
+            | Mismatch::NameExtra {
+                kind: TableKind::Rpc,
+                name,
+            } => write!(
+                f,
+                "server and client disagree on RPC {}",
+                rpc_entry_name(name)
+            ),
             Mismatch::NameMissing { kind, name } => {
                 write!(f, "server has {} {name}, you do not", kind.noun())
             }

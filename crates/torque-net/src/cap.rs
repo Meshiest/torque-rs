@@ -185,3 +185,12 @@ pub fn vec_for<T>(
 #[cfg(test)]
 #[path = "cap_tests.rs"]
 mod tests;
+
+/// The longest prefix of `text` of at most `max` bytes that ends on a character.
+pub fn cut_str(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.get(..end).unwrap_or("")
+}

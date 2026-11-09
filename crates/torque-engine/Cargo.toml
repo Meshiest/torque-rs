@@ -23,6 +23,8 @@ torque-macros = { path = "../torque-macros" }
 torque-ghosts = { path = "../torque-ghosts" }
 # The plugin collision sources the manifest lists (their names are the type bits both sides must agree on). Std only.
 torque-collide = { path = "../torque-collide" }
+# The permissions model a server checks (dotted names, wildcard grants, flat roles). Std only.
+torque-permissions = { path = "../torque-permissions" }
 
 [dev-dependencies]
 # The resource layer's files, read by an asset loader in a test.

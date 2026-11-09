@@ -328,3 +328,40 @@ fn a_tick_knows_its_time() {
     assert_eq!((tick.number, tick.time_ms), (631, 20_192));
     assert_eq!(TickInfo::new(1).time_ms, TickInfo::MS);
 }
+
+#[test]
+fn a_command_that_asks_for_a_permission_has_it_checked_and_declared() {
+    let build = |permission: &'static str| {
+        let mut builder = EngineBuilder::new();
+        builder.add_plugins(One(Box::new(move |engine| {
+            let spec = CommandSpec::new()
+                .arg("n", ArgType::Int)
+                .requires(permission);
+            engine.server_command("Mute", spec, |_client: i32, _n: i32| ());
+        })));
+        builder.build()
+    };
+    let engine = build("chat.mute").expect("builds");
+    assert_eq!(
+        engine.list::<ServerCommand>()[0].spec.permission.as_deref(),
+        Some("chat.mute")
+    );
+    let declared: Vec<_> = engine
+        .declared_permissions()
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(
+        declared,
+        ["chat.mute"],
+        "declared for the plugin so no check of it is undeclared"
+    );
+    for bad in ["", "Chat.Mute", "chat.*", "a b"] {
+        let error = build(bad).unwrap_err().to_string();
+        assert!(error.contains("not one"), "{bad:?}: {error}");
+    }
+    assert!(
+        CommandSpec::new().permission.is_none(),
+        "no permission by default"
+    );
+}

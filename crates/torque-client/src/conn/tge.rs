@@ -699,6 +699,9 @@ impl TgeFeed {
                     },
                     |b| b as u8,
                 );
+                if let Some(channels) = &self.channels {
+                    channels.set_ghost_bits(bits);
+                }
                 self.accepted(bits);
                 self.events.push_back(FeedEvent::Accepted);
             }

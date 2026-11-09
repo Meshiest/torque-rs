@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-273 entries in 1 namespace.
+275 entries in 1 namespace.
 
 ## Global
 
@@ -164,6 +164,10 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; client*
 - `deactivatePackage(name)` - takes the package and the ones above it off the active stack
   *arguments: 1; server and client*
+- `declarePermission(name, description)` - declares a permission the game's scripts check, so tools can list it; 1 when it was accepted
+  *arguments: 2; server*
+- `definePermissionRole(name, grants)` - defines (or redefines) a role as grants separated by spaces or commas; 1 when it was accepted
+  *arguments: 2; server*
 - `deleteDataBlocks()` - deletes every datablock, as before loading another set of them
   *arguments: none; server and client*
 - `deleteVariables(pattern)` - deletes the global variables whose names match

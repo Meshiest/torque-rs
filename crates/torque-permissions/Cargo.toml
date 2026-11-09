@@ -1,0 +1,19 @@
+[package]
+name = "torque-permissions"
+description = "A pure permissions model: dotted permission names, wildcard grants, flat roles and per-connection subjects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "permissions", "roles", "gamedev"]
+categories = ["game-development", "authentication"]
+
+# Names, grants, roles and the caps on them, with no engine behind them: a game's server holds a `Roles` table and a `Subject`
+# for each player, and asks `Subject::check`. Std only.
+
+[dependencies]
+
+[lints]
+workspace = true

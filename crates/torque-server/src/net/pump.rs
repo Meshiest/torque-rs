@@ -859,14 +859,24 @@ fn run_followups<G: NetGame>(
                 }
                 // A command a plugin declared is held to its spec (the connection's bucket, the count, size and types of its
                 // arguments) before its function runs; any other runs as TGE's do.
+                let perms = vm.extension::<torque_engine::permissions::Permissions>();
                 let admission = {
                     let mut sh = shared.borrow_mut();
                     let table = sh.commands.clone();
                     let tick = sh.tick;
+                    let key = super::permissions::subject_key(&sh, obj);
+                    let view = match (&perms, key) {
+                        (Some(perms), Some(key)) => Some(perms.view(key)),
+                        _ => None,
+                    };
+                    let view: &dyn torque_engine::permissions::PermissionView = match &view {
+                        Some(view) => view,
+                        None => &torque_engine::permissions::NoPermissions,
+                    };
                     match (table, sh.conns.get_mut(&obj)) {
-                        (Some(table), Some(rec)) => {
-                            rec.plugin_cmds.admit(&table, obj, &name, &args, tick)
-                        }
+                        (Some(table), Some(rec)) => rec
+                            .plugin_cmds
+                            .admit_for(&table, obj, &name, &args, tick, view),
                         _ => Admission::Unlimited,
                     }
                 };
@@ -923,8 +933,10 @@ fn run_followups<G: NetGame>(
 /// destroyed at once.
 fn packet_error<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, conn: ConnId, why: &str) {
     let obj = shared.borrow().by_conn.get(&conn).copied();
-    shared.borrow_mut().hs.remove(conn);
+    // A connection with an object is removed from the handshake table as the object goes, after `onDrop` ran: until then the
+    // connection still has its identity (what its permissions are kept under).
     let Some(obj) = obj else {
+        shared.borrow_mut().hs.remove(conn);
         return;
     };
     vm.print(format!("Client {obj} packet error: {why}.").as_bytes());

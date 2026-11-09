@@ -192,6 +192,43 @@ engine's own (`$Server::EngineClasses`, which a server whose gate admitted every
 did not read plugin classes a TGE client is never sent them: `tests/tge_client.rs` runs a client with Torque's codec alone against
 a server with a rope, and it reads its packets and sees no rope.
 
+## Permissions
+
+A server decides who may do what with **permissions**, not with fixed levels. A permission is a dotted name (`props.spawn`,
+`rpc.example.chat`): 1 to 8 segments of 1 to 32 bytes from `a-z`, `0-9`, `_` and `-`. A **grant** is a permission, or one with a
+trailing wildcard (`props.*` covers every permission under `props`, `*` all of them). A **role** is a named set of grants. The
+engine defines no roles: a game does, in Rust, in script or from a file, and roles are flat (no role includes another; a game that
+wants "admin implies moderator" grants both). A connection holds roles and direct grants, and a check is true when any grant
+matches.
+
+| Cap | Limit |
+|---|---|
+| Roles on a server, grants in a role | 256, 64 |
+| Roles on one player, direct grants on one player | 32, 64 |
+| Segments of a name, bytes of a segment or a role name | 8, 32 |
+| Declared permissions | 1,024 |
+
+Anything over a cap, an unknown role or a name that does not parse is refused with a reason, and nothing changes.
+
+```rust
+let mut perms = engine.permissions();
+perms.declare("props.spawn", "Spawn a prop");      // the permissions the plugin checks, so tools can list them
+perms.role("builder", &["props.*", "tools.paint"]); // a game's role
+// perms.provider(MyDatabase::new());                // where grants are kept (below)
+```
+
+A check of a permission nobody declared is a debug assertion (and a warning in a release build). **Script**, on a
+`GameConnection`: `%client.addRole("builder")`, `removeRole`, `hasRole`, `getRoles()` (a word list), `grant("props.*")`, `revoke`,
+`hasPermission("props.spawn")`; and globally `definePermissionRole("builder", "props.* tools.paint")` and
+`declarePermission("props.spawn", "Spawn a prop")`. The calls that change something answer 1 when they did, 0 when there was nothing to
+change, and print the reason when they were refused.
+
+**Where it is kept.** A `PermissionProvider` (a slot: one plugin sets it) keeps what each player holds, keyed by the auth identity of
+a signed-in player and by the connection otherwise (the same identity a game's ownership uses). The default keeps it in memory; a game
+with accounts backs it with its database, and its grants then outlive the connection. Grants kept under a connection are forgotten
+when it ends. All of it is on the server: a client never sets its own permissions and nothing is sent to a client unless the game
+sends it. The model itself, with no engine behind it, is the `torque-permissions` crate.
+
 ## Bulk channels
 
 A ghost is for what changes a little at a time. A **channel** carries large, mostly static data, such as a terrain or a map of
@@ -226,6 +263,106 @@ The server treats every byte as hostile (`UpstreamCaps`): what a connection hold
 16 MiB at most) and what all connections hold together (64 MiB), message size, half-received messages, and a rate in bytes and
 messages a second. A connection that passes a cap is dropped with the packet error, and nothing from the packet that passed it is
 delivered. A client queues no more than the server holds for it (`ClientChannels::set_upstream_backlog` follows a raised cap).
+
+## RPCs
+
+A **plugin RPC** is a typed request a client makes of the server (with a reply, or as a notification) or a notification the
+server sends a client. A plugin declares it with a message type, a direction, limits and a handler; the engine does the framing,
+the checks and the matching of replies to calls.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+struct SpawnProp {
+    #[net(max_len = 64)] data: String,      // a String or a Vec must say its cap
+    #[net(finite)] at: Xf,                  // a float must say it is checked
+    #[net(bits = 8)] predict_id: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+struct Spawned { prop: GhostRef }           // a ghost index, resolved per connection
+
+engine.net().rpc::<SpawnProp, Spawned>("props.spawn")
+    .to_server()                            // `.to_client()` for a notification the server sends
+    .delivery(Delivery::Reliable)           // or Unreliable (a notification only)
+    .rate(4, 8)                             // calls a second, burst: a token bucket counted in server ticks
+    .max_bytes(256)                         // encoded message, header included; at most 1,024
+    .allow(Allow::Anyone)                   // Allow::permission("props.spawn"), or Allow::check(|cx| ..)|cx| ..)
+    .server(|cx: &mut RpcCx, req| -> Result<Spawned, RpcError> { .. });
+```
+
+A message is a struct with `#[derive(NetMessage)]`: the fields of a ghost record, laid out by the same codec, with caps a peer
+cannot get around. A `String` or `Vec` without a `max_len`, a float without `finite` (the decoder then refuses a NaN or an
+infinity), a raw object id and a type the wire has no form for do not compile. Name an object with `GhostRef`: the server
+resolves it only if that object is ghosted to the caller, so a client can name only what it can see, and a call that names
+another is answered `Refused` before the handler runs. A script handler gets the object a ghost stands for (an object id), not the connection's ghost index, and a script that
+calls (`rpcToClient`, `rpcToServer`) names objects: they go out as the ghost indexes the peer has, and an object the peer has
+no ghost of is refused locally. A client checks the ghosts a server's notification names the same way,
+against its own world: `cx.resolve(ghost)` gives the object, and a notification that names a ghost the client does not have is
+refused and counted, never handed to the handler as a raw index.
+
+**Directions.** A `to_server` RPC has a reply type; when it is `()` the call is a notification and nothing waits. A `to_client`
+RPC is always a notification (a reply-bearing one does not compile): a server never waits on a client that may fail, leave or
+never answer. A server that needs an answer sends a notification and the client answers with an RPC of its own. The direction
+is enforced on both ends: a client that sends a `to_client` RPC, or a server that sends a `to_server` one, is a protocol error and
+the connection is dropped.
+
+**Calling.** The client's side of a connection is a link (`ClientRpc::with_link`), the server's one for each client
+(`ServerRpc::with_link`, `ServerRpc::notify`). `link.rpc::<Req, Resp>("props.spawn")` gives a typed handle, checking the layouts
+against the table; `link.call(&handle, request, |result| ..)` runs the closure in a later frame with the reply or an error, and
+`link.notify(&handle, request)` sends a notification. At most 16 calls of one RPC wait for a reply at once.
+
+| Error | Meaning |
+|---|---|
+| `Refused` | the server refused: permission, the script's `onRpcCheck`, or a ghost the caller was not sent |
+| `RateLimited` | the call went over its rate on the server |
+| `TooLarge`, `Busy` | local, before sending: the message is over its `max_bytes`; the send queue (64 KiB of reliable bytes not yet acknowledged) or the RPC's 16 outstanding calls are full: try again |
+| `Handler(text)` | the handler's own error, at most 255 bytes: nothing else about a handler's failure crosses |
+| `Disconnected`, `Timeout` | the connection ended, or no reply came in `$Pref::Net::RpcTimeout` (10 seconds) |
+| `Unsupported` | local: no such RPC, not this side's to call, or other message types |
+
+**Late replies.** A call that times out leaves a short-lived tombstone for its id: a reply that comes after the timeout is ignored
+(the callback ran once, with `Timeout`) and the id is not reused meanwhile. A reply to a call that never was is still a protocol
+error.
+
+**Limits.** Each RPC has a token bucket for each connection, and each connection one for all of them (64 a second, a burst of
+128), both counted in ticks, so they are deterministic. A call over a limit is dropped before it is decoded, counted
+(`rpcDrops(%client, "name")`) and reported on the console once a second; a caller waiting for a reply gets `RateLimited`. What a side sends is held to the same buckets, so a client or server
+that sends too much hears `RateLimited` (or `Busy`) locally and the peer never has to drop anything an honest caller sent. A
+float that is not finite (a script's `1e999`, `inf`, `nan`) is `Invalid` locally and never sent. Frames the carrier cannot take
+now (its queue, or the budget the bulk channels share, is full) stay queued in order for the next tick; the reserved channel
+is not held up by that shared budget, and a client that never takes its replies is dropped.
+`$Pref::Server::RpcKickDrops` (default 0, off) drops a client that has more than that many calls dropped in a second. The
+decoder checks `max_bytes` and every field's cap against the bits left before it allocates, and an over-cap message drops
+the connection like any malformed packet. On a client, a server's notifications are held to the same caps and rates, and a malformed batch from the server ends the
+connection with a reason, as any malformed server packet does. On the server the batches received between two ticks are held per
+connection (128 KiB each); a client that goes over its share is dropped with the packet error, and no other client's calls are lost.
+
+**Permissions.** `Allow::Anyone` (the default), `Allow::permission("props.spawn")` and `Allow::check(|cx| ..)` are checked on the
+server before the handler runs; `cx.has_permission("..")`, `cx.caller()` and `cx.resolve(ghost)` are what a check and a handler
+ask. A permission named in `allow` is validated when the RPC is registered and declared for the plugin if it is not already (see
+[Permissions](#permissions)); `.default_permission()` asks for `rpc.<plugin>.<name>` instead (the plugin's id and the RPC's name,
+lowercased, other characters made `_`). After that the server script's `onRpcCheck(%client, %name)`, if the game defines it, must
+answer true for the call to run: `0`, `false`, an empty answer and a function that fails all deny it (a game that defines none leaves
+the decision to `Allow`). A call whose caller has no connection object on the server is refused. A server command takes the same
+check: `CommandSpec::requires("chat.mute")`. A client has no permissions of its own: `has_permission` is false there.
+
+**Script.** `rpcToServer("props.spawn", %data, ..)` on a client and `rpcToClient(%client, "props.spawned", ..)` on the server send
+a call whose arguments are the message's fields in order (a list field is not filled from a script call); they answer nothing
+when the call was queued and the reason when not. A notification's handler can be the game's script: `.server_script()` and
+`.client_script()` call `rpcServer_<name>(%client, fields..)` and `rpcClient_<name>(fields..)`, the name's punctuation turned
+into `_` (`rpcServer_chat_note`).
+
+**On the wire.** Every RPC is listed in the manifest by name, direction and a digest of its message layouts (manifest format 2,
+written only when RPCs exist), so a peer whose RPCs differ is refused with "server and client disagree on RPC props.spawn". In
+TGE mode the calls ride a reserved channel in each direction (`torque.rpc`), batched once a tick into one reliable, ordered
+channel message that is written first in the packet (within its own budget), so a bulk transfer does not delay a call; this keeps
+TGE's packets as they are for every peer that registers no RPC. An unreliable RPC is sent reliably in TGE mode. Handlers run in the
+server's tick after the packets were received, and on a client in its tick after the packets of the frame were applied, so a call
+that names a ghost from the same packet finds it. The framing and the checks are in `RpcLink`, which hands frames to an
+`RpcCarrier`; the channel is the TGE-mode carrier.
+
+(`examples/minimal-engine/tests/rpc.rs` runs a call with a reply, a notification each way, the script natives, a script
+handler, a flood, and the permission checks through the engine's own server and client over the memory transport.)
 
 ## Auth
 
@@ -351,6 +488,9 @@ with both predictors, frame by frame.
 | One-shot ropes a client shows, their time, and sent to a client | 32, 30 seconds, 32 a second |
 | Predicted ropes waiting on a client, and their wait | 16, 2 seconds |
 | Plugin ghost classes, datablock classes | 16, 29 (the room Torque's class id widths leave) |
+| RPCs an engine registers, a message, a call's name | 256, 1,024 bytes, 40 bytes |
+| Calls of one RPC waiting for a reply, reliable RPC bytes not yet acknowledged | 16, 64 KiB |
+| An RPC's rate unless it says another, all of a connection's | 8 a second (burst 16), 64 a second (burst 128) |
 
 ## Testing a networked plugin
 

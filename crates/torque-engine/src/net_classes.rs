@@ -73,8 +73,9 @@ use torque_ts_vm::vm::Vm;
 
 pub use torque_ghosts::codec::Xf;
 pub use torque_ghosts::plugin::{
-    DatablockCodec, DatablockFields, DatablockRef, DrawnShapes, FieldSpec, GhostRecord, NetField,
-    NetRecord, PluginClass, PluginClasses, Record, Replicate, ShapeDraw, ShapeFn,
+    DatablockCodec, DatablockFields, DatablockRef, DrawnShapes, FieldSpec, GhostRecord, GhostRef,
+    NetField, NetMessage, NetRecord, PluginClass, PluginClasses, Record, Replicate, ShapeDraw,
+    ShapeFn,
 };
 
 use torque_net::classes::Kind;

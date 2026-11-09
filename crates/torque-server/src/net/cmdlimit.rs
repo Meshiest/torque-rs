@@ -14,15 +14,17 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
-use torque_engine::command::{CommandRefusal, ServerCommand, TokenBucket, command_function};
+use torque_engine::command::{
+    CommandRefusal, DropCounter, ServerCommand, TokenBucket, command_function,
+};
+use torque_engine::permissions::{NoPermissions, PermissionView};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, Vm};
 
 use super::NetGame;
 use super::NetShared;
 
-/// Ticks between two console lines about one connection's refused calls of one command (a second, rounded to whole ticks).
-pub const REPORT_TICKS: u64 = 31;
+pub use torque_engine::command::REPORT_TICKS;
 
 /// The server commands plugins declared, by function name (without case).
 #[derive(Debug, Default)]
@@ -72,9 +74,7 @@ pub enum Admission {
 #[derive(Clone, Debug)]
 struct CommandState {
     bucket: TokenBucket,
-    drops: u64,
-    unreported: u64,
-    last_report: Option<u64>,
+    drops: DropCounter,
 }
 
 /// One connection's standing with the declared commands.
@@ -84,7 +84,7 @@ pub struct ConnCommands {
 }
 
 impl ConnCommands {
-    /// Judges `obj`'s call of `function` with `args` (after the client) at server tick `tick`.
+    /// [`admit_for`](Self::admit_for) for a caller who holds no permission (a command that asks for one is refused).
     pub fn admit(
         &mut self,
         table: &CommandTable,
@@ -92,6 +92,20 @@ impl ConnCommands {
         function: &[u8],
         args: &[Vec<u8>],
         tick: u64,
+    ) -> Admission {
+        self.admit_for(table, obj, function, args, tick, &NoPermissions)
+    }
+
+    /// Judges `obj`'s call of `function` with `args` (after the client) at server tick `tick`, by a caller whose permissions
+    /// are `perms`: the bucket first, then the command's permission, then the arguments.
+    pub fn admit_for(
+        &mut self,
+        table: &CommandTable,
+        obj: ObjId,
+        function: &[u8],
+        args: &[Vec<u8>],
+        tick: u64,
+        perms: &dyn PermissionView,
     ) -> Admission {
         let Some(command) = table.get(function) else {
             return Admission::Unlimited;
@@ -101,31 +115,29 @@ impl ConnCommands {
             .entry(command.function.to_ascii_lowercase())
             .or_insert_with(|| CommandState {
                 bucket: command.spec.bucket(tick),
-                drops: 0,
-                unreported: 0,
-                last_report: None,
+                drops: DropCounter::default(),
             });
-        let verdict = if state.bucket.take(tick) {
-            command.spec.check(args)
-        } else {
+        let verdict = if !state.bucket.take(tick) {
             Err(CommandRefusal::RateLimited)
+        } else if command
+            .spec
+            .permission
+            .as_deref()
+            .is_some_and(|p| !perms.has_permission(p))
+        {
+            Err(CommandRefusal::NotPermitted)
+        } else {
+            command.spec.check(args)
         };
         let Err(reason) = verdict else {
             return Admission::Run;
         };
-        state.drops = state.drops.saturating_add(1);
-        state.unreported = state.unreported.saturating_add(1);
-        let due = state
-            .last_report
-            .is_none_or(|last| tick.saturating_sub(last) >= REPORT_TICKS);
-        let report = due.then(|| {
-            let line = format!(
-                "Client {obj} {}: {} call(s) refused ({reason}).",
-                command.function, state.unreported
-            );
-            state.last_report = Some(tick);
-            state.unreported = 0;
-            line
+        state.drops.note();
+        let report = state.drops.report(tick).map(|count| {
+            format!(
+                "Client {obj} {}: {count} call(s) refused ({reason}).",
+                command.function
+            )
         });
         Admission::Refused { reason, report }
     }
@@ -134,7 +146,7 @@ impl ConnCommands {
     pub fn drops(&self, command: &str) -> u64 {
         self.states
             .get(&command_function(command).to_ascii_lowercase())
-            .map_or(0, |state| state.drops)
+            .map_or(0, |state| state.drops.total())
     }
 }
 

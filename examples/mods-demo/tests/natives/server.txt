@@ -4,10 +4,17 @@ Camera::setOrbitMode 7..8 (GameBase orbitObject, transform mat, float minDistanc
 FlyingVehicle::useCreateHeight 3..3 (bool enabled)
 GameBase::getDataBlock 2..2 ()
 GameConnection::activateGhosting 2..2 ()
+GameConnection::addRole 3..3 %client.addRole(name) - gives the player a role the game defined; 1 when it was new, 0 when held or refused
 GameConnection::delete 2..3 (string reason=NULL)
 GameConnection::getControlObject 2..2 ()
+GameConnection::getRoles 2..2 %client.getRoles() - the roles the player holds, as a word list
+GameConnection::grant 3..3 %client.grant(grant) - gives the player a permission or a trailing-wildcard grant (props.*); 1 when it was new, 0 when held or refused
+GameConnection::hasPermission 3..3 %client.hasPermission(permission) - whether any grant of the player or of their roles covers the permission
+GameConnection::hasRole 3..3 %client.hasRole(name) - whether the player holds the role
 GameConnection::isAIControlled 2..2 ()
+GameConnection::removeRole 3..3 %client.removeRole(name) - takes a role from the player; 1 when they held it
 GameConnection::resetGhosting 2..2 ()
+GameConnection::revoke 3..3 %client.revoke(grant) - takes a direct grant from the player; 1 when they held it
 GameConnection::setControlObject 3..3 (ShapeBase object)
 GameConnection::transmitDataBlocks 3..3 (S32 sequence)
 Item::getLastStickyNormal 2..2 ()
@@ -187,6 +194,8 @@ containerSearchCurrDist 1..1 Get distance of the center of the current item from
 containerSearchCurrRadiusDist 1..1 Get the distance of the closest point of the current item from the center of the current initContainerRadiusSearch.
 containerSearchNext 1..1 Get next item from a search started with initContainerRadiusSearch.
 deactivatePackage 2..2 deactivatePackage(name) - takes the package and the ones above it off the active stack
+declarePermission 3..3 declarePermission(name, description) - declares a permission the game's scripts check, so tools can list it; 1 when it was accepted
+definePermissionRole 3..3 definePermissionRole(name, grants) - defines (or redefines) a role as grants separated by spaces or commas; 1 when it was accepted
 deleteDataBlocks 1..1 deleteDataBlocks() - deletes every datablock, as before loading another set of them
 deleteVariables 2..2 deleteVariables(pattern) - deletes the global variables whose names match
 detag 2..2 detag(taggedText) - the text after a tag

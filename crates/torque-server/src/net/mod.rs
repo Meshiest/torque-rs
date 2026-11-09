@@ -24,12 +24,14 @@ pub mod hostevent;
 pub mod local;
 pub mod payload;
 pub mod peer;
+pub mod permissions;
 pub mod pump;
 pub mod query;
 #[cfg(feature = "p2p")]
 pub mod relay;
 #[cfg(feature = "rooms")]
 pub mod room;
+pub mod rpc;
 pub mod torque;
 pub mod transport;
 #[cfg(all(feature = "web", not(target_arch = "wasm32")))]

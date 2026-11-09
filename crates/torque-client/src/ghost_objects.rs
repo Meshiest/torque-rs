@@ -327,6 +327,11 @@ pub fn object_of<G: ConnGame>(client: &Rc<RefCell<ClientState<G>>>, index: u32) 
     st.conn.conn.as_ref()?.mirrors.get(index).map(|m| m.obj)
 }
 
+/// The ghost index of the mirror object `obj`, if it is one.
+pub fn index_of<G: ConnGame>(client: &Rc<RefCell<ClientState<G>>>, obj: ObjId) -> Option<u32> {
+    client.borrow().conn.conn.as_ref()?.mirrors.index_of(obj)
+}
+
 /// `Player::getState()` of a mirrored Player or AIPlayer, from its record: "Dead" when its damage state is not Enabled, "Mounted"
 /// when it has a mount, else "Move" (the recover state is the server's). `None` for an object that is not a mirrored player.
 pub fn player_state<G: ConnGame>(

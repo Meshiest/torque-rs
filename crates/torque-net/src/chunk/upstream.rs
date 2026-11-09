@@ -166,7 +166,10 @@ impl UpstreamServer {
     pub fn connection(&self, limits: &[ChannelLimits]) -> UpstreamReader {
         let caps = self.caps;
         let mut receiver = ChunkReceiver::new(limits)
-            .with_hold_cap(caps.hold_per_connection)
+            .with_hold_cap(
+                caps.hold_per_connection
+                    .saturating_add(super::priority_allowance(limits)),
+            )
             .with_message_cap(caps.message_cap())
             .with_max_age(caps.message_age_ms, caps.message_min_rate)
             .with_shared_hold(Arc::clone(&self.shared));
@@ -279,5 +282,24 @@ mod tests {
             ..UpstreamCaps::default()
         });
         assert_eq!(server.caps().hold_per_connection, MAX_UPSTREAM_HOLD);
+    }
+
+    #[test]
+    fn a_connection_holds_the_priority_channels_room_beyond_its_cap() {
+        let limits = [
+            ChannelLimits::new(100),
+            ChannelLimits::new(100)
+                .with_max_backlog(65_536)
+                .with_priority(),
+        ];
+        let server = UpstreamServer::new(UpstreamCaps::default());
+        let reader = server.connection(&limits);
+        assert_eq!(
+            reader.receiver.hold_cap,
+            DEFAULT_UPSTREAM_HOLD + 65_536,
+            "an honest client queues its bulk up to the cap and its priority channel up to its own backlog"
+        );
+        let plain = server.connection(&limits[..1]);
+        assert_eq!(plain.receiver.hold_cap, DEFAULT_UPSTREAM_HOLD);
     }
 }

@@ -153,16 +153,25 @@ impl<G: NetGame> EngineClass for GameConnectionClass<G> {
         } else {
             vm.call_method(id, b"onDrop", std::slice::from_ref(&reason))
         };
+        let mut ended = None;
         {
             let mut sh = self.shared.borrow_mut();
             if let Some(rec) = sh.conns.remove(&id)
                 && let Some(conn) = rec.conn
             {
+                ended = Some(conn);
                 sh.by_conn.remove(&conn);
                 sh.hs.remove(conn);
                 sh.payload.on_drop(conn, vm);
             }
             sh.counters.drops += 1;
+        }
+        // What a connection held under its own key goes with it (an identity's is the provider's).
+        if let (Some(conn), Some(perms)) = (
+            ended,
+            vm.extension::<torque_engine::permissions::Permissions>(),
+        ) {
+            perms.forget_connection(conn.0);
         }
         result.map(|_| ())
     }
@@ -255,6 +264,7 @@ pub fn post_events<G: NetGame>(
 
 /// Makes the `GameConnection` behaviour and replaces the connection natives' stubs.
 pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
+    super::permissions::install(vm, shared);
     vm.set_class_behaviour(
         "GameConnection",
         Rc::new(GameConnectionClass {

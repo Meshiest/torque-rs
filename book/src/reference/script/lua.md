@@ -58,6 +58,8 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("containerSearchNext")` *none; server*
 - `ts.call("createCanvas", string windowTitle)` *1; client*
 - `ts.call("deactivatePackage", name)` *1; server and client*
+- `ts.call("declarePermission", name, description)` *2; server*
+- `ts.call("definePermissionRole", name, grants)` *2; server*
 - `ts.call("deleteDataBlocks")` *none; server and client*
 - `ts.call("deleteVariables", pattern)` *1; server and client*
 - `ts.call("detag", taggedText)` *1; server and client*
@@ -314,10 +316,17 @@ The same functions and methods as the other pages, as a script of the Lua extens
 ### GameConnection
 
 - `obj:activateGhosting()` *none; server and client*
+- `obj:addRole(name)` *1; server*
 - `obj:delete(string reason=NULL)` *0 to 1; server and client*
 - `obj:getControlObject()` *none; server and client*
+- `obj:getRoles()` *none; server*
+- `obj:grant(grant)` *1; server*
+- `obj:hasPermission(permission)` *1; server*
+- `obj:hasRole(name)` *1; server*
 - `obj:isAIControlled()` *none; server and client*
+- `obj:removeRole(name)` *1; server*
 - `obj:resetGhosting()` *none; server and client*
+- `obj:revoke(grant)` *1; server*
 - `obj:setControlObject(ShapeBase object)` *1; server and client*
 - `obj:transmitDataBlocks(S32 sequence)` *1; server and client*
 

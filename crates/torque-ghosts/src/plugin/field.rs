@@ -22,7 +22,7 @@ use std::fmt::Debug;
 
 use torque_net::NetError;
 use torque_net::bits::bit_length;
-use torque_net::cap::NET_STRING_BYTES;
+use torque_net::cap::{NET_STRING_BYTES, cut_str as cut};
 
 use crate::codec::{Codec, F32, R, Xf, datablock_id, opt};
 use crate::{ObjectView, Value, boolean, xform};
@@ -76,6 +76,10 @@ pub trait NetField: Clone + Default + Debug + PartialEq + Send + Sync + 'static 
     const COMPOUND: bool = false;
     /// The fewest bits one value takes on the wire (what a `Vec`'s count is checked against).
     const MIN_BITS: usize = 1;
+    /// Whether the type holds floats (a message may take them only with a finite check: `#[net(finite)]`).
+    const HAS_FLOATS: bool = false;
+    /// Whether the type must be given a `max_len` in a message (a `String` or a `Vec`: a message has no default cap).
+    const NEEDS_CAP: bool = false;
 
     /// Writes or reads the field: one call per value, in wire order (`name` for the logging encoder).
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, spec: FieldSpec) -> R;
@@ -106,6 +110,23 @@ pub trait NetField: Clone + Default + Debug + PartialEq + Send + Sync + 'static 
     /// The transform an [`Xf`] holds (the record's pose is its first such field).
     fn transform(&self) -> Option<Xf> {
         None
+    }
+
+    /// Appends the ghost indexes the value holds ([`GhostRef`]s), for a server to check against what it sent a connection.
+    fn ghost_refs(&self, out: &mut Vec<u32>) {
+        let _ = out;
+    }
+
+    /// Replaces each ghost index the value holds ([`GhostRef`]s) with what `map` makes of it: an index to the object it stands
+    /// for, or an object to its index. False when `map` has no answer for one (the value is then not to be used).
+    fn map_ghosts(&mut self, map: &mut dyn FnMut(u32) -> Option<u32>) -> bool {
+        let _ = map;
+        true
+    }
+
+    /// Whether every float in the value is finite.
+    fn finite(&self) -> bool {
+        true
     }
 }
 
@@ -225,6 +246,7 @@ impl NetField for i32 {
 
 impl NetField for f32 {
     const MIN_BITS: usize = 32;
+    const HAS_FLOATS: bool = true;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
         let mut bits = self.to_bits();
@@ -240,6 +262,10 @@ impl NetField for f32 {
     fn values(&self, out: &mut Vec<Value>) {
         out.push(Value::F32(*self));
     }
+
+    fn finite(&self) -> bool {
+        self.is_finite()
+    }
 }
 
 impl<const N: usize> NetField for [f32; N]
@@ -248,6 +274,7 @@ where
 {
     const ELEMENTS: usize = N;
     const MIN_BITS: usize = 32 * N;
+    const HAS_FLOATS: bool = true;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
         let mut raw = self.map(F32::new);
@@ -273,6 +300,10 @@ where
     fn values(&self, out: &mut Vec<Value>) {
         let words: Vec<String> = self.iter().map(|x| x.to_string()).collect();
         out.push(Value::Str(words.join(" ").into_bytes()));
+    }
+
+    fn finite(&self) -> bool {
+        self.iter().all(|x| x.is_finite())
     }
 }
 
@@ -312,17 +343,9 @@ where
     }
 }
 
-/// The longest prefix of `s` of at most `max` bytes that ends on a character.
-fn cut(s: &str, max: usize) -> &str {
-    let mut end = s.len().min(max);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s.get(..end).unwrap_or("")
-}
-
 impl NetField for String {
     const MAX_LEN: usize = NET_STRING_BYTES;
+    const NEEDS_CAP: bool = true;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, spec: FieldSpec) -> R {
         let max = spec.len_or(NET_STRING_BYTES).min(NET_STRING_BYTES);
@@ -377,6 +400,7 @@ impl NetField for DatablockRef {
 
 impl NetField for Xf {
     const MIN_BITS: usize = 193;
+    const HAS_FLOATS: bool = true;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
         c.xform(name, self)
@@ -398,6 +422,13 @@ impl NetField for Xf {
     fn transform(&self) -> Option<Xf> {
         Some(*self)
     }
+
+    fn finite(&self) -> bool {
+        self.position
+            .iter()
+            .chain(&self.quat)
+            .all(|f| f.get().is_finite())
+    }
 }
 
 impl<T: NetField> NetField for Option<T> {
@@ -406,6 +437,8 @@ impl<T: NetField> NetField for Option<T> {
     const OPTIONAL: bool = true;
     const ELEMENTS: usize = T::ELEMENTS;
     const COMPOUND: bool = T::COMPOUND;
+    const HAS_FLOATS: bool = T::HAS_FLOATS;
+    const NEEDS_CAP: bool = T::NEEDS_CAP;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, spec: FieldSpec) -> R {
         opt(c, name, self, |c, inner| inner.layout(c, name, spec))
@@ -442,11 +475,27 @@ impl<T: NetField> NetField for Option<T> {
     fn transform(&self) -> Option<Xf> {
         self.as_ref().and_then(NetField::transform)
     }
+
+    fn ghost_refs(&self, out: &mut Vec<u32>) {
+        if let Some(v) = self {
+            v.ghost_refs(out);
+        }
+    }
+
+    fn map_ghosts(&mut self, map: &mut dyn FnMut(u32) -> Option<u32>) -> bool {
+        self.as_mut().is_none_or(|v| v.map_ghosts(map))
+    }
+
+    fn finite(&self) -> bool {
+        self.as_ref().is_none_or(NetField::finite)
+    }
 }
 
 impl<T: NetField> NetField for Vec<T> {
     const MAX_BITS: u8 = T::MAX_BITS;
     const MAX_LEN: usize = MAX_VEC_LEN;
+    const HAS_FLOATS: bool = T::HAS_FLOATS;
+    const NEEDS_CAP: bool = true;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, spec: FieldSpec) -> R {
         let max = spec.len_or(DEFAULT_VEC_LEN).min(MAX_VEC_LEN);
@@ -482,9 +531,65 @@ impl<T: NetField> NetField for Vec<T> {
         self.iter().any(NetField::pending)
     }
 
+    fn ghost_refs(&self, out: &mut Vec<u32>) {
+        for v in self {
+            v.ghost_refs(out);
+        }
+    }
+
+    fn map_ghosts(&mut self, map: &mut dyn FnMut(u32) -> Option<u32>) -> bool {
+        let mut all = true;
+        for v in self.iter_mut() {
+            all &= v.map_ghosts(map);
+        }
+        all
+    }
+
+    fn finite(&self) -> bool {
+        self.iter().all(NetField::finite)
+    }
+
     fn values(&self, out: &mut Vec<Value>) {
         for v in self {
             v.values(out);
+        }
+    }
+}
+
+/// A reference to a ghost, for a message that names an object the connection can see (an RPC's argument): the ghost's index in
+/// the connection, `ghost bits` wide. What an index means belongs to one connection, so a server resolves it only against the
+/// ghosts it has sent that connection ([`NetField::ghost_refs`] lists them for the check), and a client can name only what it sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct GhostRef(pub u32);
+
+impl NetField for GhostRef {
+    fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
+        let bits = c.ghost_bits();
+        let mut v = low_bits(self.0, bits);
+        c.int(name, &mut v, bits)?;
+        self.0 = low_bits(v, bits);
+        Ok(())
+    }
+
+    fn from_view(view: &dyn ObjectView, name: &str, index: usize, _spec: FieldSpec) -> GhostRef {
+        GhostRef(u32::try_from(integer(view, name, index).max(0)).unwrap_or(0))
+    }
+
+    fn values(&self, out: &mut Vec<Value>) {
+        out.push(Value::Int(i64::from(self.0)));
+    }
+
+    fn ghost_refs(&self, out: &mut Vec<u32>) {
+        out.push(self.0);
+    }
+
+    fn map_ghosts(&mut self, map: &mut dyn FnMut(u32) -> Option<u32>) -> bool {
+        match map(self.0) {
+            Some(to) => {
+                self.0 = to;
+                true
+            }
+            None => false,
         }
     }
 }
