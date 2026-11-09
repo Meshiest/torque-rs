@@ -22,6 +22,7 @@ use torque_plugin_loader::call_policy::{
     CallKind, CallPolicy, DENIED_EFFECTS, DenyCodeAndFiles, PolicyCall, TGE_EFFECTS,
 };
 use torque_plugin_props::PropsPlugin;
+use torque_plugin_props::predict::PropPredictionPlugin;
 use torque_plugin_rope::RopePlugin;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::listing::check_listing;
@@ -38,6 +39,7 @@ fn for_each_script_engine(mut each: impl FnMut(&Vm)) {
         .add_plugins(HostingPlugin::default())
         .add_plugins(RopePlugin::default())
         .add_plugins(PropsPlugin)
+        .add_plugins(PropPredictionPlugin::default())
         .add_plugins(GuiLayoutPlugin);
     let engine = engine.build().expect("the engine builds");
     let files = MemFiles::new();

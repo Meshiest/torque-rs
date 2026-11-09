@@ -27,6 +27,15 @@ pub(crate) fn props_rig(datablocks: &str) -> Result<(Rig, torque_engine::Engine)
         .add_plugins(PropsPlugin)
         .build()
         .map_err(|e| e.to_string())?;
+    let rig = props_rig_with(datablocks, &client)?;
+    Ok((rig, client))
+}
+
+/// [`props_rig`] whose client's half is replayed from `client` (an engine of the plugin and the client's other plugins).
+pub(crate) fn props_rig_with(
+    datablocks: &str,
+    client: &torque_engine::Engine,
+) -> Result<Rig, String> {
     let mut rig = Rig::with_client(Mode::Tge, PropsPlugin, Control::Figure, |vm| {
         for &stage in ClientStage::ALL {
             client.replay(stage, vm).map_err(|e| e.to_string())?;
@@ -61,7 +70,7 @@ pub(crate) fn props_rig(datablocks: &str) -> Result<(Rig, torque_engine::Engine)
                 .collect::<Vec<_>>()
         ));
     }
-    Ok((rig, client))
+    Ok(rig)
 }
 
 /// The props scenario's run (module docs).

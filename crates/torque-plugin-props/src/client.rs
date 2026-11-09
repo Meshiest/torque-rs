@@ -38,6 +38,16 @@ pub struct ClientProp {
     pub frozen: bool,
     /// Updates heard (a count, to see an update came).
     pub updates: u32,
+    /// Where the client's prediction has it while it predicts it ([`crate::predict`]): what the client's own Player meets and a
+    /// grapple's tether hangs from. None while it is shown as the server sent it.
+    pub predicted: Option<Quantized>,
+}
+
+impl ClientProp {
+    /// The state the client's own movers meet: the predicted one while it is predicted, else the server's.
+    pub fn now(&self) -> &Quantized {
+        self.predicted.as_ref().unwrap_or(&self.q)
+    }
 }
 
 /// The props a client's connection was sent, by ghost index.
@@ -89,6 +99,7 @@ impl PropBook {
                 asleep: false,
                 frozen: false,
                 updates: 0,
+                predicted: None,
             }),
         };
         let data = record.data_block.0;
@@ -114,6 +125,14 @@ impl PropBook {
     /// A ghost the server deleted (or the connection ended).
     pub fn removed(&mut self, index: u32) {
         self.props.remove(&index);
+    }
+
+    /// Sets where the prediction has prop `index` (none: shown as the server sent it); false when the book has no such prop.
+    pub fn set_predicted(&mut self, index: u32, q: Option<Quantized>) -> bool {
+        self.props
+            .get_mut(&index)
+            .map(|p| p.predicted = q.map(Quantized::held))
+            .is_some()
     }
 
     /// Every prop forgotten.
@@ -192,8 +211,8 @@ pub fn heard(vm: &mut Vm, book: &ClientProps, event: GhostEvent<'_, PropGhost>) 
     }
 }
 
-/// The props as the predicting client's collision source: the boxes the server's source gives, from the states it sent, keyed by
-/// the server's slots, so both sides have the same shapes.
+/// The props as the predicting client's collision source: the boxes the server's source gives, from the states it sent (where
+/// the client predicts a prop, from its predicted state), keyed by the server's slots, so both sides have the same shapes.
 #[derive(Debug, Clone)]
 pub struct ClientSource(pub ClientProps);
 
@@ -207,7 +226,7 @@ impl CollisionSource for ClientSource {
                 }
                 out.push(crate::server::shape_of(
                     p.slot,
-                    &p.q,
+                    p.now(),
                     params.shape.half_extents(),
                 ));
             }

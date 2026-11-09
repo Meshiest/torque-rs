@@ -50,6 +50,25 @@ propApplyImpulse(%crate, "0 40 0");
   class and each client's book (`ClientJoints`). With feature `rope`, `jointRope` makes a networked rope that follows a joint
   and pulls on nothing.
 
+## Prediction
+
+`PropPredictionPlugin` on a client predicts the props its own Player holds, stands on or pushes (with the props jointed to them, at
+most 8) in a small physics world of its own, restored to the server's states and replayed through the moves the server has not
+acknowledged, and draws them through a smoothed correction; the rest are drawn between the server's updates. A game shows pushes
+at once on predicted props (`propPredictImpulse`, `propPredictBlast`, never sent), and spawns under a predict id
+(`propPredictSpawn`). The Player's own shots push the predicted props they meet at once. It sends nothing new: no network version.
+
+```rust
+use torque_plugin_props::predict::PropPredictionPlugin;
+
+let engine = EngineBuilder::new()
+    .add_plugins((DefaultPlugins, PropsPlugin, PropPredictionPlugin::default()))
+    .build()?;
+```
+
+Projectiles push the props they hit (the `ProjectileData`'s `impulse`, else by their speed), and explosions with an
+`areaImpulse` and `areaImpulseRadius` push the props around them; `PropData::onCollision` is told.
+
 ## Limits
 
 Props per player (`$Pref::Props::MaxPerPlayer`, 64), per remote address (`$Pref::Props::MaxPerAddress`, 256, orphans counted), per
@@ -74,4 +93,7 @@ protocol (`tests/tge_client.rs`); hostile servers and hostile clients (`tests/fu
 kind's hold, the joint caps and what a joint follows (`tests/joints.rs`), joints over the network (`tests/joints_net.rs`), and
 with `--features rope` the ropes that follow them (`tests/joint_rope.rs`). The bench: `cargo bench -p torque-plugin-props --bench
 step`. The `props-drop` and `props-joints` scenarios of `just trace-hash` hash a server and a predicting client with 64 props, and
-with a grappled figure among tethers, a winch, a weld and a hinge (0 corrections), native and wasm32.
+with a grappled figure among tethers, a winch, a weld and a hinge (0 corrections), native and wasm32. Prediction: `tests/predict.rs`
+(about 100 ms there and back, 2% lost: a carry, a ride and a push, predicted impulses, projectiles' pushes and the client's own
+shots), the `carry` and `projectile-props` scenarios of `just trace-hash`, and the replay's cost (`cargo run --release -p
+torque-trace-hash --bin replay-bench`).

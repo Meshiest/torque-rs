@@ -38,6 +38,8 @@ fn reference() -> Reference {
     set.sides.0.insert(Side::Server);
     let mut gizmo = native("", "drawDebug", false, "", (0, Some(0)));
     gizmo.plugins = vec!["torque.gizmos".to_string()];
+    let mut slot = native("", "setPredictor", false, "(id)", (1, Some(1)));
+    slot.plugins = vec![crate::model::SLOT_TAG.to_string()];
     Reference {
         natives: vec![
             native("", "zeta", false, "(S32 sequence)", (1, Some(1))),
@@ -51,6 +53,7 @@ fn reference() -> Reference {
             native("", "Alpha", false, "alpha(a, b...);", (1, None)),
             set,
             gizmo,
+            slot,
         ],
         classes: vec![Class {
             name: "RopeData".to_string(),
@@ -109,6 +112,17 @@ fn functions_are_sorted_without_case_and_show_their_signature() {
 }
 
 #[test]
+fn the_prediction_slots_functions_need_a_predictor_not_one_plugin() {
+    let text = page("functions.md");
+    assert!(
+        text.contains(
+            "*arguments: 1; client; needs a plugin with a predictor or a prediction part*"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
 fn an_opt_in_plugin_is_named_and_a_native_without_a_signature_gets_parentheses() {
     let text = page("functions.md");
     assert!(
@@ -146,7 +160,7 @@ fn classes_and_prefs_have_tables() {
 fn the_index_counts_and_lists_the_opt_in_plugins() {
     let text = page("index.md");
     assert!(
-        text.contains("| [Functions](functions.md) | console functions, by namespace | 4 |"),
+        text.contains("| [Functions](functions.md) | console functions, by namespace | 5 |"),
         "{text}"
     );
     assert!(text.contains("- `torque.gizmos`: debug drawing"), "{text}");

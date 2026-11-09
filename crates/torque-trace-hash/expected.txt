@@ -15,5 +15,9 @@ physics none 716cb8e96e71430f
 props-drop tge 6033b93d22486e30
 # Joints between props (tether, winch, weld, hinge) and a Player's grapple.
 props-joints tge 53ddcf6a451cd096
-# The fold of the plugin scenarios, with props-joints added.
-plugins tge 072a2ae657a9bd06
+# A client that predicts props: a crate carried on a grapple.
+carry tge 19657ca21cf577f9
+# A client that predicts props: shots and explosions of the figure's own at the crate it holds.
+projectile-props tge e31b057873e5b6a3
+# The fold of the plugin scenarios, with carry and projectile-props added.
+plugins tge 3bcfc1448c05bb03

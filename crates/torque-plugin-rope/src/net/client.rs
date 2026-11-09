@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use torque_engine::net_classes::{ClientGhostLookup, GhostEvent};
+use torque_engine::predict_ids::{self, PredictIds};
 use torque_engine::{Res, ScriptClass, VmMut, function};
 use torque_ts_text::atof;
 use torque_ts_vm::vm::Vm;
@@ -19,13 +20,13 @@ use crate::natives::{RopeShared, texture_loaded};
 use crate::sim::{Curve, MAX_COORD, RopeEnd, RopeError, RopeId, RopeWorld, Tangent};
 
 /// The most predicted ropes a client waits on at once (and so the most predict ids in use).
-pub const MAX_PREDICTED: usize = 16;
+pub const MAX_PREDICTED: usize = predict_ids::MAX_WAITING;
 
 /// How long a predicted rope waits for the server's ghost (seconds) before it fades out.
-pub const PREDICT_TIMEOUT: f32 = 2.0;
+pub const PREDICT_TIMEOUT: f32 = predict_ids::PREDICT_TIMEOUT;
 
 /// The seconds a predicted rope that was never confirmed fades out over.
-pub const PREDICT_FADE: f32 = 0.25;
+pub const PREDICT_FADE: f32 = predict_ids::PREDICT_FADE;
 
 /// The most one-shot ropes a client shows at once.
 pub const MAX_FX: usize = 32;
@@ -40,20 +41,13 @@ struct Held {
     applied: RopeGhost,
 }
 
-/// A rope the client made itself and told the server about.
-struct Predicted {
-    id: u8,
-    rope: RopeId,
-    age: f32,
-}
-
 /// The networked ropes of one client: the ghosts it follows, the predictions it waits on and the one-shot ropes it shows.
 #[derive(Default)]
 pub struct NetRopes {
     by_ghost: BTreeMap<u32, Held>,
-    predicted: Vec<Predicted>,
+    /// The ropes the client made itself and told the server about.
+    predicted: PredictIds<RopeId>,
     fx: Vec<RopeId>,
-    last_predict: u8,
 }
 
 /// The engine resource that holds a client's [`NetRopes`].
@@ -96,19 +90,10 @@ impl NetRopes {
     /// Tags the client's own rope `rope` as a prediction and gives it a predict id (1 to 255, one not in use): the server's ghost that
     /// carries the id is the rope. None when [`MAX_PREDICTED`] are already waiting, the rope is not there or is tagged already.
     pub fn predict(&mut self, world: &RopeWorld, rope: RopeId) -> Option<u8> {
-        if self.predicted.len() >= MAX_PREDICTED
-            || world.rope(rope).is_none()
-            || self.predicted.iter().any(|p| p.rope == rope)
-        {
+        if world.rope(rope).is_none() || self.predicted.any(|&r| r == rope) {
             return None;
         }
-        let id = (1..=255u8)
-            .map(|k| self.last_predict.wrapping_add(k))
-            .filter(|&id| id != 0)
-            .find(|&id| self.predicted.iter().all(|p| p.id != id))?;
-        self.last_predict = id;
-        self.predicted.push(Predicted { id, rope, age: 0.0 });
-        Some(id)
+        self.predicted.issue(rope)
     }
 }
 
@@ -242,13 +227,11 @@ fn added(
     let predicted = record
         .predict
         .map(|p| p.0)
-        .filter(|&id| id != 0)
-        .and_then(|id| book.predicted.iter().position(|p| p.id == id))
-        .map(|k| book.predicted.remove(k))
-        .filter(|p| world.rope(p.rope).is_some());
+        .and_then(|id| book.predicted.adopt(id))
+        .filter(|&rope| world.rope(rope).is_some());
     let (rope, old) = match predicted {
         // The client's own rope is the server's: nothing more is made, and the ghost's groups go on it.
-        Some(p) => (p.rope, RopeGhost::default()),
+        Some(rope) => (rope, RopeGhost::default()),
         None => {
             let point = |anchor: &Option<AnchorWire>| {
                 anchor
@@ -347,17 +330,9 @@ pub(crate) fn tick(
     if let Some(lookup) = lookup {
         world.follow_ghosts(|ghost, _node| lookup.0.position(ghost));
     }
-    net.predicted.retain_mut(|p| {
-        if world.rope(p.rope).is_none() {
-            return false;
-        }
-        p.age += seconds;
-        if p.age >= PREDICT_TIMEOUT {
-            let _ = world.set_lifetime(p.rope, PREDICT_FADE, PREDICT_FADE);
-            return false;
-        }
-        true
-    });
+    for rope in net.predicted.expire(seconds, |&r| world.rope(r).is_some()) {
+        let _ = world.set_lifetime(rope, PREDICT_FADE, PREDICT_FADE);
+    }
     net.fx.retain(|&id| world.rope(id).is_some());
 }
 

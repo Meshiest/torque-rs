@@ -136,6 +136,15 @@ them as static. A player or vehicle whose box touches a prop pushes it toward th
 asks for, since it stops at the prop it walks into), heavier props less. Props collide with each other and with the map inside
 the physics world.
 
+**Projectiles.** A projectile's ray meets the props (any plugin's collision shapes; one with a static shape's bit as a static
+object). A hit pushes the prop at the next step, at the hit point along the shot: by the `ProjectileData`'s `impulse` (newton
+seconds, Torque3D's field) when it has one above 0, else by the shot's speed times 0.25. A projectile whose `ProjectileData` has
+an `areaImpulse` and an `areaImpulseRadius` above 0 pushes every prop whose center lies within the radius when it explodes, away
+from the explosion and falling off to nothing at the radius. Every impulse is held to 5,000 and a radius to 50. The projectile's
+`onCollision(%obj, %col, ...)` names the prop as `%col`, and the prop's datablock is told after the step:
+`PropData::onCollision(%this, %prop, %projectile, %pos, %normal)`. Without props (or another plugin's shapes) projectiles are
+Torque's.
+
 ## Ownership
 
 A prop's owner is the connection given to `propSpawn` (a client's command makes it the client's). The owner key is the
@@ -270,6 +279,74 @@ at their ends; a client's book (`ClientJoints`) gives the props a joint ties to 
 them in with it. A client holds at most 4,096 joints and holds every value it is sent to its range; the fuzzers feed it hostile
 records.
 
+## Prediction
+
+`PropPredictionPlugin` (a client-side plugin, which needs `PropsPlugin`) draws the props a client's own Player is playing with
+where they will be, not where the last update put them. The rest are drawn between the server's updates as before.
+
+```rust
+use torque_engine::EngineBuilder;
+use torque_plugin_props::PropsPlugin;
+use torque_plugin_props::predict::PropPredictionPlugin;
+
+let engine = EngineBuilder::new()
+    .add_plugins((PropsPlugin, PropPredictionPlugin::default()))
+    .build()?;
+```
+
+It is a part of the client's prediction slot: it runs after whichever predictor the game picks (TGE's, the smooth one), and it
+sends nothing new, so it has no network version.
+
+**What is predicted.** Each tick: the props the Player holds (the far end of its grapple), the props under its feet and the
+props it touched in the last 16 ticks, each with the props jointed to it, at most 8. **The most is a Rust setting of the
+plugin** (`PredictConfig::max_predicted`, up to 32), not a pref. Frozen props are not predicted: they do not move.
+
+**How.** The client keeps a small physics world of its own: the predicted props, the map's pieces near them (terrain and
+interiors by their collision, static shapes by their box) and the props around them as fixed boxes. When the server's states
+come, each predicted prop is put back to the server's state exactly (the wire's precision is the server's own) and the moves the
+server has not acknowledged are replayed by the rules the server uses: the Player's push as each move left it, the grapple's pull
+on the held prop as the Player's own predicted step made it, and one step a move. Between updates it steps once a tick. The replay's work is charged to the client's tick budget for prediction parts: a tick
+whose work runs out draws the predicted props as the client shows them, and they are restored at the next. The
+Player's own prediction meets the predicted props where the prediction has them, so walking into a prop or standing on a sliding
+one is predicted no worse than not predicting.
+
+Joints between predicted props are predicted with them: tethers and winches as tethers of their length now, welds as welds of
+the pose they hold now. **A hinge is predicted as a weld** of the pose it lies at: its axis is not sent, and between two updates
+the difference does not show.
+
+**Drawing.** The simulated state takes the server's at once; what is drawn eases the jump out (it keeps 75% of it a tick; a jump
+over 5 units is drawn at once). A prop that leaves the predicted set fades from where it was drawn to where the client shows it
+over 4 ticks; one that joins eases from the server's state. Prediction is not bit for bit the server's (the server's physics
+world holds contact caches the client never sees): it is there to draw props where they belong.
+
+**Predicted impulses.** A game shows a push on a predicted prop at once: `PropPrediction::impulse` and `blast` in Rust, and on the
+client `propPredictImpulse(%ghost, %point, %impulse)` and `propPredictBlast(%point, %radius, %impulse)` (`propPredicted()` lists
+the ghosts predicted). A push is the client's own and is never sent: the server's push for the same cause (a projectile's hit,
+an explosion, a game's own command) comes back in its state, and one the server never made eases out from the next update. Only
+predicted props take one; a tick takes at most 8, each held to 5,000. They draw only, so they declare no effect.
+
+**Shots.** A projectile the client's own Player fired is followed from its first record, put ahead by the moves the server has
+not acknowledged; when it meets a predicted prop, the prop takes the hit's impulse at once, and the predicted props in reach take
+its explosion's. A shot whose first record comes after its hit (a short one) waits for the server. **Torque's `ProjectileData`
+record carries no `impulse`, `areaImpulse` or `areaImpulseRadius`**: the client reads them where its datablock has them, and
+otherwise uses `PredictConfig::shot`, which a game sets to its weapons' values.
+
+**Predicted spawns.** `PropPrediction::spawn` and `propPredictSpawn(%data, %transform)` (the datablock by its id, which the
+server and the client share) show a prop at once under a predict id (1
+to 255, at most 16 waiting: the scheme ropes use, `torque_engine::predict_ids`), which the game sends with its own spawn command
+(`propSpawn(%data, %transform, %owner, %predictId)` on the server). The server's ghost that carries the id adopts it when it comes (each ghost once), fading
+from where it was shown; one never confirmed within two seconds fades out. **A waiting spawn has no ghost, so the game draws it**
+(`PropPrediction::spawns` gives each with its opacity).
+
+**Its error and cost.** Over the memory transport with about 100 ms there and back and 2% of the datagrams lost
+(`cargo test -p torque-plugin-props --test predict`): a held crate dragged on a 600-tick walk is drawn with no jump past the
+server's own crate's (the largest change of its drawn step from one tick to the next is the server's), a mean correction of 2.2
+cm; riding a sliding raft and pushing a row of four, 0.6 cm, with 4 corrections of the Player's own prediction against 74 without
+prop prediction; a predicted push the server makes too, under 1 cm; one it never makes is back where the server has it within
+the window, with no jump. A replay of 8 props through 46 moves takes 2.9 ms natively and 7.4 ms in wasm32
+(`cargo run --release -p torque-trace-hash --bin replay-bench`, and its wasm32-wasip1 module under `web/wasi-run.mjs`; one desktop
+machine, 2026-11-09).
+
 ## Cost
 
 `cargo bench -p torque-plugin-props --bench step`, native release build (one desktop machine, 2026-11-08), against a budget of 6 ms
@@ -298,3 +375,8 @@ grapple's tether bit for bit on the client), `--features rope --test joint_rope`
 one hanging, a rope that follows its joint over the network and goes with it). The `props-joints` scenario of `just trace-hash`
 (a figure running and jumping on a grapple, with a hard and a soft tether, a winch, a weld and a motored hinge around it) prints
 the same hash native and wasm32, with 0 corrections of the figure's prediction.
+
+Prediction: `--test predict` (the carry, the ride and the push, a predicted push the server makes too and one it never makes, the
+caps, a projectile's push held to its cap, the shooter's own shot and its explosion). The `carry` and `projectile-props`
+scenarios of `just trace-hash` (a crate carried on a grapple; shots and explosions of the figure's own at the crate it holds)
+hash a client that predicts props, native and wasm32.

@@ -24,7 +24,7 @@ use vehicle::words::{KindWords, VehicleWords, WheelWords};
 
 use super::{
     ClassKind, EngineDatablock, EngineRecord, EngineSet, EngineTail, FreeMotion, PlayerPacket,
-    PlayerWords, ShapeState, VehiclePose, VehicleUpdate, WheelDatablocks,
+    PlayerWords, ShapeState, ShotRecord, VehiclePose, VehicleUpdate, WheelDatablocks,
 };
 
 fn player_words(p: &PlayerTail, translation: [f32; 3]) -> PlayerWords {
@@ -265,6 +265,30 @@ impl EngineRecord<TgeClientSet> for TgeRecord {
             .map_or([0.0; 3], |v| v.value(ghosts::player::VELOCITY_NORMAL_BITS));
         let head = ghost_world::tge::head_fractions(self).map_or(0.0, |h| h[0]);
         Some((velocity, head))
+    }
+
+    fn shot(&self) -> Option<ShotRecord> {
+        let TgeRecord::Projectile(p) = self else {
+            return None;
+        };
+        let initial = p.initial.as_ref()?;
+        // The bounce block's raw floats, when the record has it, over the initial block's coarser direction.
+        let (start, velocity) = match p.bounce {
+            Some((at, v)) => (Some(at.map(|c| c.get())), v.map(|c| c.get())),
+            None => (
+                None,
+                initial.velocity.map_or([0.0; 3], |v| {
+                    v.value(ghosts::projectile::VELOCITY_NORMAL_BITS)
+                }),
+            ),
+        };
+        Some(ShotRecord {
+            start,
+            velocity,
+            tick: initial.tick,
+            source: initial.source.map(|s| s.object),
+            exploded: p.explosion.map(|x| x.position.map(|c| c.get())),
+        })
     }
 }
 

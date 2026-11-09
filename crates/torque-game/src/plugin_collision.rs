@@ -6,12 +6,17 @@
 //! has nothing installed and every query is as it was. Script sees each source's type bit as
 //! `$TypeMasks::<Name>ObjectType`.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use collide::source::{CollisionSources, PluginCollision, Side};
+use collide::source::{CollisionSources, PluginCollision, ShapeSet, Side};
 use ts_vm::vm::Vm;
 
-struct Installed(Rc<CollisionSources>);
+struct Installed {
+    sources: Rc<CollisionSources>,
+    /// The shapes as the sources had them, and the sim time they were read at.
+    snapshot: RefCell<Option<(u32, Rc<ShapeSet>)>>,
+}
 
 /// Gives `vm` the sources of `side` among `entries` and their type bits as globals. Which sources there are depends on the list
 /// alone ([`CollisionSources::from_entries`]), so the server and the client keep the same ones whatever their script engines
@@ -30,13 +35,32 @@ pub fn install(vm: &mut Vm, entries: &[PluginCollision], side: Side) -> Vec<Stri
         }
         vm.set_global_uint(global.as_bytes(), bit);
     }
-    vm.set_extension(Rc::new(Installed(Rc::new(sources))));
+    vm.set_extension(Rc::new(Installed {
+        sources: Rc::new(sources),
+        snapshot: RefCell::new(None),
+    }));
     warnings
 }
 
 /// The sources `vm` was given, if any.
 pub fn sources_of(vm: &Vm) -> Option<Rc<CollisionSources>> {
-    vm.extension::<Installed>().map(|i| Rc::clone(&i.0))
+    vm.extension::<Installed>().map(|i| Rc::clone(&i.sources))
+}
+
+/// The shapes the sources of `vm` have, read once for each sim time (a tick's objects all see the shapes as the tick began);
+/// none when there is no source.
+pub fn snapshot_of(vm: &Vm) -> Option<Rc<ShapeSet>> {
+    let installed = vm.extension::<Installed>()?;
+    let now = vm.sim_time();
+    let mut kept = installed.snapshot.borrow_mut();
+    if let Some((at, set)) = kept.as_ref()
+        && *at == now
+    {
+        return Some(Rc::clone(set));
+    }
+    let set = Rc::new(installed.sources.snapshot());
+    *kept = Some((now, Rc::clone(&set)));
+    Some(set)
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "determinism", "testing", "wasm"]
 categories = ["game-development", "development-tools::testing"]
+default-run = "trace-hash"
 
 # Each scenario runs a server (`MinimalPlugins` and the plugin under test) and a client over an in-memory link for 600 ticks,
 # feeds the client scripted inputs, and hashes the server's and the client's per-tick state; the Rapier world's scenario steps
@@ -48,6 +49,11 @@ torque-vehicle = { path = "../torque-vehicle" }
 [[bin]]
 name = "trace-hash"
 path = "src/main.rs"
+
+# The cost of a client's prop replay (8 props x 46 moves), natively and as wasm32-wasip1.
+[[bin]]
+name = "replay-bench"
+path = "src/bin/replay_bench.rs"
 
 [lints]
 workspace = true

@@ -453,3 +453,33 @@ fn a_working_set_builds_boxes_and_hulls_and_follows_a_move() {
         .unwrap();
     assert!(working.is_empty());
 }
+
+#[test]
+fn a_ray_meets_the_nearest_shape_and_a_segment_that_is_not_finite_meets_nothing() {
+    let s = source(vec![
+        boxed(0, at(0.0, 5.0, 0.0), [1.0; 3]),
+        boxed(1, at(0.0, 9.0, 0.0), [1.0; 3]),
+    ]);
+    let src = sources(&[PluginCollision::server("Crates", s)], Side::Server);
+    let set = src.snapshot();
+    let (id, t, n) = set
+        .cast_ray([0.0; 3], [0.0, 20.0, 0.0], STATIC_SHAPE, None)
+        .expect("a hit");
+    assert_eq!(id, ObjectId(PLUGIN_ID_BASE));
+    assert!((t - 0.2).abs() < 1e-6 && n == [0.0, -1.0, 0.0], "{t} {n:?}");
+    assert!(
+        set.cast_ray([0.0; 3], [0.0, 20.0, 0.0], PLAYER, None)
+            .is_none()
+    );
+    let unit = Box3::new([-1.0; 3], [1.0; 3]);
+    for (a, b) in [
+        ([f32::NAN, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        ([0.0, -5.0, 0.0], [0.0, f32::INFINITY, 0.0]),
+    ] {
+        assert_eq!(segment_box(a, b, &unit), None);
+    }
+    assert_eq!(
+        segment_box([0.0; 3], [0.0, 5.0, 0.0], &unit).map(|h| h.0),
+        Some(0.0)
+    );
+}

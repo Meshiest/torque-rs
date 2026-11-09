@@ -148,6 +148,22 @@ pub trait EngineRecord<S: ?Sized> {
     fn player_motion(&self) -> Option<(F3, f32)> {
         None
     }
+
+    /// A Projectile's flight as its records sent it, for a record of a Projectile class ([`ShotRecord`]). None by default.
+    fn shot(&self) -> Option<ShotRecord> {
+        None
+    }
+}
+
+/// A Projectile's flight as its records sent it: where it started (when the record says so exactly; else the ghost's resolved
+/// position), its velocity, the ticks it had lived, the object that fired it and where it exploded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShotRecord {
+    pub start: Option<F3>,
+    pub velocity: F3,
+    pub tick: u32,
+    pub source: Option<u32>,
+    pub exploded: Option<F3>,
 }
 
 /// What the engine half reads of a datablock.

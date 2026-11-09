@@ -129,6 +129,7 @@ getModDownloadState -
 getModField -
 getModList -
 getModStages -
+getPredictor -
 getRandom -
 getRandomSeed -
 getRealTime -
@@ -360,6 +361,10 @@ propGetTransform -
 propGetVelocity -
 propIsAsleep -
 propIsFrozen -
+propPredictBlast -
+propPredicted -
+propPredictImpulse -
+propPredictSpawn -
 propSetVelocity -
 propSpawn -
 propUnfreeze -
@@ -439,6 +444,7 @@ setCameraMode -
 setDefaultFov -
 setField -
 setFov -
+setPredictor -
 setRandomSeed -
 setRecord -
 setRenderer -

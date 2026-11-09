@@ -6,15 +6,14 @@ use std::rc::Rc;
 
 use torque_collide::types::STATIC_SHAPE;
 use torque_engine::{Engine, TickInfo, VmPrefs};
-use torque_ts_vm::geometry;
 use torque_ts_vm::vm::Vm;
 
+use crate::hits::{self, Blast, Hit};
 use crate::joints::server as joint_server;
 use crate::natives::control_of;
-use crate::quant::conjugate;
 use crate::server::{
     CLASS, PropPrefs, ServerProps, address_of, delete_logged, is_class, joint_limits_of, limits_of,
-    owner_key, player_boxes, write_back,
+    owner_key, player_boxes, shot_push, write_back,
 };
 use crate::world::{Owner, OwnerKey, PropEvent, PropWorld, Pusher, StaticPiece};
 
@@ -24,7 +23,7 @@ pub const STATICS_EVERY: u64 = 64;
 /// The server's tick hook ([module docs](self)).
 pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
     let prefs = vm.prefs::<PropPrefs>();
-    let (events, expired, rebuilt, broke, gone_joints, problems) = {
+    let (events, expired, rebuilt, broke, gone_joints, problems, hit) = {
         let mut srv = props.0.borrow_mut();
         srv.tick += 1;
         srv.net_share = prefs.net_share;
@@ -58,6 +57,9 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         if tick == 1 || tick.is_multiple_of(STATICS_EVERY) {
             world.sync_statics(statics_of(vm));
         }
+        let state = &mut *srv;
+        let hit = projectile_pushes(vm, &mut state.hits, &mut state.blasts, &mut state.world);
+        let world = state.world_mut(vm);
         let pushers = pushers_of(vm);
         let players: Vec<[f32; 3]> = player_boxes(vm)
             .iter()
@@ -93,6 +95,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
             broke,
             gone_joints,
             world.take_problems(),
+            hit,
         )
     };
     for problem in problems {
@@ -123,6 +126,20 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         }
     }
     refresh_controls(vm, props);
+    // A prop a projectile hit is told so (after the projectile's own `onCollision`, which ran in its tick).
+    for h in hit {
+        let args = [
+            h.prop.to_string().into_bytes(),
+            h.by.to_string().into_bytes(),
+            torque_game::sim::hosted::text3_fixed(h.point),
+            torque_game::sim::hosted::text3_fixed(h.normal),
+        ];
+        if is_class(vm, h.prop, CLASS)
+            && let Err(e) = vm.call_method(h.data, b"onCollision", &args)
+        {
+            vm.warn(format!("props: prop {}'s onCollision: {e}", h.prop));
+        }
+    }
     for (id, data, event) in events {
         let name = match event {
             PropEvent::Sleep => "onPropSleep",
@@ -290,31 +307,70 @@ fn statics_of(vm: &Vm) -> Vec<(u32, StaticPiece)> {
         {
             continue;
         }
-        let m = view.obj_to_world;
-        let (lo, hi) = (view.obj_box.min, view.obj_box.max);
-        let center: [f32; 3] = std::array::from_fn(|k| (lo[k] + hi[k]) * 0.5 * view.scale[k]);
-        let half: [f32; 3] = std::array::from_fn(|k| ((hi[k] - lo[k]) * 0.5 * view.scale[k]).abs());
-        let position: [f32; 3] = std::array::from_fn(|r| {
-            m[r * 4] * center[0]
-                + m[r * 4 + 1] * center[1]
-                + m[r * 4 + 2] * center[2]
-                + m[r * 4 + 3]
-        });
-        let rows: geometry::Mat4 = std::array::from_fn(|r| std::array::from_fn(|c| m[r * 4 + c]));
-        let rotation = conjugate(geometry::quat_from_matrix(&rows));
-        if rotation.iter().any(|v| !v.is_finite()) {
-            continue;
+        if let Some(piece) = StaticPiece::of_view(&view) {
+            out.push((id, piece));
         }
-        out.push((
-            id,
-            StaticPiece::Box {
-                position,
-                rotation,
-                half,
-            },
-        ));
     }
     out
+}
+
+/// A hit that pushed a prop, for its datablock's `onCollision`.
+struct Pushed {
+    prop: u32,
+    data: u32,
+    by: u32,
+    point: [f32; 3],
+    normal: [f32; 3],
+}
+
+/// The projectiles' pushes before the step: each hit kept since the last one ([`crate::hits::hit_impulse`], at the hit point, by
+/// what its projectile's datablock says), then each explosion since the last step on every prop in its reach (in id order).
+/// Gives the hits that pushed a prop. Both lists are emptied: an explosion pushes the props there are when it went off.
+fn projectile_pushes(
+    vm: &Vm,
+    hits: &mut Vec<Hit>,
+    blasts: &mut Vec<Blast>,
+    world: &mut Option<PropWorld>,
+) -> Vec<Pushed> {
+    let (hits, blasts) = (std::mem::take(hits), std::mem::take(blasts));
+    let Some(world) = world.as_mut().filter(|w| !w.is_empty()) else {
+        return Vec::new();
+    };
+    let mut pushed = Vec::new();
+    for h in hits {
+        let Some(data) = world.get(h.prop).map(|p| p.data) else {
+            continue;
+        };
+        let Some(j) = hits::hit_impulse(h.velocity, &shot_push(vm, h.datablock)) else {
+            continue;
+        };
+        if world.impulse_at(h.prop, j, h.point) {
+            pushed.push(Pushed {
+                prop: h.prop,
+                data,
+                by: h.by,
+                point: h.point,
+                normal: h.normal,
+            });
+        }
+    }
+    for blast in blasts {
+        let push = shot_push(vm, blast.datablock);
+        if !push.blasts() {
+            continue;
+        }
+        let near: Vec<(u32, [f32; 3])> = world
+            .props()
+            .iter()
+            .filter_map(|(&p, prop)| {
+                Some((p, hits::blast_impulse(blast.at, prop.q.position(), &push)?))
+            })
+            .collect();
+        for (p, j) in near {
+            world.impulse(p, j);
+        }
+    }
+    pushed
 }
 
 /// The players and vehicles as pushers: a player pushes at the speed its move asks for (it stops at the prop it walks into), a

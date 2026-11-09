@@ -93,6 +93,57 @@ datablock PropData(Slider)
    sleepAngular = 0;
 };
 
+// A wide, low platform that slides on: a player rides it.
+datablock PropData(Raft)
+{
+   shapeFile = "kit/cube.dts";
+   size = "4 4 0.4";
+   mass = 400;
+   friction = 0.05;
+   linearDamping = 0;
+   sleepLinear = 0;
+   sleepAngular = 0;
+};
+
+// A shot that pushes what it hits (the hit's own impulse is its speed's), and one whose explosion pushes all around it too.
+datablock ProjectileData(TestShot)
+{
+   muzzleVelocity = 60;
+   lifetime = 3000;
+};
+
+datablock ProjectileData(TestBlast)
+{
+   muzzleVelocity = 60;
+   lifetime = 3000;
+   areaImpulse = 400;
+   areaImpulseRadius = 4;
+};
+
+// A shot that is gone at once when it hits: its push is its datablock's all the same.
+datablock ProjectileData(TestShotGone)
+{
+   muzzleVelocity = 60;
+   lifetime = 3000;
+   impulse = 120;
+};
+
+function TestShotGone::onCollision(%this, %obj, %col, %fade, %pos, %normal)
+{
+   %obj.delete();
+}
+
+function TestShot::onCollision(%this, %obj, %col, %fade, %pos, %normal)
+{
+   $ShotHit = %col;
+}
+
+function Crate::onCollision(%this, %prop, %col, %pos, %normal)
+{
+   $PropHitBy = %col;
+   $PropHitAt = %pos;
+}
+
 function Crate::onPropSleep(%this, %prop)
 {
    $Slept++;

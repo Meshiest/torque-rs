@@ -230,6 +230,34 @@ pub enum StaticPiece {
     },
 }
 
+impl StaticPiece {
+    /// A static object's box (its object box at its scale and transform), as both sides take static shapes; none for a
+    /// transform whose turn is not a number.
+    pub fn of_view(view: &torque_collide::ObjectView) -> Option<StaticPiece> {
+        let m = view.obj_to_world;
+        let (lo, hi) = (view.obj_box.min, view.obj_box.max);
+        let center: [f32; 3] = std::array::from_fn(|k| (lo[k] + hi[k]) * 0.5 * view.scale[k]);
+        let half: [f32; 3] = std::array::from_fn(|k| ((hi[k] - lo[k]) * 0.5 * view.scale[k]).abs());
+        let position: [f32; 3] = std::array::from_fn(|r| {
+            m[r * 4] * center[0]
+                + m[r * 4 + 1] * center[1]
+                + m[r * 4 + 2] * center[2]
+                + m[r * 4 + 3]
+        });
+        let rows: torque_ts_vm::geometry::Mat4 =
+            std::array::from_fn(|r| std::array::from_fn(|c| m[r * 4 + c]));
+        let rotation = quant::conjugate(torque_ts_vm::geometry::quat_from_matrix(&rows));
+        rotation
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some(StaticPiece::Box {
+                position,
+                rotation,
+                half,
+            })
+    }
+}
+
 /// What happened to a prop in a tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PropEvent {
@@ -258,6 +286,8 @@ pub struct TickReport {
     pub joints: Vec<(u32, u32)>,
     /// Joints that broke, in id order.
     pub joint_events: Vec<(u32, JointEvent)>,
+    /// The work the step was charged (its budget's units).
+    pub work: u64,
 }
 
 /// The server's props ([module docs](self)).
@@ -265,6 +295,8 @@ pub struct PropWorld {
     world: World,
     props: BTreeMap<u32, Prop>,
     slots: BTreeSet<u16>,
+    /// The prop in each slot in use.
+    by_slot: BTreeMap<u16, u32>,
     statics: BTreeMap<u32, StaticPiece>,
     /// The joints by object id ([`crate::joints`]).
     pub(crate) joints: BTreeMap<u32, Joint>,
@@ -367,6 +399,7 @@ impl PropWorld {
             world: World::new(config(substeps)),
             props: BTreeMap::new(),
             slots: (0..MAX_PROPS as u16).collect(),
+            by_slot: BTreeMap::new(),
             statics: BTreeMap::new(),
             joints: BTreeMap::new(),
             gone_joints: Vec::new(),
@@ -413,6 +446,11 @@ impl PropWorld {
 
     pub fn get(&self, id: u32) -> Option<&Prop> {
         self.props.get(&id)
+    }
+
+    /// The prop whose collision shape is keyed `slot`.
+    pub fn in_slot(&self, slot: u16) -> Option<u32> {
+        self.by_slot.get(&slot).copied()
     }
 
     pub fn len(&self) -> usize {
@@ -526,6 +564,7 @@ impl PropWorld {
             Err(_) => return Err(SpawnError::World),
         }
         self.slots.remove(&slot);
+        self.by_slot.insert(slot, id);
         self.props.insert(
             id,
             Prop {
@@ -549,6 +588,7 @@ impl PropWorld {
             return false;
         };
         self.slots.insert(p.slot);
+        self.by_slot.remove(&p.slot);
         let removed = self.world.remove_body(BodyId(id));
         self.note(&format!("prop {id}'s body"), removed);
         self.drop_joints_of(id);
@@ -642,6 +682,33 @@ impl PropWorld {
             return false;
         }
         self.world.apply_impulse(BodyId(id), impulse).is_ok()
+    }
+
+    /// Puts a prop back to the state `q` (a client restoring a server's state), awake or asleep as `rest` says, its quiet count
+    /// started over; false for a frozen prop, one that is not there, or a `rest` of [`Rest::Frozen`].
+    pub fn restore(&mut self, id: u32, q: Quantized, rest: Rest) -> bool {
+        let Some(p) = self.props.get_mut(&id).filter(|p| !p.rest.is_frozen()) else {
+            return false;
+        };
+        if rest.is_frozen() {
+            return false;
+        }
+        p.q = q;
+        p.quiet = 0;
+        p.rest = rest;
+        let mut s = q.state();
+        s.sleeping = rest.is_asleep();
+        self.world.set_body(BodyId(id), &s).is_ok()
+    }
+
+    /// [`PropWorld::impulse`] at the world point `point` (off its center it turns the prop too).
+    pub fn impulse_at(&mut self, id: u32, impulse: [f32; 3], point: [f32; 3]) -> bool {
+        if self.props.get(&id).is_none_or(|p| p.rest.is_frozen()) {
+            return false;
+        }
+        self.world
+            .apply_impulse_at(BodyId(id), impulse, point)
+            .is_ok()
     }
 
     /// Sets a prop's speed and spin (held to its datablock's top speed and the world's spin); wakes it.
@@ -879,6 +946,7 @@ impl PropWorld {
         } else {
             Ok(())
         };
+        report.work = spent;
         match stepped {
             Ok(_) => {
                 // A cut eases back up an eighth of the cap a tick.

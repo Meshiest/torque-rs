@@ -4799,6 +4799,7 @@ name = "torque-script-reference"
 version = "0.1.0"
 dependencies = [
  "torque-app",
+ "torque-client",
  "torque-engine",
  "torque-plugin-gui-layout",
  "torque-plugin-props",

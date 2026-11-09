@@ -17,7 +17,10 @@ categories = ["game-development", "simulation"]
 
 [dependencies]
 torque-collide = { path = "../torque-collide" }
+# The prediction slot a client's prop prediction is a part of, and the poses it draws props at.
+torque-client = { path = "../torque-client" }
 torque-engine = { path = "../torque-engine" }
+torque-ghost-world = { path = "../torque-ghost-world" }
 # Marking a server object's ghost groups dirty, reading players and map pieces.
 torque-game = { path = "../torque-game" }
 torque-ghosts = { path = "../torque-ghosts" }
@@ -38,8 +41,6 @@ criterion = { workspace = true }
 # The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
 torque-app = { path = "../torque-app", default-features = false, features = ["renderer"] }
 torque-app-server = { path = "../torque-app-server" }
-torque-client = { path = "../torque-client" }
-torque-ghost-world = { path = "../torque-ghost-world" }
 torque-server = { path = "../torque-server" }
 # The floor and the figure of the tests' world.
 torque-example-assets = { path = "../../examples/assets" }

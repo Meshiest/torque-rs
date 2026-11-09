@@ -8,7 +8,8 @@
 //!   among [`scenarios::physics`] and folded into the `physics` line, not `all`.
 //! - [`props`]: the props plugin's scenario (crates dropped and walked through, a server and a predicting client), printed among
 //!   [`scenarios::plugins`] and folded into the `plugins` line; [`joints`], its joints' (a grappled figure swinging, with
-//!   tethers, a winch, a weld and a hinge around it), printed after it.
+//!   tethers, a winch, a weld and a hinge around it), printed after it; [`props_predict`], a client that predicts props (a
+//!   held crate carried, and shots of the figure's own at it), printed after those.
 //! - [`scenarios`]: the scenarios ([`scenarios::all`]) and [`scenarios::trace_hash`], the per-plugin entry point
 //!   (`trace_hash::<MyPlugin>()`).
 //!
@@ -22,6 +23,7 @@
 pub mod hash;
 pub mod joints;
 pub mod props;
+pub mod props_predict;
 pub mod rapier;
 pub mod rig;
 pub mod scenarios;

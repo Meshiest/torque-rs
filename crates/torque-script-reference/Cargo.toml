@@ -23,6 +23,8 @@ torque-engine = { path = "../torque-engine" }
 torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
 torque-plugin-rope = { path = "../torque-plugin-rope" }
 torque-plugin-props = { path = "../torque-plugin-props" }
+# The prediction slot's functions, documented as the slot's.
+torque-client = { path = "../torque-client" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
 [lints]

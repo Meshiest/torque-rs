@@ -37,12 +37,18 @@ pub struct ClientJoint {
     pub broken: bool,
 }
 
+/// The most predicted pulls a book keeps (one a move).
+pub const MAX_PULLS: usize = 128;
+
 /// The joints a client's connection was sent, by ghost index.
 #[derive(Debug, Default)]
 pub struct JointBook {
     joints: BTreeMap<u32, ClientJoint>,
     /// Ghosts left out because the book was full.
     pub dropped: u64,
+    /// The pull the grapple on the predicted Player gave the prop at its far end at each move the client predicted (the
+    /// impulse, by move index, newest last): what the server's step gives that prop.
+    pulls: std::collections::VecDeque<(u32, [f32; 3])>,
 }
 
 impl JointBook {
@@ -99,6 +105,29 @@ impl JointBook {
 
     pub fn clear(&mut self) {
         self.joints.clear();
+        self.pulls.clear();
+    }
+
+    /// The impulse the predicted Player's grapple gave the prop at its far end at move `index` (none when it pulled nothing).
+    pub fn pull_at(&self, index: u32) -> Option<[f32; 3]> {
+        self.pulls
+            .iter()
+            .find_map(|&(i, j)| (i == index).then_some(j))
+    }
+
+    /// The grapple pulled the predicted Player by `change` at move `index` (`mass` heavy): its far end takes the opposite
+    /// impulse, as the server's step gives it. A replayed move's pull replaces the one before.
+    pub fn pulled(&mut self, index: u32, change: [f32; 3], mass: f32) {
+        let mass = crate::joints::number(mass, 0.0, 1.0e6);
+        let impulse = change.map(|c| -c * mass);
+        if !impulse.iter().all(|v| v.is_finite()) {
+            return;
+        }
+        self.pulls.retain(|(i, _)| *i != index);
+        if self.pulls.len() >= MAX_PULLS {
+            self.pulls.pop_front();
+        }
+        self.pulls.push_back((index, impulse));
     }
 
     /// The ghosts the unbroken joints tie to the ghost `index` (a prop or a player), in ghost order: what a predictor pulls in
@@ -174,13 +203,13 @@ pub fn heard(book: &ClientJoints, event: GhostEvent<'_, JointGhost>) {
     }
 }
 
-/// Where an end is as the client knows it: a point, or a prop at its last state (a point of its frame). None for a ghost the
-/// client has no prop of, or a free end.
+/// Where an end is as the client knows it: a point, or a prop at its last state (its predicted one while the client predicts
+/// it; a point of its frame). None for a ghost the client has no prop of, or a free end.
 pub fn end_point(end: &EndWire, props: &ClientProps) -> Option<[f32; 3]> {
     match *end {
         EndWire::Point(p) => Some(p),
         EndWire::Ghost { ghost, offset } => props
-            .with(|b| b.get(ghost).map(|p| point_on(&p.q, offset)))
+            .with(|b| b.get(ghost).map(|p| point_on(p.now(), offset)))
             .flatten(),
         EndWire::Free | EndWire::Waiting => None,
     }
@@ -197,6 +226,12 @@ pub struct ClientTethers {
 }
 
 impl TetherSource for ClientTethers {
+    fn predicted_pull(&self, _player: u32, index: u32, change: [f32; 3], mass: f32) {
+        if let Ok(mut book) = self.joints.0.try_borrow_mut() {
+            book.pulled(index, change, mass);
+        }
+    }
+
     fn tether(&self, player: u32) -> Option<Tether> {
         let j = self
             .joints

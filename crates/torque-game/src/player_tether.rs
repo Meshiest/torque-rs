@@ -18,6 +18,10 @@ pub trait TetherSource {
     /// The tether changed the Player `key`'s velocity by `change`, the Player being `mass` heavy (the server's step only; the
     /// source gives the thing at the other end the opposite impulse).
     fn pulled(&self, _key: u32, _change: F3, _mass: f32) {}
+    /// The tether changed the Player `key`'s velocity by `change` in a client's prediction of its move `index` (a replay of the
+    /// move tells it again, with what the replay made): for a source that shows the pull on the thing at the other end ahead
+    /// of the server. Nothing by default; it changes nothing of the Player's step.
+    fn predicted_pull(&self, _key: u32, _index: u32, _change: F3, _mass: f32) {}
 }
 
 /// The sources a script engine was given, asked in the order they were added: the first tether wins.
@@ -37,6 +41,13 @@ impl TetherSources {
     pub fn pulled(&self, index: usize, key: u32, change: F3, mass: f32) {
         if let Some(s) = self.0.get(index) {
             s.pulled(key, change, mass);
+        }
+    }
+
+    /// Tells source `index` what its tether did in a client's prediction of move `move_index`.
+    pub fn predicted_pull(&self, index: usize, key: u32, move_index: u32, change: F3, mass: f32) {
+        if let Some(s) = self.0.get(index) {
+            s.predicted_pull(key, move_index, change, mass);
         }
     }
 

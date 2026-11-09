@@ -50,6 +50,22 @@ pub fn engine(files: &GameFiles, props: bool) -> Engine {
     builder.build().expect("the engine builds")
 }
 
+/// Torque's answers, with the game's files for the shapes the client reads.
+#[derive(Debug)]
+struct FilesGame(torque_ts_vm::host::MemFiles);
+
+impl torque_client::game::ClientGame for FilesGame {
+    fn file_reader(&self) -> Option<torque_client::predict::FileReader> {
+        let files = self.0.clone();
+        Some(std::rc::Rc::new(
+            move |path: &[u8]| match torque_ts_vm::host::FileHost::read(&files, path) {
+                torque_ts_vm::host::FileRead::Found(bytes) => Some(bytes),
+                _ => None,
+            },
+        ))
+    }
+}
+
 pub struct Peer {
     pub client: GameClient,
     pub engine: Engine,
@@ -92,11 +108,53 @@ impl Peer {
     }
 }
 
+/// The link between the server and its clients: the ticks a datagram takes each way and the share lost (per thousand, a
+/// seeded sequence, the same every run). The default carries every datagram at once.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Link {
+    pub up: u64,
+    pub down: u64,
+    pub loss_per_mille: u32,
+    pub seed: u64,
+}
+
+impl Link {
+    /// About 100 ms there and back (one tick up, two down) and 2% of the datagrams lost each way.
+    pub fn lossy() -> Link {
+        Link {
+            up: 1,
+            down: 2,
+            loss_per_mille: 20,
+            seed: 0x9e37_79b9_7f4a_7c15,
+        }
+    }
+
+    fn lost(&mut self) -> bool {
+        if self.loss_per_mille == 0 {
+            return false;
+        }
+        // xorshift64
+        let mut x = self.seed;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.seed = x;
+        (x % 1000) < u64::from(self.loss_per_mille)
+    }
+}
+
+type InFlight = (u64, SocketAddrV4, Vec<u8>);
+
 pub struct Rig {
     pub server: GameServer,
     /// The server's engine (its resources are the server's props).
     pub engine: Engine,
     pub peers: Vec<Peer>,
+    pub link: Link,
+    /// The steps run, and the datagrams on their way up (from a client) and down (to one), with the step each arrives at.
+    now: u64,
+    up: Vec<InFlight>,
+    down: Vec<InFlight>,
 }
 
 impl Rig {
@@ -122,6 +180,10 @@ impl Rig {
             server,
             engine,
             peers: Vec::new(),
+            link: Link::default(),
+            now: 0,
+            up: Vec::new(),
+            down: Vec::new(),
         }
     }
 
@@ -145,6 +207,13 @@ impl Rig {
         builder.set_socket(Box::new(mem), NetPolicy::Loopback);
         builder.exec_entry().expect("the client's script");
         let mut client: GameClient = builder.build();
+        // The game's files for the shapes the client's prediction reads (the floor it stands on), as a game gives them.
+        if torque_client::game::installed_game(client.vm()).is_none() {
+            torque_client::game::set_client_game(
+                client.vm_mut(),
+                std::rc::Rc::new(FilesGame(files.mem_files())),
+            );
+        }
         for (name, value) in prefs {
             client.vm_mut().set_global(name, value);
         }
@@ -165,18 +234,37 @@ impl Rig {
         let Some(end) = self.server.memory_end() else {
             return;
         };
+        let now = self.now;
         for peer in &self.peers {
             for (to, data) in peer.sent.borrow_mut().drain(..) {
-                if SocketAddr::V4(to) == SERVER {
-                    end.inject(SocketAddr::V4(peer.addr), &data);
+                if SocketAddr::V4(to) == SERVER && !self.link.lost() {
+                    self.up.push((now + self.link.up, peer.addr, data));
                 }
             }
         }
         for (to, data) in end.take_sent() {
-            if let Some(peer) = self.peers.iter().find(|p| SocketAddr::V4(p.addr) == to) {
-                let SocketAddr::V4(from) = SERVER else {
-                    continue;
-                };
+            if let SocketAddr::V4(to) = to
+                && !self.link.lost()
+            {
+                self.down.push((now + self.link.down, to, data));
+            }
+        }
+        let (due, later): (Vec<InFlight>, Vec<InFlight>) = std::mem::take(&mut self.up)
+            .into_iter()
+            .partition(|d| d.0 <= now);
+        self.up = later;
+        for (_, from, data) in due {
+            end.inject(SocketAddr::V4(from), &data);
+        }
+        let (due, later): (Vec<InFlight>, Vec<InFlight>) = std::mem::take(&mut self.down)
+            .into_iter()
+            .partition(|d| d.0 <= now);
+        self.down = later;
+        let SocketAddr::V4(from) = SERVER else {
+            return;
+        };
+        for (_, to, data) in due {
+            if let Some(peer) = self.peers.iter().find(|p| p.addr == to) {
                 peer.incoming.borrow_mut().push_back((from, data));
             }
         }
@@ -184,6 +272,7 @@ impl Rig {
 
     /// One tick of the server, then of every client.
     pub fn step(&mut self) {
+        self.now += 1;
         self.carry();
         self.server.tick();
         self.carry();

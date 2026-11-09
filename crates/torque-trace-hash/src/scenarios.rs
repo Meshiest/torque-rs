@@ -107,6 +107,16 @@ pub fn plugins() -> Vec<Scenario> {
             mode: Some(Mode::Tge),
             run: crate::joints::grapple,
         },
+        Scenario {
+            name: "carry",
+            mode: Some(Mode::Tge),
+            run: crate::props_predict::carry,
+        },
+        Scenario {
+            name: "projectile-props",
+            mode: Some(Mode::Tge),
+            run: crate::props_predict::shots,
+        },
     ]
 }
 

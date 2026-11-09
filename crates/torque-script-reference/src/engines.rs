@@ -7,9 +7,11 @@ use torque_app::gizmos::GizmosPlugin;
 use torque_app::hosting::HostingPlugin;
 use torque_app::plugins::{DefaultPlugins, ZoomPlugin};
 use torque_app::server::{GameServer, Listen, ServerStart};
+use torque_client::predict::slot::SLOT_NATIVES;
 use torque_engine::{Engine, EngineBuilder, PluginType};
 use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_props::PropsPlugin;
+use torque_plugin_props::predict::PropPredictionPlugin;
 use torque_plugin_rope::RopePlugin;
 use torque_ts_vm::host::MemFiles;
 
@@ -25,7 +27,7 @@ struct Optional {
 
 /// The opt-in plugins that add script surface and that need nothing from the game to do it. (`LivePerfPlugin` names its
 /// console function and pref by its arguments, so it has nothing fixed to list.)
-fn optional_plugins() -> [Optional; 6] {
+fn optional_plugins() -> [Optional; 7] {
     [
         Optional {
             id: GizmosPlugin::ID.as_str(),
@@ -60,6 +62,13 @@ fn optional_plugins() -> [Optional; 6] {
             what: "props: the PropData datablock and the Prop class, rigid bodies a server simulates and every client sees, the prop functions that spawn, push, freeze and read them, and the placement checks a game's own spawn commands make; the Joint class and the joint functions (tethers, winches, welds, hinges, grapples) and their check",
             add: |engine| {
                 engine.add_plugins(PropsPlugin);
+            },
+        },
+        Optional {
+            id: PropPredictionPlugin::ID.as_str(),
+            what: "prop prediction on a client: the props its own Player holds, stands on or pushes drawn where they will be, and the client functions that show a push or a spawn at once (never sent to the server)",
+            add: |engine| {
+                engine.add_plugins((PropsPlugin, PropPredictionPlugin::default()));
             },
         },
         Optional {
@@ -120,10 +129,19 @@ pub fn reference() -> Result<Reference, String> {
         let tag = vec![extra.id.to_string()];
         for native in with.natives {
             if !reference.natives.iter().any(|n| same_native(n, &native)) {
-                reference.natives.push(crate::model::Native {
-                    plugins: tag.clone(),
-                    ..native
-                });
+                // The prediction slot's functions come with any predictor or part, not with the plugin that brought them here.
+                let slot = native.namespace.is_empty()
+                    && SLOT_NATIVES
+                        .iter()
+                        .any(|s| s.eq_ignore_ascii_case(&native.name));
+                let plugins = if slot {
+                    vec![crate::model::SLOT_TAG.to_string()]
+                } else {
+                    tag.clone()
+                };
+                reference
+                    .natives
+                    .push(crate::model::Native { plugins, ..native });
             }
         }
         for class in with.classes {

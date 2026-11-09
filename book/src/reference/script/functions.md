@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-294 entries in 1 namespace.
+300 entries in 1 namespace.
 
 ## Global
 
@@ -258,6 +258,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 0 to 1; server and client*
 - `getModStages()` - the declared load stages, separated by spaces
   *arguments: none; server and client*
+- `getPredictor()` - The id of the predictor the client's control object runs with.
+  *arguments: none; client; needs a plugin with a predictor or a prediction part*
 - `getRandom([a [, b]])` - a random number: in (0, 1\], from 0 to a, or from a to b
   *arguments: 0 to 2; server and client*
 - `getRandomSeed()` - the random generator's state
@@ -507,6 +509,30 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server; needs `torque.props`*
 - `propIsFrozen(prop)` - whether a prop is frozen
   *arguments: 1; server; needs `torque.props`*
+- `propPredictBlast(point, radius, impulse)` - shows an explosion's push on every prop the client predicts within \`radius\` of \`point\` at once, \`impulse\` at the center
+  *arguments: 3; client; needs `torque.props-prediction`*
+
+  falling off to nothing at the radius
+
+  Never sent, as `propPredictImpulse`; at most 8 pushes a tick. Returns whether it was taken.
+
+- `propPredicted()` - the ghost indexes of the props the client predicts now, separated by spaces
+  *arguments: none; client; needs `torque.props-prediction`*
+- `propPredictImpulse(ghost, point, impulse)` - shows a push on a prop the client predicts at once: \`ghost\` is the prop's ghost index, \`point\` and \`impulse\` are \`"x y z"\`
+  *arguments: 3; client; needs `torque.props-prediction`*
+
+  The push is the client's own and is never sent: the server's push for the same cause comes back in its state. Only a prop
+  the client predicts takes one (`propPredicted()` lists them), at most 8 a tick, each held to 5,000. Returns whether it was
+  taken.
+
+- `propPredictSpawn(data, transform)` - shows a prop of the client's \`PropData\` datablock at once at \`transform\` (\`"x y z \[ax ay az angle\]"\`) and returns the predict
+  *arguments: 2; client; needs `torque.props-prediction`*
+
+  id the game sends with its own spawn command (the server's `propSpawn(.., %owner, %predictId)`)
+
+  The server's ghost that carries the id is the prop; one never confirmed within two seconds fades out. At most 16 wait at
+  once: past that, for a datablock that is not a `PropData` or a transform that is not finite, the result is 0.
+
 - `propSetVelocity(prop, velocity [, spin])` - sets a prop's velocity (\`"x y z"\`, units a second, held to its datablock's \`maxSpeed\`) and, if given, its spin (radians a
   *arguments: 2 to 3; server; needs `torque.props`*
 
@@ -755,6 +781,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 3; server and client*
 - `setFov(fov)` - Set the FOV of the camera.
   *arguments: 1; client; needs `torque.zoom`*
+- `setPredictor(id)` - Runs the client's control object with the predictor registered as id, from the next tick.
+  *arguments: 1; client; needs a plugin with a predictor or a prediction part*
 - `setRandomSeed([seed])` - sets the random generator's state (the real-time counter without a seed)
   *arguments: 0 to 1; server and client*
 - `setRecord(text, index, value)` - the text with that record replaced

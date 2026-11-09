@@ -138,3 +138,56 @@ fn two_games_predictors_fail_the_build() {
         .unwrap_err();
     assert!(err.to_string().contains("test.other"), "{err}");
 }
+
+/// A part that only has an id.
+#[derive(Clone)]
+struct Part(&'static str);
+
+impl PredictionPart for Part {
+    fn id(&self) -> &str {
+        self.0
+    }
+
+    fn clone_box(&self) -> Box<dyn PredictionPart> {
+        Box::new(self.clone())
+    }
+}
+
+#[derive(PluginId)]
+#[plugin(id = "test.parts")]
+struct Parts;
+
+impl Plugin for Parts {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine
+            .net()
+            .prediction_part(Part("props"))
+            .prediction_part(Part("props"))
+            .prediction_part(Part("bad id"))
+            .prediction_part(Part("water"));
+    }
+}
+
+#[test]
+fn parts_run_beside_the_games_predictor_in_order_and_bad_ones_are_left_out() {
+    let engine = EngineBuilder::new()
+        .add_plugins((Parts, Smooth))
+        .build()
+        .unwrap();
+    let mut vm = client(&engine);
+    let slot = PredictionSlot::of(&vm).expect("the slot");
+    assert_eq!(slot.part_ids().collect::<Vec<_>>(), ["props", "water"]);
+    assert_eq!(slot.current(), "smooth", "a part is no predictor");
+    let made: Vec<String> = slot
+        .make_parts()
+        .iter()
+        .map(|p| p.id().to_owned())
+        .collect();
+    assert_eq!(made, ["props", "water"]);
+    let log: Vec<String> = vm
+        .drain_log()
+        .iter()
+        .map(|l| String::from_utf8_lossy(&l.text).into_owned())
+        .collect();
+    assert_eq!(log.len(), 2, "one warning for each left out: {log:?}");
+}

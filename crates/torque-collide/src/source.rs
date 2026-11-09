@@ -96,6 +96,31 @@ pub enum Side {
 pub trait CollisionSource: fmt::Debug {
     /// Appends the shapes the source has now to `out` (a set takes at most the first [`MAX_SHAPES_PER_SOURCE`] of them).
     fn shapes(&self, out: &mut Vec<CollisionShape>);
+
+    /// The host's object the shape `key` stands for (what a script told of a hit on it is given), when it stands for one.
+    fn object_of(&self, key: u32) -> Option<u32> {
+        let _ = key;
+        None
+    }
+
+    /// Something hit the shape `key` ([`SourceHit`]: a projectile's ray); the source does with it what it does (a push on what
+    /// the shape stands for). Nothing by default.
+    fn hit(&self, key: u32, hit: &SourceHit) {
+        let _ = (key, hit);
+    }
+}
+
+/// A hit on a plugin's shape ([`CollisionSource::hit`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceHit {
+    /// The host's object that hit it (a projectile).
+    pub by: u32,
+    pub point: F3,
+    pub normal: F3,
+    /// The hitter's velocity as it hit.
+    pub velocity: F3,
+    /// The hitter's datablock (0 for none): what it pushes with stays readable when the hitter goes.
+    pub datablock: u32,
 }
 
 /// What a source puts on the engine's list: its name (which claims its type bit), the side it answers for and the source.
@@ -362,6 +387,32 @@ impl CollisionSources {
             .map(|b| b.bit)
     }
 
+    /// The source and the key of the plugin shape `id`.
+    fn bound_of(&self, id: ObjectId) -> Option<(&Bound, u32)> {
+        if !is_plugin_id(id) {
+            return None;
+        }
+        let rel = id.0 - PLUGIN_ID_BASE;
+        let index = rel / MAX_SHAPES_PER_SOURCE as u32;
+        let b = self.bound.iter().find(|b| b.index == index)?;
+        Some((b, rel % MAX_SHAPES_PER_SOURCE as u32))
+    }
+
+    /// The host's object the plugin shape `id` stands for ([`CollisionSource::object_of`]).
+    pub fn object_of(&self, id: ObjectId) -> Option<u32> {
+        let (b, key) = self.bound_of(id)?;
+        b.source.object_of(key)
+    }
+
+    /// Tells the source of the plugin shape `id` it was hit ([`CollisionSource::hit`]); false when `id` is no source's.
+    pub fn hit(&self, id: ObjectId, hit: &SourceHit) -> bool {
+        let Some((b, key)) = self.bound_of(id) else {
+            return false;
+        };
+        b.source.hit(key, hit);
+        true
+    }
+
     /// The shapes the sources have now, in id order: each source's first [`MAX_SHAPES_PER_SOURCE`] that passed the checks; none
     /// at all when the sources list more than [`MAX_SET_SHAPES`] (see the module's note on work).
     pub fn snapshot(&self) -> ShapeSet {
@@ -542,6 +593,45 @@ impl ShapeSet {
         }
     }
 
+    /// The nearest shape the segment `start` to `end` meets whose mask meets `mask` (a hull answers by its box), skipping
+    /// `exclude` and shapes whose collision is off: its id, the fraction along the segment and the world normal there. A
+    /// segment that starts inside a shape meets it at 0. Charged to no budget: the set is bounded ([`MAX_SET_SHAPES`]).
+    pub fn cast_ray(
+        &self,
+        start: F3,
+        end: F3,
+        mask: u32,
+        exclude: Option<ObjectId>,
+    ) -> Option<(ObjectId, f32, F3)> {
+        let reach = Box3::new(
+            std::array::from_fn(|k| start[k].min(end[k])),
+            std::array::from_fn(|k| start[k].max(end[k])),
+        );
+        let mut best: Option<(ObjectId, f32, F3)> = None;
+        for e in &self.entries {
+            if Some(e.id) == exclude
+                || e.view.type_mask & mask == 0
+                || e.view.collision_disabled
+                || !e.view.world_box.overlaps(&reach)
+            {
+                continue;
+            }
+            let a = crate::math::mul_p(&e.view.world_to_obj, start);
+            let b = crate::math::mul_p(&e.view.world_to_obj, end);
+            let Some((t, axis, sign)) = segment_box(a, b, &e.view.obj_box) else {
+                continue;
+            };
+            if best.is_some_and(|(_, bt, _)| bt <= t) {
+                continue;
+            }
+            let mut n = [0.0; 3];
+            n[axis] = sign;
+            let n = crate::math::normalize(crate::math::mul_v(&e.view.obj_to_world, n));
+            best = Some((e.id, t, n));
+        }
+        best
+    }
+
     /// [`World::convex_source`] for a shape.
     pub fn convex_source(&self, id: ObjectId) -> ConvexSource {
         match self.entry(id) {
@@ -557,6 +647,59 @@ impl ShapeSet {
         }
         self.entry(id)?.hull.clone()
     }
+}
+
+/// Where the segment `a` to `b` first meets `bx` (slabs): the fraction, the axis of the face it enters by and the face's side.
+/// A segment that starts inside meets it at 0, by the axis it is nearest to leaving along its way back. A segment or a box with
+/// a value that is not finite meets nothing.
+pub fn segment_box(a: F3, b: F3, bx: &Box3) -> Option<(f32, usize, f32)> {
+    if !a
+        .iter()
+        .chain(&b)
+        .chain(&bx.min)
+        .chain(&bx.max)
+        .all(|v| v.is_finite())
+    {
+        return None;
+    }
+    let mut enter = 0.0f32;
+    let mut leave = 1.0f32;
+    let mut axis = 2;
+    let mut sign = 1.0;
+    let mut entered = false;
+    for k in 0..3 {
+        let d = b[k] - a[k];
+        if d.abs() < 1.0e-12 {
+            if a[k] < bx.min[k] || a[k] > bx.max[k] {
+                return None;
+            }
+            continue;
+        }
+        let (t0, t1, s) = if d > 0.0 {
+            ((bx.min[k] - a[k]) / d, (bx.max[k] - a[k]) / d, -1.0)
+        } else {
+            ((bx.max[k] - a[k]) / d, (bx.min[k] - a[k]) / d, 1.0)
+        };
+        if t0 > enter {
+            enter = t0;
+            axis = k;
+            sign = s;
+            entered = true;
+        }
+        leave = leave.min(t1);
+        if !(enter <= leave) {
+            return None;
+        }
+    }
+    if !entered {
+        // Inside from the start: the face behind the way it goes.
+        let d: F3 = std::array::from_fn(|k| b[k] - a[k]);
+        axis = (0..3)
+            .max_by(|&i, &j| d[i].abs().total_cmp(&d[j].abs()))
+            .unwrap_or(2);
+        sign = if d[axis] > 0.0 { -1.0 } else { 1.0 };
+    }
+    Some((enter, axis, sign))
 }
 
 /// A shape's `buildConvex`: a box convex of its half-extents, or one hull convex over its one slot.

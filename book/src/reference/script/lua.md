@@ -105,6 +105,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("getModField", id, field)` *2; server and client*
 - `ts.call("getModList", [all])` *0 to 1; server and client*
 - `ts.call("getModStages")` *none; server and client*
+- `ts.call("getPredictor")` *none; client; needs a plugin with a predictor or a prediction part*
 - `ts.call("getRandom", [a [, b]])` *0 to 2; server and client*
 - `ts.call("getRandomSeed")` *none; server and client*
 - `ts.call("getRealTime")` *none; server and client*
@@ -199,6 +200,10 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("propGetVelocity", prop)` *1; server; needs `torque.props`*
 - `ts.call("propIsAsleep", prop)` *1; server; needs `torque.props`*
 - `ts.call("propIsFrozen", prop)` *1; server; needs `torque.props`*
+- `ts.call("propPredictBlast", point, radius, impulse)` *3; client; needs `torque.props-prediction`*
+- `ts.call("propPredicted")` *none; client; needs `torque.props-prediction`*
+- `ts.call("propPredictImpulse", ghost, point, impulse)` *3; client; needs `torque.props-prediction`*
+- `ts.call("propPredictSpawn", data, transform)` *2; client; needs `torque.props-prediction`*
 - `ts.call("propSetVelocity", prop, velocity [, spin])` *2 to 3; server; needs `torque.props`*
 - `ts.call("propSpawn", datablock, transform [, owner [, predictId]])` *2 to 4; server; needs `torque.props`*
 - `ts.call("propUnfreeze", prop)` *1; server; needs `torque.props`*
@@ -267,6 +272,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("setDefaultFov", defaultFov)` *1; client; needs `torque.zoom`*
 - `ts.call("setField", text, index, value)` *3; server and client*
 - `ts.call("setFov", fov)` *1; client; needs `torque.zoom`*
+- `ts.call("setPredictor", id)` *1; client; needs a plugin with a predictor or a prediction part*
 - `ts.call("setRandomSeed", [seed])` *0 to 1; server and client*
 - `ts.call("setRecord", text, index, value)` *3; server and client*
 - `ts.call("setRenderer", id)` *1; client*

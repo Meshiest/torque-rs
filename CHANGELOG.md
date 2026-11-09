@@ -131,6 +131,8 @@ different.
   and the views and decides what is drawn; TGE's scheme is the default and is unchanged. Plugins register predictors with
   `engine.net().prediction` and `add_prediction`, and scripts swap with `setPredictor`. The client's vehicles step with the body
   solver the game picks per datablock (`PredictGame::body_solver`).
+  Plugins also add prediction parts (`prediction_part`) that run after whichever predictor is chosen, to predict objects of
+  their own and draw ghosts where they put them.
 - `torque-plugin-smooth-prediction`: a predictor that corrects as TGE's does but eases the correction out of what is drawn (body,
   vehicle, eye and camera), with a snap distance and per-class opt-in, sending TGE's bytes.
 - Web builds on WebAssembly and WebGPU: a game folder packed as one block or fetched from a file list (`files.json`,
@@ -249,6 +251,9 @@ different.
   whose props outlive them for a while. Joints between props, the world and players (tethers hard or soft, winches, welds, hinges
   with limits and motors, grapples), server-authoritative, breakable, capped per player, per remote address, per prop and per
   server, sent to every client as `Joint` ghosts, with ropes that follow them (feature `rope`).
+  Projectiles push the props they hit and explosions the props around them. With `PropPredictionPlugin` a client predicts
+  the props its own Player holds, stands on or pushes (and the joints between them), restored to the server's state and
+  replayed, drawn through a smoothed correction, with predicted impulses, spawns and shots of its own that are never sent.
 - `torque-sim`, `torque-game`, `torque-client`: a plugin can tether a Player to a point (`player_tether`), applied inside the
   Player's own tick on the server and in the client's prediction alike, so the prediction replays it exactly; with no tether the
   step is Torque's.

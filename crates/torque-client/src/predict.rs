@@ -258,6 +258,10 @@ pub struct Predictor<W: PredictWorld> {
     prediction: Box<dyn slot::Prediction>,
     /// The generation of the client's [`slot::PredictionSlot`] the predictor was made at (0: never made from one).
     prediction_generation: u64,
+    /// The plugins' parts, run after the predictor at each step ([`slot::PredictionPart`]): made from the slot once.
+    parts: Vec<Box<dyn slot::PredictionPart>>,
+    /// The work the parts did this tick ([`slot::TickStep::charge`]).
+    pub(crate) part_work: u64,
     /// The plugins' tethers on Players ([`torque_game::player_tether`]), as the client's script engine has them.
     tethers: Option<Rc<torque_game::player_tether::TetherSources>>,
 }
@@ -329,6 +333,8 @@ impl<W: PredictWorld> Predictor<W> {
             game_given: false,
             prediction: Box::new(slot::TgePrediction),
             prediction_generation: 0,
+            parts: Vec::new(),
+            part_work: 0,
             tethers: None,
         }
     }
@@ -350,6 +356,67 @@ impl<W: PredictWorld> Predictor<W> {
             std::mem::replace(&mut self.prediction, Box::new(slot::TgePrediction));
         f(&mut *prediction, self);
         self.prediction = prediction;
+    }
+
+    /// Runs `f` for each part in order, with the parts taken out of the prediction meanwhile.
+    fn with_parts(&mut self, mut f: impl FnMut(&mut dyn slot::PredictionPart, &mut Self)) {
+        if self.parts.is_empty() {
+            return;
+        }
+        let mut parts = std::mem::take(&mut self.parts);
+        for part in &mut parts {
+            f(&mut **part, self);
+        }
+        self.parts = parts;
+    }
+
+    /// The parts the prediction runs after its predictor, in order.
+    pub fn parts(&self) -> impl Iterator<Item = &dyn slot::PredictionPart> + '_ {
+        self.parts.iter().map(|p| &**p)
+    }
+
+    /// Runs `part` after the predictor from now on (after the parts already there).
+    pub fn add_part(&mut self, part: Box<dyn slot::PredictionPart>) {
+        self.parts.push(part);
+    }
+
+    /// The map pieces whose boxes meet `min..max` in the client's collision world ([`slot::TickStep::statics_near`]).
+    pub fn statics_near(&mut self, world: &W, min: F3, max: F3) -> Vec<slot::StaticView> {
+        use collide::World as _;
+        let near = [0, 1, 2].map(|k| (min[k] + max[k]) * 0.5);
+        let me = self.predicted.as_ref().map_or(u32::MAX, |p| p.index);
+        let mut collision = ClientCollision::new(
+            world,
+            me,
+            TICK_WORK,
+            Some(Ctx {
+                near,
+                static_world: &mut self.static_world,
+                shapes: &mut self.shapes,
+                driven: None,
+                ghosts: Some(&self.ghost_vehicles),
+                disabled: None,
+                player_at: None,
+            }),
+        );
+        let mask = collide::types::TERRAIN
+            | collide::types::INTERIOR
+            | collide::types::STATIC_SHAPE
+            | collide::types::STATIC_TS;
+        let mut ids = Vec::new();
+        let limit = slot::MAX_STATIC_VIEWS * 4;
+        let _ = collision.find_objects(&Box3::new(min, max), mask, None, limit, &mut ids);
+        ids.into_iter()
+            .filter(|id| !collide::source::is_plugin_id(*id))
+            .filter_map(|id| {
+                Some(slot::StaticView {
+                    id: id.0,
+                    view: collision.object(id)?,
+                    map: collision.map_shape(id),
+                })
+            })
+            .take(slot::MAX_STATIC_VIEWS)
+            .collect()
     }
 
     /// A prediction with `game`'s answers.
@@ -410,6 +477,17 @@ impl<W: PredictWorld> Predictor<W> {
                 control,
                 world,
                 moves,
+                ran: false,
+            });
+        });
+        self.with_parts(|p, sim| {
+            p.head(&mut slot::HeadCx {
+                sim,
+                ack,
+                control,
+                world,
+                moves,
+                ran: true,
             });
         });
     }
@@ -868,6 +946,17 @@ impl<W: PredictWorld> Predictor<W> {
                 moves,
                 world,
                 globals: vm_globals,
+                ran: false,
+            });
+        });
+        self.part_work = 0;
+        self.with_parts(|p, sim| {
+            p.tick(&mut slot::TickCx {
+                sim,
+                moves,
+                world,
+                globals: vm_globals,
+                ran: true,
             });
         });
     }
@@ -1034,8 +1123,7 @@ impl<W: PredictWorld> Predictor<W> {
         let tether = self
             .tethers
             .as_ref()
-            .and_then(|t| t.tether(pr.index))
-            .map(|(_, t)| t);
+            .and_then(|t| Some((Rc::clone(t), t.tether(pr.index)?)));
         let mut fresh = Vec::new();
         for (k, m) in list.iter().enumerate().skip(start + skip) {
             if collision.exhausted() {
@@ -1052,7 +1140,13 @@ impl<W: PredictWorld> Predictor<W> {
                 controls_player,
                 class: pr.kind.class(),
                 game: Rc::clone(&game),
-                tether,
+                tether: tether.as_ref().map(|(_, (_, t))| *t),
+                pull: tether.as_ref().map(|(sources, (i, _))| Pull {
+                    sources: Rc::clone(sources),
+                    source: *i,
+                    key: pr.index,
+                    move_index: first.wrapping_add(k as u32),
+                }),
             };
             pr.player.s.mask_bits = 0;
             let stepped = pr
@@ -1131,6 +1225,9 @@ impl<W: PredictWorld> Predictor<W> {
             && slot.generation() != self.prediction_generation
         {
             self.prediction = slot.make();
+            if self.prediction_generation == 0 {
+                self.parts = slot.make_parts();
+            }
             self.prediction_generation = slot.generation();
         }
     }
@@ -1384,7 +1481,20 @@ impl<W: PredictWorld> Predictor<W> {
     /// The client's view from its control object, through the predictor ([`slot::Prediction::view`]; TGE's:
     /// [`Predictor::tge_update_view`]).
     pub fn update_view(&mut self, world: &mut W) {
-        self.with_prediction(|p, sim| p.view(&mut slot::ViewCx { sim, world }));
+        self.with_prediction(|p, sim| {
+            p.view(&mut slot::ViewCx {
+                sim,
+                world: &mut *world,
+                ran: false,
+            });
+        });
+        self.with_parts(|p, sim| {
+            p.view(&mut slot::ViewCx {
+                sim,
+                world: &mut *world,
+                ran: true,
+            });
+        });
     }
 
     /// TGE's view from its control object: the predicted Player's eye when there is one, else the last state the server
@@ -3092,8 +3202,18 @@ struct ClientPlayerHost<'a, W: PredictWorld> {
     /// The Player's class (the game's).
     class: Rc<dyn PlayerClass>,
     game: Rc<dyn game::PredictGame<W>>,
-    /// The tether a plugin puts on the predicted Player ([`torque_game::player_tether`]).
+    /// The tether a plugin puts on the predicted Player ([`torque_game::player_tether`]), and whom to tell what it did.
     tether: Option<sim::player::tether::Tether>,
+    pull: Option<Pull>,
+}
+
+/// The source of a predicted Player's tether and the move it steps, told what the tether did
+/// ([`torque_game::player_tether::TetherSource::predicted_pull`]).
+struct Pull {
+    sources: Rc<torque_game::player_tether::TetherSources>,
+    source: usize,
+    key: u32,
+    move_index: u32,
 }
 
 impl<W: PredictWorld> ClientPlayerHost<'_, W> {
@@ -3115,6 +3235,13 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 
     fn tether(&mut self, _s: &PlayerState) -> Option<sim::player::tether::Tether> {
         self.tether
+    }
+
+    fn tethered(&mut self, s: &PlayerState, change: F3) {
+        if let Some(p) = &self.pull {
+            p.sources
+                .predicted_pull(p.source, p.key, p.move_index, change, s.mass);
+        }
     }
 
     fn skeleton(&mut self) -> &mut dyn Skeleton {

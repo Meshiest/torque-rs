@@ -102,7 +102,11 @@ fn one_line(text: &str) -> String {
 fn tags(sides: &Sides, plugins: &[String]) -> String {
     let mut parts = vec![sides.text().to_string()];
     for plugin in plugins {
-        parts.push(format!("needs {}", code(plugin)));
+        if plugin == crate::model::SLOT_TAG {
+            parts.push("needs a plugin with a predictor or a prediction part".to_string());
+        } else {
+            parts.push(format!("needs {}", code(plugin)));
+        }
     }
     parts.join("; ")
 }

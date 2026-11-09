@@ -18,7 +18,10 @@
 //!   same physics world, made with the server's `joint*` functions (no client entry point), the `Joint` ghost class
 //!   ([`JointGhost`]) and each client's book of them ([`JointBook`]); a grapple pulls its player inside the Player's own tick
 //!   ([`torque_game::player_tether`]), so a client's prediction replays it exactly; with feature `rope`, networked ropes that
-//!   follow joints ([`joints::rope`]).
+//!   follow joints ([`joints::rope`]);
+//! - projectiles that push the props they hit, and explosions that push the props around them ([`hits`]);
+//! - with [`predict::PropPredictionPlugin`] on a client, the props its own Player holds, stands on or pushes predicted and drawn
+//!   through a smoothed correction ([`predict`]), predicted impulses and spawns, and the Player's own shots followed ahead.
 //!
 //! It is not in `DefaultPlugins`: a game adds it. Props are engine-level: any game with an interactive world can use them.
 //!
@@ -68,7 +71,9 @@
 //! what a client does with it. [`server`]: the state, spawning, the collision source and the update priority. [`joints`]: the
 //! joint kinds and caps (`mod.rs`), their rules in the world (`world.rs`, an `impl PropWorld`), the `Joint` class and the server's
 //! tethers (`server.rs`), the console functions (`natives.rs`), the record (`records.rs`), a client's book and tethers
-//! (`client.rs`), and the ropes (`rope.rs`, feature `rope`).
+//! (`client.rs`), and the ropes (`rope.rs`, feature `rope`). [`hits`]: the impulses of a projectile's hit and of an explosion,
+//! on both sides. [`predict`]: a client's prediction (`mod.rs`: the config, the shared state, the client functions;
+//! `part.rs`: the slot's part, its world, the restore and replay, the drawing, the shots).
 //!
 //! **One tick.** During the process list each grappled Player's own step asks the server's tether source
 //! ([`joints::server::ServerTethers`]) for its tether and reports the pull back. After the process list, the hook drops props and
@@ -79,7 +84,14 @@
 //! under the step budget, each awake prop is quantized and written back, sleepers and the awake cap are applied, and each joint's
 //! distance, force, limit and break are read. The hook then writes the record fields of each dirty prop and joint, marks their
 //! ghost groups, deletes the props that went and the joints (and ropes) that went with them, and calls `onPropSleep`,
-//! `onPropWake` and `onBreak`.
+//! `onPropWake`, `onBreak` and the hit props' `onCollision`. Before the step, the projectiles' hits the server's collision
+//! source was told of during the process list push their props, and each explosion seen for the first time pushes the props in
+//! its reach.
+//!
+//! **A client tick** (with [`predict::PropPredictionPlugin`]), after the predictor's: the Player's push for the move recorded,
+//! the predicted set chosen and the client's world brought to it, the pushes of the tick taken (the game's, the Player's shots),
+//! then a restore and replay when the server sent new states (or one step), the drawn poses eased and the predicted states
+//! written into the book, which the Player's next move meets.
 //!
 //! **Invariants**, each with the test that guards it:
 //! - The state written back is the wire's, so a client restores the server's bits and native equals wasm32:
@@ -132,6 +144,36 @@
 //!   with no creep: `a_weld_drifts_at_most_a_millimeter_over_600_ticks_under_load`.
 //! - A sleeping prop a joint changes wakes (a sleeper otherwise settles back where it lay, and a winch would never lift it):
 //!   `a_winch_reaches_its_target_within_two_percent_of_the_planned_time`, `a_hinge_holds_its_limits_within_half_a_degree`.
+//! - A projectile's hit pushes its prop along the shot, held to the cap, and both `onCollision`s run; without plugin shapes a
+//!   projectile is Torque's: `a_projectile_pushes_a_prop_along_its_flight_held_to_the_cap` (`--test predict`) and every TGE
+//!   line of `just trace-hash` unchanged. An impulse at the center leaves a body's spin as it is (torque-physics-rapier), so the
+//!   pushes of every earlier line hash as before.
+//! - The client's prediction changes nothing of a client without [`predict::PropPredictionPlugin`] (the book's predicted
+//!   states stay none, so its collision source and tethers read the server's): the `props-drop` and `props-joints` lines
+//!   unchanged. With it, the client's prop prediction gives the same bits native and wasm32: the `carry` and
+//!   `projectile-props` lines.
+//! - A restore takes the server's state exactly and replays only the moves past the ack, with the pushes and pulls of each move
+//!   as that move made them; what is drawn never jumps by more than the server's own prop moves:
+//!   `a_held_prop_on_a_long_walk_is_drawn_smoothly_where_it_belongs`,
+//!   `riding_a_sliding_prop_and_pushing_a_row_is_predicted_no_worse_than_not_predicting`.
+//! - Predicted impulses touch only predicted props, are capped a tick and in size, are never sent, and one the server does not
+//!   make eases out: `predicted_impulses_are_capped_and_never_sent`,
+//!   `a_predicted_impulse_the_server_never_makes_eases_out_with_no_pop`,
+//!   `a_predicted_impulse_the_server_makes_too_moves_at_once_and_settles`; the Player's own shots push predicted props at once:
+//!   `the_shooter_sees_a_predicted_prop_move_when_its_shot_arrives`,
+//!   `an_explosion_pushes_the_predicted_props_in_its_reach_at_once`.
+//! - What a client keeps is bounded whatever the server sends or the ack does: the pushes kept for replays (eight a move over
+//!   the longest replay): `the_push_log_drops_acknowledged_moves_and_holds_its_cap_however_the_ack_stalls`; the map's pieces
+//!   are kept before the props around the predicted ones, which are the nearest 64 (compile-time checks in `part.rs`), so a
+//!   pile of props never crowds the floor out; a predicted spawn is adopted by its ghost when the ghost comes, once:
+//!   `a_predicted_spawn_is_adopted_by_its_ghost_once_and_one_never_confirmed_fades`; a shot segment that is not finite meets
+//!   nothing: `a_shot_segment_that_is_not_finite_meets_no_prop`. A replay is charged to the slot's tick budget for parts and a
+//!   tick past it falls back to interpolation.
+//! - A projectile's push is read from its datablock, kept with the hit, so a projectile deleted at its hit still pushes; an
+//!   explosion pushes the props there are when it went off (the projectiles' explosions are watched, not looked for):
+//!   `a_projectile_gone_at_its_hit_pushes_all_the_same_and_an_old_explosion_pushes_no_new_prop`.
+//! - The replay of 8 props through 46 moves fits 4 ms natively and 10 ms in wasm32 (`replay-bench` of torque-trace-hash, under
+//!   the bench lock).
 //! - A rope that shows a joint follows it and pulls on nothing:
 //!   `a_joint_rope_at_its_limit_lies_straight_within_a_millimeter_and_a_slack_one_hangs` (feature `rope`); another plugin's
 //!   driver under the joints' name is warned about: `another_plugins_driver_under_the_joints_name_is_warned_about`.
@@ -140,17 +182,22 @@
 //! collision sources ([`server::ServerSource`], [`client::ClientSource`]) other movers meet props through;
 //! [`ServerProps::check_placement`] (`propCheckPlacement`) and `jointCheck`, which a game's own rate-limited, permission-checked
 //! server commands call before `propSpawn` and the `joint*` functions; the tether sources ([`torque_game::player_tether`]) a
-//! grapple is given to the Player through; and [`JointBook::connected`], the seam a predictor pulls a prop's jointed props in
-//! through (joints interpolate until one does).
+//! grapple is given to the Player through (and its predicted pulls reported back); [`JointBook::connected`], the seam the
+//! prediction pulls a prop's jointed props in through; the collision sources' `object_of` and `hit` (torque-collide), which a
+//! projectile's hit reaches the props through; the prediction slot's parts (torque-client), which [`predict::PropPart`] is;
+//! and [`predict::PropPrediction`], a game's predicted impulses, blasts and spawns.
 //!
 //! **Checks.** `cargo test -p torque-plugin-props` and `cargo test -p torque-plugin-props --features rope --test joint_rope`;
-//! the fuzzers with `TORQUE_FUZZ_PROPS=100000`; `just trace-hash` (the `props-drop` and `props-joints` lines must be equal native
-//! and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props --bench step` under the bench lock.
+//! the fuzzers with `TORQUE_FUZZ_PROPS=100000`; `just trace-hash` (the `props-drop`, `props-joints`, `carry` and
+//! `projectile-props` lines must be equal native and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props
+//! --bench step` and the `replay-bench` of torque-trace-hash (native and wasm32) under the bench lock.
 
 pub mod client;
 pub mod data;
+pub mod hits;
 pub mod joints;
 pub mod natives;
+pub mod predict;
 pub mod quant;
 pub mod records;
 pub mod server;
@@ -211,6 +258,10 @@ impl Plugin for PropsPlugin {
         // The grapples' tethers on players: the server's step asks the world, a client's prediction its books.
         let tethers = server.clone();
         engine.server(ServerStage::Classes, move |vm, _| {
+            torque_game::sim::projectile::watch_explosions(
+                vm,
+                Rc::new(server::Blasts(tethers.clone())),
+            );
             torque_game::player_tether::add(vm, joints::server::tethers(&tethers));
             Ok(())
         });

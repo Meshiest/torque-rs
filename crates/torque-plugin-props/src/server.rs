@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::rc::Rc;
 
-use torque_collide::source::{CollisionShape, CollisionSource, ShapeKind};
+use torque_collide::source::{CollisionShape, CollisionSource, ShapeKind, SourceHit};
 use torque_collide::types::STATIC_SHAPE;
 use torque_engine::{EngineClass, Prefs, ScriptClass, ScriptError, VmPrefs};
 use torque_ts_vm::fields::Value as Field;
@@ -17,6 +17,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{FieldTarget, Vm};
 
 use crate::data::{PropData, PropParams};
+use crate::hits::{Blast, Hit, MAX_PENDING_HITS, ShotPush};
 use crate::quant::{self, Quantized, conjugate};
 use crate::records::{MASK_FLAGS, MASK_INIT, MASK_STATE, STATE_FIELDS};
 use crate::world::{Owner, OwnerKey, PropLimits, PropWorld};
@@ -133,6 +134,10 @@ pub struct PropServer {
     /// The object each owner's connection controls, by connection (made each tick, for the priority, which runs inside the
     /// ghosting and so may not ask the ghosting layer itself).
     pub(crate) controls: BTreeMap<u32, u32>,
+    /// The projectiles' hits on props since the last step, in the order they hit (at most [`MAX_PENDING_HITS`]).
+    pub(crate) hits: Vec<Hit>,
+    /// The explosions since the last step, in the order they went off (at most [`MAX_PENDING_HITS`]).
+    pub(crate) blasts: Vec<Blast>,
 }
 
 impl Default for PropServer {
@@ -143,6 +148,8 @@ impl Default for PropServer {
             tick: 0,
             net_share: DEFAULT_NET_SHARE,
             controls: BTreeMap::new(),
+            hits: Vec::new(),
+            blasts: Vec::new(),
         }
     }
 }
@@ -458,7 +465,8 @@ pub fn priority(props: &ServerProps, vm: &Vm, obj: ObjId, scope: Option<ObjId>, 
 }
 
 /// The props as the server's collision source: each a box at its pose, keyed by its slot, with a static shape's bit (players,
-/// items and projectiles hit it; TGE's vehicles see it as static).
+/// items and projectiles hit it; TGE's vehicles see it as static). A shape stands for its prop, and a projectile's hit on it is
+/// kept for the next step ([`crate::hits`]).
 #[derive(Debug, Clone)]
 pub struct ServerSource(pub ServerProps);
 
@@ -471,6 +479,65 @@ impl CollisionSource for ServerSource {
             }
         });
     }
+
+    fn object_of(&self, key: u32) -> Option<u32> {
+        self.0.with(|s| prop_in_slot(s, key)).flatten()
+    }
+
+    fn hit(&self, key: u32, hit: &SourceHit) {
+        let Ok(mut s) = self.0.0.try_borrow_mut() else {
+            return;
+        };
+        let Some(prop) = prop_in_slot(&s, key) else {
+            return;
+        };
+        if s.hits.len() < MAX_PENDING_HITS {
+            s.hits.push(Hit {
+                prop,
+                by: hit.by,
+                datablock: hit.datablock,
+                point: hit.point,
+                normal: hit.normal,
+                velocity: hit.velocity,
+            });
+        }
+    }
+}
+
+/// The prop whose collision shape is keyed `key`.
+fn prop_in_slot(s: &PropServer, key: u32) -> Option<u32> {
+    s.world.as_ref()?.in_slot(u16::try_from(key).ok()?)
+}
+
+/// The explosions the server's projectiles make, kept for the next step (at most [`MAX_PENDING_HITS`]).
+#[derive(Debug, Clone)]
+pub struct Blasts(pub ServerProps);
+
+impl torque_game::sim::projectile::ExplosionWatch for Blasts {
+    fn exploded(&self, _projectile: ObjId, datablock: ObjId, at: [f32; 3]) {
+        if let Ok(mut s) = self.0.0.try_borrow_mut()
+            && s.blasts.len() < MAX_PENDING_HITS
+        {
+            s.blasts.push(Blast { datablock, at });
+        }
+    }
+}
+
+/// What a projectile's datablock `db` says it pushes with (its `impulse`, `areaImpulse` and `areaImpulseRadius`; defaults for
+/// one that is gone).
+pub(crate) fn shot_push(vm: &Vm, db: ObjId) -> ShotPush {
+    if !vm.objects().contains(db) {
+        return ShotPush::default();
+    }
+    let number = |field: &[u8]| {
+        let text = vm.read_field_of(FieldTarget::Live(db), field, b"");
+        (!text.is_empty()).then(|| torque_ts_vm::text::atof(&text) as f32)
+    };
+    ShotPush::of(
+        number(b"impulse"),
+        number(b"areaImpulse"),
+        number(b"areaImpulseRadius"),
+    )
 }
 
 /// A prop's collision shape: a box of `half` at the state's pose.

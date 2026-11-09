@@ -57,6 +57,10 @@ impl Arity {
     }
 }
 
+/// The tag of an entry that comes with the client's prediction slot (any plugin with a predictor or a prediction part), in
+/// place of one plugin's id.
+pub const SLOT_TAG: &str = "prediction slot";
+
 /// One console function or method.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Native {

@@ -83,6 +83,7 @@ pub mod net_classes;
 pub mod param;
 pub mod permissions;
 mod plugin;
+pub mod predict_ids;
 pub mod prefs;
 mod recipe;
 pub mod rpc;

@@ -30,13 +30,25 @@
 //! and runs the ticks since (within a work budget per frame, each class's step deterministic on native and wasm32), and the
 //! view step draws them. The engine's own simulation is reached through [`PredictState::predictor`] (the client's
 //! `Predictor<W>` for its world type), and the vehicles' solvers through [`PredictState::body_solver`]. Such a predictor
-//! would add per-class snapshots and their own determinism tests; nothing here needs to change for it.
+//! would add per-class snapshots and their own determinism tests.
+//!
+//! **Parts.** A plugin that predicts objects of its own beside the control object (a props plugin's rigid bodies) registers a
+//! [`PredictionPart`] (`engine.net().prediction_part(P)`): every client runs each part after its predictor at each of the three
+//! moments, whichever predictor the game picks, and a part's `run_tge` does nothing (TGE's scheme ran already). A part reads the
+//! moves and acks as a predictor does, and what moves the predicted object makes ([`PredictState::motion`]), the map pieces
+//! near a point ([`TickStep::statics_near`]), the projectile ghosts ([`PredictState::shots`]) and a datablock's numbers
+//! ([`PredictState::datablock_number`]); at a view it draws ghosts where it puts them ([`Drawn::ghosts`]), starting from where
+//! the client shows them ([`ViewStep::shown`]).
 
 use std::any::Any;
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::rc::Rc;
 
+use collide::convex::ObjectView;
+use collide::map::MapShape;
+use collide::math::F3;
 use ghost_world::world::{Eye, Pose};
 use net::control::{ControlData, ControlSection};
 use net::moves::MoveQueue;
@@ -88,6 +100,88 @@ impl fmt::Debug for dyn Prediction {
     }
 }
 
+/// A plugin's own prediction beside the client's predictor ([module docs](self)): run after the predictor at each moment, made
+/// fresh for each connection and cloned with the client's prediction. Each step's `run_tge` does nothing for a part.
+pub trait PredictionPart: Any {
+    /// The id it is registered under (as a predictor's).
+    fn id(&self) -> &str;
+
+    /// A server head, after the predictor's.
+    fn head(&mut self, step: &mut dyn HeadStep) {
+        let _ = step;
+    }
+
+    /// The client's tick, after the predictor's.
+    fn tick(&mut self, step: &mut dyn TickStep) {
+        let _ = step;
+    }
+
+    /// A view, after the predictor's.
+    fn view(&mut self, step: &mut dyn ViewStep) {
+        let _ = step;
+    }
+
+    /// A copy of this part (it may start over: a part restores its objects from the server's states at the next update).
+    fn clone_box(&self) -> Box<dyn PredictionPart>;
+}
+
+impl Clone for Box<dyn PredictionPart> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+impl fmt::Debug for dyn PredictionPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PredictionPart({:?})", self.id())
+    }
+}
+
+/// How the predicted object moves, as the last tick left it: what a part's objects meet (a prop the Player walks into).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyMotion {
+    /// Its world box.
+    pub min: F3,
+    pub max: F3,
+    /// Its velocity, and the one its move asks for (a Player's: the move's x and y at its top forward speed, turned by its
+    /// rotation; a vehicle's own).
+    pub velocity: F3,
+    pub wish: F3,
+    pub mass: f32,
+}
+
+/// A map piece near a point, as the client's collision world has it ([`TickStep::statics_near`]): a terrain or an interior by
+/// its collision, or another static object by its box.
+#[derive(Debug, Clone)]
+pub struct StaticView {
+    /// Its id in the client's collision world (stable from tick to tick).
+    pub id: u32,
+    pub view: ObjectView,
+    pub map: Option<Rc<MapShape>>,
+}
+
+/// A Projectile ghost as its records left it ([`PredictState::shots`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shot {
+    pub ghost: u32,
+    pub datablock: Option<u32>,
+    /// Where its first record put it, its velocity there and the ticks it had lived then.
+    pub position: F3,
+    pub velocity: F3,
+    pub tick: u32,
+    /// The ghost of the object that fired it, when the record named one.
+    pub source: Option<u32>,
+    /// Where it exploded, once its record said so.
+    pub exploded: Option<F3>,
+}
+
+/// The work the parts may do in one client tick ([`TickStep::charge`]), on the scale of the physics world's work units.
+pub const PART_TICK_WORK: u64 = 4_000_000;
+
+/// The most map pieces [`TickStep::statics_near`] gives, and the most shots [`PredictState::shots`] gives.
+pub const MAX_STATIC_VIEWS: usize = 64;
+pub const MAX_SHOTS: usize = 256;
+
 /// TGE's client-side prediction: replay the moves the server has not acknowledged from its state, compare checksums, snap to
 /// the server's state on a mismatch, and draw between the last two ticks. The default predictor.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -135,6 +229,12 @@ pub trait PredictState {
     /// The client's prediction itself: a [`Predictor<W>`] for the client's world type `W` (downcast it), for a predictor that
     /// runs more than TGE's scheme does.
     fn predictor(&mut self) -> &mut dyn Any;
+    /// How the predicted object moves (none for a Camera control object).
+    fn motion(&self) -> Option<BodyMotion>;
+    /// The Projectile ghosts the client holds, in ghost order, at most [`MAX_SHOTS`] (none when the game's records give none).
+    fn shots(&self) -> Vec<Shot>;
+    /// Field `name` of datablock `id` as a number, when the client's datablock carries it.
+    fn datablock_number(&self, id: u32, name: &str) -> Option<f32>;
 }
 
 /// A server head ([`Prediction::head`]).
@@ -157,6 +257,12 @@ pub trait TickStep: PredictState {
     /// TGE's tick: every move from `mLastClientMove` to the end of the list run by the control object, then the vehicles the
     /// client runs on its own.
     fn run_tge(&mut self);
+    /// The map pieces (terrains, interiors, static shapes) whose boxes meet `min..max` in the client's collision world, in its
+    /// order, at most [`MAX_STATIC_VIEWS`]; the work is charged to the client's tick budget.
+    fn statics_near(&mut self, min: F3, max: F3) -> Vec<StaticView>;
+    /// Charges `units` of a part's work to the tick's budget for parts ([`PART_TICK_WORK`], shared by every part): false once
+    /// it is spent, and the part leaves the rest of its work for a later tick.
+    fn charge(&mut self, units: u64) -> bool;
 }
 
 /// A view ([`Prediction::view`]).
@@ -165,6 +271,9 @@ pub trait ViewStep: PredictState {
     fn run_tge(&mut self);
     /// What the view draws of the predicted object, to change after [`ViewStep::run_tge`].
     fn drawn(&mut self) -> Drawn<'_>;
+    /// Where the client shows ghost `index` this frame when nothing draws it elsewhere: its record's pose, between the server's
+    /// updates for a class shown so.
+    fn shown(&self, index: u32) -> Option<Pose>;
 }
 
 /// What a view draws of the predicted object: each part the view set (`None`: not drawn this frame).
@@ -178,6 +287,9 @@ pub struct Drawn<'a> {
     pub eye: Option<&'a mut [f32; 3]>,
     /// The camera the world is seen through.
     pub view: Option<&'a mut Eye>,
+    /// Other ghosts drawn where a predictor or a part puts them this frame (by ghost index; emptied before each view). The
+    /// predicted object and its vehicle are drawn by the fields above.
+    pub ghosts: &'a mut BTreeMap<u32, Pose>,
 }
 
 impl Drawn<'_> {
@@ -265,6 +377,70 @@ fn body_of<W: PredictWorld>(sim: &Predictor<W>, world: &W) -> Option<PredictedBo
     })
 }
 
+/// How the predicted object of `sim` moves.
+fn motion_of<W: PredictWorld>(sim: &Predictor<W>) -> Option<BodyMotion> {
+    if sim.camera.is_some() {
+        return None;
+    }
+    let pr = sim.predicted.as_ref()?;
+    if let Some(v) = pr.vehicle.as_ref().filter(|_| pr.player.s.mount.is_some()) {
+        let s = &v.v.s;
+        return Some(BodyMotion {
+            min: s.world_box.min,
+            max: s.world_box.max,
+            velocity: s.rigid.lin_vel,
+            wish: s.rigid.lin_vel,
+            mass: s.mass,
+        });
+    }
+    let s = &pr.player.s;
+    let m = s.obj_to_world;
+    let speed = pr.data.max_forward_speed;
+    let (x, y) = (s.last_move.x, s.last_move.y);
+    let wish = [0, 1].map(|r| (m[r * 4] * x + m[r * 4 + 1] * y) * speed);
+    Some(BodyMotion {
+        min: s.world_box.min,
+        max: s.world_box.max,
+        velocity: s.velocity,
+        wish: [wish[0], wish[1], 0.0],
+        mass: s.mass,
+    })
+}
+
+/// The Projectile ghosts of `world`, in ghost order.
+fn shots_of<W: PredictWorld>(world: &W) -> Vec<Shot> {
+    use crate::records::EngineRecord;
+    world
+        .ghosts
+        .iter()
+        .filter_map(|(&ghost, g)| {
+            let r = g.record.as_ref()?.shot()?;
+            Some(Shot {
+                ghost,
+                datablock: g.datablock(),
+                position: r.start.or(g.position)?,
+                velocity: r.velocity,
+                tick: r.tick,
+                source: r.source,
+                exploded: r.exploded,
+            })
+        })
+        .take(MAX_SHOTS)
+        .collect()
+}
+
+/// Field `name` of datablock `id` of `world` as a number.
+fn number_of<W: PredictWorld>(world: &W, id: u32, name: &str) -> Option<f32> {
+    use crate::records::EngineDatablock;
+    use ghosts::Value;
+    match world.datablocks.get(&id)?.value(name, 0)? {
+        Value::F32(v) => Some(*v),
+        Value::Int(v) => Some(*v as f32),
+        Value::Bool(b) => Some(f32::from(u8::from(*b))),
+        _ => None,
+    }
+}
+
 macro_rules! predict_state {
     ($ty:ident) => {
         impl<W: PredictWorld> PredictState for $ty<'_, W> {
@@ -295,6 +471,18 @@ macro_rules! predict_state {
             fn predictor(&mut self) -> &mut dyn Any {
                 &mut *self.sim
             }
+
+            fn motion(&self) -> Option<BodyMotion> {
+                motion_of(self.sim)
+            }
+
+            fn shots(&self) -> Vec<Shot> {
+                shots_of(&*self.world)
+            }
+
+            fn datablock_number(&self, id: u32, name: &str) -> Option<f32> {
+                number_of(&*self.world, id, name)
+            }
         }
     };
 }
@@ -305,6 +493,8 @@ pub(super) struct HeadCx<'a, W: PredictWorld> {
     pub(super) control: &'a ControlSection<Box<dyn ControlData>>,
     pub(super) world: &'a W,
     pub(super) moves: &'a MoveQueue,
+    /// TGE's scheme ran already (a part's step): `run_tge` does nothing.
+    pub(super) ran: bool,
 }
 
 predict_state!(HeadCx);
@@ -323,8 +513,10 @@ impl<W: PredictWorld> HeadStep for HeadCx<'_, W> {
     }
 
     fn run_tge(&mut self) {
-        self.sim
-            .tge_on_head(self.ack, self.control, self.world, self.moves);
+        if !std::mem::replace(&mut self.ran, true) {
+            self.sim
+                .tge_on_head(self.ack, self.control, self.world, self.moves);
+        }
     }
 }
 
@@ -333,6 +525,7 @@ pub(super) struct TickCx<'a, W: PredictWorld> {
     pub(super) moves: &'a MoveQueue,
     pub(super) world: &'a W,
     pub(super) globals: &'a ClientGlobals,
+    pub(super) ran: bool,
 }
 
 predict_state!(TickCx);
@@ -343,20 +536,40 @@ impl<W: PredictWorld> TickStep for TickCx<'_, W> {
     }
 
     fn run_tge(&mut self) {
-        self.sim.tge_process(self.moves, self.world, self.globals);
+        if !std::mem::replace(&mut self.ran, true) {
+            self.sim.tge_process(self.moves, self.world, self.globals);
+        }
+    }
+
+    fn statics_near(&mut self, min: F3, max: F3) -> Vec<StaticView> {
+        self.sim.statics_near(self.world, min, max)
+    }
+
+    fn charge(&mut self, units: u64) -> bool {
+        self.sim.part_work = self.sim.part_work.saturating_add(units);
+        self.sim.part_work <= PART_TICK_WORK
     }
 }
 
 pub(super) struct ViewCx<'a, W: PredictWorld> {
     pub(super) sim: &'a mut Predictor<W>,
     pub(super) world: &'a mut W,
+    pub(super) ran: bool,
 }
 
 predict_state!(ViewCx);
 
 impl<W: PredictWorld> ViewStep for ViewCx<'_, W> {
     fn run_tge(&mut self) {
-        self.sim.tge_update_view(self.world);
+        if !std::mem::replace(&mut self.ran, true) {
+            self.sim.tge_update_view(self.world);
+        }
+    }
+
+    fn shown(&self, index: u32) -> Option<Pose> {
+        let world = &**self.world;
+        let pose = world.ghosts.get(&index)?.pose()?;
+        Some(world.warped_pose(index, pose))
     }
 
     fn drawn(&mut self) -> Drawn<'_> {
@@ -369,6 +582,7 @@ impl<W: PredictWorld> ViewStep for ViewCx<'_, W> {
             vehicle: driven.and_then(|i| world.vehicle_render.get_mut(&i)),
             eye: world.control_eye.as_mut(),
             view: world.view.as_mut(),
+            ghosts: &mut world.ghost_render,
         }
     }
 }
@@ -410,6 +624,40 @@ impl fmt::Debug for PredictionEntry {
     }
 }
 
+/// A part registered on the engine ([`NetPrediction::prediction_part`]): what each client's slot makes its parts from.
+#[derive(Clone)]
+pub struct PartEntry {
+    id: String,
+    prototype: Rc<dyn PredictionPart>,
+}
+
+impl PartEntry {
+    /// The entry of `part` under its id.
+    pub fn new<P: PredictionPart>(part: P) -> PartEntry {
+        PartEntry {
+            id: part.id().to_owned(),
+            prototype: Rc::new(part),
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// A fresh part of it.
+    pub fn make(&self) -> Box<dyn PredictionPart> {
+        self.prototype.clone_box()
+    }
+}
+
+impl fmt::Debug for PartEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PartEntry")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Why a swap of predictors was refused: no predictor has the id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownPrediction {
@@ -437,6 +685,7 @@ impl std::error::Error for UnknownPrediction {}
 #[derive(Debug)]
 pub struct PredictionSlot {
     entries: Vec<PredictionEntry>,
+    parts: Vec<PartEntry>,
     current: Cell<usize>,
     /// Counts the swaps (from 1: a prediction that never saw the slot takes its predictor).
     generation: Cell<u64>,
@@ -480,10 +729,43 @@ impl PredictionSlot {
         };
         let slot = PredictionSlot {
             entries: kept,
+            parts: Vec::new(),
             current: Cell::new(current),
             generation: Cell::new(1),
         };
         (slot, warnings)
+    }
+
+    /// The slot with `parts` too, in order: a part whose id is not valid, or repeats one, is left out, and the second value says
+    /// so for each.
+    pub fn with_parts(mut self, parts: &[PartEntry]) -> (PredictionSlot, Vec<String>) {
+        let mut warnings = Vec::new();
+        for p in parts {
+            if !PluginId::is_valid(&p.id) {
+                warnings.push(format!(
+                    "a prediction part's id {:?} is not valid: left out",
+                    p.id
+                ));
+            } else if self.parts.iter().any(|k| k.id == p.id) {
+                warnings.push(format!(
+                    "a second prediction part registered as {:?}: the first is kept",
+                    p.id
+                ));
+            } else {
+                self.parts.push(p.clone());
+            }
+        }
+        (self, warnings)
+    }
+
+    /// The parts' ids, in the order they run.
+    pub fn part_ids(&self) -> impl ExactSizeIterator<Item = &str> + '_ {
+        self.parts.iter().map(PartEntry::id)
+    }
+
+    /// Fresh parts, in the order they run.
+    pub fn make_parts(&self) -> Vec<Box<dyn PredictionPart>> {
+        self.parts.iter().map(PartEntry::make).collect()
     }
 
     /// The registered predictors' ids, in the slot's order.
@@ -567,6 +849,9 @@ impl PredictionSlot {
     }
 }
 
+/// The console functions a client's slot gives its script engine: any engine that registers a predictor or a part has them.
+pub const SLOT_NATIVES: [&str; 2] = ["setPredictor", "getPredictor"];
+
 /// The game's predictor ([`NetPrediction::prediction`]).
 struct StartPrediction(String);
 
@@ -581,6 +866,9 @@ pub trait NetPrediction {
 
     /// Registers `prediction` for a script or the game to swap to (`setPredictor(id)`, [`PredictionSlot::switch`]).
     fn add_prediction<P: Prediction>(&mut self, prediction: P) -> &mut Self;
+
+    /// Registers `part`: every client runs it after its predictor ([`PredictionPart`]).
+    fn prediction_part<P: PredictionPart>(&mut self, part: P) -> &mut Self;
 }
 
 impl NetPrediction for NetRegistry<'_> {
@@ -594,21 +882,35 @@ impl NetPrediction for NetRegistry<'_> {
     fn add_prediction<P: Prediction>(&mut self, prediction: P) -> &mut Self {
         let builder = self.builder();
         builder.push(PredictionEntry::new(prediction));
-        if builder.resource::<SlotRecipe>().is_none() {
-            builder.insert_resource(SlotRecipe);
-            builder.client(ClientStage::Natives, install_slot);
-        }
+        recipe(builder);
         self
+    }
+
+    fn prediction_part<P: PredictionPart>(&mut self, part: P) -> &mut Self {
+        let builder = self.builder();
+        builder.push(PartEntry::new(part));
+        recipe(builder);
+        self
+    }
+}
+
+/// Records the slot's client recipe once.
+fn recipe(builder: &mut torque_engine::EngineBuilder) {
+    if builder.resource::<SlotRecipe>().is_none() {
+        builder.insert_resource(SlotRecipe);
+        builder.client(ClientStage::Natives, install_slot);
     }
 }
 
 /// The client recipe: the slot of the engine's predictors on the client's script engine.
 fn install_slot(vm: &mut Vm, engine: &Engine) -> Result<(), String> {
     let start = engine.slot::<StartPrediction>();
-    let (slot, warnings) = PredictionSlot::new(
+    let (slot, mut warnings) = PredictionSlot::new(
         engine.list::<PredictionEntry>(),
         start.as_deref().map(|s| s.0.as_str()),
     );
+    let (slot, more) = slot.with_parts(engine.list::<PartEntry>());
+    warnings.extend(more);
     for warning in warnings {
         vm.warn(warning);
     }

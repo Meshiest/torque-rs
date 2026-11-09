@@ -611,25 +611,61 @@ impl World {
     /// [`Limits::max_impulse`] and the speed it gives to [`Limits::max_speed`]; wakes the body. Refused
     /// ([`Error::NonFinite`], nothing changed) when the speed would not be finite (a body of next to no mass).
     pub fn apply_impulse(&mut self, id: BodyId, impulse: [f32; 3]) -> Result<(), Error> {
+        self.impulse(id, impulse, None)
+    }
+
+    /// [`World::apply_impulse`] at the world point `point`: the part off the center of mass turns the body too (its spin held
+    /// to [`Limits::max_angular_speed`]). Refused ([`Error::NonFinite`]) for a point that is not finite or past the world.
+    pub fn apply_impulse_at(
+        &mut self,
+        id: BodyId,
+        impulse: [f32; 3],
+        point: [f32; 3],
+    ) -> Result<(), Error> {
+        let p = guard::coords(point, self.config.limits.max_coordinate).ok_or(Error::NonFinite)?;
+        self.impulse(id, impulse, Some(p))
+    }
+
+    fn impulse(
+        &mut self,
+        id: BodyId,
+        impulse: [f32; 3],
+        at: Option<[f32; 3]>,
+    ) -> Result<(), Error> {
         self.live()?;
         let e = *self.bodies.get(&id).ok_or(Error::Unknown(id))?;
         let i =
             guard::magnitude(impulse, self.config.limits.max_impulse).ok_or(Error::NonFinite)?;
-        let max_v = self.config.limits.max_speed;
+        let (max_v, max_w) = (
+            self.config.limits.max_speed,
+            self.config.limits.max_angular_speed,
+        );
         let made = self.guarded(|r| {
             let Some(b) = r.bodies.get_mut(e.handle) else {
                 return true;
             };
-            let before = b.linvel();
-            b.apply_impulse(v3(i), true);
+            let (before, spin) = (b.linvel(), b.angvel());
+            match at {
+                Some(p) => b.apply_impulse_at_point(v3(i), v3(p), true),
+                None => b.apply_impulse(v3(i), true),
+            }
             // A body of next to no mass takes a speed past any range (or none): the impulse is refused, or the speed held.
-            match guard::magnitude(a3(b.linvel()), max_v) {
-                Some(v) => {
+            // An impulse at the center leaves the spin as it is.
+            let w = match at {
+                Some(_) => guard::magnitude(a3(b.angvel()), max_w),
+                None => Some(a3(spin)),
+            };
+            match (guard::magnitude(a3(b.linvel()), max_v), w) {
+                (Some(v), Some(w)) => {
                     b.set_linvel(v3(v), true);
+                    if at.is_some() {
+                        b.set_angvel(v3(w), true);
+                    }
                     true
                 }
-                None => {
+                _ => {
                     b.set_linvel(before, false);
+                    b.set_angvel(spin, false);
                     false
                 }
             }
