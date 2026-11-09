@@ -90,3 +90,39 @@ fn a_fifo_is_refused_and_does_not_block() {
         "open_plain waited on the FIFO or took it"
     );
 }
+
+#[test]
+fn a_plain_error_converts_to_an_io_error_of_its_kind() {
+    use std::io::ErrorKind;
+    let kind = |e: PlainError| std::io::Error::from(e).kind();
+    assert_eq!(kind(PlainError::NotPlain), ErrorKind::InvalidInput);
+    assert_eq!(
+        kind(PlainError::TooLarge { len: 2, cap: 1 }),
+        ErrorKind::InvalidData
+    );
+    assert_eq!(
+        kind(PlainError::Io(ErrorKind::NotFound.into())),
+        ErrorKind::NotFound
+    );
+}
+
+/// A file that passes the check is an ordinary blocking handle: `O_NONBLOCK` was only for the open.
+#[cfg(unix)]
+#[test]
+fn an_opened_file_is_not_nonblocking() {
+    use rustix::fs::{OFlags, fcntl_getfl};
+    let dir = folder("blocking");
+    let path = dir.join("a.bin");
+    fs::write(&path, b"abc").unwrap();
+    let (file, len) = open_plain(&path).unwrap();
+    assert_eq!(len, 3);
+    assert!(!fcntl_getfl(&file).unwrap().contains(OFlags::NONBLOCK));
+}
+
+#[test]
+fn at_path_names_the_file_and_keeps_the_kind() {
+    let e =
+        torque_resource::plain::at_path(Path::new("a/b.txt"), std::io::ErrorKind::NotFound.into());
+    assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+    assert!(e.to_string().starts_with("a/b.txt: "), "{e}");
+}

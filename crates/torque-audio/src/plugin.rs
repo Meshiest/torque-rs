@@ -3,7 +3,7 @@
 //! Each client the engine makes gets its own [`AudioHost`] (the mixer, the buffers, the profiles' preloaded sounds), kept as
 //! a script-engine extension ([`AudioPlugin::host`]); its voices advance once per client tick ([`ClientTick`]). The host
 //! plays through the null sink, so nothing is ever played on the machine and no sound card is needed; a game that wants
-//! sound opens the card itself with [`AudioHost::open_device`] (feature `device`). Without the plugin a client has no `alx`
+//! sound opens the card itself with `AudioHost::open_device` (feature `device`). Without the plugin a client has no `alx`
 //! natives and no audio datablock classes.
 
 use std::cell::RefCell;

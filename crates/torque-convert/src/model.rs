@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use torque_import::modelcore::Model;
 use torque_import::{Options, bbmodel, caps, dts, gltf, obj};
+use torque_resource::plain::read_plain;
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -21,18 +22,10 @@ pub fn ext(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// A file of at most `cap` bytes.
-fn read_capped(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
-    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
-    if len > cap as u64 {
-        return Err(format!("over {cap} bytes"));
-    }
-    std::fs::read(path).map_err(|e| e.to_string())
-}
-
 /// The model in the file `input`, its side files read from its folder.
 pub fn read(input: &str, options: &Options) -> Result<Model, String> {
-    let bytes = read_capped(Path::new(input), caps::MAX_FILE_BYTES)?;
+    let bytes = read_plain(Path::new(input), caps::MAX_FILE_BYTES as u64, None)
+        .map_err(|e| e.to_string())?;
     let mut free = |_: u64| true;
     match ext(input).as_str() {
         "dts" => {
@@ -274,6 +267,29 @@ mod tests {
         Model {
             images,
             ..Model::default()
+        }
+    }
+
+    #[test]
+    fn a_model_file_that_is_a_link_is_refused() {
+        let dir = folder("link");
+        let real = dir.join("real.obj");
+        std::fs::write(&real, b"o a\n").unwrap();
+        let at = real.to_string_lossy().into_owned();
+        // The file itself is read (what the parser makes of it is not the point).
+        let refused = |r: Result<Model, String>| r.is_err_and(|e| e.contains("not a plain file"));
+        assert!(!refused(read(&at, &Options::default())));
+        let link = dir.join("link.obj");
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&real, &link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&real, &link);
+        #[cfg(not(any(unix, windows)))]
+        let made: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
+        if made.is_ok() {
+            assert!(refused(read(&link.to_string_lossy(), &Options::default())));
+        } else {
+            eprintln!("no symbolic links here: the link case is skipped");
         }
     }
 

@@ -14,6 +14,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use sha1::{Digest, Sha1};
+use torque_resource::plain::{PlainError, at_path, is_link, read_plain};
 
 /// The most bytes of the request line (method, target and version).
 pub const MAX_REQUEST_LINE: usize = 2048;
@@ -74,7 +75,9 @@ impl WebFiles {
     }
 
     /// Every regular file under `dir` (at most [`MAX_DEPTH`] folders deep, [`MAX_FILES`] files and [`MAX_FILES_BYTES`] bytes),
-    /// read once. Links and names with characters other than letters, digits, `.`, `_` and `-` are left out.
+    /// read once. A name with characters other than letters, digits, `.`, `_` and `-` (or starting with `.`) is left out, as it
+    /// is never served. A link of any kind under a served name (on Windows any reparse point, so a cloud file placeholder too)
+    /// fails the load, naming the path, as it does for a game folder.
     pub fn from_dir(dir: &Path) -> io::Result<WebFiles> {
         let mut files = WebFiles::new();
         let mut total = 0u64;
@@ -125,20 +128,26 @@ fn read_dir(
         if !safe_name(&name) {
             continue;
         }
-        // `file_type` does not follow links: a link is neither a file nor a folder here.
-        let kind = entry.file_type()?;
+        let on_disk = entry.path();
+        // `DirEntry::metadata` does not follow a link.
+        let meta = entry.metadata().map_err(|e| at_path(&on_disk, e))?;
+        if is_link(&meta) {
+            return Err(at_path(&on_disk, PlainError::NotPlain.into()));
+        }
         let path = format!("{prefix}{name}");
-        if kind.is_dir() {
+        if meta.is_dir() {
             if depth < MAX_DEPTH {
-                read_dir(&entry.path(), &format!("{path}/"), depth + 1, files, total)?;
+                read_dir(&on_disk, &format!("{path}/"), depth + 1, files, total)?;
             }
-        } else if kind.is_file() {
-            let len = entry.metadata()?.len();
+        } else if meta.is_file() {
+            let len = meta.len();
             *total = total.saturating_add(len);
             if files.len() >= MAX_FILES || *total > MAX_FILES_BYTES {
                 return Err(too_many());
             }
-            files.insert(&path, std::fs::read(entry.path())?);
+            let bytes = read_plain(&on_disk, MAX_FILES_BYTES, Some(len))
+                .map_err(|e| at_path(&on_disk, e.into()))?;
+            files.insert(&path, bytes);
         }
     }
     Ok(())

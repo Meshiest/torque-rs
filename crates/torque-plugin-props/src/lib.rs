@@ -19,7 +19,7 @@
 //!   players, in the same physics world, made with the server's `joint*` functions (no client entry point), the `Joint` ghost
 //!   class ([`JointGhost`]) and each client's book of them ([`JointBook`]); a grapple pulls its player inside the Player's own
 //!   tick ([`torque_game::player_tether`]), so a client's prediction replays it exactly; with feature `rope`, networked ropes
-//!   that follow joints ([`joints::rope`]);
+//!   that follow joints (`joints::rope`);
 //! - props in the scene hierarchy ([`hierarchy`], [`world::Link`]): a prop hung on a dynamic prop joins its body, a prop hung on
 //!   anything else is driven to where the tree puts it, an unparented prop leaves at its place's speed, and a prop with a joint
 //!   cannot be hung on anything (`getParentError()` says `joints`);
@@ -78,7 +78,7 @@
 //! (`client.rs`), and the ropes (`rope.rs`, feature `rope`). [`hits`]: the impulses of a projectile's hit and of an explosion,
 //! on both sides. [`predict`]: a client's prediction (`mod.rs`: the config, the shared state, the client functions;
 //! `part.rs`: the slot's part, its world, the restore and replay, the drawing, the shots). [`hierarchy`]: what the server reads of
-//! the scene hierarchy before each step ([`hierarchy::reconcile`]) and the rule that refuses a prop with joints as a child
+//! the scene hierarchy before each step (`hierarchy::reconcile`) and the rule that refuses a prop with joints as a child
 //! ([`hierarchy::PropRule`]); the world's side of a child is `world/children.rs` ([`world::Link`], `impl PropWorld`).
 //!
 //! **One tick.** During the process list each grappled Player's own step asks the server's tether source
@@ -95,7 +95,7 @@
 //! source was told of during the process list push their props, and each explosion seen for the first time pushes the props in
 //! its reach.
 //!
-//! **Props in the hierarchy.** Before each step the hook has the hierarchy resolve, then [`hierarchy::reconcile`] walks the props
+//! **Props in the hierarchy.** Before each step the hook has the hierarchy resolve, then `hierarchy::reconcile` walks the props
 //! that changed, parents first (the objects the hierarchy logged as changing a link or a local pose with what hangs below them,
 //! the roots frozen, thawed or removed, and the driven props for their targets; the first fit and one after the log overflowed
 //! look at every prop), and makes each fit its place. The world indexes its children by kind and root (`world/children.rs`,

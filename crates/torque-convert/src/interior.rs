@@ -17,6 +17,7 @@ use std::process::ExitCode;
 use torque_interior_builder::map::{self, MapOptions};
 use torque_interior_builder::mission::{Placement, fragment};
 use torque_interior_builder::{Options, build};
+use torque_resource::plain::read_plain;
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -145,18 +146,12 @@ pub fn run(args: &[String]) -> ExitCode {
     let [input, output] = plain.as_slice() else {
         return usage();
     };
-    let text = match std::fs::metadata(input) {
-        Ok(m) if m.len() as usize > map::MAX_MAP_BYTES => {
-            eprintln!("{input}: over {} bytes", map::MAX_MAP_BYTES);
+    let text = match read_plain(Path::new(input), map::MAX_MAP_BYTES as u64, None) {
+        Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+        Err(e) => {
+            eprintln!("{input}: {e}");
             return ExitCode::FAILURE;
         }
-        _ => match std::fs::read(input) {
-            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-            Err(e) => {
-                eprintln!("{input}: {e}");
-                return ExitCode::FAILURE;
-            }
-        },
     };
     let files = textures.as_deref().map(texture_files).unwrap_or_default();
     let sizes = |n: &str| texture_size(&files, n);

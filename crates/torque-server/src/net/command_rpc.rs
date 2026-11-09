@@ -4,7 +4,7 @@
 //! calls `clientCmdName(..)`, a tag argument is still expanded against the tags the sender named, an integer is still an
 //! integer. Only the carrier differs: Torque's protocol puts a command and the NetString events of its new tags on the ordered
 //! event queue, and the engine's protocol, which has no such queue, sends the same thing as one call of [`COMMAND_RPC`] (to
-//! the server) or [`COMMAND_TO_CLIENT_RPC`] (to a client), whose single field is a [`CommandBody`] made by
+//! the server) or [`COMMAND_TO_CLIENT_RPC`] (to a client), whose single field is a [`CommandBody`](torque_net::remote::body::CommandBody) made by
 //! [`encode_command`](torque_net::remote::body::encode_command). Each body names the texts of its tags, so a call that is
 //! dropped at a limit leaves no later one with a slot that means nothing.
 //!

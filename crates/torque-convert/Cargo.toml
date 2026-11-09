@@ -16,6 +16,8 @@ categories = ["game-development", "command-line-utilities"]
 torque-import = { path = "../torque-import" }
 torque-interior-builder = { path = "../torque-interior-builder" }
 torque-shapes = { path = "../torque-shapes" }
+# The input file is read without following a link, within a cap.
+torque-resource = { path = "../torque-resource" }
 
 [dev-dependencies]
 # Holds the file-name rules here to the script host's.

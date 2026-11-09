@@ -31,6 +31,7 @@ use web_time::Instant;
 use mapcore::budget::HEIGHTFIELD_SIDE as SIZE;
 use mapcore::collision::Heightfield as Terrain;
 use rayon::prelude::*;
+use torque_resource::plain::{open_plain, read_within};
 
 use super::Fnv;
 use super::interior::Local;
@@ -1457,12 +1458,17 @@ pub(crate) fn decode(bytes: &[u8], key: u64, plan: &Plan) -> Option<Lit> {
     })
 }
 
-fn read_file(path: &std::path::Path, key: u64, plan: &Plan) -> Option<Lit> {
+/// The lightmaps in the cache file `path`, when it is a plain file (never a link) of exactly the size `plan` needs.
+pub(crate) fn read_file(path: &std::path::Path, key: u64, plan: &Plan) -> Option<Lit> {
     let want = file_size(plan);
-    if want > MAX_FILE_BYTES || std::fs::metadata(path).ok()?.len() != want {
+    if want > MAX_FILE_BYTES {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
+    let (file, len) = open_plain(path).ok()?;
+    if len != want {
+        return None;
+    }
+    let bytes = read_within(file, len, want).ok()?;
     decode(&bytes, key, plan)
 }
 

@@ -6,7 +6,7 @@
 //! guest the server's verified script files ([`ServerContent`]), then one entry at a time: a frame's events in, a flush
 //! of ops out. Every op is checked against the format and the realm's tiers ([`GrantSet`]) before the engine's
 //! [`Effects`] apply it; one that a checked guest never sends stops the realm. A [`Runner`] calls the guest: natively a
-//! [`NativeRealm`] under Wasmtime (the `wasmtime` feature), on the web a Worker (`web/client-script.js`, through the
+//! `NativeRealm` under Wasmtime (the `wasmtime` feature), on the web a Worker (`web/client-script.js`, through the
 //! `web` feature's `WebRunner`).
 //!
 //! **Stops.** A realm stops (its instance thrown away, everything it did removed, the player told, nothing of it run
@@ -28,7 +28,7 @@
 //!
 //! The crate is in no default plugin set.
 //!
-//! The older runner here, [`WasmtimeLuaModule`], runs the Lua extension's own WebAssembly module as the engine's
+//! The older runner here, `WasmtimeLuaModule`, runs the Lua extension's own WebAssembly module as the engine's
 //! `web_lua::LuaModule` (the justfile's `realm-gate` measures it); it shares this crate's WASI imports.
 //!
 //! # Maintaining

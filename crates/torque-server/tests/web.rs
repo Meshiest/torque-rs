@@ -1186,3 +1186,28 @@ fn tls_records_without_plaintext_are_metered_and_closed() {
         assert!(sent > cap, "upgrade {upgrade}: the flood sent {sent} bytes");
     }
 }
+
+/// A folder's files are served as they read, and a link in it fails the load with its path rather than being followed.
+#[test]
+fn a_folder_is_read_without_following_links() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("web-files");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), PAGE).unwrap();
+    let served = WebFiles::from_dir(&dir).unwrap();
+    assert_eq!(&*served.get("index.html").unwrap().bytes, PAGE);
+    let secret = dir.with_file_name("web-files-secret.txt");
+    std::fs::write(&secret, b"secret").unwrap();
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&secret, dir.join("leak.txt")).is_ok();
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&secret, dir.join("leak.txt")).is_ok();
+    #[cfg(not(any(unix, windows)))]
+    let linked = false;
+    if linked {
+        let error = WebFiles::from_dir(&dir).expect_err("a link fails the load");
+        assert!(error.to_string().contains("leak.txt"), "{error}");
+    } else {
+        eprintln!("no symbolic links here: the link case is skipped");
+    }
+}

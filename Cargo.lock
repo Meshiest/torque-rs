@@ -4111,6 +4111,7 @@ dependencies = [
  "torque-mods",
  "torque-net",
  "torque-plugin-hierarchy",
+ "torque-resource",
  "torque-server",
  "torque-sim",
  "torque-ts-vm",
@@ -4234,6 +4235,7 @@ version = "0.1.0"
 dependencies = [
  "torque-import",
  "torque-interior-builder",
+ "torque-resource",
  "torque-shapes",
  "torque-ts-vm",
 ]
@@ -4816,6 +4818,7 @@ dependencies = [
  "torque-interior-builder",
  "torque-mapcore",
  "torque-maps",
+ "torque-resource",
  "torque-scene",
  "torque-shape-builder",
  "torque-shapes",
@@ -4827,6 +4830,7 @@ name = "torque-resource"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix 1.1.6",
  "torque-ts-vm",
  "zip",
 ]
@@ -4879,6 +4883,7 @@ dependencies = [
  "torque-ghosts",
  "torque-interior-builder",
  "torque-net",
+ "torque-resource",
  "torque-scene",
  "torque-shape-builder",
  "torque-shapes",

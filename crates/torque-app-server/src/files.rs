@@ -13,7 +13,11 @@ use std::collections::hash_map::Entry;
 use std::io;
 use std::path::Path;
 
+use torque_resource::plain::{PlainError, at_path, is_link, read_plain};
 use torque_ts_vm::host::MemFiles;
+
+/// The most bytes of one file of a game folder ([`GameFiles::add_dir`]); a longer one is an error.
+pub const MAX_FILE_BYTES: u64 = 256 << 20;
 
 /// A game folder's files: their paths under the folder (with `/`) and their bytes, sorted by path.
 #[derive(Debug, Clone, Default)]
@@ -30,9 +34,16 @@ impl GameFiles {
     }
 
     /// Adds every file of the folder `dir` under `prefix` (`common/`, or empty for the root), replacing files of the same path.
+    ///
+    /// # Errors
+    ///
+    /// A link inside the folder (to a file or a folder), a file over [`MAX_FILE_BYTES`] or a file that cannot be read fails the
+    /// whole load, and the error names the path. On Windows any reparse point counts as a link: a junction, but also a cloud
+    /// file placeholder (OneDrive and the like) or a file on a deduplicated volume, so a game folder in such a place is refused
+    /// until its files are local plain files. `dir` itself may be a link.
     pub fn add_dir(&mut self, dir: &Path, prefix: &str) -> io::Result<()> {
         let mut found = Vec::new();
-        read_tree(dir, dir, &mut found)?;
+        read_tree(dir, dir, MAX_FILE_BYTES, &mut found)?;
         self.extend(
             found
                 .into_iter()
@@ -175,14 +186,29 @@ fn take_len(rest: &mut &[u8]) -> Result<usize, String> {
     Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
 }
 
-fn read_tree(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            read_tree(root, &path, out)?;
+/// Every file under `dir` into `out`. A link of any kind inside the folder (a symbolic link, or on Windows a junction or other
+/// reparse point), to a file or a folder, is refused, so a folder cannot lead the walk outside itself; `dir` itself is the
+/// caller's choice and may be a link.
+fn read_tree(
+    root: &Path,
+    dir: &Path,
+    cap: u64,
+    out: &mut Vec<(String, Vec<u8>)>,
+) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir).map_err(|e| at_path(dir, e))? {
+        let entry = entry.map_err(|e| at_path(dir, e))?;
+        let path = entry.path();
+        // `DirEntry::metadata` does not follow a link.
+        let meta = entry.metadata().map_err(|e| at_path(&path, e))?;
+        if is_link(&meta) {
+            return Err(at_path(&path, PlainError::NotPlain.into()));
+        }
+        if meta.is_dir() {
+            read_tree(root, &path, cap, out)?;
         } else if let Ok(rel) = path.strip_prefix(root) {
             let name = rel.to_string_lossy().replace('\\', "/");
-            out.push((name, std::fs::read(&path)?));
+            let bytes = read_plain(&path, cap, None).map_err(|e| at_path(&path, e.into()))?;
+            out.push((name, bytes));
         }
     }
     Ok(())
@@ -220,6 +246,123 @@ mod tests {
             assert!(GameFiles::unpack(&pack[..cut]).is_err(), "cut at {cut}");
         }
         assert!(GameFiles::unpack(b"TQPK\xff\xff\xff\xff").is_err());
+    }
+
+    /// A fresh folder beside the test binary (a unit test has no `CARGO_TARGET_TMPDIR`).
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let exe = std::env::current_exe().expect("the test binary's path");
+        let dir = exe
+            .parent()
+            .expect("a folder")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_folder_is_read_within_the_cap_and_never_through_a_link() {
+        let dir = scratch("game-folder");
+        std::fs::create_dir(dir.join("missions")).unwrap();
+        std::fs::write(dir.join("server.cs"), b"abc").unwrap();
+        std::fs::write(dir.join("missions/a.mis"), b"a map").unwrap();
+        let files = GameFiles::load(&dir).expect("a folder");
+        assert_eq!(files.file("missions/a.mis"), Some(&b"a map"[..]));
+        let mut found = Vec::new();
+        assert!(
+            read_tree(&dir, &dir, 4, &mut found).is_err(),
+            "5 bytes is over a cap of 4"
+        );
+        found.clear();
+        read_tree(&dir, &dir, 5, &mut found).expect("within the cap");
+        assert_eq!(found.len(), 2);
+
+        let outside = scratch("game-folder-outside");
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, b"secret").unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&secret, dir.join("l.txt"));
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&secret, dir.join("l.txt"));
+        #[cfg(not(any(unix, windows)))]
+        let linked: io::Result<()> = Err(io::ErrorKind::Unsupported.into());
+        if linked.is_ok() {
+            assert!(GameFiles::load(&dir).is_err(), "a link is refused");
+        } else {
+            eprintln!("no symbolic links here: the link case is skipped");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// A folder holding a link to a folder of files outside it, if this machine can make the link.
+    fn folder_with_link(name: &str, junction: bool) -> Option<std::path::PathBuf> {
+        let dir = scratch(name);
+        let outside = scratch(&format!("{name}-outside"));
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        std::fs::write(dir.join("server.cs"), b"abc").unwrap();
+        let at = dir.join("out");
+        #[cfg(unix)]
+        let made = !junction && std::os::unix::fs::symlink(&outside, &at).is_ok();
+        #[cfg(windows)]
+        let made = if junction {
+            // A junction needs no privilege.
+            std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&at)
+                .arg(&outside)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        } else {
+            std::os::windows::fs::symlink_dir(&outside, &at).is_ok()
+        };
+        #[cfg(not(any(unix, windows)))]
+        let made = {
+            let _ = (&at, &outside, junction);
+            false
+        };
+        made.then_some(dir)
+    }
+
+    #[test]
+    fn a_link_to_a_folder_is_refused_not_walked() {
+        for junction in [false, true] {
+            let name = if junction {
+                "game-junction"
+            } else {
+                "game-dirlink"
+            };
+            let Some(dir) = folder_with_link(name, junction) else {
+                eprintln!("no {name} here: the case is skipped");
+                continue;
+            };
+            let error = GameFiles::load(&dir).expect_err("a folder link is refused");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{name}");
+            assert!(error.to_string().contains("out"), "names the link: {error}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_game_folder_that_is_itself_a_link_still_loads() {
+        let real = scratch("game-root-real");
+        std::fs::write(real.join("server.cs"), b"abc").unwrap();
+        let link = real.with_file_name(format!("game-root-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir(&link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&real, &link).is_ok();
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&real, &link).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let made = false;
+        if made {
+            let files = GameFiles::load(&link).expect("a linked root loads");
+            assert_eq!(files.file("server.cs"), Some(&b"abc"[..]));
+            let _ = std::fs::remove_dir(&link);
+        } else {
+            eprintln!("no symbolic links here: the case is skipped");
+        }
+        let _ = std::fs::remove_dir_all(&real);
     }
 
     #[test]

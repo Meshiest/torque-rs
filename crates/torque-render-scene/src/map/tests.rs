@@ -1180,3 +1180,46 @@ fn a_repeated_terrain_carries_its_water_out_as_far_as_it_is_drawn() {
     assert!(water::tiles(&w[0], tops[0].1, 0.0, 0.25, eye, 5000.0, 8).is_none());
     assert!(water::tiles(&w[0], tops[0].1, 2048.0, 0.25, eye, 0.0, 8).is_none());
 }
+
+#[test]
+fn a_cache_file_is_read_only_when_it_is_a_plain_file_of_the_plans_size() {
+    let inputs = light::Inputs {
+        sun: overhead_sun(),
+        terrains: vec![flat_terrain(true)],
+        instances: vec![instance(floor_local(), [5.0, 5.0, 1.0])],
+    };
+    let key = inputs.key();
+    let (lit, _) = light::make(&inputs, key, light::plan(&inputs));
+    let bytes = light::encode(&lit);
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let dir = exe
+        .parent()
+        .expect("a folder")
+        .join(format!("cache-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.tml");
+    std::fs::write(&file, &bytes).unwrap();
+    assert!(light::read_file(&file, key, &lit.plan).is_some());
+    assert!(light::read_file(&dir.join("missing.tml"), key, &lit.plan).is_none());
+    let short = dir.join("short.tml");
+    std::fs::write(&short, &bytes[..bytes.len() - 1]).unwrap();
+    assert!(light::read_file(&short, key, &lit.plan).is_none());
+    let long = dir.join("long.tml");
+    std::fs::write(&long, [&bytes[..], &[0]].concat()).unwrap();
+    assert!(light::read_file(&long, key, &lit.plan).is_none());
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.tml");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(light::read_file(&link, key, &lit.plan).is_none());
+    }
+    #[cfg(windows)]
+    {
+        let link = dir.join("link.tml");
+        if std::os::windows::fs::symlink_file(&file, &link).is_ok() {
+            assert!(light::read_file(&link, key, &lit.plan).is_none());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

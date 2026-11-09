@@ -1,7 +1,7 @@
 //! A client's half of joints: the book of the joints its connection was sent ([`JointBook`]), where their ends are as the client
 //! knows them, and the tether a grapple puts on the Player the client predicts.
 //!
-//! Joints interpolate with the props at their ends: a client draws them (a rope following one, [`super::rope`]) where its props
+//! Joints interpolate with the props at their ends: a client draws them (a rope following one, `super::rope`) where its props
 //! are. [`JointBook::connected`] gives the props a joint ties to a prop, for a predictor that pulls them in with it.
 //!
 //! Everything here comes from a server, so it is held to caps: at most [`MAX_CLIENT_JOINTS`] joints in the book (a ghost past it

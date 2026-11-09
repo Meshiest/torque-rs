@@ -1,5 +1,5 @@
 //! Props in the scene hierarchy: what the server reads of the tree before each step to make each prop's physics fit its place in
-//! it ([`reconcile`]), and the rule that keeps a prop with joints from being hung on anything ([`PropRule`]).
+//! it (`reconcile`), and the rule that keeps a prop with joints from being hung on anything ([`PropRule`]).
 //!
 //! A prop whose parent is a dynamic prop becomes part of that prop's body at the pose the tree gives it (the chain of local poses
 //! from the root down, composed the way the tree composes them, so the pose is the tree's own to the last bit and changes only

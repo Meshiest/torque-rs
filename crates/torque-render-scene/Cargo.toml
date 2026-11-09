@@ -29,6 +29,8 @@ rayon = "1.11"
 shapes = { package = "torque-shapes", path = "../torque-shapes" }
 # A datablock's `.glb` / `.gltf` shape file, read as the `.dts` it makes.
 torque-import = { path = "../torque-import" }
+# A disk cache file is read without following a link, within a cap.
+torque-resource = { path = "../torque-resource" }
 # The day's sun the TimeOfDay ghost runs on the client (`hd::environment`).
 torque-scene = { path = "../torque-scene" }
 

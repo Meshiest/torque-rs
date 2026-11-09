@@ -2,11 +2,12 @@
 //! the importers share for a file a user, a mod or a download may have put there.
 //!
 //! [`open_plain`] opens `path` with the platform's no-follow flag (`O_NOFOLLOW` on Unix, `FILE_FLAG_OPEN_REPARSE_POINT` on
-//! Windows, so a link that is the last component is not followed; `O_NONBLOCK` too, so a FIFO is refused rather than waited on) and then looks at the handle that came back: it must be a
-//! regular file and no link of any kind. A link in a folder on the way is the caller's to refuse (the folder host looks at each
-//! component). [`read_plain`] reads the whole file within a cap, and within the length a listing gave, taking the length from the
-//! open handle and stopping one byte past the limit, so a file that grew after it was listed (or lies about its length) never
-//! allocates more than the limit.
+//! Windows, so a link that is the last component is not followed; `O_NONBLOCK` too, so a FIFO is refused rather than waited
+//! on) and then looks at the handle that came back: it must be a regular file and no link of any kind. A file that passes has
+//! `O_NONBLOCK` cleared again, so reads on the handle are ordinary blocking reads. A link in a folder on the way is the
+//! caller's to refuse (the folder host looks at each component). [`read_plain`] reads the whole file within a cap, and within
+//! the length a listing gave, taking the length from the open handle and stopping one byte past the limit, so a file that grew
+//! after it was listed (or lies about its length) never allocates more than the limit.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -38,10 +39,25 @@ impl fmt::Display for PlainError {
 
 impl std::error::Error for PlainError {}
 
+impl From<PlainError> for io::Error {
+    fn from(e: PlainError) -> io::Error {
+        match e {
+            PlainError::Io(e) => e,
+            PlainError::NotPlain => io::Error::new(io::ErrorKind::InvalidInput, e),
+            PlainError::TooLarge { .. } => io::Error::new(io::ErrorKind::InvalidData, e),
+        }
+    }
+}
+
 impl From<io::Error> for PlainError {
     fn from(e: io::Error) -> PlainError {
         PlainError::Io(e)
     }
+}
+
+/// `e` with `path` in its message, keeping its kind: for a caller that reads many files and must say which one failed.
+pub fn at_path(path: &Path, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{}: {e}", path.display()))
 }
 
 /// Whether `meta` is a link of any kind: a symbolic link, or on Windows any reparse point (of an open handle, or of a path read
@@ -66,8 +82,8 @@ pub fn open_plain(path: &Path) -> Result<(File, u64), PlainError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // `O_NONBLOCK` so that opening a FIFO does not wait for a writer before the check below refuses it. It has no effect on
-        // a regular file, the only kind returned, so it needs no clearing afterwards (which would take an unsafe `fcntl`).
+        // `O_NONBLOCK` so that opening a FIFO does not wait for a writer before the check below refuses it; it is cleared once
+        // the handle is known to be a regular file.
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
@@ -89,7 +105,17 @@ pub fn open_plain(path: &Path) -> Result<(File, u64), PlainError> {
     if is_link(&meta) || !meta.is_file() {
         return Err(PlainError::NotPlain);
     }
+    #[cfg(unix)]
+    clear_nonblocking(&file)?;
     Ok((file, meta.len()))
+}
+
+/// Takes `O_NONBLOCK` off `file`, which [`open_plain`] set so that a FIFO would not block the open.
+#[cfg(unix)]
+fn clear_nonblocking(file: &File) -> io::Result<()> {
+    use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+    fcntl_setfl(file, fcntl_getfl(file)? - OFlags::NONBLOCK)?;
+    Ok(())
 }
 
 /// The rest of the open `file` of length `len`, at most `limit` bytes: a file longer than that, by its handle or by what the

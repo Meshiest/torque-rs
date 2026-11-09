@@ -38,6 +38,12 @@ classes declared by `torque_game::specs::install`, so `new StaticShape()`, `new 
 work with their typed fields. The server execs `example/main.cs`, then calls the script function
 `loadExampleMission`, which execs the mission file. The game folder holds only the example's own scripts.
 
+A game folder read into memory (`GameFiles::load`, `add_dir`) holds plain files only: a link anywhere inside it, to a file or
+to a folder, fails the load and the error names the path, so a folder cannot lead the reader outside itself. The folder you
+point it at may itself be a link. On Windows every reparse point counts as a link, not only junctions and symbolic links:
+a folder kept in OneDrive or another cloud-file service (files that are placeholders until downloaded) or on a deduplicated
+volume is refused until its files are local plain files. A file over `files::MAX_FILE_BYTES` fails the load too.
+
 **The socket.** `torque_server::net::transport::UdpTransport` under a `BindPolicy`: a server binds the one address its
 host names, and a public address is refused unless the host allows it. `MemoryTransport` is the in-memory one for tests.
 
