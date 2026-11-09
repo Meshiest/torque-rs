@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use torque_collide::source::{CollisionShape, CollisionSource, ShapeKind, SourceHit};
 use torque_collide::types::STATIC_SHAPE;
+use torque_engine::permissions::{ConnectionSubjects, SubjectKey};
 use torque_engine::{EngineClass, Prefs, ScriptClass, ScriptError, VmPrefs};
 use torque_ts_vm::fields::Value as Field;
 use torque_ts_vm::geometry;
@@ -225,12 +226,21 @@ impl ServerProps {
     }
 }
 
-/// A connection's owner key: the game's identity for the player (the connection's `propOwnerKey` field, its whole text up to
-/// [`crate::world::MAX_OWNER_KEY`] bytes) when the game sets one, else the connection itself, so a player who comes back under
-/// the same identity gets their props back.
+/// A connection's owner key: the game's own key for the player (the connection's `propOwnerKey` field, its whole text up to
+/// [`crate::world::MAX_OWNER_KEY`] bytes) when the game sets one, else the account id the auth provider verified for the
+/// connection (the host's answer, never the script method `getIdentity`), else the connection itself. A player who comes back
+/// under the same key gets their props back: with a provider that gives the same account the same id, on every connection.
 pub fn owner_key(vm: &Vm, conn: ObjId) -> OwnerKey {
     let text = vm.read_field_of(FieldTarget::Live(conn), b"propOwnerKey", b"");
-    OwnerKey::new(&text, conn)
+    // Asked of the host in Rust: a script method (`getIdentity`) can be redefined, and an error in one would orphan the props.
+    let account = vm
+        .extension::<ConnectionSubjects>()
+        .and_then(|subjects| subjects.subject_of(conn));
+    let id = match &account {
+        Some(SubjectKey::Identity(id)) => Some(id.as_slice()),
+        _ => None,
+    };
+    OwnerKey::resolve(&text, id, conn)
 }
 
 /// The quota key of a connection's address text (`getAddress()`'s: `"IP:1.2.3.4:28000"`, `"IP6:[fe80::1%3]:28000"`): the IP

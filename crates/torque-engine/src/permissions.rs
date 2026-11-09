@@ -41,20 +41,105 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::fmt;
 use std::rc::Rc;
+use std::str::FromStr;
 
+use torque_net::connect::Identity;
 pub use torque_permissions::PermissionError;
 use torque_permissions::{Permission, Registry, Roles, Subject};
+use torque_ts_vm::sim::ObjId;
 
 use crate::{BuildError, Engine, EngineBuilder, PluginId};
 
 /// Who a [`Subject`] is kept for: a signed-in player's auth identity, or the connection when there is none.
+///
+/// This is the key a connection is held by wherever the server keeps something per player (roles, props, an upload's resume).
+/// It comes from the connection's verified [`Identity`] ([`SubjectKey::of`]), never from anything a client sent.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SubjectKey {
-    /// The identity the auth provider verified.
+    /// The account id of the [`Identity`] the auth provider verified: the same player on every connection.
     Identity(Vec<u8>),
     /// A connection (what a player with no identity is held by; forgotten when it ends).
     Connection(u32),
+}
+
+impl SubjectKey {
+    /// The key of the connection `conn` whose verified identity is `identity` (`None` for an anonymous player).
+    pub fn of(identity: Option<&Identity>, conn: u32) -> SubjectKey {
+        identity.map_or(SubjectKey::Connection(conn), |i| {
+            SubjectKey::Identity(i.id().to_vec())
+        })
+    }
+}
+
+/// The key as script sees it: `id:` and the account id in hex, or `conn:` and the connection's number.
+impl fmt::Display for SubjectKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SubjectKey::Identity(id) => {
+                f.write_str("id:")?;
+                id.iter().try_for_each(|b| write!(f, "{b:02x}"))
+            }
+            SubjectKey::Connection(conn) => write!(f, "conn:{conn}"),
+        }
+    }
+}
+
+/// Why a text is not a [`SubjectKey`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadSubjectKey;
+
+impl FromStr for SubjectKey {
+    type Err = BadSubjectKey;
+
+    /// Reads what [`Display`](fmt::Display) wrote.
+    fn from_str(text: &str) -> Result<SubjectKey, BadSubjectKey> {
+        // Only the digits `Display` writes: no sign, no spaces.
+        if let Some(conn) = text.strip_prefix("conn:") {
+            return conn
+                .bytes()
+                .all(|b| b.is_ascii_digit())
+                .then(|| conn.parse().ok())
+                .flatten()
+                .map(SubjectKey::Connection)
+                .ok_or(BadSubjectKey);
+        }
+        let hex = text.strip_prefix("id:").ok_or(BadSubjectKey)?;
+        let lower_hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+        if hex.is_empty() || hex.len() % 2 != 0 || !hex.bytes().all(lower_hex) {
+            return Err(BadSubjectKey);
+        }
+        let id = hex
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                std::str::from_utf8(pair)
+                    .ok()
+                    .and_then(|p| u8::from_str_radix(p, 16).ok())
+            })
+            .collect::<Option<Vec<u8>>>()
+            .ok_or(BadSubjectKey)?;
+        Ok(SubjectKey::Identity(id))
+    }
+}
+
+/// How a plugin on the server asks who a `GameConnection` is, from Rust and never through script: the server attaches one to its
+/// script engine (`vm.extension::<ConnectionSubjects>()`) and answers from the identity its connect gate verified, so a script
+/// that defines `GameConnection::getIdentity` itself cannot change what a plugin keeps under a player.
+pub struct ConnectionSubjects(Box<dyn Fn(ObjId) -> Option<SubjectKey>>);
+
+impl ConnectionSubjects {
+    /// A source that answers with `subject_of`.
+    pub fn new(subject_of: impl Fn(ObjId) -> Option<SubjectKey> + 'static) -> ConnectionSubjects {
+        ConnectionSubjects(Box::new(subject_of))
+    }
+
+    /// The key of the `GameConnection` object `connection`, or `None` when it is not an accepted network connection (a candidate
+    /// the scripts have not accepted, a local connection, an object that is gone).
+    pub fn subject_of(&self, connection: ObjId) -> Option<SubjectKey> {
+        (self.0)(connection)
+    }
 }
 
 /// Where what each player holds is kept. A game backs it with its auth or database; the methods take `&self` so a provider

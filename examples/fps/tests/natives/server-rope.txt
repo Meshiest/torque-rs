@@ -5,10 +5,19 @@ FlyingVehicle::useCreateHeight 3..3 (bool enabled)
 GameBase::getDataBlock 2..2 ()
 GameBase::setDataBlock 3..3 (DataBlock db)
 GameConnection::activateGhosting 2..2 ()
+GameConnection::addRole 3..3 %client.addRole(name) - gives the player a role the game defined; 1 when it was new, 0 when held or refused
 GameConnection::delete 2..3 (string reason=NULL)
 GameConnection::getControlObject 2..2 ()
+GameConnection::getIdentity 2..2 %client.getIdentity() - who the server holds the player as: id:<hex> for a signed-in account (the raw account id, the same on every connection; do not show it to other players if the provider's ids are private), conn:<n> for an anonymous player (new on each connection); empty for no connection
+GameConnection::getIdentityName 2..2 %client.getIdentityName() - the display name the auth provider gave the player, or empty (not unique, not stable)
+GameConnection::getRoles 2..2 %client.getRoles() - the roles the player holds, as a word list
+GameConnection::grant 3..3 %client.grant(grant) - gives the player a permission or a trailing-wildcard grant (props.*); 1 when it was new, 0 when held or refused
+GameConnection::hasPermission 3..3 %client.hasPermission(permission) - whether any grant of the player or of their roles covers the permission
+GameConnection::hasRole 3..3 %client.hasRole(name) - whether the player holds the role
 GameConnection::isAIControlled 2..2 ()
+GameConnection::removeRole 3..3 %client.removeRole(name) - takes a role from the player; 1 when they held it
 GameConnection::resetGhosting 2..2 ()
+GameConnection::revoke 3..3 %client.revoke(grant) - takes a direct grant from the player; 1 when they held it
 GameConnection::setControlObject 3..3 (ShapeBase object)
 GameConnection::transmitDataBlocks 3..3 (S32 sequence)
 Item::getLastStickyNormal 2..2 ()
@@ -188,6 +197,8 @@ containerSearchCurrDist 1..1 Get distance of the center of the current item from
 containerSearchCurrRadiusDist 1..1 Get the distance of the closest point of the current item from the center of the current initContainerRadiusSearch.
 containerSearchNext 1..1 Get next item from a search started with initContainerRadiusSearch.
 deactivatePackage 2..2 deactivatePackage(name) - takes the package and the ones above it off the active stack
+declarePermission 3..3 declarePermission(name, description) - declares a permission the game's scripts check, so tools can list it; 1 when it was accepted
+definePermissionRole 3..3 definePermissionRole(name, grants) - defines (or redefines) a role as grants separated by spaces or commas; 1 when it was accepted
 deleteDataBlocks 1..1 deleteDataBlocks() - deletes every datablock, as before loading another set of them
 deleteVariables 2..2 deleteVariables(pattern) - deletes the global variables whose names match
 detag 2..2 detag(taggedText) - the text after a tag
@@ -299,7 +310,7 @@ ropeNetSetLength 3..4 ropeNetSetLength(rope, length [, seconds]) - sets the leng
 ropeNetSetLifetime 3..4 ropeNetSetLifetime(rope, seconds [, fade]) - makes a networked rope a temporary one: it is deleted `seconds` from now, and every client shows less of it over its last
 ropeNetSetTexture 3..3 ropeNetSetTexture(rope, file) - sets the texture one networked rope is drawn with (a .png or .jpg, at most 96 bytes of name); an empty string puts the
 ropeNetSetTextureScroll 3..3 ropeNetSetTextureScroll(rope, speed) - sets how fast one networked rope's texture runs along it, in repeats a second; an empty string puts the datablock's back
-ropeNetUndrive 2..2 ropeNetUndrive(rope) - lets a networked rope go of its driver: it shows what it was last told, from the driver's last answer
+ropeNetUndrive 2..2 ropeNetUndrive(rope) - lets a networked rope go of its driver on every client
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)

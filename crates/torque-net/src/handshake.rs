@@ -53,7 +53,7 @@ use crate::cap::{
     NET_MAX_CONNECT_ARGS, NET_MAX_DATAGRAM, NET_MAX_PENDING_CONNECTS, NET_NETWORK_SHARE,
     NET_PACKETS_PER_CONN_PER_S, NET_PENDING_EVICT_AGE_MS, NET_PENDING_TIMEOUT_MS, NET_STRING_BYTES,
 };
-use crate::connect::{AuthContext, ConnectBlock, ConnectGate};
+use crate::connect::{AuthContext, ConnectBlock, ConnectGate, Identity};
 use crate::fair::{
     CapHit, Eviction, FairLimiter, FairLimits, PendingSlot, SourceCaps, SourceCount, Stage,
     choose_eviction,
@@ -669,8 +669,9 @@ pub struct Connection {
     pub ghost_bits: u8,
     /// What the profile's form read after the request's password (empty in Torque).
     pub extra: Vec<u8>,
-    /// What the gate's auth provider verified the client as, when there is one.
-    pub identity: Option<Vec<u8>>,
+    /// What the gate's auth provider verified the client as, when there is one ([`Identity`]). `None` is an anonymous player,
+    /// held by this connection's id alone: it is a new player on every connection.
+    pub identity: Option<Identity>,
     /// Accepted, but no valid game packet has arrived yet.
     pub pending: bool,
     /// The server half of a local connection (`connectLocal`): never pinged or timed out (TGE's `checkTimeout` acts only
@@ -720,7 +721,7 @@ pub struct PendingRequest {
     pub seq: u32,
     pub fields: ConnectFields,
     /// What the gate's auth provider verified the client as, when there is one.
-    pub identity: Option<Vec<u8>>,
+    pub identity: Option<Identity>,
     /// `min(current, profile's current)`.
     pub protocol_version: u32,
     /// An older connection from the same address that this request replaces. It is still in the table: the host removes it once it admits the
@@ -739,7 +740,7 @@ pub struct EngineAccepted {
     /// The ghost-id width the accept carried.
     pub ghost_bits: u8,
     /// What the gate's auth provider verified the client as, when there is one.
-    pub identity: Option<Vec<u8>>,
+    pub identity: Option<Identity>,
     /// What the client said about taking content from the server.
     pub mods: Option<crate::modsync::ModsSection>,
 }

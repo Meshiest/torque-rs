@@ -65,6 +65,18 @@
 //! quitting) or connects out declares it where it is registered ([`ScriptRegistry::with_effects`], `effects = "..."` on
 //! [`function`]): the extensions' call policy reads it, and torque-plugin-loader's
 //! `every_native_that_writes_or_evaluates_is_denied_to_languages` lists every native with its effects.
+//!
+//! **Who a connection is comes from the auth provider and nowhere else.** [`NetRegistry::auth`] sets the provider, a server's gate
+//! asks it to verify each ticket ([`torque_net::connect::AuthProvider::verify`]), and what it returns is the connection's
+//! [`torque_net::connect::Identity`]; every per-player key a server keeps ([`permissions::SubjectKey::of`], an upload's resume,
+//! a prop's owner) is made from that or, with none, from the connection. With no provider every player is anonymous: the
+//! identity exists, it is per connection, and no ticket is on the wire (the `tge` wire goldens and trace lines are unchanged).
+//! A real provider gives the same account the same id on every connection, so roles and props follow it; what a provider
+//! must guarantee is on [`torque_net::connect::AuthProvider::verify`], and a test's provider is
+//! [`torque_net::connect::SharedSecret`] (`tests/net.rs` in torque-plugin-props runs grants and ownership through a reconnect,
+//! `tests/server.rs` in torque-server checks a client cannot choose its identity). A key's text for script is
+//! [`permissions::SubjectKey`]'s `Display` (`id:<hex>` or `conn:<n>`), read back by its `FromStr`
+//! (`permissions::tests::a_key_reads_back_from_its_script_text_and_nothing_else_does`).
 
 #![warn(missing_docs)]
 

@@ -4,6 +4,14 @@
 //! by its auth identity when the ticket gave one, else by the connection itself ([`subject_key`]); connection-keyed grants are
 //! forgotten when the connection ends.
 //!
+//! **Identity.** What a connection is held by comes from the auth provider's check on the server (`Connection::identity`),
+//! never from anything the client sent. `%client.getIdentity()` is that key as text (`id:<hex>` for a verified account, the same
+//! on every connection of that account; `conn:<n>` for an anonymous player, a new one each time) and
+//! `%client.getIdentityName()` the display name the provider gave, or empty. **`getIdentity()` is the raw account id** (in hex):
+//! a game that echoes it to other clients (a scoreboard, a chat line) shows them the provider's id, so it should not if the
+//! provider's ids are meant to be private. The server's own plugins (props, uploads, permissions) never call it: a script may
+//! redefine the method, so they ask the host from Rust ([`ConnectionSubjects`]).
+//!
 //! **Script.** On a `GameConnection`: `%client.addRole(name)`, `removeRole(name)`, `hasRole(name)`, `getRoles()` (a word list),
 //! `grant(grant)`, `revoke(grant)`, `hasPermission(permission)`. The ones that change something answer 1 when they did, 0 when
 //! there was nothing to change, and print the reason on the console when they were refused (an unknown role or a name that does
@@ -13,7 +21,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use torque_engine::permissions::{Permissions, SubjectKey};
+use torque_engine::permissions::{ConnectionSubjects, Permissions, SubjectKey};
 use torque_net::handshake::ConnId;
 use torque_ts_vm::effects::Effects;
 use torque_ts_vm::sim::ObjId;
@@ -23,13 +31,10 @@ use super::NetGame;
 use super::NetShared;
 use super::commands::arg;
 
-/// What a connection's permissions are kept under: its auth identity, else the connection.
+/// What a connection is held by (its permissions, its props): its auth identity, else the connection.
 pub fn subject_key_of_conn<G: NetGame>(shared: &NetShared<G>, conn: ConnId) -> SubjectKey {
-    shared
-        .hs
-        .connection(conn)
-        .and_then(|c| c.identity.clone())
-        .map_or(SubjectKey::Connection(conn.0), SubjectKey::Identity)
+    let identity = shared.hs.connection(conn).and_then(|c| c.identity.as_ref());
+    SubjectKey::of(identity, conn.0)
 }
 
 /// What a `GameConnection` object's permissions are kept under, if the host made it and accepted it.
@@ -69,6 +74,15 @@ fn changed(
 
 /// Registers the permission natives on `vm`.
 pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
+    // Plugins read who a connection is through this, never through the script method below, which a game may redefine.
+    {
+        let shared = Rc::downgrade(shared);
+        vm.set_extension(Rc::new(ConnectionSubjects::new(move |obj| {
+            let shared = shared.upgrade()?;
+            let shared = shared.try_borrow().ok()?;
+            subject_key(&shared, obj)
+        })));
+    }
     type Method = fn(&mut Vm, &Permissions, &SubjectKey, &str) -> Native;
     let methods: [(&str, &str, Method); 6] = [
         (
@@ -129,6 +143,41 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
                     .map(|(perms, key)| perms.roles_of(&key).join(" "))
                     .unwrap_or_default();
                 Native::Str(roles.into_bytes())
+            },
+        );
+    }
+    {
+        let shared = Rc::clone(shared);
+        vm.register_in(
+            "GameConnection",
+            "getIdentity",
+            2,
+            2,
+            "%client.getIdentity() - who the server holds the player as: id:<hex> for a signed-in account (the raw account id, the same on every connection; do not show it to other players if the provider's ids are private), conn:<n> for an anonymous player (new on each connection); empty for no connection",
+            move |_, call| {
+                let key = call
+                    .this_object
+                    .and_then(|obj| subject_key(&shared.borrow(), obj));
+                Native::Str(key.map(|k| k.to_string()).unwrap_or_default().into_bytes())
+            },
+        );
+    }
+    {
+        let shared = Rc::clone(shared);
+        vm.register_in(
+            "GameConnection",
+            "getIdentityName",
+            2,
+            2,
+            "%client.getIdentityName() - the display name the auth provider gave the player, or empty (not unique, not stable)",
+            move |_, call| {
+                let name = call.this_object.and_then(|obj| {
+                    let sh = shared.borrow();
+                    let conn = sh.conns.get(&obj)?.conn?;
+                    let identity = sh.hs.connection(conn)?.identity.as_ref()?;
+                    identity.name().map(str::to_owned)
+                });
+                Native::Str(name.unwrap_or_default().into_bytes())
             },
         );
     }

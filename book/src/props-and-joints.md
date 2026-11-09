@@ -155,7 +155,10 @@ Torque's.
 
 A prop's owner is the connection given to `propSpawn` (a client's command makes it the client's). The owner key is the
 connection's `propOwnerKey` field when the game sets one (its own identity for the player, compared as its whole text, at most 128
-bytes), else the connection itself. A prop outlives its owner's leaving for `$Pref::Props::OrphanSeconds` (120); a connection that
+bytes), else the player's account (the identity the auth provider verified, read by the server, not by script), else the connection itself, so a
+player signed in with a real provider gets their props back on any later connection with no key set, and an anonymous player is a new
+player each time. A game's key is never equal to an account, whatever its text. (An account signed in twice at once is one player: by default the server ends the older connection, see
+`$Pref::Server::OneSessionPerAccount`.) A prop outlives its owner's leaving for `$Pref::Props::OrphanSeconds` (120); a connection that
 comes back under the same `propOwnerKey` in time takes its props back (unless two connections there claim that key: then neither
 does), otherwise they go. Each prop also keeps the remote address its owner spawned it from: the players of one address share
 `$Pref::Props::MaxPerAddress` (256) props between them, orphans counted, so leaving and connecting again under a new key starts no

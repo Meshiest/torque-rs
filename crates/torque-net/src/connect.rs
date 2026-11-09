@@ -45,6 +45,124 @@ pub const MAX_SECTIONS: usize = 4;
 /// The longest auth ticket, in bytes.
 pub const MAX_TICKET_BYTES: usize = 256;
 
+/// The longest account id an [`Identity`] holds, in bytes.
+pub const MAX_IDENTITY_BYTES: usize = 128;
+
+/// The longest display name an [`Identity`] holds, in bytes.
+pub const MAX_IDENTITY_NAME_BYTES: usize = 64;
+
+/// Why an [`Identity`] could not be made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityError {
+    /// An empty id would make every player who gets one the same player.
+    Empty,
+    /// The id is longer than [`MAX_IDENTITY_BYTES`].
+    TooLong(usize),
+}
+
+impl fmt::Display for IdentityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IdentityError::Empty => f.write_str("an identity needs an id"),
+            IdentityError::TooLong(n) => write!(
+                f,
+                "an identity's id is at most {MAX_IDENTITY_BYTES} bytes, this one has {n}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for IdentityError {}
+
+/// Who an auth provider verified a client as: an opaque account id and, optionally, a name to show.
+///
+/// **Only a provider makes one**, from [`AuthProvider::verify`] on the server, so it is never read from text a client sent. Two
+/// identities are the same player exactly when their ids are equal (the name is for display and takes no part in equality,
+/// ordering or hashing). The id's bytes mean nothing to the engine; keep them opaque.
+///
+/// **What it promises depends on the provider.** A real provider (a platform account, a signed token) gives the same id to the
+/// same account on every connection, so what is kept under it (roles, props, an upload's resume) follows the player across a
+/// reconnect and from one session to the next. A connection with no verified identity (no provider, or one that does not tell
+/// accounts apart) has none: the server holds it by the connection itself, which is a new player each time it connects.
+#[derive(Clone)]
+pub struct Identity {
+    id: Box<[u8]>,
+    name: Option<Box<str>>,
+}
+
+impl Identity {
+    /// An identity with this account id and no name. The id is at least one byte and at most [`MAX_IDENTITY_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// An empty id or one over the limit.
+    pub fn new(id: impl AsRef<[u8]>) -> Result<Identity, IdentityError> {
+        let id = id.as_ref();
+        if id.is_empty() {
+            return Err(IdentityError::Empty);
+        }
+        if id.len() > MAX_IDENTITY_BYTES {
+            return Err(IdentityError::TooLong(id.len()));
+        }
+        Ok(Identity {
+            id: id.into(),
+            name: None,
+        })
+    }
+
+    /// The same identity with a name to show: control characters and the bidirectional overrides (which reorder the text around
+    /// them) are dropped, and the text is cut to [`MAX_IDENTITY_NAME_BYTES`] at a character boundary. A name with nothing left
+    /// sets none.
+    #[must_use]
+    pub fn with_name(mut self, name: &str) -> Identity {
+        let mut text = String::new();
+        let shown = |c: &char| {
+            !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        };
+        for c in name.chars().filter(shown) {
+            if text.len() + c.len_utf8() > MAX_IDENTITY_NAME_BYTES {
+                break;
+            }
+            text.push(c);
+        }
+        self.name = (!text.is_empty()).then(|| text.into_boxed_str());
+        self
+    }
+
+    /// The account id.
+    pub fn id(&self) -> &[u8] {
+        &self.id
+    }
+
+    /// The name to show, if the provider gave one. Not unique and not stable: a player may rename.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+}
+
+impl PartialEq for Identity {
+    fn eq(&self, other: &Identity) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Identity {}
+
+impl std::hash::Hash for Identity {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl fmt::Debug for Identity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Identity")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
 const TAG_MANIFEST: u8 = 1;
 const TAG_TICKET: u8 = 2;
 const TAG_MODS: u8 = 3;
@@ -280,14 +398,14 @@ impl fmt::Debug for BlockSource {
 
 /// A server's judgment of a connect request, made before its scripts see the request.
 pub trait ConnectGate: fmt::Debug + Send + Sync {
-    /// `Ok` accepts the request (the identity an auth provider verified, if any); `Err` refuses it with the reason the client
+    /// `Ok` accepts the request (the [`Identity`] an auth provider verified, if any); `Err` refuses it with the reason the client
     /// shows (cut at 255 bytes on the wire). `cx` is the connection the request belongs to ([`AuthContext`]).
     fn check(
         &self,
         from: SocketAddr,
         cx: &AuthContext,
         fields: &ConnectFields,
-    ) -> Result<Option<Vec<u8>>, Vec<u8>>;
+    ) -> Result<Option<Identity>, Vec<u8>>;
 
     /// Whether the request this gate accepted lists bulk channels and they are this server's own (the same names), so the
     /// server may write the channels' section for the connection and tell the client so in its accept. The built-in
@@ -324,9 +442,15 @@ pub trait AuthProvider: fmt::Debug + Send + Sync {
     fn ticket(&self, cx: &AuthContext) -> Result<Vec<u8>, String>;
 
     /// The server's check of a ticket from `from` for the connection `cx` names (an empty ticket when the client sent none): the
-    /// identity it stands for, or the reason it is refused (cut at 255 bytes on the wire). A slow check belongs to a provider
-    /// that answers from a cache; this runs inside the handshake.
-    fn verify(&self, from: SocketAddr, cx: &AuthContext, ticket: &[u8]) -> Result<Vec<u8>, String>;
+    /// [`Identity`] it stands for, or the reason it is refused (cut at 255 bytes on the wire). A slow check belongs to a
+    /// provider that answers from a cache; this runs inside the handshake.
+    ///
+    /// The identity must come from what the provider verified (a signature, a platform's answer), never from unchecked text in
+    /// the ticket, and its id must be the same for the same account on every connection: roles and ownership are kept under
+    /// it. A provider that cannot tell accounts apart should not be a provider: a connection with no identity is already held
+    /// by the connection.
+    fn verify(&self, from: SocketAddr, cx: &AuthContext, ticket: &[u8])
+    -> Result<Identity, String>;
 
     /// The canonical token a ticket stands for, which a server's replay check remembers (two encodings of one token are one
     /// ticket). The bytes themselves unless the provider's tickets have more than one encoding.
@@ -413,7 +537,7 @@ impl ConnectGate for ManifestGate {
         from: SocketAddr,
         cx: &AuthContext,
         fields: &ConnectFields,
-    ) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    ) -> Result<Option<Identity>, Vec<u8>> {
         let block = fields.block.as_ref();
         let bare;
         let theirs = match block.and_then(|b| b.manifest.as_ref()) {
@@ -454,7 +578,7 @@ impl ConnectGate for ManifestGate {
 /// that works elsewhere. A server that was never told its own address ([`AuthContext::server_unknown`]) refuses every ticket.
 ///
 /// It is still not for a public server: every server and client holds the secret itself, so anyone with a copy can make a ticket
-/// for any name.
+/// for any name. The identity is the name, as id and as display name, so one name is one player on every connection.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SharedSecret {
     key: [u8; 16],
@@ -503,7 +627,7 @@ impl AuthProvider for SharedSecret {
         _from: SocketAddr,
         cx: &AuthContext,
         ticket: &[u8],
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Identity, String> {
         let Some(split) = ticket.len().checked_sub(8) else {
             return Err("sign in to join this server".to_string());
         };
@@ -519,7 +643,8 @@ impl AuthProvider for SharedSecret {
         if name.is_empty() || diff != 0 {
             return Err("your sign-in was not accepted".to_string());
         }
-        Ok(name.to_vec())
+        let identity = Identity::new(name).map_err(|e| e.to_string())?;
+        Ok(identity.with_name(&String::from_utf8_lossy(name)))
     }
 }
 

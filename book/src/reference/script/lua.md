@@ -352,6 +352,8 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `obj:addRole(name)` *1; server*
 - `obj:delete(string reason=NULL)` *0 to 1; server and client*
 - `obj:getControlObject()` *none; server and client*
+- `obj:getIdentity()` *none; server*
+- `obj:getIdentityName()` *none; server*
 - `obj:getRoles()` *none; server*
 - `obj:grant(grant)` *1; server*
 - `obj:hasPermission(permission)` *1; server*

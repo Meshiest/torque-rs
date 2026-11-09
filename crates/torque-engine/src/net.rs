@@ -3,7 +3,8 @@
 //! [`ManifestGate`] a server judges clients with ([`Engine::connect_block`], [`Engine::connect_gate`]).
 //!
 //! An engine with no networked plugin, no registered name and no auth provider says nothing: it sends no block and judges no
-//! client, so its handshake is Torque's own. The moment one plugin has a [`net_version`](crate::Plugin::net_version), the
+//! client, so its handshake is Torque's own, and every player is anonymous (held by the connection, with no
+//! [`Identity`](torque_net::connect::Identity)). The moment one plugin has a [`net_version`](crate::Plugin::net_version), the
 //! server refuses a client without that plugin at that version ("server needs plugin torque.rope 2, you have 1") before any
 //! ghost or datablock is sent.
 //!
@@ -148,8 +149,10 @@ impl NetRegistry<'_> {
     /// Sets the auth provider: a client sends the ticket it makes ([`AuthProvider::ticket`]) with its connect request, and a
     /// server refuses a client whose ticket it does not verify ([`AuthProvider::verify`]), after the manifest check and before
     /// `onConnectRequest`. Both get the connection's [`AuthContext`] (the server's address and the challenge), and a provider
-    /// binds its tickets to it so a ticket cannot be replayed on another server or connection. One plugin sets it; a second
-    /// fails the build.
+    /// binds its tickets to it so a ticket cannot be replayed on another server or connection. What `verify` returns is the
+    /// connection's [`Identity`](torque_net::connect::Identity): the key its roles, props and uploads are kept under, the
+    /// same for the same account on every connection. Without a provider every connection is anonymous (its identity is the
+    /// connection, and no ticket is sent). One plugin sets it; a second fails the build.
     pub fn auth<A: AuthProvider + 'static>(&mut self, provider: A) -> &mut Self {
         self.engine.set_slot(Rc::new(AuthSlot(Arc::new(provider))));
         self

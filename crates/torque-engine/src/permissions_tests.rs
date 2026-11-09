@@ -295,3 +295,66 @@ fn a_view_answers_for_one_player() {
     assert!(view.has_permission("props.delete") && !view.has_permission("props.spawn"));
     assert!(!NoPermissions.has_permission("props.delete"));
 }
+
+#[test]
+fn a_connection_is_held_by_its_verified_account_else_by_itself() {
+    let ada = Identity::new("ada").unwrap().with_name("Ada");
+    assert_eq!(
+        SubjectKey::of(Some(&ada), 4),
+        SubjectKey::Identity(b"ada".to_vec())
+    );
+    // The same account on another connection is the same key; the name takes no part.
+    let again = Identity::new("ada").unwrap();
+    assert_eq!(
+        SubjectKey::of(Some(&again), 9),
+        SubjectKey::of(Some(&ada), 4)
+    );
+    // No identity: each connection is its own player.
+    assert_eq!(SubjectKey::of(None, 4), SubjectKey::Connection(4));
+    assert_ne!(SubjectKey::of(None, 4), SubjectKey::of(None, 5));
+}
+
+#[test]
+fn what_an_account_holds_survives_the_connection_and_what_a_connection_holds_does_not() {
+    let perms = Permissions::new(&engine()).unwrap();
+    let ada = |conn| SubjectKey::of(Some(&Identity::new("ada").unwrap()), conn);
+    let anon = |conn| SubjectKey::of(None, conn);
+    perms.add_role(&ada(1), "janitor").unwrap();
+    perms.add_role(&anon(1), "janitor").unwrap();
+    perms.forget_connection(1);
+    // Ada comes back on connection 2 and has her role; the anonymous player of connection 1 is gone for good.
+    assert!(perms.has_role(&ada(2), "janitor"));
+    assert!(!perms.has_role(&anon(1), "janitor"));
+    assert!(!perms.has_role(&anon(2), "janitor"));
+}
+
+#[test]
+fn a_key_reads_back_from_its_script_text_and_nothing_else_does() {
+    for key in [
+        SubjectKey::Identity(vec![0, 0xab, 0xff]),
+        SubjectKey::Identity(b"76561198000000000".to_vec()),
+        SubjectKey::Connection(0),
+        SubjectKey::Connection(u32::MAX),
+    ] {
+        assert_eq!(key.to_string().parse(), Ok(key.clone()), "{key}");
+    }
+    assert_eq!(SubjectKey::Identity(vec![0x61]).to_string(), "id:61");
+    assert_eq!(SubjectKey::Connection(7).to_string(), "conn:7");
+    for bad in [
+        "",
+        "id:",
+        "id:6",
+        "id:6G",
+        "id:+f",
+        "id:AB",
+        "id: 61",
+        "conn:",
+        "conn:+7",
+        "conn:-1",
+        "conn:99999999999",
+        "7",
+        "ID:61",
+    ] {
+        assert_eq!(bad.parse::<SubjectKey>(), Err(BadSubjectKey), "{bad:?}");
+    }
+}

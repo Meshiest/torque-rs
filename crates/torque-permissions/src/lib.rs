@@ -43,6 +43,10 @@
 //! - Roles are flat and never removed: a role is emptied by defining it with no grants, so a redefined name cannot hand its old
 //!   holders what they never had (`roles_are_flat_named_sets_the_game_defines`).
 //! - The parsers never panic and what parses parses again as itself (`the_parsers_never_panic_and_agree_with_themselves`).
+//! - Who holds a [`Subject`] is not decided here: the engine keys it by the auth provider's verified identity, else by the
+//!   connection (`torque-engine`'s `permissions::SubjectKey::of`), so a role granted under an identity survives a reconnect with
+//!   a provider that gives an account the same id each time, and one granted to an anonymous connection ends with it
+//!   (`what_an_account_holds_survives_the_connection_and_what_a_connection_holds_does_not` in torque-engine).
 //!
 //! Checks: `cargo test -p torque-permissions`, with the fuzz at a million rounds as
 //! `TORQUE_FUZZ_PERMISSIONS=1000000 cargo test -p torque-permissions`; then the engine's `cargo test -p torque-engine permissions`

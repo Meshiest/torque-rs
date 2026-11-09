@@ -745,7 +745,7 @@ impl net::connect::ConnectGate for AlwaysChannels {
         from: std::net::SocketAddr,
         cx: &net::connect::AuthContext,
         fields: &net::handshake::ConnectFields,
-    ) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    ) -> Result<Option<net::connect::Identity>, Vec<u8>> {
         self.0.check(from, cx, fields)
     }
 

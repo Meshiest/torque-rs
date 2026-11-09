@@ -8,6 +8,8 @@ GameConnection::activateGhosting 2..2 ()
 GameConnection::addRole 3..3 %client.addRole(name) - gives the player a role the game defined; 1 when it was new, 0 when held or refused
 GameConnection::delete 2..3 (string reason=NULL)
 GameConnection::getControlObject 2..2 ()
+GameConnection::getIdentity 2..2 %client.getIdentity() - who the server holds the player as: id:<hex> for a signed-in account (the raw account id, the same on every connection; do not show it to other players if the provider's ids are private), conn:<n> for an anonymous player (new on each connection); empty for no connection
+GameConnection::getIdentityName 2..2 %client.getIdentityName() - the display name the auth provider gave the player, or empty (not unique, not stable)
 GameConnection::getRoles 2..2 %client.getRoles() - the roles the player holds, as a word list
 GameConnection::grant 3..3 %client.grant(grant) - gives the player a permission or a trailing-wildcard grant (props.*); 1 when it was new, 0 when held or refused
 GameConnection::hasPermission 3..3 %client.hasPermission(permission) - whether any grant of the player or of their roles covers the permission

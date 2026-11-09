@@ -308,6 +308,223 @@ fn an_owner_leaves_comes_back_under_its_key_and_its_orphans_expire() {
     assert!(rig.run_until(200, |r| r.server_props().is_empty()));
 }
 
+/// Joins as the account `name` at `port` and runs until the connection is in play; the connection's object.
+fn join_as(rig: &mut Rig, files: &torque_app::GameFiles, name: &'static str, port: u16) -> String {
+    let n = rig.join(files, rig::signed_in_engine(files, name), port, &[]);
+    assert!(
+        rig.run_until(400, |r| r.peers[n].ghosts() >= 2),
+        "{name} joined: {:?}",
+        rig.peers[n].client.client_log
+    );
+    newest(rig)
+}
+
+#[test]
+fn a_signed_in_player_keeps_their_role_and_their_props_across_a_reconnect() {
+    let files = rig::files();
+    let globals = [("$Pref::Props::OrphanSeconds", "30")];
+    let mut rig = Rig::with_engine(&files, &globals, rig::signed_in_engine(&files, ""));
+    rig.eval("definePermissionRole(\"builder\", \"props.*\");");
+    let first = join_as(&mut rig, &files, "ada", 50_041);
+    assert_eq!(
+        rig.eval(&format!("return {first}.getIdentity();")),
+        "id:616461"
+    );
+    assert_eq!(
+        rig.eval(&format!("return {first}.getIdentityName();")),
+        "ada"
+    );
+    rig.eval(&format!("{first}.addRole(\"builder\");"));
+    for k in 0..2 {
+        spawn(
+            &mut rig,
+            &format!("return propSpawn(Crate, \"{} 4 1\", {first});", k * 2),
+        );
+    }
+    let prop = rig.eval("return MissionCleanup.getObject(MissionCleanup.getCount() - 1);");
+    assert_eq!(rig.eval(&format!("return propCount({first});")), "2");
+    // Ada leaves: her props are orphans, and nothing but her account will take them back.
+    rig.peers[0].client.call("disconnect", &[]).unwrap();
+    rig.run(10);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), "0");
+    // Bob is another account: he holds no role and gets none of her props.
+    let bob = join_as(&mut rig, &files, "bob", 50_042);
+    assert_eq!(
+        rig.eval(&format!("return {bob}.getIdentity();")),
+        "id:626f62"
+    );
+    assert_eq!(
+        rig.eval(&format!("return {bob}.hasRole(\"builder\");")),
+        "0"
+    );
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), "0");
+    assert_eq!(rig.eval(&format!("return propCount({bob});")), "0");
+    // Ada returns on a new connection: the same identity, her role and her props, with no `propOwnerKey` anywhere.
+    let back = join_as(&mut rig, &files, "ada", 50_043);
+    assert_ne!(back, first, "a new connection");
+    assert_eq!(
+        rig.eval(&format!("return {back}.getIdentity();")),
+        "id:616461"
+    );
+    assert_eq!(
+        rig.eval(&format!("return {back}.hasRole(\"builder\");")),
+        "1"
+    );
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), back);
+    assert_eq!(rig.eval(&format!("return propCount({back});")), "2");
+    assert_eq!(rig.eval(&format!("return propCount({bob});")), "0");
+}
+
+#[test]
+fn a_games_own_owner_key_still_wins_over_the_account() {
+    let files = rig::files();
+    let globals = [("$Pref::Props::OrphanSeconds", "30")];
+    let mut rig = Rig::with_engine(&files, &globals, rig::signed_in_engine(&files, ""));
+    let first = join_as(&mut rig, &files, "ada", 50_051);
+    rig.eval(&format!("{first}.propOwnerKey = \"team\";"));
+    spawn(
+        &mut rig,
+        &format!("return propSpawn(Crate, \"0 4 1\", {first});"),
+    );
+    let prop = rig.eval("return MissionCleanup.getObject(MissionCleanup.getCount() - 1);");
+    rig.peers[0].client.call("disconnect", &[]).unwrap();
+    rig.run(10);
+    // Ada's account, with no game key, is not the owner now: the prop is held for "team".
+    let again = join_as(&mut rig, &files, "ada", 50_052);
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), "0");
+    // Another account the game gives the same key takes it.
+    let bob = join_as(&mut rig, &files, "bob", 50_053);
+    rig.eval(&format!("{bob}.propOwnerKey = \"team\";"));
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), bob);
+    assert_ne!(again, bob);
+}
+
+/// Ada joins and spawns a prop, then `script` runs on the server and Ada leaves. Returns the rig, its files and the prop.
+fn ada_with_a_prop(script: &str) -> (Rig, torque_app::GameFiles, String) {
+    let files = rig::files();
+    let globals = [("$Pref::Props::OrphanSeconds", "30")];
+    let mut rig = Rig::with_engine(&files, &globals, rig::signed_in_engine(&files, ""));
+    let first = join_as(&mut rig, &files, "ada", 50_071);
+    spawn(
+        &mut rig,
+        &format!("return propSpawn(Crate, \"0 4 1\", {first});"),
+    );
+    let prop = rig.eval("return MissionCleanup.getObject(MissionCleanup.getCount() - 1);");
+    let _ = rig.server.vm_mut().eval(script.as_bytes());
+    rig.peers[0].client.call("disconnect", &[]).unwrap();
+    rig.run(10);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), "0");
+    (rig, files, prop)
+}
+
+#[test]
+fn a_script_that_redefines_getidentity_changes_no_ones_props() {
+    // Whoever the script says Bob is, Bob is his own account: he gets none of Ada's props, and she gets them back.
+    let (mut rig, files, prop) =
+        ada_with_a_prop("function GameConnection::getIdentity(%this) { return \"id:616461\"; }");
+    let bob = join_as(&mut rig, &files, "bob", 50_072);
+    assert_eq!(
+        rig.eval(&format!("return {bob}.getIdentity();")),
+        "id:616461"
+    );
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), "0");
+    assert_eq!(rig.eval(&format!("return propCount({bob});")), "0");
+    // And the other way: a script that gives Ada a different identity does not lose her her props.
+    rig.eval("function GameConnection::getIdentity(%this) { return \"id:626f62\"; }");
+    let back = join_as(&mut rig, &files, "ada", 50_073);
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), back);
+    assert_eq!(rig.eval(&format!("return propCount({back});")), "1");
+}
+
+#[test]
+fn an_error_in_a_script_getidentity_cannot_orphan_a_players_props() {
+    let (mut rig, files, prop) = ada_with_a_prop(
+        "function GameConnection::getIdentity(%this) { return %this.getIdentity(); }",
+    );
+    let back = join_as(&mut rig, &files, "ada", 50_074);
+    assert!(
+        rig.server
+            .vm_mut()
+            .eval(format!("return {back}.getIdentity();").as_bytes())
+            .is_err(),
+        "the script method fails"
+    );
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), back);
+    assert_eq!(rig.eval(&format!("return propCount({back});")), "1");
+}
+
+#[test]
+fn an_account_signed_in_twice_has_one_live_session_unless_the_game_allows_more() {
+    for (several, port) in [(false, 50_081), (true, 50_083)] {
+        let files = rig::files();
+        let flag = if several { "0" } else { "1" };
+        let globals = [
+            ("$Pref::Props::OrphanSeconds", "30"),
+            ("$Pref::Server::OneSessionPerAccount", flag),
+        ];
+        let mut rig = Rig::with_engine(&files, &globals, rig::signed_in_engine(&files, ""));
+        let first = join_as(&mut rig, &files, "ada", port);
+        spawn(
+            &mut rig,
+            &format!("return propSpawn(Crate, \"0 4 1\", {first});"),
+        );
+        let prop = rig.eval("return MissionCleanup.getObject(MissionCleanup.getCount() - 1);");
+        let second = join_as(&mut rig, &files, "ada", port + 1);
+        rig.run(5);
+        let live = rig.eval("return ClientGroup.getCount();");
+        let owner = rig.eval(&format!("return propGetOwner({prop});"));
+        if several {
+            assert_eq!((live.as_str(), owner.as_str()), ("2", first.as_str()));
+        } else {
+            // The older session is gone, and the prop follows the live one.
+            assert_eq!(live, "1");
+            assert_eq!(owner, second);
+            assert_eq!(rig.eval(&format!("return propCount({second});")), "1");
+        }
+    }
+}
+
+#[test]
+fn anonymous_players_are_new_players_on_every_connection() {
+    let (mut rig, files) = clients(1, &[("$Pref::Props::OrphanSeconds", "30")], &[]);
+    rig.eval("definePermissionRole(\"builder\", \"props.*\");");
+    let first = newest(&mut rig);
+    let key = rig.eval(&format!("return {first}.getIdentity();"));
+    assert!(key.starts_with("conn:"), "{key}");
+    assert_eq!(rig.eval(&format!("return {first}.getIdentityName();")), "");
+    rig.eval(&format!("{first}.addRole(\"builder\");"));
+    spawn(
+        &mut rig,
+        &format!("return propSpawn(Crate, \"0 4 1\", {first});"),
+    );
+    let prop = rig.eval("return MissionCleanup.getObject(MissionCleanup.getCount() - 1);");
+    rig.peers[0].client.call("disconnect", &[]).unwrap();
+    rig.run(10);
+    // The same client, joining again: another connection, so another identity, no role and no claim on the old props.
+    rig.join(&files, rig::engine(&files, true), 50_061, &[]);
+    assert!(rig.run_until(200, |r| r.peers[1].ghosts() >= 2));
+    let back = newest(&mut rig);
+    let again = rig.eval(&format!("return {back}.getIdentity();"));
+    assert!(
+        again.starts_with("conn:") && again != key,
+        "{key} then {again}"
+    );
+    assert_eq!(
+        rig.eval(&format!("return {back}.hasRole(\"builder\");")),
+        "0"
+    );
+    rig.run(5);
+    assert_eq!(rig.eval(&format!("return propGetOwner({prop});")), "0");
+    assert_eq!(rig.eval(&format!("return propCount({back});")), "0");
+}
+
 #[test]
 fn reconnecting_from_one_address_does_not_start_a_new_quota() {
     let (mut rig, files) = clients(

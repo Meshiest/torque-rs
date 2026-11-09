@@ -244,7 +244,7 @@ fn the_ticket_is_checked_after_the_manifest() {
             &cx(),
             &with(server_manifest(), Some(signed.clone()))
         ),
-        Ok(Some(b"ada".to_vec()))
+        Ok(Some(Identity::new("ada").unwrap()))
     );
     // A bad build is refused for its build even with a good ticket.
     let reason = gate
@@ -293,7 +293,7 @@ fn a_ticket_is_good_for_the_server_and_the_connection_it_was_made_for() {
         };
         gate.check(from(), at, &fields(Some(block)))
     };
-    assert_eq!(judged(&cx()), Ok(Some(b"ada".to_vec())));
+    assert_eq!(judged(&cx()), Ok(Some(Identity::new("ada").unwrap())));
     let refused = Err(b"your sign-in was not accepted".to_vec());
     // Another server (another host, or the same host on another socket), another challenge, another sequence.
     let other = |change: fn(&mut AuthContext)| {
@@ -433,4 +433,40 @@ fn the_gate_asks_only_that_a_client_can_take_the_mods_a_server_requires() {
         Err(b"server requires mods, and your client cannot download them".to_vec())
     );
     assert_eq!(gate.mods_support(&client(None)), None);
+}
+
+#[test]
+fn an_identity_is_its_id_and_the_name_is_only_for_display() {
+    let a = Identity::new("ada").unwrap().with_name("Ada L.");
+    let b = Identity::new("ada").unwrap().with_name("someone else");
+    assert_eq!(a, b);
+    assert_ne!(a, Identity::new("adb").unwrap());
+    assert_eq!(a.id(), b"ada");
+    assert_eq!(a.name(), Some("Ada L."));
+    assert_eq!(Identity::new("ada").unwrap().name(), None);
+}
+
+#[test]
+fn an_identity_needs_an_id_of_a_sane_size() {
+    assert_eq!(Identity::new(""), Err(IdentityError::Empty));
+    assert!(Identity::new(vec![1; MAX_IDENTITY_BYTES]).is_ok());
+    assert_eq!(
+        Identity::new(vec![1; MAX_IDENTITY_BYTES + 1]),
+        Err(IdentityError::TooLong(MAX_IDENTITY_BYTES + 1))
+    );
+}
+
+#[test]
+fn a_display_name_loses_control_characters_and_is_cut_on_a_character() {
+    let id = || Identity::new("x").unwrap();
+    assert_eq!(
+        id().with_name("a\nb\u{0}c\u{202e}d\u{2066}").name(),
+        Some("abcd")
+    );
+    assert_eq!(id().with_name("\n\t").name(), None);
+    let long = "é".repeat(MAX_IDENTITY_NAME_BYTES);
+    let cut = id().with_name(&long);
+    let name = cut.name().unwrap();
+    assert_eq!(name.len(), MAX_IDENTITY_NAME_BYTES);
+    assert!(name.chars().all(|c| c == 'é'));
 }

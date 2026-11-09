@@ -4,7 +4,7 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-305 entries in 34 classes.
+307 entries in 34 classes.
 
 | Class | Entries |
 |---|---|
@@ -12,7 +12,7 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 | [Camera](#camera) | 3 |
 | [FlyingVehicle](#flyingvehicle) | 1 |
 | [GameBase](#gamebase) | 2 |
-| [GameConnection](#gameconnection) | 14 |
+| [GameConnection](#gameconnection) | 16 |
 | [GuiBitmapButtonCtrl](#guibitmapbuttonctrl) | 3 |
 | [GuiBitmapCtrl](#guibitmapctrl) | 4 |
 | [GuiButtonBaseCtrl](#guibuttonbasectrl) | 3 |
@@ -101,6 +101,10 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: 0 to 1; server and client*
 - `obj.getControlObject()`
   *arguments: none; server and client*
+- `%client.getIdentity()` - who the server holds the player as: id:\<hex\> for a signed-in account (the raw account id, the same on every connection; do not show it to other players if the provider's ids are private), conn:\<n\> for an anonymous player (new on each connection); empty for no connection
+  *arguments: none; server*
+- `%client.getIdentityName()` - the display name the auth provider gave the player, or empty (not unique, not stable)
+  *arguments: none; server*
 - `%client.getRoles()` - the roles the player holds, as a word list
   *arguments: none; server*
 - `%client.grant(grant)` - gives the player a permission or a trailing-wildcard grant (props.\*); 1 when it was new, 0 when held or refused

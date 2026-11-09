@@ -47,6 +47,7 @@ use super::codecs::ServerPrefs;
 use torque_net::NetError;
 use torque_net::bits::BitReader;
 use torque_net::cap::NET_MAX_DATAGRAM;
+use torque_net::connect::Identity;
 use torque_net::handshake::{
     ConnId, Decision, Finished, Handled, PendingRequest, RateWindow, TimeoutEvent, peek_type,
 };
@@ -615,6 +616,9 @@ pub(super) fn handle_request<G: NetGame>(
             if let Some(old) = replaced {
                 drop_conn(vm, shared, old, None, DeleteMode::Immediate);
             }
+            if let Some(identity) = &request.identity {
+                end_older_sessions(vm, shared, conn, identity);
+            }
             // The oldest pending connection made room for this one: it goes as one whose pending time ran out does.
             if let Some(old) = evicted {
                 drop_conn(vm, shared, old, Some(b"TimedOut"), DeleteMode::Immediate);
@@ -677,6 +681,51 @@ pub(super) fn handle_request<G: NetGame>(
                 send_reply(shared, request.addr, &reply);
             }
         }
+    }
+}
+
+/// The reason an account's older connection is dropped with when the same account connects again.
+pub const SIGNED_IN_ELSEWHERE: &[u8] = b"You signed in from another place.";
+
+/// Whether an account may have one connection at a time: `$Pref::Server::OneSessionPerAccount`, on when unset.
+fn one_session_per_account(vm: &Vm) -> bool {
+    global_text(vm, "$Pref::Server::OneSessionPerAccount").is_none_or(|text| atob(&text))
+}
+
+/// The same account connected again as `newest`: its older connections go, with [`SIGNED_IN_ELSEWHERE`], before `onConnect` of
+/// the new one runs, so the roles, props and uploads the account holds follow the live session. A game that allows several
+/// sessions per account turns this off with `$Pref::Server::OneSessionPerAccount = 0`.
+fn end_older_sessions<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Shared<G>,
+    newest: ConnId,
+    identity: &Identity,
+) {
+    if !one_session_per_account(vm) {
+        return;
+    }
+    let mut older: Vec<ConnId> = {
+        let sh = shared.borrow();
+        sh.by_conn
+            .keys()
+            .copied()
+            .filter(|&c| c != newest)
+            .filter(|&c| {
+                sh.hs
+                    .connection(c)
+                    .is_some_and(|k| k.identity.as_ref() == Some(identity))
+            })
+            .collect()
+    };
+    older.sort_unstable_by_key(|c| c.0);
+    for old in older {
+        drop_conn(
+            vm,
+            shared,
+            old,
+            Some(SIGNED_IN_ELSEWHERE),
+            DeleteMode::Immediate,
+        );
     }
 }
 

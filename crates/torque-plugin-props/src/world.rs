@@ -106,20 +106,34 @@ impl PropLimits {
 pub const MAX_OWNER_KEY: usize = 128;
 
 /// What stands for a player who owns props: the game's own identity for them (its full text, at most [`MAX_OWNER_KEY`]
-/// bytes, compared whole), or the connection when the game gives none.
+/// bytes, compared whole), the account id the auth provider verified for the connection, or the connection itself.
+///
+/// The three never equal one another, whatever bytes they hold: a game's text cannot name an account.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OwnerKey {
+    /// The game's own text for the player (`propOwnerKey`).
     Named(Rc<[u8]>),
+    /// The account id of the connection's verified identity: the same player on every connection.
+    Identity(Rc<[u8]>),
+    /// The connection (an anonymous player), by its object id.
     Connection(u32),
 }
 
 impl OwnerKey {
     /// The key of a game's text (cut to [`MAX_OWNER_KEY`] bytes), or of the connection when the text is empty.
     pub fn new(text: &[u8], conn: u32) -> OwnerKey {
-        if text.is_empty() {
-            OwnerKey::Connection(conn)
-        } else {
+        OwnerKey::resolve(text, None, conn)
+    }
+
+    /// The key of a connection: the game's text when it set one (it always wins), else the verified account id, else the
+    /// connection.
+    pub fn resolve(text: &[u8], identity: Option<&[u8]>, conn: u32) -> OwnerKey {
+        if !text.is_empty() {
             OwnerKey::Named(Rc::from(&text[..text.len().min(MAX_OWNER_KEY)]))
+        } else if let Some(id) = identity {
+            OwnerKey::Identity(Rc::from(id))
+        } else {
+            OwnerKey::Connection(conn)
         }
     }
 }

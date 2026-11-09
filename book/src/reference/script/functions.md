@@ -261,7 +261,7 @@ Console functions, by namespace. Functions of the global namespace are called as
 - `getParentError()` - why the last setParent or setLocalTransform was refused: self, cycle, depth, children, subtree, total, notFinite,
   *arguments: none; server; needs `torque.hierarchy`*
 
-  outOfRange, badNode, unknown, notParented, mounted, noShape, removing or class; "" after a success
+  outOfRange, badNode, unknown, notParented, mounted, noShape, removing, class or joints; "" after a success
 
 - `getPredictor()` - The id of the predictor the client's control object runs with.
   *arguments: none; client; needs a plugin with a predictor or a prediction part*

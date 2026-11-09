@@ -43,7 +43,7 @@ use std::sync::Arc;
 use torque_engine::ProtocolKind;
 use torque_net::NetError;
 use torque_net::bits::BitWriter;
-use torque_net::connect::{AuthContext, ConnectGate};
+use torque_net::connect::{AuthContext, ConnectGate, Identity};
 use torque_net::engine::bridge::{fields_of, ticket_context};
 use torque_net::engine::{
     Accept, Arrival, CloseReason, Connect, DEFAULT_MAX_PACKET, Event, Link, LinkFacts, LinkKind,
@@ -1104,11 +1104,11 @@ pub(super) fn finish<G: NetGame>(
     // The ticket is spent now that the scripts accepted: past its identity's share or the server's for this second, the
     // connection is refused instead.
     if let Some(checked) = host.checked.take() {
-        let identity = request.identity.clone().unwrap_or_default();
+        let identity = request.identity.as_ref().map_or(&[][..], Identity::id);
         if let Some(Judged::Refused(code, text)) =
             refusal(
                 host.tickets
-                    .record(&checked.token, checked.ip, &identity, now),
+                    .record(&checked.token, checked.ip, identity, now),
             )
         {
             return refuse(sh, code, &text);

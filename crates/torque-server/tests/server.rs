@@ -795,9 +795,158 @@ fn a_mismatched_client_is_refused_before_the_scripts_see_it_and_before_any_ghost
         .and_then(|r| r.conn)
         .expect("accepted");
     assert_eq!(
-        sh.hs.connection(conn).and_then(|c| c.identity.as_deref()),
-        Some(&b"ada"[..]),
+        sh.hs
+            .connection(conn)
+            .and_then(|c| c.identity.as_ref())
+            .map(|i| (i.id(), i.name())),
+        Some((&b"ada"[..], Some("ada"))),
         "the verified identity is kept with the connection"
+    );
+}
+
+/// The identity lines the script of [`identity_script`] printed, in order: what the server called each connection that joined.
+fn identities(s: &NetServer) -> Vec<String> {
+    lines(s)
+        .into_iter()
+        .filter_map(|l| l.strip_prefix("who ").map(str::to_owned))
+        .collect()
+}
+
+const IDENTITY_SCRIPT: &[u8] = b"new SimGroup(ClientGroup);
+    function GameConnection::onConnectRequest(%c, %a) { return \"\"; }
+    function GameConnection::onConnect(%c) { echo(\"who \" @ %c.getIdentity() @ \"|\" @ %c.getIdentityName()); }
+    function GameConnection::onDrop(%c, %reason) { echo(\"drop \" @ %c.getIdentityName() @ \": \" @ %reason); }";
+
+/// A client that signs in as `name` under `key` and also says `claim` in every field it controls (its connect arguments).
+fn claiming_client(key: [u8; 16], name: &'static str, claim: &str) -> Client {
+    let args = vec![claim.as_bytes().to_vec()];
+    let mut client = Client::new(9, ConnectFields::standard(claim.as_bytes(), args));
+    client.set_block_source(
+        SERVER_ADDR,
+        BlockSource::new(move |cx| {
+            Ok(Some(ConnectBlock {
+                manifest: Some(rope_manifest(2)),
+                ticket: Some(SharedSecret::new(key, name).ticket(cx)?),
+                ..Default::default()
+            }))
+        }),
+    );
+    client
+}
+
+#[test]
+fn a_signed_in_player_is_the_same_identity_on_every_connection_whatever_the_client_claims() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(IDENTITY_SCRIPT).unwrap();
+    let gate =
+        ManifestGate::new(rope_manifest(2)).with_auth(Arc::new(SharedSecret::new([4; 16], "")));
+    shared.borrow_mut().set_connect_gate(gate);
+    shared.borrow_mut().set_public_address(Some(SERVER_ADDR));
+    // Ada joins twice (two connections, as after a reconnect) and Bob once; Bob's arguments and password name Ada's identity.
+    let ada = "id:616461";
+    for (port, name, claim) in [
+        (50_021, "ada", ""),
+        (50_022, "ada", ""),
+        (50_023, "bob", ada),
+    ] {
+        // Each from its own address: a pending connection holds its source's place until its first game packet.
+        let addr = SocketAddr::from(([127, 0, 0, (port % 100) as u8], port));
+        let event = handshake_as(&mut s, &end, addr, claiming_client([4; 16], name, claim));
+        assert!(
+            matches!(event, ClientEvent::Accepted(_)),
+            "{port}: {event:?}"
+        );
+    }
+    assert_eq!(
+        identities(&s),
+        ["id:616461|ada", "id:616461|ada", "id:626f62|bob"]
+    );
+    // A client that signs with the wrong secret cannot be Ada by claiming it: it is refused and no connection is made.
+    let addr = SocketAddr::from(([127, 0, 0, 24], 50_024));
+    let event = handshake_as(&mut s, &end, addr, claiming_client([5; 16], "ada", ada));
+    assert!(matches!(event, ClientEvent::Rejected(_)), "{event:?}");
+    assert_eq!(identities(&s).len(), 3);
+}
+
+/// Joins `names` in order, each from its own address, and returns the `drop` lines the script printed.
+fn join_accounts(s: &mut NetServer, end: &MemoryEnd, names: &[&'static str]) -> Vec<String> {
+    for (n, name) in (0u8..).zip(names) {
+        let addr = SocketAddr::from(([127, 0, 1, n + 1], 50_100 + u16::from(n)));
+        let event = handshake_as(s, end, addr, claiming_client([4; 16], name, ""));
+        assert!(
+            matches!(event, ClientEvent::Accepted(_)),
+            "{name}: {event:?}"
+        );
+    }
+    lines(s)
+        .into_iter()
+        .filter(|l| l.starts_with("drop "))
+        .collect()
+}
+
+fn account_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(IDENTITY_SCRIPT).unwrap();
+    let gate =
+        ManifestGate::new(rope_manifest(2)).with_auth(Arc::new(SharedSecret::new([4; 16], "")));
+    shared.borrow_mut().set_connect_gate(gate);
+    shared.borrow_mut().set_public_address(Some(SERVER_ADDR));
+    (s, shared, end)
+}
+
+#[test]
+fn an_account_that_connects_again_ends_its_older_connection_by_default() {
+    let (mut s, shared, end) = account_server();
+    let drops = join_accounts(&mut s, &end, &["ada", "bob", "ada"]);
+    assert_eq!(drops, ["drop ada: You signed in from another place."]);
+    let sh = shared.borrow();
+    assert_eq!(sh.hs.len(), 2, "bob and the newer ada");
+    let held: Vec<_> = sh
+        .by_conn
+        .keys()
+        .filter_map(|&c| sh.hs.connection(c))
+        .filter_map(|c| c.identity.as_ref().and_then(|i| i.name()))
+        .collect();
+    assert_eq!(held.len(), 2);
+    assert!(held.contains(&"ada") && held.contains(&"bob"));
+}
+
+#[test]
+fn a_game_can_allow_several_sessions_per_account() {
+    let (mut s, shared, end) = account_server();
+    s.vm.set_global("$Pref::Server::OneSessionPerAccount", "0");
+    let drops = join_accounts(&mut s, &end, &["ada", "ada", "ada"]);
+    assert!(drops.is_empty(), "{drops:?}");
+    assert_eq!(shared.borrow().hs.len(), 3);
+}
+
+#[test]
+fn an_anonymous_connection_is_its_own_player_and_no_ticket_makes_it_anyone_else() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(IDENTITY_SCRIPT).unwrap();
+    // A gate with no auth provider: the ticket a client sends is not read.
+    shared
+        .borrow_mut()
+        .set_connect_gate(ManifestGate::new(rope_manifest(2)));
+    for port in [50_031, 50_032] {
+        let addr = SocketAddr::from(([127, 0, 0, (port % 100) as u8], port));
+        let client = claiming_client([4; 16], "ada", "id:616461");
+        let event = handshake_as(&mut s, &end, addr, client);
+        assert!(matches!(event, ClientEvent::Accepted(_)), "{event:?}");
+    }
+    let who = identities(&s);
+    assert_eq!(who.len(), 2);
+    for line in &who {
+        let key = line.strip_suffix('|').and_then(|k| k.strip_prefix("conn:"));
+        assert!(key.is_some_and(|n| n.parse::<u32>().is_ok()), "{line}");
+    }
+    assert_ne!(who[0], who[1], "one anonymous connection is not the next");
+    let sh = shared.borrow();
+    assert!(
+        sh.conns
+            .values()
+            .filter_map(|r| r.conn)
+            .all(|c| { sh.hs.connection(c).is_some_and(|c| c.identity.is_none()) })
     );
 }
 

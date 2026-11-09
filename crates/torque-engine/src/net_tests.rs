@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 
-use torque_net::connect::{AuthContext, ConnectGate, SharedSecret};
+use torque_net::connect::{AuthContext, ConnectGate, Identity, SharedSecret};
 use torque_net::handshake::ConnectFields;
 
 use super::*;
@@ -188,7 +188,7 @@ fn the_auth_provider_gives_tickets_and_verifies_them() {
     let gate = engine.connect_gate(&HandshakeProfile::default()).unwrap();
     assert_eq!(
         gate.check(from(), &cx(), &fields(Some(block.clone()))),
-        Ok(Some(b"ada".to_vec()))
+        Ok(Some(Identity::new("ada").unwrap()))
     );
     // The same block on another server or another connection is refused.
     let refused = Err(b"your sign-in was not accepted".to_vec());

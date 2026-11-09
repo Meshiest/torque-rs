@@ -211,6 +211,14 @@ different.
   changes every two minutes (the current and the previous one verify), so a sniffed connect request stops working for
   anyone after two to four minutes; within that window an on-path attacker who forges the client's address can still replay
   it, which `AuthContext` documents.
+- `torque-net::connect::Identity`: who an auth provider verified a client as, an opaque account id (never empty, at most 128
+  bytes) and an optional display name that takes no part in equality. `AuthProvider::verify` and `ConnectGate::check` return
+  it, and it is kept on the connection (`Connection::identity`). It is made only on the server from the provider's check, never
+  from text a client sends; a connection with none is anonymous and held by the connection itself, a new player each time.
+  A real provider gives the same account the same id on every connection, so roles (`SubjectKey::of`), a prop's owner key and an
+  upload's resume follow a player across a reconnect; a game's `propOwnerKey` still wins. An account that connects twice ends
+  its older connection by default (`$Pref::Server::OneSessionPerAccount = 0` allows several). Script: `%client.getIdentity()`
+  (`id:<hex>` or `conn:<n>`) and `%client.getIdentityName()`. Nothing on the wire changes.
 - A network protocol slot: a game speaks one protocol, set by one plugin (`TgeProtocolPlugin`, `torque.net.tge`, in
   `DefaultPlugins` and `MinimalPlugins`; a second setter fails the build and names both) or by `[net] protocol` in `game.toml`.
   Torque's own protocol is the only one so far and its bytes are unchanged. `Engine::protocol` reads the slot, and the server

@@ -12,7 +12,8 @@ use torque_app::config::{EngineConfig, GameConfig};
 use torque_app::plugins::DefaultPlugins;
 use torque_app::server::{GameServer, Listen};
 use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
-use torque_engine::{Engine, EngineBuilder};
+use torque_engine::{Engine, EngineBuilder, Plugin};
+use torque_net::connect::SharedSecret;
 use torque_plugin_props::{ClientProps, PropsPlugin, ServerProps};
 
 pub const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
@@ -47,6 +48,32 @@ pub fn engine(files: &GameFiles, props: bool) -> Engine {
     if props {
         builder.add_plugins(PropsPlugin);
     }
+    builder.build().expect("the engine builds")
+}
+
+/// The secret the test accounts sign in under.
+const SECRET: [u8; 16] = [3; 16];
+
+/// Sets the auth provider: tickets signed under [`SECRET`] for `name` (a server's half takes an empty name).
+#[derive(torque_engine::PluginId)]
+#[plugin(id = "test.sign-in")]
+struct SignIn(&'static str);
+
+impl Plugin for SignIn {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.net().auth(SharedSecret::new(SECRET, self.0));
+    }
+}
+
+/// [`engine`] (with props) and a real auth provider: a client that joins with it is the account `name`, whatever its
+/// connection, and a server (empty `name`) holds every account to the same secret.
+pub fn signed_in_engine(files: &GameFiles, name: &'static str) -> Engine {
+    let config = GameConfig::load(files).expect("game.toml");
+    let mut builder = EngineBuilder::new();
+    builder
+        .add_plugins(DefaultPlugins)
+        .config(&config)
+        .add_plugins((PropsPlugin, SignIn(name)));
     builder.build().expect("the engine builds")
 }
 

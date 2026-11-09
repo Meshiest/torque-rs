@@ -69,6 +69,17 @@
 //!
 //! # Maintaining
 //!
+//! **An owner key is the game's text, else the account, else the connection** ([`world::OwnerKey`], `server::owner_key`): a
+//! connection's `propOwnerKey` field wins when set; else the account id of the identity the auth provider verified
+//! (asked of the host in Rust through `ConnectionSubjects`, never through the script method `getIdentity`, which a game may
+//! redefine: `a_script_that_redefines_getidentity_changes_no_ones_props`), so a player who signs in again gets their props
+//! back; else the connection (an anonymous player is a new player each time). An account that connects twice at once is one
+//! player: the server ends the older session by default (`$Pref::Server::OneSessionPerAccount`), and with that off both
+//! connections claim the key, so neither gets orphans back. The three are different variants, so a game's text can never equal an account
+//! (`tests/net.rs`: `a_signed_in_player_keeps_their_role_and_their_props_across_a_reconnect`,
+//! `a_games_own_owner_key_still_wins_over_the_account`, `anonymous_players_are_new_players_on_every_connection`). The
+//! per-address caps are unchanged and count orphans whatever the key.
+//!
 //! **Modules.** [`natives`]: the server's console functions and the placement checks. [`tick`]: the server's tick hook (owners,
 //! statics, pushes, the step, the writeback). [`world`]: the physics world and every rule about props, with no script engine.
 //! [`quant`]: the wire's precision. [`records`], [`data`], [`client`]: what goes on the net (the ghost and datablock records) and

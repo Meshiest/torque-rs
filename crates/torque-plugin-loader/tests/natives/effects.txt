@@ -102,6 +102,8 @@ GameConnection::activateGhosting -
 GameConnection::addRole permissions
 GameConnection::delete -
 GameConnection::getControlObject -
+GameConnection::getIdentity -
+GameConnection::getIdentityName -
 GameConnection::getRoles -
 GameConnection::grant permissions
 GameConnection::hasPermission -

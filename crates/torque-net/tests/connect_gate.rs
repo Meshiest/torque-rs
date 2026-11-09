@@ -9,7 +9,7 @@ use std::sync::Arc;
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::client::{Client, ClientEvent};
 use torque_net::connect::{
-    AuthContext, AuthProvider, BLOCK_MAGIC, BlockSource, ConnectBlock, MAX_TICKET_BYTES,
+    AuthContext, AuthProvider, BLOCK_MAGIC, BlockSource, ConnectBlock, Identity, MAX_TICKET_BYTES,
     ManifestGate, SharedSecret,
 };
 use torque_net::handshake::{
@@ -405,14 +405,14 @@ fn the_ticket_is_verified_before_the_host_sees_the_request() {
     let Handled::Request(request) = server.handle_datagram(&t, from(), &connect, 0) else {
         panic!("a verified request reaches the host")
     };
-    assert_eq!(request.identity.as_deref(), Some(&b"ada"[..]));
+    assert_eq!(request.identity, Some(Identity::new("ada").unwrap()));
     let Finished::Accepted { conn, .. } = server.finish_request(&t, *request, Decision::Accept, 0)
     else {
         panic!("accepted")
     };
     assert_eq!(
-        server.connection(conn).unwrap().identity.as_deref(),
-        Some(&b"ada"[..])
+        server.connection(conn).unwrap().identity,
+        Some(Identity::new("ada").unwrap())
     );
     // A forged ticket, and no ticket, are refused with the provider's reason.
     let forged = refused(join_client(
@@ -547,9 +547,9 @@ impl AuthProvider for Counting {
         _from: SocketAddr,
         _cx: &AuthContext,
         _ticket: &[u8],
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Identity, String> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(b"who".to_vec())
+        Ok(Identity::new("who").unwrap())
     }
 }
 
@@ -561,7 +561,12 @@ impl AuthProvider for Shared {
         self.0.ticket(cx)
     }
 
-    fn verify(&self, from: SocketAddr, cx: &AuthContext, ticket: &[u8]) -> Result<Vec<u8>, String> {
+    fn verify(
+        &self,
+        from: SocketAddr,
+        cx: &AuthContext,
+        ticket: &[u8],
+    ) -> Result<Identity, String> {
         self.0.verify(from, cx, ticket)
     }
 }
@@ -622,7 +627,7 @@ impl AuthProvider for Wordy {
         _from: SocketAddr,
         _cx: &AuthContext,
         _ticket: &[u8],
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Identity, String> {
         Err("no ".repeat(300))
     }
 }

@@ -224,10 +224,11 @@ A check of a permission nobody declared is a debug assertion (and a warning in a
 `declarePermission("props.spawn", "Spawn a prop")`. The calls that change something answer 1 when they did, 0 when there was nothing to
 change, and print the reason when they were refused.
 
-**Where it is kept.** A `PermissionProvider` (a slot: one plugin sets it) keeps what each player holds, keyed by the auth identity of
-a signed-in player and by the connection otherwise (the same identity a game's ownership uses). The default keeps it in memory; a game
-with accounts backs it with its database, and its grants then outlive the connection. Grants kept under a connection are forgotten
-when it ends. All of it is on the server: a client never sets its own permissions and nothing is sent to a client unless the game
+**Where it is kept.** A `PermissionProvider` (a slot: one plugin sets it) keeps what each player holds, keyed by the player's
+[identity](#who-a-connection-is) (the same one a game's prop ownership uses): the account id the auth provider verified, else the
+connection. A role granted to a signed-in player is theirs on every later connection, as long as the server (or the provider you set)
+keeps it; one granted to an anonymous player ends with the connection. The default keeps it in memory; a game with accounts backs it
+with its database, and its grants then outlive the server. Grants kept under a connection are forgotten when it ends. All of it is on the server: a client never sets its own permissions and nothing is sent to a client unless the game
 sends it. The model itself, with no engine behind it, is the `torque-permissions` crate.
 
 ## Bulk channels
@@ -386,6 +387,41 @@ address and the connection's challenge) and **binds the ticket to it**, so a tic
 another connection. A provider that ignores the context lets any server a client joins use its ticket elsewhere. A client with no
 ticket (not signed in) stops with the provider's own reason ("not signed in"); a refused ticket is "your sign-in was not accepted",
 whatever the provider's reason was.
+
+### Who a connection is
+
+Every connection has an identity, and the server keeps what it holds per player (roles, props, an upload's resume) under it:
+
+| Provider | The identity | It is the same player when |
+|---|---|---|
+| none (the default) | none: the connection itself, `conn:<n>` | never: each connection is a new player, and a reconnect starts over |
+| a real provider (a platform account, a signed token) | the account id the provider verified, `id:<hex>`, and the display name it gave | the same account signs in, on any connection, session or restart |
+| `SharedSecret` (tests and private games) | the name the ticket is signed for, as id and as name | the same name |
+
+The server's half of the provider returns it from `verify`, as an `Identity`: an opaque account id (1 to 128 bytes, never empty, so a
+provider cannot put everyone under one key) and an optional name to show (control characters dropped, at most 64 bytes). Two
+identities are the same player when their ids are equal; the name is only for display, and a player may change it. The id must be
+what the provider checked (a signature, a platform's answer), never unchecked text out of the ticket, and the same for the same
+account every time. A client cannot choose its identity: it is made on the server from the provider's check, and the connect
+arguments, password and ticket text a client sends reach the provider only to be checked.
+
+```rust
+let identity = handshake.connection(conn).and_then(|c| c.identity.as_ref());   // None: anonymous
+let key = SubjectKey::of(identity, conn.0);                                      // what the server keeps per player
+```
+
+**One session per account.** An account that connects while it is already connected is one player on two connections, so by
+default the server ends the older connection (reason "You signed in from another place.") before the newer one's `onConnect`, and
+the roles, props and upload the account holds follow the live session. A game that wants several sessions per account sets
+`$Pref::Server::OneSessionPerAccount = 0`; the connections then share the account's roles, and props orphaned by one are claimed
+by neither while two connections hold the key. Anonymous connections are never joined: each is its own player.
+
+In script, `%client.getIdentity()` is the key as text (`id:616461` or `conn:7`; compare it, do not parse it) and
+`%client.getIdentityName()` the display name, or empty. Both exist with no provider (every connection is anonymous), and nothing
+about them is sent to a client. `getIdentity()` is the raw account id: a game that echoes it to other clients (a scoreboard, chat)
+shows them the provider's id, so it should not if the provider's ids are meant to be private. The server's own plugins never call
+the method (a game may redefine it); they ask the host from Rust. On the wire nothing changes: a ticket is sent only when a provider is set, as before, in both
+protocols.
 
 ## Events
 

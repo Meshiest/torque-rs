@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use torque_engine::{Engine, EngineBuilder, Plugin, ProtocolKind};
-use torque_net::connect::{AuthContext, AuthProvider, ConnectBlock, SharedSecret};
+use torque_net::connect::{AuthContext, AuthProvider, ConnectBlock, Identity, SharedSecret};
 use torque_net::engine::bridge::{connect_of, ticket_context};
 use torque_net::engine::{
     CloseReason, Event, Link, LinkFacts, NoRoom, NoStreams, Session, SessionConfig, TableLimits,
@@ -34,9 +34,9 @@ impl AuthProvider for Bearer {
         _from: SocketAddr,
         _cx: &AuthContext,
         ticket: &[u8],
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Identity, String> {
         if ticket == b"bearer" {
-            Ok(b"someone".to_vec())
+            Ok(Identity::new("someone").expect("an id"))
         } else {
             Err("no such ticket".to_string())
         }

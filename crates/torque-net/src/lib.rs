@@ -75,6 +75,17 @@
 //! (`serverquery::tests::spoofed_short_info_requests_reflect_at_most_three_times_their_bytes_and_padded_ones_are_answered`),
 //! and the info answer's script output is answered from for a second (`the_info_scripts_output_is_answered_from_for_a_second`).
 //!
+//! **A connection's identity is only ever the auth provider's verdict.** [`connect::Identity`] is made by
+//! [`connect::AuthProvider::verify`] on the server and travels as the gate's `Ok` into [`handshake::PendingRequest::identity`] and
+//! [`handshake::Connection::identity`]; nothing a client sends is read as one (its arguments, password and ticket text reach a
+//! provider only to be checked). `None` is an anonymous player, held by the connection id, which a table never reuses. An
+//! identity's id is never empty and at most [`connect::MAX_IDENTITY_BYTES`] (the type refuses it), so a provider cannot put every
+//! player under one key, and its name is for display only (control and bidirectional override characters
+//! dropped, cut to [`connect::MAX_IDENTITY_NAME_BYTES`]; equality and hashing use the id alone)
+//! (`connect::tests::an_identity_needs_an_id_of_a_sane_size`, `an_identity_is_its_id_and_the_name_is_only_for_display`,
+//! `a_display_name_loses_control_characters_and_is_cut_on_a_character`). Nothing on the wire carries an identity: a ticket
+//! travels only when a provider is set, and the identity is what the server made of it.
+//!
 //! **Seeded tests and fuzz loops draw from [`testrng::TestRng`]**, never from a source of their own.
 //!
 //! **A ghost pass costs what changed, not what exists** (benches `ghost_section`, and `ghost_tick` in torque-server). A full

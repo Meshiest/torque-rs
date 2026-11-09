@@ -8,6 +8,15 @@
 //! A limit a pref sets is held under a cap of the engine's own, whoever wrote the pref: `$Pref::Server::MaxPlayers` never
 //! lets in more than `net::pump::MAX_PLAYERS` (`max_players_is_held_under_the_engines_cap`).
 //!
+//! **A connection's identity is read from the handshake table, never from the client**: `GameConnection::getIdentity` and
+//! `getIdentityName` (`net/permissions.rs`) answer from the identity the
+//! connect gate verified (`a_signed_in_player_is_the_same_identity_on_every_connection_whatever_the_client_claims`,
+//! `an_anonymous_connection_is_its_own_player_and_no_ticket_makes_it_anyone_else` in `tests/server.rs`). A script that must not
+//! lose a player to a reconnect keys by it; the natives are registered with the permissions natives. A plugin never reads it
+//! from script (a game may redefine the method): `torque_engine::permissions::ConnectionSubjects`, attached beside the natives,
+//! answers from the table. An account that connects again ends its older connections before the new `onConnect`
+//! (`$Pref::Server::OneSessionPerAccount`, on unless set to 0; `pump::end_older_sessions`).
+//!
 //! **Every per-address and per-network count keys by the peer's own address** (the transport's `peer_ip`, a web peer's real
 //! one behind its stand-in): the handshake's caps, the request and reject budgets, the download places, the info limits and
 //! the strangers' shares (`peers_behind_stand_ins_from_one_real_network_share_its_caps` in `tests/server.rs`).
