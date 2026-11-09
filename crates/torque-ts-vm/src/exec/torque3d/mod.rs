@@ -35,7 +35,6 @@ mod value;
 pub use compiler::Torque3dCompiler;
 pub use natives::install;
 
-use std::any::Any;
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
@@ -44,7 +43,7 @@ use torque_ts_bytecode::opcodes::Op;
 use self::value::{Value, is_space};
 use crate::code::CodeBlock;
 use crate::exec::{
-    Executor, RunMode, ScriptCall, argc_ok, fetch, native_call, script_name, script_target,
+    Executor, RunMark, RunMode, ScriptCall, argc_ok, fetch, native_call, script_name, script_target,
 };
 use crate::ns::{Callable, EntryRef};
 use crate::sim::ObjId;
@@ -161,6 +160,8 @@ struct State {
     /// The array index of the current field and of the one before (shared by all frames, as Torque3D's).
     cur_field_array: Vec<u8>,
     prev_field_array: Vec<u8>,
+    /// A buffer for the value a field write copies, kept between writes.
+    field_value: Vec<u8>,
     /// The value whose text the last call or object lookup left (Torque3D's return variable), for field components:
     /// kept as the value and converted only when a component reads it (the conversion gives the same text later).
     ret: Value,
@@ -278,7 +279,8 @@ impl Torque3dExecutor {
 }
 
 /// What a run started from Rust puts back after an error (see [`Executor::save`]).
-struct Saved {
+#[derive(Clone, Copy, Debug)]
+pub struct Torque3dMark {
     stack: usize,
     args: usize,
     arg_frames: usize,
@@ -313,24 +315,24 @@ impl Executor for Torque3dExecutor {
         self.st().result = Value::text(text);
     }
 
-    fn save(&self) -> Box<dyn Any> {
+    fn save(&self) -> RunMark {
         let st = self.st();
-        Box::new(Saved {
+        RunMark::Torque3d(Torque3dMark {
             stack: st.stack.len(),
             args: st.args.len(),
             arg_frames: st.arg_frames.len(),
         })
     }
 
-    fn restore(&self, saved: Box<dyn Any>, unwind: bool) {
-        let Ok(saved) = saved.downcast::<Saved>() else {
+    fn restore(&self, saved: RunMark, unwind: bool) {
+        let RunMark::Torque3d(mark) = saved else {
             return;
         };
         if unwind {
             let mut st = self.st();
-            st.stack.truncate(saved.stack);
-            st.args.truncate(saved.args);
-            st.arg_frames.truncate(saved.arg_frames);
+            st.stack.truncate(mark.stack);
+            st.args.truncate(mark.args);
+            st.arg_frames.truncate(mark.arg_frames);
         }
     }
 
@@ -689,14 +691,14 @@ impl<'a> Cx<'a> {
                 let mut st = self.st();
                 let top = st.pop()?;
                 let second = st.pop()?;
-                let joined = st.concat(&second, &top.string())?;
+                let joined = top.with_string(|b| st.concat(&second, b))?;
                 st.push(joined)?;
                 Ok(ip)
             }
             Op::CompareStr => {
                 let mut st = self.st();
                 let (top, second) = st.top_two()?;
-                let equal = top.string().eq_ignore_ascii_case(&second.string());
+                let equal = top.with_string(|a| second.with_string(|b| a.eq_ignore_ascii_case(b)));
                 *second = Value::from_bool(equal);
                 Ok(ip)
             }
@@ -923,7 +925,7 @@ impl<'a> Cx<'a> {
         self.with_var(|e| match op {
             Op::SaveVarUint => e.set_int(value.int() as u32),
             Op::SaveVarFlt => e.set_float(value.float()),
-            _ => e.set_string(&value.string()),
+            _ => value.with_string(|text| e.set_string(text)),
         });
         Ok(())
     }
@@ -1639,18 +1641,23 @@ impl<'a> Cx<'a> {
     /// 64-bit) or text; without an object, a component of the value before (see `component`).
     #[inline(never)]
     fn load_field(&mut self, op: Op) -> Result<(), VmError> {
-        let (target, field, array) = {
-            let mut st = self.st();
-            let array = st.cur_field_array.clone();
-            let frame = st.frame();
-            (frame.cur_object, frame.cur_field.clone(), array)
-        };
+        let target = self.st().frame().cur_object;
         let text = if target == FieldTarget::None {
+            let field = self.st().frame().cur_field.clone();
             self.component(field.as_deref().unwrap_or(b""))
         } else {
-            let text = self
-                .vm
-                .read_field_of(target, field.as_deref().unwrap_or(b""), &array);
+            let mut text = Vec::new();
+            {
+                // Reading runs no script: the name and the index are read in place.
+                let st = self.st();
+                let field = st.frames.last().and_then(|f| f.cur_field.as_deref());
+                self.vm.read_field_into(
+                    target,
+                    field.unwrap_or(b""),
+                    &st.cur_field_array,
+                    &mut text,
+                );
+            }
             if op == Op::LoadFieldStr {
                 self.st().clear_ret();
             }
@@ -1668,21 +1675,43 @@ impl<'a> Cx<'a> {
     /// an object, into a component of the value before (see `set_component`).
     #[inline(never)]
     fn save_field(&mut self) -> Result<(), VmError> {
+        // The name, index and value are moved out while the write runs (a static-write observer may run script) and put
+        // back after, so a write copies nothing but the value's text.
         let (target, field, array, value) = {
             let mut st = self.st();
-            let value = st.top()?.string().into_owned();
-            let array = st.cur_field_array.clone();
+            let st = &mut *st;
+            let mut value = std::mem::take(&mut st.field_value);
+            value.clear();
+            st.stack
+                .last()
+                .ok_or(VmError::StackUnderflow)?
+                .with_string(|text| value.extend_from_slice(text));
+            let array = std::mem::take(&mut st.cur_field_array);
             let frame = st.frame();
-            (frame.cur_object, frame.cur_field.clone(), array, value)
+            (frame.cur_object, frame.cur_field.take(), array, value)
         };
         if target == FieldTarget::None {
-            self.set_component(field.as_deref().unwrap_or(b""), &value)?;
-            self.st().frame().prev_object = FieldTarget::None;
-        } else {
-            self.vm
-                .write_field_of(target, field.as_deref().unwrap_or(b""), &array, &value);
+            let done = self.set_component(field.as_deref().unwrap_or(b""), &value);
+            if done.is_ok() {
+                self.st().frame().prev_object = FieldTarget::None;
+            }
+            self.put_back_field(field, array, value);
+            return done;
         }
+        self.vm
+            .write_field_of(target, field.as_deref().unwrap_or(b""), &array, &value);
+        self.put_back_field(field, array, value);
         Ok(())
+    }
+
+    /// What `save_field` moved out of the state, back in.
+    fn put_back_field(&mut self, field: Option<Vec<u8>>, array: Vec<u8>, value: Vec<u8>) {
+        let mut st = self.st();
+        st.cur_field_array = array;
+        st.field_value = value;
+        if let Some(frame) = st.frames.last_mut() {
+            frame.cur_field = field;
+        }
     }
 
     /// The value a field component reads or writes (Torque3D's `.x`, `.y`, `.z`, `.w` and their colour and
@@ -1964,7 +1993,7 @@ impl<'a> Cx<'a> {
                 let entry = self.vm.global_table_mut().add(&name);
                 match next {
                     Value::Int(id) => entry.set_int(id as u32),
-                    other => entry.set_string(&other.string()),
+                    other => other.with_string(|text| entry.set_string(text)),
                 }
             }
         }

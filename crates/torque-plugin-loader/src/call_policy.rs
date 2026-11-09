@@ -359,11 +359,10 @@ pub struct DenyCodeAndFiles;
 
 /// The denied effects of a native called `name`, or of the function a `Namespace::name` text names.
 fn denied(call: &PolicyCall<'_>, name: &[u8]) -> Effects {
-    let short = name
-        .windows(2)
-        .rposition(|w| w == b"::")
-        .map_or(name, |at| &name[at + 2..]);
-    (call.effects_of(name) | call.effects_of(short)).intersection(DENIED_EFFECTS)
+    let Some(at) = name.windows(2).rposition(|w| w == b"::") else {
+        return call.effects_of(name).intersection(DENIED_EFFECTS);
+    };
+    (call.effects_of(name) | call.effects_of(&name[at + 2..])).intersection(DENIED_EFFECTS)
 }
 
 impl CallPolicy for DenyCodeAndFiles {
@@ -376,20 +375,25 @@ impl CallPolicy for DenyCodeAndFiles {
             args,
             ..
         } = *call;
-        let shown = if namespace.is_empty() {
-            name.to_string()
-        } else {
-            format!("{namespace}::{name}")
+        // Built only for a refusal: an allowed call allocates nothing here.
+        let shown = || {
+            if namespace.is_empty() {
+                name.to_string()
+            } else {
+                format!("{namespace}::{name}")
+            }
         };
         let effects = denied(call, name.as_bytes());
         if !effects.is_empty() {
             return Err(format!(
-                "`{shown}` cannot be called from a script language: its effects ({effects}) are refused"
+                "`{}` cannot be called from a script language: its effects ({effects}) are refused",
+                shown()
             ));
         }
         if let Some(field) = written_code_field(namespace, name, kind, args) {
             return Err(format!(
-                "`{shown}` cannot set `{}` from a script language: the engine runs that field's text",
+                "`{}` cannot set `{}` from a script language: the engine runs that field's text",
+                shown(),
                 String::from_utf8_lossy(&field)
             ));
         }
@@ -398,7 +402,8 @@ impl CallPolicy for DenyCodeAndFiles {
             && let Some(target) = args.iter().find(|a| !denied(call, a).is_empty())
         {
             return Err(format!(
-                "`{shown}` cannot queue `{}` from a script language",
+                "`{}` cannot queue `{}` from a script language",
+                shown(),
                 String::from_utf8_lossy(target)
             ));
         }
@@ -407,7 +412,7 @@ impl CallPolicy for DenyCodeAndFiles {
         if call.effects().contains(Effects::VARIABLES) {
             for global in call.named_globals() {
                 self.check_global(&call.global_write(&global, &[]))
-                    .map_err(|why| format!("`{shown}` cannot write that variable: {why}"))?;
+                    .map_err(|why| format!("`{}` cannot write that variable: {why}", shown()))?;
             }
         }
         // A `schedule`'s call is checked now as it will be when it fires (`DeferredCalls` checks it again then).
@@ -416,7 +421,7 @@ impl CallPolicy for DenyCodeAndFiles {
         {
             let (target_ns, target_name) = target.rsplit_once("::").unwrap_or(("", &target));
             self.check(&call.other(target_ns, target_name, target_kind, target_args))
-                .map_err(|why| format!("`{shown}` cannot queue that call: {why}"))?;
+                .map_err(|why| format!("`{}` cannot queue that call: {why}", shown()))?;
         }
         Ok(())
     }
@@ -433,14 +438,15 @@ impl CallPolicy for DenyCodeAndFiles {
     }
 
     fn check_field(&self, name: &[u8], index: &[u8], _value: &[u8]) -> Result<(), String> {
-        let built = field_name(name, index);
-        if code_field(&built) {
-            return Err(format!(
-                "the field `{}` cannot be set from a script language: the engine runs its text",
-                String::from_utf8_lossy(&built)
-            ));
-        }
-        Ok(())
+        torque_ts_vm::sim::with_dynamic_name(name, index, |built| {
+            if code_field(built) {
+                return Err(format!(
+                    "the field `{}` cannot be set from a script language: the engine runs its text",
+                    String::from_utf8_lossy(built)
+                ));
+            }
+            Ok(())
+        })
     }
 }
 

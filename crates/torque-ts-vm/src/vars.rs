@@ -7,7 +7,9 @@
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::text::{atof, atoi, f64_to_u32, fold, format_g, format_int, until_nul};
+use crate::text::{
+    atof, atoi, f64_to_u32, fold, format_g, format_int, until_nul, with_format_g, with_format_int,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -145,8 +147,8 @@ impl Entry {
     pub fn with_string<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         match self.kind {
             Kind::Str => f(&self.sval),
-            Kind::Float => f(format_g(f64::from(self.fval.get())).as_bytes()),
-            Kind::Int => f(format_int(self.ival.get()).as_bytes()),
+            Kind::Float => with_format_g(f64::from(self.fval.get()), f),
+            Kind::Int => with_format_int(self.ival.get(), f),
         }
     }
 

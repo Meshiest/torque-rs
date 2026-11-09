@@ -2,7 +2,7 @@
 //! handle hosts and tests read it through.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use torque_engine::script::{Callee, TypedNative};
@@ -32,10 +32,12 @@ pub(crate) struct ExtensionState {
     pub(crate) languages: Vec<ffi::LanguageSpec>,
     /// Why it is disabled, once it is.
     disabled: Mutex<Option<String>>,
+    /// Whether `disabled` holds a reason: what every call reads, so that a call takes no lock for it.
+    off: AtomicBool,
     /// Held for each call into it: one at a time.
     calls: Mutex<()>,
-    /// The thread holding `calls`.
-    owner: Mutex<Option<std::thread::ThreadId>>,
+    /// The thread holding `calls` ([`thread_token`]; 0 for none).
+    owner: AtomicU64,
     /// How many calls into it are live on the owner's thread (nested ones too).
     nesting: AtomicUsize,
     /// How many of those are calling the engine back ([`call_out`](Self::call_out)): a nested call is allowed only while
@@ -63,6 +65,15 @@ const DEPTH_UNIT_BYTES: usize = if cfg!(debug_assertions) { 2560 } else { 640 };
 /// The call-depth units the engine's own frames around a call into an extension and its call back cost, on top of what
 /// the extension used (the native's dispatch, the call's frame, the call back's run).
 const CALL_BACK_COST: usize = 4;
+
+/// A number for the calling thread, never 0 and different for every live thread (what `ExtensionState::owner` holds).
+fn thread_token() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    thread_local! {
+        static TOKEN: u64 = NEXT.fetch_add(1, Ordering::Relaxed);
+    }
+    TOKEN.with(|token| *token)
+}
 
 /// Where this thread's stack is now: the address of a local (the stack grows down on every platform the engine runs on).
 #[inline(never)]
@@ -98,8 +109,9 @@ impl ExtensionState {
             passes: registered.passes,
             languages: registered.languages,
             disabled: Mutex::new(None),
+            off: AtomicBool::new(false),
             calls: Mutex::new(()),
-            owner: Mutex::new(None),
+            owner: AtomicU64::new(0),
             nesting: AtomicUsize::new(0),
             calling_out: AtomicUsize::new(0),
             marks: Mutex::new(Vec::new()),
@@ -111,10 +123,18 @@ impl ExtensionState {
 
     /// Why it is disabled, or `None`.
     pub(crate) fn disabled(&self) -> Option<String> {
+        if !self.is_off() {
+            return None;
+        }
         self.disabled
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Whether it is disabled (the check a call makes: no lock, no copy of the reason).
+    pub(crate) fn is_off(&self) -> bool {
+        self.off.load(Ordering::Acquire)
     }
 
     /// Disables it: no call goes into it any more.
@@ -124,6 +144,7 @@ impl ExtensionState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get_or_insert(reason);
+        self.off.store(true, Ordering::Release);
     }
 
     /// Keeps a line of its log.
@@ -138,8 +159,8 @@ impl ExtensionState {
     /// The lock held for a call into it: one call at a time, from any thread. `None` when this thread is already in a
     /// call into it (the call would re-enter the extension, which waits for nothing but itself).
     pub(crate) fn enter(&self) -> Option<Entered<'_>> {
-        let me = std::thread::current().id();
-        if *self.owner.lock().unwrap_or_else(PoisonError::into_inner) == Some(me) {
+        let me = thread_token();
+        if self.owner.load(Ordering::Acquire) == me {
             return None;
         }
         Some(self.enter_outer(me))
@@ -149,8 +170,8 @@ impl ExtensionState {
     /// the thread already inside it, a nested call when every live call is calling the engine back (a script it ran
     /// calls it again), at most [`TORQUE_MAX_NESTING`] deep.
     pub(crate) fn enter_call(&self) -> Result<Entered<'_>, Refused> {
-        let me = std::thread::current().id();
-        if *self.owner.lock().unwrap_or_else(PoisonError::into_inner) != Some(me) {
+        let me = thread_token();
+        if self.owner.load(Ordering::Acquire) != me {
             return Ok(self.enter_outer(me));
         }
         let live = self.nesting.load(Ordering::SeqCst);
@@ -183,13 +204,17 @@ impl ExtensionState {
             .saturating_add(CALL_BACK_COST)
     }
 
-    fn enter_outer(&self, me: std::thread::ThreadId) -> Entered<'_> {
+    fn enter_outer(&self, me: u64) -> Entered<'_> {
         let lock = self.calls.lock().unwrap_or_else(PoisonError::into_inner);
-        *self.owner.lock().unwrap_or_else(PoisonError::into_inner) = Some(me);
+        self.owner.store(me, Ordering::Release);
         self.nesting.store(1, Ordering::SeqCst);
         self.calling_out.store(0, Ordering::SeqCst);
         self.fallback_steps.store(0, Ordering::SeqCst);
-        *self.lock_marks() = vec![stack_mark()];
+        {
+            let mut marks = self.lock_marks();
+            marks.clear();
+            marks.push(stack_mark());
+        }
         Entered {
             state: self,
             lock: Some(lock),
@@ -258,7 +283,7 @@ impl ExtensionState {
                     return Ok(());
                 }
             };
-            if self.disabled().is_some() {
+            if self.is_off() {
                 return Ok(());
             }
             let outcome = ffi::run_file(self, lang, vm, path, source, package);
@@ -311,7 +336,7 @@ impl ExtensionState {
                     return Native::Void;
                 }
             };
-            if self.disabled().is_some() {
+            if self.is_off() {
                 return Native::Void;
             }
             let outcome = ffi::call_defined(self, lang, id, vm, args, call.this_object);
@@ -340,7 +365,7 @@ impl ExtensionState {
 
     /// Tells its language `lang` that the script engine `vm` is gone.
     pub(crate) fn vm_dropped(&self, lang: usize, vm: u64) {
-        if self.disabled().is_some() {
+        if self.is_off() {
             return;
         }
         // From the engine's own work, never inside a call of the extension's on this thread (a script engine is dropped
@@ -361,7 +386,7 @@ impl ExtensionState {
         for _ in 0..MAX_DROP_ROUNDS {
             let dropped =
                 std::mem::take(&mut *self.dropped.lock().unwrap_or_else(PoisonError::into_inner));
-            if dropped.is_empty() || self.disabled().is_some() {
+            if dropped.is_empty() || self.is_off() {
                 return;
             }
             for (lang, vm) in dropped {
@@ -446,11 +471,7 @@ impl Drop for Entered<'_> {
         }
         self.state.nesting.store(0, Ordering::SeqCst);
         // Before the lock is let go (fields drop after this).
-        *self
-            .state
-            .owner
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
+        self.state.owner.store(0, Ordering::Release);
     }
 }
 

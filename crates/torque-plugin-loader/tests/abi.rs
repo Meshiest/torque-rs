@@ -150,6 +150,8 @@ fn a_panic_while_it_starts_or_a_refused_declaration_refuses_it() {
 
 static API: AtomicPtr<TorqueApi> = AtomicPtr::new(std::ptr::null_mut());
 static STALE: AtomicU64 = AtomicU64::new(0);
+/// Held by each test that stores the engine's table in [`API`] and calls through it: they share it.
+static API_USER: Mutex<()> = Mutex::new(());
 static SEEN: Mutex<Vec<(&'static str, TorqueStatus)>> = Mutex::new(Vec::new());
 
 fn api() -> &'static TorqueApi {
@@ -231,6 +233,9 @@ unsafe extern "C" fn raw_init(api: *const TorqueApi, out: *mut TorquePluginInfo)
 
 #[test]
 fn what_an_extension_hands_over_is_checked() {
+    let _api = API_USER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let plugin = ExtensionPlugin::from_init(TORQUE_ABI_VERSION, raw_init).unwrap();
     let engine = EngineBuilder::new().add_plugins(plugin).build().unwrap();
     let mut vm = server_vm(&engine);
@@ -360,6 +365,9 @@ unsafe extern "C" fn nest_init(api: *const TorqueApi, out: *mut TorquePluginInfo
 
 #[test]
 fn an_outer_call_handle_cannot_reach_the_script_engine_in_a_nested_call() {
+    let _api = API_USER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let plugin = ExtensionPlugin::from_init(TORQUE_ABI_VERSION, nest_init).unwrap();
     let engine = EngineBuilder::new().add_plugins(plugin).build().unwrap();
     let mut vm = server_vm(&engine);

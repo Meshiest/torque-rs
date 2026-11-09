@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::code::CodeBlock;
 use crate::events::{EventLimits, EventQueue};
 pub(crate) use crate::exec::RunMode as Mode;
-use crate::exec::{Executor, ScriptCall, argc_ok, script_name_ref, script_target};
+use crate::exec::{Executor, RunMark, ScriptCall, argc_ok, script_name_ref, script_target};
 use crate::host::{Clock, Compiler, FileHost, NoCompiler, NoFiles, SystemClock};
 use crate::ns::{Activation, Callable, EntryRef, Holder, Namespaces};
 use crate::sim::{ClassId, ObjId, Objects, SimObject};
@@ -304,7 +304,7 @@ pub struct FrameMark {
 
 /// What a finished run must put back after an error (and the executor's current variable even after a success).
 struct RunState {
-    exec: Box<dyn std::any::Any>,
+    exec: RunMark,
 }
 
 /// The `Class::method` keys still registered as the class table's stubs (a newtype so that the set stays boxed in `Vm`).
@@ -943,7 +943,29 @@ impl Vm {
         argv.push(name.to_vec());
         argv.extend(args.iter().cloned());
         let saved = self.enter_run();
-        let result = self.invoke_callable(entry, argv, name);
+        let result = self.invoke_callable(entry, argv, true);
+        self.leave_run(saved, result)
+    }
+
+    /// [`invoke`](Self::invoke) with the argument list made by the caller, which gives it up (`argv[0]` is the
+    /// function's name, then the arguments): nothing is copied. `keep` is whether the result is wanted; a caller that
+    /// drops it (a scheduled event) skips the copy, and gets the empty string.
+    pub fn invoke_owned(
+        &mut self,
+        namespace: Option<&[u8]>,
+        argv: Vec<Vec<u8>>,
+        keep: bool,
+    ) -> Result<Vec<u8>, VmError> {
+        let name = argv.first().map(Vec::as_slice).unwrap_or_default();
+        let Some(entry) = self.namespaces.lookup(namespace.unwrap_or(b""), name) else {
+            if namespace.is_none_or(<[u8]>::is_empty) && self.console_rules().unknown_command {
+                let name = argv.into_iter().next().unwrap_or_default();
+                self.warn_unknown_command(&name);
+            }
+            return Ok(Vec::new());
+        };
+        let saved = self.enter_run();
+        let result = self.invoke_callable(entry, argv, keep);
         self.leave_run(saved, result)
     }
 
@@ -972,7 +994,31 @@ impl Vm {
         let argv = method_argv(object, name, args);
         let saved = self.enter_run();
         let outer = self.this_object.replace(object);
-        let result = self.invoke_callable(entry, argv, name);
+        let result = self.invoke_callable(entry, argv, true);
+        self.this_object = outer;
+        self.leave_run(saved, result)
+    }
+
+    /// [`call_method`](Self::call_method) with the argument list made by the caller, which gives it up (`argv[0]` is
+    /// the method's name, then the arguments, without the object's id: it is put in here). `keep` as for
+    /// [`invoke_owned`](Self::invoke_owned).
+    pub fn call_method_owned(
+        &mut self,
+        object: ObjId,
+        mut argv: Vec<Vec<u8>>,
+        keep: bool,
+    ) -> Result<Vec<u8>, VmError> {
+        let name = argv.first().map(Vec::as_slice).unwrap_or_default();
+        let Some(entry) = self.method_entry(object, name) else {
+            return Ok(Vec::new());
+        };
+        argv.insert(
+            1.min(argv.len()),
+            crate::text::format_int(object).into_bytes(),
+        );
+        let saved = self.enter_run();
+        let outer = self.this_object.replace(object);
+        let result = self.invoke_callable(entry, argv, keep);
         self.this_object = outer;
         self.leave_run(saved, result)
     }
@@ -1008,7 +1054,7 @@ impl Vm {
         argv.extend(args.iter().cloned());
         let saved = self.enter_run();
         let outer = self.this_object.replace(object);
-        let result = self.invoke_callable(entry, argv, name);
+        let result = self.invoke_callable(entry, argv, true);
         self.this_object = outer;
         self.leave_run(saved, result)
     }
@@ -1225,40 +1271,40 @@ impl Vm {
         &mut self,
         entry: EntryRef,
         argv: Vec<Vec<u8>>,
-        name: &[u8],
+        keep: bool,
     ) -> Result<Vec<u8>, VmError> {
         let Some((block, offset)) = script_target(&entry) else {
-            return self.invoke_native(&entry, argv, name);
+            return self.invoke_native(&entry, argv);
         };
         if offset == 0 {
             return Ok(Vec::new());
         }
         let call = self.new_call(argv, entry);
         self.run_block(&block, offset, Some(call), Mode::PLAIN)?;
-        Ok(self.executor.result())
+        Ok(if keep {
+            self.executor.result()
+        } else {
+            Vec::new()
+        })
     }
 
     /// A native called from Rust: the file is the code block that is executing (the one that called
     /// `call`, say), the current object the one of the method that is running.
     #[inline(never)]
-    fn invoke_native(
-        &mut self,
-        entry: &EntryRef,
-        argv: Vec<Vec<u8>>,
-        name: &[u8],
-    ) -> Result<Vec<u8>, VmError> {
+    fn invoke_native(&mut self, entry: &EntryRef, argv: Vec<Vec<u8>>) -> Result<Vec<u8>, VmError> {
         let Callable::Native { min, max, usage, f } = entry.borrow().callable.clone() else {
             return Ok(Vec::new());
         };
+        let name = argv.first().cloned().unwrap_or_default();
         if !argc_ok(argv.len(), min, max) {
-            self.warn_wrong_argc(entry, name, &usage)?;
+            self.warn_wrong_argc(entry, &name, &usage)?;
             return Ok(Vec::new());
         }
         let call = NativeCall {
             argv,
             this_object: self.this_object,
             from_bytecode: false,
-            name: name.to_vec(),
+            name,
             namespace: Rc::clone(&entry.borrow().namespace),
             file: self.blocks.last().and_then(|b| b.name_shared()),
         };

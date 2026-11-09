@@ -932,6 +932,7 @@ pub fn civil_time(seconds: i64) -> CivilTime {
 
 /// What compiling TorqueScript source gives.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Compiled {
     /// The compiler's messages, as the console prints them (its syntax error report, the code generator's
     /// warnings such as `<file> (<line>): string always evaluates to 0.`), in order.
@@ -948,6 +949,11 @@ pub struct Compiled {
     /// like any other work (`WORK_PER_STEP` units a step), on top of the bytes of the file or text it
     /// charged when it read them.
     pub work: u64,
+    /// A [`Purpose::Run`] compile of the same text would give exactly this result (the same messages and code),
+    /// though this one was made for [`Purpose::Check`]: `exec` then uses it for its second pass instead of compiling
+    /// again. A compiler leaves it false (the default) unless it knows: a syntax error or a message the purposes word
+    /// differently make the two differ.
+    pub same_as_run: bool,
 }
 
 /// Turns source text into bytecode. `name` is the file name the messages name (None for `eval`'d text);
@@ -979,6 +985,7 @@ impl Compiler for NoCompiler {
             syntax_error: true,
             code: None,
             work: 0,
+            same_as_run: false,
         }
     }
 }

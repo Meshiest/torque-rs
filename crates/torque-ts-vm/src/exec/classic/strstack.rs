@@ -3,7 +3,7 @@
 //! and `stringStack.cc`, Copyright (C) GarageGames.com, Inc.); the buffer is NOT cleared between uses, which is
 //! part of the observable behavior.
 
-use crate::text::{atof, atoi, format_g, format_int, to_f32, to_f64, until_nul};
+use crate::text::{atof, atoi, to_f32, to_f64, until_nul, with_format_g, with_format_int};
 
 pub const MAX_STACK_DEPTH: usize = 1024;
 /// Arguments a call receives at most, the name not counted: TGE's argument array (`mArgV`) has `MaxArgs` (20)
@@ -169,11 +169,11 @@ impl StringStack {
 
     /// Writes an unsigned word the way `printf("%d")` shows it (signed).
     pub fn set_int(&mut self, value: u32) {
-        self.write(format_int(value).as_bytes());
+        with_format_int(value, |text| self.write(text));
     }
 
     pub fn set_float(&mut self, value: f64) {
-        self.write(format_g(value).as_bytes());
+        with_format_g(value, |text| self.write(text));
     }
 
     /// The current slot, up to its terminator.

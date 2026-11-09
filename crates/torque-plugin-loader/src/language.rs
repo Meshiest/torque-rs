@@ -1,13 +1,14 @@
 //! Script languages of extensions in the engine: the runner `exec` hands their files to, and what the engine keeps for
 //! each script engine (its number, its side, the packages its files declare into, and who to tell when it goes).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use torque_engine::Side;
+use torque_ts_vm::idhash::IdMap;
 use torque_ts_vm::policy::ScriptLanguage;
 use torque_ts_vm::vm::{Vm, VmError};
 
@@ -35,7 +36,9 @@ pub(crate) struct VmContext {
     /// What its languages' code may call.
     policy: RefCell<Rc<dyn CallPolicy>>,
     /// The calls its languages queued (`schedule`), by event, with the policies in force then: checked again as they fire.
-    deferred: RefCell<std::collections::HashMap<u32, Policies>>,
+    deferred: RefCell<IdMap<u32, Policies>>,
+    /// How many more full-table recordings pass before the table is swept of dead events again (see `record_deferred`).
+    sweep_skips: Cell<usize>,
     /// The queued calls of languages running now (their event, their policy, and the next event number when they
     /// started): what they queue in turn is the language's too, under the same policy.
     inherited: RefCell<Vec<Inherited>>,
@@ -54,7 +57,8 @@ impl VmContext {
             packages: RefCell::new(BTreeSet::new()),
             languages: RefCell::new(Vec::new()),
             policy: RefCell::new(Rc::new(DenyCodeAndFiles)),
-            deferred: RefCell::new(std::collections::HashMap::new()),
+            deferred: RefCell::new(IdMap::default()),
+            sweep_skips: Cell::new(0),
             inherited: RefCell::new(Vec::new()),
         });
         vm.set_extension(Rc::clone(&context));
@@ -108,6 +112,10 @@ impl VmContext {
 
 /// How many queued calls of languages a script engine keeps before it forgets the ones no longer pending.
 const MAX_DEFERRED: usize = 4096;
+
+/// After a sweep of a full table that freed fewer than this many entries, the next sweeps wait for this many
+/// recordings: a table that is full of live calls is not walked again for every `schedule`.
+const SWEEP_COOLDOWN: usize = MAX_DEFERRED / 16;
 
 /// The most policies one queued call is held to; a call that would need more is cancelled.
 const MAX_POLICIES: usize = 4;
@@ -179,9 +187,10 @@ fn fire_done(vm: &mut Vm, seq: u32) {
 }
 
 /// Adds `policies` to each of a language's queued calls `seqs`, to be checked as they fire: a call keeps every policy
-/// recorded for it and must pass them all. Calls cancelled or dropped with their object never fire, so a full table is
-/// cleared of them once; a call that still finds no room, or would need more than [`MAX_POLICIES`], is cancelled (it
-/// would otherwise fire with fewer checks than it was given).
+/// recorded for it and must pass them all. Calls cancelled or dropped with their object never fire, so a full table
+/// is cleared of them (a table that stays full of live calls is swept once per [`SWEEP_COOLDOWN`] recordings, not
+/// every one); a call that still finds no room, or would need more than [`MAX_POLICIES`], is cancelled (it would
+/// otherwise fire with fewer checks than it was given).
 fn record_deferred(
     context: &VmContext,
     vm: &mut Vm,
@@ -192,7 +201,16 @@ fn record_deferred(
     {
         let mut deferred = context.deferred.borrow_mut();
         if deferred.len() + seqs.len() > MAX_DEFERRED {
-            deferred.retain(|&seq, _| vm.event_pending(seq));
+            match context.sweep_skips.get() {
+                0 => {
+                    let before = deferred.len();
+                    deferred.retain(|&seq, _| vm.event_pending(seq));
+                    if before - deferred.len() < SWEEP_COOLDOWN {
+                        context.sweep_skips.set(SWEEP_COOLDOWN);
+                    }
+                }
+                skips => context.sweep_skips.set(skips - 1),
+            }
         }
         for &seq in seqs {
             if !deferred.contains_key(&seq) && deferred.len() >= MAX_DEFERRED {
@@ -308,4 +326,50 @@ pub(crate) fn read_checked(vm: &mut Vm, path: &str) -> Result<Option<Vec<u8>>, V
         return Ok(None);
     }
     vm.find_file(path.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use torque_ts_vm::sim::ROOT_GROUP_ID;
+
+    /// Queues `n` native events (live, pending) and records them as a language's.
+    fn record(vm: &mut Vm, context: &VmContext, n: usize) -> Vec<u32> {
+        let seqs: Vec<u32> = (0..n)
+            .map(|i| {
+                vm.post_native_event(1000, ROOT_GROUP_ID, 0, i as u32)
+                    .unwrap()
+            })
+            .collect();
+        let policies: Policies = vec![context.policy()];
+        record_deferred(context, vm, &seqs, &policies);
+        seqs
+    }
+
+    #[test]
+    fn a_full_table_is_swept_of_dead_calls_and_then_not_for_every_recording() {
+        let mut vm = Vm::new();
+        let context = VmContext::of(&mut vm);
+        let live = record(&mut vm, &context, MAX_DEFERRED);
+        assert_eq!(context.deferred.borrow().len(), MAX_DEFERRED);
+
+        // Calls cancelled meanwhile make room at the next recording.
+        for &seq in &live[..8] {
+            assert!(vm.cancel_native_event(seq));
+        }
+        let more = record(&mut vm, &context, 1);
+        assert_eq!(context.deferred.borrow().len(), MAX_DEFERRED - 8 + 1);
+        assert!(vm.event_pending(more[0]));
+
+        // A table full of live calls has no room for the next one and is not walked again at once.
+        let fill = record(&mut vm, &context, 8);
+        assert_eq!(context.deferred.borrow().len(), MAX_DEFERRED);
+        assert!(fill.iter().all(|&seq| vm.event_pending(seq)));
+        let refused = record(&mut vm, &context, 1);
+        assert!(
+            !context.deferred.borrow().contains_key(&refused[0]),
+            "no room: not recorded"
+        );
+        assert!(context.sweep_skips.get() > 0);
+    }
 }

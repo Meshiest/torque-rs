@@ -263,3 +263,46 @@ fn a_run_that_makes_no_calls_warns_about_a_missing_object() {
         ["Executing a.cs.", "a.cs (0): Unable to find function nope"]
     );
 }
+
+/// Counts the compiles a `Vm` asks for.
+struct CountingCompiler {
+    inner: classic::ClassicCompiler,
+    count: std::rc::Rc<std::cell::Cell<u32>>,
+}
+
+impl torque_ts_vm::host::Compiler for CountingCompiler {
+    fn compile(
+        &self,
+        source: &[u8],
+        name: Option<&[u8]>,
+        purpose: Purpose,
+    ) -> torque_ts_vm::host::Compiled {
+        self.count.set(self.count.get() + 1);
+        self.inner.compile(source, name, purpose)
+    }
+}
+
+#[test]
+fn exec_compiles_a_clean_source_once_and_a_broken_one_twice() {
+    let mut vm = classic_vm();
+    let count = Rc::new(std::cell::Cell::new(0));
+    vm.set_compiler(CountingCompiler {
+        inner: classic::ClassicCompiler::default(),
+        count: Rc::clone(&count),
+    });
+    let files = torque_ts_vm::host::MemFiles::new();
+    files.insert("clean.cs", b"echo(\"clean\");");
+    files.insert("broken.cs", b"echo(\"before\");\nif (;\n");
+    vm.set_file_host(files);
+
+    assert!(vm.exec_file(b"clean.cs", false).unwrap());
+    assert_eq!(count.get(), 1);
+    assert!(vm.exec_file(b"broken.cs", false).unwrap());
+    assert_eq!(count.get(), 3);
+    let lines: Vec<String> = levels(&mut vm).into_iter().map(|(_, t)| t).collect();
+    assert_eq!(
+        lines.iter().filter(|l| *l == "Executing clean.cs.").count(),
+        1
+    );
+    assert!(lines.contains(&"clean".to_string()) && lines.contains(&"before".to_string()));
+}

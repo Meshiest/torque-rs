@@ -112,3 +112,7 @@ mem_forget = "warn"
 [[test]]
 name = "pictures"
 required-features = ["render"]
+
+[[bench]]
+name = "native_call"
+harness = false

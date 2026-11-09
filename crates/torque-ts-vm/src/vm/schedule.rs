@@ -18,7 +18,7 @@
 //! `console/simEvents.cpp` (Copyright (c) 2012 GarageGames, LLC) and `console/consoleFunctions.cpp` (Copyright (c) 2012
 //! GarageGames, LLC); the code here is this crate's own.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::{Native, NativeCall, Vm, VmError};
 use crate::events::{Event, EventKind, EventLimits, EventQueue};
@@ -506,7 +506,7 @@ impl Vm {
         let mut errors = Vec::new();
         let mut fired = 0usize;
         let mut steps = 0u64;
-        let mut per_time_count: HashMap<u32, usize> = HashMap::new();
+        let mut per_time_count: BTreeMap<u32, usize> = BTreeMap::new();
         let mut in_batch = 0usize;
         let mut sliced = false;
         loop {
@@ -665,18 +665,19 @@ impl Vm {
         if !self.objects.contains(event.dest) {
             return Ok(());
         }
-        let Some((name, args)) = argv.split_first() else {
+        if argv.is_empty() {
             return Ok(());
-        };
-        let started = self.profile.is_some().then(web_time::Instant::now);
-        let result = if on_object {
-            self.call_method(event.dest, name, args).map(|_| ())
-        } else {
-            self.invoke(None, name, args).map(|_| ())
-        };
-        if let Some(t) = started {
-            self.profile_schedule(name, on_object, t.elapsed());
         }
-        result
+        let started = self.profile.is_some().then(web_time::Instant::now);
+        let profiled = started.map(|_| argv[0].clone());
+        let result = if on_object {
+            self.call_method_owned(event.dest, argv, false)
+        } else {
+            self.invoke_owned(None, argv, false)
+        };
+        if let (Some(t), Some(name)) = (started, profiled) {
+            self.profile_schedule(&name, on_object, t.elapsed());
+        }
+        result.map(|_| ())
     }
 }

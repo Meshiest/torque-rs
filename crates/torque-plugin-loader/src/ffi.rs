@@ -142,12 +142,23 @@ impl InitFrame {
     }
 }
 
+/// The arguments of a call, borrowed from the host's native for as long as its frame is live: the frame is taken out of
+/// [`CALLS`] before [`in_frame`] returns, and `in_frame`'s caller holds the slice until then, so no copy is needed.
+struct BorrowedArgs(*const [Vec<u8>]);
+
+impl BorrowedArgs {
+    fn as_slice(&self) -> &[Vec<u8>] {
+        // SAFETY: see the type's documentation: the slice outlives every frame that holds it.
+        unsafe { &*self.0 }
+    }
+}
+
 /// A native call running on this thread.
 struct CallFrame {
     handle: TorqueCall,
     /// The script engine of the call: exclusively borrowed by the host's native for as long as the frame is live.
     vm: *mut Vm,
-    args: Vec<Vec<u8>>,
+    args: BorrowedArgs,
     this: Option<u32>,
     result: Option<Native>,
     error: Option<String>,
@@ -261,10 +272,18 @@ unsafe fn bytes<'a>(s: TorqueStr, max: usize) -> Result<&'a [u8], TorqueStatus> 
 /// As [`bytes`].
 unsafe fn utf8(s: TorqueStr, max: usize) -> Result<String, TorqueStatus> {
     // SAFETY: the caller's promise.
+    unsafe { utf8_ref(s, max) }.map(str::to_string)
+}
+
+/// [`utf8`] without the copy: the text where the extension holds it, for the call.
+///
+/// # Safety
+///
+/// As [`bytes`].
+unsafe fn utf8_ref<'a>(s: TorqueStr, max: usize) -> Result<&'a str, TorqueStatus> {
+    // SAFETY: the caller's promise.
     let b = unsafe { bytes(s, max) }?;
-    std::str::from_utf8(b)
-        .map(str::to_string)
-        .map_err(|_| TORQUE_ERR_INVALID)
+    std::str::from_utf8(b).map_err(|_| TORQUE_ERR_INVALID)
 }
 
 /// Writes `value` to `out`: [`TORQUE_ERR_INVALID`] when it is null or misaligned.
@@ -556,7 +575,7 @@ unsafe extern "C" fn register_render_pass(
 unsafe extern "C" fn arg_count(call: TorqueCall, out: *mut u32) -> TorqueStatus {
     guard(|| {
         with_call(call, |frame| {
-            let n = u32::try_from(frame.args.len()).unwrap_or(u32::MAX);
+            let n = u32::try_from(frame.args.as_slice().len()).unwrap_or(u32::MAX);
             // SAFETY: the extension's place for the count, valid during the call.
             unsafe { put(out, n) }
         })
@@ -569,9 +588,11 @@ fn with_arg(
     index: u32,
     read: impl FnOnce(&[u8]) -> TorqueStatus,
 ) -> TorqueStatus {
-    with_call(call, |frame| match frame.args.get(index as usize) {
-        Some(arg) => read(arg),
-        None => TORQUE_ERR_RANGE,
+    with_call(call, |frame| {
+        match frame.args.as_slice().get(index as usize) {
+            Some(arg) => read(arg),
+            None => TORQUE_ERR_RANGE,
+        }
     })
 }
 
@@ -959,11 +980,11 @@ unsafe extern "C" fn call_function(
     out: *mut TorqueStr,
 ) -> TorqueStatus {
     guard(|| {
-        // SAFETY: the texts and the arguments keep the ABI's promise for the call; they are copied.
+        // SAFETY: the texts keep the ABI's promise for the call and are read in place; the arguments are copied.
         let read = unsafe {
             (
-                utf8(ns, TORQUE_MAX_NAME),
-                utf8(name, TORQUE_MAX_NAME),
+                utf8_ref(ns, TORQUE_MAX_NAME),
+                utf8_ref(name, TORQUE_MAX_NAME),
                 read_args(args, count),
             )
         };
@@ -971,18 +992,21 @@ unsafe extern "C" fn call_function(
             (Ok(ns), Ok(name), Ok(args)) => (ns, name, args),
             (Err(status), _, _) | (_, Err(status), _) | (_, _, Err(status)) => return status,
         };
-        if !is_script_name(&name) || !(ns.is_empty() || is_script_name(&ns)) {
+        if !is_script_name(name) || !(ns.is_empty() || is_script_name(ns)) {
             return TORQUE_ERR_INVALID;
         }
-        if let Some(status) = refused(call, &ns, &name, false, &args) {
+        if let Some(status) = refused(call, ns, name, false, &args) {
             return status;
         }
         let namespace = (!ns.is_empty()).then_some(ns.as_bytes());
         // SAFETY: `out` is the extension's place for the result.
         unsafe {
-            run_back(call, out, |vm| {
-                let result = vm.invoke(namespace, name.as_bytes(), &args)?;
-                crate::call_policy::note_deferred(vm, &name, &result);
+            run_back(call, out, move |vm| {
+                // The arguments are given up as the call's own list: nothing is copied again.
+                let mut argv = args;
+                argv.insert(0, name.as_bytes().to_vec());
+                let result = vm.invoke_owned(namespace, argv, true)?;
+                crate::call_policy::note_deferred(vm, name, &result);
                 Ok(result)
             })
         }
@@ -999,22 +1023,24 @@ unsafe extern "C" fn call_method(
 ) -> TorqueStatus {
     guard(|| {
         // SAFETY: as in `call_function`.
-        let read = unsafe { (utf8(name, TORQUE_MAX_NAME), read_args(args, count)) };
+        let read = unsafe { (utf8_ref(name, TORQUE_MAX_NAME), read_args(args, count)) };
         let (name, args) = match read {
             (Ok(name), Ok(args)) => (name, args),
             (Err(status), _) | (_, Err(status)) => return status,
         };
-        if !is_script_name(&name) {
+        if !is_script_name(name) {
             return TORQUE_ERR_INVALID;
         }
-        if let Some(status) = refused(call, "", &name, true, &args) {
+        if let Some(status) = refused(call, "", name, true, &args) {
             return status;
         }
         // SAFETY: `out` is the extension's place for the result.
         unsafe {
-            run_back(call, out, |vm| {
-                let result = vm.call_method(object, name.as_bytes(), &args)?;
-                crate::call_policy::note_deferred(vm, &name, &result);
+            run_back(call, out, move |vm| {
+                let mut argv = args;
+                argv.insert(0, name.as_bytes().to_vec());
+                let result = vm.call_method_owned(object, argv, true)?;
+                crate::call_policy::note_deferred(vm, name, &result);
                 Ok(result)
             })
         }
@@ -1074,7 +1100,7 @@ unsafe extern "C" fn get_field(
         // SAFETY: the texts keep the ABI's promise for the call.
         let read = unsafe { (bytes(name, TORQUE_MAX_NAME), bytes(index, TORQUE_MAX_NAME)) };
         let (name, index) = match read {
-            (Ok(name), Ok(index)) => (name.to_vec(), index.to_vec()),
+            (Ok(name), Ok(index)) => (name, index),
             (Err(status), _) | (_, Err(status)) => return status,
         };
         let value = with_innermost_call(call, |frame| {
@@ -1083,7 +1109,7 @@ unsafe extern "C" fn get_field(
             if vm.objects().get(object).is_none() {
                 return TORQUE_ERR_FAILED;
             }
-            frame.scratch = vm.script_field(object, &name, &index);
+            frame.scratch = vm.script_field(object, name, index);
             TORQUE_OK
         });
         if value != TORQUE_OK {
@@ -1117,7 +1143,7 @@ unsafe extern "C" fn set_field(
             )
         };
         let (name, index, value) = match read {
-            (Ok(n), Ok(i), Ok(v)) => (n.to_vec(), i.to_vec(), v.to_vec()),
+            (Ok(n), Ok(i), Ok(v)) => (n, i, v),
             (Err(status), _, _) | (_, Err(status), _) | (_, _, Err(status)) => return status,
         };
         if name.is_empty() {
@@ -1141,12 +1167,11 @@ unsafe extern "C" fn set_field(
                 .find(|c| c.handle == call)
                 .is_some_and(|c| c.lang.is_some())
         });
-        if language && let Err(reason) = crate::call_policy::check_field(vm, &name, &index, &value)
-        {
+        if language && let Err(reason) = crate::call_policy::check_field(vm, name, index, value) {
             vm.error(reason);
             return TORQUE_ERR_FAILED;
         }
-        ext.call_out(|| vm.script_set_field(object, &name, &index, &value));
+        ext.call_out(|| vm.script_set_field(object, name, index, value));
         TORQUE_OK
     })
 }
@@ -1633,7 +1658,7 @@ fn in_frame(start: FrameStart<'_>, call: impl FnOnce(TorqueCall) -> TorqueStatus
         calls.borrow_mut().push(CallFrame {
             handle,
             vm: start.vm as *mut Vm,
-            args: start.args.to_vec(),
+            args: BorrowedArgs(start.args),
             this: start.this,
             result: None,
             error: None,

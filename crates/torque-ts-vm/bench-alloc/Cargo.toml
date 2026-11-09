@@ -1,0 +1,18 @@
+[package]
+name = "torque-ts-vm-bench-alloc"
+description = "The script VM's bench with mimalloc as the global allocator, for comparing allocators; built on its own, never part of the workspace"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Its own workspace, so that no `--all-features` or `--workspace` build compiles mimalloc's C code: the engine's allocator is
+# never chosen here. It is the same bench as `crates/torque-ts-vm/examples/bench.rs` (that file is this binary's `bench`
+# module), run with `just bench-script mimalloc`.
+[workspace]
+
+[dependencies]
+torque-ts-vm = { path = ".." }
+torque-ts-bytecode = { path = "../../torque-ts-bytecode" }
+torque-ts-compiler = { path = "../../torque-ts-compiler" }
+mimalloc = { version = "0.1", default-features = false }

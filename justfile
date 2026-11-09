@@ -248,3 +248,13 @@ gltf-verify:
 ci: check test deny book
     just examples/headless
     cargo doc --workspace --no-deps --all-features --config "build.rustdocflags=['-D', 'warnings']"
+
+# The script engine's benches: the VM's workloads with the Torque3D executor and with the classic one (calls, loops,
+# strings, objects, numbers to text, fields, host calls, schedule, eval, exec, compile), then calls across the native
+# extension ABI. Timing runs take the bench lock (see the agents' rules). `just bench-script mimalloc` runs the VM
+# bench with mimalloc as the allocator (crates/torque-ts-vm/bench-alloc, a build of its own with a C compiler: a
+# trial, never part of the workspace)
+bench-script allocator="":
+    cargo run --release --jobs 4 {{ if allocator == "mimalloc" { "--manifest-path crates/torque-ts-vm/bench-alloc/Cargo.toml" } else { "-p torque-ts-vm --example bench" } }}
+    cargo run --release --jobs 4 {{ if allocator == "mimalloc" { "--manifest-path crates/torque-ts-vm/bench-alloc/Cargo.toml" } else { "-p torque-ts-vm --example bench" } }} -- --classic
+    cargo bench --jobs 4 -p torque-plugin-loader --bench native_call

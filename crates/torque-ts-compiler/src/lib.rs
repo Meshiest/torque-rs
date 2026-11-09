@@ -27,6 +27,13 @@
 //! TGE 1.4's two-pass code generator. It follows TGE 1.4's `engine/console/` files `CMDscan.l` and `CMDgram.y` (no
 //! notice of their own), `ast.h`, `astNodes.cc`, `astAlloc.cc`, `compiler.h`, `compiler.cc` and `codeBlock.cc`
 //! (each Copyright (C) GarageGames.com, Inc.), the engine Torque3D is the MIT release of.
+//!
+//! # Maintaining
+//!
+//! - [`compile`] runs on a worker thread each calling thread keeps for its later compiles (starting one costs about
+//!   as much as compiling a few hundred lines), and copies only the source, the file name and the dialect to it. A
+//!   compile must never start a thread of its own: benches `eval` and `exec-files` of `just bench-script`
+//!   (torque-ts-vm) show it.
 
 pub mod ast;
 pub mod classic;
@@ -35,6 +42,7 @@ pub mod lalr;
 pub mod lexer;
 pub mod parser;
 pub mod tables;
+mod worker;
 
 use torque_ts_bytecode::{Dialect, DsoFile};
 
@@ -82,35 +90,36 @@ pub const WORKER_STACK: usize = 64 << 20;
 /// The longest source compiled.
 pub const MAX_SOURCE_BYTES: usize = 16 << 20;
 
-/// Compiles `source` (a C string: it stops at the first NUL) in the given dialect. `file` is the file name
-/// messages name (None for `eval`'d text). Runs on a thread of its own with [`WORKER_STACK`] bytes of stack, so
-/// the caller's stack depth does not matter (a script can `eval` at the bottom of a deep recursion).
+/// Compiles `source` (a C string: it stops at the first NUL) in the given dialect. `file` is the file name messages
+/// name (None for `eval`'d text). Runs on a thread of its own with [`WORKER_STACK`] bytes of stack (one per calling
+/// thread, kept for its later compiles), so the caller's stack depth does not matter (a script can `eval` at the
+/// bottom of a deep recursion).
 pub fn compile(source: &[u8], file: Option<&[u8]>, purpose: Purpose, dialect: &Dialect) -> Output {
     // A browser has no threads: there the caller's stack is the compiler's (the page's build gives it room).
     if cfg!(target_arch = "wasm32") {
         return compile_here(source, file, purpose, dialect);
     }
-    let joined = std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .name("ts-compiler".into())
-            .stack_size(WORKER_STACK)
-            .spawn_scoped(scope, || compile_here(source, file, purpose, dialect))
-            .map(|handle| handle.join())
-    });
-    match joined {
-        Ok(Ok(output)) => output,
-        // A thread could not be started (or, impossibly, the compiler panicked).
-        _ => Output {
-            diagnostics: vec![Diagnostic {
-                level: Level::Error,
-                text: b"the compiler could not run".to_vec(),
-            }],
-            syntax_error: true,
-            dso: None,
-            work: source.len() as u64,
-        },
+    let (source, file, dialect) = (source.to_vec(), file.map(<[u8]>::to_vec), dialect.clone());
+    let len = source.len() as u64;
+    worker::run(move || compile_here(&source, file.as_deref(), purpose, &dialect))
+        .unwrap_or_else(|| could_not_run(len))
+}
+
+/// What [`compile`] gives when its worker thread could not be started (or, impossibly, the compiler panicked).
+fn could_not_run(work: u64) -> Output {
+    Output {
+        diagnostics: vec![Diagnostic {
+            level: Level::Error,
+            text: COULD_NOT_RUN.to_vec(),
+        }],
+        syntax_error: true,
+        dso: None,
+        work,
     }
 }
+
+/// The message of a compile that could not run (both dialects' [`compile`] give it).
+pub(crate) const COULD_NOT_RUN: &[u8] = b"the compiler could not run";
 
 /// [`compile`] on the current thread: it needs about [`WORKER_STACK`] bytes of stack for the deepest tree the
 /// parser accepts. The measure is the tree's DEPTH, not the source's size: a short source (a 500-level `+`

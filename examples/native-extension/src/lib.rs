@@ -24,6 +24,33 @@ fn greeting_twice(call: Call) -> String {
     format!("{greeting} {greeting}")
 }
 
+/// calls the script function `add` back `n` times (the loader's bench: the cost of a call from an extension into the
+/// engine)
+#[cfg(feature = "bench")]
+#[function(ns = "Sample", name = "callBack")]
+fn call_back(call: Call, n: i32) -> i32 {
+    let mut total = 0;
+    for _ in 0..n {
+        let sum = call.call_function("", "add", &[b"3", b"4"]).unwrap_or_default();
+        total += i32::from(sum.first().is_some_and(|b| *b == b'7'));
+    }
+    total
+}
+
+/// writes and reads the dynamic field `count` of the object `n` times (the loader's bench: field calls)
+#[cfg(feature = "bench")]
+#[function(ns = "Sample", name = "fieldBack")]
+fn field_back(call: Call, object: i32, n: i32) -> i32 {
+    let object = object as u32;
+    let mut total = 0;
+    for i in 0..n {
+        call.set_field(object, b"count", b"", i.to_string().as_bytes());
+        let value = call.field(object, b"count", b"").unwrap_or_default();
+        total += i32::from(!value.is_empty());
+    }
+    total
+}
+
 /// A square in the world, above the floor: drawn at the opaque stage, depth tested.
 fn world_square(_frame: &PassFrame, out: &mut Triangles) {
     let corners = [
@@ -57,6 +84,8 @@ impl Extension for Sample {
         ext.script()
             .natives(natives![sample_greet, add, greeting_twice])
             .global("$Sample::Greeting", "Hello");
+        #[cfg(feature = "bench")]
+        ext.script().natives(natives![call_back, field_back]);
         ext.render()
             .pass(Stage::Opaque, || world_square)
             .pass(Stage::Overlay, || badge);

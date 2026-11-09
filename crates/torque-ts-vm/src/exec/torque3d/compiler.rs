@@ -29,6 +29,7 @@ impl Compiler for Torque3dCompiler {
                 })
                 .collect(),
             syntax_error: output.syntax_error,
+            same_as_run: !output.syntax_error,
             code: output.dso,
             work: output.work,
         }

@@ -473,16 +473,22 @@ impl Fields {
     /// Sets a field; the empty string deletes it.
     pub fn set(&mut self, name: &[u8], value: &[u8]) {
         let value = until_nul(value);
-        let key = fold(name);
-        if value.is_empty() {
-            self.map.remove(&key);
-            return;
-        }
-        match self.map.get_mut(&key) {
-            Some(entry) => entry.1 = value.to_vec(),
-            None => {
-                self.map.insert(key, (name.to_vec(), value.to_vec()));
+        // An existing field is found by a folded copy of the name on the stack and its value buffer is reused; only a
+        // new field allocates (a key, a spelling and a value).
+        let done = with_folded(name, |key| {
+            if value.is_empty() {
+                self.map.remove(key);
+                return true;
             }
+            let Some(entry) = self.map.get_mut(key) else {
+                return false;
+            };
+            entry.1.clear();
+            entry.1.extend_from_slice(value);
+            true
+        });
+        if !done {
+            self.map.insert(fold(name), (name.to_vec(), value.to_vec()));
         }
     }
 
@@ -897,7 +903,7 @@ impl SimObject {
             }
             return;
         }
-        self.fields.set(&dynamic_name(name, array), value);
+        with_dynamic_name(name, array, |full| self.fields.set(full, value));
     }
 
     /// `getDataField`: a static field when the class declares `name` (see [`read_slot`](Self::read_slot);
@@ -933,15 +939,43 @@ impl SimObject {
                 })
                 .unwrap_or_default();
         }
-        let found = if until_nul(array).is_empty() {
-            self.fields.get(until_nul(name))
-        } else {
-            self.fields.get(&dynamic_name(name, array))
-        };
-        match found {
-            Some(value) if charge(value.len() as u64) => value.to_vec(),
-            _ => Vec::new(),
+        let mut out = Vec::new();
+        self.dynamic_field_charged_into(name, array, charge, &mut out);
+        out
+    }
+
+    /// [`data_field_charged`](Self::data_field_charged) appending the value to `out` (a buffer the caller reuses): a
+    /// dynamic field is copied once, into it.
+    pub fn data_field_charged_into(
+        &self,
+        classes: &ClassRegistry,
+        name: &[u8],
+        array: &[u8],
+        names: &dyn Fn(ObjId) -> Option<Vec<u8>>,
+        charge: &mut dyn FnMut(u64) -> bool,
+        out: &mut Vec<u8>,
+    ) {
+        if classes.static_field(self.class, name).is_some() {
+            out.extend_from_slice(&self.data_field_charged(classes, name, array, names, charge));
+            return;
         }
+        self.dynamic_field_charged_into(name, array, charge, out);
+    }
+
+    fn dynamic_field_charged_into(
+        &self,
+        name: &[u8],
+        array: &[u8],
+        charge: &mut dyn FnMut(u64) -> bool,
+        out: &mut Vec<u8>,
+    ) {
+        with_dynamic_name(name, array, |full| {
+            if let Some(value) = self.fields.get(full)
+                && charge(value.len() as u64)
+            {
+                out.extend_from_slice(value);
+            }
+        });
     }
 
     /// `setDataField` of a DYNAMIC field (the empty string deletes it). False when `name` is a static field
@@ -957,7 +991,7 @@ impl SimObject {
         if classes.static_field(self.class, name).is_some() {
             return false;
         }
-        self.fields.set(&dynamic_name(name, array), value);
+        with_dynamic_name(name, array, |full| self.fields.set(full, value));
         true
     }
 
@@ -1088,13 +1122,22 @@ pub fn split_field_spec(spec: &[u8]) -> (&[u8], &[u8]) {
 /// [`MAX_FIELD_NAME`] bytes; a name without one is used as it is. A host that checks field names (a policy on what a
 /// script language may write) builds them with this, so it sees the name the write will use.
 pub fn dynamic_name(name: &[u8], array: &[u8]) -> Vec<u8> {
-    let mut full = until_nul(name).to_vec();
+    with_dynamic_name(name, array, <[u8]>::to_vec)
+}
+
+/// [`dynamic_name`] handed to `f`, built on the stack: a field read or written by a script costs no name allocation.
+pub fn with_dynamic_name<R>(name: &[u8], array: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
+    let name = until_nul(name);
     let array = until_nul(array);
-    if !array.is_empty() {
-        full.extend_from_slice(array);
-        full.truncate(MAX_FIELD_NAME);
+    if array.is_empty() {
+        return f(name);
     }
-    full
+    let mut full = [0u8; MAX_FIELD_NAME];
+    let name_len = name.len().min(MAX_FIELD_NAME);
+    full[..name_len].copy_from_slice(&name[..name_len]);
+    let array_len = array.len().min(MAX_FIELD_NAME - name_len);
+    full[name_len..name_len + array_len].copy_from_slice(&array[..array_len]);
+    f(&full[..name_len + array_len])
 }
 
 /// What [`Objects::register`] did. `wrapped`: the dynamic id counter wrapped (the caller may say so).

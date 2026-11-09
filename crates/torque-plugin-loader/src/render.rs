@@ -265,7 +265,7 @@ struct Instance {
 
 impl Instance {
     fn frame(&mut self, frame: &TorquePassFrame, out: &mut TriangleList) {
-        if self.failed || self.state.disabled().is_some() {
+        if self.failed || self.state.is_off() {
             return;
         }
         let spec = &self.state.passes[self.index];
@@ -274,7 +274,7 @@ impl Instance {
                 return;
             };
             // Disabled by another thread's call while this one waited for the lock: not called again.
-            if self.state.disabled().is_some() {
+            if self.state.is_off() {
                 return;
             }
             if self.made.is_none() {
@@ -340,7 +340,7 @@ impl Drop for Instance {
     fn drop(&mut self) {
         // A disabled extension is not called again, even to free: its instance is left as it is.
         if let Some(made) = self.made.take()
-            && self.state.disabled().is_none()
+            && !self.state.is_off()
             && let Some(_one_at_a_time) = self.state.enter()
         {
             ffi::drop_pass(&self.state.passes[self.index], made);

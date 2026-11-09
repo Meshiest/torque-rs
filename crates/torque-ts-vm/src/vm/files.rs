@@ -13,7 +13,7 @@ use torque_ts_bytecode::DsoFile;
 
 use super::{COMPILE_BASE_WORK, MAX_LOG_LINE, Mode, Native, NativeCall, Vm, VmError, lossy};
 use crate::code::CodeBlock;
-use crate::host::{FileRead, Purpose, Refusal};
+use crate::host::{Compiled, FileRead, Purpose, Refusal};
 use crate::text::{atoi, fold, until_nul};
 use crate::vm::{Level, LogLine};
 
@@ -417,7 +417,7 @@ impl Vm {
     }
 
     /// The compiler's messages, as log lines (cut at the console's line length like every other).
-    fn print_report(&mut self, report: Vec<LogLine>) {
+    fn print_report(&mut self, report: &[LogLine]) {
         for line in report {
             self.log_bytes(line.level, &line.text);
         }
@@ -442,22 +442,40 @@ impl Vm {
         name: Option<&[u8]>,
         purpose: Purpose,
     ) -> (Option<DsoFile>, Verdict) {
+        let (compiled, verdict) = self.compile_with(text, name, purpose, None);
+        (compiled.code, verdict)
+    }
+
+    /// [`compile_source`](Self::compile_source), keeping the whole result. With `again` (a [`Purpose::Check`] result of
+    /// the same text that is [`same_as_run`](Compiled::same_as_run)) a [`Purpose::Run`] compile does not run the
+    /// compiler a second time: it bills, prints and gives what that one did.
+    #[inline(never)]
+    fn compile_with(
+        &mut self,
+        text: &[u8],
+        name: Option<&[u8]>,
+        purpose: Purpose,
+        again: Option<Compiled>,
+    ) -> (Compiled, Verdict) {
         if self.running > 0 && self.ensure_budget().is_err() {
-            return (None, Verdict::OutOfBudget);
+            return (Compiled::default(), Verdict::OutOfBudget);
         }
         // The fixed cost of starting a compile (a thread with a big stack), whatever the text: see
         // `COMPILE_BASE_STEPS`. After the budget check, so a compile that has the budget for its text still starts
         // (as before) and the next one is the one that cannot.
         self.objects.add_work(COMPILE_BASE_WORK);
-        let compiled = self.compiler.compile(text, name, purpose);
+        let compiled = match again {
+            Some(compiled) => compiled,
+            None => self.compiler.compile(text, name, purpose),
+        };
         self.objects.add_work(compiled.work);
-        self.print_report(compiled.report);
+        self.print_report(&compiled.report);
         let verdict = if compiled.syntax_error {
             Verdict::SyntaxError
         } else {
             Verdict::Clean
         };
-        (compiled.code, verdict)
+        (compiled, verdict)
     }
 
     /// Runs a loaded block from its start in the current local frame (as `exec` and `eval` do) and
@@ -588,6 +606,8 @@ impl Vm {
         let name = self.file_name(path);
         let dso_path = dso_path(path);
         let mut loadable = None;
+        // The first compile's result, when the second can be that same one.
+        let mut again = None;
         if let Some(bytes) = &dso
             && (source.is_none() || self.files.modified(&dso_path) >= self.files.modified(path))
         {
@@ -603,10 +623,11 @@ impl Vm {
             if compiled {
                 // `CodeBlock::compile`: only its messages (nothing is written), and an existing (older) DSO
                 // runs after all. A `.mis` has no compiled form and skips this pass.
-                if self.compile_source(text, Some(&name), Purpose::Check).1 == Verdict::OutOfBudget
-                {
+                let (first, verdict) = self.compile_with(text, Some(&name), Purpose::Check, None);
+                if verdict == Verdict::OutOfBudget {
                     return Prepared::OutOfBudget;
                 }
+                again = Some(first).filter(|first| first.same_as_run);
                 let wanted = self.executor.format().version();
                 loadable = dso.filter(|bytes| dso_version(bytes) == wanted);
             }
@@ -625,11 +646,11 @@ impl Vm {
         };
         self.print(format!("Executing {}.", lossy(&name)).as_bytes());
         // `compileExec`: its messages again, and the code of the statements before any syntax error.
-        let (code, verdict) = self.compile_source(&text, Some(&name), Purpose::Run);
+        let (compiled, verdict) = self.compile_with(&text, Some(&name), Purpose::Run, again);
         if verdict == Verdict::OutOfBudget {
             return Prepared::OutOfBudget;
         }
-        match code {
+        match compiled.code {
             Some(code) => match self.load_compiled(&code, Some(&name)) {
                 Some(block) => Prepared::Run(block, mode),
                 // A block that does not load still counts as executed.

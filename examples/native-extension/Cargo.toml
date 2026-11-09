@@ -16,3 +16,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 torque-plugin-sdk = { path = "../../crates/torque-plugin-sdk" }
+
+[features]
+# Two natives that call back into the engine, for the loader's bench (`just bench-script`); the tests build without it.
+bench = []

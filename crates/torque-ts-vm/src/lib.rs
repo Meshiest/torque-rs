@@ -17,6 +17,22 @@
 //! - A variable's name ends at its first NUL byte, for its key and the spelling it keeps alike, and a global pattern
 //!   reads a name the same way (`a_name_is_the_same_variable_up_to_its_nul`,
 //!   `a_globals_effects_come_from_every_pattern_that_names_it`).
+//!
+//! **Speed** (`just bench-script` prints the workloads below, for both executors; a change that alters what a script
+//! prints changes a digest it prints):
+//! - A call from the host into script allocates nothing but what the script's own work needs: `Executor::save`
+//!   returns a plain [`RunMark`](exec::RunMark), `Vm::invoke_owned` and `call_method_owned` take the argument list
+//!   without copying it and skip the result copy when it is dropped (a fired event). Benches `host-calls` and
+//!   `schedule`.
+//! - A number becomes text on the stack (`text::with_format_int`, `with_format_g`, `with_format_g9`), on the string
+//!   stack and in a variable read, and prints what `format_int`, `format_g` and `format_g9` print
+//!   (`the_stack_forms_print_what_the_allocating_ones_do`). Bench `numstr`.
+//! - A dynamic field that exists is found by a name folded on the stack, written into its own buffer and read into the
+//!   executor's, with an arrayed field's name built on the stack. Benches `fields` and `objects`.
+//! - An object with one pending event holds no set, and the queue's maps use the id hasher
+//!   (`an_objects_events_are_tracked_from_one_to_many_and_back`). Bench `schedule`.
+//! - `exec` runs the compiler once for a source whose check pass the run pass would repeat
+//!   (`exec_compiles_a_clean_source_once_and_a_broken_one_twice`). Benches `exec-files` and `eval`.
 
 pub mod classes;
 pub mod code;

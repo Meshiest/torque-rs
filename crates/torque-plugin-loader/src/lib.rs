@@ -98,6 +98,17 @@
 //!   (`the_allowlist_is_replaced_whole_and_never_over_a_file_it_cannot_read`, `a_version_with_a_comment_mark_is_refused`).
 //! - A script engine dropped inside a call into an extension is told to its languages when the outermost call returns
 //!   (`a_script_engine_dropped_inside_a_call_is_heard_when_the_call_returns`).
+//!
+//! **Speed** (`just bench-script` runs `benches/native_call.rs`: loaded against compiled-in natives, back-calls and
+//! field calls, in nanoseconds per call):
+//! - A call into an extension takes no lock to see it is not disabled (`ExtensionState::is_off`), finds its owner
+//!   thread with an atomic, and its frame borrows the call's arguments instead of copying them.
+//! - A call back into the engine hands its argument list on to `Vm::invoke_owned` and reads names and field text in
+//!   place.
+//! - `DenyCodeAndFiles` allocates only to refuse: the message is built in the refusal's branch, a field's name on the
+//!   stack (`every_native_that_writes_or_evaluates_is_denied_to_languages` holds the verdicts).
+//! - The table of queued language calls is swept of dead ones once per `SWEEP_COOLDOWN` recordings when it stays
+//!   full, not on every `schedule` (`a_full_table_is_swept_of_dead_calls_and_then_not_for_every_recording`).
 
 #![warn(missing_docs)]
 

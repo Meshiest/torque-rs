@@ -13,7 +13,7 @@ use torque_ts_bytecode::classic::ClassicDialect;
 
 use crate::lexer::{Language, Lexer};
 use crate::parser::{self, Scanner, Syntax};
-use crate::{Diagnostic, Level, MAX_SOURCE_BYTES, Purpose, WORKER_STACK};
+use crate::{COULD_NOT_RUN, Diagnostic, Level, MAX_SOURCE_BYTES, Purpose, worker};
 
 /// What a build of the classic code generator does its own way (see [`codegen`]).
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +78,7 @@ impl Default for Profile {
 
 /// What a compile gives.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Output {
     pub diagnostics: Vec<Diagnostic>,
     /// A syntax error was reported.
@@ -89,6 +90,10 @@ pub struct Output {
     /// the code generator fills them with [`codegen::gap_word`]); otherwise it is the code's length. None without
     /// a `dso`.
     pub code_end: Option<usize>,
+    /// A [`Purpose::Run`] compile of the same text would not give this output: a `precompile size mismatch` was
+    /// reported as the error [`Purpose::Check`] makes of it. (After a syntax error the two differ as well: see
+    /// `syntax_error`.)
+    pub run_differs: bool,
     /// Work done, in the VM's work units (one per source byte scanned, per parser step and per node visit of
     /// the code generator): the VM charges it to the step budget.
     pub work: u64,
@@ -107,26 +112,24 @@ pub fn compile(source: &[u8], file: Option<&[u8]>, purpose: Purpose, profile: &P
     if cfg!(target_arch = "wasm32") {
         return compile_here(source, file, purpose, profile);
     }
-    let joined = std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .name("ts-compiler".into())
-            .stack_size(WORKER_STACK)
-            .spawn_scoped(scope, || compile_here(source, file, purpose, profile))
-            .map(|handle| handle.join())
-    });
-    match joined {
-        Ok(Ok(output)) => output,
-        // A thread could not be started (or, impossibly, the compiler panicked).
-        _ => Output {
-            diagnostics: vec![Diagnostic {
-                level: Level::Error,
-                text: b"the compiler could not run".to_vec(),
-            }],
-            syntax_error: true,
-            dso: None,
-            code_end: None,
-            work: source.len() as u64,
-        },
+    let (source, file, profile) = (source.to_vec(), file.map(<[u8]>::to_vec), profile.clone());
+    let len = source.len() as u64;
+    worker::run(move || compile_here(&source, file.as_deref(), purpose, &profile))
+        .unwrap_or_else(|| could_not_run(len))
+}
+
+/// What [`compile`] gives when its worker thread could not be started (or, impossibly, the compiler panicked).
+fn could_not_run(work: u64) -> Output {
+    Output {
+        diagnostics: vec![Diagnostic {
+            level: Level::Error,
+            text: COULD_NOT_RUN.to_vec(),
+        }],
+        syntax_error: true,
+        dso: None,
+        code_end: None,
+        run_differs: false,
+        work,
     }
 }
 
@@ -158,6 +161,7 @@ pub fn compile_here(
             syntax_error: true,
             dso: None,
             code_end: None,
+            run_differs: false,
             work: source.len() as u64,
         };
     }
@@ -170,14 +174,17 @@ pub fn compile_here(
             syntax_error: parsed.syntax_error,
             dso: None,
             code_end: None,
+            run_differs: false,
             work,
         };
     }
     let generator = codegen::Gen::new(file, &profile.dialect, profile.generation);
     let (dso, mut generated, visits, code_end) = generator.generate(&parsed.script);
+    let mut run_differs = false;
     if purpose == Purpose::Check {
         for d in &mut generated {
             if d.text == codegen::RUN_MISMATCH {
+                run_differs = true;
                 d.level = Level::Error;
                 d.text = profile.generation.check_mismatch.to_vec();
             }
@@ -190,6 +197,7 @@ pub fn compile_here(
         diagnostics,
         syntax_error: parsed.syntax_error || failed,
         code_end: dso.is_ok().then_some(code_end),
+        run_differs,
         dso: dso.ok(),
         work,
     }
