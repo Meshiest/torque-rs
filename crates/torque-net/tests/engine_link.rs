@@ -432,7 +432,7 @@ fn no_answer_is_larger_than_its_request() {
         let replies = match gate.receive(from, request, now) {
             GateOutcome::Drop => vec![],
             GateOutcome::Reply(r) => vec![r],
-            GateOutcome::Open(mut session) => {
+            GateOutcome::Open { mut session, .. } => {
                 gate.settle(from);
                 let mut out = Pipe::new(LinkFacts::PLAIN, 3);
                 for t in 0..20 {
@@ -513,8 +513,9 @@ fn a_cookie_from_another_address_or_epoch_is_refused() {
     client.poll(&mut out, &mut NoStreams, t0);
     let opening = out.log[1].0.clone();
 
-    let opened =
-        |gate: &mut Gate, at, now| matches!(gate.receive(at, &opening, now), GateOutcome::Open(_));
+    let opened = |gate: &mut Gate, at, now| {
+        matches!(gate.receive(at, &opening, now), GateOutcome::Open { .. })
+    };
     assert!(
         !opened(&mut Gate::new(config(), KEY), elsewhere, t0),
         "another address"
@@ -548,7 +549,7 @@ fn a_cookie_from_another_address_or_epoch_is_refused() {
     other_nonce[2] ^= 1;
     assert!(!matches!(
         Gate::new(config(), KEY).receive(from, &other_nonce, t0),
-        GateOutcome::Open(_)
+        GateOutcome::Open { .. }
     ));
 }
 
@@ -574,7 +575,10 @@ fn the_gate_bounds_pending_sessions_per_address() {
         };
         client.receive(&c, now);
         client.poll(&mut out, &mut NoStreams, now);
-        if matches!(gate.receive(from, &out.log[1].0, now), GateOutcome::Open(_)) {
+        if matches!(
+            gate.receive(from, &out.log[1].0, now),
+            GateOutcome::Open { .. }
+        ) {
             opened += 1;
         }
     }
@@ -777,7 +781,7 @@ fn a_replayed_opening_opens_no_second_session() {
     let opening = opening_through(&mut gate, from, 5, t0);
     assert!(matches!(
         gate.receive(from, &opening, t0),
-        GateOutcome::Open(_)
+        GateOutcome::Open { .. }
     ));
     gate.settle(from);
     for later in [0, 1_000, 11_000, COOKIE_PERIOD_MS] {
@@ -809,7 +813,7 @@ fn a_clock_jump_back_does_not_keep_cookies_alive() {
     let opening = opening_through(&mut steady, from, 6, t0);
     assert!(matches!(
         steady.receive(from, &opening, t0 + COOKIE_PERIOD_MS),
-        GateOutcome::Open(_)
+        GateOutcome::Open { .. }
     ));
 }
 
@@ -905,4 +909,293 @@ fn sequences_and_message_ids_wrap() {
     }
     assert_eq!(got, total);
     assert!(p.established());
+}
+
+fn small_gate(per_network: usize, total: usize) -> Gate {
+    let mut config = GateConfig::new(SessionConfig::new(GAME));
+    config.opened_per_network = per_network;
+    config.max_opened = total;
+    Gate::new(config, KEY)
+}
+
+/// Opens one session from `from` through `gate` and settles it; the opening, if it opened.
+fn open_one(gate: &mut Gate, from: std::net::SocketAddr, nonce: u64, now: u32) -> Option<Vec<u8>> {
+    let opening = opening_through(gate, from, nonce, now);
+    let opened = matches!(gate.receive(from, &opening, now), GateOutcome::Open { .. });
+    gate.settle(from);
+    opened.then_some(opening)
+}
+
+fn v4(a: u8, b: u8, c: u8, d: u8) -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([a, b, c, d], 4000))
+}
+
+/// One /24 opening session after session holds no more than its share of the replay table, and never stops opening.
+#[test]
+fn one_network_cannot_fill_the_replay_table() {
+    let mut gate = small_gate(4, 16);
+    let now = 100_000;
+    for host in 1..=60u8 {
+        assert!(
+            open_one(&mut gate, v4(10, 0, 0, host), u64::from(host), now).is_some(),
+            "host {host}"
+        );
+        assert!(gate.remembered() <= 4, "{} remembered", gate.remembered());
+    }
+    for net in 1..=12u8 {
+        assert!(
+            open_one(&mut gate, v4(10, net, 0, 1), 7, now).is_some(),
+            "network {net}"
+        );
+    }
+    assert_eq!(gate.remembered(), 16);
+
+    // An IPv6 /64 is one network too.
+    let mut gate = small_gate(4, 16);
+    for host in 1..=20u16 {
+        let from = std::net::SocketAddr::from(([0xfd00, 0, 0, 1, 0, 0, 0, host], 4000));
+        assert!(open_one(&mut gate, from, u64::from(host), now).is_some());
+        assert!(gate.remembered() <= 4);
+    }
+}
+
+/// Networks enough to fill the table: the oldest entries go, and a fresh client still gets in.
+#[test]
+fn many_networks_filling_the_replay_table_still_let_a_fresh_client_in() {
+    let mut gate = small_gate(4, 16);
+    let now = 100_000;
+    let mut openings = Vec::new();
+    for net in 0..64u8 {
+        let from = v4(10, net, 0, 1);
+        openings.push((from, open_one(&mut gate, from, 1, now).expect("opens")));
+        assert!(gate.remembered() <= 16);
+    }
+    assert!(
+        open_one(&mut gate, v4(192, 168, 1, 2), 999, now).is_some(),
+        "a fresh client opens"
+    );
+    assert_eq!(gate.remembered(), 16);
+    // The newest are still remembered, so their replays stay refused.
+    for (from, opening) in &openings[openings.len() - 15..] {
+        assert!(matches!(
+            gate.receive(*from, opening, now),
+            GateOutcome::Drop
+        ));
+    }
+}
+
+/// A replay is refused while its entry is remembered; once its own network evicted the entry early, it opens, as the
+/// docs say, and is then remembered again.
+#[test]
+fn a_replay_is_refused_until_its_entry_is_evicted() {
+    let mut gate = small_gate(4, 4_096);
+    let now = 100_000;
+    let first = open_one(&mut gate, v4(10, 0, 0, 1), 1, now).expect("opens");
+    for host in 2..=4u8 {
+        open_one(&mut gate, v4(10, 0, 0, host), 1, now).expect("opens");
+    }
+    for later in [0, 5_000, 20_000] {
+        assert!(
+            matches!(
+                gate.receive(v4(10, 0, 0, 1), &first, now + later),
+                GateOutcome::Drop
+            ),
+            "a replay {later} ms on"
+        );
+    }
+    open_one(&mut gate, v4(10, 0, 0, 5), 1, now + 20_000).expect("opens");
+    assert!(
+        matches!(
+            gate.receive(v4(10, 0, 0, 1), &first, now + 20_000),
+            GateOutcome::Open { .. }
+        ),
+        "evicted by its own network: replayable until its cookie expires"
+    );
+    gate.settle(v4(10, 0, 0, 1));
+    assert!(
+        matches!(
+            gate.receive(v4(10, 0, 0, 1), &first, now + 20_000),
+            GateOutcome::Drop
+        ),
+        "and once it opened again it is remembered again"
+    );
+}
+
+/// Opens one session from `from` through `gate` and leaves it pending; what the gate evicted for it, if it opened.
+fn open_pending(
+    gate: &mut Gate,
+    from: std::net::SocketAddr,
+    nonce: u64,
+    now: u32,
+) -> Option<Option<std::net::SocketAddr>> {
+    let opening = opening_through(gate, from, nonce, now);
+    match gate.receive(from, &opening, now) {
+        GateOutcome::Open { evicted, .. } => Some(evicted),
+        _ => None,
+    }
+}
+
+/// Networks enough to fill the pending table, none of them finishing: the oldest is evicted, and a fresh client still
+/// connects all the way.
+#[test]
+fn many_networks_filling_the_pending_table_still_let_a_fresh_client_connect() {
+    let max = GateConfig::new(SessionConfig::new(GAME)).max_pending;
+    let mut p = Pair::new(LinkFacts::PLAIN, 21);
+    let now = p.now;
+    let gate = p.gate.as_mut().expect("a plain pair has a gate");
+    for net in 0..max {
+        let from = v4(10, u8::try_from(net).expect("64 networks"), 0, 1);
+        assert_eq!(
+            open_pending(gate, from, 1, now),
+            Some(None),
+            "network {net}"
+        );
+    }
+    assert_eq!(gate.pending(), max);
+    assert!(p.connect(200), "the fresh client connects");
+
+    // The one that made room names the oldest, which the gate no longer counts.
+    let mut gate = Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY);
+    for net in 0..max {
+        let from = v4(10, u8::try_from(net).expect("64 networks"), 0, 1);
+        open_pending(&mut gate, from, 1, now + u32::try_from(net).expect("small"));
+    }
+    let late = now + 1_000;
+    assert_eq!(
+        open_pending(&mut gate, v4(192, 168, 7, 7), 2, late),
+        Some(Some(v4(10, 0, 0, 1)))
+    );
+    assert_eq!(gate.pending(), max);
+}
+
+/// One /24 holds at most its share of pending sessions; other networks still open.
+#[test]
+fn one_network_holds_at_most_its_pending_share() {
+    let mut gate = Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY);
+    let now = 1_000;
+    let opened = (1..=20u8)
+        .filter(|&host| open_pending(&mut gate, v4(10, 0, 0, host), 1, now).is_some())
+        .count();
+    assert_eq!(opened, 4);
+    assert_eq!(gate.pending(), 4);
+    assert_eq!(
+        open_pending(&mut gate, v4(10, 0, 1, 1), 1, now),
+        Some(None),
+        "another /24 opens"
+    );
+
+    let mut gate = Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY);
+    let opened = (1..=20u16)
+        .filter(|&host| {
+            let from = std::net::SocketAddr::from(([0xfd00, 0, 0, 1, 0, 0, 0, host], 4000));
+            open_pending(&mut gate, from, 1, now).is_some()
+        })
+        .count();
+    assert_eq!(opened, 4, "a /64 likewise");
+}
+
+/// `a.b.c.d` as a dual-stack socket reports it: `::ffff:a.b.c.d`.
+fn mapped(a: u8, b: u8, c: u8, d: u8, port: u16) -> std::net::SocketAddr {
+    std::net::SocketAddr::from((std::net::Ipv4Addr::new(a, b, c, d).to_ipv6_mapped(), port))
+}
+
+/// An IPv4-mapped address is the IPv4 address it maps: one IP, one /24, one cookie; mapped clients in different /24s do
+/// not share caps.
+#[test]
+fn mapped_ipv4_addresses_count_as_their_ipv4_form() {
+    let now = 1_000;
+    let plain = |d: u8, port: u16| std::net::SocketAddr::from(([10, 0, 0, d], port));
+
+    // One IP: two pending from it in either form, then the third is refused.
+    let mut gate = Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY);
+    assert!(open_pending(&mut gate, plain(1, 4000), 1, now).is_some());
+    assert!(open_pending(&mut gate, mapped(10, 0, 0, 1, 4001), 1, now).is_some());
+    assert!(
+        open_pending(&mut gate, mapped(10, 0, 0, 1, 4002), 1, now).is_none(),
+        "the per-IP cap"
+    );
+    gate.settle(mapped(10, 0, 0, 1, 4000));
+    assert_eq!(
+        gate.pending(),
+        1,
+        "settling the mapped form settles the plain one"
+    );
+
+    // One /24: four pending across both forms, then the network is full; a mapped client elsewhere still opens.
+    let mut gate = Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY);
+    for d in 1..=2u8 {
+        assert!(open_pending(&mut gate, plain(d, 4000), 1, now).is_some());
+        assert!(open_pending(&mut gate, mapped(10, 0, 0, d + 2, 4000), 1, now).is_some());
+    }
+    assert!(
+        open_pending(&mut gate, mapped(10, 0, 0, 9, 4000), 1, now).is_none(),
+        "the /24 is full"
+    );
+    assert!(
+        open_pending(&mut gate, plain(9, 4000), 1, now).is_none(),
+        "in either form"
+    );
+    assert!(
+        open_pending(&mut gate, mapped(10, 0, 1, 9, 4000), 1, now).is_some(),
+        "another /24"
+    );
+    assert!(
+        open_pending(&mut gate, mapped(10, 0, 2, 9, 4000), 1, now).is_some(),
+        "and another"
+    );
+
+    // One cookie: one asked for in the mapped form verifies from the plain form, and the replay is caught across forms.
+    let mut gate = Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY);
+    let opening = opening_through(&mut gate, mapped(10, 0, 0, 1, 4000), 3, now);
+    assert!(matches!(
+        gate.receive(plain(1, 4000), &opening, now),
+        GateOutcome::Open { .. }
+    ));
+    gate.settle(plain(1, 4000));
+    assert!(matches!(
+        gate.receive(mapped(10, 0, 0, 1, 4000), &opening, now),
+        GateOutcome::Drop
+    ));
+}
+
+/// A host that keeps sessions by source, settles the ones that finish and drops every `evicted` one ends up holding
+/// exactly as many pending sessions as the gate counts.
+#[test]
+fn a_host_that_drops_evicted_sessions_matches_the_gate() {
+    let config = GateConfig::new(SessionConfig::new(GAME));
+    let max = config.max_pending;
+    let mut gate = Gate::new(config, KEY);
+    let mut host: std::collections::HashMap<std::net::SocketAddr, Session> =
+        std::collections::HashMap::new();
+    let mut now = 1_000;
+    let mut evictions = 0;
+    for i in 0..200u32 {
+        let [_, _, b, c] = i.to_be_bytes();
+        // Mapped and plain sources, all in different /24s.
+        let from = if i % 2 == 0 {
+            mapped(10, b, c, 1, 4000)
+        } else {
+            std::net::SocketAddr::from(([10, b, c, 1], 4000))
+        };
+        let opening = opening_through(&mut gate, from, u64::from(i), now);
+        let GateOutcome::Open { session, evicted } = gate.receive(from, &opening, now) else {
+            panic!("source {i} opens");
+        };
+        host.insert(from, *session);
+        if let Some(gone) = evicted {
+            assert!(
+                host.remove(&gone).is_some(),
+                "the evicted source is one the host holds"
+            );
+            evictions += 1;
+        }
+        if i % 7 == 0 {
+            host.remove(&from);
+            gate.settle(from);
+        }
+        assert_eq!(host.len(), gate.pending(), "after source {i}");
+        assert!(host.len() <= max);
+        now += 10;
+    }
+    assert!(evictions > 0, "the table filled");
 }

@@ -1,19 +1,34 @@
 //! The front door of a plain link's server (plain UDP): what it does with a datagram from an address that has no session yet.
 //!
 //! It keeps nothing for a `Hello`: the answer is a cookie, a keyed digest of the address, port, the client's nonce and the time
-//! epoch, which the client sends back in every `Opening`. Only an `Opening` whose cookie verifies opens a session, and the
-//! pending sessions are bounded in all and per source IP address. A `Hello` shorter than [`HELLO_BYTES`] is not answered, so
-//! no answer (a cookie, or a reject naming the game or the version) is larger than the datagram it answers, and answers are
-//! rate-limited per source and in all. Every other datagram from an address without a session is dropped unanswered.
+//! epoch, which the client sends back in every `Opening`. Only an `Opening` whose cookie verifies opens a session. Pending
+//! sessions (opened, not yet established) are bounded per source IP address and per source network (an IPv4 /24, an IPv6
+//! /64), where a new one past the cap is refused, and in all, where a new one evicts the oldest pending session instead
+//! ([`GateOutcome::Open`] names it, and the host must drop it), so no one holding many addresses keeps others from
+//! connecting: an honest handshake finishes in a few round trips, long before it is the oldest. A `Hello` shorter than
+//! [`HELLO_BYTES`] is not answered, so no answer (a cookie, or a reject naming the game or the version) is larger than the
+//! datagram it answers, and answers are rate-limited per source and in all. Every other datagram from an address without a
+//! session is dropped unanswered.
+//!
+//! Addresses are taken in their canonical form: an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`, as a dual-stack socket
+//! reports IPv4 peers) counts as the IPv4 address it maps, for the cookie, the per-address and per-network caps and the
+//! replay table alike. The address a host passes in is still the one it sends replies to.
 //!
 //! An `Opening` opens at most one session: the (address, nonce) pairs that opened one are kept for as long as their cookie
-//! could verify, so a copy replayed after the session settled is dropped. The gate's clock only goes forward: a step back is
-//! counted as no time, so cookies keep expiring when the host's clock jumps.
+//! could verify ([`COOKIE_LIFE_MS`]), so a copy replayed after the session settled is dropped. The table never refuses a new
+//! session: a source network (an IPv4 /24, an IPv6 /64) holds at most [`GateConfig::opened_per_network`] entries and
+//! evicts its own oldest past that, and a full table evicts the oldest entry of all, so no one holding many addresses can
+//! lock others out. An entry evicted before its cookie expired leaves that one opening replayable until then: at most
+//! [`COOKIE_LIFE_MS`] after its `Hello`, from the same address and port with the same nonce, so only by a sender who can
+//! already spoof that address and saw the opening, and it opens one pending session, as a fresh `Hello` from there would.
+//! That happens only when a network opens more than its share, or all networks together more than the table, within one
+//! cookie life. The gate's clock only goes forward: a step back is counted as no time, so cookies keep expiring when the
+//! host's clock jumps.
 //!
 //! The gate bounds sessions that are not yet established. How many established sessions one address or network may hold
 //! is the host's to cap (it owns the session table); see the module docs of [`super`].
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 
 use super::framing::{self, COOKIE_BYTES, Cookie, CookieValue, Datagram, Reject, RejectCode};
@@ -24,12 +39,16 @@ use crate::handshake::{RateWindow, SourceLimiter, siphash24};
 /// How long a cookie stays in one epoch: one verifies in its epoch and the next, so it lives between one and two periods.
 pub const COOKIE_PERIOD_MS: u32 = 30_000;
 
+/// The most a cookie can live: it verifies in its epoch and the next.
+pub const COOKIE_LIFE_MS: u32 = 2 * COOKIE_PERIOD_MS;
+
 /// What the cookie digests start with, so they never equal a digest of the same key made for something else.
 const COOKIE_DOMAIN: &[u8] = b"engine-cookie";
 
 /// The cookie of `from` and `nonce` in `epoch`: two keyed digests that differ in the byte after the domain.
 #[must_use]
 pub fn cookie(key: &[u8; 16], from: SocketAddr, nonce: u64, epoch: u64) -> CookieValue {
+    let from = canonical(from);
     let half = COOKIE_DOMAIN.len();
     let mut data = Vec::with_capacity(48);
     data.extend_from_slice(COOKIE_DOMAIN);
@@ -56,6 +75,11 @@ pub fn cookie(key: &[u8; 16], from: SocketAddr, nonce: u64, epoch: u64) -> Cooki
     CookieValue(out)
 }
 
+/// `addr` with an IPv4-mapped IPv6 address taken as the IPv4 address it maps.
+fn canonical(addr: SocketAddr) -> SocketAddr {
+    SocketAddr::new(addr.ip().to_canonical(), addr.port())
+}
+
 fn same(a: &CookieValue, b: &CookieValue) -> bool {
     a.0.iter().zip(b.0).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -65,16 +89,20 @@ fn same(a: &CookieValue, b: &CookieValue) -> bool {
 pub struct GateConfig {
     /// What each session it opens is set up with (its game is the one a `Hello` must name).
     pub session: SessionConfig,
-    /// Sessions opened and not yet settled, in all.
+    /// Sessions opened and not yet settled, in all; past it the oldest is evicted.
     pub max_pending: usize,
-    /// Of those, from one source IP address.
+    /// Of those, from one source IP address; past it a new one is refused.
     pub pending_per_ip: usize,
+    /// Of those, from one source network (an IPv4 /24 or an IPv6 /64); past it a new one is refused.
+    pub pending_per_network: usize,
     /// Answers to `Hello`s one source IP address gets a second.
     pub answers_per_ip_per_s: u32,
     /// Answers to `Hello`s the gate sends a second in all.
     pub answers_per_s: u32,
-    /// (address, nonce) pairs remembered as having opened a session; while it is full, no new session opens.
+    /// (address, nonce) pairs remembered as having opened a session; past it the oldest is forgotten.
     pub max_opened: usize,
+    /// Of those, from one source network (an IPv4 /24 or an IPv6 /64); past it that network's oldest is forgotten.
+    pub opened_per_network: usize,
 }
 
 impl GateConfig {
@@ -84,9 +112,11 @@ impl GateConfig {
             session,
             max_pending: 64,
             pending_per_ip: 2,
+            pending_per_network: 4,
             answers_per_ip_per_s: 4,
             answers_per_s: 2_000,
             max_opened: 4_096,
+            opened_per_network: 256,
         }
     }
 }
@@ -98,7 +128,13 @@ pub enum GateOutcome {
     Reply(Vec<u8>),
     /// A session for the source, which has already read the datagram. The host keeps it, sends it the source's datagrams
     /// from now on and calls [`Gate::settle`] once it is established or closed.
-    Open(Box<Session>),
+    Open {
+        session: Box<Session>,
+        /// The source (as the host passed it in) whose pending session made room for this one. The host must drop that
+        /// session: the gate has already stopped counting it, so a host that kept it would hold more pending sessions than
+        /// the gate's caps allow. It was never established.
+        evicted: Option<SocketAddr>,
+    },
 }
 
 /// A plain link's server front door.
@@ -110,11 +146,11 @@ pub struct Gate {
     last_now: Option<u32>,
     per_ip: SourceLimiter,
     answers: RateWindow,
-    /// Sessions opened and not settled, with when they opened.
-    pending: HashMap<SocketAddr, u64>,
-    /// The pairs that opened a session, and the order they did (oldest first) to forget them.
-    opened: HashSet<(SocketAddr, u64)>,
-    opened_order: VecDeque<(u64, SocketAddr, u64)>,
+    /// Sessions opened and not settled, by canonical source.
+    pending: HashMap<SocketAddr, Pending>,
+    /// Orders pending sessions opened in the same millisecond.
+    pending_next: u64,
+    opened: Opened,
 }
 
 impl Gate {
@@ -129,8 +165,8 @@ impl Gate {
             per_ip: SourceLimiter::default(),
             answers: RateWindow::default(),
             pending: HashMap::new(),
-            opened: HashSet::new(),
-            opened_order: VecDeque::new(),
+            pending_next: 0,
+            opened: Opened::default(),
         }
     }
 
@@ -141,13 +177,19 @@ impl Gate {
 
     /// The session for `from` is established or closed: it no longer counts as pending.
     pub fn settle(&mut self, from: SocketAddr) {
-        self.pending.remove(&from);
+        self.pending.remove(&canonical(from));
     }
 
     /// Sessions opened and not settled.
     #[must_use]
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+
+    /// (address, nonce) pairs remembered as having opened a session.
+    #[must_use]
+    pub fn remembered(&self) -> usize {
+        self.opened.by_age.len()
     }
 
     /// Moves the gate's clock to `now` and returns the epoch: the 32-bit clock unwrapped into one that only goes forward, so
@@ -171,27 +213,23 @@ impl Gate {
     fn expire(&mut self) {
         let clock = self.clock;
         self.pending
-            .retain(|_, opened| clock - *opened < u64::from(CONNECT_TIMEOUT_MS));
-        let life = 2 * u64::from(COOKIE_PERIOD_MS);
-        while let Some(&(at, from, nonce)) = self.opened_order.front()
-            && clock - at >= life
-        {
-            self.opened_order.pop_front();
-            self.opened.remove(&(from, nonce));
-        }
+            .retain(|_, p| clock - p.stamp.0 < u64::from(CONNECT_TIMEOUT_MS));
+        self.opened
+            .forget_before(clock.saturating_sub(u64::from(COOKIE_LIFE_MS)));
     }
 
-    /// Takes one datagram from `from`, an address with no session.
-    pub fn receive(&mut self, from: SocketAddr, data: &[u8], now: u32) -> GateOutcome {
+    /// Takes one datagram from `source`, an address with no session.
+    pub fn receive(&mut self, source: SocketAddr, data: &[u8], now: u32) -> GateOutcome {
         let epoch = self.tick(now);
         self.expire();
+        let from = canonical(source);
         match framing::parse(data) {
             Ok(Datagram::Hello(hello)) => self.hello(from, &hello, epoch, now),
             Ok(Datagram::Opening {
                 nonce,
                 cookie: Some(c),
                 ..
-            }) => self.opening(from, nonce, c, epoch, data, now),
+            }) => self.opening(Source { from, source }, nonce, c, epoch, data, now),
             _ => GateOutcome::Drop,
         }
     }
@@ -243,7 +281,7 @@ impl Gate {
 
     fn opening(
         &mut self,
-        from: SocketAddr,
+        Source { from, source }: Source,
         nonce: u64,
         c: CookieValue,
         epoch: u64,
@@ -252,21 +290,150 @@ impl Gate {
     ) -> GateOutcome {
         let fresh = same(&c, &cookie(&self.key, from, nonce, epoch))
             || epoch > 0 && same(&c, &cookie(&self.key, from, nonce, epoch - 1));
+        let network = Network::of(from);
         let from_ip = self.pending.keys().filter(|a| a.ip() == from.ip()).count();
+        let from_network = self
+            .pending
+            .keys()
+            .filter(|a| Network::of(**a) == network)
+            .count();
         if !fresh
-            || self.opened.contains(&(from, nonce))
-            || self.opened.len() >= self.config.max_opened
+            || self.opened.by_pair.contains_key(&(from, nonce))
             || self.pending.contains_key(&from)
-            || self.pending.len() >= self.config.max_pending
             || from_ip >= self.config.pending_per_ip
+            || from_network >= self.config.pending_per_network
         {
             return GateOutcome::Drop;
         }
+        let evicted = if self.pending.len() >= self.config.max_pending.max(1) {
+            let oldest = self
+                .pending
+                .iter()
+                .min_by_key(|(_, p)| p.stamp)
+                .map(|(a, _)| *a);
+            oldest
+                .and_then(|a| self.pending.remove(&a))
+                .map(|p| p.source)
+        } else {
+            None
+        };
         let mut session = Session::admitted(self.config.session.clone(), nonce, c, now);
         session.receive(data, now);
-        self.pending.insert(from, self.clock);
-        self.opened.insert((from, nonce));
-        self.opened_order.push_back((self.clock, from, nonce));
-        GateOutcome::Open(Box::new(session))
+        let stamp = (self.clock, self.pending_next);
+        self.pending.insert(from, Pending { stamp, source });
+        self.pending_next += 1;
+        self.opened.remember(
+            (from, nonce),
+            self.clock,
+            self.config.opened_per_network.max(1),
+            self.config.max_opened.max(1),
+        );
+        GateOutcome::Open {
+            session: Box::new(session),
+            evicted,
+        }
+    }
+}
+
+/// A datagram's source: canonical for every check, and as the host passed it in.
+#[derive(Debug, Clone, Copy)]
+struct Source {
+    from: SocketAddr,
+    source: SocketAddr,
+}
+
+/// A session opened and not yet settled.
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    stamp: Stamp,
+    /// The address as the host passed it in, to name the session if it is evicted.
+    source: SocketAddr,
+}
+
+/// A source network, the unit one party is assumed to hold many addresses of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Network {
+    /// The first three bytes (a /24).
+    V4([u8; 3]),
+    /// The first eight bytes (a /64).
+    V6([u8; 8]),
+}
+
+impl Network {
+    fn of(addr: SocketAddr) -> Network {
+        match addr.ip() {
+            IpAddr::V4(ip) => {
+                let [a, b, c, _] = ip.octets();
+                Network::V4([a, b, c])
+            }
+            IpAddr::V6(ip) => {
+                let o = ip.octets();
+                Network::V6([o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7]])
+            }
+        }
+    }
+}
+
+/// When an entry was made: the gate's clock, then a counter so two entries in one millisecond keep their order.
+type Stamp = (u64, u64);
+
+/// The pairs that opened a session, by pair, by age, and per network (each network's queue oldest first, so the oldest
+/// entry of all is always the front of its network's queue).
+#[derive(Default)]
+struct Opened {
+    by_pair: HashMap<(SocketAddr, u64), Stamp>,
+    by_age: BTreeMap<Stamp, (SocketAddr, u64)>,
+    per_network: HashMap<Network, VecDeque<Stamp>>,
+    next: u64,
+}
+
+impl Opened {
+    /// Remembers `pair` at `clock`, first forgetting its network's oldest past `per_network` and the oldest of all past
+    /// `total`.
+    fn remember(&mut self, pair: (SocketAddr, u64), clock: u64, per_network: usize, total: usize) {
+        let network = Network::of(pair.0);
+        while let Some(queue) = self.per_network.get(&network)
+            && queue.len() >= per_network
+            && let Some(&oldest) = queue.front()
+        {
+            self.forget(oldest);
+        }
+        while self.by_age.len() >= total
+            && let Some((&oldest, _)) = self.by_age.first_key_value()
+        {
+            self.forget(oldest);
+        }
+        let stamp = (clock, self.next);
+        self.next += 1;
+        self.by_pair.insert(pair, stamp);
+        self.by_age.insert(stamp, pair);
+        self.per_network
+            .entry(network)
+            .or_default()
+            .push_back(stamp);
+    }
+
+    /// Forgets every entry made before `clock`.
+    fn forget_before(&mut self, clock: u64) {
+        while let Some((&oldest, _)) = self.by_age.first_key_value()
+            && oldest.0 < clock
+        {
+            self.forget(oldest);
+        }
+    }
+
+    /// Forgets one entry, which is always the oldest of its network.
+    fn forget(&mut self, stamp: Stamp) {
+        let Some(pair) = self.by_age.remove(&stamp) else {
+            return;
+        };
+        self.by_pair.remove(&pair);
+        let network = Network::of(pair.0);
+        if let Some(queue) = self.per_network.get_mut(&network) {
+            queue.pop_front();
+            if queue.is_empty() {
+                self.per_network.remove(&network);
+            }
+        }
     }
 }

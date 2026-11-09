@@ -408,7 +408,7 @@ impl Fuzz {
                 d.len(),
                 r.len()
             ),
-            GateOutcome::Open(session) => {
+            GateOutcome::Open { session, .. } => {
                 self.opened += 1;
                 self.gate.settle(at);
                 self.gated.insert(

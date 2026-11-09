@@ -232,7 +232,7 @@ impl Pair {
                 (None, Some(g)) => match g.receive(client_addr(), &d, self.now) {
                     GateOutcome::Drop => {}
                     GateOutcome::Reply(r) => self.down.raw(r),
-                    GateOutcome::Open(s) => self.server = Some(*s),
+                    GateOutcome::Open { session, .. } => self.server = Some(*session),
                 },
                 (None, None) => unreachable!("a pair has a server or a gate"),
             }
