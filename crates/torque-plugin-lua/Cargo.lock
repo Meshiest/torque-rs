@@ -813,6 +813,7 @@ version = "0.1.0"
 name = "torque-collide"
 version = "0.1.0"
 dependencies = [
+ "rustc-hash",
  "torque-mapcore",
 ]
 
@@ -825,6 +826,7 @@ dependencies = [
  "torque-macros",
  "torque-net",
  "torque-permissions",
+ "torque-transfer",
  "torque-ts-vm",
 ]
 
@@ -942,6 +944,7 @@ dependencies = [
  "torque-net",
  "torque-resource",
  "torque-server",
+ "torque-transfer",
  "torque-ts-vm",
 ]
 
@@ -1055,6 +1058,14 @@ name = "torque-sim"
 version = "0.1.0"
 dependencies = [
  "torque-collide",
+]
+
+[[package]]
+name = "torque-transfer"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "torque-net",
 ]
 
 [[package]]

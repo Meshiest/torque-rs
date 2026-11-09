@@ -1,4 +1,4 @@
-error: expected `ns = "..."`, `name = "..."`, `usage = "..."`, `description = "..."`, `dev` or `crate = path`
+error: expected `ns = "..."`, `name = "..."`, `usage = "..."`, `description = "..."`, `dev`, `effects = "..."` or `crate = path`
  --> tests/ui/native_bad_options.rs:3:12
   |
 3 | #[function(namespace = "Pad")]
