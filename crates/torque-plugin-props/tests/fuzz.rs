@@ -1,7 +1,8 @@
 //! Hostile input on both sides. `TORQUE_FUZZ_PROPS=<n>` sets the rounds (default 20,000).
 //!
 //! - A hostile server: records of every shape (decoded from random bytes, and made of random values) reach a client's book, its
-//!   collision source and its draw function: nothing panics, the book stays within its cap, every shape it gives is finite.
+//!   collision source and its draw function: nothing panics, the book stays within its cap, every shape it gives is finite. The
+//!   same for joints: the book of joints, the tether it gives the predicted Player, the props a joint connects.
 //! - Hostile callers: the `prop*` functions and `propCheckPlacement` called with junk on a running server: nothing panics and the
 //!   caps hold.
 
@@ -12,16 +13,22 @@ use std::collections::BTreeMap;
 
 use torque_collide::source::{CollisionSource, ShapeKind};
 use torque_engine::net_classes::DatablockFields;
+use torque_game::player_tether::TetherSource;
 use torque_ghosts::Value;
 use torque_ghosts::codec::{NetWidths, ReadCtx, decode};
 use torque_net::bits::BitReader;
 use torque_net::huffman::Table;
 use torque_plugin_props::client::{ClientSource, MAX_CLIENT_PROPS, draw};
 use torque_plugin_props::data::{MAX_DRAW_SCALE, PropNumbers};
+use torque_plugin_props::joints::client::{ClientTethers, MAX_CLIENT_JOINTS};
+use torque_plugin_props::joints::records::{
+    EndWire, FlagsWire as JointFlagsWire, InitWire as JointInitWire, LengthWire, SpringWire,
+};
+use torque_plugin_props::joints::{KindId, MAX_LENGTH};
 use torque_plugin_props::quant::Quantized;
 use torque_plugin_props::records::{FlagsWire, InitWire, StateWire};
 use torque_plugin_props::world::MAX_PROPS;
-use torque_plugin_props::{ClientProps, PropGhost};
+use torque_plugin_props::{ClientJoints, ClientProps, JointGhost, PropGhost};
 
 fn rounds() -> usize {
     std::env::var("TORQUE_FUZZ_PROPS")
@@ -259,6 +266,191 @@ fn hostile_commands_and_calls_never_panic_the_server_and_the_caps_hold() {
     let world = s.world.as_ref().expect("a world");
     assert!(world.len() as u32 <= MAX_PROPS);
     assert!(!world.physics().is_poisoned());
+    for p in world.props().values() {
+        let st = p.q.state();
+        assert!(st.position.iter().chain(&st.linvel).all(|v| v.is_finite()));
+    }
+    assert!(rig.peers[0].ghosts() > 0, "the client is still there");
+}
+
+fn end(rng: &mut Rng) -> EndWire {
+    match rng.below(4) {
+        0 => EndWire::Free,
+        1 => EndWire::Point([rng.float(), rng.float(), rng.float()]),
+        2 => EndWire::Ghost {
+            ghost: rng.below(16) as u32,
+            offset: [rng.float(), rng.float(), rng.float()],
+        },
+        _ => EndWire::Waiting,
+    }
+}
+
+fn joint_record(rng: &mut Rng) -> JointGhost {
+    JointGhost {
+        init: (rng.below(2) == 0).then(|| JointInitWire {
+            kind: KindId::of(rng.below(8) as u32),
+            a: end(rng),
+            b: end(rng),
+        }),
+        length: (rng.below(2) == 0).then(|| LengthWire {
+            length: rng.float(),
+            min: rng.float(),
+        }),
+        spring: (rng.below(2) == 0).then(|| SpringWire {
+            stiffness: rng.float(),
+            damping: rng.float(),
+        }),
+        flags: (rng.below(2) == 0).then(|| JointFlagsWire {
+            at_limit: rng.below(2) == 0,
+            broken: rng.below(2) == 0,
+        }),
+    }
+}
+
+#[test]
+fn a_hostile_servers_joint_records_never_panic_the_client() {
+    let mut rng = Rng(0x1405_7b7e_f767_814f);
+    let joints = ClientJoints::default();
+    let props = ClientProps::default();
+    let tethers = ClientTethers {
+        joints: joints.clone(),
+        props: props.clone(),
+    };
+    let table = Table::torque();
+    let widths = NetWidths::engine_default();
+    let mut decoded = 0;
+    for round in 0..rounds() {
+        let r = if round % 2 == 0 {
+            let len = rng.below(48) as usize;
+            let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+            let mut reader = BitReader::new(&bytes);
+            reader.enable_string_buffer();
+            let ctx = ReadCtx::new(widths, round % 4 == 0);
+            match decode::<JointGhost>(&mut reader, &table, &mut torque_ghosts::free_charge(), &ctx)
+            {
+                Ok(r) => {
+                    decoded += 1;
+                    // What a decoder gives is held to its ranges.
+                    if let Some(l) = r.length {
+                        assert!(l.length.is_finite() && (0.0..=MAX_LENGTH).contains(&l.length));
+                        assert!(l.min.is_finite() && l.min <= l.length);
+                    }
+                    if let Some(s) = r.spring {
+                        assert!(s.stiffness.is_finite() && s.damping.is_finite());
+                    }
+                    r
+                }
+                Err(_) => joint_record(&mut rng),
+            }
+        } else {
+            joint_record(&mut rng)
+        };
+        let index = rng.below(10_000) as u32;
+        joints.0.borrow_mut().heard(index, &r);
+        // Props the joints may name, with hostile states.
+        if round % 8 == 0 {
+            props
+                .0
+                .borrow_mut()
+                .heard(rng.below(16) as u32, &record(&mut rng), |_| None);
+        }
+        if rng.below(5) == 0 {
+            joints.0.borrow_mut().removed(rng.below(10_000) as u32);
+        }
+        for key in [rng.below(16) as u32, index] {
+            if let Some(t) = tethers.tether(key) {
+                assert!(t.anchor.iter().chain(&t.offset).all(|v| v.is_finite()));
+                assert!(t.length.is_finite() && t.stiffness.is_finite() && t.damping.is_finite());
+            }
+            let _ = joints.0.borrow().connected(key);
+        }
+        assert!(joints.0.borrow().len() <= MAX_CLIENT_JOINTS);
+    }
+    assert!(decoded > 0, "some random bytes decode");
+}
+
+#[test]
+fn hostile_joint_calls_never_panic_the_server_and_the_caps_hold() {
+    let (mut rig, _files) = rig::clients(1, &[("$Test::Players", "1")], &[]);
+    let client = rig.eval("return ClientGroup.getObject(0);");
+    let player = rig.eval(&format!("return {client}.getControlObject();"));
+    for k in 0..12 {
+        rig.eval(&format!("propSpawn(Crate, \"{} 4 {}\");", k * 2, 1 + k % 3));
+    }
+    let things = rig.eval(
+        "%s = \"\"; for (%i = 0; %i < MissionCleanup.getCount(); %i++) { %o = MissionCleanup.getObject(%i); \
+         if (%o.getClassName() $= \"Prop\") %s = %s SPC %o; } return %s;",
+    );
+    let props: Vec<String> = things.split_whitespace().map(String::from).collect();
+    let mut rng = Rng(0x5851_f42d_4c95_7f2d);
+    let pick = |rng: &mut Rng| -> String {
+        match rng.below(6) {
+            0 => props[rng.below(props.len() as u64) as usize].clone(),
+            1 => format!("{} {} {}", rng.float(), rng.float(), rng.float()),
+            2 => format!(
+                "{} {} {} {}",
+                props[rng.below(props.len() as u64) as usize],
+                rng.float(),
+                rng.float(),
+                rng.float()
+            ),
+            3 => player.clone(),
+            4 => String::new(),
+            _ => rng.int().to_string(),
+        }
+    };
+    let calls = (rounds() / 20).max(500);
+    for k in 0..calls {
+        let (a, b, c) = (pick(&mut rng), pick(&mut rng), pick(&mut rng));
+        let (x, y) = (rng.float(), rng.float());
+        let j = rng.int();
+        let code = match k % 9 {
+            0 => format!("jointTether(\"{a}\", \"{b}\", {x}, {client});"),
+            1 => format!("jointGrapple(\"{a}\", \"{b}\", {x});"),
+            2 => format!("jointWeld(\"{a}\", \"{b}\", {client});"),
+            3 => format!("jointHinge(\"{a}\", \"{b}\", \"{c}\", \"{c}\");"),
+            4 => format!("jointWinch({j}, {x}, {y}, {x}); jointSetLength({j}, {x}, {y});"),
+            5 => format!(
+                "jointSetSpring({j}, {x}, {y}); jointSetBreakForce({j}, {x}); jointSetLimits({j}, {x}, {y}); jointSetMotor({j}, {x}, {y});"
+            ),
+            6 => {
+                let kind = ["", "tether", "winch", "weld", "hinge", "grapple", "rope"]
+                    [rng.below(7) as usize];
+                format!(
+                    "jointCheck({client}, \"{a}\", \"{b}\", \"{c}\", {x}, \"{kind}\", \"{c}\", {j}, {j});"
+                )
+            }
+            7 => format!("jointDelete({j}); jointGetLength({j}); jointCount({client});"),
+            _ => {
+                rig.step();
+                continue;
+            }
+        };
+        let _ = rig.server.vm_mut().eval(code.as_bytes());
+        if k % 32 == 0 {
+            // The joints the calls made get their own junk too.
+            let _ = rig.server.vm_mut().eval(
+                format!(
+                    "for (%i = 0; %i < MissionCleanup.getCount(); %i++) {{ %o = MissionCleanup.getObject(%i); \
+                     if (%o.getClassName() $= \"Joint\") {{ jointSetLength(%o, {x}, {y}); jointWinch(%o, {y}, {x}); jointSetSpring(%o, {x}, {y}); }} }}"
+                )
+                .as_bytes(),
+            );
+        }
+    }
+    rig.run(60);
+    let props = rig.props();
+    let s = props.0.borrow();
+    let world = s.world.as_ref().expect("a world");
+    let limits = world.joint_limits;
+    assert!(world.joints().len() as u32 <= limits.per_server);
+    for p in world.props().keys() {
+        assert!(world.joints_on(*p) <= limits.per_prop);
+    }
+    assert!(!world.physics().is_poisoned());
+    for j in world.joints().values() {
+        assert!(j.status.distance.is_finite() && j.status.force.is_finite());
+    }
     for p in world.props().values() {
         let st = p.q.state();
         assert!(st.position.iter().chain(&st.linvel).all(|v| v.is_finite()));

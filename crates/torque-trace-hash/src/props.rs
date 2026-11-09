@@ -17,8 +17,10 @@ const SETTLE_LIMIT: u32 = 400;
 /// The crate the scenario spawns, defined before the client is sent the datablocks.
 const DATABLOCK: &str = "datablock PropData(TraceCrate) { size = \"0.8 0.8 0.8\"; mass = 15; friction = 0.6; restitution = 0.1; };";
 
-/// The props scenario's run (module docs).
-pub fn drop() -> Result<Outcome, String> {
+/// A rig of a server with the props plugin and a predicting client that has it too (the client's half replayed from an engine of
+/// the plugin, the props' collision source in its prediction), `datablocks` defined before the client is sent them, settled into
+/// the client's prediction. The client's engine is returned with it (its resources are the client's books).
+pub(crate) fn props_rig(datablocks: &str) -> Result<(Rig, torque_engine::Engine), String> {
     // The client's half of the plugin, from an engine of the same plugin (the classes and the book are derived from the names
     // alone), and the props' collision source in its prediction.
     let client = EngineBuilder::new()
@@ -45,7 +47,7 @@ pub fn drop() -> Result<Outcome, String> {
     })?;
     rig.server
         .vm_mut()
-        .eval(DATABLOCK.as_bytes())
+        .eval(datablocks.as_bytes())
         .map_err(|e| format!("{e:?}"))?;
     if !rig.settle(SETTLE_LIMIT) {
         return Err(format!(
@@ -59,6 +61,12 @@ pub fn drop() -> Result<Outcome, String> {
                 .collect::<Vec<_>>()
         ));
     }
+    Ok((rig, client))
+}
+
+/// The props scenario's run (module docs).
+pub fn drop() -> Result<Outcome, String> {
+    let (mut rig, client) = props_rig(DATABLOCK)?;
     // Four layers of sixteen crates over the figure's way, a little apart and a little turned, falling onto the floor and each other.
     rig.server
         .vm_mut()
@@ -128,7 +136,7 @@ pub fn drop() -> Result<Outcome, String> {
     })
 }
 
-fn figure_at(rig: &Rig) -> Result<[f32; 3], String> {
+pub(crate) fn figure_at(rig: &Rig) -> Result<[f32; 3], String> {
     let vm = rig.server.vm();
     vm.objects()
         .find(b"TraceFigure")
@@ -137,7 +145,7 @@ fn figure_at(rig: &Rig) -> Result<[f32; 3], String> {
 }
 
 /// A resource of the rig's server's engine.
-fn rig_resource<T: Clone + 'static>(rig: &Rig) -> Result<T, String> {
+pub(crate) fn rig_resource<T: Clone + 'static>(rig: &Rig) -> Result<T, String> {
     rig.engine
         .resource::<T>()
         .map(|r| (*r).clone())

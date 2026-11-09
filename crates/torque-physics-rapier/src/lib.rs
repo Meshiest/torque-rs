@@ -7,7 +7,7 @@
 //! rigid-body solver behind the vehicle crate's `BodySolver` seam).
 //!
 //! **What is here:**
-//! - [`World`]: the bodies by [`BodyId`], the map pieces, the step ([`World::step`]: [`TICK`] seconds over a fixed number of
+//! - [`World`]: the bodies by [`BodyId`], the joints between them by [`JointId`] ([`world::joint`]), the map pieces, the step ([`World::step`]: [`TICK`] seconds over a fixed number of
 //!   sub-steps), the state read back ([`World::body`]) and written ([`World::set_body`], [`World::apply_impulse`]), and the
 //!   words a trace hash folds in ([`World::state_words`]).
 //! - [`Shape`]: what a body collides as: a box, a ball, or a convex hull of points (a shape's collision mesh,
@@ -48,6 +48,7 @@ pub mod world;
 pub use limits::{Config, Limits};
 pub use shape::Shape;
 pub use torque_collide::Exhausted;
+pub use world::joint::{Anchor, JointDesc, JointId, JointKind, JointState, Motor, Spring};
 pub use world::{BodyDesc, BodyId, BodyState, Error, Motion, StepReport, World};
 
 /// The Rapier this crate is built on, for a caller that needs more than this crate's surface (joints, queries). Values given
@@ -73,6 +74,8 @@ pub mod work {
     pub const BODY_STEP: u64 = 24;
     /// A contact pair's share of one sub-step (the narrow phase and the solver).
     pub const PAIR_STEP: u64 = 16;
+    /// A joint's share of one sub-step.
+    pub const JOINT_STEP: u64 = 16;
     /// A map cell looked up.
     pub const CELL: u64 = 2;
     /// One point of a convex hull built (the hull's work is about this per point, the cap bounding the count).

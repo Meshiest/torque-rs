@@ -19,6 +19,7 @@ pub mod ghost;
 pub mod library;
 pub mod masks;
 pub mod methods;
+pub mod player_tether;
 pub mod plugin_collision;
 pub mod scene;
 pub mod shapes;

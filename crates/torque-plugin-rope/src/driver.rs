@@ -119,27 +119,38 @@ impl RopeDrivers {
     }
 
     /// Registers `driver` under `name` (1 to [`MAX_DRIVER_NAME_BYTES`] bytes, no whitespace). False when the name is not valid or
-    /// is taken: a name is one driver's.
+    /// is taken: a name is one driver's, whatever its case (`joint` and `Joint` are one name).
     pub fn register(&self, name: &str, driver: impl RopeDriver) -> bool {
         self.register_shared(name, Rc::new(driver))
     }
 
     /// [`RopeDrivers::register`] for a driver that is shared already.
-    pub(crate) fn register_shared(&self, name: &str, driver: Rc<dyn RopeDriver>) -> bool {
+    pub fn register_shared(&self, name: &str, driver: Rc<dyn RopeDriver>) -> bool {
         if !valid_name(name) {
             return false;
         }
         let mut book = self.0.borrow_mut();
-        if book.drivers.contains_key(name) {
+        let key = folded(name);
+        if book.drivers.contains_key(&key) {
             return false;
         }
-        book.drivers.insert(name.to_owned(), driver);
+        book.drivers.insert(key, driver);
         true
     }
 
     /// Whether a driver is registered under `name`.
     pub fn is_registered(&self, name: &str) -> bool {
-        self.0.borrow().drivers.contains_key(name)
+        self.0.borrow().drivers.contains_key(&folded(name))
+    }
+
+    /// Whether `driver` (this very one) is the driver registered under `name`: a plugin that finds its name taken tells its
+    /// own driver, registered before, from another plugin's.
+    pub fn is_registered_as(&self, name: &str, driver: &Rc<dyn RopeDriver>) -> bool {
+        self.0
+            .borrow()
+            .drivers
+            .get(&folded(name))
+            .is_some_and(|d| Rc::ptr_eq(d, driver))
     }
 
     /// Binds `rope` to the driver `name`, to be asked with `key` each tick; a rope has one driver, so an earlier binding is
@@ -186,7 +197,12 @@ impl RopeDrivers {
             book.bound
                 .iter()
                 .map(|(&rope, (name, key))| {
-                    (rope, name.clone(), *key, book.drivers.get(name).cloned())
+                    (
+                        rope,
+                        name.clone(),
+                        *key,
+                        book.drivers.get(&folded(name)).cloned(),
+                    )
                 })
                 .collect()
         };
@@ -197,7 +213,7 @@ impl RopeDrivers {
                     if book.missing.len() >= MAX_WARNED_DRIVERS {
                         book.missing.clear();
                     }
-                    book.missing.insert(name.clone())
+                    book.missing.insert(folded(&name))
                 };
                 if first {
                     vm.warn(format!(
@@ -218,9 +234,56 @@ impl RopeDrivers {
     }
 }
 
+/// A driver name as the registry keys it: the script engine's string table keeps the first spelling of a word whatever its case,
+/// so a name a server sent may arrive in another case than the one it was registered under (ASCII case is folded).
+fn folded(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 /// A name a driver may have: 1 to [`MAX_DRIVER_NAME_BYTES`] bytes with no whitespace.
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_DRIVER_NAME_BYTES
         && !name.bytes().any(|b| b.is_ascii_whitespace())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RopeParams;
+
+    struct Here;
+
+    impl RopeDriver for Here {
+        fn drive(&self, _vm: &Vm, _key: u32) -> Option<Drive> {
+            Some(Drive::new(
+                DriveEnd::Point([1.0, 2.0, 3.0]),
+                DriveEnd::Point([4.0, 2.0, 3.0]),
+            ))
+        }
+    }
+
+    #[test]
+    fn a_driver_registered_as_joint_is_found_as_joint_in_any_case() {
+        let drivers = RopeDrivers::new();
+        assert!(drivers.register("joint", Here));
+        assert!(drivers.is_registered("Joint") && drivers.is_registered("JOINT"));
+        assert!(
+            !drivers.register("Joint", Here),
+            "one name, whatever its case"
+        );
+        // A rope bound under the string table's spelling is driven by it.
+        let mut world = RopeWorld::new();
+        let rope = world
+            .create(RopeParams::default(), [0.0; 3], [5.0, 0.0, 0.0])
+            .unwrap();
+        drivers.bind(rope, "Joint", 7);
+        let mut vm = Vm::new();
+        drivers.run(&mut vm, &mut world);
+        assert_eq!(drivers.bound_count(), 1);
+        world.step_frame(0.0, |_, _| None);
+        let shown = world.rope(rope).unwrap().drawn_points();
+        assert_eq!(shown[0].to_array(), [1.0, 2.0, 3.0]);
+        assert!(vm.drain_log().is_empty(), "no warning of a missing driver");
+    }
 }

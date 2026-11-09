@@ -17,6 +17,10 @@ use crate::map::{MapStats, Maps};
 use crate::shape::{self, Shape};
 use crate::{TICK, work};
 
+pub mod joint;
+
+use joint::{JointEntry, JointId};
+
 /// The friction of every map collider (the other body's is combined with it by Rapier's average rule).
 pub const MAP_FRICTION: f32 = 0.8;
 
@@ -113,6 +117,7 @@ impl BodyState {
 pub enum Cap {
     Bodies,
     Colliders,
+    Joints,
 }
 
 /// Why a call was refused. A refused call changes nothing, except where noted.
@@ -128,6 +133,10 @@ pub enum Error {
     Duplicate(BodyId),
     /// No body has this id.
     Unknown(BodyId),
+    /// A joint of this id is in the world already.
+    DuplicateJoint(JointId),
+    /// No joint has this id.
+    UnknownJoint(JointId),
     /// Rapier panicked (native builds catch it); the world is poisoned.
     Panicked,
     /// A panic was caught earlier: the world refuses all work. Make a new one.
@@ -141,8 +150,11 @@ impl std::fmt::Display for Error {
             Error::Exhausted => write!(f, "the work budget is spent"),
             Error::Cap(Cap::Bodies) => write!(f, "the world holds its most bodies"),
             Error::Cap(Cap::Colliders) => write!(f, "the world holds its most colliders"),
+            Error::Cap(Cap::Joints) => write!(f, "the world holds its most joints"),
             Error::Duplicate(id) => write!(f, "body {} is in the world already", id.0),
             Error::Unknown(id) => write!(f, "no body {}", id.0),
+            Error::DuplicateJoint(id) => write!(f, "joint {} is in the world already", id.0),
+            Error::UnknownJoint(id) => write!(f, "no joint {}", id.0),
             Error::Panicked => write!(f, "the physics step panicked"),
             Error::Poisoned => write!(f, "the world was poisoned by an earlier panic"),
         }
@@ -195,6 +207,9 @@ pub struct World {
     config: Config,
     rapier: PhysicsWorld,
     bodies: BTreeMap<BodyId, Entry>,
+    joints: BTreeMap<JointId, JointEntry>,
+    /// The fixed body without a collider that joints to world points hang from, made on first use.
+    ground: Option<RigidBodyHandle>,
     maps: Maps,
     poisoned: bool,
     stats: WorldStats,
@@ -205,6 +220,7 @@ impl std::fmt::Debug for World {
         f.debug_struct("World")
             .field("config", &self.config)
             .field("bodies", &self.bodies.len())
+            .field("joints", &self.joints.len())
             .field("colliders", &self.rapier.colliders.len())
             .field("maps", &self.maps.stats)
             .field("poisoned", &self.poisoned)
@@ -238,10 +254,11 @@ fn sane(l: Limits) -> Limits {
         max_density: pos(l.max_density, min_density, 1.0e9, d.max_density),
         min_density,
         max_impulse: pos(l.max_impulse, 0.0, 1.0e12, d.max_impulse),
+        max_joints: l.max_joints.min(65_536),
     }
 }
 
-fn v3(v: [f32; 3]) -> Vector {
+pub(crate) fn v3(v: [f32; 3]) -> Vector {
     Vector::new(v[0], v[1], v[2])
 }
 
@@ -249,7 +266,7 @@ fn a3(v: Vector) -> [f32; 3] {
     [v.x, v.y, v.z]
 }
 
-fn quat(q: [f32; 4]) -> Quat {
+pub(crate) fn quat(q: [f32; 4]) -> Quat {
     Quat::from_xyzw(q[0], q[1], q[2], q[3])
 }
 
@@ -301,6 +318,8 @@ impl World {
             config,
             rapier,
             bodies: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            ground: None,
             maps,
             poisoned: false,
             stats: WorldStats::default(),
@@ -528,6 +547,7 @@ impl World {
     pub fn remove_body(&mut self, id: BodyId) -> Result<(), Error> {
         self.live()?;
         let e = self.bodies.remove(&id).ok_or(Error::Unknown(id))?;
+        self.forget_joints_of(id);
         self.guarded(|r| {
             r.remove_body(e.handle);
         })
@@ -577,6 +597,14 @@ impl World {
             };
         }
         Ok(())
+    }
+
+    /// Wakes a sleeping body: it is simulated from the next step, however still it is (setting a body to the pose it has wakes
+    /// nothing).
+    pub fn wake(&mut self, id: BodyId) -> Result<(), Error> {
+        self.live()?;
+        let e = *self.bodies.get(&id).ok_or(Error::Unknown(id))?;
+        self.guarded(|r| r.wake_up(e.handle, true))
     }
 
     /// Adds an impulse (mass times units a second) at the body's center of mass, its magnitude held to
@@ -699,12 +727,15 @@ impl World {
             .filter(|b| b.is_dynamic_or_kinematic() && !b.is_sleeping())
             .count() as u64;
         let pairs = self.rapier.narrow_phase.contact_pairs().count() as u64;
-        let per = awake * work::BODY_STEP + pairs * work::PAIR_STEP;
+        let per = awake * work::BODY_STEP
+            + pairs * work::PAIR_STEP
+            + self.joints.len() as u64 * work::JOINT_STEP;
         if !charge(per.saturating_mul(u64::from(self.config.substeps))) {
             return Err(Error::Exhausted);
         }
         let handles: Vec<RigidBodyHandle> = self.bodies.values().map(|e| e.handle).collect();
         for _ in 0..self.config.substeps {
+            self.tend_springs()?;
             self.guarded(|r| r.step())?;
             report.substeps += 1;
             let max_w = l.max_angular_speed;

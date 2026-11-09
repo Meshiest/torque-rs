@@ -7,7 +7,8 @@
 //! - [`rapier`]: the Rapier world's scenario (bodies dropped onto a terrain and an interior; no server or client), printed
 //!   among [`scenarios::physics`] and folded into the `physics` line, not `all`.
 //! - [`props`]: the props plugin's scenario (crates dropped and walked through, a server and a predicting client), printed among
-//!   [`scenarios::plugins`] and folded into the `plugins` line.
+//!   [`scenarios::plugins`] and folded into the `plugins` line; [`joints`], its joints' (a grappled figure swinging, with
+//!   tethers, a winch, a weld and a hinge around it), printed after it.
 //! - [`scenarios`]: the scenarios ([`scenarios::all`]) and [`scenarios::trace_hash`], the per-plugin entry point
 //!   (`trace_hash::<MyPlugin>()`).
 //!
@@ -19,6 +20,7 @@
 //! those directly; a plugin that does one shows as a hash that changes between runs or between targets.
 
 pub mod hash;
+pub mod joints;
 pub mod props;
 pub mod rapier;
 pub mod rig;

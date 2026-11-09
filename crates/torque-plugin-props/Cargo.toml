@@ -27,11 +27,16 @@ torque-ts-text = { path = "../torque-ts-text" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 # The transcendentals of a transform (an axis and an angle), the same bits on every target.
 libm = "0.2.16"
+# Feature `rope`: a networked rope that follows a joint (`jointRope`), through the rope plugin's drivers.
+torque-plugin-rope = { path = "../torque-plugin-rope", optional = true }
+
+[features]
+rope = ["dep:torque-plugin-rope"]
 
 [dev-dependencies]
 criterion = { workspace = true }
 # The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
-torque-app = { path = "../torque-app", default-features = false }
+torque-app = { path = "../torque-app", default-features = false, features = ["renderer"] }
 torque-app-server = { path = "../torque-app-server" }
 torque-client = { path = "../torque-client" }
 torque-ghost-world = { path = "../torque-ghost-world" }
@@ -39,10 +44,21 @@ torque-server = { path = "../torque-server" }
 # The floor and the figure of the tests' world.
 torque-example-assets = { path = "../../examples/assets" }
 torque-shapes = { path = "../torque-shapes" }
+# The pictures of the ropes that follow joints (feature `rope`), drawn as the rope plugin's own pictures are.
+torque-render-core = { path = "../torque-render-core" }
+torque-render-scene = { path = "../torque-render-scene" }
 
 [[bench]]
 name = "step"
 harness = false
+
+[[test]]
+name = "joint_rope"
+required-features = ["rope"]
+
+[[test]]
+name = "joint_rope_pictures"
+required-features = ["rope"]
 
 [lints]
 workspace = true

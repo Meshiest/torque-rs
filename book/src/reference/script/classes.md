@@ -2,7 +2,7 @@
 
 # Classes
 
-Console classes, with the fields each adds to its parent's. 116 classes.
+Console classes, with the fields each adds to its parent's. 117 classes.
 
 | Class | Parent | Fields |
 |---|---|---|
@@ -66,6 +66,7 @@ Console classes, with the fields each adds to its parent's. 116 classes.
 | [InteriorInstance](#interiorinstance) | [SceneObject](#sceneobject) | 5 |
 | [Item](#item) | [ShapeBase](#shapebase) | 3 |
 | [ItemData](#itemdata) | [ShapeBaseData](#shapebasedata) | 12 |
+| [Joint](#joint) | [SceneObject](#sceneobject) | 16 |
 | [Marker](#marker) | [SceneObject](#sceneobject) | 4 |
 | [MessageVector](#messagevector) | [SimObject](#simobject) | 0 |
 | [MissionArea](#missionarea) | [NetObject](#netobject) | 3 |
@@ -896,6 +897,29 @@ No fields of its own.
 | `lightTime` | int |  |  |
 | `lightRadius` | float |  |  |
 | `lightOnlyStatic` | bool |  |  |
+
+## Joint
+
+*goes below `SceneObject`; server and client; needs `torque.props`*
+
+| Field | Type | Default | Range | What it is for |
+|---|---|---|---|---|
+| `kind` | int | `0` |  | The kind: 0 tether, 1 winch, 2 weld, 3 hinge, 4 grapple. |
+| `aMode` | int | `0` |  | What holds each end: 1 a point, 2 an object (a prop or a player); the point, the object's id and the point held in the object's frame (a player's: an offset from its position). |
+| `aPoint` | Point3F | `0 0 0` |  |  |
+| `aObject` | int | `0` |  |  |
+| `aOffset` | Point3F | `0 0 0` |  |  |
+| `bMode` | int | `0` |  |  |
+| `bPoint` | Point3F | `0 0 0` |  |  |
+| `bObject` | int | `0` |  |  |
+| `bOffset` | Point3F | `0 0 0` |  |  |
+| `length` | float | `0` |  | The length now and the shortest (a tether's, a winch's, a grapple's). |
+| `minLength` | float | `0` |  |  |
+| `stiffness` | float | `0` |  | The spring past the length (stiffness 0: hard). |
+| `damping` | float | `0` |  |  |
+| `atLimit` | int | `0` |  | 1 while a tether's ends are at its length, 1 once it broke. |
+| `broken` | int | `0` |  |  |
+| `rope` | int | `0` |  | The networked rope that shows it (0: none). |
 
 ## Marker
 

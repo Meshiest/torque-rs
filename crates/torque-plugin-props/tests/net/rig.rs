@@ -102,7 +102,11 @@ pub struct Rig {
 impl Rig {
     /// A server of the props engine and no client; `globals` are set before its scripts run.
     pub fn new(files: &GameFiles, globals: &[(&str, &str)]) -> Rig {
-        let engine = engine(files, true);
+        Rig::with_engine(files, globals, engine(files, true))
+    }
+
+    /// A server of `engine` and no client; `globals` are set before its scripts run.
+    pub fn with_engine(files: &GameFiles, globals: &[(&str, &str)], engine: Engine) -> Rig {
         let server = GameServer::start_engine(
             &engine,
             files.mem_files(),

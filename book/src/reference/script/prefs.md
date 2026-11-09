@@ -2,7 +2,7 @@
 
 # Prefs
 
-Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 13 prefs.
+Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 17 prefs.
 
 | Pref | Type | Default | Range | What it is for | Where |
 |---|---|---|---|---|---|
@@ -12,6 +12,10 @@ Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[
 | `$Pref::Mods::DownloadMegabytes` | int | `0` | 0 to 4096 | The most megabytes to take from one server (0: the game's limit). It never raises the game's limit. | server and client |
 | `$Pref::Mods::ShareCache` | bool | `0` |  | Whether a server may match mods you downloaded from other servers. Off, each server matches only what it sent you, so it cannot learn which other servers you have joined; on, a mod you already have from anywhere is not downloaded again, and a server can tell which mods you have by which blocks you skip. | server and client |
 | `$Pref::Props::MaxAwake` | int | `256` | 1 to 1024 | The most props awake at once; past it the farthest from every player sleep. | server; needs `torque.props` |
+| `$Pref::Props::MaxJoints` | int | `1024` | 1 to 1024 | The most joints on the server. | server; needs `torque.props` |
+| `$Pref::Props::MaxJointsPerAddress` | int | `256` | 1 to 1024 | The most joints the players of one remote address may own between them, orphans counted. | server; needs `torque.props` |
+| `$Pref::Props::MaxJointsPerPlayer` | int | `64` | 1 to 1024 | The most joints one player may own. | server; needs `torque.props` |
+| `$Pref::Props::MaxJointsPerProp` | int | `16` | 1 to 64 | The most joints one prop may be an end of. | server; needs `torque.props` |
 | `$Pref::Props::MaxPerAddress` | int | `256` | 1 to 1024 | The most props the players of one remote address may own between them, orphans counted (room for players behind one router; a player who comes back under a new key starts no new quota). | server; needs `torque.props` |
 | `$Pref::Props::MaxPerPlayer` | int | `64` | 1 to 1024 | The most props one player may own. | server; needs `torque.props` |
 | `$Pref::Props::MaxProps` | int | `1024` | 1 to 1024 | The most props on the server. | server; needs `torque.props` |

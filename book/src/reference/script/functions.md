@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-274 entries in 1 namespace.
+294 entries in 1 namespace.
 
 ## Global
 
@@ -320,6 +320,83 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `joinLookupResult()`
   *arguments: none; client; needs `torque.hosting`*
+- `jointCheck(client, a, b, eye [, reach [, kind [, point [, allowOtherPlayers [, allowOtherOwners]]]]])` - checks whether two ends could be joined for a player: "" when they may, else the reason
+  *arguments: 4 to 9; server; needs `torque.props`*
+
+  `client` is the connection asking (the joint's owner). `a` and `b` are ends as `jointTether` takes them (a weld's or a hinge's
+  world end may be empty); `kind` is the joint's (`tether` when left out or empty: `winch`, `weld`, `hinge`, `grapple`, whose
+  first end is a player), and a hinge gives its `point`. Every end and the point must be within `reach` of `eye` (the player's
+  eye, as the server gives it: 8 when left out). A player at an end is where the server has it, and must be the client's own
+  control object unless `allowOtherPlayers`; a prop at an end must be the client's (its owner key) or no one's unless
+  `allowOtherOwners` (each a game's choice, off by default). The caps must allow one more joint for the client, its address and
+  each prop, and a player may have one grapple. Joints have no client entry point: a game's own server command (with its
+  declared limits and permission) calls this first.
+
+- `jointCount([owner])` - how many joints there are, or, given a client, how many its owner key owns
+  *arguments: 0 to 1; server; needs `torque.props`*
+- `jointCountOn(prop)` - how many joints a prop is an end of
+  *arguments: 1; server; needs `torque.props`*
+- `jointDelete(joint)` - takes a joint away from the world and every client (and the rope that shows it); true if there was one
+  *arguments: 1; server; needs `torque.props`*
+- `jointGetDistance(joint)` - the distance between a joint's ends after the last tick
+  *arguments: 1; server; needs `torque.props`*
+- `jointGetForce(joint)` - the force a joint held its ends with in the last tick
+  *arguments: 1; server; needs `torque.props`*
+- `jointGetKind(joint)` - a joint's kind: \`tether\`, \`winch\`, \`weld\`, \`hinge\` or \`grapple\`
+  *arguments: 1; server; needs `torque.props`*
+- `jointGetLength(joint)` - a tether's, a winch's or a grapple's length now (0 for the other kinds)
+  *arguments: 1; server; needs `torque.props`*
+- `jointGrapple(player, target, length [, owner])` - tethers a player to a point or a prop, at most \`length\` away, and returns the joint's object id
+  *arguments: 3 to 4; server; needs `torque.props`*
+
+  `player` is a Player, held at its position (`"%player x y z"`: moved by an offset, a hand's height say); `target` is a point
+  (`"x y z"`) or a prop (`"%prop"`, `"%prop x y z"`). The pull runs inside the Player's own tick, so its client predicts it
+  exactly; a prop at the far end is pulled back the other way. `jointSetSpring` makes it a spring past its length,
+  `jointSetLength` reels it.
+
+- `jointHinge(a, b, point, axis [, owner])` - hinges a prop to another (or, with \`b\` empty, to the world) about \`axis\` (\`"x y z"\`) through \`point\`, and returns the joint's
+  *arguments: 4 to 5; server; needs `torque.props`*
+
+  object id
+
+  `jointSetLimits` holds the angle between two limits, `jointSetMotor` turns it.
+
+- `jointIsAtLimit(joint)` - whether a tether's ends are at its length (a rope following it is drawn taut)
+  *arguments: 1; server; needs `torque.props`*
+- `jointIsBroken(joint)` - whether a joint broke (it holds nothing; delete it when it is done with)
+  *arguments: 1; server; needs `torque.props`*
+- `jointSetBreakForce(joint, force)` - sets the force a joint breaks past (a torque counts at one unit; 0: never); true for a joint
+  *arguments: 2; server; needs `torque.props`*
+- `jointSetLength(joint, length [, min])` - sets a tether's, a winch's or a grapple's length (0.001 to 200) and, if given, its shortest; true for one of those
+  *arguments: 2 to 3; server; needs `torque.props`*
+- `jointSetLimits(joint [, low [, high]])` - holds a hinge's angle between \`low\` and \`high\` (radians, from where it was made); with neither given, frees it; true for a
+  *arguments: 1 to 3; server; needs `torque.props`*
+
+  hinge
+
+- `jointSetMotor(joint, speed, maxTorque)` - turns a hinge at \`speed\` radians a second with at most \`maxTorque\` (0: the motor is off); true for a hinge
+  *arguments: 3; server; needs `torque.props`*
+- `jointSetSpring(joint, stiffness [, damping])` - makes a tether or a grapple a spring past its length (\`stiffness\` force a unit past it, \`damping\` force a unit a second);
+  *arguments: 2 to 3; server; needs `torque.props`*
+
+  a stiffness of 0 makes it hard again; true for one of those
+
+- `jointTether(a, b, length [, owner])` - ties two ends together, at most \`length\` apart, and returns the joint's object id
+  *arguments: 3 to 4; server; needs `torque.props`*
+
+  Each end is a prop (`"%prop"`, its middle; `"%prop x y z"`, a point in its own frame) or a point in the world (`"x y z"`); at
+  least one is a prop. The tether is hard (the ends are never more than `length` apart) until `jointSetSpring` makes it a spring
+  past its length; `jointSetLength` gives it a shortest too, `jointWinch` makes it reel. `length` is held to 0.001 to 200. `owner`
+  is the connection (a client) the joint counts against (`$Pref::Props::MaxJointsPerPlayer`). Past a cap the call prints an
+  error and returns 0.
+
+- `jointWeld(a, b [, owner])` - welds a prop to another (or, with \`b\` empty, to the world) as they are now, and returns the joint's object id
+  *arguments: 2 to 3; server; needs `torque.props`*
+- `jointWinch(joint, length, rate [, maxForce])` - makes a tether a winch: its length moves to \`length\` at \`rate\` units a second (at most 20), and stops shortening while it
+  *arguments: 3 to 4; server; needs `torque.props`*
+
+  pulls with more than `maxForce` (left out or 0: no limit); true for a tether
+
 - `loadMods(stage)` - runs the entry scripts of a load stage of every enabled mod, in load order, and returns how many ran (a stage runs once for a mod)
   *arguments: 1; server and client*
 - `ltrim(text)` - the text without leading white space

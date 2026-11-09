@@ -136,6 +136,26 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("isPackage", name)` *1; server and client*
 - `ts.call("isWriteableFileName", file)` *1; server and client*
 - `ts.call("joinLookupResult")` *none; client; needs `torque.hosting`*
+- `ts.call("jointCheck", client, a, b, eye [, reach [, kind [, point [, allowOtherPlayers [, allowOtherOwners]]]]])` *4 to 9; server; needs `torque.props`*
+- `ts.call("jointCount", [owner])` *0 to 1; server; needs `torque.props`*
+- `ts.call("jointCountOn", prop)` *1; server; needs `torque.props`*
+- `ts.call("jointDelete", joint)` *1; server; needs `torque.props`*
+- `ts.call("jointGetDistance", joint)` *1; server; needs `torque.props`*
+- `ts.call("jointGetForce", joint)` *1; server; needs `torque.props`*
+- `ts.call("jointGetKind", joint)` *1; server; needs `torque.props`*
+- `ts.call("jointGetLength", joint)` *1; server; needs `torque.props`*
+- `ts.call("jointGrapple", player, target, length [, owner])` *3 to 4; server; needs `torque.props`*
+- `ts.call("jointHinge", a, b, point, axis [, owner])` *4 to 5; server; needs `torque.props`*
+- `ts.call("jointIsAtLimit", joint)` *1; server; needs `torque.props`*
+- `ts.call("jointIsBroken", joint)` *1; server; needs `torque.props`*
+- `ts.call("jointSetBreakForce", joint, force)` *2; server; needs `torque.props`*
+- `ts.call("jointSetLength", joint, length [, min])` *2 to 3; server; needs `torque.props`*
+- `ts.call("jointSetLimits", joint [, low [, high]])` *1 to 3; server; needs `torque.props`*
+- `ts.call("jointSetMotor", joint, speed, maxTorque)` *3; server; needs `torque.props`*
+- `ts.call("jointSetSpring", joint, stiffness [, damping])` *2 to 3; server; needs `torque.props`*
+- `ts.call("jointTether", a, b, length [, owner])` *3 to 4; server; needs `torque.props`*
+- `ts.call("jointWeld", a, b [, owner])` *2 to 3; server; needs `torque.props`*
+- `ts.call("jointWinch", joint, length, rate [, maxForce])` *3 to 4; server; needs `torque.props`*
 - `ts.call("loadMods", stage)` *1; server and client*
 - `ts.call("ltrim", text)` *1; server and client*
 - `ts.call("mAbs", x)` *1; server and client*

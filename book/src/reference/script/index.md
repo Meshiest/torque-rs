@@ -6,11 +6,11 @@ Every console function, method, class and pref of an engine built from `DefaultP
 
 | Page | What it lists | Entries |
 |---|---|---|
-| [Functions](functions.md) | console functions, by namespace | 274 |
+| [Functions](functions.md) | console functions, by namespace | 294 |
 | [Methods](methods.md) | methods called on an object, by class | 291 |
-| [Classes](classes.md) | console classes and the fields they add | 116 classes, 906 fields |
-| [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 13 |
-| [From Lua](lua.md) | the functions and methods as a Lua script calls them | 565 |
+| [Classes](classes.md) | console classes and the fields they add | 117 classes, 922 fields |
+| [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 17 |
+| [From Lua](lua.md) | the functions and methods as a Lua script calls them | 585 |
 
 ## Reading an entry
 
@@ -28,7 +28,7 @@ These plugins are not in `DefaultPlugins`. What each adds is listed with the plu
 - `torque.zoom`: the zoom: the field of view and how fast it changes
 - `torque.hosting`: joining by address or room code: the lookup natives of a join screen
 - `torque.rope`: ropes: the RopeData datablock, the console functions that hang, push, reel and take down ropes between points or objects, and a server's ropeNet functions that make ropes every client shows
-- `torque.props`: props: the PropData datablock and the Prop class, rigid bodies a server simulates and every client sees, the prop functions that spawn, push, freeze and read them, and the placement checks a game's own spawn commands make
+- `torque.props`: props: the PropData datablock and the Prop class, rigid bodies a server simulates and every client sees, the prop functions that spawn, push, freeze and read them, and the placement checks a game's own spawn commands make; the Joint class and the joint functions (tethers, winches, welds, hinges, grapples) and their check
 - `torque.gui-layout`: flex and grid layout: the GuiFlexCtrl and GuiGridCtrl containers, which lay their children out by CSS's flexbox and grid rules
 
 `LivePerfPlugin` also adds a function and a pref, but its two names are the game's choice, so there is nothing fixed to list.

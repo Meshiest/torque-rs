@@ -338,7 +338,10 @@ fn eval(s: &mut NetServer, code: &str) -> String {
 #[test]
 fn a_client_that_is_torques_alone_is_never_sent_a_prop_and_one_with_the_plugin_is() {
     let (mut s, shared, end, plugins) = game_server();
-    assert_eq!(plugins.names(Kind::Object).collect::<Vec<_>>(), ["Prop"]);
+    assert_eq!(
+        plugins.names(Kind::Object).collect::<Vec<_>>(),
+        ["Joint", "Prop"]
+    );
     eval(
         &mut s,
         "new SimGroup(ClientGroup);
@@ -349,6 +352,11 @@ new Camera(EyeB) { dataBlock = EyeData; };",
     );
     let prop = eval(&mut s, "return propSpawn(Crate, \"1 2 3\");");
     assert!(prop.parse::<u32>().unwrap() > 0, "{prop}");
+    let joint = eval(
+        &mut s,
+        &format!("return jointTether({prop}, \"1 2 6\", 3);"),
+    );
+    assert!(joint.parse::<u32>().unwrap() > 0, "{joint}");
     let mut tge = TestClient::new(50_001, 7, PluginClasses::default());
     tge.start(&end);
     run(&mut s, &end, &mut [&mut tge], 10);
@@ -360,7 +368,7 @@ new Camera(EyeB) { dataBlock = EyeData; };",
     );
     run(&mut s, &end, &mut [&mut tge], 30);
 
-    // Torque's client has what a Torque server sends it: its cameras, no prop, no error.
+    // Torque's client has what a Torque server sends it: its cameras, no prop, no joint, no error.
     assert!(tge.errors.is_empty(), "{:?}", tge.errors);
     assert_eq!(tge.census(), ["Camera", "Camera"]);
     assert!(tge.props().is_empty());
@@ -380,6 +388,7 @@ new Camera(EyeB) { dataBlock = EyeData; };",
     run(&mut s, &end, &mut [&mut tge, &mut own], 30);
     assert!(own.errors.is_empty(), "{:?}", own.errors);
     assert_eq!(own.census().iter().filter(|c| **c == "Prop").count(), 1);
+    assert_eq!(own.census().iter().filter(|c| **c == "Joint").count(), 1);
     let props = own.props();
     let state = props[0].state.expect("a state").0;
     assert_eq!(state.position(), [1.0, 2.0, 3.0]);

@@ -258,6 +258,8 @@ pub struct Predictor<W: PredictWorld> {
     prediction: Box<dyn slot::Prediction>,
     /// The generation of the client's [`slot::PredictionSlot`] the predictor was made at (0: never made from one).
     prediction_generation: u64,
+    /// The plugins' tethers on Players ([`torque_game::player_tether`]), as the client's script engine has them.
+    tethers: Option<Rc<torque_game::player_tether::TetherSources>>,
 }
 
 /// How the client reads a file of the install (a static object's own file, a shape, a map's files; `None`: not found or not to be
@@ -327,6 +329,7 @@ impl<W: PredictWorld> Predictor<W> {
             game_given: false,
             prediction: Box::new(slot::TgePrediction),
             prediction_generation: 0,
+            tethers: None,
         }
     }
 
@@ -1027,6 +1030,12 @@ impl<W: PredictWorld> Predictor<W> {
                 player_at: None,
             }),
         );
+        // The tether on the predicted Player, the same for every move replayed: the server's for the ticks the client knows of.
+        let tether = self
+            .tethers
+            .as_ref()
+            .and_then(|t| t.tether(pr.index))
+            .map(|(_, t)| t);
         let mut fresh = Vec::new();
         for (k, m) in list.iter().enumerate().skip(start + skip) {
             if collision.exhausted() {
@@ -1043,6 +1052,7 @@ impl<W: PredictWorld> Predictor<W> {
                 controls_player,
                 class: pr.kind.class(),
                 game: Rc::clone(&game),
+                tether,
             };
             pr.player.s.mask_bits = 0;
             let stepped = pr
@@ -1110,6 +1120,7 @@ impl<W: PredictWorld> Predictor<W> {
         }
         self.static_world
             .set_plugin_sources(torque_game::plugin_collision::sources_of(vm));
+        self.tethers = torque_game::player_tether::of(vm);
         self.free_look = vm
             .global("$mvFreeLook")
             .is_some_and(|v| ts_vm::fields::atob(&v));
@@ -3081,6 +3092,8 @@ struct ClientPlayerHost<'a, W: PredictWorld> {
     /// The Player's class (the game's).
     class: Rc<dyn PlayerClass>,
     game: Rc<dyn game::PredictGame<W>>,
+    /// The tether a plugin puts on the predicted Player ([`torque_game::player_tether`]).
+    tether: Option<sim::player::tether::Tether>,
 }
 
 impl<W: PredictWorld> ClientPlayerHost<'_, W> {
@@ -3098,6 +3111,10 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 
     fn player_class(&self) -> Option<Rc<dyn sim::player::PlayerClass>> {
         Some(Rc::clone(&self.class))
+    }
+
+    fn tether(&mut self, _s: &PlayerState) -> Option<sim::player::tether::Tether> {
+        self.tether
     }
 
     fn skeleton(&mut self) -> &mut dyn Skeleton {

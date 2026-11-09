@@ -11,7 +11,8 @@ use torque_collide::map::MapShape;
 use torque_collide::math::Box3;
 use torque_mapcore::budget::HEIGHTFIELD_SAMPLES;
 use torque_physics_rapier::{
-    BodyDesc, BodyId, BodyState, Config, Error, Limits, Motion, Shape, World,
+    Anchor, BodyDesc, BodyId, BodyState, Config, Error, JointDesc, JointId, JointKind, Limits,
+    Motion, Motor, Shape, Spring, World,
 };
 
 /// Floats a hostile input picks from, beside plain ones.
@@ -125,6 +126,44 @@ fn desc(rng: &mut Rng, cap: usize) -> BodyDesc {
     }
 }
 
+/// A joint of hostile values between two of the first `bodies` bodies (or one that is not there), or a body and the world.
+fn joint(rng: &mut Rng, bodies: u32) -> JointDesc {
+    let anchor = |rng: &mut Rng| {
+        if rng.below(3) == 0 {
+            Anchor::World(vec3(rng, 1e3))
+        } else {
+            Anchor::Body {
+                body: BodyId(rng.below(u64::from(bodies) + 1) as u32),
+                local: vec3(rng, 10.0),
+            }
+        }
+    };
+    let (a, b) = (anchor(rng), anchor(rng));
+    let kind = match rng.below(3) {
+        0 => JointKind::Distance {
+            min: float(rng, 10.0),
+            max: float(rng, 100.0),
+            spring: (rng.below(2) == 0).then(|| Spring {
+                stiffness: float(rng, 1e5),
+                damping: float(rng, 1e4),
+            }),
+        },
+        1 => JointKind::Fixed {
+            frame: (vec3(rng, 10.0), quat(rng)),
+        },
+        _ => JointKind::Revolute {
+            axis_a: vec3(rng, 1.0),
+            axis_b: vec3(rng, 1.0),
+            limits: (rng.below(2) == 0).then(|| [float(rng, 4.0), float(rng, 4.0)]),
+            motor: (rng.below(2) == 0).then(|| Motor {
+                speed: float(rng, 100.0),
+                max_torque: float(rng, 1e6),
+            }),
+        },
+    };
+    JointDesc { a, b, kind }
+}
+
 fn limits(rng: &mut Rng) -> Limits {
     if rng.below(4) == 0 {
         return Limits::default();
@@ -145,6 +184,7 @@ fn limits(rng: &mut Rng) -> Limits {
         max_density: pick(rng, d.max_density),
         min_density: pick(rng, d.min_density),
         max_impulse: pick(rng, d.max_impulse),
+        max_joints: rng.below(20) as usize,
     }
 }
 
@@ -273,14 +313,23 @@ fn hostile_input_never_panics_and_every_count_stays_within_its_cap() {
             let d = desc(&mut rng, l.max_hull_vertices);
             check(w.add_body(BodyId(k), &d, &mut charge));
         }
+        for j in 0..rng.below(4) as u32 {
+            let d = joint(&mut rng, bodies);
+            check(w.add_joint(JointId(j), &d));
+        }
         if rng.below(3) == 0 {
             let region = Box3::new(vec3(&mut rng, 1e4), vec3(&mut rng, 1e4));
             check(w.ensure_region(&region, &mut charge).map(|_| ()));
         }
         for _ in 0..rng.below(4) {
             let id = BodyId(rng.below(u64::from(bodies) + 1) as u32);
-            match rng.below(3) {
+            match rng.below(5) {
                 0 => check(w.apply_impulse(id, vec3(&mut rng, 1e4))),
+                3 => check(w.remove_body(id)),
+                4 => {
+                    let kind = joint(&mut rng, bodies).kind;
+                    check(w.set_joint(JointId(rng.below(4) as u32), kind));
+                }
                 1 => {
                     let s = BodyState {
                         position: vec3(&mut rng, 40.0),
@@ -307,6 +356,14 @@ fn hostile_input_never_panics_and_every_count_stays_within_its_cap() {
         assert!(!w.is_poisoned(), "iteration {it}");
         assert!(w.body_count() <= l.max_bodies, "iteration {it}");
         assert!(w.collider_count() <= l.max_colliders, "iteration {it}");
+        assert!(w.joint_count() <= l.max_joints, "iteration {it}");
+        for id in w.joint_ids().collect::<Vec<_>>() {
+            let s = w.joint(id).expect("a listed joint");
+            assert!(
+                s.distance.is_finite() && s.force.is_finite() && s.torque.is_finite(),
+                "iteration {it}: {s:?}"
+            );
+        }
         for id in w.ids().collect::<Vec<_>>() {
             let s = w.body(id).expect("a listed body");
             let words = [s.position.as_slice(), &s.rotation, &s.linvel, &s.angvel].concat();

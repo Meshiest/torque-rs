@@ -14,7 +14,7 @@
 //! they print after the predictors' and fold into `physics`.
 //!
 //! **The plugins' scenarios** ([`plugins`]) run a server and a predicting client with an opt-in plugin that simulates on the server
-//! (the props, [`crate::props`]); they print last and fold into `plugins`.
+//! (the props, [`crate::props`], and their joints, [`crate::joints`]); they print last and fold into `plugins`.
 //!
 //! **Adding a plugin's scenario:** a plugin whose systems run on a predicted path adds a [`Scenario`] to [`all`] that calls
 //! [`figure`] or [`buggy`] with the plugin (or its own function built on [`Rig`]); a plugin that only adds a ghost or a channel
@@ -86,11 +86,18 @@ pub fn physics() -> Vec<Scenario> {
 /// The scenarios of the engine's opt-in plugins that a server simulates and a predicting client sees, in the order they print
 /// after `physics`.
 pub fn plugins() -> Vec<Scenario> {
-    vec![Scenario {
-        name: "props-drop",
-        mode: Some(Mode::Tge),
-        run: crate::props::drop,
-    }]
+    vec![
+        Scenario {
+            name: "props-drop",
+            mode: Some(Mode::Tge),
+            run: crate::props::drop,
+        },
+        Scenario {
+            name: "props-joints",
+            mode: Some(Mode::Tge),
+            run: crate::joints::grapple,
+        },
+    ]
 }
 
 /// What a run came to: the hash, and numbers a caller can check the run was not an empty one.
@@ -99,7 +106,8 @@ pub struct Outcome {
     pub hash: u64,
     /// Values hashed.
     pub values: u64,
-    /// How far the server's control object went from where it began (units), and where it ended.
+    /// How far the server's control object went from where it began (units; the length of its path, for a scenario that holds it
+    /// near its start), and where it ended.
     pub distance: f32,
     pub end: [f32; 3],
     /// The client's server heads that corrected its prediction.

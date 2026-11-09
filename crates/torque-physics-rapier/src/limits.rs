@@ -31,6 +31,8 @@ pub struct Limits {
     pub min_density: f32,
     /// An impulse's magnitude (mass times units a second).
     pub max_impulse: f32,
+    /// Joints in the world.
+    pub max_joints: usize,
 }
 
 impl Default for Limits {
@@ -49,6 +51,7 @@ impl Default for Limits {
             max_density: 100_000.0,
             min_density: 0.001,
             max_impulse: 10_000_000.0,
+            max_joints: 4_096,
         }
     }
 }

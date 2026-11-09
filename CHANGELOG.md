@@ -237,7 +237,12 @@ different.
   `propCheckPlacement` for a game's own spawn commands), their state quantized
   to the wire's precision each tick so clients hold the server's state exactly; players and vehicles collide with them and push
   them; caps per player, per remote address, per server and awake (the farthest sleep first), a step budget, sleeping props that cost nothing, owners
-  whose props outlive them for a while.
+  whose props outlive them for a while. Joints between props, the world and players (tethers hard or soft, winches, welds, hinges
+  with limits and motors, grapples), server-authoritative, breakable, capped per player, per remote address, per prop and per
+  server, sent to every client as `Joint` ghosts, with ropes that follow them (feature `rope`).
+- `torque-sim`, `torque-game`, `torque-client`: a plugin can tether a Player to a point (`player_tether`), applied inside the
+  Player's own tick on the server and in the client's prediction alike, so the prediction replays it exactly; with no tether the
+  step is Torque's.
 
 #### Content import
 

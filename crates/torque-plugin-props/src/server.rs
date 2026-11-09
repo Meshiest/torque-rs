@@ -56,6 +56,18 @@ pub struct PropPrefs {
     /// The share of each packet the props' updates take at most (0.05 to 1).
     #[pref(default = 0.4, range = 0.05..=1.0, name = "NetShare")]
     pub net_share: f32,
+    /// The most joints one player may own.
+    #[pref(default = 64, range = 1..=1024, name = "MaxJointsPerPlayer")]
+    pub max_joints_per_player: i32,
+    /// The most joints the players of one remote address may own between them, orphans counted.
+    #[pref(default = 256, range = 1..=1024, name = "MaxJointsPerAddress")]
+    pub max_joints_per_address: i32,
+    /// The most joints on the server.
+    #[pref(default = 1024, range = 1..=1024, name = "MaxJoints")]
+    pub max_joints: i32,
+    /// The most joints one prop may be an end of.
+    #[pref(default = 16, range = 1..=64, name = "MaxJointsPerProp")]
+    pub max_joints_per_prop: i32,
 }
 
 /// A prop on the server: the object a server script makes with `propSpawn` and every client of the engine sees as a shape. The
@@ -140,7 +152,9 @@ impl PropServer {
     pub fn world_mut(&mut self, vm: &Vm) -> &mut PropWorld {
         self.world.get_or_insert_with(|| {
             let prefs = vm.prefs::<PropPrefs>();
-            PropWorld::new(prefs.substeps as u8, limits_of(&prefs))
+            let mut world = PropWorld::new(prefs.substeps as u8, limits_of(&prefs));
+            world.joint_limits = joint_limits_of(&prefs);
+            world
         })
     }
 }
@@ -154,6 +168,17 @@ pub fn limits_of(prefs: &PropPrefs) -> PropLimits {
         awake: prefs.max_awake as u32,
         step_budget: prefs.step_budget as u64,
         orphan_ticks: (f64::from(prefs.orphan_seconds) * 1000.0 / 32.0) as u64,
+    }
+    .held()
+}
+
+/// The joint caps the prefs say.
+pub fn joint_limits_of(prefs: &PropPrefs) -> crate::joints::JointLimits {
+    crate::joints::JointLimits {
+        per_player: prefs.max_joints_per_player as u32,
+        per_address: prefs.max_joints_per_address as u32,
+        per_server: prefs.max_joints as u32,
+        per_prop: prefs.max_joints_per_prop as u32,
     }
     .held()
 }
@@ -249,7 +274,7 @@ pub fn parse_transform(text: &str) -> Result<([f32; 3], [f32; 4]), ScriptError> 
     let mut rotation = [0.0, 0.0, 0.0, 1.0];
     if w.len() >= 7 {
         let axis = [w[3], w[4], w[5]];
-        let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        let len = crate::world::length(axis);
         if len > 1.0e-6 {
             let unit = axis.map(|a| a / len);
             rotation = conjugate(geometry::quat_from_axis_angle(unit, w[6]));
@@ -262,6 +287,13 @@ pub fn parse_transform(text: &str) -> Result<([f32; 3], [f32; 4]), ScriptError> 
 pub fn axis_angle(q: [f32; 4]) -> [f32; 4] {
     let (axis, angle) = geometry::axis_angle_from_quat(conjugate(q));
     [axis[0], axis[1], axis[2], angle]
+}
+
+/// Deletes an object, printing why when its deletion failed (an `onRemove` that stopped on an error).
+pub(crate) fn delete_logged(vm: &mut Vm, id: u32) {
+    if let Err(e) = vm.delete_object(id) {
+        vm.warn(format!("props: deleting {id}: {e}"));
+    }
 }
 
 pub(crate) fn is_class(vm: &Vm, id: ObjId, class: &str) -> bool {
@@ -352,7 +384,7 @@ pub(crate) fn spawn(
         .world_mut(vm)
         .spawn(id, data, params, pose, owner, predict);
     if let Err(e) = added {
-        let _ = vm.delete_object(id);
+        delete_logged(vm, id);
         return Err(e.to_string());
     }
     if let Ok(srv) = props.0.try_borrow()
@@ -414,8 +446,7 @@ pub fn priority(props: &ServerProps, vm: &Vm, obj: ObjId, scope: Option<ObjId>, 
                 .and_then(|s| torque_game::scene::access::matrix_of(vm, s))
                 .map_or(0.0, |m| {
                     let at = p.q.position();
-                    let d = [at[0] - m[3], at[1] - m[7], at[2] - m[11]];
-                    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+                    crate::world::length([at[0] - m[3], at[1] - m[7], at[2] - m[11]])
                 });
             // The drift is capped, so a prop that has waited long enough (a still one's first record among many moving ones)
             // goes before one just sent, however fast that one moves.

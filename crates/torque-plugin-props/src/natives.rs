@@ -429,7 +429,7 @@ impl ServerProps {
             return Err(PlacementError::Eye);
         }
         let d: [f32; 3] = std::array::from_fn(|k| at[k] - eye[k]);
-        let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let distance = crate::world::length(d);
         if !(reach > 0.0 && distance <= reach) {
             return Err(PlacementError::TooFar);
         }

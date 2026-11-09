@@ -9,11 +9,12 @@ use torque_engine::{Engine, TickInfo, VmPrefs};
 use torque_ts_vm::geometry;
 use torque_ts_vm::vm::Vm;
 
+use crate::joints::server as joint_server;
 use crate::natives::control_of;
 use crate::quant::conjugate;
 use crate::server::{
-    CLASS, PropPrefs, ServerProps, address_of, is_class, limits_of, owner_key, player_boxes,
-    write_back,
+    CLASS, PropPrefs, ServerProps, address_of, delete_logged, is_class, joint_limits_of, limits_of,
+    owner_key, player_boxes, write_back,
 };
 use crate::world::{Owner, OwnerKey, PropEvent, PropWorld, Pusher, StaticPiece};
 
@@ -23,13 +24,26 @@ pub const STATICS_EVERY: u64 = 64;
 /// The server's tick hook ([module docs](self)).
 pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
     let prefs = vm.prefs::<PropPrefs>();
-    let (events, expired, rebuilt) = {
+    let (events, expired, rebuilt, broke, gone_joints, problems) = {
         let mut srv = props.0.borrow_mut();
         srv.tick += 1;
         srv.net_share = prefs.net_share;
         let tick = srv.tick;
         let world = srv.world_mut(vm);
         world.limits = limits_of(&prefs);
+        world.joint_limits = joint_limits_of(&prefs);
+        // Joints whose objects a script deleted, and where the players at grapples' ends are.
+        let dropped: Vec<u32> = world
+            .joints()
+            .keys()
+            .filter(|&&id| !is_class(vm, id, joint_server::CLASS))
+            .copied()
+            .collect();
+        let mut gone_joints: Vec<(u32, u32)> = dropped
+            .into_iter()
+            .filter_map(|id| world.remove_joint(id).map(|j| (id, j.rope)))
+            .collect();
+        world.set_players(grappled_players(vm, world));
         // Props whose objects a script deleted.
         let gone: Vec<u32> = world
             .props()
@@ -62,13 +76,28 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         for &(id, mask) in &report.dirty {
             write_back(vm, world, id, mask);
         }
+        for &(id, mask) in &report.joints {
+            joint_server::write_back(vm, world, id, mask);
+        }
+        let broke: Vec<u32> = report.joint_events.iter().map(|&(id, _)| id).collect();
+        gone_joints.extend(world.take_gone_joints());
         let events: Vec<(u32, u32, PropEvent)> = report
             .events
             .iter()
             .filter_map(|&(id, e)| world.get(id).map(|p| (id, p.data, e)))
             .collect();
-        (events, expired, report.rebuilt.then_some(report.lost))
+        (
+            events,
+            expired,
+            report.rebuilt.then_some(report.lost),
+            broke,
+            gone_joints,
+            world.take_problems(),
+        )
     };
+    for problem in problems {
+        vm.warn(problem);
+    }
     if let Some(lost) = rebuilt {
         vm.warn(
             "props: the physics world stopped on a caught panic; it was made again from each prop's last state".to_string(),
@@ -77,75 +106,120 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
             vm.warn(format!(
                 "props: prop {id} could not be made again in the new physics world; it is deleted"
             ));
-            let _ = vm.delete_object(id);
+            delete_logged(vm, id);
         }
     }
     for id in expired {
-        let _ = vm.delete_object(id);
+        delete_logged(vm, id);
+    }
+    // The props that went took their joints with them: their objects and ropes go too.
+    joint_server::delete_objects(vm, &gone_joints);
+    // A callback that stops on an error is printed, and the ones after it still run.
+    for id in broke {
+        if is_class(vm, id, joint_server::CLASS)
+            && let Err(e) = vm.call_method(id, b"onBreak", &[])
+        {
+            vm.warn(format!("props: joint {id}'s onBreak: {e}"));
+        }
     }
     refresh_controls(vm, props);
     for (id, data, event) in events {
-        let name: &[u8] = match event {
-            PropEvent::Sleep => b"onPropSleep",
-            PropEvent::Wake => b"onPropWake",
+        let name = match event {
+            PropEvent::Sleep => "onPropSleep",
+            PropEvent::Wake => "onPropWake",
         };
-        vm.call_method(data, name, &[id.to_string().into_bytes()])
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = vm.call_method(data, name.as_bytes(), &[id.to_string().into_bytes()]) {
+            vm.warn(format!("props: prop {id}'s {name}: {e}"));
+        }
     }
     Ok(())
 }
 
-/// Owners that left (their props become orphans), came back under the same key (they take their props back, unless two
+/// Owners that left (their props and joints become orphans), came back under the same key (they take them back, unless two
 /// connections there share that key: then nobody does), or have been gone longer than the orphan time (their props are taken
-/// out of the world and returned, for their objects to be deleted).
+/// out of the world and returned, for their objects to be deleted; their joints go after the tick, with the ones that went with
+/// their props).
 fn tend_owners(vm: &mut Vm, world: &mut PropWorld, tick: u64) -> Vec<u32> {
-    let mut owners: Vec<(u32, Owner)> = Vec::new();
-    let mut expired = Vec::new();
     let mut keys: Option<BTreeMap<OwnerKey, Option<u32>>> = None;
-    for (&id, p) in world.props() {
-        let Some(o) = &p.owner else { continue };
-        match o.conn {
-            Some(c) if vm.objects().contains(c) => {}
-            Some(_) => owners.push((
-                id,
-                Owner {
-                    conn: None,
-                    left: Some(tick),
-                    ..o.clone()
-                },
-            )),
-            None => {
-                let keys = keys.get_or_insert_with(|| live_owner_keys(vm));
-                if let Some(&Some(c)) = keys.get(&o.key) {
-                    owners.push((
-                        id,
-                        Owner {
-                            conn: Some(c),
-                            left: None,
-                            ..o.clone()
-                        },
-                    ));
-                } else if o
-                    .left
-                    .is_some_and(|t| tick.saturating_sub(t) > world.limits.orphan_ticks)
-                {
-                    expired.push(id);
+    let orphan = world.limits.orphan_ticks;
+    let props: Vec<(u32, Owner)> = world
+        .props()
+        .iter()
+        .filter_map(|(&id, p)| Some((id, p.owner.clone()?)))
+        .collect();
+    let joints: Vec<(u32, Owner)> = world
+        .joints()
+        .iter()
+        .filter_map(|(&id, j)| Some((id, j.owner.clone()?)))
+        .collect();
+    let mut expired = Vec::new();
+    for (id, o) in props {
+        match tended(vm, &o, tick, orphan, &mut keys) {
+            Tended::Kept => {}
+            Tended::Changed(owner) => {
+                if let Some(mask) = world.set_owner(id, Some(owner)) {
+                    write_back(vm, world, id, mask);
                 }
             }
+            Tended::Expired => expired.push(id),
         }
     }
-    for (id, mut owner) in owners {
-        if let Some(c) = owner.conn {
-            owner.address = Some(address_of(vm, c));
-        }
-        if let Some(mask) = world.set_owner(id, Some(owner)) {
-            write_back(vm, world, id, mask);
+    // A joint's owner is tended by the same rule; an expired one goes, its object deleted after the tick with the joints that
+    // went with their props.
+    for (id, o) in joints {
+        match tended(vm, &o, tick, orphan, &mut keys) {
+            Tended::Kept => {}
+            Tended::Changed(owner) => {
+                world.set_joint_owner(id, Some(owner));
+            }
+            Tended::Expired => world.expire_joint(id),
         }
     }
     for &id in &expired {
         world.remove(id);
     }
     expired
+}
+
+/// What tending did to an owner.
+enum Tended {
+    Kept,
+    Changed(Owner),
+    Expired,
+}
+
+/// An owner tended ([`tend_owners`]): its connection went (an orphan from `tick`), it came back under its key (with the
+/// connection's address now), or it has been gone longer than `orphan` ticks.
+fn tended(
+    vm: &mut Vm,
+    o: &Owner,
+    tick: u64,
+    orphan: u64,
+    keys: &mut Option<BTreeMap<OwnerKey, Option<u32>>>,
+) -> Tended {
+    match o.conn {
+        Some(c) if vm.objects().contains(c) => Tended::Kept,
+        Some(_) => Tended::Changed(Owner {
+            conn: None,
+            left: Some(tick),
+            ..o.clone()
+        }),
+        None => {
+            let keys = keys.get_or_insert_with(|| live_owner_keys(vm));
+            if let Some(&Some(c)) = keys.get(&o.key) {
+                Tended::Changed(Owner {
+                    conn: Some(c),
+                    left: None,
+                    address: Some(address_of(vm, c)),
+                    ..o.clone()
+                })
+            } else if o.left.is_some_and(|t| tick.saturating_sub(t) > orphan) {
+                Tended::Expired
+            } else {
+                Tended::Kept
+            }
+        }
+    }
 }
 
 /// The owner key of every connection there is now, with the connection; none for a key two connections share (the props
@@ -164,6 +238,19 @@ fn live_owner_keys(vm: &Vm) -> BTreeMap<OwnerKey, Option<u32>> {
             .or_insert(Some(c));
     }
     keys
+}
+
+/// Where each player at a grapple's first end is now.
+fn grappled_players(vm: &Vm, world: &PropWorld) -> BTreeMap<u32, [f32; 3]> {
+    world
+        .joints()
+        .values()
+        .filter_map(|j| match j.a {
+            crate::joints::End::Player { id, .. } => Some(id),
+            _ => None,
+        })
+        .filter_map(|id| Some((id, torque_game::sim::player::position(vm, id)?)))
+        .collect()
 }
 
 /// The object each owner's connection controls now, for the priority of the next packets.

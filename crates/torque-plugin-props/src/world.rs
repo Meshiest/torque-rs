@@ -26,6 +26,7 @@ use torque_physics_rapier::{
 };
 
 use crate::data::{PropParams, PropShape};
+use crate::joints::{Joint, JointEvent, JointLimits};
 use crate::quant::{self, Quantized};
 use crate::records::{MASK_FLAGS, MASK_INIT, MASK_STATE};
 
@@ -253,6 +254,10 @@ pub struct TickReport {
     pub rebuilt: bool,
     /// Props the world made again did not take, taken out (their objects are for the caller to delete).
     pub lost: Vec<u32>,
+    /// The joints whose ghost groups changed, in id order, with the mask bits to mark.
+    pub joints: Vec<(u32, u32)>,
+    /// Joints that broke, in id order.
+    pub joint_events: Vec<(u32, JointEvent)>,
 }
 
 /// The server's props ([module docs](self)).
@@ -261,6 +266,15 @@ pub struct PropWorld {
     props: BTreeMap<u32, Prop>,
     slots: BTreeSet<u16>,
     statics: BTreeMap<u32, StaticPiece>,
+    /// The joints by object id ([`crate::joints`]).
+    pub(crate) joints: BTreeMap<u32, Joint>,
+    /// The joints taken out because a body at an end went, with their ropes, for the caller to delete their objects.
+    pub(crate) gone_joints: Vec<(u32, u32)>,
+    /// Where each player at a grapple's end is, given before each tick.
+    pub(crate) players: BTreeMap<u32, [f32; 3]>,
+    /// Sleepers a joint woke since the last tick (reported by the next).
+    roused: Vec<u32>,
+    pub joint_limits: JointLimits,
     config: Config,
     /// The awake cap a budget overrun lowered, while it lasts.
     cut: Option<u32>,
@@ -269,6 +283,8 @@ pub struct PropWorld {
     pub over_budget: u64,
     /// Physics worlds made again after a caught panic.
     pub rebuilds: u64,
+    /// Physics calls that failed where nothing was there to tell, for the tick to print ([`PropWorld::note`]).
+    problems: Vec<String>,
 }
 
 impl std::fmt::Debug for PropWorld {
@@ -276,6 +292,7 @@ impl std::fmt::Debug for PropWorld {
         f.debug_struct("PropWorld")
             .field("props", &self.props.len())
             .field("statics", &self.statics.len())
+            .field("joints", &self.joints.len())
             .finish_non_exhaustive()
     }
 }
@@ -334,9 +351,14 @@ pub fn world_half(half: [f32; 3], q: [f32; 4]) -> [f32; 3] {
     std::array::from_fn(|r| (0..3).map(|c| (m[r * 4 + c] * half[c]).abs()).sum::<f32>())
 }
 
-fn length(v: [f32; 3]) -> f32 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+/// A vector's length: the one form every length in this crate is taken by (the sum in `x, y, z` order, then the root), so a
+/// length is the same bits wherever it is read.
+pub(crate) fn length(v: [f32; 3]) -> f32 {
+    torque_collide::math::dot(v, v).sqrt()
 }
+
+/// The most problems the world keeps for the tick to print ([`PropWorld::take_problems`]).
+const MAX_PROBLEMS: usize = 64;
 
 impl PropWorld {
     /// An empty world of `substeps` sub-steps a tick.
@@ -346,12 +368,37 @@ impl PropWorld {
             props: BTreeMap::new(),
             slots: (0..MAX_PROPS as u16).collect(),
             statics: BTreeMap::new(),
+            joints: BTreeMap::new(),
+            gone_joints: Vec::new(),
+            players: BTreeMap::new(),
+            roused: Vec::new(),
+            joint_limits: JointLimits::default(),
             config: config(substeps),
             cut: None,
             limits: limits.held(),
             over_budget: 0,
             rebuilds: 0,
+            problems: Vec::new(),
         }
+    }
+
+    /// Notes a physics call that failed, for the tick to print: not when the thing was gone already (a grapple or a broken
+    /// joint has no physics joint) or the world has stopped (it is made again from the props' states, and that is printed).
+    pub(crate) fn note<T>(&mut self, what: &str, result: Result<T, Error>) {
+        match result {
+            Ok(_) | Err(Error::Unknown(_) | Error::UnknownJoint(_) | Error::Poisoned) => {}
+            Err(e) => {
+                if self.problems.len() < MAX_PROBLEMS {
+                    self.problems.push(format!("props: {what}: {e}"));
+                }
+            }
+        }
+    }
+
+    /// The physics calls that failed since the last call where no caller was there to tell (not a stopped world, which its
+    /// rebuild reports).
+    pub fn take_problems(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.problems)
     }
 
     /// The physics world.
@@ -435,7 +482,10 @@ impl PropWorld {
         owner: Option<Owner>,
         predict: u8,
     ) -> Result<(), SpawnError> {
-        if self.props.contains_key(&id) || self.statics.contains_key(&id) {
+        if self.props.contains_key(&id)
+            || self.statics.contains_key(&id)
+            || self.joints.contains_key(&id)
+        {
             return Err(SpawnError::Taken);
         }
         let finite = position.iter().chain(&rotation).all(|v| v.is_finite());
@@ -499,7 +549,9 @@ impl PropWorld {
             return false;
         };
         self.slots.insert(p.slot);
-        let _ = self.world.remove_body(BodyId(id));
+        let removed = self.world.remove_body(BodyId(id));
+        self.note(&format!("prop {id}'s body"), removed);
+        self.drop_joints_of(id);
         true
     }
 
@@ -521,9 +573,36 @@ impl PropWorld {
             angular_damping: p.params.angular_damping,
             ..BodyDesc::default()
         };
-        let _ = self.world.remove_body(BodyId(id));
+        let before = BodyDesc {
+            motion: if motion == Motion::Fixed {
+                Motion::Dynamic
+            } else {
+                Motion::Fixed
+            },
+            linvel: p.q.state().linvel,
+            angvel: p.q.state().angvel,
+            ..desc.clone()
+        };
+        let removed = self.world.remove_body(BodyId(id));
+        self.note(&format!("prop {id}'s body"), removed);
         let mut free = |_: u64| true;
-        self.world.add_body(BodyId(id), &desc, &mut free).is_ok()
+        let (made, has_body) = match self.world.add_body(BodyId(id), &desc, &mut free) {
+            Ok(()) => (true, true),
+            Err(e) => {
+                // The old body goes back as it was. When the world refuses that too it has stopped, and the next tick
+                // makes every body (and joint) again from its prop's state.
+                self.note(&format!("prop {id}'s new body"), Err::<(), _>(e));
+                let back = self.world.add_body(BodyId(id), &before, &mut free);
+                let has_body = back.is_ok();
+                self.note(&format!("prop {id}'s body put back"), back);
+                (false, has_body)
+            }
+        };
+        // Removing the body took its joints out of the physics world: they go back on the body it has now.
+        if has_body {
+            self.reinsert_joints_of(id);
+        }
+        made
     }
 
     /// Pins a prop where it is (a fixed body); false when it is not a prop, is frozen already, or its datablock says it cannot be.
@@ -704,6 +783,7 @@ impl PropWorld {
                 let _ = self.world.set_body(BodyId(id), &st);
             }
         }
+        self.reinsert_all_joints();
         self.rebuilds += 1;
         Some(lost)
     }
@@ -777,6 +857,11 @@ impl PropWorld {
             ..TickReport::default()
         };
         self.push(pushers);
+        self.joints_before_step(&mut report);
+        for id in std::mem::take(&mut self.roused) {
+            report.events.push((id, PropEvent::Wake));
+            report.dirty.push((id, MASK_FLAGS));
+        }
         let budget = self.limits.step_budget;
         let mut spent = 0u64;
         let mut charge = |units: u64| {
@@ -848,8 +933,26 @@ impl PropWorld {
             }
         });
         report.events.sort_by_key(|&(id, _)| id);
+        self.joints_after_step(&mut report);
         report.awake = self.awake();
         report
+    }
+
+    /// Wakes a sleeping prop that something other than a contact is to move (a joint made or changed, a winch reeling): awake,
+    /// its quiet count started over, its wake reported by the next tick. A prop that sleeps settles back exactly where it lay
+    /// unless it moves, so a joint's slow start would otherwise never wake it.
+    pub(crate) fn rouse(&mut self, id: u32) {
+        let Some(p) = self.props.get_mut(&id) else {
+            return;
+        };
+        if !p.rest.is_asleep() {
+            return;
+        }
+        p.rest = Rest::Awake;
+        p.quiet = 0;
+        let woke = self.world.wake(BodyId(id));
+        self.note(&format!("waking prop {id}"), woke);
+        self.roused.push(id);
     }
 
     /// A prop stopped where it is and asleep.

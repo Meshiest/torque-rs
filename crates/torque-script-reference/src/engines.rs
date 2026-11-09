@@ -57,7 +57,7 @@ fn optional_plugins() -> [Optional; 6] {
         },
         Optional {
             id: PropsPlugin::ID.as_str(),
-            what: "props: the PropData datablock and the Prop class, rigid bodies a server simulates and every client sees, the prop functions that spawn, push, freeze and read them, and the placement checks a game's own spawn commands make",
+            what: "props: the PropData datablock and the Prop class, rigid bodies a server simulates and every client sees, the prop functions that spawn, push, freeze and read them, and the placement checks a game's own spawn commands make; the Joint class and the joint functions (tethers, winches, welds, hinges, grapples) and their check",
             add: |engine| {
                 engine.add_plugins(PropsPlugin);
             },

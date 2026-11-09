@@ -44,6 +44,11 @@ propApplyImpulse(%crate, "0 40 0");
 - The `Prop` ghost class, its updates held to `$Pref::Props::NetShare` (40%) of each packet and ordered for each client (touched
   by its player, then its own, then by how far each may have moved); each client's book of the props it was sent
   (`ClientProps`), drawn as shapes.
+- Joints between props, the world and players: `jointTether` (hard, or a spring past its length), `jointWinch`, `jointWeld`,
+  `jointHinge` (limits, a motor) and `jointGrapple` (a Player held to a point or a prop inside its own tick, so its client
+  predicts it exactly), breakable, with their setters, getters and `jointCheck` for a game's own commands; the `Joint` ghost
+  class and each client's book (`ClientJoints`). With feature `rope`, `jointRope` makes a networked rope that follows a joint
+  and pulls on nothing.
 
 ## Limits
 
@@ -54,12 +59,19 @@ first. The step is charged to `$Pref::Props::StepBudget`: a step past it does no
 prop outlives its owner by `$Pref::Props::OrphanSeconds` (120). A client holds at most 4,096 props and holds every value a server
 sends it to the wire's ranges.
 
+Joints per player (`$Pref::Props::MaxJointsPerPlayer`, 64), per address (`$Pref::Props::MaxJointsPerAddress`, 256, orphans
+counted), per server (`$Pref::Props::MaxJoints`, 1,024) and per prop
+(`$Pref::Props::MaxJointsPerProp`, 16): a joint past one is refused. Lengths are at most 200 units, a winch's rate 20 units a
+second, every force and spring held to its range; a client holds at most 4,096 joints.
+
 The book's "Props and joints" chapter has the rest.
 
 ## Tests
 
 `cargo test -p torque-plugin-props`: the quantization, the records and hostile bytes, the world's caps, sleep, freeze, pushes and
 budget (`src/*_tests.rs`); a server and two clients over the memory transport (`tests/net.rs`); a client that speaks only Torque's
-protocol (`tests/tge_client.rs`); hostile servers and hostile clients (`tests/fuzz.rs`, `TORQUE_FUZZ_PROPS=<rounds>`). The bench:
-`cargo bench -p torque-plugin-props --bench step`. The `props-drop` scenario of `just trace-hash` hashes a server and a predicting
-client with 64 props, native and wasm32.
+protocol (`tests/tge_client.rs`); hostile servers and hostile clients (`tests/fuzz.rs`, `TORQUE_FUZZ_PROPS=<rounds>`); each joint
+kind's hold, the joint caps and what a joint follows (`tests/joints.rs`), joints over the network (`tests/joints_net.rs`), and
+with `--features rope` the ropes that follow them (`tests/joint_rope.rs`). The bench: `cargo bench -p torque-plugin-props --bench
+step`. The `props-drop` and `props-joints` scenarios of `just trace-hash` hash a server and a predicting client with 64 props, and
+with a grappled figure among tethers, a winch, a weld and a hinge (0 corrections), native and wasm32.
