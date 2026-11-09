@@ -65,20 +65,9 @@ fn lift_pose(tick: u32) -> String {
     format!("{x} -8 {z} 0 0 1 {yaw}")
 }
 
-/// Moves `obj` and marks its record's position, as a class whose own `setTransform` sends its pose does (TGE's StaticShape
-/// marks nothing, so a client would never see it move).
+/// Moves `obj` by `setTransform`, which marks a StaticShape's record position as in TGE.
 pub(crate) fn move_shape(rig: &mut Rig, obj: ObjId, pose: &str) -> Result<(), String> {
-    eval(rig, &format!("{obj}.setTransform(\"{pose}\");"))?;
-    mark_position(rig, obj);
-    Ok(())
-}
-
-fn mark_position(rig: &Rig, obj: ObjId) {
-    torque_game::scene::ghost::mark_record(
-        rig.server.vm(),
-        obj,
-        torque_ghosts::shapes::STATIC_POSITION_MASK,
-    );
+    eval(rig, &format!("{obj}.setTransform(\"{pose}\");")).map(drop)
 }
 
 /// The figure's keys at `tick` of the ride: a slow turn, and a jump held for two ticks of every 64.
@@ -152,7 +141,6 @@ pub fn ride(deck: Deck<'_>, latency: u32) -> Result<Ride, String> {
         if let Deck::Root(path) = deck {
             let at = *path.get(tick as usize).ok_or("the path is too short")?;
             torque_game::scene::object::set_transform(rig.server.vm_mut(), deck_id, at);
-            mark_position(&rig, deck_id);
         }
         ride_keys(&mut rig, tick);
         rig.step();

@@ -1,8 +1,13 @@
-// The test game's server: a mover for ropes to hang from, a camera for each client, and the commands the tests send.
+// The test game's server: a mover (a StaticShape) for ropes to hang from, a camera for each client, and the commands the tests send.
 
 datablock CameraData(EyeData)
 {
    mode = "Observer";
+};
+
+// What ropes hang from and the tests move: a Camera does not send its pose when a script sets it.
+datablock StaticShapeData(MoverData)
+{
 };
 
 datablock RopeData(Cable)
@@ -42,7 +47,7 @@ function startRopes()
 {
    new SimGroup(MissionCleanup);
    new SimGroup(ClientGroup);
-   MissionCleanup.add(new Camera(Mover) { dataBlock = EyeData; position = "0 0 1"; });
+   MissionCleanup.add(new StaticShape(Mover) { dataBlock = MoverData; position = "0 0 1"; });
 }
 
 function GameConnection::onConnect(%client)
@@ -63,11 +68,6 @@ function GameConnection::onDrop(%client, %reason)
 {
    if (isObject(%client.camera))
       %client.camera.delete();
-}
-
-function moveMover(%x)
-{
-   Mover.setTransform(%x SPC "0 1 0 0 1 0");
 }
 
 // A client fires: its own rope is already there, tagged with %id.

@@ -71,15 +71,6 @@ function box(%pos)
    return %obj;
 }
 
-// A camera no client controls: its record carries its position and yaw as floats, so a client draws it exactly where the
-// server has it (a root that moves and turns).
-function eye(%pos)
-{
-   %obj = new Camera() { dataBlock = EyeData; position = %pos; };
-   MissionCleanup.add(%obj);
-   return %obj;
-}
-
 // The ghost index of %obj on the first client's connection (-1 until its first record is acknowledged).
 function ghostOf(%obj)
 {

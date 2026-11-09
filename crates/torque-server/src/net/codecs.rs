@@ -493,6 +493,10 @@ impl NetCodecs for EngineCodecs {
         Some(&self.plugins)
     }
 
+    fn transform_mask(&self, code: u16) -> u32 {
+        TorqueCodecs.transform_mask(code)
+    }
+
     fn sim_mask(&self, code: u16, bits: u32) -> u32 {
         TorqueCodecs.sim_mask(code, bits)
     }

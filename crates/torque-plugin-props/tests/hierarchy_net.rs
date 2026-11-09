@@ -25,14 +25,9 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt()
 }
 
-/// Moves a static shape and marks its record, as a class whose `setTransform` sends its pose does.
+/// Moves a static shape; its `setTransform` marks the record's position.
 fn move_to(rig: &mut Rig, id: u32, pose: &str) {
     rig.eval(&format!("{id}.setTransform(\"{pose}\");"));
-    torque_game::scene::ghost::mark_record(
-        rig.server.vm(),
-        id,
-        torque_ghosts::shapes::STATIC_POSITION_MASK,
-    );
 }
 
 fn slot_of(rig: &Rig, id: u32) -> u16 {

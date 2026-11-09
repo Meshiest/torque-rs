@@ -94,7 +94,7 @@ fn an_end_attached_at_an_offset_carries_it_to_every_client_and_a_plain_attach_cl
     }
     // A client that draws no frame follows the ghost's position plus the offset.
     for k in 0..60 {
-        rig.eval(&format!("moveMover({});", k as f32 * 0.05));
+        rig.move_mover(k as f32 * 0.05);
         rig.step();
     }
     rig.run(20);
@@ -153,7 +153,7 @@ fn a_driven_rope_follows_what_its_driver_says_on_the_client_and_nothing_else() {
     // server does not override what the driver says.
     rig.eval(&format!("ropeNetSetLength({id}, 9, 0);"));
     for k in 0..40 {
-        rig.eval(&format!("moveMover({});", k as f32 * 0.05));
+        rig.move_mover(k as f32 * 0.05);
         rig.step();
     }
     rig.run(30);

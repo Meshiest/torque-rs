@@ -14,6 +14,7 @@ use torque_app::server::{GameServer, Listen};
 use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque_engine::{Engine, EngineBuilder};
 use torque_plugin_rope::{NetRopes, Rope, RopePlugin, RopeShared};
+use torque_ts_vm::sim::ObjId;
 
 pub const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
 
@@ -83,20 +84,6 @@ impl Peer {
     /// The client's rope ids, in order.
     pub fn rope_ids(&self) -> Vec<u32> {
         self.ropes().lock().ropes().map(|(id, _)| id).collect()
-    }
-
-    /// Ghosts of the Camera class the client holds, with the positions the server last put them at.
-    pub fn cameras(&self) -> Vec<(u32, [f32; 3])> {
-        self.client
-            .with_world(|w| {
-                w.records
-                    .ghosts
-                    .iter()
-                    .filter(|(_, g)| g.class.is_some_and(|c| c.name() == "Camera"))
-                    .filter_map(|(i, g)| Some((*i, g.position?)))
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// Ghosts of every class the client holds.
@@ -214,6 +201,22 @@ impl Rig {
             .eval(code.as_bytes())
             .map(|v| String::from_utf8_lossy(&v).into_owned())
             .unwrap_or_else(|e| panic!("{code}: {e}"))
+    }
+
+    /// Moves the server's static shape `obj` by `setTransform`, which marks its record's position as in TGE.
+    pub fn move_static(&mut self, obj: ObjId, pose: &str) {
+        self.eval(&format!("{obj}.setTransform(\"{pose}\");"));
+    }
+
+    /// Moves the server's `Mover` to `x` along the x axis, one unit up.
+    pub fn move_mover(&mut self, x: f32) {
+        let mover = self
+            .server
+            .vm()
+            .objects()
+            .find(b"Mover")
+            .expect("the mover");
+        self.move_static(mover, &format!("{x} 0 1 0 0 1 0"));
     }
 
     /// Server objects of a class.

@@ -19,20 +19,20 @@ fn hierarchy_files() -> GameFiles {
     files
 }
 
-/// The id of the camera `code` makes on the server.
-fn camera(rig: &mut Rig, position: &str) -> u32 {
+/// The id of the static shape `code` makes on the server (its `setTransform` reaches clients; a camera's does not).
+fn shape(rig: &mut Rig, position: &str) -> u32 {
     rig.eval(&format!(
-        "return new Camera() {{ dataBlock = EyeData; position = \"{position}\"; }};"
+        "return new StaticShape() {{ dataBlock = MoverData; position = \"{position}\"; }};"
     ))
     .parse()
-    .expect("a camera")
+    .expect("a static shape")
 }
 
 /// A root, its child and its grandchild, hung on each other at local poses that turn and lift.
 fn tree(rig: &mut Rig) -> [u32; 3] {
-    let root = camera(rig, "0 0 2");
-    let child = camera(rig, "3 0 2");
-    let grandchild = camera(rig, "5 1 3");
+    let root = shape(rig, "0 0 2");
+    let child = shape(rig, "3 0 2");
+    let grandchild = shape(rig, "5 1 3");
     let linked = rig.eval(&format!(
         "return {child}.setParent({root}) && {child}.setLocalTransform(\"3 0 0 0 0 1 0.6\") \
          && {grandchild}.setParent({child}) && {grandchild}.setLocalTransform(\"2 1 0.5 0 0 1 0.4\");"
@@ -113,7 +113,7 @@ fn follow(offset: [f32; 3]) -> (usize, usize) {
     assert!(arrived, "the end never reached the resolved anchor");
     let (mut good, mut stale_record) = (0, 0);
     for t in 0..600 {
-        rig.eval(&format!("{root}.setTransform(\"{}\");", root_pose(t)));
+        rig.move_static(root, &root_pose(t));
         rig.step();
         let (resolved, record) = client_places(&rig, ghost);
         let end = rope(&rig.peers[0]).1.points().last().expect("points");

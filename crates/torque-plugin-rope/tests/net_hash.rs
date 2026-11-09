@@ -47,7 +47,7 @@ fn run() -> (u64, u64) {
             _ => {}
         }
         if (20..120).contains(&tick) {
-            rig.eval(&format!("moveMover({});", (tick - 20) as f32 * 0.03));
+            rig.move_mover((tick - 20) as f32 * 0.03);
         }
         rig.step();
         for peer in &rig.peers {

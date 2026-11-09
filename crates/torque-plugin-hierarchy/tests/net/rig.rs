@@ -185,15 +185,9 @@ impl Rig {
             .unwrap_or_else(|e| panic!("{code}: {e}"))
     }
 
-    /// Moves StaticShape `obj` to `pose` (`setTransform` text) and marks its record's position, as a class whose own
-    /// `setTransform` sends its pose does (TGE's StaticShape marks nothing, so a client would never see the root move).
+    /// Moves StaticShape `obj` to `pose` (`setTransform` text); its `setTransform` marks the record's position, so clients see it move.
     pub fn move_to(&mut self, obj: ObjId, pose: &str) {
         self.eval(&format!("{obj}.setTransform(\"{pose}\");"));
-        torque_game::scene::ghost::mark_record(
-            self.server.vm(),
-            obj,
-            torque_ghosts::shapes::STATIC_POSITION_MASK,
-        );
     }
 
     /// The object `code` returns.

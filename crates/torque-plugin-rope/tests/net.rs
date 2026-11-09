@@ -110,20 +110,10 @@ fn a_rope_hung_from_a_moving_ghost_follows_it_on_every_client() {
     rig.eval(&format!("ropeNetAttach({id}, 1, Mover);"));
     rig.run(10);
     for k in 0..80 {
-        rig.eval(&format!("moveMover({});", k as f32 * 0.04));
+        rig.move_mover(k as f32 * 0.04);
         rig.step();
     }
     rig.run(12);
-    eprintln!(
-        "cameras {:?} anchor {:?}",
-        rig.peers[0].cameras(),
-        rope(&rig.peers[0]).1.anchor(RopeEnd::End)
-    );
-    rig.peers[0].client.with_world(|w| {
-        for (i, g) in &w.records.ghosts {
-            eprintln!("ghost {i} {:?} {:?} {:?}", g.class, g.position, g.pose());
-        }
-    });
     let x = 79.0 * 0.04;
     for peer in &rig.peers {
         let (_, rope) = rope(peer);
