@@ -4163,6 +4163,7 @@ dependencies = [
  "torque-ghost-world",
  "torque-ghosts",
  "torque-gui",
+ "torque-hierarchy",
  "torque-images",
  "torque-import",
  "torque-net",
@@ -4674,6 +4675,7 @@ dependencies = [
  "torque-render-scene",
  "torque-server",
  "torque-shapes",
+ "torque-trace-hash",
  "torque-ts-vm",
 ]
 
@@ -4939,6 +4941,7 @@ dependencies = [
  "torque-example-assets",
  "torque-example-minimal-engine",
  "torque-game",
+ "torque-ghosts",
  "torque-gui",
  "torque-maps",
  "torque-physics-rapier",

@@ -56,6 +56,8 @@ use crate::records::{EngineDatablock, EngineRecord, EngineSet, VehicleUpdate};
 /// The most shapes a connection reads, and the largest file it reads (a vehicle's shape is far below both).
 pub const MAX_SHAPES: usize = 256;
 pub const MAX_SHAPE_BYTES: usize = 16 << 20;
+/// The longest shape path [`ShapeCache::loaded`] lowers on the stack.
+pub const KEY_ON_STACK: usize = 256;
 /// The work a shape's read is charged per byte (its parse, facts and hulls are charged by their own units).
 pub const SHAPE_WORK_PER_BYTE: u64 = 1;
 /// The work the loads of [`ShapeCache::get`] may take in one tick, all of them together (their reads, imports, parses, facts and
@@ -79,6 +81,8 @@ pub struct ClientShape {
     los: OnceCell<Option<Rc<Collision>>>,
     /// [`ClientShape::hull_slots`], made at the first ask.
     slots: OnceCell<Rc<[HullSlot]>>,
+    /// Each node's transform in the shape's space at rest.
+    rest: Vec<Matrix>,
 }
 
 impl ClientShape {
@@ -136,6 +140,12 @@ impl ClientShape {
             Err(_) if refused.get() => Err(Exhausted),
             Err(_) => Ok(None),
         }
+    }
+
+    /// Node `node`'s transform in the shape's space at rest (`None` past the shape's nodes): where a child hung on that node
+    /// sits on an unanimated parent.
+    pub fn rest_node(&self, node: u16) -> Option<&Matrix> {
+        self.rest.get(usize::from(node))
     }
 
     /// The shape's bounds (`ShapeBase::onNewDataBlock`'s object box).
@@ -281,12 +291,13 @@ impl ShapeLoad {
             };
         }
         match (self.shape.take(), self.posed.take()) {
-            (Some(shape), Some((facts, _))) => Step::Done(Box::new(ClientShape {
+            (Some(shape), Some((facts, rest))) => Step::Done(Box::new(ClientShape {
                 shape,
                 facts,
                 hulls: std::mem::take(&mut self.hulls),
                 los: OnceCell::new(),
                 slots: OnceCell::new(),
+                rest,
             })),
             _ => Step::Bad,
         }
@@ -318,6 +329,21 @@ impl ShapeCache {
 
     fn slot_rule(&self) -> SlotRule {
         self.slots.unwrap_or(shapes::preload::collision_slots)
+    }
+
+    /// The shape at `path` if it was read already (nothing is read, and a path of up to [`KEY_ON_STACK`] bytes is looked
+    /// up without an allocation).
+    pub fn loaded(&self, path: &[u8]) -> Option<&Rc<ClientShape>> {
+        let mut key = [0u8; KEY_ON_STACK];
+        let found = match key.get_mut(..path.len()) {
+            Some(key) => {
+                key.copy_from_slice(path);
+                key.make_ascii_lowercase();
+                self.shapes.get(&*key)
+            }
+            None => self.shapes.get(&path.to_ascii_lowercase()),
+        };
+        found?.as_ref()
     }
 
     /// The shape at `path`, read through `reader` the first time and kept, found or not (at most [`MAX_SHAPES`] shapes). The
@@ -445,6 +471,7 @@ fn load(bytes: &[u8], slots: SlotRule, work: &mut u64, budget: u64) -> Option<Cl
         hulls,
         los: OnceCell::new(),
         slots: OnceCell::new(),
+        rest: nodes,
     })
 }
 

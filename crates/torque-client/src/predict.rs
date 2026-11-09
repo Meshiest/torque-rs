@@ -44,6 +44,7 @@
 //! `T3D/camera.cpp`, `T3D/vehicles/vehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC).
 
 use std::any::Any;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -1181,6 +1182,7 @@ impl<W: PredictWorld> Predictor<W> {
                 self.stats.budget_stops += 1;
                 break;
             }
+            collision.carry_children(&pr.player.s.obj_to_world);
             let before = (pr.player.clone(), pr.vehicle.clone());
             let mut host = ClientPlayerHost {
                 world: &mut collision,
@@ -2681,6 +2683,8 @@ pub struct ClientCollision {
     /// The type bits the index answers for ([`StaticIndex::type_bits`]).
     index_bits: u32,
     objects: Vec<(ObjectId, Object)>,
+    /// The scene-hierarchy children of the predicted object, in its frame ([`ClientCollision::carry_children`]).
+    carried: Vec<CarriedChild>,
     /// `objects`' ids with their places, sorted: a lookup is a binary search (every convex's transform asks).
     by_id: Vec<(ObjectId, u32)>,
     /// The static index's water ([`StaticIndex::zones`]).
@@ -2741,6 +2745,187 @@ pub fn static_shape<W: PredictWorld>(
     })
 }
 
+/// The work units each scene-hierarchy link takes when [`ClientCollision::new`] places the children it holds: a lookup and,
+/// once a container for each ghost a chain reaches, a compose.
+pub const LINK_WORK: u64 = 8;
+
+/// What [`place_linked`] reads beside the world: the shapes for the parents' nodes, and the bodies the client runs itself.
+struct Linked<'a> {
+    shapes: Option<&'a mut drive::ShapeCache>,
+    reader: Option<&'a FileReader>,
+    driven: Option<&'a drive::DrivenVehicle>,
+    ghosts: Option<&'a BTreeMap<u32, drive::GhostVehicle>>,
+    player_at: Option<(u32, F3)>,
+    /// The predicted object the container is made for: its children are carried from its predicted pose
+    /// ([`ClientCollision::carry_children`]).
+    me: u32,
+}
+
+impl Linked<'_> {
+    /// Where the client runs ghost `index` itself this tick (the vehicle it drives, a ghost vehicle it runs ahead, the
+    /// control Player of a ghost vehicle's tick), if it does.
+    fn own<W: PredictWorld>(&self, world: &W, index: u32) -> Option<Matrix> {
+        if let Some(d) = self.driven.filter(|d| d.index == index) {
+            return Some(d.v.s.obj_to_world);
+        }
+        if let Some(g) = self.ghosts.and_then(|m| m.get(&index)) {
+            return Some(g.body.v.s.obj_to_world);
+        }
+        let (_, at) = self.player_at.filter(|&(i, _)| i == index)?;
+        let pose = world.ghosts.get(&index)?.pose()?;
+        let mut m = ghost_world::links::record_matrix(&pose);
+        [m[3], m[7], m[11]] = at;
+        Some(m)
+    }
+
+    /// Reads the shapes of the parents whose nodes the chains above `objects` hang on, walking each link once, each charged
+    /// [`LINK_WORK`] (and a read as the cache charges it). False once `budget` is spent.
+    fn read_node_shapes<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        objects: &[(ObjectId, Object)],
+        work: &mut u64,
+        budget: u64,
+    ) -> bool {
+        let mut walked = BTreeSet::new();
+        for (id, _) in objects {
+            let Some(mut at) = id.0.checked_sub(1) else {
+                continue;
+            };
+            for _ in 0..=hierarchy::HARD_DEPTH {
+                let Some(parent) = world.links.parent(at) else {
+                    break;
+                };
+                *work = work.saturating_add(LINK_WORK);
+                if *work > budget {
+                    return false;
+                }
+                at = parent.object.0;
+                if !walked.insert(at) {
+                    break;
+                }
+                if !matches!(parent.node, hierarchy::NodeRef::Node(_)) {
+                    continue;
+                }
+                let Some(cache) = self.shapes.as_deref_mut() else {
+                    continue;
+                };
+                let path = world
+                    .ghosts
+                    .get(&at)
+                    .and_then(|g| g.datablock())
+                    .and_then(|db| drive::shape_path(world, db));
+                if let Some(path) = path
+                    && cache.loaded(path).is_none()
+                {
+                    cache.get(path, self.reader, work, budget);
+                }
+            }
+        }
+        true
+    }
+}
+
+/// A child the predicted object carries: where it sits in that object's frame, and whether it keeps an upright box.
+#[derive(Debug, Clone, Copy)]
+struct CarriedChild {
+    id: ObjectId,
+    rel: Matrix,
+    upright: bool,
+}
+
+/// `view` at `m`, its collision switch as it was; a Player's box stays upright, at `m`'s translation.
+fn placed_view(view: &ObjectView, m: &Matrix, upright: bool) -> ObjectView {
+    let mut at = *m;
+    if upright {
+        at = collide::math::IDENTITY;
+        [at[3], at[7], at[11]] = [m[3], m[7], m[11]];
+    }
+    let mut placed = view_of(at, view.obj_box, view.scale, view.type_mask);
+    placed.collision_disabled = view.collision_disabled;
+    placed
+}
+
+/// Places the container's scene-hierarchy children for this tick: each object of a ghost with a link (and that the client does
+/// not run itself) moves to its [`ghost_world::ClientWorld::tick_pose_in`]: its parents' latest server poses (or where the
+/// client runs them) times their nodes at rest times the local pose the server last sent, not the record's own pose (which a
+/// parent's motion leaves behind) or where a frame draws it. A Player keeps its box upright, at the pose's translation.
+///
+/// Every ghost a chain reaches is worked out once, whatever children share it, and each link walked is charged
+/// [`LINK_WORK`]; past `budget` the rest stay where their records put them. The children
+/// whose chain rests on the predicted object (`linked.me`) are given back, at their poses in its frame, for
+/// [`ClientCollision::carry_children`]; they are placed here from its record.
+fn place_linked<W: PredictWorld>(
+    world: &W,
+    objects: &mut [(ObjectId, Object)],
+    mut linked: Linked<'_>,
+    work: &mut u64,
+    budget: u64,
+) -> Vec<CarriedChild> {
+    let mut carried = Vec::new();
+    if world.links.linked_count() == 0 || !linked.read_node_shapes(world, objects, work, budget) {
+        return carried;
+    }
+    let me = linked.me;
+    let me_record = world
+        .ghosts
+        .get(&me)
+        .and_then(|g| g.pose())
+        .map(|p| ghost_world::links::record_matrix(&p));
+    let cache = linked.shapes.as_deref();
+    let nodes = |ghost: u32, node: u16| {
+        let path = drive::shape_path(world, world.ghosts.get(&ghost)?.datablock()?)?;
+        cache?.loaded(path)?.rest_node(node).copied()
+    };
+    // The predicted object at the origin: its children come out in its frame.
+    let own = |ghost: u32| {
+        if ghost == me {
+            return Some(collide::math::IDENTITY);
+        }
+        linked.own(world, ghost)
+    };
+    let mut poses = ghost_world::world::TickPoses::default();
+    let mut charge = || {
+        *work = work.saturating_add(LINK_WORK);
+        *work <= budget
+    };
+    for (id, o) in objects.iter_mut() {
+        let Some(index) = id.0.checked_sub(1) else {
+            continue;
+        };
+        if world.links.parent(index).is_none() || linked.own(world, index).is_some() {
+            continue;
+        }
+        let pose = world.tick_pose_in(index, &nodes, &own, &mut poses, &mut charge);
+        if poses.stopped() {
+            break;
+        }
+        let Some(pose) = pose else {
+            continue;
+        };
+        let upright = world
+            .ghosts
+            .get(&index)
+            .and_then(|g| g.class)
+            .is_some_and(|c| <W::Set as EngineSet>::class_kind(c).is_player());
+        let at = if pose.base == me {
+            carried.push(CarriedChild {
+                id: *id,
+                rel: pose.world,
+                upright,
+            });
+            let Some(base) = &me_record else {
+                continue;
+            };
+            collide::math::matrix_product(base, &pose.world)
+        } else {
+            pose.world
+        };
+        o.view = placed_view(&o.view, &at, upright);
+    }
+    carried
+}
+
 /// Whether the control object `ctrl` is a Player or AIPlayer ghost (a turret the Player rides): the server's driver split reads it
 /// (`Player::processTick`'s `info.player`: the rider's turn goes to the turret, not to the rider).
 fn controls_player<W: PredictWorld>(world: &W, ctrl: Option<ObjectId>) -> bool {
@@ -2752,6 +2937,15 @@ fn controls_player<W: PredictWorld>(world: &W, ctrl: Option<ObjectId>) -> bool {
         .get(&index)
         .and_then(|g| g.class)
         .is_some_and(|c| <W::Set as EngineSet>::class_kind(c).is_player())
+}
+
+/// Where `id` is in the objects `by_id` indexes ([`index_of`]): its first place, as a scan from the front finds it.
+fn place_in(by_id: &[(ObjectId, u32)], id: ObjectId) -> Option<usize> {
+    let at = by_id.partition_point(|&(k, _)| k < id);
+    by_id
+        .get(at)
+        .filter(|&&(k, _)| k == id)
+        .map(|&(_, i)| i as usize)
 }
 
 /// The ids of `objects` with their places, sorted by id and then place ([`ClientCollision::place`]).
@@ -2970,6 +3164,20 @@ impl ClientCollision {
                 }
             }
         }
+        let carried = place_linked(
+            world,
+            &mut objects,
+            Linked {
+                shapes,
+                reader: reader.as_ref(),
+                driven,
+                ghosts: ghost_vehicles,
+                player_at,
+                me,
+            },
+            &mut work,
+            budget,
+        );
         // The plugins' shapes: charged to no budget, so the client and the server hold the same ones (see `collide::source`).
         let plugin = plugin_sources.map_or_else(collide::source::ShapeSet::none, |s| s.snapshot());
         ClientCollision {
@@ -2977,6 +3185,7 @@ impl ClientCollision {
             index_bits,
             by_id: index_of(&objects),
             objects,
+            carried,
             zones,
             work,
             budget,
@@ -3007,11 +3216,7 @@ impl ClientCollision {
 
     /// Where `id` is in `objects`: its first place, as a scan from the front finds it.
     fn place(&self, id: ObjectId) -> Option<usize> {
-        let at = self.by_id.partition_point(|&(k, _)| k < id);
-        self.by_id
-            .get(at)
-            .filter(|&&(k, _)| k == id)
-            .map(|&(_, i)| i as usize)
+        place_in(&self.by_id, id)
     }
 
     /// An object's type mask (0 for one that is not there).
@@ -3028,12 +3233,29 @@ impl ClientCollision {
             statics: None,
             index_bits: 0,
             objects: Vec::new(),
+            carried: Vec::new(),
             by_id: Vec::new(),
             zones: Vec::new(),
             work: 0,
             budget: TICK_WORK,
             order: None,
             plugin: collide::source::ShapeSet::none(),
+        }
+    }
+
+    /// Places the scene-hierarchy children of the predicted object at `at`, its pose before a move: the server resolves a
+    /// parent's children before each object's turn, so the object's next move meets them there. Each child is charged
+    /// [`GHOST_WORK`]; nothing is done without such children.
+    pub fn carry_children(&mut self, at: &Matrix) {
+        for child in &self.carried {
+            self.work = self.work.saturating_add(GHOST_WORK);
+            let Some((_, o)) =
+                place_in(&self.by_id, child.id).and_then(|at| self.objects.get_mut(at))
+            else {
+                continue;
+            };
+            let m = collide::math::matrix_product(at, &child.rel);
+            o.view = placed_view(&o.view, &m, child.upright);
         }
     }
 
@@ -3444,6 +3666,10 @@ pub mod look;
 pub mod slot;
 
 pub use slot::{NetPrediction, Prediction, PredictionSlot, TgePrediction};
+
+#[cfg(test)]
+#[path = "predict/linked_tests.rs"]
+mod linked_tests;
 
 #[cfg(test)]
 mod box_tests {

@@ -10,8 +10,10 @@
 //!   [`scenarios::plugins`] and folded into the `plugins` line; [`joints`], its joints' (a grappled figure swinging, with
 //!   tethers, a winch, a weld and a hinge around it), printed after it; [`props_predict`], a client that predicts props (a
 //!   held crate carried, and shots of the figure's own at it), printed after those.
-//! - [`hierarchy`]: the scene hierarchy's scenario (a moving root, three levels of children and a Player child on it, in
-//!   engine mode, where the hierarchy is on), printed among [`scenarios::scene`] and folded into the `scene` line.
+//! - [`hierarchy`]: the scene hierarchy's scenario (a moving root, three levels of children and a Player child on it, and the
+//!   client's figure riding a deck hung on a moving lift while the client predicts it, in engine mode, where the hierarchy
+//!   is on), printed among [`scenarios::scene`] and folded into the `scene` line; [`hierarchy::ride`] runs the ride alone
+//!   for torque-plugin-hierarchy's `tests/ride.rs`.
 //! - [`scenarios`]: the scenarios ([`scenarios::all`]) and [`scenarios::trace_hash`], the per-plugin entry point
 //!   (`trace_hash::<MyPlugin>()`).
 //!

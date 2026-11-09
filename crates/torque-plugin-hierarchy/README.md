@@ -19,8 +19,10 @@ each child on its parent.
   a parent's motion costs its children nothing; a link waits until the parent's ghost exists, the child drawn at its own pose
   meanwhile; the plugin is in the manifest, so a client without it is refused at connect. Clients check every link and pose
   as a server's tree does.
+- **Prediction.** A predicting client meets each child where the server's latest poses of its parents and its local pose put
+  it, every tick, so a Player riding a hung platform is corrected no more often than on the same platform moved by itself.
 
 In the default plugin groups and on in engine mode; Torque's protocol leaves it out (`HierarchyPlugin::always()` turns it on
 there too). The tree is `torque-hierarchy`; the scene's seam is torque-game's `scene::links`. The book's "Scene hierarchy"
 chapter has the model; the crate docs end with a "Maintaining" section. `cargo test -p torque-plugin-hierarchy --test server`
-runs the server's checks, `--test net` the network's.
+runs the server's checks, `--test net` the network's, `--test ride` the prediction's.

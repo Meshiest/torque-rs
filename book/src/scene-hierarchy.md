@@ -20,7 +20,8 @@ let engine = EngineBuilder::new()
 
 In the engine's own protocol the links go to every client and each client draws a child on its parent (see
 [On the network](#on-the-network)). With Torque's protocol and `HierarchyPlugin::always()` the hierarchy stays on the server,
-and a child's ghost carries its world pose as its class always has. Prediction over parented objects comes later.
+and a child's ghost carries its world pose as its class always has. A predicting client meets children where the server has
+them (see [Prediction](#prediction)).
 
 ## Parenting from a script
 
@@ -182,3 +183,33 @@ draw the ghost uses the pose the renderer drew, nodes included.
 On the server a joint's anchor on a Player is read when the props' tick hook runs, after the hierarchy has written any child
 whose parent moved since its last resolve, so a grapple's tether on a Player standing on a moving platform measures from the
 platform's pose of this tick.
+
+## Prediction
+
+A client predicts its control object against the ghosts it holds, so a Player standing on a child (a deck hung on a moving
+lift, a step on a vehicle) must meet the child where the server has it, not where the child's record was left when it was
+linked or where the last frame drew it. Each prediction tick the client's collision world places every child at
+`ClientWorld::tick_pose_in`: its parent's tick pose, times the parent's node, times the local pose the server last sent. What
+is exact and what is not:
+
+- **Exact:** the local pose (the server rounds every local pose to the wire's steps, so the client's is the server's to the
+  bit), the node rule and the compose (the same `torque_hierarchy::compose` the server uses), and the parent's pose as its
+  latest record carries it.
+- **Held, not extrapolated:** the parent's motion after its latest record. The moves a correction replays all come after the
+  server state it sent, so no record covers them; the client holds the parent's latest pose through the replay, as it holds a
+  moving object that is no one's child. A rider is therefore corrected no more often on a hung deck than on the same deck
+  moved by itself (`cargo test -p torque-plugin-hierarchy --test ride`), and the same figure on the same deck held still is
+  never corrected.
+- **Bodies the client runs itself** (the vehicle it drives, a ghost vehicle it runs ahead) carry their children from where the
+  client runs them, and the client's own predicted object carries its children from where it is before each move, as the
+  server places a parent's children before each object's turn.
+- **Not re-placed:** the objects of a game's static index set (`StaticIndex::set_near`), which a game keeps apart from the
+  ghosts; a child among them stays where the game put it.
+- **Cost:** each ghost a tick's chains reach is worked out once, whatever children share it, and every link walked is charged
+  to the tick's prediction budget, so the largest tree a server can send costs a tick no more than that budget.
+- **Nodes at rest:** a child on a node sits on the parent's shape at rest; a parent the server animates moves its nodes there
+  only.
+
+The blend a frame shows between two local poses never reaches the collision world: a frame draws children with
+`ClientWorld::world_pose`, a tick collides with `ClientWorld::tick_pose`. In Torque's protocol no link reaches a client, so its
+prediction is Torque's.

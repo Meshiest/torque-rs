@@ -55,6 +55,14 @@
 //!   moves with its parent without an update of its own, so a handler that follows where a ghost is drawn asks
 //!   `ClientWorld::world_pose` each frame rather than waiting to be told; `ClientGhostLookup::position` (a plugin's view of
 //!   where a ghost is) answers the same way, so a rope hung from a child follows the child's resolved pose.
+//! - The prediction's collision world places a scene-hierarchy child for each tick where the server's latest poses of its
+//!   parents and its last local pose put it (`ClientWorld::tick_pose_in`, through `predict::ClientCollision::new`), never at
+//!   its record's stale pose or a frame's blended one, and the predicted object's own children where it is before each move
+//!   (`ClientCollision::carry_children`). Each ghost a chain reaches is worked out once a container and every link walked
+//!   is charged [`predict::LINK_WORK`] to the tick's budget, so the largest tree a server can send stops at the budget
+//!   (`predict::linked_tests`); it costs nothing without links. The game's static set (`StaticIndex::set_near`) is not
+//!   re-placed. torque-plugin-hierarchy's `tests/ride.rs`: a rider on a hung deck is corrected no more than on the same
+//!   deck moved as a root, and not at all on one that never moves.
 //! - A connection reads the per-ghost block only when its engine's plugins fill it (`torque_ghosts::block::BlockSections`, a
 //!   resource of the engine, `conn::tge::ConnectHello::blocks`), and the manifest makes the server's plugins the same.
 //! - Nothing a server or an off-path sender can predict or flood is trusted: the TGE connect sequence mixes in the system's

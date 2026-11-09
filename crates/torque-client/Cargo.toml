@@ -18,6 +18,8 @@ torque-scene = { path = "../torque-scene" }
 torque-game = { path = "../torque-game" }
 torque-server = { path = "../torque-server" }
 ghost-world = { path = "../torque-ghost-world", package = "torque-ghost-world" }
+# The scene hierarchy's node references and depth, for placing a ghost's children in the prediction's collision world.
+hierarchy = { path = "../torque-hierarchy", package = "torque-hierarchy" }
 net = { path = "../torque-net", package = "torque-net" }
 ghosts = { path = "../torque-ghosts", package = "torque-ghosts" }
 collide = { package = "torque-collide", path = "../torque-collide" }

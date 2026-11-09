@@ -126,7 +126,17 @@
 //! `ClientGhostLookup`): `torque-plugin-rope`'s `tests/hierarchy_anchor.rs`. A joint's anchor on a Player child is where the
 //! resolve put it, the props' tick hook writing the tree's pending moves before it reads: `tests/joint_anchor.rs`.
 //!
-//! **Seams left for later work.** Prediction over parented colliders, and props as children, build on
+//! **Prediction** (in torque-client and torque-ghost-world; nothing here). A predicting client's collision world places
+//! each child for every tick at `ClientWorld::tick_pose_in`: its parents' latest record poses (or where the client runs
+//! them) times their nodes at rest times the local pose last sent, and the predicted object's own children where it is
+//! before each move. The local pose and the compose are the server's exactly; a parent's motion past its latest record is
+//! held, as a moving root's is, never extrapolated. The game's static set is not re-placed. `tests/ride.rs`: a figure riding
+//! a deck hung on a moving lift's node is corrected no more often than on the same deck moved as a root along the same path
+//! (latencies of 0 and 3 ticks), and never on the same deck held still, and the client's collision world places the deck
+//! within a millimetre of the server's pose at the tick of its latest record; the `hierarchy` line of `just trace-hash`
+//! hashes that ride's prediction.
+//!
+//! **Seams left for later work.** Props as children build on
 //! [`ServerHierarchy::world`], the same resolve and `ClientWorld::world_pose`.
 //!
 //! **Checks.** `cargo test -p torque-plugin-hierarchy`; `TORQUE_FUZZ_HIERARCHY_NET=100000 cargo test -p

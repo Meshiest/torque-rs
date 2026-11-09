@@ -32,6 +32,8 @@ torque-physics-rapier = { path = "../torque-physics-rapier" }
 torque-plugin-props = { path = "../torque-plugin-props" }
 # The hierarchy scenario's tree (the plugin itself is in `MinimalPlugins`).
 torque-plugin-hierarchy = { path = "../torque-plugin-hierarchy" }
+# The record bit a moved StaticShape marks in the hierarchy scenario.
+torque-ghosts = { path = "../torque-ghosts" }
 torque-server = { path = "../torque-server" }
 torque-shapes = { path = "../torque-shapes" }
 torque-ts-vm = { path = "../torque-ts-vm" }

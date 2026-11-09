@@ -41,6 +41,8 @@ torque-client = { path = "../torque-client" }
 torque-ghost-world = { path = "../torque-ghost-world" }
 torque-render-core = { path = "../torque-render-core" }
 torque-render-scene = { path = "../torque-render-scene" }
+# The ride test's predicting client over a link with latency, and its deck hung or moved by itself.
+torque-trace-hash = { path = "../torque-trace-hash" }
 
 [lints]
 workspace = true

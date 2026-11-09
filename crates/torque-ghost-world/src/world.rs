@@ -618,6 +618,38 @@ pub struct ClientWorld<S: ClientSet> {
     pub links: super::links::ClientLinks,
 }
 
+/// A ghost's pose for a prediction tick ([`ClientWorld::tick_pose_in`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TickPose {
+    pub world: Matrix,
+    pub scale: [f32; 3],
+    /// The ghost the chain rests on: the one whose own or record pose it starts from (the ghost itself when nothing
+    /// carries it).
+    pub base: u32,
+}
+
+/// The tick poses one prediction tick's collision world worked out ([`ClientWorld::tick_pose_in`]): each ghost once,
+/// whatever chains reach it.
+#[derive(Debug, Clone, Default)]
+pub struct TickPoses {
+    known: BTreeMap<u32, Option<TickPose>>,
+    stopped: bool,
+}
+
+impl TickPoses {
+    /// Whether a charge was refused: nothing more is worked out.
+    #[must_use]
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// How many ghosts were worked out.
+    #[must_use]
+    pub fn worked(&self) -> usize {
+        self.known.len()
+    }
+}
+
 // The derive would ask the set's classes and records for defaults they need not have.
 impl<S: ClientSet> Default for ClientWorld<S> {
     fn default() -> ClientWorld<S> {
@@ -1307,6 +1339,109 @@ impl<S: ClientSet> ClientWorld<S> {
             return Some((hierarchy::compose(&at, node.as_ref(), &local), scale));
         }
         Some((super::links::record_matrix(&self.own_pose(index)?), scale))
+    }
+
+    /// Where ghost `index` is for a prediction tick, and its scale: what the client's collision world places it at
+    /// ([`ClientWorld::tick_pose_in`] with nothing kept and nothing charged).
+    pub fn tick_pose(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+    ) -> Option<(Matrix, [f32; 3])> {
+        let pose = self.tick_pose_in(index, nodes, own, &mut TickPoses::default(), &mut || true)?;
+        Some((pose.world, pose.scale))
+    }
+
+    /// Where ghost `index` is for a prediction tick: a ghost the client runs itself where `own` holds it; a child at its
+    /// parent's tick pose times the parent's node (`nodes`, as for [`ClientWorld::world_pose`]) times the local pose the
+    /// server last sent (exactly the server's, never blended); any other ghost where its record puts it (the server's latest
+    /// pose of it, not where a frame draws it). Each ghost a chain reaches is worked out once into `poses` and charged one
+    /// `charge` call; once `charge` refuses, this and every later call on `poses` answer `None` ([`TickPoses::stopped`]).
+    /// `None` also for a ghost the client does not hold or whose record has no pose.
+    pub fn tick_pose_in(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+        poses: &mut TickPoses,
+        charge: &mut dyn FnMut() -> bool,
+    ) -> Option<TickPose> {
+        self.tick_through(index, nodes, own, poses, charge, 0)
+    }
+
+    fn tick_through(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+        poses: &mut TickPoses,
+        charge: &mut dyn FnMut() -> bool,
+        depth: usize,
+    ) -> Option<TickPose> {
+        if poses.stopped {
+            return None;
+        }
+        if let Some(known) = poses.known.get(&index) {
+            return *known;
+        }
+        if !charge() {
+            poses.stopped = true;
+            return None;
+        }
+        let placed = self.tick_placed(index, nodes, own, poses, charge, depth);
+        // A chain cut by the charge is not kept: its ghosts were not worked out.
+        if poses.stopped {
+            return None;
+        }
+        poses.known.insert(index, placed);
+        placed
+    }
+
+    fn tick_placed(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+        poses: &mut TickPoses,
+        charge: &mut dyn FnMut() -> bool,
+        depth: usize,
+    ) -> Option<TickPose> {
+        let placed = |world: Matrix, scale: [f32; 3]| TickPose {
+            world,
+            scale,
+            base: index,
+        };
+        if let Some((world, scale)) = self.links.held(index) {
+            return Some(placed(world, scale));
+        }
+        let g = self.ghosts.get(&index)?;
+        let scale = g.scale().unwrap_or([1.0; 3]);
+        if let Some(world) = own(index) {
+            return Some(placed(world, scale));
+        }
+        // The tree holds every chain to its hard depth; the bound only stops a walk that would not end.
+        if depth <= hierarchy::HARD_DEPTH
+            && let Some(parent) = self.links.parent(index)
+            && let Some(local) = self.links.local(index, self.anim_ms, false)
+            && let Some(on) =
+                self.tick_through(parent.object.0, nodes, own, poses, charge, depth + 1)
+        {
+            let node = match parent.node {
+                hierarchy::NodeRef::Origin => None,
+                hierarchy::NodeRef::Node(n) => nodes(parent.object.0, n),
+            };
+            let at = hierarchy::Pose {
+                world: on.world,
+                scale: on.scale,
+            };
+            return Some(TickPose {
+                world: hierarchy::compose(&at, node.as_ref(), &local),
+                scale,
+                base: on.base,
+            });
+        }
+        Some(placed(super::links::record_matrix(&g.pose()?), scale))
     }
 
     /// Where ghost `index` is drawn when nothing carries it: the client's own pose for what it runs (the control object, a
