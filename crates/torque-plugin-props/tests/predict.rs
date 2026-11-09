@@ -441,6 +441,7 @@ fn the_shooter_sees_a_predicted_prop_move_when_its_shot_arrives() {
     rig.eval(&format!(
         "new Projectile() {{ dataBlock = TestShot; initialPosition = \"0 24 0.5\"; initialVelocity = \"0 -60 0\"; sourceObject = {player}; }};"
     ));
+    // The move of the hit is stepped again with its push: the crate is drawn moving in the frame of the hit.
     let mut seen = None;
     for t in 0..40 {
         rig.step();
@@ -489,7 +490,7 @@ fn an_explosion_pushes_the_predicted_props_in_its_reach_at_once() {
         if !seen && p.stats().shot_hits > 0 {
             seen = true;
             let now = drawn_at(&p, ghost).expect("drawn");
-            // The hit and the blast: it moves away from the shot and up off the floor.
+            // The hit and the blast, in the frame of the hit: it moves away from the shot and up off the floor.
             assert!(len(sub(now, before)) > 0.05, "{before:?} {now:?}");
         }
     }

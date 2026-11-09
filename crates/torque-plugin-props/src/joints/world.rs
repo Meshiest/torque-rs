@@ -318,23 +318,31 @@ impl PropWorld {
     }
 
     /// The grapple on `player` changed its velocity by `change` (the player `mass` heavy): the prop at its far end takes the
-    /// opposite impulse at the next step, and the pull counts toward its break force.
+    /// opposite impulse at the next step, by the pair's reduced mass ([`super::grapple_pull`]; a frozen or missing prop is a
+    /// fixed end, and no prop moves), and the Player's momentum counts toward its break force ([`super::grapple_momentum`]).
     pub fn pulled(&mut self, player: u32, change: [f32; 3], mass: f32) {
         let Some(id) = self.grapple_on(player) else {
             return;
         };
+        let far = self
+            .joints
+            .get(&id)
+            .and_then(|j| j.b.prop())
+            .and_then(|p| self.get(p))
+            .map_or(super::FarEnd::Fixed, super::FarEnd::of);
         let Some(joint) = self.joints.get_mut(&id).filter(|j| !j.status.broken) else {
             return;
         };
-        let mass = number(mass, 0.0, 1.0e6);
-        let impulse = change.map(|c| -c * mass);
-        if !impulse.iter().all(|v| v.is_finite()) {
+        let (Some(impulse), Some(momentum)) = (
+            super::grapple_pull(change, mass, far),
+            super::grapple_momentum(change, mass),
+        ) else {
             return;
-        }
+        };
         for (p, i) in joint.pending.iter_mut().zip(impulse) {
             *p += i;
         }
-        joint.pull += length(impulse) / TICK;
+        joint.pull += length(momentum) / TICK;
     }
 
     /// The physics world's joint for a joint (none for a grapple, which is not a physics joint, or a broken one).

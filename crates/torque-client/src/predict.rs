@@ -266,6 +266,8 @@ pub struct Predictor<W: PredictWorld> {
     parts: Vec<Box<dyn slot::PredictionPart>>,
     /// The work the parts did this tick ([`slot::TickStep::charge`]).
     pub(crate) part_work: u64,
+    /// The shapes the parts said they moved at the last move (kept to be filled again).
+    moved_shapes: Vec<(&'static str, u32)>,
     /// The plugins' tethers on Players ([`torque_game::player_tether`]), as the client's script engine has them.
     tethers: Option<Rc<torque_game::player_tether::TetherSources>>,
 }
@@ -339,6 +341,7 @@ impl<W: PredictWorld> Predictor<W> {
             prediction_generation: 0,
             parts: Vec::new(),
             part_work: 0,
+            moved_shapes: Vec::new(),
             tethers: None,
         }
     }
@@ -945,6 +948,7 @@ impl<W: PredictWorld> Predictor<W> {
     /// The client's tick, through the predictor ([`slot::Prediction::tick`]; TGE's: [`Predictor::tge_process`]).
     pub fn process(&mut self, moves: &MoveQueue, world: &W, vm_globals: &ClientGlobals) {
         self.shapes.start_tick();
+        self.part_work = 0;
         self.with_prediction(|p, sim| {
             p.tick(&mut slot::TickCx {
                 sim,
@@ -954,7 +958,6 @@ impl<W: PredictWorld> Predictor<W> {
                 ran: false,
             });
         });
-        self.part_work = 0;
         self.with_parts(|p, sim| {
             p.tick(&mut slot::TickCx {
                 sim,
@@ -1040,39 +1043,8 @@ impl<W: PredictWorld> Predictor<W> {
         let first = moves.first_index();
         let list = moves.moves();
         let end = first.wrapping_add(list.len() as u32);
-        if let Some(cam) = self.camera.as_mut() {
-            let start = self.last_client_move.wrapping_sub(first);
-            let start = if (start as i32) < 0 {
-                0
-            } else {
-                (start as usize).min(list.len())
-            };
-            let skip = list.len().saturating_sub(start).saturating_sub(MAX_REPLAY);
-            cam.begin(world);
-            let near = cam.position();
-            let mut collision = ClientCollision::new(
-                world,
-                cam.index(),
-                TICK_WORK,
-                Some(Ctx {
-                    near,
-                    static_world: &mut self.static_world,
-                    shapes: &mut self.shapes,
-                    driven: None,
-                    ghosts: Some(&self.ghost_vehicles),
-                    disabled: None,
-                    player_at: None,
-                }),
-            );
-            for m in list.iter().skip(start + skip) {
-                if collision.exhausted() {
-                    self.stats.budget_stops += 1;
-                    break;
-                }
-                cam.step(m, world, &mut collision);
-                self.stats.steps += 1;
-            }
-            self.last_client_move = end;
+        if self.camera.is_some() {
+            self.process_camera(moves, world);
             return;
         }
         let game = Rc::clone(self.game());
@@ -1081,13 +1053,7 @@ impl<W: PredictWorld> Predictor<W> {
             return;
         };
         let controls_player = controls_player(world, pr.player.s.control_object);
-        let start = self.last_client_move.wrapping_sub(first);
-        let start = if (start as i32) < 0 {
-            0
-        } else {
-            (start as usize).min(list.len())
-        };
-        let skip = list.len().saturating_sub(start).saturating_sub(MAX_REPLAY);
+        let from = slot::replay_from(self.last_client_move, first, list.len(), MAX_REPLAY);
         // `ShapeBase::unpackUpdate` sets the control object's damage state as its ghost's record carries it (the same object on
         // TGE's client; a disabled Player runs no move of its own).
         if let Some(state) = damage_state(world, pr.index) {
@@ -1110,7 +1076,7 @@ impl<W: PredictWorld> Predictor<W> {
         if let Some(v) = pr.vehicle.as_mut() {
             v.refresh_wheels(world);
         }
-        let mut collision = ClientCollision::new(
+        let collision = ClientCollision::new(
             world,
             pr.index,
             TICK_WORK,
@@ -1124,13 +1090,93 @@ impl<W: PredictWorld> Predictor<W> {
                 player_at: None,
             }),
         );
-        // The tether on the predicted Player, the same for every move replayed: the server's for the ticks the client knows of.
-        let tether = self
-            .tethers
-            .as_ref()
-            .and_then(|t| Some((Rc::clone(t), t.tether(pr.index)?)));
+        let fresh =
+            self.run_player_moves(moves, from, collision, controls_player, &game, vm_globals);
+        self.last_client_move = end;
+        self.mount_pred = self.step_mount_pred(world, &fresh);
+    }
+
+    /// The Camera control object's moves from `mLastClientMove` (no part steps with a Camera).
+    fn process_camera(&mut self, moves: &MoveQueue, world: &W) {
+        let first = moves.first_index();
+        let list = moves.moves();
+        let end = first.wrapping_add(list.len() as u32);
+        if let Some(cam) = self.camera.as_mut() {
+            let from = slot::replay_from(self.last_client_move, first, list.len(), MAX_REPLAY);
+            cam.begin(world);
+            let near = cam.position();
+            let mut collision = ClientCollision::new(
+                world,
+                cam.index(),
+                TICK_WORK,
+                Some(Ctx {
+                    near,
+                    static_world: &mut self.static_world,
+                    shapes: &mut self.shapes,
+                    driven: None,
+                    ghosts: Some(&self.ghost_vehicles),
+                    disabled: None,
+                    player_at: None,
+                }),
+            );
+            for m in list.iter().skip(from) {
+                if collision.exhausted() {
+                    self.stats.budget_stops += 1;
+                    break;
+                }
+                cam.step(m, world, &mut collision);
+                self.stats.steps += 1;
+            }
+        }
+        self.last_client_move = end;
+    }
+
+    /// The predicted Player's moves from the list's `from`th, in `collision`, with the parts stepping their objects with each
+    /// ([`slot::PredictionPart::moved`]); the turns of the moves run for the first time. A step the budget cuts short ends the
+    /// loop: the Player and the parts both stop at the last whole move.
+    fn run_player_moves(
+        &mut self,
+        moves: &MoveQueue,
+        from: usize,
+        mut collision: ClientCollision,
+        controls_player: bool,
+        game: &Rc<dyn game::PredictGame<W>>,
+        vm_globals: &ClientGlobals,
+    ) -> Vec<[f32; 2]> {
+        let first = moves.first_index();
+        let list = moves.moves();
+        let end = first.wrapping_add(list.len() as u32);
         let mut fresh = Vec::new();
-        for (k, m) in list.iter().enumerate().skip(start + skip) {
+        let Some(pr) = self.predicted.as_mut() else {
+            return fresh;
+        };
+        let mut parts = std::mem::take(&mut self.parts);
+        // The shapes a part moved are read again for the next move, while the tick's budget for parts lasts.
+        let plugin_sources = self
+            .static_world
+            .plugin
+            .clone()
+            .filter(|s| !parts.is_empty() && !s.is_empty());
+        let mut moved = std::mem::take(&mut self.moved_shapes);
+        moved.clear();
+        slot::parts_begin(
+            &mut parts,
+            slot::motion_of_predicted(pr),
+            slot::player_of_predicted(pr),
+            &mut self.part_work,
+            &mut moved,
+            (first.wrapping_add(from as u32), end),
+        );
+        for (k, m) in list.iter().enumerate().skip(from) {
+            if let Some(sources) = &plugin_sources {
+                refresh_moved(sources, &mut collision, &mut moved, &mut self.part_work);
+            }
+            moved.clear();
+            // The tether on the predicted Player: asked again at each move, since a part may move its far end with the moves.
+            let tether = self
+                .tethers
+                .as_ref()
+                .and_then(|t| Some((Rc::clone(t), t.tether(pr.index)?)));
             if collision.exhausted() {
                 self.stats.budget_stops += 1;
                 break;
@@ -1144,7 +1190,7 @@ impl<W: PredictWorld> Predictor<W> {
                 vehicle: pr.vehicle.as_mut(),
                 controls_player,
                 class: pr.kind.class(),
-                game: Rc::clone(&game),
+                game: Rc::clone(game),
                 tether: tether.as_ref().map(|(_, (_, t))| *t),
                 pull: tether.as_ref().map(|(sources, (i, _))| Pull {
                     sources: Rc::clone(sources),
@@ -1156,7 +1202,7 @@ impl<W: PredictWorld> Predictor<W> {
             pr.player.s.mask_bits = 0;
             let stepped = pr
                 .player
-                .process_tick(&pr.data, Some(&sim_move(m, &*game)), &mut host);
+                .process_tick(&pr.data, Some(&sim_move(m, &**game)), &mut host);
             if stepped.is_err() || collision.exhausted() {
                 // A step the budget cut short is not kept: the state of the last whole step stays.
                 (pr.player, pr.vehicle) = before;
@@ -1173,7 +1219,7 @@ impl<W: PredictWorld> Predictor<W> {
                 .is_none_or(|n| (id.wrapping_sub(n) as i32) > 0);
             if new {
                 self.newest_move = Some(id);
-                fresh.push(game.control_turn(&sim_move(m, &*game), self.camera_pos));
+                fresh.push(game.control_turn(&sim_move(m, &**game), self.camera_pos));
                 if pr.player.s.mask_bits & sim::player::net_mask::JUMP != 0
                     && self.jumps.len() < MAX_JUMP_SOUNDS
                 {
@@ -1187,9 +1233,18 @@ impl<W: PredictWorld> Predictor<W> {
             if let Some(d) = full_packet_data::<W::Set>(pr) {
                 self.history.push_back((id, d));
             }
+            slot::parts_moved(
+                &mut parts,
+                slot::motion_of_predicted(pr),
+                slot::player_of_predicted(pr),
+                &mut self.part_work,
+                &mut moved,
+                id,
+            );
         }
-        self.last_client_move = end;
-        self.mount_pred = self.step_mount_pred(world, &fresh);
+        self.parts = parts;
+        self.moved_shapes = moved;
+        fresh
     }
 
     /// The control object's checksum for the next packet (0: nothing predicted).
@@ -3232,6 +3287,32 @@ impl collide::World for ClientCollision {
 
     fn map_shape(&self, id: ObjectId) -> Option<Rc<collide::map::MapShape>> {
         self.get(id)?.map.clone()
+    }
+}
+
+/// The plugin shapes in `moved` read again into `collision` (each charged to `work` as [`slot::SHAPE_READ_WORK`]; none once
+/// the tick's budget for parts is spent).
+fn refresh_moved(
+    sources: &collide::source::CollisionSources,
+    collision: &mut ClientCollision,
+    moved: &mut [(&'static str, u32)],
+    work: &mut u64,
+) {
+    if moved.is_empty() {
+        return;
+    }
+    let cost = moved.len() as u64 * slot::SHAPE_READ_WORK;
+    if work.saturating_add(cost) > slot::PART_TICK_WORK {
+        return;
+    }
+    *work += cost;
+    moved.sort_unstable();
+    let set = Rc::make_mut(&mut collision.plugin);
+    let mut rest = &*moved;
+    while let Some(&(name, _)) = rest.first() {
+        let n = rest.iter().take_while(|(s, _)| *s == name).count();
+        sources.refresh(set, name, rest[..n].iter().map(|(_, k)| *k));
+        rest = &rest[n..];
     }
 }
 

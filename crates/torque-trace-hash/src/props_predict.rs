@@ -205,3 +205,49 @@ pub fn shots() -> Result<Outcome, String> {
     }
     outcome(&rig, &h, start, &prediction)
 }
+
+/// The props in the replay bench's book besides the predicted ones (asleep, far off).
+pub const BENCH_BOOK: u32 = 900;
+
+/// A rig for timing a client's replay of predicted props through its own prediction: the figure holds a crate on a grapple
+/// with seven more tethered to it (eight predicted), [`BENCH_BOOK`] more props asleep in the book, and the server's packets
+/// `latency` ticks late, so each update replays that many moves. Settled: the client predicts all eight. The client's
+/// prediction is returned with it.
+pub fn replay_bench_rig(latency: u32) -> Result<(Rig, PropPrediction), String> {
+    let (mut rig, book, prediction) = rig()?;
+    let eval = |rig: &mut Rig, code: &str| {
+        rig.server
+            .vm_mut()
+            .eval(code.as_bytes())
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
+    };
+    eval(
+        &mut rig,
+        "$Held = propSpawn(TraceCrate, \"0 2 0.4\"); jointGrapple(TraceFigure SPC \"0 0 1\", $Held, 2.5);          for (%i = 0; %i < 7; %i++) { %p = propSpawn(TraceCrate, (%i - 3) * 0.9 SPC \"3.2 0.4\"); jointTether($Held, %p, 3); }",
+    )?;
+    let settle = |rig: &mut Rig, done: &dyn Fn() -> bool| {
+        for _ in 0..2000 {
+            if done() {
+                return true;
+            }
+            rig.step();
+        }
+        done()
+    };
+    if !settle(&mut rig, &|| prediction.members().len() >= 8) {
+        return Err(format!("{} props predicted", prediction.members().len()));
+    }
+    eval(
+        &mut rig,
+        &format!(
+            "for (%i = 0; %i < {BENCH_BOOK}; %i++) propSpawn(TraceCrate, 60 + (%i % 30) * 1.2 SPC 60 + mFloor(%i / 30) * 1.2 SPC \"0.4\");"
+        ),
+    )?;
+    let full = BENCH_BOOK as usize + 8;
+    if !settle(&mut rig, &|| book.with(|b| b.len()).unwrap_or(0) >= full) {
+        return Err(format!("the book holds {:?} props", book.with(|b| b.len())));
+    }
+    rig.set_latency(latency);
+    Ok((rig, prediction))
+}

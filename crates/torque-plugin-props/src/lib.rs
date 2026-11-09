@@ -148,6 +148,19 @@
 //!   projectile is Torque's: `a_projectile_pushes_a_prop_along_its_flight_held_to_the_cap` (`--test predict`) and every TGE
 //!   line of `just trace-hash` unchanged. An impulse at the center leaves a body's spin as it is (torque-physics-rapier), so the
 //!   pushes of every earlier line hash as before.
+//! - A grapple's pull on a prop is the momentum of the pair's reduced mass ([`joints::grapple_pull`]), the same on the server and
+//!   in a client's prediction, so a light prop is not flung past its Player; toward a fixed end (a point, a frozen or missing
+//!   prop) it is the Player's own, and nothing moves (the `props-joints` line unchanged). Its break force counts the Player's
+//!   momentum whatever the far end is ([`joints::grapple_momentum`]):
+//!   `a_grapples_pull_moves_its_prop_by_the_pairs_reduced_mass_and_counts_the_players_momentum`. The props a client predicts step inside the slot's move loop with its Player (a
+//!   correction replays both), so a held prop's prediction holds in either protocol (one packet a tick in the engine's own,
+//!   a correction a packet at worst): `a_held_prop_on_a_long_walk_is_drawn_smoothly_where_it_belongs` in both
+//!   (`TORQUE_NET_PROTOCOL=engine`); the slot's order: torque-client's
+//!   `a_correction_runs_a_part_from_the_ack_with_each_move_after_the_control_objects`. Inside the loop the Player meets only the
+//!   predicted props' shapes read again (by slot, [`client::PropBook::in_slot`]; torque-collide's
+//!   `a_refresh_reads_only_the_keys_given_again`), each charged to the tick's budget for parts, so a book of thousands costs
+//!   no more a move; the whole client tick is timed by `replay-bench`. A hit's push is made at the move of the hit, which is
+//!   stepped again with it (drawn in the frame of the hit): `the_shooter_sees_a_predicted_prop_move_when_its_shot_arrives`.
 //! - The client's prediction changes nothing of a client without [`predict::PropPredictionPlugin`] (the book's predicted
 //!   states stay none, so its collision source and tethers read the server's): the `props-drop` and `props-joints` lines
 //!   unchanged. With it, the client's prop prediction gives the same bits native and wasm32: the `carry` and

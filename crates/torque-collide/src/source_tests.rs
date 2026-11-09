@@ -455,6 +455,46 @@ fn a_working_set_builds_boxes_and_hulls_and_follows_a_move() {
 }
 
 #[test]
+fn a_refresh_reads_only_the_keys_given_again() {
+    let s = source(vec![
+        boxed(0, at(0.0, 5.0, 0.0), [1.0; 3]),
+        boxed(1, at(0.0, 9.0, 0.0), [1.0; 3]),
+    ]);
+    let src = sources(
+        &[PluginCollision::server(
+            "Crates",
+            Rc::clone(&s) as Rc<dyn CollisionSource>,
+        )],
+        Side::Server,
+    );
+    let mut set = (*src.snapshot()).clone();
+    // Shape 0 moves, shape 1 goes, shape 2 comes; only 0 and 2 are read again.
+    *s.0.borrow_mut() = vec![
+        boxed(0, at(0.0, 6.0, 0.0), [1.0; 3]),
+        boxed(1, at(0.0, 9.0, 0.0), [1.0; 3]),
+        boxed(2, at(0.0, 20.0, 0.0), [1.0; 3]),
+    ];
+    assert_eq!(src.refresh(&mut set, "crates", [0, 2, 5000]), 3);
+    let base = PLUGIN_ID_BASE;
+    assert_eq!(
+        set.object(ObjectId(base)).map(|v| v.position()[1]),
+        Some(6.0)
+    );
+    assert!(set.object(ObjectId(base + 1)).is_some(), "not read again");
+    assert!(
+        set.object(ObjectId(base + 2)).is_some(),
+        "a new one is added"
+    );
+    s.0.borrow_mut().retain(|c| c.key != 0);
+    src.refresh(&mut set, "Crates", [0]);
+    assert!(
+        set.object(ObjectId(base)).is_none(),
+        "one the source has no more goes"
+    );
+    assert_eq!(src.refresh(&mut set, "Walls", [1]), 0);
+}
+
+#[test]
 fn a_ray_meets_the_nearest_shape_and_a_segment_that_is_not_finite_meets_nothing() {
     let s = source(vec![
         boxed(0, at(0.0, 5.0, 0.0), [1.0; 3]),

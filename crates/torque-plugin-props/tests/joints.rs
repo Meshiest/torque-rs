@@ -671,3 +671,53 @@ fn hostile_joint_values_are_held_and_never_reach_the_physics_world_unchecked() {
     assert!(s.distance.is_finite() && s.force.is_finite());
     assert!(position(&w, 100).iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn a_grapples_pull_moves_its_prop_by_the_pairs_reduced_mass_and_counts_the_players_momentum() {
+    use torque_plugin_props::joints::{FarEnd, grapple_momentum, grapple_pull};
+    // A 90 kg Player whose tether took 2 units a second from it, on a 20 kg prop: the prop takes the reduced mass's momentum.
+    let change = [0.0, -2.0, 0.0];
+    let reduced = 90.0 * 20.0 / 110.0;
+    let j = grapple_pull(change, 90.0, FarEnd::Prop(20.0)).unwrap();
+    assert!((j[1] - 2.0 * reduced).abs() < 1e-3, "{j:?}");
+    assert_eq!(
+        grapple_pull(change, 90.0, FarEnd::Fixed),
+        Some([0.0, 180.0, 0.0])
+    );
+    assert_eq!(grapple_momentum(change, 90.0), Some([0.0, 180.0, 0.0]));
+    assert_eq!(
+        grapple_pull([f32::NAN, 0.0, 0.0], 90.0, FarEnd::Fixed),
+        None
+    );
+    let mut w = world();
+    spawn(&mut w, 100, [0.0, 0.0, 0.5], 20.0);
+    let grapple = Joint::new(
+        Kind::Grapple {
+            reach: Reach::new(5.0),
+        },
+        End::Player {
+            id: 7,
+            offset: [0.0; 3],
+        },
+        middle(100),
+        None,
+    );
+    w.add_joint(500, grapple).unwrap();
+    w.set_players([(7, [0.0, -5.0, 0.5])].into());
+    w.pulled(7, change, 90.0);
+    w.tick(&[], &|_| 0.0);
+    // The break force counts the Player's momentum (180 over a tick), and the prop moves at the reduced mass's speed.
+    let force = w.joint(500).unwrap().status.force;
+    assert!((force - 180.0 / 0.032).abs() < 1.0, "{force}");
+    let v = w.get(100).unwrap().q.state().linvel;
+    assert!(v[1] > 1.0 && v[1] < 2.0 * reduced / 20.0 + 0.05, "{v:?}");
+    // A frozen prop is a fixed end: the pull counts the same and moves nothing.
+    assert!(w.freeze(100).is_some());
+    let before = w.get(100).unwrap().q;
+    w.set_players([(7, [0.0, -5.0, 0.5])].into());
+    w.pulled(7, change, 90.0);
+    w.tick(&[], &|_| 0.0);
+    let force = w.joint(500).unwrap().status.force;
+    assert!((force - 180.0 / 0.032).abs() < 1.0, "{force}");
+    assert_eq!(w.get(100).unwrap().q, before);
+}

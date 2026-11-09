@@ -10,10 +10,12 @@
 //!   [`MAX_PREDICTED`]);
 //! - keeps them in its own [`PropWorld`] with the map pieces near them ([`torque_client::predict::slot::TickStep::statics_near`])
 //!   and the props around them as fixed boxes, and the joints between them as the server's joints (a hinge is held as it lies);
-//! - when the server sent new states, restores each to the server's state exactly (the wire's precision is the server's own)
-//!   and replays the moves the server has not acknowledged: for each, the Player's push ([`crate::world::Pusher`]) as the
-//!   move left it, the held prop's tether to where the Player was, the predicted impulses tagged with that move, and one step;
-//!   otherwise it steps once for the tick's move;
+//! - steps them with the client's Player, move by move, inside the slot's move loop: for each move, the Player's push
+//!   ([`crate::world::Pusher`]) as the move left it, the held prop's pull the Player's step just made, the predicted impulses
+//!   tagged with that move, and one step. When the server sent new states, or the Player's moves run again after a correction,
+//!   each is first put back to the server's state exactly (the wire's precision is the server's own), and the moves already
+//!   run since the ack are replayed with what each did; the Player and the props then run the rest together, so a correction
+//!   of the Player is a correction of what it holds too;
 //! - writes the predicted states into the client's book ([`crate::client::ClientProp::predicted`]), which the client's Player
 //!   meets through the props' collision source and a grapple hangs from.
 //!
@@ -134,6 +136,51 @@ impl PredictConfig {
             ),
             max_work: self.max_work,
         }
+    }
+}
+
+/// Values kept by move index, newest last, at most `N`: a move run again replaces its value, the oldest go past the cap.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MoveRing<T, const N: usize> {
+    items: std::collections::VecDeque<(u32, T)>,
+}
+
+impl<T, const N: usize> Default for MoveRing<T, N> {
+    fn default() -> Self {
+        MoveRing {
+            items: std::collections::VecDeque::new(),
+        }
+    }
+}
+
+impl<T, const N: usize> MoveRing<T, N> {
+    /// Keeps `value` for move `index`, in place of what it had.
+    pub(crate) fn put(&mut self, index: u32, value: T) {
+        if let Some(slot) = self.items.iter_mut().find(|(i, _)| *i == index) {
+            slot.1 = value;
+            return;
+        }
+        if self.items.len() >= N {
+            self.items.pop_front();
+        }
+        self.items.push_back((index, value));
+    }
+
+    /// The value of move `index`.
+    pub(crate) fn get(&self, index: u32) -> Option<&T> {
+        self.items
+            .iter()
+            .rev()
+            .find_map(|(i, v)| (*i == index).then_some(v))
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.items.clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.items.len()
     }
 }
 

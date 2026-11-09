@@ -154,6 +154,48 @@ impl Reach {
     }
 }
 
+/// What is at a grapple's far end, for its pull ([`grapple_pull`]): something that does not move (a point, a frozen prop, a
+/// prop that is not there), or a prop of a mass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FarEnd {
+    Fixed,
+    Prop(f32),
+}
+
+impl FarEnd {
+    /// A prop: fixed while frozen.
+    pub fn of(prop: &crate::world::Prop) -> FarEnd {
+        if prop.rest.is_frozen() {
+            FarEnd::Fixed
+        } else {
+            FarEnd::Prop(prop.params.mass())
+        }
+    }
+}
+
+/// The impulse a grapple's pull gives the prop at its far end when the tether changed its Player's velocity by `change` (the
+/// Player `player_mass` heavy): the momentum of the pair's reduced mass, so the two end the pull moving apart no faster than
+/// they were (a light prop is not flung past its Player). Toward a fixed end it is the Player's own momentum, which is also
+/// what a pull counts toward a break force ([`grapple_momentum`]). None for a value that is not finite.
+pub fn grapple_pull(change: [f32; 3], player_mass: f32, far: FarEnd) -> Option<[f32; 3]> {
+    let m = number(player_mass, 0.0, 1.0e6);
+    let mass = match far {
+        FarEnd::Prop(p) => {
+            let p = number(p, 0.0, 1.0e6);
+            if m + p > 0.0 { m * p / (m + p) } else { m }
+        }
+        FarEnd::Fixed => m,
+    };
+    let impulse = change.map(|c| -c * mass);
+    impulse.iter().all(|v| v.is_finite()).then_some(impulse)
+}
+
+/// The Player's momentum a grapple's pull took (its velocity change `change` times its `player_mass`): what the pull counts
+/// toward the grapple's break force, whatever is at the far end. None for a value that is not finite.
+pub fn grapple_momentum(change: [f32; 3], player_mass: f32) -> Option<[f32; 3]> {
+    grapple_pull(change, player_mass, FarEnd::Fixed)
+}
+
 /// A number held to `lo..=hi`, a NaN to `lo`.
 pub(crate) fn number(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_nan() { lo } else { v.clamp(lo, hi) }

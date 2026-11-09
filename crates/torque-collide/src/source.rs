@@ -104,6 +104,16 @@ pub trait CollisionSource: fmt::Debug {
         None
     }
 
+    /// The shape keyed `key` the source has now (none: it has none), for a host that reads a few shapes again
+    /// ([`CollisionSources::refresh`]). By default the first of [`CollisionSource::shapes`] with the key.
+    fn shape(&self, key: u32) -> Option<CollisionShape> {
+        let mut all = Vec::new();
+        self.shapes(&mut all);
+        all.into_iter()
+            .take(MAX_SHAPES_PER_SOURCE)
+            .find(|s| s.key == key)
+    }
+
     /// Something hit the shape `key` ([`SourceHit`]: a projectile's ray); the source does with it what it does (a push on what
     /// the shape stands for). Nothing by default.
     fn hit(&self, key: u32, hit: &SourceHit) {
@@ -436,6 +446,42 @@ impl CollisionSources {
         };
         b.source.hit(key, hit);
         true
+    }
+
+    /// The shapes of source `name` keyed `keys` read again into `set` ([`CollisionSource::shape`]): each replaced where it is now,
+    /// added when it is new (while the set holds fewer than [`MAX_SET_SHAPES`]), taken out when the source has it no more.
+    /// Returns the shapes read: the work is the caller's to charge. Nothing for a name no source has.
+    pub fn refresh(
+        &self,
+        set: &mut ShapeSet,
+        name: &str,
+        keys: impl IntoIterator<Item = u32>,
+    ) -> usize {
+        let Some(b) = self
+            .bound
+            .iter()
+            .find(|b| b.name.eq_ignore_ascii_case(name))
+        else {
+            return 0;
+        };
+        let mut read = 0;
+        for key in keys {
+            read += 1;
+            if key as usize >= MAX_SHAPES_PER_SOURCE {
+                continue;
+            }
+            let id = ObjectId(PLUGIN_ID_BASE + b.index * MAX_SHAPES_PER_SOURCE as u32 + key);
+            let at = set.entries.binary_search_by_key(&id, |e| e.id);
+            match (b.source.shape(key).and_then(|s| Entry::new(b, s)), at) {
+                (Some(e), Ok(i)) => set.entries[i] = e,
+                (Some(e), Err(i)) if set.entries.len() < MAX_SET_SHAPES => set.entries.insert(i, e),
+                (None, Ok(i)) => {
+                    set.entries.remove(i);
+                }
+                _ => {}
+            }
+        }
+        read
     }
 
     /// The shapes the sources have now, in id order: each source's first [`MAX_SHAPES_PER_SOURCE`] that passed the checks; none

@@ -38,7 +38,12 @@
 //! moves and acks as a predictor does, and what moves the predicted object makes ([`PredictState::motion`]), the map pieces
 //! near a point ([`TickStep::statics_near`]), the projectile ghosts ([`PredictState::shots`]) and a datablock's numbers
 //! ([`PredictState::datablock_number`]); at a view it draws ghosts where it puts them ([`Drawn::ghosts`]), starting from where
-//! the client shows them ([`ViewStep::shown`]).
+//! the client shows them ([`ViewStep::shown`]). A part whose objects move with the control object (a prop it pushes or a
+//! grapple holds) steps them inside the predictor's tick, in TGE's move loop ([`PredictionPart::moves_begin`],
+//! [`PredictionPart::moved`]): after a correction the control object and those objects run the moves again together, in the
+//! server's order, and the control object meets the shapes a part moved ([`MoveStep::shape_moved`]) as the next move
+//! begins. The loop runs only through TGE's tick ([`TickStep::run_tge`]: a predictor that does not call it runs no part's
+//! moves) and never for a Camera control object.
 
 use std::any::Any;
 use std::cell::Cell;
@@ -111,6 +116,20 @@ pub trait PredictionPart: Any {
         let _ = step;
     }
 
+    /// The control object is about to run its moves `first` to before `end` in TGE's scheme (after a correction, `first` is the
+    /// server's ack and the moves run again from its state): a part whose objects move with the control object restores them
+    /// here and steps them with each move ([`PredictionPart::moved`]), so the two are replayed together, in the server's
+    /// order. Nothing by default.
+    fn moves_begin(&mut self, step: &mut MoveStep<'_>, first: u32, end: u32) {
+        let _ = (step, first, end);
+    }
+
+    /// The control object ran move `index` (its state is the move's end): what the server's tick does after the control
+    /// object's move, the part does here. Nothing by default.
+    fn moved(&mut self, step: &mut MoveStep<'_>, index: u32) {
+        let _ = (step, index);
+    }
+
     /// The client's tick, after the predictor's.
     fn tick(&mut self, step: &mut dyn TickStep) {
         let _ = step;
@@ -134,6 +153,96 @@ impl Clone for Box<dyn PredictionPart> {
 impl fmt::Debug for dyn PredictionPart {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PredictionPart({:?})", self.id())
+    }
+}
+
+/// What a part's per-move step reads ([`PredictionPart::moves_begin`], [`PredictionPart::moved`]): how the control object
+/// moves, which Player that is, and the tick's budget for parts.
+#[derive(Debug)]
+pub struct MoveStep<'a> {
+    /// How the predicted object moves at this point.
+    pub motion: BodyMotion,
+    /// The predicted Player's ghost while it is on foot (none while it drives a vehicle).
+    pub player: Option<u32>,
+    work: &'a mut u64,
+    moved: &'a mut Vec<(&'static str, u32)>,
+}
+
+impl<'a> MoveStep<'a> {
+    /// A step at `motion` of the Player `player`, charging `work`, the shapes the part moves noted in `moved`.
+    pub fn new(
+        motion: BodyMotion,
+        player: Option<u32>,
+        work: &'a mut u64,
+        moved: &'a mut Vec<(&'static str, u32)>,
+    ) -> MoveStep<'a> {
+        MoveStep {
+            motion,
+            player,
+            work,
+            moved,
+        }
+    }
+
+    /// Charges `units` to the tick's budget for parts ([`PART_TICK_WORK`], as [`TickStep::charge`]): false once it is spent.
+    pub fn charge(&mut self, units: u64) -> bool {
+        *self.work = self.work.saturating_add(units);
+        *self.work <= PART_TICK_WORK
+    }
+
+    /// The part moved the shape keyed `key` of the collision source `source`: the control object meets it where it is from the
+    /// next move on, the read charged to the tick's budget for parts ([`SHAPE_READ_WORK`] a shape). At most
+    /// [`MAX_MOVED_SHAPES`] a move are read.
+    pub fn shape_moved(&mut self, source: &'static str, key: u32) {
+        if self.moved.len() < MAX_MOVED_SHAPES {
+            self.moved.push((source, key));
+        }
+    }
+}
+
+/// The most shapes the parts may say they moved in one move ([`MoveStep::shape_moved`]).
+pub const MAX_MOVED_SHAPES: usize = 64;
+
+/// The work of reading one plugin collision shape again inside the move loop ([`MoveStep::shape_moved`]).
+pub const SHAPE_READ_WORK: u64 = collide::work::CANDIDATE * 16;
+
+/// The index of the first move of `len` (from `first`) the control object runs when it has run every one before
+/// `last_client_move` (a correction sets that back to the server's ack): at most `max` from the end.
+pub fn replay_from(last_client_move: u32, first: u32, len: usize, max: usize) -> usize {
+    let start = last_client_move.wrapping_sub(first);
+    let start = if (start as i32) < 0 {
+        0
+    } else {
+        (start as usize).min(len)
+    };
+    start + len.saturating_sub(start).saturating_sub(max)
+}
+
+/// The parts told that the moves `begin` to before `end` are about to run, the shapes they moved noted in `moved`.
+pub fn parts_begin(
+    parts: &mut [Box<dyn PredictionPart>],
+    motion: BodyMotion,
+    player: Option<u32>,
+    work: &mut u64,
+    moved: &mut Vec<(&'static str, u32)>,
+    (begin, end): (u32, u32),
+) {
+    for part in parts {
+        part.moves_begin(&mut MoveStep::new(motion, player, work, moved), begin, end);
+    }
+}
+
+/// The parts told the control object ran move `index`, the shapes they moved noted in `moved`.
+pub fn parts_moved(
+    parts: &mut [Box<dyn PredictionPart>],
+    motion: BodyMotion,
+    player: Option<u32>,
+    work: &mut u64,
+    moved: &mut Vec<(&'static str, u32)>,
+    index: u32,
+) {
+    for part in parts {
+        part.moved(&mut MoveStep::new(motion, player, work, moved), index);
     }
 }
 
@@ -382,29 +491,38 @@ fn motion_of<W: PredictWorld>(sim: &Predictor<W>) -> Option<BodyMotion> {
     if sim.camera.is_some() {
         return None;
     }
-    let pr = sim.predicted.as_ref()?;
+    Some(motion_of_predicted(sim.predicted.as_ref()?))
+}
+
+/// The predicted Player's ghost while it is on foot.
+pub(super) fn player_of_predicted(pr: &super::Predicted) -> Option<u32> {
+    (pr.vehicle.is_none() || pr.player.s.mount.is_none()).then_some(pr.index)
+}
+
+/// How the predicted Player (or the vehicle it drives) moves.
+pub(super) fn motion_of_predicted(pr: &super::Predicted) -> BodyMotion {
     if let Some(v) = pr.vehicle.as_ref().filter(|_| pr.player.s.mount.is_some()) {
         let s = &v.v.s;
-        return Some(BodyMotion {
+        return BodyMotion {
             min: s.world_box.min,
             max: s.world_box.max,
             velocity: s.rigid.lin_vel,
             wish: s.rigid.lin_vel,
             mass: s.mass,
-        });
+        };
     }
     let s = &pr.player.s;
     let m = s.obj_to_world;
     let speed = pr.data.max_forward_speed;
     let (x, y) = (s.last_move.x, s.last_move.y);
     let wish = [0, 1].map(|r| (m[r * 4] * x + m[r * 4 + 1] * y) * speed);
-    Some(BodyMotion {
+    BodyMotion {
         min: s.world_box.min,
         max: s.world_box.max,
         velocity: s.velocity,
         wish: [wish[0], wish[1], 0.0],
         mass: s.mass,
-    })
+    }
 }
 
 /// The Projectile ghosts of `world`, in ghost order.

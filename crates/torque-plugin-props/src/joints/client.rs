@@ -17,6 +17,7 @@ use torque_game::player_tether::{Tether, TetherSource};
 use super::records::{EndWire, JointGhost};
 use super::{KindId, MIN_LENGTH, point_on};
 use crate::client::ClientProps;
+use crate::predict::MoveRing;
 
 /// The most joints a client keeps.
 pub const MAX_CLIENT_JOINTS: usize = 4096;
@@ -40,15 +41,22 @@ pub struct ClientJoint {
 /// The most predicted pulls a book keeps (one a move).
 pub const MAX_PULLS: usize = 128;
 
+/// What a grapple did to the predicted Player at a move: its velocity change and its mass.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrapplePull {
+    pub change: [f32; 3],
+    pub mass: f32,
+}
+
 /// The joints a client's connection was sent, by ghost index.
 #[derive(Debug, Default)]
 pub struct JointBook {
     joints: BTreeMap<u32, ClientJoint>,
     /// Ghosts left out because the book was full.
     pub dropped: u64,
-    /// The pull the grapple on the predicted Player gave the prop at its far end at each move the client predicted (the
-    /// impulse, by move index, newest last): what the server's step gives that prop.
-    pulls: std::collections::VecDeque<(u32, [f32; 3])>,
+    /// What the grapple on the predicted Player did at each move the client predicted, by move index: the pull the server's
+    /// step gives the prop at its far end.
+    pulls: MoveRing<GrapplePull, MAX_PULLS>,
 }
 
 impl JointBook {
@@ -108,26 +116,19 @@ impl JointBook {
         self.pulls.clear();
     }
 
-    /// The impulse the predicted Player's grapple gave the prop at its far end at move `index` (none when it pulled nothing).
-    pub fn pull_at(&self, index: u32) -> Option<[f32; 3]> {
-        self.pulls
-            .iter()
-            .find_map(|&(i, j)| (i == index).then_some(j))
+    /// The impulse the predicted Player's grapple gave what is at its far end at move `index`, as the server's step gives it
+    /// ([`crate::joints::grapple_pull`]); none when it pulled nothing.
+    pub fn pull_at(&self, index: u32, far: crate::joints::FarEnd) -> Option<[f32; 3]> {
+        let p = self.pulls.get(index)?;
+        crate::joints::grapple_pull(p.change, p.mass, far)
     }
 
-    /// The grapple pulled the predicted Player by `change` at move `index` (`mass` heavy): its far end takes the opposite
-    /// impulse, as the server's step gives it. A replayed move's pull replaces the one before.
+    /// The grapple pulled the predicted Player by `change` at move `index` (`mass` heavy). A replayed move's pull replaces the
+    /// one before.
     pub fn pulled(&mut self, index: u32, change: [f32; 3], mass: f32) {
-        let mass = crate::joints::number(mass, 0.0, 1.0e6);
-        let impulse = change.map(|c| -c * mass);
-        if !impulse.iter().all(|v| v.is_finite()) {
-            return;
+        if change.iter().chain([&mass]).all(|v| v.is_finite()) {
+            self.pulls.put(index, GrapplePull { change, mass });
         }
-        self.pulls.retain(|(i, _)| *i != index);
-        if self.pulls.len() >= MAX_PULLS {
-            self.pulls.pop_front();
-        }
-        self.pulls.push_back((index, impulse));
     }
 
     /// The ghosts the unbroken joints tie to the ghost `index` (a prop or a player), in ghost order: what a predictor pulls in

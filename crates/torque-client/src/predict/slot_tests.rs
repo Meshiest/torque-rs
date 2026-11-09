@@ -191,3 +191,86 @@ fn parts_run_beside_the_games_predictor_in_order_and_bad_ones_are_left_out() {
         .collect();
     assert_eq!(log.len(), 2, "one warning for each left out: {log:?}");
 }
+
+/// A part that writes down when it was called.
+#[derive(Clone, Default)]
+struct Recorder(Rc<std::cell::RefCell<Vec<String>>>);
+
+impl PredictionPart for Recorder {
+    fn id(&self) -> &str {
+        "recorder"
+    }
+
+    fn moves_begin(&mut self, step: &mut MoveStep<'_>, first: u32, end: u32) {
+        self.0.borrow_mut().push(format!("begin {first}..{end}"));
+        step.shape_moved("Crates", 7);
+    }
+
+    fn moved(&mut self, step: &mut MoveStep<'_>, index: u32) {
+        self.0
+            .borrow_mut()
+            .push(format!("moved {index} player {:?}", step.player));
+    }
+
+    fn clone_box(&self) -> Box<dyn PredictionPart> {
+        Box::new(self.clone())
+    }
+}
+
+#[test]
+fn a_correction_runs_a_part_from_the_ack_with_each_move_after_the_control_objects() {
+    let motion = BodyMotion {
+        min: [0.0; 3],
+        max: [1.0; 3],
+        velocity: [0.0; 3],
+        wish: [0.0; 3],
+        mass: 90.0,
+    };
+    let log = Recorder::default();
+    let mut parts: Vec<Box<dyn PredictionPart>> = vec![Box::new(log.clone())];
+    let (mut work, mut moved) = (0, Vec::new());
+    // Moves 10 to 14 held; the server's correction set the next move to run back to its ack, 12.
+    let (first, len) = (10u32, 5usize);
+    let end = first + len as u32;
+    for (last_client_move, expect_from) in [(12u32, 2usize), (14, 4), (9, 0), (40, 5)] {
+        assert_eq!(replay_from(last_client_move, first, len, 64), expect_from);
+    }
+    assert_eq!(
+        replay_from(10, first, len, 2),
+        3,
+        "at most `max` from the end"
+    );
+    let from = replay_from(12, first, len, 64);
+    parts_begin(
+        &mut parts,
+        motion,
+        Some(3),
+        &mut work,
+        &mut moved,
+        (first + from as u32, end),
+    );
+    assert_eq!(moved, [("Crates", 7)], "a part's moved shape is noted");
+    moved.clear();
+    for index in first + from as u32..end {
+        // The control object's step for `index` ran here.
+        parts_moved(&mut parts, motion, Some(3), &mut work, &mut moved, index);
+        assert!(moved.is_empty());
+    }
+    assert_eq!(
+        *log.0.borrow(),
+        [
+            "begin 12..15",
+            "moved 12 player Some(3)",
+            "moved 13 player Some(3)",
+            "moved 14 player Some(3)"
+        ]
+    );
+    // The budget is the tick's for every part, and the moved shapes a move are capped.
+    let mut step = MoveStep::new(motion, None, &mut work, &mut moved);
+    assert!(step.charge(PART_TICK_WORK));
+    assert!(!step.charge(1));
+    for key in 0..MAX_MOVED_SHAPES as u32 + 10 {
+        step.shape_moved("Crates", key);
+    }
+    assert_eq!(moved.len(), MAX_MOVED_SHAPES);
+}

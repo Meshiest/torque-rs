@@ -217,7 +217,10 @@ the Player ends the tick within the length (a hard grapple; a Player past it is 
 back by the spring past it. The sweep's contacts still stop the Player. Because the pull is part of the Player's step, the
 predicting client replays it exactly: it is sent the grapple's point, length and spring as whole floats, and its prediction is
 never corrected for it (the `props-joints` scenario of `just trace-hash` counts 0 corrections over 600 ticks of a figure running
-and jumping on one). A prop at the far end is pulled the other way at the next step. A player has one grapple at a time (a
+and jumping on one). A prop at the far end is pulled the other way at the next step, by the momentum of the pair's reduced mass (the
+Player's mass times the prop's over their sum, times the Player's change of speed), so a light prop follows its Player
+rather than being flung past it; a frozen prop is a fixed end and is not moved. What a pull counts toward the grapple's
+break force is the Player's own momentum, whatever is at the far end. A player has one grapple at a time (a
 second is refused until the first is deleted, broken or not), so the server and its client always pull it by the same one. A
 Player with no grapple runs Torque's step unchanged.
 
@@ -304,7 +307,8 @@ plugin** (`PredictConfig::max_predicted`, up to 32), not a pref. Frozen props ar
 **How.** The client keeps a small physics world of its own: the predicted props, the map's pieces near them (terrain and
 interiors by their collision, static shapes by their box) and the props around them as fixed boxes. When the server's states
 come, each predicted prop is put back to the server's state exactly (the wire's precision is the server's own) and the moves the
-server has not acknowledged are replayed by the rules the server uses: the Player's push as each move left it, the grapple's pull
+server has not acknowledged are replayed by the rules the server uses, inside the Player's own move loop (a correction of the
+Player replays what it holds with it): the Player's push as each move left it, the grapple's pull
 on the held prop as the Player's own predicted step made it, and one step a move. Between updates it steps once a tick. The replay's work is charged to the client's tick budget for prediction parts: a tick
 whose work runs out draws the predicted props as the client shows them, and they are restored at the next. The
 Player's own prediction meets the predicted props where the prediction has them, so walking into a prop or standing on a sliding

@@ -61,6 +61,8 @@ pub struct PropBook {
     /// A revision of what the book holds ([`torque_collide::source::next_revision`] at every change; 0 for a book never
     /// changed): what its collision source answers.
     revision: u64,
+    /// Each prop by its slot and ghost index: a slot's shape is its lowest ghost's.
+    by_slot: std::collections::BTreeSet<(u16, u32)>,
 }
 
 impl PropBook {
@@ -75,6 +77,12 @@ impl PropBook {
 
     pub fn get(&self, index: u32) -> Option<&ClientProp> {
         self.props.get(&index)
+    }
+
+    /// The prop whose collision shape is keyed `slot` (the lowest ghost of two that hold it while a slot changes hands).
+    pub fn in_slot(&self, slot: u16) -> Option<(u32, &ClientProp)> {
+        let &(_, g) = self.by_slot.range((slot, 0)..=(slot, u32::MAX)).next()?;
+        Some((g, self.props.get(&g)?))
     }
 
     pub fn len(&self) -> usize {
@@ -100,18 +108,21 @@ impl PropBook {
                 self.dropped += 1;
                 return;
             }
-            None => self.props.entry(index).or_insert(ClientProp {
-                data: None,
-                params: None,
-                slot: 0,
-                mine: false,
-                predict: 0,
-                q: Quantized::default(),
-                asleep: false,
-                frozen: false,
-                updates: 0,
-                predicted: None,
-            }),
+            None => {
+                self.by_slot.insert((0, index));
+                self.props.entry(index).or_insert(ClientProp {
+                    data: None,
+                    params: None,
+                    slot: 0,
+                    mine: false,
+                    predict: 0,
+                    q: Quantized::default(),
+                    asleep: false,
+                    frozen: false,
+                    updates: 0,
+                    predicted: None,
+                })
+            }
         };
         let data = record.data_block.0;
         if data != entry.data || entry.params.is_none() {
@@ -119,6 +130,10 @@ impl PropBook {
             entry.params = data.and_then(params);
         }
         if let Some(init) = record.init {
+            if entry.slot != init.slot {
+                self.by_slot.remove(&(entry.slot, index));
+                self.by_slot.insert((init.slot, index));
+            }
             entry.slot = init.slot;
             entry.mine = init.mine;
             entry.predict = init.predict;
@@ -136,7 +151,9 @@ impl PropBook {
     /// A ghost the server deleted (or the connection ended).
     pub fn removed(&mut self, index: u32) {
         self.revision = next_revision();
-        self.props.remove(&index);
+        if let Some(p) = self.props.remove(&index) {
+            self.by_slot.remove(&(p.slot, index));
+        }
     }
 
     /// Sets where the prediction has prop `index` (none: shown as the server sent it); false when the book has no such prop.
@@ -156,6 +173,7 @@ impl PropBook {
     pub fn clear(&mut self) {
         self.revision = next_revision();
         self.props.clear();
+        self.by_slot.clear();
     }
 
     /// The props' states as words, in ghost order (the index, the slot, the thirteen integers, the flags), for a trace hash.
@@ -249,6 +267,22 @@ impl CollisionSource for ClientSource {
                 ));
             }
         });
+    }
+
+    /// The prop in slot `key`, as [`ClientSource::shapes`] lists it.
+    fn shape(&self, key: u32) -> Option<CollisionShape> {
+        let slot = u16::try_from(key).ok()?;
+        self.0
+            .with(|book| {
+                let (_, p) = book.in_slot(slot)?;
+                let params = p.params?;
+                Some(crate::server::shape_of(
+                    p.slot,
+                    p.now(),
+                    params.shape.half_extents(),
+                ))
+            })
+            .flatten()
     }
 
     /// The book's [`PropBook::revision`]; none while it is being changed.

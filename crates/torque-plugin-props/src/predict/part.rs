@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use torque_client::predict::slot::{
-    BodyMotion, HeadStep, PredictionPart, Shot, StaticView, TickStep, ViewStep,
+    BodyMotion, HeadStep, MoveStep, PredictionPart, Shot, StaticView, TickStep, ViewStep,
 };
 use torque_collide::math::{
     Box3, QUAT_IDENTITY, affine_inverse, interpolate, mul_p, plain_quat_normalize,
@@ -14,12 +14,12 @@ use torque_engine::predict_ids::PREDICT_FADE;
 use torque_ghost_world::world::Pose;
 use torque_physics_rapier::TICK;
 
-use super::{MAX_REPLAY, PART_ID, PredictConfig, PropPrediction, Push, Spawn};
+use super::{MAX_REPLAY, MoveRing, PART_ID, PredictConfig, PropPrediction, Push, Spawn};
 use crate::client::{ClientProp, ClientProps, PropBook};
 use crate::hits::{self, ShotPush};
 use crate::joints::client::{ClientJoints, JointBook};
 use crate::joints::records::EndWire;
-use crate::joints::{End, Joint, Kind, KindId, Reach, Spring};
+use crate::joints::{End, FarEnd, Joint, Kind, KindId, Reach, Spring};
 use crate::quant::{self, Quantized, conjugate, quat_mul, quat_nlerp};
 use crate::records::xf_of;
 use crate::world::{PUSH_MARGIN, PropWorld, Pusher, Rest, StaticPiece, length, world_half};
@@ -134,8 +134,20 @@ impl PushLog {
         }
     }
 
+    #[cfg(test)]
     fn at(&self, m: u32) -> &[Push] {
         self.by_move.get(&m).map_or(&[], Vec::as_slice)
+    }
+
+    /// The pushes of move `m`, taken out to apply ([`PushLog::put_back`] returns them).
+    fn take(&mut self, m: u32) -> Vec<Push> {
+        self.by_move.remove(&m).unwrap_or_default()
+    }
+
+    fn put_back(&mut self, m: u32, pushes: Vec<Push>) {
+        if !pushes.is_empty() {
+            self.by_move.insert(m, pushes);
+        }
     }
 }
 
@@ -148,7 +160,7 @@ struct State {
     members: BTreeMap<u32, Member>,
     /// The tick each prop was last touched by the Player.
     touched: BTreeMap<u32, u64>,
-    history: VecDeque<(u32, BodyMotion)>,
+    history: MoveRing<BodyMotion, HISTORY>,
     log: PushLog,
     neighbors: BTreeMap<u32, Quantized>,
     statics: Vec<(u32, StaticPiece)>,
@@ -165,6 +177,22 @@ struct State {
     interpolating: bool,
     /// The physics work done this tick.
     work: u64,
+    /// Where this tick's moves stand.
+    run: Run,
+    /// The members' states before the last move was stepped (kept from tick to tick, refilled in place).
+    pre: Vec<(u32, Quantized, Rest)>,
+}
+
+/// Where a tick's moves stand.
+#[derive(Debug, Default)]
+enum Run {
+    /// Stepped as they ran.
+    #[default]
+    Stepping,
+    /// Put back to the server's states and replayed: where each was predicted before.
+    Restored(Vec<(u32, Place)>),
+    /// The tick's work ran out: it falls back to interpolation.
+    Over,
 }
 
 impl State {
@@ -175,7 +203,7 @@ impl State {
             ack: 0,
             members: BTreeMap::new(),
             touched: BTreeMap::new(),
-            history: VecDeque::new(),
+            history: MoveRing::default(),
             log: PushLog::default(),
             neighbors: BTreeMap::new(),
             statics: Vec::new(),
@@ -187,6 +215,8 @@ impl State {
             seen: BTreeSet::new(),
             interpolating: false,
             work: 0,
+            run: Run::Stepping,
+            pre: Vec::new(),
         }
     }
 }
@@ -209,6 +239,27 @@ impl PropPart {
             state: None,
         }
     }
+
+    /// Runs `f` over the part's state and the client's books (nothing when a book is borrowed elsewhere).
+    fn with_cx(&mut self, f: impl FnOnce(&mut Cx<'_>)) {
+        let config = self.shared.config();
+        let state = self
+            .state
+            .get_or_insert_with(|| Box::new(State::new(&config)));
+        let Ok(mut book) = self.book.0.try_borrow_mut() else {
+            return;
+        };
+        let Ok(joints) = self.joints.0.try_borrow() else {
+            return;
+        };
+        f(&mut Cx {
+            config,
+            book: &mut book,
+            joints: &joints,
+            shared: &self.shared,
+            s: state,
+        });
+    }
 }
 
 impl PredictionPart for PropPart {
@@ -222,25 +273,16 @@ impl PredictionPart for PropPart {
         }
     }
 
+    fn moves_begin(&mut self, step: &mut MoveStep<'_>, first: u32, end: u32) {
+        self.with_cx(|cx| cx.begin(step, first, end));
+    }
+
+    fn moved(&mut self, step: &mut MoveStep<'_>, index: u32) {
+        self.with_cx(|cx| cx.moved(step, index));
+    }
+
     fn tick(&mut self, step: &mut dyn TickStep) {
-        let config = self.shared.config();
-        let state = self
-            .state
-            .get_or_insert_with(|| Box::new(State::new(&config)));
-        let Ok(mut book) = self.book.0.try_borrow_mut() else {
-            return;
-        };
-        let Ok(joints) = self.joints.0.try_borrow() else {
-            return;
-        };
-        let mut cx = Cx {
-            config,
-            book: &mut book,
-            joints: &joints,
-            shared: &self.shared,
-            s: state,
-        };
-        cx.tick(step);
+        self.with_cx(|cx| cx.tick(step));
     }
 
     fn view(&mut self, step: &mut dyn ViewStep) {
@@ -307,54 +349,139 @@ struct Cx<'a> {
 }
 
 impl Cx<'_> {
+    /// The control object is about to run its moves `first` to before `end`: the pushes the game asked for are kept for the
+    /// newest (for whichever props are predicted when it runs, a prop that joins this tick too), and when the server sent new
+    /// states or the moves run again after a correction, every member is put back to the server's state and the moves from
+    /// the ack to `first` replayed; the rest are stepped with the control object's own ([`Cx::moved`]).
+    fn begin(&mut self, step: &mut MoveStep<'_>, first: u32, end: u32) {
+        self.s.work = 0;
+        self.s.run = Run::Stepping;
+        let ack = self.s.ack;
+        self.s.log.acked(ack);
+        let pushes = self.take_pushes();
+        self.s.log.add(end.wrapping_sub(1), &pushes);
+        if self.s.members.is_empty() {
+            return;
+        }
+        let stale = self
+            .s
+            .members
+            .iter()
+            .any(|(g, m)| self.book.get(*g).is_some_and(|p| p.updates != m.updates));
+        let again = end.wrapping_sub(first) > 1;
+        if !(stale || again) {
+            return;
+        }
+        let (motion, player) = (Some(step.motion), step.player);
+        let mut charge = |units: u64| step.charge(units);
+        self.s.run = match self.restore_and_replay(&mut charge, motion, player, ack, first) {
+            Ok(before) => Run::Restored(before),
+            Err(OverBudget) => Run::Over,
+        };
+        // The moves the control object runs from here are replayed too.
+        if let Ok(mut shared) = self.shared.0.try_borrow_mut() {
+            shared.stats.replayed += u64::from(end.wrapping_sub(first));
+        }
+        self.note_shapes(step);
+    }
+
+    /// The control object ran move `m`: its motion kept for a replay, and the members stepped for it (its push, the held
+    /// prop's pull it just made, the pushes made at it), their states into the book for its next move.
+    fn moved(&mut self, step: &mut MoveStep<'_>, m: u32) {
+        self.s.history.put(m, step.motion);
+        if self.s.members.is_empty() || matches!(self.s.run, Run::Over) {
+            return;
+        }
+        let pusher = pusher_of(step.player.unwrap_or(0), &step.motion);
+        let player = step.player;
+        let mut charge = |units: u64| step.charge(units);
+        if self
+            .step_move(&mut charge, m, Some(pusher), player)
+            .is_err()
+        {
+            self.s.run = Run::Over;
+            return;
+        }
+        self.write_states();
+        self.note_shapes(step);
+    }
+
+    /// The tick, after the control object's moves: the restore's corrections eased out, the predicted set chosen (a prop that
+    /// joins is brought up to the moves run so far at once), the shots of the client's Player followed (a hit's push made at
+    /// the move of the hit, which is stepped again with it), the map pieces brought up to date and the drawn poses settled.
     fn tick(&mut self, step: &mut dyn TickStep) {
         self.s.tick += 1;
         self.s.interpolating = false;
-        self.s.work = 0;
         let next = step.last_client_move();
         let newest = next.wrapping_sub(1);
         let player = step.body().filter(|b| !b.vehicle).map(|b| b.ghost);
         let motion = step.motion();
-        if let Some(m) = motion {
-            self.s.history.retain(|(i, _)| *i != newest);
-            if self.s.history.len() >= HISTORY {
-                self.s.history.pop_front();
-            }
-            self.s.history.push_back((newest, m));
-        }
-        let ack = self.s.ack;
-        self.s.log.acked(ack);
         self.tend_spawns();
         let wanted = match (player, motion) {
             (Some(p), Some(m)) => self.wanted(p, &m),
             _ => Vec::new(),
         };
+        let mut over = match std::mem::take(&mut self.s.run) {
+            Run::Restored(before) => {
+                let last = self.pre_places();
+                self.ease_corrections(&before, &last);
+                false
+            }
+            Run::Over => true,
+            Run::Stepping => false,
+        };
         let joined = self.join_and_leave(&wanted);
-        let mut pushes = self.take_pushes();
-        let shots = step.shots();
-        self.follow_shots(newest, player, &shots, &*step, &mut pushes);
-        self.s.log.add(newest, &pushes);
         if !self.s.members.is_empty() {
             self.refresh_statics(step);
-            let stale = self
-                .s
-                .members
-                .iter()
-                .any(|(g, m)| self.book.get(*g).is_some_and(|p| p.updates != m.updates));
-            let done = if stale || joined {
-                self.restore_and_replay(step, ack, next, player, motion)
-            } else {
-                let pusher = motion.map(|m| pusher_of(player.unwrap_or(0), &m));
-                self.step_once(step, newest, pusher, player, &pushes)
-            };
-            if done.is_err() {
-                self.fall_back();
+        }
+        let ack = self.s.ack;
+        if joined && !over {
+            let mut charge = |units: u64| step.charge(units);
+            match self.restore_and_replay(&mut charge, motion, player, ack, next) {
+                Ok(_) => {
+                    let last = self.pre_places();
+                    self.ease_corrections(&[], &last);
+                }
+                Err(OverBudget) => over = true,
             }
         }
-        if !self.s.interpolating {
+        let mut pushes = Vec::new();
+        let shots = step.shots();
+        self.follow_shots(newest, player, &shots, &*step, &mut pushes);
+        if !pushes.is_empty() {
+            self.s.log.add(newest, &pushes);
+            if !over && !self.s.members.is_empty() {
+                let mut charge = |units: u64| step.charge(units);
+                over = self.restep_newest(&mut charge, newest, player).is_err();
+            }
+        }
+        if over {
+            self.fall_back();
+        } else {
             self.settle_drawn();
         }
         self.write_book();
+    }
+
+    /// The newest move stepped again from the members' states before it (a hit's push was made at it): what the server's
+    /// step does, drawn in the frame of the hit.
+    fn restep_newest(
+        &mut self,
+        charge: &mut dyn FnMut(u64) -> bool,
+        newest: u32,
+        player: Option<u32>,
+    ) -> Result<(), OverBudget> {
+        let pre = std::mem::take(&mut self.s.pre);
+        for &(g, q, rest) in &pre {
+            self.s.world.restore(g, q, rest);
+        }
+        self.s.pre = pre;
+        let pusher = self
+            .motion_at(newest)
+            .map(|mo| pusher_of(player.unwrap_or(0), &mo));
+        self.step_move(charge, newest, pusher, player)?;
+        self.write_states();
+        Ok(())
     }
 
     /// The props the Player holds, stands on or touched lately, each with the props jointed to it, in priority order and capped.
@@ -491,15 +618,11 @@ impl Cx<'_> {
         joined
     }
 
-    /// The pushes the game asked for since the last tick, on members only.
+    /// The pushes the game asked for since the last tick (each on the props predicted when its move runs).
     fn take_pushes(&mut self) -> Vec<Push> {
         let mut shared = self.shared.0.borrow_mut();
-        let mut taken: Vec<Push> = std::mem::take(&mut shared.pushes);
+        let taken: Vec<Push> = std::mem::take(&mut shared.pushes);
         shared.stats.impulses += taken.len() as u64;
-        taken.retain(|p| match p {
-            Push::At { ghost, .. } => self.s.members.contains_key(ghost),
-            Push::Blast { .. } => true,
-        });
         taken
     }
 
@@ -690,58 +813,65 @@ impl Cx<'_> {
     }
 
     /// Every member put back to the server's state, the client's joints made again from it, and the moves from `ack` to before
-    /// `next` replayed; each member's jump is drawn eased out. Stops when the tick's work runs out.
+    /// `next` replayed with what each did when it ran (the control object runs the rest with the members after). Gives where
+    /// each member was predicted before; stops when the tick's work runs out.
     fn restore_and_replay(
         &mut self,
-        step: &mut dyn TickStep,
+        charge: &mut dyn FnMut(u64) -> bool,
+        motion: Option<BodyMotion>,
+        player: Option<u32>,
         ack: u32,
         next: u32,
-        player: Option<u32>,
-        motion: Option<BodyMotion>,
-    ) -> Result<(), OverBudget> {
+    ) -> Result<Vec<(u32, Place)>, OverBudget> {
         let before = self.sim_places();
         for (&g, m) in self.s.members.iter_mut() {
             let Some(p) = self.book.get(g) else { continue };
-            let rest = if p.asleep { Rest::Asleep } else { Rest::Awake };
-            self.s.world.restore(g, p.q, rest);
+            self.s.world.restore(g, p.q, rest_of(p));
             m.updates = p.updates;
         }
         self.rejoin();
-        let count = next.wrapping_sub(ack).min(MAX_REPLAY);
-        let first = next.wrapping_sub(count);
-        let mut last = None;
-        for k in 0..count {
-            let m = first.wrapping_add(k);
-            last = Some(self.sim_places());
-            let pusher = self
-                .motion_at(m)
-                .or(motion)
-                .map(|mo| pusher_of(player.unwrap_or(0), &mo));
-            let pushes = self.s.log.at(m).to_vec();
-            self.step_once(step, m, pusher, player, &pushes)?;
-        }
-        let last = last.unwrap_or_else(|| self.sim_places());
+        // After a correction the moves run again from the ack itself: nothing to replay here then.
+        let count = if (next.wrapping_sub(ack) as i32) > 0 {
+            next.wrapping_sub(ack).min(MAX_REPLAY)
+        } else {
+            0
+        };
         if let Ok(mut shared) = self.shared.0.try_borrow_mut() {
             shared.stats.restores += 1;
             shared.stats.replayed += u64::from(count);
         }
-        self.ease_corrections(&before, &last);
-        Ok(())
+        self.fill_pre();
+        let first = next.wrapping_sub(count);
+        for k in 0..count {
+            let m = first.wrapping_add(k);
+            let pusher = self
+                .motion_at(m)
+                .or(motion)
+                .map(|mo| pusher_of(player.unwrap_or(0), &mo));
+            self.step_move(charge, m, pusher, player)?;
+        }
+        self.write_states();
+        Ok(before)
     }
 
-    /// The correction of a restore: where the replay has each member at the tick before this one (`last`) against where it was
-    /// predicted then (`before`), counted; what is drawn eases from where it was drawn.
-    fn ease_corrections(&mut self, before: &BTreeMap<u32, Place>, last: &BTreeMap<u32, Place>) {
+    /// The correction of a restore: where the replay has each member at the move before the last (`last`) against where it was
+    /// predicted then (`before`), counted; what is drawn eases from where it was drawn. Both lists are in ghost order.
+    fn ease_corrections(&mut self, before: &[(u32, Place)], last: &[(u32, Place)]) {
+        let find = |list: &[(u32, Place)], g: u32| {
+            list.binary_search_by_key(&g, |e| e.0)
+                .ok()
+                .map(|i| list[i].1)
+        };
         let (keep, snap) = (self.config.keep, self.config.snap_distance);
         let mut sizes = Vec::new();
         for (&g, m) in self.s.members.iter_mut() {
-            let Some(r) = last.get(&g).copied() else {
+            let Some(r) = find(last, g) else {
                 continue;
             };
             let drawn = match m.from.take() {
                 Some(from) => from,
                 None => {
-                    if let Some(&b) = before.get(&g) {
+                    if let Some(b) = find(before, g) {
                         sizes.push(length(sub(b.0, r.0)));
                     }
                     m.cur
@@ -856,38 +986,69 @@ impl Cx<'_> {
             })
     }
 
-    /// One step for move `m`: the Player's push, the held prop's pull from the grapple at that move (as the server's step
-    /// gives it), the pushes made at that move; its work charged to the tick's.
-    fn step_once(
+    /// One step for move `m`, the members' states before it kept: the Player's push, the held prop's pull from the grapple at
+    /// that move (as the server's step gives it), the pushes made at that move; its work charged to the tick's.
+    fn step_move(
         &mut self,
-        step: &mut dyn TickStep,
+        charge: &mut dyn FnMut(u64) -> bool,
         m: u32,
         pusher: Option<Pusher>,
         player: Option<u32>,
-        pushes: &[Push],
     ) -> Result<(), OverBudget> {
+        self.fill_pre();
         if let Some(p) = player
             && let Some(prop) = self.grappled(p)
-            && let Some(j) = self.joints.pull_at(m)
+            && let Some(far) = self.s.world.get(prop).map(FarEnd::of)
+            && let Some(j) = self.joints.pull_at(m, far)
         {
             self.s.world.impulse(prop, j);
         }
-        for push in pushes {
+        let pushes = self.s.log.take(m);
+        for push in &pushes {
             self.apply(push);
         }
-        let pushers: Vec<Pusher> = pusher.into_iter().collect();
+        self.s.log.put_back(m, pushes);
         let center = pusher.map(|p| feet(&p));
         let near = |at: [f32; 3]| center.map_or(0.0, |c| length(sub(at, c)));
-        let report = self.s.world.tick(&pushers, &near);
+        let report = self.s.world.tick(pusher.as_slice(), &near);
         if let Ok(mut shared) = self.shared.0.try_borrow_mut() {
             shared.stats.steps += 1;
         }
         self.s.work = self.s.work.saturating_add(report.work);
-        if step.charge(report.work) && self.s.work <= self.config.max_work && !report.over_budget {
+        if charge(report.work) && self.s.work <= self.config.max_work && !report.over_budget {
             Ok(())
         } else {
             Err(OverBudget)
         }
+    }
+
+    /// The members' collision shapes moved: the client's Player meets them where they are from its next move.
+    fn note_shapes(&self, step: &mut MoveStep<'_>) {
+        for &g in self.s.members.keys() {
+            if let Some(p) = self.book.get(g) {
+                step.shape_moved(crate::COLLISION_NAME, u32::from(p.slot));
+            }
+        }
+    }
+
+    /// The members' states now into the kept list, in ghost order (refilled in place).
+    fn fill_pre(&mut self) {
+        let pre = &mut self.s.pre;
+        pre.clear();
+        for &g in self.s.members.keys() {
+            if let Some(p) = self.s.world.get(g) {
+                pre.push((g, p.q, p.rest));
+            }
+        }
+    }
+
+    /// The kept states as poses.
+    fn pre_places(&self) -> Vec<(u32, Place)> {
+        self.s
+            .pre
+            .iter()
+            .map(|(g, q, _)| (*g, place_q(q)))
+            .collect()
     }
 
     fn apply(&mut self, push: &Push) {
@@ -917,15 +1078,11 @@ impl Cx<'_> {
     }
 
     fn motion_at(&self, m: u32) -> Option<BodyMotion> {
-        self.s
-            .history
-            .iter()
-            .find(|(i, _)| *i == m)
-            .map(|(_, mo)| *mo)
+        self.s.history.get(m).copied()
     }
 
-    /// The members' simulated poses now.
-    fn sim_places(&self) -> BTreeMap<u32, Place> {
+    /// The members' simulated poses now, in ghost order.
+    fn sim_places(&self) -> Vec<(u32, Place)> {
         self.s
             .members
             .keys()
@@ -939,7 +1096,13 @@ impl Cx<'_> {
         let keep = self.config.keep;
         let sims = self.sim_places();
         for (g, m) in self.s.members.iter_mut() {
-            let Some(&(p, q)) = sims.get(g) else { continue };
+            let Some(&(p, q)) = sims
+                .binary_search_by_key(g, |e| e.0)
+                .ok()
+                .map(|i| &sims[i].1)
+            else {
+                continue;
+            };
             m.prev = m.cur;
             m.cur = (
                 std::array::from_fn(|k| p[k] + m.offset[k]),
@@ -960,16 +1123,23 @@ impl Cx<'_> {
     /// The members' predicted states into the book (none while the tick fell back to interpolation), and the members' list
     /// into the shared state.
     fn write_book(&mut self) {
-        for &g in self.s.members.keys() {
-            let q = if self.s.interpolating {
-                None
-            } else {
-                self.s.world.get(g).map(|p| p.q)
-            };
-            self.book.set_predicted(g, q);
+        if self.s.interpolating {
+            for &g in self.s.members.keys() {
+                self.book.set_predicted(g, None);
+            }
+        } else {
+            self.write_states();
         }
         if let Ok(mut shared) = self.shared.0.try_borrow_mut() {
             shared.members = self.s.members.keys().copied().collect();
+        }
+    }
+
+    /// The members' simulated states into the book: what the client's Player meets and its grapple hangs from.
+    fn write_states(&mut self) {
+        for &g in self.s.members.keys() {
+            let q = self.s.world.get(g).map(|p| p.q);
+            self.book.set_predicted(g, q);
         }
     }
 
@@ -1012,6 +1182,11 @@ impl Cx<'_> {
             }
         }
     }
+}
+
+/// How a book's prop rests: asleep or awake (a frozen one is not predicted).
+fn rest_of(p: &ClientProp) -> Rest {
+    if p.asleep { Rest::Asleep } else { Rest::Awake }
 }
 
 /// The Player's push from how it moves.
@@ -1159,6 +1334,22 @@ mod tests {
         log.acked(newest);
         assert_eq!(log.len, super::super::MAX_IMPULSES_PER_TICK);
         assert!(log.at(newest - 1).is_empty());
+    }
+
+    #[test]
+    fn a_move_ring_keeps_one_value_a_move_and_its_newest_moves() {
+        let mut ring: MoveRing<u32, 4> = MoveRing::default();
+        for m in 0..6 {
+            ring.put(m, m * 10);
+        }
+        ring.put(5, 7);
+        assert_eq!(ring.len(), 4);
+        assert_eq!(
+            (ring.get(1), ring.get(2), ring.get(5)),
+            (None, Some(&20), Some(&7))
+        );
+        ring.clear();
+        assert_eq!(ring.get(5), None);
     }
 
     #[test]
