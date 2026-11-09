@@ -5,12 +5,12 @@
 //! link, to the [`Gate`] (a cookie round trip first); on a validated link only an `Opening` without a cookie opens a session,
 //! and everything else is dropped unanswered.
 //!
-//! **Caps.** The table holds at most [`TableLimits::sessions`] sessions, [`TableLimits::per_ip`] from one IP address and
-//! [`TableLimits::per_network`] from one network (an IPv4 /24, an IPv6 /64), established or not, counted by the peer's own
-//! address (the host passes the real one a transport knows behind a stand-in address): a datagram that would
-//! open one past a cap is dropped. Of those not yet established, a plain link's are bounded by the gate's caps, a validated
-//! link's by [`TableLimits::pending_per_ip`], [`TableLimits::pending_per_network`] (refused past them) and
-//! [`TableLimits::pending`] (the oldest is evicted). An evicted session is gone from the table; the host drops what it made
+//! **Caps.** The table holds at most [`TableLimits::sessions`] sessions, and from one source what [`TableLimits::caps`] allow
+//! ([`SourceCaps`]: per IP address and per network, an IPv4 /24 or an IPv6 /64, established or not, counted by the peer's own
+//! address; the host passes the real one a transport knows behind a stand-in address): a datagram that would open one past a
+//! cap is dropped. Of those not yet established, a plain link's are bounded by the gate (the same pending caps), a validated
+//! link's by the pending caps (refused past them) and [`TableLimits::pending`] (past it a pending session is evicted by the
+//! shared rule, [`crate::fair::choose_eviction`], or the new one refused). An evicted session is gone from the table; the host drops what it made
 //! for it ([`SessionTable::take_evicted`]). Addresses are taken in their canonical form (an IPv4-mapped IPv6 address is the
 //! IPv4 address).
 //!
@@ -22,10 +22,13 @@ use std::net::{IpAddr, SocketAddr};
 
 use super::framing::{self, Datagram};
 pub use super::gate::canonical;
-use super::gate::{Gate, GateConfig, GateOutcome, Network};
+use super::gate::{Gate, GateConfig, GateOutcome};
 use super::link::LinkKind;
 use super::order::PacketOrder;
 use super::session::{Session, SessionConfig, State};
+use crate::cap::NET_PENDING_EVICT_AGE_MS;
+pub use crate::fair::Stage;
+use crate::fair::{Eviction, PendingSlot, SourceCaps, SourceCount, choose_eviction};
 use crate::handshake::siphash24;
 
 /// How many sessions a [`SessionTable`] holds.
@@ -33,37 +36,20 @@ use crate::handshake::siphash24;
 pub struct TableLimits {
     /// Sessions in all.
     pub sessions: usize,
-    /// Sessions from one source IP address.
-    pub per_ip: usize,
-    /// Sessions from one source network.
-    pub per_network: usize,
     /// Sessions on validated links not yet established, in all; past it the oldest is evicted.
     pub pending: usize,
-    /// Of those, from one source IP address; past it a new one is refused.
-    pub pending_per_ip: usize,
-    /// Of those, from one source network; past it a new one is refused.
-    pub pending_per_network: usize,
+    /// What one source IP address and one source network may hold, pending and in all.
+    pub caps: SourceCaps,
 }
 
 impl Default for TableLimits {
     fn default() -> TableLimits {
         TableLimits {
             sessions: 512,
-            per_ip: 16,
-            per_network: 64,
             pending: 64,
-            pending_per_ip: 4,
-            pending_per_network: 16,
+            caps: SourceCaps::default(),
         }
     }
-}
-
-/// Where a session is, as the caps count it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stage {
-    /// Opened, not yet established: counted against the pending caps.
-    Pending,
-    Established,
 }
 
 /// One source's session and what the host keeps beside it.
@@ -75,19 +61,19 @@ pub struct Peer {
     pub stage: Stage,
     /// The peer's own IP address, which the caps count by: the source's, or the one behind a transport's stand-in address.
     pub ip: IpAddr,
-    /// When the session was opened, for the pending eviction order.
-    opened: u64,
+    /// When the session was opened (the host's clock), for the pending eviction rule.
+    opened_at: u32,
 }
 
 impl Peer {
-    fn new(session: Session, kind: LinkKind, ip: IpAddr, opened: u64) -> Peer {
+    fn new(session: Session, kind: LinkKind, ip: IpAddr, opened_at: u32) -> Peer {
         Peer {
             session,
             kind,
             order: PacketOrder::default(),
             stage: Stage::Pending,
             ip,
-            opened,
+            opened_at,
         }
     }
 }
@@ -107,12 +93,8 @@ pub enum Arrival {
 #[derive(Debug, Default)]
 struct Count {
     all: usize,
-    ip: usize,
-    network: usize,
+    source: SourceCount,
     pending: usize,
-    pending_ip: usize,
-    pending_network: usize,
-    oldest_pending: Option<SocketAddr>,
 }
 
 /// A server's engine-mode sessions (module docs).
@@ -124,7 +106,6 @@ pub struct SessionTable {
     evicted: Vec<SocketAddr>,
     key: [u8; 16],
     drawn: u64,
-    opened: u64,
 }
 
 impl SessionTable {
@@ -132,15 +113,16 @@ impl SessionTable {
     /// source). The gate's caps are [`GateConfig::new`]'s.
     #[must_use]
     pub fn new(config: SessionConfig, limits: TableLimits, key: [u8; 16]) -> SessionTable {
+        let mut gate = GateConfig::new(config.clone());
+        gate.caps = limits.caps;
         SessionTable {
-            gate: Gate::new(GateConfig::new(config.clone()), key),
+            gate: Gate::new(gate, key),
             limits,
             config,
             peers: BTreeMap::new(),
             evicted: Vec::new(),
             key,
             drawn: 0,
-            opened: 0,
         }
     }
 
@@ -155,8 +137,10 @@ impl SessionTable {
         self.limits
     }
 
+    /// Sets the table's limits, and the gate's pending caps with them.
     pub fn set_limits(&mut self, limits: TableLimits) {
         self.limits = limits;
+        self.gate.set_caps(limits.caps);
     }
 
     /// A fresh session id: a keyed digest of a counter, so ids never repeat within a key and cannot be guessed without it.
@@ -206,25 +190,36 @@ impl SessionTable {
             return Arrival::Dropped;
         }
         let count = self.count(ip);
-        if count.pending_ip >= self.limits.pending_per_ip
-            || count.pending_network >= self.limits.pending_per_network
-            || !self.has_room(&count)
-        {
+        if !self.has_room(&count) {
             return Arrival::Dropped;
         }
-        if count.pending >= self.limits.pending.max(1)
-            && let Some(oldest) = count.oldest_pending
-        {
-            self.peers.remove(&oldest);
-            // A plain link's pending session counts at the gate too.
-            self.gate.settle(oldest);
-            self.evicted.push(oldest);
+        // A full table follows the shared rule: a network over its fair share pays, never an honest client's only slot.
+        if count.pending >= self.limits.pending.max(1) {
+            let slots: Vec<PendingSlot<SocketAddr>> = self
+                .peers
+                .iter()
+                .filter(|(_, p)| p.stage == Stage::Pending)
+                .map(|(a, p)| PendingSlot {
+                    key: *a,
+                    ip: p.ip,
+                    age_ms: u64::from(now.wrapping_sub(p.opened_at)),
+                })
+                .collect();
+            match choose_eviction(&slots, ip, u64::from(NET_PENDING_EVICT_AGE_MS)) {
+                Eviction::Evict(oldest) => {
+                    self.peers.remove(&oldest);
+                    // A plain link's pending session counts at the gate too.
+                    self.gate.settle(oldest);
+                    self.evicted.push(oldest);
+                }
+                Eviction::Refuse => return Arrival::Dropped,
+            }
         }
         let Ok(mut session) = Session::server(self.config.clone(), kind.facts, now) else {
             return Arrival::Dropped;
         };
         session.receive(data, now);
-        self.insert(key, ip, session, kind);
+        self.insert(key, ip, session, kind, now);
         Arrival::Session { opened: true }
     }
 
@@ -250,7 +245,7 @@ impl SessionTable {
                     self.gate.settle(key);
                     return Arrival::Dropped;
                 }
-                self.insert(key, ip, *session, kind);
+                self.insert(key, ip, *session, kind, now);
                 Arrival::Session { opened: true }
             }
         }
@@ -258,39 +253,25 @@ impl SessionTable {
 
     /// What the table holds that the caps count for a new session from `ip`, in one walk.
     fn count(&self, ip: IpAddr) -> Count {
-        let network = Network::of_ip(ip);
-        let mut count = Count::default();
-        let mut oldest: Option<(u64, SocketAddr)> = None;
-        for (addr, peer) in &self.peers {
-            let same_ip = peer.ip == ip;
-            let same_network = Network::of_ip(peer.ip) == network;
-            count.ip += usize::from(same_ip);
-            count.network += usize::from(same_network);
-            if peer.stage == Stage::Pending {
-                count.pending += 1;
-                count.pending_ip += usize::from(same_ip);
-                count.pending_network += usize::from(same_network);
-                if oldest.is_none_or(|(at, _)| peer.opened < at) {
-                    oldest = Some((peer.opened, *addr));
-                }
-            }
+        Count {
+            all: self.peers.len(),
+            source: SourceCount::of(ip, self.peers.values().map(|p| (p.ip, p.stage))),
+            pending: self
+                .peers
+                .values()
+                .filter(|p| p.stage == Stage::Pending)
+                .count(),
         }
-        count.all = self.peers.len();
-        count.oldest_pending = oldest.map(|(_, addr)| addr);
-        count
     }
 
-    /// Whether one more session stays within the totals `count` found.
+    /// Whether one more session stays within the total and the source's caps `count` found (a plain link's pending ones are
+    /// the gate's to count, so a validated link's are checked here).
     fn has_room(&self, count: &Count) -> bool {
-        count.all < self.limits.sessions
-            && count.ip < self.limits.per_ip
-            && count.network < self.limits.per_network
+        count.all < self.limits.sessions && self.limits.caps.admits(&count.source).is_ok()
     }
 
-    fn insert(&mut self, key: SocketAddr, ip: IpAddr, session: Session, kind: LinkKind) {
-        self.opened += 1;
-        self.peers
-            .insert(key, Peer::new(session, kind, ip, self.opened));
+    fn insert(&mut self, key: SocketAddr, ip: IpAddr, session: Session, kind: LinkKind, now: u32) {
+        self.peers.insert(key, Peer::new(session, kind, ip, now));
         self.note_state(key);
     }
 

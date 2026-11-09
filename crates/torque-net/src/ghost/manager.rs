@@ -398,6 +398,8 @@ pub struct GhostManager<P: GhostPolicy = TorqueGhosts> {
     ghosting: bool,
     /// `GhostingSequence`.
     sequence: u32,
+    /// A Ready of this sequence ran the script (what [`GhostPolicy::ready_once`] reads).
+    ready_done: bool,
     scope_object: Option<ObjId>,
     refs: BTreeMap<u32, Vec<GhostRef>>,
     ref_total: usize,
@@ -442,6 +444,7 @@ impl<P: GhostPolicy> GhostManager<P> {
             scoping: false,
             ghosting: false,
             sequence: 0,
+            ready_done: false,
             scope_object: None,
             refs: BTreeMap::new(),
             ref_total: 0,
@@ -706,6 +709,7 @@ impl<P: GhostPolicy> GhostManager<P> {
             });
         }
         self.sequence = self.sequence.wrapping_add(1);
+        self.ready_done = false;
         self.table.init(self.cfg.max_ghosts, sz as u32);
         self.activated = true;
         self.scoped_pending = true;
@@ -765,6 +769,7 @@ impl<P: GhostPolicy> GhostManager<P> {
         self.scoping = false;
         self.activated = false;
         self.sequence = self.sequence.wrapping_add(1);
+        self.ready_done = false;
         self.table.clear();
         self.refs.clear();
         self.ref_total = 0;
@@ -786,8 +791,8 @@ impl<P: GhostPolicy> GhostManager<P> {
     /// The ghost half of `GameConnection::handleConnectionMessage` for a message the CLIENT sent.
     ///
     /// - 1 (Ready) with the current ghosting sequence: `onGhostAlwaysObjectsReceived`, `mGhosting = 1`, and every ghost with
-    ///   `ScopedEvent` loses `Ghosting | ScopedEvent`. A repeated Ready runs the script again (as it does). Another sequence: ignored,
-    ///   no error.
+    ///   `ScopedEvent` loses `Ghosting | ScopedEvent`. A repeated Ready runs the script again (as it does), unless the policy
+    ///   says once ([`GhostPolicy::ready_once`]: then it is ignored). Another sequence: ignored, no error.
     /// - 0, 2, 3 on a server (no local ghost table): the connection error `Invalid packet.(ghost bad connection message state)`.
     pub fn on_connection_message<C: GhostScripts>(
         &mut self,
@@ -797,9 +802,10 @@ impl<P: GhostPolicy> GhostManager<P> {
         match msg.message {
             0 | 2 | 3 => Err(GhostError::BadMessageState),
             1 => {
-                if msg.seq != self.sequence {
+                if msg.seq != self.sequence || self.ready_done && self.policy.ready_once() {
                     return Ok(MessageOutcome::Ignored);
                 }
+                self.ready_done = true;
                 scripts.on_ghost_always_objects_received();
                 self.ghosting = true;
                 if std::mem::take(&mut self.scoped_pending) {

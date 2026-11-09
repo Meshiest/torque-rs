@@ -8,11 +8,12 @@
 //! scripts `schedule()` is a Sim event and draws on the run's budget; `Server::run_restarting` is the run of a server with a
 //! socket.)
 //!
-//! **Receive** ([`receive`]). At most [`NET_DATAGRAMS_PER_PASS`] datagrams a call and [`NET_WORK_PER_TICK`] units of work a
-//! tick (the polls of a realtime server between two ticks share the tick's units). A datagram from the server's own address
+//! **Receive** ([`receive`]). At most [`NET_DATAGRAMS_PER_PASS`] datagrams of connections a call and [`NET_WORK_PER_TICK`]
+//! units of work a tick (the polls of a realtime server between two ticks share the tick's units); strangers' datagrams draw on
+//! a pool of their own and past it are read and dropped (the host's module docs). A datagram from the server's own address
 //! (`127.0.0.1` with its own port, whatever address the socket is bound to) is skipped. A datagram of one of the codecs' info
 //! types is the server query's ([`super::query`]: the LAN list's ping and info requests), answered there. A challenge or accept
-//! reply is sent. A connect request that passes the global rate ([`NET_REQUESTS_PER_S`]) and finds script budget is a
+//! reply is sent. A connect request that passes the global rate ([`NET_REQUESTS_PER_S`](super::NET_REQUESTS_PER_S)) and finds script budget is a
 //! `GameConnection` candidate and the script's `onConnectRequest(%client, address, args...)` (the codecs' address text,
 //! [`NetCodecs::address_text`](super::codecs::NetCodecs::address_text); non-empty return =
 //! reject); a limit or error there drops the request silently (counted). An accepted one joins `ClientGroup`,
@@ -37,8 +38,9 @@
 //! move handling of `T3D/gameBase/gameConnection.cpp` (`Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic,
 //! Inc.`).
 
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 
 use super::codecs::ServerPrefs;
@@ -65,13 +67,16 @@ use super::payload::{ConnCtx, Followup, PacketOutcome};
 use super::reserve_for;
 use super::transport::{RECV_BUFFER_BYTES, Recv};
 use super::{
-    Awaiting, Burst, ConnRec, NET_DATAGRAMS_PER_PASS, NET_REQUESTS_PER_S, NET_TIMEOUT_SWEEP_MS,
-    NET_TRIGGER_CALLS_PER_TICK, NET_WORK_PER_SOURCE, NET_WORK_PER_TICK, NetShared, SourceKey,
+    Awaiting, Burst, ConnRec, NET_DATAGRAMS_PER_PASS, NET_READS_PER_PASS,
+    NET_STRANGER_DATAGRAMS_PER_PASS, NET_STRANGER_WORK_PER_SOURCE, NET_STRANGER_WORK_PER_TICK,
+    NET_TIMEOUT_SWEEP_MS, NET_TRIGGER_CALLS_PER_TICK, NET_UNKNOWN_COMMAND_STEPS,
+    NET_WORK_PER_SOURCE, NET_WORK_PER_TICK, NetShared, SourceKey,
 };
 use torque_game::scene::camera_tick::{TriggerCalls, call_on_trigger};
 use torque_game::sim::adapters;
 use torque_game::sim::pass::ControlSide;
 use torque_game::sim::{TickCx, Ticker};
+use torque_net::fair::NetworkKey;
 
 /// The packets a second the server sends a client unless the game says otherwise ([`NetGame::server_prefs`]).
 const DEFAULT_PACKET_RATE: u32 = 10;
@@ -220,6 +225,13 @@ fn send_reply<G: NetGame>(shared: &Shared<G>, to: SocketAddr, reply: &[u8]) {
     }
 }
 
+/// The IP address the per-address and per-network limits count `from` by: the transport's real one behind a stand-in
+/// ([`Transport::peer_ip`](super::transport::Transport::peer_ip)).
+pub(super) fn peer_ip<G: NetGame>(shared: &Shared<G>, from: SocketAddr) -> IpAddr {
+    let transport = Rc::clone(&shared.borrow().transport);
+    transport.borrow().peer_ip(from).to_canonical()
+}
+
 /// Whether `from` is the server itself: `127.0.0.1` with the socket's own port, also when the socket is bound to every
 /// address.
 pub fn is_own_address(local: Option<SocketAddr>, from: SocketAddr) -> bool {
@@ -238,6 +250,7 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
         sh.set_now(now);
         if new_tick {
             sh.work_used = 0;
+            sh.stranger_work = 0;
             sh.source_work.clear();
         }
     }
@@ -258,13 +271,18 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
     }
     let local = transport.borrow().local_addr();
     let mut buf = vec![0u8; RECV_BUFFER_BYTES];
-    let mut seen = 0usize;
-    while seen < NET_DATAGRAMS_PER_PASS && shared.borrow().work_used < NET_WORK_PER_TICK {
+    let (mut reads, mut players, mut strangers) = (0usize, 0usize, 0usize);
+    while reads < NET_READS_PER_PASS
+        && players < NET_DATAGRAMS_PER_PASS
+        && shared.borrow().work_used < NET_WORK_PER_TICK
+    {
         // A datagram the last pass could not pay for is still at the head of the queue.
         let stashed = shared.borrow_mut().stash.take();
-        seen += 1;
-        let (from, data) = match stashed {
-            Some(held) => held,
+        reads += 1;
+        // The datagram is looked at where it was read: only one that waits for the next pass is copied, so a dropped one costs
+        // its read alone.
+        let (from, data): (SocketAddr, Cow<'_, [u8]>) = match stashed {
+            Some((from, held)) => (from, Cow::Owned(held)),
             None => {
                 let got = transport.borrow_mut().recv(&mut buf);
                 let (len, from) = match got {
@@ -276,42 +294,62 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
                     shared.borrow_mut().work_used += cost(len);
                     continue;
                 }
-                (from, buf.get(..len).unwrap_or_default().to_vec())
+                (from, Cow::Borrowed(buf.get(..len).unwrap_or_default()))
             }
         };
-        // A game packet reserves its worst case before it is handled; what the tick cannot pay waits (and ends the pass). Any
-        // datagram, handshake ones too, counts against its source's share of the tick ([`SourceKey`]: a game packet of a
-        // connection the table holds by address and port, any other datagram by IP), and a source over it is skipped for the
-        // rest of the tick without costing the tick anything, so that one source cannot hold the budget with packets,
-        // requests or junk. (The pass still reads at most [`NET_DATAGRAMS_PER_PASS`] datagrams, skipped ones included.)
+        // A connection's game packet (a player's) reserves its worst case before it is handled; what the tick cannot pay
+        // waits (and ends the pass). Every other datagram is a stranger's: it costs its bytes, from the strangers' pool, and one
+        // past the pool is read and dropped at no cost, so a flood cannot take the players' work. Any datagram counts against
+        // its source's share of the tick ([`SourceKey`]: a player's by address and port, a stranger's by IP, a smaller share),
+        // and a source over it is skipped for the rest of the tick without costing the tick anything.
         let game = data.first().is_some_and(|b| b & 1 != 0);
         // Only a connection the table holds is counted by its address and port: a datagram that merely looks like a game
-        // packet is counted for its IP, so a source cannot take a fresh share by varying its port.
-        let key = if game && shared.borrow().hs.lookup(from).is_some() {
+        // packet is a stranger's, counted for its IP, so a source cannot take a fresh share by varying its port.
+        let player = game && shared.borrow().hs.lookup(from).is_some();
+        let key = if player {
             SourceKey::Address(from)
         } else {
-            SourceKey::Ip(from.ip())
+            SourceKey::Ip(transport.borrow().peer_ip(from).to_canonical())
         };
         {
             let mut sh = shared.borrow_mut();
-            let need = if game {
-                sh.reservation_override.map_or_else(
-                    || reserve_for(data.len()),
-                    |r| r.saturating_add(cost(data.len())),
-                )
+            let bytes = cost(data.len());
+            let need = if player {
+                sh.reservation_override
+                    .map_or_else(|| reserve_for(data.len()), |r| r.saturating_add(bytes))
             } else {
-                cost(data.len())
+                bytes
             };
-            if game && sh.work_used > 0 && sh.work_used.saturating_add(need) > NET_WORK_PER_TICK {
-                sh.stash = Some((from, data));
+            let over_tick = sh.work_used.saturating_add(need) > NET_WORK_PER_TICK;
+            if player && sh.work_used > 0 && over_tick {
+                sh.stash = Some((from, data.into_owned()));
                 break;
             }
+            if !player
+                && (strangers >= NET_STRANGER_DATAGRAMS_PER_PASS
+                    || over_tick
+                    || sh.stranger_work.saturating_add(need) > NET_STRANGER_WORK_PER_TICK)
+            {
+                sh.counters.strangers_dropped += 1;
+                continue;
+            }
+            let share = if player {
+                NET_WORK_PER_SOURCE
+            } else {
+                NET_STRANGER_WORK_PER_SOURCE
+            };
             let used = sh.source_work.get(&key).copied().unwrap_or(0);
-            if used.saturating_add(need) > NET_WORK_PER_SOURCE {
+            if used.saturating_add(need) > share {
                 sh.counters.over_budget += 1;
                 continue;
             }
-            sh.work_used += cost(data.len());
+            sh.work_used += bytes;
+            if player {
+                players += 1;
+            } else {
+                strangers += 1;
+                sh.stranger_work += bytes;
+            }
         }
         {
             let mut sh = shared.borrow_mut();
@@ -321,6 +359,9 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
         let extra = handle_datagram(vm, shared, from, &data, now);
         let mut sh = shared.borrow_mut();
         sh.work_used = sh.work_used.saturating_add(extra);
+        if !player {
+            sh.stranger_work = sh.stranger_work.saturating_add(extra);
+        }
         let charge = cost(data.len()).saturating_add(extra);
         if let Some(spent) = sh.source_work.get_mut(&key) {
             *spent = spent.saturating_add(charge);
@@ -347,10 +388,13 @@ fn handle_datagram<G: NetGame>(
     if super::engine::ensure_host(vm, &mut shared.borrow_mut()).is_some() {
         return super::engine::receive(vm, shared, from, data, now);
     }
+    // Every per-address and per-network count keys by the peer's own address: a web peer behind a stand-in counts for its
+    // real one.
+    let ip = peer_ip(shared, from);
     let handled = {
         let mut sh = shared.borrow_mut();
         let table = sh.string_table();
-        sh.hs.handle_datagram(&table, from, data, now)
+        sh.hs.handle_datagram_from(&table, from, ip, data, now)
     };
     match handled {
         Handled::Ignored(_) => {
@@ -362,8 +406,9 @@ fn handle_datagram<G: NetGame>(
             let is_reject = data.first() == Some(&types.connect_request)
                 && reply.first() == Some(&types.connect_reject);
             if is_reject {
-                // A reject the handshake made takes an object and runs `onDrop`: it draws on the global request rate too.
-                if shared.borrow_mut().requests.allow(now, NET_REQUESTS_PER_S) {
+                // A reject the handshake made takes an object and runs `onDrop`: it draws on a budget of its own, shared out
+                // per network as the requests' is.
+                if shared.borrow_mut().rejects.allow(ip, now).is_ok() {
                     reject_candidate(vm, shared, from, data, &reply);
                 } else {
                     shared.borrow_mut().counters.over_budget += 1;
@@ -449,7 +494,7 @@ pub(super) fn handle_request<G: NetGame>(
     // keeps its old session.
     let admitted = {
         let mut sh = shared.borrow_mut();
-        sh.requests.allow(now, NET_REQUESTS_PER_S) && sh.script_available()
+        sh.script_available() && sh.requests.allow(request.ip, now).is_ok()
     };
     if !admitted {
         shared.borrow_mut().counters.over_budget += 1;
@@ -527,6 +572,7 @@ pub(super) fn handle_request<G: NetGame>(
             conn,
             reply,
             replaced,
+            evicted,
         } => {
             {
                 let mut sh = shared.borrow_mut();
@@ -556,6 +602,10 @@ pub(super) fn handle_request<G: NetGame>(
             }
             if let Some(old) = replaced {
                 drop_conn(vm, shared, old, None, DeleteMode::Immediate);
+            }
+            // The oldest pending connection made room for this one: it goes as one whose pending time ran out does.
+            if let Some(old) = evicted {
+                drop_conn(vm, shared, old, Some(b"TimedOut"), DeleteMode::Immediate);
             }
             let mods = shared
                 .borrow()
@@ -655,19 +705,30 @@ fn held_command_refused<G: NetGame>(vm: &Vm, shared: &Shared<G>, obj: ObjId, nam
         .is_none_or(|server| !server.0.allows_command(name))
 }
 
-/// Whether a request that would be held cannot be taken now: the server already holds as many clients as it allows.
+/// Whether a request that would be held cannot be taken now: the server already holds as many clients as it allows, or as many
+/// from the request's network ([`ContentLimits::per_network_clients`](super::content::ContentLimits::per_network_clients)).
 fn content_busy<G: NetGame>(vm: &Vm, shared: &Shared<G>, request: &PendingRequest) -> bool {
     let Some(server) = vm.extension::<ContentServerSlot>() else {
         return false;
     };
-    let (held, wants) = {
+    let network = NetworkKey::of(request.ip);
+    let (held, from_network, wants) = {
         let sh = shared.borrow();
         let wants = sh.hs.config().gate.as_ref().is_some_and(|gate| {
             gate.matches_channels(&request.fields) && gate.mods_support(&request.fields).is_some()
         });
-        (sh.awaiting.len(), wants)
+        let from_network = sh
+            .awaiting
+            .iter()
+            .filter_map(|a| sh.hs.connection(a.conn))
+            .filter(|c| NetworkKey::of(c.ip) == network)
+            .count();
+        (sh.awaiting.len(), from_network, wants)
     };
-    wants && server.0.holds(vm) && !server.0.admit(vm, held)
+    wants
+        && server.0.holds(vm)
+        && (!server.0.admit(vm, held)
+            || from_network >= server.0.limits(vm).per_network_clients.get())
 }
 
 /// Runs `onConnect` of the connections whose client says it has what the server requires, and drops the ones that took too long,
@@ -704,8 +765,13 @@ fn poll_content<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
             run_on_connect(vm, shared, entry.obj, &entry.args);
             continue;
         }
+        // Progress is what was served since the last mark, at the least rate the limits ask for: a client that takes a
+        // block now and then to look busy stalls.
         let seen = server.0.progress(vm, entry.obj);
-        if seen != entry.seen {
+        if entry.limits.counts_as_progress(
+            seen.saturating_sub(entry.seen),
+            now.wrapping_sub(entry.moved),
+        ) {
             entry.seen = seen;
             entry.moved = now;
         }
@@ -936,9 +1002,14 @@ fn run_followups<G: NetGame>(
                     shared.borrow_mut().counters.commands_dropped += 1;
                     continue;
                 }
+                // A name with no function costs the connection's share as a short run would, so a flood of them runs out of
+                // share as real commands do; its warning is the script engine's, whose lines are limited per source
+                // (`Vm::invoke_from`), so the flood does not fill the log either.
+                if !vm.is_function(None, &name) {
+                    charge_unknown_command(shared, obj, &name);
+                }
                 let mut argv = vec![obj.to_string().into_bytes()];
                 argv.extend(args);
-                // Each connection's unknown-command lines are limited apart.
                 run_for(vm, shared, true, conn_obj, |vm| {
                     vm.invoke_from(CommandSource(u64::from(obj)), None, &name, &argv)
                         .map(|_| ())
@@ -962,6 +1033,17 @@ fn run_followups<G: NetGame>(
             }
         }
     }
+}
+
+/// A remote command of connection `obj` that names no function: charged to the connection's share
+/// ([`NET_UNKNOWN_COMMAND_STEPS`] and a step per byte of the name) and counted.
+fn charge_unknown_command<G: NetGame>(shared: &Shared<G>, obj: ObjId, name: &[u8]) {
+    let mut sh = shared.borrow_mut();
+    sh.counters.unknown_commands += 1;
+    sh.charge_share(
+        obj,
+        NET_UNKNOWN_COMMAND_STEPS.saturating_add(u64::try_from(name.len()).unwrap_or(u64::MAX)),
+    );
 }
 
 /// A protocol error from a connection: the error is printed, and the connection is given the reason `Packet Error.` and

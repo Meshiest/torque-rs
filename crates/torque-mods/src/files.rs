@@ -359,6 +359,14 @@ impl FileHost for ModFiles {
 
     fn copy(&self, from: &[u8], to: &[u8]) -> bool {
         match self.table.find(from) {
+            // A server's file copied to a script's name would be a script a server sent: refused, whatever the client's
+            // scripts ask.
+            Some(hit)
+                if hit.mount.kind == MountKind::Server
+                    && is_script_path(&String::from_utf8_lossy(to)) =>
+            {
+                false
+            }
             Some(hit) => hit
                 .mount
                 .package

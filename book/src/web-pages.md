@@ -110,3 +110,15 @@ it back, which most home routers do not. The host counts the joiner by the addre
 comes from (or by a stand-in of its invite's own when the browser hides that address, as it does for a peer-reflexive
 pair), and hands the open channel to the worker's relay with every cap. With no TURN server, some networks can't connect;
 the page says so when the channel does not open in time.
+
+### Room codes
+
+A player who hosts through a room service (`torque-rooms`) is given a code of 16 characters, shown in four groups of four
+(`ABCD-EFGH-JKMN-PQRS`). Each character is one of 32 letters and digits that do not read alike, so a code holds 80 bits.
+The code is the room's only secret, and it is long enough that guessing it is hopeless whatever the guesser does: with at
+most 1,024 rooms live, a guess hits about once in 2^70 tries. So the service needs no stop that refuses every player at
+once; its limits are kept per network (an IPv4 /24, an IPv6 /48). A network's join attempts a minute and its misses a
+second are counted, and past either of them every join from that network is refused as `busy` until the window passes,
+whether its code names a room or not, so the reply never tells a guesser which codes are live. A joiner refused `busy` tries
+again by itself, up to three times, waiting 1.5 s, then 3 s, then 6 s. Codes from before the codes were lengthened (eight
+characters) no longer read.

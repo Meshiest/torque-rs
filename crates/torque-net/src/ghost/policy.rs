@@ -79,6 +79,12 @@ pub enum PendingOrder {
 /// A game's ghosting rules, the part that needs no world. See the module docs; every default is TGE's. The questions about objects
 /// are [`ObjectPolicy`]'s.
 pub trait GhostPolicy {
+    /// Whether a Ready the client sends again for the same ghosting sequence is ignored: `onGhostAlwaysObjectsReceived` runs
+    /// once a sequence. Torque runs it for every Ready (`false`), and a game's scripts that spawn there would spawn again.
+    fn ready_once(&self) -> bool {
+        false
+    }
+
     /// The scope radius around the scope object (read with every packet).
     fn radius(&self) -> ScopeRadius {
         ScopeRadius::default()

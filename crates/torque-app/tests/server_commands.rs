@@ -322,3 +322,159 @@ fn commands_no_plugin_declared_and_the_scripts_own_calls_are_not_limited() {
     rig.eval("for (%i = 0; %i < 50; %i++) serverCmdPing(1, %i);");
     assert_eq!(rig.calls("Ping").len(), 50);
 }
+
+#[test]
+fn unknown_commands_cost_the_connections_share_and_their_warnings_are_limited() {
+    let mut rig = Rig::new();
+    let _ = rig.server.drain_log();
+    // A command that spends the connection's share of the window first: the unknown ones after it in that window are dropped
+    // and counted, and the later ones are charged to the next windows' shares.
+    rig.client_eval(
+        "commandToServer('Spend'); for (%i = 0; %i < 4000; %i++) commandToServer('NoSuchCommand', %i);",
+    );
+    let start = rig.ticks;
+    let mut most_charged = 0;
+    for _ in 0..250 {
+        rig.run(1);
+        let sh = rig.server.shared.borrow();
+        let charged = sh.conns.values().map(|r| r.share_used).max().unwrap_or(0);
+        if sh.counters.over_share > 0 {
+            most_charged = most_charged.max(charged);
+        }
+    }
+    let seconds = ((rig.ticks - start) * 32).div_ceil(1000);
+    let (unknown, over_share) = {
+        let sh = rig.server.shared.borrow();
+        (sh.counters.unknown_commands, sh.counters.over_share)
+    };
+    assert!(
+        unknown > 0 && over_share > 0,
+        "{unknown} unknown, {over_share} over the share"
+    );
+    // Every command is counted but those after `Spend` in its packet: a run that stops at its limit ends its packet's work.
+    let counted = unknown + over_share;
+    assert!((3_900..=4_000).contains(&counted), "{counted} counted");
+    assert!(
+        most_charged >= 300 * torque_server::net::NET_UNKNOWN_COMMAND_STEPS,
+        "the unknown commands were charged: {most_charged} steps"
+    );
+    let warnings = rig
+        .server
+        .drain_log()
+        .into_iter()
+        .filter(|l| l.contains("Unknown command"))
+        .count();
+    // The script engine's per-source limit: at most its lines a second, and a count line for the rest.
+    let most = torque_ts_vm::vm::MAX_UNKNOWN_COMMAND_LINES as usize * (seconds + 1);
+    assert!(
+        (1..=most).contains(&warnings),
+        "{warnings} warnings in {seconds} s"
+    );
+    assert!(rig.connected(), "the client stays");
+}
+
+impl Rig {
+    /// [`Rig::step`] with what the client sends mutated by `mutate` on its way (it may drop a datagram by emptying it).
+    fn step_through(&mut self, mutate: &mut dyn FnMut(&mut Vec<u8>)) {
+        if let Some(end) = self.server.memory_end() {
+            for (to, mut data) in self.sent.borrow_mut().drain(..) {
+                mutate(&mut data);
+                if SocketAddr::V4(to) == SERVER && !data.is_empty() {
+                    end.inject(SocketAddr::V4(self.addr), &data);
+                }
+            }
+        }
+        self.server.tick();
+        self.carry();
+        self.client.step(32);
+        self.ticks += 1;
+    }
+}
+
+/// The whole receive path of an established connection (the pump, the packet layer, the events with their commands and
+/// net strings, the moves and the followups) under hostile packets, by structure: an engine client sends commands of random
+/// names (declared, the scripts', unknown), random argument counts and random contents (numbers, tags, long and binary
+/// text), so the events are well formed and hostile; then most datagrams keep their header (the first 8 bytes) and have
+/// their payload's bits flipped, cut short or replaced, and a few are mangled whole. The server never panics, and a
+/// connection it drops for a bad packet is joined again. `TORQUE_FUZZ_SERVER` sets the ticks (default 600).
+#[test]
+fn hostile_packets_of_an_established_connection_never_panic_the_server() {
+    use torque_net::testrng::TestRng;
+    let ticks: usize = std::env::var("TORQUE_FUZZ_SERVER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    let mut rng = TestRng::new(0x5eed_0f5e_7e47);
+    let names = [
+        "Legacy",
+        "Say",
+        "Ping",
+        "Scripted",
+        "NoSuchCommand",
+        "x",
+        "Ping2",
+    ];
+    let mut rig = Rig::new();
+    let mut done = 0;
+    while done < ticks {
+        let mut code = String::new();
+        for _ in 0..1 + rng.index(6) {
+            let name = names[rng.index(names.len())];
+            code.push_str(&format!("commandToServer('{name}'"));
+            for _ in 0..rng.index(19) {
+                let arg = match rng.below(5) {
+                    0 => rng.below(1 << 20).to_string(),
+                    1 => format!("'tag{}'", rng.below(40)),
+                    2 => format!("\"{}\"", "w".repeat(rng.index(256))),
+                    3 => "\"\x01\x02\t\n\"".to_string(),
+                    _ => "\"\"".to_string(),
+                };
+                code.push_str(", ");
+                code.push_str(&arg);
+            }
+            code.push_str(");");
+        }
+        rig.client_eval(&code);
+        for _ in 0..8 {
+            let mut mutate = |data: &mut Vec<u8>| {
+                let head = 8.min(data.len());
+                match rng.below(8) {
+                    0..=3 => {}
+                    4 => {
+                        for _ in 0..1 + rng.below(3) {
+                            let at = head + rng.index(data.len() - head);
+                            if let Some(b) = data.get_mut(at) {
+                                *b ^= 1 << rng.below(8);
+                            }
+                        }
+                    }
+                    5 => data.truncate(head + rng.index(data.len() - head + 1)),
+                    6 => {
+                        for b in data.iter_mut().skip(head) {
+                            if rng.below(8) == 0 {
+                                *b = rng.byte();
+                            }
+                        }
+                        let extra = rng.index(64);
+                        data.extend((0..extra).map(|_| rng.byte()));
+                    }
+                    _ => {
+                        // Mangled whole, the header too.
+                        for b in data.iter_mut() {
+                            if rng.below(4) == 0 {
+                                *b = rng.byte();
+                            }
+                        }
+                    }
+                }
+            };
+            rig.step_through(&mut mutate);
+            done += 1;
+        }
+        if rig.server.shared.borrow().hs.is_empty() {
+            rig = Rig::new();
+        }
+    }
+    // The server still runs its ticks.
+    rig.server.tick();
+}

@@ -12,15 +12,16 @@
 //!
 //! ICE: each `--stun` URL (`stun:host:port`) is given to every room's players, and each `--turn` URL (`turn:` or `turns:`)
 //! with a credential made from the secret in `--turn-secret-file` (shared with the TURN server: coturn's
-//! `use-auth-secret` and `static-auth-secret`) lasting `--turn-ttl` seconds (default 4 hours, at most 48). The secret
+//! `use-auth-secret` and `static-auth-secret`) lasting `--turn-ttl` seconds (default 2 hours, at most 48). The secret
 //! file must be a regular file of at most a little over a kilobyte, and on Unix closed to other users. Rooms last
-//! `--room-hours` (default 6).
+//! `--room-hours` (default 6). The TURN server must deny relays into private ranges and cap its relays
+//! ([`torque_rooms::ice::TURN_SERVER_SETTINGS`], printed by `--help`): anyone can open a room.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use torque_rooms::ice::{DEFAULT_TTL, read_secret_file};
+use torque_rooms::ice::{DEFAULT_TTL, TURN_SERVER_SETTINGS, read_secret_file};
 use torque_rooms::{Ice, RoomLimits, Rooms, Service, service_limits};
 use torque_server::net::transport::{BindPolicy, LanRules};
 use torque_server::net::web::{Access, Origins, Tls, TlsFiles, WebFiles, WebSetup};
@@ -83,6 +84,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--help" | "-h" => {
                 println!(
                     "usage: torque-rooms [--bind <address>] [--port <port>] [--tls-cert <pem> --tls-key <pem>] [--web-host <name>]... [--allow-origin <origin>]... [--web-root <dir>] [--stun <url>]... [--turn <url>]... [--turn-secret-file <path>] [--turn-ttl <seconds>] [--room-hours <hours>]"
+                );
+                println!(
+                    "\nA --turn server must have these settings (coturn's names): anyone can open a room, so it must not \
+                     relay into private ranges and must cap its relays.\n\n{TURN_SERVER_SETTINGS}"
                 );
                 return Ok(());
             }

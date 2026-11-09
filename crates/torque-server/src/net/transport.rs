@@ -567,6 +567,8 @@ struct Queues {
     bound: Option<SocketAddr>,
     /// Every address `bind` was asked for, in order (a test reads it).
     binds: Vec<SocketAddr>,
+    /// Stand-in addresses and the real IP behind each ([`MemoryEnd::stand_in`]).
+    stand_ins: std::collections::HashMap<SocketAddr, IpAddr>,
 }
 
 /// An in-memory transport: a queue in and a queue out.
@@ -650,9 +652,23 @@ impl Transport for MemoryTransport {
     fn link_kind(&self, _peer: SocketAddr) -> LinkKind {
         LinkKind::MEMORY
     }
+
+    fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
+        self.queues
+            .borrow()
+            .stand_ins
+            .get(&peer)
+            .copied()
+            .unwrap_or(peer.ip())
+    }
 }
 
 impl MemoryEnd {
+    /// Datagrams from `stand_in` come from a peer whose own address is `real`, as a web transport's peers do.
+    pub fn stand_in(&self, stand_in: SocketAddr, real: IpAddr) {
+        self.queues.borrow_mut().stand_ins.insert(stand_in, real);
+    }
+
     /// A datagram arrives from `from`. False when the queue is full (dropped, like a full socket buffer).
     pub fn inject(&self, from: SocketAddr, data: &[u8]) -> bool {
         let mut queues = self.queues.borrow_mut();

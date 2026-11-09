@@ -914,6 +914,8 @@ fn sequences_and_message_ids_wrap() {
 fn small_gate(per_network: usize, total: usize) -> Gate {
     let mut config = GateConfig::new(SessionConfig::new(GAME));
     config.opened_per_network = per_network;
+    // Many hosts of one network ask in one millisecond here: the answers are not what these tests count.
+    config.answers.per_network = u32::MAX;
     config.max_opened = total;
     Gate::new(config, KEY)
 }
@@ -1035,16 +1037,17 @@ fn open_pending(
     }
 }
 
-/// Networks enough to fill the pending table, none of them finishing: the oldest is evicted, and a fresh client still
-/// connects all the way.
+/// Networks enough to fill the pending table, none of them finishing: once they are past the evict age the oldest is
+/// evicted, and a fresh client still connects all the way (a young network's only slot is never evicted).
 #[test]
 fn many_networks_filling_the_pending_table_still_let_a_fresh_client_connect() {
     let max = GateConfig::new(SessionConfig::new(GAME)).max_pending;
     let mut p = Pair::new(LinkFacts::PLAIN, 21);
     let now = p.now;
     let gate = p.gate.as_mut().expect("a plain pair has a gate");
+    // Networks apart from the fresh client's own, which holds nothing.
     for net in 0..max {
-        let from = v4(10, u8::try_from(net).expect("64 networks"), 0, 1);
+        let from = v4(11, u8::try_from(net).expect("64 networks"), 0, 1);
         assert_eq!(
             open_pending(gate, from, 1, now),
             Some(None),
@@ -1052,6 +1055,7 @@ fn many_networks_filling_the_pending_table_still_let_a_fresh_client_connect() {
         );
     }
     assert_eq!(gate.pending(), max);
+    p.now += torque_net::cap::NET_PENDING_EVICT_AGE_MS;
     assert!(p.connect(200), "the fresh client connects");
 
     // The one that made room names the oldest, which the gate no longer counts.
@@ -1060,9 +1064,14 @@ fn many_networks_filling_the_pending_table_still_let_a_fresh_client_connect() {
         let from = v4(10, u8::try_from(net).expect("64 networks"), 0, 1);
         open_pending(&mut gate, from, 1, now + u32::try_from(net).expect("small"));
     }
-    let late = now + 1_000;
     assert_eq!(
-        open_pending(&mut gate, v4(192, 168, 7, 7), 2, late),
+        open_pending(&mut gate, v4(192, 168, 7, 7), 2, now + 1_000),
+        None,
+        "every network's only slot is young: refused"
+    );
+    let late = now + torque_net::cap::NET_PENDING_EVICT_AGE_MS;
+    assert_eq!(
+        open_pending(&mut gate, v4(192, 168, 7, 7), 3, late),
         Some(Some(v4(10, 0, 0, 1)))
     );
     assert_eq!(gate.pending(), max);
@@ -1195,7 +1204,8 @@ fn a_host_that_drops_evicted_sessions_matches_the_gate() {
         }
         assert_eq!(host.len(), gate.pending(), "after source {i}");
         assert!(host.len() <= max);
-        now += 10;
+        // Far enough apart that the oldest is past the evict age when the table fills.
+        now += 40;
     }
     assert!(evictions > 0, "the table filled");
 }

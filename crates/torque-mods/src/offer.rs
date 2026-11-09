@@ -162,11 +162,17 @@ pub fn decode_offer(bytes: &[u8], caps: &OfferCaps) -> Result<Vec<ModOffer>, Mes
     }
     let (mut files_total, mut bytes_total) = (0usize, 0u64);
     let mut mods = Vec::with_capacity(count);
+    let mut ids = std::collections::HashSet::new();
     for _ in 0..count {
         let id = c.text()?;
         let version = c.text()?;
-        if !torque_net::manifest::is_name(&id) {
+        // A server's ids are held to a local mod's rules (no `/`, `:` or quote reaches a mount name, a hook or a message),
+        // and an id comes once: a repeat would make the client look for its older copies again.
+        if crate::info::check_id(&id).is_err() {
             return Err(MessageError::Malformed("mod id"));
+        }
+        if !ids.insert(id.to_ascii_lowercase()) {
+            return Err(MessageError::Malformed("repeated mod id"));
         }
         if !torque_net::modsync::is_version(&version) {
             return Err(MessageError::Malformed("mod version"));

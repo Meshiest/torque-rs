@@ -45,6 +45,8 @@ open = { version = "5.4.4", default-features = false, features = ["shellexecute-
 tungstenite = { version = "0.30", default-features = false, optional = true }
 # A data channel beside it (the `webrtc` feature): natively ICE, DTLS and SCTP over a UDP socket made here...
 str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"], optional = true }
+# The connect sequence's and the engine nonce's random bits, from the operating system.
+getrandom = "0.3"
 
 # ... and in a browser the page's own `WebSocket`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

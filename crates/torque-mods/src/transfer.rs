@@ -124,6 +124,10 @@ pub struct DownloadLimits {
     /// The most clients a server holds in the downloading state at once; the next is refused with `Server busy, try again.`
     /// (6).
     pub max_clients: usize,
+    /// Of those, the most from one source network (an IPv4 /24, an IPv6 /64), so one party cannot hold every slot (2).
+    pub max_clients_per_network: std::num::NonZeroUsize,
+    /// The least rate, in bytes a second, a held client must take what it asked for at to count as making progress (1,024).
+    pub min_bytes_per_s: u32,
     /// How long a client may go without asking for anything, in seconds (20; 0 reads as 20).
     pub idle_seconds: u32,
 }
@@ -138,6 +142,8 @@ impl Default for DownloadLimits {
             seconds: 300,
             cache_bytes: 512 << 20,
             max_clients: 6,
+            max_clients_per_network: std::num::NonZeroUsize::new(2).expect("two"),
+            min_bytes_per_s: 1_024,
             idle_seconds: 20,
         }
     }
@@ -155,6 +161,8 @@ impl DownloadLimits {
             max_clients: self.max_clients.max(1),
             total_ms: self.time_seconds().saturating_mul(1_000),
             idle_ms: self.idle_seconds.saturating_mul(1_000),
+            per_network_clients: self.max_clients_per_network,
+            min_bytes_per_s: self.min_bytes_per_s,
         }
     }
 }
@@ -239,9 +247,15 @@ pub(crate) struct Caps {
 pub(crate) trait LocalSource {
     /// The content hash of the installed mod `id`.
     fn hash_of(&self, id: &str) -> Option<Hash>;
+    /// The bytes of the installed mod `id`'s content, known before its files are read.
+    fn bytes_of(&self, id: &str) -> Option<u64>;
     /// The content files of the installed mod `id`.
     fn files_of(&self, id: &str) -> Option<Vec<(String, Vec<u8>)>>;
 }
+
+/// The most bytes of older copies one offer may have the client read to build from, whatever it would download: twice what
+/// it downloads is the budget, and this its ceiling.
+pub const MAX_BASE_BYTES: u64 = 64 << 20;
 
 /// What the client sends the server next.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -547,6 +561,15 @@ impl Downloads {
         let mut jobs: Vec<Option<Job>> = Vec::with_capacity(offer.len());
         let mut cached: Vec<(String, Files)> = Vec::new();
         let (mut transfer, mut assembled) = (0u64, 0u64);
+        // The cache's heads are read once an offer, and the older copies loaded to build from are bounded in all: twice what
+        // the offer would download, so an offer cannot make the client read and hash its whole cache.
+        let heads = inner.cache.heads(64);
+        let download_total: u64 = offer
+            .iter()
+            .filter(|i| i.download)
+            .map(ModOffer::bytes)
+            .fold(0, u64::saturating_add);
+        let mut base_budget = download_total.saturating_mul(2).min(MAX_BASE_BYTES);
         for item in &offer {
             // By package hash: an installed or cached copy of this very content needs nothing.
             if local
@@ -596,20 +619,35 @@ impl Downloads {
             }
             // The older copies this one may be built from: the installed mod of that id, and the cache's entries of it.
             let mut bases: Vec<Vec<(String, Vec<u8>)>> = Vec::new();
-            if let Some(files) = local.as_ref().and_then(|l| l.files_of(&item.id)) {
-                bases.push(files);
-            }
-            let older: Vec<Hash> = inner
-                .cache
-                .heads(64)
-                .into_iter()
-                .filter(|(id, _, _)| id == &item.id)
-                .map(|(_, _, hash)| hash)
-                .take(2)
-                .collect();
-            for hash in older {
-                if let Some(files) = inner.cache.load(&hash, &content_caps) {
+            let mut take_base = |files: Files, budget: &mut u64| {
+                let size = files
+                    .iter()
+                    .map(|(_, d)| u64::try_from(d.len()).unwrap_or(u64::MAX))
+                    .fold(0, u64::saturating_add);
+                if size <= *budget {
+                    *budget -= size;
                     bases.push(files);
+                }
+            };
+            // An installed copy is read only when its size, known first, fits what is left of the budget.
+            if let Some(local) = local.as_ref()
+                && local.bytes_of(&item.id).is_some_and(|b| b <= base_budget)
+                && let Some(files) = local.files_of(&item.id)
+            {
+                take_base(files, &mut base_budget);
+            }
+            let older = heads
+                .iter()
+                .filter(|(id, _, _)| id == &item.id)
+                .map(|(_, _, hash)| *hash)
+                .take(2);
+            for hash in older {
+                // Its size is known before it is read: an entry past what is left of the budget is not read at all.
+                if inner.cache.size_of(&hash).is_none_or(|s| s > base_budget) {
+                    continue;
+                }
+                if let Some(files) = inner.cache.load(&hash, &content_caps) {
+                    take_base(files, &mut base_budget);
                 }
             }
             let job = assemble(item, &bases);

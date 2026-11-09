@@ -1223,7 +1223,6 @@ impl Mods {
             let mut serving = self.serving.borrow_mut();
             let held = serving.get_mut(&obj).ok_or("Unexpected mod request.")?;
             held.requests += 1;
-            held.progress += 1;
             if held.requests > held.max_requests {
                 return Err("Too many mod requests.");
             }
@@ -1280,7 +1279,13 @@ impl Mods {
             .and_then(|(_, d)| d.get(from as usize..to as usize))
             .ok_or("Mod request out of range.")?;
         hub.send_to(conn, CHANNEL, Kind::Snapshot, encode_data(&request, data))
-            .map_err(|_| "Mod requests too fast.")
+            .map_err(|_| "Mod requests too fast.")?;
+        if let Some(held) = self.serving.borrow_mut().get_mut(&obj) {
+            held.progress = held
+                .progress
+                .saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
+        }
+        Ok(())
     }
 
     /// A held client says it has what the server requires.
@@ -1684,6 +1689,10 @@ impl LocalSource for Mods {
             return None;
         }
         self.content_of(id).map(|c| c.hash)
+    }
+
+    fn bytes_of(&self, id: &str) -> Option<u64> {
+        self.content_of(id).map(|c| c.bytes)
     }
 
     fn files_of(&self, id: &str) -> Option<Vec<(String, Vec<u8>)>> {

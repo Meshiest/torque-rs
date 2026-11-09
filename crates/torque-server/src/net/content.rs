@@ -5,10 +5,13 @@
 //! only once the game says the client is ready (it has what the server requires, mounted), so the datablocks and ghosts a script
 //! starts sending in `onConnect` never reach a client that has not mounted the content they refer to. While it waits, the
 //! connection is in a burst ([`torque_net::protocol::Protocol::set_burst`]): the host sends packets every tick, and the channels
-//! take the whole packet. A client that makes no progress for [`ContentLimits::idle_ms`], or does not finish within
-//! [`ContentLimits::total_ms`], is dropped; a server already holding [`ContentLimits::max_clients`] such connections refuses a
-//! new one with `Server busy, try again.`.
+//! take the whole packet. A client that makes no progress for [`ContentLimits::idle_ms`] (progress is bytes served at
+//! [`ContentLimits::min_bytes_per_s`] at least, so a client that takes a block now and then to look busy stalls), or does not
+//! finish within [`ContentLimits::total_ms`], is dropped; a server already holding [`ContentLimits::max_clients`] such
+//! connections, or [`ContentLimits::per_network_clients`] from the new one's network (an IPv4 /24, an IPv6 /64), refuses it with
+//! `Server busy, try again.`.
 
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 use torque_net::handshake::ConnId;
@@ -27,6 +30,10 @@ pub struct ContentLimits {
     pub total_ms: u32,
     /// How long a client may go without making progress, in milliseconds (0: 20,000).
     pub idle_ms: u32,
+    /// The most connections held at once from one source network.
+    pub per_network_clients: NonZeroUsize,
+    /// The least rate, in bytes a second, what a held client is served counts as progress at.
+    pub min_bytes_per_s: u32,
 }
 
 impl ContentLimits {
@@ -37,6 +44,12 @@ impl ContentLimits {
         } else {
             self.total_ms
         }
+    }
+
+    /// Whether `served` progress units over `elapsed_ms` since the last mark are progress: at least one, and at least
+    /// [`ContentLimits::min_bytes_per_s`] over the time.
+    pub fn counts_as_progress(&self, served: u64, elapsed_ms: u32) -> bool {
+        served > 0 && served >= u64::from(self.min_bytes_per_s) * u64::from(elapsed_ms) / 1_000
     }
 
     /// The idle time, 0 read as the default.
@@ -80,8 +93,9 @@ pub trait ContentServer {
     /// Whether the client has what the server requires (the host then runs `onConnect`).
     fn is_ready(&self, vm: &Vm, obj: ObjId) -> bool;
 
-    /// A count that grows whenever the client does something the server asked of it (a request, the ready word): the host drops a
-    /// client whose count stands still.
+    /// A count that grows as the client takes what the server serves (the bytes of what it asked for, one for the ready word):
+    /// the host drops a client whose count grows slower than [`ContentLimits::min_bytes_per_s`] for
+    /// [`ContentLimits::idle_ms`].
     fn progress(&self, vm: &Vm, obj: ObjId) -> u64;
 
     /// The client is gone or released: forget it.
@@ -91,3 +105,27 @@ pub trait ContentServer {
 /// The server's script engine's [`ContentServer`], an extension of it.
 #[derive(Clone)]
 pub struct ContentServerSlot(pub Rc<dyn ContentServer>);
+
+#[cfg(test)]
+mod tests {
+    use super::{ContentLimits, NonZeroUsize};
+
+    #[test]
+    fn progress_is_bytes_served_at_the_least_rate() {
+        let limits = ContentLimits {
+            max_clients: 6,
+            total_ms: 0,
+            idle_ms: 0,
+            per_network_clients: NonZeroUsize::new(2).expect("two"),
+            min_bytes_per_s: 1_024,
+        };
+        assert!(
+            !limits.counts_as_progress(0, 0),
+            "nothing served is no progress"
+        );
+        assert!(limits.counts_as_progress(1, 0));
+        // A block now and then: 4 KiB over 19 s is under 1 KiB a second.
+        assert!(!limits.counts_as_progress(4_096, 19_000));
+        assert!(limits.counts_as_progress(20_000, 19_000));
+    }
+}

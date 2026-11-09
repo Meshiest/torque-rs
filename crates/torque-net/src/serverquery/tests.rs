@@ -14,6 +14,7 @@ fn prof() -> QueryProfile {
         protocol_min: 12,
         version: 1800,
         info_type_max: GAME_HEARTBEAT,
+        request_bytes: 0,
     }
 }
 
@@ -277,36 +278,125 @@ fn a_reply_is_cut_at_1500_bytes() {
     );
 }
 
+fn ask(ip: IpAddr, request_len: usize, source: Source) -> InfoAsk {
+    InfoAsk {
+        ip,
+        request_len,
+        max_reply: NET_MAX_DATAGRAM,
+        source,
+    }
+}
+
 #[test]
-fn the_limiter_counts_per_source_in_all_and_script_runs() {
+fn the_limiter_counts_per_source_and_per_network() {
+    let padded = |ip| ask(ip, PADDED_REQUEST_BYTES, Source::Unproven);
     let a = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
     let mut l = InfoLimiter::default();
     for _ in 0..NET_INFO_REPLIES_PER_SRC_PER_S {
-        assert_eq!(l.allow(a, false, 0), Ok(()));
+        assert_eq!(l.allow(&padded(a), 0), Ok(()));
     }
-    assert_eq!(l.allow(a, false, 500), Err(Refused::Source));
+    assert_eq!(l.allow(&padded(a), 500), Err(Refused::Source));
     // The next second.
-    assert_eq!(l.allow(a, false, 1_000), Ok(()));
-    // In all: many sources.
+    assert_eq!(l.allow(&padded(a), 1_000), Ok(()));
+    // One network: its addresses share the network's budget.
     let mut l = InfoLimiter::default();
-    let mut refused = 0;
-    for i in 0..(NET_INFO_REPLIES_PER_S + 10) {
-        let ip = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i));
-        if l.allow(ip, false, 0) == Err(Refused::Global) {
-            refused += 1;
+    let answered = (0..=255u8)
+        .filter(|&h| {
+            l.allow(&padded(IpAddr::V4(Ipv4Addr::new(10, 1, 1, h))), 0)
+                .is_ok()
+        })
+        .count();
+    assert_eq!(answered, NET_INFO_REPLIES_PER_NETWORK_PER_S as usize);
+}
+
+#[test]
+fn the_info_scripts_output_is_answered_from_for_a_second() {
+    let mut cache = InfoCache::default();
+    assert_eq!(cache.fresh(0), None);
+    cache.store(100, b"players 3".to_vec());
+    assert_eq!(
+        cache.fresh(100 + NET_INFO_CACHE_MS - 1),
+        Some(&b"players 3"[..])
+    );
+    assert_eq!(
+        cache.fresh(100 + NET_INFO_CACHE_MS),
+        None,
+        "stale: the script runs again"
+    );
+}
+
+#[test]
+fn spoofed_short_info_requests_reflect_at_most_three_times_their_bytes_and_padded_ones_are_answered()
+ {
+    // 10,000 spoofed 6-byte info requests from 1,000 sources in a second, each answered with a 600-byte reply when the
+    // limiter lets it: the reply bytes stay within 3 times the request bytes. A padded request is still answered in full.
+    let reply_len = 600;
+    let mut l = InfoLimiter::default();
+    let (mut asked, mut sent) = (0usize, 0usize);
+    for i in 0..10_000u32 {
+        let spoofed = ask(
+            IpAddr::V4(Ipv4Addr::from(0xc612_0000 + (i % 1_000) * 61)),
+            REQUEST_BYTES,
+            Source::Unproven,
+        );
+        let now = i / 10;
+        asked += REQUEST_BYTES;
+        if l.allow(&spoofed, now).is_ok() && l.allow_reply(&spoofed, reply_len, now).is_ok() {
+            sent += reply_len;
         }
     }
-    assert_eq!(refused, 10);
-    // Script runs.
-    let mut l = InfoLimiter::default();
-    let mut refused = 0;
-    for i in 0..(NET_INFO_SCRIPT_RUNS_PER_S + 3) {
-        let ip = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i));
-        if l.allow(ip, true, 0) == Err(Refused::Script) {
-            refused += 1;
-        }
-    }
-    assert_eq!(refused, 3);
+    assert!(sent > 0, "a stock client still gets some answers");
+    assert!(
+        sent <= 3 * asked,
+        "{sent} reply bytes for {asked} request bytes"
+    );
+    let honest = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+    let now = 999;
+    let padded = ask(honest, PADDED_REQUEST_BYTES, Source::Unproven);
+    assert_eq!(l.allow(&padded, now), Ok(()));
+    assert_eq!(l.allow_reply(&padded, NET_MAX_DATAGRAM, now), Ok(()));
+    // A connected source is never held to the factor, and a reply within it costs the budget nothing.
+    let connected = ask(honest, REQUEST_BYTES, Source::Connected);
+    assert_eq!(l.allow_reply(&connected, NET_MAX_DATAGRAM, now), Ok(()));
+    let small = ask(honest, REQUEST_BYTES, Source::Unproven);
+    assert_eq!(l.allow_reply(&small, 18, now), Ok(()));
+}
+
+#[test]
+fn a_padded_request_reads_as_the_request_it_pads() {
+    let padded = padded_request(GAME_INFO_REQUEST, 0, 3, 9, PADDED_REQUEST_BYTES);
+    assert_eq!(padded.len(), PADDED_REQUEST_BYTES);
+    const { assert!(PADDED_REQUEST_BYTES * NET_INFO_REPLY_FACTOR >= NET_MAX_DATAGRAM) };
+    assert_eq!(
+        &padded[..REQUEST_BYTES],
+        request(GAME_INFO_REQUEST, 0, 3, 9).as_slice()
+    );
+    assert_eq!(
+        parse_request(&padded),
+        parse_request(&padded[..REQUEST_BYTES])
+    );
+    // Torque's profile sends the bare request; a profile with the extension pads.
+    assert_eq!(
+        QueryProfile::default()
+            .request(GAME_PING_REQUEST, 0, 3, 9)
+            .len(),
+        REQUEST_BYTES
+    );
+    let handshake = crate::profile::HandshakeProfile {
+        extension: Some(crate::profile::HandshakeExtension {
+            arg: b"x".to_vec(),
+            accept_word: 1,
+            ghost_bits: None,
+            packet_bytes: None,
+            wide_limit: None,
+        }),
+        ..Default::default()
+    };
+    let profile = QueryProfile::for_handshake(&handshake);
+    assert_eq!(
+        profile.request(GAME_PING_REQUEST, 0, 3, 9).len(),
+        PADDED_REQUEST_BYTES
+    );
 }
 
 #[test]

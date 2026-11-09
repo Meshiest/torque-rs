@@ -597,7 +597,7 @@ function joinRoomCode()
    %code = trim(AddressEdit.getValue());
    if (%code $= "")
    {
-      MenuStatus.setText("Type the room's code first (like ABCD-EFGH).");
+      MenuStatus.setText("Type the room's code first (like ABCD-EFGH-JKMN-PQRS).");
       return;
    }
    MenuStatus.setText("Joining room " @ %code @ "...");

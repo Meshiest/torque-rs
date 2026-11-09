@@ -21,8 +21,14 @@
 //! **Who answers.** The ping needs `allowConnections`, a `$Server::ServerType` that is not `SinglePlayer` and flags bit 0
 //! ([`FLAG_OFFLINE_QUERY`]) clear; the info request needs `allowConnections` and bit 0 clear ([`answers`]).
 //!
-//! **Additions.** A request shorter than 6 bytes is silence. The replies are rate limited
-//! ([`InfoLimiter`]: per source, in all, and the `onServerInfoQuery()` runs); a standard server answers every request.
+//! **Additions.** A request shorter than 6 bytes is silence. The replies are rate limited ([`InfoLimiter`]: per source
+//! address and per source network), and the info answer's `onServerInfoQuery()` output is answered from for a second
+//! ([`InfoCache`]); a standard server answers every request. A reply
+//! to a source with no connection is at most [`NET_INFO_REPLY_FACTOR`] times its request's size, but for a small budget in all
+//! ([`NET_INFO_AMPLIFIED_BYTES_PER_S`], shared out per network), so the server reflects almost nothing at a spoofed source
+//! while a stock client still gets its answers, more slowly under a flood. This engine's clients pad their requests with
+//! zeros to [`PADDED_REQUEST_BYTES`] ([`crate::profile::QueryProfile::request_bytes`], set for a profile with the handshake
+//! extension); a Torque server reads only the first 6 bytes, so a padded request is answered there too.
 //!
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `app/net/serverQuery.cpp` and
 //! `sim/netInterface.cpp` (each Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
@@ -32,10 +38,10 @@ use std::net::IpAddr;
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
 use crate::cap::{
-    self, NET_INFO_REPLIES_PER_S, NET_INFO_REPLIES_PER_SRC_PER_S, NET_INFO_SCRIPT_RUNS_PER_S,
-    NET_MAX_DATAGRAM, NET_STRING_BYTES,
+    self, NET_INFO_AMPLIFIED_BYTES_PER_S, NET_INFO_REPLIES_PER_NETWORK_PER_S,
+    NET_INFO_REPLIES_PER_SRC_PER_S, NET_INFO_REPLY_FACTOR, NET_MAX_DATAGRAM, NET_STRING_BYTES,
 };
-use crate::handshake::{RateWindow, SourceLimiter};
+use crate::fair::{FairLimiter, FairLimits};
 use crate::huffman::Table;
 use crate::profile::QueryProfile;
 
@@ -64,6 +70,13 @@ pub const REPLY_BITS: usize = NET_MAX_DATAGRAM * 8;
 
 /// The bytes of a request: type, flags, key.
 pub const REQUEST_BYTES: usize = 6;
+
+/// The largest ping answer: its head, the version string (a 255-byte string with its length and flag), the three versions
+/// and the name of at most [`SERVER_NAME_BYTES`] with its length and flag.
+pub const PING_REPLY_MAX_BYTES: usize = 6 + 257 + 12 + SERVER_NAME_BYTES + 2;
+
+/// The size this engine's clients pad a request to: [`NET_INFO_REPLY_FACTOR`] times it holds the largest reply.
+pub const PADDED_REQUEST_BYTES: usize = NET_MAX_DATAGRAM.div_ceil(NET_INFO_REPLY_FACTOR);
 
 /// A request the server answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +145,16 @@ pub fn request(ty: u8, flags: u8, session: u32, key: u32) -> Vec<u8> {
     w.write_u8(flags);
     w.write_u32((session << 16) | (key & 0xffff));
     w.into_bytes()
+}
+
+/// [`request`] padded with zeros to `bytes` (no shorter than the request itself): what a client whose profile pads its
+/// requests ([`crate::profile::QueryProfile::request_bytes`]) sends.
+pub fn padded_request(ty: u8, flags: u8, session: u32, key: u32, bytes: usize) -> Vec<u8> {
+    let mut out = request(ty, flags, session, key);
+    if out.len() < bytes {
+        out.resize(bytes, 0);
+    }
+    out
 }
 
 fn reply_head(ty: u8, request: &Request) -> BitWriter {
@@ -341,53 +364,125 @@ pub fn parse_info_response(table: &Table, data: &[u8]) -> Result<InfoResponse, N
 /// Why the limiter refused a reply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
-    /// The source had [`NET_INFO_REPLIES_PER_SRC_PER_S`] this second.
+    /// The source address had [`NET_INFO_REPLIES_PER_SRC_PER_S`] this second, or its network
+    /// [`NET_INFO_REPLIES_PER_NETWORK_PER_S`].
     Source,
-    /// The server sent [`NET_INFO_REPLIES_PER_S`] this second.
-    Global,
-    /// [`NET_INFO_SCRIPT_RUNS_PER_S`] info replies ran the script this second.
-    Script,
+    /// The reply is more than [`NET_INFO_REPLY_FACTOR`] times its request for a source with no connection, and the budget of
+    /// such replies ([`NET_INFO_AMPLIFIED_BYTES_PER_S`]) has no room for it this second.
+    Amplified,
 }
 
-/// The rate limits of the info replies: per source IP (a bounded table), in all, and the info replies that
-/// run `onServerInfoQuery()`.
+/// Whom a reply goes to, as the amplification rule sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// The source has a connection to the server: its address is proven.
+    Connected,
+    /// Anyone else: the address may be spoofed.
+    Unproven,
+}
+
+/// One request as the limiter weighs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InfoAsk {
+    /// The source's own address.
+    pub ip: IpAddr,
+    /// The request's bytes.
+    pub request_len: usize,
+    /// The most its reply can take ([`PING_REPLY_MAX_BYTES`] for a ping, else [`NET_MAX_DATAGRAM`]).
+    pub max_reply: usize,
+    pub source: Source,
+}
+
+/// The rate limits of the info replies: per source address and network ([`FairLimiter`]; there is no total, since no reply
+/// is larger than its request allows but within the amplified budget), and the bytes of replies larger than
+/// [`NET_INFO_REPLY_FACTOR`] times their request to sources with no connection (in all, a network a share). The script the
+/// info answer carries runs at most once a [`NET_INFO_CACHE_MS`]: the host answers from what it last returned
+/// ([`InfoCache`]), so a flood of requests runs no script.
 #[derive(Debug)]
 pub struct InfoLimiter {
-    per_source: SourceLimiter,
-    replies: RateWindow,
-    scripts: RateWindow,
-    pub per_source_limit: u32,
-    pub global_limit: u32,
-    pub script_limit: u32,
+    replies: FairLimiter,
+    amplified: FairLimiter,
 }
 
 impl Default for InfoLimiter {
     fn default() -> InfoLimiter {
+        let amplified = FairLimits::shared(NET_INFO_AMPLIFIED_BYTES_PER_S, 0);
         InfoLimiter {
-            per_source: SourceLimiter::default(),
-            replies: RateWindow::default(),
-            scripts: RateWindow::default(),
-            per_source_limit: NET_INFO_REPLIES_PER_SRC_PER_S,
-            global_limit: NET_INFO_REPLIES_PER_S,
-            script_limit: NET_INFO_SCRIPT_RUNS_PER_S,
+            replies: FairLimiter::new(FairLimits::per_source(
+                NET_INFO_REPLIES_PER_SRC_PER_S,
+                NET_INFO_REPLIES_PER_NETWORK_PER_S,
+            )),
+            amplified: FairLimiter::new(FairLimits {
+                per_ip: amplified.per_network,
+                ..amplified
+            }),
         }
     }
 }
 
+/// Whether a reply of `reply` bytes to a request of `request` bytes stays within [`NET_INFO_REPLY_FACTOR`].
+fn within_factor(request: usize, reply: usize) -> bool {
+    reply <= request.saturating_mul(NET_INFO_REPLY_FACTOR)
+}
+
 impl InfoLimiter {
-    /// Counts one reply to `ip` at `now` (milliseconds), `script` when it runs the host's script (the info answer's), or says
-    /// which limit refuses it (a refused reply is counted only by the limits checked before the one that refused it).
-    pub fn allow(&mut self, ip: IpAddr, script: bool, now: u32) -> Result<(), Refused> {
-        if !self.per_source.allow(ip, now, self.per_source_limit) {
-            return Err(Refused::Source);
+    /// Counts one reply to `ask` at `now` (milliseconds), or says which limit refuses it (nothing is counted then). A request
+    /// whose largest reply could amplify is refused here already when the budget of such replies has no room for that
+    /// largest reply, so the source's budget is not spent on a reply that cannot go; the reply itself is charged by
+    /// [`InfoLimiter::allow_reply`] once it is built.
+    pub fn allow(&mut self, ask: &InfoAsk, now: u32) -> Result<(), Refused> {
+        let most = u32::try_from(ask.max_reply).unwrap_or(u32::MAX);
+        if ask.source == Source::Unproven
+            && !within_factor(ask.request_len, ask.max_reply)
+            && self.amplified.check(ask.ip, most, now).is_err()
+        {
+            return Err(Refused::Amplified);
         }
-        if !self.replies.allow(now, self.global_limit) {
-            return Err(Refused::Global);
+        self.replies.allow(ask.ip, now).map_err(|_| Refused::Source)
+    }
+
+    /// Whether the built reply of `reply_len` bytes to `ask` may go: always to a connected source or within
+    /// [`NET_INFO_REPLY_FACTOR`], else when the budget of amplifying replies has room for its bytes (charged then).
+    pub fn allow_reply(
+        &mut self,
+        ask: &InfoAsk,
+        reply_len: usize,
+        now: u32,
+    ) -> Result<(), Refused> {
+        if ask.source == Source::Connected || within_factor(ask.request_len, reply_len) {
+            return Ok(());
         }
-        if script && !self.scripts.allow(now, self.script_limit) {
-            return Err(Refused::Script);
-        }
-        Ok(())
+        let bytes = u32::try_from(reply_len).unwrap_or(u32::MAX);
+        self.amplified
+            .allow_n(ask.ip, bytes, now)
+            .map_err(|_| Refused::Amplified)
+    }
+}
+
+/// How long the info answer's script output is answered from before the script runs again.
+pub const NET_INFO_CACHE_MS: u32 = 1_000;
+
+/// What the info answer's script (`onServerInfoQuery()`) last returned, and when: requests within [`NET_INFO_CACHE_MS`] are
+/// answered from it, so however many arrive the script runs at most once in that time and no source can spend the host's
+/// script budget, nor keep its answer from others, by asking.
+#[derive(Debug, Default, Clone)]
+pub struct InfoCache {
+    held: Option<(u32, Vec<u8>)>,
+}
+
+impl InfoCache {
+    /// The output held at `now`, if it is younger than [`NET_INFO_CACHE_MS`].
+    #[must_use]
+    pub fn fresh(&self, now: u32) -> Option<&[u8]> {
+        self.held
+            .as_ref()
+            .filter(|(at, _)| now.wrapping_sub(*at) < NET_INFO_CACHE_MS)
+            .map(|(_, out)| out.as_slice())
+    }
+
+    /// Keeps `output`, the script's, run at `now`.
+    pub fn store(&mut self, now: u32, output: Vec<u8>) {
+        self.held = Some((now, output));
     }
 }
 

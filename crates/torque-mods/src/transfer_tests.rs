@@ -57,6 +57,13 @@ impl LocalSource for Installed {
             .map(|(_, f)| summarize_files(f).hash)
     }
 
+    fn bytes_of(&self, id: &str) -> Option<u64> {
+        self.0
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, f)| f.iter().map(|(_, d)| d.len() as u64).sum())
+    }
+
     fn files_of(&self, id: &str) -> Option<Files> {
         self.0.iter().find(|(i, _)| i == id).map(|(_, f)| f.clone())
     }
@@ -495,6 +502,117 @@ impl Rig {
             },
         );
     }
+}
+
+/// A store that counts its reads.
+struct Counting {
+    inner: crate::cache::MemoryStore,
+    reads: Rc<std::cell::Cell<usize>>,
+    heads: Rc<std::cell::Cell<usize>>,
+}
+
+impl crate::cache::CacheStore for Counting {
+    fn list(&self) -> Vec<crate::cache::Listed> {
+        self.inner.list()
+    }
+
+    fn read(&self, name: &str, max: u64) -> Option<Vec<u8>> {
+        self.reads.set(self.reads.get() + 1);
+        self.inner.read(name, max)
+    }
+
+    fn read_head(&self, name: &str, n: usize) -> Option<Vec<u8>> {
+        self.heads.set(self.heads.get() + 1);
+        self.inner.read_head(name, n)
+    }
+
+    fn write(&mut self, name: &str, bytes: &[u8]) -> bool {
+        self.inner.write(name, bytes)
+    }
+
+    fn remove(&mut self, name: &str) {
+        self.inner.remove(name);
+    }
+
+    fn touch(&mut self, name: &str, stamp: u64) {
+        self.inner.touch(name, stamp);
+    }
+}
+
+#[test]
+fn an_offer_loads_each_ids_older_copies_once_and_within_a_budget() {
+    let reads = Rc::new(std::cell::Cell::new(0));
+    let heads = Rc::new(std::cell::Cell::new(0));
+    let store = Counting {
+        inner: crate::cache::MemoryStore::default(),
+        reads: Rc::clone(&reads),
+        heads: Rc::clone(&heads),
+    };
+    let table = Rc::new(Table::default());
+    let d = Downloads::new(
+        Rc::clone(&table),
+        ModLimits::default(),
+        caps(true),
+        ContentCache::new(Box::new(store), 1 << 24),
+    );
+    let r = Rig { d, table };
+    // Two older copies of `props` in the cache.
+    for seed in [1, 2] {
+        let (offer, content) = offered("props", "1.0", &files(seed), true);
+        r.join(&[offer], &[content]);
+        r.d.closed();
+    }
+    // A 32-item offer: a new `props` and 31 others. The cache's heads are read once, and `props`'s copies at most twice.
+    let mut mods = vec![offered("props", "1.1", &files(3), true).0];
+    for n in 0..31 {
+        mods.push(offered(&format!("other{n}"), "1.0", &files(4 + n), true).0);
+    }
+    let (reads_before, heads_before) = (reads.get(), heads.get());
+    r.d.reset();
+    r.d.receive(&encode_offer(&mods));
+    assert!(
+        reads.get() - reads_before <= 2,
+        "{} loads",
+        reads.get() - reads_before
+    );
+    assert!(heads.get() - heads_before <= 2, "the heads were read once");
+    // An offer of a tiny new `props` builds from nothing: its copies are past twice what it would download.
+    let tiny = vec![("art/one.bin".to_string(), vec![7u8; 10])];
+    let reads_before = reads.get();
+    r.d.reset();
+    r.d.receive(&encode_offer(&[offered("props", "2.0", &tiny, true).0]));
+    assert_eq!(reads.get(), reads_before, "no older copy was read");
+}
+
+/// An installed mod that says it is huge and counts the reads of its files.
+struct Huge(std::cell::Cell<usize>);
+
+impl LocalSource for Huge {
+    fn hash_of(&self, _id: &str) -> Option<Hash> {
+        Some([9; 32])
+    }
+
+    fn bytes_of(&self, _id: &str) -> Option<u64> {
+        Some(1 << 40)
+    }
+
+    fn files_of(&self, _id: &str) -> Option<Files> {
+        self.0.set(self.0.get() + 1);
+        Some(files(1))
+    }
+}
+
+#[test]
+fn an_installed_copy_past_the_base_budget_is_never_read() {
+    let r = rig(caps(true));
+    let huge = Rc::new(Huge(std::cell::Cell::new(0)));
+    let local: Rc<dyn LocalSource> = huge.clone();
+    r.d.set_local(Rc::downgrade(&local));
+    let (offer, content) = offered("props", "2.0", &files(2), true);
+    r.join(&[offer], &[content]);
+    assert_eq!(r.d.phase(), Phase::Done);
+    assert_eq!(huge.0.get(), 0, "its size was checked first");
+    const { assert!(MAX_BASE_BYTES <= 1 << 30) };
 }
 
 #[test]

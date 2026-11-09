@@ -322,6 +322,9 @@ fn hostile_datagrams_never_panic_the_handshake_and_never_create_state_without_th
     let _ = game;
 }
 
+/// A flood of requests 110 ms apart (within the digest's life), every one from its own network: once the table is full each is accepted by evicting a
+/// pending connection past the evict age, so the pending table stays at its cap, the newest requests hold it and a flood
+/// never locks a new client out.
 #[test]
 fn the_pending_caps_hold_under_a_flood_of_valid_requests_from_many_sources() {
     let t = table();
@@ -339,14 +342,22 @@ fn the_pending_caps_hold_under_a_flood_of_valid_requests_from_many_sources() {
             GAME_CONNECTION_CLASS,
             &fields(),
         );
-        if let Handled::Request(req) = server.handle_datagram(&t, from, &bytes, 0)
-            && let Finished::Accepted { .. } = server.finish_request(&t, *req, Decision::Accept, 0)
+        let now = i * 110;
+        if let Handled::Request(req) = server.handle_datagram(&t, from, &bytes, now)
+            && let Finished::Accepted { .. } =
+                server.finish_request(&t, *req, Decision::Accept, now)
         {
             accepted += 1;
         }
         assert!(server.pending_len() <= NET_MAX_PENDING_CONNECTS);
     }
-    assert_eq!(accepted, NET_MAX_PENDING_CONNECTS);
+    assert_eq!(accepted, 2000);
+    assert_eq!(server.pending_len(), NET_MAX_PENDING_CONNECTS);
+    let newest = addr(1999);
+    assert!(
+        server.lookup(newest).is_some(),
+        "the newest request holds a slot"
+    );
     // None of the sources holds more than the per-address cap.
     let mut per_ip = std::collections::HashMap::new();
     for id in server.ids() {

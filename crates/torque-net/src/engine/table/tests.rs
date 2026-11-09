@@ -6,6 +6,7 @@ use super::*;
 use crate::engine::framing::{Accept, Connect, TableDigests, Versions, Widths};
 use crate::engine::link::{Link, LinkFacts, NoRoom};
 use crate::engine::session::{Event, NoStreams};
+use crate::fair::SourceCaps;
 
 const GAME: &str = "fixture";
 const KEY: [u8; 16] = [3; 16];
@@ -113,10 +114,13 @@ fn a_plain_link_answers_a_hello_with_a_cookie_and_opens_on_the_opening() {
 }
 
 #[test]
-fn pending_sessions_from_one_address_are_capped_and_the_oldest_of_all_is_evicted() {
+fn pending_sessions_from_one_address_are_capped_and_a_network_over_its_share_is_evicted() {
     let limits = TableLimits {
         pending: 3,
-        pending_per_ip: 2,
+        caps: SourceCaps {
+            pending_per_ip: 2,
+            ..SourceCaps::default()
+        },
         ..TableLimits::default()
     };
     let mut t = table(limits);
@@ -134,12 +138,13 @@ fn pending_sessions_from_one_address_are_capped_and_the_oldest_of_all_is_evicted
         "a third pending session from one address"
     );
     assert_eq!(
-        t.rx(addr([10, 0, 0, 2], 1), LinkKind::MEMORY, &opening, 0),
+        t.rx(addr([10, 0, 1, 2], 1), LinkKind::MEMORY, &opening, 0),
         Arrival::Session { opened: true }
     );
     assert!(t.take_evicted().is_empty());
+    // The table is full: the network holding two of three slots is over its share and pays, not the other network's one.
     assert_eq!(
-        t.rx(addr([10, 0, 0, 3], 1), LinkKind::MEMORY, &opening, 0),
+        t.rx(addr([10, 0, 2, 3], 1), LinkKind::MEMORY, &opening, 0),
         Arrival::Session { opened: true }
     );
     assert_eq!(t.take_evicted(), [addr([10, 0, 0, 1], 1)]);
@@ -184,8 +189,11 @@ fn establish(t: &mut SessionTable, from: SocketAddr, nonce: u64) {
 #[test]
 fn established_sessions_are_capped_per_address_and_per_network() {
     let limits = TableLimits {
-        per_ip: 2,
-        per_network: 3,
+        caps: SourceCaps {
+            per_ip: 2,
+            per_network: 3,
+            ..SourceCaps::default()
+        },
         ..TableLimits::default()
     };
     let mut t = table(limits);
@@ -274,7 +282,10 @@ fn a_challenge_comes_back_answered_with_the_ticket_before_the_server_decides() {
 #[test]
 fn the_network_caps_count_the_peers_own_address_behind_stand_ins() {
     let limits = TableLimits {
-        per_network: 2,
+        caps: SourceCaps {
+            per_network: 2,
+            ..SourceCaps::default()
+        },
         ..TableLimits::default()
     };
     let mut t = table(limits);
@@ -324,8 +335,14 @@ fn a_plain_pending_session_evicted_for_a_validated_one_is_settled_at_the_gate() 
     t.rx(plain, LinkKind::PLAIN_UDP, &out.0[0], 1);
     assert_eq!(t.gate_pending(), 1);
     let (_, opening) = first_datagram(LinkKind::MEMORY, 1);
+    // Its only slot is not evicted while young; past the evict age it is.
     assert_eq!(
         t.rx(addr([10, 0, 0, 1], 1), LinkKind::MEMORY, &opening, 2),
+        Arrival::Dropped
+    );
+    let late = 2 + crate::cap::NET_PENDING_EVICT_AGE_MS;
+    assert_eq!(
+        t.rx(addr([10, 0, 0, 1], 1), LinkKind::MEMORY, &opening, late),
         Arrival::Session { opened: true }
     );
     assert_eq!(t.take_evicted(), [plain]);

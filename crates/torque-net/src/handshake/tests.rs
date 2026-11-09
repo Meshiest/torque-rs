@@ -1,9 +1,14 @@
 use super::*;
 use crate::bits::BitWriter;
+use crate::cap::{
+    NET_CONNS_PER_ADDR, NET_CONNS_PER_NETWORK, NET_LIMITER_ENTRIES, NET_PENDING_EVICT_AGE_MS,
+    NET_PENDING_PER_NETWORK,
+};
 use crate::client::{Client, ClientEvent, ClientState};
 use crate::huffman::tests::sample_frequencies;
 use crate::profile::{HandshakeExtension, HandshakeForm, HandshakeProfile};
 use crate::protocol::PacketType;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 // TGE's datagram types and the codecs under them.
@@ -135,8 +140,40 @@ fn table() -> Table {
     Table::from_frequencies(&sample_frequencies()).expect("a table")
 }
 
+/// Host `host`'s address: each host in a network of its own, so only the tests of the network caps share one.
 fn addr(host: u8, port: u16) -> SocketAddr {
-    SocketAddr::from(([10, 0, 0, host], port))
+    SocketAddr::from(([10, 0, host, 1], port))
+}
+
+/// Host `host` of the network 10.9.9.0/24.
+fn net_addr(host: u8, port: u16) -> SocketAddr {
+    SocketAddr::from(([10, 9, 9, host], port))
+}
+
+/// A request from `from` with the right digest, sent.
+fn request_from(sv: &mut Server, t: &Table, from: SocketAddr, seq: u32, now: u32) -> Handled {
+    let bytes = request_bytes(sv, t, from, seq, GAME_CONNECTION_CLASS, &standard_fields());
+    send(sv, t, from, &bytes, now)
+}
+
+/// A request from `from`, accepted.
+fn admit(
+    sv: &mut Server,
+    t: &Table,
+    from: SocketAddr,
+    seq: u32,
+    now: u32,
+) -> (ConnId, Option<ConnId>) {
+    let h = request_from(sv, t, from, seq, now);
+    accept(sv, t, h, now)
+}
+
+/// Accepts a request the server handed to the host.
+fn accept(sv: &mut Server, t: &Table, h: Handled, now: u32) -> (ConnId, Option<ConnId>) {
+    match sv.finish_request(t, pending(h), Decision::Accept, now) {
+        Finished::Accepted { conn, evicted, .. } => (conn, evicted),
+        other => panic!("expected an accept, got {other:?}"),
+    }
 }
 
 /// A config whose verified-request budget is high, so a test can send many requests from one address; the tests of the
@@ -1022,50 +1059,206 @@ fn two_clients_behind_different_ports_have_separate_connections() {
 // ---- the caps --------------------------------------------------------------------------------------------------------------
 
 #[test]
-fn at_most_20_connections_are_pending_and_at_most_2_per_address() {
+fn at_most_2_connections_are_pending_per_address_and_4_per_network() {
     let (mut sv, t) = (server(), table());
-    // Two per address.
     join(&mut sv, &t, addr(1, 5000), 10, 0);
     join(&mut sv, &t, addr(1, 5001), 10, 0);
-    let third = request_bytes(
-        &sv,
-        &t,
-        addr(1, 5002),
-        10,
-        GAME_CONNECTION_CLASS,
-        &standard_fields(),
-    );
     assert_eq!(
-        ignored(send(&mut sv, &t, addr(1, 5002), &third, 0)),
+        ignored(request_from(&mut sv, &t, addr(1, 5002), 10, 0)),
         Ignore::PendingPerAddr
     );
-    // 20 in all: ten addresses of two.
     let mut sv = Server::new(cfg(100), KEY);
-    for host in 1..=10u8 {
-        join(&mut sv, &t, addr(host, 5000), 10, 0);
-        join(&mut sv, &t, addr(host, 5001), 10, 0);
+    for host in 1..=NET_PENDING_PER_NETWORK as u8 {
+        join(&mut sv, &t, net_addr(host, 5000), 10, 0);
     }
-    assert_eq!(sv.pending_len(), NET_MAX_PENDING_CONNECTS);
-    let more = request_bytes(
-        &sv,
-        &t,
-        addr(11, 5000),
-        10,
-        GAME_CONNECTION_CLASS,
-        &standard_fields(),
-    );
     assert_eq!(
-        ignored(send(&mut sv, &t, addr(11, 5000), &more, 0)),
-        Ignore::PendingFull
+        ignored(request_from(&mut sv, &t, net_addr(99, 5000), 10, 0)),
+        Ignore::PendingPerNetwork
     );
-    // A first packet from one frees a pending slot.
-    let first = first_packet(10);
+    // A first packet from one frees its network's slot.
     assert!(matches!(
-        send(&mut sv, &t, addr(1, 5000), &first, 1),
+        send(&mut sv, &t, net_addr(1, 5000), &first_packet(10), 1),
         Handled::Game { .. }
     ));
-    assert_eq!(sv.pending_len(), 19);
-    pending(send(&mut sv, &t, addr(11, 5000), &more, 2));
+    pending(request_from(&mut sv, &t, net_addr(99, 5000), 10, 2));
+}
+
+#[test]
+fn ten_addresses_holding_every_pending_slot_cannot_lock_out_another_network() {
+    // Ten addresses of one /24 hold 2 pending connections each (the caps raised so they can): another network's request is
+    // still accepted and established, the oldest pending connection making room.
+    let t = table();
+    let mut config = cfg(100);
+    config.caps.pending_per_network = 2 * 10;
+    config.caps.per_network = 2 * 10;
+    let mut sv = Server::new(config, KEY);
+    let mut first = None;
+    for host in 1..=10u8 {
+        for port in [5000, 5001] {
+            let (conn, evicted) = admit(&mut sv, &t, net_addr(host, port), 10, 0);
+            assert_eq!(evicted, None);
+            first.get_or_insert(conn);
+        }
+    }
+    assert_eq!(sv.pending_len(), NET_MAX_PENDING_CONNECTS);
+    let honest = addr(1, 7000);
+    let (conn, evicted) = admit(&mut sv, &t, honest, 10, 1);
+    assert_eq!(evicted, first, "the oldest pending connection made room");
+    assert_eq!(sv.pending_len(), NET_MAX_PENDING_CONNECTS);
+    assert!(matches!(
+        send(&mut sv, &t, honest, &first_packet(10), 2),
+        Handled::Game { conn: c, .. } if c == conn
+    ));
+    assert_eq!(
+        sv.connection(conn).map(Connection::stage),
+        Some(Stage::Established)
+    );
+    // At the default caps, an 11th address of a network that holds 4 pending is refused.
+    let mut sv = Server::new(cfg(100), KEY);
+    for host in 1..=10u8 {
+        let h = request_from(&mut sv, &t, net_addr(host, 5000), 10, 0);
+        if host as usize <= NET_PENDING_PER_NETWORK {
+            accept(&mut sv, &t, h, 0);
+        } else {
+            assert_eq!(ignored(h), Ignore::PendingPerNetwork);
+        }
+    }
+    assert_eq!(
+        ignored(request_from(&mut sv, &t, net_addr(11, 5000), 10, 0)),
+        Ignore::PendingPerNetwork
+    );
+    pending(request_from(&mut sv, &t, addr(2, 5000), 10, 0));
+}
+
+#[test]
+fn an_eviction_takes_from_a_network_over_its_share_never_an_honest_client_elsewhere() {
+    let t = table();
+    let mut config = cfg(100);
+    config.caps = SourceCaps::unlimited();
+    let mut sv = Server::new(config, KEY);
+    // An honest client is the oldest pending; one network holds the other 19 slots.
+    let (honest, _) = admit(&mut sv, &t, addr(1, 5000), 10, 0);
+    let mut hostile = Vec::new();
+    for host in 1..=19u8 {
+        hostile.push(admit(&mut sv, &t, net_addr(host, 5000), 10, 1).0);
+    }
+    let (_, evicted) = admit(&mut sv, &t, addr(2, 5000), 10, 2);
+    assert_eq!(
+        evicted,
+        hostile.first().copied(),
+        "the network over its share pays"
+    );
+    assert!(sv.connection(honest).is_some(), "the honest client stays");
+}
+
+#[test]
+fn a_requester_whose_network_holds_its_share_is_refused_and_nothing_is_evicted() {
+    let t = table();
+    let mut sv = Server::new(cfg(100), KEY);
+    // Twenty networks of one each: the share is one, and the requester's network holds it.
+    for h in 1..=20u8 {
+        admit(&mut sv, &t, addr(h, 5000), 10, 0);
+    }
+    let req = pending(request_from(&mut sv, &t, addr(1, 6000), 10, 1));
+    let Finished::Rejected { reply } = sv.finish_request(&t, req, Decision::Accept, 1) else {
+        panic!("not refused")
+    };
+    assert_eq!(reject_reason(&t, &reply, 10), CR_SERVERFULL);
+    assert_eq!(
+        sv.pending_len(),
+        NET_MAX_PENDING_CONNECTS,
+        "nothing was evicted"
+    );
+}
+
+#[test]
+fn an_honest_networks_only_pending_slot_is_never_evicted_while_young() {
+    // Twenty networks of one each and a newcomer: the share comes to 0, taken as 1, so no network is over it. The young slots
+    // stay and the newcomer is refused; once they are past the evict age, the oldest makes room (and is reported).
+    let t = table();
+    let mut sv = Server::new(cfg(100), KEY);
+    let held: Vec<ConnId> = (1..=20u8)
+        .map(|h| admit(&mut sv, &t, addr(h, 5000), 10, 0).0)
+        .collect();
+    let req = pending(request_from(&mut sv, &t, addr(99, 5000), 10, 2));
+    assert!(matches!(
+        sv.finish_request(&t, req, Decision::Accept, 2),
+        Finished::Rejected { .. }
+    ));
+    assert!(
+        held.iter().all(|c| sv.connection(*c).is_some()),
+        "no honest slot was evicted"
+    );
+    let (_, evicted) = admit(&mut sv, &t, addr(99, 5000), 11, NET_PENDING_EVICT_AGE_MS);
+    assert_eq!(
+        evicted,
+        held.first().copied(),
+        "an eviction is always reported"
+    );
+}
+
+#[test]
+fn a_table_full_of_evenly_spread_pending_connections_still_admits_a_new_network() {
+    let t = table();
+    let mut sv = Server::new(cfg(100), KEY);
+    // Ten networks of two each: none is over its share, and the newcomer's holds none.
+    let mut held = Vec::new();
+    for host in 1..=10u8 {
+        held.push(admit(&mut sv, &t, addr(host, 5000), 10, u32::from(host)).0);
+        held.push(admit(&mut sv, &t, addr(host, 5001), 10, u32::from(host)).0);
+    }
+    assert_eq!(sv.pending_len(), NET_MAX_PENDING_CONNECTS);
+    let (conn, evicted) = admit(&mut sv, &t, addr(50, 5000), 10, 20);
+    assert_eq!(
+        evicted,
+        held.first().copied(),
+        "the oldest of all made room"
+    );
+    assert!(sv.connection(conn).is_some());
+}
+
+#[test]
+fn pending_connections_fill_a_small_table_only_until_a_new_one_evicts_one_past_the_evict_age() {
+    // A table of 4 (no players and the margin), all pending: a new network's accept evicts the oldest once it is past the
+    // evict age, instead of "full".
+    let t = table();
+    let mut sv = Server::new(cfg(0), KEY);
+    let limit = sv.config().max_connections();
+    let held: Vec<ConnId> = (0..limit as u8)
+        .map(|h| admit(&mut sv, &t, addr(h + 10, 5000), 10, 0).0)
+        .collect();
+    let (_, evicted) = admit(&mut sv, &t, addr(1, 5000), 10, NET_PENDING_EVICT_AGE_MS);
+    assert_eq!(evicted, held.first().copied());
+    assert_eq!(sv.len(), limit);
+}
+
+#[test]
+fn a_source_holds_at_most_4_connections_per_address_and_8_per_network() {
+    let t = table();
+    let mut sv = Server::new(cfg(100), KEY);
+    let established = |sv: &mut Server, from: SocketAddr| {
+        join(sv, &t, from, 10, 0);
+        assert!(matches!(
+            send(sv, &t, from, &first_packet(10), 1),
+            Handled::Game { .. }
+        ));
+    };
+    for port in 0..NET_CONNS_PER_ADDR as u16 {
+        established(&mut sv, addr(1, 5000 + port));
+    }
+    let r = reply(request_from(&mut sv, &t, addr(1, 6000), 10, 2));
+    assert_eq!(reject_reason(&t, &r, 10), CR_SERVERFULL);
+    // Another network is still accepted.
+    pending(request_from(&mut sv, &t, addr(2, 5000), 10, 2));
+    let mut sv = Server::new(cfg(100), KEY);
+    for host in 1..=NET_CONNS_PER_NETWORK as u8 {
+        established(&mut sv, net_addr(host, 5000));
+    }
+    let r = reply(request_from(&mut sv, &t, net_addr(99, 5000), 10, 2));
+    assert_eq!(reject_reason(&t, &r, 10), CR_SERVERFULL);
+    pending(request_from(&mut sv, &t, addr(2, 5000), 10, 2));
+    // A reconnect from a held address replaces its own connection and is not refused.
+    pending(request_from(&mut sv, &t, net_addr(1, 5000), 11, 3));
 }
 
 #[test]
@@ -1160,19 +1353,57 @@ fn challenge_replies_are_limited_per_address_and_in_all() {
     reply(send(&mut sv, &t, addr(2, 5000), &challenge_request(1), 500));
     reply(send(&mut sv, &t, from, &challenge_request(99), 1100));
 
-    // The global budget: many addresses, one reply each.
+    // One network: its addresses share the network's budget.
     let mut sv = server();
     let mut answered = 0u32;
-    for i in 0..3000u32 {
-        let from = SocketAddr::from(([10, (i >> 8) as u8, i as u8, 7], 4000));
-        if let Handled::Reply(_) = send(&mut sv, &t, from, &challenge_request(i), 5000) {
+    for host in 0..=255u8 {
+        if let Handled::Reply(_) = send(
+            &mut sv,
+            &t,
+            net_addr(host, 4000),
+            &challenge_request(1),
+            5000,
+        ) {
             answered += 1;
         }
     }
-    assert_eq!(answered, NET_CHALLENGE_REPLIES_PER_S);
-    // And it refills.
-    let from = SocketAddr::from(([10, 99, 99, 7], 4000));
-    reply(send(&mut sv, &t, from, &challenge_request(1), 6001));
+    assert_eq!(answered, NET_CHALLENGES_PER_NETWORK_PER_S);
+    reply(send(
+        &mut sv,
+        &t,
+        net_addr(1, 4000),
+        &challenge_request(1),
+        6001,
+    ));
+}
+
+#[test]
+fn a_spoofed_flood_of_challenges_still_lets_an_honest_client_through_at_once() {
+    // 20,000 spoofed challenge requests a second from random sources: an honest client's first or second try is answered.
+    let (mut sv, t) = (server(), table());
+    let mut rng = crate::testrng::TestRng::new(0x2545_f491_4f6c_dd1d);
+    let honest = addr(1, 5000);
+    for second in 0..3u32 {
+        let mut tries = 0;
+        let mut answered = false;
+        for i in 0..20_000u32 {
+            let bits = rng.next_u64().to_le_bytes();
+            let spoofed = SocketAddr::from((
+                [bits[0], bits[1], bits[2], bits[3]],
+                u16::from_le_bytes([bits[4], bits[5]]),
+            ));
+            let now = second * 1_000 + i / 20;
+            let _ = send(&mut sv, &t, spoofed, &challenge_request(i), now);
+            if i % 10_000 == 5_000 && !answered {
+                tries += 1;
+                answered = matches!(
+                    send(&mut sv, &t, honest, &challenge_request(7), now),
+                    Handled::Reply(_)
+                );
+            }
+        }
+        assert!(answered && tries <= 2, "second {second}: {tries} tries");
+    }
 }
 
 #[test]
@@ -1181,7 +1412,7 @@ fn the_per_address_counters_stay_bounded_under_a_spoofed_flood() {
     for i in 0..20_000u32 {
         let from = SocketAddr::from(([(i >> 16) as u8 + 11, (i >> 8) as u8, i as u8, 1], 4000));
         let _ = send(&mut sv, &t, from, &challenge_request(i), i / 4);
-        assert!(sv.per_addr.windows.len() <= NET_LIMITER_ENTRIES);
+        assert_eq!(sv.len(), 0);
     }
     assert_eq!(sv.len(), 0, "a challenge stores no connection");
 }
@@ -1511,7 +1742,9 @@ fn the_repeated_accept_resend_is_rate_limited() {
 fn pending_per_address_is_a_config_knob() {
     let t = table();
     let mut config = cfg(100);
-    config.pending_per_addr = 5;
+    config.caps.pending_per_ip = 5;
+    config.caps.pending_per_network = 5;
+    config.caps.per_ip = 10;
     let mut sv = Server::new(config, KEY);
     for port in 0..5 {
         join(&mut sv, &t, addr(1, 5000 + port), 10, 0);
@@ -1528,7 +1761,7 @@ fn pending_per_address_is_a_config_knob() {
         ignored(send(&mut sv, &t, addr(1, 5005), &bytes, 0)),
         Ignore::PendingPerAddr
     );
-    assert_eq!(cfg(1).pending_per_addr, NET_PENDING_PER_ADDR);
+    assert_eq!(cfg(1).caps, SourceCaps::default());
 }
 
 #[test]
@@ -1539,9 +1772,13 @@ fn finish_request_rechecks_the_table_capacity() {
     let late = addr(100, 5000);
     let bytes = request_bytes(&sv, &t, late, 10, GAME_CONNECTION_CLASS, &standard_fields());
     let req = pending(send(&mut sv, &t, late, &bytes, 0));
-    // The table fills while the script runs.
+    // The table fills with established connections while the script runs (pending ones would be evicted).
     for i in 0..NET_CONNECTIONS_MARGIN as u8 {
         join(&mut sv, &t, addr(i + 1, 5000), 10, 0);
+        assert!(matches!(
+            send(&mut sv, &t, addr(i + 1, 5000), &first_packet(10), 0),
+            Handled::Game { .. }
+        ));
     }
     let Finished::Rejected { reply } = sv.finish_request(&t, req, Decision::Accept, 1) else {
         panic!("accepted into a full table")
@@ -1582,17 +1819,17 @@ fn a_late_accept_never_replaces_a_newer_connection_and_reports_what_it_replaced(
 }
 
 #[test]
-fn the_limiter_forgets_the_oldest_source_in_constant_time_and_stays_bounded() {
+fn the_limiter_forgets_the_least_recent_source_and_stays_bounded() {
     let mut l = SourceLimiter::default();
     for i in 0..(NET_LIMITER_ENTRIES as u32 + 10) {
-        let ip = IpAddr::from([10, 0, (i >> 8) as u8, i as u8]);
+        let ip = IpAddr::from((0x0a00_0000 + i).to_be_bytes());
         assert!(l.allow(ip, 0, 1));
-        assert_eq!(l.windows.len(), l.order.len());
-        assert!(l.windows.len() <= NET_LIMITER_ENTRIES);
+        assert!(l.len() <= NET_LIMITER_ENTRIES);
     }
     // The first ten sources were forgotten (their budget is back); the newest still holds its count.
     assert!(l.allow(IpAddr::from([10, 0, 0, 0]), 0, 1));
-    assert!(!l.allow(IpAddr::from([10, 0, 4, 9]), 0, 1));
+    let newest = 0x0a00_0000 + NET_LIMITER_ENTRIES as u32 + 9;
+    assert!(!l.allow(IpAddr::from(newest.to_be_bytes()), 0, 1));
 }
 
 #[test]

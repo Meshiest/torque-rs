@@ -345,7 +345,7 @@ pub fn solo_page() -> bool {
         .is_some_and(|v| v == "1")
 }
 
-/// The room code a host page shows (`data-torque-room`, `web/host.js`: `ABCD-EFGH`), if it has one yet and it is
+/// The room code a host page shows (`data-torque-room`, `web/host.js`: `ABCD-EFGH-JKMN-PQRS`), if it has one yet and it is
 /// letters, digits and `-` only.
 pub fn page_room() -> Option<String> {
     let code = web_sys::window()?
@@ -362,8 +362,8 @@ pub fn page_room() -> Option<String> {
 /// pointer-lock guard, the host's LAN rule and the map.
 const KEPT: [&str; 5] = ["rooms", "name", "nolock", "lan", "map"];
 
-/// The longest room code [`room_code`] takes (`ABCD-EFGH` with room to spare); a code is letters, digits and `-` only.
-pub const MAX_CODE: usize = 16;
+/// The longest room code [`room_code`] takes (`ABCD-EFGH-JKMN-PQRS` with room to spare); a code is letters, digits and `-` only.
+pub const MAX_CODE: usize = 32;
 
 /// `code` as a room code, trimmed (Err: empty, over [`MAX_CODE`], or not letters, digits and `-` only).
 pub fn room_code(code: &str) -> Result<String, String> {
@@ -372,7 +372,9 @@ pub fn room_code(code: &str) -> Result<String, String> {
         || code.len() > MAX_CODE
         || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
-        return Err(format!("{code:?} is not a room code (like ABCD-EFGH)"));
+        return Err(format!(
+            "{code:?} is not a room code (like ABCD-EFGH-JKMN-PQRS)"
+        ));
     }
     Ok(code.to_string())
 }

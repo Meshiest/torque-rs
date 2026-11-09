@@ -9,7 +9,7 @@
 // servers, the joiners and their addresses, so a link must not choose it. `?lan` (private addresses allowed) counts only
 // when the page's code allows it (`hostGame`'s `lan`). Its protocol is torque-server's
 // `net::room` (text in binary WebSocket messages); joiners' signaling is the data channels' (`net::web::rtc::signal`:
-// `offer`, `answer`, `candidate`). The page's root element carries `data-torque-room` (the code, `ABCD-EFGH`) and
+// `offer`, `answer`, `candidate`). The page's root element carries `data-torque-room` (the code, `ABCD-EFGH-JKMN-PQRS`) and
 // `data-torque-server` (`worker` once the server runs there).
 //
 // Played alone (`solo`, a page `build.mjs --solo` marked): the server in the worker and the host player's own link, with no
@@ -48,8 +48,8 @@ const PING_MS = 10_000;
 // How long a joiner has from its offer to its channel's opening.
 const CONNECT_MS = 20_000;
 
-// The room code's form for people.
-const show = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
+// The room code's form for people: groups of four (`ABCD-EFGH-JKMN-PQRS`, net::room's `show_code`).
+const show = (code) => code.match(/.{1,4}/g).join('-');
 
 // A peer number as the room service writes it: decimal, no leading zero, 1 or more (0 is the host's own link).
 export function peerNumber(text) {
@@ -358,7 +358,7 @@ export async function hostGame(
     const body = newline < 0 ? '' : text.slice(newline + 1);
     const [verb, a, b] = head;
     if (verb === 'room') {
-      if (!/^[0-9A-Z]{8}$/.test(a ?? '')) return;
+      if (!/^[0-9A-Z]{16}$/.test(a ?? '')) return;
       root.dataset.torqueRoom = show(a);
       iceServers = iceServersFrom(body);
       return;

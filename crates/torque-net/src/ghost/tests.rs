@@ -117,6 +117,49 @@ impl ObjectPolicy<World> for Spaced {
     }
 }
 
+/// Torque's ghosting but for a Ready that runs the script once a sequence.
+#[derive(Default)]
+struct ReadyOnce;
+
+impl GhostPolicy for ReadyOnce {
+    fn ready_once(&self) -> bool {
+        true
+    }
+}
+
+impl ObjectPolicy<World> for ReadyOnce {}
+
+#[test]
+fn a_repeated_ready_runs_the_script_once_when_the_policy_says_so() {
+    let mut rig = Rig::with_policy(crate::profile::DEFAULT_GHOST_LIMIT, ReadyOnce);
+    rig.add(1);
+    rig.go();
+    let seq = rig.mgr.sequence();
+    let ready = ConnectionMessage {
+        seq,
+        message: 1,
+        count: 0,
+    };
+    assert_eq!(
+        rig.mgr.on_connection_message(&ready, &mut rig.scripts),
+        Ok(MessageOutcome::Ignored)
+    );
+    assert_eq!(rig.scripts.ready, 1);
+    // A new sequence takes its own Ready.
+    let _ = rig.mgr.reset();
+    let _ = rig.mgr.activate(&rig.world).unwrap();
+    let next = ConnectionMessage {
+        seq: rig.mgr.sequence(),
+        message: 1,
+        count: 0,
+    };
+    assert_eq!(
+        rig.mgr.on_connection_message(&next, &mut rig.scripts),
+        Ok(MessageOutcome::Ready)
+    );
+    assert_eq!(rig.scripts.ready, 2);
+}
+
 impl Rig<Spaced> {
     fn spaced() -> Rig<Spaced> {
         Rig::with_policy(crate::profile::DEFAULT_GHOST_LIMIT, Spaced::default())

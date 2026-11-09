@@ -40,6 +40,22 @@ pub(crate) struct Notes {
     pub(crate) warnings: Vec<String>,
 }
 
+/// The warnings one scan keeps; past them one line says more were left out.
+pub(crate) const MAX_WARNINGS: usize = 64;
+
+impl Notes {
+    /// Keeps `line`, unless [`MAX_WARNINGS`] are kept already: then one last line says the rest were left out.
+    pub(crate) fn warn(&mut self, line: String) {
+        match self.warnings.len() {
+            n if n < MAX_WARNINGS => self.warnings.push(line),
+            MAX_WARNINGS => self
+                .warnings
+                .push("more warnings about the mods folder were left out".into()),
+            _ => {}
+        }
+    }
+}
+
 /// A candidate before it is read: where its files are.
 pub(crate) struct Pending {
     pub(crate) raw: String,

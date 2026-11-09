@@ -23,3 +23,9 @@ function serverCmdScripted(%client, %n)
 {
    $Scripted++;
 }
+
+// A command that runs until the connection's share of the script window is spent.
+function serverCmdSpend(%client)
+{
+   for (%i = 0; %i < 100000000; %i++) {}
+}

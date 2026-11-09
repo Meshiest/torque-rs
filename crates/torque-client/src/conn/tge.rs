@@ -392,6 +392,7 @@ fn read_datablock(
     ctx: &EventCtx<'_>,
     classes: &NetClasses,
     plugins: &PluginClasses,
+    charge: &mut ghosts::ChargeFn<'_>,
 ) -> Result<Option<(TgeDatablockEvent, u32, u32)>, NetError> {
     if !r.read_flag()? {
         return Ok(None);
@@ -411,12 +412,7 @@ fn read_datablock(
                 PluginClasses::datablock_base(table_len),
             )
             .ok_or(NetError::Invalid("datablock class id"))?;
-        let record = class.decode(
-            r,
-            ctx.table,
-            &mut net::events::free_charge(),
-            &ghosts::ReadCtx::new(widths, true),
-        )?;
+        let record = class.decode(r, ctx.table, charge, &ghosts::ReadCtx::new(widths, true))?;
         let datablock = TgeDatablock {
             class: class.name().to_string(),
             fields: record.record_fields(),
@@ -429,8 +425,7 @@ fn read_datablock(
         .map(|c| c.name.as_str())
         .ok_or(NetError::Invalid("datablock class id"))?;
     let class = TgeDatablocks::class_by_name(name).ok_or(NetError::Invalid("datablock class"))?;
-    let record =
-        TgeDatablocks::decode(class, r, ctx.table, &mut net::events::free_charge(), widths)?;
+    let record = TgeDatablocks::decode(class, r, ctx.table, charge, widths)?;
     let datablock = TgeDatablock {
         class: name.to_string(),
         fields: ghosts::datablocks::fields::fields(&record, widths),
@@ -450,7 +445,9 @@ impl EventUnpacker for Unpacker<'_> {
         if class == ctx.ids.ghost_always_object {
             self.ghosts.read_always_event(r).map(Incoming::Always)
         } else if class == ctx.ids.sim_data_block {
-            read_datablock(r, ctx, self.classes, self.plugins).map(Incoming::DataBlock)
+            // A datablock event draws on its datagram's budget, as the ghost records do.
+            let mut charge = self.ghosts.codec().charge();
+            read_datablock(r, ctx, self.classes, self.plugins, &mut charge).map(Incoming::DataBlock)
         } else {
             NetEvent::unpack(class, r, ctx).map(Incoming::Net)
         }
@@ -928,20 +925,27 @@ impl TgeFeed {
         let Some(ghosts) = self.ghosts.as_mut() else {
             return Ok(());
         };
-        let mut charge = net::events::free_charge();
-        let class_of = |index: u32| {
-            let g = ghosts.ghost(index)?;
-            let wheels = g
-                .datablock
-                .and_then(|db| ghosts.codec().facts.wheels.get(&db).copied());
-            g.class?.tail_class(wheels)
+        // What one datagram's decoders may spend, so a server cannot make the client expand more per packet than its bytes
+        // allow ([`ghosts::datagram_budget`]): the head, the datablock events and the ghost records all draw on the codec's.
+        ghosts
+            .codec_mut()
+            .set_budget(Some(ghosts::datagram_budget(data.len())));
+        let head = {
+            let mut charge = ghosts.codec().charge();
+            let class_of = |index: u32| {
+                let g = ghosts.ghost(index)?;
+                let wheels = g
+                    .datablock
+                    .and_then(|db| ghosts.codec().facts.wheels.get(&db).copied());
+                g.class?.tail_class(wheels)
+            };
+            ServerHead::read_with(
+                &mut r,
+                self.widths.ghost_bits,
+                &mut charge,
+                &mut ghosts::TgeTails::new(&class_of),
+            )?
         };
-        let head = ServerHead::read_with(
-            &mut r,
-            self.widths.ghost_bits,
-            &mut charge,
-            &mut ghosts::TgeTails::new(&class_of),
-        )?;
         // The point the head left the stream at, which the ghosts are read against: a resent Player at a vehicle's wheel sends no
         // position of its own, and the vehicle's packet data nested in it sets the point.
         let cp = stream_point(&r)?;

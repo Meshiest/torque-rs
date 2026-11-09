@@ -25,7 +25,8 @@ use torque_server::net::rpc::RpcLanes;
 use super::{FeedEvent, Link};
 
 /// A key the client's nonces are drawn from in place of the system's randomness, as an extension of the client's script
-/// engine: a run that must repeat (the trace hashes) sets one.
+/// engine: a run that must repeat (the trace hashes) sets one. With one set, the TGE connect sequence is the seeded one too
+/// (the Sim clock's and the object's), so the trace's packets repeat; without, it mixes in the system's randomness.
 pub struct EngineNonceKey(pub [u8; 16]);
 
 /// The nonce of the connect with sequence `seq`: from `key` when there is one, else from the system's randomness.
@@ -33,12 +34,26 @@ pub struct EngineNonceKey(pub [u8; 16]);
 pub fn engine_nonce(key: Option<&EngineNonceKey>, seq: u32) -> u64 {
     match key {
         Some(key) => siphash24(&key.0, &seq.to_le_bytes()),
-        None => {
-            let mut hasher = RandomState::new().build_hasher();
-            hasher.write_u32(seq);
-            hasher.finish()
+        None => system_random(),
+    }
+}
+
+/// 64 bits from the system's random source: the operating system's natively. In a browser (no OS source here) the standard
+/// library's hasher seed mixed with the clock.
+#[must_use]
+pub fn system_random() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut bytes = [0u8; 8];
+        if getrandom::fill(&mut bytes).is_ok() {
+            return u64::from_le_bytes(bytes);
         }
     }
+    let mut hasher = RandomState::new().build_hasher();
+    if let Ok(now) = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH) {
+        hasher.write_u128(now.as_nanos());
+    }
+    hasher.finish()
 }
 
 /// What a connection in engine mode starts from.

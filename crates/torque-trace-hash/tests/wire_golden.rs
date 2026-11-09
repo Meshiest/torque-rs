@@ -24,6 +24,7 @@ use torque::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
 use torque::mods::CacheChoice;
 use torque::net::connect::SharedSecret;
+use torque_client::conn::engine_wire::EngineNonceKey;
 use torque_example_minimal_engine::{ExamplePlugin, files, server};
 use torque_plugin_rope::RopePlugin;
 use torque_trace_hash::rig::{CHALLENGE_KEY, Control, Rig};
@@ -182,6 +183,10 @@ impl Pair {
         builder.set_socket(Box::new(mem), NetPolicy::Loopback);
         builder.exec_entry().expect("the client's script");
         let mut client = builder.build();
+        // The client draws its connect sequence and nonces at random; fixed, the datagrams are a function of the inputs.
+        client
+            .vm_mut()
+            .set_extension(std::rc::Rc::new(EngineNonceKey(CHALLENGE_KEY)));
         client
             .call("connectTo", &[&SERVER.to_string()])
             .expect("connect");
@@ -362,8 +367,15 @@ fn render(sessions: &[(&str, Session)]) -> String {
     out
 }
 
+/// The two tests run the sessions one at a time: the download session clears and fills one cache folder, and a client of
+/// one test finding the other's cached mod would send no download.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn the_wire_is_the_bytes_it_was() {
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sessions = sessions();
     let text = render(&sessions);
     if std::env::var_os("TORQUE_BLESS_GOLDEN").is_some() {
@@ -392,6 +404,9 @@ fn the_wire_is_the_bytes_it_was() {
 
 #[test]
 fn the_sessions_do_what_they_say() {
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let by_name: std::collections::BTreeMap<_, _> = sessions().into_iter().collect();
     // The accepted sessions went on trading packets; the refused ones ended at the refusal, with the reason.
     assert!(by_name["plain"].wire.len() > 100);

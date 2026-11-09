@@ -924,9 +924,24 @@ pub struct TgeCodec {
     pub control: Option<u32>,
     /// Records read so far.
     pub serial: usize,
+    /// The work units the records of the datagram being read may still spend ([`TgeCodec::set_budget`]); `None` sets no
+    /// bound.
+    budget: std::cell::Cell<Option<u64>>,
 }
 
 impl TgeCodec {
+    /// Bounds the work the next records read may spend in all, until the next call (a client sets it per datagram:
+    /// [`ghosts::datagram_budget`]); a record past it is an error.
+    pub fn set_budget(&mut self, units: Option<u64>) {
+        self.budget.set(units);
+    }
+
+    /// A charge callback on what is left of the budget ([`TgeCodec::set_budget`]), for the datagram's other decoders (its
+    /// head, its datablock events): all of one datagram draw on one budget.
+    pub fn charge(&self) -> impl FnMut(u64) -> bool + '_ {
+        ghosts::cell_charge(&self.budget)
+    }
+
     /// A codec for the object classes `names` in class id order (a connection's derived net class table).
     pub fn new<'a>(
         names: impl IntoIterator<Item = &'a str>,
@@ -941,6 +956,7 @@ impl TgeCodec {
             facts: TgeFacts::default(),
             control: None,
             serial: 0,
+            budget: std::cell::Cell::new(None),
         }
     }
 
@@ -982,7 +998,7 @@ impl TgeCodec {
                 datablock,
             },
         };
-        TgeGhosts::decode(class, r, &self.table, &mut ghosts::free_charge(), &ctx)
+        TgeGhosts::decode(class, r, &self.table, &mut self.charge(), &ctx)
     }
 }
 

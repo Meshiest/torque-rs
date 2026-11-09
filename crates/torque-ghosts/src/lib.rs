@@ -86,5 +86,39 @@ pub fn free_charge() -> impl FnMut(u64) -> bool {
     |_| true
 }
 
+/// The work units a received datagram of `len` bytes may spend in a client's decoders: 8 a byte and a floor. An honest
+/// record costs about a unit a byte; a string the shared-prefix form expands costs a unit per 8 bytes it expands to, so a
+/// datagram of strings at their greatest expansion stops at this bound.
+#[must_use]
+pub fn datagram_budget(len: usize) -> u64 {
+    u64::try_from(len)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(8)
+        .saturating_add(256)
+}
+
+/// A charge callback that pays out of `units` and refuses once they are spent.
+pub fn budget_charge(units: u64) -> impl FnMut(u64) -> bool {
+    let budget = std::cell::Cell::new(Some(units));
+    move |cost| spend(&budget, cost)
+}
+
+/// A charge callback that pays out of `budget` (`None`: no bound) and refuses once it is spent. What is left stays in the
+/// cell, so the decoders of one datagram (its head, its events, its ghost records) can draw on one budget.
+pub fn cell_charge(budget: &std::cell::Cell<Option<u64>>) -> impl FnMut(u64) -> bool + '_ {
+    move |cost| spend(budget, cost)
+}
+
+/// Takes `cost` out of `budget`, or refuses (taking nothing) when it has less.
+fn spend(budget: &std::cell::Cell<Option<u64>>, cost: u64) -> bool {
+    match budget.get() {
+        None => true,
+        Some(left) => left.checked_sub(cost).is_some_and(|left| {
+            budget.set(Some(left));
+            true
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -198,9 +198,14 @@ is required but not served: a player who lacks it leaves with a line that says s
 
 While a player is held, its connection is in `ClientGroup` but your `onConnect` has not run. The held connection sends packets
 every tick and gives the whole packet to the transfer (a **burst**), then goes back to the connection's rate. A server holds only
-`DownloadLimits::max_clients` players at a time: the next is refused with `Server busy, try again.` A player is dropped when it
-asks for nothing for `idle_seconds`, or has not finished within `seconds`. A player may only ask for runs of blocks the offer
+`DownloadLimits::max_clients` players at a time, and `max_clients_per_network` of them from one network (an IPv4 /24, an IPv6
+/64): the next is refused with `Server busy, try again.` A player is dropped when it takes less than `min_bytes_per_s` of what
+it asked for over `idle_seconds`, or has not finished within `seconds`. A player may only ask for runs of blocks the offer
 lists, a few at a time and no more often than it can take them; any other request drops it.
+
+A player's word that it has the mods (`serverCmdTorqueModsReady`) is taken as given: a server cannot check a client's files, so
+holding a player only keeps an honest client from joining before its content is mounted. A modified client can join without
+the mods, and the server's scripts must not count on a client having them.
 
 Measured through the engine's memory link, 400 KB takes about 11 seconds, 33 KB a second. The same download before the burst, at
 Torque's default rates (10 packets of 200 bytes a second, half of each for the channel), ran at under 1 KB a second.
@@ -214,6 +219,8 @@ Torque's default rates (10 packets of 200 bytes a second, half of each for the c
 | Time to finish | 300 s | `DownloadLimits::seconds` |
 | Time without a request | 20 s | `DownloadLimits::idle_seconds` |
 | Players held at once | 6 | `DownloadLimits::max_clients` |
+| Of those, from one network | 2 | `DownloadLimits::max_clients_per_network` |
+| The least rate a held player takes what it asked for at | 1 KiB a second | `DownloadLimits::min_bytes_per_s` |
 | The player's cache of downloads | 512 MiB | `DownloadLimits::cache_bytes` |
 
 The client sends its requests as the remote command `TorqueModsGet`, so its connection object must be named `ServerConnection`
@@ -224,7 +231,10 @@ The client sends its requests as the remote command `TorqueModsGet`, so its conn
 A mod a server sends is saved in a cache folder of your own (`%LOCALAPPDATA%\torque-rs\mod-content`,
 `~/Library/Caches/torque-rs/mod-content` or `~/.cache/torque-rs/mod-content`; on the web it lasts the session). It is outside the
 game's folder and outside `plugins/`, and it holds only content. Each entry is named for its hash and for the server it came from
-(the address you dialed), and is checked again when it is used: an entry that does not match is deleted.
+(the address you dialed), and is checked again when it is used: an entry that does not match is deleted. One server holds at
+most half the cache: past that, what it sends evicts its own oldest entries first, so a server cannot flush the others'. A
+server's offer names each mod once, with an id a mod of your own could have, and the older copies the client builds an update
+from are read only up to twice what the offer would download.
 
 What a server can learn from you. The client sends no list of its mods, but the blocks it asks for, and the blocks it does not ask
 for, show what it already has. So:

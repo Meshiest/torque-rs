@@ -132,6 +132,37 @@ fn the_cache_evicts_what_was_used_least_recently_and_keeps_to_its_cap() {
 }
 
 #[test]
+fn one_server_storing_new_content_cannot_flush_another_servers_entries() {
+    let server = |port| CacheOwner::of_server(std::net::SocketAddr::from(([203, 0, 113, 7], port)));
+    let scope = |owner| CacheScope {
+        owner: Some(owner),
+        share: false,
+    };
+    let (a, b) = (server(1), server(2));
+    let one = entry("x", 400, 0).1.len() as u64;
+    let mut cache = ContentCache::in_memory(one * 8);
+    // Server A fills the cache.
+    cache.set_scope(scope(a));
+    let mut a_hashes = Vec::new();
+    for seed in 0..8 {
+        let (hash, message) = entry(&format!("a{seed}"), 400, seed);
+        assert!(cache.store(&hash, &message));
+        a_hashes.push(hash);
+    }
+    // Server B stores on every connect: A's newest entries survive, B churns its own half.
+    cache.set_scope(scope(b));
+    for seed in 0..40 {
+        let (hash, message) = entry(&format!("b{seed}"), 400, 100 + seed);
+        assert!(cache.store(&hash, &message));
+        assert!(cache.bytes() <= one * 8);
+    }
+    cache.set_scope(scope(a));
+    let kept = a_hashes.iter().filter(|h| cache.has(h)).count();
+    assert!(kept >= 3, "A keeps about its half: {kept} of 8");
+    assert!(cache.has(&a_hashes[7]), "A's newest entry survives");
+}
+
+#[test]
 fn heads_skip_entries_that_do_not_start_like_a_message() {
     let mut cache = ContentCache::in_memory(1 << 20);
     let (hash, message) = entry("good", 100, 1);

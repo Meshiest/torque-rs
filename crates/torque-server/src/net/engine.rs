@@ -5,7 +5,10 @@
 //! A server is in engine mode when its script engine's [`ProtocolMode`] says so; the host then keeps an [`EngineHost`]
 //! ([`NetShared::engine_host`], made at the first pass). Its [`SessionTable`] routes each datagram by source, puts the gate in
 //! front of plain links and caps the sessions one address and network may hold (the cap the framing leaves to the host),
-//! counted by the peer's own address ([`Transport::peer_ip`](super::transport::Transport::peer_ip)). A session's connect
+//! counted by the peer's own address ([`Transport::peer_ip`](super::transport::Transport::peer_ip)): the same
+//! [`torque_net::fair::SourceCaps`] as TGE mode's, read from the handshake's
+//! [`ServerConfig::caps`](torque_net::handshake::ServerConfig::caps) when the host is made. A source's connects are counted
+//! per address and per network as TGE mode's verified requests are ([`torque_net::handshake::verified_limits`]). A session's connect
 //! becomes a [`PendingRequest`] judged as in TGE mode (the password, the player count, the connect gate with its manifest
 //! and ticket, then `onConnectRequest`); an accepted one enters the handshake table as an engine connection
 //! ([`Server::insert_engine`](torque_net::handshake::Server::insert_engine)) and the accept goes out on the control lane
@@ -47,9 +50,10 @@ use torque_net::engine::{
     NoRoom, NoStreams, PacketFates, PacketOrder, Polled, RejectCode, SessionConfig, SessionTable,
     State, StreamLane, StreamSource, TableDigests, TableLimits, Widths, canonical,
 };
+use torque_net::fair::{FairLimiter, NetworkKey, SourceCaps};
 use torque_net::handshake::{
     ConnId, ConnectFields, Decision, EngineAccepted, Finished, PendingRequest, RateWindow,
-    SourceLimiter, siphash24,
+    siphash24, verified_limits,
 };
 use torque_net::huffman::Table;
 use torque_net::profile::HandshakeProfile;
@@ -105,25 +109,12 @@ pub enum Admit {
     Full,
 }
 
-/// A source network, the unit of [`TICKETS_PER_NETWORK`].
-fn network_key(ip: IpAddr) -> [u8; 9] {
-    let mut key = [0; 9];
-    match ip.to_canonical() {
-        IpAddr::V4(v4) => key[1..4].copy_from_slice(&v4.octets()[..3]),
-        IpAddr::V6(v6) => {
-            key[0] = 6;
-            key[1..].copy_from_slice(&v6.octets()[..8]);
-        }
-    }
-    key
-}
-
 /// One accepted ticket the cache holds.
 #[derive(Debug, Clone, Copy)]
 struct Held {
     digest: u64,
     at: u32,
-    network: [u8; 9],
+    network: NetworkKey,
     identity: u64,
 }
 
@@ -137,7 +128,7 @@ pub struct TicketCache {
     key: [u8; 16],
     seen: HashSet<u64>,
     order: VecDeque<Held>,
-    per_network: HashMap<[u8; 9], usize>,
+    per_network: HashMap<NetworkKey, usize>,
     per_identity: HashMap<u64, usize>,
     rate: RateWindow,
 }
@@ -182,7 +173,11 @@ impl TicketCache {
     /// Whether the ticket whose canonical token is `token`, from a source at `ip`, may be checked at `now`.
     pub fn admit(&mut self, token: &[u8], ip: IpAddr, now: u32) -> Admit {
         self.expire(now);
-        let network = self.per_network.get(&network_key(ip)).copied().unwrap_or(0);
+        let network = self
+            .per_network
+            .get(&NetworkKey::of(ip))
+            .copied()
+            .unwrap_or(0);
         if self.seen.contains(&self.digest(token)) {
             Admit::Replayed
         } else if network >= TICKETS_PER_NETWORK || self.order.len() >= TICKET_CACHE {
@@ -209,7 +204,7 @@ impl TicketCache {
         let held = Held {
             digest: self.digest(token),
             at: now,
-            network: network_key(ip),
+            network: NetworkKey::of(ip),
             identity,
         };
         self.seen.insert(held.digest);
@@ -353,7 +348,7 @@ pub struct EngineHost {
     pub digests: TableDigests,
     stashed: BTreeMap<SocketAddr, Stash>,
     pace: BTreeMap<SocketAddr, Pace>,
-    requests: SourceLimiter,
+    requests: FairLimiter,
     /// The byte rate the next accept names.
     byte_rate: u32,
     verdict: Verdict,
@@ -364,17 +359,21 @@ pub struct EngineHost {
 
 impl EngineHost {
     /// A host whose sessions speak for `game`, whose cookies and session ids come from `key` and whose ticket cache digests
-    /// under `ticket_key` (both from the host's random source).
+    /// under `ticket_key` (both from the host's random source), and which lets one source hold what `caps` allow.
     #[must_use]
-    pub fn new(game: &str, key: [u8; 16], ticket_key: [u8; 16]) -> EngineHost {
+    pub fn new(game: &str, key: [u8; 16], ticket_key: [u8; 16], caps: SourceCaps) -> EngineHost {
+        let limits = TableLimits {
+            caps,
+            ..TableLimits::default()
+        };
         EngineHost {
-            table: SessionTable::new(SessionConfig::new(game), TableLimits::default(), key),
+            table: SessionTable::new(SessionConfig::new(game), limits, key),
             auth: Auth::None,
             tickets: TicketCache::new(ticket_key),
             digests: TableDigests::default(),
             stashed: BTreeMap::new(),
             pace: BTreeMap::new(),
-            requests: SourceLimiter::default(),
+            requests: FairLimiter::new(verified_limits(0)),
             byte_rate: DEFAULT_BYTE_RATE,
             verdict: Verdict::None,
             checked: None,
@@ -409,8 +408,15 @@ pub fn ensure_host<'a, G: NetGame>(
     sh: &'a mut NetShared<G>,
 ) -> Option<&'a mut EngineHost> {
     if sh.engine_host.is_none() && ProtocolMode::of(vm) == ProtocolKind::Engine {
-        let game = String::from_utf8_lossy(&sh.hs.config().profile.game).into_owned();
-        sh.engine_host = Some(Box::new(EngineHost::new(&game, digest_key(), digest_key())));
+        let config = sh.hs.config();
+        let game = String::from_utf8_lossy(&config.profile.game).into_owned();
+        let caps = config.caps;
+        sh.engine_host = Some(Box::new(EngineHost::new(
+            &game,
+            digest_key(),
+            digest_key(),
+            caps,
+        )));
     }
     sh.engine_host.as_deref_mut()
 }
@@ -852,7 +858,7 @@ impl Checks {
     }
 
     /// The connect gate's judgment of `fields` (with the ticket, if any) for the session challenged with `challenge`.
-    fn gated(&self, addr: SocketAddr, fields: ConnectFields, challenge: u64) -> Judged {
+    fn gated(&self, addr: SocketAddr, ip: IpAddr, fields: ConnectFields, challenge: u64) -> Judged {
         let identity = match self
             .gate
             .as_ref()
@@ -864,6 +870,7 @@ impl Checks {
         };
         Judged::Request(Box::new(PendingRequest {
             addr,
+            ip,
             seq: 0,
             fields,
             identity,
@@ -888,11 +895,10 @@ fn judge<G: NetGame>(
         return Judged::Silent;
     };
     host.byte_rate = byte_rate_pref(vm);
-    if !checks.allow
-        || !host
-            .requests
-            .allow(addr.ip().to_canonical(), now, checks.per_source)
-    {
+
+    let ip = host.table.peer(addr).map_or(addr.ip(), |p| p.ip);
+    let limits = verified_limits(checks.per_source);
+    if !checks.allow || host.requests.allow_within(limits, ip, now).is_err() {
         return Judged::Silent;
     }
     let mut fields = match fields_of(connect, &checks.profile) {
@@ -914,7 +920,7 @@ fn judge<G: NetGame>(
     }
     match host.auth {
         Auth::Challenge => challenge(host, addr, fields),
-        Auth::None => checks.gated(addr, fields, 0),
+        Auth::None => checks.gated(addr, ip, fields, 0),
     }
 }
 
@@ -979,7 +985,7 @@ fn judge_ticket<G: NetGame>(
     if let Some(block) = fields.block.as_mut() {
         block.ticket = (!ticket.is_empty()).then(|| ticket.to_vec());
     }
-    let judged = checks.gated(addr, *fields, challenge);
+    let judged = checks.gated(addr, ip, *fields, challenge);
     host.checked = (matches!(judged, Judged::Request(_)) && !ticket.is_empty())
         .then_some(Checked { token, ip });
     judged
@@ -1129,6 +1135,7 @@ pub(super) fn finish<G: NetGame>(
     }
     let accepted = EngineAccepted {
         addr,
+        ip: peer.ip,
         ghost_bits,
         identity: request.identity.clone(),
         mods,
@@ -1138,6 +1145,7 @@ pub(super) fn finish<G: NetGame>(
         conn,
         reply: Vec::new(),
         replaced: None,
+        evicted: None,
     }
 }
 

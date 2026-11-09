@@ -442,9 +442,13 @@ impl DedicatedServer {
                         conn,
                         reply,
                         replaced,
+                        evicted,
                     } => {
                         if let Some(old) = replaced {
                             self.leave(old, "replaced by a new connection");
+                        }
+                        if let Some(old) = evicted {
+                            self.leave(old, "never heard from");
                         }
                         self.transport.send_to(from, &reply);
                         self.enter(conn, from);

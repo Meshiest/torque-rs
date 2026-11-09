@@ -3,12 +3,14 @@
 //! It keeps nothing for a `Hello`: the answer is a cookie, a keyed digest of the address, port, the client's nonce and the time
 //! epoch, which the client sends back in every `Opening`. Only an `Opening` whose cookie verifies opens a session. Pending
 //! sessions (opened, not yet established) are bounded per source IP address and per source network (an IPv4 /24, an IPv6
-//! /64), where a new one past the cap is refused, and in all, where a new one evicts the oldest pending session instead
+//! /64: [`GateConfig::caps`]), where a new one past the cap is refused, and in all, where a new one evicts a pending session
+//! by the shared rule ([`crate::fair::choose_eviction`]: the oldest of a network over its fair share, or one old enough) instead
 //! ([`GateOutcome::Open`] names it, and the host must drop it), so no one holding many addresses keeps others from
 //! connecting: an honest handshake finishes in a few round trips, long before it is the oldest. A `Hello` shorter than
 //! [`HELLO_BYTES`] is not answered, so no answer (a cookie, or a reject naming the game or the version) is larger than the
-//! datagram it answers, and answers are rate-limited per source and in all. Every other datagram from an address without a
-//! session is dropped unanswered.
+//! datagram it answers, and answers are rate-limited per source address and per source network ([`GateConfig::answers`],
+//! with no total: no answer amplifies, and a total would let a spoofed flood take every honest client's cookie). Every other
+//! datagram from an address without a session is dropped unanswered.
 //!
 //! Addresses are taken in their canonical form: an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`, as a dual-stack socket
 //! reports IPv4 peers) counts as the IPv4 address it maps, for the cookie, the per-address and per-network caps and the
@@ -34,7 +36,15 @@ use std::net::{IpAddr, SocketAddr};
 use super::framing::{self, COOKIE_BYTES, Cookie, CookieValue, Datagram, Reject, RejectCode};
 use super::session::{CONNECT_TIMEOUT_MS, Session, SessionConfig};
 use super::{ENGINE_FRAMING, HELLO_BYTES};
-use crate::handshake::{RateWindow, SourceLimiter, siphash24};
+use crate::cap::{
+    NET_CHALLENGES_PER_ADDR_PER_S, NET_CHALLENGES_PER_NETWORK_PER_S, NET_PENDING_EVICT_AGE_MS,
+};
+pub use crate::fair::canonical;
+use crate::fair::{
+    Eviction, FairLimiter, FairLimits, NetworkKey, PendingSlot, SourceCaps, SourceCount, Stage,
+    choose_eviction,
+};
+use crate::handshake::siphash24;
 
 /// How long a cookie stays in one epoch: one verifies in its epoch and the next, so it lives between one and two periods.
 pub const COOKIE_PERIOD_MS: u32 = 30_000;
@@ -75,11 +85,6 @@ pub fn cookie(key: &[u8; 16], from: SocketAddr, nonce: u64, epoch: u64) -> Cooki
     CookieValue(out)
 }
 
-/// `addr` with an IPv4-mapped IPv6 address taken as the IPv4 address it maps.
-pub fn canonical(addr: SocketAddr) -> SocketAddr {
-    SocketAddr::new(addr.ip().to_canonical(), addr.port())
-}
-
 fn same(a: &CookieValue, b: &CookieValue) -> bool {
     a.0.iter().zip(b.0).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -91,14 +96,11 @@ pub struct GateConfig {
     pub session: SessionConfig,
     /// Sessions opened and not yet settled, in all; past it the oldest is evicted.
     pub max_pending: usize,
-    /// Of those, from one source IP address; past it a new one is refused.
-    pub pending_per_ip: usize,
-    /// Of those, from one source network (an IPv4 /24 or an IPv6 /64); past it a new one is refused.
-    pub pending_per_network: usize,
-    /// Answers to `Hello`s one source IP address gets a second.
-    pub answers_per_ip_per_s: u32,
-    /// Answers to `Hello`s the gate sends a second in all.
-    pub answers_per_s: u32,
+    /// Of those, what one source IP address and one source network may hold ([`SourceCaps::pending_per_ip`],
+    /// [`SourceCaps::pending_per_network`]); past them a new one is refused.
+    pub caps: SourceCaps,
+    /// Answers to `Hello`s a second, per source address, per source network and in all.
+    pub answers: FairLimits,
     /// (address, nonce) pairs remembered as having opened a session; past it the oldest is forgotten.
     pub max_opened: usize,
     /// Of those, from one source network (an IPv4 /24 or an IPv6 /64); past it that network's oldest is forgotten.
@@ -111,10 +113,11 @@ impl GateConfig {
         GateConfig {
             session,
             max_pending: 64,
-            pending_per_ip: 2,
-            pending_per_network: 4,
-            answers_per_ip_per_s: 4,
-            answers_per_s: 2_000,
+            caps: SourceCaps::default(),
+            answers: FairLimits::per_source(
+                NET_CHALLENGES_PER_ADDR_PER_S,
+                NET_CHALLENGES_PER_NETWORK_PER_S,
+            ),
             max_opened: 4_096,
             opened_per_network: 256,
         }
@@ -144,8 +147,7 @@ pub struct Gate {
     /// Milliseconds on the gate's own clock, which only goes forward.
     clock: u64,
     last_now: Option<u32>,
-    per_ip: SourceLimiter,
-    answers: RateWindow,
+    answers: FairLimiter,
     /// Sessions opened and not settled, by canonical source.
     pending: HashMap<SocketAddr, Pending>,
     /// Orders pending sessions opened in the same millisecond.
@@ -158,12 +160,11 @@ impl Gate {
     #[must_use]
     pub fn new(config: GateConfig, key: [u8; 16]) -> Gate {
         Gate {
+            answers: FairLimiter::new(config.answers),
             config,
             key,
             clock: 0,
             last_now: None,
-            per_ip: SourceLimiter::default(),
-            answers: RateWindow::default(),
             pending: HashMap::new(),
             pending_next: 0,
             opened: Opened::default(),
@@ -173,6 +174,11 @@ impl Gate {
     /// Replaces the key: cookies handed out before no longer verify.
     pub fn rekey(&mut self, key: [u8; 16]) {
         self.key = key;
+    }
+
+    /// Sets what one source may hold pending ([`GateConfig::caps`]).
+    pub fn set_caps(&mut self, caps: SourceCaps) {
+        self.config.caps = caps;
     }
 
     /// The session for `from` is established or closed: it no longer counts as pending.
@@ -241,11 +247,7 @@ impl Gate {
         epoch: u64,
         now: u32,
     ) -> GateOutcome {
-        if !self
-            .per_ip
-            .allow(from.ip(), now, self.config.answers_per_ip_per_s)
-            || !self.answers.allow(now, self.config.answers_per_s)
-        {
+        if self.answers.allow(from.ip(), now).is_err() {
             return GateOutcome::Drop;
         }
         let refusal = if hello.game != self.config.session.game {
@@ -290,30 +292,33 @@ impl Gate {
     ) -> GateOutcome {
         let fresh = same(&c, &cookie(&self.key, from, nonce, epoch))
             || epoch > 0 && same(&c, &cookie(&self.key, from, nonce, epoch - 1));
-        let network = Network::of(from);
-        let from_ip = self.pending.keys().filter(|a| a.ip() == from.ip()).count();
-        let from_network = self
-            .pending
-            .keys()
-            .filter(|a| Network::of(**a) == network)
-            .count();
+        let count = SourceCount::of(
+            from.ip(),
+            self.pending.keys().map(|a| (a.ip(), Stage::Pending)),
+        );
         if !fresh
             || self.opened.by_pair.contains_key(&(from, nonce))
             || self.pending.contains_key(&from)
-            || from_ip >= self.config.pending_per_ip
-            || from_network >= self.config.pending_per_network
+            || self.config.caps.admits_pending(&count).is_err()
         {
             return GateOutcome::Drop;
         }
+        // A full table follows the shared rule: a network over its fair share pays, never an honest client's only slot.
         let evicted = if self.pending.len() >= self.config.max_pending.max(1) {
-            let oldest = self
+            let mut slots: Vec<PendingSlot<SocketAddr>> = self
                 .pending
                 .iter()
-                .min_by_key(|(_, p)| p.stamp)
-                .map(|(a, _)| *a);
-            oldest
-                .and_then(|a| self.pending.remove(&a))
-                .map(|p| p.source)
+                .map(|(a, p)| PendingSlot {
+                    key: *a,
+                    ip: a.ip(),
+                    age_ms: self.clock - p.stamp.0,
+                })
+                .collect();
+            slots.sort_by_key(|s| self.pending.get(&s.key).map(|p| p.stamp));
+            match choose_eviction(&slots, from.ip(), u64::from(NET_PENDING_EVICT_AGE_MS)) {
+                Eviction::Evict(a) => self.pending.remove(&a).map(|p| p.source),
+                Eviction::Refuse => return GateOutcome::Drop,
+            }
         } else {
             None
         };
@@ -350,34 +355,6 @@ struct Pending {
     source: SocketAddr,
 }
 
-/// A source network, the unit one party is assumed to hold many addresses of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Network {
-    /// The first three bytes (a /24).
-    V4([u8; 3]),
-    /// The first eight bytes (a /64).
-    V6([u8; 8]),
-}
-
-impl Network {
-    pub(crate) fn of(addr: SocketAddr) -> Network {
-        Network::of_ip(addr.ip())
-    }
-
-    pub(crate) fn of_ip(ip: IpAddr) -> Network {
-        match ip.to_canonical() {
-            IpAddr::V4(ip) => {
-                let [a, b, c, _] = ip.octets();
-                Network::V4([a, b, c])
-            }
-            IpAddr::V6(ip) => {
-                let o = ip.octets();
-                Network::V6([o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7]])
-            }
-        }
-    }
-}
-
 /// When an entry was made: the gate's clock, then a counter so two entries in one millisecond keep their order.
 type Stamp = (u64, u64);
 
@@ -387,7 +364,7 @@ type Stamp = (u64, u64);
 struct Opened {
     by_pair: HashMap<(SocketAddr, u64), Stamp>,
     by_age: BTreeMap<Stamp, (SocketAddr, u64)>,
-    per_network: HashMap<Network, VecDeque<Stamp>>,
+    per_network: HashMap<NetworkKey, VecDeque<Stamp>>,
     next: u64,
 }
 
@@ -395,7 +372,7 @@ impl Opened {
     /// Remembers `pair` at `clock`, first forgetting its network's oldest past `per_network` and the oldest of all past
     /// `total`.
     fn remember(&mut self, pair: (SocketAddr, u64), clock: u64, per_network: usize, total: usize) {
-        let network = Network::of(pair.0);
+        let network = NetworkKey::of_addr(pair.0);
         while let Some(queue) = self.per_network.get(&network)
             && queue.len() >= per_network
             && let Some(&oldest) = queue.front()
@@ -432,7 +409,7 @@ impl Opened {
             return;
         };
         self.by_pair.remove(&pair);
-        let network = Network::of(pair.0);
+        let network = NetworkKey::of_addr(pair.0);
         if let Some(queue) = self.per_network.get_mut(&network) {
             queue.pop_front();
             if queue.is_empty() {

@@ -90,6 +90,14 @@ fn server_sent_script_never_executes_on_a_client() {
         .mount_server_files("server:1", sent())
         .expect("the files mount");
     assert_eq!(mounted, 3, "the pictures, the secret file and payload.txt");
+    // A server's file is never copied to a script's name, which would get it past the content-only rule.
+    for to in ["copied.cs", "x.cs.dso", "ui/x.GUI"] {
+        assert_eq!(
+            vm.copy_file(b"payload.txt", to.as_bytes()),
+            Ok(false),
+            "{to}"
+        );
+    }
 
     // Not as script by name...
     for name in [

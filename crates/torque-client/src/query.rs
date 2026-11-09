@@ -278,7 +278,7 @@ impl QueryState {
                     } else {
                         format!("Pinging Server {} ({})...", address_text(e.addr), e.tries)
                     }));
-                    net.send(e.addr, &request(GAME_PING_REQUEST, &e));
+                    net.send(e.addr, &request(&self.versions, GAME_PING_REQUEST, &e));
                     i += 1;
                     slots += 1;
                 } else {
@@ -322,7 +322,7 @@ impl QueryState {
                             address_text(e.addr),
                             e.tries
                         )));
-                        net.send(e.addr, &request(GAME_INFO_REQUEST, &e));
+                        net.send(e.addr, &request(&self.versions, GAME_INFO_REQUEST, &e));
                         if let Some(s) = self.server_mut(e.addr)
                             && s.status & 0x1000_0000 == 0
                         {
@@ -594,9 +594,11 @@ impl QueryState {
     }
 }
 
-/// A request datagram (`sendPacket`): the type, flags 0, `(session << 16) | (key & 0xffff)`.
-fn request(ty: u8, e: &Entry) -> Vec<u8> {
-    net::serverquery::request(ty, 0, e.session, e.key)
+/// A request datagram (`sendPacket`): the type, flags 0, `(session << 16) | (key & 0xffff)`, padded as the game's query
+/// profile says ([`QueryProfile::request_bytes`]: a server bounds what it sends a source it cannot prove at three times the
+/// request, so this engine's clients pad to have the whole answer).
+fn request(profile: &QueryProfile, ty: u8, e: &Entry) -> Vec<u8> {
+    profile.request(ty, 0, e.session, e.key)
 }
 
 /// Takes one received datagram of an info type; `true` when it was an answer of the query's kinds.

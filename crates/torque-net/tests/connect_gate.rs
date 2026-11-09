@@ -573,7 +573,7 @@ fn a_request_the_server_would_drop_anyway_costs_no_verification() {
         ManifestGate::new(Manifest::new(12, 12)).with_auth(Arc::new(Shared(Arc::clone(&counter))));
     let mut config = ServerConfig::new(8);
     config.connect_requests_per_src_per_s = 100_000;
-    config.pending_per_addr = 1;
+    config.caps.pending_per_ip = 1;
     config.gate = Some(Arc::new(gate));
     let mut server = Server::new(config, KEY);
     let t = table();

@@ -45,3 +45,19 @@ fn the_ticks_stay_on_their_grid_at_frame_steps_that_do_not_divide_a_tick() {
     assert_eq!(tick_time(Some(1_000), 1_070), 1_070);
     assert_eq!(tick_time(None, 5), 5);
 }
+
+#[test]
+fn the_connect_sequence_is_random_outside_a_run_that_must_repeat() {
+    let mut vm = Vm::new();
+    // The same Sim time and object: two connects still differ.
+    let (a, b) = (connect_seq(&vm, 7), connect_seq(&vm, 7));
+    assert_ne!(a, b);
+    // With a fixed key (the trace hashes), the sequence is the seeded one, every time.
+    vm.set_extension(Rc::new(EngineNonceKey([1; 16])));
+    let seeded = connect_seq(&vm, 7);
+    assert_eq!(seeded, connect_seq(&vm, 7));
+    assert_eq!(
+        seeded,
+        vm.sim_time().wrapping_mul(0x9e37_79b9) ^ 7u32.wrapping_mul(0x85eb_ca6b) ^ 0x6d31_2065
+    );
+}

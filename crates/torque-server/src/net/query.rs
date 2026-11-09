@@ -12,7 +12,11 @@
 //!
 //! **Limits.** The CPU field is the codecs' unknown speed
 //! ([`NetCodecs::unknown_cpu_mhz`](super::codecs::NetCodecs::unknown_cpu_mhz)). A request shorter than 6 bytes is silence.
-//! Every answer passes [`torque_net::serverquery::InfoLimiter`] (per source, in all, and the script runs), and
+//! Every answer passes [`torque_net::serverquery::InfoLimiter`] (per source address and network, and for a source with no
+//! connection the bound on what is reflected: an answer more than three times its request's size goes only within a small
+//! budget in all, counted in [`Counters::info_limited`](super::Counters::info_limited) past it). The script's output is kept
+//! for a second ([`InfoCache`](torque_net::serverquery::InfoCache)) and the answers in that time are made from it with no script run, so spoofed sources can
+//! neither spend the script budget nor hide the server from browsers; when it does run,
 //! `onServerInfoQuery()` runs as a stranger's script does: an outermost run under the network's step limits
 //! ([`NET_SCRIPT_RUN_STEPS`](super::NET_SCRIPT_RUN_STEPS), the window's budget); with no budget left, or when the run stops at
 //! a limit, no answer is sent (counted in [`Counters::info_dropped`](super::Counters::info_dropped)). The datagram's work is
@@ -24,8 +28,10 @@ use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::rc::Rc;
 
+use torque_net::cap::NET_MAX_DATAGRAM;
 use torque_net::serverquery::{
-    self, InfoFields, Kind, Parsed, Request, STATUS_DEDICATED, STATUS_PASSWORDED,
+    self, InfoAsk, InfoFields, Kind, PING_REPLY_MAX_BYTES, Parsed, Request, STATUS_DEDICATED,
+    STATUS_PASSWORDED, Source,
 };
 
 use super::codecs::net_codecs;
@@ -115,21 +121,32 @@ pub fn handle<G: NetGame>(
         shared.borrow_mut().counters.ignored += 1;
         return 0;
     }
-    let script = matches!(&request, Query::Torque(r) if r.kind == Kind::Info);
-    let limited = shared
-        .borrow_mut()
-        .info
-        .allow(from.ip(), script, now)
-        .is_err();
+    let ask = InfoAsk {
+        ip: super::pump::peer_ip(shared, from),
+        request_len: data.len(),
+        max_reply: match &request {
+            Query::Torque(r) if r.kind == Kind::Ping => PING_REPLY_MAX_BYTES,
+            _ => NET_MAX_DATAGRAM,
+        },
+        source: source_of(&shared.borrow(), from),
+    };
+    let limited = shared.borrow_mut().info.allow(&ask, now).is_err();
     if limited {
         shared.borrow_mut().counters.info_limited += 1;
         return 0;
     }
-    let Some((reply, script)) = build(vm, shared, &request) else {
+    let Some((reply, script)) = build(vm, shared, &request, now) else {
         shared.borrow_mut().counters.info_dropped += 1;
         return SCRIPT_WORK;
     };
-    if send(shared, from, &reply) {
+    let reflects = shared
+        .borrow_mut()
+        .info
+        .allow_reply(&ask, reply.len(), now)
+        .is_err();
+    if reflects {
+        shared.borrow_mut().counters.info_limited += 1;
+    } else if send(shared, from, &reply) {
         shared.borrow_mut().counters.info_replies += 1;
     }
     let extra = cost(reply.len());
@@ -140,14 +157,30 @@ pub fn handle<G: NetGame>(
     }
 }
 
+/// Whether `from` has a connection the host accepted (its address is proven) or is anyone else.
+fn source_of<G: NetGame>(sh: &NetShared<G>, from: SocketAddr) -> Source {
+    if sh.hs.lookup(from).is_some() {
+        Source::Connected
+    } else {
+        Source::Unproven
+    }
+}
+
 /// A request the server answers: one of torque-net's, or one of the game's own types (the codecs' extra queries).
 enum Query {
     Torque(Request),
     Extra { ty: u8, flags: u8, key: u32 },
 }
 
-/// The answer to `request` and whether a script ran for it; None when the script could not run or stopped at a limit.
-fn build<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: &Query) -> Option<(Vec<u8>, bool)> {
+/// The answer to `request` at `now` and whether a script ran for it; None when the script could not run or stopped at a
+/// limit. The info answer's script output is taken from the cache while it is fresh ([`InfoCache`](torque_net::serverquery::InfoCache)): the script runs at most
+/// once a [`NET_INFO_CACHE_MS`](torque_net::serverquery::NET_INFO_CACHE_MS), however many ask.
+fn build<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Shared<G>,
+    request: &Query,
+    now: u32,
+) -> Option<(Vec<u8>, bool)> {
     let codecs = Rc::clone(&shared.borrow().codecs);
     let table = shared.borrow().string_table();
     let request = match request {
@@ -163,12 +196,21 @@ fn build<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: &Query) -> Option
         }
         Kind::Info => {
             let mut fields = info_fields(vm);
-            if !shared.borrow_mut().script_available() {
-                return None;
-            }
-            let content = run(vm, shared, true, |vm| vm.eval(INFO_QUERY_CALL))?.ok()?;
-            fields.content = torque_ts_vm::text::until_nul(&content).to_vec();
-            Some((serverquery::info_response(&table, request, &fields), true))
+            let cached = shared.borrow().info_cache.fresh(now).map(<[u8]>::to_vec);
+            let ran = cached.is_none();
+            fields.content = match cached {
+                Some(content) => content,
+                None => {
+                    if !shared.borrow_mut().script_available() {
+                        return None;
+                    }
+                    let out = run(vm, shared, true, |vm| vm.eval(INFO_QUERY_CALL))?.ok()?;
+                    let content = torque_ts_vm::text::until_nul(&out).to_vec();
+                    shared.borrow_mut().info_cache.store(now, content.clone());
+                    content
+                }
+            };
+            Some((serverquery::info_response(&table, request, &fields), ran))
         }
     }
 }

@@ -37,8 +37,14 @@ use std::net::Ipv4Addr;
 pub const MAX_MESSAGE: usize = 8 << 10;
 /// The characters of a room code: 32 letters and digits with none that read alike (no I, L, O, U).
 pub const CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-/// The characters of a room code (40 bits).
-pub const CODE_LEN: usize = 8;
+/// The characters of a room code: 5 bits each, 80 bits in all. A code is the room's only secret, so it must not be guessed
+/// however many joins a flood spread over the internet can try: at 2^80 codes over the service's most live rooms
+/// (1,024, 2^10), a guess hits about once in 2^70 tries, which no join rate can reach, and the service needs no stop that
+/// would refuse every joiner at once.
+pub const CODE_LEN: usize = 16;
+
+/// The bits of a room code ([`CODE_LEN`] characters of the 32 of [`CODE_ALPHABET`]).
+pub const CODE_BITS: u32 = CODE_LEN as u32 * 5;
 
 /// The signaling messages the service carries between a host and a joiner (the data channels' own,
 /// `net::web::rtc::signal`): a body must begin with one of them, so nothing else (a game's datagrams) can ride through
@@ -249,12 +255,16 @@ pub fn read_code(text: &str) -> Option<String> {
     (code.len() == CODE_LEN).then_some(code)
 }
 
-/// A code's form for people: two groups of four (`ABCD-EFGH`).
+/// A code's form for people: groups of four (`ABCD-EFGH-JKMN-PQRS`).
 pub fn show_code(code: &str) -> String {
-    match code.get(..CODE_LEN / 2).zip(code.get(CODE_LEN / 2..)) {
-        Some((a, b)) if code.len() == CODE_LEN => format!("{a}-{b}"),
-        _ => code.to_string(),
+    if code.len() != CODE_LEN || !code.is_ascii() {
+        return code.to_string();
     }
+    code.as_bytes()
+        .chunks(4)
+        .map(|g| String::from_utf8_lossy(g).into_owned())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 /// A code made from random bytes (the service draws them from the system's random source): each character from one
@@ -374,16 +384,39 @@ mod tests {
 
     #[test]
     fn codes_read_as_typed() {
-        assert_eq!(read_code("abcd-2345").as_deref(), Some("ABCD2345"));
-        assert_eq!(read_code(" ab cd 23 45 ").as_deref(), Some("ABCD2345"));
-        assert_eq!(read_code("OIL0-0000").as_deref(), Some("01100000"));
-        assert_eq!(read_code("ABCD234"), None);
-        assert_eq!(read_code("ABCD23456"), None);
-        assert_eq!(read_code("ABCD-234U"), None);
-        assert_eq!(read_code("ABCD-234\u{e9}"), None);
+        assert_eq!(
+            read_code("abcd-2345-efgh-6789").as_deref(),
+            Some("ABCD2345EFGH6789")
+        );
+        assert_eq!(
+            read_code(" ab cd 23 45 ef gh 67 89 ").as_deref(),
+            Some("ABCD2345EFGH6789")
+        );
+        assert_eq!(
+            read_code("OIL0-0000-0000-0000").as_deref(),
+            Some("0110000000000000")
+        );
+        assert_eq!(read_code("ABCD2345EFGH678"), None);
+        assert_eq!(read_code("ABCD2345EFGH67890"), None);
+        assert_eq!(read_code("ABCD-2345"), None, "a code of the old length");
+        assert_eq!(read_code("ABCD-2345-EFGH-678U"), None);
+        assert_eq!(read_code("ABCD-2345-EFGH-678\u{e9}"), None);
         assert_eq!(read_code(&"-".repeat(100)), None);
-        assert_eq!(show_code("ABCD2345"), "ABCD-2345");
-        assert_eq!(code_from(&[0, 31, 32, 255, 10, 1, 2, 3]), "0Z0ZA123");
+        assert_eq!(show_code("ABCD2345EFGH6789"), "ABCD-2345-EFGH-6789");
+        let mut bytes = [0u8; CODE_LEN];
+        bytes[..8].copy_from_slice(&[0, 31, 32, 255, 10, 1, 2, 3]);
+        assert_eq!(code_from(&bytes), "0Z0ZA12300000000");
         assert!(read_code(&code_from(&[7; CODE_LEN])).is_some());
+    }
+
+    #[test]
+    fn a_code_holds_at_least_64_bits() {
+        assert_eq!(CODE_ALPHABET.len(), 32, "five bits a character");
+        const { assert!(CODE_BITS >= 64) };
+        assert_eq!(CODE_BITS, 80);
+        assert_eq!(
+            read_code(&code_from(&[31; CODE_LEN])).map(|c| c.len()),
+            Some(CODE_LEN)
+        );
     }
 }

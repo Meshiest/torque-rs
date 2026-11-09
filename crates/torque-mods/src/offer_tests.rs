@@ -105,6 +105,28 @@ fn an_offer_with_a_script_a_bad_path_or_a_repeat_is_refused() {
 }
 
 #[test]
+fn an_offer_naming_one_id_twice_or_an_id_a_local_mod_could_not_have_is_refused() {
+    let mut twice = offer(true);
+    twice.id = "Props".to_string();
+    twice.hash = [4; 32];
+    assert!(matches!(
+        decode_offer(&encode_offer(&[offer(true), twice]), &caps()),
+        Err(MessageError::Malformed("repeated mod id"))
+    ));
+    for id in ["a/b", "a:b", "a\"b", ".hidden", "a b"] {
+        let mut m = offer(true);
+        m.id = id.to_string();
+        assert!(
+            matches!(
+                decode_offer(&encode_offer(&[m]), &caps()),
+                Err(MessageError::Malformed("mod id"))
+            ),
+            "{id}"
+        );
+    }
+}
+
+#[test]
 fn lua_files_are_content_in_an_offer() {
     let mut m = offer(true);
     m.files[1].path = "ui/panel.LUA".to_string();

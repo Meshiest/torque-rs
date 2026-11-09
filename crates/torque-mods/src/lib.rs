@@ -35,6 +35,15 @@
 //! - `read_prefix` answers as `read` does, cut: a mod's file over the game's, the files under it below
 //!   and a zip mod's entry inflates only the prefix (`a_prefix_read_of_a_mods_file_is_the_start_of_what_a_read_gives`,
 //!   `a_prefix_read_of_a_zip_mods_file_is_its_start`).
+//! - A server's offer costs the client no more than it downloads: ids come once and only as a local mod's could be
+//!   (`an_offer_naming_one_id_twice_or_an_id_a_local_mod_could_not_have_is_refused`), the cache's heads are read once an
+//!   offer and older copies only up to twice the offer's download (`an_offer_loads_each_ids_older_copies_once_and_within_a_budget`).
+//! - One server cannot flush the others' cache (`one_server_storing_new_content_cannot_flush_another_servers_entries`), the
+//!   disk cache opens nothing through a link (`a_link_in_the_cache_folder_is_never_read_or_touched_through`), and a server's
+//!   file is never copied to a script's name (`server_sent_script_never_executes_on_a_client`).
+//! - A scan of the mods folder visits a bounded number of entries of every kind and keeps at most 64 warnings
+//!   (`a_mod_of_many_empty_folders_is_skipped_quickly_with_one_warning`, `the_warnings_of_a_scan_are_capped`); download
+//!   places are shared out per network (`one_network_holds_at_most_two_download_places` in minimal-engine's tests).
 
 #![warn(missing_docs)]
 

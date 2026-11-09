@@ -83,6 +83,8 @@ use crate::state::{ClientState, GameSlot};
 pub mod engine_wire;
 pub mod tge;
 
+use engine_wire::EngineNonceKey;
+
 /// The client's tick: one move and one packet each (TGE's process list ticks every 32 ms; `$pref::Net::PacketRateToServer` is 32).
 pub const TICK_MS: u32 = 32;
 /// TGE's camera speed between first and third person (`GameConnection::mCameraSpeed`), Torque's [`ConnGame::camera_speed`].
@@ -1567,9 +1569,17 @@ fn command_to_server<G: ConnGame>(
     Native::Void
 }
 
-/// A seeded connect sequence (TGE draws one at random per connection; the engine's is the Sim clock's and the object's).
+/// The connect sequence of `obj`'s connect. TGE draws one at random per connection; so does the engine (the Sim clock's and
+/// the object's mixed with the system's randomness), so a sender off the path cannot guess it to forge a disconnect or a
+/// reject. A run that must repeat (the trace hashes set an [`EngineNonceKey`]) gets the Sim clock's and the object's alone.
 fn connect_seq(vm: &Vm, obj: ObjId) -> u32 {
-    vm.sim_time().wrapping_mul(0x9e37_79b9) ^ obj.wrapping_mul(0x85eb_ca6b) ^ 0x6d31_2065
+    let seeded =
+        vm.sim_time().wrapping_mul(0x9e37_79b9) ^ obj.wrapping_mul(0x85eb_ca6b) ^ 0x6d31_2065;
+    if vm.extension::<EngineNonceKey>().is_some() {
+        return seeded;
+    }
+    let random = engine_wire::system_random().to_le_bytes();
+    seeded ^ u32::from_le_bytes([random[0], random[1], random[2], random[3]])
 }
 
 pub fn connect<G: ConnGame>(

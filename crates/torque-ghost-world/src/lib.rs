@@ -9,6 +9,12 @@
 //! Rules a change must keep, each guarded by a test:
 //! - The world follows at most [`world::MAX_WORLD_GHOSTS`] ghosts whatever ghost table a server's accept allows, the ones past it
 //!   counted (`a_24_bit_ghost_table_is_followed_up_to_the_worlds_cap`).
+//! - A server's records are read within the datagram's work budget (`tge::TgeCodec::set_budget`,
+//!   `torque_ghosts::datagram_budget`; `strings_at_their_greatest_expansion_stop_at_the_datagrams_budget` in torque-ghosts),
+//!   and an image's state chain is charged to the clock step's budget
+//!   (`images::tests::looping_state_chains_are_charged_to_the_tick_budget`).
+//! - Hostile orders of records (replayed, dropped, reordered, cut, spliced) never panic the table or the world
+//!   (`hostile_ghost_sequences_never_panic_the_client_or_its_world` in `tests/session.rs`, `TORQUE_FUZZ_GHOSTS`).
 
 pub mod effects;
 pub mod images;

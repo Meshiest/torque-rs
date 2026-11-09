@@ -1013,6 +1013,15 @@ impl Vm {
         self.leave_run(saved, result)
     }
 
+    /// Whether `name` is a function of `namespace` (`None`: the global one), looked up as [`invoke`](Self::invoke) and
+    /// `isFunction` look it up: a host that charges a remote party for a name with no function asks first.
+    #[must_use]
+    pub fn is_function(&self, namespace: Option<&[u8]>, name: &[u8]) -> bool {
+        self.namespaces
+            .lookup(namespace.unwrap_or(b""), name)
+            .is_some()
+    }
+
     /// `Con::execute`'s line for a global function that does not exist.
     #[cold]
     #[inline(never)]

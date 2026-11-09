@@ -187,3 +187,33 @@ fn opening_a_folder_sweeps_half_written_files_and_a_write_never_takes_a_planted_
         .collect();
     assert!(left.is_empty(), "{left:?}");
 }
+
+#[test]
+fn a_link_in_the_cache_folder_is_never_read_or_touched_through() {
+    let dir = folder("link");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (hash, message) = entry("props", 300, 9);
+    let outside = folder("link-target");
+    std::fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("secret.bin");
+    std::fs::write(&target, &message).unwrap();
+    let name = format!("{}.mod", hex(&hash));
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(&target, dir.join(&name));
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&target, dir.join(&name));
+    if made.is_err() {
+        // Making links needs a right this account may not have.
+        return;
+    }
+    let mut store = DiskStore::new(&dir);
+    assert_eq!(store.read(&name, 1 << 20), None);
+    assert_eq!(store.read_head(&name, 16), None);
+    let before = std::fs::metadata(&target).unwrap().modified().unwrap();
+    store.touch(&name, 1);
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().modified().unwrap(),
+        before,
+        "the link's target was not touched"
+    );
+}

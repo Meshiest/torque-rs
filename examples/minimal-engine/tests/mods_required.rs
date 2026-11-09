@@ -863,10 +863,17 @@ impl Crowd {
         }
     }
 
-    /// Adds a client; `stalled` takes away its way of asking the server for anything, so it holds its place.
+    /// Adds a client, each from a network of its own; `stalled` takes away its way of asking the server for anything, so it
+    /// holds its place.
     fn add(&mut self, stalled: bool) -> usize {
         let n = self.clients.len();
-        let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_100 + n as u16);
+        self.add_at(Ipv4Addr::new(127, n as u8 + 1, 0, 1), stalled)
+    }
+
+    /// [`Crowd::add`] from `ip`.
+    fn add_at(&mut self, ip: Ipv4Addr, stalled: bool) -> usize {
+        let n = self.clients.len();
+        let address = SocketAddrV4::new(ip, 28_100 + n as u16);
         let files = game(None);
         let engine = engine(&files, client_plugin(&format!("crowd-{n}")));
         let mut client = client(
@@ -946,6 +953,27 @@ fn the_seventh_held_client_is_turned_away_with_server_busy() {
     assert_eq!(crowd.connected(), 0, "all six are still held");
     let n = crowd.add(false);
     assert_eq!(crowd.try_join(n), BUSY);
+}
+
+#[test]
+fn one_network_holds_at_most_two_download_places() {
+    let mut crowd = Crowd::new(&big_pack(), server_plugin());
+    for host in 1..=2 {
+        let n = crowd.add_at(Ipv4Addr::new(127, 9, 9, host), true);
+        assert_eq!(
+            crowd.try_join(n),
+            "",
+            "client {host} of the network is taken"
+        );
+    }
+    let third = crowd.add_at(Ipv4Addr::new(127, 9, 9, 3), false);
+    assert_eq!(crowd.try_join(third), BUSY);
+    let elsewhere = crowd.add(false);
+    assert_eq!(
+        crowd.try_join(elsewhere),
+        "",
+        "another network is still taken"
+    );
 }
 
 #[test]

@@ -11,7 +11,9 @@
 //! folder full of junk or hand-made names does no harm.
 //!
 //! The cache is bounded: [`ContentCache::store`] evicts the entries used least recently until the folder is within its cap, and an
-//! entry above the cap is not kept at all. On the web, and when no per-user folder is known, the cache lives in memory for the
+//! entry above the cap is not kept at all. A server holds at most half the cap: past that, what it stores evicts its own
+//! oldest entries first, so a server that sends new content on every connect churns its own share and leaves the other
+//! servers' entries alone. On the web, and when no per-user folder is known, the cache lives in memory for the
 //! session.
 //!
 //! Only content is stored, so nothing in the cache can run: the folder is never a script path, and the files in it are read back
@@ -26,6 +28,9 @@ use crate::content::{ContentCaps, Hash, decode_content, from_hex, hex, summarize
 
 /// The suffix of an entry's file name.
 pub const ENTRY_SUFFIX: &str = ".mod";
+
+/// What the cache's cap is divided by for the most one server may hold before its own entries are evicted first (a half).
+pub const SERVER_SHARE: u64 = 2;
 
 /// The most entries a listing is read for.
 pub const MAX_ENTRIES: usize = 4_096;
@@ -263,6 +268,12 @@ impl ContentCache {
             .collect()
     }
 
+    /// The stored size of the entry for `hash` the scope may use (not verified).
+    #[must_use]
+    pub fn size_of(&self, hash: &Hash) -> Option<u64> {
+        self.entry_for(hash).map(|e| e.size)
+    }
+
     /// Whether the scope may use an entry for `hash` (not verified).
     pub fn has(&self, hash: &Hash) -> bool {
         self.entry_for(hash).is_some()
@@ -309,12 +320,31 @@ impl ContentCache {
         true
     }
 
-    /// Deletes the least recently used entries until the cache is within its cap; `keep` is never deleted.
+    /// Deletes the least recently used entries until the cache is within its cap; `keep` is never deleted. While the scope's
+    /// server holds more than its share (half the cap), its own entries go first.
     pub fn evict(&mut self, keep: Option<&Hash>) {
         let mut entries = self.index();
         let mut total: u64 = entries.iter().map(|e| e.size).sum();
+        let owner = self.scope.owner;
+        let share = self.max_bytes / SERVER_SHARE;
+        let mut own: u64 = entries
+            .iter()
+            .filter(|e| owner.is_some() && e.owner == owner)
+            .map(|e| e.size)
+            .sum();
         entries.sort_by_key(|e| e.stamp);
+        let mut left = Vec::with_capacity(entries.len());
         for entry in entries {
+            let is_own = owner.is_some() && entry.owner == owner;
+            if total > self.max_bytes && own > share && is_own && keep != Some(&entry.hash) {
+                self.store.remove(&entry_name(&entry.hash, entry.owner));
+                total = total.saturating_sub(entry.size);
+                own = own.saturating_sub(entry.size);
+            } else {
+                left.push(entry);
+            }
+        }
+        for entry in left {
             if total <= self.max_bytes {
                 break;
             }
@@ -457,14 +487,13 @@ impl CacheStore for DiskStore {
     fn read(&self, name: &str, max: u64) -> Option<Vec<u8>> {
         use std::io::Read;
         let path = self.path(name)?;
-        let meta = std::fs::symlink_metadata(&path).ok()?;
-        if !meta.is_file() || meta.len() > max {
+        let file = crate::disk::open_plain(&path, std::fs::OpenOptions::new().read(true))?;
+        let len = file.metadata().ok()?.len();
+        if len > max {
             return None;
         }
-        let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).ok()?);
-        std::fs::File::open(&path)
-            .ok()?
-            .take(max.saturating_add(1))
+        let mut bytes = Vec::with_capacity(usize::try_from(len).ok()?);
+        file.take(max.saturating_add(1))
             .read_to_end(&mut bytes)
             .ok()?;
         (bytes.len() as u64 <= max).then_some(bytes)
@@ -473,13 +502,9 @@ impl CacheStore for DiskStore {
     fn read_head(&self, name: &str, n: usize) -> Option<Vec<u8>> {
         use std::io::Read;
         let path = self.path(name)?;
-        if !std::fs::symlink_metadata(&path).ok()?.is_file() {
-            return None;
-        }
+        let file = crate::disk::open_plain(&path, std::fs::OpenOptions::new().read(true))?;
         let mut bytes = Vec::with_capacity(n);
-        std::fs::File::open(&path)
-            .ok()?
-            .take(n as u64)
+        file.take(u64::try_from(n).unwrap_or(u64::MAX))
             .read_to_end(&mut bytes)
             .ok()?;
         Some(bytes)
@@ -528,7 +553,8 @@ impl CacheStore for DiskStore {
         // The stamp is the cache's own count of uses, above every stamp it found; it goes in the file's time, so the order
         // survives a restart.
         if let Some(path) = self.path(name)
-            && let Ok(file) = std::fs::OpenOptions::new().write(true).open(path)
+            && let Some(file) =
+                crate::disk::open_plain(&path, std::fs::OpenOptions::new().write(true))
         {
             let _ =
                 file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(stamp));

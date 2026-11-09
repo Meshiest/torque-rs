@@ -282,6 +282,7 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
         &tables.ctx(widths),
         &tables.classes,
         &PluginClasses::default(),
+        &mut ghosts::free_charge(),
     )
     .unwrap()
     .expect("a modified datablock");
@@ -292,6 +293,37 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
         Some(&Value::str("shapes/crate.dts"))
     );
     assert_eq!(read.datablock.get("mass", 0), Some(&Value::F32(4.0)));
+
+    // Datablock events draw on their datagram's budget: what one spends, the next does not have.
+    let spent = std::cell::Cell::new(None::<u64>);
+    let mut probe = |cost: u64| {
+        spent.set(Some(spent.get().unwrap_or(0) + cost));
+        true
+    };
+    let mut r = BitReader::new(&bytes);
+    r.enable_string_buffer();
+    read_datablock(
+        &mut r,
+        &tables.ctx(widths),
+        &tables.classes,
+        &PluginClasses::default(),
+        &mut probe,
+    )
+    .unwrap();
+    let one = spent.get().expect("the event paid");
+    let budget = std::cell::Cell::new(Some(one + one / 2));
+    for (n, want_ok) in [(1, true), (2, false)] {
+        let mut r = BitReader::new(&bytes);
+        r.enable_string_buffer();
+        let read = read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &PluginClasses::default(),
+            &mut ghosts::cell_charge(&budget),
+        );
+        assert_eq!(read.is_ok(), want_ok, "event {n} of the datagram");
+    }
 
     // The one-bit event of a datablock the client has: nothing.
     let mut w = net::bits::BitWriter::new();
@@ -308,7 +340,8 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
             &mut r,
             &tables.ctx(widths),
             &tables.classes,
-            &PluginClasses::default()
+            &PluginClasses::default(),
+            &mut ghosts::free_charge()
         )
         .unwrap()
         .is_none()
@@ -488,9 +521,15 @@ fn a_plugins_datablock_goes_out_past_tges_class_ids_and_the_client_makes_and_pre
         let bytes = event(id, model);
         let mut r = BitReader::new(&bytes);
         r.enable_string_buffer();
-        let (read, _, _) = read_datablock(&mut r, &tables.ctx(widths), &tables.classes, &plugins)
-            .unwrap()
-            .expect("a modified datablock");
+        let (read, _, _) = read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &plugins,
+            &mut ghosts::free_charge(),
+        )
+        .unwrap()
+        .expect("a modified datablock");
         assert_eq!(read.datablock.class, "PropData");
         assert_eq!(read.datablock.get("partCount", 0), Some(&Value::Int(4)));
         let unpacked = unpack_datablock(FieldRules::default(), &read);
@@ -524,7 +563,8 @@ fn a_plugins_datablock_goes_out_past_tges_class_ids_and_the_client_makes_and_pre
             &mut r,
             &tables.ctx(widths),
             &tables.classes,
-            &PluginClasses::default()
+            &PluginClasses::default(),
+            &mut ghosts::free_charge()
         )
         .unwrap_err(),
         NetError::Invalid("datablock class id")

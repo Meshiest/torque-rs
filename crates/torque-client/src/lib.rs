@@ -49,6 +49,12 @@
 //!   transform asks), shares its plugin shapes while their sources' revisions hold, and hands out a shape's slots as one
 //!   `Rc`; the bench is torque-trace-hash's `client` (a predicting client's tick with replays over a link with latency). The
 //!   trace-hash lines must not move.
+//! - Nothing a server or an off-path sender can predict or flood is trusted: the TGE connect sequence mixes in the system's
+//!   randomness but under a fixed key (the trace hashes) (`conn::tests::the_connect_sequence_is_random_outside_a_run_that_must_repeat`);
+//!   a received datagram's decoders spend at most its work budget (`torque_ghosts::datagram_budget`); a profile with the
+//!   handshake extension pads its query requests so a server that bounds what it reflects answers in full
+//!   (`net::serverquery::tests::a_padded_request_reads_as_the_request_it_pads`); a room join refused `busy` is tried again
+//!   three times, backing off (`net::room_join::tests::busy_is_tried_again_three_times_backing_off_and_nothing_else_is`).
 
 pub mod actionmap;
 pub mod conn;

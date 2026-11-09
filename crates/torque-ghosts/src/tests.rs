@@ -2,6 +2,8 @@
 //! rules of AudioEmitter and the motion quantisers.
 
 use std::collections::HashMap;
+
+use crate::{budget_charge, datagram_budget};
 use std::fmt::Debug;
 
 use torque_net::bits::{BitReader, BitWriter};
@@ -73,6 +75,44 @@ impl ObjectView for MapView {
     fn mesh_objects(&self) -> Option<usize> {
         self.meshes
     }
+}
+
+/// A thousand strings of 255 bytes: in the shared-prefix form each after the first costs a few bits on the wire.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Strings(Vec<Vec<u8>>);
+
+impl Layout for Strings {
+    fn layout<C: Codec>(&mut self, c: &mut C) -> R {
+        self.0.resize(1_000, Vec::new());
+        for s in &mut self.0 {
+            c.string("s", s)?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn strings_at_their_greatest_expansion_stop_at_the_datagrams_budget() {
+    let t = table();
+    let text = vec![b'x'; 255];
+    let rec = Strings(vec![text; 1_000]);
+    let mut w = writer();
+    encode(&rec, &mut w, &t, widths()).unwrap();
+    let bits = w.bits();
+    let bytes = w.into_bytes();
+    let ctx = ReadCtx::new(widths(), true);
+    // Its bytes' budget does not pay for what the strings expand to; with an unlimited charge it reads back.
+    let mut r = reader(&bytes, bits);
+    let mut charge = budget_charge(datagram_budget(bytes.len()));
+    assert!(decode::<Strings>(&mut r, &t, &mut charge, &ctx).is_err());
+    let mut r = reader(&bytes, bits);
+    assert_eq!(
+        decode::<Strings>(&mut r, &t, &mut free_charge(), &ctx).unwrap(),
+        rec
+    );
+    // A budget pays out what it has and refuses past it.
+    let mut b = budget_charge(5);
+    assert!(b(3) && b(2) && !b(1));
 }
 
 fn writer() -> BitWriter {

@@ -4151,6 +4151,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "criterion",
+ "getrandom 0.3.4",
  "glam 0.34.2",
  "js-sys",
  "open",
