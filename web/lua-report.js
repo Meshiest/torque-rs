@@ -5,7 +5,8 @@ export function report(where, results) {
   const failed = results.filter((r) => !r.ok);
   for (const r of results) {
     const time = r.seconds === undefined ? '' : ` (${r.seconds.toFixed(2)} s)`;
-    console.log(`${where}: ${r.ok ? 'ok' : 'FAILED'} ${r.name}${time}${r.afterFailure ? ' (after a failure)' : ''}`);
+    const parity = r.parity ? ` parity ${r.parity}` : '';
+    console.log(`${where}: ${r.ok ? 'ok' : 'FAILED'} ${r.name}${time}${parity}${r.afterFailure ? ' (after a failure)' : ''}`);
     if (!r.ok) console.log(`  ${String(r.error).replaceAll('\n', '\n  ')}`);
   }
   console.log(`${where}: ${results.length - failed.length} of ${results.length} cases passed`);

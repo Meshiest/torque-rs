@@ -40,6 +40,12 @@ server.
   always is granted without a line, one whose policy is never shows grayed and unticked, and one decided for this server before
   shows as decided. The buttons are Allow, Not now and Never for this server, and "Remember" is ticked unless the player clears it.
 
+The "allow without asking" option grants the basic abilities whenever a server asks for them: `ui` (menus and HUD), `net`
+(messages to the script's own server and its replies), `state` (read-only views of the players and objects the game already
+shows), `draw` (markers and lines in the world) and `effects` (sounds and effects). It does not cover the abilities that act on
+the player's input, camera, local objects or movement. A game that shows the option says all of that, not only "menus, HUD,
+markers and sounds": `torque_plugin_client_script::abilities::BASICS_ENGLISH` is the English line and `BASICS_KEY` its key. The engine ships no settings screen: a game's own settings UI shows this line beside the option, and the library does not draw it.
+
 The prompt ignores the pointer for half a second after it appears, needs the press and the release on the same button, and takes
 no key, so a click the player was making or a Return a game dialog was waiting for cannot answer it. It is drawn in the engine
 layer above every dialog and above the server's own controls. Until the player allows something, no instance of the sandbox
@@ -120,6 +126,57 @@ once it has an RPC link (`clientScriptOffer(%client)` sends it again).
    but sits in the engine layer, and the realm cannot draw over it).
 5. The guest is a data file the engine checks by hash. A release lists the hash of the guest it ships in
    `ACCEPTED_CLIENT_GUESTS` (the justfile's `client-script-guest-hash` prints it); an unlisted guest makes server scripts unavailable.
+   The next section says how to build the file the list names.
+
+## Building the guest
+
+`just lua-client-web` builds `torque_lua_client.wasm` into the build folder's `lua-web`. The built file is not committed; its hash
+is, in `ACCEPTED_CLIENT_GUESTS` (`crates/torque-client-script-host/src/guests.rs`), and the justfile's `client-script-guest-check` builds the
+guest and fails unless its hash is listed. The build is reproducible: the same sources and the same toolchain give the same bytes, whatever the folders of the checkout, the
+build and the cargo home are. `web/lua-build.mjs` builds the crates from a copy of them laid out as in the checkout (cargo hashes
+the absolute path of a path dependency outside its workspace into the module, which would put the checkout's folder in the hash),
+and names the folders that are left by fixed stand-ins in the file's panic and assertion messages, so the player's folder names are
+not in it either.
+
+| Input | What the listed hash was built with |
+|---|---|
+| WASI SDK | 34.0 (`wasi-sdk-34.0-x86_64-windows.tar.gz` from the [WebAssembly/wasi-sdk releases](https://github.com/WebAssembly/wasi-sdk/releases/tag/wasi-sdk-34), clang 23.1.0-rc3, wasi-libc 2e6fb9d8ee0c) |
+| Rust | 1.99.1 (58cf8f9c3 2026-10-13), target `wasm32-wasip1` |
+| Host | Windows x86_64 |
+| Luau | the `luau0-src` the lockfile of `crates/torque-plugin-lua` names |
+| Command | `WASI_SDK_PATH=<the SDK's folder> just lua-client-web` |
+
+The release publishes no checksum for its archives; the SDK archive above has the SHA-256
+`cccb5c323a9b34f0349a9b09e8804a0a7632c68c3310f4b5f437ed57d7e71d8f`. Another host or another SDK or Rust version is a different guest
+with a hash of its own (a panic message names its file with the host's path separator, and the compiler's own version and the
+SDK's libraries are in the bytes): list the hash of each guest a release ships, one line each, with the toolchain in a comment
+above it. Never change a listed guest's sources without building again and listing the new hash.
+
+## How the realm is tested
+
+The justfile's `client-script-check` is the whole suite, and its output is the evidence:
+
+- **Escape, fuel and memory** (`just lua-client-test`, and the same cases under Wasmtime, Node and Chrome): every way out the
+  plan lists is refused or absent (over 160 cases), a runaway loop stops in every entry (a file run, an event, a timer, a message
+  handler, a frame callback, a coroutine), memory bombs stop at the cap, and a hand-written guest that loops without imports or
+  grows past its maximum is stopped by the deadline or the memory trap while other realms run on.
+- **Spoofing and lockout** (`cargo test -p torque-gui client_script`): over random operations mixed with the game's own dialogs and
+  screen changes, the realm is drawn only between the content and the game's dialogs, never over a screen the game did not mark,
+  never without the chip, and nothing is drawn after the chip; Escape never reaches the realm.
+- **Authority** (`tests/authority.rs`): a hostile realm that makes no calls leaves the bytes the client sends the server over 600
+  frames, and the server's script state, equal to an idle realm's, for every set of granted abilities; one that makes calls changes
+  the server only inside the handlers the game registered, which the test counts.
+- **End to end** (`tests/end_to_end.rs`): a whole server and client of the engine's own over the memory transport: a realm's message
+  arrives in `clientScriptOnMessage` as text that nothing runs, `clientScriptSend` arrives in the realm, and the answer is heard in
+  `clientScriptOnStatus`.
+- **Fuzzing** (seeded, `TORQUE_CLIENT_SCRIPT_FUZZ` set for the full counts): the message decoder 1,000,000 cases both ways, the
+  Lua-to-arguments converter 300,000, the rich-text reader 300,000 and the applier 100,000 sequences, all with no panic and every
+  accepted result within its caps.
+- **Parity** (`parity.txt` in the host crate): each case's stream (log lines, applied `ui` records, messages, calls, revocations and
+  the stop) is folded into one number and the number must be the same natively, under Node and in Chrome. A case that reads the
+  wall clock has none. A change that moves a number on purpose is written back with `TORQUE_PARITY_BLESS=1`.
+- **Budgets** (the justfile's `client-script-bench ui,net`): a hostile realm at its caps keeps the frame within 3 ms of the scene alone at
+  p99, and an idle realm with 1,024 controls costs at most 0.3 ms at p50.
 
 ## What servers cannot do
 

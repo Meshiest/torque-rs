@@ -36,7 +36,10 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 
 [dev-dependencies]
 torque-engine = { path = "../torque-engine", features = ["testing"] }
-torque-client-script-host = { path = "../torque-client-script-host", features = ["ui", "net", "unreviewed-tiers"] }
+torque-client-script-host = { path = "../torque-client-script-host", features = ["ui", "net", "unreviewed-tiers", "wasmtime"] }
+# The end-to-end test: the engine's own server and client over the memory transport (tests/end_to_end.rs).
+torque = { path = "../torque", default-features = false, features = ["app", "mods"] }
+torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
 
 [lints]
 workspace = true

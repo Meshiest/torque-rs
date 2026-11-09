@@ -332,3 +332,271 @@ fn client_script_input_fuzz_never_gives_the_realm_an_escape_or_a_dialogs_input()
         assert_eq!(rig.gui.client_script_stats().escape_keys, 0, "step {i}");
     }
 }
+
+/// How many random texts the rich-text fuzz reads: more when `TORQUE_CLIENT_SCRIPT_FUZZ` is set (the justfile's
+/// `client-script-check`).
+fn rich_cases() -> usize {
+    if std::env::var_os("TORQUE_CLIENT_SCRIPT_FUZZ").is_some() {
+        300_000
+    } else {
+        60_000
+    }
+}
+
+const RICH_PIECES: [&str; 36] = [
+    "x",
+    "word",
+    " ",
+    "  ",
+    "\n",
+    "é",
+    "✓",
+    ">",
+    "<",
+    "<<",
+    "<b>",
+    "</b>",
+    "<i>",
+    "</i>",
+    "<color:ff8800>",
+    "<color:ff880080>",
+    "<color:zz>",
+    "</color>",
+    "<size:12>",
+    "<size:8>",
+    "<size:72>",
+    "<size:9999>",
+    "<size:-3>",
+    "</size>",
+    "<align:left>",
+    "<align:center>",
+    "<align:right>",
+    "<align:up>",
+    "<br>",
+    "<a:gotoWebPage>",
+    "</a>",
+    "<bitmap:base/x>",
+    "<font:Arial:12>",
+    "</>",
+    "<:>",
+    "<color:",
+];
+
+/// A text made of markup pieces, now and then with a stray character.
+fn random_rich(rng: &mut Rng) -> String {
+    let mut text = String::new();
+    for _ in 0..rng.below(30) {
+        if rng.percent(3) {
+            text.push(char::from_u32(rng.below(0x3000) as u32).unwrap_or('?'));
+        } else {
+            text.push_str(rng.pick(&RICH_PIECES));
+        }
+    }
+    text
+}
+
+/// What a text that passed `check_rich` shows, by a second reading of it: `<<` is `<`, `<br>` and newlines break the line and
+/// every other tag vanishes.
+fn visible(text: &str) -> String {
+    let text = text.replace("<<", "\u{1}");
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let end = after.find('>').expect("a text that passed has no stray <");
+        if &after[..end] == "br" {
+            out.push('\n');
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out.replace('\u{1}', "<")
+}
+
+#[test]
+fn client_script_rich_text_fuzz_never_panics_and_lays_out_within_its_rules() {
+    use crate::client_script::rich::layout;
+    use torque_client_script_format::ui::check_rich;
+
+    let cases = rich_cases();
+    let mut rng = Rng(0x8F1B_BCDC_A953_9B7D);
+    let (mut passed, mut refused) = (0usize, 0usize);
+    for case in 0..cases {
+        let text = random_rich(&mut rng);
+        let verdict = check_rich(&text, 4096);
+        let wrap = *rng.pick(&[None, Some(1), Some(10), Some(60), Some(i32::MAX)]);
+        let mut measured = 0usize;
+        let lines = layout(&text, wrap, 14, |word, size| {
+            measured += 1;
+            i32::try_from(word.len())
+                .unwrap_or(i32::MAX)
+                .saturating_mul(size)
+        });
+        assert!(!lines.is_empty(), "case {case}: {text:?}");
+        let runs: usize = lines.iter().map(|l| l.runs.len()).sum();
+        assert_eq!(measured, runs, "case {case}: each word measured once");
+        let mut shown = 0;
+        for line in &lines {
+            for (run, _) in &line.runs {
+                shown += run.text.len();
+                assert!(
+                    run.size.is_none_or(|s| (8..=72).contains(&s)),
+                    "case {case}: size {:?}",
+                    run.size
+                );
+            }
+            if let Some(limit) = wrap
+                && line.runs.len() > 1
+            {
+                assert!(
+                    line.width() <= limit,
+                    "case {case}: {text:?} wrapped at {limit}"
+                );
+            }
+        }
+        assert!(shown <= text.len(), "case {case}: more shown than given");
+        if verdict.is_ok() {
+            passed += 1;
+            if wrap.is_none() {
+                let shown: Vec<String> = lines
+                    .iter()
+                    .map(|l| l.runs.iter().map(|(r, _)| r.text.as_str()).collect())
+                    .collect();
+                assert_eq!(shown.join("\n"), visible(&text), "case {case}: {text:?}");
+            }
+        } else {
+            refused += 1;
+        }
+    }
+    println!(
+        "rich-text fuzz: {cases} cases, {passed} passed the check, {refused} refused, 0 panics"
+    );
+    assert!(
+        passed > cases / 20 && refused > cases / 20,
+        "{passed} passed, {refused} refused: both paths are reached"
+    );
+}
+
+/// How many frames the spoofing fuzz draws.
+fn spoof_frames() -> usize {
+    if std::env::var_os("TORQUE_CLIENT_SCRIPT_FUZZ").is_some() {
+        100_000
+    } else {
+        20_000
+    }
+}
+
+/// The place of a layer in the draw order the canvas keeps: content, the server layer, the game's dialogs, the engine layer,
+/// the chip.
+fn layer_rank(mark: crate::client_script::LayerMark) -> u8 {
+    use crate::client_script::LayerMark;
+    match mark {
+        LayerMark::Content => 0,
+        LayerMark::Server => 1,
+        LayerMark::Dialog => 2,
+        LayerMark::Engine => 3,
+        LayerMark::Chip => 4,
+    }
+}
+
+#[test]
+fn client_script_spoof_fuzz_draws_the_realm_only_in_its_place_and_never_without_the_chip() {
+    use crate::client_script::LayerMark;
+
+    let mut rig = Rig::new(&[Tier::Ui, Tier::Net]);
+    rig.realm.set_content_check(store("mods/m/"));
+    let mut rng = Rng(0xA24B_AED4_963E_E407);
+    let mut start = Ops::default();
+    start.root(1, "mod").interactive(true);
+    rig.apply_ok(&start);
+    let games = [
+        "Canvas.pushDialog(DialogOne);",
+        "Canvas.pushDialog(DialogTwo);",
+        "Canvas.popDialog(DialogOne);",
+        "Canvas.popLayer(0);",
+        "Canvas.setContent(MenuGui);",
+        "Canvas.setContent(PlayGui);",
+    ];
+    // PlayGui is the screen the game marks for server controls.
+    let mut marked_screen = true;
+    let mut live = Vec::new();
+    let (mut shown, mut with_dialog, mut off_screen) = (0usize, 0usize, 0usize);
+    for step in 0..spoof_frames() {
+        match rng.below(8) {
+            0 => {
+                let game = *rng.pick(&games);
+                rig.game(game);
+                if game.contains("setContent(MenuGui)") {
+                    marked_screen = false;
+                } else if game.contains("setContent(PlayGui)") {
+                    marked_screen = true;
+                }
+            }
+            _ => {
+                let next = rig.realm.next_handle();
+                let ops = random_op(&mut rng, &live, next);
+                let clock = (step as u64 + 1) * 1000;
+                let _ = rig
+                    .realm
+                    .apply_flush(&mut rig.vm, &rig.gui, ops.bytes(), clock);
+                if step % 40 == 0 {
+                    live = rig.realm.handles();
+                }
+            }
+        }
+        rig.frame();
+        let report = rig.draw();
+        let ranks: Vec<u8> = report.layers.iter().map(|m| layer_rank(*m)).collect();
+        assert!(
+            ranks.windows(2).all(|w| w[0] <= w[1]),
+            "step {step}: the layers were drawn out of order: {:?}",
+            report.layers
+        );
+        let server_drawn = report.layers.contains(&LayerMark::Server);
+        // A game that popped its content away leaves no screen for the server layer to sit on.
+        assert!(
+            !server_drawn || report.layers.first() == Some(&LayerMark::Content),
+            "step {step}: a server layer with no content under it: {:?}",
+            report.layers
+        );
+        if report.realm_controls > 0 {
+            shown += 1;
+            assert!(
+                server_drawn,
+                "step {step}: realm controls drew outside the server layer"
+            );
+            assert!(
+                report.chip,
+                "step {step}: the realm is on screen with no chip"
+            );
+            assert_eq!(
+                report.layers.last(),
+                Some(&LayerMark::Chip),
+                "step {step}: something was drawn after the chip"
+            );
+            let dialogs = report
+                .layers
+                .iter()
+                .filter(|m| **m == LayerMark::Dialog)
+                .count();
+            with_dialog += usize::from(dialogs > 0);
+            assert!(
+                marked_screen,
+                "step {step}: drawn over a screen the game did not mark"
+            );
+        }
+        if !marked_screen {
+            off_screen += 1;
+            assert!(
+                !server_drawn,
+                "step {step}: a server layer over an unmarked screen"
+            );
+        }
+    }
+    println!(
+        "spoof fuzz: {} frames, {shown} drew the realm ({with_dialog} under a dialog), {off_screen} on an unmarked screen, 0 out of place",
+        spoof_frames()
+    );
+    assert!(shown > 100 && with_dialog > 10 && off_screen > 100);
+}

@@ -21,7 +21,7 @@ export async function runCases({ check, guest }) {
       let state;
       while ((state = run.step()) === 0) await scripts.settled();
       if (state === 2) throw new Error(run.error());
-      results.push({ name, ok: true, seconds: seconds(), afterFailure: failed });
+      results.push({ name, ok: true, seconds: seconds(), afterFailure: failed, parity: run.parity() });
     } catch (error) {
       failed = true;
       results.push({ name, ok: false, seconds: seconds(), error: String(error) });

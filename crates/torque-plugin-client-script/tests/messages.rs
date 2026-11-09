@@ -646,6 +646,7 @@ fn random_value(next: &mut impl FnMut() -> u64, depth: usize) -> Value {
 
 #[test]
 fn message_decoding_never_panics_and_what_it_accepts_is_within_caps() {
+    let cases = fuzz_cases(200_000, 1_000_000);
     let mut seed = 0x9e37_79b9_7f4a_7c15u64;
     let mut next = move || {
         seed ^= seed << 13;
@@ -654,7 +655,7 @@ fn message_decoding_never_panics_and_what_it_accepts_is_within_caps() {
         seed
     };
     let (mut accepted, mut refused) = (0u32, 0u32);
-    for case in 0..200_000u32 {
+    for case in 0..cases {
         let bytes = if next() % 2 == 0 {
             // A value that is right, then wronged: bytes changed, cut, extended, the length off by one.
             let mut bytes = random_value(&mut next, 0)
@@ -716,9 +717,185 @@ fn message_decoding_never_panics_and_what_it_accepts_is_within_caps() {
             );
         }
     }
+    println!("message fuzz: {cases} cases, {accepted} accepted, {refused} refused, 0 panics");
     assert!(
-        accepted > 10_000 && refused > 10_000,
+        accepted > cases / 20 && refused > cases / 20,
         "{accepted} accepted, {refused} refused: both paths are reached"
     );
     let _ = Delivery::Reliable;
+}
+
+/// A random value shaped like the arguments of a call: mostly a table of field names to the kinds a field takes, with
+/// every kind of mistake mixed in.
+fn random_args(rng: &mut Rng, depth: u32) -> Value {
+    const NAMES: [&str; 6] = ["data", "at", "text", "", "DATA", "data\0"];
+    let number = |rng: &mut Rng| match rng.below(12) {
+        0 => Value::Number(f64::NAN),
+        1 => Value::Number(f64::INFINITY),
+        2 => Value::Number(f64::NEG_INFINITY),
+        3 => Value::Number(1e300),
+        4 => Value::Number(-0.0),
+        5 => Value::Number(5e-324),
+        6 => Value::Number(rng.below(1 << 40) as f64),
+        _ => Value::Number(rng.below(2000) as f64 / 8.0 - 100.0),
+    };
+    let string = |rng: &mut Rng| {
+        let len = match rng.below(8) {
+            0 => 255,
+            1 => 256,
+            2 => 1000,
+            _ => rng.below(40) as usize,
+        };
+        let mut bytes: Vec<u8> = (0..len).map(|_| b'a' + rng.below(26) as u8).collect();
+        match rng.below(10) {
+            0 if !bytes.is_empty() => {
+                let at = rng.below(bytes.len() as u64) as usize;
+                bytes[at] = 0;
+            }
+            1 if !bytes.is_empty() => {
+                let at = rng.below(bytes.len() as u64) as usize;
+                bytes[at] = rng.below(256) as u8;
+            }
+            _ => {}
+        }
+        Value::String(bytes)
+    };
+    let scalar = |rng: &mut Rng| match rng.below(6) {
+        0 => Value::Nil,
+        1 => Value::Bool(rng.below(2) == 0),
+        2 | 3 => number(rng),
+        _ => string(rng),
+    };
+    if depth == 0 {
+        return match rng.below(12) {
+            0 => scalar(rng),
+            1 => Value::Nil,
+            _ => {
+                let fields = rng.below(5);
+                Value::Table(
+                    (0..fields)
+                        .map(|_| {
+                            let key = match rng.below(10) {
+                                0 => number(rng),
+                                1 => Value::Bool(true),
+                                _ => Value::String(
+                                    NAMES[rng.below(NAMES.len() as u64) as usize]
+                                        .as_bytes()
+                                        .to_vec(),
+                                ),
+                            };
+                            (key, random_args(rng, 1))
+                        })
+                        .collect(),
+                )
+            }
+        };
+    }
+    match rng.below(10) {
+        0..=4 => scalar(rng),
+        5..=7 => {
+            // A vector: its length around the cap of 16, its keys in any order.
+            let len = match rng.below(6) {
+                0 => 17,
+                1 => 16,
+                _ => rng.below(5),
+            };
+            let mut items: Vec<(Value, Value)> = (0..len)
+                .map(|n| {
+                    let key = if rng.below(12) == 0 {
+                        Value::String(b"k".to_vec())
+                    } else {
+                        Value::Number((len - n) as f64)
+                    };
+                    let item = if rng.below(12) == 0 {
+                        scalar(rng)
+                    } else {
+                        number(rng)
+                    };
+                    (key, item)
+                })
+                .collect();
+            if rng.below(2) == 0 {
+                items.reverse();
+            }
+            Value::Table(items)
+        }
+        _ => Value::Table(vec![(Value::Number(1.0), random_args(rng, 0))]),
+    }
+}
+
+#[test]
+fn the_converter_from_a_realms_table_to_arguments_never_panics_and_stays_within_caps() {
+    use torque_plugin_client_script::call::{MAX_ARG_BYTES, callable, script_args};
+    let w = running();
+    let table = w.engine.net_rpcs().expect("the table");
+    let entry = callable(&table, "props.spawn").expect("a realm RPC");
+    let fields = entry.request_fields();
+    assert!(callable(&table, "props.delete").is_none());
+    let cases = fuzz_cases(60_000, 300_000);
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let (mut accepted, mut refused) = (0u32, 0u32);
+    for case in 0..cases {
+        let args = random_args(&mut rng, 0);
+        let Some(out) = script_args(entry, &args) else {
+            refused += 1;
+            continue;
+        };
+        accepted += 1;
+        assert_eq!(out.len(), fields.len(), "case {case}: one argument a field");
+        for (arg, field) in out.iter().zip(fields) {
+            assert!(!arg.contains(&0), "case {case}: a NUL in {field}");
+            assert!(
+                arg.len() <= MAX_ARG_BYTES,
+                "case {case}: {} bytes in {field}",
+                arg.len()
+            );
+        }
+        // Only a table (or nothing) names fields, and only fields the request has.
+        match &args {
+            Value::Nil => assert!(out.iter().all(Vec::is_empty), "case {case}"),
+            Value::Table(pairs) => {
+                for (key, _) in pairs {
+                    let Value::String(name) = key else {
+                        panic!("case {case}: a key that is no name was taken");
+                    };
+                    assert!(
+                        fields.iter().any(|f| f.as_bytes() == name.as_slice()),
+                        "case {case}: an unknown field was taken"
+                    );
+                }
+            }
+            _ => panic!("case {case}: a value that is no table was taken"),
+        }
+    }
+    println!("converter fuzz: {cases} cases, {accepted} accepted, {refused} refused, 0 panics");
+    assert!(
+        accepted > cases / 50 && refused > cases / 50,
+        "{accepted} accepted, {refused} refused: both paths are reached"
+    );
+}
+
+#[test]
+fn an_argument_of_huge_numbers_is_refused_for_its_text_not_carried() {
+    use torque_plugin_client_script::call::{MAX_ARG_BYTES, callable, script_args};
+    let w = running();
+    let rpcs = w.engine.net_rpcs().expect("the table");
+    let entry = callable(&rpcs, "props.spawn").expect("a realm RPC");
+    let vector = |n: f64, count: u32| {
+        table_of_at(Value::Table(
+            (1..=count)
+                .map(|i| (Value::Number(f64::from(i)), Value::Number(n)))
+                .collect(),
+        ))
+    };
+    // Sixteen numbers of 301 digits each would be a 5 KB argument, and one of them is more than a string may be.
+    assert!(script_args(entry, &vector(1e300, 16)).is_none());
+    assert!(script_args(entry, &table(&[("data", Value::Number(1e300))])).is_none());
+    // Sixteen ordinary numbers are well within it.
+    let fits = script_args(entry, &vector(-123.456_789, 16)).expect("a vector that fits");
+    assert!(fits.iter().all(|a| a.len() <= MAX_ARG_BYTES));
+}
+
+fn table_of_at(value: Value) -> Value {
+    table(&[("at", value)])
 }

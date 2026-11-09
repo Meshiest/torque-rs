@@ -35,7 +35,7 @@ pub fn from_key(key: &str) -> Option<Tier> {
 pub fn english(tier: Tier) -> &'static str {
     match tier {
         Tier::Ui => "Show its own menus and HUD",
-        Tier::Net => "Send what you do in its menus back to the server",
+        Tier::Net => "Send messages to its own server",
         Tier::State => "See the players and objects your game already shows",
         Tier::Draw => "Draw markers and lines in the world",
         Tier::Effects => "Play sounds and effects",
@@ -53,10 +53,39 @@ pub fn default_on(tier: Tier, reduce_motion: bool) -> bool {
     !(tier == Tier::Camera && reduce_motion)
 }
 
-/// Whether an ability is one of the basic ones the "allow without asking" option covers: menus, HUD, markers and sounds.
+/// The key of the line a game shows beside the option that grants the basic abilities without asking.
+pub const BASICS_KEY: &str = "client_script.basics_without_asking";
+
+/// The English line for that option. It names what [`is_basic`] covers, which is more than menus: a script may also message
+/// its own server and read the game state the player's client already holds.
+pub const BASICS_ENGLISH: &str = "Allow without asking: menus, HUD, markers and sounds. These scripts can also send messages to their own server and read the players and objects your game already shows.";
+
+/// Whether an ability is one of the basic ones the "allow without asking" option covers: `ui` (menus and HUD), `net` (messages
+/// to the script's own server), `state` (read-only views of replicated game state), `draw` (markers and lines) and `effects`
+/// (sounds and effects).
 pub fn is_basic(tier: Tier) -> bool {
     matches!(
         tier,
         Tier::Ui | Tier::Net | Tier::State | Tier::Draw | Tier::Effects
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_basics_line_names_everything_the_option_grants() {
+        let covered: Vec<Tier> = ABILITIES.into_iter().filter(|t| is_basic(*t)).collect();
+        assert_eq!(
+            covered,
+            [Tier::Ui, Tier::Net, Tier::State, Tier::Draw, Tier::Effects]
+        );
+        for word in [
+            "menus", "HUD", "markers", "sounds", "messages", "server", "read",
+        ] {
+            assert!(BASICS_ENGLISH.contains(word), "{word}");
+        }
+        assert!(english(Tier::Net).contains("server"));
+    }
 }

@@ -212,6 +212,30 @@ client-script-web-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/client-script-check.mjs "{{web_target}}/lua-web/client-check"
 
+# The guest `lua-client-web` built must be one this build accepts (ACCEPTED_CLIENT_GUESTS); prints its hash
+client-script-guest-check: lua-client-web
+    cargo run -p torque-client-script-host --example guest-hash -- --check "{{web_target}}/lua-web/torque_lua_client.wasm"
+
+# The client-script realm's fuzz and authority suites at their full counts (message decoder 1,000,000 cases, Lua-to-arguments
+# converter 300,000, rich text 300,000, 100,000 spoofing frames): the consent, message, authority and end-to-end tests and
+# the GUI's, run natively with TORQUE_CLIENT_SCRIPT_FUZZ set. No guest needed
+client-script-fuzz:
+    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-plugin-client-script -- --nocapture
+    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-gui client_script -- --nocapture
+
+# The time a realm costs a frame (crates/torque-plugin-client-script/tests/bench.rs): the real guest under Wasmtime in a client's
+# GUI, a hostile realm at its caps within 3 ms of the scene alone at p99, an idle realm with 1,024 controls within 0.3 ms at p50.
+# `tiers` are the tiers granted (`ui`, `net`). A timing run: run it with nothing else loading the machine. Needs what `lua-web` needs
+client-script-bench tiers="ui,net":
+    node web/lua-build.mjs --client
+    $env:TORQUE_CLIENT_SCRIPT_BENCH_TIERS = "{{tiers}}"; $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test --profile client-script-check -p torque-plugin-client-script --test bench -- --ignored --nocapture
+
+# The client-script realm's hardening suite, one command: the guest built and its hash listed, the escape, fuel and memory suites
+# natively and under Wasmtime (whose cases also hold every case's parity number), the fuzz and authority suites at full counts,
+# the same cases under Node and in headless Chrome (the same parity numbers), and the bench for `ui` and `net`. Needs what `lua-web`
+# needs and Chrome; takes a while, and the bench is a timing run (see `client-script-bench`)
+client-script-check: client-script-guest-check lua-client-test client-script-host-test client-script-test client-script-fuzz client-script-web-check (client-script-bench "ui,net")
+
 # The Wasmtime gate for client scripts (crates/torque-client-script-host): the Lua module of `lua-web` run natively under
 # Wasmtime against the Lua extension's shared cases, an epoch-interruption check, and the costs (compile, instantiate, host
 # call, Luau step, release binary size; `cold` adds the cold build time, built from nothing). Needs what `lua-web` needs

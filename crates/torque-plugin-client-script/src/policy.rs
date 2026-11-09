@@ -30,7 +30,8 @@ pub enum Policy {
     Never,
 }
 
-/// The per-ability policies, and the option to grant the basic abilities (menus, HUD, markers, sounds) without asking.
+/// The per-ability policies, and the option to grant the basic abilities without asking: menus and HUD, messages to the
+/// script's own server, read-only game state, markers and sounds (see [`is_basic`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Policies {
     per: [Policy; Tier::ALL.len()],

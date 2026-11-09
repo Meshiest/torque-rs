@@ -357,7 +357,8 @@ different.
   `unavailable` or the abilities granted, and gets `clientScriptOnMessage`, `clientScriptSend`, `clientScriptOnStatus` and an
   offer built from the mods' `[client_script]` manifest tables. `torque-mods` reads a server's script files for a realm only from
   the mount that server offered, verified against its hash and not found through cache sharing. The guest is run only if its hash
-  is listed in `ACCEPTED_CLIENT_GUESTS` (empty until a release lists one). In no default plugin set. TGE has none.
+  is listed in `ACCEPTED_CLIENT_GUESTS`: the guest built with WASI SDK 34.0 is listed, and `just lua-client-web` gives the same bytes
+  whatever the folders it is built in (the build names them by fixed stand-ins). The justfile's `client-script-check` is the hardening suite. In no default plugin set. TGE has none.
 - `torque-bundle` (`just bundle <game crate>`): packages a game for the computer it runs on: its binaries built in release
   with only the plugin features its `game.toml` keeps (debug gizmos left out), its game folder without dev files, its native
   extensions in `plugins/`, the license texts of every crate it links, and a manifest of every file's SHA-256. Local folders

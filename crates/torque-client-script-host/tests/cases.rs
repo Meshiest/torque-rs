@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use torque_client_script_host::cases::{CASES, CaseRun, Guest, Runners, Step};
+use torque_client_script_host::cases::{CASES, CaseRun, Guest, Runners, Step, parity};
 use torque_client_script_host::{GuestEngine, InstanceLimits, RealmGuest, Runner, Settings, Trap};
 
 /// Wasmtime runners over one engine.
@@ -74,6 +74,8 @@ fn every_case_passes_under_wasmtime() {
         }
     };
     let (mut passed, mut skipped, mut failed) = (0, 0, Vec::new());
+    let bless = std::env::var_os("TORQUE_PARITY_BLESS").is_some();
+    let mut numbers = Vec::new();
     for case in CASES {
         if realm.is_none() && case.needs_realm_guest() {
             skipped += 1;
@@ -85,16 +87,32 @@ fn every_case_passes_under_wasmtime() {
             guests: Vec::new(),
         };
         let started = Instant::now();
-        let outcome = match CaseRun::new(case, Box::new(runners)).step() {
+        let mut run = CaseRun::new(case, Box::new(runners));
+        let outcome = match run.step() {
             Step::Done(outcome) => outcome,
             Step::Waiting => Err(format!("{}: a native runner waited", case.name)),
         };
+        let digest = run
+            .digest()
+            .filter(|_| !parity::RUNNER_DEPENDENT.contains(&case.name));
+        if let Some(digest) = digest {
+            numbers.push(format!("{} {digest:016x}", case.name));
+        }
         println!(
-            "native: {} {} ({:.2} s)",
+            "native: {} {} ({:.2} s){}",
             if outcome.is_ok() { "ok" } else { "FAILED" },
             case.name,
-            started.elapsed().as_secs_f64()
+            started.elapsed().as_secs_f64(),
+            digest.map_or_else(String::new, |d| format!(
+                " parity {d:016x} {}",
+                run.summary()
+            ))
         );
+        // Blessing writes the numbers the run came to, so only the checks that are not the parity's can fail it.
+        let outcome = match outcome {
+            Err(error) if bless && error.contains("parity.txt") => Ok(()),
+            other => other,
+        };
         match outcome {
             Ok(()) => passed += 1,
             Err(error) => failed.push(error),
@@ -104,6 +122,19 @@ fn every_case_passes_under_wasmtime() {
         "native: {passed} of {} cases passed, {skipped} skipped",
         CASES.len()
     );
+    if bless && skipped == 0 && failed.is_empty() {
+        let header: Vec<&str> = parity::TABLE
+            .lines()
+            .take_while(|l| l.starts_with('#'))
+            .collect();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cases/parity.txt");
+        std::fs::write(
+            &path,
+            format!("{}\n{}\n", header.join("\n"), numbers.join("\n")),
+        )
+        .expect("parity.txt is written");
+        println!("native: wrote {}", path.display());
+    }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
@@ -121,4 +152,25 @@ fn a_guest_off_the_list_is_refused_before_it_is_compiled() {
     // The test constructor skips the list and nothing else.
     assert!(RealmGuest::unlisted(&engine, &wasm).is_ok());
     assert!(RealmGuest::unlisted(&engine, b"not a module").is_err());
+}
+
+#[test]
+fn every_case_that_does_not_read_the_clock_has_a_parity_number() {
+    for case in CASES {
+        let wall = parity::RUNNER_DEPENDENT.contains(&case.name);
+        assert_eq!(
+            parity::expected(case.name).is_some(),
+            !wall,
+            "{}: {}",
+            case.name,
+            if wall {
+                "reads the clock and has a number"
+            } else {
+                "has none: run the native cases with TORQUE_PARITY_BLESS=1"
+            }
+        );
+    }
+    for name in parity::RUNNER_DEPENDENT {
+        assert!(CASES.iter().any(|c| c.name == *name), "{name} is no case");
+    }
 }

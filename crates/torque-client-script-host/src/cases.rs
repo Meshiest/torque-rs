@@ -6,6 +6,8 @@
 //! Realm time is the run's own: every frame moves it 1/60 s on, so timers, rates and the strike rule's window are the
 //! same on every runner. Deadlines and budgets are wall-clock time, as they are in a game.
 
+pub mod parity;
+
 use std::time::Duration;
 
 use torque_client_script_format::{Grants, Records, Tier, Value, Writer, op};
@@ -15,6 +17,7 @@ use crate::{
     CallRoute, ClientMod, Effects, FrameBudget, GrantSet, InstanceLimits, LogLevel, Runner,
     ServerContent, Session, Settings, Stop, Trap, Unstarted, Violation,
 };
+use parity::Trace;
 
 /// A frame's length in the realm's time.
 pub const FRAME_US: u64 = 16_667;
@@ -119,6 +122,8 @@ impl Case {
 pub struct Recorder {
     /// Its log lines.
     pub logs: Vec<String>,
+    /// The log lines that were script errors.
+    pub errors: Vec<String>,
     /// The `ui` records it applied.
     pub ui_records: usize,
     /// The controls and roots it holds (made, not yet torn down or revoked).
@@ -133,11 +138,17 @@ pub struct Recorder {
     pub sends: Vec<Value>,
     /// Its calls' names.
     pub calls: Vec<String>,
+    /// Everything above as one number ([`parity`]).
+    pub trace: Trace,
     apply_cost: Duration,
 }
 
 impl Effects for Recorder {
-    fn log(&mut self, _level: LogLevel, line: &str) {
+    fn log(&mut self, level: LogLevel, line: &str) {
+        self.trace.put(1 + level as u8, line.as_bytes());
+        if level == LogLevel::Error {
+            self.errors.push(line.to_string());
+        }
         self.logs.push(line.to_string());
     }
 
@@ -148,9 +159,10 @@ impl Effects for Recorder {
             .map_err(|_| Violation::Ui("ui records the host should not have passed"))
     }
 
-    fn apply_ui(&mut self, records: &[u8]) -> Result<(), Violation> {
+    fn apply_ui(&mut self, bytes: &[u8]) -> Result<(), Violation> {
         let started = Instant::now();
-        let records = Records::new(records, usize::MAX, usize::MAX)
+        self.trace.put(4, bytes);
+        let records = Records::new(bytes, usize::MAX, usize::MAX)
             .and_then(Records::collect_all)
             .map_err(|_| Violation::Ui("ui records the host should not have passed"))?;
         self.ui_records += records.len();
@@ -168,15 +180,22 @@ impl Effects for Recorder {
     }
 
     fn send(&mut self, message: Value) {
+        self.trace
+            .put(5, &message.to_bytes().expect("a message that was checked"));
         self.sends.push(message);
     }
 
-    fn call(&mut self, _id: u32, name: &str, _args: Value) -> CallRoute {
+    fn call(&mut self, id: u32, name: &str, args: Value) -> CallRoute {
+        self.trace.put(6, &id.to_le_bytes());
+        self.trace.put(6, name.as_bytes());
+        self.trace
+            .put(6, &args.to_bytes().expect("arguments that were checked"));
         self.calls.push(name.to_string());
         CallRoute::Refused
     }
 
     fn revoke(&mut self, tier: Tier) {
+        self.trace.put(7, &[tier.id()]);
         self.revoked.push(tier);
         if tier == Tier::Ui {
             self.objects = 0;
@@ -184,11 +203,14 @@ impl Effects for Recorder {
     }
 
     fn teardown(&mut self) {
+        self.trace.put(8, &[]);
         self.teardowns += 1;
         self.objects = 0;
     }
 
-    fn stopped(&mut self, _why: &Stop) {}
+    fn stopped(&mut self, why: &Stop) {
+        self.trace.put(9, format!("{why:?}").as_bytes());
+    }
 }
 
 /// One realm of a case.
@@ -224,6 +246,37 @@ impl World {
     /// The instances that exist.
     pub fn live(&self) -> usize {
         self.live
+    }
+
+    /// What each realm did, in numbers: for the message of a stream that came to another number.
+    fn summary(&self) -> String {
+        self.slots
+            .iter()
+            .flatten()
+            .map(|slot| {
+                let e = slot.effects();
+                format!(
+                    "[logs {} errors {} ui {} sends {} calls {} revoked {:?} teardowns {} stop {:?}]",
+                    e.logs.len(),
+                    e.errors.len(),
+                    e.ui_records,
+                    e.sends.len(),
+                    e.calls.len(),
+                    e.revoked,
+                    e.teardowns,
+                    slot.stop().map(|(why, _)| why)
+                )
+            })
+            .collect()
+    }
+
+    /// The realms' streams as one number.
+    fn digest(&self) -> u64 {
+        let mut all = Trace::default();
+        for slot in self.slots.iter().flatten() {
+            all.merge(slot.effects().trace);
+        }
+        all.digest()
     }
 
     fn slot_mut(&mut self, slot: usize) -> &mut Slot {
@@ -283,10 +336,14 @@ pub enum Step {
 /// A case being run.
 pub struct CaseRun {
     name: &'static str,
+    digest: Option<u64>,
+    summary: String,
     actions: Vec<Action>,
     at: usize,
     /// Frames done of the current [`Action::Frames`].
     frames: u32,
+    /// Calls of the current [`Action::Frames`] that started no frame (a web runner spends them on startup entries).
+    idle_calls: u32,
     world: World,
     runners: Box<dyn Runners>,
 }
@@ -296,9 +353,12 @@ impl CaseRun {
     pub fn new(case: &Case, runners: Box<dyn Runners>) -> CaseRun {
         CaseRun {
             name: case.name,
+            digest: None,
+            summary: String::new(),
             actions: (case.actions)(),
             at: 0,
             frames: 0,
+            idle_calls: 0,
             world: World {
                 slots: Vec::new(),
                 live: 0,
@@ -321,12 +381,14 @@ impl CaseRun {
                     apply_cost,
                 } => self.open(slot, guest, grants, scripts, tune, apply_cost),
                 &Action::Frames { slot, count } => {
-                    while self.frames < count {
+                    // A frame is a frame entry of the guest, so the realm's time and the cases' counts mean the same on every
+                    // runner: natively the startup entries and the first frame are one call of `Session::frame`, on the web
+                    // each entry is a call of its own, and those calls pass no time.
+                    while self.frames < count && self.idle_calls < 64 + 4 * count {
                         if !self.settle(slot) {
                             return Step::Waiting;
                         }
                         let now = self.world.now_us + FRAME_US;
-                        self.world.now_us = now;
                         let slot = self.world.slot_mut(slot);
                         let Some(session) = slot.session.as_mut() else {
                             break;
@@ -334,13 +396,20 @@ impl CaseRun {
                         if session.stop().is_some() {
                             break;
                         }
-                        session.frame(now, TARGET);
-                        self.frames += 1;
+                        let before = session.frames_started();
+                        let report = session.frame(now, TARGET);
+                        if session.frames_started() > before || report.sat_out {
+                            self.world.now_us = now;
+                            self.frames += 1;
+                        } else {
+                            self.idle_calls += 1;
+                        }
                     }
                     if !self.settle(slot) {
                         return Step::Waiting;
                     }
                     self.frames = 0;
+                    self.idle_calls = 0;
                 }
                 &Action::Revoke { slot, tier } => {
                     let slot = self.world.slot_mut(slot);
@@ -367,9 +436,42 @@ impl CaseRun {
             }
             self.at += 1;
         }
+        let digest = self.world.digest();
+        let summary = self.world.summary();
+        self.digest = Some(digest);
+        self.summary.clone_from(&summary);
         // The realms end with the case.
         self.world.slots.clear();
-        Step::Done(Ok(()))
+        if parity::RUNNER_DEPENDENT.contains(&self.name) {
+            return Step::Done(Ok(()));
+        }
+        match parity::expected(self.name) {
+            Some(want) if want == digest => Step::Done(Ok(())),
+            Some(want) => Step::Done(Err(format!(
+                "{}: its stream came to {digest:016x}, not {want:016x} (parity.txt): another runner saw something else, or the case changed {summary}",
+                self.name
+            ))),
+            None => Step::Done(Err(format!(
+                "{}: no number in parity.txt (it would be {digest:016x})",
+                self.name
+            ))),
+        }
+    }
+
+    /// The number the finished case's stream came to ([`parity`]): `None` until it is over.
+    pub fn digest(&self) -> Option<u64> {
+        self.digest
+    }
+
+    /// What the realms of the finished case did, in numbers (empty until it is over).
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    /// [`CaseRun::digest`] for a case that has a number in `parity.txt`.
+    pub fn parity(&self) -> Option<u64> {
+        self.digest
+            .filter(|_| !parity::RUNNER_DEPENDENT.contains(&self.name))
     }
 
     fn open(
@@ -506,6 +608,30 @@ pub const CASES: &[Case] = &[
     Case {
         name: "nan_prints_the_same_on_every_runner",
         actions: nan_prints_the_same_on_every_runner,
+    },
+    Case {
+        name: "numbers_print_and_compute_the_same_on_every_runner",
+        actions: parity::numbers,
+    },
+    Case {
+        name: "strings_patterns_and_sorting_come_out_the_same_on_every_runner",
+        actions: parity::strings,
+    },
+    Case {
+        name: "a_ui_tree_and_its_timers_come_out_the_same_on_every_runner",
+        actions: parity::ui_tree,
+    },
+    Case {
+        name: "messages_and_calls_come_out_the_same_on_every_runner",
+        actions: parity::net,
+    },
+    Case {
+        name: "the_step_caps_cut_where_they_do_on_every_runner",
+        actions: parity::steps,
+    },
+    Case {
+        name: "a_revocation_lands_in_the_same_place_on_every_runner",
+        actions: parity::revoked,
     },
 ];
 

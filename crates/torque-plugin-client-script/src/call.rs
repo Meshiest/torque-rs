@@ -3,10 +3,10 @@
 //!
 //! **Which RPCs.** Only a `to_server` RPC registered with [`RpcBuilder::realm`](torque_engine::rpc::RpcBuilder::realm), and never
 //! one of this crate's own. The realm's table must name only fields the request has (a name that is none is refused locally,
-//! as a mismatch of the layout), each value a nil, boolean, number, string, or a list of up to 16 numbers (a vector), at most
-//! 255 bytes of text without a NUL. The message is then built from those arguments exactly as a console call builds it, and
-//! the link validates it again (size, `finite` floats, ghost fields: a realm has no object to name, so a call that needs one
-//! is refused). The server decodes and checks it as it checks any client's.
+//! as a mismatch of the layout), each value a nil, boolean, number, string, or a list of up to 16 numbers (a vector), each at
+//! most 255 bytes of text (a number or a vector's numbers written out, joined by spaces) without a NUL. The message is then built from
+//! those arguments exactly as a console call builds it, and the link validates it again (size, `finite` floats, ghost fields: a
+//! realm has no object to name, so a call that needs one is refused). The server decodes and checks it as it checks any client's.
 
 use torque_client_script_format::Value;
 use torque_engine::rpc::{RpcDirection, RpcEntry, RpcError, RpcTable};
@@ -49,7 +49,12 @@ pub fn script_args(entry: &RpcEntry, args: &Value) -> Option<Vec<Vec<u8>>> {
     Some(out)
 }
 
+/// One argument's text, at most [`MAX_ARG_BYTES`] whatever the value (a 300-digit number is as long as a string).
 fn argument(value: &Value) -> Option<Vec<u8>> {
+    argument_text(value).filter(|text| text.len() <= MAX_ARG_BYTES)
+}
+
+fn argument_text(value: &Value) -> Option<Vec<u8>> {
     match value {
         Value::Nil => Some(Vec::new()),
         Value::Bool(b) => Some(vec![if *b { b'1' } else { b'0' }]),

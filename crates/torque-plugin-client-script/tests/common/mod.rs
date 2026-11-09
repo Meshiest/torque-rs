@@ -32,6 +32,33 @@ use torque_server::net::channels::ClientChannels;
 use torque_server::net::rpc::{ClientRpc, RpcLanes};
 use torque_ts_vm::vm::Vm;
 
+/// The number of cases a fuzz test runs: `full` when `TORQUE_CLIENT_SCRIPT_FUZZ` is set (the justfile's
+/// `client-script-check` sets it), else `quick`.
+pub fn fuzz_cases(quick: u32, full: u32) -> u32 {
+    if std::env::var_os("TORQUE_CLIENT_SCRIPT_FUZZ").is_some() {
+        full
+    } else {
+        quick
+    }
+}
+
+/// A small xorshift generator, so a fuzz run is a function of its seed.
+pub struct Rng(pub u64);
+
+impl Rng {
+    pub fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    /// One of `n` choices.
+    pub fn below(&mut self, n: u64) -> u64 {
+        (self.next() >> 11) % n.max(1)
+    }
+}
+
 pub const CLIENT: ConnId = ConnId(1);
 pub const FRAME: Duration = Duration::from_micros(16_667);
 pub const ALL: [Tier; 9] = [

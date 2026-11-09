@@ -86,6 +86,8 @@ struct Core {
     /// Whether the realm was closed: its effects were torn down.
     closed: bool,
     guest_pending: u32,
+    /// How many `frame` entries were started.
+    frames_started: u64,
     /// The longest a script's entry (a file run or a frame) ran.
     longest: Duration,
 }
@@ -143,6 +145,7 @@ impl Core {
             stop: None,
             closed: false,
             guest_pending: 0,
+            frames_started: 0,
             longest: Duration::ZERO,
         }
     }
@@ -235,6 +238,7 @@ impl Core {
                 Some(entry) => entry,
                 None if !framed => {
                     framed = true;
+                    self.frames_started += 1;
                     // The batch's revocations lead it: from this entry on the guest knows of every one so far.
                     self.tiers.told = self.tiers.revoked;
                     Entry::Frame {
@@ -583,6 +587,12 @@ impl<E: Effects> Session<E> {
     /// The events the guest keeps for a later frame (its frame budget ran out), and those the host keeps.
     pub fn pending(&self) -> (u32, usize) {
         self.core.pending()
+    }
+
+    /// How many `frame` entries the guest was started on. A call of [`Session::frame`] starts at most one; on the web it may
+    /// start none, spending the call on one of the startup entries.
+    pub fn frames_started(&self) -> u64 {
+        self.core.frames_started
     }
 
     /// The longest a script's entry (a file run or a frame) ran, as its runner measured it.

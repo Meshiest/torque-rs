@@ -431,19 +431,19 @@ mod tests {
             r#"(module (import "torque" "call" (func)) (memory (export "memory") 1))"#,
         )
         .expect("text");
-        assert!(RealmGuest::new(&engine(), &wasm).is_err());
+        assert!(RealmGuest::unlisted(&engine(), &wasm).is_err());
     }
 
     #[test]
     fn a_guest_of_another_format_does_not_open() {
-        let guest = RealmGuest::new(&engine(), &guest("", 1, 0)).expect("links");
+        let guest = RealmGuest::unlisted(&engine(), &guest("", 1, 0)).expect("links");
         assert!(matches!(guest.open(limits()), Err(Trap::Fault(_))));
         assert_eq!(guest.live(), 0);
     }
 
     #[test]
     fn after_a_trap_the_instance_is_thrown_away_and_runs_nothing() {
-        let guest = RealmGuest::new(&engine(), &guest("unreachable", 2, 0)).expect("links");
+        let guest = RealmGuest::unlisted(&engine(), &guest("unreachable", 2, 0)).expect("links");
         let mut realm = guest.open(limits()).expect("opens");
         assert_eq!(guest.live(), 1);
         realm.start(Entry::New(Config::default()));
@@ -458,8 +458,8 @@ mod tests {
 
     #[test]
     fn a_flush_past_the_formats_cap_is_a_fault_before_it_is_read() {
-        let guest =
-            RealmGuest::new(&engine(), &guest("", 2, (MAX_FLUSH_BYTES + 1) as u32)).expect("links");
+        let guest = RealmGuest::unlisted(&engine(), &guest("", 2, (MAX_FLUSH_BYTES + 1) as u32))
+            .expect("links");
         let mut realm = guest.open(limits()).expect("opens");
         realm.start(frame());
         assert!(matches!(realm.poll(), Some(Err(Trap::Fault(_)))));
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn growing_past_the_cap_is_a_memory_trap() {
         let grow = "(drop (memory.grow (i32.const 128)))";
-        let guest = RealmGuest::new(&engine(), &guest(grow, 2, 0)).expect("links");
+        let guest = RealmGuest::unlisted(&engine(), &guest(grow, 2, 0)).expect("links");
         let mut realm = guest.open(limits()).expect("opens");
         realm.start(frame());
         assert_eq!(realm.poll(), Some(Err(Trap::Memory)));

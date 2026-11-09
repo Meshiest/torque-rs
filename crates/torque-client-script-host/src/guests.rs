@@ -12,8 +12,15 @@ pub type GuestHash = [u8; 32];
 /// The guests this build accepts. A release lists the hash of the guest `just lua-client-web` built for it (`just
 /// client-script-guest-hash` prints the line to add); a build with the list empty runs none, so server scripts are
 /// unavailable in it. Adding a hash is a change a reviewer sees, and the guest it names is the code that runs the server's
-/// Lua.
-pub const ACCEPTED_CLIENT_GUESTS: &[GuestHash] = &[];
+/// Lua. The book's "Server scripts" chapter names the toolchain that reproduces each hash.
+pub const ACCEPTED_CLIENT_GUESTS: &[GuestHash] = &[
+    // WASI SDK 34.0, Rust 1.99.1, Windows x86_64.
+    [
+        0x4c, 0x82, 0xa2, 0x74, 0x78, 0x55, 0xe9, 0xf3, 0x7f, 0x17, 0xee, 0x8c, 0x63, 0xa8, 0xd5,
+        0x3d, 0x4d, 0x06, 0x41, 0xde, 0x68, 0xd5, 0x64, 0x08, 0xee, 0x69, 0x50, 0x49, 0x07, 0x0e,
+        0xf2, 0x25,
+    ],
+];
 
 /// A guest that is not on the list.
 #[derive(Clone, Debug, PartialEq, Eq)]

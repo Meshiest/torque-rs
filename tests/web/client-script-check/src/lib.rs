@@ -76,4 +76,12 @@ impl Run {
     pub fn error(&self) -> String {
         self.error.clone()
     }
+
+    /// The number the passed case's stream came to, as 16 hexadecimal digits: empty for a case with none (it reads the
+    /// wall clock) or one not over.
+    pub fn parity(&self) -> String {
+        self.run
+            .parity()
+            .map_or_else(String::new, |d| format!("{d:016x}"))
+    }
 }

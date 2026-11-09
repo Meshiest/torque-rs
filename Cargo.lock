@@ -4619,9 +4619,11 @@ version = "0.1.0"
 name = "torque-plugin-client-script"
 version = "0.1.0"
 dependencies = [
+ "torque",
  "torque-client-script-format",
  "torque-client-script-host",
  "torque-engine",
+ "torque-example-minimal-engine",
  "torque-ghosts",
  "torque-gui",
  "torque-mods",
