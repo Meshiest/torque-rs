@@ -17,6 +17,11 @@
 //! A Player's nested packet data (a vehicle it drives) is read by class like the head's own; the nesting depth is capped at
 //! [`MAX_NESTED_TAILS`].
 //!
+//! **The frame** (the engine's own protocol with the scene hierarchy's block section on, never Torque's): after the control
+//! object's packet data and what is nested in it, `flag(in a parent's frame)`; when set, the parent's ghost index (GB bits)
+//! and `flag(node)` with a 16-bit node index. In a parent's frame a Player's position, velocity and yaw are its local pose's
+//! ([`TailFrame`]), so a client predicts the child on its parent without knowing where the parent went since.
+//!
 //! **View fields** of the packers: `energy`, `recharge_rate`; Player: `state`, `recover_ticks`, `jump_delay`, `mounted`,
 //! `position` 0..3, `velocity` 0..3, `jump_surface_last_contact`, `head` 0..3, `rotation` 0..3, the link `control_object`;
 //! Vehicle: `steering` 0..2, `position` 0..3, `rotation` 0..4, `linear_momentum` 0..3, `angular_momentum` 0..3, `at_rest`,
@@ -41,7 +46,7 @@ use crate::codec::{
     Codec, Enc, F32, Layout, NetWidths, R, ReadCtx, WIRE_WHEELS, decode_into, mask_bits, opt,
 };
 use crate::player::{RECOVER_DELAY_BITS, RECOVER_STATE, STATE_BITS};
-use crate::{ChargeFn, Link, ObjectView, boolean, int, raw, raws};
+use crate::{ChargeFn, Link, ObjectView, boolean, int, pay, raw, raws};
 
 /// The deepest chain of nested packet data (a control object's control object) a reader follows.
 pub const MAX_NESTED_TAILS: usize = 4;
@@ -289,6 +294,62 @@ impl TailData {
     }
 }
 
+/// The frame a control object's packet data is in (module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TailFrame {
+    /// Torque's protocol: no frame on the wire, the values are the world's.
+    #[default]
+    Absent,
+    /// The world's, on a connection that carries frames.
+    World,
+    /// The parent's whose ghost index is `ghost`, at its shape's node `node` (`None`: its origin): a Player's position,
+    /// velocity and yaw are its local pose's.
+    Parent { ghost: u32, node: Option<u16> },
+}
+
+impl TailFrame {
+    fn write(self, w: &mut BitWriter, ghost_bits: u8) {
+        match self {
+            TailFrame::Absent => {}
+            TailFrame::World => w.write_flag(false),
+            TailFrame::Parent { ghost, node } => {
+                w.write_flag(true);
+                w.write_bits(ghost, ghost_bits);
+                w.write_flag(node.is_some());
+                if let Some(node) = node {
+                    w.write_bits(u32::from(node), crate::block::NODE_BITS);
+                }
+            }
+        }
+    }
+
+    /// Reads a frame, charging its bytes to `charge` as a record's are charged.
+    fn read(
+        r: &mut BitReader,
+        ghost_bits: u8,
+        charge: &mut ChargeFn,
+    ) -> Result<TailFrame, NetError> {
+        let start = r.position();
+        let frame = TailFrame::read_bits(r, ghost_bits)?;
+        pay(charge, (r.position() - start).div_ceil(8).max(1) as u64)?;
+        Ok(frame)
+    }
+
+    fn read_bits(r: &mut BitReader, ghost_bits: u8) -> Result<TailFrame, NetError> {
+        if !r.read_flag()? {
+            return Ok(TailFrame::World);
+        }
+        let ghost = r.read_bits(ghost_bits)?;
+        let node = if r.read_flag()? {
+            // Read in 16 bits: the cast keeps every bit.
+            Some(r.read_bits(crate::block::NODE_BITS)? as u16)
+        } else {
+            None
+        };
+        Ok(TailFrame::Parent { ghost, node })
+    }
+}
+
 /// A TGE control object's packet data, with the nested packet data of a Player's own control object.
 #[derive(Debug, Clone)]
 pub struct TgePacketData {
@@ -298,16 +359,19 @@ pub struct TgePacketData {
     /// After a Player's control index: that object's packet data. The host fills it whenever the Player's data names a control
     /// object (`writePacketData` follows the index with the object's own data); without it only the index is written.
     pub nested: Option<Box<dyn ControlData>>,
+    /// The frame its values are in, written after everything else (module docs).
+    pub frame: TailFrame,
 }
 
 impl TgePacketData {
-    /// Packet data with the position its data carries and nothing nested.
+    /// Packet data with the position its data carries, nothing nested and no frame.
     pub fn new(data: TailData) -> TgePacketData {
         let position = data.position();
         TgePacketData {
             data,
             position,
             nested: None,
+            frame: TailFrame::Absent,
         }
     }
 }
@@ -316,6 +380,7 @@ impl PartialEq for TgePacketData {
     fn eq(&self, other: &TgePacketData) -> bool {
         self.data == other.data
             && self.position.map(f32::to_bits) == other.position.map(f32::to_bits)
+            && self.frame == other.frame
             && match (&self.nested, &other.nested) {
                 (None, None) => true,
                 (Some(a), Some(b)) => a.same_as(b.as_ref()),
@@ -343,6 +408,7 @@ impl ControlData for TgePacketData {
         {
             n.write(w, ghost_bits);
         }
+        self.frame.write(w, ghost_bits);
     }
 
     fn box_clone(&self) -> Box<dyn ControlData> {
@@ -374,11 +440,23 @@ pub enum TailClass {
 /// The class-directed reader: the class of the object at a ghost index comes from `class_of` (the client's ghost table).
 pub struct TgeTails<'a> {
     pub class_of: &'a dyn Fn(u32) -> Option<TailClass>,
+    /// The packet data ends with its frame ([`TailFrame`]): the engine's own protocol with the scene hierarchy's section on.
+    pub frames: bool,
 }
 
 impl<'a> TgeTails<'a> {
     pub fn new(class_of: &'a dyn Fn(u32) -> Option<TailClass>) -> TgeTails<'a> {
-        TgeTails { class_of }
+        TgeTails {
+            class_of,
+            frames: false,
+        }
+    }
+
+    /// The reader of a connection whose packet data ends with its frame when `frames`.
+    #[must_use]
+    pub fn with_frames(mut self, frames: bool) -> TgeTails<'a> {
+        self.frames = frames;
+        self
     }
 
     /// Reads the packet data of the object at `index`, following a Player's nested data up to [`MAX_NESTED_TAILS`] deep.
@@ -420,10 +498,16 @@ impl<'a> TgeTails<'a> {
             _ => None,
         };
         let position = data.position();
+        let frame = if self.frames && depth == 0 {
+            TailFrame::read(r, ghost_bits, charge)?
+        } else {
+            TailFrame::Absent
+        };
         Ok(Box::new(TgePacketData {
             data,
             position,
             nested,
+            frame,
         }))
     }
 }

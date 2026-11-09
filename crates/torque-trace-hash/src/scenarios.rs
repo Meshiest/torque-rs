@@ -133,6 +133,11 @@ pub fn scene() -> Vec<Scenario> {
             mode: Some(Mode::Engine),
             run: crate::hierarchy_props::run,
         },
+        Scenario {
+            name: "turret",
+            mode: Some(Mode::Engine),
+            run: crate::turret::turret,
+        },
     ]
 }
 
@@ -298,7 +303,14 @@ pub(crate) fn observe_server(rig: &Rig, h: &mut TraceHasher, control: Control) {
 
 /// What the client's prediction holds, folded in by its bits; whether it was running a vehicle.
 pub(crate) fn observe_client(rig: &Rig, h: &mut TraceHasher) -> bool {
-    let st = rig.client.borrow();
+    observe_state(&rig.client.borrow(), h)
+}
+
+/// What a client's prediction holds ([`observe_client`] of any of the rig's clients).
+pub(crate) fn observe_state(
+    st: &torque_client::state::ClientState<torque_client::conn::tge::TgeConn>,
+    h: &mut TraceHasher,
+) -> bool {
     let Some(conn) = st.conn.conn.as_ref() else {
         h.u32(0);
         return false;

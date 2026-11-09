@@ -10,7 +10,9 @@ use torque_collide::math::{Matrix, matrix_product, mul_p, quat_matrix};
 use torque_engine::{ClientStage, EngineBuilder, ProtocolKind, ServerStage};
 use torque_game::scene::access::matrix_of;
 use torque_game::scene::links::{self, ChildRefusal, ChildRule};
-use torque_plugin_hierarchy::{HierarchyPlugin, ServerHierarchy};
+use torque_net::bits::BitWriter;
+use torque_plugin_hierarchy::{Clients, HierarchyPlugin, Keep, ParentRef, ServerHierarchy};
+use torque_server::net::peer::PeerKind;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
@@ -863,6 +865,94 @@ fn a_player_child_moves_in_its_parents_frame() {
     assert!(
         worst < 2e-3,
         "its local path differs by {worst} on a moving parent"
+    );
+}
+
+/// A Player hung on a parent that tilts and turns keeps an upright yaw in the parent's frame: its local rotation is a turn
+/// about the parent's up alone, and only its own moves turn it (none here).
+#[test]
+fn a_player_childs_rotation_is_its_yaw_in_its_parents_frame() {
+    let mut s = server(&[]);
+    let base = id(&mut s, "return marker(\"0 0 0\");");
+    let player = id(
+        &mut s,
+        "return new Player() { datablock = FigureData; position = \"0 0 1\"; rotation = \"0 0 1 23\"; };",
+    );
+    assert_eq!(
+        eval(&mut s, &format!("return {player}.setParent({base});")),
+        "1"
+    );
+    let mut first = None;
+    for tick in 0..120 {
+        let tilt = (tick % 40) as f32 * 0.005;
+        eval(
+            &mut s,
+            &format!("{base}.setTransform(\"0 0 0 1 0.5 0 {tilt}\");"),
+        );
+        s.tick();
+        let local = hierarchy(&s).local(player).expect("still a child");
+        let [x, y, ..] = local.rotation;
+        assert!(
+            x == 0.0 && y == 0.0,
+            "tick {tick}: a tilted local rotation {:?}",
+            local.rotation
+        );
+        let first = *first.get_or_insert(local.rotation);
+        assert_eq!(local.rotation, first, "tick {tick}: the yaw moved");
+    }
+    let yaw = torque_game::sim::player::state(s.vm(), player).and_then(|p| p.frame_yaw);
+    // The rotation field is in degrees.
+    let turned = 23f32.to_radians();
+    assert!(
+        yaw.is_some_and(|y| (y - turned).abs() < 1e-3),
+        "its frame yaw is {yaw:?}"
+    );
+    eval(&mut s, &format!("{player}.setParent(0);"));
+    s.tick();
+    assert_eq!(
+        torque_game::sim::player::state(s.vm(), player).and_then(|p| p.frame_yaw),
+        None,
+        "a Player taken off keeps a frame yaw"
+    );
+}
+
+/// The control data of a Player child, written for a peer of kind `peer`, on a server of Torque's protocol whose hierarchy
+/// fills the per-ghost block (`hung`), or with no hierarchy at all: its bits and bytes.
+fn control_data(hung: bool, peer: PeerKind) -> (usize, Vec<u8>) {
+    let mut s = server_in(ProtocolKind::Tge, &[]);
+    let base = id(&mut s, "return marker(\"0 0 0\");");
+    let player = id(
+        &mut s,
+        "return new Player() { datablock = FigureData; position = \"2 0 1\"; };",
+    );
+    if hung {
+        let h = ServerHierarchy::install(s.vm_mut(), Clients::Links);
+        let parent = ParentRef::origin(torque_hierarchy::ObjId(base));
+        h.set_parent(s.vm_mut(), player, Some(parent), Keep::World)
+            .expect("the Player hangs on the marker");
+    }
+    let codecs = torque_server::net::codecs::net_codecs(s.vm());
+    let index = |_: ObjId| Some(5);
+    let control = codecs
+        .peer_control_object(s.vm(), player, &index, peer)
+        .expect("a Player's control data");
+    let mut w = BitWriter::new();
+    control.packet_data().write(&mut w, 10);
+    (w.bits(), w.into_bytes())
+}
+
+/// A peer of Torque's own never reads a frame, so on a server whose hierarchy fills the block it gets the control data of a
+/// server with no hierarchy, bit for bit; a peer of the engine's own gets the frame.
+#[test]
+fn a_torque_peer_gets_the_control_data_of_a_server_without_the_hierarchy() {
+    let plain = control_data(false, PeerKind::Tge);
+    assert_eq!(control_data(true, PeerKind::Tge), plain);
+    let framed = control_data(true, PeerKind::EnginePeer);
+    assert!(
+        framed.0 > plain.0,
+        "the engine's peer got no frame: {} bits, {} without",
+        framed.0,
+        plain.0
     );
 }
 

@@ -15,7 +15,8 @@ use collide::math::F3;
 use ghost_world::tge::{TgeClientSet, TgeDatablock, TgeTail, shape_part};
 use ghosts::codec::F32;
 use ghosts::tails::{
-    PlayerTail, PlayerTailMotion, ShapeTail, TailData, VehicleTail, WheelTail, WheeledTail,
+    PlayerTail, PlayerTailMotion, ShapeTail, TailData, TailFrame, VehicleTail, WheelTail,
+    WheeledTail,
 };
 use ghosts::vehicle::VehiclePart;
 use ghosts::{TgeClass, TgePacketData, TgeRecord, TgeShapeBase, Value};
@@ -27,7 +28,7 @@ use super::{
     PlayerWords, ShapeState, ShotRecord, VehiclePose, VehicleUpdate, WheelDatablocks,
 };
 
-fn player_words(p: &PlayerTail, translation: [f32; 3]) -> PlayerWords {
+fn player_words(p: &PlayerTail, translation: [f32; 3], frame: TailFrame) -> PlayerWords {
     PlayerWords {
         energy: p.shape.energy.get(),
         flag: false,
@@ -40,6 +41,7 @@ fn player_words(p: &PlayerTail, translation: [f32; 3]) -> PlayerWords {
         head_z: p.head[1].get(),
         rot_z: p.rotation_z.get(),
         translation,
+        frame,
     }
 }
 
@@ -81,7 +83,7 @@ impl EngineSet for TgeClientSet {
             return None;
         };
         Some(PlayerPacket {
-            words: player_words(t, p.position),
+            words: player_words(t, p.position, p.frame),
             controlled: t.control.zip(p.nested.as_deref()),
         })
     }
@@ -111,6 +113,7 @@ impl EngineSet for TgeClientSet {
             data: TailData::Player(tail),
             position: words.translation,
             nested,
+            frame: words.frame,
         })
     }
 
@@ -174,6 +177,7 @@ impl EngineSet for TgeClientSet {
             data,
             position: translation,
             nested: None,
+            frame: TailFrame::Absent,
         })
     }
 }
@@ -306,7 +310,7 @@ impl EngineTail for TgeTail {
     fn player(&self) -> Option<PlayerWords> {
         match self {
             TgeTail::Data(p) => match &p.data {
-                TailData::Player(t) => Some(player_words(t, p.position)),
+                TailData::Player(t) => Some(player_words(t, p.position, p.frame)),
                 _ => None,
             },
             _ => None,

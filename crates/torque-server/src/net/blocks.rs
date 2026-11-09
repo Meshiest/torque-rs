@@ -2,7 +2,9 @@
 //! [`GhostBlocks`] in the server's script engine, and every record [`super::torque::TgeSource`] packs for a peer of the
 //! engine's own is followed by the block. The same source scopes an object's relatives with it ([`GhostBlocks::relatives`]),
 //! orders their first records parents first ([`GhostBlocks::height`]) and stamps its full query with what the block's links
-//! change ([`GhostBlocks::revision`]). A server without one sends no block, as Torque's does.
+//! change ([`GhostBlocks::revision`]). The same seam says which frame a control object's packet data is in
+//! ([`GhostBlocks::control_frame`]: a controlled child's parent's, once the connection has the parent's ghost). A server
+//! without one sends no block and no frame, as Torque's does.
 
 use std::rc::Rc;
 
@@ -45,6 +47,35 @@ pub trait GhostBlocks {
 
     /// A number that moves whenever a link is made or taken off.
     fn revision(&self) -> u64;
+
+    /// The frame the packet data of control object `obj` is in for a connection whose acknowledged ghosts `ghost_index`
+    /// names: its parent's, when it has a parent whose first record that connection acknowledged (`None`: the world's).
+    /// Called as the head is written, with the server's script engine (the parent's nodes); the default has none.
+    fn control_frame(
+        &self,
+        vm: &Vm,
+        obj: ObjId,
+        ghost_index: &dyn Fn(ObjId) -> Option<u32>,
+    ) -> Option<ControlFrame> {
+        let _ = (vm, obj, ghost_index);
+        None
+    }
+}
+
+/// A control object's frame ([`GhostBlocks::control_frame`]): where it hangs and its local pose there, rounded to the wire's
+/// steps as its clients have it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlFrame {
+    /// The parent's ghost index on the connection.
+    pub ghost: u32,
+    /// The node of the parent's shape it hangs on (`None`: the origin).
+    pub node: Option<u16>,
+    /// The parent's world times the node: the frame's own transform (its rotation turns a velocity into the frame).
+    pub attachment: torque_collide::math::Matrix,
+    /// The local translation.
+    pub translation: [f32; 3],
+    /// The yaw in the frame (a Player's, which turns there by its moves alone).
+    pub yaw: f32,
 }
 
 struct Installed(Rc<dyn GhostBlocks>);

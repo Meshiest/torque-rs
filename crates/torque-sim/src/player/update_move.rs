@@ -234,6 +234,11 @@ pub(super) fn head_and_rotation(s: &mut PlayerState, db: &PlayerData, mv: &Move)
         s.head[2] = held(s.head[2] + turn, -limit, limit);
     } else {
         s.rot[2] += turn;
+        // In a parent's frame the body turns there by the same turn, so the yaw a client and the server compare is
+        // the frame's alone, whatever the parent's own turn.
+        if let Some(yaw) = s.frame_yaw.as_mut() {
+            *yaw = into_one_turn(*yaw + turn);
+        }
         s.head[2] *= 0.5;
         if s.control_object.is_some() {
             s.head[0] *= 0.5;

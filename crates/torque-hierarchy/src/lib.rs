@@ -47,6 +47,11 @@
 //!
 //! [`compose`] is the resolve's own composition, public so a host that draws children at poses of its own (a client, at its
 //! parent's drawn pose) composes them exactly as the tree does; [`Hierarchy`] is `Clone` for a client world that is.
+//! [`wire_local`], [`wire_form`], [`same_pose`] and [`RESOLVE_ROUNDS`] are the rest of a server's resolve, for a host that runs a child's
+//! own simulation in its parent's frame by itself (a client predicting the child it controls): the local pose a write
+//! leaves, rounded to the wire's steps, when a resolve leaves a child where it is, and how often it goes round
+//! (`wire_local_is_what_set_world_keeps`). [`Hierarchy::attachment`] gives the parent's pose and node a child hangs on, for a
+//! host that computes such a local pose itself.
 //!
 //! Extension points: a new refusal is a [`ParentError`] variant plus a check in [`Hierarchy::check_parent`] (pure, so a client
 //! can run it); a new field of [`Local`] needs `compose`, `quant` and [`Local::validate`] changed together; what a node is
@@ -69,7 +74,7 @@ pub use caps::{
     Caps, HARD_CHILDREN, HARD_DEPTH, HARD_DESCENDANTS, HARD_TOTAL, MAX_SCALE, MAX_TRANSLATION,
     MAX_WORLD, MIN_SCALE, ParentError, ROTATION_ROW_LENGTH,
 };
-pub use compose::compose;
+pub use compose::{RESOLVE_ROUNDS, compose, same_pose, wire_form, wire_local};
 pub use quant::{
     MAX_ROTATION_CODE, MAX_TRANSLATION_CODE, QuantLocal, QuantRotation, ROTATION_BITS,
     TRANSLATION_STEPS, UNIT_SCALE_CODE, quantize,

@@ -968,7 +968,8 @@ impl TgeFeed {
                 &mut r,
                 self.widths.ghost_bits,
                 &mut charge,
-                &mut ghosts::TgeTails::new(&class_of),
+                // The packet data ends with its frame where the per-ghost block carries the scene hierarchy.
+                &mut ghosts::TgeTails::new(&class_of).with_frames(self.blocks.links),
             )?
         };
         // The point the head left the stream at, which the ghosts are read against: a resent Player at a vehicle's wheel sends no

@@ -65,7 +65,7 @@ pub use plugin::{
 };
 pub use set::GhostCodecSet;
 pub use shapebase::TgeShapeBase;
-pub use tails::{TailClass, TgePacketData, TgeTails};
+pub use tails::{TailClass, TailFrame, TgePacketData, TgeTails};
 pub use tge::{TgeClass, TgeGhosts, TgeRecord, tge_reps};
 pub use value::Value;
 pub use view::{Link, ObjectView, PackCtx, boolean, fld, id, int, raw, raws, text, word, xform};

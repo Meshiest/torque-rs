@@ -140,6 +140,7 @@ fn a_child_sits_on_its_parents_node_and_the_predicted_objects_children_go_with_i
         &w,
         &mut objects,
         linked(Some(&mut cache), Some(&reader), 5),
+        &mut ghost_world::world::TickPoses::default(),
         &mut work,
         TICK_WORK,
     );
@@ -222,6 +223,7 @@ fn a_hostile_tree_is_placed_within_the_ticks_budget_each_ghost_worked_out_once()
         &w,
         &mut cut,
         linked(Some(&mut cache), Some(&reader), u32::MAX),
+        &mut ghost_world::world::TickPoses::default(),
         &mut work,
         TICK_WORK,
     );
@@ -240,6 +242,7 @@ fn a_hostile_tree_is_placed_within_the_ticks_budget_each_ghost_worked_out_once()
         &w,
         &mut all,
         linked(Some(&mut cache), Some(&reader), u32::MAX),
+        &mut ghost_world::world::TickPoses::default(),
         &mut work,
         u64::MAX,
     );

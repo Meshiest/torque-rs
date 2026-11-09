@@ -23,7 +23,9 @@
 //! - [`ClientWorld::world_pose`] and the renderer (`torque_render_scene::mounts`) draw a child the way the server composes it,
 //!   by `torque_hierarchy::compose` (torque-plugin-hierarchy's `tests/net.rs`: within a millimetre over 600 ticks with a fifth
 //!   of the datagrams lost). A plugin's lookup of where a ghost is (`torque_engine::net_classes::ClientGhostLookup`, from the
-//!   client's connection) is [`ClientWorld::world_pose`] too (torque-plugin-rope's `tests/hierarchy_anchor.rs`).
+//!   client's connection) is [`ClientWorld::world_pose`] too (torque-plugin-rope's `tests/hierarchy_anchor.rs`). The control
+//!   object the client predicts is where the prediction draws it (`control_render`), a controlled child on its parent's drawn
+//!   pose (torque-plugin-hierarchy's `tests/turret.rs`).
 //!   [`ClientWorld::tick_pose_in`] gives a prediction tick's pose through the same compose, each local
 //!   pose as last sent, a ghost the caller runs where it runs it and any other ghost nothing carries at its record's pose;
 //!   each ghost a tick's chains reach is worked out once ([`world::TickPoses`]) and charged, and a refused charge stops the

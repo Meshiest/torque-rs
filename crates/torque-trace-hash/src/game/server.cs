@@ -126,6 +126,13 @@ function GameConnection::onConnect(%client)
 function GameConnection::onDataBlocksDone(%client, %sequence)
 {
    %client.activateGhosting();
+   // A later connection a scenario gives an object of its own to control.
+   if (isObject($Trace::Next))
+   {
+      %client.setControlObject($Trace::Next);
+      $Trace::Next = "";
+      return;
+   }
    // The connection controls the figure; for the buggy the figure sits at its wheel and its control object is the buggy.
    if ($Trace::Control $= "buggy")
    {

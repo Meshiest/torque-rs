@@ -947,7 +947,7 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
                 let index = |o: ObjId| ghost.and_then(|g| g.mgr.ghost_index(o));
                 let adapter = ghost
                     .and_then(|g| g.control)
-                    .and_then(|obj| st.codecs.control_object(&*ctx.vm, obj, &index));
+                    .and_then(|obj| st.codecs.peer_control_object(&*ctx.vm, obj, &index, peer));
                 c.control.write_head(w, ctx.ghost_bits, adapter.as_deref());
             }),
             None => {

@@ -71,10 +71,12 @@ Players, vehicles, items and plugin classes may be children as well as parents. 
 its parent's frame: it ticks after its parent, from where its parent's turn left it; its own moves, physics and limits act on
 that pose; and what it writes back becomes its new local pose. When a parent turns, the child's velocity turns with it, so a
 Player walking on a turning platform keeps walking the same way on the platform. Each class keeps its own rules about its
-rotation: a Player stays upright and keeps only its yaw, an Item its own upright rotation.
+rotation: a Player stays upright and keeps only its yaw, an Item its own upright rotation. A Player child's yaw is kept in its
+parent's frame: its local rotation is a turn about the parent's up alone, and only its own moves turn it there (the parent's
+tilt and turns carry it, they never turn it on the parent), while in the world it stands upright as any Player does.
 
 So a player can drive a turret that sits on another player's tank: the turret is the tank's child, the tank carries it, and
-the turret's own controls turn it on the tank.
+the turret's own controls turn it on the tank (see [A controlled child](#a-controlled-child)).
 
 An object is mounted or parented, never both: a mounted object (a SpotLight riding a shape too) is refused (`mounted`) and
 `mountObject` returns 0 for an object that has a parent. Mounts and parents never close a loop between them: a parent that
@@ -233,3 +235,39 @@ is exact and what is not:
 The blend a frame shows between two local poses never reaches the collision world: a frame draws children with
 `ClientWorld::world_pose`, a tick collides with `ClientWorld::tick_pose`. In Torque's protocol no link reaches a client, so its
 prediction is Torque's.
+
+## A controlled child
+
+A client can control a child: a gunner in a turret on a tank someone else drives. The server's state of the child and the
+client's prediction of it are compared each packet (the control object's checksum), and the tank's motion since the client's
+latest record of it is the one thing the client cannot know. So in the engine's protocol the server sends a controlled child's
+state in its parent's frame, and the client predicts it there:
+
+- **On the wire.** The control object's packet data ends with its frame: one bit for the world's, or the parent's ghost index
+  and node. In a parent's frame a Player's position is its local translation, its velocity is turned into the frame and its
+  yaw is its yaw on the parent. The server names the parent only once that connection has the parent's ghost; before, the
+  frame is the world's and the client predicts as before. Only a peer that is sent the per-ghost block gets a frame, and only
+  a Player that sends its position (a mounted one sends none) is sent in a parent's; a peer of Torque's own gets the data a
+  server with no hierarchy sends.
+- **Each move.** The client places the child where the parent's tick pose and the local pose put it (the parent where its
+  latest record puts it, or where the client runs it), runs the move in the world as the server does (the same Player
+  simulation, against the same collision world, which holds the parent there too), and takes the new local pose back rounded
+  to the wire's steps, as the server's tree rounds it (`torque_hierarchy::wire_local`). The server's resolve rounds, its
+  carry of the velocity and its Player rules are the same code on both sides.
+- **What is compared.** The local translation and the yaw on the parent, which the moves alone change: a parent's drive, turns
+  and tilt carry the child without moving either, so the client predicts them exactly whatever the parent did since its
+  latest record. The velocity is compared in the frame too; a child standing on its parent has none of its own.
+- **Drawing.** The child is drawn on its parent as the frame draws the parent: interpolated when someone else drives it, the
+  client's own prediction when it drives the parent itself. Its predicted pose is moved from the parent's tick pose to the
+  parent's drawn pose, and so are the eye and the camera, so the turret never lags its tank by a tick.
+- **Cost.** The parent's tick pose is worked out once a tick, its chain charged to the prediction budget as the placement of
+  children is, from the same tick poses, so no ghost is worked out twice; a tick with no budget left for it, or a parent the
+  client holds no ghost of, runs no move (`unplaced` in the predictor's counts), and the next tick that places the parent
+  replays the moves that waited.
+
+`cargo test -p torque-plugin-hierarchy --test turret` runs the case of the example above: one client drives the tank and a
+second controls a turret on its roof, turning it and looking up and down, at latencies of 0 and 3 ticks. The gunner is
+corrected no more often than for the same moves on a base that never moves (none, either way), the driver as often with the
+gunner as without, and the gunner draws the turret within a millimetre of where its drawn tank and the turret's local pose
+put it. The `turret` line of `just trace-hash` hashes that run. A gunner who walks about its parent compares a velocity
+the parent's turns have turned, so it may be corrected now and then; a turret, which stands and aims, never is.

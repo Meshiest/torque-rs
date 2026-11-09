@@ -114,6 +114,104 @@ impl ClientGame for TraceClient {
     }
 }
 
+/// A client of the rig's server: its script engine, its state and its end of the memory link.
+pub struct Peer {
+    pub vm: Vm,
+    pub client: Rc<RefCell<ClientState<TgeConn>>>,
+    addr: SocketAddrV4,
+    sent: DatagramQueue,
+    incoming: DatagramQueue,
+    /// The datagrams from the server waiting out the rig's latency, with the step each is due at.
+    held: std::collections::VecDeque<(u32, Vec<u8>)>,
+}
+
+impl Peer {
+    /// A client of `engine`'s plugins at `addr`, reading the shapes from `files`, with `setup` run on its script engine before
+    /// it connects to the rig's server.
+    fn connect(
+        engine: &Engine,
+        files: MemFiles,
+        addr: SocketAddrV4,
+        setup: impl FnOnce(&mut Vm) -> Result<(), String>,
+    ) -> Result<Peer, String> {
+        let mut vm = Vm::new();
+        torque_game::specs::install(&mut vm);
+        let gui = torque_gui::register(&mut vm);
+        let mem = MemoryDatagrams {
+            local_port: addr.port(),
+            ..MemoryDatagrams::default()
+        };
+        let (sent, incoming) = (Rc::clone(&mem.sent), Rc::clone(&mem.incoming));
+        let net = Rc::new(RefCell::new(torque_client::net::ClientNet::default()));
+        {
+            let mut n = net.borrow_mut();
+            n.policy = NetPolicy::Loopback;
+            n.socket = Some(Box::new(mem));
+        }
+        let client = Rc::new(RefCell::new(ClientState::<TgeConn> {
+            net,
+            root: ".".into(),
+            ..ClientState::default()
+        }));
+        torque_client::conn::register(&mut vm, &client, &gui);
+        // The client reads the shapes of the datablocks it is sent (a vehicle's wheel count, the floor's hulls) from the same files.
+        torque_client::game::set_client_game(&mut vm, Rc::new(TraceClient(files)));
+        // What the engine's plugins say in a connect request (their manifest), as a client of the same engine says it: nothing
+        // for an engine that says nothing on the wire.
+        torque_client::conn::tge::ConnectHello::install(&mut vm, engine);
+        install_rpcs(&mut vm, engine)?;
+        // The client's nonces, as the server's keys, are fixed so that a run's datagrams repeat.
+        vm.set_extension(Rc::new(EngineNonceKey(CHALLENGE_KEY)));
+        vm.set_step_limit(Some(50_000_000));
+        setup(&mut vm)?;
+        vm.advance_time(1_000);
+        vm.eval(
+            format!("new GameConnection(TraceConn); TraceConn.connect(\"{SERVER}\");").as_bytes(),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Peer {
+            vm,
+            client,
+            addr,
+            sent,
+            incoming,
+            held: std::collections::VecDeque::new(),
+        })
+    }
+
+    /// The client's half of a step: its clock moved on a tick and its network pass.
+    fn step(&mut self) {
+        self.vm.advance_time(TICK_MS);
+        EnginePass.net(&mut self.vm, &self.client);
+        pump_rpcs(&mut self.vm);
+    }
+
+    /// The client's server heads that corrected its prediction.
+    pub fn corrections(&self) -> u64 {
+        self.client
+            .borrow()
+            .conn
+            .conn
+            .as_ref()
+            .map_or(0, |c| c.predict.stats.corrections)
+    }
+
+    /// Whether the client has a connection with a control object it predicts.
+    pub fn predicting(&self) -> bool {
+        self.client
+            .borrow()
+            .conn
+            .conn
+            .as_ref()
+            .is_some_and(|c| c.predict.packet_data().is_some())
+    }
+
+    /// Sets a client move global for the next tick.
+    pub fn set_global(&mut self, name: &str, value: f32) {
+        self.vm.set_global_float(name.as_bytes(), f64::from(value));
+    }
+}
+
 /// A server of `MinimalPlugins` and the plugin under test, a client connected to it, and the link between them.
 pub struct Rig {
     /// The protocol the server and the client speak.
@@ -125,6 +223,8 @@ pub struct Rig {
     pub client: Rc<RefCell<ClientState<TgeConn>>>,
     sent: DatagramQueue,
     incoming: DatagramQueue,
+    /// The clients joined after the first ([`Rig::add_client`]), each on a port of its own, stepped after the first.
+    pub peers: Vec<Peer>,
     /// Ticks stepped so far.
     pub ticks: u32,
     /// Every datagram carried while [`Rig::record_wire`] was on, in the order carried: true when it went to the server.
@@ -182,49 +282,16 @@ impl Rig {
             host.table.rekey(CHALLENGE_KEY);
         }
 
-        let mut vm = Vm::new();
-        torque_game::specs::install(&mut vm);
-        let gui = torque_gui::register(&mut vm);
-        let mem = MemoryDatagrams {
-            local_port: CLIENT.port(),
-            ..MemoryDatagrams::default()
-        };
-        let (sent, incoming) = (Rc::clone(&mem.sent), Rc::clone(&mem.incoming));
-        let net = Rc::new(RefCell::new(torque_client::net::ClientNet::default()));
-        {
-            let mut n = net.borrow_mut();
-            n.policy = NetPolicy::Loopback;
-            n.socket = Some(Box::new(mem));
-        }
-        let client = Rc::new(RefCell::new(ClientState::<TgeConn> {
-            net,
-            root: ".".into(),
-            ..ClientState::default()
-        }));
-        torque_client::conn::register(&mut vm, &client, &gui);
-        // The client reads the shapes of the datablocks it is sent (a vehicle's wheel count, the floor's hulls) from the same files.
-        torque_client::game::set_client_game(&mut vm, Rc::new(TraceClient(files)));
-        // What the engine's plugins say in a connect request (their manifest), as a client of the same engine says it: nothing
-        // for an engine that says nothing on the wire.
-        torque_client::conn::tge::ConnectHello::install(&mut vm, &engine);
-        install_rpcs(&mut vm, &engine)?;
-        // The client's nonces, as the server's keys, are fixed so that a run's datagrams repeat.
-        vm.set_extension(Rc::new(EngineNonceKey(CHALLENGE_KEY)));
-        vm.set_step_limit(Some(50_000_000));
-        setup(&mut vm)?;
-        vm.advance_time(1_000);
-        vm.eval(
-            format!("new GameConnection(TraceConn); TraceConn.connect(\"{SERVER}\");").as_bytes(),
-        )
-        .map_err(|e| e.to_string())?;
+        let peer = Peer::connect(&engine, files, CLIENT, setup)?;
         Ok(Rig {
             mode,
             engine,
             server,
-            client_vm: vm,
-            client,
-            sent,
-            incoming,
+            client_vm: peer.vm,
+            client: peer.client,
+            sent: peer.sent,
+            incoming: peer.incoming,
+            peers: Vec::new(),
             ticks: 0,
             wire: Vec::new(),
             recording: false,
@@ -251,8 +318,20 @@ impl Rig {
                 end.inject(SocketAddr::V4(CLIENT), &data);
             }
         }
+        for peer in &self.peers {
+            for (to, data) in peer.sent.borrow_mut().drain(..) {
+                if to == SERVER {
+                    end.inject(SocketAddr::V4(peer.addr), &data);
+                }
+            }
+        }
         let mut incoming = self.incoming.borrow_mut();
+        let (ticks, latency) = (self.ticks, self.latency);
         for (to, data) in end.take_sent() {
+            if let Some(peer) = self.peers.iter_mut().find(|p| SocketAddr::V4(p.addr) == to) {
+                peer.held.push_back((ticks + latency, data));
+                continue;
+            }
             if to == SocketAddr::V4(CLIENT) {
                 if self.recording {
                     self.wire.push((false, data.clone()));
@@ -270,10 +349,19 @@ impl Rig {
             let (_, data) = self.held.pop_front().expect("the front");
             incoming.push_back((SERVER, data));
         }
+        for peer in &mut self.peers {
+            while let Some((due, _)) = peer.held.front()
+                && *due <= ticks
+            {
+                let (_, data) = peer.held.pop_front().expect("the front");
+                peer.incoming.borrow_mut().push_back((SERVER, data));
+            }
+        }
     }
 
-    /// Holds each datagram from the server for `steps` steps before the client gets it (a link with latency: the client's
-    /// moves pile up unacknowledged, and a correction replays them). 0, the default, carries every datagram at once.
+    /// Holds each datagram from the server for `steps` steps before a client gets it (a link with latency: the client's moves
+    /// pile up unacknowledged, and a correction replays them), for every client. 0, the default, carries every datagram at
+    /// once.
     pub fn set_latency(&mut self, steps: u32) {
         self.latency = steps;
     }
@@ -297,8 +385,34 @@ impl Rig {
         self.client_vm.advance_time(TICK_MS);
         EnginePass.net(&mut self.client_vm, &self.client);
         self.pump_rpcs();
+        for peer in &mut self.peers {
+            peer.step();
+        }
         self.carry();
         self.ticks += 1;
+    }
+
+    /// Connects another client (the next port up) and steps until it predicts a control object, at most `limit` ticks. The
+    /// server's `onDataBlocksDone` gives it its control object (`$Trace::Next`, when set).
+    ///
+    /// # Errors
+    /// The client could not start, or never predicted in `limit` ticks.
+    pub fn add_client(&mut self, limit: u32) -> Result<usize, String> {
+        let port = CLIENT.port() + 1 + self.peers.len() as u16;
+        let addr = SocketAddrV4::new(*CLIENT.ip(), port);
+        let peer = Peer::connect(&self.engine, files(), addr, |_| Ok(()))?;
+        self.peers.push(peer);
+        let index = self.peers.len() - 1;
+        for _ in 0..limit {
+            self.step();
+            if self.peers[index].predicting() {
+                return Ok(index);
+            }
+        }
+        Err(format!(
+            "client {} never predicted its control object in {limit} ticks",
+            index + 1
+        ))
     }
 
     /// One tick of the server, then the client's clock moved on a tick in `frames` equal steps with the client's network pass
@@ -329,10 +443,7 @@ impl Rig {
 
     /// The client's RPCs, as a window client's tick pumps them after its network pass.
     fn pump_rpcs(&mut self) {
-        if let Some(rpc) = self.client_vm.extension::<ClientRpc>() {
-            let tick = u64::from(self.client_vm.sim_time()) / u64::from(TICK_MS);
-            rpc.pump(&mut self.client_vm, tick);
-        }
+        pump_rpcs(&mut self.client_vm);
     }
 
     /// The client's ticks so far (its last tick's time).
@@ -376,6 +487,14 @@ impl Rig {
 /// What a window client installs for the engine's channels and RPCs in the engine's protocol: the channels the connection reads
 /// and writes, and the RPCs over the session's lanes (the script commands ride two of them). Torque's protocol installs nothing
 /// here: its runs keep the channels they had.
+/// Runs the client RPCs of `vm` (a client's) due at its tick.
+fn pump_rpcs(vm: &mut Vm) {
+    if let Some(rpc) = vm.extension::<ClientRpc>() {
+        let tick = u64::from(vm.sim_time()) / u64::from(TICK_MS);
+        rpc.pump(vm, tick);
+    }
+}
+
 fn install_rpcs(vm: &mut Vm, engine: &Engine) -> Result<(), String> {
     if engine.protocol() != ProtocolKind::Engine {
         return Ok(());

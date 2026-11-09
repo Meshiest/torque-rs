@@ -1310,9 +1310,11 @@ impl<S: ClientSet> ClientWorld<S> {
             .deleted(index, worlds, &|i| i != index && ghosts.contains_key(&i));
     }
 
-    /// Where ghost `index` is in the world, and its scale: a child at its parent's place times the parent's node (`nodes`
-    /// answers a ghost's node in its own space, as its shape is posed; a node it cannot answer counts as the parent's origin)
-    /// times its local pose; any other ghost where the client draws it (its predicted, run or held pose) or its record puts it.
+    /// Where ghost `index` is in the world, and its scale: the control object the client predicts where the prediction draws
+    /// it (`control_render`: a controlled child on its parent's drawn pose); a child at its parent's place times the parent's
+    /// node (`nodes` answers a ghost's node in its own space, as its shape is posed; a node it cannot answer counts as the
+    /// parent's origin) times its local pose; any other ghost where the client draws it (its run or held pose) or its record
+    /// puts it.
     /// `None` for a ghost the client does not hold or whose record has no pose.
     pub fn world_pose(
         &self,
@@ -1333,6 +1335,13 @@ impl<S: ClientSet> ClientWorld<S> {
         }
         let g = self.ghosts.get(&index)?;
         let scale = g.scale().unwrap_or([1.0; 3]);
+        // The control object the client predicts is where its prediction draws it (a child of a parent on the parent's drawn
+        // pose), not where the server's last local pose puts it.
+        if self.control.object == Some(index)
+            && let Some(p) = &self.control_render
+        {
+            return Some((super::links::record_matrix(p), scale));
+        }
         // The tree holds every chain to its hard depth; the bound only stops a walk that would not end.
         if depth <= hierarchy::HARD_DEPTH
             && let Some(parent) = self.links.parent(index)

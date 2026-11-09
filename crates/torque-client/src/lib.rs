@@ -63,6 +63,12 @@
 //!   (`predict::linked_tests`); it costs nothing without links. The game's static set (`StaticIndex::set_near`) is not
 //!   re-placed. torque-plugin-hierarchy's `tests/ride.rs`: a rider on a hung deck is corrected no more than on the same
 //!   deck moved as a root, and not at all on one that never moves.
+//! - A control Player hung on a parent is predicted in the parent's frame ([`predict::framed`]): the server's packet data
+//!   says so (its frame, `records::TailFrame`) and carries its local translation, velocity and yaw there; each move places
+//!   it at the parent's tick pose (from the placement's own tick poses, charged to the same budget) times its local pose,
+//!   runs the move and takes the local pose back as the server's tree rounds it, so the parent's motion past its latest
+//!   record never corrects it; a tick that cannot place the parent leaves its moves to the next that can. It is drawn, with its eye and camera, on the parent's drawn pose. torque-plugin-hierarchy's `tests/turret.rs`: a
+//!   gunner on a driven tank is corrected no more than on a still base, and the driver no more than without the gunner.
 //! - A connection reads the per-ghost block only when its engine's plugins fill it (`torque_ghosts::block::BlockSections`, a
 //!   resource of the engine, `conn::tge::ConnectHello::blocks`), and the manifest makes the server's plugins the same.
 //! - Nothing a server or an off-path sender can predict or flood is trusted: the TGE connect sequence mixes in the system's

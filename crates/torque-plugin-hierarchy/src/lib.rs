@@ -31,7 +31,9 @@
 //!   a vehicle used as a turret, an Item) moves in its parent's frame: it ticks after its parent from where its parent's turn
 //!   left it, its own moves, physics and limits act on that pose, and what it writes back becomes its new local pose. When a
 //!   parent turns, a child's velocity turns with it. Each class keeps its own rules about its rotation (a Player stays
-//!   upright and keeps only its yaw; an Item keeps its own upright rotation).
+//!   upright and keeps only its yaw; an Item keeps its own upright rotation). A Player child keeps its yaw in its parent's
+//!   frame (`PlayerState::frame_yaw`, turned by its own moves alone): its local rotation is that yaw, whatever the parent's
+//!   tilt, so a client that controls it predicts it on the parent exactly.
 //! - **World and local.** `getTransform`/`setTransform` stay world space for every object; a child's write is turned into its
 //!   local pose. `setParent` keeps the world pose by default (`keepWorld` 0 keeps the local one).
 //! - **Scale.** A parent's scale scales the translation of its node and of the child's local pose, never the child's own
@@ -80,7 +82,9 @@
 //!   (64 children, world error at most 1e-4).
 //! - A recursive delete leaves nothing of the subtree and no dangling link, and a plain delete takes flagged children and
 //!   detaches the rest: `a_recursive_delete_of_4096_nodes_leaves_nothing`, `flagged_children_go_with_their_parent`.
-//! - A Player child's own simulation runs in its parent's frame: `a_player_child_moves_in_its_parents_frame`.
+//! - A Player child's own simulation runs in its parent's frame: `a_player_child_moves_in_its_parents_frame`; its local
+//!   rotation is its yaw there, untouched by the parent's tilt and turns, and goes when it is taken off:
+//!   `a_player_childs_rotation_is_its_yaw_in_its_parents_frame`.
 //! - No client entry point, and nothing in Torque's protocol: `the_natives_are_the_servers_alone`,
 //!   `torques_protocol_leaves_the_plugin_out`; the `tge` lines of `just trace-hash` and the wire goldens unchanged.
 //!
@@ -95,7 +99,12 @@
 //! the child, so that client's record carries the child's pose, and while any connection lacks the parent its children's
 //! carries mark their records as before. When a connection makes a parent's ghost, its children's link and pose bits are
 //! marked there (`GhostBlocks::marks_on_ghost`), so a child first sent with no parent gets its link. Every link change moves the revision the source's scope stamp includes. A Player child's own move is rounded to the wire's steps
-//! like any local pose.
+//! like any local pose. A controlled child's packet data is in its parent's frame once the connection has the parent's ghost
+//! (`GhostBlocks::control_frame`: the parent's ghost and node, the attachment, the local translation and the frame yaw;
+//! torque-server's `PlayerControl` writes the Player's words from it and ends the data with its frame,
+//! `torque_ghosts::TailFrame`, for a peer that is sent the block alone: `NetCodecs::peer_control_object`), and in the world's
+//! for a Player that sends no position. A peer of Torque's own gets the data of a server with no hierarchy, bit for bit:
+//! `a_torque_peer_gets_the_control_data_of_a_server_without_the_hierarchy`.
 //!
 //! **Network invariants**, in `tests/net.rs` and `tests/net_fuzz.rs`:
 //! - A client draws every child within a millimetre of the server's world over 600 ticks with a fifth of the datagrams lost:
@@ -128,6 +137,12 @@
 //! `ClientGhostLookup`): `torque-plugin-rope`'s `tests/hierarchy_anchor.rs`. A joint's anchor on a Player child is where the
 //! resolve put it, the props' tick hook writing the tree's pending moves before it reads: `tests/joint_anchor.rs`.
 //!
+//! **Class rules on the tree** (`Shared::own_rotations`, at the start of each resolve): a Player whose link changed takes
+//! its frame yaw from its new local rotation (none once it has no parent), and every child written since keeps its class's
+//! own rotation (`torque_game::scene::links::own_rotation`) as its local one; a kept pose of such a class changes only its
+//! translation, and only a change goes round again. The Player's state is out of the scene during its own tick, so the
+//! rotation is put back at the resolve after it, not in `written`.
+//!
 //! **Prediction** (in torque-client and torque-ghost-world; nothing here). A predicting client's collision world places
 //! each child for every tick at `ClientWorld::tick_pose_in`: its parents' latest record poses (or where the client runs
 //! them) times their nodes at rest times the local pose last sent, and the predicted object's own children where it is
@@ -137,6 +152,15 @@
 //! (latencies of 0 and 3 ticks), and never on the same deck held still, and the client's collision world places the deck
 //! within a millimetre of the server's pose at the tick of its latest record; the `hierarchy` line of `just trace-hash`
 //! hashes that ride's prediction.
+//!
+//! **A controlled child** (torque-client's `predict::framed`): the client keeps the local pose its packet data sent, and for
+//! each move places the Player at its parent's tick pose times the local pose, runs the move, and takes the local pose back
+//! rounded as the tree rounds it (`torque_hierarchy::wire_local`, `wire_form`, `same_pose`, `RESOLVE_ROUNDS`, the carry's
+//! `carry_turn`: the server's own steps); it draws the Player on the parent's drawn pose, and the control object's
+//! `ClientWorld::world_pose` is that drawn pose. `tests/turret.rs`: one client drives a tank, a second controls a turret on
+//! its roof (latencies of 0 and 3 ticks); the gunner is corrected no more often than for the same moves on a still base, the
+//! driver as often as without the gunner, and the gunner draws the turret within a millimetre of its drawn tank times its
+//! local pose; the `turret` line of `just trace-hash` hashes that run.
 //!
 //! **Following changes.** [`ServerHierarchy::track_changes`] and [`ServerHierarchy::changes_since`] give a plugin the objects whose
 //! link or local pose changed since it last looked (a world move is no change), so it need not walk the tree each tick; the log

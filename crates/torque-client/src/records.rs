@@ -6,6 +6,7 @@
 
 use collide::math::F3;
 use ghost_world::ClientSet;
+pub use ghosts::TailFrame;
 use ghosts::Value;
 use net::control::ControlData;
 use net::moves::Move;
@@ -57,6 +58,8 @@ pub struct PlayerWords {
     pub rot_z: f32,
     /// The object's world translation (the control section's equal branch sends it raw).
     pub translation: F3,
+    /// The frame the words are in: a Player hung on a parent sends its local pose there.
+    pub frame: TailFrame,
 }
 
 /// A Player's packet data as read: its words and its control object's ghost index and data, when it controls one.

@@ -5,7 +5,7 @@ mod common;
 use common::{World, pose_error};
 use torque_collide::math::{IDENTITY, Matrix, mul_p, quat_matrix};
 use torque_hierarchy::{
-    Caps, Hierarchy, Keep, Local, NodeRef, ObjId, ParentError, ParentRef, Pose,
+    Caps, Hierarchy, Host, Keep, Local, NodeRef, ObjId, ParentError, ParentRef, Pose,
 };
 
 fn id(n: u32) -> ObjId {
@@ -627,4 +627,32 @@ fn a_subtree_that_got_shorter_fits_where_it_did_not() {
         .expect("0 > 1 now fits under 11");
     assert_eq!(h.depth(id(1)), 3);
     h.audit().expect("heights stay consistent");
+}
+
+/// A host that runs a child's own simulation by itself rounds each of its moves as a tree that quantizes its locals does.
+#[test]
+fn wire_local_is_what_set_world_keeps() {
+    let mut rng = common::Rng::new(7);
+    for n in 0..200 {
+        let mut host = world(2);
+        let parent = common::random_pose(&mut rng);
+        host.poses.insert(id(0), parent);
+        let mut h = Hierarchy::new(Caps::default()).quantize_locals(true);
+        let node = (n % 2 == 0).then_some(1);
+        let link = ParentRef {
+            object: id(0),
+            node: node.map_or(NodeRef::Origin, NodeRef::Node),
+        };
+        h.link(id(1), link, common::random_local(&mut rng), &host)
+            .expect("the link");
+        h.flush(&host, usize::MAX);
+        let mut world = quat_matrix(rng.quat());
+        [world[3], world[7], world[11]] = [rng.range(-4.0, 4.0), rng.range(-4.0, 4.0), 1.0];
+        h.set_world(id(1), world, &host).expect("the move");
+        let scale = h.local(id(1)).expect("held").scale;
+        let on = node.and_then(|n| host.node_matrix(id(0), n));
+        let wire = torque_hierarchy::wire_local(&world, &parent, on.as_ref(), scale)
+            .expect("a pose the tree took");
+        assert_eq!(h.local(id(1)), Some(wire), "move {n}");
+    }
 }

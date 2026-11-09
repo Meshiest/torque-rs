@@ -34,6 +34,8 @@ torque-plugin-props = { path = "../torque-plugin-props" }
 torque-plugin-hierarchy = { path = "../torque-plugin-hierarchy" }
 # The record bit a moved StaticShape marks in the hierarchy scenario.
 torque-ghosts = { path = "../torque-ghosts" }
+# Where the turret scenario's gunner draws its turret.
+torque-ghost-world = { path = "../torque-ghost-world" }
 torque-server = { path = "../torque-server" }
 torque-shapes = { path = "../torque-shapes" }
 torque-ts-vm = { path = "../torque-ts-vm" }

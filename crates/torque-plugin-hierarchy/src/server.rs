@@ -16,11 +16,11 @@ use torque_game::sim::mount;
 use torque_ghosts::block::{BlockSections, GhostBlock, LINK_MASK, LinkField, POSE_MASK, PoseField};
 use torque_hierarchy::{
     Caps, Hierarchy, Host, Keep, Local, NodeRef, ObjId as Node, ParentError, ParentRef, Pose,
-    QuantLocal, UNIT_SCALE_CODE, Violation,
+    QuantLocal, RESOLVE_ROUNDS, UNIT_SCALE_CODE, Violation, same_pose,
 };
 use torque_net::bits::BitWriter;
 use torque_net::ghost::ConnectionGhosts;
-use torque_server::net::blocks::GhostBlocks;
+use torque_server::net::blocks::{ControlFrame, GhostBlocks};
 use torque_ts_vm::sim::{ClassId, ObjId};
 use torque_ts_vm::vm::Vm;
 
@@ -175,9 +175,6 @@ impl Callback {
 /// The most callbacks that wait at once (a server that parents in a loop without a tick); past it they are counted.
 const MAX_CALLBACKS: usize = 65_536;
 
-/// How many times one resolve goes round when a class kept a pose of its own (a Player stays upright).
-const RESOLVE_ROUNDS: usize = 4;
-
 #[derive(Default)]
 struct State {
     /// Made at the first link, from the prefs.
@@ -196,6 +193,12 @@ struct State {
     /// The record bits a parent's motion would have marked on each child ([`links::carry_quiet`]), marked again when the
     /// child's link changes, so the record's own pose is current whenever a client draws the child from it.
     held: BTreeMap<ObjId, u32>,
+    /// Objects whose link changed since the last resolve: a Player among them takes its yaw in its new parent's frame (or
+    /// none, with no parent) there ([`links::set_frame_yaw`]).
+    relinked: BTreeSet<ObjId>,
+    /// Children written since the last resolve: a class that keeps a local rotation of its own (a Player's yaw in its
+    /// parent's frame, [`links::own_rotation`]) has it put back there, once its state is in again after its own tick.
+    written: BTreeSet<ObjId>,
     /// The links and local poses that changed, for a plugin that follows them ([`ServerHierarchy::track_changes`]).
     log: ChangeLog,
 }
@@ -255,6 +258,7 @@ impl State {
     /// A child's link changed (made, moved or taken off): its block's groups are due, and its record's pose too.
     fn link_changed(&mut self, vm: &Vm, id: ObjId) {
         link_changed(self.net, &mut self.held, vm, id);
+        self.relinked.insert(id);
     }
 
     fn queue(&mut self, callback: Callback) {
@@ -348,19 +352,6 @@ fn dying(vm: &Vm, id: ObjId) -> bool {
     vm.objects()
         .get(id)
         .is_some_and(|o| o.is_removing() || o.delete_pending())
-}
-
-/// Whether two transforms are the same pose within a few units in the last place (a pose the tree composed back from the
-/// object's own write): the rotations to 1e-6, the translations to four `f32` steps of their size or 1e-5 units.
-fn same_pose(a: &Matrix, b: &Matrix) -> bool {
-    (0..12).all(|i| {
-        let tolerance = if i % 4 == 3 {
-            (4.0 * f32::EPSILON * a[i].abs().max(b[i].abs())).max(1e-5)
-        } else {
-            1e-6
-        };
-        (a[i] - b[i]).abs() <= tolerance
-    })
 }
 
 /// A child a resolve writes: where its parent's motion took it, and whether that motion marks no update of its record
@@ -834,6 +825,7 @@ impl Shared {
         if self.resolving.get() {
             return;
         }
+        self.own_rotations(vm);
         let mut writes = std::mem::take(&mut *self.writes.borrow_mut());
         let mut kept = std::mem::take(&mut *self.kept.borrow_mut());
         for _ in 0..RESOLVE_ROUNDS {
@@ -877,14 +869,25 @@ impl Shared {
             let state = &mut *state;
             if let Some(tree) = state.tree.as_mut() {
                 for &(id, now) in &kept {
-                    if tree
-                        .set_world(Node(id), now, &VmHost { vm, classes })
-                        .is_err()
-                    {
-                        state.stats.refused_moves += 1;
-                    } else if tree.parent(Node(id)).is_some() {
-                        pose_changed(state.net, vm, id);
-                        state.log.note(id);
+                    let host = VmHost { vm, classes };
+                    // A class that keeps a local rotation of its own takes the kept pose's place alone, and only a
+                    // change goes round again.
+                    let kept = match links::own_rotation(vm, id) {
+                        Some(rotation) => own_local(tree, id, &now, rotation, &host).map(|local| {
+                            local.is_some_and(|local| {
+                                tree.local(Node(id)) != Some(local)
+                                    && tree.set_local(Node(id), local).is_ok()
+                            })
+                        }),
+                        None => tree.set_world(Node(id), now, &host).map(|_| true),
+                    };
+                    match kept {
+                        Err(_) => state.stats.refused_moves += 1,
+                        Ok(true) if tree.parent(Node(id)).is_some() => {
+                            pose_changed(state.net, vm, id);
+                            state.log.note(id);
+                        }
+                        Ok(_) => {}
                     }
                 }
             }
@@ -893,6 +896,57 @@ impl Shared {
         kept.clear();
         *self.writes.borrow_mut() = writes;
         *self.kept.borrow_mut() = kept;
+    }
+
+    /// The rules of the classes that keep a local rotation of their own: a Player whose link changed takes its yaw in its new
+    /// parent's frame (its local rotation's yaw, or none), and each child written since keeps that rotation as its local
+    /// one (a write gives the tree the rotation of the world pose, which for a Player upright on a tilted parent leans
+    /// against the parent).
+    fn own_rotations(&self, vm: &mut Vm) {
+        let (relinked, mut written) = {
+            let Ok(mut state) = self.state.try_borrow_mut() else {
+                return;
+            };
+            if state.relinked.is_empty() && state.written.is_empty() {
+                return;
+            }
+            (
+                std::mem::take(&mut state.relinked),
+                std::mem::take(&mut state.written),
+            )
+        };
+        for id in relinked {
+            let yaw = self
+                .local(id)
+                .map(|local| torque_game::sim::player::yaw_of(&quat_matrix(local.rotation)));
+            if links::set_frame_yaw(vm, id, yaw) && yaw.is_some() {
+                written.insert(id);
+            }
+        }
+        let mut state = self.state.borrow_mut();
+        let state = &mut *state;
+        let Some(tree) = state.tree.as_mut() else {
+            return;
+        };
+        for id in written {
+            let (Some(rotation), Some(local)) = (links::own_rotation(vm, id), tree.local(Node(id)))
+            else {
+                continue;
+            };
+            if tree
+                .set_local(Node(id), Local { rotation, ..local })
+                .is_ok()
+            {
+                pose_changed(state.net, vm, id);
+                state.log.note(id);
+                self.unapplied.set(true);
+            }
+        }
+    }
+
+    /// `id`'s local pose, when the tree holds it as a child.
+    fn local(&self, id: ObjId) -> Option<Local> {
+        self.state.try_borrow().ok()?.tree.as_ref()?.local(Node(id))
     }
 
     /// Flushes the tree and lists in `writes` the children it moved with their new world, quiet for a child whose clients
@@ -978,6 +1032,7 @@ impl SceneLinks for Shared {
         } else if tree.parent(node).is_some() {
             pose_changed(state.net, vm, id);
             state.log.note(id);
+            state.written.insert(id);
         }
         if !moved && let Some(old) = tree.parent(node) {
             // A move the tree cannot hold as a local pose (too far from the parent, not finite) takes the child off its
@@ -985,6 +1040,7 @@ impl SceneLinks for Shared {
             if tree.set_parent(node, None, Keep::World, &host).is_ok() {
                 link_changed(state.net, &mut state.held, vm, id);
                 state.log.note(id);
+                state.relinked.insert(id);
                 self.relinked();
                 state.stats.dropped += 1;
                 state.queue(Callback::ChildRemoved {
@@ -1112,6 +1168,26 @@ impl Shared {
     }
 }
 
+/// The local pose a class that keeps its own rotation takes when its world is written: the translation that puts it at
+/// `world` in its parent's frame and its own `rotation`, rounded as the tree rounds every local ([`torque_hierarchy::wire_local`],
+/// [`torque_hierarchy::wire_form`]). `Ok(None)` for an object with no parent.
+fn own_local(
+    tree: &mut Hierarchy,
+    id: ObjId,
+    world: &Matrix,
+    rotation: [f32; 4],
+    host: &VmHost<'_>,
+) -> Result<Option<Local>, ParentError> {
+    let (Some(scale), Some((parent, node))) = (
+        tree.local(Node(id)).map(|l| l.scale),
+        tree.attachment(Node(id), host),
+    ) else {
+        return Ok(None);
+    };
+    let local = torque_hierarchy::wire_local(world, &parent, node.as_ref(), scale)?;
+    torque_hierarchy::wire_form(&Local { rotation, ..local }).map(Some)
+}
+
 /// A local pose as the block's pose group carries it.
 fn pose_field(local: &Local, snap: bool) -> PoseField {
     let q = QuantLocal::from_local(local);
@@ -1176,5 +1252,36 @@ impl GhostBlocks for Shared {
 
     fn revision(&self) -> u64 {
         self.revision.get()
+    }
+
+    /// A child's frame is its parent's once the connection has the parent's ghost: its packet data is its local pose there,
+    /// and the attachment is the parent's world (the tree's copy, which composed the child) times its node.
+    fn control_frame(
+        &self,
+        vm: &Vm,
+        obj: ObjId,
+        ghost_index: &dyn Fn(ObjId) -> Option<u32>,
+    ) -> Option<ControlFrame> {
+        let state = self.state.try_borrow().ok()?;
+        let tree = state.tree.as_ref()?;
+        let link = tree.parent(Node(obj))?;
+        let ghost = ghost_index(link.object.0)?;
+        let local = tree.local(Node(obj))?;
+        let parent = tree.pose(link.object)?;
+        let node = match link.node {
+            NodeRef::Origin => None,
+            NodeRef::Node(n) => Some(n),
+        };
+        let on = node.and_then(|n| links::node_matrix(vm, link.object.0, n));
+        let yaw = torque_game::sim::player::state(vm, obj)
+            .and_then(|s| s.frame_yaw)
+            .unwrap_or_else(|| torque_game::sim::player::yaw_of(&quat_matrix(local.rotation)));
+        Some(ControlFrame {
+            ghost,
+            node,
+            attachment: torque_hierarchy::compose(&parent, on.as_ref(), &Local::IDENTITY),
+            translation: local.translation,
+            yaw,
+        })
     }
 }

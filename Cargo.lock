@@ -4953,6 +4953,7 @@ dependencies = [
  "torque-example-assets",
  "torque-example-minimal-engine",
  "torque-game",
+ "torque-ghost-world",
  "torque-ghosts",
  "torque-gui",
  "torque-maps",

@@ -241,7 +241,9 @@ different.
   API with no client entry point. In the engine's protocol each child's link and quantized local pose ride its own update
   in a per-ghost block after the class record (a parent's motion sends nothing for its children; a link waits for its
   parent's ghost), whole trees are scoped together, and clients check every link and draw children on their parents; a
-  predicting client collides with each child where its parents' latest server poses and its local pose put it. A rope end hung
+  predicting client collides with each child where its parents' latest server poses and its local pose put it, and predicts
+  a child it controls (a turret on another player's tank) in its parent's frame, from packet data sent in that frame, so the
+  parent's motion never corrects it; a Player child keeps its yaw in its parent's frame. A rope end hung
   from a child ghost follows the child's resolved pose (`ClientGhostLookup` answers through `ClientWorld::world_pose`), and a joint's
   anchor on a Player child is read after the tree's pending moves are written.
 - `torque-game`: hitboxes with lag compensation (opt-in): a Player can be hit on its posed shape, checked against where

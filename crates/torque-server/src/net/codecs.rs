@@ -29,7 +29,9 @@ use torque_ghosts::datablocks::{
 use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
 use torque_ghosts::plugin::{PluginClass, PluginClasses, Record};
 use torque_ghosts::set::GhostCodecSet;
-use torque_ghosts::tails::{PlayerTail, PlayerTailMotion, ShapeTail, TailData, WheeledTail};
+use torque_ghosts::tails::{
+    PlayerTail, PlayerTailMotion, ShapeTail, TailData, TailFrame, WheeledTail,
+};
 use torque_ghosts::tge::{TGE_DATABLOCK_CLASSES, TgeClass, TgeGhosts, tge_reps};
 use torque_ghosts::{ObjectView, PackCtx, Value};
 use torque_net::bits::BitWriter;
@@ -47,7 +49,9 @@ use torque_sim::player::PlayerState;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
+use super::blocks::ControlFrame;
 use super::datablock::{DatablockRecord, DatablockView, DbPackError, DbValue};
+use super::peer::PeerKind;
 
 use super::transport::LanRules;
 
@@ -440,6 +444,19 @@ pub trait NetCodecs: Debug {
         None
     }
 
+    /// [`NetCodecs::control_object`] for a connection whose peer is `peer`: the head of a peer that reads the engine's own
+    /// additions (a control object's frame) may carry them. The default ignores the peer.
+    fn peer_control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+        peer: PeerKind,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
+        let _ = peer;
+        self.control_object(vm, obj, ghost_index)
+    }
+
     /// How many objects the control object's chain (an object a control object controls in turn) may hold.
     fn control_chain(&self) -> usize {
         1
@@ -487,6 +504,16 @@ impl NetCodecs for EngineCodecs {
         ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
     ) -> Option<Box<dyn ControlObject + 'a>> {
         TorqueCodecs.control_object(vm, obj, ghost_index)
+    }
+
+    fn peer_control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+        peer: PeerKind,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
+        TorqueCodecs.peer_control_object(vm, obj, ghost_index, peer)
     }
 }
 
@@ -635,18 +662,30 @@ impl NetCodecs for TorqueCodecs {
     }
 
     /// A simulated Player as TGE's head writes it: its ghost index, its damage flash and white-out, and `Player::writePacketData`
-    /// ([`player_packet_data`]); any other object writes no control section.
+    /// ([`player_packet_data`]); any other object writes no control section. No frame: Torque's peer's head.
     fn control_object<'a>(
         &self,
         vm: &'a Vm,
         obj: ObjId,
         ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
     ) -> Option<Box<dyn ControlObject + 'a>> {
+        self.peer_control_object(vm, obj, ghost_index, PeerKind::Tge)
+    }
+
+    /// [`TorqueCodecs::control_object`]; a peer that is sent the per-ghost block also gets the Player's frame.
+    fn peer_control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+        peer: PeerKind,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
         torque_game::sim::player::state(vm, obj)?;
         Some(Box::new(PlayerControl {
             vm,
             obj,
             ghost_index,
+            frames: peer.sees_engine_classes(),
         }))
     }
 }
@@ -656,6 +695,8 @@ struct PlayerControl<'a> {
     vm: &'a Vm,
     obj: ObjId,
     ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+    /// The peer reads the per-ghost block, so its packet data ends with a frame when the server fills the block's links.
+    frames: bool,
 }
 
 impl ControlObject for PlayerControl<'_> {
@@ -696,7 +737,42 @@ impl ControlObject for PlayerControl<'_> {
         });
         let mut data = TgePacketData::new(TailData::Player(tail));
         data.nested = nested;
+        // In the engine's own protocol with the scene hierarchy, the data ends with its frame: a Player hung on a parent the
+        // connection holds sends its local pose, so its client predicts it on the parent wherever the parent went.
+        if let Some(blocks) = self
+            .frames
+            .then(|| super::blocks::of(self.vm))
+            .flatten()
+            .filter(|b| b.sections().links)
+        {
+            data.frame = match blocks.control_frame(self.vm, self.obj, self.ghost_index) {
+                Some(frame) => in_frame(&mut data.data, &frame),
+                None => TailFrame::World,
+            };
+        }
         Box::new(data)
+    }
+}
+
+/// A Player's packet data in its parent's frame: its local translation, its velocity turned into the frame and its yaw
+/// there, and the frame that says so. The position the matching head sends stays the world's.
+///
+/// Only a Player that sends its position is sent in a frame (a mounted one sends none): any other data stays the world's.
+fn in_frame(data: &mut TailData, frame: &ControlFrame) -> TailFrame {
+    let TailData::Player(tail) = data else {
+        return TailFrame::World;
+    };
+    let Some(motion) = tail.motion.as_mut() else {
+        return TailFrame::World;
+    };
+    motion.position = frame.translation.map(F32::new);
+    let velocity = motion.velocity.map(F32::get);
+    motion.velocity =
+        torque_game::scene::links::into_frame(&frame.attachment, velocity).map(F32::new);
+    tail.rotation_z = F32::new(frame.yaw);
+    TailFrame::Parent {
+        ghost: frame.ghost,
+        node: frame.node,
     }
 }
 
@@ -802,5 +878,40 @@ mod tests {
         assert!(c.lan_rules().is_lan("192.168.1.2".parse().unwrap(), false));
         assert!(!c.lan_rules().is_lan("25.1.2.3".parse().unwrap(), false));
         assert!(c.lan_rules().is_lan("8.8.8.8".parse().unwrap(), true));
+    }
+
+    /// A mounted Player sends no position, so its data stays the world's and its client writes the same; a free one is sent
+    /// in its parent's frame.
+    #[test]
+    fn only_a_player_that_sends_its_position_is_sent_in_a_frame() {
+        let frame = ControlFrame {
+            ghost: 3,
+            node: Some(1),
+            attachment: torque_collide::math::IDENTITY,
+            translation: [1.0, 2.0, 3.0],
+            yaw: 0.5,
+        };
+        let mut mounted = TailData::Player(PlayerTail::default());
+        assert_eq!(in_frame(&mut mounted, &frame), TailFrame::World);
+        assert_eq!(mounted, TailData::Player(PlayerTail::default()));
+        let mut free = TailData::Player(PlayerTail {
+            motion: Some(PlayerTailMotion::default()),
+            ..PlayerTail::default()
+        });
+        assert_eq!(
+            in_frame(&mut free, &frame),
+            TailFrame::Parent {
+                ghost: 3,
+                node: Some(1)
+            }
+        );
+        let TailData::Player(tail) = free else {
+            panic!("built as a Player's")
+        };
+        assert_eq!(
+            tail.motion.map(|m| m.position.map(F32::get)),
+            Some([1.0, 2.0, 3.0])
+        );
+        assert_eq!(tail.rotation_z.get(), 0.5);
     }
 }

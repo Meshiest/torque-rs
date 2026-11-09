@@ -177,6 +177,9 @@ pub struct PlayerState {
     pub head: F3,
     pub rot: F3,
     pub velocity: F3,
+    /// The yaw in its parent's frame of a Player that moves in one (a scene-hierarchy child), turned by its moves as `rot`'s
+    /// yaw is and kept in one turn; `None` for any other Player (Torque's have none).
+    pub frame_yaw: Option<f32>,
     /// The impact flag, and the flag that blocks `onImpact` when set.
     pub impact_flag: u32,
     pub impact_block: u32,
@@ -294,6 +297,7 @@ impl PlayerState {
             head: [0.0; 3],
             rot: [0.0, 0.0, yaw],
             velocity: [0.0; 3],
+            frame_yaw: None,
             impact_flag: 0,
             impact_block: 0,
             speeds: [

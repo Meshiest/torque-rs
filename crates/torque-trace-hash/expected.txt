@@ -34,5 +34,8 @@ hierarchy engine d5bdc4032123d6c1
 # body, a body frozen and thawed, a part's local pose set, a body with parts deleted, a driven crate hung on another). Every
 # prop's state, every part's pose in its body's frame and every local pose are hashed each tick.
 hierarchy-props engine 51b44f0b0b721733
-# The fold of the scene scenarios: hierarchy and hierarchy-props (it moved only because the second joined the first).
-scene engine d8bba205524ceeff
+# turret: one client drives the buggy as a tank while a second controls a Player turret hung on its roof, aiming it; the
+# server sends the turret's state in the tank's frame and the gunner predicts it there and draws it on the drawn tank.
+turret engine 54b46db5a559244e
+# The fold of the scene scenarios: hierarchy, hierarchy-props and turret (it moved only because the three now fold together).
+scene engine 338997006c72880d

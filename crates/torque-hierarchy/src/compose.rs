@@ -4,7 +4,13 @@
 use torque_collide::math::{F3, IDENTITY, Matrix, matrix_product, quat_matrix};
 use torque_collide::math::{plain_quat_from_matrix, plain_quat_normalize};
 
-use crate::types::{Local, Pose};
+use crate::caps::ParentError;
+use crate::quant;
+use crate::types::{Local, Pose, matrix_check};
+
+/// How many times a host's resolve goes round for a child whose class keeps a pose of its own (a Player stays upright): each
+/// round places the child where its local pose puts it and takes back, as its new local pose, the pose the class kept.
+pub const RESOLVE_ROUNDS: usize = 4;
 
 /// `matrix` with its translation (elements 3, 7 and 11) multiplied per axis by `by`.
 fn scale_translation(mut matrix: Matrix, by: F3) -> Matrix {
@@ -41,6 +47,47 @@ pub fn compose(parent: &Pose, node: Option<&Matrix>, local: &Local) -> Matrix {
         &attachment(parent, node),
         &local_matrix(local, parent.scale),
     )
+}
+
+/// The local pose a tree that quantizes its locals keeps for a child of scale `scale` written at `world` under `parent`'s
+/// attachment (on `node`): what [`crate::Hierarchy::set_world`] stores, for a host that runs a child's own simulation in its
+/// parent's frame by itself (a client predicting the child it controls), so it rounds each move as the server does.
+///
+/// # Errors
+/// [`ParentError::NotFinite`] or [`ParentError::OutOfRange`], as `set_world` refuses the move.
+pub fn wire_local(
+    world: &Matrix,
+    parent: &Pose,
+    node: Option<&Matrix>,
+    scale: F3,
+) -> Result<Local, ParentError> {
+    matrix_check(world)?;
+    wire_form(&local_from_world(world, parent, node, scale))
+}
+
+/// `local` as a tree that quantizes its locals keeps it for a child: checked, its rotation made a unit quaternion, rounded
+/// to the wire's steps ([`crate::Hierarchy::set_local`]'s).
+///
+/// # Errors
+/// [`Local::validate`]'s.
+pub fn wire_form(local: &Local) -> Result<Local, ParentError> {
+    local.validate()?;
+    Ok(quant::quantize(&local.normalized()))
+}
+
+/// Whether two transforms are the same pose within a few units in the last place (a pose composed back from the object's own
+/// write): the rotations to 1e-6, the translations to four `f32` steps of their size or 1e-5 units. A host's resolve leaves
+/// a child where it is when its new world is the same pose.
+#[must_use]
+pub fn same_pose(a: &Matrix, b: &Matrix) -> bool {
+    (0..12).all(|i| {
+        let tolerance = if i % 4 == 3 {
+            (4.0 * f32::EPSILON * a[i].abs().max(b[i].abs())).max(1e-5)
+        } else {
+            1e-6
+        };
+        (a[i] - b[i]).abs() <= tolerance
+    })
 }
 
 /// The local pose that puts a child of scale `scale` at `world` under `parent`'s attachment: the inverse of [`compose`].

@@ -383,6 +383,20 @@ impl Hierarchy {
         })
     }
 
+    /// Where child `id` hangs, resolving whatever is queued first: its parent's pose and the matrix of the node its link
+    /// names (`None`: the parent's origin). `None` for an object with no parent, or a node its host cannot answer.
+    pub fn attachment<H: Host + ?Sized>(
+        &mut self,
+        id: ObjId,
+        host: &H,
+    ) -> Option<(Pose, Option<Matrix>)> {
+        let slot = self.slot_of(id)?;
+        self.node(slot).up?;
+        self.settle(host);
+        let up = self.node(slot).up?;
+        self.attachment_of(up, host).ok()
+    }
+
     /// An object moved in the world: a root takes `world` (O(1)), a child gets the local pose that puts it there (resolving
     /// whatever is queued first). Returns whether the hierarchy holds `id` (nothing happens to an object it does not).
     ///

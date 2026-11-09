@@ -178,19 +178,68 @@ fn rotation(m: &Matrix) -> Matrix {
 /// ghost as that class does), then the container's bins; a Player's, Item's or vehicle's velocity (and a vehicle's spin) turns
 /// by the same turn, so a child that moves by itself keeps moving the same way in its parent's frame.
 pub fn carry(vm: &mut Vm, id: ObjId, from: &Matrix, to: &Matrix) {
-    let turn = matrix_product(&rotation(to), &transpose(&rotation(from)));
-    // A turn within float noise of none leaves the velocity's bits as they are.
-    if turn
-        .iter()
-        .zip(&IDENTITY)
-        .any(|(a, b)| (a - b).abs() > 1e-6)
-    {
+    if let Some(turn) = carry_turn(from, to) {
         turn_velocity(vm, id, &turn);
     }
     object::set_transform(vm, id, *to);
     if let Some(container) = object::container_of(vm) {
         object::check_bins(vm, &container, id);
     }
+}
+
+/// The turn a [`carry`] from `from` to `to` gives a child's velocity: `to`'s rotation times the inverse of `from`'s; `None`
+/// for a turn within float noise of none, which leaves the velocity's bits as they are. A client that runs a child's own
+/// simulation in its parent's frame turns its velocity by the same rule.
+#[must_use]
+pub fn carry_turn(from: &Matrix, to: &Matrix) -> Option<Matrix> {
+    let turn = matrix_product(&rotation(to), &transpose(&rotation(from)));
+    turn.iter()
+        .zip(&IDENTITY)
+        .any(|(a, b)| (a - b).abs() > 1e-6)
+        .then_some(turn)
+}
+
+/// The rotation of a yaw of `yaw` (radians about +z), as a unit quaternion (`x, y, z, w`): the local rotation of a Player that
+/// moves in its parent's frame, upright there and turned by its own moves alone.
+#[must_use]
+pub fn yaw_rotation(yaw: f32) -> [f32; 4] {
+    collide::math::plain_quat_normalize(&collide::math::plain_quat_from_matrix(
+        &collide::math::set_euler([0.0, 0.0, yaw]),
+    ))
+}
+
+/// The local rotation `id`'s class keeps for itself as a child, whatever its world: a Player's yaw in its parent's frame
+/// ([`yaw_rotation`] of its `frame_yaw`). `None` for every other object, and for a Player whose frame yaw is not set (or
+/// whose state is out for its own tick).
+#[must_use]
+pub fn own_rotation(vm: &Vm, id: ObjId) -> Option<[f32; 4]> {
+    crate::sim::player::state(vm, id)?
+        .frame_yaw
+        .map(yaw_rotation)
+}
+
+/// Sets the yaw `id` keeps in its parent's frame when it is a Player (`None` once it has no parent). True for a Player.
+pub fn set_frame_yaw(vm: &mut Vm, id: ObjId, yaw: Option<f32>) -> bool {
+    match crate::sim::player::state_mut(vm, id) {
+        Some(s) => {
+            s.frame_yaw = yaw;
+            true
+        }
+        None => false,
+    }
+}
+
+/// `v`, a world direction, in the frame whose transform is `frame` (its rotation's inverse times `v`): how a controlled
+/// child's velocity travels in its parent's frame.
+#[must_use]
+pub fn into_frame(frame: &Matrix, v: [f32; 3]) -> [f32; 3] {
+    mul_v(&transpose(&rotation(frame)), v)
+}
+
+/// `v`, a direction in the frame whose transform is `frame`, in the world: the inverse of [`into_frame`].
+#[must_use]
+pub fn out_of_frame(frame: &Matrix, v: [f32; 3]) -> [f32; 3] {
+    mul_v(&rotation(frame), v)
 }
 
 /// [`carry`], with the marks the class's `setTransform` makes on the object's ghost taken back: the client draws a child

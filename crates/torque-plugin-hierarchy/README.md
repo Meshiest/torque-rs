@@ -21,8 +21,10 @@ each child on its parent.
   as a server's tree does.
 - **Prediction.** A predicting client meets each child where the server's latest poses of its parents and its local pose put
   it, every tick, so a Player riding a hung platform is corrected no more often than on the same platform moved by itself.
+  A client that controls a child (a turret on another player's tank) predicts it in its parent's frame: the server sends its
+  state there, so the parent's motion never corrects it, and the client draws it on the parent as it draws the parent.
 
 In the default plugin groups and on in engine mode; Torque's protocol leaves it out (`HierarchyPlugin::always()` turns it on
 there too). The tree is `torque-hierarchy`; the scene's seam is torque-game's `scene::links`. The book's "Scene hierarchy"
 chapter has the model; the crate docs end with a "Maintaining" section. `cargo test -p torque-plugin-hierarchy --test server`
-runs the server's checks, `--test net` the network's, `--test ride` the prediction's.
+runs the server's checks, `--test net` the network's, `--test ride` and `--test turret` the prediction's.

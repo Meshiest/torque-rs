@@ -71,7 +71,7 @@ use vehicle::words::VehicleWords;
 
 use crate::records::{
     ClassKind, EngineDatablock, EngineRecord, EngineSet, EngineTail, FreeMotion, PlayerWords,
-    VehicleUpdate,
+    TailFrame, VehicleUpdate,
 };
 use game::PredictWorld;
 
@@ -119,6 +119,9 @@ pub struct PredictStats {
     pub predicted_packets: u64,
     /// Ticks whose prediction ran out of [`TICK_WORK`] (the replay stopped there).
     pub budget_stops: u64,
+    /// Ticks a Player hung on a parent ran no move: the client could not place the parent (it holds no ghost of it, or the
+    /// tick's budget ran out first).
+    pub unplaced: u64,
     /// The resends once the server had matched a checksum (the ones before answer packets sent before the client had a state to
     /// report), by what they answer ([`ResendClass`]): the server's events, their tails, and the corrections (the rest: the client
     /// predicted the server's state wrong).
@@ -168,6 +171,18 @@ impl ControlKind {
     }
 }
 
+/// One tick's run of the predicted Player's moves ([`Predictor::run_player_moves`]): the moves from the list's `from`th, in
+/// `collision`, with `at` the attachment of its parent frame when it is predicted in one.
+struct MoveRun<'a, W: PredictWorld> {
+    moves: &'a MoveQueue,
+    from: usize,
+    collision: ClientCollision,
+    at: Option<framed::Attach>,
+    controls_player: bool,
+    game: &'a Rc<dyn game::PredictGame<W>>,
+    vm_globals: &'a ClientGlobals,
+}
+
 /// The predicted Player.
 #[derive(Clone)]
 pub struct Predicted {
@@ -180,6 +195,10 @@ pub struct Predicted {
     pub player: Player,
     /// The vehicle the Player drives (its control object), when it drives one.
     pub vehicle: Option<drive::DrivenVehicle>,
+    /// The server's packet data ends with its frame (the engine's own protocol with the scene hierarchy).
+    pub frames: bool,
+    /// The parent frame the Player is predicted in, when the server sends its local pose ([`framed`]).
+    pub frame: Option<framed::ChildFrame>,
 }
 
 /// The client's control object as it predicts it, over the game's world `W`.
@@ -692,6 +711,8 @@ impl<W: PredictWorld> Predictor<W> {
                 kind,
                 player: Player::new(s),
                 vehicle: None,
+                frames: false,
+                frame: None,
             });
         }
         let game = Rc::clone(self.game());
@@ -742,6 +763,11 @@ impl<W: PredictWorld> Predictor<W> {
         s.place(pos, rot, None);
         s.delta_head = s.head;
         s.delta_rot = rot;
+        // A Player hung on a parent sent its local pose and its yaw there: the next tick places it on the parent.
+        let frame = framed::ChildFrame::read(p, s.scale);
+        s.frame_yaw = frame.map(|_| p.rot_z);
+        pr.frames = p.frame != TailFrame::Absent;
+        pr.frame = frame;
     }
 
     /// The control object's `readPacketData` for a WheeledVehicle the predicted Player drives: the vehicle the client already holds
@@ -1077,7 +1103,7 @@ impl<W: PredictWorld> Predictor<W> {
         if let Some(v) = pr.vehicle.as_mut() {
             v.refresh_wheels(world);
         }
-        let collision = ClientCollision::new(
+        let mut collision = ClientCollision::new(
             world,
             pr.index,
             TICK_WORK,
@@ -1091,8 +1117,34 @@ impl<W: PredictWorld> Predictor<W> {
                 player_at: None,
             }),
         );
-        let fresh =
-            self.run_player_moves(moves, from, collision, controls_player, &game, vm_globals);
+        // A Player hung on a parent moves in the parent's frame: the parent's pose for this tick, charged to its budget.
+        let at = pr.frame.as_ref().and_then(|frame| {
+            let mut linked = Linked {
+                shapes: Some(&mut self.shapes),
+                reader: self.static_world.reader.as_ref(),
+                driven: pr.vehicle.as_ref(),
+                ghosts: Some(&self.ghost_vehicles),
+                player_at: None,
+                me: pr.index,
+            };
+            let c = &mut collision;
+            linked.attach(world, frame, &mut c.tick_poses, &mut c.work, c.budget)
+        });
+        if pr.frame.is_some() && at.is_none() {
+            // Nowhere to place it (the parent not held, or the budget spent): the moves wait unrun, and a later tick that
+            // places the parent replays them from `last_client_move`, as a correction replays.
+            self.stats.unplaced += 1;
+            return;
+        }
+        let fresh = self.run_player_moves(MoveRun {
+            moves,
+            from,
+            collision,
+            at,
+            controls_player,
+            game: &game,
+            vm_globals,
+        });
         self.last_client_move = end;
         self.mount_pred = self.step_mount_pred(world, &fresh);
     }
@@ -1135,15 +1187,16 @@ impl<W: PredictWorld> Predictor<W> {
     /// The predicted Player's moves from the list's `from`th, in `collision`, with the parts stepping their objects with each
     /// ([`slot::PredictionPart::moved`]); the turns of the moves run for the first time. A step the budget cuts short ends the
     /// loop: the Player and the parts both stop at the last whole move.
-    fn run_player_moves(
-        &mut self,
-        moves: &MoveQueue,
-        from: usize,
-        mut collision: ClientCollision,
-        controls_player: bool,
-        game: &Rc<dyn game::PredictGame<W>>,
-        vm_globals: &ClientGlobals,
-    ) -> Vec<[f32; 2]> {
+    fn run_player_moves(&mut self, run: MoveRun<'_, W>) -> Vec<[f32; 2]> {
+        let MoveRun {
+            moves,
+            from,
+            mut collision,
+            at,
+            controls_player,
+            game,
+            vm_globals,
+        } = run;
         let first = moves.first_index();
         let list = moves.moves();
         let end = first.wrapping_add(list.len() as u32);
@@ -1182,8 +1235,13 @@ impl<W: PredictWorld> Predictor<W> {
                 self.stats.budget_stops += 1;
                 break;
             }
+            let before = (pr.player.clone(), pr.vehicle.clone(), pr.frame);
+            // The server resolves a child before its turn, after its parent's: the Player where its parent's tick pose and its
+            // local pose put it.
+            if let (Some(frame), Some(at)) = (pr.frame.as_mut(), at) {
+                frame.settle(&mut pr.player.s, at, false);
+            }
             collision.carry_children(&pr.player.s.obj_to_world);
-            let before = (pr.player.clone(), pr.vehicle.clone());
             let mut host = ClientPlayerHost {
                 world: &mut collision,
                 skeleton: NoSkeleton,
@@ -1207,9 +1265,17 @@ impl<W: PredictWorld> Predictor<W> {
                 .process_tick(&pr.data, Some(&sim_move(m, &**game)), &mut host);
             if stepped.is_err() || collision.exhausted() {
                 // A step the budget cut short is not kept: the state of the last whole step stays.
-                (pr.player, pr.vehicle) = before;
+                (pr.player, pr.vehicle, pr.frame) = before;
                 self.stats.budget_stops += 1;
                 break;
+            }
+            // The move's pose becomes the local pose the server's tree keeps, and the end of the step resolves it again. A
+            // move the tree would refuse takes the Player off its parent there: the next head says how.
+            if let (Some(frame), Some(at)) = (pr.frame.as_mut(), at) {
+                match frame.moved(&pr.player.s) {
+                    Some(moved) => frame.settle(&mut pr.player.s, at, moved),
+                    None => pr.frame = None,
+                }
             }
             self.stats.steps += 1;
             let id = first.wrapping_add(k as u32);
@@ -1540,6 +1606,29 @@ impl<W: PredictWorld> Predictor<W> {
         ))
     }
 
+    /// The turn that takes the predicted Player hung in `frame` from the attachment its last tick ran in to where the
+    /// parent is drawn now (its [`ghost_world::ClientWorld::world_pose`] times the node). `None` before a tick placed it, or
+    /// for a parent the client does not draw.
+    fn drawn_frame(&self, world: &W, frame: &framed::ChildFrame) -> Option<Matrix> {
+        let at = frame.at?;
+        let nodes = |ghost: u32, node: u16| {
+            let path = drive::shape_path(world, world.ghosts.get(&ghost)?.datablock()?)?;
+            self.shapes.loaded(path)?.rest_node(node).copied()
+        };
+        let (drawn, scale) = world.world_pose(frame.parent, &nodes)?;
+        let drawn = framed::Attach {
+            parent: hierarchy::Pose {
+                world: drawn,
+                scale,
+            },
+            node: at.node,
+        };
+        Some(collide::math::matrix_product(
+            &drawn.matrix(),
+            &collide::math::affine_inverse(&at.matrix()),
+        ))
+    }
+
     /// The client's view from its control object, through the predictor ([`slot::Prediction::view`]; TGE's:
     /// [`Predictor::tge_update_view`]).
     pub fn update_view(&mut self, world: &mut W) {
@@ -1585,45 +1674,11 @@ impl<W: PredictWorld> Predictor<W> {
         if let Some(p) = self.projectiles.as_mut() {
             p.frame(world, back);
         }
-        // `Player::interpolateTick`: the render position, yaw and head between the last tick's (`dt` 0) and the one
-        // before (`dt` 1: the position before the tick's move, the yaw and head less their last change). A mounted Player's
-        // position comes from its mount (`setRenderPosition`'s mounted branch); its yaw and head are interpolated as
-        // any Player's (the driver's free look moved once a tick).
         // Smooth aim: the yaw and head drawn ahead of the latest tick by what the next move makes of the frame's move
         // globals, in every mode (on foot, free look, a seat, a driver's), so the view never steps back when that move lands.
         let angles = self.predicted.as_ref().map_or((0.0, [0.0; 3]), |pr| {
             self.view_angles(pr, back, controls_player(world, pr.player.s.control_object))
         });
-        let lerp = |s: &sim::player::PlayerState| -> ([f32; 3], f32, f32) {
-            let p = s.position();
-            let (yaw, head) = (angles.0, angles.1[0]);
-            if back <= 0.0 || s.mount.is_some() {
-                return (p, yaw, head);
-            }
-            let b = back.min(1.0);
-            (
-                [0, 1, 2].map(|k| p[k] + (s.delta_pos[k] - p[k]) * b),
-                yaw,
-                head,
-            )
-        };
-        world.hide_control =
-            self.camera.is_none() && self.predicted.is_some() && self.camera_pos == 0.0;
-        world.control_eye = None;
-        // The control Player is drawn where it is predicted; a mounted one (a driver) is drawn at its mount's node, which the
-        // renderer takes from the mount (`setRenderPosition`'s mounted branch), turned by this pose's yaw.
-        world.control_render = self
-            .predicted
-            .as_ref()
-            .filter(|_| self.camera.is_none())
-            .map(|pr| {
-                let (position, yaw, pitch) = lerp(&pr.player.s);
-                Pose::Euler {
-                    position,
-                    pitch,
-                    yaw,
-                }
-            });
         // The vehicle the Player drives, where the client predicts it, between its last two ticks
         // (`WheeledVehicle::interpolateTick`: the rotation `interpolate(rot[1], rot[0], dt)`, the position
         // `delta.pos + delta.posVec * dt`); the server's updates of it carry no position for its controlling client.
@@ -1679,6 +1734,56 @@ impl<W: PredictWorld> Predictor<W> {
         for (i, pose) in flying {
             world.vehicle_render.entry(i).or_insert(pose);
         }
+        // A Player hung on a parent is drawn on the parent as this frame draws it: its pose moved from the attachment its last
+        // tick ran in to the parent's drawn pose times the node, so the view and the body ride the parent between ticks.
+        let frame_turn = self
+            .predicted
+            .as_ref()
+            .filter(|_| self.camera.is_none())
+            .and_then(|pr| self.drawn_frame(world, pr.frame.as_ref()?));
+        // `Player::interpolateTick`: the render position, yaw and head between the last tick's (`dt` 0) and the one
+        // before (`dt` 1: the position before the tick's move, the yaw and head less their last change). A mounted Player's
+        // position comes from its mount (`setRenderPosition`'s mounted branch); its yaw and head are interpolated as
+        // any Player's (the driver's free look moved once a tick).
+        let lerp = |s: &sim::player::PlayerState| -> ([f32; 3], f32, f32) {
+            let p = s.position();
+            let (yaw, head) = (angles.0, angles.1[0]);
+            let (p, yaw, head) = if back <= 0.0 || s.mount.is_some() {
+                (p, yaw, head)
+            } else {
+                let b = back.min(1.0);
+                (
+                    [0, 1, 2].map(|k| p[k] + (s.delta_pos[k] - p[k]) * b),
+                    yaw,
+                    head,
+                )
+            };
+            match &frame_turn {
+                Some(m) => (
+                    collide::math::mul_p(m, p),
+                    yaw + torque_game::sim::player::yaw_of(m),
+                    head,
+                ),
+                None => (p, yaw, head),
+            }
+        };
+        world.hide_control =
+            self.camera.is_none() && self.predicted.is_some() && self.camera_pos == 0.0;
+        world.control_eye = None;
+        // The control Player is drawn where it is predicted; a mounted one (a driver) is drawn at its mount's node, which the
+        // renderer takes from the mount (`setRenderPosition`'s mounted branch), turned by this pose's yaw.
+        world.control_render = self
+            .predicted
+            .as_ref()
+            .filter(|_| self.camera.is_none())
+            .map(|pr| {
+                let (position, yaw, pitch) = lerp(&pr.player.s);
+                Pose::Euler {
+                    position,
+                    pitch,
+                    yaw,
+                }
+            });
         // The control Player's own jetting and crouching (its ghost's updates carry neither for its own client).
         let control_state = self
             .predicted
@@ -1973,7 +2078,13 @@ pub fn vehicle_render_pose(s: &vehicle::state::VehicleState, back: f32) -> Pose 
 /// A predicted Player's `writePacketData` as set `S`'s packet data: its own words, then its control object's (a driven
 /// vehicle's) when it has one.
 fn full_packet_data<S: EngineSet>(pr: &Predicted) -> Option<Box<dyn ControlData>> {
-    let words = player_words(&pr.player.s, &*pr.kind);
+    let mut words = player_words(&pr.player.s, &*pr.kind);
+    if pr.frames {
+        words.frame = TailFrame::World;
+    }
+    if let Some(frame) = &pr.frame {
+        frame.words(&pr.player.s, &mut words);
+    }
     let controlled = match &pr.vehicle {
         Some(v) if pr.player.s.control_object.is_some() => {
             Some((v.index, v.packet_data::<S>(&mut ClientCollision::empty())))
@@ -1998,6 +2109,7 @@ pub fn player_words(s: &PlayerState, kind: &dyn PlayerKind) -> PlayerWords {
         head_z: s.head[2],
         rot_z: s.rot[2],
         translation: pos,
+        frame: TailFrame::Absent,
     }
 }
 
@@ -2685,6 +2797,9 @@ pub struct ClientCollision {
     objects: Vec<(ObjectId, Object)>,
     /// The scene-hierarchy children of the predicted object, in its frame ([`ClientCollision::carry_children`]).
     carried: Vec<CarriedChild>,
+    /// The tick poses the placement of children worked out, kept for the predicted object's own frame
+    /// (`Linked::attach`), so no ghost is worked out or charged twice a tick.
+    tick_poses: ghost_world::world::TickPoses,
     /// `objects`' ids with their places, sorted: a lookup is a binary search (every convex's transform asks).
     by_id: Vec<(ObjectId, u32)>,
     /// The static index's water ([`StaticIndex::zones`]).
@@ -2778,6 +2893,53 @@ impl Linked<'_> {
         Some(m)
     }
 
+    /// Where the predicted object's frame hangs this tick: the parent's tick pose ([`ghost_world::ClientWorld::tick_pose_in`],
+    /// where the client runs it or its record puts it, from the tick's `poses`, each ghost of its chain not worked out yet
+    /// charged [`LINK_WORK`] to `work` up to `budget`) and the node at rest, read from the parent's shape (the parent's
+    /// origin when it has no such node). `None` when the client holds no ghost of the parent or the budget ran out.
+    fn attach<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        frame: &framed::ChildFrame,
+        poses: &mut ghost_world::world::TickPoses,
+        work: &mut u64,
+        budget: u64,
+    ) -> Option<framed::Attach> {
+        let path = world
+            .ghosts
+            .get(&frame.parent)
+            .and_then(|g| g.datablock())
+            .and_then(|db| drive::shape_path(world, db));
+        if frame.node.is_some()
+            && let (Some(path), Some(cache)) = (path, self.shapes.as_deref_mut())
+            && cache.loaded(path).is_none()
+        {
+            cache.get(path, self.reader, work, budget);
+        }
+        let cache = self.shapes.as_deref();
+        let node = frame
+            .node
+            .zip(path)
+            .and_then(|(n, path)| cache?.loaded(path)?.rest_node(n).copied());
+        let nodes = |ghost: u32, node: u16| {
+            let path = drive::shape_path(world, world.ghosts.get(&ghost)?.datablock()?)?;
+            cache?.loaded(path)?.rest_node(node).copied()
+        };
+        let own = |ghost: u32| self.own(world, ghost);
+        let mut charge = || {
+            *work = work.saturating_add(LINK_WORK);
+            *work <= budget
+        };
+        let pose = world.tick_pose_in(frame.parent, &nodes, &own, poses, &mut charge)?;
+        Some(framed::Attach {
+            parent: hierarchy::Pose {
+                world: pose.world,
+                scale: pose.scale,
+            },
+            node,
+        })
+    }
+
     /// Reads the shapes of the parents whose nodes the chains above `objects` hang on, walking each link once, each charged
     /// [`LINK_WORK`] (and a read as the cache charges it). False once `budget` is spent.
     fn read_node_shapes<W: PredictWorld>(
@@ -2859,6 +3021,7 @@ fn place_linked<W: PredictWorld>(
     world: &W,
     objects: &mut [(ObjectId, Object)],
     mut linked: Linked<'_>,
+    poses: &mut ghost_world::world::TickPoses,
     work: &mut u64,
     budget: u64,
 ) -> Vec<CarriedChild> {
@@ -2884,7 +3047,6 @@ fn place_linked<W: PredictWorld>(
         }
         linked.own(world, ghost)
     };
-    let mut poses = ghost_world::world::TickPoses::default();
     let mut charge = || {
         *work = work.saturating_add(LINK_WORK);
         *work <= budget
@@ -2896,7 +3058,7 @@ fn place_linked<W: PredictWorld>(
         if world.links.parent(index).is_none() || linked.own(world, index).is_some() {
             continue;
         }
-        let pose = world.tick_pose_in(index, &nodes, &own, &mut poses, &mut charge);
+        let pose = world.tick_pose_in(index, &nodes, &own, poses, &mut charge);
         if poses.stopped() {
             break;
         }
@@ -3164,6 +3326,7 @@ impl ClientCollision {
                 }
             }
         }
+        let mut tick_poses = ghost_world::world::TickPoses::default();
         let carried = place_linked(
             world,
             &mut objects,
@@ -3175,6 +3338,7 @@ impl ClientCollision {
                 player_at,
                 me,
             },
+            &mut tick_poses,
             &mut work,
             budget,
         );
@@ -3186,6 +3350,7 @@ impl ClientCollision {
             by_id: index_of(&objects),
             objects,
             carried,
+            tick_poses,
             zones,
             work,
             budget,
@@ -3234,6 +3399,7 @@ impl ClientCollision {
             index_bits: 0,
             objects: Vec::new(),
             carried: Vec::new(),
+            tick_poses: ghost_world::world::TickPoses::default(),
             by_id: Vec::new(),
             zones: Vec::new(),
             work: 0,
@@ -3660,6 +3826,7 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 
 pub mod aim;
 pub mod drive;
+pub mod framed;
 pub mod game;
 pub mod ghost_players;
 pub mod look;
