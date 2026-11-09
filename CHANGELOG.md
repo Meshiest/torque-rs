@@ -59,6 +59,14 @@ different.
 - `torque-plugin-gui-layout`: flex and grid layout containers (`GuiFlexCtrl`, `GuiGridCtrl`; taffy) whose children are any
   controls, read through dynamic layout fields, inside GUIs that keep TGE's absolute positions (`GuiLayoutPlugin`, not in
   `DefaultPlugins`); TGE has only absolute positions and sizing flags.
+- `torque-gui` `client_script`: the GUI side of client scripts, the scripts a server sends to run on the player's client. A
+  server's `ui` ops make controls of a closed set of Rust classes (`ClientScriptPanel`, `ClientScriptButton`, ...) through a
+  typed applier that checks every op against the op format, the grants and the caps (a violation stops the realm). The
+  controls have no names, commands, variables, accelerators or script callbacks, and scripts cannot read or write them. They
+  live in a server layer the canvas does not own: drawn after the content and before the dialogs, only over the screens the
+  game names, never moved by `setContent`, `pushDialog` or `popLayer`. An engine layer and a chip ("Server scripts:
+  <address>", with per-tier toggles) are drawn over the dialogs and get input first; Escape is the host's, and the realm is
+  given text and navigation only in its focused text field.
 - `torque-client`: input sources (`InputSource`, `add_input_source`): devices a plugin adds that the client polls once per
   drawn frame (once per client pass without a window) and that reach the action maps as TGE's `joystick<N>` buttons, axes and hats (`bind(joystick0, xaxis, f)`); a device
   that goes lets go of what it held. TGE reads only DirectInput devices. A source can stamp events (`InputQueue`, `axis_at`) and the

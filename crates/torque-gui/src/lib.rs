@@ -54,6 +54,7 @@ use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 pub mod backdrop;
 pub mod canvas;
 mod classes;
+pub mod client_script;
 pub mod console;
 mod control;
 pub mod custom;
@@ -157,6 +158,8 @@ pub struct Control {
     pub message_vector: Option<ObjId>,
     /// A GuiGraphCtrl's plots ([`hud::GraphState`]).
     pub graph: Option<Box<hud::GraphState>>,
+    /// The host made the control for a client-script realm ([`client_script`]): no script callback runs for it.
+    pub realm: bool,
 }
 
 /// A GuiFadeinBitmapCtrl's state (`onWake`, `reset`, `onRender`): the tick count it woke or was reset at, whether `onWait`
@@ -218,6 +221,9 @@ pub struct GuiState {
     pub cursor: Option<ObjId>,
     /// `cursorOn`/`cursorOff` (TGE's constructor: on).
     pub cursor_on: bool,
+    /// How many times the game called `cursorOn` or `cursorOff`: the client-script layers give back a cursor they turned on
+    /// only while the game has not set it since.
+    pub cursor_calls: u64,
     /// `showCursor`/`hideCursor` (on).
     pub show_cursor: bool,
     /// `getCursorPos` (headless: what `setCursorPos` stored).
@@ -259,6 +265,8 @@ pub struct GuiState {
     /// The host's overlays ([`Gui::set_overlay`]): controls drawn over the canvas's children, never members of the canvas, so a
     /// script's `Canvas.getCount()` and `Canvas.getObject(%i)` count only what the scripts put there.
     pub overlays: Vec<ObjId>,
+    /// The host layers of client scripts: the server layer, the engine layer and the chip ([`client_script`]).
+    pub client_script: client_script::LayerState,
 }
 
 impl Default for GuiState {
@@ -268,6 +276,7 @@ impl Default for GuiState {
             canvas_size: DEFAULT_CANVAS_SIZE,
             cursor: None,
             cursor_on: true,
+            cursor_calls: 0,
             show_cursor: true,
             cursor_pos: (0, 0),
             cursor_drawn: false,
@@ -287,6 +296,7 @@ impl Default for GuiState {
             ext: Extension::default(),
             custom: custom::Custom::default(),
             overlays: Vec::new(),
+            client_script: client_script::LayerState::default(),
         }
     }
 }
@@ -360,6 +370,11 @@ impl Gui {
     /// `f` of the control's state, mutable, under a short borrow (no script may run inside `f`).
     pub fn with_mut<R>(&self, id: ObjId, f: impl FnOnce(&mut Control) -> R) -> Option<R> {
         self.0.borrow_mut().controls.get_mut(&id).map(f)
+    }
+
+    /// Whether the host made the control for a client-script realm ([`Control::realm`]).
+    pub fn is_realm(&self, id: ObjId) -> bool {
+        self.0.borrow().controls.get(&id).is_some_and(|c| c.realm)
     }
 
     /// The control's dialog layer (0 for one the model does not know).
@@ -469,6 +484,8 @@ impl Gui {
                 control::resize(vm, self, o, (0, 0), size);
             }
         }
+        // The host layers of client scripts: sized to the canvas, the holds checked against what is on screen.
+        client_script::frame(vm, self, size);
         // The render pass, as far as it runs scripts: the GuiFadeinBitmapCtrl clocks of the controls drawn (awake, and visible
         // with every parent: `renderChildControls` draws the visible children only), in drawing order.
         let mut calls: Vec<(ObjId, &'static [u8])> = Vec::new();

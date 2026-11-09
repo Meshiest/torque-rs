@@ -4448,6 +4448,7 @@ name = "torque-gui"
 version = "0.1.0"
 dependencies = [
  "png",
+ "torque-client-script-format",
  "torque-engine",
  "torque-fonts",
  "torque-images",

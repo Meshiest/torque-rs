@@ -110,6 +110,13 @@ pub trait GuiControlClass: ScriptClass {
         cx.base_resize(position, extent);
     }
 
+    /// How far the control's children are drawn from where their positions put them (a scrolling area's offset). The
+    /// default is none.
+    fn child_shift(state: &Self::State) -> (i32, i32) {
+        let _ = state;
+        (0, 0)
+    }
+
     /// Once a frame while the control is awake and shown, after the canvas laid its children out and before the frame is
     /// drawn, parents before their children: a control that keeps something in step with its children or fields checks it
     /// here. A control in one of the host's overlays ([`Gui::set_overlay`]) is not updated. An error is printed and the
@@ -344,6 +351,7 @@ pub(crate) trait ControlBehavior {
         position: (i32, i32),
         extent: (i32, i32),
     );
+    fn child_shift(&self, state: &dyn Any) -> (i32, i32);
     fn update(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
     fn wake(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
     fn sleep(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError>;
@@ -420,6 +428,12 @@ impl<C: GuiControlClass> ControlBehavior for Adapter<C> {
             (Some(state), Some(this)) => this.resize(state, cx, position, extent),
             _ => cx.base_resize(position, extent),
         }
+    }
+
+    fn child_shift(&self, state: &dyn Any) -> (i32, i32) {
+        state
+            .downcast_ref::<C::State>()
+            .map_or((0, 0), |state| C::child_shift(state))
     }
 
     fn update(&self, state: &mut dyn Any, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
@@ -607,6 +621,18 @@ impl Gui {
         }
     }
 
+    /// `f` of the state of type `T` the control `id` keeps (a control of a plugin's class whose
+    /// [`State`](GuiControlClass::State) is `T`, not busy).
+    pub(crate) fn with_custom_state<T: 'static, R>(
+        &self,
+        id: ObjId,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let mut state = self.0.borrow_mut();
+        let slot = state.custom.objects.get_mut(&id)?;
+        slot.state.as_mut()?.downcast_mut::<T>().map(f)
+    }
+
     /// `f` of the value of type `T` a plugin keeps on the control `id` (any control, of any class), made with `Default` the
     /// first time and dropped with the control. None when `id` is not a control. `f` runs under a borrow of the GUI: it must
     /// not reach the GUI or run script.
@@ -748,6 +774,19 @@ pub(crate) fn pointer(
     ev: GuiEvent,
 ) -> Option<Result<(), VmError>> {
     let at = screen_position(vm, id);
+    pointer_at(vm, gui, id, which, ev, at)
+}
+
+/// [`pointer`] for a control whose top left corner is at `at` on the canvas (a host that places the control itself, as a
+/// scrolling area's children are).
+pub(crate) fn pointer_at(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    which: Pointer,
+    ev: GuiEvent,
+    at: (i32, i32),
+) -> Option<Result<(), VmError>> {
     let ev = PointerEvent {
         point: ev.point,
         local: (ev.point.0.wrapping_sub(at.0), ev.point.1.wrapping_sub(at.1)),

@@ -479,13 +479,16 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         }
     });
     reg(vm, gui, "cursorOn", 2, 2, "", |_, gui, _| {
-        gui.0.borrow_mut().cursor_on = true;
+        let mut g = gui.0.borrow_mut();
+        g.cursor_on = true;
+        g.cursor_calls += 1;
         Native::Void
     });
     // The cursor off, and the mouse control (`mMouseControl`) dropped.
     reg(vm, gui, "cursorOff", 2, 2, "", |_, gui, _| {
         let mut g = gui.0.borrow_mut();
         g.cursor_on = false;
+        g.cursor_calls += 1;
         g.input.mouse_control = None;
         Native::Void
     });

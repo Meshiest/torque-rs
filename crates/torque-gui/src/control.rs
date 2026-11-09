@@ -320,7 +320,9 @@ fn on_wake(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
     // The remembered first responder, a tabable control that takes key focus.
     crate::input::on_wake(vm, gui, id)?;
     classes::on_wake(vm, gui, id);
-    vm.call_method(id, b"onWake", &[])?;
+    if !gui.is_realm(id) {
+        vm.call_method(id, b"onWake", &[])?;
+    }
     // What a class's `onWake` does after `GuiControl::onWake` returned (the script's `onWake` ran inside it).
     if vm.objects().contains(id) && gui.is_control(id) {
         classes::after_wake(vm, gui, id);
@@ -359,7 +361,11 @@ fn sleep_at(vm: &mut Vm, gui: &Gui, id: ObjId, depth: usize) -> Result<(), VmErr
     // The first responder cleared and the mouse unlocked before the script's `onSleep`.
     crate::input::on_sleep(vm, gui, id)?;
     crate::custom::sleep(vm, gui, id)?;
-    let result = vm.call_method(id, b"onSleep", &[]).map(|_| ());
+    let result = if gui.is_realm(id) {
+        Ok(())
+    } else {
+        vm.call_method(id, b"onSleep", &[]).map(|_| ())
+    };
     if let Some(control) = gui.0.borrow_mut().controls.get_mut(&id) {
         control.awake = false;
         // Sleeping clears the "has rendered" flag with the awake one: the script's `onRender` runs once again on the first
@@ -414,6 +420,27 @@ pub(crate) fn remove_child(
     Ok(vm.objects_mut().remove(parent, child))
 }
 
+/// A control the host makes itself for a client-script realm: an object of `class` that scripts neither read nor write
+/// ([`SimObject::engine_made`]), with no name, no `GuiGroup` membership and no script callbacks (`onAdd`, `onWake`, `onSleep`,
+/// `onRemove` and `onRender` never run for it). The control's state is made as a script-made control's is. `None` for an
+/// unknown class or when no id is free.
+pub(crate) fn make_realm_control(
+    vm: &mut Vm,
+    gui: &Gui,
+    class: &str,
+    fields: &[(&[u8], &[u8], &[u8])],
+) -> Option<ObjId> {
+    let id = vm.add_engine_object(class.as_bytes(), fields)?;
+    let mut control = Control {
+        selected: -1,
+        realm: true,
+        ..Control::default()
+    };
+    control.active = crate::custom::made(vm, gui, id).unwrap_or(false);
+    gui.0.borrow_mut().controls.insert(id, control);
+    Some(id)
+}
+
 /// The behaviour of `GuiControl` and every subclass.
 struct ControlClass(Gui);
 
@@ -459,7 +486,9 @@ impl EngineClass for ControlClass {
     fn on_remove(&self, vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
         // The script's `onRemove` first (`Con::executef(this, "onRemove")`: silent without one), then the first
         // responder cleared and SimGroup's own.
-        vm.call_method(id, b"onRemove", &[])?;
+        if !self.0.is_realm(id) {
+            vm.call_method(id, b"onRemove", &[])?;
+        }
         let result = if self.0.is_awake(id) {
             sleep(vm, &self.0, id)
         } else {
@@ -468,6 +497,7 @@ impl EngineClass for ControlClass {
         crate::input::forget(&self.0, id);
         self.0.ext().removed(id);
         crate::custom::removed(&self.0, id);
+        crate::client_script::forget(&self.0, id);
         let mut state = self.0.0.borrow_mut();
         state.controls.remove(&id);
         if state.canvas == Some(id) {

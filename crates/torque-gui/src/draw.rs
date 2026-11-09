@@ -40,9 +40,11 @@
 //! 2012 GarageGames, LLC); the code here is this crate's own.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 
 use torque_fonts::TextColors;
+use torque_images::lru::Lru;
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
@@ -64,6 +66,11 @@ pub const MAX_QUADS: usize = 1 << 20;
 pub const MAX_CONTROLS: u32 = 1 << 18;
 /// The most GameTSCtrls one frame keeps the projection of.
 pub const MAX_TS_RECTS: usize = 64;
+
+/// The most textures of client-script realms' images one cache keeps.
+pub const MAX_REALM_TEXTURES: usize = 2 * torque_client_script_format::ui::MAX_IMAGES;
+/// The most texel bytes those textures hold together (least recently drawn dropped first).
+pub const MAX_REALM_TEXTURE_BYTES: usize = 128 << 20;
 
 /// The most columns a GuiGraphCtrl plots (a hostile extent draws to here).
 pub const MAX_GRAPH_COLUMNS: i32 = 4096;
@@ -126,6 +133,58 @@ pub struct DrawReport {
     pub covered: u32,
     /// The extension's own counts, by name.
     pub extension: BTreeMap<&'static str, u32>,
+    /// Controls of a client-script realm drawn this frame ([`crate::client_script`]).
+    pub realm_controls: u32,
+    /// Texts measured by plugin controls' draws ([`DrawCtx::text_size`]).
+    pub text_measures: u32,
+    /// Whether the client-script chip was drawn.
+    pub chip: bool,
+    /// The layers in the order they were drawn: the content, the server layer, each dialog, the engine layer, the chip.
+    pub layers: Vec<crate::client_script::LayerMark>,
+}
+
+/// Where the next quad of a frame goes: the number of batches, and the quads of the last.
+#[derive(Clone, Copy, Debug)]
+struct QuadMark {
+    batches: usize,
+    quads: usize,
+}
+
+/// The parts of `q` outside `hole` (x, y, width, height), each with its texture coordinates, pushed to `out`.
+fn cut_quad(q: GuiQuad, hole: [i32; 4], out: &mut Vec<GuiQuad>) {
+    let [hx0, hy0] = [hole[0] as f32, hole[1] as f32];
+    let [hx1, hy1] = [hx0 + hole[2] as f32, hy0 + hole[3] as f32];
+    let [x0, y0, x1, y1] = q.rect;
+    if x0.max(x1) <= hx0 || x0.min(x1) >= hx1 || y0.max(y1) <= hy0 || y0.min(y1) >= hy1 {
+        out.push(q);
+        return;
+    }
+    // A quad drawn mirrored or empty that meets the hole is dropped whole.
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let piece = |r: [f32; 4]| {
+        let u = |x: f32| q.uv[0] + (q.uv[2] - q.uv[0]) * (x - x0) / (x1 - x0);
+        let v = |y: f32| q.uv[1] + (q.uv[3] - q.uv[1]) * (y - y0) / (y1 - y0);
+        GuiQuad {
+            rect: r,
+            uv: [u(r[0]), v(r[1]), u(r[2]), v(r[3])],
+            color: q.color,
+        }
+    };
+    if y0 < hy0 {
+        out.push(piece([x0, y0, x1, hy0]));
+    }
+    if y1 > hy1 {
+        out.push(piece([x0, hy1, x1, y1]));
+    }
+    let (my0, my1) = (y0.max(hy0), y1.min(hy1));
+    if x0 < hx0 {
+        out.push(piece([x0, my0, hx0, my1]));
+    }
+    if x1 > hx1 {
+        out.push(piece([hx1, my0, x1, my1]));
+    }
 }
 
 /// A frame's draw list.
@@ -256,9 +315,46 @@ pub struct Frame {
     pub callbacks: Vec<Callback>,
 }
 
+/// An image a client-script realm shows: the bytes its server's store gave for one of its paths, under an id no other image
+/// has. It is drawn from those bytes alone, its texture kept apart from the game's ([`DrawCache`]): it is never looked up by
+/// name, so a realm's path cannot reach the game's art.
+#[derive(Clone)]
+pub(crate) struct RealmImage {
+    id: u64,
+    kind: torque_images::Kind,
+    bytes: Arc<[u8]>,
+}
+
+impl RealmImage {
+    /// The image of `bytes`, given for `path`: None when the path's extension names no image kind.
+    pub(crate) fn new(path: &str, bytes: Arc<[u8]>) -> Option<RealmImage> {
+        let kind = match path.rsplit_once('.')?.1 {
+            "png" => torque_images::Kind::Png,
+            "jpg" | "jpeg" => torque_images::Kind::Jpeg,
+            _ => return None,
+        };
+        Some(RealmImage {
+            id: crate::textures::next_id(),
+            kind,
+            bytes,
+        })
+    }
+}
+
+impl fmt::Debug for RealmImage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RealmImage")
+            .field("id", &self.id)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
 /// What a frame reuses: the textures, the fonts and their sheets, and `dglDrawTextN`'s saved colour (a global in TGE).
 pub struct DrawCache {
     pub textures: GuiTextures,
+    /// The textures of client-script realms' images, by image ([`RealmImage`]; None: it did not decode or fit).
+    realm_textures: Lru<u64, Option<Arc<GuiTexture>>>,
     pub fonts: Box<dyn crate::FontSource>,
     sheets: BTreeMap<(String, i32, usize), Arc<GuiTexture>>,
     /// The sheets' texel bytes.
@@ -388,6 +484,7 @@ impl DrawCache {
     pub fn new(fonts: Box<dyn crate::FontSource>) -> DrawCache {
         DrawCache {
             textures: GuiTextures::default(),
+            realm_textures: Lru::new(MAX_REALM_TEXTURES, MAX_REALM_TEXTURE_BYTES),
             fonts,
             sheets: BTreeMap::new(),
             sheet_bytes: 0,
@@ -675,6 +772,30 @@ impl Walk<'_> {
         t
     }
 
+    /// A realm image's texture: decoded from its own bytes once, in the realm textures (never the game's).
+    fn realm_texture(&mut self, image: &RealmImage) -> Option<Arc<GuiTexture>> {
+        if let Some(found) = self.cache.realm_textures.get(&image.id) {
+            return found.clone();
+        }
+        let made = torque_images::decode(image.kind, &image.bytes)
+            .ok()
+            .and_then(|b| texture_of(&format!("realm:{}", image.id), &b, false, true));
+        let size = made.as_ref().map_or(0, |t| t.rgba.len());
+        if !self
+            .cache
+            .realm_textures
+            .insert(image.id, made.clone(), size)
+        {
+            // Too large beside what the frame drew: remembered as none, not decoded again.
+            self.cache.realm_textures.insert(image.id, None, 0);
+            return None;
+        }
+        if made.is_none() {
+            self.out.draws.report.no_texture += 1;
+        }
+        made
+    }
+
     /// `dglDrawBitmapStretchSR`: `dst` (x, y, w, h) from `src` (x, y, w, h) of the texture, modulated by `color`.
     fn stretch(
         &mut self,
@@ -783,6 +904,27 @@ impl Walk<'_> {
         let (cx0, cy0) = (i64::from(p.0), i64::from(p.1));
         let (cx1, cy1) = (cx0 + i64::from(e.0), cy0 + i64::from(e.1));
         near.any(|(_, r)| r[0] <= cx0 && r[1] <= cy0 && cx1 <= r[2] && cy1 <= r[3])
+    }
+
+    /// The font `face` at `size` (a miss is counted in the report).
+    fn font(&mut self, face: &str, size: i32) -> Option<Arc<torque_fonts::Font>> {
+        let vm = self.vm;
+        let read = |p: &str| match vm.file_host().read(p.as_bytes()) {
+            FileRead::Found(b) => Some(b),
+            _ => None,
+        };
+        let font = self.cache.fonts.font(face, size, &read);
+        if font.is_none() {
+            self.out.draws.report.no_font += 1;
+            if self.out.draws.report.missing_fonts.len() < 64 {
+                self.out
+                    .draws
+                    .report
+                    .missing_fonts
+                    .insert(format!("{face}_{size}"));
+            }
+        }
+        font
     }
 
     /// `renderChildControls`.
@@ -916,7 +1058,6 @@ impl Walk<'_> {
         }
     }
 
-    /// `GuiControl::onRender`.
     /// GameTSCtrl's `onRender`: with a camera (the client host says whether the connection's
     /// `processCameraQuery` has one: a control object), the world in the control's rectangle, then the children; without one,
     /// nothing at all.
@@ -963,10 +1104,11 @@ impl Walk<'_> {
         let Some((behavior, mut state)) = self.gui.take_custom(id) else {
             return false;
         };
-        let first = self
-            .gui
-            .with_mut(id, |c| !std::mem::replace(&mut c.has_rendered, true))
-            .unwrap_or(false);
+        let first = !self.gui.is_realm(id)
+            && self
+                .gui
+                .with_mut(id, |c| !std::mem::replace(&mut c.has_rendered, true))
+                .unwrap_or(false);
         if first {
             self.out.callbacks.push(Callback::OnRender(id));
         }
@@ -978,11 +1120,17 @@ impl Walk<'_> {
             depth,
         };
         behavior.draw(&mut *state, &mut DrawCtx(self), &place);
+        let shift = behavior.child_shift(&*state);
         self.gui.put_custom(id, state);
-        self.children(id, update, offset, depth);
+        let inside = (
+            offset.0.wrapping_add(shift.0),
+            offset.1.wrapping_add(shift.1),
+        );
+        self.children(id, update, inside, depth);
         true
     }
 
+    /// `GuiControl::onRender`.
     fn gui_control(&mut self, id: ObjId, offset: (i32, i32), update: [i32; 4], depth: usize) {
         let first = self
             .gui
@@ -1525,6 +1673,81 @@ impl Walk<'_> {
         )
     }
 
+    fn mark(&mut self, mark: crate::client_script::LayerMark) {
+        self.out.draws.report.layers.push(mark);
+    }
+
+    fn quad_mark(&self) -> QuadMark {
+        let batches = &self.out.draws.batches;
+        QuadMark {
+            batches: batches.len(),
+            quads: batches.last().map_or(0, |b| b.quads.len()),
+        }
+    }
+
+    /// Cuts `hole` (x, y, width, height) out of every quad pushed since `mark` ([`cut_quad`]).
+    fn cut_since(&mut self, mark: QuadMark, hole: [i32; 4]) {
+        // The batch that was last at the mark may have grown since.
+        let first = mark.batches.saturating_sub(1);
+        for (i, batch) in self.out.draws.batches.iter_mut().enumerate().skip(first) {
+            let from = if i + 1 == mark.batches { mark.quads } else { 0 };
+            let tail = batch.quads.split_off(from.min(batch.quads.len()));
+            for q in tail {
+                cut_quad(q, hole, &mut batch.quads);
+            }
+        }
+    }
+
+    /// Draws one control of a client-script layer at the screen's origin.
+    fn layer_control(&mut self, id: ObjId) {
+        if !self.vm.objects().contains(id) || !is_a(self.vm, id, "GuiControl") {
+            return;
+        }
+        let viewport = self.viewport;
+        self.set_clip(viewport);
+        let alpha = std::mem::replace(&mut self.alpha, 1.0);
+        let pos = point(self.vm, id, b"position");
+        self.control(id, pos, viewport, 1);
+        self.alpha = alpha;
+    }
+
+    /// The server layer, when the plan has it ([`crate::client_script`]).
+    fn server_layer(&mut self, plan: &crate::client_script::DrawPlan) {
+        let Some(root) = plan.server else {
+            return;
+        };
+        let start = self.quad_mark();
+        self.layer_control(root);
+        // A focused text field (a leaf) is drawn again over everything else of the layer.
+        if let Some((field, at)) = crate::client_script::focus_on_top(self.vm, self.gui) {
+            let viewport = self.viewport;
+            self.set_clip(viewport);
+            self.control(field, at, viewport, 1);
+        }
+        let viewport = self.viewport;
+        self.set_clip(viewport);
+        crate::client_script::draw_tooltip(&mut DrawCtx(self));
+        // Nothing of the layer shows in the chip's column.
+        let column = self.gui.0.borrow().client_script.column;
+        if let Some(column) = column {
+            self.cut_since(start, column);
+        }
+        self.mark(crate::client_script::LayerMark::Server);
+    }
+
+    /// The engine layer's controls and the chip, over every dialog.
+    fn engine_layer(&mut self, plan: &crate::client_script::DrawPlan) {
+        for &id in &plan.engine {
+            self.layer_control(id);
+        }
+        self.mark(crate::client_script::LayerMark::Engine);
+        if let Some(chip) = plan.chip {
+            self.layer_control(chip);
+            self.out.draws.report.chip = true;
+            self.mark(crate::client_script::LayerMark::Chip);
+        }
+    }
+
     /// The cursor (the end of `renderFrame`); notes whether it was drawn ([`crate::GuiState::cursor_drawn`]).
     fn cursor(&mut self) {
         let drawn = self.draw_cursor();
@@ -1560,6 +1783,7 @@ impl Walk<'_> {
 pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     cache.chunked.begin_frame();
     cache.textures.begin_frame();
+    cache.realm_textures.begin_frame();
     let (canvas, size) = {
         let s = gui.0.borrow();
         (s.canvas, s.canvas_size)
@@ -1567,6 +1791,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     let now = vm.sim_time();
     let (w, h) = (size.0.max(0), size.1.max(0));
     let viewport = [0, 0, w, h];
+    let layers = crate::client_script::DrawPlan::of(vm, gui);
     let ext = gui.ext();
     ext.begin_draw(gui, cache.fonts.as_mut());
     let mut walk = Walk {
@@ -1584,13 +1809,21 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     };
     walk.out.draws.size = (w as u32, h as u32);
     if let Some(canvas) = canvas.filter(|c| vm.objects().contains(*c)) {
-        for child in children(vm, canvas) {
-            if !vm.objects().contains(child) || !is_a(vm, child, "GuiControl") {
-                continue;
+        for (i, child) in children(vm, canvas).into_iter().enumerate() {
+            if vm.objects().contains(child) && is_a(vm, child, "GuiControl") {
+                walk.set_clip(viewport);
+                let pos = point(vm, child, b"position");
+                walk.control(child, pos, viewport, 1);
             }
-            walk.set_clip(viewport);
-            let pos = point(vm, child, b"position");
-            walk.control(child, pos, viewport, 1);
+            walk.mark(if i == 0 {
+                crate::client_script::LayerMark::Content
+            } else {
+                crate::client_script::LayerMark::Dialog
+            });
+            // The server layer: after the content, before every dialog.
+            if i == 0 {
+                walk.server_layer(&layers);
+            }
         }
         // The host's overlays, over the canvas's children and under the cursor.
         for o in gui.overlays(vm) {
@@ -1601,6 +1834,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
             let pos = point(vm, o, b"position");
             walk.control(o, pos, viewport, 1);
         }
+        walk.engine_layer(&layers);
         walk.set_clip(viewport);
         walk.cursor();
     }
@@ -1641,6 +1875,109 @@ impl<'a> DrawCtx<'_, 'a> {
     /// The opacity the current subtree draws at.
     pub fn alpha(&self) -> f32 {
         self.0.alpha
+    }
+
+    /// Multiplies the opacity of the control being drawn and its children by `factor` (0 to 1); the walk restores it after
+    /// the control.
+    pub fn scale_alpha(&mut self, factor: f32) {
+        self.0.alpha *= factor.clamp(0.0, 1.0);
+    }
+
+    /// The width and height of `text` in the font `face` at `size` (None: no such font).
+    pub fn text_size(&mut self, face: &str, size: i32, text: &[u8]) -> Option<(i32, i32)> {
+        self.0.out.draws.report.text_measures += 1;
+        let font = self.0.font(face, size)?;
+        Some((font.str_width(text), font.height as i32))
+    }
+
+    /// Narrows the clip to `r` (x, y, width, height) for the rest of this control's own drawing.
+    pub fn clip_to(&mut self, r: [i32; 4]) {
+        self.0.clip = intersect(self.0.clip, r);
+    }
+
+    /// `text` at `at` (its top left corner) in the font `face` at `size`, in one color: the pen's advance (None: no such
+    /// font, nothing drawn).
+    pub fn text(
+        &mut self,
+        face: &str,
+        size: i32,
+        at: (i32, i32),
+        text: &[u8],
+        color: [u8; 4],
+    ) -> Option<i32> {
+        let font = self.0.font(face, size)?;
+        let mut colors = TextColors::new(self.0.faded(color), self.0.cache.saved_color);
+        Some(
+            self.0
+                .glyphs(&font, face, size, at, text, &mut colors, None),
+        )
+    }
+
+    /// The bitmap `name` over `rect` (x, y, width, height): `fit` is 0 stretch, 1 contain, 2 cover (cut to the rectangle),
+    /// 3 centered at its own size; `tint` modulates it. False when it does not load.
+    pub fn image(&mut self, name: &[u8], rect: [i32; 4], fit: u8, tint: [u8; 4]) -> bool {
+        let Some(t) = self.0.texture(name, true) else {
+            return false;
+        };
+        self.fitted(&t, rect, fit, tint);
+        true
+    }
+
+    /// A client-script realm's image over `rect`, as [`DrawCtx::image`] draws a bitmap: only what the server's store gave,
+    /// never a file of the game's. False when it does not decode.
+    pub(crate) fn realm_image(
+        &mut self,
+        image: &RealmImage,
+        rect: [i32; 4],
+        fit: u8,
+        tint: [u8; 4],
+    ) -> bool {
+        let Some(t) = self.0.realm_texture(image) else {
+            return false;
+        };
+        self.fitted(&t, rect, fit, tint);
+        true
+    }
+
+    /// The texture `t` over `rect` by `fit` ([`DrawCtx::image`]).
+    fn fitted(&mut self, t: &Arc<GuiTexture>, rect: [i32; 4], fit: u8, tint: [u8; 4]) {
+        let (bw, bh) = (t.bitmap_size.0 as i32, t.bitmap_size.1 as i32);
+        if bw <= 0 || bh <= 0 || rect[2] <= 0 || rect[3] <= 0 {
+            return;
+        }
+        let full = [0, 0, bw, bh];
+        let (rw, rh) = (f64::from(rect[2]), f64::from(rect[3]));
+        let (fw, fh) = (f64::from(bw), f64::from(bh));
+        match fit {
+            1 => {
+                let scale = (rw / fw).min(rh / fh);
+                let (w, h) = ((fw * scale) as i32, (fh * scale) as i32);
+                let at = [
+                    rect[0] + (rect[2] - w) / 2,
+                    rect[1] + (rect[3] - h) / 2,
+                    w,
+                    h,
+                ];
+                self.0.stretch(t, at, full, tint, false);
+            }
+            2 => {
+                let scale = (rw / fw).max(rh / fh);
+                let sw = ((rw / scale) as i32).clamp(1, bw);
+                let sh = ((rh / scale) as i32).clamp(1, bh);
+                let src = [(bw - sw) / 2, (bh - sh) / 2, sw, sh];
+                self.0.stretch(t, rect, src, tint, false);
+            }
+            3 => {
+                let at = [
+                    rect[0] + (rect[2] - bw) / 2,
+                    rect[1] + (rect[3] - bh) / 2,
+                    bw,
+                    bh,
+                ];
+                self.0.stretch(t, at, full, tint, false);
+            }
+            _ => self.0.stretch(t, rect, full, tint, false),
+        }
     }
 
     /// The batches drawn so far (an extra pushed now goes before the next one).

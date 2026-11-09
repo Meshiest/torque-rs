@@ -895,7 +895,12 @@ pub(crate) fn mouse_down_on(
     on_mouse_down(vm, gui, id, ev)
 }
 
-fn on_mouse_down(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+pub(crate) fn on_mouse_down(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    ev: GuiEvent,
+) -> Result<(), VmError> {
     if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Down, ev) {
         return done;
     }
@@ -950,7 +955,7 @@ fn on_mouse_down(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), 
     Ok(())
 }
 
-fn on_mouse_up(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+pub(crate) fn on_mouse_up(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
     if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Up, ev) {
         return done;
     }
@@ -996,7 +1001,12 @@ fn on_mouse_up(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), Vm
     Ok(())
 }
 
-fn on_mouse_move(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+pub(crate) fn on_mouse_move(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    ev: GuiEvent,
+) -> Result<(), VmError> {
     // A plugin's control sees the move, then (as `GuiControl::onMouseMove`) its parent does.
     if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Move, ev) {
         done?;
@@ -1023,7 +1033,12 @@ fn on_mouse_move(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), 
     Ok(())
 }
 
-fn on_mouse_dragged(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+pub(crate) fn on_mouse_dragged(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    ev: GuiEvent,
+) -> Result<(), VmError> {
     if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Dragged, ev) {
         return done;
     }
@@ -1051,7 +1066,12 @@ fn on_mouse_dragged(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(
     Ok(())
 }
 
-fn on_mouse_enter(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+pub(crate) fn on_mouse_enter(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    ev: GuiEvent,
+) -> Result<(), VmError> {
     if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Enter, ev) {
         return done;
     }
@@ -1076,7 +1096,12 @@ fn on_mouse_enter(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(),
     Ok(())
 }
 
-fn on_mouse_leave(vm: &mut Vm, gui: &Gui, id: ObjId, ev: GuiEvent) -> Result<(), VmError> {
+pub(crate) fn on_mouse_leave(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    ev: GuiEvent,
+) -> Result<(), VmError> {
     if let Some(done) = crate::custom::pointer(vm, gui, id, crate::custom::Pointer::Leave, ev) {
         return done;
     }
@@ -1323,7 +1348,7 @@ fn on_key_down_at(
     parent_key_down(vm, gui, id, ev, depth)
 }
 
-fn on_key_up_at(
+pub(crate) fn on_key_up_at(
     vm: &mut Vm,
     gui: &Gui,
     id: ObjId,
@@ -1411,8 +1436,19 @@ fn on_input_event(vm: &mut Vm, gui: &Gui, id: ObjId, ev: &InputEvent) -> Result<
 
 // ---- the canvas
 
-/// `GuiCanvas::processInputEvent`: whether the canvas consumed the event (see the module documentation).
+/// `GuiCanvas::processInputEvent`: whether the canvas consumed the event (see the module documentation). The host layers of
+/// client scripts ([`crate::client_script`]) see it first: Escape the Escape filter, other keys an engine prompt or the realm's
+/// focused field, the pointer the chip, the engine layer and the server layer; an event they take does not reach the canvas.
 pub fn process_input_event(vm: &mut Vm, gui: &Gui, ev: &InputEvent) -> Result<bool, VmError> {
+    if crate::client_script::route(vm, gui, ev)? {
+        return Ok(true);
+    }
+    let result = process_canvas_event(vm, gui, ev);
+    crate::client_script::after_canvas(vm, gui, ev)?;
+    result
+}
+
+fn process_canvas_event(vm: &mut Vm, gui: &Gui, ev: &InputEvent) -> Result<bool, VmError> {
     let Some(canvas) = canvas_of(vm, gui) else {
         return Ok(false);
     };

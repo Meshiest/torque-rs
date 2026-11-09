@@ -283,6 +283,8 @@ struct Quirks {
     /// `gSyntaxError`: set by an `eval` whose text has a syntax error, cleared at the start of each `eval` and by
     /// nothing else. The `eval` that ran a bad text reports only if it is still set after the run.
     syntax_error: bool,
+    /// How many times text was evaluated (`eval`, the native or the host's), for hosts that must show none ran.
+    evals: u64,
     /// `call("eval", ...)` is about to run the native `eval`: it is handed the static argument array one
     /// slot on, so its report shows the array's second slot. Set by `call` and taken by `eval` at its entry.
     eval_via_call: bool,
@@ -1039,6 +1041,11 @@ impl Vm {
     /// `$name = <text>` as `SAVEVAR_STR` stores it, by a name of any bytes.
     pub fn set_global_text(&mut self, name: &[u8], value: &[u8]) {
         self.globals.add(name).set_string(value);
+    }
+
+    /// How many times text has been evaluated here (`eval`, the native or the host's `Vm::eval`).
+    pub fn eval_count(&self) -> u64 {
+        self.quirks.evals
     }
 
     /// The method `name` in the namespace chain of `object`, if both exist.

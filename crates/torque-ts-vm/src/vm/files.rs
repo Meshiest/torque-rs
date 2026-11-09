@@ -699,6 +699,7 @@ impl Vm {
         slot: Option<usize>,
     ) -> Result<Vec<u8>, VmError> {
         self.quirks.syntax_error = false;
+        self.quirks.evals = self.quirks.evals.wrapping_add(1);
         let (block, verdict) = self.prepare_text(text, None);
         if verdict == Verdict::OutOfBudget {
             return Err(VmError::StepLimit);
