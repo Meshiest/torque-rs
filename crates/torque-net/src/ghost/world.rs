@@ -24,6 +24,8 @@ pub struct Obj {
     pub mount: Option<ObjId>,
     pub unsent: u32,
     pub prio: f32,
+    /// Its packet share group and part (`ObjectSource::packet_share`).
+    pub share: Option<(u32, f32)>,
 }
 
 impl Obj {
@@ -39,6 +41,7 @@ impl Obj {
             mount: None,
             unsent: 0,
             prio: 0.0,
+            share: None,
         }
     }
 }
@@ -123,6 +126,10 @@ impl ObjectSource for World {
 
     fn update_priority(&self, obj: ObjId, _cam: &CamInfo, _mask: u32, _skip: u8) -> f32 {
         self.objs.get(&obj).map_or(0.0, |o| o.prio)
+    }
+
+    fn packet_share(&self, obj: ObjId) -> Option<(u32, f32)> {
+        self.objs.get(&obj)?.share
     }
 
     fn camera_info(&self, _scope: ObjId) -> Option<CamInfo> {

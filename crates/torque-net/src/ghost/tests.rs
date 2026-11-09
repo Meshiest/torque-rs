@@ -12,7 +12,8 @@ use crate::events::{
 
 use super::client::{ClassForm, ClientEvent, GhostClient, GhostEventReader, SectionReport};
 use super::manager::{
-    GhostConfig, GhostError, GhostEvent, GhostManager, MessageOutcome, SectionBudget,
+    GhostConfig, GhostError, GhostEvent, GhostManager, KILL_PRIORITY, MessageOutcome,
+    SHARE_FIRST_PRIORITY, SHARE_PRIORITY_MAX, SectionBudget, share_cap, share_priority,
 };
 use super::policy::{
     GhostPolicy, ObjectPolicy, PendingOrder, ScopeRadius, TableCounts, TorqueGhosts,
@@ -856,6 +857,35 @@ fn a_record_that_cannot_fit_the_stream_is_rolled_back_and_skipped() {
 }
 
 #[test]
+fn a_share_group_takes_at_most_its_part_of_a_packet_and_the_rest_wait() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 12);
+    // Ten objects of one group, each a little over 100 bits, at a fifth of a 4,000-bit packet; two with no share.
+    for o in 1..=12 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.bulk = 12;
+        obj.share = (o <= 10).then_some((3, 0.2));
+    }
+    let mut sent = 0;
+    for round in 0..8 {
+        let s = rig.send_with(4_000);
+        assert!(s.stats.share_bits <= 800, "round {round}: {:?}", s.stats);
+        if round == 0 {
+            assert!(s.stats.share_deferred > 0, "{:?}", s.stats);
+        }
+        sent += s.stats.records;
+        rig.ack(&s);
+        rig.mgr.check_invariants().unwrap();
+    }
+    // Every object got its first record in the end.
+    assert_eq!(sent, 12);
+    assert_eq!(share_cap(4_000, 0.2), 800);
+    assert_eq!(share_cap(4_000, f32::NAN), 0);
+    assert_eq!(share_cap(4_000, 7.0), 4_000);
+}
+
+#[test]
 fn the_work_budget_ends_a_section_cleanly() {
     let mut rig = Rig::new();
     rig.go();
@@ -1281,6 +1311,116 @@ fn kill_records_have_the_highest_priority() {
         rep.first_index,
         Some(0),
         "the kill (10000) before the updates"
+    );
+}
+
+#[test]
+fn a_pending_kill_goes_before_a_share_update_of_any_priority() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 4);
+    let a = rig.send();
+    rig.ack(&a);
+    for o in 1..=4 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.fields[0] = 1;
+        obj.prio = 1.0e6;
+        obj.share = Some((0, 1.0));
+        rig.mgr.set_mask(o, 1);
+    }
+    rig.mgr.detach_object(1);
+    rig.world.remove(1);
+    let s = rig.send();
+    let mut r = BitReader::new(&s.bytes);
+    let rep = rig.client.read_section(&mut r).unwrap();
+    assert_eq!(rep.first_index, Some(0), "the kill before the 1e6 updates");
+    assert_eq!(share_priority(1.0e6), SHARE_PRIORITY_MAX);
+    const {
+        assert!(
+            SHARE_PRIORITY_MAX < SHARE_FIRST_PRIORITY && SHARE_FIRST_PRIORITY < KILL_PRIORITY / 2.0
+        )
+    };
+    assert_eq!(share_priority(f32::NAN), 0.0);
+}
+
+#[test]
+fn a_share_is_of_the_room_the_section_starts_with() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 12);
+    for o in 1..=12 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.bulk = 12;
+        obj.share = (o <= 10).then_some((3, 0.5));
+    }
+    // A writer already 70% full of a 4,000-bit packet: 1,200 bits are left, so the group may take 600.
+    rig.seq += 1;
+    let mut w = BitWriter::with_limit(12_000);
+    for _ in 0..2_800 {
+        w.write_flag(false);
+    }
+    let stats = rig
+        .mgr
+        .write_section(&mut w, 4_000, rig.seq, rig.now, &mut rig.world, free!());
+    assert!(stats.share_bits > 0 && stats.share_bits <= 600, "{stats:?}");
+    assert!(stats.share_deferred > 0, "{stats:?}");
+    // The two with no share still went, after the group's room was spent.
+    let sent: Vec<ObjId> = (1..=12)
+        .filter(|&o| rig.mgr.view_of(o).is_some_and(|v| v.mask != 0xFFFF_FFFF))
+        .collect();
+    assert!(
+        sent.contains(&11) && sent.contains(&12),
+        "{sent:?} {stats:?}"
+    );
+}
+
+#[test]
+fn a_share_groups_first_records_go_before_its_updates() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 4);
+    for o in 1..=4 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.share = Some((1, 1.0));
+        obj.prio = 1.0e6;
+    }
+    let a = rig.send();
+    rig.ack(&a);
+    // Four ghosted objects with updates of the highest priority, and a fifth never sent with none: it goes first.
+    for o in 1..=4 {
+        rig.world.objs.get_mut(&o).unwrap().fields[0] = 1;
+        rig.mgr.set_mask(o, 1);
+    }
+    rig.scope_many(5, 1);
+    let five = rig.world.objs.get_mut(&5).unwrap();
+    five.share = Some((1, 1.0));
+    five.prio = 0.0;
+    let s = rig.send();
+    let mut r = BitReader::new(&s.bytes);
+    let rep = rig.client.read_section(&mut r).unwrap();
+    assert_eq!(rep.first_index, rig.mgr.view_of(5).map(|v| v.index));
+}
+
+#[test]
+fn a_share_group_is_closed_after_its_first_rewind() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 10);
+    for o in 1..=10 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.bulk = 12;
+        obj.share = Some((5, 0.05));
+    }
+    let before = rig.world.packs;
+    let s = rig.send_with(4_000);
+    // 200 bits of room: a record or two fit, then one is packed and rolled back, and the rest are not packed at all.
+    let packed = rig.world.packs - before;
+    assert_eq!(packed, s.stats.records + 1, "{:?}", s.stats);
+    assert_eq!(
+        s.stats.records + s.stats.share_deferred,
+        10,
+        "{:?}",
+        s.stats
     );
 }
 

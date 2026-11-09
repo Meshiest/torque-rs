@@ -223,6 +223,82 @@ pub struct SectionStats {
     pub out_of_budget: bool,
     /// The section was `flag(0)` alone (not ghosting).
     pub idle: bool,
+    /// Updates passed over (left dirty for a later packet) because their share group of the packet was spent
+    /// ([`ObjectSource::packet_share`]).
+    pub share_deferred: usize,
+    /// The most bits one share group's updates took in this section (0 when no object has a share).
+    pub share_bits: usize,
+}
+
+/// The bits each share group's updates took in one section ([`ObjectSource::packet_share`]), and whether the group is closed
+/// (an update of it was rolled back for passing its share: the rest of the group waits for the next packet without being
+/// packed). A few groups at most, so a list.
+#[derive(Debug, Default)]
+struct ShareSpend(Vec<(u32, usize, bool)>);
+
+impl ShareSpend {
+    fn entry(&mut self, group: u32) -> &mut (u32, usize, bool) {
+        let at = match self.0.iter().position(|e| e.0 == group) {
+            Some(at) => at,
+            None => {
+                self.0.push((group, 0, false));
+                self.0.len() - 1
+            }
+        };
+        &mut self.0[at]
+    }
+
+    /// Whether the group may write another update under `cap`.
+    fn open(&self, group: u32, cap: usize) -> bool {
+        self.0
+            .iter()
+            .find(|e| e.0 == group)
+            .is_none_or(|e| !e.2 && e.1 < cap)
+    }
+
+    fn spent(&self, group: u32) -> usize {
+        self.0.iter().find(|e| e.0 == group).map_or(0, |e| e.1)
+    }
+
+    fn add(&mut self, group: u32, bits: usize) {
+        self.entry(group).1 += bits;
+    }
+
+    fn close(&mut self, group: u32) {
+        self.entry(group).2 = true;
+    }
+
+    fn most(&self) -> usize {
+        self.0.iter().map(|e| e.1).max().unwrap_or(0)
+    }
+}
+
+/// The highest priority an update with a packet share is given (a plugin's priority above it is held to it): below half of
+/// [`KILL_PRIORITY`], so a ghost's kill always goes before any plugin's update.
+pub const SHARE_PRIORITY_MAX: f32 = KILL_PRIORITY * 0.5 - 2.0;
+
+/// The priority of a share-group object's first record: above every update of the group (an object a client has never been
+/// sent is the largest error there is), still below a kill.
+pub const SHARE_FIRST_PRIORITY: f32 = SHARE_PRIORITY_MAX + 1.0;
+
+/// A share-group update's priority, held to `-SHARE_PRIORITY_MAX..=SHARE_PRIORITY_MAX` (a NaN is 0).
+pub fn share_priority(p: f32) -> f32 {
+    if p.is_nan() {
+        0.0
+    } else {
+        p.clamp(-SHARE_PRIORITY_MAX, SHARE_PRIORITY_MAX)
+    }
+}
+
+/// The bits of a packet of `packet_bits` a share of `part` (0 to 1; anything else is held to that range, a NaN is 0) leaves its
+/// group.
+pub fn share_cap(packet_bits: usize, part: f32) -> usize {
+    let part = if part.is_nan() {
+        0.0
+    } else {
+        part.clamp(0.0, 1.0)
+    };
+    (packet_bits as f64 * f64::from(part)) as usize
 }
 
 /// A read-only view of one ghost.
@@ -1050,6 +1126,8 @@ impl<P: GhostPolicy> GhostManager<P> {
             stats.idle = true;
             return stats;
         }
+        // A share is of the room the section starts with: what the control and event sections took is not the ghosts' to share.
+        let room = packet_bits.saturating_sub(w.bits());
         w.write_flag(true);
         let mut budget = Budget {
             charge: sections.scan,
@@ -1093,8 +1171,16 @@ impl<P: GhostPolicy> GhostManager<P> {
                 } else if g.flags & flags::KILL_GHOST != 0 {
                     KILL_PRIORITY
                 } else {
-                    g.obj
-                        .map_or(0.0, |o| src.update_priority(o, &cam, g.mask, g.skip))
+                    g.obj.map_or(0.0, |o| {
+                        let p = src.update_priority(o, &cam, g.mask, g.skip);
+                        if src.packet_share(o).is_none() {
+                            p
+                        } else if g.flags & flags::NOT_YET_GHOSTED != 0 {
+                            SHARE_FIRST_PRIORITY
+                        } else {
+                            share_priority(p)
+                        }
+                    })
                 };
                 items.push((p, id));
             }
@@ -1117,6 +1203,7 @@ impl<P: GhostPolicy> GhostManager<P> {
         // A record is kept only when the closing flag still fits after it (a closing `writeFlag` could fall past the stream; the
         // writer would mark the packet overflowed).
         let closing = w.hold_back(1);
+        let mut shares = ShareSpend::default();
         let mut i = self.table.zero() as isize - 1;
         while i >= 0 {
             if w.bits() > packet_bits || rec.out {
@@ -1137,6 +1224,17 @@ impl<P: GhostPolicy> GhostManager<P> {
                 break;
             }
             let (gflags, mask, obj) = (g.flags, g.mask, g.obj);
+            // An update of an object with a share of the packet waits for a later packet once its group has spent the share.
+            let share = obj
+                .filter(|_| gflags & flags::KILL_GHOST == 0)
+                .and_then(|o| src.packet_share(o))
+                .map(|(group, part)| (group, share_cap(room, part)));
+            if let Some((group, cap)) = share
+                && !shares.open(group, cap)
+            {
+                stats.share_deferred += 1;
+                continue;
+            }
             let start = w.bits();
             if !rec.spend(1) {
                 break;
@@ -1184,6 +1282,16 @@ impl<P: GhostPolicy> GhostManager<P> {
                     stats.refused += 1;
                     continue;
                 }
+                if let Some((group, cap)) = share {
+                    let used = w.bits().saturating_sub(start);
+                    if shares.spent(group) + used > cap {
+                        w.rewind(mark);
+                        shares.close(group);
+                        stats.share_deferred += 1;
+                        continue;
+                    }
+                    shares.add(group, used);
+                }
                 self.commit_update(id, send_seq, notyet, ret);
             }
             stats.records += 1;
@@ -1191,6 +1299,7 @@ impl<P: GhostPolicy> GhostManager<P> {
         }
         w.release(closing);
         w.write_flag(false);
+        stats.share_bits = shares.most();
         stats.out_of_budget = budget.out || rec.out;
         stats
     }

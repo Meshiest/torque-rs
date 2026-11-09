@@ -108,6 +108,15 @@ pub trait ObjectSource {
     /// (the policy's [`super::policy::GhostPolicy::pending_order`]).
     fn update_priority(&self, obj: ObjId, cam: &CamInfo, mask: u32, skip: u8) -> f32;
 
+    /// The share of each packet the object's updates belong to: `Some((group, part))` holds the updates (and first records) of
+    /// all the objects of `group` in one packet to `part` (0 to 1) of the packet's bits; an update that would take its group
+    /// past that is passed over and stays dirty for a later packet, so a flood of one kind of object cannot crowd the others
+    /// out. `None` (the default, and every TGE object) is no share: the update goes as TGE's would.
+    fn packet_share(&self, obj: ObjId) -> Option<(u32, f32)> {
+        let _ = obj;
+        None
+    }
+
     /// The scope object's camera data (eye, forward, field of view), `None` if it has none. The manager fills
     /// `visible_distance` itself.
     fn camera_info(&self, scope: ObjId) -> Option<CamInfo>;

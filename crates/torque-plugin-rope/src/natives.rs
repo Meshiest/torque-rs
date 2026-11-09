@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use torque_engine::assets::Assets;
 use torque_engine::{Engine, Res, ScriptClass, ScriptError, VmMut, VmRef, function};
-use torque_ts_text::atof;
 use torque_ts_vm::vm::Vm;
 
 use crate::data::{RopeData, RopeLook, RopeParams, RopeStyle, parse_color as parse_rgba};
@@ -30,12 +29,7 @@ impl RopeShared {
 
 /// `"x y z"` as a point. Missing words are an error; a word that is not a number reads as 0, as TorqueScript's vectors do.
 fn parse_point(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
-    let mut words = text.split_ascii_whitespace();
-    let mut next = || words.next().map(|w| atof(w.as_bytes()) as f32);
-    match (next(), next(), next()) {
-        (Some(x), Some(y), Some(z)) => Ok([x, y, z]),
-        _ => Err(ScriptError::new(format!("{what} must be \"x y z\""))),
-    }
+    torque_engine::args::vec3(text, what)
 }
 
 fn parse_end(text: &str) -> Result<RopeEnd, ScriptError> {

@@ -4625,6 +4625,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-plugin-props"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "libm",
+ "torque-app",
+ "torque-app-server",
+ "torque-client",
+ "torque-collide",
+ "torque-engine",
+ "torque-example-assets",
+ "torque-game",
+ "torque-ghost-world",
+ "torque-ghosts",
+ "torque-net",
+ "torque-physics-rapier",
+ "torque-server",
+ "torque-shapes",
+ "torque-ts-text",
+ "torque-ts-vm",
+]
+
+[[package]]
 name = "torque-plugin-rope"
 version = "0.1.0"
 dependencies = [
@@ -4736,6 +4759,7 @@ dependencies = [
  "torque-app",
  "torque-engine",
  "torque-plugin-gui-layout",
+ "torque-plugin-props",
  "torque-plugin-rope",
  "torque-ts-vm",
 ]
@@ -4802,6 +4826,7 @@ dependencies = [
  "torque-gui",
  "torque-maps",
  "torque-physics-rapier",
+ "torque-plugin-props",
  "torque-plugin-rope",
  "torque-plugin-smooth-prediction",
  "torque-shapes",

@@ -215,6 +215,10 @@ pub struct Totals {
     pub record_units: u64,
     /// Wall time spent writing the sections, in nanoseconds.
     pub nanos: u64,
+    /// Updates passed over because their share of the packet was spent, and the most bits one share group took in a section
+    /// ([`torque_net::ghost::ObjectSource::packet_share`]).
+    pub share_deferred: u64,
+    pub share_bits_max: u64,
 }
 
 /// One connection's ghost state.
@@ -906,6 +910,8 @@ impl<G: GhostGame> GhostHub<G> {
             t.refused += stats.refused as u64;
             t.full_queries += u64::from(stats.full_query);
             t.out_of_budget += u64::from(stats.out_of_budget);
+            t.share_deferred += stats.share_deferred as u64;
+            t.share_bits_max = t.share_bits_max.max(stats.share_bits as u64);
             Some(stats)
         })
     }

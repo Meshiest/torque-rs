@@ -1,0 +1,7 @@
+[game]
+name = "Props network test"
+server = "server.cs"
+client = "main.cs"
+
+[plugins]
+disable = ["torque.audio", "torque.water", "torque.terrain", "torque.server-query"]

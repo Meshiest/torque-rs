@@ -1,0 +1,48 @@
+[package]
+name = "torque-plugin-props"
+description = "Props for torque-rs: rigid bodies a server simulates in a deterministic Rapier world and sends to every client, drawn as shapes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "physics", "props", "plugin", "gamedev"]
+categories = ["game-development", "simulation"]
+
+# Props: the `PropData` datablock class and the `Prop` ghost class, one persistent Rapier world a server steps after each tick's
+# objects, the `prop*` console functions and the rate-limited `serverCmdPropSpawn`, a collision source on each side (players
+# collide with props), and each client's book of the props it was sent, drawn as shapes. Nothing here draws by itself, so the
+# crate builds for wasm32 too.
+
+[dependencies]
+torque-collide = { path = "../torque-collide" }
+torque-engine = { path = "../torque-engine" }
+# Marking a server object's ghost groups dirty, reading players and map pieces.
+torque-game = { path = "../torque-game" }
+torque-ghosts = { path = "../torque-ghosts" }
+torque-net = { path = "../torque-net" }
+torque-physics-rapier = { path = "../torque-physics-rapier" }
+torque-ts-text = { path = "../torque-ts-text" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+# The transcendentals of a transform (an axis and an angle), the same bits on every target.
+libm = "0.2.16"
+
+[dev-dependencies]
+criterion = { workspace = true }
+# The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
+torque-app = { path = "../torque-app", default-features = false }
+torque-app-server = { path = "../torque-app-server" }
+torque-client = { path = "../torque-client" }
+torque-ghost-world = { path = "../torque-ghost-world" }
+torque-server = { path = "../torque-server" }
+# The floor and the figure of the tests' world.
+torque-example-assets = { path = "../../examples/assets" }
+torque-shapes = { path = "../torque-shapes" }
+
+[[bench]]
+name = "step"
+harness = false
+
+[lints]
+workspace = true

@@ -2,7 +2,7 @@
 
 # Classes
 
-Console classes, with the fields each adds to its parent's. 114 classes.
+Console classes, with the fields each adds to its parent's. 116 classes.
 
 | Class | Parent | Fields |
 |---|---|---|
@@ -86,6 +86,8 @@ Console classes, with the fields each adds to its parent's. 114 classes.
 | [PlayerData](#playerdata) | [ShapeBaseData](#shapebasedata) | 80 |
 | [Projectile](#projectile) | [GameBase](#gamebase) | 4 |
 | [ProjectileData](#projectiledata) | [GameBaseData](#gamebasedata) | 23 |
+| [Prop](#prop) | [SceneObject](#sceneobject) | 19 |
+| [PropData](#propdata) | [GameBaseData](#gamebasedata) | 16 |
 | [Rope](#rope) | [SceneObject](#sceneobject) | 29 |
 | [RopeData](#ropedata) | [SimDataBlock](#simdatablock) | 20 |
 | [ScatterSky](#scattersky) | [SceneObject](#sceneobject) | 11 |
@@ -1182,6 +1184,55 @@ No fields of its own.
 | `bounceElasticity` | float |  |  |
 | `bounceFriction` | float |  |  |
 | `gravityMod` | float |  |  |
+
+## Prop
+
+*goes below `SceneObject`; server and client; needs `torque.props`*
+
+| Field | Type | Default | Range | What it is for |
+|---|---|---|---|---|
+| `dataBlock` | int | `0` |  | The `PropData` datablock's object id. |
+| `slot` | int | `0` |  | The key of its collision shape on both sides (0 to 1,023). |
+| `ownerConn` | int | `0` |  | The owner's connection object (0: none, or gone). |
+| `predict` | int | `0` |  | The predict id the owner's client gave it (0: none). |
+| `asleep` | int | `0` |  | 1 while it sleeps, 1 while it is frozen. |
+| `frozen` | int | `0` |  |  |
+| `qPosX` | int | `0` |  | The state at the wire's precision: the position in 1/1024 units, the rotation's largest component and the other three in 15 bits, the speed and the spin in 1/256 units a second. |
+| `qPosY` | int | `0` |  |  |
+| `qPosZ` | int | `0` |  |  |
+| `qRotI` | int | `3` |  |  |
+| `qRotA` | int | `16383` |  |  |
+| `qRotB` | int | `16383` |  |  |
+| `qRotC` | int | `16383` |  |  |
+| `qLinX` | int | `0` |  |  |
+| `qLinY` | int | `0` |  |  |
+| `qLinZ` | int | `0` |  |  |
+| `qAngX` | int | `0` |  |  |
+| `qAngY` | int | `0` |  |  |
+| `qAngZ` | int | `0` |  |  |
+
+## PropData
+
+*goes below `GameBaseData`; server and client; needs `torque.props`*
+
+| Field | Type | Default | Range | What it is for |
+|---|---|---|---|---|
+| `shapeFile` | filename |  |  | The shape the prop is drawn as (a `.dts`, or a format the engine imports); empty draws nothing. Collision is `size` or `radius`, not the shape. |
+| `drawScale` | Point3F | `1 1 1` |  | The scale the shape is drawn at along each axis (0.001 to 256). |
+| `size` | Point3F | `1 1 1` |  | The collision box's full size along each axis, centered on the prop's origin (each 0.02 to 128 units). |
+| `radius` | float | `0` | 0 to 64 | Above 0: the prop collides as a ball of this radius (0.01 to 64) and `size` is not used. |
+| `mass` | float | `0` | 0 to 100000 | The mass; 0 (the default) takes it from `density` and the volume. |
+| `density` | float | `1` | 0.001 to 100000 | Mass a cubic unit, when `mass` is 0. |
+| `friction` | float | `0.6` | 0 to 10 | 0 (ice) to 10. |
+| `restitution` | float | `0.1` | 0 to 1 | How much a hit bounces back, 0 to 1. |
+| `linearDamping` | float | `0.1` | 0 to 100 | How fast it loses speed and spin (roughly a fraction a second), 0 to 100. |
+| `angularDamping` | float | `0.3` | 0 to 100 |  |
+| `maxSpeed` | float | `100` | 0 to 500 | The fastest it may move, units a second (at most the world's 500). |
+| `sleepLinear` | float | `0.1` | 0 to 10 | It falls asleep after half a second slower than these (units and radians a second); 0 for either never sleeps. |
+| `sleepAngular` | float | `0.2` | 0 to 10 |  |
+| `canFreeze` | bool | `1` |  | Whether `propFreeze` may pin it in place. |
+| `maxPerPlayer` | int | `0` | 0 to 1024 | The most props of this kind one player may own (0: only the server's per-player cap). |
+| `clientSpawn` | bool | `0` |  | Whether a client may ask for one (`commandToServer('PropSpawn', ..)`); scripts spawn any kind. |
 
 ## Rope
 

@@ -64,6 +64,7 @@
 // The derive names this crate by its path, which inside the crate (its tests) is this.
 extern crate self as torque_engine;
 
+pub mod args;
 pub mod assets;
 mod builder;
 pub mod class;

@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-257 entries in 1 namespace.
+273 entries in 1 namespace.
 
 ## Global
 
@@ -114,6 +114,8 @@ Console functions, by namespace. Functions of the global namespace are called as
 
 - `collapseEscape(text)` - the text with its escape sequences turned into the bytes they stand for
   *arguments: 1; server and client*
+- `commandDrops(client, command)` - how many calls of a server command the client sent that were refused
+  *arguments: 2; server; needs `torque.props`*
 - `commandToClient`
   *arguments: 2 to 21; server*
 - `commandToServer`
@@ -383,6 +385,53 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: none; client*
 - `OpenALShutdownDriver()`
   *arguments: none; client*
+- `propApplyImpulse(prop, impulse)` - pushes a prop: \`impulse\` is \`"x y z"\` (mass times units a second), held to the world's limits; wakes it
+  *arguments: 2; server; needs `torque.props`*
+
+  False for a frozen prop.
+
+- `propAwakeCount()` - how many props are awake now
+  *arguments: none; server; needs `torque.props`*
+- `propCount([owner])` - how many props there are, or, given a client, how many its owner key owns (orphans of an earlier connection under the same
+  *arguments: 0 to 1; server; needs `torque.props`*
+
+  `propOwnerKey` counted)
+
+- `propDelete(prop)` - takes a prop away from the world and every client; true if there was one
+  *arguments: 1; server; needs `torque.props`*
+- `propFreeze(prop)` - pins a prop where it is: it no longer moves, and others rest on it; true if it was frozen now
+  *arguments: 1; server; needs `torque.props`*
+
+  False for a prop already frozen, or whose datablock has `canFreeze = false`.
+
+- `propGetOwner(prop)` - the connection that owns a prop, 0 for none (or an owner who left)
+  *arguments: 1; server; needs `torque.props`*
+- `propGetSpin(prop)` - a prop's spin, \`"x y z"\` (radians a second about each axis)
+  *arguments: 1; server; needs `torque.props`*
+- `propGetTransform(prop)` - a prop's transform, \`"x y z ax ay az angle"\`, as the clients are sent it
+  *arguments: 1; server; needs `torque.props`*
+- `propGetVelocity(prop)` - a prop's velocity, \`"x y z"\` (units a second), as the clients are sent it
+  *arguments: 1; server; needs `torque.props`*
+- `propIsAsleep(prop)` - whether a prop is asleep (still, and costing nothing until something wakes it)
+  *arguments: 1; server; needs `torque.props`*
+- `propIsFrozen(prop)` - whether a prop is frozen
+  *arguments: 1; server; needs `torque.props`*
+- `propSetVelocity(prop, velocity [, spin])` - sets a prop's velocity (\`"x y z"\`, units a second, held to its datablock's \`maxSpeed\`) and, if given, its spin (radians a
+  *arguments: 2 to 3; server; needs `torque.props`*
+
+  second about each axis); wakes it
+
+- `propSpawn(datablock, transform [, owner [, predictId]])` - spawns a prop of the datablock at a transform and returns its object id
+  *arguments: 2 to 4; server; needs `torque.props`*
+
+  `transform` is `"x y z"` or `"x y z ax ay az angle"`. `owner` is the connection (a client) the prop counts against: its
+  per-player cap (`$Pref::Props::MaxPerPlayer`, and the datablock's `maxPerPlayer`), its address's (`$Pref::Props::
+  MaxPerAddress`), and its props outlive its leaving by `$Pref::Props::OrphanSeconds`. `predictId` (1 to 255) ties the prop to
+  one the owner's client showed at once. Past a cap, or for a pose out of the world, the call prints an error and returns 0.
+  The prop is put in `MissionCleanup` when there is one; the datablock's `onPropSpawn(%this, %prop)` is called.
+
+- `propUnfreeze(prop)` - lets a frozen prop move again, at rest; true if it was frozen
+  *arguments: 1; server; needs `torque.props`*
 - `purgeResources()` - Purge resources from the resource manager.
   *arguments: none; server*
 - `queryLanServers(...)`
@@ -601,6 +650,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `schedule(delay, object, function, args...)` - calls the function later; the object bounds the call's life
   *arguments: at least 3; server and client*
+- `serverCmdPropSpawn(client, datablock [, predictId])` - spawns a prop in front of the client's player
+  *arguments: 2 to 3; server; needs `torque.props`*
 - `serverCmdTorqueModsGet(client, modIndex, file, start, count)` - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
   *arguments: 5; server and client*
 - `serverCmdTorqueModsReady(client)` - a client says it has every mod the server requires, mounted (the server then lets its join go on)

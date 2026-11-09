@@ -2,7 +2,7 @@
 
 # Prefs
 
-Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 5 prefs.
+Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 13 prefs.
 
 | Pref | Type | Default | Range | What it is for | Where |
 |---|---|---|---|---|---|
@@ -11,3 +11,11 @@ Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[
 | `$Pref::Mods::Download` | bool | `1` |  | Whether to download the content of mods a server requires when you do not have it. Off, a server that needs a mod you lack refuses you with the reason instead. | server and client |
 | `$Pref::Mods::DownloadMegabytes` | int | `0` | 0 to 4096 | The most megabytes to take from one server (0: the game's limit). It never raises the game's limit. | server and client |
 | `$Pref::Mods::ShareCache` | bool | `0` |  | Whether a server may match mods you downloaded from other servers. Off, each server matches only what it sent you, so it cannot learn which other servers you have joined; on, a mod you already have from anywhere is not downloaded again, and a server can tell which mods you have by which blocks you skip. | server and client |
+| `$Pref::Props::MaxAwake` | int | `256` | 1 to 1024 | The most props awake at once; past it the farthest from every player sleep. | server; needs `torque.props` |
+| `$Pref::Props::MaxPerAddress` | int | `256` | 1 to 1024 | The most props the players of one remote address may own between them, orphans counted (room for players behind one router; a player who comes back under a new key starts no new quota). | server; needs `torque.props` |
+| `$Pref::Props::MaxPerPlayer` | int | `64` | 1 to 1024 | The most props one player may own. | server; needs `torque.props` |
+| `$Pref::Props::MaxProps` | int | `1024` | 1 to 1024 | The most props on the server. | server; needs `torque.props` |
+| `$Pref::Props::NetShare` | float | `0.4` | 0.05 to 1 | The share of each packet the props' updates take at most (0.05 to 1). | server; needs `torque.props` |
+| `$Pref::Props::OrphanSeconds` | float | `120.0` | 0 to 3600 | Seconds a prop outlives its owner's connection. | server; needs `torque.props` |
+| `$Pref::Props::StepBudget` | int | `4000000` | 1000 to 1000000000 | The physics work a tick may take (work units); a step past it does not run and the awake cap is lowered for a while. | server; needs `torque.props` |
+| `$Pref::Props::Substeps` | int | `4` | 1 to 8 | The physics sub-steps of a 32 ms tick, read when the server makes its world. | server; needs `torque.props` |

@@ -22,6 +22,7 @@ torque-app = { path = "../torque-app" }
 torque-engine = { path = "../torque-engine" }
 torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
 torque-plugin-rope = { path = "../torque-plugin-rope" }
+torque-plugin-props = { path = "../torque-plugin-props" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
 [lints]

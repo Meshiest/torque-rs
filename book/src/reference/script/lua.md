@@ -45,6 +45,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("clearModDownloadCache")` *none; server and client*
 - `ts.call("clientCmdRopeFx", start, end, datablock, seconds, bend)` *5; client; needs `torque.rope`*
 - `ts.call("collapseEscape", text)` *1; server and client*
+- `ts.call("commandDrops", client, command)` *2; server; needs `torque.props`*
 - `ts.call("commandToClient")` *2 to 21; server*
 - `ts.call("commandToServer")` *1 to 20; server*
 - `ts.call("compile", file)` *1; server and client*
@@ -165,6 +166,20 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("OpenALInitDriver")` *none; client*
 - `ts.call("OpenALRegisterExtensions")` *none; client*
 - `ts.call("OpenALShutdownDriver")` *none; client*
+- `ts.call("propApplyImpulse", prop, impulse)` *2; server; needs `torque.props`*
+- `ts.call("propAwakeCount")` *none; server; needs `torque.props`*
+- `ts.call("propCount", [owner])` *0 to 1; server; needs `torque.props`*
+- `ts.call("propDelete", prop)` *1; server; needs `torque.props`*
+- `ts.call("propFreeze", prop)` *1; server; needs `torque.props`*
+- `ts.call("propGetOwner", prop)` *1; server; needs `torque.props`*
+- `ts.call("propGetSpin", prop)` *1; server; needs `torque.props`*
+- `ts.call("propGetTransform", prop)` *1; server; needs `torque.props`*
+- `ts.call("propGetVelocity", prop)` *1; server; needs `torque.props`*
+- `ts.call("propIsAsleep", prop)` *1; server; needs `torque.props`*
+- `ts.call("propIsFrozen", prop)` *1; server; needs `torque.props`*
+- `ts.call("propSetVelocity", prop, velocity [, spin])` *2 to 3; server; needs `torque.props`*
+- `ts.call("propSpawn", datablock, transform [, owner [, predictId]])` *2 to 4; server; needs `torque.props`*
+- `ts.call("propUnfreeze", prop)` *1; server; needs `torque.props`*
 - `ts.call("purgeResources")` *none; server*
 - `ts.call("queryLanServers", ...)` *11; client*
 - `ts.call("queryMasterServer", ...)` *10; client*
@@ -224,6 +239,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("ropeSetTextureScroll", rope, speed)` *2; client; needs `torque.rope`*
 - `ts.call("rtrim", text)` *1; server and client*
 - `ts.call("schedule", delay, object, function, args...)` *at least 3; server and client*
+- `ts.call("serverCmdPropSpawn", client, datablock [, predictId])` *2 to 3; server; needs `torque.props`*
 - `ts.call("serverCmdTorqueModsGet", client, modIndex, file, start, count)` *5; server and client*
 - `ts.call("serverCmdTorqueModsReady", client)` *1; server and client*
 - `ts.call("setCameraMode", name)` *1; client*

@@ -200,6 +200,23 @@ impl TgeSource<'_> {
         })
     }
 
+    /// The share of each packet the object's plugin class takes ([`torque_engine::net_classes::GhostShares`]) and its group, if
+    /// it has one.
+    fn share_of<R>(
+        &self,
+        obj: ObjId,
+        f: impl FnOnce(u32, &torque_engine::net_classes::GhostShare) -> R,
+    ) -> Option<R> {
+        let shares = self
+            .vm
+            .extension::<torque_engine::net_classes::GhostShares>()?;
+        let Some(TgeClass::Plugin(class)) = self.class(obj) else {
+            return None;
+        };
+        let (group, share) = shares.get(class.name())?;
+        Some(f(group, share))
+    }
+
     /// Whether the connection may know the object's class: TGE's always, the engine's own and the plugins' only when its peer is
     /// the engine's ([`PeerKind::sees_engine_classes`]).
     fn known(&self, obj: ObjId) -> bool {
@@ -734,9 +751,18 @@ impl ObjectSource for TgeSource<'_> {
         kept
     }
 
-    fn update_priority(&self, _obj: ObjId, _cam: &CamInfo, _mask: u32, skip: u8) -> f32 {
+    fn update_priority(&self, obj: ObjId, cam: &CamInfo, _mask: u32, skip: u8) -> f32 {
+        // A plugin class with a share orders its updates itself.
+        let scope = (cam.object != 0).then_some(cam.object);
+        if let Some(p) = self.share_of(obj, |_, share| share.priority(self.vm, obj, scope, skip)) {
+            return p;
+        }
         // `NetObject::getUpdatePriority`: the skip count over ten.
         f32::from(skip) * 0.1
+    }
+
+    fn packet_share(&self, obj: ObjId) -> Option<(u32, f32)> {
+        self.share_of(obj, |group, share| (group, share.part(self.vm)))
     }
 
     fn camera_info(&self, scope: ObjId) -> Option<CamInfo> {

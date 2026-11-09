@@ -171,6 +171,23 @@ impl std::fmt::Debug for CodeBlock {
 }
 
 impl CodeBlock {
+    /// An empty block with no name: the site of work a host does natively ([`crate::vm::Vm::new_object`]), which the messages
+    /// of that work name as evaluated text at line 0.
+    pub fn native() -> CodeBlock {
+        CodeBlock {
+            name: None,
+            code: Vec::new(),
+            names: Vec::new(),
+            global_strings: Vec::new(),
+            function_strings: Vec::new(),
+            global_floats: Vec::new(),
+            function_floats: Vec::new(),
+            sites: RefCell::new(NameMap::default()),
+            tags: RefCell::new(NameMap::default()),
+            lines: Vec::new(),
+        }
+    }
+
     /// Loads `dso`, a file of `format`, as the code block of `name` (None for evaluated text).
     pub fn from_dso(
         dso: &DsoFile,

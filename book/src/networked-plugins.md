@@ -89,6 +89,26 @@ platform (the engine's determinism rules apply, and `torque-trace-hash` checks t
 A rope is **cosmetic**: each client simulates its own points, they differ in the last digits from client to client, nothing
 depends on them, and a rope never applies a force to anything. Pulling is for a physics joint that a rope can follow later.
 
+### A share of each packet
+
+A class with many objects that change often (props, debris) can hold its updates to a share of each packet and order them itself:
+
+```rust,ignore
+engine.net().ghost_share(
+    "Prop",
+    |_vm| 0.4,                                    // at most 40% of each packet's bits
+    |vm, prop, scope, waited| priority(vm, prop, scope, waited),
+);
+```
+
+The manager writes the class's first records before its updates, and the updates in the order of the priority, higher first, for
+each connection (the function gets the connection's scope object and how many packets the update has waited; the priority is held
+below half of a kill's, so a ghost's removal always goes first). The share is of the room the packet has left when its ghost
+section starts. An update that would take the class past its share waits for a later packet, and the class's other updates wait
+with it (the group is closed for that packet). Other classes are untouched, and only the engine's
+peers see plugin classes, so a TGE peer's packets do not change. Both functions run for each update of each packet, so they
+should only read. The props plugin uses it (see [Props and joints](props-and-joints.md)).
+
 ## The client's side of a ghost
 
 The ghost reaches the client as a record in the connection's world; a plugin that shows or simulates it names a handler for the

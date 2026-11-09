@@ -1070,6 +1070,19 @@ impl Vm {
         Ok(Some(id))
     }
 
+    /// [`declare_new_object`](Self::declare_new_object) for a host with no script of its own to name: the object a script's
+    /// `new <class>() { <field> = <value>; ... };` makes, with its `onAdd` and its placement, from Rust and with no text
+    /// compiled (a field's value is only written through its type, never run). Messages of a refused registration name
+    /// evaluated text.
+    pub fn new_object(
+        &mut self,
+        class_name: &[u8],
+        fields: &[(&[u8], &[u8])],
+    ) -> Result<Option<ObjId>, VmError> {
+        let block = CodeBlock::native();
+        self.declare_new_object((&block, 0), class_name, fields)
+    }
+
     /// An object the host makes itself with no `onAdd` of its class (a networked copy of an object, say: the host
     /// constructs the class's object and registers it; the class's `onAdd` there is the host's own, which runs no
     /// script and which the classes, all server halves, do not have). An object of `class_name` with a new dynamic id,

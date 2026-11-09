@@ -15,7 +15,7 @@ use torque_client::host::{ClientPass, EnginePass};
 use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque_client::predict::FileReader;
 use torque_client::state::ClientState;
-use torque_engine::{EngineBuilder, Plugins};
+use torque_engine::{Engine, EngineBuilder, Plugins};
 use torque_ts_vm::host::{FileHost, FileRead, MemFiles};
 use torque_ts_vm::vm::Vm;
 
@@ -103,6 +103,8 @@ impl ClientGame for TraceClient {
 pub struct Rig {
     /// The protocol the server and the client speak.
     pub mode: Mode,
+    /// The server's engine (a plugin's server resources are its).
+    pub engine: Engine,
     pub server: GameServer,
     pub client_vm: Vm,
     pub client: Rc<RefCell<ClientState<TgeConn>>>,
@@ -127,6 +129,17 @@ impl Rig {
         mode: Mode,
         plugins: impl Plugins<M>,
         control: Control,
+    ) -> Result<Rig, String> {
+        Rig::with_client(mode, plugins, control, |_| Ok(()))
+    }
+
+    /// [`Rig::in_mode`], with `setup` run on the client's script engine before it connects (a plugin's client half: its
+    /// classes, which the connection reads when it starts).
+    pub fn with_client<M>(
+        mode: Mode,
+        plugins: impl Plugins<M>,
+        control: Control,
+        setup: impl FnOnce(&mut Vm) -> Result<(), String>,
     ) -> Result<Rig, String> {
         let engine = EngineBuilder::new()
             .add_plugins(MinimalPlugins)
@@ -173,6 +186,7 @@ impl Rig {
         // for an engine that says nothing on the wire.
         torque_client::conn::tge::ConnectHello::install(&mut vm, &engine);
         vm.set_step_limit(Some(50_000_000));
+        setup(&mut vm)?;
         vm.advance_time(1_000);
         vm.eval(
             format!("new GameConnection(TraceConn); TraceConn.connect(\"{SERVER}\");").as_bytes(),
@@ -180,6 +194,7 @@ impl Rig {
         .map_err(|e| e.to_string())?;
         Ok(Rig {
             mode,
+            engine,
             server,
             client_vm: vm,
             client,

@@ -320,6 +320,12 @@ impl World {
         self.poisoned
     }
 
+    /// Stops the world as a caught panic does: every later call is refused with [`Error::Poisoned`]. For a caller's test of
+    /// how it recovers (a fresh world rebuilt from its own record of the bodies).
+    pub fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
     pub fn body_count(&self) -> usize {
         self.bodies.len()
     }

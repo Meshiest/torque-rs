@@ -36,7 +36,8 @@ pub use client::{
 };
 pub use manager::{
     GhostConfig, GhostError, GhostEvent, GhostManager, GhostPackCtx, GhostView, KILL_PRIORITY,
-    MessageOutcome, SectionBudget, SectionStats,
+    MessageOutcome, SHARE_FIRST_PRIORITY, SHARE_PRIORITY_MAX, SectionBudget, SectionStats,
+    share_cap, share_priority,
 };
 pub use policy::{GhostPolicy, ObjectPolicy, PendingOrder, ScopeRadius, TableCounts, TorqueGhosts};
 

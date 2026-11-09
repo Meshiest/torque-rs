@@ -68,6 +68,7 @@
 use std::rc::Rc;
 
 use torque_ghosts::plugin::PluginClassError;
+use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
 pub use torque_ghosts::codec::Xf;
@@ -91,6 +92,73 @@ struct Installs;
 
 /// The marker that the recipe installing the ghost handlers into each client is recorded.
 struct SinkInstalls;
+
+/// The marker that the recipe installing the ghost shares into each server is recorded.
+struct ShareInstalls;
+
+/// How a ghost class's updates are ordered and how much of a packet they take ([`NetRegistry::ghost_share`]).
+type PriorityFn = dyn Fn(&Vm, ObjId, Option<ObjId>, u8) -> f32;
+type PartFn = dyn Fn(&Vm) -> f32;
+
+/// One class's share of each packet and its update priority ([`NetRegistry::ghost_share`]).
+#[derive(Clone)]
+pub struct GhostShare {
+    class: String,
+    part: Rc<PartFn>,
+    priority: Rc<PriorityFn>,
+}
+
+impl GhostShare {
+    /// The ghost class.
+    pub fn class(&self) -> &str {
+        &self.class
+    }
+
+    /// The share of each packet's bits the class's updates take at most now (0 to 1; a value that is not a number is 0).
+    pub fn part(&self, vm: &Vm) -> f32 {
+        let p = (self.part)(vm);
+        if p.is_nan() { 0.0 } else { p.clamp(0.0, 1.0) }
+    }
+
+    /// The priority of an update of `obj` to the connection whose scope object is `scope`, `skip` packets after it was first
+    /// passed over: higher goes first.
+    pub fn priority(&self, vm: &Vm, obj: ObjId, scope: Option<ObjId>, skip: u8) -> f32 {
+        let p = (self.priority)(vm, obj, scope, skip);
+        if p.is_finite() { p } else { 0.0 }
+    }
+}
+
+impl std::fmt::Debug for GhostShare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GhostShare")
+            .field("class", &self.class)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The ghost classes that take a share of each packet, in the order they were added: a server's script engine has it as its
+/// extension, and its network host reads it for each update's priority and share group (the group is the place in this list).
+#[derive(Debug, Clone, Default)]
+pub struct GhostShares(Vec<GhostShare>);
+
+impl GhostShares {
+    /// The share of the class `name` and its group.
+    pub fn get(&self, name: &str) -> Option<(u32, &GhostShare)> {
+        self.0
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.class == name)
+            .map(|(i, s)| (i as u32, s))
+    }
+
+    /// Every class's share, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &GhostShare> {
+        self.0.iter()
+    }
+}
+
+/// A share a plugin added.
+struct ShareEntry(GhostShare);
 
 /// The draw function a plugin named for the ghosts of one class ([`NetRegistry::drawn_shape`]).
 struct DrawnEntry {
@@ -308,6 +376,55 @@ impl NetRegistry<'_> {
         self
     }
 
+    /// Holds the updates of the ghost class `name` to a share of each packet a server sends a connection (`part`, asked as the
+    /// packet is written: 0 to 1 of its bits), and orders them by `priority` (higher first): the function gets the server's
+    /// script engine, the object, the connection's scope object (its control object) and how many packets the update has waited.
+    /// An update past the share waits for a later packet, so a flood of one plugin's objects leaves the rest of the packet to the
+    /// others. Both functions run for each update of each packet, so they should only read. The class must be added
+    /// ([`NetRegistry::ghost`]) before, by this plugin or another, and a class has one share: anything else fails the build. Only
+    /// the engine's own peers see plugin classes, so a TGE peer's packets are unchanged.
+    pub fn ghost_share(
+        &mut self,
+        name: &str,
+        part: impl Fn(&Vm) -> f32 + 'static,
+        priority: impl Fn(&Vm, ObjId, Option<ObjId>, u8) -> f32 + 'static,
+    ) -> &mut Self {
+        let added = self
+            .engine
+            .list::<NetClassEntry>()
+            .iter()
+            .any(|e| e.class.kind() == Kind::Object && e.class.name() == name);
+        if !added {
+            self.engine
+                .reject(format!("ghost_share: no ghost class {name} was added"));
+            return self;
+        }
+        if self
+            .engine
+            .list::<ShareEntry>()
+            .iter()
+            .any(|e| e.0.class == name)
+        {
+            self.engine.reject(format!(
+                "ghost_share: the ghost class {name} has a share already"
+            ));
+            return self;
+        }
+        self.engine.push(ShareEntry(GhostShare {
+            class: name.to_string(),
+            part: Rc::new(part),
+            priority: Rc::new(priority),
+        }));
+        if self.engine.resource::<ShareInstalls>().is_none() {
+            self.engine.insert_resource(ShareInstalls);
+            self.engine.server(ServerStage::Classes, |vm, engine| {
+                vm.set_extension(Rc::new(engine.ghost_shares()));
+                Ok(())
+            });
+        }
+        self
+    }
+
     /// Adds the datablock class `name`: every datablock of the console class `name` goes to the engine's own clients as a
     /// `D` record.
     pub fn datablock<D: DatablockCodec>(&mut self, name: &str) -> &mut Self {
@@ -361,6 +478,16 @@ impl Engine {
     pub fn net_classes(&self) -> PluginClasses {
         // The registry refused every set that would not make one.
         PluginClasses::new(self.list::<NetClassEntry>().iter().map(|e| e.class)).unwrap_or_default()
+    }
+
+    /// The ghost classes that take a share of each packet ([`NetRegistry::ghost_share`]), in the order they were added.
+    pub fn ghost_shares(&self) -> GhostShares {
+        GhostShares(
+            self.list::<ShareEntry>()
+                .iter()
+                .map(|e| e.0.clone())
+                .collect(),
+        )
     }
 
     /// The ghost classes the plugins draw as shapes, each with its draw function ([`NetRegistry::drawn_shape`]); a client's script

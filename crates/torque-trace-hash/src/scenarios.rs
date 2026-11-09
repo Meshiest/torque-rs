@@ -11,7 +11,10 @@
 //! `all` (which stays the fold of TGE's predictor's scenarios) and fold into `predictors`.
 //!
 //! **The physics scenarios** ([`physics`]) step a physics world alone (no server or client: the Rapier world, [`crate::rapier`]);
-//! they print last and fold into `physics`.
+//! they print after the predictors' and fold into `physics`.
+//!
+//! **The plugins' scenarios** ([`plugins`]) run a server and a predicting client with an opt-in plugin that simulates on the server
+//! (the props, [`crate::props`]); they print last and fold into `plugins`.
 //!
 //! **Adding a plugin's scenario:** a plugin whose systems run on a predicted path adds a [`Scenario`] to [`all`] that calls
 //! [`figure`] or [`buggy`] with the plugin (or its own function built on [`Rig`]); a plugin that only adds a ghost or a channel
@@ -77,6 +80,16 @@ pub fn physics() -> Vec<Scenario> {
         name: "rapier-drop",
         mode: None,
         run: crate::rapier::drop,
+    }]
+}
+
+/// The scenarios of the engine's opt-in plugins that a server simulates and a predicting client sees, in the order they print
+/// after `physics`.
+pub fn plugins() -> Vec<Scenario> {
+    vec![Scenario {
+        name: "props-drop",
+        mode: Some(Mode::Tge),
+        run: crate::props::drop,
     }]
 }
 
@@ -183,7 +196,7 @@ fn transform(m: &[f32]) -> [f32; 12] {
 }
 
 /// What the server's control object holds, folded in by its bits.
-fn observe_server(rig: &Rig, h: &mut TraceHasher, control: Control) {
+pub(crate) fn observe_server(rig: &Rig, h: &mut TraceHasher, control: Control) {
     use torque_game::sim::vehicle::{Body, ext_of};
     let vm = rig.server.vm();
     match control {
@@ -240,7 +253,7 @@ fn observe_server(rig: &Rig, h: &mut TraceHasher, control: Control) {
 }
 
 /// What the client's prediction holds, folded in by its bits; whether it was running a vehicle.
-fn observe_client(rig: &Rig, h: &mut TraceHasher) -> bool {
+pub(crate) fn observe_client(rig: &Rig, h: &mut TraceHasher) -> bool {
     let st = rig.client.borrow();
     let Some(conn) = st.conn.conn.as_ref() else {
         h.u32(0);

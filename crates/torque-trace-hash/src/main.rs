@@ -1,5 +1,5 @@
 //! Prints one `name mode hash` line per scenario of the engine's own plugins (and `all mode hash` for each mode's fold), then the
-//! predictors' scenarios (and `predictors mode hash`), then the physics scenarios (and `physics none hash`), the same lines on
+//! predictors' scenarios (and `predictors mode hash`), then the physics scenarios (and `physics none hash`), then the plugins' (and `plugins mode hash`), the same lines on
 //! every target. The mode is the network protocol the run spoke (`none` for a world stepped alone, which speaks none).
 //! `--detail` adds what each run came to. The names to run can be given as arguments.
 
@@ -81,6 +81,7 @@ fn main() -> ExitCode {
     for (group, list) in [
         ("predictors", scenarios::predictors()),
         ("physics", scenarios::physics()),
+        ("plugins", scenarios::plugins()),
     ] {
         let label = list.first().map_or("none", Scenario::label);
         if let Some(fold) = run_list(&list, &names, detail, &mut failed) {

@@ -52,3 +52,27 @@ const DUMP_BEFORE_FIELD_DOCS: &[&str] = &[
     "  setInternalName() - obj.setInternalName(newInternalName)",
     "  setName() - object.setName(name) - renames the object",
 ];
+
+/// An object made from Rust is the one the script's declaration makes: its fields written through their types (never run as
+/// script).
+#[test]
+fn an_object_made_from_rust_is_the_declarations_object() {
+    let mut vm = Vm::new();
+    vm.register_class("Crate", "SimObject", &["weight", "label"])
+        .expect("registers");
+    let id = vm
+        .new_object(
+            b"Crate",
+            &[(b"weight", b"3"), (b"label", b"\"); quit(); (\"")],
+        )
+        .unwrap()
+        .expect("an object");
+    assert_eq!(
+        vm.eval(format!("return {id}.weight;").as_bytes()).unwrap(),
+        b"3"
+    );
+    let label = vm.eval(format!("return {id}.label;").as_bytes()).unwrap();
+    assert_eq!(label, b"\"); quit(); (\"");
+    // An unknown class makes nothing.
+    assert_eq!(vm.new_object(b"NoSuchClass", &[]).unwrap(), None);
+}

@@ -127,12 +127,7 @@ const CLASS: &str = <NetRope as ScriptClass>::NAME;
 
 /// `"x y z"` as a point, every coordinate a finite number held to the world.
 fn parse_point(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
-    let mut words = text.split_ascii_whitespace();
-    let mut next = || words.next().map(|w| atof(w.as_bytes()) as f32);
-    match (next(), next(), next()) {
-        (Some(x), Some(y), Some(z)) => Ok(crate::sim::point([x, y, z]).to_array()),
-        _ => Err(ScriptError::new(format!("{what} must be \"x y z\""))),
-    }
+    torque_engine::args::vec3(text, what).map(|p| crate::sim::point(p).to_array())
 }
 
 /// The networked rope `id`, if it is one.

@@ -88,6 +88,8 @@ different.
   reels a rope over a time and a rope held farther apart than it is long is drawn straight (visual only); temporary ropes fade out
   (`ropeSetLifetime`); `ropeNetFx` sends a one-shot rope as a remote command with no ghost; `ropePredict` shows a client's own rope at once
   and the server's ghost adopts it by a bounded per-client id (or it fades out unconfirmed). The book's "Networked plugins" chapter.
+- `engine.net().ghost_share`: a plugin ghost class's updates held to a share of each packet (an update past it waits for a later
+  packet) and ordered by the plugin's own priority for each connection; TGE's objects and TGE peers are unchanged.
 - `engine.net().drawn_shape`: a plugin ghost class drawn as a shape (a shape file, scale and skin from its record and datablock) by the
   engine's renderer, lit, shadowed and culled as a StaticShape is and in the frame's list of ghosts that ropes and passes anchor to;
   a class marked `Replicate::Interpolated` is shown between the server's updates (a warp of one to three ticks, as a vehicle's).
@@ -196,6 +198,11 @@ different.
   type bit of its own taken from the free bits by name) that the server's container and the predicting client's world both
   answer for, so what a plugin owns blocks Players and vehicles on both sides alike (`engine.push(PluginCollision::server(..))`,
   `PluginCollision::client(..)`), listed in the handshake manifest so peers with other sources are refused. Capped in sources, shapes, hull size and work per query; an engine with none is unchanged.
+- `torque-plugin-props` (optional): props, rigid bodies a server simulates in one persistent deterministic Rapier world and every
+  client is sent and draws as shapes (`PropData`, `propSpawn` and kin, a rate-limited `serverCmdPropSpawn`), their state quantized
+  to the wire's precision each tick so clients hold the server's state exactly; players and vehicles collide with them and push
+  them; caps per player, per server and awake (the farthest sleep first), a step budget, sleeping props that cost nothing, owners
+  whose props outlive them for a while.
 
 #### Content import
 
