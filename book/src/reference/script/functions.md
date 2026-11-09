@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-301 entries in 1 namespace.
+304 entries in 1 namespace.
 
 ## Global
 
@@ -770,6 +770,12 @@ Console functions, by namespace. Functions of the global namespace are called as
 
   A speed that is not a number is 0. True if the rope exists.
 
+- `rpcDrops(client, name)` - how many calls of an RPC the client sent that were dropped for going over its rate
+  *arguments: 2; server; needs a plugin that registers an RPC*
+- `rpcToClient(client, name, fields..)` - sends a client the server-to-client RPC \`name\`, its arguments the message's fields; answers the reason it was not queued, or nothing
+  *arguments: at least 2; server; needs a plugin that registers an RPC*
+- `rpcToServer(name, fields..)` - calls the client-to-server RPC \`name\`, its arguments the message's fields; answers the reason it was not queued, or nothing
+  *arguments: at least 1; client; needs a plugin that registers an RPC*
 - `rtrim(text)` - the text without trailing white space
   *arguments: 1; server and client*
 - `schedule(delay, object, function, args...)` - calls the function later; the object bounds the call's life

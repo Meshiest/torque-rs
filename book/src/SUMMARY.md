@@ -32,4 +32,5 @@
   - [Methods](reference/script/methods.md)
   - [Classes](reference/script/classes.md)
   - [Prefs](reference/script/prefs.md)
+  - [RPCs](reference/script/rpcs.md)
   - [From Lua](reference/script/lua.md)

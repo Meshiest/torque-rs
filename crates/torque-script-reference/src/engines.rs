@@ -8,7 +8,12 @@ use torque_app::hosting::HostingPlugin;
 use torque_app::plugins::{DefaultPlugins, HierarchyPlugin, ZoomPlugin};
 use torque_app::server::{GameServer, Listen, ServerStart};
 use torque_client::predict::slot::SLOT_NATIVES;
-use torque_engine::{Engine, EngineBuilder, PluginGroup, PluginGroupBuilder, PluginType};
+use torque_engine::net_classes::{GhostRef, Xf};
+use torque_engine::rpc::{Allow, Delivery, RpcCx, RpcError};
+use torque_engine::{
+    Engine, EngineBuilder, NetMessage, Plugin, PluginGroup, PluginGroupBuilder, PluginId,
+    PluginType,
+};
 use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_props::PropsPlugin;
 use torque_plugin_props::predict::PropPredictionPlugin;
@@ -94,6 +99,73 @@ fn optional_plugins() -> [Optional; 8] {
             group: None,
         },
     ]
+}
+
+/// A request of the sample RPCs, with one field of each kind a message documents: a capped string, a sized integer, a float
+/// that must be finite and a ghost.
+#[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+struct SampleRequest {
+    #[net(max_len = 64)]
+    text: String,
+    #[net(bits = 8)]
+    count: u8,
+    #[net(finite)]
+    scale: f32,
+    target: GhostRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+struct SampleReply {
+    #[net(max_len = 64)]
+    text: String,
+    accepted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+struct SampleNotice {
+    #[net(max_len = 32)]
+    label: String,
+    #[net(finite)]
+    at: Xf,
+}
+
+/// Registers one RPC of each kind: a call with a reply and a Rust handler, a notification a client sends that the game's
+/// script handles, and a notification the server sends that a client's script handles. An engine with any RPC registers the
+/// RPC natives, which the reference documents from this one.
+#[derive(PluginId)]
+#[plugin(id = "reference.sample-rpc")]
+struct SampleRpcPlugin;
+
+impl Plugin for SampleRpcPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine
+            .net()
+            .rpc::<SampleRequest, SampleReply>("sample.echo")
+            .to_server()
+            .rate(4, 8)
+            .max_bytes(128)
+            .server(
+                |_cx: &mut RpcCx, req: SampleRequest| -> Result<SampleReply, RpcError> {
+                    Ok(SampleReply {
+                        text: req.text,
+                        accepted: true,
+                    })
+                },
+            );
+        engine
+            .net()
+            .rpc::<SampleRequest, ()>("sample.note")
+            .to_server()
+            .allow(Allow::permission("sample.note"))
+            .server_script();
+        engine
+            .net()
+            .rpc::<SampleNotice, ()>("sample.notice")
+            .to_client()
+            .delivery(Delivery::Unreliable)
+            .max_bytes(64)
+            .client_script();
+    }
 }
 
 fn build(extra: Option<&Optional>) -> Result<Engine, String> {
@@ -186,7 +258,27 @@ pub fn reference() -> Result<Reference, String> {
             .optional
             .push((extra.id.to_string(), extra.what.to_string()));
     }
+    add_rpcs(&mut reference)?;
     Ok(reference)
+}
+
+/// The RPC natives and the sample's RPCs: an engine registers the natives only when it has an RPC.
+pub(crate) fn add_rpcs(reference: &mut Reference) -> Result<(), String> {
+    let mut engine = EngineBuilder::new();
+    engine.add_plugins(DefaultPlugins);
+    engine.add_plugins(SampleRpcPlugin);
+    let engine = engine.build().map_err(|e| e.to_string())?;
+    let with = read(&engine)?;
+    for native in with.natives {
+        if !reference.natives.iter().any(|n| same_native(n, &native)) {
+            reference.natives.push(crate::model::Native {
+                plugins: vec![crate::model::RPC_TAG.to_string()],
+                ..native
+            });
+        }
+    }
+    reference.rpcs = crate::collect::rpcs(&engine)?;
+    Ok(())
 }
 
 fn same_native(a: &crate::model::Native, b: &crate::model::Native) -> bool {

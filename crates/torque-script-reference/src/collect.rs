@@ -1,14 +1,18 @@
 //! Reads the reference's entries from the script engines an [`Engine`] makes.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
+use torque_engine::rpc::{Allow, Delivery, RpcDirection as Direction, RpcEntry};
 use torque_engine::{Engine, PrefKind};
 use torque_ts_vm::classes::Validator;
 use torque_ts_vm::fields::{self, FieldType};
 use torque_ts_vm::text::format_g;
 use torque_ts_vm::vm::Vm;
 
-use crate::model::{Arity, Class, Field, Native, Pref, Reference, Side, Sides};
+use crate::model::{
+    Arity, Class, Field, MessageField, Native, Pref, Reference, Rpc, RpcDirection, Side, Sides,
+};
 
 /// One script engine and the side it belongs to.
 pub struct SideVm<'a> {
@@ -76,6 +80,88 @@ pub fn collect(engine: &Engine, vms: &[SideVm]) -> Reference {
         });
     }
     reference
+}
+
+/// The RPCs `engine` holds, in name order, with the shape of each one's messages.
+///
+/// # Errors
+/// The engine's RPC table is invalid (more RPCs than the wire has ids for), or a message's layout text has an entry that does
+/// not read (which would shift the documented argument positions).
+pub fn rpcs(engine: &Engine) -> Result<Vec<Rpc>, String> {
+    let table = engine.net_rpcs().map_err(|e| format!("{e:?}"))?;
+    table.iter().map(rpc).collect()
+}
+
+fn rpc(entry: &Rc<RpcEntry>) -> Result<Rpc, String> {
+    let fields = |schema| {
+        message_fields(schema)
+            .map_err(|bad| format!("RPC `{}`: layout entry `{bad}` does not read", entry.name))
+    };
+    Ok(Rpc {
+        name: entry.name.clone(),
+        direction: if entry.direction == Direction::ToServer {
+            RpcDirection::ToServer
+        } else {
+            RpcDirection::ToClient
+        },
+        reliable: entry.delivery == Delivery::Reliable,
+        rate: entry.rate,
+        burst: entry.burst,
+        max_bytes: entry.max_bytes,
+        allow: match &entry.allow {
+            Allow::Anyone => "any connected client".to_string(),
+            Allow::Permission(permission) => format!("callers who hold `{permission}`"),
+            _ => "callers the plugin's own check accepts".to_string(),
+        },
+        script_handler: entry.script_function().map(str::to_string),
+        request: fields(entry.request_schema())?,
+        reply: fields(entry.response_schema())?,
+        has_reply: entry.reply,
+    })
+}
+
+/// The fields of a message from its layout text: `name:type:bits:max_len:finite` entries joined by `;`. A type may hold a `;`
+/// of its own (`[f32;3]`), so only a `;` outside brackets ends an entry.
+///
+/// # Errors
+/// The text of the first entry that does not read.
+pub(crate) fn message_fields(schema: &str) -> Result<Vec<MessageField>, String> {
+    let mut entries = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, c) in schema.char_indices() {
+        match c {
+            '[' | '<' => depth += 1,
+            ']' | '>' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => {
+                entries.push(&schema[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    entries.push(&schema[start..]);
+    if schema.is_empty() {
+        return Ok(Vec::new());
+    }
+    entries
+        .into_iter()
+        .map(|entry| message_field(entry).ok_or_else(|| entry.to_string()))
+        .collect()
+}
+
+fn message_field(entry: &str) -> Option<MessageField> {
+    let mut parts = entry.rsplitn(4, ':');
+    let finite = parts.next()? == "1";
+    let max_len = parts.next()?.parse().ok()?;
+    let bits = parts.next()?.parse().ok()?;
+    let (name, ty) = parts.next()?.split_once(':')?;
+    Some(MessageField {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        bits,
+        max_len,
+        finite,
+    })
 }
 
 fn lower(text: &str) -> String {

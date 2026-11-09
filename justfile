@@ -52,6 +52,12 @@ book-serve:
 site:
     node web/site.mjs
 
+# The browser build of the app crate type-checks with its peer-to-peer feature (wasm32-unknown-unknown). A rustc wrapper
+# (sccache) is turned off for it, set in the cargo config or in RUSTC_WRAPPER: the wrapper spawns rustc with web-sys's full
+# feature list on one command line, which is longer than Windows allows, and cargo's own response-file fallback never runs
+wasm-check $RUSTC_WRAPPER="":
+    cargo check --config "build.rustc-wrapper=''" -p torque-app --target wasm32-unknown-unknown --features p2p
+
 # Serve the site on http://127.0.0.1:{{port}}/torque-rs/, as GitHub Pages does (build it first with `site`)
 site-serve port="8080":
     node web/serve.mjs "{{web_target}}/site" {{port}} /torque-rs/

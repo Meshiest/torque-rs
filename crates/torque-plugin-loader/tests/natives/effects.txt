@@ -97,6 +97,7 @@ findNextFile -
 firstWord -
 FlyingVehicle::useCreateHeight -
 GameBase::getDataBlock -
+GameBase::setDataBlock -
 GameConnection::activateGhosting -
 GameConnection::addRole permissions
 GameConnection::delete -

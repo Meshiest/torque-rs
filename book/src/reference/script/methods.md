@@ -4,14 +4,14 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-304 entries in 34 classes.
+305 entries in 34 classes.
 
 | Class | Entries |
 |---|---|
 | [ActionMap](#actionmap) | 12 |
 | [Camera](#camera) | 3 |
 | [FlyingVehicle](#flyingvehicle) | 1 |
-| [GameBase](#gamebase) | 1 |
+| [GameBase](#gamebase) | 2 |
 | [GameConnection](#gameconnection) | 14 |
 | [GuiBitmapButtonCtrl](#guibitmapbuttonctrl) | 3 |
 | [GuiBitmapCtrl](#guibitmapctrl) | 4 |
@@ -88,6 +88,8 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 
 - `obj.getDataBlock()`
   *arguments: none; server and client*
+- `obj.setDataBlock(DataBlock db)`
+  *arguments: 1; server and client*
 
 ## GameConnection
 

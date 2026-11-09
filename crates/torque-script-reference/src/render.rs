@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::model::{Class, Field, Native, Pref, Reference, Sides};
+use crate::model::{Class, Field, MessageField, Native, Pref, Reference, Rpc, RpcDirection, Sides};
 
 /// The folder the pages go in, below the guide's `src`.
 pub const FOLDER: &str = "reference/script";
@@ -19,6 +19,7 @@ pub fn pages(reference: &Reference) -> Vec<(&'static str, String)> {
         ("methods.md", methods(reference)),
         ("classes.md", classes(reference)),
         ("prefs.md", prefs(reference)),
+        ("rpcs.md", rpcs(reference)),
         ("lua.md", lua(reference)),
     ]
 }
@@ -45,9 +46,11 @@ fn index(reference: &Reference) -> String {
          | [Methods](methods.md) | methods called on an object, by class | {methods} |\n\
          | [Classes](classes.md) | console classes and the fields they add | {} classes, {fields} fields |\n\
          | [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | {} |\n\
+         | [RPCs](rpcs.md) | the RPC functions and the shape of an RPC's message fields, from a sample | {} |\n\
          | [From Lua](lua.md) | the functions and methods as a Lua script calls them | {} |\n",
         reference.classes.len(),
         reference.prefs.len(),
+        reference.rpcs.len(),
         reference.natives.len(),
     );
     out.push_str(
@@ -104,6 +107,8 @@ fn tags(sides: &Sides, plugins: &[String]) -> String {
     for plugin in plugins {
         if plugin == crate::model::SLOT_TAG {
             parts.push("needs a plugin with a predictor or a prediction part".to_string());
+        } else if plugin == crate::model::RPC_TAG {
+            parts.push("needs a plugin that registers an RPC".to_string());
         } else {
             parts.push(format!("needs {}", code(plugin)));
         }
@@ -525,4 +530,106 @@ fn prefs(reference: &Reference) -> String {
         pref_row(&mut out, pref);
     }
     out
+}
+
+fn message_table(out: &mut String, fields: &[MessageField]) {
+    if fields.is_empty() {
+        out.push_str("No fields.\n\n");
+        return;
+    }
+    out.push_str("| Argument | Field | Type | Bits | Most | Finite |\n|---|---|---|---|---|---|\n");
+    for (i, f) in fields.iter().enumerate() {
+        let number = |n: usize| if n == 0 { String::new() } else { n.to_string() };
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} | {} | {} |",
+            i + 1,
+            code(&f.name),
+            code(&f.ty),
+            number(usize::from(f.bits)),
+            number(f.max_len),
+            if f.finite { "yes" } else { "" },
+        );
+    }
+    out.push('\n');
+}
+
+fn rpc_section(out: &mut String, rpc: &Rpc) {
+    let _ = writeln!(out, "### {}\n", rpc.name);
+    let (who, handler_args) = match rpc.direction {
+        RpcDirection::ToServer => ("a client calls it and the server handles it", "%client, "),
+        RpcDirection::ToClient => ("the server sends it and each client handles it", ""),
+    };
+    let reply = if rpc.has_reply {
+        "a call with a reply"
+    } else {
+        "a notification, with no reply"
+    };
+    let delivery = if rpc.reliable {
+        "reliable"
+    } else {
+        "unreliable"
+    };
+    let _ = writeln!(
+        out,
+        "*{who}; {reply}; {delivery}; {} calls a second, a burst of {}; at most {} bytes{}*\n",
+        rpc.rate,
+        rpc.burst,
+        rpc.max_bytes,
+        match rpc.direction {
+            RpcDirection::ToServer => format!("; may be called by {}", rpc.allow),
+            RpcDirection::ToClient => String::new(),
+        },
+    );
+    match &rpc.script_handler {
+        Some(function) => {
+            let names: Vec<&str> = rpc.request.iter().map(|f| f.name.as_str()).collect();
+            let _ = writeln!(
+                out,
+                "Handled by the game's script: {}.\n",
+                code(&format!("{function}({handler_args}{})", names.join(", ")))
+            );
+        }
+        None => out.push_str("Handled by a plugin in Rust; a script only calls or sends it.\n\n"),
+    }
+    out.push_str("Request:\n\n");
+    message_table(out, &rpc.request);
+    if rpc.has_reply {
+        out.push_str("Reply:\n\n");
+        message_table(out, &rpc.reply);
+    }
+}
+
+fn rpcs(reference: &Reference) -> String {
+    let mut out = format!(
+        "{GENERATED}\n\n# RPCs\n\n\
+         A plugin declares an RPC (`NetRegistry::rpc`): a typed request a client makes of the server, with a reply or as a \
+         notification, or a notification the server sends. The script functions below register only in an engine that has at \
+         least one RPC, so the other pages list them as needing a plugin that registers one; they are the same in every such \
+         engine. See [Networked plugins](../../networked-plugins.md) for declaring one.\n\n\
+         ## Calling one from script\n\n\
+         - `rpcToServer(name, fields..)` on a client calls the client-to-server RPC `name`.\n\
+         - `rpcToClient(client, name, fields..)` on the server sends a client the server-to-client RPC `name`.\n\
+         - `rpcDrops(client, name)` on the server counts the calls of an RPC a client sent that were dropped for going over its \
+         rate.\n\n\
+         The arguments after the name are the request message's fields, in the order the message declares them (the Argument \
+         column below). A missing or malformed argument reads as the field's zero value, a list field is not filled from a \
+         script call, and a field that names a ghost is an object id in the script. Both functions answer the reason the call \
+         was not queued, or nothing. A game's script handles an RPC by defining the function its section names; the server's \
+         handler gets the calling client first.\n\n\
+         ## The fields\n\n\
+         A message is a struct with `#[derive(NetMessage)]`, and each of its fields is a type with a layout on the wire. The \
+         tables show what the message declared: **Bits** is an integer's width (empty for the type's own), **Most** is the most \
+         bytes of a string or elements of a list (a message has no default cap), and **Finite** marks a float whose decoder \
+         refuses a NaN or an infinity.\n\n\
+         ## The sample\n\n\
+         These RPCs are registered by a sample plugin of the reference tool, to show how each kind is documented; a game's own \
+         RPCs come with its plugins.\n\n"
+    );
+    let mut sorted: Vec<&Rpc> = reference.rpcs.iter().collect();
+    sorted.sort_by_key(|r| lower(&r.name));
+    for rpc in sorted {
+        rpc_section(&mut out, rpc);
+    }
+    trim_end(out)
 }

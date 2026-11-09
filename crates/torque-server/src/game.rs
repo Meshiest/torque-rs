@@ -7,8 +7,10 @@
 //!   the Player, the Item, the camera methods, the Projectile), the movers' environment over the same container and shapes, set on the
 //!   process list, and the write observer that rebuilds a Player's datablock after a script changes it;
 //! - `GameBase::onAdd`: an object with no datablock is refused (its script `onRemove` runs first); otherwise it takes the type
-//!   mask its class's constructor sets, the classes' `onNewDataBlock` run (the camera's, the shape's, the Player's, the Item's, the vehicles'), then the datablock's script
-//!   `onNewDataBlock(%obj)`, and the object joins the process list at the tail. `onRemove` takes it out again;
+//!   mask its class's constructor sets, the classes' `onNewDataBlock` run ([`torque_game::scene::object::new_datablock`]: the
+//!   camera's, the shape's, the Player's, the Item's, the vehicles'), then the datablock's script `onNewDataBlock(%obj)`, and the
+//!   object joins the process list at the tail. `onRemove` takes it out again. `setDataBlock` on an object added this way runs the
+//!   same list for the new datablock ([`torque_game::scene::object::set_data_block`]);
 //! - the engine's own light and sky classes' methods ([`torque_game::scene::lights`]), and a `TimeOfDay` joins the process list
 //!   when it is added (it ticks its day).
 //!
@@ -59,11 +61,7 @@ impl EngineClass for GameBaseClass {
         {
             e.type_mask |= mask;
         }
-        torque_game::scene::camera::new_datablock(vm, id);
-        torque_game::scene::shapebase::new_datablock(vm, id, db)?;
-        torque_game::sim::player::new_datablock(vm, id, db)?;
-        torque_game::sim::item::new_datablock(vm, id, db);
-        torque_game::sim::vehicle::new_datablock(vm, id, db);
+        torque_game::scene::object::new_datablock(vm, id, db)?;
         vm.call_method(db, b"onNewDataBlock", &[id.to_string().into_bytes()])?;
         if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
             e.process = Some(self.process.clone());

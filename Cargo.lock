@@ -4428,6 +4428,7 @@ name = "torque-game"
 version = "0.1.0"
 dependencies = [
  "torque-collide",
+ "torque-ghosts",
  "torque-import",
  "torque-mapcore",
  "torque-maps",

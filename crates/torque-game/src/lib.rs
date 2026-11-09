@@ -24,6 +24,13 @@
 //! - The control chain ([`scene::camera::chain`]) is walked without an allocation (it runs per connection for every Player's
 //!   tick), and the vehicle host keeps its buffers across sub-steps.
 //! - Nothing here changes what is charged or returned: every line of `just trace-hash` stays.
+//!
+//! **One list of `onNewDataBlock` work.** `GameBase::onAdd` (torque-server's `game.rs`) and `setDataBlock` both run
+//! [`scene::object::new_datablock`], so a class that keeps state made from its datablock (the shape instance, a Player's
+//! products, a vehicle's preload) adds its step there and must take a second datablock over the state the first made; the
+//! tests are in torque-server's `tests/set_datablock.rs`. `setDataBlock` also marks [`scene::object::DATABLOCK_MASK`] (GameBase's
+//! bit 2, which the ghost codecs' `sim_mask` keeps as it is), and a client reads the new datablock from the next update of the
+//! ghost. On a client it only writes the pointer: a ghost's object runs none of the server's classes.
 
 pub mod behaviour;
 pub mod charge;

@@ -20,8 +20,8 @@
 //! visible and are not kept.
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree:
-//! `scene/sceneObject.cpp` and, for `getDataBlock`, `T3D/gameBase/gameBase.cpp` (each Copyright (c) 2012 GarageGames, LLC;
-//! Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
+//! `scene/sceneObject.cpp` and, for `getDataBlock` and `setDataBlock`, `T3D/gameBase/gameBase.cpp` (each Copyright (c) 2012
+//! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
 
 use std::rc::Rc;
 
@@ -252,6 +252,75 @@ pub fn static_written(vm: &mut Vm, id: Option<ObjId>, class: ts_vm::sim::ClassId
     crate::sim::player::datablock_written(vm, id, class);
 }
 
+/// `GameBase`'s `DataBlockMask`: the update bit that sends a connection the object's datablock again (the ghost codecs' own).
+pub const DATABLOCK_MASK: u32 = torque_ghosts::parts::mask::DATABLOCK;
+
+/// The datablock class an object of each class below `GameBase` takes (`dynamic_cast` in the class's `onNewDataBlock`), the
+/// most derived first.
+const DATABLOCK_CLASSES: [(&str, &str); 8] = [
+    ("Player", "PlayerData"),
+    ("Item", "ItemData"),
+    ("StaticShape", "StaticShapeData"),
+    ("Camera", "CameraData"),
+    ("WheeledVehicle", "WheeledVehicleData"),
+    ("FlyingVehicle", "FlyingVehicleData"),
+    ("Projectile", "ProjectileData"),
+    ("ShapeBase", "ShapeBaseData"),
+];
+
+/// Whether `db` is a datablock of the class `id`'s `onNewDataBlock` takes (a `GameBaseData` for a class that names none).
+fn takes_datablock(vm: &Vm, id: ObjId, db: ObjId) -> bool {
+    let wanted = DATABLOCK_CLASSES
+        .iter()
+        .find(|(object, _)| camera::is_class(vm, id, object))
+        .map_or("GameBaseData", |(_, data)| data);
+    camera::is_class(vm, db, wanted)
+}
+
+/// The classes' `onNewDataBlock` work for `db`, parent classes first: the camera's, the shape's, the Player's, the Item's and
+/// the vehicles'. A class that is not `id`'s, or a datablock that is not its class's, does nothing. It runs for the first
+/// datablock (`GameBase::onAdd`) and again for each later one (`setDataBlock`), so each keeps the state of the datablock it
+/// had.
+///
+/// # Errors
+/// A class's work ran past the script engine's limits.
+pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
+    camera::new_datablock(vm, id);
+    super::shapebase::new_datablock(vm, id, db)?;
+    crate::sim::player::new_datablock(vm, id, db)?;
+    crate::sim::item::new_datablock(vm, id, db);
+    crate::sim::vehicle::new_datablock(vm, id, db);
+    Ok(())
+}
+
+/// `GameBase::setDataBlock`: an object that is not added yet only takes the pointer; an added one given another datablock
+/// writes the pointer, marks [`DATABLOCK_MASK`] so every connection that ghosts it reads the new datablock, runs the classes'
+/// `onNewDataBlock` ([`new_datablock`]), then the new datablock's script `onNewDataBlock(%db, %obj)`. False for a datablock
+/// the object's class does not take, with nothing changed; true otherwise, also for the datablock it already has.
+///
+/// # Errors
+/// A class's work or the script callback ran past the script engine's limits.
+pub fn set_data_block(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<bool, VmError> {
+    // `GameBase`'s `on_add` hands the object to the process list as its last step, which is when TGE's `isProperlyAdded` turns
+    // true; the script callbacks that run before that only write the pointer.
+    let added = ext::get(vm.objects(), id).is_some_and(|e| e.process.is_some());
+    if !added {
+        set_field(vm, id, b"dataBlock", Value::Object(Some(db)));
+        return Ok(true);
+    }
+    if super::access::object_field(vm, id, b"dataBlock") == Some(db) {
+        return Ok(true);
+    }
+    if !takes_datablock(vm, id, db) {
+        return Ok(false);
+    }
+    set_field(vm, id, b"dataBlock", Value::Object(Some(db)));
+    ghosts::mark(vm, id, DATABLOCK_MASK);
+    new_datablock(vm, id, db)?;
+    vm.call_method(db, b"onNewDataBlock", &[id.to_string().into_bytes()])?;
+    Ok(true)
+}
+
 /// The server's container, kept in its script engine for code that has no other way to it (the scene hierarchy's
 /// [`super::links::carry`]).
 struct ServerContainer(Rc<Container>);
@@ -267,7 +336,8 @@ fn current_matrix(vm: &mut Vm, id: Option<ObjId>) -> Option<Matrix> {
     id.and_then(|id| matrix_of(vm, id))
 }
 
-/// Registers the `SceneObject` behaviour and the ten console methods, and `getType`.
+/// Registers the `SceneObject` behaviour and the ten console methods, `getType`, and `GameBase`'s `getDataBlock` and
+/// `setDataBlock`.
 pub fn register(vm: &mut Vm, container: &Rc<Container>) {
     vm.set_extension(Rc::new(ServerContainer(Rc::clone(container))));
     vm.set_class_behaviour(
@@ -282,6 +352,28 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
             .this_object
             .and_then(|id| crate::scene::access::object_field(vm, id, b"dataBlock"));
         Native::Int(db.map_or(0, |d| i32::try_from(d).unwrap_or(0)))
+    });
+    // `GameBase::setDataBlock`: false (and a console error) for a name that is not a datablock.
+    register_method(vm, "GameBase", "setDataBlock", |vm, c| {
+        let Some(id) = c.this_object else {
+            return Native::Bool(false);
+        };
+        let name = c.argv.get(2).map_or(&b""[..], Vec::as_slice);
+        let found = vm
+            .objects()
+            .find(name)
+            .filter(|db| camera::is_class(vm, *db, "GameBaseData"));
+        let Some(db) = found else {
+            vm.error(format!(
+                "Could not find data block \"{}\"",
+                String::from_utf8_lossy(name)
+            ));
+            return Native::Bool(false);
+        };
+        match set_data_block(vm, id, db) {
+            Ok(done) => Native::Bool(done),
+            Err(e) => Native::Fail(e),
+        }
     });
     // The type mask lives in the object's ext, for every object: 0 until a class sets it.
     vm.register_in("SimObject", "getType", 2, 2, "obj.getType()", |vm, c| {

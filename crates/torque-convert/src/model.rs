@@ -142,7 +142,7 @@ fn is_plain_file_name(name: &str) -> bool {
             let mut chars = n.chars();
             matches!(
                 (chars.next(), chars.next()),
-                (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
             )
         })
     };

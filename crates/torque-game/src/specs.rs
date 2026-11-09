@@ -131,7 +131,10 @@ pub static CLASSES: &[ClassSpec] = &[
             field("nameTag", FieldType::CaseString, 1),
             field("dataBlock", FieldType::DataBlock("GameBaseData"), 1),
         ],
-        methods: &[method("getDataBlock", 2, 2, "()", Returns::Int)],
+        methods: &[
+            method("getDataBlock", 2, 2, "()", Returns::Int),
+            method("setDataBlock", 3, 3, "(DataBlock db)", Returns::Bool),
+        ],
         defaults: None,
     },
     ClassSpec {

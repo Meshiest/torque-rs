@@ -184,3 +184,36 @@ fn prefs_and_classes_carry_their_defaults_ranges_and_docs() {
     assert_eq!(segments.range.as_deref(), Some("2 to 64"));
     assert_eq!(segments.doc, "How many pieces the rope is cut into.");
 }
+
+#[test]
+fn a_messages_layout_text_gives_its_fields_even_when_a_type_holds_a_semicolon() {
+    let fields = crate::collect::message_fields(
+        "text:String:0:32:0;at:[f32;3]:0:0:1;ids:Vec<u8>:8:16:0;target:torque_engine::net_classes::GhostRef:0:0:0",
+    )
+    .expect("every entry reads");
+    let shown: Vec<(&str, &str, u8, usize, bool)> = fields
+        .iter()
+        .map(|f| (f.name.as_str(), f.ty.as_str(), f.bits, f.max_len, f.finite))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("text", "String", 0, 32, false),
+            ("at", "[f32;3]", 0, 0, true),
+            ("ids", "Vec<u8>", 8, 16, false),
+            (
+                "target",
+                "torque_engine::net_classes::GhostRef",
+                0,
+                0,
+                false
+            ),
+        ]
+    );
+    assert!(crate::collect::message_fields("").unwrap().is_empty());
+    // An entry that does not read is named, not dropped.
+    assert_eq!(
+        crate::collect::message_fields("a:u8:0:0:0;broken;b:u8:0:0:0"),
+        Err("broken".to_string())
+    );
+}

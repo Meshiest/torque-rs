@@ -1,6 +1,8 @@
 //! The pages' text for a small reference.
 
-use crate::model::{Arity, Class, Field, Native, Pref, Reference, Side, Sides};
+use crate::model::{
+    Arity, Class, Field, MessageField, Native, Pref, Reference, Rpc, RpcDirection, Side, Sides,
+};
 use crate::render::pages;
 
 fn native(
@@ -81,6 +83,37 @@ fn reference() -> Reference {
             plugins: Vec::new(),
         }],
         optional: vec![("torque.gizmos".to_string(), "debug drawing".to_string())],
+        rpcs: vec![rpc()],
+    }
+}
+
+fn message_field(name: &str, ty: &str, bits: u8, max_len: usize, finite: bool) -> MessageField {
+    MessageField {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        bits,
+        max_len,
+        finite,
+    }
+}
+
+fn rpc() -> Rpc {
+    Rpc {
+        name: "pad.rumble".to_string(),
+        direction: RpcDirection::ToServer,
+        reliable: true,
+        rate: 4,
+        burst: 8,
+        max_bytes: 128,
+        allow: "any connected client".to_string(),
+        script_handler: Some("rpcServer_pad_rumble".to_string()),
+        request: vec![
+            message_field("label", "String", 0, 32, false),
+            message_field("strength", "f32", 0, 0, true),
+            message_field("steps", "u8", 8, 0, false),
+        ],
+        reply: vec![message_field("done", "bool", 0, 0, false)],
+        has_reply: true,
     }
 }
 
@@ -178,6 +211,62 @@ fn the_lua_page_shows_the_calls_as_lua_writes_them() {
         "{text}"
     );
     assert!(text.contains("- `obj:dump(string a)`"), "{text}");
+}
+
+#[test]
+fn the_rpc_page_shows_each_rpc_and_the_shape_of_its_fields() {
+    let text = page("rpcs.md");
+    assert!(
+        text.contains(
+            "### pad.rumble
+"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("a call with a reply; reliable; 4 calls a second, a burst of 8; at most 128 bytes; may be called by any connected client*"),
+        "{text}"
+    );
+    assert!(
+        text.contains("`rpcServer_pad_rumble(%client, label, strength, steps)`"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "| 1 | `label` | `String` |  | 32 |  |
+| 2 | `strength` | `f32` |  |  | yes |
+| 3 | `steps` | `u8` | 8 |  |  |
+"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "Reply:
+
+| Argument | Field | Type | Bits | Most | Finite |
+|---|---|---|---|---|---|
+| 1 | `done` | `bool` |"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_rpc_functions_need_a_plugin_that_registers_an_rpc() {
+    let mut reference = reference();
+    let mut call = native("", "rpcToServer", false, "(name, fields..)", (1, None));
+    call.plugins = vec![crate::model::RPC_TAG.to_string()];
+    reference.natives.push(call);
+    let text = pages(&reference)
+        .into_iter()
+        .find(|(n, _)| *n == "functions.md")
+        .map(|(_, text)| text)
+        .expect("the page");
+    assert!(
+        text.contains("*arguments: at least 1; client; needs a plugin that registers an RPC*"),
+        "{text}"
+    );
 }
 
 #[test]

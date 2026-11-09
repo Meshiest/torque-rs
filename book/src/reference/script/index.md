@@ -6,11 +6,12 @@ Every console function, method, class and pref of an engine built from `DefaultP
 
 | Page | What it lists | Entries |
 |---|---|---|
-| [Functions](functions.md) | console functions, by namespace | 301 |
-| [Methods](methods.md) | methods called on an object, by class | 304 |
+| [Functions](functions.md) | console functions, by namespace | 304 |
+| [Methods](methods.md) | methods called on an object, by class | 305 |
 | [Classes](classes.md) | console classes and the fields they add | 117 classes, 922 fields |
 | [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 22 |
-| [From Lua](lua.md) | the functions and methods as a Lua script calls them | 605 |
+| [RPCs](rpcs.md) | the RPC functions and the shape of an RPC's message fields, from a sample | 3 |
+| [From Lua](lua.md) | the functions and methods as a Lua script calls them | 609 |
 
 ## Reading an entry
 

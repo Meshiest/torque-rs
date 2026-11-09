@@ -265,6 +265,9 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("ropeSetLifetime", rope, seconds [, fade])` *2 to 3; client; needs `torque.rope`*
 - `ts.call("ropeSetTexture", rope, file)` *2; client; needs `torque.rope`*
 - `ts.call("ropeSetTextureScroll", rope, speed)` *2; client; needs `torque.rope`*
+- `ts.call("rpcDrops", client, name)` *2; server; needs a plugin that registers an RPC*
+- `ts.call("rpcToClient", client, name, fields..)` *at least 2; server; needs a plugin that registers an RPC*
+- `ts.call("rpcToServer", name, fields..)` *at least 1; client; needs a plugin that registers an RPC*
 - `ts.call("rtrim", text)` *1; server and client*
 - `ts.call("schedule", delay, object, function, args...)` *at least 3; server and client*
 - `ts.call("serverCmdTorqueModsGet", client, modIndex, file, start, count)` *5; server and client*
@@ -338,6 +341,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 ### GameBase
 
 - `obj:getDataBlock()` *none; server and client*
+- `obj:setDataBlock(DataBlock db)` *1; server and client*
 
 ### GameConnection
 
