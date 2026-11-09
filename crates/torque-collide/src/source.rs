@@ -38,6 +38,7 @@
 //! rotation and scale elements), a box with a half-extent that is not finite or past [`MAX_HALF_EXTENT`], and a mesh that is not
 //! a convex solid ([`PluginHull::new`]) are refused.
 
+use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
@@ -108,6 +109,22 @@ pub trait CollisionSource: fmt::Debug {
     fn hit(&self, key: u32, hit: &SourceHit) {
         let _ = (key, hit);
     }
+
+    /// A number that changes whenever the shapes [`CollisionSource::shapes`] lists may have changed, and never comes back to
+    /// an earlier value: while every source of a side answers the number its last set was made at, the next phase takes that
+    /// set again ([`CollisionSources::snapshot`]) instead of listing the shapes. `None` (the default) lists them for every
+    /// phase.
+    fn revision(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// A revision no other call of this process gave (for [`CollisionSource::revision`]): a source takes a new one at each change,
+/// so a source that is made again never answers a revision its predecessor did.
+pub fn next_revision() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A hit on a plugin's shape ([`CollisionSource::hit`]).
@@ -309,6 +326,8 @@ fn is_convex_solid(verts: &[F3], tris: &[[u32; 3]]) -> bool {
 #[derive(Debug, Clone, Default)]
 pub struct CollisionSources {
     bound: Vec<Bound>,
+    /// The last set made, with each source's revision then (none when a source keeps no revision).
+    last: RefCell<Option<(Vec<u64>, Rc<ShapeSet>)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -366,7 +385,13 @@ impl CollisionSources {
             });
         }
         bound.sort_by_key(|b| b.index);
-        (CollisionSources { bound }, warnings)
+        (
+            CollisionSources {
+                bound,
+                last: RefCell::new(None),
+            },
+            warnings,
+        )
     }
 
     /// Whether there is no source.
@@ -414,8 +439,26 @@ impl CollisionSources {
     }
 
     /// The shapes the sources have now, in id order: each source's first [`MAX_SHAPES_PER_SOURCE`] that passed the checks; none
-    /// at all when the sources list more than [`MAX_SET_SHAPES`] (see the module's note on work).
-    pub fn snapshot(&self) -> ShapeSet {
+    /// at all when the sources list more than [`MAX_SET_SHAPES`] (see the module's note on work). The last set is given again
+    /// while every source answers the revision it was made at ([`CollisionSource::revision`]).
+    pub fn snapshot(&self) -> Rc<ShapeSet> {
+        if let Some((at, set)) = self.last.borrow().as_ref()
+            && at.len() == self.bound.len()
+            && self
+                .bound
+                .iter()
+                .zip(at)
+                .all(|(b, &r)| b.source.revision() == Some(r))
+        {
+            return Rc::clone(set);
+        }
+        let revisions: Option<Vec<u64>> = self.bound.iter().map(|b| b.source.revision()).collect();
+        let set = Rc::new(self.list());
+        *self.last.borrow_mut() = revisions.map(|r| (r, Rc::clone(&set)));
+        set
+    }
+
+    fn list(&self) -> ShapeSet {
         let mut entries: Vec<Entry> = Vec::new();
         let mut listed = Vec::new();
         let mut total = 0usize;
@@ -549,6 +592,14 @@ pub struct ShapeSet {
 }
 
 impl ShapeSet {
+    /// The empty set, shared (a phase with no source takes it without an allocation).
+    pub fn none() -> Rc<ShapeSet> {
+        thread_local! {
+            static NONE: Rc<ShapeSet> = Rc::default();
+        }
+        NONE.with(Rc::clone)
+    }
+
     /// Shapes in the set.
     pub fn len(&self) -> usize {
         self.entries.len()

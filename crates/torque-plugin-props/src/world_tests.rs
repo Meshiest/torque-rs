@@ -478,3 +478,42 @@ fn a_prop_the_rebuilt_world_does_not_take_is_taken_out_and_reported() {
         Err(SpawnError::World)
     );
 }
+
+/// The collision source's revision: new at a spawn, at every tick a prop moves, at a removal and a restore; the same over
+/// ticks where every prop sleeps, so the shape set is shared only while it is right.
+#[test]
+fn the_revision_moves_with_every_change_of_a_props_slot_or_pose_and_only_then() {
+    let mut w = world(PropLimits::default());
+    let empty = w.revision();
+    w.spawn(10, 9, crate_params(), at(0.0, 0.0, 2.0), None, 0)
+        .expect("a crate");
+    let spawned = w.revision();
+    assert_ne!(spawned, empty);
+    // Falling: every tick moves it, and each gives a revision never seen before.
+    let mut seen = vec![empty, spawned];
+    for _ in 0..5 {
+        w.tick(&[], &far);
+        assert!(!seen.contains(&w.revision()), "a moving tick");
+        seen.push(w.revision());
+    }
+    // Asleep on the floor: ticks change nothing.
+    for _ in 0..600 {
+        w.tick(&[], &far);
+    }
+    assert!(w.get(10).unwrap().rest.is_asleep());
+    let resting = w.revision();
+    for _ in 0..10 {
+        w.tick(&[], &far);
+    }
+    assert_eq!(w.revision(), resting, "nothing moved");
+    // A restore to another state and a removal each move it.
+    let mut q = w.get(10).unwrap().q;
+    q.pos[0] += 100;
+    assert!(w.restore(10, q, Rest::Awake));
+    assert_ne!(w.revision(), resting);
+    let restored = w.revision();
+    assert!(w.remove(10));
+    assert_ne!(w.revision(), restored);
+    // A world made again never answers an old revision.
+    assert!(!seen.contains(&PropWorld::new(4, PropLimits::default()).revision()));
+}

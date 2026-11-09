@@ -3,14 +3,18 @@
 //! prediction makes one a move).
 //!
 //! The world is a list of boxes: a floor whose top is at z = 0 and a block ahead of every buggy, so the wheel rays, the
-//! working set, the GJK states, the contacts and the hold-out all run.
+//! working set, the GJK states, the contacts and the hold-out all run. Two more grounds for one buggy: "on tiles" is a floor
+//! cut into 0.5-unit boxes (a working set of a few hundred convexes), and "beside hulls" makes the block and 20 pillars along
+//! the way convex hulls of 48 vertices (a shape's collision mesh). The allocations a tick on each ground are printed ahead of
+//! the timings (a counting allocator).
 
 use std::hint::black_box;
 use std::rc::Rc;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use torque_collide::convex::{
-    BOX_CONVEX_TYPE, ConvexBuilder, ConvexKind, ConvexSource, WorkingSet, query_in_object,
+    BOX_CONVEX_TYPE, ConvexBuilder, ConvexKind, ConvexSource, HullSlot, WorkingSet, query_in_object,
 };
 use torque_collide::math::{Box3, F3, IDENTITY, d};
 use torque_collide::mesh::{Hull, MeshPart};
@@ -23,6 +27,9 @@ use torque_vehicle::tick::{Vehicle, process_tick};
 use torque_vehicle::wheeled::{self, Wheeled};
 use torque_vehicle::{Move, VehicleState};
 
+#[global_allocator]
+static GLOBAL: &StatsAlloc<std::alloc::System> = &INSTRUMENTED_SYSTEM;
+
 /// The most ticks a client replays in one tick of its own.
 const REPLAY: usize = 46;
 /// The ticks one buggy runs in the scaling benches: long enough to reach its block and press on it.
@@ -31,10 +38,21 @@ const DRIVE: usize = 100;
 /// The buggy's object box.
 const BODY_BOX: Box3 = Box3::new([-0.9, -1.9, -0.5], [0.9, 1.9, 0.5]);
 
-/// A static box: its world box, as a solid.
+/// A static box: its world box, as a solid; a pillar is a convex hull inside that box instead.
 struct Solid {
     min: F3,
     max: F3,
+    hull: bool,
+}
+
+impl Solid {
+    fn block(min: F3, max: F3) -> Solid {
+        Solid {
+            min,
+            max,
+            hull: false,
+        }
+    }
 }
 
 impl Solid {
@@ -85,6 +103,8 @@ struct Sandbox {
     sources: Vec<ConvexSource>,
     /// The buggies' collision mesh (every id from [`FIRST_VEHICLE`] on).
     body: Rc<Hull>,
+    /// The pillars' hulls, by solid.
+    pillars: Vec<Option<Rc<Hull>>>,
 }
 
 /// The id of the first buggy; the solids' ids are their indexes below it.
@@ -137,17 +157,66 @@ fn body_hull(b: &Box3) -> Hull {
     Hull::new(Some(IDENTITY), vec![part])
 }
 
+/// A 24-sided prism filling the box `half` (centered on the origin): 48 vertices and 92 triangles wound outward.
+fn pillar_hull(half: F3) -> Hull {
+    const SIDES: u32 = 24;
+    let mut verts = Vec::new();
+    for z in [-half[2], half[2]] {
+        for k in 0..SIDES {
+            let a = k as f32 * std::f32::consts::TAU / SIDES as f32;
+            verts.push([half[0] * a.cos(), half[1] * a.sin(), z]);
+        }
+    }
+    let mut tris = Vec::new();
+    for k in 0..SIDES {
+        let n = (k + 1) % SIDES;
+        tris.push([k, n, SIDES + n]);
+        tris.push([k, SIDES + n, SIDES + k]);
+    }
+    for k in 1..SIDES - 1 {
+        tris.push([0, k + 1, k]);
+        tris.push([SIDES, SIDES + k, SIDES + k + 1]);
+    }
+    let part = MeshPart {
+        node: IDENTITY,
+        materials: vec![0; tris.len()],
+        verts,
+        tris,
+    };
+    Hull::new(Some(IDENTITY), vec![part])
+}
+
 impl Sandbox {
     fn new(solids: Vec<Solid>) -> Sandbox {
         let sources = solids
             .iter()
-            .map(|s| ConvexSource::Custom(Rc::new(BoxClass { half: s.half() })))
+            .map(|s| {
+                let h = s.half();
+                if s.hull {
+                    ConvexSource::Shape {
+                        has_shape: true,
+                        slots: [HullSlot {
+                            slot: 0,
+                            present: true,
+                            bounds: Box3::new(h.map(|v| -v), h),
+                        }]
+                        .into(),
+                    }
+                } else {
+                    ConvexSource::Custom(Rc::new(BoxClass { half: h }))
+                }
+            })
+            .collect();
+        let pillars = solids
+            .iter()
+            .map(|s| s.hull.then(|| Rc::new(pillar_hull(s.half()))))
             .collect();
         let body = Rc::new(body_hull(&BODY_BOX));
         Sandbox {
             solids,
             sources,
             body,
+            pillars,
         }
     }
 
@@ -208,7 +277,13 @@ impl World for Sandbox {
     }
 
     fn hull(&self, id: ObjectId, slot: u32) -> Option<Rc<Hull>> {
-        (id.0 >= FIRST_VEHICLE && slot == 0).then(|| Rc::clone(&self.body))
+        if slot != 0 {
+            return None;
+        }
+        if id.0 >= FIRST_VEHICLE {
+            return Some(Rc::clone(&self.body));
+        }
+        self.pillars.get(id.0 as usize)?.clone()
     }
 
     fn charge(&mut self, _units: u64) -> bool {
@@ -348,20 +423,60 @@ fn buggy(db: &WheeledVehicleData, id: u32, x: f32, y: f32) -> Vehicle<Wheeled> {
     v
 }
 
+/// What the buggies drive on and into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ground {
+    /// One floor box and a box block ahead of each buggy.
+    Boxes,
+    /// A floor cut into 0.5-unit boxes around each buggy's way, over a floor a unit lower.
+    Tiles,
+    /// The floor box, the block ahead a hull and 10 hull pillars on each side of the way.
+    Hulls,
+}
+
 /// The floor, and a block 7 m ahead of each of the `count` buggies of an 8-wide grid; the buggies, whose ids are past the solids'.
 fn scene(count: usize) -> (Sandbox, WheeledVehicleData, Vec<Vehicle<Wheeled>>) {
+    scene_on(count, Ground::Boxes)
+}
+
+fn scene_on(count: usize, ground: Ground) -> (Sandbox, WheeledVehicleData, Vec<Vehicle<Wheeled>>) {
     let db = datablock();
-    let mut solids = vec![Solid {
-        min: [-200.0, -200.0, -1.0],
-        max: [200.0, 200.0, 0.0],
-    }];
+    let floor_top = if ground == Ground::Tiles { -1.0 } else { 0.0 };
+    let mut solids = vec![Solid::block(
+        [-200.0, -200.0, floor_top - 1.0],
+        [200.0, 200.0, floor_top],
+    )];
     let mut at = Vec::new();
     for i in 0..count {
         let (x, y) = ((i % 8) as f32 * 14.0 - 50.0, (i / 8) as f32 * 30.0 - 100.0);
         solids.push(Solid {
             min: [x - 1.0, y + 7.0, 0.0],
             max: [x + 1.0, y + 9.0, 1.5],
+            hull: ground == Ground::Hulls,
         });
+        match ground {
+            Ground::Boxes => {}
+            Ground::Tiles => {
+                for tx in 0..12 {
+                    for ty in 0..56 {
+                        let (mx, my) = (x - 3.0 + tx as f32 * 0.5, y - 4.0 + ty as f32 * 0.5);
+                        solids.push(Solid::block([mx, my, -1.0], [mx + 0.5, my + 0.5, 0.0]));
+                    }
+                }
+            }
+            Ground::Hulls => {
+                for side in [-1.0f32, 1.0] {
+                    for k in 0..10 {
+                        let (px, py) = (x + side * 2.2, y - 1.0 + k as f32 * 0.8);
+                        solids.push(Solid {
+                            min: [px - 0.3, py - 0.3, 0.0],
+                            max: [px + 0.3, py + 0.3, 1.2],
+                            hull: true,
+                        });
+                    }
+                }
+            }
+        }
         at.push((x, y));
     }
     let vehicles = at
@@ -406,7 +521,29 @@ fn scaling(c: &mut Criterion) {
             )
         });
     }
+    for (name, ground) in [("on tiles", Ground::Tiles), ("beside hulls", Ground::Hulls)] {
+        let (mut host, db, vehicles) = scene_on(1, ground);
+        group.bench_function(format!("buggy {name}"), |b| {
+            b.iter_batched(
+                || vehicles.clone(),
+                |mut vs| {
+                    drive(&mut vs[0], &db, &mut host, DRIVE);
+                    black_box(vs[0].s.rigid.lin_pos[1])
+                },
+                BatchSize::LargeInput,
+            )
+        });
+    }
     group.finish();
+}
+
+/// The allocations a tick of one buggy's drive on `ground`, and where the buggy ends.
+fn allocations(ground: Ground) -> (f64, f32) {
+    let (mut host, db, mut vehicles) = scene_on(1, ground);
+    let region = Region::new(GLOBAL);
+    drive(&mut vehicles[0], &db, &mut host, DRIVE);
+    let n = region.change().allocations as f64 / DRIVE as f64;
+    (n, vehicles[0].s.rigid.lin_pos[1])
 }
 
 /// A client's worst replay: a correction rewinds a vehicle and 46 ticks run again, a clone of the vehicle each.
@@ -453,6 +590,10 @@ fn main() {
     eprintln!(
         "rigid trace {hash:016x} (first buggy ends at y = {end:.4}; the block is 7 m ahead of its start)"
     );
+    for ground in [Ground::Boxes, Ground::Tiles, Ground::Hulls] {
+        let (n, end) = allocations(ground);
+        eprintln!("{ground:?}: {n:.1} allocations a tick (the buggy ends at y = {end:.4})");
+    }
     benches();
     Criterion::default().configure_from_args().final_summary();
 }

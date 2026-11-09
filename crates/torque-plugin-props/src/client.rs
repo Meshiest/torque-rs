@@ -9,7 +9,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use torque_collide::source::{CollisionShape, CollisionSource, MAX_SHAPES_PER_SOURCE};
+use torque_collide::source::{
+    CollisionShape, CollisionSource, MAX_SHAPES_PER_SOURCE, next_revision,
+};
 use torque_engine::net_classes::{DatablockFields, GhostEvent, ShapeDraw};
 use torque_ghosts::Value;
 use torque_ts_vm::vm::Vm;
@@ -56,9 +58,17 @@ pub struct PropBook {
     props: BTreeMap<u32, ClientProp>,
     /// Ghosts left out because the book was full.
     pub dropped: u64,
+    /// A revision of what the book holds ([`torque_collide::source::next_revision`] at every change; 0 for a book never
+    /// changed): what its collision source answers.
+    revision: u64,
 }
 
 impl PropBook {
+    /// The revision of what the book holds: it changes at every record heard, removal and prediction.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn props(&self) -> &BTreeMap<u32, ClientProp> {
         &self.props
     }
@@ -83,6 +93,7 @@ impl PropBook {
         params: impl FnOnce(u32) -> Option<PropParams>,
     ) {
         let full = self.props.len() >= MAX_CLIENT_PROPS;
+        self.revision = next_revision();
         let entry = match self.props.get_mut(&index) {
             Some(e) => e,
             None if full => {
@@ -124,19 +135,26 @@ impl PropBook {
 
     /// A ghost the server deleted (or the connection ended).
     pub fn removed(&mut self, index: u32) {
+        self.revision = next_revision();
         self.props.remove(&index);
     }
 
     /// Sets where the prediction has prop `index` (none: shown as the server sent it); false when the book has no such prop.
     pub fn set_predicted(&mut self, index: u32, q: Option<Quantized>) -> bool {
-        self.props
-            .get_mut(&index)
-            .map(|p| p.predicted = q.map(Quantized::held))
-            .is_some()
+        let Some(p) = self.props.get_mut(&index) else {
+            return false;
+        };
+        let q = q.map(Quantized::held);
+        if p.predicted != q {
+            p.predicted = q;
+            self.revision = next_revision();
+        }
+        true
     }
 
     /// Every prop forgotten.
     pub fn clear(&mut self) {
+        self.revision = next_revision();
         self.props.clear();
     }
 
@@ -231,6 +249,11 @@ impl CollisionSource for ClientSource {
                 ));
             }
         });
+    }
+
+    /// The book's [`PropBook::revision`]; none while it is being changed.
+    fn revision(&self) -> Option<u64> {
+        self.0.with(PropBook::revision)
     }
 }
 

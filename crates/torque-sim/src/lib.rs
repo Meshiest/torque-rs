@@ -16,6 +16,12 @@
 //!
 //! The process list, the Player, the AIPlayer, the Item, the Projectile and the images follow TGE 1.4's design; each module
 //! names the Torque3D file it follows where Torque3D has the same rules, with that file's copyright lines.
+//!
+//! # Maintaining
+//!
+//! **Speed.** The process list's map hashes an id with one multiply ([`torque_collide::hash::IdMap`]: no order of it is ever
+//! read) and a pass walks the list straight into its temporary one (no copy of the order); a pass allocates nothing once warm.
+//! The bench: `cargo bench -p torque-sim --bench process` (2,000 objects, with the allocations of a pass printed).
 
 pub mod ai;
 pub mod image;

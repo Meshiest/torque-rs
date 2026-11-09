@@ -128,6 +128,10 @@ pub struct Rig {
     /// Every datagram carried while [`Rig::record_wire`] was on, in the order carried: true when it went to the server.
     pub wire: Vec<(bool, Vec<u8>)>,
     recording: bool,
+    /// Steps a datagram from the server waits before the client gets it ([`Rig::set_latency`]), and those waiting, with the
+    /// step each is due at.
+    latency: u32,
+    held: std::collections::VecDeque<(u32, Vec<u8>)>,
 }
 
 impl Rig {
@@ -221,6 +225,8 @@ impl Rig {
             ticks: 0,
             wire: Vec::new(),
             recording: false,
+            latency: 0,
+            held: std::collections::VecDeque::new(),
         })
     }
 
@@ -248,16 +254,43 @@ impl Rig {
                 if self.recording {
                     self.wire.push((false, data.clone()));
                 }
-                incoming.push_back((SERVER, data));
+                if self.latency == 0 {
+                    incoming.push_back((SERVER, data));
+                } else {
+                    self.held.push_back((self.ticks + self.latency, data));
+                }
             }
         }
+        while let Some((due, _)) = self.held.front()
+            && *due <= self.ticks
+        {
+            let (_, data) = self.held.pop_front().expect("the front");
+            incoming.push_back((SERVER, data));
+        }
+    }
+
+    /// Holds each datagram from the server for `steps` steps before the client gets it (a link with latency: the client's
+    /// moves pile up unacknowledged, and a correction replays them). 0, the default, carries every datagram at once.
+    pub fn set_latency(&mut self, steps: u32) {
+        self.latency = steps;
     }
 
     /// One tick of the server and one of the client, the link carried around each.
     pub fn step(&mut self) {
+        self.step_server();
+        self.step_client();
+    }
+
+    /// The server's half of [`Rig::step`]: its tick, the link carried around it.
+    pub fn step_server(&mut self) {
         self.carry();
         self.server.tick();
         self.carry();
+    }
+
+    /// The client's half of [`Rig::step`]: its clock moved on a tick and its network pass (reading what arrived, its tick, its
+    /// prediction), the link carried after it.
+    pub fn step_client(&mut self) {
         self.client_vm.advance_time(TICK_MS);
         EnginePass.net(&mut self.client_vm, &self.client);
         self.carry();

@@ -9,6 +9,8 @@
 //!   identity (the vertex list made unique, the face normals, and per vertex an "emit string" of the vertices, edges and faces
 //!   around it), and its `support`.
 
+use std::rc::Rc;
+
 use crate::library;
 use crate::math::{F3, IDENTITY, Matrix, dot, matrix_product, mul_p, plane_from_points};
 use crate::poly::PolyList;
@@ -37,7 +39,8 @@ pub struct MeshPart {
 pub struct Hull {
     pub node: Option<Matrix>,
     pub parts: Vec<MeshPart>,
-    pub accel: Option<HullAccel>,
+    /// Shared with the kept shape that made it (one accelerator a detail, whatever the pose).
+    pub accel: Option<Rc<HullAccel>>,
 }
 
 impl Hull {
@@ -47,7 +50,7 @@ impl Hull {
         Hull {
             node,
             parts,
-            accel: Some(accel),
+            accel: Some(Rc::new(accel)),
         }
     }
 }

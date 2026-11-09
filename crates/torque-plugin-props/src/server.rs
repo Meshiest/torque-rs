@@ -322,16 +322,23 @@ pub(crate) fn prop_of(vm: &Vm, id: i32) -> Result<ObjId, ScriptError> {
 
 /// Writes a prop's record fields from the world and marks `mask` of its ghost dirty; the scene transform follows its pose.
 pub(crate) fn write_back(vm: &mut Vm, world: &PropWorld, id: u32, mask: u32) {
-    use torque_game::scene::access::set_field;
+    use torque_game::scene::access::{set_field, set_fields};
     let Some(p) = world.get(id) else {
         return;
     };
     if mask & (MASK_STATE | MASK_FLAGS) != 0 {
-        for (name, word) in STATE_FIELDS.iter().zip(p.q.words()) {
-            set_field(vm, id, name.as_bytes(), Field::Int(word));
-        }
-        set_field(vm, id, b"asleep", Field::Int(i32::from(p.rest.is_asleep())));
-        set_field(vm, id, b"frozen", Field::Int(i32::from(p.rest.is_frozen())));
+        let words = p.q.words();
+        let state: [(&'static [u8], Field); 13] =
+            std::array::from_fn(|k| (STATE_FIELDS[k].as_bytes(), Field::Int(words[k])));
+        set_fields(vm, id, state);
+        set_fields(
+            vm,
+            id,
+            [
+                (b"asleep", Field::Int(i32::from(p.rest.is_asleep()))),
+                (b"frozen", Field::Int(i32::from(p.rest.is_frozen()))),
+            ],
+        );
         let m = quant::matrix(p.q.position(), p.q.rotation());
         torque_game::scene::object::set_plain_transform(vm, id, &m);
     }
@@ -482,6 +489,13 @@ impl CollisionSource for ServerSource {
 
     fn object_of(&self, key: u32) -> Option<u32> {
         self.0.with(|s| prop_in_slot(s, key)).flatten()
+    }
+
+    /// The world's [`PropWorld::revision`] (0 with no world: a world's revisions are never 0); none while the state is being
+    /// changed.
+    fn revision(&self) -> Option<u64> {
+        self.0
+            .with(|s| s.world.as_ref().map_or(0, PropWorld::revision))
     }
 
     fn hit(&self, key: u32, hit: &SourceHit) {

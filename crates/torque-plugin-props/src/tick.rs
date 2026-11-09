@@ -13,7 +13,7 @@ use crate::joints::server as joint_server;
 use crate::natives::control_of;
 use crate::server::{
     CLASS, PropPrefs, ServerProps, address_of, delete_logged, is_class, joint_limits_of, limits_of,
-    owner_key, player_boxes, shot_push, write_back,
+    owner_key, shot_push, write_back,
 };
 use crate::world::{Owner, OwnerKey, PropEvent, PropWorld, Pusher, StaticPiece};
 
@@ -60,11 +60,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         let state = &mut *srv;
         let hit = projectile_pushes(vm, &mut state.hits, &mut state.blasts, &mut state.world);
         let world = state.world_mut(vm);
-        let pushers = pushers_of(vm);
-        let players: Vec<[f32; 3]> = player_boxes(vm)
-            .iter()
-            .map(|(_, a, b)| std::array::from_fn(|k| (a[k] + b[k]) * 0.5))
-            .collect();
+        let (pushers, players) = pushers_of(vm);
         let near = |p: [f32; 3]| {
             players
                 .iter()
@@ -374,11 +370,15 @@ fn projectile_pushes(
 }
 
 /// The players and vehicles as pushers: a player pushes at the speed its move asks for (it stops at the prop it walks into), a
-/// vehicle at its own.
-fn pushers_of(vm: &Vm) -> Vec<Pusher> {
+/// vehicle at its own. With them, the center of each player's box (what the awake cap's distances are to), from the same walk
+/// of the objects.
+fn pushers_of(vm: &Vm) -> (Vec<Pusher>, Vec<[f32; 3]>) {
     let mut out = Vec::new();
+    let mut players = Vec::new();
     for (id, _) in vm.objects().iter() {
         if let Some(s) = torque_game::sim::player::state(vm, id) {
+            let (a, b) = (s.world_box.min, s.world_box.max);
+            players.push(std::array::from_fn(|k| (a[k] + b[k]) * 0.5));
             let m = s.obj_to_world;
             let speed =
                 torque_game::sim::player::info(vm, id).map_or(6.0, |i| i.data.max_forward_speed);
@@ -401,7 +401,7 @@ fn pushers_of(vm: &Vm) -> Vec<Pusher> {
             });
         }
     }
-    out
+    (out, players)
 }
 
 /// The hook's form for [`torque_engine::ServerTick`].

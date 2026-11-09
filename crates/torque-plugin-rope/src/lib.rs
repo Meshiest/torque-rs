@@ -182,6 +182,14 @@
 //! [`Stage::Translucent`], alpha blended over the frame's depth (tested, not written), with the frame's light and fog; their
 //! triangles are made again each frame the camera or the ropes moved. A
 //! rope has no motion vector, so a fast one smears a little under the anti-aliasing.
+//!
+//! # Maintaining
+//!
+//! **Speed.** A rope that hangs still rests ([`sim::REST_MOVE`]): its frames run no substeps for it and the world's revision,
+//! and so the tube mesh and the strips, stay put while every rope rests. Whatever changes a rope (every [`RopeWorld`] call on
+//! it, a pin whose anchor moves, a new floor) wakes it, and a reeling, driven or fading rope never rests:
+//! `a_hanging_rope_comes_to_rest_and_an_impulse_wakes_it`. The bench: `cargo bench -p torque-plugin-rope --bench sim` (64 ropes
+//! of 32 segments at rest and swinging).
 
 mod data;
 pub mod driver;

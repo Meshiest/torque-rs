@@ -18,6 +18,7 @@ torque-collide = { path = "../torque-collide" }
 
 [dev-dependencies]
 criterion = { workspace = true }
+stats_alloc = { workspace = true }
 
 [[bench]]
 name = "tick"

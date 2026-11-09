@@ -366,7 +366,7 @@ fn a_hull_must_be_a_convex_solid() {
 }
 
 /// A world of one set, as a host's world answers for the plugin range.
-struct SetWorld(ShapeSet);
+struct SetWorld(Rc<ShapeSet>);
 
 impl World for SetWorld {
     fn object(&self, id: ObjectId) -> Option<ObjectView> {
@@ -482,4 +482,60 @@ fn a_ray_meets_the_nearest_shape_and_a_segment_that_is_not_finite_meets_nothing(
         segment_box([0.0; 3], [0.0, 5.0, 0.0], &unit).map(|h| h.0),
         Some(0.0)
     );
+}
+
+/// A source that counts its listings and answers the revision it is given.
+#[derive(Debug, Default)]
+struct Counted {
+    shapes: RefCell<Vec<CollisionShape>>,
+    listed: std::cell::Cell<u32>,
+    revision: std::cell::Cell<Option<u64>>,
+}
+
+impl CollisionSource for Counted {
+    fn shapes(&self, out: &mut Vec<CollisionShape>) {
+        self.listed.set(self.listed.get() + 1);
+        out.extend(self.shapes.borrow().iter().cloned());
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.revision.get()
+    }
+}
+
+#[test]
+fn a_set_is_listed_again_only_when_a_sources_revision_moves() {
+    let a = Rc::new(Counted::default());
+    a.shapes
+        .borrow_mut()
+        .push(boxed(1, at(0.0, 0.0, 0.0), [1.0; 3]));
+    let b = Rc::new(Counted::default());
+    let entries = [
+        PluginCollision::server("A", a.clone()),
+        PluginCollision::server("B", b.clone()),
+    ];
+    let src = sources(&entries, Side::Server);
+    // No revision: listed for every phase.
+    src.snapshot();
+    src.snapshot();
+    assert_eq!(a.listed.get(), 2);
+    // Both sources keep a revision: the set is taken again, the same set, while neither moves.
+    a.revision.set(Some(next_revision()));
+    b.revision.set(Some(next_revision()));
+    let first = src.snapshot();
+    let again = src.snapshot();
+    assert!(Rc::ptr_eq(&first, &again));
+    assert_eq!((a.listed.get(), b.listed.get()), (3, 3));
+    // One source changes: both are listed again, and the set holds the change.
+    a.shapes.borrow_mut()[0] = boxed(1, at(5.0, 0.0, 0.0), [1.0; 3]);
+    a.revision.set(Some(next_revision()));
+    let moved = src.snapshot();
+    assert_eq!((a.listed.get(), b.listed.get()), (4, 4));
+    let id = ObjectId(PLUGIN_ID_BASE + 1);
+    assert_eq!(moved.object(id).unwrap().position(), [5.0, 0.0, 0.0]);
+    // A source that stops keeping one is listed for every phase again.
+    b.revision.set(None);
+    src.snapshot();
+    src.snapshot();
+    assert_eq!(a.listed.get(), 6);
 }

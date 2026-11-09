@@ -58,6 +58,13 @@ pub const MAX_PIN_SPEED: f32 = 60.0;
 pub const ANCHOR_SMOOTHING: f32 = 0.03;
 /// A rope with no length of its own is this much longer than the distance between its ends.
 pub const DEFAULT_SLACK: f32 = 1.1;
+/// A rope rests (its frames skip it: no substeps, no new mesh) once its fastest point has moved less than this over each
+/// substep (units) for [`REST_RUNS`] frames running, its ends are where they are pinned, and it neither reels, is driven nor
+/// fades (a hanging rope's solver jitters at a few 1e-5 a substep, under it). Anything that changes it, a pin that moves or a
+/// new floor wakes it; it is drawn where it lies, at most this far from where it would be.
+pub const REST_MOVE: f32 = 1.0e-4;
+/// Frames under [`REST_MOVE`] before a rope rests.
+pub const REST_RUNS: u32 = 30;
 /// The shortest rope.
 pub const MIN_LENGTH: f32 = 0.02;
 
@@ -397,6 +404,8 @@ pub struct Rope {
     at_limit: bool,
     /// The length a driver last gave ([`RopeWorld::drive`]); None when none does.
     driven_length: Option<f32>,
+    /// Frames in a row that moved it less than [`REST_MOVE`] a substep (0: it moved, or something changed it).
+    still: u32,
 }
 
 impl Rope {
@@ -449,6 +458,7 @@ impl Rope {
             life: None,
             at_limit: false,
             driven_length: None,
+            still: 0,
         };
         rope.layout(a, b);
         rope
@@ -835,8 +845,31 @@ impl Rope {
         (i == 0 && self.pins[0].is_some()) || (i + 1 == self.pos.len() && self.pins[1].is_some())
     }
 
-    /// Runs `steps` substeps; the anchors that follow an object close `alpha` of their gap over the call.
+    /// Whether the rope rests ([`REST_MOVE`]): its frames skip it.
+    fn resting(&self) -> bool {
+        self.still >= REST_RUNS
+            && self.reel.is_none()
+            && self.life.is_none()
+            && !self.driven()
+            && self
+                .pins
+                .iter()
+                .flatten()
+                .all(|p| p.at.distance_squared(p.target) < REST_MOVE * REST_MOVE)
+    }
+
+    /// Runs `steps` substeps, then counts the frame toward its rest ([`Rope::resting`]).
     fn run(&mut self, steps: usize, floor: Option<f32>, alpha: f32) {
+        self.run_steps(steps, floor, alpha);
+        if self.speed() * SUBSTEP_SECONDS < REST_MOVE {
+            self.still = self.still.saturating_add(1);
+        } else {
+            self.still = 0;
+        }
+    }
+
+    /// Runs `steps` substeps; the anchors that follow an object close `alpha` of their gap over the call.
+    fn run_steps(&mut self, steps: usize, floor: Option<f32>, alpha: f32) {
         let last = self.pos.len() - 1;
         let from = self.pins.each_ref().map(|p| p.as_ref().map(|p| p.at));
         let reach = MAX_PIN_SPEED * steps as f32 * SUBSTEP_SECONDS;
@@ -1041,8 +1074,11 @@ impl RopeWorld {
         self.ropes.clear();
     }
 
+    /// Rope `id` to change: it wakes ([`REST_MOVE`]).
     fn rope_mut(&mut self, id: RopeId) -> Result<&mut Rope, RopeError> {
-        self.ropes.get_mut(&id).ok_or(RopeError::NoSuchRope(id))
+        let rope = self.ropes.get_mut(&id).ok_or(RopeError::NoSuchRope(id))?;
+        rope.still = 0;
+        Ok(rope)
     }
 
     /// Pins an end to a point (the end glides there over the next substeps).
@@ -1199,6 +1235,7 @@ impl RopeWorld {
                     }
                     None if held.ghost_seen => {
                         rope.pins[k] = None;
+                        rope.still = 0;
                         lost.push((id, end));
                     }
                     None => {}
@@ -1264,6 +1301,7 @@ impl RopeWorld {
     pub fn resolve(&mut self, mut read: impl FnMut(ObjId, &str) -> Option<[f32; 3]>) {
         let mut released = false;
         for rope in self.ropes.values_mut() {
+            let mut lost = false;
             for pin in &mut rope.pins {
                 let Some(held) = pin else { continue };
                 let Some((id, node)) = &held.object else {
@@ -1273,9 +1311,13 @@ impl RopeWorld {
                     Some(at) => held.target = point((Vec3::from(at) + held.offset).to_array()),
                     None => {
                         *pin = None;
-                        released = true;
+                        lost = true;
                     }
                 }
+            }
+            if lost {
+                rope.still = 0;
+                released = true;
             }
         }
         if released {
@@ -1285,7 +1327,13 @@ impl RopeWorld {
 
     /// Keeps the free points of every rope above the height `z` (None: nothing is in the way).
     pub fn set_floor(&mut self, z: Option<f32>) {
-        self.floor = z.map(|z| point([0.0, 0.0, z]).z);
+        let floor = z.map(|z| point([0.0, 0.0, z]).z);
+        if floor != self.floor {
+            for rope in self.ropes.values_mut() {
+                rope.still = 0;
+            }
+        }
+        self.floor = floor;
     }
 
     /// The floor, if there is one.
@@ -1331,8 +1379,7 @@ impl RopeWorld {
                 }
             }
         }
-        self.advance(seconds);
-        if seconds > 0.0 && !self.ropes.is_empty() {
+        if self.run_ropes(seconds) {
             self.revision += 1;
         }
     }
@@ -1367,7 +1414,7 @@ impl RopeWorld {
     /// Takes a rope's driver's hold off it: it is no longer at its limit, and a length a driver gives next is set at once. The ends,
     /// the length and the curve stay as they were.
     pub fn release_drive(&mut self, id: RopeId) {
-        if let Some(rope) = self.ropes.get_mut(&id) {
+        if let Ok(rope) = self.rope_mut(id) {
             rope.at_limit = false;
             rope.driven_length = None;
             self.revision += 1;
@@ -1431,30 +1478,47 @@ impl RopeWorld {
 
     /// Runs the ropes on by `seconds` ([module docs](self)). A time that is not a positive finite number does nothing.
     pub fn advance(&mut self, seconds: f32) {
+        if self.run_ropes(seconds) {
+            self.revision += 1;
+        }
+    }
+
+    /// [`RopeWorld::advance`] but the revision: true when what is shown of a rope changed (a rope ran, came to rest, or one that
+    /// does not rest moved on toward its next substep), for the caller to give a new revision once.
+    fn run_ropes(&mut self, seconds: f32) -> bool {
+        let active = self.ropes.values().any(|r| !r.resting());
         if !(seconds.is_finite() && seconds > 0.0) {
             self.refresh_shown();
-            return;
+            return false;
         }
         let most = SUBSTEP_SECONDS * MAX_SUBSTEPS as f32;
         self.left = (self.left + seconds.min(most)).min(most + SUBSTEP_SECONDS);
         let steps = ((self.left / SUBSTEP_SECONDS) as usize).min(MAX_SUBSTEPS);
         if steps == 0 {
             self.refresh_shown();
-            return;
+            return active;
         }
         self.left -= steps as f32 * SUBSTEP_SECONDS;
         let ran = steps as f32 * SUBSTEP_SECONDS;
         let alpha = 1.0 - (-ran / ANCHOR_SMOOTHING).exp();
         let floor = self.floor;
+        let mut changed = false;
         for rope in self.ropes.values_mut() {
+            if rope.resting() {
+                // Shown where it lies from its first resting frame on.
+                if rope.before != rope.pos {
+                    rope.before.clone_from(&rope.pos);
+                    changed = true;
+                }
+                continue;
+            }
             rope.run(steps, floor, alpha);
+            changed = true;
         }
         self.substeps += steps as u64;
         self.age(ran);
         self.refresh_shown();
-        if !self.ropes.is_empty() {
-            self.revision += 1;
-        }
+        changed
     }
 
     /// Ages the temporary ropes by `seconds`; the ones whose time is up are taken away.

@@ -14,6 +14,7 @@ use crate::convex::{
     BOX_CONVEX_CORNERS, BOX_CONVEX_FACE_AXES, BOX_CONVEX_FACES, Convex, ConvexKind, World,
 };
 use crate::gjk::GjkState;
+use crate::hash::{IdMap, IdSet};
 use crate::library;
 use crate::math::{
     F3, IDENTITY, Matrix, Plane, affine_inverse, cross, determinant, dot, inverse, matrix_product,
@@ -393,6 +394,25 @@ pub fn mat_scale(m: &Matrix, s: F3) -> Matrix {
 #[derive(Debug, Clone, Default)]
 pub struct StateList {
     pub states: Vec<GjkState>,
+    /// [`StateList::update`]'s buffers, empty between calls and kept for their capacity (a clone gets none).
+    scratch: UpdateScratch,
+}
+
+#[derive(Debug, Default)]
+struct UpdateScratch {
+    /// The working set's index of each id (the last, for an id it holds twice, as a map built in order).
+    working: IdMap<u64, u32>,
+    /// The ids that have a state.
+    with_state: IdSet<u64>,
+    /// The states made this call, oldest first.
+    added: Vec<GjkState>,
+}
+
+/// Empty: a clone takes nothing of the buffers (a replay clones the list every move).
+impl Clone for UpdateScratch {
+    fn clone(&self) -> UpdateScratch {
+        UpdateScratch::default()
+    }
 }
 
 impl StateList {
@@ -420,33 +440,41 @@ impl StateList {
                 || bb.max[1] < lo[1]
                 || bb.max[2] < lo[2])
         };
-        // Membership by map, not by scanning: a state list and a working set both at their caps would be 16 million tests here.
-        let in_working: std::collections::HashMap<u64, &Convex> =
-            working.iter().map(|w| (w.id, w)).collect();
+        // Membership by maps the list keeps (cleared, not made, each call), not by scanning: a state list and a working set
+        // both at their caps would be 16 million tests here.
+        let UpdateScratch {
+            working: by_id,
+            with_state,
+            added,
+        } = &mut self.scratch;
+        by_id.clear();
+        by_id.extend(working.iter().enumerate().map(|(i, w)| (w.id, i as u32)));
+        let in_working = |id: u64| working.get(*by_id.get(&id)? as usize);
         // The state holds pointers to the two convexes, so it sees what a `buildConvex` changed in place (a collision plane's
-        // box follows the query's centre): each kept state takes its convexes as they are now.
+        // box follows the query's center): each kept state takes its convexes as they are now.
         self.states.retain_mut(|s| {
             let (mine, other) = if s.a.id == me.id {
                 (&mut s.a, &mut s.b)
             } else {
                 (&mut s.b, &mut s.a)
             };
-            let Some(now) = in_working.get(&other.id) else {
+            let Some(now) = in_working(other.id) else {
                 return false;
             };
-            *other = **now;
+            *other = *now;
             if mine.id == me.id {
                 *mine = *me;
             }
             other.bounding_box(world).is_some_and(|bb| meets(&bb))
         });
-        let mut with_state: std::collections::HashSet<u64> =
-            self.states.iter().flat_map(|s| [s.a.id, s.b.id]).collect();
+        with_state.clear();
+        with_state.extend(self.states.iter().flat_map(|s| [s.a.id, s.b.id]));
         // The add test is the other way round (`min <= hi && lo <= max`): a NaN box gets no state.
         let meets_add =
             |bb: &crate::math::Box3| (0..3).all(|i| bb.min[i] <= hi[i] && lo[i] <= bb.max[i]);
+        added.clear();
         for w in working {
-            if self.states.len() >= MAX_STATES {
+            if self.states.len() + added.len() >= MAX_STATES {
                 break;
             }
             if !world.charge(work::CONVEX) {
@@ -460,8 +488,12 @@ impl StateList {
             let state = GjkState::new(world, *me, *w, mat, &other_mat);
             with_state.insert(state.a.id);
             with_state.insert(state.b.id);
-            self.states.insert(0, state);
+            added.push(state);
         }
+        // Each new state went in at the head: the newest first.
+        self.states.splice(0..0, added.drain(..).rev());
+        by_id.clear();
+        with_state.clear();
     }
 
     /// `getCollisionInfo` for `me` at `mat` and `scale`: for each state within `tol` (after swapping so `me` is `a`),

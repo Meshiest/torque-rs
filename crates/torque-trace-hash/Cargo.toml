@@ -47,6 +47,9 @@ torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
 torque-plugin-rope = { path = "../torque-plugin-rope" }
 # A test's body solver: TGE's behind a counter.
 torque-vehicle = { path = "../torque-vehicle" }
+# The benches (`benches/`): a whole server tick, and a predicting client's tick with replays.
+criterion = { workspace = true }
+stats_alloc = { workspace = true }
 
 [[bin]]
 name = "trace-hash"
@@ -56,6 +59,14 @@ path = "src/main.rs"
 [[bin]]
 name = "replay-bench"
 path = "src/bin/replay_bench.rs"
+
+[[bench]]
+name = "server"
+harness = false
+
+[[bench]]
+name = "client"
+harness = false
 
 [lints]
 workspace = true

@@ -177,6 +177,12 @@
 //! - A rope that shows a joint follows it and pulls on nothing:
 //!   `a_joint_rope_at_its_limit_lies_straight_within_a_millimeter_and_a_slack_one_hangs` (feature `rope`); another plugin's
 //!   driver under the joints' name is warned about: `another_plugins_driver_under_the_joints_name_is_warned_about`.
+//! - Speed: the collision sources answer a revision ([`world::PropWorld::revision`], [`client::PropBook::revision`]) that
+//!   takes a new value at every spawn, removal, pose change, record heard and prediction change, so every Player's, Item's and
+//!   vehicle's phase of a tick shares one shape set; a change that moves a prop's slot or pose without a new revision leaves
+//!   movers meeting the old pose. The hook walks the scene's objects once for the pushers and the players, and writes a prop's
+//!   record fields with the object looked up once ([`torque_game::scene::access::set_fields`]). The benches:
+//!   `cargo bench -p torque-plugin-props --bench step` and torque-trace-hash's `server` (64 AIPlayers among 1,024 props).
 //!
 //! **Extension points.** `engine.net().ghost_share` (the props' share of each packet and their [`server::priority`]); the
 //! collision sources ([`server::ServerSource`], [`client::ClientSource`]) other movers meet props through;

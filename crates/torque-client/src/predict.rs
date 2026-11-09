@@ -2626,6 +2626,8 @@ pub struct ClientCollision {
     /// The type bits the index answers for ([`StaticIndex::type_bits`]).
     index_bits: u32,
     objects: Vec<(ObjectId, Object)>,
+    /// `objects`' ids with their places, sorted: a lookup is a binary search (every convex's transform asks).
+    by_id: Vec<(ObjectId, u32)>,
     /// The static index's water ([`StaticIndex::zones`]).
     zones: Vec<ZoneView>,
     work: u64,
@@ -2633,7 +2635,7 @@ pub struct ClientCollision {
     /// The game's working-list order (none: the container's).
     order: Option<Rc<dyn CandidateOrder>>,
     /// The plugins' collision shapes as they were when the container was made, listed after every other object.
-    plugin: collide::source::ShapeSet,
+    plugin: Rc<collide::source::ShapeSet>,
 }
 
 /// The mount of a Player the server says is mounted before its ghost's update said on what.
@@ -2695,6 +2697,17 @@ fn controls_player<W: PredictWorld>(world: &W, ctrl: Option<ObjectId>) -> bool {
         .get(&index)
         .and_then(|g| g.class)
         .is_some_and(|c| <W::Set as EngineSet>::class_kind(c).is_player())
+}
+
+/// The ids of `objects` with their places, sorted by id and then place ([`ClientCollision::place`]).
+fn index_of(objects: &[(ObjectId, Object)]) -> Vec<(ObjectId, u32)> {
+    let mut by_id: Vec<(ObjectId, u32)> = objects
+        .iter()
+        .enumerate()
+        .map(|(at, (id, _))| (*id, at as u32))
+        .collect();
+    by_id.sort_unstable();
+    by_id
 }
 
 /// The mount of Player ghost `index` when it is a Player or AIPlayer whose ShapeBase part says a connection controls it (the turret
@@ -2903,11 +2916,11 @@ impl ClientCollision {
             }
         }
         // The plugins' shapes: charged to no budget, so the client and the server hold the same ones (see `collide::source`).
-        let plugin =
-            plugin_sources.map_or_else(collide::source::ShapeSet::default, |s| s.snapshot());
+        let plugin = plugin_sources.map_or_else(collide::source::ShapeSet::none, |s| s.snapshot());
         ClientCollision {
             statics: set,
             index_bits,
+            by_id: index_of(&objects),
             objects,
             zones,
             work,
@@ -2934,7 +2947,16 @@ impl ClientCollision {
         {
             return Some(&set.get(i).1);
         }
-        self.objects.iter().find(|(i, _)| *i == id).map(|(_, o)| o)
+        self.objects.get(self.place(id)?).map(|(_, o)| o)
+    }
+
+    /// Where `id` is in `objects`: its first place, as a scan from the front finds it.
+    fn place(&self, id: ObjectId) -> Option<usize> {
+        let at = self.by_id.partition_point(|&(k, _)| k < id);
+        self.by_id
+            .get(at)
+            .filter(|&&(k, _)| k == id)
+            .map(|&(_, i)| i as usize)
     }
 
     /// An object's type mask (0 for one that is not there).
@@ -2951,11 +2973,12 @@ impl ClientCollision {
             statics: None,
             index_bits: 0,
             objects: Vec::new(),
+            by_id: Vec::new(),
             zones: Vec::new(),
             work: 0,
             budget: TICK_WORK,
             order: None,
-            plugin: collide::source::ShapeSet::default(),
+            plugin: collide::source::ShapeSet::none(),
         }
     }
 
@@ -2970,7 +2993,7 @@ impl ClientCollision {
             set.set_view(i, view);
             return;
         }
-        if let Some((_, o)) = self.objects.iter_mut().find(|(i, _)| *i == id) {
+        if let Some((_, o)) = self.place(id).and_then(|at| self.objects.get_mut(at)) {
             let disabled = o.view.collision_disabled;
             o.view = view;
             o.view.collision_disabled = disabled;
@@ -3352,5 +3375,88 @@ mod box_tests {
         assert_eq!(predicted_side(-3.0, 1.0), 0.0);
         assert_eq!(predicted_side(f32::NAN, 2.3), 2.3);
         assert_eq!(predicted_side(f32::INFINITY, 2.3), 2.3);
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    /// An object of the container whose type mask tells it apart.
+    fn object(mask: u32) -> Object {
+        Object {
+            view: view_of(collide::math::IDENTITY, Box3::default(), [1.0; 3], mask),
+            source: Source::Torque(ConvexSource::None),
+            shape: None,
+            map: None,
+        }
+    }
+
+    /// A world of `objects` as `ClientCollision::new` lists them.
+    fn world(objects: Vec<(ObjectId, Object)>) -> ClientCollision {
+        let mut c = ClientCollision::empty();
+        c.by_id = index_of(&objects);
+        c.objects = objects;
+        c
+    }
+
+    /// What a scan from the front (the lookup the index stands in for) finds.
+    fn scanned(c: &ClientCollision, id: ObjectId) -> Option<u32> {
+        c.objects
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, o)| o.view.type_mask)
+    }
+
+    #[test]
+    fn the_index_finds_what_a_scan_finds_as_ghosts_come_go_and_come_back() {
+        let ids = |list: &[(u32, u32)]| -> Vec<(ObjectId, Object)> {
+            list.iter()
+                .map(|&(id, mask)| (ObjectId(id), object(mask)))
+                .collect()
+        };
+        // Newest first, as the bins answer; an id twice (a stale entry beside its new object) answers its first place.
+        let worlds = [
+            ids(&[(9, 1), (3, 2), (5, 4), (3, 8)]),
+            // Ghost 3 went and ghost 7 came.
+            ids(&[(7, 16), (9, 1), (5, 4)]),
+            // Index 3 came back as another object.
+            ids(&[(3, 32), (7, 16), (9, 1), (5, 4)]),
+            ids(&[]),
+        ];
+        for objects in worlds {
+            let c = world(objects);
+            for id in 0..12 {
+                let id = ObjectId(id);
+                assert_eq!(
+                    c.get(id).map(|o| o.view.type_mask),
+                    scanned(&c, id),
+                    "{id:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_moved_object_is_the_one_its_id_names() {
+        let mut c = world(vec![
+            (ObjectId(4), object(1)),
+            (ObjectId(2), object(2)),
+            (ObjectId(4), object(4)),
+        ]);
+        let mut moved = view_of(collide::math::IDENTITY, Box3::default(), [1.0; 3], 64);
+        moved.obj_to_world[3] = 5.0;
+        c.set_view(ObjectId(4), moved);
+        // The first of the two with id 4 moved, as a scan from the front would have found it; the others did not.
+        assert_eq!(c.objects[0].1.view.obj_to_world[3], 5.0);
+        assert_eq!(c.objects[2].1.view.obj_to_world[3], 0.0);
+        assert_eq!(c.get(ObjectId(2)).unwrap().view.type_mask, 2);
+        // An id the world does not hold moves nothing.
+        c.set_view(ObjectId(99), moved);
+        assert!(
+            c.objects
+                .iter()
+                .all(|(i, o)| *i == ObjectId(4) || o.view.obj_to_world[3] == 0.0)
+        );
     }
 }

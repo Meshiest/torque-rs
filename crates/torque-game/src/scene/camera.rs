@@ -205,20 +205,44 @@ pub fn control_chain(vm: &Vm) -> Rc<dyn ControlChain> {
 
 /// The control chain from `start` (a connection's control object): each object leads to the one it controls
 /// ([`ControlChain::control_object`]) while that one still exists. Bounded by [`CONTROL_CHAIN`] and cut at a repeat.
-pub fn chain(vm: &Vm, start: ObjId) -> Vec<ObjId> {
-    let rules = control_chain(vm);
-    let mut out = vec![start];
+pub fn chain(vm: &Vm, start: ObjId) -> Chain {
+    let installed = vm.extension::<InstalledChain>();
+    let rules: &dyn ControlChain = match &installed {
+        Some(i) => &*i.0,
+        None => &TorqueChain,
+    };
+    let mut out = Chain {
+        ids: [start; CONTROL_CHAIN + 1],
+        len: 1,
+    };
     let mut at = start;
-    while out.len() <= CONTROL_CHAIN {
+    while out.len < out.ids.len() {
         match rules.control_object(vm, at) {
             Some(n) if !out.contains(&n) => {
-                out.push(n);
+                out.ids[out.len] = n;
+                out.len += 1;
                 at = n;
             }
             _ => break,
         }
     }
     out
+}
+
+/// A control chain ([`chain`]): at most [`CONTROL_CHAIN`] links after its start, held without an allocation (the server
+/// walks one per connection for every Player's tick). Reads as a slice.
+#[derive(Debug, Clone, Copy)]
+pub struct Chain {
+    ids: [ObjId; CONTROL_CHAIN + 1],
+    len: usize,
+}
+
+impl std::ops::Deref for Chain {
+    type Target = [ObjId];
+
+    fn deref(&self) -> &[ObjId] {
+        &self.ids[..self.len]
+    }
 }
 
 /// The object of the chain from `start` that `setControlCameraFov` and `getControlCameraFov` talk to
@@ -538,10 +562,10 @@ mod chain_tests {
     #[test]
     fn tges_chain_stops_at_an_object_that_controls_nothing_and_the_fov_goes_to_its_last_object() {
         let (mut vm, a, b) = vm_with_pair();
-        assert_eq!(chain(&vm, a), vec![a]);
+        assert_eq!(*chain(&vm, a), [a]);
         assert_eq!(fov_object(&vm, a), Some(a), "whatever its class");
         set_control_chain(&mut vm, Rc::new(ByField));
-        assert_eq!(chain(&vm, a), vec![a, b], "cut at the repeat");
+        assert_eq!(*chain(&vm, a), [a, b], "cut at the repeat");
         assert_eq!(fov_object(&vm, a), Some(b));
     }
 

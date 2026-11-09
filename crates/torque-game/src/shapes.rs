@@ -169,6 +169,11 @@ pub struct HullCache {
     pub accels: RefCell<std::collections::BTreeMap<i32, Rc<collide::mesh::HullAccel>>>,
     /// The node transforms at rest (an instance made with no thread).
     pub rest: RefCell<Option<Rc<Vec<shapes::math::Matrix>>>>,
+    /// The eight collision slots as `collide` takes them ([`crate::scene::container_world::hull_slots`]).
+    pub slots: std::cell::OnceCell<Rc<[collide::convex::HullSlot]>>,
+    /// The collision hulls made of each detail, by the poses of their parts
+    /// ([`crate::scene::container_world::BuiltHulls`]).
+    pub built: RefCell<std::collections::BTreeMap<i32, crate::scene::container_world::BuiltHulls>>,
 }
 
 impl PartialEq for HullCache {

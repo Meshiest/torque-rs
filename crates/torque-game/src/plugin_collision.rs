@@ -58,7 +58,7 @@ pub fn snapshot_of(vm: &Vm) -> Option<Rc<ShapeSet>> {
     {
         return Some(Rc::clone(set));
     }
-    let set = Rc::new(installed.sources.snapshot());
+    let set = installed.sources.snapshot();
     *kept = Some((now, Rc::clone(&set)));
     Some(set)
 }

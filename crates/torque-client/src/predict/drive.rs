@@ -77,25 +77,17 @@ pub struct ClientShape {
     /// The line-of-sight queries ([`shapes::collide::Collision`]), made when the first ray reaches the shape and paid for by it;
     /// `None` inside for a shape whose details do not build.
     los: OnceCell<Option<Rc<Collision>>>,
+    /// [`ClientShape::hull_slots`], made at the first ask.
+    slots: OnceCell<Rc<[HullSlot]>>,
 }
 
 impl ClientShape {
-    /// The eight collision slots as `collide` takes them.
-    pub fn hull_slots(&self) -> Vec<HullSlot> {
-        // A shape lists only the collision details it has: the slots past them are absent.
-        (0..SLOTS)
-            .map(|i| {
-                let b = self.facts.bounds.get(i).copied().unwrap_or_default();
-                HullSlot {
-                    slot: i as u32,
-                    present: self.facts.slots.collision.get(i).is_some_and(|&d| d >= 0),
-                    bounds: Box3 {
-                        min: [b[0], b[1], b[2]],
-                        max: [b[3], b[4], b[5]],
-                    },
-                }
-            })
-            .collect()
+    /// The eight collision slots as `collide` takes them, made once (every container the shape is in shares them).
+    pub fn hull_slots(&self) -> Rc<[HullSlot]> {
+        let slots = self.slots.get_or_init(|| {
+            HullSlot::of_shape(SLOTS, &self.facts.slots.collision, &self.facts.bounds)
+        });
+        Rc::clone(slots)
     }
 
     /// `ShapeBase::castRay` in the object's space, at the rest pose (the client animates no shape): the segment `a` to `b` cast
@@ -294,6 +286,7 @@ impl ShapeLoad {
                 facts,
                 hulls: std::mem::take(&mut self.hulls),
                 los: OnceCell::new(),
+                slots: OnceCell::new(),
             })),
             _ => Step::Bad,
         }
@@ -451,6 +444,7 @@ fn load(bytes: &[u8], slots: SlotRule, work: &mut u64, budget: u64) -> Option<Cl
         facts,
         hulls,
         los: OnceCell::new(),
+        slots: OnceCell::new(),
     })
 }
 
@@ -477,7 +471,7 @@ fn slot_hull(
     Some(Hull {
         node: parts.first().map(|p| p.node),
         parts,
-        accel: Some(accel),
+        accel: Some(Rc::new(accel)),
     })
 }
 

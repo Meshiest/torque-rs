@@ -21,6 +21,7 @@ use std::rc::Rc;
 
 use torque_collide::ObjectId;
 use torque_collide::map::MapShape;
+use torque_collide::source::next_revision;
 use torque_physics_rapier::{
     BodyDesc, BodyId, BodyState, Config, Error, Limits as WorldLimits, Motion, Shape, World,
 };
@@ -317,6 +318,9 @@ pub struct PropWorld {
     pub rebuilds: u64,
     /// Physics calls that failed where nothing was there to tell, for the tick to print ([`PropWorld::note`]).
     problems: Vec<String>,
+    /// A revision of the props' poses ([`torque_collide::source::next_revision`]): a new one at every spawn, removal and pose
+    /// change, so the collision source lists the props again only after one.
+    revision: u64,
 }
 
 impl std::fmt::Debug for PropWorld {
@@ -412,6 +416,7 @@ impl PropWorld {
             over_budget: 0,
             rebuilds: 0,
             problems: Vec::new(),
+            revision: next_revision(),
         }
     }
 
@@ -437,6 +442,11 @@ impl PropWorld {
     /// The physics world.
     pub fn physics(&self) -> &World {
         &self.world
+    }
+
+    /// The revision of the props' slots and poses: it changes whenever a prop is spawned, removed or moves.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The props by id.
@@ -565,6 +575,7 @@ impl PropWorld {
         }
         self.slots.remove(&slot);
         self.by_slot.insert(slot, id);
+        self.revision = next_revision();
         self.props.insert(
             id,
             Prop {
@@ -587,6 +598,7 @@ impl PropWorld {
         let Some(p) = self.props.remove(&id) else {
             return false;
         };
+        self.revision = next_revision();
         self.slots.insert(p.slot);
         self.by_slot.remove(&p.slot);
         let removed = self.world.remove_body(BodyId(id));
@@ -658,6 +670,7 @@ impl PropWorld {
         let p = self.props.get_mut(&id)?;
         p.rest = Rest::Frozen;
         p.q = p.q.stopped();
+        self.revision = next_revision();
         Some(MASK_STATE | MASK_FLAGS)
     }
 
@@ -694,6 +707,7 @@ impl PropWorld {
             return false;
         }
         p.q = q;
+        self.revision = next_revision();
         p.quiet = 0;
         p.rest = rest;
         let mut s = q.state();
@@ -1029,6 +1043,7 @@ impl PropWorld {
             return;
         };
         p.q = p.q.stopped();
+        self.revision = next_revision();
         p.rest = Rest::Asleep;
         p.quiet = 0;
         let mut s = p.q.state();
@@ -1091,6 +1106,7 @@ impl PropWorld {
         p.quiet = if quiet { p.quiet.saturating_add(1) } else { 0 };
         if p.quiet >= SLEEP_TICKS {
             p.q = q;
+            self.revision = next_revision();
             self.put_to_sleep(id);
             report.events.push((id, PropEvent::Sleep));
             report.dirty.push((id, MASK_STATE | MASK_FLAGS));
@@ -1098,6 +1114,9 @@ impl PropWorld {
         }
         let changed = q != p.q;
         p.q = q;
+        if changed {
+            self.revision = next_revision();
+        }
         let _ = self.world.set_body(BodyId(id), &q.state());
         if changed {
             report.dirty.push((id, MASK_STATE));

@@ -45,6 +45,10 @@
 //!   (`a_collision_shape_of_megabytes_loads_once_for_a_small_share_of_the_tick`,
 //!   `the_loads_of_one_tick_share_one_load_budget_and_the_rest_load_on_later_ticks`); the trace-hash
 //!   scenarios' busiest tick stays under half of [`predict::TICK_WORK`].
+//! - Speed: a prediction world ([`predict::ClientCollision`]) finds an object by a sorted index, not a scan (every convex's
+//!   transform asks), shares its plugin shapes while their sources' revisions hold, and hands out a shape's slots as one
+//!   `Rc`; the bench is torque-trace-hash's `client` (a predicting client's tick with replays over a link with latency). The
+//!   trace-hash lines must not move.
 
 pub mod actionmap;
 pub mod conn;

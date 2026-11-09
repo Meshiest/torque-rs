@@ -27,7 +27,9 @@
 //! `T3D/gameBase/gameBase.cpp` (each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.) and
 //! `T3D/gameBase/gameProcess.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
+
+use torque_collide::hash::IdMap;
 
 use crate::ObjectKey;
 
@@ -47,7 +49,7 @@ struct Node<T> {
 
 /// The process list. `T` is what the host ticks an object with (a boxed [`Ticking`](crate::Ticking)).
 pub struct ProcessList<T> {
-    nodes: HashMap<ObjectKey, Node<T>>,
+    nodes: IdMap<ObjectKey, Node<T>>,
     first: Option<ObjectKey>,
     last: Option<ObjectKey>,
     /// The objects of a pass that were not visited yet, with their serials.
@@ -59,7 +61,7 @@ pub struct ProcessList<T> {
 impl<T> Default for ProcessList<T> {
     fn default() -> Self {
         ProcessList {
-            nodes: HashMap::new(),
+            nodes: IdMap::default(),
             first: None,
             last: None,
             temp: VecDeque::new(),
@@ -297,10 +299,14 @@ impl<T> ProcessList<T> {
     /// ([`order_list_if_dirty`](Self::order_list_if_dirty)), not between them.
     pub fn begin_pass(&mut self) {
         self.finish_pass();
-        for key in self.order() {
-            if let Some(n) = self.nodes.get(&key) {
-                self.temp.push_back((key, n.serial));
-            }
+        // The list's order, as `order` walks it (bounded the same way), straight into the temporary list.
+        let mut at = self.first;
+        while let Some(key) = at
+            && self.temp.len() <= self.nodes.len()
+            && let Some(n) = self.nodes.get(&key)
+        {
+            self.temp.push_back((key, n.serial));
+            at = n.next;
         }
         self.first = None;
         self.last = None;

@@ -1083,3 +1083,33 @@ fn a_fading_tube_thins_and_a_fading_ribbon_grows_faint() {
         "the ribbon faded: {a0} then {a1}"
     );
 }
+
+#[test]
+fn a_hanging_rope_comes_to_rest_and_an_impulse_wakes_it() {
+    let mut world = RopeWorld::new();
+    let id = world
+        .create(params(32, 12.0), [0.0, 0.0, 10.0], [10.0, 0.0, 10.0])
+        .unwrap();
+    for _ in 0..1200 {
+        world.advance(1.0 / 60.0);
+    }
+    // At rest: the frames change neither its points nor the world's revision.
+    let (points, revision) = (
+        world.rope(id).unwrap().drawn_points().to_vec(),
+        world.revision(),
+    );
+    let mut t = 0.0f32;
+    for _ in 0..60 {
+        world.advance(1.0 / 60.0);
+        t += 1.0 / 60.0;
+        world.step_frame(t, |_, _| None);
+    }
+    assert_eq!(world.rope(id).unwrap().drawn_points(), points.as_slice());
+    assert_eq!(world.revision(), revision);
+    // Pushed, it swings again.
+    world.impulse(id, [0.0, 5.0, 0.0]).unwrap();
+    world.advance(1.0 / 60.0);
+    assert_ne!(world.rope(id).unwrap().drawn_points(), points.as_slice());
+    assert_ne!(world.revision(), revision);
+    assert!(finite(&world));
+}

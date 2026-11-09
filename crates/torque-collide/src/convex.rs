@@ -115,6 +115,27 @@ pub struct HullSlot {
     pub bounds: Box3,
 }
 
+impl HullSlot {
+    /// The first `count` slots of a shape whose collision entries name the details `details` (`-1` for none) with the boxes
+    /// `bounds` (`[min.x, min.y, min.z, max.x, max.y, max.z]`): a slot past either list is absent (a shape lists only the
+    /// collision details it has, as TGE's lists grow by one per detail).
+    pub fn of_shape(count: usize, details: &[i32], bounds: &[[f32; 6]]) -> Rc<[HullSlot]> {
+        (0..count)
+            .map(|i| {
+                let b = bounds.get(i).copied().unwrap_or_default();
+                HullSlot {
+                    slot: i as u32,
+                    present: details.get(i).is_some_and(|&d| d >= 0),
+                    bounds: Box3 {
+                        min: [b[0], b[1], b[2]],
+                        max: [b[3], b[4], b[5]],
+                    },
+                }
+            })
+            .collect()
+    }
+}
+
 /// A class's `buildConvex` override, for an object class a game adds (Torque's virtual on `SceneObject`). The host resolves
 /// the object's class in [`World::convex_source`] and returns the builder with the per-object data it reads.
 ///
@@ -142,7 +163,7 @@ pub enum ConvexSource {
     /// `ShapeBase::buildConvex`: `has_shape` is the object's shape flag; the datablock's slots.
     Shape {
         has_shape: bool,
-        slots: Vec<HullSlot>,
+        slots: Rc<[HullSlot]>,
     },
     /// `PhysicalZone::buildConvex`.
     Zone,
@@ -599,16 +620,14 @@ impl WorkingSet {
     ) -> Result<(), Exhausted> {
         self.overflowed = false;
         // Drop what no longer overlaps or no longer collides (a gone object too: its convexes were nuked with it).
-        let mut kept = VecDeque::with_capacity(self.entries.len());
         let mut spent = false;
-        for c in self.entries.drain(..) {
+        self.entries.retain(|c| {
             // Once the budget is spent the rest stay as they are and the update stops after this walk.
             if spent || !world.charge(work::CONVEX) {
                 spent = true;
-                kept.push_back(c);
-                continue;
+                return true;
             }
-            let keep = match (world.object(c.object), c.bounding_box(world)) {
+            match (world.object(c.object), c.bounding_box(world)) {
                 (Some(view), Some(bb)) => {
                     let missed = query.max[0] < bb.min[0]
                         || query.max[1] < bb.min[1]
@@ -619,12 +638,8 @@ impl WorkingSet {
                     !missed && !view.collision_disabled
                 }
                 _ => false,
-            };
-            if keep {
-                kept.push_back(c);
             }
-        }
-        self.entries = kept;
+        });
         if spent {
             return Err(Exhausted);
         }

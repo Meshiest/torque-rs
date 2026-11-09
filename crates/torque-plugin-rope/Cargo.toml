@@ -40,6 +40,11 @@ torque-client = { path = "../torque-client" }
 torque-ghost-world = { path = "../torque-ghost-world" }
 # The hash a run is folded into.
 torque-trace-hash = { path = "../torque-trace-hash" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "sim"
+harness = false
 
 [lints]
 workspace = true
