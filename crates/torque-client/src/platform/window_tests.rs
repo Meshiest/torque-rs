@@ -222,37 +222,41 @@ mod frame_input {
         let engine = EngineBuilder::new().add_plugins(Notes).build().unwrap();
         let (mut host, _) = host();
         let files = MemFiles::new();
-        files.insert_at("a.note", b"one", 1);
+        files.insert_at("notes/a.note", b"one", 1);
         let resets = Rc::new(Resets::default());
         let vm = host.server.vm_mut();
         vm.set_file_host(files.clone());
         vm.set_clock(clock(1_000));
         crate::game::set_client_game(vm, Rc::new(Game(Rc::clone(&resets))));
         let assets = engine.assets(vm);
+        // A trusted-only loader reads the game's own folders only: the host says `notes` is one.
+        assets.trust_folder("notes");
         assets.set_hot_reload(Some(true));
-        assets.load::<Vec<u8>>(vm.file_host(), "a.note").unwrap();
+        assets
+            .load::<Vec<u8>>(vm.file_host(), "notes/a.note")
+            .unwrap();
 
         let mut game = Fake(host);
         let mut owed = 0.0;
         clock_pass(&mut game, &mut owed, 16.0);
         assert!(assets.changed().is_empty());
-        files.insert_at("a.note", b"two", 2);
+        files.insert_at("notes/a.note", b"two", 2);
         // The next look comes once the interval has passed on the script engine's clock.
         let vm = game.0.server.vm_mut();
         vm.set_clock(clock(10_000));
         clock_pass(&mut game, &mut owed, 16.0);
-        assert_eq!(assets.changed(), ["a.note"]);
-        assert_eq!(*assets.get::<Vec<u8>>("a.note").unwrap(), b"two");
+        assert_eq!(assets.changed(), ["notes/a.note"]);
+        assert_eq!(*assets.get::<Vec<u8>>("notes/a.note").unwrap(), b"two");
         assert_eq!(resets.0.get(), 1, "the renderer was told");
         clock_pass(&mut game, &mut owed, 16.0);
         assert!(assets.changed().is_empty(), "listed for one frame");
         assert_eq!(resets.0.get(), 1);
 
         // A frame empties the list even once the cache is empty.
-        files.insert_at("a.note", b"three", 3);
+        files.insert_at("notes/a.note", b"three", 3);
         game.0.server.vm_mut().set_clock(clock(20_000));
         clock_pass(&mut game, &mut owed, 16.0);
-        assert_eq!(assets.changed(), ["a.note"]);
+        assert_eq!(assets.changed(), ["notes/a.note"]);
         assets.clear();
         clock_pass(&mut game, &mut owed, 16.0);
         assert!(assets.changed().is_empty());

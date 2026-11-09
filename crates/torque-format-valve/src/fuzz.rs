@@ -4,10 +4,18 @@
 //! place), so tables read the same bytes many times. `TORQUE_FUZZ_VALVE` sets the count (20,000 by default).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::time::{Duration, Instant};
 
 use crate::{bsp, kv, mdl, model, pcf, sound, synth, vmt, vpk, vtf, vtx, vvd};
 
 const CASES: usize = 20_000;
+
+/// The longest any one case may take, in a debug build: a reader that works in time tied to its input takes milliseconds, so a
+/// case near this is a path whose work grows faster than the input.
+const SLOWEST_CASE: Duration = Duration::from_secs(10);
+
+/// The seed kind of the synthetic MP3 files, which get frame-aware mutations.
+const MP3_KIND: usize = 11;
 
 /// A seeded xorshift generator.
 pub struct Rng(u64);
@@ -90,9 +98,67 @@ pub fn mutate(seed: &[u8], r: &mut Rng) -> Vec<u8> {
     b
 }
 
+/// One mutation of an MP3 `seed` that reaches past the frame sync: the 4 header bytes (version, layer, bitrate, rate, padding,
+/// mode), the side information after one (the granule sizes, table selects and scale factor bits) or a stretch of its main data
+/// set to a random or edge value, and, as the plain mutations do, cuts and repeats.
+fn mutate_mp3(seed: &[u8], r: &mut Rng) -> Vec<u8> {
+    let starts: Vec<usize> = (0..seed.len().saturating_sub(4))
+        .filter(|&i| seed[i] == 0xff && seed[i + 1] & 0xe0 == 0xe0)
+        .collect();
+    let mut b = seed.to_vec();
+    for _ in 0..1 + r.below(6) {
+        let Some(&frame) = starts.get(r.below(starts.len().max(1))) else {
+            return mutate(seed, r);
+        };
+        let last = b.len().saturating_sub(1);
+        let at = |off: usize| (frame + off).min(last);
+        match r.below(6) {
+            // A header byte: any bit flipped, or any value.
+            0 => {
+                let i = at(1 + r.below(3));
+                b[i] = if r.below(2) == 0 {
+                    b[i] ^ (1 << r.below(8))
+                } else {
+                    r.next() as u8
+                };
+            }
+            // Side information (up to 32 bytes after the header): a byte set to an edge value.
+            1 | 2 => {
+                let i = at(4 + r.below(32));
+                b[i] = [0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff][r.below(6)];
+            }
+            // A run of side information and main data random.
+            3 => {
+                for _ in 0..1 + r.below(24) {
+                    let i = at(4 + r.below(64));
+                    b[i] = r.next() as u8;
+                }
+            }
+            // A frame repeated or dropped.
+            4 => {
+                let start = frame.min(b.len());
+                let end = (start + 417).min(b.len());
+                let chunk = b[start..end].to_vec();
+                b.splice(start..start, chunk);
+            }
+            _ => {
+                let start = frame.min(b.len());
+                b.drain(start..(start + 417).min(b.len()));
+            }
+        }
+        if b.len() < 8 {
+            return mutate(seed, r);
+        }
+    }
+    b
+}
+
 /// Every reader on `b`, as its format `kind`.
 fn read_all(kind: usize, b: &[u8]) {
     match kind {
+        MP3_KIND => {
+            let _ = sound::read_sound("a.mp3", b);
+        }
         0 => {
             if let Ok(d) = vpk::VpkDir::parse(b.to_vec()) {
                 let paths: Vec<String> = d.paths().map(str::to_string).collect();
@@ -263,6 +329,12 @@ fn seeds() -> Vec<(usize, Vec<u8>)> {
         (8, sheet_texture()),
         (9, sound::write_wav(22050, 2, &[1, -1, 2, -2, 3, -3], Some(1))),
         (9, sound::write_adpcm(&[0x12, 0x34, 0x56, 0x78])),
+        (MP3_KIND, sound::write_mp3(sound::Mpeg::V1, false, 3)),
+        (MP3_KIND, sound::write_mp3(sound::Mpeg::V1, true, 3)),
+        (MP3_KIND, sound::write_mp3(sound::Mpeg::V2, false, 3)),
+        (MP3_KIND, sound::write_mp3(sound::Mpeg::V2, true, 3)),
+        (MP3_KIND, sound::write_mp3(sound::Mpeg::V25, false, 3)),
+        (MP3_KIND, sound::write_mp3(sound::Mpeg::V25, true, 3)),
         (
             9,
             b"\"A.B\" { \"volume\" \"0.5,0.7\" \"soundlevel\" \"SNDLVL_70dB\" \"rndwave\" { \"wave\" \")a.wav\" } } \"S\" { \"playrandom\" { \"time\" \"1,2\" } \"playsoundscape\" { \"name\" \"S\" } }".to_vec(),
@@ -279,22 +351,61 @@ fn fuzz_every_reader_without_a_panic() {
     let seeds = seeds();
     for (kind, s) in &seeds {
         read_all(*kind, s);
+        // A mutation of a frame is only worth running when the unmutated file decodes: the seeds are real frames.
+        if *kind == MP3_KIND {
+            let wave = sound::read_mp3(s).expect("an MP3 seed decodes");
+            assert!(wave.samples.len() >= 1152, "{} samples", wave.samples.len());
+        }
     }
     let mut r = Rng::new(0x5eed_f501_17ce);
     let mut panics = Vec::new();
+    let mut slowest = (Duration::ZERO, 0usize, 0usize);
+    let mut mp3_decoded = 0usize;
     for case in 0..cases {
         let (kind, seed) = &seeds[case % seeds.len()];
-        let b = mutate(seed, &mut r);
         let kind = *kind;
-        if catch_unwind(AssertUnwindSafe(|| read_all(kind, &b))).is_err() {
-            panics.push((case, kind));
+        let b = if kind == MP3_KIND {
+            mutate_mp3(seed, &mut r)
+        } else {
+            mutate(seed, &mut r)
+        };
+        let started = Instant::now();
+        match catch_unwind(AssertUnwindSafe(|| {
+            if kind == MP3_KIND {
+                return sound::read_sound("a.mp3", &b).is_ok();
+            }
+            read_all(kind, &b);
+            false
+        })) {
+            Ok(decoded) => mp3_decoded += usize::from(decoded),
+            Err(_) => panics.push((case, kind)),
         }
+        slowest = slowest.max((started.elapsed(), case, kind));
     }
+    eprintln!(
+        "VALVE-FUZZ {cases} cases, {} panics, {mp3_decoded} mutated MP3s still decode; slowest case {} (kind {}) took {:?}",
+        panics.len(),
+        slowest.1,
+        slowest.2,
+        slowest.0
+    );
     assert!(
         panics.is_empty(),
         "{} panics: {:?}",
         panics.len(),
         &panics[..panics.len().min(10)]
+    );
+    assert!(
+        slowest.0 < SLOWEST_CASE,
+        "case {} (kind {}) took {:?}",
+        slowest.1,
+        slowest.2,
+        slowest.0
+    );
+    // Some mutations must keep the file decodable, or the mutations never get past the frame sync.
+    assert!(
+        cases < 2_000 || mp3_decoded > 0,
+        "no mutated MP3 decoded in {cases} cases"
     );
 }
 

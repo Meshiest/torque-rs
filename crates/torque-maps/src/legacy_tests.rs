@@ -138,3 +138,48 @@ fn the_engine_s_surface_flags_mark_their_material_and_an_unmarked_file_marks_non
         Some(&MaterialFlags::TRANSLUCENT.with(MaterialFlags::NEAREST))
     );
 }
+
+/// The synthetic interior with its two-name material list replaced by `names`.
+fn dif_with_materials(names: &[String]) -> Vec<u8> {
+    let bytes = crate::synth::dif(SPEC);
+    let mut old = vec![1u8];
+    old.extend_from_slice(&2u32.to_le_bytes());
+    for name in ["textures/wall", "NULL"] {
+        old.push(name.len() as u8);
+        old.extend_from_slice(name.as_bytes());
+    }
+    let at = bytes.windows(old.len()).position(|w| w == old).unwrap();
+    let mut new = vec![1u8];
+    new.extend_from_slice(&(names.len() as u32).to_le_bytes());
+    for name in names {
+        new.push(name.len() as u8);
+        new.extend_from_slice(name.as_bytes());
+    }
+    let mut out = bytes[..at].to_vec();
+    out.extend_from_slice(&new);
+    out.extend_from_slice(&bytes[at + old.len()..]);
+    out
+}
+
+#[test]
+fn a_model_with_many_distinct_materials_is_named_in_linear_time() {
+    // 200,000 names took minutes when each was compared with every name kept; the pass is a set lookup per name.
+    let names: Vec<String> = (0..200_000).map(|i| format!("m{i:07}")).collect();
+    let bytes = dif_with_materials(&names);
+    let started = std::time::Instant::now();
+    let named = IMPORTER.named_files(FileKind::Model, &bytes).unwrap();
+    let took = started.elapsed();
+    assert_eq!(named, names);
+    let bound = if cfg!(debug_assertions) { 2_000 } else { 100 };
+    assert!(took.as_millis() < bound, "{took:?}");
+}
+
+#[test]
+fn material_names_that_differ_only_in_case_are_named_once_and_keep_their_first_spelling() {
+    let names = ["Rock", "ROCK", "NULL", "Sand", "rock", "sand"].map(String::from);
+    let bytes = dif_with_materials(&names);
+    assert_eq!(
+        IMPORTER.named_files(FileKind::Model, &bytes).unwrap(),
+        ["Rock", "Sand"]
+    );
+}

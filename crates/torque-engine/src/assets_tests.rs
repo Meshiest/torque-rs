@@ -192,16 +192,16 @@ fn a_file_over_the_cap_is_a_clean_error_and_is_not_read() {
     assert_eq!((runs.0.get(), assets.reads(), assets.len()), (0, 0, 0));
 }
 
+/// A classifier of one layer: `origin` for the paths under `prefix`, nothing for the rest.
+fn folder(prefix: &'static str, origin: Origin) -> impl Fn(&str) -> Option<Origin> + 'static {
+    move |path| path.starts_with(prefix).then_some(origin)
+}
+
 #[test]
 fn a_loader_of_trusted_files_is_never_given_an_untrusted_one() {
     let assets = Assets::new(&engine(&Runs::default()));
-    assets.set_origins(|path| {
-        if path.to_ascii_lowercase().starts_with("mods/") {
-            Origin::Untrusted
-        } else {
-            Origin::Trusted
-        }
-    });
+    assets.trust_folder("data");
+    assets.add_origins(folder("mods/", Origin::Untrusted));
     let files = files();
     let error = assets.load::<Words>(&files, "mods/evil/list.words").err();
     assert_eq!(
@@ -222,6 +222,123 @@ fn a_loader_of_trusted_files_is_never_given_an_untrusted_one() {
     assert!(
         assets.load::<Pairs>(&files, "mods/evil/ok.pairs").is_ok(),
         "a hardened loader takes it"
+    );
+}
+
+#[test]
+fn a_path_is_trusted_only_when_one_says_so_and_none_says_otherwise() {
+    let assets = Assets::new(&engine(&Runs::default()));
+    // Layers speak for their own paths only: the game's folder, mods, downloads.
+    assets.trust_folder("data");
+    assets.add_origins(folder("mods/", Origin::Untrusted));
+    assets.add_origins(folder("downloads/", Origin::Untrusted));
+    let files = files();
+    files.insert("mods/a/list.words", b"x");
+    files.insert("downloads/b/list.words", b"y");
+    files.insert("data/list.words", b"z");
+    files.insert("other/list.words", b"w");
+    for path in [
+        "mods/a/list.words",
+        "downloads/b/list.words",
+        "other/list.words",
+    ] {
+        assert_eq!(
+            assets.load::<Words>(&files, path).err(),
+            Some(AssetError::Untrusted { path: path.into() }),
+            "{path}"
+        );
+    }
+    assert_eq!(assets.reads(), 0, "refused before it is read");
+    assert_eq!(
+        assets.load::<Words>(&files, "data/list.words").unwrap().0,
+        ["z"]
+    );
+    // A later layer that trusts everything cannot undo another layer's untrusted paths, nor a path covered by its own folder.
+    assets.add_origins(|_| Some(Origin::Trusted));
+    assert_eq!(assets.origin("mods/a/list.words"), Origin::Untrusted);
+    assert_eq!(assets.origin("downloads/b/list.words"), Origin::Untrusted);
+    assert_eq!(assets.origin("data/list.words"), Origin::Trusted);
+    // A mount over a trusted folder is untrusted.
+    assets.add_origins(folder("data/mod/", Origin::Untrusted));
+    assert_eq!(assets.origin("data/mod/x.words"), Origin::Untrusted);
+}
+
+#[test]
+fn a_trusted_folder_is_the_folder_not_every_path() {
+    let assets = Assets::new(&engine(&Runs::default()));
+    assets.trust_folder("/Shapes\\");
+    assert_eq!(assets.origin("shapes/a.obj"), Origin::Trusted);
+    assert_eq!(assets.origin("SHAPES/deep/a.obj"), Origin::Trusted);
+    assert_eq!(assets.origin("shapes"), Origin::Untrusted);
+    assert_eq!(assets.origin("shapes2/a.obj"), Origin::Untrusted);
+    assert_eq!(assets.origin("art/shapes/a.obj"), Origin::Untrusted);
+}
+
+#[test]
+fn a_cached_asset_is_checked_again_when_a_classifier_is_added() {
+    let assets = Assets::new(&engine(&Runs::default()));
+    assets.trust_folder("data");
+    let files = files();
+    assert!(assets.load::<Words>(&files, "data/list.words").is_ok());
+    assert!(assets.get::<Words>("data/list.words").is_some());
+    // A layer later says the folder holds someone else's files: the trusted-only asset leaves the cache.
+    assets.add_origins(folder("data/", Origin::Untrusted));
+    assert!(assets.get::<Words>("data/list.words").is_none());
+    assert!(assets.load::<Words>(&files, "data/list.words").is_err());
+    // A hardened loader's asset stays.
+    files.insert("data/ok.pairs", b"a = b");
+    assert!(assets.load::<Pairs>(&files, "data/ok.pairs").is_ok());
+    assets.add_origins(folder("data/", Origin::Untrusted));
+    assert!(assets.get::<Pairs>("data/ok.pairs").is_some());
+}
+
+#[test]
+fn with_no_classifier_every_path_is_untrusted_and_a_trusted_only_loader_reads_nothing() {
+    let assets = Assets::new(&engine(&Runs::default()));
+    let files = files();
+    assert_eq!(assets.origin("data/list.words"), Origin::Untrusted);
+    assert_eq!(
+        assets.load::<Words>(&files, "data/list.words").err(),
+        Some(AssetError::Untrusted {
+            path: "data/list.words".into()
+        })
+    );
+    assert_eq!(assets.reads(), 0);
+    // A hardened loader still takes it.
+    files.insert("data/ok.pairs", b"a = b");
+    assert!(assets.load::<Pairs>(&files, "data/ok.pairs").is_ok());
+    // A classifier that only knows other paths does not trust these.
+    assets.add_origins(folder("mods/", Origin::Untrusted));
+    assert!(assets.load::<Words>(&files, "data/list.words").is_err());
+    assets.trust_folder("data");
+    assert!(assets.load::<Words>(&files, "data/list.words").is_ok());
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn an_unclassified_mount_trips_the_debug_assertion() {
+    let assets = Assets::new(&engine(&Runs::default()));
+    // Classified: fine.
+    assets.add_origins(folder("downloads/", Origin::Untrusted));
+    assets.debug_assert_untrusted(
+        "downloads",
+        ["downloads/a/x.words", "Downloads\\b\\y.words"],
+    );
+    // A folder of someone else's files that no classifier marks (and a trusted folder over it) is caught.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assets.debug_assert_untrusted("a pack", ["packs/p/x.words"]);
+    }));
+    assert!(
+        result.is_ok(),
+        "nobody speaks for it, so it is untrusted already"
+    );
+    assets.trust_folder("packs");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assets.debug_assert_untrusted("a pack", ["packs/p/x.words"]);
+    }));
+    assert!(
+        result.is_err(),
+        "a trusted folder covers a mount nobody classified"
     );
 }
 
@@ -396,6 +513,7 @@ fn bad_extensions_and_a_second_loader_of_one_type_fail_the_build() {
 fn hot_reload_follows_the_change_times_and_keeps_the_old_asset_on_a_failure() {
     let runs = Runs::default();
     let assets = Assets::new(&engine(&runs));
+    assets.trust_folder("data");
     let files = MemFiles::new();
     files.insert_at("data/door.pairs", b"width = 2", 100);
     files.insert_at("data/list.words", b"a b", 100);
@@ -588,6 +706,7 @@ fn a_datablocks_asset_fields_preload_their_files_and_fail_cleanly() {
     let files = files();
     files.insert("data/empty.words", b"");
     vm.set_file_host(files);
+    engine.assets(&mut vm).trust_folder("data");
     for &stage in ServerStage::ALL {
         engine.replay(stage, &mut vm).expect("replays");
     }
@@ -644,7 +763,7 @@ fn a_datablocks_asset_fields_preload_their_files_and_fail_cleanly() {
         assert!(logged(&vm, line), "{line}");
     }
 
-    assets.set_origins(|_| Origin::Untrusted);
+    assets.add_origins(|_| Some(Origin::Untrusted));
     assets.clear();
     vm.eval(b"datablock SignData(Sent) { list = \"data/list.words\"; };")
         .expect("runs");

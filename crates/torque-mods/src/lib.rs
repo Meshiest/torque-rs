@@ -24,6 +24,12 @@
 //! hash is refused with the reason, and a server may send the content of a mod to a client that lacks it, over a bulk channel
 //! into a per-user cache, checked against the hash before it is mounted. Only content is sent: no script, in any spelling,
 //! is ever written, mounted or run from a server. See the guide's Mods chapter for the flow and [`content`] for the hash.
+//!
+//! # Maintaining
+//!
+//! **Mounts speak only for their own files.** `ModsPlugin` adds an asset classifier that says untrusted for the paths a mod or a
+//! server mount serves and `None` for every other path; a path nobody says is trusted stays untrusted. Server files are checked with
+//! `Assets::debug_assert_untrusted` when they are mounted (`mount_server_files`). A new kind of mount does both.
 
 #![warn(missing_docs)]
 

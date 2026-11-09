@@ -121,6 +121,9 @@ different.
   `Filename` field can name an asset type (`#[field(asset = T)]`) that each datablock's preload loads, failing the preload
   with the reason. Hot reload in debug builds or with `$Pref::Dev`: changed files load again once per drawn frame,
   `Assets::changed` lists them and the renderer's caches reset. TGE's own shape and texture loading is unchanged.
+  A path is trusted only when a classifier says so and none says otherwise: layers add classifiers that answer `Some(origin)` for
+  their own paths and `None` for the rest (`Assets::add_origins`), a host declares its own folders (`Assets::trust_folder`), a
+  path nobody speaks for is untrusted, and an asset cached before a classifier was added is checked again.
 
 #### Web and networking
 
@@ -285,6 +288,9 @@ different.
   for scripts. Entity definitions can be read at run time from a player's installed FGD files over coded defaults. A
   map's brush models read as convex hulls (`torque-format-valve`).
 - Every reader bounds its counts, offsets, sizes and paths, and font and secret files are checked before they are read.
+- `torque-images`: a JPEG's decode work is tied to its file size (samples per byte, block visits per block and byte), as a
+  PNG's is. The Source file readers open a file once and cap its read, and the bundle tool's leak scan looks inside zips, gzip
+  and PNG text and in more spellings of a path.
 
 #### Tooling
 

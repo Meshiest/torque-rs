@@ -97,6 +97,8 @@ pub struct Mods {
     limits: ModLimits,
     enable_list: Rc<dyn ModEnableList>,
     share: Rc<dyn ModShare>,
+    /// The asset cache of the same script engine: what a mount of someone else's files must be untrusted to.
+    assets: Rc<Assets>,
     net: Option<NetOptions>,
     /// A client's downloads, when the engine shares mods over the network.
     downloads: RefCell<Option<Rc<Downloads>>>,
@@ -453,6 +455,7 @@ impl Mods {
             limits,
             enable_list: rules.enable_list,
             share: rules.share,
+            assets: engine.assets(vm),
             net: engine
                 .resource::<crate::plugin::ModsOptions>()
                 .and_then(|o| o.net.clone()),
@@ -470,13 +473,8 @@ impl Mods {
         vm.wrap_file_host(move |inner| Box::new(ModFiles::new(inner, layer)));
         let origins = Rc::clone(&table);
         let assets: Rc<Assets> = engine.assets(vm);
-        assets.set_origins(move |path| {
-            if origins.provides(path) {
-                Origin::Untrusted
-            } else {
-                Origin::Trusted
-            }
-        });
+        // The mounts speak for their own files only: a path no mount serves is none of this layer's business.
+        assets.add_origins(move |path| origins.provides(path).then_some(Origin::Untrusted));
         let previous = vm.exec_policy();
         vm.set_exec_policy(Rc::new(ContentOnly { table, previous }));
         vm.set_extension(mods);
@@ -935,7 +933,15 @@ impl Mods {
             .collect();
         // What is mounted already counts: every mod's bytes and every other server mount's bytes and files (a mount under
         // this name is being replaced, so it does not), so many mounts together stay within the limits.
-        mount_content(&self.table, &self.limits, name, kept)
+        let paths: Vec<String> = if cfg!(debug_assertions) {
+            kept.iter().map(|(path, _)| path.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let count = mount_content(&self.table, &self.limits, name, kept)?;
+        self.assets
+            .debug_assert_untrusted("files a server sent", &paths);
+        Ok(count)
     }
 
     /// Unmounts what [`mount_server_files`](Self::mount_server_files) mounted under `name`.

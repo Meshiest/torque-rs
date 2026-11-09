@@ -17,6 +17,22 @@
 //!
 //! A game's files are mounted as one tree by [`files::SourceFiles`] (its VPK archives and loose folders, as its `gameinfo.txt`
 //! lists them, and a map's pak lump), a [`torque_ts_vm::host::FileHost`] the registry loads from.
+//!
+//! # Maintaining
+//!
+//! **Files on disk.** A loose file, a gameinfo, a `_dir.vpk` and a `_NNN.vpk` data file are opened once through
+//! `read::open_plain` / `read::read_plain_file`, which are `torque_resource::plain` (the no-follow open flag, a check of the
+//! handle, the length from the open file, at most the cap and the length the listing gave). `.vpk` files are not listed as loose files.
+//!
+//! **Invariants and their tests.**
+//! - A listed file that grew is refused, and a read stops at its cap whatever the file says
+//!   (`tests/loose_files.rs`: `a_listed_file_that_grew_is_refused_not_read`, `a_read_stops_at_the_cap_whatever_the_file_says`).
+//! - Links are not followed (`links_are_not_followed`, Unix only: creating a link on Windows needs a privilege) and a folder is
+//!   no file (`a_folder_is_not_a_file_and_vpk_pieces_are_not_loose_files`).
+//! - The MP3 decode runs under `catch_unwind` and the fuzz seeds are real frames of each MPEG version and mode, which must decode
+//!   before mutation, with header- and side-information-aware mutations (`sound::tests::the_synthetic_mp3s_decode_in_every_mpeg_version_and_mode`,
+//!   `fuzz::fuzz_every_reader_without_a_panic`). The fuzz reports its slowest case and fails past a bound.
+//! - `normalize_path` keeps device names: use it for table keys, never for a path on the disk.
 
 pub mod brushes;
 pub mod bsp;

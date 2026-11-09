@@ -246,6 +246,15 @@ fn decode_adpcm(fmt: &[u8], data: &[u8], ch: usize, align: usize) -> Result<Vec<
 /// padding trimmed), mono or stereo.
 pub fn read_mp3(b: &[u8]) -> Result<Wave> {
     cap("the sound file's size", b.len() as u64, MAX_FILE_BYTES)?;
+    // The decoder forbids `unsafe`, so the worst a bad frame does is panic; natively that is an error here, as for the Ogg reader
+    // (on the web a panic aborts the module, so the fuzz must find none).
+    match std::panic::catch_unwind(|| decode_mp3(b)) {
+        Ok(result) => result,
+        Err(_) => invalid("an MP3 file the decoder panicked on"),
+    }
+}
+
+fn decode_mp3(b: &[u8]) -> Result<Wave> {
     let mut reader = nanomp3::SliceReader::<i16>::new(b);
     let mut out: Vec<i16> = Vec::new();
     loop {
@@ -550,6 +559,33 @@ pub fn read_soundscapes(text: &[u8]) -> Result<Vec<Soundscape>> {
         .collect())
 }
 
+/// The MPEG version of a synthetic MP3 ([`write_mp3`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mpeg {
+    /// MPEG-1 Layer III: 44.1 kHz, 128 kbit/s, 417-byte frames.
+    V1,
+    /// MPEG-2 Layer III: 22.05 kHz, 64 kbit/s, 208-byte frames.
+    V2,
+    /// MPEG-2.5 Layer III: 11.025 kHz, 64 kbit/s, 417-byte frames.
+    V25,
+}
+
+/// An MP3 file of `frames` silent Layer III frames (a header, then zeros: no side information, no main data), mono or stereo,
+/// for tests and fuzz seeds.
+pub fn write_mp3(version: Mpeg, mono: bool, frames: usize) -> Vec<u8> {
+    let (second, third, size) = match version {
+        Mpeg::V1 => (0xfb, 0x90, 417),
+        Mpeg::V2 => (0xf3, 0x80, 208),
+        Mpeg::V25 => (0xe3, 0x80, 417),
+    };
+    let mut out = Vec::with_capacity(frames * size);
+    for _ in 0..frames {
+        out.extend_from_slice(&[0xff, second, third, if mono { 0xc0 } else { 0x00 }]);
+        out.resize(out.len() + size - 4, 0);
+    }
+    out
+}
+
 /// A wave file of `samples` (16-bit, interleaved) for tests and fuzz seeds, with a cue point at `cue` when given.
 pub fn write_wav(rate: u32, channels: u16, samples: &[i16], cue: Option<u32>) -> Vec<u8> {
     let mut b = Vec::new();
@@ -631,6 +667,18 @@ mod tests {
         assert_eq!(w.loop_start, Some(1));
         let w = read_wav(&write_wav(11025, 1, &[5], Some(9))).unwrap();
         assert_eq!(w.loop_start, None, "a cue past the end is no loop");
+    }
+
+    #[test]
+    fn the_synthetic_mp3s_decode_in_every_mpeg_version_and_mode() {
+        for (version, rate) in [(Mpeg::V1, 44_100), (Mpeg::V2, 22_050), (Mpeg::V25, 11_025)] {
+            for mono in [false, true] {
+                let w = read_mp3(&write_mp3(version, mono, 4)).unwrap();
+                assert_eq!((w.rate, w.channels), (rate, if mono { 1 } else { 2 }));
+                assert!(w.samples.len() >= 1152 && w.samples.iter().all(|&s| s == 0));
+            }
+        }
+        assert!(read_mp3(&write_mp3(Mpeg::V1, false, 0)).is_err());
     }
 
     #[test]

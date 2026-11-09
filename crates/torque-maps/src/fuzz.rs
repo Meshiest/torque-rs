@@ -182,6 +182,11 @@ fn exercise(kind: Kind, bytes: &[u8]) -> Option<bool> {
                 ok &= i.check().is_ok();
                 let _ = i.triangle_count();
             }
+            // What the importer makes of it (the files it names, its surfaces), so that work tied to the contents, not the size,
+            // shows in the longest case.
+            use torque_mapcore::Importer as _;
+            let _ = crate::legacy::IMPORTER.named_files(torque_mapcore::FileKind::Model, bytes);
+            let _ = crate::legacy::IMPORTER.surfaces(bytes);
             Some(ok)
         }
         Kind::Ter => {

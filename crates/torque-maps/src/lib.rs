@@ -26,6 +26,18 @@
 //! for in all ([`parse_requests`]). Every item of a vector consumes bytes of the file, so a parse never asks for more than a small
 //! multiple of the file's size ([`MAX_ALLOC_PER_BYTE`] in each of at most [`MAX_READINGS`] readings). The work is linear in the file's size: nothing recurses and nothing
 //! loops over a range a file names except the check's ranges, which are tested, not walked.
+//!
+//! # Maintaining
+//!
+//! **Work is tied to the file, not only to its size.** Allocations are counted per byte of input; a pass over a list that a file
+//! can make long (a `.dif`'s materials, surfaces, hulls) must be linear in it.
+//!
+//! **Invariants and their tests.**
+//! - Material names of a model are de-duplicated with a set, not by comparing each with every name kept
+//!   (`legacy_tests::a_model_with_many_distinct_materials_is_named_in_linear_time`, which has a timing bound;
+//!   `material_names_that_differ_only_in_case_are_named_once_and_keep_their_first_spelling` pins the folding).
+//! - The fuzz (`tests/fuzz.rs`) runs the importer's `named_files` and `surfaces` over each mutant, reports its longest case and
+//!   fails past a bound, with the allocation caps checked as before.
 
 pub mod dif;
 pub mod dml;

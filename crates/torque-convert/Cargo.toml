@@ -17,6 +17,10 @@ torque-import = { path = "../torque-import" }
 torque-interior-builder = { path = "../torque-interior-builder" }
 torque-shapes = { path = "../torque-shapes" }
 
+[dev-dependencies]
+# Holds the file-name rules here to the script host's.
+torque-ts-vm = { path = "../torque-ts-vm" }
+
 [[bin]]
 name = "torque-convert"
 path = "src/main.rs"

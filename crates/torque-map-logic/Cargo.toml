@@ -22,6 +22,8 @@ torque-mapcore = { path = "../torque-mapcore" }
 torque-collide = { path = "../torque-collide" }
 # The triggers' broad phase: the container's bins.
 torque-scene = { path = "../torque-scene" }
+# The capped, link-refusing read of an FGD file.
+torque-resource = { path = "../torque-resource" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
 [dev-dependencies]

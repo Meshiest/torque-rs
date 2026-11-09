@@ -6,7 +6,9 @@
 //! `.vpk` names the archive `<name>_dir.vpk`; paths with wildcards (`custom/*`) are not mounted.
 //!
 //! Every lookup is a table lookup: a loose folder is listed once when it is mounted (at most [`MAX_FOLDER_FILES`] files), so a
-//! path never reaches the disk unless the listing found it there.
+//! path never reaches the disk unless the listing found it there. A loose file is opened once and read by the length of the open
+//! file, at most the length the listing gave and [`MAX_LOOSE_FILE_BYTES`] (a file that grew since is refused); a link is not
+//! followed (the same for gameinfo, `_dir.vpk` and the `_NNN.vpk` data files); `.vpk` files are never listed as loose files.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -16,7 +18,7 @@ use torque_resource::zips::ZipMount;
 use torque_ts_vm::host::{FileHost, FileRead, FileStat, Refusal};
 
 use crate::kv;
-use crate::read::{Error, Result, cap, normalize_path};
+use crate::read::{Error, Result, normalize_path, read_plain_file};
 use crate::vpk::VpkArchive;
 
 /// The most files one loose folder lists.
@@ -25,6 +27,8 @@ pub const MAX_FOLDER_FILES: usize = 1 << 20;
 const MAX_FOLDER_DEPTH: usize = 24;
 /// The largest gameinfo file read.
 const MAX_GAMEINFO_BYTES: u64 = 1 << 20;
+/// The largest loose file one read returns (the engine's biggest maps are a few hundred MiB).
+pub const MAX_LOOSE_FILE_BYTES: u64 = 512 << 20;
 
 /// One search path.
 enum Mount {
@@ -69,12 +73,7 @@ impl SourceFiles {
     /// Mounts the search paths of the game folder `dir` after the ones mounted already (a path mounted already is skipped).
     pub fn add_gameinfo(&mut self, dir: &Path) -> Result<()> {
         let info = dir.join("gameinfo.txt");
-        let len = std::fs::metadata(&info)
-            .map_err(|e| Error::Missing(format!("{}: {e}", info.display())))?
-            .len();
-        cap("gameinfo.txt's size", len, MAX_GAMEINFO_BYTES)?;
-        let text =
-            std::fs::read(&info).map_err(|e| Error::Missing(format!("{}: {e}", info.display())))?;
+        let text = read_plain_file(&info, MAX_GAMEINFO_BYTES, None)?;
         let kv = kv::parse(&text)?;
         let paths = kv
             .first()
@@ -161,6 +160,10 @@ impl SourceFiles {
                         stack.push((e.path(), rel, depth + 1));
                     }
                 } else if ft.is_file() {
+                    // A `.vpk` is an archive: its pieces are read through the archive, never as files of this folder.
+                    if name.ends_with(".vpk") {
+                        continue;
+                    }
                     if index.len() >= MAX_FOLDER_FILES {
                         return Err(Error::TooLarge {
                             what: "a folder's files",
@@ -218,9 +221,8 @@ impl SourceFiles {
         for (_, m) in &self.mounts {
             let found = match m {
                 Mount::Vpk(a) => a.read(&p),
-                Mount::Folder(index) => index.get(&p).map(|(real, _)| {
-                    std::fs::read(real)
-                        .map_err(|e| Error::Missing(format!("{}: {e}", real.display())))
+                Mount::Folder(index) => index.get(&p).map(|(real, listed)| {
+                    read_plain_file(real, MAX_LOOSE_FILE_BYTES, Some(*listed))
                 }),
                 Mount::Zip(z) => z.read(p.as_bytes()).map(Ok),
                 Mount::Memory(files) => files.get(&p).cloned().map(Ok),

@@ -23,7 +23,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: torque-convert <in.glb|in.gltf|in.obj|in.bbmodel> <out.dif> [--hulls auto|authored|slabs] [--slab T] \
          [--lightmap-texel T] [--up y|z] [--scale N] [--mission OUT.mis] [--name NAME] [--file PATH] [--position \"x y z\"] \
-         [--rotation \"ax ay az deg\"] [--instance-scale \"x y z\"]"
+         [--rotation \"ax ay az deg\"] [--instance-scale \"x y z\"] [--force]"
     );
     ExitCode::FAILURE
 }
@@ -50,6 +50,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut name = String::new();
     let mut file: Option<String> = None;
     let mut at = Placement::default();
+    let mut force = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned();
@@ -83,6 +84,10 @@ pub fn run(args: &[String]) -> ExitCode {
                 .is_some(),
             "--mission" => value().map(|v| mission = Some(v)).is_some(),
             "--name" => value().map(|v| name = v).is_some(),
+            "--force" => {
+                force = true;
+                true
+            }
             "--file" => value().map(|v| file = Some(v)).is_some(),
             "--position" => value()
                 .and_then(|v| floats::<3>(&v))
@@ -196,7 +201,7 @@ pub fn run(args: &[String]) -> ExitCode {
         eprintln!("{}: {e}", mis.display());
         return ExitCode::FAILURE;
     }
-    let images = match model::write_images(&m, out) {
+    let images = match model::write_images(&m, out, force) {
         Ok(n) => n,
         Err(e) => {
             eprintln!("{output}: {e}");

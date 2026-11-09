@@ -17,5 +17,9 @@ categories = ["game-development", "filesystem"]
 torque-ts-vm = { path = "../torque-ts-vm" }
 zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+# `O_NOFOLLOW`, to open a file without following a link.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true

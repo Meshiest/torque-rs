@@ -19,6 +19,43 @@
 //! `--archive` also writes the bundle as one file ([`archive`]); `--server` packages the game's dedicated server ([`server`]).
 //! `--twice` is for a game maker to verify that a game builds reproducibly: it bundles two times from clean build folders and
 //! fails unless the two archives have the same SHA-256, naming the files that differ.
+//!
+//! # Maintaining
+//!
+//! **The leak scan** (`scan`, one `Scanner` over every needle: an Aho-Corasick automaton) looks for each folder of the build
+//! computer in every file of the bundle, with backslashes and case folded, in every spelling a path takes (doubled slashes,
+//! percent-encoding with `%2f` and `%5c` separators, MSYS and WSL paths, 8.3 short names that keep `-` and `_`, at most 256 for a folder; UTF-8, UTF-16 LE and BE), and inside what a game
+//! folder holds compressed: every zip of a file (found by its end record, which counts only when it points at a central
+//! directory, possibly with a zip64 record or signature between them, since a program's code holds the signature bytes), zips in zips, gzip, raw zlib and compressed PNG text chunks, up
+//! to `Options::max_inflated_bytes` for each file. A hit is `Hit::Leak` or `Hit::Unscannable`, and both fail the bundle: a zip that
+//! does not open, more members than the scan reads, a container nested too deep, a PNG cut short or with a text chunk that does not
+//! parse, and xz, zstd, bzip2, 7z and WOFF files (not decoded). Every plausible end record opens a zip of its own and none is
+//! skipped (a stored zip inside a zip is found twice and its repeated hits are dropped); a skip on any ground could hide a zip. The user and host
+//! name (variables, the home folder, the host name files) are only warnings, and only as a path component (`runner` is a word).
+//! A new place a path can hide gets a spelling or a container and a test.
+//!
+//! **Invariants and their tests.**
+//! - Spellings, short names and names (`scan::tests::every_spelling_of_a_folder_is_found`,
+//!   `percent_encoded_and_short_name_spellings_are_found`, `short_names_follow_the_8_3_rule_and_keep_dashes_and_underscores`,
+//!   `user_and_host_names_are_soft_and_only_between_separators`,
+//!   `the_names_of_this_computer_come_from_the_variables_the_home_folder_and_the_host_files`, `short_names_in_edge_cases`; end to end
+//!   `tests/bundle.rs::a_binary_that_holds_the_build_servers_user_name_bundles_with_a_warning`).
+//! - Containers, with the member named and a leaking member name not printed
+//!   (`what_is_compressed_inside_a_file_is_scanned_and_the_member_named`, `every_zip_of_a_file_is_scanned_not_only_the_last`,
+//!   `a_zip_behind_other_bytes_is_found_by_its_end_record`, `compressed_formats_the_scan_does_not_decode_are_unscannable`,
+//!   `the_inflate_limit_is_the_callers`, `a_crafted_directory_offset_cannot_hide_another_zip`,
+//!   `a_zip_hidden_in_an_entry_the_scan_does_not_read_is_still_found`; end to end
+//!   `tests/bundle.rs::a_folder_inside_a_zip_and_its_other_spellings_in_plain_files_are_refused_by_name`,
+//!   `the_inflate_limit_of_the_leak_scan_is_a_flag`).
+//! - What cannot be read is reported (`nesting_is_bounded_and_reported`, `something_that_looks_like_a_zip_and_does_not_open_is_reported`,
+//!   `a_zip_with_more_members_than_the_scan_reads_is_reported`, `a_truncated_or_malformed_png_is_reported`).
+//! - Only a folder this tool made (it holds the marker) is emptied or removed, `--twice`'s build folders included
+//!   (`tests/main.rs::a_twice_run_leaves_a_build_folder_it_did_not_make_alone`).
+//! - `--verify` follows no link, in a folder on the way or as the file, and reads through `torque_resource::plain`
+//!   (`tests/main.rs::a_file_below_a_linked_folder_is_not_read`, `verify_does_not_follow_a_link_out_of_the_bundle`, Unix only).
+//! - Every detector runs on every file (`every_detector_runs_on_a_file_that_is_more_than_one_container`); a gap before an end record
+//!   (`a_gap_between_the_central_directory_and_the_end_record_is_still_a_zip`), the short-name cap
+//!   (`short_name_spellings_are_capped_with_the_lowest_numbers_first`) and encoded separators (`encoded_separators_are_found`).
 
 /// The variable the game's build is given: the SHA-256 (lower-case hex) of each extension library the bundle ships in
 /// `plugins/`, separated by spaces. A game reads it at compile time (`option_env!`) to approve those libraries without
@@ -45,7 +82,7 @@ use cargo::{Build, Metadata, Toolchain};
 use features::Toggles;
 use licenses::Text;
 use manifest::{Entry, Header};
-use scan::Needle;
+use scan::{Needle, Scanner};
 use spec::Spec;
 
 /// What to package and where.
@@ -63,6 +100,9 @@ pub struct Options {
     pub server: bool,
     /// Also write the bundle as one archive beside its folder: a zip on Windows, a gzipped tar elsewhere ([`archive`]).
     pub archive: bool,
+    /// The most bytes the leak scan inflates for one file of the bundle, over everything compressed inside it
+    /// ([`scan::MAX_INFLATED_BYTES`] by default on the command line); a file that needs more fails the bundle as unscannable.
+    pub max_inflated_bytes: usize,
 }
 
 /// What the server variant's checks counted. A bundle is refused when a count that must be 0 is not, so a report holds zeros.
@@ -102,6 +142,8 @@ pub struct Report {
     /// What the server variant's check found, when it was packaged.
     pub server: Option<ServerReport>,
     pub archive: Option<ArchiveReport>,
+    /// What the leak scan noticed that does not fail a bundle: the user or host name of the build computer as a path component.
+    pub warnings: Vec<String>,
 }
 
 /// The bundle folder's name for `name` on `target`: `name-windows-x86_64`.
@@ -201,7 +243,13 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         .iter()
         .filter_map(|(label, path, _)| Needle::new(label, path))
         .chain(Needle::new("the crate folder", &crate_dir))
+        .chain(scan::name_needles(
+            |name| std::env::var(name).ok().filter(|v| !v.is_empty()),
+            |path| std::fs::read_to_string(path).ok(),
+            home.as_deref(),
+        ))
         .collect();
+    let scanner = Scanner::new(needles, options.max_inflated_bytes)?;
 
     // The game's binaries.
     let mut game_build = Build {
@@ -342,17 +390,21 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
     };
     let manifest_text = manifest::write(&header, &entries);
     written.push((manifest::FILE.to_string(), manifest_text.into_bytes()));
-    let leaks: Vec<String> = written
-        .iter()
-        .flat_map(|(path, bytes)| {
-            scan::scan(bytes, &needles)
-                .into_iter()
-                .map(move |label| format!("{path}: holds {label}"))
-        })
-        .collect();
+    let mut leaks = Vec::new();
+    let mut warnings = Vec::new();
+    for (path, bytes) in &written {
+        for hit in scanner.scan_file(bytes) {
+            let line = hit.describe(path);
+            if hit.is_hard() {
+                leaks.push(line);
+            } else {
+                warnings.push(line);
+            }
+        }
+    }
     if !leaks.is_empty() {
         return Err(format!(
-            "the bundle holds folders of this computer (nothing was written):\n  {}",
+            "the bundle holds folders of this computer, or something the scan could not look into (nothing was written):\n  {}",
             leaks.join("\n  ")
         ));
     }
@@ -437,6 +489,7 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
             system_libraries: 0,
         }),
         archive,
+        warnings,
     })
 }
 
@@ -538,6 +591,17 @@ pub fn own_folder(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     std::fs::write(dir.join(MARKER), "made by torque-bundle\n")
         .map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+/// Removes `dir` when it carries the [`MARKER`] (a folder [`own_folder`] made), and leaves any other folder as it is.
+pub fn remove_owned_folder(dir: &Path) -> Result<(), String> {
+    if !dir.join(MARKER).is_file() {
+        return Err(format!(
+            "{} is not a folder this tool made (no {MARKER}); it is left as it is",
+            dir.display()
+        ));
+    }
+    std::fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 fn file_name(path: &Path) -> Result<String, String> {

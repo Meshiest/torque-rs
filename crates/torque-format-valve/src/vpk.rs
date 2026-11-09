@@ -15,7 +15,9 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use crate::read::{Cursor, Error, Result, cap, invalid, normalize_path};
+use crate::read::{
+    Cursor, Error, Result, cap, invalid, normalize_path, open_plain, read_plain_file,
+};
 
 /// The directory file's signature.
 pub const SIGNATURE: u32 = 0x55aa_1234;
@@ -254,12 +256,7 @@ impl VpkArchive {
             .to_string();
         let stem = path.with_file_name(&stem_name);
         let dir_path = path.with_file_name(format!("{stem_name}_dir.vpk"));
-        let len = std::fs::metadata(&dir_path)
-            .map_err(|e| Error::Missing(format!("{}: {e}", dir_path.display())))?
-            .len();
-        cap("the VPK directory's size", len, MAX_DIR_BYTES)?;
-        let bytes = std::fs::read(&dir_path)
-            .map_err(|e| Error::Missing(format!("{}: {e}", dir_path.display())))?;
+        let bytes = read_plain_file(&dir_path, MAX_DIR_BYTES, None)?;
         Ok(VpkArchive {
             dir: VpkDir::parse(bytes)?,
             stem,
@@ -283,8 +280,7 @@ impl VpkArchive {
                     .unwrap_or_default()
             );
             let p = stem.with_file_name(name);
-            let mut f = std::fs::File::open(&p)
-                .map_err(|e| Error::Missing(format!("{}: {e}", p.display())))?;
+            let mut f = open_plain(&p)?;
             f.seek(SeekFrom::Start(offset))
                 .map_err(|e| Error::Missing(format!("{}: {e}", p.display())))?;
             let mut out = Vec::new();

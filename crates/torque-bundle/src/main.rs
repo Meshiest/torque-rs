@@ -1,4 +1,4 @@
-//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice]`:
+//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>]`:
 //! packages the game for this computer (the library's docs say what goes in). `--server` packages its dedicated-server variant;
 //! `--archive` also writes the bundle as a zip (Windows) or a gzipped tar, the same bytes from the same inputs; `--twice` builds
 //! it two times from clean build folders (`<out>/one`, `<out>/two`) and fails unless the two archives have the same SHA-256.
@@ -10,9 +10,11 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use torque_bundle::{ArchiveReport, Options, Report, bundle, manifest};
+use torque_bundle::{
+    ArchiveReport, Options, Report, bundle, manifest, own_folder, remove_owned_folder, scan,
+};
 
-const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice]\n       torque-bundle --verify <bundle folder>";
+const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>]\n       torque-bundle --verify <bundle folder>";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -25,6 +27,7 @@ fn run() -> Result<(), String> {
     let mut server = false;
     let mut archive = false;
     let mut twice = false;
+    let mut max_inflated = scan::MAX_INFLATED_BYTES;
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
             args.next()
@@ -47,6 +50,13 @@ fn run() -> Result<(), String> {
             "--server" => server = true,
             "--archive" => archive = true,
             "--twice" => twice = true,
+            "--max-inflated" => {
+                let mib: usize = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--max-inflated needs a number of MiB")?;
+                max_inflated = mib.saturating_mul(1 << 20);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -65,6 +75,7 @@ fn run() -> Result<(), String> {
         check,
         server,
         archive: archive || twice,
+        max_inflated_bytes: max_inflated,
     };
     if twice {
         return build_twice(&options);
@@ -84,9 +95,13 @@ fn build_twice(options: &Options) -> Result<(), String> {
             target_dir: options.target_dir.join(format!("twice-{run}")),
             ..options.clone()
         };
-        let report = bundle(&build)?;
+        // A build folder of the user's own is never emptied or removed: only one this run made (it carries the marker).
+        own_folder(&build.target_dir)?;
+        let report = bundle(&build);
+        let removed = remove_owned_folder(&build.target_dir);
+        let report = report?;
+        removed?;
         print_report(&report);
-        let _ = std::fs::remove_dir_all(&build.target_dir);
         let archive = report.archive.clone().ok_or("no archive was written")?;
         runs.push((report, archive));
     }
@@ -137,6 +152,9 @@ fn print_report(report: &Report) {
         report.features.join(", ")
     );
     println!("  left out of the game folder: {}", report.skipped.len());
+    for warning in &report.warnings {
+        println!("  warning: {warning}");
+    }
     for path in &report.skipped {
         println!("    {path}");
     }

@@ -26,6 +26,12 @@
 //! key, bases of a class, string lengths and the parser's steps are capped (the `MAX_*` constants). At a cap the reader stops
 //! reading that file, keeps what it has and records one warning. Bytes are decoded as UTF-8 where they are, else byte by byte
 //! as Latin-1. Nothing here panics on any input (the crate's fuzz test).
+//!
+//! # Maintaining
+//!
+//! **Files on disk.** `DirSource` and `read_plain` are `torque_resource::plain`: a file is opened once without following a link, the
+//! length comes from the open file, and the read stops one byte past `MAX_FILE_BYTES` (`tests/fgd_files.rs::a_file_over_the_cap_at_read_time_is_refused_and_one_at_the_cap_is_read`,
+//! `folders_and_missing_names_are_not_files`, and `a_link_is_refused` on Unix only).
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -77,13 +83,14 @@ impl FgdSource for DirSource {
         if !plain_name(name) {
             return None;
         }
-        let path = self.dir.join(name);
-        let meta = std::fs::symlink_metadata(&path).ok()?;
-        if !meta.file_type().is_file() || meta.len() > MAX_FILE_BYTES as u64 {
-            return None;
-        }
-        std::fs::read(&path).ok()
+        read_plain(&self.dir.join(name), MAX_FILE_BYTES as u64)
     }
+}
+
+/// The plain file at `path`, at most `max` bytes ([`torque_resource::plain::read_plain`]): no link, no folder, the length from
+/// the open file, so a file swapped or grown after a look is refused rather than read whole.
+pub fn read_plain(path: &Path, max: u64) -> Option<Vec<u8>> {
+    torque_resource::plain::read_plain(path, max, None).ok()
 }
 
 /// Files held in memory by name (tests, and a host that read them itself).

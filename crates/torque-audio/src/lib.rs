@@ -12,6 +12,11 @@
 //! Sound files are hostile input (downloaded content): every read is capped ([`MAX_SOUND_FILE_BYTES`], [`MAX_PCM_BYTES`],
 //! [`ogg::MAX_OGG_PACKETS`]) and gives a value or an error, never a panic (`fuzz`: 50,000 cases), and never an allocation sized by a
 //! header field the file does not back ([`vorbis_check`]).
+//!
+//! # Maintaining
+//!
+//! **Fuzz timing.** `fuzz::hostile_sound_files_never_panic` reports its slowest case and fails past a bound; a decoder's work must be
+//! tied to its input.
 
 pub mod al;
 pub mod buffer;

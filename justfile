@@ -15,6 +15,11 @@ build:
 test:
     cargo test --workspace --all-features
 
+# The TrueType sweep under Miri (needs `rustup +nightly component add miri`): fontdue rasterizes with unchecked writes, which
+# only Miri or a sanitizer can see go wrong. `TORQUE_FUZZ_TTF` sets the case count.
+miri-ttf:
+    cargo +nightly miri test -p torque-fonts --lib --ignore-rust-version a_short_hostile_sweep
+
 check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings

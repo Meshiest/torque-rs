@@ -2,6 +2,10 @@
 //! checked against the bytes left before anything is allocated for it.
 
 use std::fmt;
+use std::fs::File;
+use std::path::Path;
+
+use torque_resource::plain::{self, PlainError};
 
 /// Why a file did not read.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +51,32 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// An [`Error::Invalid`] from a message.
 pub(crate) fn invalid<T>(why: impl Into<String>) -> Result<T> {
     Err(Error::Invalid(why.into()))
+}
+
+/// A [`PlainError`] for the file at `path` as this crate's [`Error`].
+fn plain_error(path: &Path, e: PlainError) -> Error {
+    match e {
+        PlainError::Io(e) => Error::Missing(format!("{}: {e}", path.display())),
+        PlainError::NotPlain => Error::Invalid(format!("{} is not a plain file", path.display())),
+        PlainError::TooLarge { len, cap } => Error::TooLarge {
+            what: "a file's size",
+            asked: len,
+            cap,
+        },
+    }
+}
+
+/// Opens the plain file at `path` without following a link ([`torque_resource::plain::open_plain`]).
+pub(crate) fn open_plain(path: &Path) -> Result<File> {
+    plain::open_plain(path)
+        .map(|(file, _)| file)
+        .map_err(|e| plain_error(path, e))
+}
+
+/// The whole plain file at `path`, at most `max` bytes, and at most `listed` bytes when a listing gave its length
+/// ([`torque_resource::plain::read_plain`]): the length is taken from the open file, no link is followed.
+pub fn read_plain_file(path: &Path, max: u64, listed: Option<u64>) -> Result<Vec<u8>> {
+    plain::read_plain(path, max, listed).map_err(|e| plain_error(path, e))
 }
 
 /// Refuses `asked` over `cap`.
@@ -207,7 +237,8 @@ pub(crate) fn f16(bits: u16) -> f32 {
 }
 
 /// A path as the archives and the files' tables store it: `\` as `/`, lower case, no leading `/` or `./`, `.` parts dropped.
-/// None for a path with `..`, a NUL, a drive or an empty part.
+/// None for a path with `..`, a NUL, a drive or an empty part. Device names (`con`, `nul`) are kept: the result keys in-memory
+/// tables only and is never joined onto a folder of the disk.
 pub fn normalize_path(p: &str) -> Option<String> {
     let lower = p.replace('\\', "/").to_ascii_lowercase();
     let mut parts = Vec::new();

@@ -26,6 +26,12 @@
 //! object of a mesh's levels and the key count of a sampled sequence (`duration * rate + 0.5`, plus one) follow Torque3D's
 //! shape loader, `TSShapeLoader::generateObjects` and `generateSequences` (`Engine/source/ts/loader/tsShapeLoader.cpp`:
 //! Copyright (c) 2012 GarageGames, LLC; MIT). The code here is this crate's own.
+//!
+//! # Maintaining
+//!
+//! **Side files are read as hostile.** `gltf::side_files` resolves a path under the model's folder (canonicalized, still under it),
+//! then opens it through `torque_resource::plain::open_plain` (no link followed, the handle checked) and reads at most the length
+//! the reader asked for. A new resolver of files beside a model does the same (`tests/side_files.rs`).
 
 #[cfg(feature = "gltf")]
 pub mod bbmodel;

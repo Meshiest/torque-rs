@@ -41,6 +41,8 @@
 //! let mut vm = Vm::new();
 //! vm.set_file_host(files);
 //! let assets = engine.assets(&mut vm);
+//! // OBJ is a trusted-files-only loader: the host says its `art` folder is the game's own.
+//! assets.trust_folder("art");
 //! let shape = assets.load::<ImportedShape>(vm.file_host(), "art/tri.obj")?;
 //! assert!(!shape.dts.is_empty());
 //! # Ok::<(), Box<dyn std::error::Error>>(())

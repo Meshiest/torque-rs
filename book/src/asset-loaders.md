@@ -76,9 +76,15 @@ a loader that takes untrusted files must not panic on any bytes.
 
 A failed load is not cached, so the next load tries again.
 
-**Until the host calls `set_origins`, every path counts as trusted**, so a `Spec::trusted` loader is given any file.
-Where a file comes from is the host's to say: `assets.set_origins(|path| ...)` returns `Origin::Trusted` or
-`Origin::Untrusted` for a normalized path. A host that mounts mods or the files a server sent must set it.
+**A path is trusted only when the host has said so.** A classifier (`assets.add_origins(|path| ...)`) returns
+`Some(Origin::Trusted)`, `Some(Origin::Untrusted)` or `None` ("not mine") for a normalized path. A path is trusted only when at
+least one classifier says trusted and none says untrusted, so a `Spec::trusted` loader reads nothing until a host has declared
+its own folders (`assets.trust_folder("shapes")`), and never a file a layer says it did not make. Each layer that mounts files
+it did not make (mods, a server's downloads, a content pack) adds a classifier that says untrusted for its own paths and `None`
+for the rest, and calls `assets.debug_assert_untrusted(..)` on what it mounted (a debug build panics when a mount nobody
+classified sits under a trusted folder). A later classifier never replaces an earlier one, and an asset cached before a
+classifier was added is dropped from the cache when its path is untrusted now. `ModsPlugin` adds the classifier for its mods and
+server files.
 
 The cache keeps what it loaded until `assets.forget(path)` or `assets.clear()`: it is bounded only by the files there are,
 each at most its loader's `max_bytes` (plus what the loader makes of it). A host whose files keep growing (a server's
@@ -169,6 +175,10 @@ let engine = EngineBuilder::new()
     .build()?;
 let shape = engine.assets(&mut vm).load::<ImportedShape>(vm.file_host(), "shapes/rock.obj")?;
 ```
+
+`ModsPlugin` (in `DefaultPlugins`) says its mods' files are untrusted and nothing about the rest, so the load above needs the
+game to say that `shapes` is its own first: `engine.assets(&mut vm).trust_folder("shapes")`. Without that, or for a mod's
+file, an OBJ, Blockbench or `.map` load is refused.
 
 A `game.toml` does the same by id: `[plugins] disable = ["torque.format-dif"]`, `enable = ["torque.format-obj"]`.
 

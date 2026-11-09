@@ -1,11 +1,12 @@
 //! `manifest.toml`: what a bundle is and every file in it with its size and SHA-256, sorted by path. It holds no times and
 //! no local paths, so the same inputs give the same bytes; [`verify`] checks a bundle folder against it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use torque_resource::plain::{PlainError, is_link, read_plain};
 
 /// The manifest's path in a bundle.
 pub const FILE: &str = "manifest.toml";
@@ -126,20 +127,41 @@ pub fn verify(dir: &Path) -> Result<Vec<String>, String> {
         }
         match listed.get(path) {
             None => problems.push(format!("{path}: not in the manifest")),
-            Some(entry) => {
-                let bytes = std::fs::read(dir.join(path)).map_err(|e| format!("{path}: {e}"))?;
-                if Entry::of(path, &bytes) != *entry {
+            // A link is never followed, in a folder on the way or as the file: a bundle from elsewhere could point one out of its
+            // folder, or swap one in after the listing.
+            Some(entry) => match read_below(dir, path, entry.size) {
+                Ok(bytes) if Entry::of(path, &bytes) == *entry => {}
+                Ok(_) | Err(PlainError::TooLarge { .. }) => {
                     problems.push(format!("{path}: changed"));
                 }
-            }
+                Err(PlainError::NotPlain) => problems.push(format!("{path}: is not a plain file")),
+                Err(PlainError::Io(e)) => return Err(format!("{path}: {e}")),
+            },
         }
     }
+    let on_disk: HashSet<&String> = on_disk.iter().collect();
     for path in listed.keys() {
         if !on_disk.contains(path) {
             problems.push(format!("{path}: missing"));
         }
     }
     Ok(problems)
+}
+
+/// The file at `path` (`/` between its parts) below `dir`, at most `max` bytes: every part is looked at without following it, and
+/// the file is opened without following a link ([`torque_resource::plain`]).
+pub fn read_below(dir: &Path, path: &str, max: u64) -> Result<Vec<u8>, PlainError> {
+    let mut at = dir.to_path_buf();
+    for part in path.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            return Err(PlainError::NotPlain);
+        }
+        at.push(part);
+        if is_link(&std::fs::symlink_metadata(&at)?) {
+            return Err(PlainError::NotPlain);
+        }
+    }
+    read_plain(&at, max, None)
 }
 
 /// Every file under `dir`, `/` between folders.

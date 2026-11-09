@@ -25,6 +25,14 @@
 //! `core/strings/unicode.cpp` (Copyright (c) 2012 GarageGames, LLC). The layout follows TGE's `dglDrawTextN` (`dgl/dgl.cc`,
 //! TGE 1.4, Copyright (C) GarageGames.com, Inc.; the Torque engine is MIT-licensed as Torque3D, Copyright (c) 2012
 //! GarageGames, LLC). The code here is this crate's own.
+//!
+//! # Maintaining
+//!
+//! **TrueType.** `fontdue` rasterizes with unchecked writes, so a sweep that only sees panics cannot see a bad write. The sweep
+//! (`ttf_fuzz::sweep`, `ttf_tests::a_short_hostile_sweep_has_no_panics`) reports its slowest case. `just miri-ttf` runs it under
+//! Miri where the nightly `miri` component is installed (`rustup +nightly component add miri`; `TORQUE_FUZZ_TTF` sets the case
+//! count, and under Miri the real-face seeds are left out). It is a local run, not a CI job (CI minutes are tight): run it after
+//! a change to the TrueType path or a `fontdue` update.
 
 use std::collections::HashMap;
 use std::fmt;

@@ -83,7 +83,15 @@ fn engine_with<M>(
     let mut vm = Vm::new();
     vm.set_file_host(files);
     let assets = engine.assets(&mut vm);
+    trust_fixture_folders(&assets);
     (engine, vm, assets)
+}
+
+/// The folders of [`fixtures`] are the game's own.
+fn trust_fixture_folders(assets: &Assets) {
+    for folder in ["shapes", "interiors", "terrains", "maps"] {
+        assets.trust_folder(folder);
+    }
 }
 
 /// Every format turned on.
@@ -142,6 +150,7 @@ fn a_format_turns_off_and_on_by_its_id_as_a_game_toml_does() {
     let mut vm = Vm::new();
     vm.set_file_host(fixtures());
     let assets = engine.assets(&mut vm);
+    trust_fixture_folders(&assets);
     let error = assets
         .load::<dif::Dif>(vm.file_host(), "interiors/box.dif")
         .unwrap_err();
@@ -354,7 +363,7 @@ fn a_file_over_its_loaders_cap_is_not_read() {
 #[test]
 fn untrusted_files_reach_only_the_hardened_loaders() {
     let (_engine, vm, assets) = engine_with(every_format(), fixtures());
-    assets.set_origins(|_| Origin::Untrusted);
+    assets.add_origins(|_| Some(Origin::Untrusted));
     let files = vm.file_host();
     let refused = |path: &str, error: AssetError| {
         assert_eq!(
@@ -465,7 +474,7 @@ fn the_untrusted_loaders_never_panic_on_mutated_files() {
     let seeds = [seeds, vec![("glb", crate_glb())]].concat();
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
     let (_engine, _vm, assets) = engine_with(ContentFormatPlugins, MemFiles::new());
-    assets.set_origins(|_| Origin::Untrusted);
+    assets.add_origins(|_| Some(Origin::Untrusted));
     let mut loaded = 0;
     for case in 0..cases {
         let (ext, seed) = &seeds[case % seeds.len()];

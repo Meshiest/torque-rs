@@ -46,6 +46,7 @@ fn options(dir: &Path, crate_dir: PathBuf, out: &str) -> Options {
         check: true,
         server: false,
         archive: false,
+        max_inflated_bytes: torque_bundle::scan::MAX_INFLATED_BYTES,
     }
 }
 
@@ -339,4 +340,142 @@ fn the_minimal_server_links_no_drawing_crates_and_the_mods_demo_does() {
         drawing.iter().any(|c| c.starts_with("wgpu ")),
         "{drawing:?}"
     );
+}
+
+/// The spellings of `folder` a leak can take: slashes, percent-encoded, and (on a drive path) the MSYS form.
+fn spellings(folder: &Path) -> Vec<String> {
+    let slashed = folder.to_string_lossy().replace('\\', "/");
+    let mut out = vec![format!("file:///{}", slashed.replace(' ', "%20"))];
+    if let Some((drive, rest)) = slashed.split_once(":/") {
+        out.push(format!("/{}/{rest}", drive.to_ascii_lowercase()));
+    }
+    out
+}
+
+#[test]
+fn a_folder_inside_a_zip_and_its_other_spellings_in_plain_files_are_refused_by_name() {
+    let dir = tmp("zipleak");
+    let crate_dir = fixture(&dir, |s| s);
+    let slashed = crate_dir.to_string_lossy().replace('\\', "/");
+    // A mod zip whose deflated entry holds the workspace path.
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file(
+        "notes/build.txt",
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated),
+    )
+    .unwrap();
+    std::io::Write::write_all(
+        &mut zip,
+        format!("built in {slashed}/src\n").repeat(4).as_bytes(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(crate_dir.join("game/mods")).unwrap();
+    std::fs::write(
+        crate_dir.join("game/mods/a.zip"),
+        zip.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+    // The folder as a file URL and as an MSYS path, each in a text file of its own.
+    for (i, text) in spellings(&crate_dir).iter().enumerate() {
+        std::fs::write(crate_dir.join(format!("game/spelling{i}.txt")), text).unwrap();
+    }
+
+    let error = bundle(&options(&dir, crate_dir.clone(), "out")).unwrap_err();
+    assert!(
+        error.contains("game/mods/a.zip!notes/build.txt: holds"),
+        "{error}"
+    );
+    for i in 0..spellings(&crate_dir).len() {
+        assert!(
+            error.contains(&format!("game/spelling{i}.txt: holds")),
+            "{error}"
+        );
+    }
+    assert!(
+        !dir.join("out").exists() || std::fs::read_dir(dir.join("out")).unwrap().next().is_none()
+    );
+}
+
+#[test]
+fn a_binary_that_holds_the_build_servers_user_name_bundles_with_a_warning() {
+    let dir = tmp("runner");
+    let crate_dir = fixture(&dir, |s| {
+        s.replace(
+            "exclude =",
+            "features = [\"runner-text\"]
+exclude =",
+        )
+    });
+    // CI names its user `runner` and its home `/home/runner`: the word is in the binary, as a path component too.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_torque-bundle"))
+        .arg(&crate_dir)
+        .args(["--no-check", "--out"])
+        .arg(dir.join("out"))
+        .arg("--target-dir")
+        .arg(dir.join("target"))
+        .env("USERNAME", "runner")
+        .env("USER", "runner")
+        .env("LOGNAME", "runner")
+        .env("COMPUTERNAME", "runner")
+        .env("HOSTNAME", "runner")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{stdout}
+{stderr}"
+    );
+    assert!(
+        stdout.contains("warning: ") && stdout.contains("holds the user name"),
+        "{stdout}"
+    );
+    assert!(dir.join("out").read_dir().unwrap().next().is_some());
+}
+
+#[test]
+fn the_inflate_limit_of_the_leak_scan_is_a_flag() {
+    let dir = tmp("inflate");
+    let crate_dir = fixture(&dir, |s| s);
+    // A mod zip with one small member: it must be inflated to be looked at.
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file(
+        "notes.txt",
+        zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated),
+    )
+    .unwrap();
+    std::io::Write::write_all(&mut zip, b"nothing to see here, nothing to see here").unwrap();
+    std::fs::create_dir_all(crate_dir.join("game/mods")).unwrap();
+    std::fs::write(
+        crate_dir.join("game/mods/a.zip"),
+        zip.finish().unwrap().into_inner(),
+    )
+    .unwrap();
+    let run = |extra: &[&str], out: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_torque-bundle"))
+            .arg(&crate_dir)
+            .args(["--no-check", "--out"])
+            .arg(dir.join(out))
+            .arg("--target-dir")
+            .arg(dir.join("target"))
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    // No room to inflate anything: the member is unscannable, so the bundle fails and says why.
+    let refused = run(&["--max-inflated", "0"], "refused");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success());
+    assert!(
+        stderr.contains("game/mods/a.zip!notes.txt") && stderr.contains("limit"),
+        "{stderr}"
+    );
+    // With room it bundles; a limit that is no number is refused.
+    assert!(run(&["--max-inflated", "1"], "roomy").status.success());
+    let bad = run(&["--max-inflated", "lots"], "bad");
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("--max-inflated needs a number"));
 }

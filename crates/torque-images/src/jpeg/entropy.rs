@@ -17,7 +17,7 @@ const LOOKAHEAD: i32 = 8;
 pub(super) struct State {
     get_buffer: u32,
     bits_left: i32,
-    insufficient: bool,
+    pub(super) insufficient: bool,
     restarts_to_go: u32,
     pub(super) next_restart_num: u8,
     eobrun: u32,

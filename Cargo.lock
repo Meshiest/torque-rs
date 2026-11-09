@@ -4120,12 +4120,14 @@ dependencies = [
 name = "torque-bundle"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "flate2",
  "memchr",
  "serde",
  "serde_json",
  "sha2",
  "toml",
+ "torque-resource",
  "zip",
 ]
 
@@ -4215,6 +4217,7 @@ dependencies = [
  "torque-import",
  "torque-interior-builder",
  "torque-shapes",
+ "torque-ts-vm",
 ]
 
 [[package]]
@@ -4493,6 +4496,7 @@ dependencies = [
  "gltf",
  "serde_json",
  "torque-modelcore",
+ "torque-resource",
  "torque-shape-builder",
  "torque-shapes",
 ]
@@ -4541,6 +4545,7 @@ dependencies = [
  "torque-engine",
  "torque-format-valve",
  "torque-mapcore",
+ "torque-resource",
  "torque-scene",
  "torque-ts-vm",
 ]
@@ -4769,6 +4774,7 @@ dependencies = [
 name = "torque-resource"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "torque-ts-vm",
  "zip",
 ]

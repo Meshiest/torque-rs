@@ -35,8 +35,14 @@
 //! `jpeg_std_error`'s, exits the process). Warnings (`WARNMS`) are counted in [`Info::warnings`] and decoding goes on, as there.
 //! In a single-scan file libjpeg reads the markers after the image to EOI in `jpeg_finish_decompress`; an error there is an error here.
 //!
-//! **Caps** ([`Limits`], defaults [`MAX_JPEG_DIMENSION`], [`MAX_JPEG_PIXELS`], [`MAX_JPEG_SCANS`]): libjpeg's own limit is 65,500 a side
-//! and nothing else; this decoder refuses larger images and more scans than these before allocating (deviations: libjpeg would decode them).
+//! **Caps** ([`Limits`], defaults [`MAX_JPEG_DIMENSION`], [`MAX_JPEG_PIXELS`], [`MAX_JPEG_SCANS`], [`MAX_JPEG_SAMPLES_PER_BYTE`],
+//! [`MAX_JPEG_BLOCK_VISITS_PER_BYTE`]): libjpeg's own limit is 65,500 a side and nothing else; this decoder refuses larger images and
+//! more scans than these before allocating (deviations: libjpeg would decode them). The work is tied to the file's size, as PNG's is:
+//! a frame may hold at most [`JPEG_SAMPLES_FLOOR`] samples (pixels times components) plus [`Limits::samples_per_byte`] per file byte,
+//! so a header with no data behind it allocates nothing; and the scans together may visit at most
+//! [`Limits::block_visits_per_byte`] per file byte (plus the floor), so scans that carry no data cannot be repeated for free; the
+//! coefficient arrays grow a block row at a time as the scans reach them, so memory follows the data decoded. A scan whose entropy
+//! decoder has no input left stops at once.
 //!
 //! **Known deviation:** an SOS that names one component twice while the scan count makes the file single-scan leaves libjpeg's main
 //! buffer rows of the unnamed components uninitialised; here they come out as the IDCT of zero coefficients (mid grey).
@@ -61,6 +67,15 @@ pub const MAX_JPEG_DIMENSION: u32 = 16_384;
 pub const MAX_JPEG_PIXELS: u64 = 1 << 24;
 /// The most scans this decoder accepts (libjpeg has no limit; a typical progressive file has about ten).
 pub const MAX_JPEG_SCANS: u32 = 256;
+/// The samples (pixels times components) a frame may hold for each byte of the file, beyond [`JPEG_SAMPLES_FLOOR`]. A real file at
+/// its best compression stays far under 1,000 pixels a byte.
+pub const MAX_JPEG_SAMPLES_PER_BYTE: u64 = 4096;
+/// The samples any frame may hold whatever the file's size, so that small honest files always pass.
+pub const JPEG_SAMPLES_FLOOR: u64 = 1 << 16;
+/// The block visits the scans may make for each byte of the file, beyond [`JPEG_SAMPLES_FLOOR`]. A real file makes a handful of
+/// visits for each block (about five for a progressive one) and spends at least an eighth of a byte on each block, so a flat
+/// progressive image stays under a quarter of this.
+pub const MAX_JPEG_BLOCK_VISITS_PER_BYTE: u64 = 256;
 
 /// libjpeg's fixed limits (`jpeglib.h`, `jmorecfg.h`).
 const MAX_COMPONENTS: usize = 10;
@@ -76,6 +91,17 @@ pub struct Limits {
     pub max_dimension: u32,
     pub max_pixels: u64,
     pub max_scans: u32,
+    /// Samples a frame may hold for each byte of the file (on top of [`JPEG_SAMPLES_FLOOR`]).
+    pub samples_per_byte: u64,
+    /// Block visits the scans may make for each byte of the file (on top of [`JPEG_SAMPLES_FLOOR`]).
+    pub block_visits_per_byte: u64,
+}
+
+impl Limits {
+    /// The samples a file of `len` bytes may hold.
+    fn sample_allowance(&self, len: usize) -> u64 {
+        JPEG_SAMPLES_FLOOR.saturating_add(self.samples_per_byte.saturating_mul(len as u64))
+    }
 }
 
 impl Default for Limits {
@@ -84,6 +110,8 @@ impl Default for Limits {
             max_dimension: MAX_JPEG_DIMENSION,
             max_pixels: MAX_JPEG_PIXELS,
             max_scans: MAX_JPEG_SCANS,
+            samples_per_byte: MAX_JPEG_SAMPLES_PER_BYTE,
+            block_visits_per_byte: MAX_JPEG_BLOCK_VISITS_PER_BYTE,
         }
     }
 }
@@ -135,11 +163,13 @@ pub struct Info {
     pub smoothed: bool,
     /// libjpeg warnings (corrupt data, a fake EOI, a bogus progression, ...).
     pub warnings: u32,
+    /// Coefficient blocks allocated: those the scans reached (a frame with no data behind it allocates none past its first row).
+    pub coefficient_blocks: usize,
 }
 
 /// The size the frame header gives (see [`crate::size_of`]): the markers after `SOI` are walked as libjpeg's `next_marker` walks
 /// them (fill bytes and stray bytes skipped, the stand-alone markers taken alone, every other segment skipped by its length) to the
-/// first `SOF`; only the frame types the decoder takes count, within the default [`Limits`].
+/// first `SOF`; only the frame types the decoder takes count, within the default [`Limits`] (the samples-per-byte tie included).
 pub fn header_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.get(..2)? != [0xff, 0xd8] {
         return None;
@@ -161,15 +191,17 @@ pub fn header_size(bytes: &[u8]) -> Option<(u32, u32)> {
             // EOI before a frame header, or SOS: no size.
             0xd9 | 0xda => return None,
             0xc0 | 0xc1 | 0xc2 | 0xc9 | 0xca => {
-                let s = bytes.get(at..at + 7)?;
+                let s = bytes.get(at..at + 8)?;
                 let h = u32::from(u16::from_be_bytes([s[3], s[4]]));
                 let w = u32::from(u16::from_be_bytes([s[5], s[6]]));
                 let limits = Limits::default();
+                let samples = u64::from(w) * u64::from(h) * u64::from(s[7]);
                 let ok = w > 0
                     && h > 0
                     && w <= limits.max_dimension
                     && h <= limits.max_dimension
-                    && u64::from(w) * u64::from(h) <= limits.max_pixels;
+                    && u64::from(w) * u64::from(h) <= limits.max_pixels
+                    && samples <= limits.sample_allowance(bytes.len());
                 return ok.then_some((w, h));
             }
             // The frame types the decoder refuses.
@@ -267,6 +299,9 @@ struct Decoder<'a> {
     /// Per component, the successive-approximation bit each coefficient is known to (`coef_bits`, -1 = not yet); progressive only.
     coef_bits: Vec<[i32; 64]>,
     entropy: entropy::State,
+    /// The block visits the scans have made so far, and the most they may make (see [`Limits`]; set when the frame is accepted).
+    visits: u64,
+    visit_cap: u64,
 }
 
 impl<'a> Decoder<'a> {
@@ -297,6 +332,8 @@ impl<'a> Decoder<'a> {
             has_multiple_scans: false,
             coef_bits: Vec::new(),
             entropy: entropy::State::default(),
+            visits: 0,
+            visit_cap: 0,
         }
     }
 
@@ -348,6 +385,7 @@ impl<'a> Decoder<'a> {
         }
         let bits = output::render(self, jpeg_cs)?;
         self.info.progressive = self.progressive;
+        self.info.coefficient_blocks = self.comps.iter().map(|c| c.coefs.len()).sum();
         self.info.sampling = self.comps.iter().map(|c| (c.h, c.v)).collect();
         self.info.color_space = match jpeg_cs {
             ColorSpace::Gray => "gray",
@@ -458,6 +496,19 @@ impl<'a> Decoder<'a> {
                 cap: limits.max_pixels,
             });
         }
+        let samples = pixels.saturating_mul(self.comps.len() as u64);
+        let allowed = limits.sample_allowance(self.src.len());
+        if samples > allowed {
+            return Err(JpegError::Cap {
+                what: "jpeg samples for the file's size",
+                value: samples,
+                cap: allowed,
+            });
+        }
+        self.visit_cap = limits
+            .block_visits_per_byte
+            .saturating_mul(self.src.len() as u64)
+            .saturating_add(JPEG_SAMPLES_FLOOR);
         // The upsampler's method per component (jinit_upsampler); a fractional ratio is an error.
         for ci in 0..self.comps.len() {
             output::method(self, ci)?;
@@ -465,16 +516,21 @@ impl<'a> Decoder<'a> {
         if self.arith {
             return Err(JpegError::Fatal("JERR_ARITH_NOTIMPL"));
         }
-        // The whole-image coefficient arrays, pre-zeroed (jinit_d_coef_controller). A single-scan file decodes each block once into
-        // a zeroed MCU buffer, which is the same. Only one or three components get here (the colour-space check), and each array is
-        // at most (width / 8 + 4) x (height / 8 + 4) blocks, so the pixel cap bounds the memory.
-        for c in &mut self.comps {
-            c.coefs = vec![[0i16; 64]; c.blocks_w * c.blocks_h];
-        }
+        // The whole-image coefficient arrays, pre-zeroed in libjpeg (jinit_d_coef_controller), grow here a block row at a time as
+        // the scans reach them (`decode_scan`); a block never reached reads as zeros, which is what the zeroed array holds. So the
+        // memory is what the scans decoded, and a frame with no data behind it allocates none. Only one or three components get
+        // here (the colour-space check), and each array is at most (width / 8 + 4) x (height / 8 + 4) blocks.
         if self.progressive {
             self.coef_bits = vec![[-1i32; 64]; self.comps.len()];
         }
         Ok(())
+    }
+
+    /// Whether the latch can no longer end in this scan: the input is all consumed, or the marker the entropy data ran into is not
+    /// a restart marker (`jpeg_resync_to_restart` keeps such a marker unread and the latch set).
+    fn restart_is_out_of_reach(&self) -> bool {
+        self.src.exhausted()
+            || (self.unread_marker != 0 && !(0xd0..=0xd7).contains(&self.unread_marker))
     }
 
     /// `start_input_pass` and the scan's MCUs (`consume_data` / `decompress_onepass` input side).
@@ -516,8 +572,43 @@ impl<'a> Decoder<'a> {
         let mut layout: Vec<(usize, usize, usize)> = Vec::with_capacity(D_MAX_BLOCKS_IN_MCU);
         let mut mcu = [[0i16; 64]; D_MAX_BLOCKS_IN_MCU];
         let mut membership = [0usize; D_MAX_BLOCKS_IN_MCU];
-        for mr in 0..mcu_rows {
+        let blocks_per_mcu = if interleaved {
+            self.scan
+                .comps
+                .iter()
+                .map(|&ci| usize::from(self.comps[ci].h) * usize::from(self.comps[ci].v))
+                .sum()
+        } else {
+            1
+        };
+        let dc_refine = self.progressive && self.scan.ss == 0 && self.scan.ah != 0;
+        'rows: for mr in 0..mcu_rows {
+            let visits = (mcus_per_row as u64).saturating_mul(blocks_per_mcu as u64);
+            self.visits = self.visits.saturating_add(visits);
+            if self.visits > self.visit_cap {
+                return Err(JpegError::Cap {
+                    what: "jpeg block visits for the file's size",
+                    value: self.visits,
+                    cap: self.visit_cap,
+                });
+            }
+            for &ci in &self.scan.comps {
+                let c = &mut self.comps[ci];
+                let band = if interleaved { usize::from(c.v) } else { 1 };
+                let rows = ((mr + 1) * band).min(c.blocks_h);
+                if c.coefs.len() < rows * c.blocks_w {
+                    c.coefs.resize(rows * c.blocks_w, [0; 64]);
+                }
+            }
             for mc in 0..mcus_per_row {
+                // Zero bits change nothing once the entropy decoder has run out of data (a DC refinement scan does not look at the
+                // latch, but zero bits change nothing there either). Only a restart marker later in the input can end the latch.
+                if self.entropy.insufficient
+                    && (self.restart_is_out_of_reach()
+                        || (self.restart_interval == 0 && !dc_refine))
+                {
+                    break 'rows;
+                }
                 layout.clear();
                 if interleaved {
                     for (k, &ci) in self.scan.comps.iter().enumerate() {

@@ -9,8 +9,13 @@
 //! [`AssetError`]. A loader that panics is caught and is an error too, natively only: on the web a panic aborts the
 //! module (`catch_unwind` catches nothing there), so a loader that takes untrusted files must not panic on any bytes.
 //!
-//! **Trust.** Until the host says where files come from ([`Assets::set_origins`]), every path counts as trusted, and a
-//! [`Spec::trusted`] loader is given any file. A host that mounts mods or files a server sent sets it.
+//! **Trust.** A path is trusted only when some classifier says it is trusted and none says it is untrusted. Each layer that
+//! knows where some files come from adds a classifier with [`Assets::add_origins`]: it answers [`Some`] for the paths it
+//! knows (a mod mount says [`Origin::Untrusted`] for its files, a host says [`Origin::Trusted`] for its own folders with
+//! [`Assets::trust_folder`]) and [`None`] for the rest. Classifiers add up (a later one never replaces an earlier one), and a
+//! path nobody speaks for is untrusted, so a [`Spec::trusted`] loader (one whose reader is not hardened against hostile bytes)
+//! reads only what a host has declared its own, and never a file a layer says it did not make. An asset cached before a
+//! classifier was added is checked again when it is.
 //!
 //! **Memory.** The cache keeps every asset it loaded until [`Assets::forget`] or [`Assets::clear`]: it is bounded only by
 //! the files there are, each at most its loader's [`Spec::max_bytes`] (plus what the loader makes of it). A host that
@@ -25,6 +30,19 @@
 //! at the cached files' change times once per drawn frame (at most every [`HOT_RELOAD_INTERVAL_MS`]); a file that
 //! changed is loaded again, [`Assets::changed`] lists it until the next frame, and the renderer's caches are reset. A file
 //! whose new contents do not load keeps its old asset. A release build does not look unless the pref says so.
+//!
+//! # Maintaining
+//!
+//! **Trust is declared, never assumed.** [`Assets::origin`] is trusted only when a classifier ([`Assets::add_origins`],
+//! [`Assets::trust_folder`]) says [`Origin::Trusted`] and none says [`Origin::Untrusted`]; a [`Spec::trusted`] loader is never
+//! given an untrusted path. A new layer that mounts files it did not make adds a classifier that answers untrusted for them and
+//! `None` for everything else, where it mounts (and calls [`Assets::debug_assert_untrusted`] on what it mounted); it must not
+//! speak for paths that are not its own, and there is no call that replaces another's. Tests:
+//! `assets::tests::a_path_is_trusted_only_when_one_says_so_and_none_says_otherwise`,
+//! `a_trusted_folder_is_the_folder_not_every_path`, `a_cached_asset_is_checked_again_when_a_classifier_is_added`,
+//! `with_no_classifier_every_path_is_untrusted_and_a_trusted_only_loader_reads_nothing`,
+//! `a_loader_of_trusted_files_is_never_given_an_untrusted_one`, `an_unclassified_mount_trips_the_debug_assertion`. A test that
+//! loads through a trusted-only loader declares its folders first (`trust_folder`).
 //!
 //! ```
 //! use torque_engine::assets::{Assets, Spec};
@@ -113,13 +131,13 @@ impl Spec {
     }
 }
 
-/// Where a file came from, as the host tells it ([`Assets::set_origins`]).
+/// Where a file came from, as the host tells it ([`Assets::add_origins`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Origin {
-    /// The game's own files (the default for every path).
-    #[default]
+    /// The game's own files: a classifier said so ([`Assets::trust_folder`]) and none said otherwise.
     Trusted,
-    /// Files someone else made: what a server sent, a mod.
+    /// Files someone else made (what a server sent, a mod), or files nobody has spoken for: the default.
+    #[default]
     Untrusted,
 }
 
@@ -439,8 +457,8 @@ struct Entry {
 /// A cached asset whose file changed: its key, its path, its loader and the file's change time now.
 type Stale = ((String, TypeId), String, usize, Option<u64>);
 
-/// What an origin function is.
-type Origins = Rc<dyn Fn(&str) -> Origin>;
+/// What an origin classifier is: the path's origin when the classifier knows it, else `None`.
+type Origins = Rc<dyn Fn(&str) -> Option<Origin>>;
 
 /// The asset cache of one script engine (a server's, a client's): what its loaders made, by normalized path and type.
 /// [`Engine::assets`] attaches one to a script engine; [`Assets::of`] finds it again. Interior mutability throughout,
@@ -448,7 +466,7 @@ type Origins = Rc<dyn Fn(&str) -> Origin>;
 pub struct Assets {
     loaders: Rc<[LoaderEntry]>,
     cache: RefCell<HashMap<(String, TypeId), Entry>>,
-    origins: RefCell<Option<Origins>>,
+    origins: RefCell<Vec<Origins>>,
     hot_reload: Cell<Option<bool>>,
     last_poll: Cell<Option<u32>>,
     changed: RefCell<Vec<String>>,
@@ -479,17 +497,74 @@ impl Assets {
         self.loaders.iter().map(LoaderEntry::info)
     }
 
-    /// Tells the cache where each path's file comes from (a mod's folder, the files a server sent): a loader whose
-    /// [`Spec`] does not take untrusted files is never given one. Every path is [`Origin::Trusted`] until this is set. The
-    /// function is given the normalized path.
-    pub fn set_origins(&self, origins: impl Fn(&str) -> Origin + 'static) {
-        *self.origins.borrow_mut() = Some(Rc::new(origins));
+    /// Adds a classifier of where files come from (a mod's folder, the files a server sent). It answers `Some(origin)` for a
+    /// path it knows and `None` for any other, and is given the normalized path. Classifiers add up: a path is
+    /// [`Origin::Trusted`] only when at least one says so and none says [`Origin::Untrusted`], so a layer cannot make
+    /// another layer's files trusted, and a path nobody speaks for is untrusted. The classifier must not call back into this
+    /// cache. A loader whose [`Spec`] does not take untrusted files is never given an untrusted path, and a cached asset of
+    /// such a loader whose path is untrusted now is dropped from the cache.
+    pub fn add_origins(&self, origins: impl Fn(&str) -> Option<Origin> + 'static) {
+        self.origins.borrow_mut().push(Rc::new(origins));
+        let loaders = &self.loaders;
+        self.cache.borrow_mut().retain(|_, entry| {
+            loaders[entry.loader].spec.untrusted_ok || self.origin(&entry.path) == Origin::Trusted
+        });
     }
 
-    /// Where the file at the normalized `path` comes from.
+    /// Declares the files under `folder` (a normalized path, any case) the game's own: a classifier that says trusted for them
+    /// and nothing for any other path. A mount of someone else's files over that folder still makes its paths untrusted
+    /// (a mod's `shapes/rock.obj` is not trusted because `shapes` is).
+    pub fn trust_folder(&self, folder: &str) {
+        let folder = folder.replace('\\', "/").to_ascii_lowercase();
+        let folder = folder.trim_matches('/').to_string();
+        self.add_origins(move |path| {
+            let lower = path.to_ascii_lowercase();
+            let inside = lower
+                .strip_prefix(folder.as_str())
+                .is_some_and(|rest| rest.starts_with('/'));
+            inside.then_some(Origin::Trusted)
+        });
+    }
+
+    /// Where the file at the normalized `path` comes from: trusted when a classifier says so and none says untrusted.
     pub fn origin(&self, path: &str) -> Origin {
-        let origins = self.origins.borrow().clone();
-        origins.map_or(Origin::Trusted, |f| f(path))
+        // The classifiers are cloned out so that none runs under the borrow.
+        let classifiers = self.origins.borrow().clone();
+        let mut trusted = false;
+        for answer in classifiers.iter().filter_map(|f| f(path)) {
+            match answer {
+                Origin::Untrusted => return Origin::Untrusted,
+                Origin::Trusted => trusted = true,
+            }
+        }
+        if trusted {
+            Origin::Trusted
+        } else {
+            Origin::Untrusted
+        }
+    }
+
+    /// In a debug build, panics when a path of files someone else made (a download folder, a mount) is not untrusted to this
+    /// cache: the layer that mounted them has not added its classifier, or another layer's trusted folder covers them and its
+    /// own classifier is missing. Every layer that mounts such files calls it with what it mounted. In a release build it
+    /// does nothing.
+    pub fn debug_assert_untrusted<S: AsRef<str>>(
+        &self,
+        what: &str,
+        paths: impl IntoIterator<Item = S>,
+    ) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        for path in paths {
+            let Ok(path) = normalize(path.as_ref()) else {
+                continue;
+            };
+            assert!(
+                self.origin(&path) == Origin::Untrusted,
+                "{what}: {path} holds files someone else made but no classifier marks it untrusted (Assets::add_origins)"
+            );
+        }
     }
 
     /// The `T` asset of the file at `path`: the cached one, else the file read through `files` and given to the loader of

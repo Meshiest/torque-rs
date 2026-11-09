@@ -16,3 +16,5 @@ dev = []
 gizmos = []
 # Puts this crate's folder into the binary, which the leak scan must refuse.
 leak = []
+# Puts the word "runner" and a build server's home path into the binary: names of the build computer are warnings, not leaks.
+runner-text = []
