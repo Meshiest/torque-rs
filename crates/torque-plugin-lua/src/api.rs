@@ -7,7 +7,7 @@ use mlua::{
 use torque_plugin_sdk::abi::TORQUE_MAX_ARGS;
 use torque_plugin_sdk::{Definition, Side};
 
-use crate::realm::{self, engine, with_call};
+use crate::realm::{self, charge_bytes, charged_function, engine, with_call};
 use crate::value::{from_text, texts, to_text};
 
 /// An object of the script engine, by its id: `obj.field`, `obj.field = value`, `obj:method(...)`, `obj.id`.
@@ -60,7 +60,7 @@ impl UserData for Object {
 
 /// `obj:name(...)`: the method `name` of the object `id`.
 fn bound_method(lua: &Lua, id: u32, name: String) -> mlua::Result<Function> {
-    lua.create_function(move |lua, args: MultiValue| {
+    charged_function(lua, charge_bytes, move |lua, args: MultiValue| {
         let mut args = args.into_iter();
         match args.next() {
             Some(Value::UserData(data)) if data.borrow::<Object>().is_ok_and(|o| o.0 == id) => {}
@@ -125,34 +125,43 @@ pub(crate) fn ts_table(lua: &Lua, package: &str) -> mlua::Result<Table> {
     )?;
     ts.raw_set(
         "call",
-        lua.create_function(|lua, (name, args): (String, MultiValue)| {
-            let (namespace, function) = split_name(&name);
-            let args = texts(&args, TORQUE_MAX_ARGS)?;
-            let refs: Vec<&[u8]> = args.iter().map(Vec::as_slice).collect();
-            let result = with_call(lua, |call| call.call_function(namespace, function, &refs))?;
-            let result = engine(lua, &name, result)?;
-            from_text(lua, &result)
-        })?,
+        charged_function(
+            lua,
+            charge_bytes,
+            |lua, (name, args): (String, MultiValue)| {
+                let (namespace, function) = split_name(&name);
+                let args = texts(&args, TORQUE_MAX_ARGS)?;
+                let refs: Vec<&[u8]> = args.iter().map(Vec::as_slice).collect();
+                let result = with_call(lua, |call| call.call_function(namespace, function, &refs))?;
+                let result = engine(lua, &name, result)?;
+                from_text(lua, &result)
+            },
+        )?,
     )?;
     ts.raw_set(
         "method",
-        lua.create_function(|lua, (object, name, args): (Value, String, MultiValue)| {
-            match object_of(lua, &object)? {
+        charged_function(
+            lua,
+            charge_bytes,
+            |lua, (object, name, args): (Value, String, MultiValue)| match object_of(lua, &object)?
+            {
                 Some(id) => call_method(lua, id, &name, &args),
                 None => Ok(Value::String(lua.create_string("")?)),
+            },
+        )?,
+    )?;
+    ts.raw_set(
+        "object",
+        charged_function(lua, charge_bytes, |lua, name: Value| {
+            match object_of(lua, &name)? {
+                Some(id) => lua.create_userdata(Object(id)).map(Value::UserData),
+                None => Ok(Value::Nil),
             }
         })?,
     )?;
     ts.raw_set(
-        "object",
-        lua.create_function(|lua, name: Value| match object_of(lua, &name)? {
-            Some(id) => lua.create_userdata(Object(id)).map(Value::UserData),
-            None => Ok(Value::Nil),
-        })?,
-    )?;
-    ts.raw_set(
         "exists",
-        lua.create_function(|lua, object: Value| {
+        charged_function(lua, charge_bytes, |lua, object: Value| {
             let id = match &object {
                 Value::UserData(data) => data.borrow::<Object>().ok().map(|o| o.0),
                 _ => None,
@@ -167,7 +176,9 @@ pub(crate) fn ts_table(lua: &Lua, package: &str) -> mlua::Result<Table> {
     )?;
     ts.raw_set(
         "field",
-        lua.create_function(
+        charged_function(
+            lua,
+            charge_bytes,
             |lua, (object, name, index): (Value, String, Option<Value>)| {
                 let Some(id) = object_of(lua, &object)? else {
                     return Ok(Value::Nil);
@@ -182,7 +193,9 @@ pub(crate) fn ts_table(lua: &Lua, package: &str) -> mlua::Result<Table> {
     )?;
     ts.raw_set(
         "setField",
-        lua.create_function(
+        charged_function(
+            lua,
+            charge_bytes,
             |lua, (object, name, value, index): (Value, String, Value, Option<Value>)| {
                 let Some(id) = object_of(lua, &object)? else {
                     return Ok(false);
@@ -197,14 +210,14 @@ pub(crate) fn ts_table(lua: &Lua, package: &str) -> mlua::Result<Table> {
     )?;
     ts.raw_set(
         "global",
-        lua.create_function(|lua, name: String| {
+        charged_function(lua, charge_bytes, |lua, name: String| {
             let value = with_call(lua, |call| call.global(&global_name(&name)))?;
             from_text(lua, &value)
         })?,
     )?;
     ts.raw_set(
         "setGlobal",
-        lua.create_function(|lua, (name, value): (String, Value)| {
+        charged_function(lua, charge_bytes, |lua, (name, value): (String, Value)| {
             let value = to_text(&value)?;
             if !with_call(lua, |call| call.set_global(&global_name(&name), &value))? {
                 return Err(Error::runtime(format!("`{name}` is not a global's name")));
@@ -215,26 +228,30 @@ pub(crate) fn ts_table(lua: &Lua, package: &str) -> mlua::Result<Table> {
     let package = package.to_string();
     ts.raw_set(
         "define",
-        lua.create_function(move |lua, (name, function): (String, Function)| {
-            let (namespace, short) = split_name(&name);
-            // One id for each package's definition: two mods defining one name each keep their own.
-            let id = realm::defined_id(lua, &format!("{package}/{name}"));
-            realm::keep_defined(lua, id, function)?;
-            let usage = format!("{name}(...) - defined by a Lua script");
-            let definition = Definition {
-                namespace,
-                name: short,
-                package: &package,
-                usage: &usage,
-                id,
-            };
-            let defined = with_call(lua, |call| call.define_function(&definition))?;
-            engine(lua, &format!("ts.define(\"{name}\")"), defined)
-        })?,
+        charged_function(
+            lua,
+            charge_bytes,
+            move |lua, (name, function): (String, Function)| {
+                let (namespace, short) = split_name(&name);
+                // One id for each package's definition: two mods defining one name each keep their own.
+                let id = realm::defined_id(lua, &format!("{package}/{name}"));
+                realm::keep_defined(lua, id, function)?;
+                let usage = format!("{name}(...) - defined by a Lua script");
+                let definition = Definition {
+                    namespace,
+                    name: short,
+                    package: &package,
+                    usage: &usage,
+                    id,
+                };
+                let defined = with_call(lua, |call| call.define_function(&definition))?;
+                engine(lua, &format!("ts.define(\"{name}\")"), defined)
+            },
+        )?,
     )?;
     ts.raw_set(
         "warn",
-        lua.create_function(|lua, values: MultiValue| {
+        charged_function(lua, charge_bytes, |lua, values: MultiValue| {
             let line = values
                 .iter()
                 .map(Value::to_string)

@@ -4,7 +4,10 @@
 // (the standard `exnref` form, the one the SDK's C++ runtime is built for); the page's shim (web/lua.js) supplies the few
 // WASI imports the module has.
 //
-// Usage: node lua-build.mjs [--check]
+// Usage: node lua-build.mjs [--check | --client]
+// With `--client` it builds the client-script guest instead, <target>/lua-web/torque_lua_client.wasm: the same crate with its
+// `client-script` feature, whose module has the realm's entry points (`torque_realm_*`, crates/torque-client-script-format)
+// and none of the extension's.
 // With `--check` it also builds the Lua tests for the web (examples/lua-web-check, the engine with the page's Lua module) and
 // puts them, wasm-bindgen's glue, web/lua.js and the module into <target>/lua-web/check/, for web/lua-check.mjs to run.
 // wasm-bindgen's command line, at the version Cargo.lock names, is installed into <target>/web-tools at first.
@@ -24,8 +27,9 @@ import { gzipSync } from 'node:zlib';
 
 const flags = process.argv.slice(2);
 const check = flags.includes('--check');
-if (flags.some((f) => f !== '--check')) {
-  console.error('usage: node lua-build.mjs [--check]');
+const client = flags.includes('--client');
+if (flags.some((f) => f !== '--check' && f !== '--client') || (check && client)) {
+  console.error('usage: node lua-build.mjs [--check | --client]');
   process.exit(2);
 }
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -124,24 +128,32 @@ const env = {
   // A rustc wrapper (sccache) is turned off, as web/build.mjs does.
   RUSTC_WRAPPER: '',
 };
+const profile = client ? 'web-lua-client' : 'web-lua';
 run(
   'cargo',
-  ['rustc', '--config', "build.rustc-wrapper=''", '--lib', '--crate-type', 'staticlib', '--profile', 'web-lua',
-    '--target', 'wasm32-wasip1', '--manifest-path', buildManifest],
+  ['rustc', '--config', "build.rustc-wrapper=''", '--lib', '--crate-type', 'staticlib', '--profile', profile,
+    '--target', 'wasm32-wasip1', '--manifest-path', buildManifest, ...(client ? ['--features', 'client-script'] : [])],
   { env },
 );
-const library = join(target, 'wasm32-wasip1', 'web-lua', 'libtorque_lua.a');
-const EXPORTS = [
-  'torque_lua_start', 'torque_lua_alloc', 'torque_lua_free', 'torque_lua_run_file', 'torque_lua_call_defined',
-  'torque_lua_result', 'torque_lua_result_len', 'torque_lua_vm_dropped',
-];
-const built = join(work, 'torque_lua.wasm');
+const library = join(target, 'wasm32-wasip1', profile, 'libtorque_lua.a');
+const EXPORTS = client
+  ? [
+      'torque_realm_format', 'torque_realm_tiers', 'torque_realm_alloc', 'torque_realm_free', 'torque_realm_new',
+      'torque_realm_add_script', 'torque_realm_run', 'torque_realm_frame', 'torque_realm_ops', 'torque_realm_ops_len',
+      'torque_realm_pending',
+    ]
+  : [
+      'torque_lua_start', 'torque_lua_alloc', 'torque_lua_free', 'torque_lua_run_file', 'torque_lua_call_defined',
+      'torque_lua_result', 'torque_lua_result_len', 'torque_lua_vm_dropped',
+    ];
+const built = join(work, client ? 'torque_lua_client.wasm' : 'torque_lua.wasm');
 run(clang, [
   '--target=wasm32-wasip1', '-mexec-model=reactor', '-fwasm-exceptions', '-o', built, library,
   `-L${join(libs, 'eh')}`, `-L${libs}`, '-lc++', '-lc++abi', '-lunwind',
   // Luau's `os.clock` is C's `clock()`, which WASI's C library has only as an emulation over its CPU-time clock.
   '-lwasi-emulated-process-clocks',
-  // Room for Lua and TorqueScript calling each other deeply (the engine's call depth stops them first).
+  // Room for Lua and TorqueScript calling each other deeply (the engine's call depth stops them first); the client
+  // guest's Lua nests within Luau's own C-call limit.
   '-Wl,-z,stack-size=8388608',
   '-Wl,--strip-all',
   ...EXPORTS.map((name) => `-Wl,--export=${name}`),
@@ -150,7 +162,17 @@ run(clang, [
 const out = built;
 const bytes = readFileSync(built);
 try {
-  await WebAssembly.compile(bytes);
+  const module = await WebAssembly.compile(bytes);
+  if (client) {
+    // The client guest reaches nothing of the engine: its imports are WASI's alone.
+    const imports = WebAssembly.Module.imports(module);
+    const foreign = imports.filter((i) => i.module !== 'wasi_snapshot_preview1');
+    if (foreign.length) {
+      console.error(`${built}: imports outside WASI: ${foreign.map((i) => `${i.module}.${i.name}`).join(', ')}`);
+      process.exit(1);
+    }
+    console.log(`imports: ${imports.map((i) => i.name).join(', ')}`);
+  }
 } catch (error) {
   console.error(`${built}: not a module this Node compiles (it needs WebAssembly exception handling): ${error.message}`);
   process.exit(1);

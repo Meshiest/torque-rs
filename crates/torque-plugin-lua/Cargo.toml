@@ -20,11 +20,26 @@ categories = ["game-engines"]
 name = "torque_lua"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# The client-script realm (`client_script`): Lua a server sends, in its own sandbox with only the tiers it was granted, an
+# op stream out and an event stream in. Built for wasm32-wasip1 as `torque_lua_client.wasm` (`just lua-client-web`), the
+# guest the engine runs it in; natively for its tests. Off by default: no plugin set has it.
+client-script = ["dep:torque-client-script-format"]
+
 [dependencies]
 torque-plugin-sdk = { path = "../torque-plugin-sdk" }
+# The op and event format the client-script realm writes and reads (no dependencies of its own).
+torque-client-script-format = { path = "../torque-client-script-format", optional = true }
 # Luau (MIT), built from its sources: `send` because the engine may call an extension from any of its threads (one at a
 # time).
-mlua = { version = "0.12.2", default-features = false, features = ["luau", "vendored", "send"] }
+# Pinned exactly, with the two crates under it: the realms read Luau's table header (`realm::table_slots`), whose layout
+# is that Luau's; a realm checks the reading when it is made, and an update is a deliberate change of these pins.
+mlua = { version = "=0.12.2", default-features = false, features = ["luau", "vendored", "send"] }
+
+# Never built (the crate has no build script): only the exact versions of the Luau sources and their bindings under mlua.
+[build-dependencies]
+mlua-sys = "=0.13.0"
+luau0-src = "=0.22.0"
 
 [dev-dependencies]
 torque-engine = { path = "../torque-engine" }
@@ -100,3 +115,7 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# The client-script guest (`just lua-client-web`): the same, in its own output folder.
+[profile.web-lua-client]
+inherits = "web-lua"

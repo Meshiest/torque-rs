@@ -4165,6 +4165,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-client-script-format"
+version = "0.1.0"
+
+[[package]]
 name = "torque-client-script-host"
 version = "0.1.0"
 dependencies = [

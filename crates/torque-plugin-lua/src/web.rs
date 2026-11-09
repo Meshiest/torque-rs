@@ -16,7 +16,10 @@
 //! `torque_lua_free` (the page's texts going in), `torque_lua_run_file`, `torque_lua_call_defined` with
 //! `torque_lua_result` and `torque_lua_result_len` (its result), and `torque_lua_vm_dropped`.
 
-#![allow(unsafe_code)]
+#![expect(
+    unsafe_code,
+    reason = "the C ABI's table and the page's imports are raw pointers"
+)]
 
 use std::cell::RefCell;
 
@@ -678,7 +681,10 @@ pub unsafe extern "C" fn torque_lua_free(ptr: *mut u8, len: usize) {
 ///
 /// Each pointer and length is a text the page wrote into this module's memory, kept until the call returns.
 #[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an export's arguments are the page's texts, a pointer and a length each"
+)]
 pub unsafe extern "C" fn torque_lua_run_file(
     call: u32,
     vm: TorqueVm,

@@ -664,6 +664,54 @@ cases! {
                 "insert-front.lua",
                 "local t = table.create(100000, 1) while true do table.insert(t, 1, 0) table.remove(t, 1) end",
             ),
+            (
+                "plain-find-needle.lua",
+                "local s, n = ('a'):rep(65536), ('a'):rep(32768) .. 'b' while true do s:find(n, 1, true) end",
+            ),
+            (
+                "balanced.lua",
+                "local s = ('('):rep(65536) while true do s:find('%b()') end",
+            ),
+            (
+                "split-needle.lua",
+                "local s, n = ('a'):rep(65536), ('a'):rep(32768) .. 'b' while true do s:split(n) end",
+            ),
+            (
+                "next-sparse.lua",
+                "local t = table.create(100000) while true do next(t) end",
+            ),
+            (
+                "clear-sparse.lua",
+                "local t = table.create(100000) while true do table.clear(t) end",
+            ),
+            (
+                "pcall-error-loop.lua",
+                "while true do pcall(error, 'x') end",
+            ),
+            (
+                "refused-ts-loop.lua",
+                "while true do pcall(ts.call, 'exec', 'main.cs') end",
+            ),
+            (
+                "unpack-past-length.lua",
+                "while true do pcall(unpack, {}, 1, 7000) end",
+            ),
+            (
+                "pairs-iterator-sparse.lua",
+                "local t = table.create(100000) t[100000] = 1 local f = pairs(t) while true do f(t) end",
+            ),
+            (
+                "rep-text-count.lua",
+                "while true do local s = string.rep('x', '1e7') end",
+            ),
+            (
+                "create-text-size.lua",
+                "while true do local t = table.create('100000') end",
+            ),
+            (
+                "clone-sparse.lua",
+                "local t = table.create(100000) while true do local c = table.clone(t) end",
+            ),
         ] {
             let started = Stopwatch::start();
             assert_eq!(

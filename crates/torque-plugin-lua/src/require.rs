@@ -8,10 +8,10 @@ use torque_plugin_sdk::CallError;
 use crate::realm::{self, engine, with_call};
 
 /// The longest module name `require` takes.
-const MAX_NAME: usize = 200;
+pub(crate) const MAX_NAME: usize = 200;
 
 /// Whether `name` is a module name: parts of ASCII letters, digits, `_` and `-`, separated by `.` or `/`.
-fn is_module_name(name: &str) -> bool {
+pub(crate) fn is_module_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_NAME
         && name.split(['.', '/']).all(|part| {

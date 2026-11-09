@@ -135,6 +135,16 @@ lua-test:
 lua-web:
     node web/lua-build.mjs
 
+# The client-script guest, <target>/lua-web/torque_lua_client.wasm (web/lua-build.mjs --client): the Lua extension's crate with
+# its `client-script` feature built as the realm's WebAssembly module (crates/torque-client-script-format names its exports).
+# Needs what `lua-web` needs
+lua-client-web:
+    node web/lua-build.mjs --client
+
+# The client-script realm's tests: its escape suite, its fuel, memory and tier cases, natively (the Lua extension's workspace)
+lua-client-test:
+    cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test client_script -- --nocapture
+
 # The Lua tests on the web: the cases of `lua-test` run natively, then built for a browser with the page's Lua module and run
 # under Node and in headless Chrome from the cursor guard (web/lua-check.mjs). Needs what `lua-web` needs and Chrome
 lua-web-check:

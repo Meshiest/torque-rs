@@ -25,10 +25,13 @@
 #![warn(missing_docs)]
 
 mod api;
+#[cfg(feature = "client-script")]
+pub mod client_script;
 mod realm;
 mod require;
 mod value;
-#[cfg(target_os = "wasi")]
+// The client-script guest's module has the realm's entry points instead (`client_script`).
+#[cfg(all(target_os = "wasi", not(feature = "client-script")))]
 mod web;
 
 use std::sync::Arc;

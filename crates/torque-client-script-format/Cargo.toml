@@ -1,0 +1,17 @@
+[package]
+name = "torque-client-script-format"
+description = "The op and event format between a client-script realm (Luau in a WebAssembly guest) and the engine that hosts it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "lua", "sandbox", "protocol", "gamedev"]
+categories = ["game-engines", "encoding"]
+
+# No dependencies: the guest (crates/torque-plugin-lua with `client-script`, built for wasm32-wasip1) and the engine's host and
+# appliers read and write the same bytes with this one crate.
+
+[lints]
+workspace = true
