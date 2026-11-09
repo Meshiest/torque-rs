@@ -163,7 +163,7 @@ impl Plugin for ModsPlugin {
         self.net.as_ref().map(|_| 1)
     }
 
-    /// In the engine's protocol a client asks for blocks with the RPC `torque.mods.get` ([`crate::transfer::register_get_rpc`]);
+    /// In the engine's protocol a client asks for blocks with the RPC `torque.mods.get` (`crate::transfer::register_get_rpc`);
     /// in Torque's it stays the remote command, and the manifest is what it was.
     fn finish(&self, engine: &mut EngineBuilder) {
         if self.net.is_some() && engine.protocol() == torque_engine::ProtocolKind::Engine {

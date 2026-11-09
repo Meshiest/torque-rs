@@ -3,9 +3,9 @@
 //! and the host itself over a game's parts ([`host`]: [`NetShared`], [`NetGame`]): the passes ([`pump`]), the connections
 //! ([`conn`], [`local`]), the ghosting natives and the `NetObject` behaviour ([`ghosting`]), the event layer ([`events`],
 //! [`hostevent`]), the bulk channels ([`channels`]) and the content a server sends before a client's game starts ([`content`]), the datablock chain ([`datablocks`]), the ghost hub ([`ghosts`]), the command natives ([`commands`]) and the server query's answers ([`query`]); [`torque`] is Torque's
-//! own net game and the network host the main loop drives. With the `web` feature, [`web`] is the transport browsers join
+//! own net game and the network host the main loop drives. With the `web` feature, `web` is the transport browsers join
 //! over (WebSocket, with the game's page served on the same port) and the one that takes UDP and the web together. With the
-//! `rooms` feature, [`room`] is the protocol of a room service, by which a player who hosts a game and the players who
+//! `rooms` feature, `room` is the protocol of a room service, by which a player who hosts a game and the players who
 //! join it find each other.
 
 pub mod channels;

@@ -48,7 +48,7 @@ impl UploadInbox {
     }
 }
 
-/// The server's seam to the network host: what [`ServerUploads`] needs of the connections.
+/// The server's seam to the network host: what [`ServerUploads`](super::ServerUploads) needs of the connections.
 pub trait ServerLinks {
     /// Takes what the upload channel received since the last call.
     fn take_inbox(&self) -> UploadInbox;

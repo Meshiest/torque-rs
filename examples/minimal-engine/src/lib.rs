@@ -1,4 +1,4 @@
-//! The minimal example again, built on [`Engine`] and [`DefaultPlugins`](torque::app::plugins::DefaultPlugins): the same game as `examples/minimal` (its scripts and its
+//! The minimal example again, built on [`Engine`] and [`DefaultPlugins`]: the same game as `examples/minimal` (its scripts and its
 //! mission), a dedicated server and a client that connect over the loopback address, with the engine's helpers doing the wiring that
 //! example does by hand.
 //!

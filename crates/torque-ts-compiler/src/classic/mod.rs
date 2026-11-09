@@ -100,7 +100,7 @@ pub struct Output {
 }
 
 /// Compiles `source` (a C string: the compiler stops at the first NUL) with `profile`. `file` is the file name
-/// messages name (None for `eval`'d text). Runs on a thread of its own with [`WORKER_STACK`] bytes of stack, so the
+/// messages name (None for `eval`'d text). Runs on a thread of its own with [`WORKER_STACK`](crate::WORKER_STACK) bytes of stack, so the
 /// caller's stack depth does not matter (a script can `eval` at the bottom of a deep recursion).
 ///
 /// The two purposes differ as TGE's entry points do: [`Purpose::Run`] (`CodeBlock::compileExec`) still compiles
@@ -133,7 +133,7 @@ fn could_not_run(work: u64) -> Output {
     }
 }
 
-/// [`compile`] on the current thread: it needs about [`WORKER_STACK`] bytes of stack for the deepest tree the
+/// [`compile`] on the current thread: it needs about [`WORKER_STACK`](crate::WORKER_STACK) bytes of stack for the deepest tree the
 /// parser accepts. The measure is the tree's DEPTH, not the source's size: a short source (a 500-level `+`
 /// chain is a few KiB) can need many MiB of a debug build's stack, so a caller that trusts a "small source"
 /// bound on a small thread can overflow it. Everything but tools and tests that give the thread its stack

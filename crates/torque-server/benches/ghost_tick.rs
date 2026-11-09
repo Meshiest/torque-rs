@@ -68,7 +68,6 @@ impl Scene {
                 transport,
                 game: TorqueNet::default(),
                 engine: Rc::clone(&state),
-                step_limit: None,
                 clock: NetClock::Sim,
                 ghosts: TgeGhostGame,
                 container,

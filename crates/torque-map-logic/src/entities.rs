@@ -1,4 +1,4 @@
-//! The supported classes and how each is made from its keyvalues ([`make`]); each family's behavior is in its own module.
+//! The supported classes and how each is made from its keyvalues (`make`); each family's behavior is in its own module.
 //!
 //! | Class | Module |
 //! |---|---|

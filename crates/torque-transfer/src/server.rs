@@ -218,7 +218,7 @@ enum Late {
     Run,
 }
 
-/// Everything a server holds for uploads. See the [module](self).
+/// Everything a server holds for uploads. See the module docs.
 pub struct UploadServer {
     kinds: Vec<Kind>,
     pool: Pool,

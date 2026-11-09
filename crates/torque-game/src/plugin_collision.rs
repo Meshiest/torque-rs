@@ -1,4 +1,4 @@
-//! The collision sources of the plugins a script engine has ([`torque_collide::source`]): the server's container reads them for
+//! The collision sources of the plugins a script engine has ([`collide::source`]): the server's container reads them for
 //! every collision phase ([`crate::scene::container_world::ContainerWorld`]), and the client's prediction world reads the
 //! client's.
 //!

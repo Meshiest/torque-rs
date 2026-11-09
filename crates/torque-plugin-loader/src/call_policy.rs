@@ -200,7 +200,7 @@ impl<'a> PolicyCall<'a> {
 }
 
 /// Err when a name the call gives has a NUL byte: its namespace or name, and every argument of a call that stores a
-/// name ([`STORE_NAMES`]) or writes a variable an argument names ([`Effects::VARIABLES`]). The engine keeps a name only up
+/// name (`STORE_NAMES`) or writes a variable an argument names ([`Effects::VARIABLES`]). The engine keeps a name only up
 /// to its NUL, so a policy that compared the whole name would see another name than the one used. Refused whatever the
 /// policy.
 pub fn refuse_nul_names(call: &PolicyCall<'_>) -> Result<(), String> {
