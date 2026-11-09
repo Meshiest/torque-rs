@@ -219,6 +219,6 @@ fn the_datablock_record_names_fields_of_the_class() {
     for name in &sent {
         assert!(class.contains(name), "{name} is not a PropData field");
     }
-    // Every field but the server's own two (the per-player cap, whether clients may spawn it) goes to the clients.
-    assert_eq!(sent.len() + 2, class.len(), "{sent:?} {class:?}");
+    // Every field but the server's own cap goes to the clients.
+    assert_eq!(sent.len() + 1, class.len(), "{sent:?} {class:?}");
 }

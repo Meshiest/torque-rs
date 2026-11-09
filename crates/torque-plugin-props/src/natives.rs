@@ -1,11 +1,9 @@
-//! The server's console functions (`propSpawn` and kin) and the command a client spawns a prop with (`serverCmdPropSpawn`),
-//! checked on the server.
-
-use std::rc::Rc;
+//! The server's console functions (`propSpawn` and kin) and the placement checks a game calls before it spawns a prop for a
+//! player ([`ServerProps::check_placement`], `propCheckPlacement`). Props have no client entry point: a game's own server
+//! commands decide who may spawn what.
 
 use torque_collide::types::{INTERIOR, ITEM, PLAYER, STATIC_SHAPE, STATIC_TS, TERRAIN, VEHICLE};
 use torque_engine::args::vec3;
-use torque_engine::command::{ArgType, CommandSpec};
 use torque_engine::{Res, ScriptClass, ScriptError, VmMut, function};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
@@ -13,18 +11,10 @@ use torque_ts_vm::vm::Vm;
 use crate::data::{PropData, PropParams};
 use crate::quant;
 use crate::server::{
-    SPAWN_RATE, ServerProps, address_of, axis_angle, is_class, owner_key, owner_of,
-    parse_transform, player_boxes, prop_of, spawn, write_back,
+    ServerProps, axis_angle, is_class, owner_key, owner_of, parse_transform, player_boxes, prop_of,
+    spawn, write_back,
 };
 use crate::world::{Prop, PropWorld, world_half};
-
-/// How far in front of a player's eye `serverCmdPropSpawn` puts a prop (units).
-pub const SPAWN_REACH: f32 = 2.5;
-
-/// What a client's spawn point may not be blocked by, or overlap: the map, static shapes, vehicles, players and items (props
-/// are checked against the physics world's own record).
-pub const SPAWN_BLOCKERS: u32 =
-    TERRAIN | INTERIOR | STATIC_SHAPE | STATIC_TS | VEHICLE | PLAYER | ITEM;
 
 /// `"x y z"` as a vector of finite numbers.
 fn finite_vec(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
@@ -40,7 +30,9 @@ fn finite_vec(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
 ///
 /// `transform` is `"x y z"` or `"x y z ax ay az angle"`. `owner` is the connection (a client) the prop counts against: its
 /// per-player cap (`$Pref::Props::MaxPerPlayer`, and the datablock's `maxPerPlayer`), its address's (`$Pref::Props::
-/// MaxPerAddress`), and its props outlive its leaving by `$Pref::Props::OrphanSeconds`. `predictId` (1 to 255) ties the prop to
+/// MaxPerAddress`), and its props outlive its leaving by `$Pref::Props::OrphanSeconds`. Those caps apply only when `owner` is
+/// given: a prop with no owner counts against the server's cap alone, so a game spawning for a player passes the player's
+/// connection. `predictId` (1 to 255) ties the prop to
 /// one the owner's client showed at once. Past a cap, or for a pose out of the world, the call prints an error and returns 0.
 /// The prop is put in `MissionCleanup` when there is one; the datablock's `onPropSpawn(%this, %prop)` is called.
 #[function(name = "propSpawn")]
@@ -241,6 +233,55 @@ fn prop_awake_count(props: Res<ServerProps>) -> i32 {
         .unwrap_or(0)
 }
 
+/// The object a client controls (its `getControlObject()`), if it is one.
+pub(crate) fn control_of(vm: &mut Vm, client: ObjId) -> Option<ObjId> {
+    let text = vm.call_method(client, b"getControlObject", &[]).ok()?;
+    let id = torque_ts_vm::text::atof(&text) as i64;
+    u32::try_from(id)
+        .ok()
+        .filter(|&o| o != 0 && vm.objects().contains(o))
+}
+
+/// checks where a prop of the datablock could be spawned for a player: "" when it may, else the reason
+///
+/// `transform` is the prop's `"x y z [ax ay az angle]"` and `eye` the point it is placed from (a player's eye), at most
+/// `reach` units away (32 when left out). The checks: the datablock is a `PropData`; the transform is finite, its rotation a
+/// turn, and inside the world; the eye is finite and inside the world; the server's ray from `eye` to the prop's position meets
+/// nothing (the map, shapes, vehicles, players, items); the prop's box there overlaps nothing (the same, and other props).
+/// `ignore` is left out of the ray alone: it must be the object the server itself gives that client to control (its player,
+/// `%client.getControlObject()`), never an id the client sent, and an object that is neither a player nor controlled by a
+/// connection is refused. Props have no client entry point: a game's own server command (with its declared limits and
+/// permission) calls this, then `propSpawn`.
+#[function(name = "propCheckPlacement")]
+fn prop_check_placement(
+    mut vm: VmMut,
+    props: Res<ServerProps>,
+    datablock: &str,
+    transform: &str,
+    eye: &str,
+    ignore: Option<i32>,
+    reach: Option<f32>,
+) -> String {
+    let data = vm.objects().find(datablock.as_bytes()).unwrap_or(0);
+    let check = parse_transform(transform)
+        .map_err(|_| PlacementError::Transform)
+        .and_then(|pose| {
+            let eye = finite_vec(eye, "the eye").map_err(|_| PlacementError::Eye)?;
+            let mut placement = Placement::new(data, pose, eye);
+            if let Some(o) = ignore
+                .and_then(|o| ObjId::try_from(o).ok())
+                .filter(|&o| o != 0)
+            {
+                placement = placement.ignoring(o);
+            }
+            if let Some(r) = reach {
+                placement = placement.within(r);
+            }
+            props.check_placement(&mut vm, &placement)
+        });
+    check.err().map_or_else(String::new, |e| e.to_string())
+}
+
 /// The natives, as the plugin registers them.
 pub(crate) fn declared() -> Vec<torque_engine::script::NativeDecl> {
     torque_engine::natives![
@@ -257,33 +298,156 @@ pub(crate) fn declared() -> Vec<torque_engine::script::NativeDecl> {
         prop_is_frozen,
         prop_get_owner,
         prop_count,
-        prop_awake_count
+        prop_awake_count,
+        prop_check_placement
     ]
 }
 
-/// The object a client controls (its `getControlObject()`), if it is one.
-pub(crate) fn control_of(vm: &mut Vm, client: ObjId) -> Option<ObjId> {
-    let text = vm.call_method(client, b"getControlObject", &[]).ok()?;
-    let id = torque_ts_vm::text::atof(&text) as i64;
-    u32::try_from(id)
-        .ok()
-        .filter(|&o| o != 0 && vm.objects().contains(o))
+/// Why a placement was refused ([`ServerProps::check_placement`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlacementError {
+    /// The datablock is not a `PropData`.
+    NotPropData,
+    /// The transform is not finite, its rotation is not a turn, or the prop would be out of the world.
+    Transform,
+    /// The eye is not finite or is out of the world.
+    Eye,
+    /// The prop's position is farther from the eye than the placement's reach.
+    TooFar,
+    /// The object to leave out of the ray is neither a player nor controlled by a connection.
+    Ignore,
+    /// The server's ray from the eye meets something before the prop's position.
+    Blocked,
+    /// The prop's box there overlaps the map, a shape, a vehicle, a player, an item or another prop.
+    NoRoom,
 }
 
-/// A player's eye (at 85% of its box's height over its position) and where `serverCmdPropSpawn` puts a prop for it: in front of
-/// the eye along the way the player faces, at the eye's height. None when it is not a player.
-fn eye_and_point(vm: &Vm, player: ObjId) -> Option<([f32; 3], [f32; 3])> {
-    let state = torque_game::sim::player::state(vm, player)?;
-    let m = state.obj_to_world;
-    let b = state.world_box;
-    let eye = [m[3], m[7], b.min[2] + (b.max[2] - b.min[2]) * 0.85];
-    let forward = [m[1], m[5], 0.0];
-    let len = (forward[0] * forward[0] + forward[1] * forward[1]).sqrt();
-    if !(len > 1.0e-4) {
-        return None;
+impl std::fmt::Display for PlacementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PlacementError::NotPropData => "that is not a prop datablock",
+            PlacementError::Transform => "the transform is out of the world",
+            PlacementError::Eye => "the eye is out of the world",
+            PlacementError::TooFar => "that is out of reach",
+            PlacementError::Ignore => {
+                "only a player or a controlled object may be left out of the ray"
+            }
+            PlacementError::Blocked => "something is in the way",
+            PlacementError::NoRoom => "there is no room there",
+        })
     }
-    let point = [0, 1, 2].map(|k| eye[k] + forward[k] / len * SPAWN_REACH);
-    Some((eye, point))
+}
+
+impl std::error::Error for PlacementError {}
+
+/// What a placement may not be blocked by, or overlap: the map, static shapes, vehicles, players and items (props are checked
+/// against the physics world's own record).
+pub const PLACEMENT_BLOCKERS: u32 =
+    TERRAIN | INTERIOR | STATIC_SHAPE | STATIC_TS | VEHICLE | PLAYER | ITEM;
+
+/// The farthest a prop may be placed from the eye when a placement names no reach (units).
+pub const DEFAULT_REACH: f32 = 32.0;
+
+/// How far from 1 a placement's rotation may be (a quaternion that is not a turn is refused).
+const TURN_TOLERANCE: f32 = 1.0e-3;
+
+/// Where a game wants to spawn a prop for a player ([`ServerProps::check_placement`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    /// The `PropData` datablock.
+    pub data: ObjId,
+    /// The prop's position and its rotation, a unit quaternion of the physics world ([`crate::server::parse_transform`]).
+    pub pose: ([f32; 3], [f32; 4]),
+    /// The point it is placed from: the player's eye.
+    pub eye: [f32; 3],
+    /// The object left out of the ray: the one the server gives the player to control, never an id the client sent.
+    pub ignore: Option<ObjId>,
+    /// The farthest the prop may be from the eye ([`DEFAULT_REACH`]).
+    pub reach: f32,
+}
+
+impl Placement {
+    /// A placement of datablock `data` at `pose` from `eye`, nothing left out of the ray, within [`DEFAULT_REACH`].
+    #[must_use]
+    pub fn new(data: ObjId, pose: ([f32; 3], [f32; 4]), eye: [f32; 3]) -> Placement {
+        Placement {
+            data,
+            pose,
+            eye,
+            ignore: None,
+            reach: DEFAULT_REACH,
+        }
+    }
+
+    /// The placement with `object` (the player's own controlled object) left out of the ray.
+    #[must_use]
+    pub fn ignoring(mut self, object: ObjId) -> Placement {
+        self.ignore = Some(object);
+        self
+    }
+
+    /// The placement within `reach` units of the eye.
+    #[must_use]
+    pub fn within(mut self, reach: f32) -> Placement {
+        self.reach = reach;
+        self
+    }
+}
+
+impl ServerProps {
+    /// Whether a prop may be spawned as `placement` says for a player: the checks of `propCheckPlacement`. A game calls it from
+    /// its own server command before `propSpawn`; the props' caps are `propSpawn`'s own.
+    ///
+    /// # Errors
+    ///
+    /// The first check that fails: [`PlacementError::NotPropData`], [`PlacementError::Transform`] (not finite, a rotation that
+    /// is not a turn, out of the world), [`PlacementError::Eye`], [`PlacementError::TooFar`] (past the reach; a reach that is not
+    /// a finite positive number refuses every placement), [`PlacementError::Ignore`] (an object left out of the ray that is
+    /// neither a player nor controlled), [`PlacementError::Blocked`] (the ray), [`PlacementError::NoRoom`] (the box).
+    pub fn check_placement(
+        &self,
+        vm: &mut Vm,
+        placement: &Placement,
+    ) -> Result<(), PlacementError> {
+        let &Placement {
+            data,
+            pose: (at, rotation),
+            eye,
+            ignore,
+            reach,
+        } = placement;
+        if !is_class(vm, data, <PropData as ScriptClass>::NAME) {
+            return Err(PlacementError::NotPropData);
+        }
+        let kind = PropData::read(vm, data).map_err(|_| PlacementError::NotPropData)?;
+        let inside = |p: &[f32; 3]| p.iter().all(|v| v.abs() < quant::MAX_COORD);
+        let turn = rotation.iter().map(|c| c * c).sum::<f32>().sqrt();
+        if !(inside(&at) && (turn - 1.0).abs() < TURN_TOLERANCE) {
+            return Err(PlacementError::Transform);
+        }
+        if !inside(&eye) {
+            return Err(PlacementError::Eye);
+        }
+        let d: [f32; 3] = std::array::from_fn(|k| at[k] - eye[k]);
+        let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if !(reach > 0.0 && distance <= reach) {
+            return Err(PlacementError::TooFar);
+        }
+        if let Some(o) = ignore
+            && torque_game::sim::player::state(vm, o).is_none()
+            && !torque_game::scene::ghost::is_control_object(vm, o)
+        {
+            return Err(PlacementError::Ignore);
+        }
+        if ray_blocked(vm, eye, at, ignore) {
+            return Err(PlacementError::Blocked);
+        }
+        let half = world_half(PropParams::from(&kind).shape.half_extents(), rotation);
+        if box_blocked(vm, self, at, half) {
+            return Err(PlacementError::NoRoom);
+        }
+        Ok(())
+    }
 }
 
 /// The text of a point for a native's argument (finite numbers, as Rust prints them: no exponent).
@@ -291,14 +455,14 @@ fn point_text(p: [f32; 3]) -> Vec<u8> {
     format!("{} {} {}", p[0], p[1], p[2]).into_bytes()
 }
 
-/// Whether the server's ray from `eye` to `point` meets the map, a shape, a vehicle, a player or an item (the player `own`
-/// left out).
-fn ray_blocked(vm: &mut Vm, eye: [f32; 3], point: [f32; 3], own: ObjId) -> bool {
+/// Whether the server's ray from `eye` to `point` meets the map, a shape, a vehicle, a player or an item (`ignore` left out;
+/// none is the id 0, which names no object).
+fn ray_blocked(vm: &mut Vm, eye: [f32; 3], point: [f32; 3], ignore: Option<ObjId>) -> bool {
     let args = [
         point_text(eye),
         point_text(point),
-        SPAWN_BLOCKERS.to_string().into_bytes(),
-        own.to_string().into_bytes(),
+        PLACEMENT_BLOCKERS.to_string().into_bytes(),
+        ignore.unwrap_or(0).to_string().into_bytes(),
     ];
     match vm.invoke(None, b"containerRayCast", &args) {
         Ok(hit) => torque_ts_vm::text::atoi(&hit) != 0,
@@ -307,11 +471,11 @@ fn ray_blocked(vm: &mut Vm, eye: [f32; 3], point: [f32; 3], own: ObjId) -> bool 
     }
 }
 
-/// Whether a box of half-extents `half` at `at` overlaps the map, a shape, a vehicle, a player or an item
-/// (`containerBoxEmpty`), or another prop.
+/// Whether a box of half-extents `half` (along the world's axes) at `at` overlaps the map, a shape, a vehicle, a player or an
+/// item (`containerBoxEmpty`), or another prop.
 fn box_blocked(vm: &mut Vm, props: &ServerProps, at: [f32; 3], half: [f32; 3]) -> bool {
     let args = [
-        SPAWN_BLOCKERS.to_string().into_bytes(),
+        PLACEMENT_BLOCKERS.to_string().into_bytes(),
         point_text(at),
         half[0].to_string().into_bytes(),
         half[1].to_string().into_bytes(),
@@ -339,119 +503,4 @@ fn box_blocked(vm: &mut Vm, props: &ServerProps, at: [f32; 3], half: [f32; 3]) -
                 })
             })
             .unwrap_or(true)
-}
-
-/// Tells a client its spawn was refused (`clientCmdPropRefused(%reason)`) and prints a line, at most one a second.
-fn refuse(vm: &mut Vm, props: &ServerProps, client: ObjId, why: &str) {
-    let (line, tag) = {
-        let mut srv = props.0.borrow_mut();
-        let due = srv.tick >= srv.refused_at;
-        if due {
-            srv.refused_at = srv.tick + 1000 / 32;
-        }
-        let tag = match srv.refused_tag {
-            Some(tag) => Some(tag),
-            None => {
-                let tag = vm.tags_mut().add_string(b"PropRefused");
-                srv.refused_tag = tag;
-                tag
-            }
-        };
-        (due, tag)
-    };
-    if line {
-        vm.error(format!("serverCmdPropSpawn: client {client}: {why}"));
-    }
-    if let Some(tag) = tag {
-        let args = [
-            client.to_string().into_bytes(),
-            format!("\u{1}{tag}").into_bytes(),
-            why.as_bytes().to_vec(),
-        ];
-        let _ = vm.invoke(None, b"commandToClient", &args);
-    }
-}
-
-/// The command a client sends to spawn a prop: `commandToServer('PropSpawn', %datablock [, %predictId])`.
-///
-/// The server checks everything: its address's spawn rate (the command's own, kept per address so a player cannot spend it
-/// again by connecting again), the datablock is a `PropData` with `clientSpawn = true`, the client controls a player, the point
-/// (in front of the player's eye, never one the client sends) is inside the world, the server's ray from the eye reaches it,
-/// the prop's box there overlaps nothing (the map, shapes, vehicles, players, items, props), and the caps. A refusal prints an
-/// error (at most one a second) and sends the client `clientCmdPropRefused(%reason)`.
-pub(crate) fn cmd_prop_spawn(
-    mut vm: VmMut,
-    props: Res<ServerProps>,
-    client: i32,
-    datablock: String,
-    predict_id: Option<i32>,
-) {
-    let Ok(client) = ObjId::try_from(client) else {
-        return;
-    };
-    if !vm.objects().contains(client) {
-        return;
-    }
-    let address = address_of(&mut vm, client);
-    if !props.0.borrow_mut().take_spawn(&address) {
-        return;
-    }
-    if let Err(why) = check_and_spawn(&mut vm, &props, client, &address, &datablock, predict_id) {
-        refuse(&mut vm, &props, client, &why);
-    }
-}
-
-/// The command's checks, then the spawn; the reason when it is refused.
-fn check_and_spawn(
-    vm: &mut Vm,
-    props: &ServerProps,
-    client: ObjId,
-    address: &Rc<str>,
-    datablock: &str,
-    predict_id: Option<i32>,
-) -> Result<(), String> {
-    let data = vm
-        .objects()
-        .find(datablock.as_bytes())
-        .filter(|&d| is_class(vm, d, <PropData as ScriptClass>::NAME))
-        .ok_or("that is not a prop datablock")?;
-    let kind = PropData::read(vm, data).map_err(|_| "that is not a prop datablock")?;
-    if !kind.client_spawn {
-        return Err("players may not spawn that prop".into());
-    }
-    let player = control_of(vm, client).ok_or("you control no player")?;
-    let (eye, at) = eye_and_point(vm, player).ok_or("you control no player")?;
-    if at.iter().any(|v| !(v.abs() < quant::MAX_COORD)) {
-        return Err("the point is out of the world".into());
-    }
-    if ray_blocked(vm, eye, at, player) {
-        return Err("something is in the way".into());
-    }
-    let half = PropParams::from(&kind).shape.half_extents();
-    if box_blocked(vm, props, at, half) {
-        return Err("there is no room there".into());
-    }
-    let mut owner = owner_of(vm, client);
-    owner.address = Some(Rc::clone(address));
-    let predict = predict_id.filter(|p| (1..=255).contains(p)).unwrap_or(0) as u8;
-    spawn(
-        vm,
-        props,
-        data,
-        (at, [0.0, 0.0, 0.0, 1.0]),
-        Some(owner),
-        predict,
-    )
-    .map(|_| ())
-}
-
-/// The command's limits: a datablock name and an optional predict id, 4 a second after a burst of 8 per connection (and
-/// per address, [`SPAWN_RATE`]).
-pub fn spawn_spec() -> CommandSpec {
-    CommandSpec::new()
-        .arg("datablock", ArgType::Text)
-        .optional("predictId", ArgType::Int)
-        .rate(SPAWN_RATE.0, SPAWN_RATE.1)
-        .max_arg_bytes(64)
-        .describe("spawns a prop in front of the client's player")
 }

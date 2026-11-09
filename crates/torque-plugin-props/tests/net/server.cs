@@ -29,18 +29,54 @@ datablock PlayerData(FigureData)
    minImpactSpeed = 40;
 };
 
+datablock WheeledVehicleTire(BuggyTire)
+{
+   shapeFile = "kit/buggy_wheel.dts";
+   staticFriction = 4.4;
+   kineticFriction = 3.4;
+   lateralForce = 17000;
+   lateralDamping = 4000;
+   lateralRelaxation = 1;
+   longitudinalForce = 17000;
+   longitudinalDamping = 4000;
+   longitudinalRelaxation = 1;
+   radius = 0.5;
+};
+
+datablock WheeledVehicleSpring(BuggySpring)
+{
+   length = 0.42;
+   force = 3400;
+   damping = 1400;
+   antiSwayForce = 8;
+};
+
+datablock WheeledVehicleData(BuggyData)
+{
+   shapeFile = "kit/buggy.dts";
+   maxDamage = 1000;
+   mass = 380;
+   massCenter = "0 0 0.2";
+   massBox = "1.6 3.8 0.9";
+   drag = 0.6;
+   bodyFriction = 0.6;
+   bodyRestitution = 0.3;
+   minImpactSpeed = 5;
+   integration = 8;
+   collisionTol = 0.1;
+   contactTol = 0.4;
+   maxSteeringAngle = 0.55;
+   engineTorque = 5200;
+   engineBrake = 250;
+   brakeTorque = 9000;
+   maxWheelSpeed = 22;
+};
+
 datablock PropData(Crate)
 {
    shapeFile = "kit/cube.dts";
    size = "1 1 1";
    mass = 20;
-   clientSpawn = true;
-};
-
-// Only scripts spawn it.
-datablock PropData(Locked)
-{
-   size = "1 1 1";
 };
 
 // Slides for ever: no friction, no damping, never sleeps.

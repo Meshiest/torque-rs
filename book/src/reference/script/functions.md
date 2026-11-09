@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-275 entries in 1 namespace.
+274 entries in 1 namespace.
 
 ## Global
 
@@ -114,8 +114,6 @@ Console functions, by namespace. Functions of the global namespace are called as
 
 - `collapseEscape(text)` - the text with its escape sequences turned into the bytes they stand for
   *arguments: 1; server and client*
-- `commandDrops(client, command)` - how many calls of a server command the client sent that were refused
-  *arguments: 2; server; needs `torque.props`*
 - `commandToClient`
   *arguments: 2 to 21; server*
 - `commandToServer`
@@ -396,6 +394,18 @@ Console functions, by namespace. Functions of the global namespace are called as
 
 - `propAwakeCount()` - how many props are awake now
   *arguments: none; server; needs `torque.props`*
+- `propCheckPlacement(datablock, transform, eye [, ignore [, reach]])` - checks where a prop of the datablock could be spawned for a player: "" when it may, else the reason
+  *arguments: 3 to 5; server; needs `torque.props`*
+
+  `transform` is the prop's `"x y z [ax ay az angle]"` and `eye` the point it is placed from (a player's eye), at most
+  `reach` units away (32 when left out). The checks: the datablock is a `PropData`; the transform is finite, its rotation a
+  turn, and inside the world; the eye is finite and inside the world; the server's ray from `eye` to the prop's position meets
+  nothing (the map, shapes, vehicles, players, items); the prop's box there overlaps nothing (the same, and other props).
+  `ignore` is left out of the ray alone: it must be the object the server itself gives that client to control (its player,
+  `%client.getControlObject()`), never an id the client sent, and an object that is neither a player nor controlled by a
+  connection is refused. Props have no client entry point: a game's own server command (with its declared limits and
+  permission) calls this, then `propSpawn`.
+
 - `propCount([owner])` - how many props there are, or, given a client, how many its owner key owns (orphans of an earlier connection under the same
   *arguments: 0 to 1; server; needs `torque.props`*
 
@@ -430,7 +440,9 @@ Console functions, by namespace. Functions of the global namespace are called as
 
   `transform` is `"x y z"` or `"x y z ax ay az angle"`. `owner` is the connection (a client) the prop counts against: its
   per-player cap (`$Pref::Props::MaxPerPlayer`, and the datablock's `maxPerPlayer`), its address's (`$Pref::Props::
-  MaxPerAddress`), and its props outlive its leaving by `$Pref::Props::OrphanSeconds`. `predictId` (1 to 255) ties the prop to
+  MaxPerAddress`), and its props outlive its leaving by `$Pref::Props::OrphanSeconds`. Those caps apply only when `owner` is
+  given: a prop with no owner counts against the server's cap alone, so a game spawning for a player passes the player's
+  connection. `predictId` (1 to 255) ties the prop to
   one the owner's client showed at once. Past a cap, or for a pose out of the world, the call prints an error and returns 0.
   The prop is put in `MissionCleanup` when there is one; the datablock's `onPropSpawn(%this, %prop)` is called.
 
@@ -654,8 +666,6 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 1; server and client*
 - `schedule(delay, object, function, args...)` - calls the function later; the object bounds the call's life
   *arguments: at least 3; server and client*
-- `serverCmdPropSpawn(client, datablock [, predictId])` - spawns a prop in front of the client's player
-  *arguments: 2 to 3; server; needs `torque.props`*
 - `serverCmdTorqueModsGet(client, modIndex, file, start, count)` - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
   *arguments: 5; server and client*
 - `serverCmdTorqueModsReady(client)` - a client says it has every mod the server requires, mounted (the server then lets its join go on)

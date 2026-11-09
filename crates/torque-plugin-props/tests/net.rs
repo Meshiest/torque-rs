@@ -110,85 +110,139 @@ fn many_awake_props_stay_within_their_share_and_near_the_server() {
     }
 }
 
-/// The clients' refusals heard so far, all clients together.
-fn refused(rig: &Rig) -> u32 {
-    rig.peers
-        .iter()
-        .map(|p| p.global("$Refused").parse::<u32>().unwrap_or(0))
-        .sum()
-}
-
-fn command(rig: &mut Rig, peer: usize, datablock: &str) {
-    let code = format!("commandToServer('PropSpawn', \"{datablock}\");");
-    rig.peers[peer]
-        .client
-        .vm_mut()
-        .eval(code.as_bytes())
-        .unwrap();
+/// `propCheckPlacement` of a crate at `at` from the eye `eye`: "" or the reason.
+fn check(rig: &mut Rig, at: &str, eye: &str) -> String {
+    rig.eval(&format!(
+        "return propCheckPlacement(Crate, \"{at}\", \"{eye}\");"
+    ))
 }
 
 #[test]
-fn a_clients_command_is_rate_limited_by_its_address() {
-    // Two clients from one address: twenty calls each in one tick, eight are heard between them.
-    let (mut rig, _files) = clients(2, &[("$Test::Players", "1")], &[]);
-    rig.run(10);
-    for _ in 0..20 {
-        command(&mut rig, 0, "Crate");
-        command(&mut rig, 1, "Crate");
-    }
-    rig.run(6);
-    // The first spawns; the next seven are heard and refused (the crate is in the way); the rest are dropped unheard.
-    let whys: Vec<String> = rig.peers.iter().map(|p| p.global("$RefusedWhy")).collect();
-    assert_eq!(
-        rig.eval("return propCount();"),
-        "1",
-        "{} {whys:?}",
-        refused(&rig)
-    );
-    assert_eq!(refused(&rig), 7);
-    let owner =
-        rig.eval("return propGetOwner(MissionCleanup.getObject(MissionCleanup.getCount() - 1));");
-    assert_ne!(owner, "0");
-}
-
-#[test]
-fn a_clients_spawn_is_checked_on_the_server() {
-    let (mut rig, _files) = clients(1, &[("$Test::Players", "1")], &[]);
-    rig.run(10);
-    let why = |rig: &Rig| rig.peers[0].global("$RefusedWhy");
-    // Not a prop datablock, and one players may not spawn.
-    command(&mut rig, 0, "FloorData");
-    assert!(rig.run_until(20, |r| refused(r) == 1));
-    assert!(why(&rig).contains("not a prop"), "{}", why(&rig));
-    command(&mut rig, 0, "Locked");
-    assert!(rig.run_until(20, |r| refused(r) == 2));
-    assert!(why(&rig).contains("may not spawn"), "{}", why(&rig));
+fn a_placement_is_refused_in_a_wall_a_vehicle_or_a_prop() {
+    let (mut rig, _files) = clients(1, &[], &[]);
+    let (eye, at) = ("0 -8 2", "0 -5 2");
+    assert_eq!(check(&mut rig, at, eye), "");
     // A wall between the eye and the point: the server's ray meets it.
-    rig.eval("new StaticShape(Wall) { dataBlock = FloorData; position = \"0 -6.6 0\"; scale = \"6 0.2 8\"; };");
+    rig.eval("new StaticShape(Wall) { dataBlock = FloorData; position = \"0 -6.5 0\"; scale = \"6 0.2 8\"; };");
     rig.run(2);
-    command(&mut rig, 0, "Crate");
-    assert!(rig.run_until(20, |r| refused(r) == 3));
-    assert!(why(&rig).contains("in the way"), "{}", why(&rig));
+    assert_eq!(check(&mut rig, at, eye), "something is in the way");
     rig.eval("Wall.delete();");
-    // A frozen crate already at the point: no room.
-    let at = rig.eval(
-        "%p = ClientGroup.getObject(0).player; %t = %p.getTransform();          return getWord(%t, 0) SPC getWord(%t, 1) + 2.5 SPC getWord(%t, 2) + 1.7;",
+    rig.run(2);
+    // A vehicle where the prop would go.
+    rig.eval("new WheeledVehicle(Car) { dataBlock = BuggyData; position = \"0 -5 1.2\"; };");
+    rig.run(2);
+    let why = check(&mut rig, at, eye);
+    assert!(
+        why == "there is no room there" || why == "something is in the way",
+        "{why:?}"
     );
+    rig.eval("Car.delete();");
+    rig.run(2);
+    assert_eq!(check(&mut rig, at, eye), "");
+    // A frozen prop already there: no room.
     let blocker = rig.eval(&format!(
         "%c = propSpawn(Crate, \"{at}\"); propFreeze(%c); return %c;"
     ));
     assert_ne!(blocker, "0");
-    rig.run(70);
-    command(&mut rig, 0, "Crate");
-    assert!(rig.run_until(20, |r| refused(r) == 4));
-    assert!(why(&rig).contains("no room"), "{}", why(&rig));
-    // Out of the way, the same request spawns.
+    assert_eq!(check(&mut rig, at, eye), "there is no room there");
     rig.eval(&format!("propDelete({blocker});"));
+    assert_eq!(check(&mut rig, at, eye), "");
+    // Not a prop datablock, a transform or an eye that is out of the world or not a number.
+    assert_eq!(
+        rig.eval(&format!(
+            "return propCheckPlacement(FloorData, \"{at}\", \"{eye}\");"
+        )),
+        "that is not a prop datablock"
+    );
+    assert_eq!(
+        check(&mut rig, "0 0 1e40", eye),
+        "the transform is out of the world"
+    );
+    assert_eq!(
+        check(&mut rig, at, "nan 0 2"),
+        "the eye is out of the world"
+    );
+    assert_eq!(
+        check(&mut rig, at, "0 -8 1e30"),
+        "the eye is out of the world"
+    );
+    // An axis whose length overflows is no turn.
+    assert_eq!(
+        check(&mut rig, "0 -5 2 1e30 0 0 1", eye),
+        "the transform is out of the world"
+    );
+    assert_eq!(check(&mut rig, "0 -5 2 1 0 0 1", eye), "");
+    // Out of reach: 32 units by default, or the reach given.
+    assert_eq!(check(&mut rig, at, "0 -45 2"), "that is out of reach");
+    let near = |rig: &mut Rig, reach: &str| {
+        rig.eval(&format!(
+            "return propCheckPlacement(Crate, \"{at}\", \"{eye}\", 0, {reach});"
+        ))
+    };
+    assert_eq!(near(&mut rig, "2"), "that is out of reach");
+    assert_eq!(near(&mut rig, "4"), "");
+    assert_eq!(near(&mut rig, "-1"), "that is out of reach");
+    // Only a player or a controlled object may be left out of the ray: a wall may not.
+    rig.eval("new StaticShape(Post) { dataBlock = FloorData; position = \"0 -6.5 0\"; scale = \"6 0.2 8\"; };");
     rig.run(2);
-    command(&mut rig, 0, "Crate");
-    rig.run(4);
-    assert_eq!(refused(&rig), 4, "{}", why(&rig));
+    let post = rig.eval("return Post.getId();");
+    assert_eq!(
+        rig.eval(&format!(
+            "return propCheckPlacement(Crate, \"{at}\", \"{eye}\", {post});"
+        )),
+        "only a player or a controlled object may be left out of the ray"
+    );
+    rig.eval("Post.delete();");
+    rig.run(2);
+    assert_eq!(
+        check(&mut rig, "200000 0 2", eye),
+        "the transform is out of the world"
+    );
+    // The caps are still propSpawn's own: a placement that is clear spawns only within them.
+    rig.eval("$Pref::Props::MaxProps = 1;");
+    rig.run(1);
+    assert!(spawn(&mut rig, &format!("return propSpawn(Crate, \"{at}\");")) > 0);
+    assert_eq!(check(&mut rig, "4 -5 2", "4 -8 2"), "");
+    assert_eq!(spawn(&mut rig, "return propSpawn(Crate, \"4 -5 2\");"), 0);
     assert_eq!(rig.eval("return propCount();"), "1");
+}
+
+#[test]
+fn a_players_own_figure_may_be_left_out_of_the_ray() {
+    let (mut rig, _files) = clients(1, &[("$Test::Players", "1")], &[]);
+    rig.run(10);
+    // From inside the figure's own box, toward a point in front of it: blocked by the figure unless it is left out.
+    let player = rig.eval("return ClientGroup.getObject(0).getControlObject();");
+    let base = rig.eval("%t = ClientGroup.getObject(0).getControlObject().getTransform(); return getWords(%t, 0, 2);");
+    let w: Vec<f32> = base
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let eye = format!("{} {} {}", w[0], w[1], w[2] + 1.7);
+    let at = format!("{} {} {}", w[0], w[1] + 2.5, w[2] + 1.7);
+    assert_eq!(
+        rig.eval(&format!(
+            "return propCheckPlacement(Crate, \"{at}\", \"{eye}\", {player});"
+        )),
+        ""
+    );
+}
+
+#[test]
+fn a_client_sending_the_old_spawn_command_gets_nothing() {
+    let (mut rig, _files) = clients(1, &[("$Test::Players", "1")], &[]);
+    rig.run(10);
+    for _ in 0..5 {
+        rig.peers[0]
+            .client
+            .vm_mut()
+            .eval(b"commandToServer('PropSpawn', \"Crate\");")
+            .unwrap();
+    }
+    rig.run(20);
+    assert_eq!(rig.eval("return propCount();"), "0");
+    assert_eq!(rig.peers[0].global("$Refused"), "");
+    assert!(rig.peers[0].props().is_empty());
 }
 
 /// The connection that joined last.
@@ -337,4 +391,27 @@ fn an_owner_with_no_readable_address_is_capped_under_its_connection() {
             .eval(format!("return propSpawn(Crate, \"{} 6 1\", {conn});", k * 2).as_bytes());
     }
     assert_eq!(rig.eval(&format!("return propCount({conn});")), "2");
+}
+
+#[test]
+fn no_script_text_is_built_from_what_a_player_controls() {
+    let (mut rig, _files) = clients(1, &[], &[]);
+    let conn = newest(&mut rig);
+    // An owner key, a datablock name and a transform shaped like script: each is data, never run.
+    rig.eval(&format!(
+        "{conn}.propOwnerKey = \"\\\"); $Injected = 1; (\\\"\";"
+    ));
+    let id = spawn(
+        &mut rig,
+        &format!("return propSpawn(Crate, \"0 4 1\", {conn});"),
+    );
+    assert!(id > 0);
+    let why = rig.eval(
+        "return propCheckPlacement(\"Crate\\\"); $Injected = 2; (\\\"\", \"0 -5 2\", \"0 -8 2\");",
+    );
+    assert_eq!(why, "that is not a prop datablock");
+    let _ = rig.eval("return propCheckPlacement(Crate, \"0 -5 2; $Injected = 3;\", \"0 -8 2\");");
+    rig.run(5);
+    assert_eq!(rig.eval("return $Injected;"), "");
+    assert_eq!(rig.eval(&format!("return propCount({conn});")), "1");
 }

@@ -2,7 +2,7 @@
 //!
 //! - A hostile server: records of every shape (decoded from random bytes, and made of random values) reach a client's book, its
 //!   collision source and its draw function: nothing panics, the book stays within its cap, every shape it gives is finite.
-//! - Hostile clients: `serverCmdPropSpawn` and the `prop*` functions called with junk on a running server: nothing panics and the
+//! - Hostile callers: the `prop*` functions and `propCheckPlacement` called with junk on a running server: nothing panics and the
 //!   caps hold.
 
 #[path = "net/rig.rs"]
@@ -225,8 +225,8 @@ fn hostile_commands_and_calls_never_panic_the_server_and_the_caps_hold() {
         let (a, b, c) = (junk(&mut rng), junk(&mut rng), junk(&mut rng));
         let id = rng.int();
         let code = match k % 8 {
-            0 => format!("serverCmdPropSpawn({client}, \"{a}\", \"{b}\");"),
-            1 => format!("serverCmdPropSpawn(\"{a}\", \"{b}\");"),
+            0 => format!("propCheckPlacement(\"{a}\", \"{b}\", \"{c}\", {id});"),
+            1 => format!("propCheckPlacement(Crate, \"{b}\", \"{c}\", {client});"),
             2 => format!("propSpawn(\"{a}\", \"{b}\", \"{c}\");"),
             3 => format!("propSpawn(Slider, \"{b}\", {client}, \"{c}\");"),
             4 => {

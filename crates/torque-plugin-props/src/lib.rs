@@ -5,8 +5,9 @@
 //! - the datablock class `PropData` ([`PropData`]): what a kind of prop collides as, its mass, friction and bounce, when it sleeps,
 //!   whether it may be frozen, the shape it is drawn as;
 //! - the console class `Prop` ([`server::NetProp`]) and the server's console functions `propSpawn`, `propDelete`, `propFreeze`,
-//!   `propUnfreeze`, `propApplyImpulse`, `propSetVelocity`, the getters, and the rate-limited command `serverCmdPropSpawn`
-//!   ([`server`]);
+//!   `propUnfreeze`, `propApplyImpulse`, `propSetVelocity`, the getters, and `propCheckPlacement` ([`natives`]): a server API
+//!   only. Props have no client entry point: a game's own server commands decide who may spawn what, checking a placement
+//!   with [`ServerProps::check_placement`] first;
 //! - one persistent Rapier world on the server ([`PropWorld`], on [`torque_physics_rapier`]) stepped after each tick's objects,
 //!   its state quantized to the wire's precision every tick ([`quant`]), so a client is sent the server's state exactly;
 //! - a collision source on both sides: players, items and projectiles hit props as static boxes, and a player or vehicle that
@@ -43,8 +44,9 @@
 //! # Limits
 //!
 //! Props per player (`$Pref::Props::MaxPerPlayer`, 64), per server (`$Pref::Props::MaxProps`, 1,024) and awake at once
-//! (`$Pref::Props::MaxAwake`, 256). A spawn past the first two is refused with a console error (and, for a client's command, a
-//! `clientCmdPropRefused`); past the awake cap the props farthest from every player sleep first. The step is charged to a budget
+//! (`$Pref::Props::MaxAwake`, 256), and per remote address of the owners (`$Pref::Props::MaxPerAddress`, 256), whoever asked
+//! for the spawn. A spawn past a cap is refused with a console error; past the awake cap the props farthest from every player
+//! sleep first. The step is charged to a budget
 //! (`$Pref::Props::StepBudget`): a step past it does not run, and the awake cap is lowered until the step fits again.
 //!
 //! # Network
@@ -52,11 +54,42 @@
 //! A server and a client must both have the plugin (the handshake refuses a client without it before any ghost). A TGE-protocol
 //! peer is never sent a prop. A prop's updates take at most `$Pref::Props::NetShare` (40%) of each packet, the ones that matter most
 //! to that client first ([`server::priority`]); asleep and frozen props cost nothing after their last update.
-
-#![expect(
-    clippy::neg_cmp_op_on_partial_ord,
-    reason = "a negated comparison is how a NaN takes a fixed side: `!(a < b)` is \"not below, or unordered\""
-)]
+//!
+//! # Maintaining
+//!
+//! **Modules.** [`natives`]: the server's console functions and the placement checks. [`tick`]: the server's tick hook (owners,
+//! statics, pushes, the step, the writeback). [`world`]: the physics world and every rule about props, with no script engine.
+//! [`quant`]: the wire's precision. [`records`], [`data`], [`client`]: what goes on the net (the ghost and datablock records) and
+//! what a client does with it. [`server`]: the state, spawning, the collision source and the update priority.
+//!
+//! **One tick.** After the process list, the hook drops props whose objects went, tends owners and orphans, looks for the map's
+//! statics every 64 ticks, gathers the players' and vehicles' pushes, and calls [`PropWorld::tick`]: a stopped world is made
+//! again, pushes become impulses, the world steps (not when nothing moves) under the step budget, each awake prop is quantized
+//! and written back, sleepers and the awake cap are applied. The hook then writes the record fields of each dirty prop, marks its
+//! ghost groups, deletes the props that went, and calls `onPropSleep` and `onPropWake`.
+//!
+//! **Invariants**, each with the test that guards it:
+//! - The state written back is the wire's, so a client restores the server's bits and native equals wasm32:
+//!   `every_awake_state_is_written_back_at_the_wires_precision`, `a_quantized_state_quantizes_back_to_the_same_state`, and the
+//!   `props-drop` line of `just trace-hash`.
+//! - No script text is built from what a player controls (objects are made with `Vm::new_object`, callbacks called natively):
+//!   `no_script_text_is_built_from_what_a_player_controls`.
+//! - Caps per owner, per address and per server hold whoever asks: `the_caps_refuse_the_65th_for_a_player_and_the_1025th_for_the_server`,
+//!   `the_players_of_one_address_share_its_cap_whatever_their_keys`, `reconnecting_from_one_address_does_not_start_a_new_quota`,
+//!   `an_owner_with_no_readable_address_is_capped_under_its_connection`.
+//! - A share group's priority stays below a kill's: `a_pending_kill_goes_before_a_share_update_of_any_priority` (torque-net).
+//! - A poisoned world is made again: `a_stopped_world_is_made_again_from_the_props_states`,
+//!   `a_prop_lost_when_the_physics_world_is_made_again_is_deleted_everywhere`.
+//! - This crate has no client entry point: `a_client_sending_the_old_spawn_command_gets_nothing`.
+//!
+//! **Extension points.** `engine.net().ghost_share` (the props' share of each packet and their [`server::priority`]); the
+//! collision sources ([`server::ServerSource`], [`client::ClientSource`]) other movers meet props through; and
+//! [`ServerProps::check_placement`] (`propCheckPlacement`), which a game's own rate-limited, permission-checked server command
+//! calls before `propSpawn`.
+//!
+//! **Checks.** `cargo test -p torque-plugin-props`; the fuzzers with `TORQUE_FUZZ_PROPS=100000`; `just trace-hash` (the
+//! `props-drop` line must be equal native and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props --bench
+//! step` under the bench lock.
 
 pub mod client;
 pub mod data;
@@ -157,7 +190,6 @@ impl Plugin for PropsPlugin {
             .client_script()
             .class::<PropData>()
             .class::<server::NetProp>();
-        engine.server_command("PropSpawn", natives::spawn_spec(), natives::cmd_prop_spawn);
         engine.push(ServerTick::after(tick::hook(server)));
     }
 }

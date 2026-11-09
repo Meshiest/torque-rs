@@ -65,9 +65,6 @@ pub struct PropData {
     /// The most props of this kind one player may own (0: only the server's per-player cap).
     #[field(name = "maxPerPlayer", range = 0..=1024, default = 0)]
     pub max_per_player: i32,
-    /// Whether a client may ask for one (`commandToServer('PropSpawn', ..)`); scripts spawn any kind.
-    #[field(name = "clientSpawn", default = false)]
-    pub client_spawn: bool,
 }
 
 /// What a prop collides as.

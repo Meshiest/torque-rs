@@ -222,9 +222,10 @@ different.
   answer for, so what a plugin owns blocks Players and vehicles on both sides alike (`engine.push(PluginCollision::server(..))`,
   `PluginCollision::client(..)`), listed in the handshake manifest so peers with other sources are refused. Capped in sources, shapes, hull size and work per query; an engine with none is unchanged.
 - `torque-plugin-props` (optional): props, rigid bodies a server simulates in one persistent deterministic Rapier world and every
-  client is sent and draws as shapes (`PropData`, `propSpawn` and kin, a rate-limited `serverCmdPropSpawn`), their state quantized
+  client is sent and draws as shapes (`PropData`, `propSpawn` and kin, a server API with no client entry point, and
+  `propCheckPlacement` for a game's own spawn commands), their state quantized
   to the wire's precision each tick so clients hold the server's state exactly; players and vehicles collide with them and push
-  them; caps per player, per server and awake (the farthest sleep first), a step budget, sleeping props that cost nothing, owners
+  them; caps per player, per remote address, per server and awake (the farthest sleep first), a step budget, sleeping props that cost nothing, owners
   whose props outlive them for a while.
 
 #### Content import

@@ -1,6 +1,6 @@
 //! The server's half: the `Prop` console class a prop is (its fields are what [`PropGhost`](crate::records::PropGhost) is packed
 //! from), the server's state ([`ServerProps`]), spawning, the collision source players meet props through, and the order of the
-//! props' updates in each packet. The console functions and the client's command are [`crate::natives`]; the tick hook is
+//! props' updates in each packet. The console functions and the placement checks are [`crate::natives`]; the tick hook is
 //! [`crate::tick`].
 
 use std::cell::RefCell;
@@ -10,7 +10,6 @@ use std::rc::Rc;
 
 use torque_collide::source::{CollisionShape, CollisionSource, ShapeKind};
 use torque_collide::types::STATIC_SHAPE;
-use torque_engine::command::TokenBucket;
 use torque_engine::{EngineClass, Prefs, ScriptClass, ScriptError, VmPrefs};
 use torque_ts_vm::fields::Value as Field;
 use torque_ts_vm::geometry;
@@ -110,15 +109,8 @@ pub struct NetProp {
     q_ang_z: i32,
 }
 
-/// The rate of the clients' spawns from one remote address: the command's own, so a player cannot spend it again by
-/// connecting again.
-pub const SPAWN_RATE: (u32, u32) = (4, 8);
-
-/// The most remote addresses whose spawn rate is kept; past it the ones idle longest are forgotten.
-pub const MAX_RATE_ADDRESSES: usize = 256;
-
 /// The server's state for props: the world (made at the first tick or spawn, with the sub-steps the prefs say then) and what the
-/// tick hook and the command keep between ticks.
+/// tick hook keeps between ticks.
 #[derive(Debug)]
 pub struct PropServer {
     pub world: Option<PropWorld>,
@@ -126,15 +118,9 @@ pub struct PropServer {
     pub tick: u64,
     /// The share of each packet the props take (the pref, read each tick).
     pub net_share: f32,
-    /// The tick the next refused spawn may print its line (one a second).
-    pub(crate) refused_at: u64,
-    /// The tag of `clientCmdPropRefused`, entered once.
-    pub(crate) refused_tag: Option<u32>,
     /// The object each owner's connection controls, by connection (made each tick, for the priority, which runs inside the
     /// ghosting and so may not ask the ghosting layer itself).
     pub(crate) controls: BTreeMap<u32, u32>,
-    /// Each remote address's spawn bucket and the tick it was last used.
-    pub(crate) rates: BTreeMap<Rc<str>, (TokenBucket, u64)>,
 }
 
 impl Default for PropServer {
@@ -144,10 +130,7 @@ impl Default for PropServer {
             world: None,
             tick: 0,
             net_share: DEFAULT_NET_SHARE,
-            refused_at: 0,
-            refused_tag: None,
             controls: BTreeMap::new(),
-            rates: BTreeMap::new(),
         }
     }
 }
@@ -159,27 +142,6 @@ impl PropServer {
             let prefs = vm.prefs::<PropPrefs>();
             PropWorld::new(prefs.substeps as u8, limits_of(&prefs))
         })
-    }
-
-    /// Spends one of `address`'s spawns; false when its bucket is empty.
-    pub(crate) fn take_spawn(&mut self, address: &Rc<str>) -> bool {
-        let tick = self.tick;
-        if !self.rates.contains_key(address) && self.rates.len() >= MAX_RATE_ADDRESSES {
-            let idle = self
-                .rates
-                .iter()
-                .min_by_key(|(_, (_, at))| *at)
-                .map(|(a, _)| Rc::clone(a));
-            if let Some(idle) = idle {
-                self.rates.remove(&idle);
-            }
-        }
-        let (bucket, at) = self
-            .rates
-            .entry(Rc::clone(address))
-            .or_insert_with(|| (TokenBucket::new(SPAWN_RATE.0, SPAWN_RATE.1, tick), tick));
-        *at = tick;
-        bucket.take(tick)
     }
 }
 

@@ -54,7 +54,6 @@ datablock PropData(Crate)
    sleepAngular = 0.2;            // (0 for either: never sleeps)
    canFreeze = true;
    maxPerPlayer = 0;              // 0: only the server's per-player cap
-   clientSpawn = false;           // whether players may ask for one (scripts spawn any kind)
 };
 
 function Crate::onPropSpawn(%this, %prop) {}
@@ -72,24 +71,61 @@ All run on the server.
 
 | Function | Does |
 |---|---|
-| `propSpawn(datablock, transform [, owner, predictId])` | spawns a prop at `"x y z [ax ay az angle]"`; returns its object id, or prints an error and returns 0 past a cap |
+| `propSpawn(datablock, transform [, owner, predictId])` | spawns a prop at `"x y z [ax ay az angle]"`; returns its object id, or prints an error and returns 0 past a cap (the owner's caps only when an owner is given) |
 | `propDelete(prop)` | takes it away from the world and every client (`%prop.delete()` does too) |
 | `propFreeze(prop)`, `propUnfreeze(prop)` | pins it where it is (others rest on it), or lets it move again |
 | `propApplyImpulse(prop, "x y z")` | a push, mass times units a second |
 | `propSetVelocity(prop, velocity [, spin])` | sets its speed (held to `maxSpeed`) and spin |
 | `propGetVelocity`, `propGetSpin`, `propGetTransform`, `propIsAsleep`, `propIsFrozen`, `propGetOwner` | what the clients are sent |
 | `propCount([client])`, `propAwakeCount()` | how many there are (a client's own), how many are awake |
+| `propCheckPlacement(datablock, transform, eye [, ignore, reach])` | "" when a prop may be spawned there for a player, else the reason |
 
 A prop is a `SceneObject`: `getTransform()` and `getPosition()` read the pose the clients are sent. It is put in `MissionCleanup`
 when there is one.
 
-A client asks for a prop with `commandToServer('PropSpawn', %datablock [, %predictId])`. The server checks everything: the name is
-a `PropData` with `clientSpawn = true`, the client controls a player, the point (2.5 units in front of the player's eye, never one
-the client sends) is inside the world, the server's own ray from the eye reaches it (no wall, shape, vehicle, player or item in the
-way), the prop's box there overlaps nothing (the map, shapes, vehicles, players, items, other props), and the caps. The command is
-limited to 4 a second after a burst of 8, per connection and per remote address (so connecting again does not refill it); a
-refusal prints at most one console line a second and sends the client `clientCmdPropRefused(%reason)`. No script text is built from
-what a client sends: the prop is made and the client told by native calls.
+Props have **no client entry point**: no client command spawns, pushes or freezes one. Who may spawn what is the game's decision
+(a sandbox mode, a game's own scripts), made in its own server commands. Before it spawns a prop for a player, a game asks
+`propCheckPlacement(datablock, transform, eye [, ignore, reach])` (in Rust, `ServerProps::check_placement` with a `Placement`):
+it returns "" when the prop may go there, else the reason. The checks: the datablock is a `PropData`; the transform is finite, its
+rotation a turn and inside the world; the eye too; the prop is within `reach` of the eye (32 units by default); the server's own
+ray from the eye reaches the prop's position (no wall, shape, vehicle, player or item in the way); and the prop's box there
+overlaps nothing (the same, and other props). `ignore` is left out of the ray alone, and must be the object the server gives that
+client to control (`%client.getControlObject()`), never an id the client sent: anything that is neither a player nor controlled
+is refused.
+
+`propSpawn`'s per-owner, per-address and `maxPerPlayer` caps apply only when it is given the owner (`propSpawn(Crate, %at,
+%client)`); a prop with no owner counts against the server's cap alone. A game spawning for a player passes the player's
+connection.
+
+A server command is limited only when the game declares its limits: without a declaration, TGE's `serverCmd` runs every call. A
+game's plugin declares the command's rate and permission once, and its script is then the command:
+
+```rust,ignore
+use torque_engine::command::CommandSpec;
+
+engine.server_command_limits(
+    "SpawnCrate",
+    CommandSpec::new().rate(4, 8).requires("props.spawn"),   // 4 a second after a burst of 8, and the permission
+);
+```
+
+```
+declarePermission("props.spawn", "spawn props in front of you");
+
+function serverCmdSpawnCrate(%client)
+{
+   %player = %client.getControlObject();
+   %eye = %player.getEyePoint();
+   %at = VectorAdd(%eye, VectorScale(%player.getEyeVector(), 2.5));
+   %why = propCheckPlacement(Crate, %at, %eye, %player);
+   if (%why !$= "")
+      return messageClient(%client, '', %why);
+   propSpawn(Crate, %at, %client);
+}
+```
+
+No script text is built from what a player controls: props are made with the script engine's native object call, and callbacks
+are called natively.
 
 ## Players, vehicles and projectiles
 

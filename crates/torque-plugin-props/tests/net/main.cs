@@ -16,9 +16,3 @@ function GameConnection::onConnectRequestRejected(%this, %why)
 {
    $Why = %why;
 }
-
-function clientCmdPropRefused(%why)
-{
-   $Refused++;
-   $RefusedWhy = %why;
-}

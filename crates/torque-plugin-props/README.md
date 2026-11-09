@@ -37,9 +37,8 @@ propApplyImpulse(%crate, "0 40 0");
 - `PropData` (shape, collision box or ball, mass or density, friction, restitution, damping, top speed, sleep thresholds,
   `canFreeze`, `maxPerPlayer`), every number clamped on write and on read; callbacks `onPropSpawn`, `onPropSleep`, `onPropWake`.
 - The `Prop` class and `propSpawn`, `propDelete`, `propFreeze`, `propUnfreeze`, `propApplyImpulse`, `propSetVelocity`, the getters,
-  `propCount`, `propAwakeCount`; `commandToServer('PropSpawn', %datablock [, %predictId])` for clients (datablocks with
-  `clientSpawn = true`), checked on the server (a ray from the eye, a box that overlaps nothing) and limited to 4 a second after a
-  burst of 8 per connection and per address.
+  `propCount`, `propAwakeCount`, and `propCheckPlacement` (a ray from the eye, a box that overlaps nothing), which a game's own
+  server command calls before it spawns for a player. Props have no client entry point.
 - A collision source on both sides (`$TypeMasks::PropObjectType`): players, items and projectiles hit props, vehicles see them as
   static, and a player or vehicle that walks into one pushes it.
 - The `Prop` ghost class, its updates held to `$Pref::Props::NetShare` (40%) of each packet and ordered for each client (touched

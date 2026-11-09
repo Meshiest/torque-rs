@@ -11,7 +11,7 @@ keywords = ["torque", "physics", "props", "plugin", "gamedev"]
 categories = ["game-development", "simulation"]
 
 # Props: the `PropData` datablock class and the `Prop` ghost class, one persistent Rapier world a server steps after each tick's
-# objects, the `prop*` console functions and the rate-limited `serverCmdPropSpawn`, a collision source on each side (players
+# objects, the `prop*` console functions (a server API: no client entry point), a collision source on each side (players
 # collide with props), and each client's book of the props it was sent, drawn as shapes. Nothing here draws by itself, so the
 # crate builds for wasm32 too.
 

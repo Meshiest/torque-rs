@@ -28,6 +28,14 @@ pub fn files() -> GameFiles {
         "kit/figure.dts",
         &dts(&torque_example_assets::shapes::figure()),
     );
+    files.insert(
+        "kit/buggy.dts",
+        &dts(&torque_example_assets::buggy::buggy()),
+    );
+    files.insert(
+        "kit/buggy_wheel.dts",
+        &dts(&torque_example_assets::buggy::wheel()),
+    );
     files
 }
 

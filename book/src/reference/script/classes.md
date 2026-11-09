@@ -87,7 +87,7 @@ Console classes, with the fields each adds to its parent's. 116 classes.
 | [Projectile](#projectile) | [GameBase](#gamebase) | 4 |
 | [ProjectileData](#projectiledata) | [GameBaseData](#gamebasedata) | 23 |
 | [Prop](#prop) | [SceneObject](#sceneobject) | 19 |
-| [PropData](#propdata) | [GameBaseData](#gamebasedata) | 16 |
+| [PropData](#propdata) | [GameBaseData](#gamebasedata) | 15 |
 | [Rope](#rope) | [SceneObject](#sceneobject) | 29 |
 | [RopeData](#ropedata) | [SimDataBlock](#simdatablock) | 20 |
 | [ScatterSky](#scattersky) | [SceneObject](#sceneobject) | 11 |
@@ -1232,7 +1232,6 @@ No fields of its own.
 | `sleepAngular` | float | `0.2` | 0 to 10 |  |
 | `canFreeze` | bool | `1` |  | Whether `propFreeze` may pin it in place. |
 | `maxPerPlayer` | int | `0` | 0 to 1024 | The most props of this kind one player may own (0: only the server's per-player cap). |
-| `clientSpawn` | bool | `0` |  | Whether a client may ask for one (`commandToServer('PropSpawn', ..)`); scripts spawn any kind. |
 
 ## Rope
 
