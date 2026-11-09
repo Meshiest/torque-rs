@@ -168,6 +168,26 @@ pub(crate) fn coord(c: f32) -> f32 {
     }
 }
 
+/// The transform that moves the origin to `at` and turns nothing (a row-major 4 by 4 matrix).
+pub(crate) fn pose_at(at: [f32; 3]) -> [f32; 16] {
+    let mut pose = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    [pose[3], pose[7], pose[11]] = at;
+    pose
+}
+
+/// The point `offset` from a ghost in the ghost's own frame, in the world: the offset turned by the transform `pose` (a row-major
+/// 4 by 4 matrix) and added to its translation.
+pub(crate) fn held_at(pose: &[f32; 16], offset: Vec3) -> Vec3 {
+    let turned = Vec3::new(
+        pose[0] * offset.x + pose[1] * offset.y + pose[2] * offset.z,
+        pose[4] * offset.x + pose[5] * offset.y + pose[6] * offset.z,
+        pose[8] * offset.x + pose[9] * offset.y + pose[10] * offset.z,
+    );
+    point((Vec3::new(pose[3], pose[7], pose[11]) + turned).to_array())
+}
+
 /// `p` as a point the simulation can hold ([`coord`] for each coordinate).
 pub(crate) fn point(p: [f32; 3]) -> Vec3 {
     Vec3::from(p.map(coord))
@@ -1160,8 +1180,8 @@ impl RopeWorld {
 
     /// [`RopeWorld::pin_ghost`] holding the point `offset` from the node, in the ghost's own frame: the end is where the frame draws
     /// that point of the ghost (the node's place moved by the offset turned with the ghost's drawn transform), each frame, so it
-    /// rotates with the ghost and moves with its interpolation. A client that draws no frame ([`RopeWorld::follow_ghosts`]) adds
-    /// the offset to the ghost's position unrotated.
+    /// rotates with the ghost and moves with its interpolation. A client that draws no frame ([`RopeWorld::follow_ghost_poses`]) turns
+    /// the offset by the ghost's transform the same way; [`RopeWorld::follow_ghosts`], which is given positions, adds it unrotated.
     pub fn pin_ghost_at(
         &mut self,
         id: RopeId,
@@ -1209,10 +1229,21 @@ impl RopeWorld {
     /// Reads where the ghosts that ends pinned with [`RopeWorld::pin_ghost`] follow are, for a client that draws no frame
     /// (`read(ghost, node)`: None when the client has no such ghost). An end whose ghost was read once and is gone lets go, as an end
     /// hung from a deleted object does; the ends that did are returned. Ends whose ghost the frame draws follow that instead
-    /// ([`RopeWorld::step_frame`]).
+    /// ([`RopeWorld::step_frame`]). An end's offset is added as it is, not turned with the ghost: use
+    /// [`RopeWorld::follow_ghost_poses`] when the ghosts can turn.
     pub fn follow_ghosts(
         &mut self,
         mut read: impl FnMut(u32, &str) -> Option<[f32; 3]>,
+    ) -> Vec<(RopeId, RopeEnd)> {
+        self.follow_ghost_poses(|ghost, node| read(ghost, node).map(pose_at))
+    }
+
+    /// [`RopeWorld::follow_ghosts`] with each ghost's whole transform (a row-major 4 by 4 matrix, the engine's): an end hung at an
+    /// offset ([`RopeWorld::pin_ghost_at`]) holds the point `offset` from the ghost in the ghost's own frame, turned by the
+    /// transform as [`FrameAnchors::mount_at`](crate::FrameAnchors::mount_at) turns it for a drawn ghost.
+    pub fn follow_ghost_poses(
+        &mut self,
+        mut read: impl FnMut(u32, &str) -> Option<[f32; 16]>,
     ) -> Vec<(RopeId, RopeEnd)> {
         let mut lost = Vec::new();
         for (&id, rope) in &mut self.ropes {
@@ -1227,10 +1258,10 @@ impl RopeWorld {
                     continue;
                 };
                 match read(*ghost, node) {
-                    Some(at) => {
+                    Some(pose) => {
                         held.ghost_seen = true;
                         if held.drawn.is_none() {
-                            held.target = point((Vec3::from(at) + held.offset).to_array());
+                            held.target = held_at(&pose, held.offset);
                         }
                     }
                     None if held.ghost_seen => {

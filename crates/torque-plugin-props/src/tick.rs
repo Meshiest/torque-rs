@@ -22,6 +22,9 @@ pub const STATICS_EVERY: u64 = 64;
 
 /// The server's tick hook ([module docs](self)).
 pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
+    // A player at a grapple's end may hang on a parent that moved since the last resolve: its anchor is where the hierarchy
+    // puts it.
+    torque_game::scene::links::resolve(vm);
     let prefs = vm.prefs::<PropPrefs>();
     let (events, expired, rebuilt, broke, gone_joints, problems, hit) = {
         let mut srv = props.0.borrow_mut();

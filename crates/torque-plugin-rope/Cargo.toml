@@ -38,6 +38,8 @@ torque-server = { path = "../torque-server" }
 # The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
 torque-client = { path = "../torque-client" }
 torque-ghost-world = { path = "../torque-ghost-world" }
+# The matrix the client resolves a ghost to.
+torque-collide = { path = "../torque-collide" }
 # The hash a run is folded into.
 torque-trace-hash = { path = "../torque-trace-hash" }
 criterion = { workspace = true }

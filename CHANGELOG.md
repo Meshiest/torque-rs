@@ -234,7 +234,9 @@ different.
   moving in their parent's frame, and mounts never close a loop with parents; children resolved before every query, turn and read; `setParent`, `deleteRecursive` and kin, a server
   API with no client entry point. In the engine's protocol each child's link and quantized local pose ride its own update
   in a per-ghost block after the class record (a parent's motion sends nothing for its children; a link waits for its
-  parent's ghost), whole trees are scoped together, and clients check every link and draw children on their parents.
+  parent's ghost), whole trees are scoped together, and clients check every link and draw children on their parents. A rope end hung
+  from a child ghost follows the child's resolved pose (`ClientGhostLookup` answers through `ClientWorld::world_pose`), and a joint's
+  anchor on a Player child is read after the tree's pending moves are written.
 - `torque-game`: hitboxes with lag compensation (opt-in): a Player can be hit on its posed shape, checked against where
   the shooter saw it.
 - `torque::app::camera_blend` and `camera_boom`: a camera that moves smoothly between first and third person and a

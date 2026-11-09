@@ -53,7 +53,8 @@
 //!   applied sections created, updated and deleted (`ghost_world::world::TouchedGhosts`) and the walk of the whole class is for a
 //!   list that overflowed (a reset, or more than `MAX_TOUCHED_GHOSTS`); the bench is `ghost_read`. A scene-hierarchy child
 //!   moves with its parent without an update of its own, so a handler that follows where a ghost is drawn asks
-//!   `ClientWorld::world_pose` each frame rather than waiting to be told.
+//!   `ClientWorld::world_pose` each frame rather than waiting to be told; `ClientGhostLookup::position` (a plugin's view of
+//!   where a ghost is) answers the same way, so a rope hung from a child follows the child's resolved pose.
 //! - A connection reads the per-ghost block only when its engine's plugins fill it (`torque_ghosts::block::BlockSections`, a
 //!   resource of the engine, `conn::tge::ConnectHello::blocks`), and the manifest makes the server's plugins the same.
 //! - Nothing a server or an off-path sender can predict or flood is trusted: the TGE connect sequence mixes in the system's

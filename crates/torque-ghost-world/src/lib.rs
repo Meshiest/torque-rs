@@ -22,7 +22,8 @@
 //!   arrives or its time runs out (found by parent and by age, never by a walk of what waits).
 //! - [`ClientWorld::world_pose`] and the renderer (`torque_render_scene::mounts`) draw a child the way the server composes it,
 //!   by `torque_hierarchy::compose` (torque-plugin-hierarchy's `tests/net.rs`: within a millimetre over 600 ticks with a fifth
-//!   of the datagrams lost).
+//!   of the datagrams lost). A plugin's lookup of where a ghost is (`torque_engine::net_classes::ClientGhostLookup`, from the
+//!   client's connection) is [`ClientWorld::world_pose`] too (torque-plugin-rope's `tests/hierarchy_anchor.rs`).
 
 pub mod effects;
 pub mod images;

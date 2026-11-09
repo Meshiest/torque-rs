@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use glam::Vec3;
 use torque_engine::net_classes::{ClientGhostLookup, GhostEvent};
 use torque_engine::predict_ids::{self, PredictIds};
 use torque_engine::{Res, ScriptClass, VmMut, function};
@@ -17,7 +18,7 @@ use super::server::MAX_FX_SECONDS;
 use crate::data::{RopeData, RopeLook, RopeParams};
 use crate::driver::RopeDrivers;
 use crate::natives::{RopeShared, texture_loaded};
-use crate::sim::{Curve, MAX_COORD, RopeEnd, RopeError, RopeId, RopeWorld, Tangent};
+use crate::sim::{Curve, MAX_COORD, RopeEnd, RopeError, RopeId, RopeWorld, Tangent, pose_at};
 
 /// The most predicted ropes a client waits on at once (and so the most predict ids in use).
 pub const MAX_PREDICTED: usize = predict_ids::MAX_WAITING;
@@ -102,12 +103,20 @@ fn anchor_point(anchor: &AnchorWire, lookup: Option<&ClientGhostLookup>) -> [f32
     match anchor {
         AnchorWire::Point(at) => *at,
         AnchorWire::Ghost { ghost, offset, .. } => lookup
-            .and_then(|l| l.0.position(*ghost))
-            .map_or([0.0; 3], |at| {
-                crate::sim::point(std::array::from_fn(|k| at[k] + offset[k])).to_array()
+            .and_then(|l| placed(l, *ghost))
+            .map_or([0.0; 3], |pose| {
+                crate::sim::held_at(&pose, Vec3::from(*offset)).to_array()
             }),
         _ => [0.0; 3],
     }
+}
+
+/// Where the client has ghost `ghost`, as a transform: its resolved pose, else its position with no turn.
+fn placed(lookup: &ClientGhostLookup, ghost: u32) -> Option<[f32; 16]> {
+    lookup
+        .0
+        .pose(ghost)
+        .or_else(|| lookup.0.position(ghost).map(pose_at))
 }
 
 fn pin(world: &mut RopeWorld, rope: RopeId, end: RopeEnd, anchor: &AnchorWire) {
@@ -328,7 +337,7 @@ pub(crate) fn tick(
     seconds: f32,
 ) {
     if let Some(lookup) = lookup {
-        world.follow_ghosts(|ghost, _node| lookup.0.position(ghost));
+        world.follow_ghost_poses(|ghost, _node| placed(lookup, ghost));
     }
     for rope in net.predicted.expire(seconds, |&r| world.rope(r).is_some()) {
         let _ = world.set_lifetime(rope, PREDICT_FADE, PREDICT_FADE);

@@ -1353,23 +1353,31 @@ impl ConnGame for TgeConn {
     }
 }
 
-/// Where the connection's ghosts are, for the plugins ([`ClientGhosts`]).
+/// Where the connection's ghosts are, for the plugins ([`ClientGhosts`]): a scene-hierarchy child where its parents' poses put it
+/// ([`ClientWorld::world_pose`]), any other ghost where the client draws it or its record puts it. A parent's node counts as the parent's
+/// origin: the connection holds no shapes to pose.
 struct GhostPlaces(Rc<RefCell<ClientState<TgeConn>>>);
 
 impl ClientGhosts for GhostPlaces {
     fn position(&self, index: u32) -> Option<[f32; 3]> {
-        use ghost_world::world::Pose;
+        if let Some(m) = self.pose(index) {
+            return Some(collide::math::translation(&m));
+        }
         let st = self.0.try_borrow().ok()?;
-        let ghost = st.conn.conn.as_ref()?.world.records.ghosts.get(&index)?;
-        ghost.position.or_else(|| {
-            Some(match ghost.pose()? {
-                Pose::Affine { xf, .. } => xf.position.map(|f| f.get()),
-                Pose::Matrix { m, .. } => [m[3], m[7], m[11]],
-                Pose::Euler { position, .. }
-                | Pose::Quat { position, .. }
-                | Pose::Item { position, .. } => position,
-            })
-        })
+        st.conn
+            .conn
+            .as_ref()?
+            .world
+            .records
+            .ghosts
+            .get(&index)?
+            .position
+    }
+
+    fn pose(&self, index: u32) -> Option<collide::math::Matrix> {
+        let st = self.0.try_borrow().ok()?;
+        let records = &st.conn.conn.as_ref()?.world.records;
+        records.world_pose(index, &|_, _| None).map(|(m, _)| m)
     }
 }
 

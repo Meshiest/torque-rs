@@ -67,6 +67,7 @@
 
 use std::rc::Rc;
 
+use torque_collide::math::Matrix;
 use torque_ghosts::plugin::PluginClassError;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
@@ -252,9 +253,15 @@ pub struct GhostSinks(pub Vec<GhostSink>);
 /// Where the client's ghosts are: a client's connection gives the script engine an implementation
 /// ([`ClientGhostLookup`]).
 pub trait ClientGhosts {
-    /// Where ghost `index` was last put by the server (its position), or none when the client has no such ghost or it has
-    /// no position.
+    /// Where ghost `index` is in the world: a scene-hierarchy child where its parents' poses put it, any other ghost where the
+    /// client draws it or its record puts it. None when the client has no such ghost or it has no position.
     fn position(&self, index: u32) -> Option<[f32; 3]>;
+
+    /// Where ghost `index` is in the world as a transform, resolved as [`ClientGhosts::position`] is, so a plugin can turn a
+    /// point in the ghost's own frame with it. None when the ghost has no pose (the default).
+    fn pose(&self, _index: u32) -> Option<Matrix> {
+        None
+    }
 }
 
 /// The client's [`ClientGhosts`], a script-engine extension of a client that is connected to a server.

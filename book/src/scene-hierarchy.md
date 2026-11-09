@@ -168,3 +168,17 @@ counted and the ghost is drawn at its record pose. A link to a ghost index the c
 and at most 4,096 wait at once; it is dropped when a ghost at that index goes, so it never lands on the next ghost given the
 index. `ClientWorld::links` holds a client's links, `ClientWorld::world_pose(index, nodes)` gives where
 a ghost is, through the hierarchy, and the renderer draws children the same way (`torque_render_scene::mounts`).
+
+## Ropes and joints on children
+
+Anything that hangs from a ghost follows where the client resolves it, not the pose the ghost's own record last carried (a
+child's record keeps the pose it had when it was linked, because its parent's motion sends nothing). A rope end hung from a
+child, a grandchild or a joint's rope end therefore moves with the parents, frame after frame. A plugin asks
+`ClientGhostLookup`, which answers through `ClientWorld::world_pose`; a client that draws no frame reads the ghost's resolved
+transform there and turns a rope end's offset by it, taking a parent's node as the parent's origin (it holds no shapes to pose),
+so with a parent hung on a node of its parent such an end can differ from where the renderer draws the shape. A client that does
+draw the ghost uses the pose the renderer drew, nodes included.
+
+On the server a joint's anchor on a Player is read when the props' tick hook runs, after the hierarchy has written any child
+whose parent moved since its last resolve, so a grapple's tether on a Player standing on a moving platform measures from the
+platform's pose of this tick.

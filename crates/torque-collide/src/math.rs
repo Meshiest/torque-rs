@@ -114,6 +114,11 @@ pub fn mul_p(m: &Matrix, p: F3) -> F3 {
     (library::get().mul_p)(m, p)
 }
 
+/// Where `m` puts the origin: its translation.
+pub fn translation(m: &Matrix) -> F3 {
+    [m[3], m[7], m[11]]
+}
+
 /// `MatrixF::mulV` (through the table).
 pub fn mul_v(m: &Matrix, v: F3) -> F3 {
     (library::get().mul_v)(m, v)

@@ -65,7 +65,12 @@
 //! **Offsets.** An end can hang from a point in a ghost's own frame: [`RopeWorld::pin_ghost_at`] (and `ropeNetAttachAt` from a server
 //! script) holds the point `offset` from the node, turned with the ghost's transform as the frame draws it
 //! ([`FrameAnchors::mount_at`]), so the end rotates with the ghost and is at the drawn point every frame, interpolated as the ghost
-//! is. A client that draws no frame adds the offset to the ghost's position unrotated.
+//! is. A client that draws no frame turns the offset by the ghost's resolved transform the same way
+//! ([`RopeWorld::follow_ghost_poses`]), so the two paths put the end at the same point.
+//!
+//! **Children of the scene hierarchy.** A ghost that hangs on another (a child, a grandchild) is where its parents put it, not
+//! where its own record last put it: a client that draws it follows the drawn pose, and one that draws no frame reads
+//! [`ClientGhostLookup`], which resolves through the hierarchy (a parent's node counts as the parent's origin there).
 //!
 //! # Limits
 //!
@@ -190,6 +195,11 @@
 //! it, a pin whose anchor moves, a new floor) wakes it, and a reeling, driven or fading rope never rests:
 //! `a_hanging_rope_comes_to_rest_and_an_impulse_wakes_it`. The bench: `cargo bench -p torque-plugin-rope --bench sim` (64 ropes
 //! of 32 segments at rest and swinging).
+//!
+//! **Anchors on children.** A rope end pinned to a ghost reads the ghost's resolved world pose (the client's [`ClientGhostLookup`]
+//! answers through `ClientWorld::world_pose`), never the pose of the ghost's last record: `a_rope_hung_from_a_grandchild_ghost_follows_its_resolved_pose_on_600_of_600_frames`
+//! (`tests/hierarchy_anchor.rs`: the end within a millimeter of the resolved anchor on 600 of 600 frames), and an offset is turned by that pose
+//! (`ClientGhosts::pose`) as the drawn path turns it: `a_rope_hung_at_an_offset_from_a_turning_grandchild_ends_where_the_drawn_path_puts_it`.
 
 mod data;
 pub mod driver;

@@ -122,8 +122,12 @@
 //!   `a_first_record_bonus_counts_for_the_first_record_alone`).
 //! - `tests/pictures.rs` draws a three-level hierarchy offscreen (`TORQUE_HIERARCHY_PICTURES=<folder>` keeps the PNGs).
 //!
-//! **Seams left for later work.** Prediction over parented colliders; props as children, and rope and joint anchors on
-//! children, build on [`ServerHierarchy::world`], the same resolve and `ClientWorld::world_pose`.
+//! **Anchors on children.** A rope end hung from a child ghost follows `ClientWorld::world_pose` (through the client's
+//! `ClientGhostLookup`): `torque-plugin-rope`'s `tests/hierarchy_anchor.rs`. A joint's anchor on a Player child is where the
+//! resolve put it, the props' tick hook writing the tree's pending moves before it reads: `tests/joint_anchor.rs`.
+//!
+//! **Seams left for later work.** Prediction over parented colliders, and props as children, build on
+//! [`ServerHierarchy::world`], the same resolve and `ClientWorld::world_pose`.
 //!
 //! **Checks.** `cargo test -p torque-plugin-hierarchy`; `TORQUE_FUZZ_HIERARCHY_NET=100000 cargo test -p
 //! torque-plugin-hierarchy --release --test net_fuzz`; `cargo clippy -p torque-plugin-hierarchy --all-targets -- -D

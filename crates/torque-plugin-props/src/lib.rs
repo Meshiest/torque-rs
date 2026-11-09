@@ -76,7 +76,8 @@
 //! `part.rs`: the slot's part, its world, the restore and replay, the drawing, the shots).
 //!
 //! **One tick.** During the process list each grappled Player's own step asks the server's tether source
-//! ([`joints::server::ServerTethers`]) for its tether and reports the pull back. After the process list, the hook drops props and
+//! ([`joints::server::ServerTethers`]) for its tether and reports the pull back. After the process list, the hook writes the
+//! scene hierarchy's pending children (a grappled Player may hang on a parent that moved), drops props and
 //! joints whose objects went, tends owners and orphans, looks for the map's statics every 64 ticks, tells the world where the
 //! grappled players are, gathers the players' and vehicles' pushes, and calls [`PropWorld::tick`]: a stopped world is made again
 //! (its joints too, in id order), pushes become impulses, grapples whose players went are taken out, each grapple's pull goes to
@@ -103,6 +104,9 @@
 //!   `the_players_of_one_address_share_its_cap_whatever_their_keys`, `reconnecting_from_one_address_does_not_start_a_new_quota`,
 //!   `an_owner_with_no_readable_address_is_capped_under_its_connection`.
 //! - A share group's priority stays below a kill's: `a_pending_kill_goes_before_a_share_update_of_any_priority` (torque-net).
+//! - A joint's anchor on a Player is where the scene hierarchy puts the Player, the tree's pending moves written first:
+//!   `a_grapple_from_a_player_on_a_moving_platform_measures_from_where_the_platform_puts_it` (torque-plugin-hierarchy's
+//!   `tests/joint_anchor.rs`). On a client a joint's ropes follow their ghost ends through the rope plugin, resolved the same way.
 //! - A poisoned world is made again: `a_stopped_world_is_made_again_from_the_props_states`,
 //!   `a_prop_lost_when_the_physics_world_is_made_again_is_deleted_everywhere`.
 //! - This crate has no client entry point: `a_client_sending_the_old_spawn_command_gets_nothing`, and for joints

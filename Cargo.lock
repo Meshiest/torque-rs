@@ -4736,6 +4736,7 @@ dependencies = [
  "glam 0.34.2",
  "torque-app",
  "torque-client",
+ "torque-collide",
  "torque-engine",
  "torque-game",
  "torque-ghost-world",
