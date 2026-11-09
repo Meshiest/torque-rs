@@ -4172,13 +4172,17 @@ version = "0.1.0"
 name = "torque-client-script-host"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
+ "torque-client-script-format",
  "torque-engine",
  "torque-mods",
  "torque-plugin-abi",
  "torque-plugin-loader",
  "torque-ts-vm",
+ "wasm-bindgen",
  "wasmtime",
  "wat",
+ "web-time",
 ]
 
 [[package]]
@@ -4247,6 +4251,16 @@ dependencies = [
  "torque-example-common",
  "torque-render-core",
  "torque-render-scene",
+]
+
+[[package]]
+name = "torque-example-client-script-web-check"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "torque-client-script-host",
+ "wasm-bindgen",
+ "wat",
 ]
 
 [[package]]

@@ -155,6 +155,27 @@ lua-web-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/lua-check.mjs "{{web_target}}/lua-web/check"
 
+# The client-script host's tests (crates/torque-client-script-host): its own, then every case of `cases` under Wasmtime with
+# the guest `lua-client-web` builds (the deadline cases, memory traps, the strike rule, grants and revocation,
+# teardown, the frame budget), clippy and formatting. Needs what `lua-web` needs
+client-script-host-test:
+    node web/lua-build.mjs --client
+    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-client-script-host --features wasmtime,cases -- --nocapture
+    cargo clippy -p torque-client-script-host --features wasmtime,cases --all-targets -- -D warnings
+    cargo clippy -p torque-client-script-host --all-targets -- -D warnings
+    cargo fmt -p torque-client-script-host -p torque-example-client-script-web-check --check
+
+# The client-script host's cases on the web: built for a browser (examples/client-script-web-check), each realm's guest
+# in a Worker of web/client-script.js, run under Node and in headless Chrome from the cursor guard
+# (web/client-script-check.mjs). Needs what `lua-web` needs and Chrome
+client-script-web-check:
+    node web/guard-scan.mjs
+    node --test web/client-script.test.mjs
+    node web/lua-build.mjs --client --check
+    node "{{web_target}}/lua-web/client-check/client-script-node.mjs"
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node web/client-script-check.mjs "{{web_target}}/lua-web/client-check"
+
 # The Wasmtime gate for client scripts (crates/torque-client-script-host): the Lua module of `lua-web` run natively under
 # Wasmtime against the Lua extension's shared cases, an epoch-interruption check, and the costs (compile, instantiate, host
 # call, Luau step, release binary size; `cold` adds the cold build time, built from nothing). Needs what `lua-web` needs

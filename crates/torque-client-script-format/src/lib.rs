@@ -3,7 +3,7 @@
 //! `torque_lua_client.wasm` (crates/torque-plugin-lua with its `client-script` feature, built by `just lua-client-web`); the
 //! host runs it under Wasmtime natively and as a module in a browser. Both sides read and write the bytes with this crate.
 //!
-//! The format is frozen at [`FORMAT_VERSION`] 1. A change of any layout, number or rule below is a new version, and a host
+//! The format is frozen at [`FORMAT_VERSION`] 2 (2: a frame's callbacks get at most the steps per frame). A change of any layout, number or rule below is a new version, and a host
 //! refuses a guest whose `torque_realm_format()` is not the version it was built for.
 //!
 //! # 1. The model
@@ -215,8 +215,9 @@
 //! queue (at most [`MAX_QUEUED`]: past it the oldest `ui` input event goes, else the oldest event, and a dropped net
 //! message makes one `overflow` callback); then the queue runs in order, then due timers (by due time, then age), then the
 //! `onFrame` callbacks with the frame's seconds since the previous frame. Each callback gets the config's steps per
-//! callback; once the frame's steps are spent no further callback starts, and the rest waits for the next frame
-//! (`torque_realm_pending`).
+//! callback, but no more than the config's steps per frame; once the frame's steps are spent no further callback
+//! starts, and the rest waits for the next frame (`torque_realm_pending`). A file run (`torque_realm_run`, and its
+//! `require`s) is not a frame's: it gets the full steps per callback.
 //!
 //! # 10. Limits the guest keeps
 //!
@@ -240,7 +241,7 @@ pub use codec::{Malformed, Reader, Record, Records, Writer};
 pub use value::{NodeBudget, Value, ValueError};
 
 /// The version of this format; a host refuses a guest whose `torque_realm_format()` differs.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// The most bytes a record's body has.
 pub const MAX_RECORD: usize = 64 << 10;

@@ -1,6 +1,9 @@
 use crate::abi::{self, Config};
 use crate::ui::{self, Kind, Prop, PropValue};
-use crate::{Grants, MAX_RECORD, Malformed, Reader, Records, Tier, Value, ValueError, Writer, net};
+use crate::{
+    FORMAT_VERSION, Grants, MAX_RECORD, Malformed, Reader, Records, Tier, Value, ValueError,
+    Writer, net,
+};
 
 #[test]
 fn tiers_round_trip_by_id_and_name() {
@@ -288,8 +291,8 @@ fn config_and_names() {
     };
     assert_eq!(Config::from_bytes(&config.to_bytes()), Ok(config));
     let mut bad = config.to_bytes();
-    bad[0] = 2;
-    assert!(Config::from_bytes(&bad).is_err());
+    bad[..4].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
+    assert!(Config::from_bytes(&bad).is_err(), "another version");
     let bad = Config {
         grants: Grants(1 << 12),
         ..config

@@ -1234,3 +1234,56 @@ fn zero_width_and_tag_characters_are_hidden_in_log_lines() {
     run(&mut r, r#"realm.log("a\u{200b}b\u{feff}c\u{e0041}d")"#);
     assert_eq!(logs(&r), ["a b c d"]);
 }
+
+#[test]
+fn a_file_run_gets_its_own_steps_and_a_frames_callbacks_the_frames() {
+    let counting = |n: u32| format!("local x = 0 for i = 1, {n} do x = x + i end");
+    let steps_of = |n: u32| {
+        let mut r = realm_of(Config {
+            callback_steps: 10_000_000,
+            ..Config::default()
+        });
+        run(&mut r, &counting(n));
+        assert!(limits(&r).is_empty());
+        r.last_steps()
+    };
+    let (thousand, two_thousand) = (steps_of(1000), steps_of(2000));
+    assert_eq!(two_thousand - thousand, 1000, "one step an iteration");
+    // The loop that takes exactly 100,000 steps as a file run.
+    let exact = u32::try_from(100_000 - (thousand - 1000)).unwrap();
+    let config = Config {
+        callback_steps: 100_000,
+        frame_steps: 20_000,
+        ..Config::default()
+    };
+    let mut r = realm_of(config);
+    run(&mut r, &counting(exact));
+    assert!(limits(&r).is_empty(), "100,000 steps run");
+    assert_eq!(r.last_steps(), 100_000);
+    let mut r = realm_of(config);
+    run(&mut r, &counting(exact + 1));
+    assert_eq!(
+        limits(&r),
+        [(op::realm::LIMIT_STEPS, op::realm::ENTRY_RUN)],
+        "100,001 do not"
+    );
+    // A frame's callback gets the frame's steps, not a file run's.
+    let mut r = realm_of(config);
+    run(
+        &mut r,
+        &format!("realm.onFrame(function() {} end)", counting(30_000)),
+    );
+    frame(&mut r, 1, Batch::default());
+    assert_eq!(
+        limits(&r),
+        [(op::realm::LIMIT_STEPS, op::realm::ENTRY_FRAME)]
+    );
+    assert_eq!(r.last_steps(), 20_001);
+    let mut r = realm_of(config);
+    run(
+        &mut r,
+        &format!("realm.onFrame(function() {} end)", counting(15_000)),
+    );
+    frame(&mut r, 1, Batch::default());
+    assert!(limits(&r).is_empty());
+}

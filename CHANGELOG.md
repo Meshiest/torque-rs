@@ -296,6 +296,11 @@ different.
   extension is a WebAssembly module of its own (`just lua-web`, built with the WASI SDK; it needs WebAssembly exception
   handling), loaded by the page only when its game uses Lua (`build.mjs --lua`, `web/lua.js`) and bridged to the engine's
   `web_lua::WebLuaPlugin`, which makes the C ABI's checks; the same tests run natively and on the web (`just lua-web-check`).
+- `torque-client-script-host`: the host of server/client scripts, Lua a server sends run on its players' clients in a realm
+  (a WebAssembly guest) per connection, under Wasmtime natively and in a Worker on the web: a wall-clock deadline per entry,
+  a linear-memory cap, every op checked against the format and the granted tiers (a violation stops the realm), revocation
+  that removes a tier's effects in the same frame, a strike rule, teardown on disconnect and a per-frame budget. In no
+  default plugin set; no tier is reviewed yet. TGE has none.
 - `torque-bundle` (`just bundle <game crate>`): packages a game for the computer it runs on: its binaries built in release
   with only the plugin features its `game.toml` keeps (debug gizmos left out), its game folder without dev files, its native
   extensions in `plugins/`, the license texts of every crate it links, and a manifest of every file's SHA-256. Local folders

@@ -4,6 +4,7 @@
 use std::panic::AssertUnwindSafe;
 
 use super::*;
+use crate::wasi::{ERRNO_BADF, ERRNO_INVAL, LINES_PER_SECOND, MAX_TEXT_BYTES};
 
 const MEMORY: usize = 128 << 16;
 
@@ -24,7 +25,7 @@ fn hostile(wat: &str) -> (Store<Data>, wasmtime::Instance) {
     let wasm = wat::parse_str(wat).expect("text");
     let module = Module::new(engine.engine(), wasm).expect("a module");
     let mut linker = Linker::new(engine.engine());
-    wasi(&mut linker).expect("WASI imports");
+    wasi::link(&mut linker).expect("WASI imports");
     torque(&mut linker).expect("torque imports");
     let mut store = Store::new(engine.engine(), Data::new(limits()));
     store.limiter(|data| &mut data.limits);
@@ -33,7 +34,7 @@ fn hostile(wat: &str) -> (Store<Data>, wasmtime::Instance) {
         .instantiate(&mut store, &module)
         .expect("an instance");
     let memory = instance.get_memory(&mut store, "memory").expect("a memory");
-    store.data_mut().memory = Some(memory);
+    store.data_mut().wasi.memory = Some(memory);
     (store, instance)
 }
 
@@ -77,7 +78,7 @@ fn random_bytes_outside_memory_trap_before_anything_is_made() {
         let result = go(&mut store, &instance, (ptr, len, 0, 0));
         assert!(result.is_err(), "random_get({ptr}, {len}) was let through");
     }
-    let memory = store.data().memory.expect("memory");
+    let memory = store.data().wasi.memory.expect("memory");
     assert!(
         memory.data(&store).iter().all(|&b| b == 0),
         "nothing was written"
@@ -91,7 +92,7 @@ fn random_bytes_fill_only_their_range_and_are_capped() {
         go(&mut store, &instance, (100, 4096, 0, 0)).expect("in memory"),
         0
     );
-    let memory = store.data().memory.expect("memory");
+    let memory = store.data().wasi.memory.expect("memory");
     let bytes = memory.data(&store);
     assert!(bytes[..100].iter().all(|&b| b == 0));
     assert!(bytes[100 + 4096..].iter().all(|&b| b == 0));
@@ -126,7 +127,7 @@ fn fd_write_refuses_too_many_or_too_large_buffers() {
         go(&mut store, &instance, (2, 0, 1024, 16)).expect("refused"),
         ERRNO_INVAL
     );
-    let printer = &store.data().printer;
+    let printer = &store.data().wasi.printer;
     assert!(
         printer.partial.is_empty() && printer.printed == 0,
         "nothing was copied"
@@ -158,9 +159,9 @@ fn fd_write_streams_and_its_lines_are_rate_limited() {
         u32::from_le_bytes(written.try_into().expect("4 bytes")),
         3 << 20
     );
-    assert!(store.data().printer.partial.len() <= MAX_LINE);
+    assert!(store.data().wasi.printer.partial.len() <= MAX_LINE);
     // 768 pieces of a line went by; at most a second's worth were printed, the rest counted.
-    let printer = &store.data().printer;
+    let printer = &store.data().wasi.printer;
     assert!(printer.printed <= u64::from(LINES_PER_SECOND));
     assert!(printer.dropped > 0);
     // 10,000 short lines: the same.
@@ -171,7 +172,7 @@ fn fd_write_streams_and_its_lines_are_rate_limited() {
         go(&mut store, &instance, (1, 0, 1, 16)).expect("written"),
         0
     );
-    assert!(store.data().printer.printed <= u64::from(LINES_PER_SECOND));
+    assert!(store.data().wasi.printer.printed <= u64::from(LINES_PER_SECOND));
     // Another descriptor's buffers are not read at all.
     assert_eq!(
         go(&mut store, &instance, (3, 0, 1, 16)).expect("refused"),
@@ -315,7 +316,7 @@ fn reentrant(then: Then) -> (Rc<WasmtimeLuaModule>, Host) {
 /// The word at `at` in the module's memory.
 fn word(module: &WasmtimeLuaModule, at: usize) -> i32 {
     let store = module.store.borrow();
-    let memory = store.data().memory.expect("memory");
+    let memory = store.data().wasi.memory.expect("memory");
     let bytes = &memory.data(&*store)[at..at + 4];
     i32::from_le_bytes(bytes.try_into().expect("4 bytes"))
 }

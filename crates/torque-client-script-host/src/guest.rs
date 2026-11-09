@@ -9,11 +9,9 @@
 #![allow(unsafe_code)]
 
 use std::cell::{Cell, RefCell};
-use std::hash::{BuildHasher, RandomState};
-use std::ops::Range;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use torque_engine::Side;
 use torque_plugin_abi::{
@@ -24,32 +22,29 @@ use torque_plugin_abi::{
 use torque_plugin_loader::web_lua::{HostError, LuaHost, LuaModule};
 use torque_ts_vm::vm::{Level, VmError};
 use wasmtime::{
-    AsContext, AsContextMut, Caller, Collector, Config, Engine, InstancePre, Linker, Memory,
-    Module, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder, Trap, TypedFunc, format_err,
+    AsContextMut, Caller, Collector, Config, Engine, InstancePre, Linker, Module, Store,
+    StoreContextMut, StoreLimits, StoreLimitsBuilder, Trap, TypedFunc, format_err,
 };
 
-/// WASI's error numbers the imports answer with.
-const ERRNO_BADF: i32 = 8;
-const ERRNO_NOTSUP: i32 = 58;
-const ERRNO_NOTCAPABLE: i32 = 76;
-/// WASI's clocks: the monotonic one and the process's and thread's CPU time (C's `clock()`); the wall clock is refused.
-const MONOTONIC: i32 = 1;
-const PROCESS_CPUTIME: i32 = 2;
-const THREAD_CPUTIME: i32 = 3;
-/// A line the module writes to its standard output or error is printed in pieces of this many bytes at most.
-const MAX_LINE: usize = 4096;
-/// How many texts an argument list (or `fd_write`'s list of buffers) may name (the C ABI's cap is far lower; the host
-/// checks that one).
-const MAX_TEXTS: u32 = 1024;
-/// The most bytes such a list may name in all: past it the list is refused before anything is copied.
-const MAX_TEXT_BYTES: usize = 4 << 20;
-/// WASI's error number for a refused argument.
-const ERRNO_INVAL: i32 = 28;
-/// The most table elements an instance may have (the module's function table is a few thousand).
+use crate::wasi::{self, MAX_LINE, Wasi, WasiData, read, read_texts, write, write_u32};
+
+/// The most table elements an instance may have (a guest's function table is a few thousand).
 const MAX_TABLE_ELEMENTS: usize = 1 << 16;
-/// What the module writes to standard output and error: at most this many lines a second are printed, and one notice
-/// for those dropped.
-const LINES_PER_SECOND: u32 = 20;
+/// The native stack a guest's calls may use (Wasmtime's default, written out): Luau's own call limits stop deep
+/// recursion well before it.
+const MAX_WASM_STACK: usize = 512 << 10;
+
+/// The store limits of one guest instance: one instance, one memory of at most `memory` bytes, one table of at most
+/// [`MAX_TABLE_ELEMENTS`].
+pub(crate) fn store_limits(memory: usize) -> StoreLimits {
+    StoreLimitsBuilder::new()
+        .memory_size(memory)
+        .table_elements(MAX_TABLE_ELEMENTS)
+        .instances(1)
+        .tables(1)
+        .memories(1)
+        .build()
+}
 
 /// A Wasmtime engine for guests: exception handling on, epoch interruption on, ticked by a thread of its own every `tick`.
 #[derive(Clone)]
@@ -64,6 +59,13 @@ impl GuestEngine {
         let mut config = Config::new();
         config
             .wasm_exceptions(true)
+            // Exceptions need the GC heap for their objects, not the GC proposal's types: those stay off.
+            .wasm_gc(false)
+            // Relaxed SIMD's results differ by machine; native and web must compute the same numbers.
+            .wasm_relaxed_simd(false)
+            // Every NaN a guest makes is the canonical one, whatever the machine.
+            .cranelift_nan_canonicalization(true)
+            .max_wasm_stack(MAX_WASM_STACK)
             .epoch_interruption(true)
             // Exception objects are collected (the null collector never frees one, and Luau throws one per error).
             .collector(Collector::DeferredReferenceCounting);
@@ -152,19 +154,14 @@ struct Running {
 /// A store's data.
 struct Data {
     limits: StoreLimits,
-    memory: Option<Memory>,
+    wasi: Wasi,
     /// The running calls, innermost last.
     running: Vec<Running>,
     /// The answer the module copies out next (`result_len`, `result_copy`).
     pending: Vec<u8>,
-    /// What the module writes to standard output and error.
-    printer: Printer,
     /// Set when a call into the module trapped or panicked, shared with the module: an import serving a request whose
     /// nested call broke the module traps too, so that the outer call stops.
     broken: Rc<Cell<bool>>,
-    started: Instant,
-    random: RandomState,
-    draws: u64,
     active: ActiveCaller,
     counters: Rc<Counters>,
 }
@@ -172,24 +169,24 @@ struct Data {
 impl Data {
     fn new(limits: GuestLimits) -> Data {
         Data {
-            limits: StoreLimitsBuilder::new()
-                .memory_size(limits.memory)
-                .table_elements(MAX_TABLE_ELEMENTS)
-                .instances(1)
-                .tables(1)
-                .memories(1)
-                .build(),
-            memory: None,
+            limits: store_limits(limits.memory),
+            wasi: Wasi::new("torque_lua.wasm"),
             running: Vec::new(),
             pending: Vec::new(),
-            printer: Printer::default(),
             broken: Rc::new(Cell::new(false)),
-            started: Instant::now(),
-            random: RandomState::new(),
-            draws: 0,
             active: Rc::new(Cell::new(None)),
             counters: Rc::new(Counters::default()),
         }
+    }
+}
+
+impl WasiData for Data {
+    fn wasi(&self) -> &Wasi {
+        &self.wasi
+    }
+
+    fn wasi_mut(&mut self) -> &mut Wasi {
+        &mut self.wasi
     }
 }
 
@@ -225,7 +222,7 @@ impl LuaGuest {
     /// Links the imports of `module`, compiled by `engine`.
     pub fn link(engine: &GuestEngine, module: Module) -> wasmtime::Result<LuaGuest> {
         let mut linker = Linker::new(engine.engine());
-        wasi(&mut linker)?;
+        wasi::link(&mut linker)?;
         torque(&mut linker)?;
         let pre = linker.instantiate_pre(&module)?;
         Ok(LuaGuest {
@@ -253,7 +250,7 @@ impl LuaGuest {
         let memory = instance
             .get_memory(&mut store, "memory")
             .ok_or_else(|| format_err!("the module exports no memory"))?;
-        store.data_mut().memory = Some(memory);
+        store.data_mut().wasi.memory = Some(memory);
         let exports = Exports {
             alloc: instance.get_typed_func(&mut store, "torque_lua_alloc")?,
             free: instance.get_typed_func(&mut store, "torque_lua_free")?,
@@ -556,119 +553,12 @@ impl Drop for BreakOnUnwind<'_> {
 }
 
 /// The C ABI's code for `side`.
-/// The step of the guest's clocks: one microsecond, the resolution they advertise (not a browser's coarser step).
-const CLOCK_STEP_NANOS: u64 = 1_000;
-
 fn side_code(side: Side) -> u32 {
     match side {
         Side::Both => TORQUE_SIDE_BOTH,
         Side::Server => TORQUE_SIDE_SERVER,
         Side::Client => TORQUE_SIDE_CLIENT,
     }
-}
-
-/// The module's memory.
-fn memory(store: &impl AsContext<Data = Data>) -> wasmtime::Result<Memory> {
-    store
-        .as_context()
-        .data()
-        .memory
-        .ok_or_else(|| format_err!("the module has no memory yet"))
-}
-
-/// The range of the `len` bytes at `ptr`, checked to lie in the module's memory (a range out of it traps the module).
-fn range(
-    store: &impl AsContext<Data = Data>,
-    ptr: i32,
-    len: i32,
-) -> wasmtime::Result<Range<usize>> {
-    let size = memory(store)?.data_size(store);
-    let start = ptr as u32 as usize;
-    start
-        .checked_add(len as u32 as usize)
-        .filter(|&end| end <= size)
-        .map(|end| start..end)
-        .ok_or_else(|| format_err!("the module named bytes outside its memory"))
-}
-
-/// The `len` bytes at `ptr` in the module's memory (a pointer out of it traps the module).
-fn read(store: &impl AsContext<Data = Data>, ptr: i32, len: i32) -> wasmtime::Result<Vec<u8>> {
-    let range = range(store, ptr, len)?;
-    Ok(memory(store)?.data(store)[range].to_vec())
-}
-
-/// Writes `bytes` at `ptr` in the module's memory.
-fn write(
-    store: &mut impl AsContextMut<Data = Data>,
-    ptr: i32,
-    bytes: &[u8],
-) -> wasmtime::Result<()> {
-    let memory = memory(store)?;
-    let start = ptr as u32 as usize;
-    let end = start.checked_add(bytes.len());
-    end.and_then(|end| memory.data_mut(&mut *store).get_mut(start..end))
-        .ok_or_else(|| format_err!("the module named bytes outside its memory"))?
-        .copy_from_slice(bytes);
-    Ok(())
-}
-
-fn write_u32(
-    store: &mut impl AsContextMut<Data = Data>,
-    ptr: i32,
-    value: u32,
-) -> wasmtime::Result<()> {
-    write(store, ptr, &value.to_le_bytes())
-}
-
-fn write_u64(
-    store: &mut impl AsContextMut<Data = Data>,
-    ptr: i32,
-    value: u64,
-) -> wasmtime::Result<()> {
-    write(store, ptr, &value.to_le_bytes())
-}
-
-/// The ranges of the `count` texts (a pointer and a length each) at `ptr`, each checked to lie in the module's memory
-/// (one out of it traps the module): `None` when there are more than [`MAX_TEXTS`] or they name more than
-/// [`MAX_TEXT_BYTES`] in all.
-fn text_ranges(
-    store: &impl AsContext<Data = Data>,
-    ptr: i32,
-    count: i32,
-) -> wasmtime::Result<Option<Vec<Range<usize>>>> {
-    let count = count as u32;
-    if count > MAX_TEXTS {
-        return Ok(None);
-    }
-    let list = read(store, ptr, (count * 8) as i32)?;
-    let mut ranges = Vec::with_capacity(count as usize);
-    let mut total = 0usize;
-    for pair in list.as_chunks::<8>().0 {
-        let ptr = i32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]);
-        let len = i32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]);
-        let range = range(store, ptr, len)?;
-        match total.checked_add(range.len()) {
-            Some(sum) if sum <= MAX_TEXT_BYTES => total = sum,
-            _ => return Ok(None),
-        }
-        ranges.push(range);
-    }
-    Ok(Some(ranges))
-}
-
-/// The `count` texts (a pointer and a length each) at `ptr`: `None` when [`text_ranges`] refuses them.
-fn read_texts(
-    store: &impl AsContext<Data = Data>,
-    ptr: i32,
-    count: i32,
-) -> wasmtime::Result<Option<Vec<Vec<u8>>>> {
-    let Some(ranges) = text_ranges(store, ptr, count)? else {
-        return Ok(None);
-    };
-    let bytes = memory(store)?.data(store);
-    Ok(Some(
-        ranges.into_iter().map(|r| bytes[r].to_vec()).collect(),
-    ))
 }
 
 /// Copies `bytes` into the module: its pointer and length, freed with the module's `torque_lua_free`.
@@ -682,216 +572,6 @@ fn put(
     let ptr = exports.alloc.call(&mut *store, len)?;
     write(store, ptr, bytes)?;
     Ok((ptr, len))
-}
-
-/// The module's WASI imports: nothing reaches anything but the monotonic clock, random bytes and standard error.
-fn wasi(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
-    const W: &str = "wasi_snapshot_preview1";
-    linker.func_wrap(W, "args_get", |_: Caller<'_, Data>, _: i32, _: i32| {
-        TORQUE_OK as i32
-    })?;
-    linker.func_wrap(
-        W,
-        "args_sizes_get",
-        |mut c: Caller<'_, Data>, count: i32, size: i32| {
-            write_u32(&mut c, count, 0)?;
-            write_u32(&mut c, size, 0)?;
-            Ok(TORQUE_OK as i32)
-        },
-    )?;
-    linker.func_wrap(W, "environ_get", |_: Caller<'_, Data>, _: i32, _: i32| {
-        TORQUE_OK as i32
-    })?;
-    linker.func_wrap(
-        W,
-        "environ_sizes_get",
-        |mut c: Caller<'_, Data>, count: i32, size: i32| {
-            write_u32(&mut c, count, 0)?;
-            write_u32(&mut c, size, 0)?;
-            Ok(TORQUE_OK as i32)
-        },
-    )?;
-    let clock = |id: i32| matches!(id, MONOTONIC | PROCESS_CPUTIME | THREAD_CPUTIME);
-    linker.func_wrap(
-        W,
-        "clock_res_get",
-        move |mut c: Caller<'_, Data>, id: i32, out: i32| {
-            if !clock(id) {
-                return Ok(ERRNO_NOTSUP);
-            }
-            write_u64(&mut c, out, CLOCK_STEP_NANOS)?;
-            Ok(TORQUE_OK as i32)
-        },
-    )?;
-    linker.func_wrap(
-        W,
-        "clock_time_get",
-        move |mut c: Caller<'_, Data>, id: i32, _precision: i64, out: i32| {
-            if !clock(id) {
-                return Ok(ERRNO_NOTSUP);
-            }
-            let nanos = u64::try_from(c.data().started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            // No sharper than the resolution the clock advertises.
-            let nanos = nanos - nanos % CLOCK_STEP_NANOS;
-            write_u64(&mut c, out, nanos)?;
-            Ok(TORQUE_OK as i32)
-        },
-    )?;
-    linker.func_wrap(
-        W,
-        "fd_write",
-        |mut c: Caller<'_, Data>, fd: i32, iovs: i32, count: i32, written: i32| {
-            if fd != 1 && fd != 2 {
-                return Ok(ERRNO_BADF);
-            }
-            let Some(ranges) = text_ranges(&c, iovs, count)? else {
-                return Ok(ERRNO_INVAL);
-            };
-            let mut n = 0u32;
-            let memory = memory(&c)?;
-            let (bytes, data) = memory.data_and_store_mut(&mut c);
-            for range in ranges {
-                n = n.saturating_add(range.len() as u32);
-                // Streamed a line's length at a time: the output never holds more than a line and a piece.
-                for piece in bytes[range].chunks(MAX_LINE) {
-                    data.printer.write(piece);
-                }
-            }
-            write_u32(&mut c, written, n)?;
-            Ok(TORQUE_OK as i32)
-        },
-    )?;
-    linker.func_wrap(W, "fd_close", |_: Caller<'_, Data>, _: i32| ERRNO_BADF)?;
-    linker.func_wrap(W, "fd_fdstat_get", |_: Caller<'_, Data>, _: i32, _: i32| {
-        ERRNO_BADF
-    })?;
-    linker.func_wrap(
-        W,
-        "fd_filestat_get",
-        |_: Caller<'_, Data>, _: i32, _: i32| ERRNO_BADF,
-    )?;
-    linker.func_wrap(
-        W,
-        "fd_prestat_get",
-        |_: Caller<'_, Data>, _: i32, _: i32| ERRNO_BADF,
-    )?;
-    linker.func_wrap(
-        W,
-        "fd_prestat_dir_name",
-        |_: Caller<'_, Data>, _: i32, _: i32, _: i32| ERRNO_BADF,
-    )?;
-    linker.func_wrap(
-        W,
-        "fd_read",
-        |_: Caller<'_, Data>, _: i32, _: i32, _: i32, _: i32| ERRNO_BADF,
-    )?;
-    linker.func_wrap(
-        W,
-        "fd_seek",
-        |_: Caller<'_, Data>, _: i32, _: i64, _: i32, _: i32| ERRNO_BADF,
-    )?;
-    linker.func_wrap(
-        W,
-        "path_filestat_get",
-        |_: Caller<'_, Data>, _: i32, _: i32, _: i32, _: i32, _: i32| ERRNO_NOTCAPABLE,
-    )?;
-    linker.func_wrap(
-        W,
-        "path_open",
-        |_: Caller<'_, Data>,
-         _: i32,
-         _: i32,
-         _: i32,
-         _: i32,
-         _: i32,
-         _: i64,
-         _: i64,
-         _: i32,
-         _: i32| ERRNO_NOTCAPABLE,
-    )?;
-    linker.func_wrap(
-        W,
-        "proc_exit",
-        |_: Caller<'_, Data>, code: i32| -> wasmtime::Result<()> {
-            Err(format_err!("the module exited ({code})"))
-        },
-    )?;
-    linker.func_wrap(
-        W,
-        "random_get",
-        |mut c: Caller<'_, Data>, ptr: i32, len: i32| {
-            // The range is checked first, then filled in place: nothing of its size is made on this side.
-            let range = range(&c, ptr, len)?;
-            if range.len() > MAX_TEXT_BYTES {
-                return Ok(ERRNO_INVAL);
-            }
-            let memory = memory(&c)?;
-            let (bytes, data) = memory.data_and_store_mut(&mut c);
-            for chunk in bytes[range].chunks_mut(8) {
-                data.draws = data.draws.wrapping_add(1);
-                let word = data.random.hash_one(data.draws).to_le_bytes();
-                chunk.copy_from_slice(&word[..chunk.len()]);
-            }
-            Ok(TORQUE_OK as i32)
-        },
-    )?;
-    linker.func_wrap(W, "sched_yield", |_: Caller<'_, Data>| TORQUE_OK as i32)?;
-    Ok(())
-}
-
-/// What the module writes to standard output and error, printed on this process's standard error a line at a time (a
-/// line that never ends in pieces of [`MAX_LINE`]), at most [`LINES_PER_SECOND`] lines a second.
-#[derive(Default)]
-struct Printer {
-    /// What was written since the last full line.
-    partial: Vec<u8>,
-    /// When the current second started, and the lines printed and dropped in it.
-    second: Option<Instant>,
-    lines: u32,
-    dropped: u64,
-    /// Lines printed in all.
-    printed: u64,
-}
-
-impl Printer {
-    /// Takes `bytes` of output (of at most [`MAX_LINE`]): every full line in them is printed.
-    fn write(&mut self, mut bytes: &[u8]) {
-        while let Some(at) = bytes.iter().position(|&b| b == b'\n') {
-            self.partial.extend_from_slice(&bytes[..at]);
-            let line = std::mem::take(&mut self.partial);
-            self.line(&line);
-            bytes = &bytes[at + 1..];
-        }
-        self.partial.extend_from_slice(bytes);
-        while self.partial.len() > MAX_LINE {
-            let rest = self.partial.split_off(MAX_LINE);
-            let line = std::mem::replace(&mut self.partial, rest);
-            self.line(&line);
-        }
-    }
-
-    /// Prints one line, unless this second's lines are spent.
-    fn line(&mut self, text: &[u8]) {
-        let now = Instant::now();
-        if self
-            .second
-            .is_none_or(|start| now.duration_since(start) >= Duration::from_secs(1))
-        {
-            if self.dropped > 0 {
-                eprintln!("torque_lua.wasm: ({} lines dropped)", self.dropped);
-            }
-            self.second = Some(now);
-            self.lines = 0;
-            self.dropped = 0;
-        }
-        if self.lines >= LINES_PER_SECOND {
-            self.dropped += 1;
-            return;
-        }
-        self.lines += 1;
-        self.printed += 1;
-        eprintln!("torque_lua.wasm: {}", String::from_utf8_lossy(text));
-    }
 }
 
 /// What a request comes to: a status, or a text that becomes the pending answer.
@@ -1006,7 +686,7 @@ fn torque(linker: &mut Linker<Data>) -> wasmtime::Result<()> {
             };
             if call == 0 {
                 let text: Vec<u8> = text.bytes().take(MAX_LINE).collect();
-                c.data_mut().printer.line(&text);
+                c.data_mut().wasi.printer.line(&text);
                 return Ok(TORQUE_OK as i32);
             }
             Ok(serve(&mut c, call, |host| {

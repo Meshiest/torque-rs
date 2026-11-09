@@ -795,6 +795,7 @@ dependencies = [
  "torque-ghosts",
  "torque-macros",
  "torque-net",
+ "torque-permissions",
  "torque-ts-vm",
 ]
 
@@ -839,6 +840,7 @@ dependencies = [
 name = "torque-gui"
 version = "0.1.0"
 dependencies = [
+ "torque-client-script-format",
  "torque-engine",
  "torque-fonts",
  "torque-images",
@@ -915,6 +917,10 @@ dependencies = [
 
 [[package]]
 name = "torque-net"
+version = "0.1.0"
+
+[[package]]
+name = "torque-permissions"
 version = "0.1.0"
 
 [[package]]

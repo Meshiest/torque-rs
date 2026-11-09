@@ -4,12 +4,14 @@
 // (the standard `exnref` form, the one the SDK's C++ runtime is built for); the page's shim (web/lua.js) supplies the few
 // WASI imports the module has.
 //
-// Usage: node lua-build.mjs [--check | --client]
+// Usage: node lua-build.mjs [--check] [--client]
 // With `--client` it builds the client-script guest instead, <target>/lua-web/torque_lua_client.wasm: the same crate with its
 // `client-script` feature, whose module has the realm's entry points (`torque_realm_*`, crates/torque-client-script-format)
 // and none of the extension's.
 // With `--check` it also builds the Lua tests for the web (examples/lua-web-check, the engine with the page's Lua module) and
-// puts them, wasm-bindgen's glue, web/lua.js and the module into <target>/lua-web/check/, for web/lua-check.mjs to run.
+// puts them, wasm-bindgen's glue, web/lua.js and the module into <target>/lua-web/check/, for web/lua-check.mjs to run. With
+// both, it builds the client-script host's cases instead (examples/client-script-web-check) and puts them, the glue,
+// web/client-script*.js and the guest into <target>/lua-web/client-check/, for web/client-script-check.mjs.
 // wasm-bindgen's command line, at the version Cargo.lock names, is installed into <target>/web-tools at first.
 // Needs the wasm32-wasip1 target (`rustup target add wasm32-wasip1`) and the WASI SDK, unpacked anywhere, named by WASI_SDK_PATH
 // (its folder with `bin/` and `share/wasi-sysroot/`). The build folder is CARGO_TARGET_DIR's, else `target`. Prints the module's
@@ -28,8 +30,8 @@ import { gzipSync } from 'node:zlib';
 const flags = process.argv.slice(2);
 const check = flags.includes('--check');
 const client = flags.includes('--client');
-if (flags.some((f) => f !== '--check' && f !== '--client') || (check && client)) {
-  console.error('usage: node lua-build.mjs [--check | --client]');
+if (flags.some((f) => f !== '--check' && f !== '--client')) {
+  console.error('usage: node lua-build.mjs [--check] [--client]');
   process.exit(2);
 }
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -181,10 +183,13 @@ const kib = (n) => `${(n / 1024).toFixed(0)} KiB`;
 console.log(`${out}: ${kib(statSync(out).size)} (${kib(gzipSync(bytes, { level: 9 }).length)} gzipped)`);
 
 if (check) {
-  // The cases, in the release profile (the step-limit cases run millions of steps), and wasm-bindgen's glue for a page.
+  // The cases, optimized (the step-limit cases run millions of steps), and wasm-bindgen's glue for a page. The client
+  // cases grant unreviewed tiers, which only a build with debug assertions may: their profile keeps them on.
+  const example = client ? 'torque-example-client-script-web-check' : 'torque-example-lua-web-check';
+  const casesProfile = client ? 'client-script-check' : 'release';
   run(
     'cargo',
-    ['build', '--config', "build.rustc-wrapper=''", '--release', '--target', 'wasm32-unknown-unknown', '-p', 'torque-example-lua-web-check'],
+    ['build', '--config', "build.rustc-wrapper=''", '--profile', casesProfile, '--target', 'wasm32-unknown-unknown', '-p', example],
     { env: { CARGO_TARGET_DIR: target, RUSTC_WRAPPER: '' } },
   );
   const lock = readFileSync(join(root, 'Cargo.lock'), 'utf8');
@@ -197,12 +202,17 @@ if (check) {
   const bindgen = join(tools, 'bin', `wasm-bindgen${suffix}`);
   const have = existsSync(bindgen) ? (spawnSync(bindgen, ['--version'], { encoding: 'utf8' }).stdout ?? '') : '';
   if (!have.includes(version)) run('cargo', ['install', 'wasm-bindgen-cli', '--version', version, '--locked', '--root', tools]);
-  const folder = join(work, 'check');
+  const folder = join(work, client ? 'client-check' : 'check');
   rmSync(folder, { recursive: true, force: true });
   mkdirSync(folder, { recursive: true });
-  const cases = join(target, 'wasm32-unknown-unknown', 'release', 'torque_example_lua_web_check.wasm');
+  const cases = join(target, 'wasm32-unknown-unknown', casesProfile, `${example.replaceAll('-', '_')}.wasm`);
   run(bindgen, ['--target', 'web', '--no-typescript', '--out-dir', folder, '--out-name', 'check', cases]);
-  for (const page of ['lua.js', 'lua-cases.js', 'lua-report.js', 'lua-node.mjs', 'lua-check.html']) cpSync(join(root, 'web', page), join(folder, page));
-  cpSync(out, join(folder, 'torque_lua.wasm'));
+  const pages = client
+    ? ['client-script.js', 'client-script-worker.js', 'client-script-cases.js', 'client-script-node.mjs', 'client-script-check.html']
+    : ['lua.js', 'lua-cases.js', 'lua-node.mjs', 'lua-check.html'];
+  for (const page of [...pages, 'lua-report.js']) cpSync(join(root, 'web', page), join(folder, page));
+  cpSync(out, join(folder, client ? 'torque_lua_client.wasm' : 'torque_lua.wasm'));
+  // Node takes the `.js` files (the Worker's among them) for ES modules, as a browser does.
+  if (client) writeFileSync(join(folder, 'package.json'), '{ "type": "module" }\n');
   console.log(`${folder}: the Lua tests for the web`);
 }

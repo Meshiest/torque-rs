@@ -36,7 +36,8 @@ pub struct Config {
     pub grants: Grants,
     /// Luau's allocator cap, in bytes.
     pub memory: u32,
-    /// The steps one callback (a file run, an event, a timer, an `onFrame`) may take.
+    /// The steps a file run may take; an event's, a timer's or an `onFrame` callback may take as many, but no more than
+    /// [`Config::frame_steps`].
     pub callback_steps: u32,
     /// The steps all callbacks of one frame may take before the rest waits.
     pub frame_steps: u32,

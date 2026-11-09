@@ -84,6 +84,12 @@ mem_forget = "warn"
 inherits = "release"
 lto = "thin"
 
+# The client-script host's web cases (`client-script-web-check`): optimized, with debug assertions on, the only builds
+# in which tiers may be granted before their review (the host refuses to compile `unreviewed-tiers` without them).
+[profile.client-script-check]
+inherits = "release"
+debug-assertions = true
+
 # Debug builds (`cargo run`, `cargo test`) with the crates that make the examples' assets and their GPU state optimized: the
 # examples build their forests' interiors, their textures and the renderer's pipelines at every start, which unoptimized took
 # 25 s to the vehicle demo's menu. The engine's own crates stay unoptimized for debugging; the third-party ones (wgpu, naga,

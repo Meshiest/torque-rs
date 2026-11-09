@@ -119,6 +119,9 @@ struct Fuel {
     memory: usize,
     /// Where the running callback is.
     run: Run,
+    /// The steps the running callback may take: a file run's `callback_steps`, a frame's callback at most
+    /// `frame_steps` of them.
+    cap: u64,
     /// The memory in use after the last collection the interrupt made.
     collected_at: usize,
     /// Steps of the frame's callbacks so far.
@@ -146,7 +149,7 @@ impl Fuel {
             Run::Stopped(_) => false,
             Run::Running(spent) => {
                 let spent = spent.saturating_add(steps);
-                if spent > self.callback_steps {
+                if spent > self.cap {
                     self.run = Run::Stopped(spent);
                     false
                 } else {
@@ -423,14 +426,20 @@ pub(crate) fn invoke_kept(lua: &Lua, entry: u8, id: CallbackId, args: impl IntoL
 
 /// Runs `f` as one callback of `entry`, with its own step budget; an error or a stop becomes ops.
 pub(crate) fn invoke(lua: &Lua, entry: u8, f: &Function, args: impl IntoLuaMulti) {
-    begin_callback(lua);
+    begin_callback(lua, entry);
     let result = f.call::<()>(args);
     end_callback(lua, entry, result);
 }
 
-fn begin_callback(lua: &Lua) {
+fn begin_callback(lua: &Lua, entry: u8) {
     if let Ok(mut st) = state(lua) {
-        st.fuel.run = Run::Running(0);
+        let fuel = &mut st.fuel;
+        fuel.cap = if entry == op::realm::ENTRY_RUN {
+            fuel.callback_steps
+        } else {
+            fuel.callback_steps.min(fuel.frame_steps)
+        };
+        fuel.run = Run::Running(0);
     }
 }
 
@@ -848,6 +857,7 @@ impl ClientRealm {
                 frame_steps: u64::from(config.frame_steps),
                 memory: config.memory as usize,
                 run: Run::Idle,
+                cap: u64::from(config.callback_steps),
                 collected_at: 0,
                 frame_used: 0,
                 last_steps: 0,

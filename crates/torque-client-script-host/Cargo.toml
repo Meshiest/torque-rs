@@ -10,19 +10,40 @@ publish.workspace = true
 keywords = ["torque", "lua", "wasm", "sandbox", "gamedev"]
 categories = ["game-engines", "wasm"]
 
-# Wasmtime (and Cranelift with it) comes in only with the `wasmtime` feature, off by default and native only: nothing else in
-# the workspace depends on this crate, and without the feature it has no code.
+# Wasmtime (and Cranelift with it) comes in only with the `wasmtime` feature, off by default and native only; the
+# session, its checks and its rules are plain Rust on every target. Nothing in the engine's default plugin sets depends on
+# this crate.
 
 [features]
-# The Wasmtime runner: `WasmtimeLuaModule`, the Lua extension's WebAssembly module (`just lua-web`) as the engine's
-# `web_lua::LuaModule`.
-wasmtime = ["dep:wasmtime"]
+# The Wasmtime runners: `NativeRealm` for the realm's guest, and `WasmtimeLuaModule`, the Lua extension's WebAssembly module
+# (`just lua-web`) as the engine's `web_lua::LuaModule`.
+wasmtime = [
+    "dep:wasmtime",
+    "dep:torque-engine",
+    "dep:torque-plugin-abi",
+    "dep:torque-plugin-loader",
+    "dep:torque-ts-vm",
+]
+# The web runner, `WebRunner`: the guest in a Worker of the page's (web/client-script.js), for wasm32 builds.
+web = ["dep:wasm-bindgen", "dep:js-sys"]
+# The host modules of the tiers: without its feature a tier cannot be granted, and its ops stop the realm.
+ui = []
+net = []
+# `GrantSet::unreviewed`: tiers granted before their review, for tests and for working on a tier.
+unreviewed-tiers = []
+# The cases every runner passes (`cases`), run natively by `tests/cases.rs` and on the web by
+# examples/client-script-web-check.
+cases = ["unreviewed-tiers", "ui", "net", "dep:wat"]
 
 [dependencies]
-torque-engine = { path = "../torque-engine" }
-torque-plugin-abi = { path = "../torque-plugin-abi" }
-torque-plugin-loader = { path = "../torque-plugin-loader" }
-torque-ts-vm = { path = "../torque-ts-vm" }
+torque-client-script-format = { path = "../torque-client-script-format" }
+web-time = "1.1"
+torque-engine = { path = "../torque-engine", optional = true }
+torque-plugin-abi = { path = "../torque-plugin-abi", optional = true }
+torque-plugin-loader = { path = "../torque-plugin-loader", optional = true }
+torque-ts-vm = { path = "../torque-ts-vm", optional = true }
+# The hand-written guests of the cases, written as text.
+wat = { version = "1", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Cranelift compiles the module; `gc` holds the guest's exception objects (`exnref`); nothing else: no cache, no async,
@@ -36,6 +57,10 @@ wasmtime = { version = "50.0.1", optional = true, default-features = false, feat
     "parallel-compilation",
 ] }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+
 [dev-dependencies]
 torque-mods = { path = "../torque-mods" }
 # The import-free looping module of the epoch check, written as text.
@@ -45,6 +70,11 @@ wat = "1"
 [[example]]
 name = "realm-gate"
 required-features = ["wasmtime"]
+
+# Every case of `cases` under Wasmtime, with the guest `just lua-client-web` builds (the `client-script-host-test` recipe).
+[[test]]
+name = "cases"
+required-features = ["wasmtime", "cases"]
 
 # What the Wasmtime runner adds to a release binary (`realm-gate` builds it with and without the feature).
 [[example]]

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client script tests</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  .failed { color: #b00020; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } .failed { color: #ff8a80; } }
+</style>
+</head>
+<body>
+<p id="status">Running the client script tests...</p>
+<script type="module">
+  // The client-script host's cases in this browser (web/client-script-check.mjs loads this page): the results go into
+  // `window.clientScriptResults`.
+  import { runCases } from './client-script-cases.js';
+
+  const status = document.getElementById('status');
+  try {
+    const [check, guest] = await Promise.all([
+      WebAssembly.compileStreaming(fetch('check_bg.wasm')),
+      fetch('torque_lua_client.wasm').then((r) => r.arrayBuffer()),
+    ]);
+    const results = await runCases({ check, guest });
+    const failed = results.filter((r) => !r.ok);
+    status.textContent = `${results.length - failed.length} of ${results.length} passed`;
+    for (const r of failed) {
+      const line = document.createElement('pre');
+      line.className = 'failed';
+      line.textContent = `${r.name}\n${r.error}`;
+      document.body.append(line);
+    }
+    window.clientScriptResults = results;
+  } catch (error) {
+    status.textContent = `The tests did not run: ${error}`;
+    window.clientScriptResults = [{ name: 'load', ok: false, error: String(error) }];
+  }
+</script>
+</body>
+</html>
