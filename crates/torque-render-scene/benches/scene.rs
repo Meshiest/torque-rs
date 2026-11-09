@@ -1,18 +1,29 @@
-//! The frame's vector math: particles, decals, the sky's SH shape and the interiors' merged meshes.
+//! The frame's vector math: particles, decals, the sky's SH shape, the interiors' merged meshes and a frame of moving ghosts.
 
+use std::collections::HashMap;
 use std::hint::black_box;
 use std::sync::atomic::Ordering;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use ghost_world::tge::{TgeClientSet, TgeDatablock};
+use ghost_world::world::{ClientWorld, Ghost};
+use ghosts::shapes::StaticShape;
+use ghosts::{F32, TgeClass, TgeRecord, TgeShapeBase, Xf};
 use torque_interior_builder::{Brush, Options, TexGen, build};
 use torque_render_scene::decals::{DecalData, DecalManager, Triangle};
-use torque_render_scene::hd::{TextureTable, sh};
+use torque_render_scene::hd::objects::{KeptObject, objects_of};
+use torque_render_scene::hd::{DynamicObject, HdScene, TextureTable, sh};
 use torque_render_scene::map::{
     self, MapClass, MapInput, MapProfile, MapRecords, MapValue, Object,
 };
+use torque_render_scene::moving::{self as moving, ShapeSelect, draws_culled};
 use torque_render_scene::particles::{Emitter, EmitterData, ParticleData, Rng};
+use torque_render_scene::shapecache::with_cache;
+use torque_render_scene::shapes::DetailPolicy;
 use torque_render_scene::textures::TextureSet;
+use torque_render_scene::world::Value;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Sun, TexEnv, Vertex};
+use torque_shape_builder::{FULL_UV, MeshData, ShapeBuilder};
 
 fn emitter() -> Emitter {
     let particle = ParticleData {
@@ -260,5 +271,184 @@ fn interiors(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, particles, decals, sh_lighting, interiors);
+/// 10,000 particles drawn (one draw facing the camera) and handed to the enhanced renderer's frame with a decal: what a frame
+/// with a burst alive converts.
+fn particles_draw(c: &mut Criterion) {
+    let (mut e, mut live) = (emitter(), 0);
+    burst_10k(&mut e, &mut live);
+    let files = Shapes(HashMap::new());
+    let mut scene = HdScene::new(());
+    c.bench_function("particles draw+upload 10k", |b| {
+        b.iter(|| {
+            let mut textures = TextureSet::new(&files);
+            let Some(d) = e.draw([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], &mut textures, "burst") else {
+                return 0;
+            };
+            scene.set_particles_and_decals(&[(5.0, d)], &[], textures);
+            black_box(scene.particles.len())
+        })
+    });
+}
+
+/// The shape files of the ghost benches, by lowercase path.
+struct Shapes(HashMap<String, Vec<u8>>);
+
+impl Assets for Shapes {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        self.0.get(&path.to_ascii_lowercase()).cloned()
+    }
+}
+
+const FIGURE: &str = "bench/figure.dts";
+
+/// A figure of ten nodes, twenty boxes each (4,800 vertices).
+fn figure_dts() -> Vec<u8> {
+    let mut b = ShapeBuilder::new();
+    let root = b.node("root", None, [0.0; 3]);
+    let detail = b.detail("detail1", 1.0);
+    let m = b.material("figure", 0);
+    for n in 0..10 {
+        let node = b.node(&format!("part{n}"), Some(root), [0.0, 0.0, n as f32 * 0.2]);
+        let mut mesh = MeshData::new(Some(m));
+        for k in 0..20 {
+            let x = k as f32 * 0.05 - 0.5;
+            mesh.add_box([x, -0.1, 0.0], [x + 0.04, 0.1, 0.18], |_| FULL_UV);
+        }
+        b.object(&format!("part{n}"), node, detail, mesh);
+    }
+    shapes::write::write_dts(&b.build())
+}
+
+/// The record of a StaticShape at `at`.
+fn static_shape(at: [f32; 3]) -> TgeRecord {
+    TgeRecord::StaticShape(StaticShape {
+        shape: TgeShapeBase {
+            game: ghosts::parts::GameBase {
+                scale: None,
+                datablock: Some(3),
+            },
+            body: None,
+        },
+        transform: Some((
+            Xf {
+                position: at.map(F32::new),
+                quat: [F32::new(0.0); 3],
+                negative_w: false,
+            },
+            [F32::new(1.0); 3],
+        )),
+        powered: false,
+    })
+}
+
+/// 128 figures in a row along x, ten units apart; the frame `frame` moves every fourth one a little (a quarter of them change).
+fn ghost_world(frame: u32) -> ClientWorld<TgeClientSet> {
+    let mut w = ClientWorld::<TgeClientSet>::default();
+    w.datablocks.insert(
+        3,
+        TgeDatablock {
+            class: "StaticShapeData".to_string(),
+            fields: vec![("shapeFile".to_string(), 0, Value::str(FIGURE))],
+        },
+    );
+    for i in 0..128u32 {
+        let step = if i % 4 == 0 { frame as f32 * 0.01 } else { 0.0 };
+        let ghost = Ghost {
+            class: Some(TgeClass::StaticShape),
+            serial: i as usize + 1,
+            always: false,
+            record: Some(static_shape([i as f32 * 10.0, step, 0.0])),
+            part: (),
+            position: None,
+            updates: 0,
+        };
+        w.ghosts.insert(i + 1, ghost);
+    }
+    w
+}
+
+/// The first tenth of the row (x below 128) is in view.
+struct FirstTenth;
+
+impl moving::Cull for FirstTenth {
+    fn keeps(&self, centre: [f32; 3], radius: f32) -> bool {
+        centre[0] - radius < 128.0
+    }
+}
+
+/// One frame of the ghosts' objects: built (kept builds and kept objects with `kept`), converted, and each given its motion from
+/// the last frame's object (`drawn`, replaced).
+fn ghost_frame(
+    w: &ClientWorld<TgeClientSet>,
+    files: &Shapes,
+    drawn: &mut Vec<DynamicObject>,
+    kept: Option<&mut HashMap<u32, KeptObject>>,
+    cull: Option<&dyn moving::Cull>,
+) -> usize {
+    let mut textures = TextureSet::new(files);
+    let mut notes = Vec::new();
+    let shaped = draws_culled(
+        w,
+        &(),
+        files,
+        &mut textures,
+        &mut notes,
+        DetailPolicy::Highest,
+        ShapeSelect::All,
+        cull,
+    );
+    let local: Vec<usize> = (0..textures.into_textures().len()).collect();
+    let mut out = objects_of(w, &shaped, &local, drawn, kept);
+    torque_render_scene::hd::objects::carry_motion(&mut out, drawn);
+    let n = out.len();
+    *drawn = out;
+    n
+}
+
+fn ghosts(c: &mut Criterion) {
+    let files = Shapes([(FIGURE.to_string(), figure_dts())].into());
+    let worlds = [ghost_world(0), ghost_world(1)];
+    let mut drawn = Vec::new();
+    let n = ghost_frame(&worlds[0], &files, &mut drawn, None, None);
+    assert_eq!(n, 128, "every figure is drawn");
+    let mut frame = 0usize;
+    c.bench_function("ghost frame 128 rebuilt", |b| {
+        b.iter(|| {
+            frame += 1;
+            black_box(ghost_frame(
+                &worlds[frame % 2],
+                &files,
+                &mut drawn,
+                None,
+                None,
+            ))
+        })
+    });
+    let mut drawn = Vec::new();
+    let mut kept = HashMap::new();
+    c.bench_function("ghost frame 128 kept and culled", |b| {
+        b.iter(|| {
+            frame += 1;
+            with_cache(|| {
+                black_box(ghost_frame(
+                    &worlds[frame % 2],
+                    &files,
+                    &mut drawn,
+                    Some(&mut kept),
+                    Some(&FirstTenth),
+                ))
+            })
+        })
+    });
+}
+
+criterion_group!(
+    benches,
+    particles,
+    particles_draw,
+    decals,
+    sh_lighting,
+    interiors,
+    ghosts
+);
 criterion_main!(benches);

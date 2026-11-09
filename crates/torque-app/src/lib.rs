@@ -56,6 +56,15 @@
 //! - A [`ghosts::GhostScene`] draws its moving shapes under [`ghosts::GhostOptions::budget`] (4M vertices and 4 shape parses a
 //!   frame by default) (`a_frames_moving_shapes_stay_within_the_vertex_budget_nearest_first` and
 //!   `a_frame_parses_at_most_its_budget_of_new_shapes_and_the_rest_wait`, in `torque-render-scene`).
+//! - A [`ghosts::GhostScene`] builds its moving shapes in its own shape cache and [`view::WorldView`] keeps their objects, so a
+//!   ghost posed as it was is the last frame's object again
+//!   (`a_ghost_posed_as_it_was_takes_its_last_objects_draws_and_converts_nothing`, in `torque-render-scene`); with
+//!   [`ghosts::GhostOptions::cull`] it leaves out only what [`view::WorldView::ghost_cull`] says nothing can show from the eye
+//!   about to be drawn, shadows and reflections included (`a_shape_out_of_view_whose_shadow_falls_in_view_is_kept`, in
+//!   `torque-render-scene`), and nothing on the first frame, a cut's or another renderer's
+//!   (`a_cut_to_a_far_view_draws_its_ghosts_on_that_frame`, in `tests/drawn_shapes.rs`).
+//! - The interiors hand their panes out with the last frame's draws moved over, not copied, and a frame with none changed
+//!   reads no file name again (bench `interiors update 100 kept` in `benches/app.rs`, timed under the bench lock).
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
 

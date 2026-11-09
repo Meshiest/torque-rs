@@ -4074,6 +4074,7 @@ dependencies = [
  "torque-ghost-world",
  "torque-ghosts",
  "torque-gui",
+ "torque-interior-builder",
  "torque-mapcore",
  "torque-maps",
  "torque-net",
@@ -4457,6 +4458,7 @@ dependencies = [
 name = "torque-gui"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "png",
  "torque-client-script-format",
  "torque-engine",
@@ -4739,6 +4741,7 @@ dependencies = [
 name = "torque-render-core"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "pollster",
  "torque-gui",
  "wgpu",
@@ -4748,6 +4751,7 @@ dependencies = [
 name = "torque-render-hd"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "glam 0.34.2",
  "naga",
  "png",

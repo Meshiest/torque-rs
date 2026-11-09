@@ -51,6 +51,38 @@ pub trait Backdrops: Send {
     fn present(&self, gpu: &Gpu, surface: &wgpu::TextureView);
 }
 
+/// The vertices of `draws` into `bytes` (cleared first; its room kept): four a quad (its corners counter-clockwise from the top
+/// left), batch after batch. [`QUAD_INDICES`] makes each quad's two triangles of them.
+pub fn vertex_bytes(draws: &GuiDraws, bytes: &mut Vec<u8>) {
+    const QUAD: usize = 4 * VERTEX_BYTES as usize;
+    bytes.clear();
+    bytes.resize(draws.quads() * QUAD, 0);
+    let quads = draws.batches.iter().flat_map(|b| &b.quads);
+    for (q, out) in quads.zip(bytes.as_chunks_mut::<QUAD>().0) {
+        let [x0, y0, x1, y1] = q.rect;
+        let [u0, v0, u1, v1] = q.uv;
+        let corners = [
+            (x0, y0, u0, v0),
+            (x1, y0, u1, v0),
+            (x1, y1, u1, v1),
+            (x0, y1, u0, v1),
+        ];
+        for ((x, y, u, v), vertex) in corners
+            .into_iter()
+            .zip(out.as_chunks_mut::<{ VERTEX_BYTES as usize }>().0)
+        {
+            vertex[0..4].copy_from_slice(&x.to_le_bytes());
+            vertex[4..8].copy_from_slice(&y.to_le_bytes());
+            vertex[8..12].copy_from_slice(&u.to_le_bytes());
+            vertex[12..16].copy_from_slice(&v.to_le_bytes());
+            vertex[16..20].copy_from_slice(&q.color);
+        }
+    }
+}
+
+/// A quad's two triangles of its four corners ([`vertex_bytes`]): the first three, then the first, the third and the fourth.
+pub const QUAD_INDICES: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
 struct GpuTexture {
     group: wgpu::BindGroup,
     last_used: u64,
@@ -68,6 +100,10 @@ pub struct GuiPass {
     _white_texture: wgpu::Texture,
     textures: HashMap<u64, GpuTexture>,
     vertices: Option<wgpu::Buffer>,
+    /// The last frame's vertex bytes (their room kept).
+    bytes: Vec<u8>,
+    /// Every quad's [`QUAD_INDICES`] for as many quads as it holds (written when it grows).
+    indices: Option<(wgpu::Buffer, usize)>,
     frame: u64,
     /// What draws the backdrops (None: they are left out).
     backdrops: Option<Box<dyn Backdrops>>,
@@ -294,10 +330,35 @@ impl GuiPass {
             _white_texture: white_texture,
             textures: HashMap::new(),
             vertices: None,
+            bytes: Vec::new(),
+            indices: None,
             frame: 0,
             backdrops,
             timer: None,
         }
+    }
+
+    /// The index buffer holds `quads` quads' indices (made anew, at a power of two of them, when it does not).
+    fn ensure_indices(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, quads: usize) {
+        let quads = quads.max(1);
+        if self.indices.as_ref().is_some_and(|(_, n)| *n >= quads) {
+            return;
+        }
+        let n = quads.next_power_of_two();
+        let mut bytes = Vec::with_capacity(n * 6 * 4);
+        for q in 0..n as u32 {
+            for i in QUAD_INDICES {
+                bytes.extend_from_slice(&(q * 4 + i).to_le_bytes());
+            }
+        }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gui indices"),
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, &bytes);
+        self.indices = Some((buffer, n));
     }
 
     /// Textures on the GPU now.
@@ -336,29 +397,10 @@ impl GuiPass {
                 .flat_map(|f| f.to_le_bytes())
                 .collect::<Vec<u8>>(),
         );
-        // The vertices: six a quad, batch after batch.
-        let quads = draws.quads();
-        let mut bytes = Vec::with_capacity(quads * 6 * VERTEX_BYTES as usize);
-        for b in &draws.batches {
-            for q in &b.quads {
-                let [x0, y0, x1, y1] = q.rect;
-                let [u0, v0, u1, v1] = q.uv;
-                for (x, y, u, v) in [
-                    (x0, y0, u0, v0),
-                    (x1, y0, u1, v0),
-                    (x1, y1, u1, v1),
-                    (x0, y0, u0, v0),
-                    (x1, y1, u1, v1),
-                    (x0, y1, u0, v1),
-                ] {
-                    for f in [x, y, u, v] {
-                        bytes.extend_from_slice(&f.to_le_bytes());
-                    }
-                    bytes.extend_from_slice(&q.color);
-                }
-            }
-        }
-        let needed = (bytes.len() as u64).max(VERTEX_BYTES * 6);
+        let mut bytes = std::mem::take(&mut self.bytes);
+        vertex_bytes(draws, &mut bytes);
+        self.ensure_indices(device, queue, draws.quads());
+        let needed = (bytes.len() as u64).max(VERTEX_BYTES * 4);
         if self.vertices.as_ref().is_none_or(|v| v.size() < needed) {
             self.vertices = Some(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("gui vertices"),
@@ -374,6 +416,7 @@ impl GuiPass {
         if !bytes.is_empty() {
             queue.write_buffer(vertices, 0, &bytes);
         }
+        self.bytes = bytes;
         // Textures first seen.
         for b in &draws.batches {
             if let Some(t) = &b.texture {
@@ -502,8 +545,12 @@ impl GuiPass {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        let Some((indices, _)) = self.indices.as_ref() else {
+            return;
+        };
         pass.set_bind_group(0, &self.screen_group, &[]);
         pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
         let mut first: u32 = draws.batches[..range.start.min(draws.batches.len())]
             .iter()
             .map(|b| (b.quads.len() * 6) as u32)
@@ -531,7 +578,7 @@ impl GuiPass {
                 .and_then(|t| self.textures.get(&t.id))
                 .map_or(&self.white, |t| &t.group);
             pass.set_bind_group(1, group, &[]);
-            pass.draw(start..start + count, 0..1);
+            pass.draw_indexed(start..start + count, 0, 0..1);
         }
     }
 

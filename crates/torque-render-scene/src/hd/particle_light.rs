@@ -52,13 +52,19 @@ pub fn shape_sprites(hd: &mut HdDraw) -> bool {
     }
     let mut shaped = Vec::with_capacity(hd.vertices.len());
     for quad in hd.vertices.as_chunks::<6>().0 {
-        let mut corners: Vec<[f32; 3]> = Vec::with_capacity(4);
+        let mut corners = [[0.0f32; 3]; 4];
+        let mut found = 0;
         for v in quad {
-            if !corners.contains(&v.position) {
-                corners.push(v.position);
+            if corners[..found].contains(&v.position) {
+                continue;
             }
+            if found == 4 {
+                return false;
+            }
+            corners[found] = v.position;
+            found += 1;
         }
-        if corners.len() != 4 {
+        if found != 4 {
             return false;
         }
         let center =

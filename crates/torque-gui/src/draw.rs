@@ -519,6 +519,7 @@ pub struct TextLook<'a> {
 
 /// What one run of glyphs is drawn with: the clip rectangle, the opacity, and the font (with its face and size, the key of its
 /// sheets' textures).
+#[derive(Clone, Copy)]
 struct GlyphRun<'a> {
     clip: [i32; 4],
     alpha: f32,
@@ -539,13 +540,7 @@ impl DrawCache {
         colors: &mut TextColors,
         table: Option<&[[u8; 4]]>,
     ) -> i32 {
-        let GlyphRun {
-            clip,
-            alpha,
-            font,
-            face,
-            size,
-        } = run;
+        let font = run.font;
         // At most one quad a byte: the text is cut to what the budget has left.
         let left = MAX_QUADS.saturating_sub(draws.pushed);
         if left == 0 {
@@ -557,28 +552,98 @@ impl DrawCache {
         let advance = layout.advance;
         self.saved_color = colors.saved;
         draws.report.invalid_glyphs += layout.invalid;
-        for q in layout.quads {
+        self.push_glyphs(draws, run, &layout.quads, (0, 0));
+        advance
+    }
+
+    /// [`DrawCache::glyph_quads`] of `text` in `colors` at each of `offsets` from `at` in turn (an outline's passes): laid out once
+    /// and pushed at each offset when every pass is the same (the quad budget holds them all, and the text leaves the saved colour
+    /// as it was), else laid out again for each.
+    fn glyph_quads_at(
+        &mut self,
+        draws: &mut GuiDraws,
+        run: GlyphRun<'_>,
+        at: (i32, i32),
+        offsets: &[(i32, i32)],
+        text: &[u8],
+        color: [u8; 4],
+    ) {
+        let saved = self.saved_color;
+        let left = MAX_QUADS.saturating_sub(draws.pushed);
+        if left >= text.len().saturating_mul(offsets.len()) {
+            let mut colors = TextColors::new(color, saved);
+            let layout = run.font.layout(at, text, &mut colors, None, 9);
+            if colors.saved == saved {
+                for &offset in offsets {
+                    draws.report.invalid_glyphs += layout.invalid;
+                    if !self.push_glyphs(draws, run, &layout.quads, offset) {
+                        return;
+                    }
+                }
+                return;
+            }
+        }
+        for &(dx, dy) in offsets {
+            let mut colors = TextColors::new(color, self.saved_color);
+            let at = (at.0.wrapping_add(dx), at.1.wrapping_add(dy));
+            self.glyph_quads(draws, run, at, text, &mut colors, None);
+        }
+    }
+
+    /// Pushes the glyph quads `quads` of `run` moved by `offset` to `draws`, each sheet a nearest-filtered texture: false when the
+    /// quad budget ran out (marked in `draws.report.truncated`).
+    fn push_glyphs(
+        &mut self,
+        draws: &mut GuiDraws,
+        run: GlyphRun<'_>,
+        quads: &[torque_fonts::GlyphQuad],
+        (dx, dy): (i32, i32),
+    ) -> bool {
+        let GlyphRun {
+            clip,
+            alpha,
+            font,
+            face,
+            size,
+        } = run;
+        // The sheet of the last glyph (most runs are of one sheet), and the sheets' key of the face (made once).
+        let mut last: Option<(usize, Arc<GuiTexture>)> = None;
+        let mut face_key: Option<String> = None;
+        for q in quads {
             if draws.full() {
                 draws.report.truncated = true;
-                return advance;
+                return false;
             }
-            let key = (face.to_ascii_lowercase(), size, q.sheet);
-            let tex = match self.sheets.get(&key) {
-                Some(t) => t.clone(),
-                None => {
-                    if self.sheets.len() >= MAX_SHEET_TEXTURES
-                        || self.sheet_bytes >= MAX_SHEET_BYTES
-                    {
-                        draws.report.truncated = true;
-                        continue;
-                    }
-                    let Some(t) = font.sheets.get(q.sheet).and_then(|s| {
-                        texture_of(&format!("font:{face}_{size}#{}", q.sheet), s, true, false)
-                    }) else {
-                        continue;
+            let tex = match &last {
+                Some((sheet, t)) if *sheet == q.sheet => Arc::clone(t),
+                _ => {
+                    let lower = face_key.get_or_insert_with(|| face.to_ascii_lowercase());
+                    let key = (lower.clone(), size, q.sheet);
+                    let t = match self.sheets.get(&key) {
+                        Some(t) => t.clone(),
+                        None => {
+                            if self.sheets.len() >= MAX_SHEET_TEXTURES
+                                || self.sheet_bytes >= MAX_SHEET_BYTES
+                            {
+                                draws.report.truncated = true;
+                                continue;
+                            }
+                            let Some(t) = font.sheets.get(q.sheet).and_then(|s| {
+                                texture_of(
+                                    &format!("font:{face}_{size}#{}", q.sheet),
+                                    s,
+                                    true,
+                                    false,
+                                )
+                            }) else {
+                                continue;
+                            };
+                            self.sheet_bytes += t.rgba.len();
+                            self.sheets.insert(key, t.clone());
+                            t
+                        }
                     };
-                    self.sheet_bytes += t.rgba.len();
-                    self.sheets.insert(key, t.clone());
+                    last = Some((q.sheet, Arc::clone(&t)));
                     t
                 }
             };
@@ -586,14 +651,21 @@ impl DrawCache {
             if alpha < 1.0 {
                 color[3] = (f32::from(color[3]) * alpha).round() as u8;
             }
+            let [x0, y0, x1, y1] = q.rect;
+            let rect = [
+                x0.wrapping_add(dx),
+                y0.wrapping_add(dy),
+                x1.wrapping_add(dx),
+                y1.wrapping_add(dy),
+            ];
             let quad = GuiQuad {
-                rect: q.rect.map(|v| v as f32),
+                rect: rect.map(|v| v as f32),
                 uv: q.uv,
                 color,
             };
             draws.push(clip, Some(&tex), GuiBlend::Alpha, quad);
         }
-        advance
+        true
     }
 
     /// The width and height in pixels of `text` in the font `face` at `size` (None: no font was found for them).
@@ -634,17 +706,8 @@ impl DrawCache {
             size,
         };
         if let Some(outline) = outline {
-            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                let mut colors = TextColors::new(outline, self.saved_color);
-                self.glyph_quads(
-                    draws,
-                    run(),
-                    (at.0 + dx, at.1 + dy),
-                    text,
-                    &mut colors,
-                    None,
-                );
-            }
+            const AROUND: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+            self.glyph_quads_at(draws, run(), at, &AROUND, text, outline);
         }
         let mut colors = TextColors::new(color, self.saved_color);
         Some(self.glyph_quads(draws, run(), at, text, &mut colors, None))
@@ -1027,15 +1090,12 @@ impl Walk<'_> {
         self.out.draws.report.controls += 1;
         let ext = std::rc::Rc::clone(&self.ext);
         ext.before_control(&mut DrawCtx(self), id, offset, update);
-        let class = self
-            .vm
-            .objects()
-            .get(id)
-            .map(|o| {
-                String::from_utf8_lossy(self.vm.objects().classes.name(o.class())).into_owned()
-            })
-            .unwrap_or_default();
-        match class.as_str() {
+        let vm = self.vm;
+        let objects = vm.objects();
+        let class = objects.get(id).map_or(std::borrow::Cow::Borrowed(""), |o| {
+            String::from_utf8_lossy(objects.classes.name(o.class()))
+        });
+        match class.as_ref() {
             _ if self.custom_control(id, offset, update, depth) => {}
             // The deprecated seam, for a class no plugin control handles.
             #[allow(deprecated)]
@@ -1078,7 +1138,13 @@ impl Walk<'_> {
                 self.gui_control(id, offset, update, depth)
             }
             _ => {
-                *self.out.draws.report.unmodelled.entry(class).or_default() += 1;
+                *self
+                    .out
+                    .draws
+                    .report
+                    .unmodelled
+                    .entry(class.into_owned())
+                    .or_default() += 1;
                 self.gui_control(id, offset, update, depth);
             }
         }
@@ -1428,6 +1494,10 @@ impl Walk<'_> {
         let sx = ext.0 as f32 / bitmap.width as f32;
         let sy = ext.1 as f32 / bitmap.height as f32;
         let bpp = bitmap.format.bytes_per_pixel();
+        let chunk_key = format!(
+            "{}#chunk",
+            String::from_utf8_lossy(name).to_ascii_lowercase()
+        );
         for i in 0..cols {
             for j in 0..rows {
                 if self.out.draws.full() {
@@ -1438,14 +1508,7 @@ impl Walk<'_> {
                     (bitmap.width - i * CHUNK).min(CHUNK),
                     (bitmap.height - j * CHUNK).min(CHUNK),
                 );
-                let key = (
-                    format!(
-                        "{}#chunk",
-                        String::from_utf8_lossy(name).to_ascii_lowercase()
-                    ),
-                    (j * cols + i) as i32,
-                    0usize,
-                );
+                let key = (chunk_key.clone(), (j * cols + i) as i32, 0usize);
                 let tex = match self.cache.sheets.get(&key) {
                     Some(t) => t.clone(),
                     None => {
@@ -1608,16 +1671,15 @@ impl Walk<'_> {
             return None;
         };
         let width = font.str_width(text);
-        let table: Vec<[u8; 4]> = (0..10)
-            .map(|i| crate::profile::font_color(vm, profile, i))
-            .collect();
+        let table: [[u8; 4]; 10] =
+            std::array::from_fn(|i| crate::profile::font_color(vm, profile, i));
         // `mActive` picks `fontColor` or `fontColorNA`, and a control that is not `enabled` is NA either way.
         let active = crate::input::active(self.gui, id) && flag(vm, id, b"enabled");
         let color = color.unwrap_or(if active { table[0] } else { table[2] });
-        let justify = text_field(vm, profile, b"justify").to_ascii_lowercase();
+        let justify = text_field(vm, profile, b"justify");
         let justify = match justify.as_slice() {
-            b"right" | b"1" => 1,
-            b"center" | b"2" => 2,
+            j if j.eq_ignore_ascii_case(b"right") || j == b"1" => 1,
+            j if j.eq_ignore_ascii_case(b"center") || j == b"2" => 2,
             _ => 0,
         };
         let mut xoff = match justify {
@@ -1636,23 +1698,28 @@ impl Walk<'_> {
                 1 => x -= 1,
                 _ => {}
             }
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    let mut colors = TextColors::new(outline, self.cache.saved_color);
-                    self.glyphs(
-                        &font,
-                        &face,
-                        size,
-                        (
-                            x.wrapping_add(dx).wrapping_add(xoff),
-                            at.1.wrapping_add(yoff).wrapping_add(dy),
-                        ),
-                        text,
-                        &mut colors,
-                        None,
-                    );
-                }
-            }
+            // Every offset of -1..1 each way, x then y.
+            const NINE: [(i32, i32); 9] = [
+                (-1, -1),
+                (-1, 0),
+                (-1, 1),
+                (0, -1),
+                (0, 0),
+                (0, 1),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+            ];
+            let run = GlyphRun {
+                clip: self.clip,
+                alpha: self.alpha,
+                font: &font,
+                face: &face,
+                size,
+            };
+            let at = (x.wrapping_add(xoff), at.1.wrapping_add(yoff));
+            self.cache
+                .glyph_quads_at(&mut self.out.draws, run, at, &NINE, text, outline);
         }
         let mut colors = TextColors::new(color, self.cache.saved_color);
         Some(self.glyphs(
@@ -1663,7 +1730,7 @@ impl Walk<'_> {
             (x.wrapping_add(xoff), at.1.wrapping_add(yoff)),
             text,
             &mut colors,
-            Some(&table),
+            Some(table.as_slice()),
         ))
     }
 

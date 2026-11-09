@@ -83,6 +83,8 @@ p2p = ["webrtc", "torque-app-server/p2p", "torque-server/p2p", "torque-client/p2
 
 [dev-dependencies]
 criterion = { workspace = true }
+# The interiors bench's yards.
+torque-interior-builder = { path = "../torque-interior-builder" }
 # The hashes the web page tests check the files against.
 sha2 = "0.10"
 

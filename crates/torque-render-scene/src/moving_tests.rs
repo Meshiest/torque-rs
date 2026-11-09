@@ -726,3 +726,122 @@ fn only_the_control_object_the_vehicle_it_drives_and_its_mounts_load_past_the_pa
     assert_eq!(crate::shapes::loaded_stats().0 - before, 2);
     crate::shapes::clear_loaded();
 }
+
+/// One frame of `w`'s objects as a window's control sync makes them: built in the shape cache, made objects of with the kept
+/// objects, given their motion.
+fn kept_frame(
+    w: &ClientWorld<TgeClientSet>,
+    files: &Files,
+    drawn: &mut Vec<crate::hd::DynamicObject>,
+    kept: &mut HashMap<u32, crate::hd::objects::KeptObject>,
+) {
+    let (shaped, _) =
+        crate::shapecache::with_cache(|| draws_of(w, files, &(), ShapeSelect::All, None));
+    let mut out = crate::hd::objects::objects_of(w, &shaped, &[], drawn, Some(kept));
+    crate::hd::objects::carry_motion(&mut out, drawn);
+    *drawn = out;
+}
+
+#[test]
+fn a_ghost_posed_as_it_was_takes_its_last_objects_draws_and_converts_nothing() {
+    let (mut w, files) = world([0.0; 3]);
+    let (mut drawn, mut kept) = (Vec::new(), HashMap::new());
+    kept_frame(&w, &files, &mut drawn, &mut kept);
+    let stamp = drawn[0].stamp.expect("a kept object has a stamp");
+    let vertices = drawn[0].draws[0].vertices.as_ptr();
+    // The same pose: the same object, its draws moved over (not converted again), still where they were.
+    kept_frame(&w, &files, &mut drawn, &mut kept);
+    assert_eq!(drawn[0].stamp, Some(stamp));
+    assert_eq!(drawn[0].draws[0].vertices.as_ptr(), vertices);
+    let here: Vec<[f32; 3]> = drawn[0]
+        .draws
+        .iter()
+        .flat_map(|d| d.vertices.iter().map(|v| v.position))
+        .collect();
+    assert_eq!(drawn[0].previous.as_deref(), Some(here.as_slice()));
+    // Moved: built again, a new stamp, its vertices' last places the last frame's.
+    if let Some(TgeRecord::StaticShape(s)) = w.ghosts.get_mut(&1).and_then(|g| g.record.as_mut())
+        && let Some((xf, _)) = s.transform.as_mut()
+    {
+        xf.position = [1.0, 0.0, 0.0].map(F32::new);
+    }
+    kept_frame(&w, &files, &mut drawn, &mut kept);
+    assert_ne!(drawn[0].stamp, Some(stamp));
+    let last = drawn[0].previous.as_ref().expect("the last frame's places");
+    assert!(last.iter().zip(&here).all(|(a, b)| a == b));
+}
+
+/// Hooks that keep a live pose for every ghost and count the poses advanced and posed, and advanced unseen.
+#[derive(Default)]
+struct Clock {
+    posed: std::sync::atomic::AtomicUsize,
+    unseen: std::sync::atomic::AtomicUsize,
+}
+
+impl<W: ShapeWorld + ?Sized> Hooks<W> for Clock {
+    type Live = ();
+
+    fn take_live(&self, _: u32) -> Option<()> {
+        Some(())
+    }
+
+    fn advance_live(
+        &self,
+        _: &W,
+        _: LiveAsk<'_, W>,
+        kept: Option<()>,
+        _: &mut Vec<String>,
+    ) -> (Option<()>, Option<ShapeInstance>) {
+        self.posed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        (kept, None)
+    }
+
+    fn advance_unseen(
+        &self,
+        _: &W,
+        _: LiveAsk<'_, W>,
+        kept: Option<()>,
+        _: &mut Vec<String>,
+    ) -> Option<()> {
+        self.unseen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        kept
+    }
+}
+
+#[test]
+fn a_player_the_cull_leaves_out_keeps_time_but_is_not_posed_or_built() {
+    let (mut w, files) = world([0.0; 3]);
+    w.datablocks.insert(
+        4,
+        datablock("PlayerData", &[("shapeFile", Value::str(CRATE))]),
+    );
+    let record = TgeRecord::Player(ghosts::player::Player {
+        shape: TgeShapeBase {
+            game: ghosts::parts::GameBase {
+                scale: None,
+                datablock: Some(4),
+            },
+            body: None,
+        },
+        motion: Some(ghosts::player::PlayerMove::default()),
+        ..Default::default()
+    });
+    let mut g = ghost(TgeClass::Player, record);
+    g.position = Some([0.0, 5.0, 0.0]);
+    w.ghosts.insert(2, g);
+    w.animate = true;
+    let count = |h: &Clock| {
+        use std::sync::atomic::Ordering::Relaxed;
+        (h.posed.load(Relaxed), h.unseen.load(Relaxed))
+    };
+    let hooks = Clock::default();
+    let (out, _) = draws_of(&w, &files, &hooks, ShapeSelect::All, Some(&Nothing));
+    assert_eq!(count(&hooks), (0, 1), "advanced, not posed");
+    assert_eq!(out.culled, 2);
+    assert!(out.opaque.is_empty() && out.translucent.is_empty());
+    let (out, _) = draws_of(&w, &files, &hooks, ShapeSelect::All, None);
+    assert_eq!(count(&hooks), (1, 1));
+    assert!(out.opaque_owners.contains(&2));
+}

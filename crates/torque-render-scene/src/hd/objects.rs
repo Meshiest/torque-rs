@@ -305,6 +305,22 @@ fn objects_with<W: ShapeWorld + ?Sized>(
     out
 }
 
+/// Gives each of `objects` its motion from `before` (the last frame's objects): the last transform and vertex places of the object
+/// of the same id there. An object with a stamp brings its own ([`objects_of`] made it from the same last frame, whose kept objects
+/// gave their draws up to it).
+pub fn carry_motion(objects: &mut [DynamicObject], before: &[DynamicObject]) {
+    if objects.iter().all(|o| o.stamp.is_some()) {
+        return;
+    }
+    let before: HashMap<u32, &DynamicObject> = before.iter().map(|b| (b.ghost, b)).collect();
+    for o in objects.iter_mut().filter(|o| o.stamp.is_none()) {
+        if let Some(before) = before.get(&o.ghost) {
+            o.prev_transform = before.transform;
+            o.previous = o.previous_from(before);
+        }
+    }
+}
+
 /// [`objects_of`]'s object of `p` (and its kept builds): its draws converted (or the last frame's again), its bounds and its
 /// previous positions.
 fn make_object(

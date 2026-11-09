@@ -123,6 +123,19 @@ pub fn swap(store: &mut Store) {
     CACHE.with(|c| std::mem::swap(&mut *c.borrow_mut(), &mut store.0));
 }
 
+/// Runs `f` with `store` as this thread's cache, and puts the two back after it (also when `f` panics).
+pub fn with_store<T>(store: &mut Store, f: impl FnOnce() -> T) -> T {
+    struct Back<'a>(&'a mut Store);
+    impl Drop for Back<'_> {
+        fn drop(&mut self) {
+            swap(self.0);
+        }
+    }
+    swap(store);
+    let _back = Back(store);
+    f()
+}
+
 /// The time spent filling the kept builds' vertices so far, on every thread (ns).
 static FILL_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

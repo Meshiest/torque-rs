@@ -184,7 +184,9 @@ impl App for Viewer {
                     surfaces: &|_, _, _| Vec::new(),
                 };
                 self.ghosts.update(&self.files, &mut conn.world, &input);
-                let objects = self.ghosts.objects(view, &self.files, &conn.world);
+                let objects = self
+                    .ghosts
+                    .objects(view, &self.files, &conn.world, Some(&self.eye));
                 view.set_objects(objects);
             }
         }

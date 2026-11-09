@@ -27,6 +27,11 @@ gizmos = []
 # The lights-sky example: the day's sun and its pictures.
 torque-scene = { path = "../torque-scene" }
 png = "0.18"
+criterion = { workspace = true }
+
+[[bench]]
+name = "upload"
+harness = false
 
 [lints]
 workspace = true

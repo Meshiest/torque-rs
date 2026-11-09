@@ -21,6 +21,21 @@
 //!   is counted in the frame's [`moving::ShapeDraws`] alone.
 //! - Ghosts of one shape posed the same share one kept build ([`shapecache`]'s content key)
 //!   (`ghosts_of_one_shape_posed_the_same_share_one_kept_build`).
+//! - [`hd::view_cull::ViewCull`] leaves a moving shape out only when no view, no sun shadow's sweep within the shadows' reach,
+//!   no water reflection, no seen light's reach and (while the light capture is drawn) no visible distance can show it; never on
+//!   the view alone (`a_shape_out_of_view_whose_shadow_falls_in_view_is_kept`,
+//!   `a_shape_seen_in_the_water_or_the_capture_or_in_a_lights_reach_is_kept`). A shape left out keeps time: its live pose and
+//!   images' clocks advance ([`moving::Hooks::advance_unseen`]) with nothing posed or built
+//!   (`a_player_the_cull_leaves_out_keeps_time_but_is_not_posed_or_built`).
+//!
+//! Costs a frame must not grow back (the benches in `benches/scene.rs`, timed under the bench lock):
+//! - A ghost posed as it was costs its cache key: its object is the last frame's, its draws moved over, not converted
+//!   (`a_ghost_posed_as_it_was_takes_its_last_objects_draws_and_converts_nothing`; bench `ghost frame 128 kept and culled`).
+//!   [`hd::objects::carry_motion`] leaves an object with a stamp as [`hd::objects::objects_of`] made it.
+//! - [`hd::HdScene::set_particles_and_decals`] makes the frame's particles again in the last frame's draws (no new lists once
+//!   their room is there: [`hd::HdDraw::assign_fixed`]) and counts no new set when there was none and is none; the lit sprites
+//!   are shaped with no list a quad (bench `particles draw+upload 10k`).
+//! - [`hd::TextureTable::intern`] finds a texture it holds by its levels' address with no copy of its path.
 
 pub mod camera;
 pub mod decals;

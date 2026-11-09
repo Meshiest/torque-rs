@@ -304,6 +304,71 @@ pub(crate) struct DrawRef {
     cutout: bool,
 }
 
+/// Bind groups made in the last frames by what they bind (wgpu's handles compare by the resource they name): a group is made
+/// again only when a resource it binds was replaced (the targets made anew, a buffer grown), not every frame.
+struct GroupCache<K> {
+    frame: u64,
+    groups: Vec<(K, wgpu::BindGroup, u64)>,
+}
+
+impl<K> Default for GroupCache<K> {
+    fn default() -> GroupCache<K> {
+        GroupCache {
+            frame: 0,
+            groups: Vec::new(),
+        }
+    }
+}
+
+impl<K: PartialEq> GroupCache<K> {
+    /// The frames a group not asked for is kept, and the most groups kept.
+    const KEEP_FRAMES: u64 = 2;
+    const MAX_GROUPS: usize = 32;
+
+    /// The group of `key` (made by `make` when it is not kept).
+    fn get(&mut self, key: K, make: impl FnOnce() -> wgpu::BindGroup) -> wgpu::BindGroup {
+        let now = self.frame;
+        if let Some(e) = self.groups.iter_mut().find(|e| e.0 == key) {
+            e.2 = now;
+            return e.1.clone();
+        }
+        let group = make();
+        if self.groups.len() >= Self::MAX_GROUPS {
+            self.groups.remove(0);
+        }
+        self.groups.push((key, group.clone(), now));
+        group
+    }
+
+    /// A frame starts: the groups no frame asked for lately are let go (with the resources they hold).
+    fn next_frame(&mut self) {
+        self.frame += 1;
+        let now = self.frame;
+        self.groups.retain(|e| now - e.2 <= Self::KEEP_FRAMES);
+    }
+}
+
+/// What a forward pass's frame group binds ([`HdWorld::frame_group_with`]).
+#[derive(PartialEq)]
+struct FrameKey {
+    buffers: [wgpu::Buffer; 7],
+    views: [wgpu::TextureView; 10],
+    samplers: [wgpu::Sampler; 3],
+}
+
+/// What the tonemap pass's group binds.
+#[derive(PartialEq)]
+struct TonemapKey {
+    views: [wgpu::TextureView; 3],
+    buffers: [wgpu::Buffer; 2],
+    sampler: wgpu::Sampler,
+}
+
+/// A mutex's value, even when a thread panicked holding it (the caches hold nothing a panic leaves half made).
+fn locked<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The frame's particles on the GPU (uploaded again whenever the scene's set changes: every frame they move).
 #[derive(Default)]
 struct Particles {
@@ -313,6 +378,9 @@ struct Particles {
     draws: Vec<(f32, DrawRef)>,
     /// The multiplied decals ([`Blend::Modulate2x`]): their own pass over the opaque frame, in any order.
     decals: Vec<DrawRef>,
+    /// The last upload's vertex and index bytes (their room kept for the next).
+    vertex_bytes: Vec<u8>,
+    index_bytes: Vec<u8>,
 }
 
 /// A cell on the GPU: its slabs in the static arena ([`arena::Arena`]; its indices relative to its first vertex, `base_vertex`, from
@@ -1031,11 +1099,17 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     index_runs: slots::Runs,
     /// The previous positions' buffer while an upload needs none.
     spare_previous: Option<wgpu::Buffer>,
-    /// The uploads whose loose draws did not fit one buffer of the device ([`HdWorld::oversize_uploads`]), and a cap below
+    /// The uploads whose loose draws or particles did not fit one buffer of the device ([`HdWorld::oversize_uploads`]), and a cap below
     /// the device's largest buffer ([`HdWorld::set_buffer_cap`]).
     oversize_uploads: u64,
     buffer_cap: Option<u64>,
     particles: Particles,
+    /// The last upload's table of mesh places in bytes (its room kept).
+    node_bytes: Vec<u8>,
+    /// The forward passes' frame groups made in the last frames, by what they bind ([`GroupCache`]).
+    frame_groups: std::sync::Mutex<GroupCache<FrameKey>>,
+    /// The tonemap pass's groups made in the last frames.
+    tonemap_groups: std::sync::Mutex<GroupCache<TonemapKey>>,
     targets: Option<Targets>,
     timer: Option<Timer>,
     times: Option<GpuTimes>,
@@ -2527,6 +2601,9 @@ impl<E: HdExtension> HdWorld<E> {
             oversize_uploads: 0,
             buffer_cap: None,
             particles: Particles::default(),
+            node_bytes: Vec::new(),
+            frame_groups: std::sync::Mutex::new(GroupCache::default()),
+            tonemap_groups: std::sync::Mutex::new(GroupCache::default()),
             targets: None,
             timer,
             times: None,
@@ -2836,6 +2913,48 @@ impl<E: HdExtension> HdWorld<E> {
 
     /// [`HdWorld::frame_group`] with another frame uniform (a secondary view's).
     pub(crate) fn frame_group_with(
+        &self,
+        frame: &wgpu::Buffer,
+        background: &wgpu::TextureView,
+        contact: &wgpu::TextureView,
+        ao: &wgpu::TextureView,
+        front: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
+        let key = FrameKey {
+            buffers: [
+                frame.clone(),
+                self.lights.clone(),
+                self.masks.clone(),
+                self.shadows.uniform.clone(),
+                self.ext_slots.forward[0].clone(),
+                self.ext_slots.forward[1].clone(),
+                self.nodes.clone(),
+            ],
+            views: [
+                background.clone(),
+                self.shadows.csm_view().clone(),
+                self.shadows.point_view(0).clone(),
+                self.shadows.point_view(1).clone(),
+                self.shadows.point_view(2).clone(),
+                contact.clone(),
+                ao.clone(),
+                front.clone(),
+                self.shadows.trans_view().clone(),
+                self.lightmap.1.clone(),
+            ],
+            samplers: [
+                self.shadows.cmp_sampler.clone(),
+                self.shadows.gather_sampler.clone(),
+                self.shadows.trans_sampler.clone(),
+            ],
+        };
+        locked(&self.frame_groups).get(key, || {
+            self.make_frame_group(frame, background, contact, ao, front)
+        })
+    }
+
+    /// The frame group of [`HdWorld::frame_group_with`], made.
+    fn make_frame_group(
         &self,
         frame: &wgpu::Buffer,
         background: &wgpu::TextureView,
@@ -4159,16 +4278,18 @@ impl<E: HdExtension> HdWorld<E> {
             let view = self.upload_texture(&scene.textures.textures[self.textures.len()]);
             self.textures.push(view);
         }
-        let mut vbytes = Vec::new();
-        let mut indices: Vec<u32> = Vec::new();
+        let old = std::mem::take(&mut self.particles);
+        let (mut vbytes, mut ib) = (old.vertex_bytes, old.index_bytes);
+        vbytes.clear();
+        ib.clear();
+        let mut icount: u32 = 0;
         let mut vcount: u32 = 0;
         let mut draws = Vec::with_capacity(scene.particles.len());
         for (dist, d) in &scene.particles {
-            let first = indices.len() as u32;
-            for v in &d.vertices {
-                v.write(&mut vbytes);
-            }
-            indices.extend_from_slice(&d.indices);
+            let first = icount;
+            HdVertex::extend_bytes(&d.vertices, &mut vbytes);
+            push_u32(&mut ib, &d.indices);
+            icount += d.indices.len() as u32;
             draws.push((
                 *dist,
                 DrawRef {
@@ -4204,29 +4325,40 @@ impl<E: HdExtension> HdWorld<E> {
             generation: Some(scene.particles_generation),
             draws,
             decals: decals.into_iter().map(|(_, r)| r).collect(),
+            vertices: old.vertices,
+            indices: old.indices,
             ..Particles::default()
         };
-        if !indices.is_empty() {
-            particles.vertices = Some(self.device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("hd particle vertices"),
-                    contents: &vbytes,
-                    usage: wgpu::BufferUsages::VERTEX,
-                },
-            ));
-            let mut ib = Vec::with_capacity(indices.len() * 4);
-            push_u32(&mut ib, &indices);
-            particles.indices = Some(self.device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("hd particle indices"),
-                    contents: &ib,
-                    usage: wgpu::BufferUsages::INDEX,
-                },
-            ));
+        let limit = self.buffer_limit() as usize;
+        let fits = vbytes.len() <= limit && ib.len() <= limit;
+        if !ib.is_empty() && !fits {
+            // More than one buffer of the device holds: no particle this frame (counted).
+            self.oversize_uploads += 1;
+        }
+        if !ib.is_empty() && fits {
+            // The buffers are kept while they are big enough (grown with room when they are not) and written in place.
+            let (v, _) = self.buffer_of(
+                particles.vertices.take(),
+                vbytes.len(),
+                wgpu::BufferUsages::VERTEX,
+                "hd particle vertices",
+            );
+            let (i, _) = self.buffer_of(
+                particles.indices.take(),
+                ib.len(),
+                wgpu::BufferUsages::INDEX,
+                "hd particle indices",
+            );
+            self.queue.write_buffer(&v, 0, &vbytes);
+            self.queue.write_buffer(&i, 0, &ib);
+            particles.vertices = Some(v);
+            particles.indices = Some(i);
         } else {
             particles.draws.clear();
             particles.decals.clear();
         }
+        particles.vertex_bytes = vbytes;
+        particles.index_bytes = ib;
         self.particles = particles;
     }
 
@@ -4743,7 +4875,9 @@ impl<E: HdExtension> HdWorld<E> {
         if (self.nodes.size() as usize) < end * NODE_BYTES {
             self.nodes = Self::nodes_buffer(&self.device, end + end / 4 + 64);
         }
-        let mut bytes = vec![0u8; end * NODE_BYTES];
+        let mut bytes = std::mem::take(&mut self.node_bytes);
+        bytes.clear();
+        bytes.resize(end * NODE_BYTES, 0);
         for (o, g) in scene.objects.iter().zip(objects) {
             let Some(base) = g.node_base else {
                 continue;
@@ -4762,6 +4896,7 @@ impl<E: HdExtension> HdWorld<E> {
             }
         }
         self.queue.write_buffer(&self.nodes, 0, &bytes);
+        self.node_bytes = bytes;
     }
 
     /// The largest buffer the loose draws are put in: the device's largest, or the cap below it.
@@ -4775,7 +4910,7 @@ impl<E: HdExtension> HdWorld<E> {
         self.buffer_cap = cap;
     }
 
-    /// How many uploads left their loose draws out because they did not fit one buffer of the device.
+    /// How many uploads left their loose draws or their particles out because they did not fit one buffer of the device.
     pub fn oversize_uploads(&self) -> u64 {
         self.oversize_uploads
     }
@@ -5589,17 +5724,20 @@ impl<E: HdExtension> HdWorld<E> {
         let split = items.len();
         items.extend(self.loose.water.iter().map(|d| Item::Loose(*d)));
         // With the TAA, the late objects and the dying shapes are drawn after its resolve (`over`), back to front too.
-        let mut sorted: Vec<(f32, Vec<DrawRef>)> = self
+        // One list of every translucent draw by its object's distance: the sort is stable, so an object's draws stay together in
+        // their order.
+        let mut sorted: Vec<(f32, DrawRef)> = self
             .loose
             .objects
             .iter()
             .filter(|o| o.translucent && sees_sphere(o.centre, o.radius))
             .filter(|o| !(taa && o.late))
-            .map(|o| {
-                (
-                    dist(o.centre),
-                    o.draws.iter().filter(|d| !d.shadow_only).copied().collect(),
-                )
+            .flat_map(|o| {
+                let d = dist(o.centre);
+                o.draws
+                    .iter()
+                    .filter(|r| !r.shadow_only)
+                    .map(move |r| (d, *r))
             })
             .collect();
         cpu_mark!("begin: items");
@@ -5617,7 +5755,7 @@ impl<E: HdExtension> HdWorld<E> {
                         &mut corona_work,
                     )
                 })
-                .map(|(d, c, _)| (*d, vec![*c])),
+                .map(|(d, c, _)| (*d, *c)),
         );
         cpu_mark!("begin: coronas");
         sorted.extend(
@@ -5625,20 +5763,21 @@ impl<E: HdExtension> HdWorld<E> {
                 .draws
                 .iter()
                 .filter(|(_, c)| !(taa && c.late))
-                .map(|(d, c)| (*d, vec![*c])),
+                .map(|(d, c)| (*d, *c)),
         );
-        let mut over_sorted: Vec<(f32, Vec<DrawRef>)> = Vec::new();
+        let mut over_sorted: Vec<(f32, DrawRef)> = Vec::new();
         if taa {
             over_sorted.extend(
                 self.loose
                     .objects
                     .iter()
                     .filter(|o| o.late && sees_sphere(o.centre, o.radius))
-                    .map(|o| {
-                        (
-                            dist(o.centre),
-                            o.draws.iter().filter(|d| !d.shadow_only).copied().collect(),
-                        )
+                    .flat_map(|o| {
+                        let d = dist(o.centre);
+                        o.draws
+                            .iter()
+                            .filter(|r| !r.shadow_only)
+                            .map(move |r| (d, *r))
                     }),
             );
             over_sorted.extend(
@@ -5646,14 +5785,12 @@ impl<E: HdExtension> HdWorld<E> {
                     .draws
                     .iter()
                     .filter(|(_, c)| c.late)
-                    .map(|(d, c)| (*d, vec![*c])),
+                    .map(|(d, c)| (*d, *c)),
             );
             over_sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
         }
         sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, ds) in sorted {
-            items.extend(ds.into_iter().map(Item::Loose));
-        }
+        items.extend(sorted.into_iter().map(|(_, d)| Item::Loose(d)));
         if wboit {
             for (g, _) in self.table.groups() {
                 if g.0 && self.main_lists.group_drawn(&self.table, *g) {
@@ -5674,9 +5811,7 @@ impl<E: HdExtension> HdWorld<E> {
         }
         // The over draws last (outside the translucent pass).
         let over_start = items.len();
-        for (_, ds) in over_sorted {
-            items.extend(ds.into_iter().map(Item::Loose));
-        }
+        items.extend(over_sorted.into_iter().map(|(_, d)| Item::Loose(d)));
         cpu_mark!("begin: sort");
         // Pipelines and bind groups first (they need the world mutably).
         let mut prepared = Vec::with_capacity(items.len());
@@ -6169,6 +6304,8 @@ impl<E: HdExtension> HdWorld<E> {
         }
         mark!("clusters");
         let _ = set_pass_kind(PassKind::View);
+        locked(&self.frame_groups).next_frame();
+        locked(&self.tonemap_groups).next_frame();
         // The reflections' secondary views (the sky cube, the capture, the planar reflection).
         let views_timed = self.encode_views(
             &mut encoder,
@@ -6764,11 +6901,16 @@ impl<E: HdExtension> HdWorld<E> {
             );
         }
         self.encode_water_depth(&mut encoder, &targets.depth);
-        encoder.copy_texture_to_texture(
-            targets.hdr.as_image_copy(),
-            targets.background.as_image_copy(),
-            full,
-        );
+        // The opaque frame's copy is read by the draws after it (the water, the translucent front layer, the weighted blend's
+        // composite) and maybe by a pass of the extension's: with none of them it is not taken.
+        let reads_background = split < items.len() || PassStage::ALL.iter().any(|&s| passes.has(s));
+        if reads_background {
+            encoder.copy_texture_to_texture(
+                targets.hdr.as_image_copy(),
+                targets.background.as_image_copy(),
+                full,
+            );
+        }
         mark!("volumetric/water depth/copy");
         let mut late_sprites: Vec<(usize, PipelineKey)> = Vec::new();
         if !wboit {
@@ -7271,29 +7413,37 @@ impl<E: HdExtension> HdWorld<E> {
         push_f32(&mut post, &waterline);
         debug_assert_eq!(post.len() as u64, POST_BYTES);
         self.queue.write_buffer(&self.post_uniform, 0, &post);
-        let tonemap_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hd tonemap"),
-            layout: &self.tonemap_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.post_uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.post.linear),
-                },
-                tv(3, self.bloom.result().unwrap_or(&self.white)),
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.exposure.state.as_entire_binding(),
-                },
-                tv(5, &self.lut_view),
-            ],
+        let bloom = self.bloom.result().unwrap_or(&self.white);
+        let key = TonemapKey {
+            views: [source.clone(), bloom.clone(), self.lut_view.clone()],
+            buffers: [self.post_uniform.clone(), self.exposure.state.clone()],
+            sampler: self.post.linear.clone(),
+        };
+        let tonemap_group = locked(&self.tonemap_groups).get(key, || {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("hd tonemap"),
+                layout: &self.tonemap_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.post_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.post.linear),
+                    },
+                    tv(3, bloom),
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: self.exposure.state.as_entire_binding(),
+                    },
+                    tv(5, &self.lut_view),
+                ],
+            })
         });
         {
             let view = target.map_or(&targets.ldr_view, |t| t.0);

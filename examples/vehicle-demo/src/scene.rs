@@ -164,7 +164,7 @@ impl WorldScene {
         world: &TgeWorld,
         eye: &Eye,
     ) -> Vec<DynamicObject> {
-        let out = self.ghosts.objects(view, assets, world);
+        let out = self.ghosts.objects(view, assets, world, Some(eye));
         self.ghosts.effects(view, assets, eye);
         out
     }

@@ -706,10 +706,12 @@ impl ArenaGame {
         self.view_frame();
         let filter = TextureFilter::named(&self.global("$Arena::TextureFilter"));
         self.scene.set_texture_filter(filter);
+        // The eye first: the ghosts it may show are the ones built.
+        let eye = self.drawn_eye();
         let objects = {
             let st = self.client.host.client.borrow();
             match st.conn.conn.as_ref() {
-                Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world),
+                Some(conn) => self.scene.objects(view, &self.files.kit, &conn.world, &eye),
                 None => Vec::new(),
             }
         };
@@ -719,7 +721,6 @@ impl ArenaGame {
         self.apply_sky(view);
         // The example draws the world itself: the GameTSCtrl draws the world whatever the connection's camera is, and the names
         // over the others are placed from its eye.
-        let eye = self.drawn_eye();
         let host = &mut self.client.host;
         host.gui.0.borrow_mut().world_camera = true;
         torque_example_common::names_camera(host, &eye);

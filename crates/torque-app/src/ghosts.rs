@@ -37,11 +37,12 @@ use torque_render_scene::images::{HeldMotion, ImageClock};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::render_pose;
 use torque_render_scene::moving::{
-    Hooks, ImageFrames, LiveAsk, ShapeBudget, ShapeSelect, draws_culled, with_budget,
+    Cull, Hooks, ImageFrames, LiveAsk, ShapeBudget, ShapeSelect, draws_culled, with_budget,
     with_shadow_body,
 };
 use torque_render_scene::particles::{Emitter, Rng};
 use torque_render_scene::ribbons::{Ribbon, projectile_ribbon};
+use torque_render_scene::shapecache::{self, Store, with_cache};
 use torque_render_scene::shapes::DetailPolicy;
 use torque_render_scene::source::Eye;
 use torque_render_scene::textures::TextureSet;
@@ -226,6 +227,19 @@ pub struct GhostOptions {
     /// ([`ShapeBudget`]: 4M vertices and 4 parses by default; the shapes past it are drawn at a lower detail, left out or put off,
     /// and counted).
     pub budget: ShapeBudget,
+    /// Whether the moving shapes nothing in the frame can show are built ([`GhostCull`]).
+    pub cull: GhostCull,
+}
+
+/// Which of a frame's moving shapes a [`GhostScene`] builds ([`GhostOptions::cull`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GhostCull {
+    /// The ones nothing in the frame can show (out of every view, their shadows and reflections too:
+    /// [`WorldView::ghost_cull`]) are not posed or built; their animations keep time.
+    #[default]
+    LeaveUnseen,
+    /// Every one is built.
+    BuildAll,
 }
 
 impl Default for GhostOptions {
@@ -242,6 +256,7 @@ impl Default for GhostOptions {
             poses: None,
             water: Vec::new(),
             budget: ShapeBudget::default(),
+            cull: GhostCull::default(),
         }
     }
 }
@@ -570,49 +585,27 @@ struct GhostHooks {
     synced: bool,
 }
 
-impl Hooks<World> for GhostHooks {
-    type Live = LivePlayer;
-
-    fn take_live(&self, index: u32) -> Option<LivePlayer> {
-        self.live.lock().ok()?.remove(&index)
-    }
-
-    fn take_clock(&self, ghost: u32, slot: usize) -> Option<ImageClock> {
-        self.clocks.lock().ok()?.remove(&(ghost, slot))
-    }
-
-    fn held_motion(&self, ghost: u32, slot: usize) -> HeldMotion {
-        self.motions
-            .get(&(ghost, slot))
-            .copied()
-            .unwrap_or_default()
-    }
-
-    /// A Player's frame: its threads run by the time since its last frame ([`PlayerAnimation::update`]), then posed.
-    fn advance_live(
+impl GhostHooks {
+    /// A Player's live pose `kept` advanced by the frame's time (its animation, its server's threads, its steering), not posed;
+    /// `kept` as it is for a ghost that is not a Player.
+    fn advance(
         &self,
         world: &World,
         ask: LiveAsk<'_, World>,
         kept: Option<LivePlayer>,
-        notes: &mut Vec<String>,
-    ) -> (Option<LivePlayer>, Option<ShapeInstance>) {
-        let _ = notes;
+    ) -> Option<LivePlayer> {
         let Some(record @ (TgeRecord::Player(_) | TgeRecord::AiPlayer(_))) =
             ask.ghost.record.as_ref()
         else {
-            return (kept, None);
+            return kept;
         };
         let birth = world.birth_order.get(&ask.index).copied();
         let kept = kept.filter(|l| l.nodes == ask.shape.nodes.len() && l.birth == birth);
         let mut live = match kept {
             Some(l) => l,
             None => {
-                let Ok(mut instance) = ShapeInstance::new(ask.shape, &mut |_| true) else {
-                    return (None, None);
-                };
-                let Some(mut anim) = PlayerAnimation::new(ask.shape, &mut instance) else {
-                    return (None, None);
-                };
+                let mut instance = ShapeInstance::new(ask.shape, &mut |_| true).ok()?;
+                let mut anim = PlayerAnimation::new(ask.shape, &mut instance)?;
                 anim.set_synced(self.synced);
                 LivePlayer {
                     instance,
@@ -666,11 +659,55 @@ impl Hooks<World> for GhostHooks {
         live.anim
             .script_threads(ask.shape, &mut live.instance, &plays);
         drive_steering(world, ask.index, ask.shape, &mut live);
-        let _ = live
-            .instance
-            .animate(ask.shape, ask.dl, None, &mut |_| true);
+        Some(live)
+    }
+}
+
+impl Hooks<World> for GhostHooks {
+    type Live = LivePlayer;
+
+    fn take_live(&self, index: u32) -> Option<LivePlayer> {
+        self.live.lock().ok()?.remove(&index)
+    }
+
+    fn take_clock(&self, ghost: u32, slot: usize) -> Option<ImageClock> {
+        self.clocks.lock().ok()?.remove(&(ghost, slot))
+    }
+
+    fn held_motion(&self, ghost: u32, slot: usize) -> HeldMotion {
+        self.motions
+            .get(&(ghost, slot))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// A Player's frame: its threads run by the time since its last frame ([`PlayerAnimation::update`]), then posed.
+    fn advance_live(
+        &self,
+        world: &World,
+        ask: LiveAsk<'_, World>,
+        kept: Option<LivePlayer>,
+        notes: &mut Vec<String>,
+    ) -> (Option<LivePlayer>, Option<ShapeInstance>) {
+        let _ = notes;
+        let (shape, dl) = (ask.shape, ask.dl);
+        let Some(mut live) = self.advance(world, ask, kept) else {
+            return (None, None);
+        };
+        let _ = live.instance.animate(shape, dl, None, &mut |_| true);
         let posed = live.instance.clone();
         (Some(live), Some(posed))
+    }
+
+    fn advance_unseen(
+        &self,
+        world: &World,
+        ask: LiveAsk<'_, World>,
+        kept: Option<LivePlayer>,
+        notes: &mut Vec<String>,
+    ) -> Option<LivePlayer> {
+        let _ = notes;
+        self.advance(world, ask, kept)
     }
 
     fn put_back(
@@ -848,6 +885,8 @@ pub struct GhostScene<S = Plain> {
     pub tracks: Option<TireTracks>,
     /// The datablocks whose shapes and textures were loaded ([`GhostScene::preload`]).
     preloaded: BTreeSet<u32>,
+    /// The moving shapes' builds kept from the last frame ([`shapecache`]): a shape posed as it was is not built again.
+    builds: Store,
 }
 
 impl GhostScene {
@@ -893,6 +932,7 @@ impl<S: GhostStyle> GhostScene<S> {
             dust: VehicleDust::default(),
             tracks: None,
             preloaded: BTreeSet::new(),
+            builds: Store::default(),
         }
     }
 
@@ -939,6 +979,7 @@ impl<S: GhostStyle> GhostScene<S> {
             dust: _,
             tracks: _,
             preloaded: self.preloaded,
+            builds: self.builds,
         } = GhostScene::new(self.options.clone());
         self.tracks = tracks;
         self.dust = dust;
@@ -1681,12 +1722,15 @@ impl<S: GhostStyle> GhostScene<S> {
 
     /// The frame's objects of the ghosts the engine draws ([`GhostOptions::select`]) as [`GhostScene::update`] left them, and
     /// the interiors' see-through panes; the map's interiors go into the view's static meshes on the way
-    /// ([`crate::interiors`], each draw through [`GhostStyle::interior_draw`]).
+    /// ([`crate::interiors`], each draw through [`GhostStyle::interior_draw`]). `eye` is the eye the frame is about to be drawn
+    /// from, when the host knows it (the boom's or the orbit's in a third person or an orbit): the ghosts it may show are
+    /// built ([`GhostOptions::cull`]).
     pub fn objects(
         &mut self,
         view: &mut WorldView,
         assets: &dyn Assets,
         world: &World,
+        eye: Option<&Eye>,
     ) -> Vec<DynamicObject> {
         let mut set = TextureSet::new(assets);
         let mut notes = Vec::new();
@@ -1699,31 +1743,43 @@ impl<S: GhostStyle> GhostScene<S> {
             .and_then(|c| world.mount_of(c))
             .map(|(m, _)| m)
             .filter(|m| world.vehicle_render.contains_key(m));
-        let shaped = with_budget(self.options.budget, driven, || {
-            with_shadow_body(self.options.shadow_body, || {
-                draws_culled(
-                    world,
-                    hooks,
-                    assets,
-                    &mut set,
-                    &mut notes,
-                    DetailPolicy::Highest,
-                    select,
-                    None,
-                )
-            })
+        let cull = match self.options.cull {
+            GhostCull::LeaveUnseen => view.ghost_cull(world, eye),
+            GhostCull::BuildAll => None,
+        };
+        // The scene's own kept builds in this thread's place while its shapes are built and made objects of.
+        let (shaped, mut out) = shapecache::with_store(&mut self.builds, || {
+            let shaped = with_cache(|| {
+                with_budget(self.options.budget, driven, || {
+                    with_shadow_body(self.options.shadow_body, || {
+                        draws_culled(
+                            world,
+                            hooks,
+                            assets,
+                            &mut set,
+                            &mut notes,
+                            DetailPolicy::Highest,
+                            select,
+                            cull.as_ref().map(|c| c as &dyn Cull),
+                        )
+                    })
+                })
+            });
+            let out = view.ghost_objects(world, &shaped, set);
+            (shaped, out)
         });
         let control = world.control.object;
-        let drawn = |i: &u32| shaped.transforms.contains_key(i);
-        self.bolts_drawn = self.bolts.keys().filter(|i| drawn(i)).count();
+        let drawn = shaped.drawn_ghosts();
+        self.bolts_drawn = self.bolts.keys().filter(|i| drawn.contains(i)).count();
         self.holders_drawn = self
             .others
             .iter()
             .filter(|o| {
-                Some(o.0) != control && drawn(&o.0) && !world.mounted_images(o.0).is_empty()
+                Some(o.0) != control
+                    && drawn.contains(&o.0)
+                    && !world.mounted_images(o.0).is_empty()
             })
             .count();
-        let mut out = view.ghost_objects(world, &shaped, set);
         let style = &mut self.style;
         out.extend(
             self.interiors

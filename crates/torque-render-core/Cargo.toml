@@ -18,6 +18,13 @@ pollster = "0.4"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu", "wgsl", "fragile-send-sync-non-atomic-wasm"] }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "gui_pass"
+harness = false
+
 # The workspace's lints (`[workspace.lints]`), copied: a crate that inherits them cannot change one, and `forbid` cannot be
 # lowered by an `allow`. The one change is `unsafe_code`, so that the pipeline cache's one `unsafe` block can be expected
 # where it is. The test `the_lints_are_the_workspaces` (src/lib.rs) fails when the copy and the workspace's differ.

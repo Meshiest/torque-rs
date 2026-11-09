@@ -176,3 +176,52 @@ fn loose_draws_past_the_largest_buffer_are_left_out_and_counted_not_a_panic() {
     assert!(drawn + 40.0 < left_out, "{left_out} then {drawn}");
     assert_eq!(gpu.device_errors().validation, 0);
 }
+
+#[test]
+fn particles_past_the_largest_buffer_are_left_out_and_counted() {
+    let gpu = match Gpu::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            return;
+        }
+    };
+    let mut s = PlainScene::default();
+    let eye = look_at([0.0, -8.0, 4.0], [0.0, 0.0, 0.0]);
+    s.eye = Some(eye);
+    s.fov = 70;
+    s.size = SIZE;
+    let sprite = quads(
+        "sprite",
+        200,
+        &[(
+            [
+                [-1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 2.0],
+                [-1.0, 0.0, 2.0],
+            ],
+            [0.0, -1.0, 0.0],
+        )],
+    );
+    s.particles = vec![(8.0, HdDraw::from_fixed(&sprite, material::KIND_SKY, &[]))];
+    let camera = HdCamera::new(eye, 70.0f32, s.visible_distance, SIZE.0, SIZE.1);
+    let target = gpu.offscreen(SIZE.0, SIZE.1).expect("a target");
+    let format = target.color.texture().format();
+    let mut world: HdWorld<NoExtension> = HdWorld::new(&gpu);
+    let frame = |world: &mut HdWorld<NoExtension>, s: &mut PlainScene| {
+        s.generation += 1;
+        s.particles_generation += 1;
+        world.upload(s);
+        world
+            .draw(s, &camera, Some((&target.color, format, [0, 0])))
+            .expect("a frame");
+    };
+    world.set_buffer_cap(Some(64));
+    frame(&mut world, &mut s);
+    assert_eq!(world.oversize_uploads(), 1, "the particles did not fit");
+    world.set_buffer_cap(None);
+    frame(&mut world, &mut s);
+    assert_eq!(world.oversize_uploads(), 1);
+    assert_eq!(gpu.device_errors().validation, 0);
+}

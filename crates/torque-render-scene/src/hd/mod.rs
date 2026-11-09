@@ -32,6 +32,7 @@ pub mod sh;
 pub mod shadow;
 pub mod sky;
 pub mod sync;
+pub mod view_cull;
 
 pub use camera::HdCamera;
 pub use scene::{HdFog, HdLight, HdScene, HdSpot, HdSun, WaterZone};
@@ -42,10 +43,11 @@ pub use settings::{HdMode, ImageSettings};
 pub struct TextureTable {
     pub textures: Vec<Texture>,
     keys: HashMap<(String, u64), usize>,
-    /// The same decoded levels (one `Arc`, the texture cache's) under the same path: found without hashing their bytes again
-    /// (a sync hashed every texture's level 0, 24 ms a sync for a big scene's textures). The table holds every `Arc` it keys,
-    /// so no address is reused while it is a key.
-    shared: HashMap<(String, usize), usize>,
+    /// The same decoded levels (one `Arc`, the texture cache's) under the same path: found by their address without hashing
+    /// their bytes again (a sync hashed every texture's level 0, 24 ms a sync for a big scene's textures) or copying the path. The
+    /// table holds every `Arc` it keys, so no address is reused while it is a key; a hit is checked to be that `Arc` under that
+    /// path.
+    shared: HashMap<usize, usize>,
 }
 
 /// A texture's level 0 hashed 32 bytes at a time in four lanes (FNV a byte at a time took 0.76 ms of a 512 x 512 texture).
@@ -80,8 +82,12 @@ fn content_hash(bytes: &[u8]) -> u64 {
 impl TextureTable {
     /// The table's index of `t` (added when new).
     pub fn intern(&mut self, t: Texture) -> usize {
-        let shared = (t.path.clone(), std::sync::Arc::as_ptr(&t.levels) as usize);
-        if let Some(&i) = self.shared.get(&shared) {
+        let shared = std::sync::Arc::as_ptr(&t.levels) as usize;
+        if let Some(&i) = self.shared.get(&shared)
+            && let Some(held) = self.textures.get(i)
+            && std::sync::Arc::ptr_eq(&held.levels, &t.levels)
+            && held.path == t.path
+        {
             return i;
         }
         let key = (
@@ -660,42 +666,59 @@ impl HdDraw {
     }
 
     pub fn from_fixed(d: &Draw, kind: u32, textures: &[usize]) -> HdDraw {
-        let mut base = (kind << material::KIND_SHIFT) | material::tex_env(d.tex_env);
+        let mut h = HdDraw::empty();
+        h.assign_fixed(d, kind, textures, 0);
+        h
+    }
+
+    /// A draw of nothing, opaque, culled by nothing and depth tested and written: a start for [`HdDraw::assign_fixed`].
+    pub fn empty() -> HdDraw {
+        HdDraw {
+            label: String::new(),
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            texture: None,
+            blend: Blend::Opaque,
+            cull: Cull::None,
+            depth_test: true,
+            depth_write: true,
+        }
+    }
+
+    /// [`HdDraw::from_fixed`] of `d` into this draw, its lists' room kept (a frame's particles made again into the last frame's),
+    /// `bits` set in every vertex's material word.
+    pub fn assign_fixed(&mut self, d: &Draw, kind: u32, textures: &[usize], bits: u32) {
+        let mut base = (kind << material::KIND_SHIFT) | material::tex_env(d.tex_env) | bits;
         if d.texture.is_none() {
             base &= !(material::TEX_ENV_MASK << material::TEX_ENV_SHIFT);
         }
         if !d.lighting {
             base |= material::UNLIT;
         }
-        let vertices: Vec<HdVertex> = d
-            .vertices
-            .iter()
-            .map(|v| {
-                let (n, zero) = unit_normal(v.normal);
-                HdVertex {
-                    position: v.position,
-                    normal: oct_encode(n),
-                    uv: v.uv,
-                    color: v.color,
-                    material: base | if zero { material::ZERO_NORMAL } else { 0 },
-                    extra: 0,
-                }
-            })
-            .collect();
-        let n = (vertices.len() - vertices.len() % 3) as u32;
-        HdDraw {
-            label: d.label.clone(),
-            vertices,
-            indices: (0..n).collect(),
-            texture: d
-                .texture
-                .and_then(|(i, s)| textures.get(i).map(|&g| (g, s)))
-                .filter(|_| d.tex_env != TexEnv::None),
-            blend: d.blend,
-            cull: d.cull,
-            depth_test: d.depth_test,
-            depth_write: d.depth_write,
-        }
+        self.vertices.clear();
+        self.vertices.extend(d.vertices.iter().map(|v| {
+            let (n, zero) = unit_normal(v.normal);
+            HdVertex {
+                position: v.position,
+                normal: oct_encode(n),
+                uv: v.uv,
+                color: v.color,
+                material: base | if zero { material::ZERO_NORMAL } else { 0 },
+                extra: 0,
+            }
+        }));
+        let n = (self.vertices.len() - self.vertices.len() % 3) as u32;
+        self.indices.clear();
+        self.indices.extend(0..n);
+        self.label.clone_from(&d.label);
+        self.texture = d
+            .texture
+            .and_then(|(i, s)| textures.get(i).map(|&g| (g, s)))
+            .filter(|_| d.tex_env != TexEnv::None);
+        self.blend = d.blend;
+        self.cull = d.cull;
+        self.depth_test = d.depth_test;
+        self.depth_write = d.depth_write;
     }
 }
 

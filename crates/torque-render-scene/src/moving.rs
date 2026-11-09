@@ -21,7 +21,8 @@
 //! MIT licence: `T3D/shapeBase.cpp`, `T3D/projectile.cpp` and `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C)
 //! 2015 Faust Logic, Inc.), `math/mathUtils.cpp` (Copyright (c) 2012 GarageGames, LLC). The code here is this crate's own.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use ghost_world::images::MountedImage;
@@ -85,6 +86,18 @@ pub trait Hooks<W: ShapeWorld + ?Sized>: Sync {
         (kept, None)
     }
 
+    /// Advances the live pose `kept` of a ghost the frame leaves out ([`Cull`]) by the frame's time, as [`Hooks::advance_live`]
+    /// would, without posing it: its animation keeps time while nothing shows it. By default the pose is made and dropped.
+    fn advance_unseen(
+        &self,
+        world: &W,
+        ask: LiveAsk<'_, W>,
+        kept: Option<Self::Live>,
+        notes: &mut Vec<String>,
+    ) -> Option<Self::Live> {
+        self.advance_live(world, ask, kept, notes).0
+    }
+
     /// The host's own motion of the image in ghost `ghost`'s slot `slot` this frame ([`HeldMotion`]: none by default).
     fn held_motion(&self, ghost: u32, slot: usize) -> HeldMotion {
         let _ = (ghost, slot);
@@ -118,7 +131,7 @@ pub struct LiveAsk<'a, W: ShapeWorld + ?Sized> {
 }
 
 /// Which shapes a frame may leave out: whether a shape whose bounding sphere (images and tyres included) is at `centre` with
-/// `radius` may show in it.
+/// `radius` may show in it (the enhanced renderer's: [`crate::hd::view_cull::ViewCull`]).
 pub trait Cull {
     fn keeps(&self, centre: [f32; 3], radius: f32) -> bool;
 }
@@ -172,6 +185,14 @@ fn projectile_placement<W: ShapeWorld + ?Sized>(
         m.set_column3(p);
     }
     Some((m, scale, path))
+}
+
+/// A datablock's file name with its backslashes turned to slashes (borrowed when it has none).
+fn slashed(file: &[u8]) -> Cow<'_, str> {
+    match String::from_utf8_lossy(file) {
+        Cow::Borrowed(s) if !s.contains('\\') => Cow::Borrowed(s),
+        s => Cow::Owned(s.replace('\\', "/")),
+    }
 }
 
 /// `MathUtils::createOrientFromDir`: the columns `i = j x z` (`(0, -1, 0)` when zero, normalised), `j`, `k = i x j`.
@@ -236,6 +257,26 @@ pub struct ShapeDraws {
     /// `translucent`: [`crate::shapecache::with_draws`]).
     pub calls: BTreeMap<u32, Vec<crate::shapecache::Call>>,
 }
+impl ShapeDraws {
+    /// The ghosts the frame draws something of (their own draws, or kept builds' calls): not the ones left out by the cull or
+    /// the budget, nor the ones whose shapes did not load.
+    pub fn drawn_ghosts(&self) -> BTreeSet<u32> {
+        let mut out: BTreeSet<u32> = self
+            .opaque_owners
+            .iter()
+            .chain(&self.translucent_owners)
+            .copied()
+            .collect();
+        out.extend(
+            self.calls
+                .iter()
+                .filter(|(_, calls)| !calls.is_empty())
+                .map(|(&g, _)| g),
+        );
+        out
+    }
+}
+
 /// Which shapes a frame's build takes (a live window draws the client's control object every frame, the rest of the
 /// world's shapes with the scene it rebuilds now and then).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,7 +361,8 @@ fn dynamic_in<W: ShapeWorld + ?Sized>(world: &W, index: u32, animate: bool) -> b
 }
 
 /// The draws of the shapes `select` takes at the detail levels `policy` picks, leaving out the shapes `cull` says nothing in the
-/// frame can show (never the control object): they are not posed or built.
+/// frame can show (never the control object): they are not posed or built, but their live poses and images' clocks keep time
+/// ([`Hooks::advance_unseen`]), so a shape that comes back into view is where its animation would have been.
 #[allow(clippy::too_many_arguments)]
 pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     world: &W,
@@ -483,13 +525,13 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
             .as_ref()
             .and_then(|p| pose_matrix(p, None))
             .map(|(m, _)| (m, draw.scale));
-        (draw.shape.replace('\\', "/"), placed, draw.skin)
+        (Cow::Owned(draw.shape.replace('\\', "/")), placed, draw.skin)
     } else if world.kind(class) == ShapeKind::Projectile {
         let (m, scale, path) = projectile_placement(world, index, ghost, eye)?;
-        (path, Some((m, scale)), None)
+        (Cow::Owned(path), Some((m, scale)), None)
     } else {
         let file = records.datablock_text(db, "shapeFile")?;
-        let path = String::from_utf8_lossy(file).replace('\\', "/");
+        let path = slashed(file);
         let placed = match mounted {
             Some(m) => Some((m, ghost.scale().unwrap_or([1.0; 3]))),
             None => pose.as_ref().and_then(|p| pose_matrix(p, ghost.scale())),
@@ -504,17 +546,16 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
         return None;
     };
     let model = &loaded.model;
-    if let Some(cull) = cull
-        && records.control.object != Some(index)
-        && !shape_may_show(
-            cull, world, assets, models, notes, index, model, &xform, scale,
-        )
-    {
+    let unseen = cull.is_some_and(|cull| {
+        records.control.object != Some(index)
+            && !shape_may_show(
+                cull, world, assets, models, notes, index, model, &xform, scale,
+            )
+    });
+    if unseen {
         out.culled += 1;
         CULLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return None;
-    }
-    if cull.is_some() {
+    } else if cull.is_some() {
         BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let centre = xform.mul_p(model.shape.center);
@@ -539,6 +580,7 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
         eye_distance,
         max_scale,
         dl,
+        unseen,
         live_out: false,
         entry: 0,
         live: None,
@@ -740,6 +782,9 @@ fn fit_budget<S: ClientSet, L>(
     let mut dropped = vec![false; jobs.len()];
     for i in order {
         let job = &mut jobs[i];
+        if job.unseen {
+            continue;
+        }
         let first = job.dl;
         loop {
             let v = job_vertices(job);
@@ -1152,7 +1197,7 @@ struct Job<'w, S: ClientSet, L> {
     index: u32,
     ghost: &'w Ghost<S>,
     db: u32,
-    path: String,
+    path: Cow<'w, str>,
     /// A texture shown in place of the first material's ([`ShapeDraw::skin`]).
     skin: Option<String>,
     loaded: Arc<Loaded>,
@@ -1164,6 +1209,8 @@ struct Job<'w, S: ClientSet, L> {
     eye_distance: f32,
     max_scale: f32,
     dl: usize,
+    /// Left out by the frame's cull: its live pose and clocks advanced, nothing posed or built.
+    unseen: bool,
     /// Its live pose was taken out of the host's keeping ([`take_live`]), and the pose taken (none: its first live frame).
     live_out: bool,
     /// Its place among the frame's entries (the ghosts placed, in order).
@@ -1317,6 +1364,44 @@ fn take_live<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     }
 }
 
+/// An unseen job's frame: its live pose advanced unposed and its images' clocks advanced (they go back with it), nothing posed.
+fn keep_time<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
+    f: &Frame<'_, W, H>,
+    mut job: Job<'w, W::Set, H::Live>,
+) -> Posed<'w, W::Set, H::Live> {
+    let mut notes = Vec::new();
+    let live = match job.pose {
+        Some(Pose::Euler { pitch, .. }) if job.live_out => {
+            let ask = LiveAsk {
+                index: job.index,
+                ghost: job.ghost,
+                shape: &job.loaded.model.shape,
+                db: job.db,
+                pitch,
+                dl: job.dl,
+            };
+            let kept = job.live.take();
+            f.hooks.advance_unseen(f.world, ask, kept, &mut notes)
+        }
+        _ => None,
+    };
+    let records = f.world.records();
+    for i in &mut job.images {
+        if let ImageJob::Pose(p) = i
+            && p.clock_out
+        {
+            p.clock = Some(advance_clock(records, &p.image, p.clock.as_ref()));
+        }
+    }
+    Posed {
+        job,
+        live,
+        notes,
+        body: None,
+        images: Vec::new(),
+    }
+}
+
 /// A job's share of the pool's work: its nodes and its images' nodes.
 fn weight<S: ClientSet, L>(job: &Job<'_, S, L>) -> usize {
     let images: usize = job
@@ -1335,6 +1420,9 @@ fn pose<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
     f: &Frame<'_, W, H>,
     mut job: Job<'w, W::Set, H::Live>,
 ) -> Posed<'w, W::Set, H::Live> {
+    if job.unseen {
+        return keep_time(f, job);
+    }
     let world = f.world;
     let mut notes = Vec::new();
     let model = &job.loaded.model;

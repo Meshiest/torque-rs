@@ -562,6 +562,8 @@ struct Maps {
 pub(crate) struct Shadows {
     maps: Maps,
     casters: wgpu::Buffer,
+    /// The last frame's casters in bytes, up to the last one used (its room kept).
+    caster_bytes: Vec<u8>,
     caster_group: wgpu::BindGroup,
     sun_pipeline: wgpu::RenderPipeline,
     point_pipeline: wgpu::RenderPipeline,
@@ -1267,6 +1269,7 @@ impl Shadows {
             slots: vec![Slot::default(); maps.slots()],
             maps,
             casters,
+            caster_bytes: Vec::new(),
             caster_group,
             sun_pipeline,
             point_pipeline,
@@ -1400,7 +1403,10 @@ impl Shadows {
         let q = self.maps.quality;
         let mut stats = ShadowStats::default();
         let mut jobs: Vec<Job> = Vec::new();
-        let mut caster_bytes = vec![0u8; CASTER_STRIDE as usize * CASTERS];
+        // Written up to the last caster used (the slots past it are not read this frame), zeros between.
+        let mut caster_bytes = std::mem::take(&mut self.caster_bytes);
+        caster_bytes.clear();
+        let mut b = Vec::with_capacity(CASTER_BYTES as usize);
         // A cascade's extra casters cast only within `near` (the eye, the distance their geometry is drawn whole to).
         let near = {
             let e = input.camera.eye;
@@ -1412,12 +1418,15 @@ impl Shadows {
             ]
         };
         let mut put_caster = |index: usize, m: &[f32; 16], light: [f32; 4], exclude: [u32; 4]| {
-            let mut b = Vec::with_capacity(CASTER_BYTES as usize);
+            b.clear();
             push_f32(&mut b, m);
             push_f32(&mut b, &light);
             crate::push_u32(&mut b, &exclude);
             push_f32(&mut b, &near);
             let at = index * CASTER_STRIDE as usize;
+            if caster_bytes.len() < at + CASTER_STRIDE as usize {
+                caster_bytes.resize(at + CASTER_STRIDE as usize, 0);
+            }
             caster_bytes[at..at + b.len()].copy_from_slice(&b);
         };
         // The extra casters going on or off changes what the static cascades hold.
@@ -1732,7 +1741,10 @@ impl Shadows {
         }
 
         // The uniform.
-        queue.write_buffer(&self.casters, 0, &caster_bytes);
+        if !caster_bytes.is_empty() {
+            queue.write_buffer(&self.casters, 0, &caster_bytes);
+        }
+        self.caster_bytes = caster_bytes;
         let mut u = Vec::with_capacity(SHADOWS_BYTES);
         for i in 0..MAX_CASCADES {
             push_f32(&mut u, &cs.get(i).map_or([0.0; 16], |c| c.view_proj));

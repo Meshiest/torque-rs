@@ -307,7 +307,7 @@ impl WorldScene {
         world: &TgeWorld,
         eye: &Eye,
     ) -> Vec<DynamicObject> {
-        let mut out = self.ghosts.objects(view, assets, world);
+        let mut out = self.ghosts.objects(view, assets, world, Some(eye));
         for object in &mut out {
             for draw in &mut object.draws {
                 if let Some((_, sampler)) = draw.texture.as_mut() {

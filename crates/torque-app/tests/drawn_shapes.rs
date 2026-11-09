@@ -281,7 +281,7 @@ fn objects(session: &Session, scene: &mut GhostScene, view: &mut WorldView) -> V
     let kit = Kit(files());
     session
         .client
-        .with_world(|w| scene.objects(view, &kit, &w.records))
+        .with_world(|w| scene.objects(view, &kit, &w.records, None))
         .expect("connected")
 }
 
@@ -463,4 +463,45 @@ fn a_moved_prop_is_shown_between_its_updates_and_ends_where_the_server_put_it() 
     session.run(20);
     let last = drawn_x(&session).expect("drawn");
     assert!((last - 3.0).abs() < 0.01, "{last}");
+}
+
+#[test]
+fn a_cut_to_a_far_view_draws_its_ghosts_on_that_frame() {
+    let Some(gpu) = gpu() else { return };
+    let game = files();
+    let mut session = Session::new(&game, None);
+    session.eval(&format!("return makeStatic({AT});"));
+    assert!(session.run_until(200, |s| s.client.with_world(|w| {
+        w.records
+            .ghosts
+            .values()
+            .any(|g| g.class.is_some_and(|c| c.name() == "StaticShape"))
+    }) == Some(true)));
+    session.run(8);
+    let mut view = view(&gpu, &session.engine);
+    let mut scene = scene();
+    let kit = Kit(files());
+    let mut drawn_from = |view: &mut WorldView, eye: Eye| {
+        session
+            .client
+            .with_world(|w| scene.objects(view, &kit, &w.records, Some(&eye)))
+            .expect("connected")
+            .iter()
+            .any(|o| !o.draws.is_empty())
+    };
+    // Past the visible distance behind the crate, looking away from it, its shadow falling away from the view.
+    let away = look_at([0.0, -260.0, 3.0], [0.0, -400.0, 1.0]);
+    assert!(drawn_from(&mut view, away), "the first frame is not culled");
+    view.set_objects(Vec::new());
+    view.render_world(&gpu, SIZE, away)
+        .expect("the world is drawn");
+    let mut step = away;
+    step.position[1] -= 0.5;
+    assert!(!drawn_from(&mut view, step), "out of the view: left out");
+    // A cut to a far view of the crate draws it on the cut's frame.
+    assert!(drawn_from(&mut view, eye()), "a cut to a view of it");
+    // A cut builds every ghost, even ones out of its view.
+    let elsewhere = look_at([0.0, -600.0, 3.0], [0.0, -800.0, 1.0]);
+    assert!(drawn_from(&mut view, elsewhere), "a cut is not culled");
+    assert_eq!(gpu.device_errors().validation, 0);
 }

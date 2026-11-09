@@ -317,25 +317,36 @@ impl<G> HdScene<G> {
             .into_iter()
             .map(|t| self.textures.intern(t))
             .collect();
-        let sprites = particles.iter().map(|(dist, d)| {
-            let hd =
-                HdDraw::from_fixed(d, material::KIND_SKY, &local).with_material(material::PARTICLE);
-            let mut hd = if d.blend == Blend::Additive {
-                hd.with_material(material::EMITTER)
+        // (None before and none now: the renderer keeps what it has.)
+        if self.particles.is_empty() && particles.is_empty() && decals.is_empty() {
+            return;
+        }
+        // The last frame's draws are made again in place: their lists keep their room.
+        let mut kept = std::mem::take(&mut self.particles);
+        kept.truncate(particles.len() + decals.len());
+        let mut pool = kept.into_iter().map(|(_, d)| d);
+        let mut made = |dist: f32, d: &Draw, bits: u32| {
+            let mut hd = pool.next().unwrap_or_else(HdDraw::empty);
+            hd.assign_fixed(d, material::KIND_SKY, &local, bits);
+            (dist, hd)
+        };
+        let mut out = Vec::with_capacity(particles.len() + decals.len());
+        for (dist, d) in particles {
+            let emitter = if d.blend == Blend::Additive {
+                material::EMITTER
             } else {
-                hd
+                0
             };
+            let (dist, mut hd) = made(*dist, d, material::PARTICLE | emitter);
             if self.particle_light.is_some_and(|rule| rule.lights(d)) {
                 shape_sprites(&mut hd);
             }
-            (*dist, hd)
-        });
-        let marks = decals.iter().map(|(dist, d)| {
-            let hd = HdDraw::from_fixed(d, material::KIND_SKY, &local)
-                .with_material(material::PARTICLE | material::DECAL);
-            (*dist, hd)
-        });
-        self.particles = sprites.chain(marks).collect();
+            out.push((dist, hd));
+        }
+        for (dist, d) in decals {
+            out.push(made(*dist, d, material::PARTICLE | material::DECAL));
+        }
+        self.particles = out;
         self.particles_generation = self.particles_generation.wrapping_add(1);
     }
 

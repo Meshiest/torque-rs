@@ -9,6 +9,10 @@
 //! Rules a change must keep, each guarded by a test:
 //! - Every device has an uncaptured-error handler that counts and prints ([`DeviceErrors`]), never wgpu's panic
 //!   (`a_buffer_past_the_device_limit_is_a_counted_error_not_a_panic`).
+//!
+//! Costs a frame must not grow back: the GUI pass writes four vertices a quad into its kept byte list
+//! ([`gui_pass::vertex_bytes`]) and its shared quad indices only when they grow (bench `gui pass vertices 3k quads`, timed
+//! under the bench lock).
 
 use std::fmt;
 use std::path::Path;

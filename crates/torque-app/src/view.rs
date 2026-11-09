@@ -26,9 +26,10 @@ use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture, StaticCells};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
 use torque_render_scene::hd::environment::ClientDay;
-use torque_render_scene::hd::objects::objects_of;
+use torque_render_scene::hd::objects::{KeptObject, carry_motion, objects_of};
 use torque_render_scene::hd::particle_light::ParticleLight;
 use torque_render_scene::hd::scatter::ScatterLook;
+use torque_render_scene::hd::view_cull::{ViewCull, is_cut};
 use torque_render_scene::hd::{
     DynamicObject, HdCamera, HdDraw, HdScene, HdSpot, Quality, WaterZone, bounding_sphere, material,
 };
@@ -277,6 +278,9 @@ pub struct WorldView {
     batch_sources: Vec<BatchSource>,
     /// The plugins' emitter kinds.
     kinds: EmitterKinds,
+    /// What the last frame's moving objects were made of ([`objects_of`]'s kept objects): an object whose builds did not change
+    /// is the last frame's again.
+    kept: HashMap<u32, KeptObject>,
 }
 
 impl WorldView {
@@ -322,6 +326,7 @@ impl WorldView {
             batch_budget: crate::render::MAX_VIEW_BATCH_TRIANGLES,
             batch_sources: Vec::new(),
             kinds: EmitterKinds::default(),
+            kept: HashMap::new(),
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
@@ -1117,20 +1122,59 @@ impl WorldView {
         textures: TextureSet,
     ) -> Vec<DynamicObject> {
         let local = self.intern(textures.into_textures());
-        objects_of(world, shaped, &local, &mut self.scene.objects, None)
+        objects_of(
+            world,
+            shaped,
+            &local,
+            &mut self.scene.objects,
+            Some(&mut self.kept),
+        )
     }
 
-    /// The frame's moving objects. Each takes its motion from the last frame's object of the same id: its transform then and
-    /// where its vertices were.
-    pub fn set_objects(&mut self, mut objects: Vec<DynamicObject>) {
-        let before: HashMap<u32, &DynamicObject> =
-            self.scene.objects.iter().map(|b| (b.ghost, b)).collect();
-        for o in &mut objects {
-            if let Some(before) = before.get(&o.ghost) {
-                o.prev_transform = before.transform;
-                o.previous = o.previous_from(before);
-            }
+    /// What a frame drawn by this view can show of `world`'s moving shapes ([`ViewCull`]): from `eye` (the eye the host is about
+    /// to draw from, the boom's or the orbit's in a third person or an orbit), the world's camera and the eye the last frame was
+    /// drawn from, their shadows, the water's reflection and the light capture included. None (nothing left out): no frame drawn
+    /// yet, a cut ([`is_cut`]: the eye jumped from the last frame's), or another renderer than the engine's drawing (its frame is
+    /// not the one the cull knows).
+    pub fn ghost_cull<W: ShapeWorld + ?Sized>(
+        &self,
+        world: &W,
+        eye: Option<&Eye>,
+    ) -> Option<ViewCull> {
+        if self.drawing != Drawing::Default {
+            return None;
         }
+        let records = world.records();
+        let frame = &self.scene.frame;
+        let last = frame.eye?;
+        let camera = records.eye();
+        if eye.copied().or(camera).is_some_and(|e| is_cut(&last, &e)) {
+            return None;
+        }
+        let fov = records.fov_deg();
+        let eyes: Vec<(Eye, f32)> = eye
+            .map(|e| (*e, e.fov.map_or(fov, f32::from)))
+            .into_iter()
+            .chain(camera.map(|e| (e, fov)))
+            .chain(Some((last, f32::from(frame.fov))))
+            .collect();
+        ViewCull::new(
+            frame,
+            &eyes,
+            self.world.capture_on(),
+            self.world.shadow_range().map(|r| r.end),
+        )
+    }
+
+    /// The last frame's moving objects (a host takes the draws of one it hands out again as they were).
+    pub(crate) fn objects_mut(&mut self) -> &mut [DynamicObject] {
+        &mut self.scene.objects
+    }
+
+    /// The frame's moving objects. Each takes its motion from the last frame's object of the same id (its transform then and where
+    /// its vertices were), unless it brings its own ([`carry_motion`]).
+    pub fn set_objects(&mut self, mut objects: Vec<DynamicObject>) {
+        carry_motion(&mut objects, &self.scene.objects);
         self.scene.objects = objects;
     }
 

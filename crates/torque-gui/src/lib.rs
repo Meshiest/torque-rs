@@ -61,6 +61,10 @@
 //!   (`a_bitmap_with_no_header_in_reach_is_read_at_most_once_and_never_past_its_cap`).
 //! - Every pass of a reflow is constant work: tags are pushed and their ids kept in a set, and every number is read from its tag
 //!   alone (`a_reflow_of_sixty_five_thousand_tags_is_linear`, `a_duplicate_tag_id_is_still_counted_once`).
+//!
+//! Costs a frame must not grow back (bench `gui draw 300 controls`, timed under the bench lock): a control's class is matched
+//! by its borrowed name (no copy a control), a run of glyphs finds its font sheet once a sheet (no key a glyph), and an outline
+//! is laid out once and pushed at each of its offsets when its passes are the same.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
