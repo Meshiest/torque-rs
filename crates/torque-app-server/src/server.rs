@@ -561,5 +561,6 @@ impl TickHooks for EngineTicks {
 
     fn after(&self, vm: &mut Vm, tick: TickInfo) {
         self.run(TickPhase::After, vm, tick);
+        self.run(TickPhase::Resolve, vm, tick);
     }
 }

@@ -198,8 +198,9 @@ pub fn install_keys_with(vm: &mut Vm, keys: &DatablockKeys, rule: Option<StaticW
     let keys = keys.clone();
     vm.set_static_write_observer(Some(Rc::new(
         move |vm: &mut Vm, id: Option<ObjId>, class: ClassId| {
-            // The observer this one replaces (the simulation work: a PlayerData's Players rebuild their products).
-            torque_game::sim::player::datablock_written(vm, id, class);
+            // The observer this one replaces (the scene hierarchy hears a moved object; a PlayerData's Players rebuild their
+            // products).
+            torque_game::scene::object::static_written(vm, id, class);
             let classes = &vm.objects().classes;
             if !classes.is_a(class, SIM_DATA_BLOCK) {
                 return;

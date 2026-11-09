@@ -105,6 +105,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("getModField", id, field)` *2; server and client*
 - `ts.call("getModList", [all])` *0 to 1; server and client*
 - `ts.call("getModStages")` *none; server and client*
+- `ts.call("getParentError")` *none; server; needs `torque.hierarchy`*
 - `ts.call("getPredictor")` *none; client; needs a plugin with a predictor or a prediction part*
 - `ts.call("getRandom", [a [, b]])` *0 to 2; server and client*
 - `ts.call("getRandomSeed")` *none; server and client*
@@ -561,14 +562,27 @@ The same functions and methods as the other pages, as a script of the Lua extens
 
 ### SceneObject
 
+- `obj:clearChildren([keepWorld])` *0 to 1; server; needs `torque.hierarchy`*
+- `obj:deleteRecursive()` *none; server; needs `torque.hierarchy`*
+- `obj:getChild(index)` *1; server; needs `torque.hierarchy`*
+- `obj:getChildCount()` *none; server; needs `torque.hierarchy`*
+- `obj:getDeleteWithParent()` *none; server; needs `torque.hierarchy`*
 - `obj:getForwardVector()` *none; server and client*
+- `obj:getLocalTransform()` *none; server; needs `torque.hierarchy`*
 - `obj:getObjectBox()` *none; server and client*
+- `obj:getParent()` *none; server; needs `torque.hierarchy`*
+- `obj:getParentNode()` *none; server; needs `torque.hierarchy`*
 - `obj:getPosition()` *none; server and client*
+- `obj:getRoot()` *none; server; needs `torque.hierarchy`*
 - `obj:getScale()` *none; server and client*
 - `obj:getTransform()` *none; server and client*
 - `obj:getUpVector()` *none; server and client*
 - `obj:getWorldBox()` *none; server and client*
 - `obj:getWorldBoxCenter()` *none; server and client*
+- `obj:isAncestorOf(other)` *1; server; needs `torque.hierarchy`*
+- `obj:setDeleteWithParent(flag)` *1; server; needs `torque.hierarchy`*
+- `obj:setLocalTransform(transform [, snap])` *1 to 2; server; needs `torque.hierarchy`*
+- `obj:setParent(parent [, keepWorld [, node]])` *1 to 3; server; needs `torque.hierarchy`*
 - `obj:setScale(Point3F scale)` *1; server and client*
 - `obj:setTransform(Transform T)` *1; server and client*
 

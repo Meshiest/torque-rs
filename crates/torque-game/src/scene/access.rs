@@ -95,7 +95,8 @@ pub fn matrix_of(vm: &Vm, id: ObjId) -> Option<Matrix> {
     .flatten()
 }
 
-/// Makes `matrix` the object's transform (false for an object with no such field).
+/// Makes `matrix` the object's transform (false for an object with no such field), and tells the scene hierarchy, if the
+/// server has one ([`super::links::written`]).
 pub fn set_matrix(vm: &mut Vm, id: ObjId, matrix: &Matrix) -> bool {
     let Some(slot) = slot_of(vm, id, b"position") else {
         return false;
@@ -108,6 +109,7 @@ pub fn set_matrix(vm: &mut Vm, id: ObjId, matrix: &Matrix) -> bool {
         return false;
     };
     **rows = rows_of(matrix);
+    super::links::written(vm, id);
     true
 }
 

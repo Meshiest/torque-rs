@@ -18,6 +18,7 @@
 [Networked plugins](networked-plugins.md)
 [Network protocols](network-protocols.md)
 [Props and joints](props-and-joints.md)
+[Scene hierarchy](scene-hierarchy.md)
 [Mods](mods.md)
 [Native extensions](native-extensions.md)
 [Lua](lua.md)

@@ -21,3 +21,7 @@ carry tge 19657ca21cf577f9
 projectile-props tge e31b057873e5b6a3
 # The fold of the plugin scenarios, with carry and projectile-props added.
 plugins tge 3bcfc1448c05bb03
+# The scene hierarchy (on in engine mode): a moving root, three levels of children on nodes and origins, a Player child,
+# reparents with both keep modes. Its fold has it alone.
+hierarchy engine 653a6f7a547e2f5f
+scene engine 1833dc207872ead7

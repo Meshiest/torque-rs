@@ -161,8 +161,10 @@ impl EngineClass for SceneBehaviour {
         Ok(true)
     }
 
-    /// `SceneObject::onRemove` takes the object out of the container (the bins), charged (always carried out).
+    /// `SceneObject::onRemove` takes the object out of the container (the bins), charged (always carried out), after the
+    /// scene hierarchy, if the server has one, let go of it ([`super::links::removed`]).
     fn on_remove(&self, vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
+        super::links::removed(vm, id);
         let vm: &Vm = vm;
         self.container
             .bins_mut()
@@ -239,8 +241,35 @@ fn world_box_of(vm: &Vm, id: ObjId) -> Option<SceneState> {
     ext::get(vm.objects(), id)?.scene
 }
 
+/// The observer of a server's static-field writes (`Vm::set_static_write_observer`): a script's write of `position`,
+/// `rotation` or `scale` reaches the scene hierarchy ([`super::links::written`], which compares the transform it holds,
+/// so other fields cost one lookup), then a datablock's write its Players and images
+/// ([`crate::sim::player::datablock_written`]).
+pub fn static_written(vm: &mut Vm, id: Option<ObjId>, class: ts_vm::sim::ClassId) {
+    if let Some(id) = id {
+        super::links::written(vm, id);
+    }
+    crate::sim::player::datablock_written(vm, id, class);
+}
+
+/// The server's container, kept in its script engine for code that has no other way to it (the scene hierarchy's
+/// [`super::links::carry`]).
+struct ServerContainer(Rc<Container>);
+
+/// The container [`register`] was given.
+pub fn container_of(vm: &Vm) -> Option<Rc<Container>> {
+    vm.extension::<ServerContainer>().map(|c| Rc::clone(&c.0))
+}
+
+/// The object's transform after the scene hierarchy wrote its children's, so a script never reads a child's stale pose.
+fn current_matrix(vm: &mut Vm, id: Option<ObjId>) -> Option<Matrix> {
+    super::links::resolve(vm);
+    id.and_then(|id| matrix_of(vm, id))
+}
+
 /// Registers the `SceneObject` behaviour and the ten console methods, and `getType`.
 pub fn register(vm: &mut Vm, container: &Rc<Container>) {
+    vm.set_extension(Rc::new(ServerContainer(Rc::clone(container))));
     vm.set_class_behaviour(
         SCENE_OBJECT_CLASS,
         Rc::new(SceneBehaviour {
@@ -263,20 +292,20 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         Native::Int(i32::from_ne_bytes(mask.to_ne_bytes()))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getTransform", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| transform_text(crate::geometry::of(vm), &m)))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getPosition", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| text3(position_of(&m))))
     });
     // Columns 1 and 2 of the rotation: where the object's y and z axes point.
     register_method(vm, SCENE_OBJECT_CLASS, "getForwardVector", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| text3([m[1], m[5], m[9]])))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getUpVector", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| text3([m[2], m[6], m[10]])))
     });
     let w = Rc::clone(container);
@@ -315,10 +344,12 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         Native::Void
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getWorldBox", |vm, c| {
+        super::links::resolve(vm);
         let state = c.this_object.and_then(|id| world_box_of(vm, id));
         Native::Str(state.map_or_else(Vec::new, |s| text6(s.world_min, s.world_max)))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getWorldBoxCenter", |vm, c| {
+        super::links::resolve(vm);
         let state = c.this_object.and_then(|id| world_box_of(vm, id));
         Native::Str(state.map_or_else(Vec::new, |s| {
             text3(grid::box_center(s.world_min, s.world_max))

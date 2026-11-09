@@ -17,6 +17,7 @@
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, a plugin each, by id ([`transports`](crate::transports)) | `UdpTransport`, `MemoryTransport`, the web and p2p ones |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
+//! | [`HierarchyPlugin`] | `torque.hierarchy` | server, `Game`, a `Resolve` tick hook; only in engine mode | the scene hierarchy: parent and child transforms ([`torque_plugin_hierarchy`]) |
 //! | [`DedicatedRunnerPlugin`] | `torque.dedicated-runner` | the engine's runner slot | [`run`](crate::run): a dedicated server |
 //!
 //! `SimClassesPlugin` sets the slot of the game's own simulated classes; it is in no group.
@@ -41,6 +42,7 @@ use crate::run::DedicatedRunnerPlugin;
 pub use crate::transports::ServerTransportPlugins;
 pub use torque_content::ContentFormatPlugins;
 pub use torque_mods::ModsPlugin;
+pub use torque_plugin_hierarchy::HierarchyPlugin;
 
 /// What a dedicated server needs and nothing else: TGE's game classes, the server game, the terrain and water blocks, the
 /// network host and the content formats' asset loaders ([`ContentFormatPlugins`]), with the runner that runs a
@@ -75,6 +77,7 @@ impl PluginGroup for MinimalPlugins {
             .add(NetHostPlugin)
             .add_group(ServerTransportPlugins)
             .add_group(ContentFormatPlugins)
+            .add(HierarchyPlugin::default())
             .add(DedicatedRunnerPlugin)
     }
 }

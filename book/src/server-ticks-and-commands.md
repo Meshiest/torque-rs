@@ -22,10 +22,11 @@ fn build(engine: &mut EngineBuilder) {
 ```
 
 - **Where.** `ServerTick::before` hooks run before the process list ticks the objects, `ServerTick::after` hooks right
-  after it, before the send pass. Both come before the tick's Sim events (`schedule`), so a script's event of tick N sees what
+  after it, before the send pass, and `ServerTick::resolve` hooks after every `after` hook, whatever plugin pushed it (the
+  scene hierarchy writes there the children of what the `after` hooks moved). Both come before the tick's Sim events (`schedule`), so a script's event of tick N sees what
   the hooks of tick N did.
 - **Order.** Each group runs in the order the hooks were pushed, which is plugin order. A tick runs all the `before` hooks,
-  the process list, then all the `after` hooks.
+  the process list, then all the `after` hooks, then all the `resolve` hooks.
 - **Parameters.** A hook is written like a recipe: a function of injected parameters (`VmMut`, `VmRef`, `Res<T>`,
   `ResMut<T>`, `Slot<dyn T>`, `&Engine`, `Local<T>`) and `TickInfo`, the tick's `number` (from 1) and `time_ms`
   (`number * 32`, whatever the host's pacing). The closure form `Fn(&mut Vm, &Engine, TickInfo) -> Result<(), String>` works
@@ -33,7 +34,7 @@ fn build(engine: &mut EngineBuilder) {
   script engine's extension.
 - **Several ticks at once.** The first pass of a server covers its start-up and runs 32 ticks together, and a pass after a stall
   covers the ticks that were missed. The hooks run for each of those ticks, in tick order: every `before`, the process list over
-  all of them, every `after`.
+  all of them, then each tick's `after` and `resolve` hooks in turn.
 - **Errors.** A hook that returns an error prints it on the server's console (once, until its message changes) and the server
   goes on with the other hooks.
 - **Nothing registered, nothing changed.** A server whose engine has no `ServerTick` ticks exactly as before: the hashes of the

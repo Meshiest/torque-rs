@@ -14,9 +14,9 @@ use torque_app::client::{ClientBuilder, ClientNet};
 use torque_app::gizmos::GizmosPlugin;
 use torque_app::hosting::HostingPlugin;
 use torque_app::page_bridge;
-use torque_app::plugins::{DefaultPlugins, ZoomPlugin};
+use torque_app::plugins::{DefaultPlugins, HierarchyPlugin, ZoomPlugin};
 use torque_app::server::{GameServer, Listen, ServerStart};
-use torque_engine::{Effects, EngineBuilder};
+use torque_engine::{Effects, EngineBuilder, PluginGroup};
 use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_loader::call_policy::{
     CallKind, CallPolicy, DENIED_EFFECTS, DenyCodeAndFiles, PolicyCall, TGE_EFFECTS,
@@ -32,7 +32,8 @@ use torque_ts_vm::vm::Vm;
 /// page bridge's, each handed to `each`.
 fn for_each_script_engine(mut each: impl FnMut(&Vm)) {
     let mut engine = EngineBuilder::new();
-    engine.add_plugins(DefaultPlugins);
+    // The hierarchy is in DefaultPlugins but on only in engine mode: on here whatever the protocol.
+    engine.add_plugins(DefaultPlugins.set(HierarchyPlugin::always()));
     engine
         .add_plugins(GizmosPlugin::default())
         .add_plugins(ZoomPlugin)

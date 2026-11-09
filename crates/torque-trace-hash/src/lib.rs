@@ -10,6 +10,8 @@
 //!   [`scenarios::plugins`] and folded into the `plugins` line; [`joints`], its joints' (a grappled figure swinging, with
 //!   tethers, a winch, a weld and a hinge around it), printed after it; [`props_predict`], a client that predicts props (a
 //!   held crate carried, and shots of the figure's own at it), printed after those.
+//! - [`hierarchy`]: the scene hierarchy's scenario (a moving root, three levels of children and a Player child on it, in
+//!   engine mode, where the hierarchy is on), printed among [`scenarios::scene`] and folded into the `scene` line.
 //! - [`scenarios`]: the scenarios ([`scenarios::all`]) and [`scenarios::trace_hash`], the per-plugin entry point
 //!   (`trace_hash::<MyPlugin>()`).
 //!
@@ -21,6 +23,7 @@
 //! those directly; a plugin that does one shows as a hash that changes between runs or between targets.
 
 pub mod hash;
+pub mod hierarchy;
 pub mod joints;
 pub mod props;
 pub mod props_predict;

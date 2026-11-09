@@ -6,11 +6,11 @@ Every console function, method, class and pref of an engine built from `DefaultP
 
 | Page | What it lists | Entries |
 |---|---|---|
-| [Functions](functions.md) | console functions, by namespace | 300 |
-| [Methods](methods.md) | methods called on an object, by class | 291 |
+| [Functions](functions.md) | console functions, by namespace | 301 |
+| [Methods](methods.md) | methods called on an object, by class | 304 |
 | [Classes](classes.md) | console classes and the fields they add | 117 classes, 922 fields |
-| [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 17 |
-| [From Lua](lua.md) | the functions and methods as a Lua script calls them | 591 |
+| [Prefs](prefs.md) | `$Pref::` globals with their defaults and ranges | 22 |
+| [From Lua](lua.md) | the functions and methods as a Lua script calls them | 605 |
 
 ## Reading an entry
 
@@ -24,6 +24,7 @@ Every console function, method, class and pref of an engine built from `DefaultP
 
 These plugins are not in `DefaultPlugins`. What each adds is listed with the plugin's id beside it, since a game that does not add the plugin does not have it.
 
+- `torque.hierarchy`: the scene hierarchy (in the default plugins, on in engine mode): the SceneObject methods that hang an object on another at a local pose, read the tree and delete a subtree, a server API
 - `torque.gizmos`: debug drawing: lines, boxes, spheres, arrows, crosses and labels in world space
 - `torque.zoom`: the zoom: the field of view and how fast it changes
 - `torque.hosting`: joining by address or room code: the lookup natives of a join screen

@@ -4,7 +4,7 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-291 entries in 34 classes.
+304 entries in 34 classes.
 
 | Class | Entries |
 |---|---|
@@ -35,7 +35,7 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 | [NetConnection](#netconnection) | 4 |
 | [Player](#player) | 8 |
 | [ScatterSky](#scattersky) | 1 |
-| [SceneObject](#sceneobject) | 10 |
+| [SceneObject](#sceneobject) | 23 |
 | [ShapeBase](#shapebase) | 78 |
 | [SimObject](#simobject) | 12 |
 | [SimSet](#simset) | 10 |
@@ -464,12 +464,30 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 
 ## SceneObject
 
+- `sceneObject.clearChildren([keepWorld])` - takes every child off the object (keeping where each is, or with \`keepWorld\` 0 its local pose); how many
+  *arguments: 0 to 1; server; needs `torque.hierarchy`*
+- `sceneObject.deleteRecursive()` - deletes the object and every object below it, children first; how many objects went
+  *arguments: none; server; needs `torque.hierarchy`*
+- `sceneObject.getChild(index)` - the object's child number \`index\` (from 0, in the order they were hung), 0 past the last
+  *arguments: 1; server; needs `torque.hierarchy`*
+- `sceneObject.getChildCount()` - how many children the object has
+  *arguments: none; server; needs `torque.hierarchy`*
+- `sceneObject.getDeleteWithParent()` - whether the object is deleted with its parent
+  *arguments: none; server; needs `torque.hierarchy`*
 - `obj.getForwardVector()`
   *arguments: none; server and client*
+- `sceneObject.getLocalTransform()` - the object's pose in its parent as "x y z ax ay az angle", "" when it has no parent
+  *arguments: none; server; needs `torque.hierarchy`*
 - `obj.getObjectBox()`
   *arguments: none; server and client*
+- `sceneObject.getParent()` - the parent's id, 0 for none
+  *arguments: none; server; needs `torque.hierarchy`*
+- `sceneObject.getParentNode()` - the parent's node the object hangs on, "" for the parent's origin
+  *arguments: none; server; needs `torque.hierarchy`*
 - `obj.getPosition()`
   *arguments: none; server and client*
+- `sceneObject.getRoot()` - the top of the object's chain of parents: the object itself when it has none
+  *arguments: none; server; needs `torque.hierarchy`*
 - `obj.getScale()`
   *arguments: none; server and client*
 - `obj.getTransform()`
@@ -480,6 +498,29 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: none; server and client*
 - `obj.getWorldBoxCenter()`
   *arguments: none; server and client*
+- `sceneObject.isAncestorOf(other)` - whether the object is above \`other\` in its chain of parents
+  *arguments: 1; server; needs `torque.hierarchy`*
+- `sceneObject.setDeleteWithParent(flag)` - sets whether the object is deleted with its parent (a turret with its tank) instead of being taken off it where it
+  *arguments: 1; server; needs `torque.hierarchy`*
+
+  is; false when the server holds as many flags as its cap of parented objects
+
+- `sceneObject.setLocalTransform(transform [, snap])` - sets the object's pose in its parent ("x y z ax ay az angle"; the values left out are kept); true, or false with
+  *arguments: 1 to 2; server; needs `torque.hierarchy`*
+
+  getParentError() naming why
+
+  `snap` (0 by default) shows the new pose on clients at once instead of blending to it.
+
+- `sceneObject.setParent(parent [, keepWorld [, node]])` - hangs the object on a parent, or takes it off with 0 or ""; true, or false with getParentError() naming why
+  *arguments: 1 to 3; server; needs `torque.hierarchy`*
+
+  `keepWorld` (1 by default) keeps the object where it is and rewrites its local pose; 0 keeps its pose and moves it with
+  the parent. `node` hangs it on a node of the parent's shape: a mount slot `0` to `31` or a node's name; "" is the
+  parent's origin. A child ticks after its parent and moves in its parent's frame: its own moves, physics and limits act
+  on its local pose, and the parent's motion carries it. A mounted object cannot be parented, nor a prop (yet), nor an
+  object that is being removed; a parent that rides the object, through mounts or parents, is refused as a cycle.
+
 - `obj.setScale(Point3F scale)`
   *arguments: 1; server and client*
 - `obj.setTransform(Transform T)`

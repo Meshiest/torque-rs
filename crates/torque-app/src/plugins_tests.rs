@@ -21,12 +21,12 @@ use crate::client::{ClientBuilder, ClientNet, ClientSetup};
 use crate::plugins::{
     ActionMapPlugin, AmbientOcclusionPlugin, AntiAliasingPlugin, AudioPlugin, BloomPlugin,
     CameraModesPlugin, ClearWaterPlugin, ClientHostPlugin, CloudsPlugin, ConnPlugin,
-    DefaultPlugins, GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, LivePerfPlugin,
-    MinimalPlugins, ModsPlugin, NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin,
-    RendererPlugin, RendererSlotPlugin, ScreenPlugin, ServerGamePlugin, ServerQueryPlugin,
-    ShadowsPlugin, SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin, TgeProtocolPlugin,
-    TransparencyPlugin, VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin,
-    ZoomPlugin,
+    DefaultPlugins, GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, HierarchyPlugin,
+    LivePerfPlugin, MinimalPlugins, ModsPlugin, NetHostPlugin, ParticleLightPlugin,
+    ReflectionsPlugin, RendererPlugin, RendererSlotPlugin, ScreenPlugin, ServerGamePlugin,
+    ServerQueryPlugin, ShadowsPlugin, SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin,
+    TgeProtocolPlugin, TransparencyPlugin, VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin,
+    WindowRunnerPlugin, ZoomPlugin,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -132,6 +132,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             WaterPlugin::ID,
             TgeProtocolPlugin::ID,
             NetHostPlugin::ID,
+            HierarchyPlugin::ID,
             GuiPlugin::ID,
             ActionMapPlugin::ID,
             ScreenPlugin::ID,
@@ -179,6 +180,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.water",
             "torque.net.tge",
             "torque.net-host",
+            "torque.hierarchy",
             "torque.gui",
             "torque.action-map",
             "torque.screen",

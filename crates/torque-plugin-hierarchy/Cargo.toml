@@ -1,0 +1,36 @@
+[package]
+name = "torque-plugin-hierarchy"
+description = "Scene hierarchy for torque-rs: any scene object parented to another at a local pose, its world kept by the server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "scene-graph", "hierarchy", "plugin", "gamedev"]
+categories = ["game-development"]
+
+# The server side of the scene hierarchy: the `SceneObject` methods that parent objects (a server API: no client entry point),
+# the tree a server keeps (torque-hierarchy) plugged into the scene's seam (torque-game's `scene::links`), the resolve after
+# each step and after the tick hooks, detach and recursive delete. On in engine mode with the default plugins; Torque's protocol
+# leaves it out. Nothing here draws, so the crate builds for wasm32 too.
+
+[dependencies]
+torque-collide = { path = "../torque-collide" }
+torque-engine = { path = "../torque-engine" }
+# The scene's seam, its transforms and the classes' own setTransform.
+torque-game = { path = "../torque-game" }
+torque-hierarchy = { path = "../torque-hierarchy" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[dev-dependencies]
+# The tests' server, stepped by hand.
+torque-app-server = { path = "../torque-app-server" }
+# The floor, the figure and the cube of the tests' world.
+torque-example-assets = { path = "../../examples/assets" }
+torque-shapes = { path = "../torque-shapes" }
+# A prop, refused as a child.
+torque-plugin-props = { path = "../torque-plugin-props" }
+
+[lints]
+workspace = true

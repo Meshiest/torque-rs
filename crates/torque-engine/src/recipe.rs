@@ -203,6 +203,9 @@ pub enum TickPhase {
     Before,
     /// After the process list ticked the objects, before the send pass and the Sim events.
     After,
+    /// After every `After` hook of the tick, whatever plugin pushed it: where work that settles what the others moved
+    /// goes (the scene hierarchy writes the children of the objects an `After` hook moved, a physics step's props, say).
+    Resolve,
 }
 
 /// The function a tick hook runs.
@@ -210,9 +213,10 @@ pub(crate) type TickFn = Rc<dyn Fn(&mut Vm, &Engine, TickInfo) -> Result<(), Str
 
 /// Work a plugin has every server do once per tick (32 ms), pushed onto the engine's list of `ServerTick`s
 /// (`engine.push(ServerTick::after(..))`). The host runs the hooks around the process list's pass over the objects:
-/// [`before`](Self::before) hooks first, [`after`](Self::after) hooks once the objects have ticked, each group in the
-/// order the hooks were pushed (so in the order plugins were built). Within a tick all the `before` hooks run, then the
-/// process list, then all the `after` hooks.
+/// [`before`](Self::before) hooks first, [`after`](Self::after) hooks once the objects have ticked, then
+/// [`resolve`](Self::resolve) hooks, each group in the order the hooks were pushed (so in the order plugins were built).
+/// Within a tick all the `before` hooks run, then the process list, then all the `after` hooks, then all the `resolve`
+/// hooks.
 ///
 /// A hook is a function of [injected parameters](crate::param): the server's script engine (`VmMut`), resources, slots and
 /// the tick (`TickInfo`), so a plugin ticks without the game calling a script function. A hook that returns an error
@@ -220,7 +224,7 @@ pub(crate) type TickFn = Rc<dyn Fn(&mut Vm, &Engine, TickInfo) -> Result<(), Str
 ///
 /// A pass that covers several ticks at once (the first pass of a server, or one after a stall) runs the hooks for each of
 /// them, in tick order: the `before` hooks of every tick, then the process list's pass over all of them, then the `after`
-/// hooks of every tick. A server with no hook pushed runs its ticks exactly as without this type.
+/// and `resolve` hooks of each tick in turn. A server with no hook pushed runs its ticks exactly as without this type.
 ///
 /// ```
 /// use torque_engine::{EngineBuilder, ServerTick, TickInfo, VmMut};
@@ -257,6 +261,14 @@ impl ServerTick {
     pub fn after<M>(work: impl IntoServerTick<M>) -> ServerTick {
         ServerTick {
             phase: TickPhase::After,
+            run: work.into_tick(),
+        }
+    }
+
+    /// A hook that runs `work` after every [`after`](Self::after) hook of each tick.
+    pub fn resolve<M>(work: impl IntoServerTick<M>) -> ServerTick {
+        ServerTick {
+            phase: TickPhase::Resolve,
             run: work.into_tick(),
         }
     }

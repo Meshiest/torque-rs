@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-300 entries in 1 namespace.
+301 entries in 1 namespace.
 
 ## Global
 
@@ -258,6 +258,11 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 0 to 1; server and client*
 - `getModStages()` - the declared load stages, separated by spaces
   *arguments: none; server and client*
+- `getParentError()` - why the last setParent or setLocalTransform was refused: self, cycle, depth, children, subtree, total, notFinite,
+  *arguments: none; server; needs `torque.hierarchy`*
+
+  outOfRange, badNode, unknown, notParented, mounted, noShape, removing or class; "" after a success
+
 - `getPredictor()` - The id of the predictor the client's control object runs with.
   *arguments: none; client; needs a plugin with a predictor or a prediction part*
 - `getRandom([a [, b]])` - a random number: in (0, 1\], from 0 to a, or from a to b

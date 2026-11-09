@@ -4097,6 +4097,7 @@ dependencies = [
  "torque-maps",
  "torque-mods",
  "torque-net",
+ "torque-plugin-hierarchy",
  "torque-server",
  "torque-sim",
  "torque-ts-vm",
@@ -4615,6 +4616,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-plugin-hierarchy"
+version = "0.1.0"
+dependencies = [
+ "torque-app-server",
+ "torque-collide",
+ "torque-engine",
+ "torque-example-assets",
+ "torque-game",
+ "torque-hierarchy",
+ "torque-plugin-props",
+ "torque-shapes",
+ "torque-ts-vm",
+]
+
+[[package]]
 name = "torque-plugin-loader"
 version = "0.1.0"
 dependencies = [
@@ -4869,6 +4885,7 @@ dependencies = [
  "torque-gui",
  "torque-maps",
  "torque-physics-rapier",
+ "torque-plugin-hierarchy",
  "torque-plugin-props",
  "torque-plugin-rope",
  "torque-plugin-smooth-prediction",

@@ -30,6 +30,8 @@ torque-maps = { path = "../torque-maps" }
 torque-physics-rapier = { path = "../torque-physics-rapier" }
 # The props scenario's plugin.
 torque-plugin-props = { path = "../torque-plugin-props" }
+# The hierarchy scenario's tree (the plugin itself is in `MinimalPlugins`).
+torque-plugin-hierarchy = { path = "../torque-plugin-hierarchy" }
 torque-server = { path = "../torque-server" }
 torque-shapes = { path = "../torque-shapes" }
 torque-ts-vm = { path = "../torque-ts-vm" }

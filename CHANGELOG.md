@@ -222,7 +222,10 @@ different.
 
 - `torque-hierarchy`: parent and child transforms for any scene object, unlike TGE's one-level mounting: a tree with depth,
   children and size caps, cycle checks, parents-first resolve, keep-world or keep-local reparenting, a recursive delete and
-  a per-child flag to go with the parent, and a quantizer for local poses on the wire. Not wired into the engine yet.
+  a per-child flag to go with the parent, and a quantizer for local poses on the wire. `torque-plugin-hierarchy` (on in engine
+  mode, absent with TGE's protocol) puts it on the server: any class but props may be a child, Players and vehicles included,
+  moving in their parent's frame, and mounts never close a loop with parents; children resolved before every query, turn and read; `setParent`, `deleteRecursive` and kin, a server
+  API with no client entry point. Clients are not sent the links yet.
 - `torque-game`: hitboxes with lag compensation (opt-in): a Player can be hit on its posed shape, checked against where
   the shooter saw it.
 - `torque::app::camera_blend` and `camera_boom`: a camera that moves smoothly between first and third person and a

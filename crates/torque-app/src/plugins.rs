@@ -18,6 +18,7 @@
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
+//! | [`HierarchyPlugin`] | `torque.hierarchy` | server, `Game`, a `Resolve` tick hook; only in engine mode | the scene hierarchy: parent and child transforms (`torque_plugin_hierarchy`) |
 //! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register`, and the control classes plugins add ([`torque_gui::custom`]) |
 //! | [`ActionMapPlugin`] | `torque.action-map` | client, `Input` | the `ActionMap` class and its natives, and the input sources plugins add ([`torque_client::input_source`]) |
 //! | [`ScreenPlugin`] | `torque.screen` | client, `Screen` | `torque_client::screen::register` |
@@ -62,10 +63,10 @@ use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
 
 pub use torque_app_server::plugins::{
-    ContentFormatPlugins, EngineProtocolPlugin, GameClassesPlugin, MinimalPlugins, ModsPlugin,
-    NetHostPlugin, PROTOCOL_ENV, ProtocolPlugins, ServerGamePlugin, ServerTransportPlugins,
-    ServerWiring, SimClassesPlugin, TerrainPlugin, TgeProtocolPlugin, WaterPlugin,
-    protocol_from_env, set_protocol,
+    ContentFormatPlugins, EngineProtocolPlugin, GameClassesPlugin, HierarchyPlugin, MinimalPlugins,
+    ModsPlugin, NetHostPlugin, PROTOCOL_ENV, ProtocolPlugins, ServerGamePlugin,
+    ServerTransportPlugins, ServerWiring, SimClassesPlugin, TerrainPlugin, TgeProtocolPlugin,
+    WaterPlugin, protocol_from_env, set_protocol,
 };
 
 pub use crate::camera_modes::CameraModesPlugin;
@@ -111,6 +112,7 @@ impl PluginGroup for DefaultPlugins {
             .add(NetHostPlugin)
             .add_group(ServerTransportPlugins)
             .add_group(ContentFormatPlugins)
+            .add(HierarchyPlugin::default())
             .add(GuiPlugin::default())
             .add(ActionMapPlugin)
             .add(ScreenPlugin)

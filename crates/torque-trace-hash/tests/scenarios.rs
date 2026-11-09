@@ -8,7 +8,8 @@ fn every_scenario_repeats_itself_and_ran_the_whole_script() {
         .into_iter()
         .chain(scenarios::predictors())
         .chain(scenarios::physics())
-        .chain(scenarios::plugins());
+        .chain(scenarios::plugins())
+        .chain(scenarios::scene());
     for scenario in every {
         let first = (scenario.run)().expect(scenario.name);
         let second = (scenario.run)().expect(scenario.name);

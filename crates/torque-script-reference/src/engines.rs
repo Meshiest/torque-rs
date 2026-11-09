@@ -5,10 +5,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 use torque_app::client::{ClientBuilder, ClientNet};
 use torque_app::gizmos::GizmosPlugin;
 use torque_app::hosting::HostingPlugin;
-use torque_app::plugins::{DefaultPlugins, ZoomPlugin};
+use torque_app::plugins::{DefaultPlugins, HierarchyPlugin, ZoomPlugin};
 use torque_app::server::{GameServer, Listen, ServerStart};
 use torque_client::predict::slot::SLOT_NATIVES;
-use torque_engine::{Engine, EngineBuilder, PluginType};
+use torque_engine::{Engine, EngineBuilder, PluginGroup, PluginGroupBuilder, PluginType};
 use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_props::PropsPlugin;
 use torque_plugin_props::predict::PropPredictionPlugin;
@@ -23,18 +23,27 @@ struct Optional {
     id: &'static str,
     what: &'static str,
     add: fn(&mut EngineBuilder),
+    /// The group the engine starts from in place of [`DefaultPlugins`], for a plugin of that group that is off by default.
+    group: Option<fn() -> PluginGroupBuilder>,
 }
 
 /// The opt-in plugins that add script surface and that need nothing from the game to do it. (`LivePerfPlugin` names its
 /// console function and pref by its arguments, so it has nothing fixed to list.)
-fn optional_plugins() -> [Optional; 7] {
+fn optional_plugins() -> [Optional; 8] {
     [
+        Optional {
+            id: HierarchyPlugin::ID.as_str(),
+            what: "the scene hierarchy (in the default plugins, on in engine mode): the SceneObject methods that hang an object on another at a local pose, read the tree and delete a subtree, a server API",
+            add: |_| {},
+            group: Some(|| DefaultPlugins.set(HierarchyPlugin::always())),
+        },
         Optional {
             id: GizmosPlugin::ID.as_str(),
             what: "debug drawing: lines, boxes, spheres, arrows, crosses and labels in world space",
             add: |engine| {
                 engine.add_plugins(GizmosPlugin::default());
             },
+            group: None,
         },
         Optional {
             id: ZoomPlugin::ID.as_str(),
@@ -42,6 +51,7 @@ fn optional_plugins() -> [Optional; 7] {
             add: |engine| {
                 engine.add_plugins(ZoomPlugin);
             },
+            group: None,
         },
         Optional {
             id: HostingPlugin::ID.as_str(),
@@ -49,6 +59,7 @@ fn optional_plugins() -> [Optional; 7] {
             add: |engine| {
                 engine.add_plugins(HostingPlugin::default());
             },
+            group: None,
         },
         Optional {
             id: RopePlugin::ID.as_str(),
@@ -56,6 +67,7 @@ fn optional_plugins() -> [Optional; 7] {
             add: |engine| {
                 engine.add_plugins(RopePlugin::default());
             },
+            group: None,
         },
         Optional {
             id: PropsPlugin::ID.as_str(),
@@ -63,6 +75,7 @@ fn optional_plugins() -> [Optional; 7] {
             add: |engine| {
                 engine.add_plugins(PropsPlugin);
             },
+            group: None,
         },
         Optional {
             id: PropPredictionPlugin::ID.as_str(),
@@ -70,6 +83,7 @@ fn optional_plugins() -> [Optional; 7] {
             add: |engine| {
                 engine.add_plugins((PropsPlugin, PropPredictionPlugin::default()));
             },
+            group: None,
         },
         Optional {
             id: GuiLayoutPlugin::ID.as_str(),
@@ -77,13 +91,17 @@ fn optional_plugins() -> [Optional; 7] {
             add: |engine| {
                 engine.add_plugins(GuiLayoutPlugin);
             },
+            group: None,
         },
     ]
 }
 
 fn build(extra: Option<&Optional>) -> Result<Engine, String> {
     let mut engine = EngineBuilder::new();
-    engine.add_plugins(DefaultPlugins);
+    match extra.and_then(|extra| extra.group) {
+        Some(group) => engine.add_plugins(group()),
+        None => engine.add_plugins(DefaultPlugins),
+    };
     if let Some(extra) = extra {
         (extra.add)(&mut engine);
     }

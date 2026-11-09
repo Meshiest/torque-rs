@@ -82,7 +82,11 @@ impl<'a> ContainerWorld<'a> {
     /// The server container for a phase that holds the `Vm`. The queries use the math tables installed for the process
     /// (`torque_collide::library`, `torque_shapes::library`): a host installs its own when it builds its server, before the
     /// first world; without one they are the plain ones.
+    ///
+    /// The scene hierarchy's children are written first ([`super::links::resolve`]), so the phase meets them where their
+    /// parents are now.
     pub fn new(vm: &'a mut Vm, container: &'a Container, shapes: &'a Shapes) -> ContainerWorld<'a> {
+        super::links::resolve(vm);
         ContainerWorld {
             vm: RefCell::new(vm),
             container,
